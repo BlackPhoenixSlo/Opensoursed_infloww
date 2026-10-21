@@ -1,0 +1,31 @@
+{
+  "_about": "Add bundle > Save (settings/subscription/promotion-campaign/modal-2). relay: the app's POST /api/of/v2/subscriptions/bundles; of: of_client.create_bundle's body.",
+  "_source": "OF web bundle build 202610091632, read statically (not observed live: no logged-in onlyfans.com tab and no write is ever sent): the bundle dialog's save sends {discount, duration}; its options are users/me settings' canAddSubscriberByBundle {discounts, durations} (false on the account read, so this case's options are synthetic).",
+  "settings": {
+    "canAddSubscriberByBundle": {
+      "discounts": {
+        "0": "No discount",
+        "5": "5% discount",
+        "10": "10% discount"
+      },
+      "durations": {
+        "3": "3 months",
+        "6": "6 months",
+        "12": "12 months"
+      }
+    },
+    "bundleMaxPrice": 250
+  },
+  "form": {
+    "discount": 10,
+    "duration": 3
+  },
+  "relay": {
+    "discount": 10,
+    "duration": 3
+  },
+  "of": {
+    "discount": 10,
+    "duration": 3
+  }
+}

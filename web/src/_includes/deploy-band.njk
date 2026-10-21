@@ -1,0 +1,48 @@
+{#- The closing ink band: title, intro, the command row, notes, the ToS line and two buttons. Include it last on the
+    page: -mb-24 cancels the footer's top margin, so the band meets the footer with no white strip. Its button is the
+    one link that says "on GitHub"; every "Deploy it yourself" on the site points to /#deploy.
+    The landing passes its own text, set before the include: `deployIntro` (paragraphs above the commands),
+    `deployCmd` (the command text) and `deployNotes` (paragraphs below them). Inner pages use the defaults below.
+    A command with more than one line gets the wide, scrolling row and a "Copy commands" button. -#}
+{%- set bandIntro -%}
+<p class="mx-auto mt-4 max-w-2xl text-pretty">
+  Deploying it yourself means installing it once on a server you rent; after that, everyone works in a browser.
+</p>
+<p class="mx-auto mt-4 max-w-2xl text-sm">
+  After the <a class="text-link" href="{{ '/#deploy' | url }}">one-time setup</a> (<code>docker network create
+  n8n_default</code>, the state files and an <code>.env</code>), this is the install. Docker Engine 25+ with Compose 2.20+.
+</p>
+{%- endset -%}
+{%- set bandNotes -%}
+<p class="mx-auto mt-2 max-w-2xl text-sm text-pretty">
+  Before chatters reach it from outside, read the <a class="text-link" href="{{ '/help/#security' | url }}">security
+  notes</a>: today it belongs on a private network or a VPN, not on the open internet.
+</p>
+{%- endset -%}
+{%- set bandCmd = deployCmd or "docker compose up -d --build" -%}
+{%- set multiLine = deployCmd is defined -%}
+<section id="deploy" aria-labelledby="deploy-title" class="band-ink -mb-24">
+  <div class="wrap py-20 text-center text-white/75 sm:py-28 [&_p_a]:text-white [&_p_a]:decoration-white/40 [&_p_a:hover]:decoration-white [&_p_code]:text-white">
+    <h2 id="deploy-title" class="section-title text-white">Get started with Inflowwww today</h2>
+    {{ (deployIntro or bandIntro) | safe }}
+    <div class="mx-auto mt-8 flex {{ 'max-w-2xl' if multiLine else 'max-w-xl' }} flex-wrap items-center gap-3 rounded-2xl bg-white/5 p-3 text-left ring-1 ring-white/15">
+      <pre class="min-w-0 basis-full overflow-x-auto px-2 py-2 font-mono text-sm {{ 'whitespace-pre' if multiLine else 'sm:flex-1 sm:basis-0' }} text-mint"><code id="deploy-cmd">{{ bandCmd | safe }}</code></pre>
+      <button type="button" class="btn-light w-full sm:w-auto" data-copy="#deploy-cmd" data-status="#copy-status" hidden>
+        <svg class="size-4" aria-hidden="true" focusable="false"><use href="#i-copy" /></svg>
+        Copy command{{ "s" if multiLine }}
+      </button>
+    </div>
+    <p id="copy-status" class="mt-2 min-h-6 text-sm" role="status" aria-live="polite"></p>
+    {{ (deployNotes or bandNotes) | safe }}
+    <p class="mx-auto mt-2 max-w-2xl text-sm text-pretty">{% include "tos.njk" %}</p>
+    <div class="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
+      <a class="btn-light w-full sm:w-auto" href="{{ site.repo }}">
+        <svg class="size-4" aria-hidden="true" focusable="false"><use href="#i-code" /></svg>
+        Get Inflowwww on GitHub
+      </a>
+      <a class="btn-outline-light w-full sm:w-auto" href="{{ site.repo }}/blob/main/README.md#quick-start">
+        Read the Quick start
+      </a>
+    </div>
+  </div>
+</section>

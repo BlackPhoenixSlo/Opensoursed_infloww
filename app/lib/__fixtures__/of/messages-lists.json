@@ -1,0 +1,990 @@
+{
+  "list": [
+    {
+      "id": "tagged",
+      "type": "tagged",
+      "name": "Tagged",
+      "usersCount": 9,
+      "postsCount": 14093,
+      "order": "default",
+      "direction": "asc",
+      "canUpdate": false,
+      "canDelete": false,
+      "canManageUsers": false,
+      "canAddUsers": false,
+      "canPinnedToFeed": true,
+      "isPinnedToFeed": false,
+      "canPinnedToChat": false,
+      "isPinnedToChat": false,
+      "sortList": [],
+      "users": [
+        {
+          "view": "t",
+          "id": 2034,
+          "name": "Synth User 36",
+          "username": "synthuser21",
+          "isVerified": true,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/9/9d/9dbe2838c30d7adc9d5968b3cb1bbe33/synthetic.jpg",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/8/89/896c58086508b1bc9d83ef38230428f8/synthetic.jpg",
+            "c144": "https://thumbs.onlyfans.com/files/a/a6/a678318bec1de6c007182cf8c34a3e43/synthetic.jpg"
+          },
+          "displayName": ""
+        },
+        {
+          "view": "t",
+          "id": 2035,
+          "name": "Synth User 37",
+          "username": "synthuser22",
+          "isVerified": true,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/d/d4/d498545e5f297c45eba518591a858b7c/synthetic.jpg",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/e/e5/e5135c5f9f610e298e48b7e40fc98df5/synthetic.jpg",
+            "c144": "https://thumbs.onlyfans.com/files/d/db/db10643f2d8420b682ea8737f593028a/synthetic.jpg"
+          },
+          "displayName": ""
+        },
+        {
+          "view": "t",
+          "id": 2036,
+          "name": "Synth User 38",
+          "username": "synthuser23",
+          "isVerified": true,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/4/43/439b1136dd7ce5b992915ea89359b906/synthetic.jpg",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/8/8a/8a1d1d173a7af2ea6d2a963a48f6218c/synthetic.jpg",
+            "c144": "https://thumbs.onlyfans.com/files/2/29/29d3583a1aaefdfafcdaed9bdac6edd2/synthetic.jpg"
+          },
+          "displayName": ""
+        }
+      ]
+    },
+    {
+      "id": "recent",
+      "type": "recent",
+      "name": "Recent (last 24 hours)",
+      "usersCount": 0,
+      "postsCount": 0,
+      "order": "default",
+      "direction": "asc",
+      "canUpdate": false,
+      "canDelete": false,
+      "canManageUsers": false,
+      "canAddUsers": false,
+      "canPinnedToFeed": false,
+      "isPinnedToFeed": false,
+      "canPinnedToChat": false,
+      "isPinnedToChat": false,
+      "sortList": [],
+      "users": []
+    },
+    {
+      "id": "purchased",
+      "type": "purchased",
+      "name": "Purchased",
+      "usersCount": 7,
+      "postsCount": 16,
+      "order": "purchases",
+      "direction": "asc",
+      "canUpdate": false,
+      "canDelete": false,
+      "canManageUsers": false,
+      "canAddUsers": false,
+      "canPinnedToFeed": false,
+      "isPinnedToFeed": false,
+      "canPinnedToChat": false,
+      "isPinnedToChat": false,
+      "sortList": [],
+      "users": [
+        {
+          "view": "t",
+          "id": 2008,
+          "name": "Synth User 17",
+          "username": "synthuser10",
+          "isVerified": true,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/1/18/1878378926ea4cf6c36b161cc9cb216d/synthetic.jpg",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/7/73/7314ce6ab8a05c0b000be571e78eec1f/synthetic.jpg",
+            "c144": "https://thumbs.onlyfans.com/files/6/60/60c6704d41db8146e14ad18f7309a58f/synthetic.jpg"
+          },
+          "displayName": "Synth Rename 18"
+        },
+        {
+          "view": "t",
+          "id": 2037,
+          "name": "Synth User 39",
+          "username": "synthuser24",
+          "isVerified": true,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/1/11/11f95fcaed71704b6bb712c8012babac/synthetic.png",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/4/42/42635f339717a714c970b94a76c8ec4d/synthetic.png",
+            "c144": "https://thumbs.onlyfans.com/files/a/a9/a91863b67efc7344da699f5e3ea07acf/synthetic.png"
+          },
+          "displayName": "Synth Rename 40"
+        },
+        {
+          "view": "t",
+          "id": 2038,
+          "name": "Synth User 41",
+          "username": "synthuser25",
+          "isVerified": true,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/3/3e/3e6ad336670bbccbd3a30fff494f1719/synthetic.jpg",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/6/67/67d15fc7dad4547863673f9c8d31081b/synthetic.jpg",
+            "c144": "https://thumbs.onlyfans.com/files/8/8f/8fa5b38da05808c58eed6143eed79608/synthetic.jpg"
+          },
+          "displayName": "Synth Rename 1"
+        }
+      ],
+      "activeSubscriberPurchasedCount": 3,
+      "expiredSubscriberPurchasedCount": 1,
+      "pinnedPostsCount": 1
+    },
+    {
+      "id": "1299098471",
+      "type": "custom",
+      "name": "Synth list 9",
+      "usersCount": 1,
+      "postsCount": 27,
+      "order": "default",
+      "direction": "asc",
+      "canUpdate": true,
+      "canDelete": true,
+      "canManageUsers": true,
+      "canAddUsers": true,
+      "canPinnedToFeed": true,
+      "isPinnedToFeed": false,
+      "canPinnedToChat": true,
+      "isPinnedToChat": false,
+      "sortList": [],
+      "users": [
+        {
+          "view": "t",
+          "id": 2039,
+          "name": "Synth User 42",
+          "username": "synthuser26",
+          "isVerified": true,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": null,
+          "avatarThumbs": null,
+          "displayName": "Synth Rename 43"
+        }
+      ]
+    },
+    {
+      "id": "muted",
+      "type": "muted",
+      "name": "Muted",
+      "usersCount": 4,
+      "postsCount": 43739,
+      "order": "default",
+      "direction": "asc",
+      "canUpdate": false,
+      "canDelete": false,
+      "canManageUsers": true,
+      "canAddUsers": true,
+      "canPinnedToFeed": false,
+      "isPinnedToFeed": false,
+      "canPinnedToChat": false,
+      "isPinnedToChat": false,
+      "sortList": [],
+      "users": [
+        {
+          "view": "t",
+          "id": 2040,
+          "name": "Synth User 44",
+          "username": "synthuser27",
+          "isVerified": true,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/0/03/033548166f54e456a3c939cf84ecb6dc/synthetic.jpg",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/4/48/48ccdd0291269f915e413f54d1ee7c9a/synthetic.jpg",
+            "c144": "https://thumbs.onlyfans.com/files/d/d0/d07c2ccede3eac16084b78fd071829f7/synthetic.jpg"
+          },
+          "displayName": "Synth Rename 45"
+        },
+        {
+          "view": "t",
+          "id": 2012,
+          "name": "Synth User 19",
+          "username": "synthuser11",
+          "isVerified": true,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/c/cc/ccd08f849a7867e84dcc92ce40c00fcb/synthetic.png",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/7/7e/7e460b23bbdf37f45281bfa11f72ae19/synthetic.png",
+            "c144": "https://thumbs.onlyfans.com/files/7/7b/7bcaca330afdad737f1de2bdb538ea39/synthetic.png"
+          },
+          "displayName": "Synth Rename 20"
+        },
+        {
+          "view": "t",
+          "id": 2035,
+          "name": "Synth User 37",
+          "username": "synthuser22",
+          "isVerified": true,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/d/d4/d498545e5f297c45eba518591a858b7c/synthetic.jpg",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/e/e5/e5135c5f9f610e298e48b7e40fc98df5/synthetic.jpg",
+            "c144": "https://thumbs.onlyfans.com/files/d/db/db10643f2d8420b682ea8737f593028a/synthetic.jpg"
+          },
+          "displayName": ""
+        }
+      ]
+    },
+    {
+      "id": "1209107594",
+      "type": "custom",
+      "name": "Synth list 10",
+      "usersCount": 0,
+      "postsCount": 0,
+      "order": "default",
+      "direction": "asc",
+      "canUpdate": true,
+      "canDelete": true,
+      "canManageUsers": true,
+      "canAddUsers": true,
+      "canPinnedToFeed": true,
+      "isPinnedToFeed": false,
+      "canPinnedToChat": true,
+      "isPinnedToChat": false,
+      "sortList": [],
+      "users": []
+    },
+    {
+      "id": "1295193661",
+      "type": "custom",
+      "name": "Synth list 11",
+      "usersCount": 0,
+      "postsCount": 0,
+      "order": "default",
+      "direction": "asc",
+      "canUpdate": true,
+      "canDelete": true,
+      "canManageUsers": true,
+      "canAddUsers": true,
+      "canPinnedToFeed": true,
+      "isPinnedToFeed": false,
+      "canPinnedToChat": true,
+      "isPinnedToChat": true,
+      "sortList": [],
+      "users": []
+    },
+    {
+      "id": "1295553133",
+      "type": "custom",
+      "name": "Synth list 12",
+      "usersCount": 0,
+      "postsCount": 0,
+      "order": "default",
+      "direction": "asc",
+      "canUpdate": true,
+      "canDelete": true,
+      "canManageUsers": true,
+      "canAddUsers": true,
+      "canPinnedToFeed": true,
+      "isPinnedToFeed": false,
+      "canPinnedToChat": true,
+      "isPinnedToChat": true,
+      "sortList": [],
+      "users": []
+    },
+    {
+      "id": "1165235349",
+      "type": "custom",
+      "name": "Synth list 6",
+      "usersCount": 4,
+      "postsCount": 11622,
+      "order": "default",
+      "direction": "asc",
+      "canUpdate": true,
+      "canDelete": true,
+      "canManageUsers": true,
+      "canAddUsers": true,
+      "canPinnedToFeed": true,
+      "isPinnedToFeed": false,
+      "canPinnedToChat": true,
+      "isPinnedToChat": false,
+      "sortList": [],
+      "users": [
+        {
+          "view": "t",
+          "id": 2041,
+          "name": "Synth User 46",
+          "username": "synthuser28",
+          "isVerified": true,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/b/b1/b127bc0771577d3a1870434e1f316526/synthetic.jpg",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/6/68/68ea52964c293e85523d3b8219a9aca5/synthetic.jpg",
+            "c144": "https://thumbs.onlyfans.com/files/f/f0/f040eddcaa31327f9abac20729eadf51/synthetic.jpg"
+          },
+          "displayName": "Synth Rename 47"
+        },
+        {
+          "view": "t",
+          "id": 2042,
+          "name": "Synth User 48",
+          "username": "synthuser29",
+          "isVerified": true,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/a/a4/a4982a143527dbfe932ea47beca4d50b/synthetic.jpg",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/a/a5/a53f04748ca23ac9dfef55dd37f53ea1/synthetic.jpg",
+            "c144": "https://thumbs.onlyfans.com/files/d/da/da7fbb813234d6ba3bf420e837a74698/synthetic.jpg"
+          },
+          "displayName": ""
+        },
+        {
+          "view": "t",
+          "id": 2035,
+          "name": "Synth User 37",
+          "username": "synthuser22",
+          "isVerified": true,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/d/d4/d498545e5f297c45eba518591a858b7c/synthetic.jpg",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/e/e5/e5135c5f9f610e298e48b7e40fc98df5/synthetic.jpg",
+            "c144": "https://thumbs.onlyfans.com/files/d/db/db10643f2d8420b682ea8737f593028a/synthetic.jpg"
+          },
+          "displayName": ""
+        }
+      ]
+    },
+    {
+      "id": "1165234001",
+      "type": "custom",
+      "name": "Synth list 3",
+      "usersCount": 4,
+      "postsCount": 2235,
+      "order": "default",
+      "direction": "asc",
+      "canUpdate": true,
+      "canDelete": true,
+      "canManageUsers": true,
+      "canAddUsers": true,
+      "canPinnedToFeed": true,
+      "isPinnedToFeed": false,
+      "canPinnedToChat": true,
+      "isPinnedToChat": false,
+      "sortList": [],
+      "users": [
+        {
+          "view": "t",
+          "id": 2042,
+          "name": "Synth User 48",
+          "username": "synthuser29",
+          "isVerified": true,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/a/a4/a4982a143527dbfe932ea47beca4d50b/synthetic.jpg",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/a/a5/a53f04748ca23ac9dfef55dd37f53ea1/synthetic.jpg",
+            "c144": "https://thumbs.onlyfans.com/files/d/da/da7fbb813234d6ba3bf420e837a74698/synthetic.jpg"
+          },
+          "displayName": ""
+        },
+        {
+          "view": "t",
+          "id": 2008,
+          "name": "Synth User 17",
+          "username": "synthuser10",
+          "isVerified": true,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/1/18/1878378926ea4cf6c36b161cc9cb216d/synthetic.jpg",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/7/73/7314ce6ab8a05c0b000be571e78eec1f/synthetic.jpg",
+            "c144": "https://thumbs.onlyfans.com/files/6/60/60c6704d41db8146e14ad18f7309a58f/synthetic.jpg"
+          },
+          "displayName": "Synth Rename 18"
+        },
+        {
+          "view": "t",
+          "id": 2035,
+          "name": "Synth User 37",
+          "username": "synthuser22",
+          "isVerified": true,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/d/d4/d498545e5f297c45eba518591a858b7c/synthetic.jpg",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/e/e5/e5135c5f9f610e298e48b7e40fc98df5/synthetic.jpg",
+            "c144": "https://thumbs.onlyfans.com/files/d/db/db10643f2d8420b682ea8737f593028a/synthetic.jpg"
+          },
+          "displayName": ""
+        }
+      ]
+    },
+    {
+      "id": "1167106451",
+      "type": "custom",
+      "name": "Synth list 7",
+      "usersCount": 2,
+      "postsCount": 717,
+      "order": "default",
+      "direction": "asc",
+      "canUpdate": true,
+      "canDelete": true,
+      "canManageUsers": true,
+      "canAddUsers": true,
+      "canPinnedToFeed": true,
+      "isPinnedToFeed": false,
+      "canPinnedToChat": true,
+      "isPinnedToChat": false,
+      "sortList": [],
+      "users": [
+        {
+          "view": "t",
+          "id": 2019,
+          "name": "Synth User 26",
+          "username": "synthuser15",
+          "isVerified": true,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/5/5a/5a25ab61f9a23ad1abd6960d09de713b/synthetic.jpg",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/e/ea/eab8ae1b4689e0411afd0a83eeaf1a23/synthetic.jpg",
+            "c144": "https://thumbs.onlyfans.com/files/1/1c/1c0661423e3765f2d43d54be7afd28f1/synthetic.jpg"
+          },
+          "displayName": "Synth Rename 27"
+        },
+        {
+          "view": "t",
+          "id": 2043,
+          "name": "Synth User 49",
+          "username": "synthuser30",
+          "isVerified": true,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/2/25/253c14e83ec79e696f0e66d21afc4ff3/synthetic.jpg",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/9/91/9191b876fbb851e3dda609f69425e5b0/synthetic.jpg",
+            "c144": "https://thumbs.onlyfans.com/files/1/1a/1ae33c62e50c855b7ac1ea089bd0f20f/synthetic.jpg"
+          },
+          "displayName": ""
+        }
+      ]
+    },
+    {
+      "id": "1167107713",
+      "type": "custom",
+      "name": "Synth list 13",
+      "usersCount": 1,
+      "postsCount": 12,
+      "order": "default",
+      "direction": "asc",
+      "canUpdate": true,
+      "canDelete": true,
+      "canManageUsers": true,
+      "canAddUsers": true,
+      "canPinnedToFeed": true,
+      "isPinnedToFeed": false,
+      "canPinnedToChat": true,
+      "isPinnedToChat": false,
+      "sortList": [],
+      "users": [
+        {
+          "view": "t",
+          "id": 2044,
+          "name": "Synth User 50",
+          "username": "synthuser31",
+          "isVerified": true,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/3/3c/3ccde840edb3cf69d6a98bc8ff287960/synthetic.jpg",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/a/a4/a40e63499a0f8112e3fa5af5c79e82d2/synthetic.jpg",
+            "c144": "https://thumbs.onlyfans.com/files/b/ba/baf15b90edf5e66c304b7e89d257ab71/synthetic.jpg"
+          },
+          "displayName": ""
+        }
+      ]
+    },
+    {
+      "id": "friends",
+      "type": "friends",
+      "name": "Friends",
+      "usersCount": 5,
+      "postsCount": 12037,
+      "order": "default",
+      "direction": "asc",
+      "canUpdate": false,
+      "canDelete": false,
+      "canManageUsers": true,
+      "canAddUsers": true,
+      "canPinnedToFeed": true,
+      "isPinnedToFeed": false,
+      "canPinnedToChat": false,
+      "isPinnedToChat": false,
+      "sortList": [],
+      "users": [
+        {
+          "view": "t",
+          "id": 2041,
+          "name": "Synth User 46",
+          "username": "synthuser28",
+          "isVerified": true,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/b/b1/b127bc0771577d3a1870434e1f316526/synthetic.jpg",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/6/68/68ea52964c293e85523d3b8219a9aca5/synthetic.jpg",
+            "c144": "https://thumbs.onlyfans.com/files/f/f0/f040eddcaa31327f9abac20729eadf51/synthetic.jpg"
+          },
+          "displayName": "Synth Rename 47"
+        },
+        {
+          "view": "t",
+          "id": 2045,
+          "name": "Synth User 51",
+          "username": "synthuser32",
+          "isVerified": true,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/8/8e/8ee6aed0e10a75a78bff304d1b0b4386/synthetic.jpg",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/d/dc/dc1c6a30e42a199de781b051d9e58c82/synthetic.jpg",
+            "c144": "https://thumbs.onlyfans.com/files/9/9a/9aebd9cddb8b07a1c1d099a5ee911a41/synthetic.jpg"
+          },
+          "displayName": ""
+        },
+        {
+          "view": "t",
+          "id": 2046,
+          "name": "Synth User 52",
+          "username": "synthuser33",
+          "isVerified": true,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/5/5a/5ab4607543dd77e6fad5f3933ae36931/synthetic.jpg",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/c/c9/c921f756d5aea9df6ca965cfa42f4f24/synthetic.jpg",
+            "c144": "https://thumbs.onlyfans.com/files/d/d7/d79b6b421c7bf43719d519a64cc992eb/synthetic.jpg"
+          },
+          "displayName": "Synth Rename 53"
+        }
+      ]
+    },
+    {
+      "id": "following",
+      "type": "following",
+      "name": "Following",
+      "usersCount": 117,
+      "postsCount": 101877,
+      "order": "last_activity",
+      "direction": "desc",
+      "canUpdate": false,
+      "canDelete": false,
+      "canManageUsers": false,
+      "canAddUsers": false,
+      "canPinnedToFeed": false,
+      "isPinnedToFeed": false,
+      "canPinnedToChat": true,
+      "isPinnedToChat": true,
+      "sortList": [],
+      "users": [
+        {
+          "view": "t",
+          "id": 2047,
+          "name": "Synth User 54",
+          "username": "synthuser34",
+          "isVerified": true,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/e/e2/e2d90402e6bcf7aab630a7f4f7506034/synthetic.jpg",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/a/a7/a7f12f7667c792751e810d1f550507d0/synthetic.jpg",
+            "c144": "https://thumbs.onlyfans.com/files/0/07/070e4d12cdc6424efa77e53b98b2c2eb/synthetic.jpg"
+          },
+          "displayName": ""
+        },
+        {
+          "view": "t",
+          "id": 2048,
+          "name": "Synth User 55",
+          "username": "synthuser35",
+          "isVerified": false,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": null,
+          "avatarThumbs": null,
+          "displayName": ""
+        },
+        {
+          "view": "t",
+          "id": 2008,
+          "name": "Synth User 17",
+          "username": "synthuser10",
+          "isVerified": true,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/1/18/1878378926ea4cf6c36b161cc9cb216d/synthetic.jpg",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/7/73/7314ce6ab8a05c0b000be571e78eec1f/synthetic.jpg",
+            "c144": "https://thumbs.onlyfans.com/files/6/60/60c6704d41db8146e14ad18f7309a58f/synthetic.jpg"
+          },
+          "displayName": "Synth Rename 18"
+        }
+      ]
+    },
+    {
+      "id": "fans",
+      "type": "fans",
+      "name": "Fans",
+      "usersCount": 70,
+      "postsCount": 36101,
+      "order": "last_activity",
+      "direction": "desc",
+      "canUpdate": false,
+      "canDelete": false,
+      "canManageUsers": false,
+      "canAddUsers": false,
+      "canPinnedToFeed": false,
+      "isPinnedToFeed": false,
+      "canPinnedToChat": false,
+      "isPinnedToChat": false,
+      "sortList": {
+        "all": {
+          "order": "expire_date",
+          "direction": "desc"
+        }
+      },
+      "users": [
+        {
+          "view": "t",
+          "id": 2049,
+          "name": "Synth User 56",
+          "username": "synthuser36",
+          "isVerified": false,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/e/e5/e53d166268378ecd414e2c063c1a1df1/synthetic.png",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/7/75/75916c64632ccc06cb2fc6b7b65de63a/synthetic.png",
+            "c144": "https://thumbs.onlyfans.com/files/c/c4/c4ee6be116d00a422fd40e4d00aeca2d/synthetic.png"
+          },
+          "displayName": ""
+        },
+        {
+          "view": "t",
+          "id": 2050,
+          "name": "Synth User 57",
+          "username": "synthuser37",
+          "isVerified": true,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/4/40/405deb9ad90a33a280dbf613d74214dc/synthetic.jpg",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/d/dc/dc5dcefab3bf202d491f37670043f19a/synthetic.jpg",
+            "c144": "https://thumbs.onlyfans.com/files/0/07/07aa925213c19dbd73de41072fc239a9/synthetic.jpg"
+          },
+          "displayName": ""
+        },
+        {
+          "view": "t",
+          "id": 2051,
+          "name": "Synth User 58",
+          "username": "synthuser38",
+          "isVerified": true,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/e/ee/ee8b6ef1308845669360771072dacc99/synthetic.jpg",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/5/5f/5f33ea2612b9371aae6165db43b35af9/synthetic.jpg",
+            "c144": "https://thumbs.onlyfans.com/files/c/c1/c1083cd757ba4d8e5c6a569ea991d983/synthetic.jpg"
+          },
+          "displayName": "Synth Rename 59"
+        }
+      ]
+    },
+    {
+      "id": "1320999428",
+      "type": "custom",
+      "name": "Synth list 1",
+      "usersCount": 26,
+      "postsCount": 59969,
+      "order": "default",
+      "direction": "asc",
+      "canUpdate": true,
+      "canDelete": true,
+      "canManageUsers": true,
+      "canAddUsers": true,
+      "canPinnedToFeed": true,
+      "isPinnedToFeed": false,
+      "canPinnedToChat": true,
+      "isPinnedToChat": false,
+      "sortList": [],
+      "users": [
+        {
+          "view": "t",
+          "id": 2016,
+          "name": "Synth User 3",
+          "username": "synthuser2",
+          "isVerified": true,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/4/4c/4c6d31e777ebfce7672764c6d2f7de23/synthetic.jpg",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/a/a6/a6ee74441821d3b356b3898b2db20a2e/synthetic.jpg",
+            "c144": "https://thumbs.onlyfans.com/files/2/22/224e5fc9c2c64f539897e88b6d425093/synthetic.jpg"
+          },
+          "displayName": "Synth Rename 4"
+        },
+        {
+          "view": "t",
+          "id": 2040,
+          "name": "Synth User 44",
+          "username": "synthuser27",
+          "isVerified": true,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/0/03/033548166f54e456a3c939cf84ecb6dc/synthetic.jpg",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/4/48/48ccdd0291269f915e413f54d1ee7c9a/synthetic.jpg",
+            "c144": "https://thumbs.onlyfans.com/files/d/d0/d07c2ccede3eac16084b78fd071829f7/synthetic.jpg"
+          },
+          "displayName": "Synth Rename 45"
+        },
+        {
+          "view": "t",
+          "id": 2052,
+          "name": "Synth User 60",
+          "username": "synthuser39",
+          "isVerified": true,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/e/e9/e9d522c6caef29d40ea49073bbcfd556/synthetic.jpg",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/3/38/38d6902691791faec839e99888d26147/synthetic.jpg",
+            "c144": "https://thumbs.onlyfans.com/files/9/99/99c6cb1d5bbe0f936cfdf8ed87f0579b/synthetic.jpg"
+          },
+          "displayName": "Synth Rename 61"
+        }
+      ]
+    },
+    {
+      "id": "1165234649",
+      "type": "custom",
+      "name": "Synth list 4",
+      "usersCount": 3,
+      "postsCount": 1766,
+      "order": "default",
+      "direction": "asc",
+      "canUpdate": true,
+      "canDelete": true,
+      "canManageUsers": true,
+      "canAddUsers": true,
+      "canPinnedToFeed": true,
+      "isPinnedToFeed": false,
+      "canPinnedToChat": true,
+      "isPinnedToChat": true,
+      "sortList": [],
+      "users": [
+        {
+          "view": "t",
+          "id": 2049,
+          "name": "Synth User 56",
+          "username": "synthuser36",
+          "isVerified": false,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/e/e5/e53d166268378ecd414e2c063c1a1df1/synthetic.png",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/7/75/75916c64632ccc06cb2fc6b7b65de63a/synthetic.png",
+            "c144": "https://thumbs.onlyfans.com/files/c/c4/c4ee6be116d00a422fd40e4d00aeca2d/synthetic.png"
+          },
+          "displayName": ""
+        },
+        {
+          "view": "t",
+          "id": 2042,
+          "name": "Synth User 48",
+          "username": "synthuser29",
+          "isVerified": true,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/a/a4/a4982a143527dbfe932ea47beca4d50b/synthetic.jpg",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/a/a5/a53f04748ca23ac9dfef55dd37f53ea1/synthetic.jpg",
+            "c144": "https://thumbs.onlyfans.com/files/d/da/da7fbb813234d6ba3bf420e837a74698/synthetic.jpg"
+          },
+          "displayName": ""
+        },
+        {
+          "view": "t",
+          "id": 2008,
+          "name": "Synth User 17",
+          "username": "synthuser10",
+          "isVerified": true,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/1/18/1878378926ea4cf6c36b161cc9cb216d/synthetic.jpg",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/7/73/7314ce6ab8a05c0b000be571e78eec1f/synthetic.jpg",
+            "c144": "https://thumbs.onlyfans.com/files/6/60/60c6704d41db8146e14ad18f7309a58f/synthetic.jpg"
+          },
+          "displayName": "Synth Rename 18"
+        }
+      ]
+    },
+    {
+      "id": "1234059711",
+      "type": "custom",
+      "name": "Synth list 8",
+      "usersCount": 1,
+      "postsCount": 598,
+      "order": "default",
+      "direction": "asc",
+      "canUpdate": true,
+      "canDelete": true,
+      "canManageUsers": true,
+      "canAddUsers": true,
+      "canPinnedToFeed": true,
+      "isPinnedToFeed": false,
+      "canPinnedToChat": true,
+      "isPinnedToChat": false,
+      "sortList": [],
+      "users": [
+        {
+          "view": "t",
+          "id": 2019,
+          "name": "Synth User 26",
+          "username": "synthuser15",
+          "isVerified": true,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/5/5a/5a25ab61f9a23ad1abd6960d09de713b/synthetic.jpg",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/e/ea/eab8ae1b4689e0411afd0a83eeaf1a23/synthetic.jpg",
+            "c144": "https://thumbs.onlyfans.com/files/1/1c/1c0661423e3765f2d43d54be7afd28f1/synthetic.jpg"
+          },
+          "displayName": "Synth Rename 27"
+        }
+      ]
+    },
+    {
+      "id": "755017382",
+      "type": "close_friends",
+      "name": "Close Friends",
+      "usersCount": 1,
+      "postsCount": 598,
+      "order": "default",
+      "direction": "asc",
+      "canUpdate": true,
+      "canDelete": true,
+      "canManageUsers": true,
+      "canAddUsers": true,
+      "canPinnedToFeed": true,
+      "isPinnedToFeed": false,
+      "canPinnedToChat": true,
+      "isPinnedToChat": false,
+      "sortList": [],
+      "users": [
+        {
+          "view": "t",
+          "id": 2019,
+          "name": "Synth User 26",
+          "username": "synthuser15",
+          "isVerified": true,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/5/5a/5a25ab61f9a23ad1abd6960d09de713b/synthetic.jpg",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/e/ea/eab8ae1b4689e0411afd0a83eeaf1a23/synthetic.jpg",
+            "c144": "https://thumbs.onlyfans.com/files/1/1c/1c0661423e3765f2d43d54be7afd28f1/synthetic.jpg"
+          },
+          "displayName": "Synth Rename 27"
+        }
+      ]
+    },
+    {
+      "id": "755017319",
+      "type": "bookmarks",
+      "name": "Bookmarks",
+      "usersCount": 3,
+      "postsCount": 4777,
+      "order": "default",
+      "direction": "asc",
+      "canUpdate": true,
+      "canDelete": true,
+      "canManageUsers": true,
+      "canAddUsers": true,
+      "canPinnedToFeed": true,
+      "isPinnedToFeed": false,
+      "canPinnedToChat": true,
+      "isPinnedToChat": false,
+      "sortList": [],
+      "users": [
+        {
+          "view": "t",
+          "id": 2049,
+          "name": "Synth User 56",
+          "username": "synthuser36",
+          "isVerified": false,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/e/e5/e53d166268378ecd414e2c063c1a1df1/synthetic.png",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/7/75/75916c64632ccc06cb2fc6b7b65de63a/synthetic.png",
+            "c144": "https://thumbs.onlyfans.com/files/c/c4/c4ee6be116d00a422fd40e4d00aeca2d/synthetic.png"
+          },
+          "displayName": ""
+        },
+        {
+          "view": "t",
+          "id": 2051,
+          "name": "Synth User 58",
+          "username": "synthuser38",
+          "isVerified": true,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/e/ee/ee8b6ef1308845669360771072dacc99/synthetic.jpg",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/5/5f/5f33ea2612b9371aae6165db43b35af9/synthetic.jpg",
+            "c144": "https://thumbs.onlyfans.com/files/c/c1/c1083cd757ba4d8e5c6a569ea991d983/synthetic.jpg"
+          },
+          "displayName": "Synth Rename 59"
+        },
+        {
+          "view": "t",
+          "id": 2008,
+          "name": "Synth User 17",
+          "username": "synthuser10",
+          "isVerified": true,
+          "isDeleted": false,
+          "isActive": true,
+          "avatar": "https://public.onlyfans.com/files/1/18/1878378926ea4cf6c36b161cc9cb216d/synthetic.jpg",
+          "avatarThumbs": {
+            "c50": "https://thumbs.onlyfans.com/files/7/73/7314ce6ab8a05c0b000be571e78eec1f/synthetic.jpg",
+            "c144": "https://thumbs.onlyfans.com/files/6/60/60c6704d41db8146e14ad18f7309a58f/synthetic.jpg"
+          },
+          "displayName": "Synth Rename 18"
+        }
+      ]
+    }
+  ],
+  "hasMore": true,
+  "order": "desc",
+  "sort": "name"
+}

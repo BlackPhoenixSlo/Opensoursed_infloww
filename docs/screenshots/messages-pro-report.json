@@ -1,0 +1,1062 @@
+{
+  "ok": false,
+  "startedAt": 1792434161,
+  "shots": [
+    {
+      "name": "messages-pro-desktop",
+      "file": "docs/screenshots/messages-pro-desktop.png",
+      "url": "/messages-pro",
+      "viewport": [
+        1440,
+        900
+      ],
+      "gated": true,
+      "overflowX": false,
+      "consoleErrors": [],
+      "offHostRequests": [],
+      "stubbedRequests": [],
+      "unmatchedRequests": [
+        "GET /chatter/me",
+        "GET /admin/shifts/clock-status",
+        "GET /admin/settings/applied",
+        "GET /api/of/v2/users/notifications?limit=20&offset=0&type=purchases",
+        "GET /api/of/v2/users/notifications?limit=20&offset=0&type=tip",
+        "GET /api/of/v2/users/notifications/count",
+        "GET /api/of/v2/vault/lists?view=main&limit=50&offset=0",
+        "GET /api/of/v2/vault/media?limit=24&offset=0&type=all",
+        "GET /admin/vault/fan-history?account_id=424242&fan_id=1002",
+        "GET /admin/sensitive-words?account_id=424242",
+        "GET /admin/messages/424242/1002?limit=30",
+        "POST /admin/messages/424242/1002/mark-read",
+        "POST /api/of/v2/chats/1002/mark-as-read",
+        "GET /api/of/v2/scheduled-sends?fan_id=1002",
+        "GET /api/of/v2/chats/1002/pinned",
+        "GET /admin/messages/424242/1002/attribution",
+        "POST /admin/messages/424242/1002/mark-read",
+        "POST /api/of/v2/chats/1002/mark-as-read",
+        "GET /admin/vault/fan-history?account_id=424242&fan_id=1001",
+        "GET /admin/messages/424242/1001?limit=30",
+        "POST /admin/messages/424242/1001/mark-read",
+        "GET /api/of/v2/scheduled-sends?fan_id=1001",
+        "GET /api/of/v2/chats/1001/pinned",
+        "GET /admin/messages/424242/1001/attribution",
+        "POST /admin/messages/424242/1001/mark-read",
+        "GET /admin/messages/424242/1001/attribution?since_id=50001",
+        "POST /admin/perflog/ingest",
+        "GET /api/of/v2/scheduled-sends?fan_id=1001",
+        "GET /admin/messages/424242/1001?limit=30&before_id=50001",
+        "POST /admin/perflog/ingest",
+        "GET /api/of/v2/scheduled-sends?fan_id=1001",
+        "GET /api/of/v2/scheduled-sends?fan_id=1001",
+        "GET /api/of/v2/scheduled-sends?fan_id=1001",
+        "GET /admin/shifts/clock-status",
+        "GET /api/of/v2/scheduled-sends?fan_id=1001"
+      ],
+      "checks": [
+        {
+          "name": "state reached",
+          "ok": true
+        },
+        {
+          "name": "no Top bar above the Window header: its top is 0 and no banner is visible",
+          "ok": true,
+          "got": {
+            "top": 0,
+            "banners": 0
+          }
+        },
+        {
+          "name": "Toggle sidebar, the time zone and Account menu sit in the Window header",
+          "ok": false
+        },
+        {
+          "name": "check_sidebar",
+          "ok": false
+        },
+        {
+          "name": "Fan List shows 'Bella Hart'",
+          "ok": true
+        },
+        {
+          "name": "Fan List shows 'Chloe Rivers'",
+          "ok": true
+        },
+        {
+          "name": "Fan List shows 'Dana Brooks'",
+          "ok": true
+        },
+        {
+          "name": "Fan List shows 'Eva Stone'",
+          "ok": true
+        },
+        {
+          "name": "Fan List shows 'Faye Monroe'",
+          "ok": true
+        },
+        {
+          "name": "only 'Bella Hart''s row has aria-current=\"true\"",
+          "ok": true
+        },
+        {
+          "name": "Thread shows 7 messages",
+          "ok": true
+        },
+        {
+          "name": "Thread shows the $15 PPV",
+          "ok": true
+        },
+        {
+          "name": "Fan insights pane visible, naming 'Bella Hart'",
+          "ok": true
+        },
+        {
+          "name": "only 'Eva Stone''s row shows \"Off\"",
+          "ok": true
+        },
+        {
+          "name": "only 'Chloe Rivers''s row shows \ud83d\udd25",
+          "ok": true
+        },
+        {
+          "name": "only 'Faye Monroe''s row shows \u2744\ufe0f",
+          "ok": true
+        },
+        {
+          "name": "only 'Dana Brooks''s row shows the expired \u2715 avatar",
+          "ok": true
+        },
+        {
+          "name": "only 'Bella Hart''s row shows the orange figure \"$12.5k\"",
+          "ok": true
+        },
+        {
+          "name": "only 'Dana Brooks''s row shows the \u2715 avatar with a \"$230\" pill in its slot",
+          "ok": true
+        },
+        {
+          "name": "only 'Eva Stone''s row shows a \"$0\" pill",
+          "ok": true
+        },
+        {
+          "name": "'Faye Monroe''s row, with no spend entry, shows no spend pill",
+          "ok": true
+        },
+        {
+          "name": "a Fan List row is 96px tall at 1440, with a 40px avatar",
+          "ok": true
+        },
+        {
+          "name": "two Fan tabs 'Chloe Rivers', 'Bella Hart', the second active",
+          "ok": true
+        },
+        {
+          "name": "Chat header shows 'Bella Hart' and 'Available now', not clipped",
+          "ok": true
+        },
+        {
+          "name": "Chat header's icon row names Priority, Mute notifications, Notes, Pinned chat, Gallery and Find, in that order",
+          "ok": true
+        },
+        {
+          "name": "Chat header's right group names Open in new tab, Refresh, Fan insights and More actions, in that order, after the name",
+          "ok": true
+        },
+        {
+          "name": "no 'Inflowwww extras' or 'Message statistics' button in the Chat header, and no translate toggle",
+          "ok": true
+        },
+        {
+          "name": "no Persona button and no AI strip in the Chat header",
+          "ok": true
+        },
+        {
+          "name": "Chat header is two lines and line 2 follows the presence line: 52px tall (1px), Priority at most 24px right of the presence text, Priority, Gallery and Find below the name, 'Open in new tab', 'Refresh' and 'More actions' on one centre (1px)",
+          "ok": true,
+          "height": 52,
+          "priorityAfterPresence": 21.0,
+          "rightCentres": [
+            101.5,
+            101.5,
+            101.5
+          ]
+        },
+        {
+          "name": "the first fixture message's time sits under its bubble",
+          "ok": true,
+          "rowBelowBubble": 6.0,
+          "fontSize": "11px",
+          "bubble": {
+            "radius": [
+              "6px",
+              "6px",
+              "6px",
+              "0px"
+            ],
+            "padding": "10px",
+            "font": [
+              "16px",
+              "20px"
+            ]
+          },
+          "nextRunGap": 14
+        },
+        {
+          "name": "an outgoing fixture bubble shows a receipt named 'Delivered' in its column",
+          "ok": true
+        },
+        {
+          "name": "the fixture PPV reads '\u00b7 not paid' once, inside its card",
+          "ok": true
+        },
+        {
+          "name": "the fixture PPV shows no 'UNLOCK FOR' bar",
+          "ok": true
+        },
+        {
+          "name": "the first incoming bubble's Message actions show on hover only: transparent before, shown on hover naming Pin, Reply, Like, Translate in order inside the thread pane",
+          "ok": true,
+          "got": [
+            "Pin",
+            "Reply",
+            "Like",
+            "Translate"
+          ],
+          "firstGlyphAfterBubble": 8.0,
+          "pitch": [
+            20.0,
+            20.0,
+            20.0
+          ],
+          "box": [
+            16,
+            16,
+            16,
+            16
+          ],
+          "centreOnBubble": 0.0
+        },
+        {
+          "name": "the first incoming bubble's Message actions show on focus: shown with Pin focused and the pointer away, transparent again once blurred",
+          "ok": true
+        },
+        {
+          "name": "every run's last bubble has its avatar: the Fan's first in its line, ours last",
+          "ok": true,
+          "fan": {
+            "size": [
+              36,
+              36
+            ],
+            "gap": 8,
+            "bottomBelowBubble": 0.0
+          },
+          "creator": {
+            "size": [
+              36,
+              36
+            ],
+            "gap": 8.0,
+            "bottomBelowBubble": 20.0
+          }
+        },
+        {
+          "name": "a Date separator sits above the first fixture message",
+          "got": "Today",
+          "want": "Today",
+          "ok": true
+        },
+        {
+          "name": "the Date separator label is not uppercase",
+          "ok": true,
+          "fontSize": "11px"
+        },
+        {
+          "name": "one visible [data-mp-pane] root each for fan-list, thread and insights",
+          "ok": true
+        },
+        {
+          "name": "the fan-list pane is 400px wide (0.5px)",
+          "ok": true
+        },
+        {
+          "name": "the insights pane is 280px wide (0.5px)",
+          "ok": true
+        },
+        {
+          "name": "fan-list, thread and insights side by side in that order, tops level (1px)",
+          "ok": true
+        },
+        {
+          "name": "the Chat header's 'More actions' kebab sits inside the thread pane's box",
+          "ok": true,
+          "kebabRight": 1154,
+          "threadRight": 1160
+        },
+        {
+          "name": "CO1 the Fan List's Online Fans button is Infloww's accent #4166f6",
+          "ok": true,
+          "got": "#4166f6"
+        },
+        {
+          "name": "CO2 our own message bubble is Infloww's blue #4166f6",
+          "ok": true,
+          "got": "#4166f6"
+        },
+        {
+          "name": "CO3 the Fan's message bubble is Infloww's grey #262626",
+          "ok": true,
+          "got": "#262626"
+        },
+        {
+          "name": "CO4 the PPV bubble is Infloww's grey card #232323",
+          "ok": true,
+          "got": "#232323"
+        },
+        {
+          "name": "CO4 the PPV bubble's outline #2f2f2f",
+          "ok": true,
+          "got": "#2f2f2f"
+        },
+        {
+          "name": "CO4 the PPV's 'not paid' price line #8a8a8a",
+          "ok": true,
+          "got": "#8a8a8a"
+        },
+        {
+          "name": "CO5 the Window header #0d0d0d",
+          "ok": true,
+          "got": "#0d0d0d"
+        },
+        {
+          "name": "CO5 the Fan tabs row #2b2c30",
+          "ok": true,
+          "got": "#2b2c30"
+        },
+        {
+          "name": "CO5 the Fan List pane #151515",
+          "ok": true,
+          "got": "#151515"
+        },
+        {
+          "name": "CO5 the Thread pane #151515",
+          "ok": true,
+          "got": "#151515"
+        },
+        {
+          "name": "CO5 the Fan insights pane #0d0d0d",
+          "ok": true,
+          "got": "#0d0d0d"
+        },
+        {
+          "name": "CO5 the selected Fan row #353535",
+          "ok": true,
+          "got": "#353535"
+        },
+        {
+          "name": "CO6 a Fan List row divider #444444",
+          "ok": true,
+          "got": "#444444"
+        },
+        {
+          "name": "CO7 a Fan name (primary text) #d9d9d9",
+          "ok": true,
+          "got": "#d9d9d9"
+        },
+        {
+          "name": "CO7 a Fan row's preview (dim text) #999999",
+          "ok": true,
+          "got": "#999999"
+        },
+        {
+          "name": "same colours under data-theme=light: CO1 the Fan List's Online Fans button is Infloww's accent #4166f6",
+          "ok": true,
+          "got": "#4166f6"
+        },
+        {
+          "name": "same colours under data-theme=light: CO2 our own message bubble is Infloww's blue #4166f6",
+          "ok": true,
+          "got": "#4166f6"
+        },
+        {
+          "name": "same colours under data-theme=light: CO3 the Fan's message bubble is Infloww's grey #262626",
+          "ok": false,
+          "got": "#f5f5f5"
+        },
+        {
+          "name": "same colours under data-theme=light: CO4 the PPV bubble is Infloww's grey card #232323",
+          "ok": false,
+          "got": "#f5f5f5"
+        },
+        {
+          "name": "same colours under data-theme=light: CO4 the PPV bubble's outline #2f2f2f",
+          "ok": false,
+          "got": "#e6e6e6"
+        },
+        {
+          "name": "same colours under data-theme=light: CO4 the PPV's 'not paid' price line #8a8a8a",
+          "ok": false,
+          "got": "#999999"
+        },
+        {
+          "name": "same colours under data-theme=light: CO5 the Window header #0d0d0d",
+          "ok": false,
+          "got": "#f2f2f2"
+        },
+        {
+          "name": "same colours under data-theme=light: CO5 the Fan tabs row #2b2c30",
+          "ok": false,
+          "got": "#f2f2f2"
+        },
+        {
+          "name": "same colours under data-theme=light: CO5 the Fan List pane #151515",
+          "ok": false,
+          "got": "#ffffff"
+        },
+        {
+          "name": "same colours under data-theme=light: CO5 the Thread pane #151515",
+          "ok": false,
+          "got": "#ffffff"
+        },
+        {
+          "name": "same colours under data-theme=light: CO5 the Fan insights pane #0d0d0d",
+          "ok": false,
+          "got": "#f2f2f2"
+        },
+        {
+          "name": "same colours under data-theme=light: CO5 the selected Fan row #353535",
+          "ok": false,
+          "got": "#e4e4e4"
+        },
+        {
+          "name": "same colours under data-theme=light: CO6 a Fan List row divider #444444",
+          "ok": false,
+          "got": "#e6e6e6"
+        },
+        {
+          "name": "same colours under data-theme=light: CO7 a Fan name (primary text) #d9d9d9",
+          "ok": false,
+          "got": "#151515"
+        },
+        {
+          "name": "same colours under data-theme=light: CO7 a Fan row's preview (dim text) #999999",
+          "ok": true,
+          "got": "#999999"
+        },
+        {
+          "name": "same colours under data-theme=light: Messages Pro keeps color-scheme dark",
+          "ok": false,
+          "got": "light"
+        },
+        {
+          "name": "check_app_accent_outside",
+          "ok": false
+        },
+        {
+          "name": "Fan List pane ends at the viewport's bottom edge (1px) and sits inside it horizontally",
+          "ok": true
+        },
+        {
+          "name": "Thread pane ends at the viewport's bottom edge (1px) and sits inside it horizontally",
+          "ok": true
+        },
+        {
+          "name": "Fan insights pane ends at the viewport's bottom edge (1px) and sits inside it horizontally",
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "messages-pro-popout",
+      "file": "docs/screenshots/messages-pro-popout.png",
+      "url": "/messages-pro?window=1",
+      "viewport": [
+        1440,
+        900
+      ],
+      "gated": true,
+      "overflowX": false,
+      "consoleErrors": [],
+      "offHostRequests": [],
+      "stubbedRequests": [],
+      "unmatchedRequests": [
+        "GET /chatter/me",
+        "GET /admin/shifts/clock-status",
+        "GET /admin/settings/applied",
+        "GET /api/of/v2/users/notifications?limit=20&offset=0&type=purchases",
+        "GET /api/of/v2/users/notifications?limit=20&offset=0&type=tip",
+        "GET /api/of/v2/users/notifications/count",
+        "GET /api/of/v2/vault/lists?view=main&limit=50&offset=0",
+        "GET /api/of/v2/vault/media?limit=24&offset=0&type=all",
+        "GET /admin/vault/fan-history?account_id=424242&fan_id=1001",
+        "GET /admin/sensitive-words?account_id=424242",
+        "GET /admin/messages/424242/1001?limit=30",
+        "POST /admin/messages/424242/1001/mark-read",
+        "GET /api/of/v2/scheduled-sends?fan_id=1001",
+        "GET /api/of/v2/chats/1001/pinned",
+        "GET /admin/messages/424242/1001/attribution",
+        "POST /admin/messages/424242/1001/mark-read",
+        "GET /admin/messages/424242/1001/attribution?since_id=50001"
+      ],
+      "checks": [
+        {
+          "name": "state reached",
+          "ok": true
+        },
+        {
+          "name": "no #app-sidebar in the DOM",
+          "ok": true
+        },
+        {
+          "name": "no 'Toggle sidebar' button in the DOM",
+          "ok": true
+        },
+        {
+          "name": "Fan List shows 'Bella Hart'",
+          "ok": true
+        },
+        {
+          "name": "Fan List shows 'Chloe Rivers'",
+          "ok": true
+        },
+        {
+          "name": "Fan List shows 'Dana Brooks'",
+          "ok": true
+        },
+        {
+          "name": "Fan List shows 'Eva Stone'",
+          "ok": true
+        },
+        {
+          "name": "Fan List shows 'Faye Monroe'",
+          "ok": true
+        },
+        {
+          "name": "Thread shows 7 messages",
+          "ok": true
+        },
+        {
+          "name": "Fan insights pane visible, naming 'Bella Hart'",
+          "ok": true
+        },
+        {
+          "name": "Fan List pane ends at the viewport's bottom edge (1px) and sits inside it horizontally",
+          "ok": true
+        },
+        {
+          "name": "Thread pane ends at the viewport's bottom edge (1px) and sits inside it horizontally",
+          "ok": true
+        },
+        {
+          "name": "Fan insights pane ends at the viewport's bottom edge (1px) and sits inside it horizontally",
+          "ok": true
+        },
+        {
+          "name": "one visible [data-mp-pane] root each for fan-list, thread and insights",
+          "ok": true
+        },
+        {
+          "name": "the fan-list pane is 400px wide (0.5px)",
+          "ok": true
+        },
+        {
+          "name": "the insights pane is 280px wide (0.5px)",
+          "ok": true
+        },
+        {
+          "name": "fan-list, thread and insights side by side in that order, tops level (1px)",
+          "ok": true
+        },
+        {
+          "name": "the Chat header's 'More actions' kebab sits inside the thread pane's box",
+          "ok": true,
+          "kebabRight": 1154,
+          "threadRight": 1160
+        }
+      ]
+    },
+    {
+      "name": "messages-pro-insights",
+      "file": "docs/screenshots/messages-pro-insights.png",
+      "url": "/messages-pro",
+      "viewport": [
+        1440,
+        900
+      ],
+      "gated": true,
+      "overflowX": false,
+      "consoleErrors": [],
+      "offHostRequests": [],
+      "stubbedRequests": [],
+      "unmatchedRequests": [
+        "GET /chatter/me",
+        "GET /admin/shifts/clock-status",
+        "GET /admin/settings/applied",
+        "GET /api/of/v2/users/notifications?limit=20&offset=0&type=purchases",
+        "GET /api/of/v2/users/notifications?limit=20&offset=0&type=tip",
+        "GET /api/of/v2/users/notifications/count",
+        "GET /api/of/v2/vault/lists?view=main&limit=50&offset=0",
+        "GET /api/of/v2/vault/media?limit=24&offset=0&type=all",
+        "GET /admin/vault/fan-history?account_id=424242&fan_id=1001",
+        "GET /admin/sensitive-words?account_id=424242",
+        "GET /admin/messages/424242/1001?limit=30",
+        "POST /admin/messages/424242/1001/mark-read",
+        "GET /api/of/v2/scheduled-sends?fan_id=1001",
+        "GET /api/of/v2/chats/1001/pinned",
+        "GET /admin/messages/424242/1001/attribution",
+        "POST /admin/messages/424242/1001/mark-read",
+        "GET /admin/messages/424242/1001/attribution?since_id=50001"
+      ],
+      "checks": [
+        {
+          "name": "state reached",
+          "ok": true
+        },
+        {
+          "name": "Fan insights pane visible, naming 'Bella Hart'",
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "messages-pro-phone-list",
+      "file": "docs/screenshots/messages-pro-phone-list.png",
+      "url": "/messages-pro",
+      "viewport": [
+        390,
+        844
+      ],
+      "gated": true,
+      "overflowX": false,
+      "consoleErrors": [],
+      "offHostRequests": [],
+      "stubbedRequests": [],
+      "unmatchedRequests": [
+        "GET /chatter/me",
+        "GET /admin/shifts/clock-status",
+        "GET /admin/settings/applied",
+        "GET /api/of/v2/users/notifications?limit=20&offset=0&type=purchases",
+        "GET /api/of/v2/users/notifications?limit=20&offset=0&type=tip"
+      ],
+      "checks": [
+        {
+          "name": "state reached",
+          "ok": true
+        },
+        {
+          "name": "Fan List shows 'Bella Hart'",
+          "ok": true
+        },
+        {
+          "name": "Fan List shows 'Chloe Rivers'",
+          "ok": true
+        },
+        {
+          "name": "Fan List shows 'Dana Brooks'",
+          "ok": true
+        },
+        {
+          "name": "Fan List shows 'Eva Stone'",
+          "ok": true
+        },
+        {
+          "name": "Fan List shows 'Faye Monroe'",
+          "ok": true
+        },
+        {
+          "name": "no Thread visible",
+          "ok": true
+        },
+        {
+          "name": "the Top bar is shown below lg",
+          "ok": false
+        },
+        {
+          "name": "a Fan List row is 96px tall at 390, with a 40px avatar",
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "messages-pro-phone-thread",
+      "file": "docs/screenshots/messages-pro-phone-thread.png",
+      "url": "/messages-pro",
+      "viewport": [
+        390,
+        844
+      ],
+      "gated": true,
+      "overflowX": false,
+      "consoleErrors": [],
+      "offHostRequests": [],
+      "stubbedRequests": [],
+      "unmatchedRequests": [
+        "GET /chatter/me",
+        "GET /admin/shifts/clock-status",
+        "GET /admin/settings/applied",
+        "GET /api/of/v2/users/notifications?limit=20&offset=0&type=purchases",
+        "GET /api/of/v2/users/notifications?limit=20&offset=0&type=tip",
+        "GET /api/of/v2/vault/lists?view=main&limit=50&offset=0",
+        "GET /api/of/v2/vault/media?limit=24&offset=0&type=all",
+        "GET /admin/vault/fan-history?account_id=424242&fan_id=1001",
+        "GET /admin/sensitive-words?account_id=424242",
+        "GET /admin/messages/424242/1001?limit=30",
+        "POST /admin/messages/424242/1001/mark-read",
+        "GET /api/of/v2/scheduled-sends?fan_id=1001",
+        "GET /api/of/v2/chats/1001/pinned",
+        "GET /admin/messages/424242/1001/attribution",
+        "POST /admin/messages/424242/1001/mark-read",
+        "GET /admin/messages/424242/1001/attribution?since_id=50001"
+      ],
+      "checks": [
+        {
+          "name": "state reached",
+          "ok": true
+        },
+        {
+          "name": "Thread shows 7 messages",
+          "ok": true
+        },
+        {
+          "name": "'Back to chat list' visible",
+          "ok": true
+        },
+        {
+          "name": "Fan List not visible",
+          "ok": true
+        },
+        {
+          "name": "'Back to chat list' and 'Fan insights' are visible, and 'Open in new tab' and 'Refresh' are not",
+          "ok": true
+        },
+        {
+          "name": "Chat header is two lines on a phone: Priority below the name, Find on Priority's line, no horizontal scroll",
+          "ok": true,
+          "height": 67
+        },
+        {
+          "name": "an incoming bubble's Message actions show with no hover, inside the 390px viewport",
+          "ok": true,
+          "got": [
+            "Pin",
+            "Reply",
+            "Like",
+            "Translate"
+          ]
+        },
+        {
+          "name": "the phone Message actions buttons are at least 24px",
+          "ok": true,
+          "sizes": [
+            [
+              24,
+              24
+            ],
+            [
+              24,
+              24
+            ],
+            [
+              24,
+              24
+            ],
+            [
+              24,
+              24
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "messages-pro-composer-ppv",
+      "file": "docs/screenshots/messages-pro-composer-ppv.png",
+      "url": "/messages-pro",
+      "viewport": [
+        1440,
+        900
+      ],
+      "gated": true,
+      "overflowX": false,
+      "consoleErrors": [],
+      "offHostRequests": [],
+      "stubbedRequests": [],
+      "unmatchedRequests": [
+        "GET /chatter/me",
+        "GET /admin/shifts/clock-status",
+        "GET /admin/settings/applied",
+        "GET /api/of/v2/users/notifications?limit=20&offset=0&type=purchases",
+        "GET /api/of/v2/users/notifications?limit=20&offset=0&type=tip",
+        "GET /api/of/v2/users/notifications/count",
+        "GET /api/of/v2/vault/lists?view=main&limit=50&offset=0",
+        "GET /api/of/v2/vault/media?limit=24&offset=0&type=all",
+        "GET /admin/vault/fan-history?account_id=424242&fan_id=1001",
+        "GET /admin/sensitive-words?account_id=424242",
+        "GET /admin/messages/424242/1001?limit=30",
+        "POST /admin/messages/424242/1001/mark-read",
+        "GET /api/of/v2/scheduled-sends?fan_id=1001",
+        "GET /api/of/v2/chats/1001/pinned",
+        "GET /admin/messages/424242/1001/attribution",
+        "POST /admin/messages/424242/1001/mark-read",
+        "GET /admin/messages/424242/1001/attribution?since_id=50001"
+      ],
+      "checks": [
+        {
+          "name": "state reached",
+          "ok": true
+        },
+        {
+          "name": "Composer 'PPV price' holds '25'",
+          "ok": true
+        },
+        {
+          "name": "Composer inside the viewport",
+          "ok": true
+        },
+        {
+          "name": "row 1 is 44px",
+          "ok": true,
+          "got": 44
+        },
+        {
+          "name": "Send is 32px",
+          "ok": true,
+          "got": 32
+        },
+        {
+          "name": "Send 16px above Composer bottom",
+          "ok": true,
+          "got": 16.0
+        },
+        {
+          "name": "PPV row between input and toolbar",
+          "ok": true,
+          "got": [
+            0.0,
+            0.0
+          ]
+        }
+      ]
+    }
+  ],
+  "flows": [
+    {
+      "name": "phone-popout",
+      "url": "/messages-pro?window=1",
+      "viewport": [
+        390,
+        844
+      ],
+      "gated": true,
+      "consoleErrors": [],
+      "offHostRequests": [],
+      "checks": [
+        {
+          "name": "no #app-sidebar in the DOM",
+          "ok": true
+        },
+        {
+          "name": "no 'Toggle sidebar' button in the DOM",
+          "ok": true
+        },
+        {
+          "name": "Fan List shows 'Bella Hart'",
+          "ok": true
+        },
+        {
+          "name": "Fan List shows 'Chloe Rivers'",
+          "ok": true
+        },
+        {
+          "name": "Fan List shows 'Dana Brooks'",
+          "ok": true
+        },
+        {
+          "name": "Fan List shows 'Eva Stone'",
+          "ok": true
+        },
+        {
+          "name": "Fan List shows 'Faye Monroe'",
+          "ok": true
+        },
+        {
+          "name": "Thread shows 7 messages",
+          "ok": true
+        },
+        {
+          "name": "Thread pane ends at the viewport's bottom edge (1px)",
+          "ok": true
+        },
+        {
+          "name": "'Fan insights' opens the slide-over",
+          "ok": true
+        },
+        {
+          "name": "closing Fan insights removes the slide-over",
+          "ok": true
+        },
+        {
+          "name": "Thread shows 7 messages",
+          "ok": true
+        },
+        {
+          "name": "Fan List shows 'Bella Hart'",
+          "ok": true
+        },
+        {
+          "name": "Fan List shows 'Chloe Rivers'",
+          "ok": true
+        },
+        {
+          "name": "Fan List shows 'Dana Brooks'",
+          "ok": true
+        },
+        {
+          "name": "Fan List shows 'Eva Stone'",
+          "ok": true
+        },
+        {
+          "name": "Fan List shows 'Faye Monroe'",
+          "ok": true
+        },
+        {
+          "name": "no Thread visible",
+          "ok": true
+        }
+      ]
+    },
+    {
+      "name": "phone-composer-overflow",
+      "url": "/messages-pro",
+      "viewport": [
+        390,
+        844
+      ],
+      "gated": true,
+      "consoleErrors": [],
+      "offHostRequests": [],
+      "checks": [
+        {
+          "name": "row 1 on one line",
+          "ok": true,
+          "got": [
+            689.5,
+            690.5
+          ]
+        },
+        {
+          "name": "row 1 in viewport",
+          "ok": true,
+          "got": 378
+        },
+        {
+          "name": "quick emojis after \u2699",
+          "ok": true,
+          "got": [
+            69,
+            74
+          ]
+        },
+        {
+          "name": "quick emojis in viewport",
+          "ok": true,
+          "got": [
+            74,
+            218
+          ]
+        },
+        {
+          "name": "\u23f1 panel in viewport",
+          "ok": true,
+          "got": [
+            140,
+            378,
+            457.0
+          ]
+        },
+        {
+          "name": "Send at presets in \u23f1",
+          "ok": true,
+          "got": [
+            "+5m",
+            "+10m",
+            "+15m",
+            "+30m",
+            "+60m"
+          ]
+        },
+        {
+          "name": "\u2699 panel in viewport",
+          "ok": true,
+          "got": [
+            43,
+            281,
+            74.8
+          ]
+        },
+        {
+          "name": "PPV row in viewport",
+          "ok": true,
+          "got": [
+            0,
+            390
+          ]
+        },
+        {
+          "name": "Send unmoved by PPV",
+          "ok": true,
+          "got": 0.0
+        },
+        {
+          "name": "slide-over in viewport",
+          "ok": true,
+          "got": [
+            56,
+            390
+          ]
+        },
+        {
+          "name": "slide-over no overflow",
+          "ok": true
+        },
+        {
+          "name": "slide-over padding visible",
+          "ok": true,
+          "got": 0
+        }
+      ]
+    },
+    {
+      "name": "desktop-edit-name",
+      "url": "/messages-pro",
+      "viewport": [
+        1440,
+        900
+      ],
+      "gated": true,
+      "consoleErrors": [],
+      "offHostRequests": [],
+      "checks": [
+        {
+          "name": "Fan insights pane visible, naming 'Bella Hart'",
+          "ok": true
+        },
+        {
+          "name": "the Chat header's 'Fan insights' toggle closes Fan insights",
+          "ok": true
+        },
+        {
+          "name": "'Edit name' opens Fan insights with Nickname focused (document.activeElement is the visible Fan insights input labelled 'Nickname')",
+          "ok": true
+        }
+      ]
+    }
+  ],
+  "serverOffHostAttempts": [
+    {
+      "process": "next",
+      "via": "fetch",
+      "target": "https://registry.npmjs.org/-/package/next/dist-tags",
+      "refused": true
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+ "users": [
+  {
+   "id": 900004,
+   "name": "Synthetic Fan D",
+   "username": "u_synthetic_d",
+   "avatar": null,
+   "subscribedOnDuration": "1 month",
+   "subscribedOnData": {
+    "price": 0,
+    "subscribeAt": "2026-10-01T00:00:00+00:00",
+    "renewedAt": null,
+    "expiredAt": "2026-11-01T00:00:00+00:00"
+   }
+  },
+  {
+   "id": 900011,
+   "name": "u900011",
+   "username": "u900011",
+   "avatar": null,
+   "subscribedOnDuration": "3 months",
+   "subscribedOnData": {
+    "price": 9.99,
+    "subscribeAt": "2026-07-10T00:00:00+00:00",
+    "renewedAt": "2026-10-10T00:00:00+00:00",
+    "expiredAt": "2026-10-12T00:00:00+00:00"
+   }
+  }
+ ],
+ "hasMore": false
+}

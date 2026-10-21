@@ -1,0 +1,22 @@
+---
+layout: page.njk
+title: "Status"
+description: "Status: whatever your VPS says. There is no status page for software you run yourself, so here is how to check yours."
+---
+<h2>Check your containers</h2>
+<p>Run this next to your <code>docker-compose.yml</code>:</p>
+<pre><code>docker compose ps</code></pre>
+<p>
+  A healthy install shows three services running: <code>openinflowwww-relay</code> (127.0.0.1:8787),
+  <code>openinflowwww-app</code> (127.0.0.1:3001) and <code>openinflowwww-autoheal</code>, which restarts unhealthy
+  services. <code>openinflowwww-tunnel</code> shows up only if you started the <code>tunnel</code> profile.
+</p>
+
+<h2>Check the relay</h2>
+<p>The relay's liveness probe needs no token. It is what the Docker healthcheck calls:</p>
+<pre><code>curl http://127.0.0.1:8787/livez
+# {"ok":true}</code></pre>
+<p>
+  If a service keeps restarting, <code>docker compose logs openinflowwww-relay</code> (or <code>openinflowwww-app</code>)
+  shows why. If the logs don't help, <a href="{{ site.repo }}/issues/new">open an issue</a> with them.
+</p>

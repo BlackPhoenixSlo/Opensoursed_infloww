@@ -1,0 +1,35 @@
+{
+  "hasMore": false,
+  "items": [
+    {
+      "id": 66545943,
+      "message": "Synthetic promotion 1",
+      "rawMessage": "Synthetic promotion 1",
+      "hasRelatedPromo": false,
+      "price": 4.95,
+      "type": "all",
+      "canClaim": false,
+      "claimsCount": 0,
+      "subscribeCounts": null,
+      "subscribeDays": 0,
+      "createdAt": "2026-10-12T20:47:59+00:00",
+      "finishedAt": "2026-10-12T20:48:22+00:00",
+      "isFinished": true
+    },
+    {
+      "id": 66545917,
+      "message": "Synthetic promotion 2",
+      "rawMessage": "Synthetic promotion 2",
+      "hasRelatedPromo": false,
+      "price": 4.95,
+      "type": "all",
+      "canClaim": false,
+      "claimsCount": 0,
+      "subscribeCounts": 1,
+      "subscribeDays": 0,
+      "createdAt": "2026-10-12T20:47:24+00:00",
+      "finishedAt": "2026-10-12T20:49:06+00:00",
+      "isFinished": true
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "payoutAvailable": 12.8,
+  "payoutPending": 0,
+  "currency": "USD",
+  "minPayoutSumm": 20,
+  "maxPayoutSumm": 20,
+  "withdrawalPeriodOptions": [
+    {
+      "code": "manual",
+      "name": "Manual payouts"
+    },
+    {
+      "code": "weekly",
+      "name": "Weekly payouts"
+    },
+    {
+      "code": "monthly",
+      "name": "Monthly payouts"
+    }
+  ],
+  "manualPayoutPendingDays": 7,
+  "withdrawalPeriod": "manual"
+}

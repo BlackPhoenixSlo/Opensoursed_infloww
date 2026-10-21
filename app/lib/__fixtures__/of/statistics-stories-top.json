@@ -1,0 +1,16 @@
+{
+ "items": [
+  {
+   "id": 58001,
+   "createdAt": "2026-10-11T09:00:00+00:00",
+   "price": 0,
+   "viewersCount": 4,
+   "likesCount": 2,
+   "commentsCount": 1,
+   "tipsCount": 0,
+   "tipsAmountRaw": 0,
+   "media": []
+  }
+ ],
+ "hasMore": false
+}

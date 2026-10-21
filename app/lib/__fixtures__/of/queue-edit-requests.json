@@ -1,0 +1,197 @@
+{
+  "_source": "captured live on onlyfans.com (account 1001 = the sandbox creator) 2026-10-17 through the browser's network panel, scrubbed (synthetic text, fan and creator): the requests OF's own Save sent (each was a real write on the sandbox account, all undone afterwards); `relay` is Inflowwww's request for the same action, checked against the app",
+  "savePostForLater": {
+    "of": {
+      "method": "POST",
+      "path": "/api2/v2/posts",
+      "body": {
+        "preview": [],
+        "rfTag": [],
+        "rfGuest": [],
+        "rfPartner": [],
+        "text": "<p>Synthetic saved post</p>",
+        "isScheduled": 1,
+        "isPublishedWithPeriod": 1
+      }
+    },
+    "relay": {
+      "method": "POST",
+      "path": "/api/of/v2/posts",
+      "body": {
+        "text": "Synthetic saved post",
+        "media_files": [],
+        "price": 0,
+        "save_for_later": true
+      }
+    }
+  },
+  "editPost": {
+    "of": {
+      "method": "PUT",
+      "path": "/api2/v2/posts/2824438622",
+      "body": {
+        "preview": [],
+        "rfTag": [],
+        "rfGuest": [],
+        "rfPartner": [],
+        "text": "<p>Synthetic saved post edited</p>",
+        "isScheduled": 1,
+        "isPublishedWithPeriod": 1
+      }
+    }
+  },
+  "reschedulePost": {
+    "of": {
+      "method": "PUT",
+      "path": "/api2/v2/posts/2824438622",
+      "body": {
+        "preview": [],
+        "rfTag": [],
+        "rfGuest": [],
+        "rfPartner": [],
+        "text": "<p>Synthetic saved post edited</p>",
+        "isScheduled": 1,
+        "scheduledDate": "2026-11-05T18:37:00.000Z"
+      }
+    },
+    "relay": {
+      "method": "PUT",
+      "path": "/api/of/v2/queue/posts/2433845504",
+      "body": {
+        "text": "Synthetic scheduled post 1",
+        "media_files": [],
+        "price": 0,
+        "posted_at": "2026-11-27T03:14:00+01:00"
+      }
+    }
+  },
+  "scheduleMessage": {
+    "of": {
+      "method": "POST",
+      "path": "/api2/v2/messages/queue",
+      "body": {
+        "text": "<p>Synthetic scheduled message</p>",
+        "lockedText": false,
+        "mediaFiles": [],
+        "price": 0,
+        "previews": [],
+        "rfTag": [],
+        "rfGuest": [],
+        "rfPartner": [],
+        "isForward": false,
+        "isScheduled": 1,
+        "scheduledDate": "2026-12-15T11:00:00.000Z",
+        "filters": {},
+        "userLists": [],
+        "userIds": [
+          5001
+        ]
+      }
+    }
+  },
+  "editMessage": {
+    "of": {
+      "method": "PUT",
+      "path": "/api2/v2/messages/queue/48844793592",
+      "body": {
+        "text": "<p>Synthetic scheduled message edited</p>",
+        "lockedText": false,
+        "mediaFiles": [],
+        "price": "",
+        "previews": [],
+        "rfTag": [],
+        "rfGuest": [],
+        "rfPartner": [],
+        "isForward": false,
+        "isScheduled": 1,
+        "scheduledDate": "2026-12-15T11:00:00+00:00",
+        "filters": {},
+        "userLists": [],
+        "userIds": [
+          "5001"
+        ]
+      }
+    }
+  },
+  "rescheduleMessage": {
+    "of": {
+      "method": "PUT",
+      "path": "/api2/v2/messages/queue/48844793592",
+      "body": {
+        "text": "<p>Synthetic scheduled message edited</p>",
+        "lockedText": false,
+        "mediaFiles": [],
+        "price": "",
+        "previews": [],
+        "rfTag": [],
+        "rfGuest": [],
+        "rfPartner": [],
+        "isForward": false,
+        "isScheduled": 1,
+        "scheduledDate": "2026-12-16T11:00:00.000Z",
+        "filters": {},
+        "userLists": [],
+        "userIds": [
+          "5001"
+        ]
+      }
+    },
+    "relay": {
+      "method": "PUT",
+      "path": "/api/of/v2/messages/queue/6105",
+      "body": {
+        "text": "Synthetic scheduled message",
+        "user_lists": [
+          "fans",
+          "1234"
+        ],
+        "user_ids": [
+          501,
+          502
+        ],
+        "excluded_user_lists": [
+          "99"
+        ],
+        "media_files": [
+          8105
+        ],
+        "price": 5,
+        "scheduled_date": "2026-11-07T10:00:00+01:00"
+      }
+    }
+  },
+  "saveMessageForLater": {
+    "of": {
+      "method": "POST",
+      "path": "/api2/v2/messages/queue",
+      "body": {
+        "text": "<p>Synthetic saved message</p>",
+        "lockedText": false,
+        "mediaFiles": [],
+        "price": 0,
+        "previews": [],
+        "rfTag": [],
+        "rfGuest": [],
+        "rfPartner": [],
+        "isForward": false,
+        "isPublishedWithPeriod": 1,
+        "filters": {},
+        "userLists": [],
+        "userIds": [
+          5001
+        ]
+      }
+    },
+    "relay": {
+      "method": "POST",
+      "path": "/api/of/v2/messages/queue/later",
+      "body": {
+        "text": "Synthetic message",
+        "user_lists": [
+          "fans"
+        ],
+        "save_for_later": true
+      }
+    }
+  }
+}

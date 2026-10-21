@@ -1,0 +1,20 @@
+---
+layout: page.njk
+title: "Changelog"
+description: "Every change to Inflowwww is a commit in the repository. This page links to them instead of retelling them."
+---
+<h2>Where the changes are</h2>
+<ul>
+  <li><a href="{{ site.repo }}/commits/main">Commits on main</a>: every change, newest first.</li>
+  <li><a href="{{ site.repo }}/releases">Releases</a> and <a href="{{ site.repo }}/tags">tags</a>: tagged versions, when there are any.</li>
+  <li><a href="{{ site.repo }}/pulls?q=is%3Apr+is%3Amerged">Merged pull requests</a>: the larger changes, with their review.</li>
+</ul>
+
+<h2>On your server</h2>
+<p>To see what changed since your last update:</p>
+<pre><code>git fetch
+git log --oneline HEAD..origin/main</code></pre>
+<p>
+  We don't keep a hand-written list here, because it would only drift from the log. Every entry in the real one
+  was written by the person who made the change.
+</p>

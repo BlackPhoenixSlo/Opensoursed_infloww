@@ -1,0 +1,611 @@
+{
+  "list": [
+    {
+      "withUser": {
+        "id": 2001,
+        "_view": "m"
+      },
+      "canNotSendReason": null,
+      "canSendMessage": true,
+      "canGoToProfile": true,
+      "unreadMessagesCount": 0,
+      "hasUnreadTips": false,
+      "isMutedNotifications": false,
+      "lastMessage": {
+        "id": 11707004216490,
+        "isOpened": false,
+        "createdAt": "2026-10-17T11:32:27+00:00",
+        "text": "<p>Synthetic message 1</p>",
+        "giphyId": null,
+        "lockedText": false,
+        "isFree": true,
+        "mediaCount": 0,
+        "isTip": false,
+        "fromUser": {
+          "id": 2001,
+          "_view": "i"
+        }
+      },
+      "lastReadMessageId": 11707004216490,
+      "hasPurchasedFeed": false,
+      "countPinnedMessages": 0,
+      "isCallReady": false
+    },
+    {
+      "withUser": {
+        "id": 2002,
+        "_view": "m"
+      },
+      "canNotSendReason": null,
+      "canSendMessage": true,
+      "canGoToProfile": true,
+      "unreadMessagesCount": 0,
+      "hasUnreadTips": false,
+      "isMutedNotifications": false,
+      "lastMessage": {
+        "id": 11706995553242,
+        "isOpened": false,
+        "createdAt": "2026-10-17T11:31:24+00:00",
+        "text": "<p>Synthetic message 2</p>",
+        "giphyId": null,
+        "lockedText": false,
+        "isFree": false,
+        "mediaCount": 7,
+        "isTip": false,
+        "fromUser": {
+          "id": 2002,
+          "_view": "i"
+        }
+      },
+      "lastReadMessageId": 11706995553242,
+      "hasPurchasedFeed": false,
+      "countPinnedMessages": 0,
+      "isCallReady": false
+    },
+    {
+      "withUser": {
+        "id": 2003,
+        "_view": "m"
+      },
+      "canNotSendReason": null,
+      "canSendMessage": true,
+      "canGoToProfile": true,
+      "unreadMessagesCount": 0,
+      "hasUnreadTips": false,
+      "isMutedNotifications": false,
+      "lastMessage": {
+        "id": 11706923170514,
+        "isOpened": false,
+        "createdAt": "2026-10-17T11:22:20+00:00",
+        "text": "<p>Synthetic message 3</p>",
+        "giphyId": null,
+        "lockedText": false,
+        "isFree": true,
+        "mediaCount": 0,
+        "isTip": false,
+        "fromUser": {
+          "id": 2003,
+          "_view": "i"
+        }
+      },
+      "lastReadMessageId": 11706923170514,
+      "hasPurchasedFeed": false,
+      "countPinnedMessages": 0,
+      "isCallReady": false
+    },
+    {
+      "withUser": {
+        "id": 2004,
+        "_view": "m"
+      },
+      "canNotSendReason": null,
+      "canSendMessage": true,
+      "canGoToProfile": true,
+      "unreadMessagesCount": 0,
+      "hasUnreadTips": false,
+      "isMutedNotifications": false,
+      "lastMessage": {
+        "id": 11706802675301,
+        "isOpened": false,
+        "createdAt": "2026-10-17T11:07:22+00:00",
+        "text": "<p>Synthetic message 4</p>",
+        "giphyId": null,
+        "lockedText": false,
+        "isFree": true,
+        "mediaCount": 0,
+        "isTip": false,
+        "fromUser": {
+          "id": 2004,
+          "_view": "i"
+        }
+      },
+      "lastReadMessageId": 11706802675301,
+      "hasPurchasedFeed": false,
+      "countPinnedMessages": 0,
+      "isCallReady": false
+    },
+    {
+      "withUser": {
+        "id": 2005,
+        "_view": "m"
+      },
+      "canNotSendReason": null,
+      "canSendMessage": true,
+      "canGoToProfile": true,
+      "unreadMessagesCount": 0,
+      "hasUnreadTips": false,
+      "isMutedNotifications": false,
+      "lastMessage": {
+        "id": 11700829430726,
+        "isOpened": false,
+        "createdAt": "2026-10-16T23:06:49+00:00",
+        "text": "<p>Synthetic message 5</p>",
+        "giphyId": null,
+        "lockedText": false,
+        "isFree": false,
+        "mediaCount": 11,
+        "isTip": false,
+        "fromUser": {
+          "id": 2005,
+          "_view": "i"
+        }
+      },
+      "lastReadMessageId": 11706467692253,
+      "hasPurchasedFeed": false,
+      "countPinnedMessages": 0,
+      "isCallReady": false
+    },
+    {
+      "withUser": {
+        "id": 2006,
+        "_view": "m"
+      },
+      "canNotSendReason": null,
+      "canSendMessage": true,
+      "canGoToProfile": true,
+      "unreadMessagesCount": 0,
+      "hasUnreadTips": false,
+      "isMutedNotifications": false,
+      "lastMessage": {
+        "id": 11706310608197,
+        "isOpened": false,
+        "createdAt": "2026-10-17T10:06:08+00:00",
+        "text": "<p>Synthetic message 6</p>",
+        "giphyId": null,
+        "lockedText": false,
+        "isFree": true,
+        "mediaCount": 0,
+        "isTip": false,
+        "fromUser": {
+          "id": 2006,
+          "_view": "i"
+        }
+      },
+      "lastReadMessageId": 11706310608197,
+      "hasPurchasedFeed": false,
+      "countPinnedMessages": 0,
+      "isCallReady": false
+    },
+    {
+      "withUser": {
+        "id": 2007,
+        "_view": "m"
+      },
+      "canNotSendReason": null,
+      "canSendMessage": true,
+      "canGoToProfile": true,
+      "unreadMessagesCount": 0,
+      "hasUnreadTips": false,
+      "isMutedNotifications": false,
+      "lastMessage": {
+        "id": 11706220464037,
+        "isOpened": false,
+        "createdAt": "2026-10-17T09:54:54+00:00",
+        "text": "<p>Synthetic message 7</p>",
+        "giphyId": null,
+        "lockedText": false,
+        "isFree": true,
+        "mediaCount": 0,
+        "isTip": false,
+        "fromUser": {
+          "id": 2007,
+          "_view": "i"
+        }
+      },
+      "lastReadMessageId": 11706220464037,
+      "hasPurchasedFeed": false,
+      "countPinnedMessages": 0,
+      "isCallReady": false
+    },
+    {
+      "withUser": {
+        "id": 2008,
+        "_view": "m"
+      },
+      "canNotSendReason": null,
+      "canSendMessage": true,
+      "canGoToProfile": true,
+      "unreadMessagesCount": 0,
+      "hasUnreadTips": false,
+      "isMutedNotifications": false,
+      "lastMessage": {
+        "id": 11706182716120,
+        "isOpened": false,
+        "createdAt": "2026-10-17T09:50:19+00:00",
+        "text": "<p>Synthetic message 8</p>",
+        "giphyId": null,
+        "lockedText": false,
+        "isFree": true,
+        "mediaCount": 0,
+        "isTip": false,
+        "fromUser": {
+          "id": 2008,
+          "_view": "i"
+        }
+      },
+      "lastReadMessageId": 11706182716120,
+      "hasPurchasedFeed": true,
+      "countPinnedMessages": 0,
+      "isCallReady": false
+    },
+    {
+      "withUser": {
+        "id": 2009,
+        "_view": "m"
+      },
+      "canNotSendReason": null,
+      "canSendMessage": true,
+      "canGoToProfile": true,
+      "unreadMessagesCount": 0,
+      "hasUnreadTips": false,
+      "isMutedNotifications": false,
+      "lastMessage": {
+        "id": 11706114475459,
+        "isOpened": false,
+        "createdAt": "2026-10-17T09:42:00+00:00",
+        "text": "<p>Synthetic message 9</p>",
+        "giphyId": null,
+        "lockedText": false,
+        "isFree": true,
+        "mediaCount": 1,
+        "isTip": false,
+        "fromUser": {
+          "id": 2009,
+          "_view": "i"
+        }
+      },
+      "lastReadMessageId": 11706114475459,
+      "hasPurchasedFeed": true,
+      "countPinnedMessages": 0,
+      "isCallReady": false
+    },
+    {
+      "withUser": {
+        "id": 2010,
+        "_view": "m"
+      },
+      "canNotSendReason": null,
+      "canSendMessage": true,
+      "canGoToProfile": true,
+      "unreadMessagesCount": 0,
+      "hasUnreadTips": false,
+      "isMutedNotifications": false,
+      "lastMessage": {
+        "id": 11706074075040,
+        "isOpened": false,
+        "createdAt": "2026-10-17T09:37:04+00:00",
+        "text": "<p>Synthetic message 10</p>",
+        "giphyId": null,
+        "lockedText": false,
+        "isFree": true,
+        "mediaCount": 1,
+        "isTip": false,
+        "fromUser": {
+          "id": 2010,
+          "_view": "i"
+        }
+      },
+      "lastReadMessageId": 11706074075040,
+      "hasPurchasedFeed": false,
+      "countPinnedMessages": 0,
+      "isCallReady": false
+    },
+    {
+      "withUser": {
+        "id": 2011,
+        "_view": "m"
+      },
+      "canNotSendReason": null,
+      "canSendMessage": true,
+      "canGoToProfile": true,
+      "unreadMessagesCount": 0,
+      "hasUnreadTips": false,
+      "isMutedNotifications": true,
+      "lastMessage": {
+        "id": 11705938816970,
+        "isOpened": false,
+        "createdAt": "2026-10-17T09:20:09+00:00",
+        "text": "<p>Synthetic message 11</p>",
+        "giphyId": null,
+        "lockedText": false,
+        "isFree": false,
+        "mediaCount": 2,
+        "isTip": false,
+        "fromUser": {
+          "id": 2011,
+          "_view": "i"
+        }
+      },
+      "lastReadMessageId": 11705938816970,
+      "hasPurchasedFeed": false,
+      "countPinnedMessages": 0,
+      "isCallReady": false
+    },
+    {
+      "withUser": {
+        "id": 2012,
+        "_view": "m"
+      },
+      "canNotSendReason": null,
+      "canSendMessage": true,
+      "canGoToProfile": true,
+      "unreadMessagesCount": 0,
+      "hasUnreadTips": false,
+      "isMutedNotifications": true,
+      "lastMessage": {
+        "id": 11705438010136,
+        "isOpened": false,
+        "createdAt": "2026-10-17T08:18:17+00:00",
+        "text": "<p>Synthetic message 12</p>",
+        "giphyId": null,
+        "lockedText": false,
+        "isFree": false,
+        "mediaCount": 2,
+        "isTip": false,
+        "fromUser": {
+          "id": 2012,
+          "_view": "i"
+        }
+      },
+      "lastReadMessageId": 11705878895386,
+      "hasPurchasedFeed": false,
+      "countPinnedMessages": 1,
+      "isCallReady": false
+    },
+    {
+      "withUser": {
+        "id": 2013,
+        "_view": "m"
+      },
+      "canNotSendReason": null,
+      "canSendMessage": true,
+      "canGoToProfile": true,
+      "unreadMessagesCount": 0,
+      "hasUnreadTips": false,
+      "isMutedNotifications": false,
+      "lastMessage": {
+        "id": 11705873600579,
+        "isOpened": false,
+        "createdAt": "2026-10-17T09:12:10+00:00",
+        "text": "<p>Synthetic message 13</p>",
+        "giphyId": null,
+        "lockedText": false,
+        "isFree": false,
+        "mediaCount": 20,
+        "isTip": false,
+        "fromUser": {
+          "id": 2013,
+          "_view": "i"
+        }
+      },
+      "lastReadMessageId": 11705873600579,
+      "hasPurchasedFeed": false,
+      "countPinnedMessages": 0,
+      "isCallReady": false
+    },
+    {
+      "withUser": {
+        "id": 2014,
+        "_view": "m"
+      },
+      "canNotSendReason": null,
+      "canSendMessage": true,
+      "canGoToProfile": true,
+      "unreadMessagesCount": 0,
+      "hasUnreadTips": false,
+      "isMutedNotifications": false,
+      "lastMessage": {
+        "id": 11681961695599,
+        "isOpened": false,
+        "createdAt": "2026-10-15T14:27:52+00:00",
+        "text": "<p>Synthetic message 14</p>",
+        "giphyId": null,
+        "lockedText": false,
+        "isFree": true,
+        "mediaCount": 0,
+        "isTip": false,
+        "fromUser": {
+          "id": 2014,
+          "_view": "i"
+        }
+      },
+      "lastReadMessageId": 11705825344770,
+      "hasPurchasedFeed": false,
+      "countPinnedMessages": 0,
+      "isCallReady": false
+    },
+    {
+      "withUser": {
+        "id": 2015,
+        "_view": "m"
+      },
+      "canNotSendReason": null,
+      "canSendMessage": true,
+      "canGoToProfile": true,
+      "unreadMessagesCount": 0,
+      "hasUnreadTips": false,
+      "isMutedNotifications": false,
+      "lastMessage": {
+        "id": 11705511774871,
+        "isOpened": false,
+        "createdAt": "2026-10-17T08:27:19+00:00",
+        "text": "<p>Synthetic message 15</p>",
+        "giphyId": null,
+        "lockedText": false,
+        "isFree": true,
+        "mediaCount": 1,
+        "isTip": false,
+        "fromUser": {
+          "id": 2015,
+          "_view": "i"
+        }
+      },
+      "lastReadMessageId": 11705511774871,
+      "hasPurchasedFeed": false,
+      "countPinnedMessages": 0,
+      "isCallReady": false
+    },
+    {
+      "withUser": {
+        "id": 2016,
+        "_view": "m"
+      },
+      "canNotSendReason": null,
+      "canSendMessage": true,
+      "canGoToProfile": true,
+      "unreadMessagesCount": 0,
+      "hasUnreadTips": false,
+      "isMutedNotifications": false,
+      "lastMessage": null,
+      "lastReadMessageId": 11705383406180,
+      "hasPurchasedFeed": false,
+      "countPinnedMessages": 1,
+      "isCallReady": false
+    },
+    {
+      "withUser": {
+        "id": 2017,
+        "_view": "m"
+      },
+      "canNotSendReason": null,
+      "canSendMessage": true,
+      "canGoToProfile": true,
+      "unreadMessagesCount": 0,
+      "hasUnreadTips": false,
+      "isMutedNotifications": false,
+      "lastMessage": {
+        "id": 11705269958410,
+        "isOpened": false,
+        "createdAt": "2026-10-17T07:57:09+00:00",
+        "text": "<p>Synthetic message 16</p>",
+        "giphyId": null,
+        "lockedText": false,
+        "isFree": false,
+        "mediaCount": 5,
+        "isTip": false,
+        "fromUser": {
+          "id": 2017,
+          "_view": "i"
+        }
+      },
+      "lastReadMessageId": 11705269958410,
+      "hasPurchasedFeed": false,
+      "countPinnedMessages": 0,
+      "isCallReady": false
+    },
+    {
+      "withUser": {
+        "id": 2018,
+        "_view": "m"
+      },
+      "canNotSendReason": "only_friends",
+      "canSendMessage": false,
+      "canGoToProfile": true,
+      "unreadMessagesCount": 0,
+      "hasUnreadTips": false,
+      "isMutedNotifications": false,
+      "lastMessage": {
+        "id": 11705214377190,
+        "isOpened": false,
+        "createdAt": "2026-10-17T07:50:25+00:00",
+        "text": "<p>Synthetic message 17</p>",
+        "giphyId": null,
+        "lockedText": false,
+        "isFree": true,
+        "mediaCount": 0,
+        "isTip": false,
+        "fromUser": {
+          "id": 2018,
+          "_view": "i"
+        }
+      },
+      "lastReadMessageId": 11705214377190,
+      "hasPurchasedFeed": false,
+      "countPinnedMessages": 0,
+      "isCallReady": false
+    },
+    {
+      "withUser": {
+        "id": 2019,
+        "_view": "m"
+      },
+      "canNotSendReason": null,
+      "canSendMessage": true,
+      "canGoToProfile": true,
+      "unreadMessagesCount": 0,
+      "hasUnreadTips": false,
+      "isMutedNotifications": false,
+      "lastMessage": {
+        "id": 11703750187823,
+        "isOpened": false,
+        "createdAt": "2026-10-17T04:51:31+00:00",
+        "text": "<p>Synthetic message 18</p>",
+        "giphyId": null,
+        "lockedText": false,
+        "isFree": false,
+        "mediaCount": 21,
+        "isTip": false,
+        "fromUser": {
+          "id": 2019,
+          "_view": "i"
+        }
+      },
+      "lastReadMessageId": 11704959332728,
+      "hasPurchasedFeed": false,
+      "countPinnedMessages": 0,
+      "isCallReady": false
+    },
+    {
+      "withUser": {
+        "id": 2020,
+        "_view": "m"
+      },
+      "canNotSendReason": null,
+      "canSendMessage": true,
+      "canGoToProfile": true,
+      "unreadMessagesCount": 0,
+      "hasUnreadTips": false,
+      "isMutedNotifications": false,
+      "lastMessage": {
+        "id": 11704619150535,
+        "isOpened": false,
+        "createdAt": "2026-10-17T06:37:36+00:00",
+        "text": "<p>Synthetic message 19</p>",
+        "giphyId": null,
+        "lockedText": false,
+        "isFree": true,
+        "mediaCount": 0,
+        "isTip": false,
+        "fromUser": {
+          "id": 2020,
+          "_view": "i"
+        }
+      },
+      "lastReadMessageId": 11704619150535,
+      "hasPurchasedFeed": false,
+      "countPinnedMessages": 0,
+      "isCallReady": false
+    }
+  ],
+  "hasMore": true
+}

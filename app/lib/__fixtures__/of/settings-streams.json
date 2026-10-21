@@ -1,0 +1,12 @@
+{
+  "priceMin": 5,
+  "priceMax": 50,
+  "tipGoalMin": 1,
+  "tipGoalMax": 10000,
+  "canCreatePaidStream": true,
+  "allowAgoraDirect": true,
+  "allowRed5": false,
+  "twitterImage": {
+    "allow": true
+  }
+}

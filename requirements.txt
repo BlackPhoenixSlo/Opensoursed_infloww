@@ -1,0 +1,46 @@
+# Runtime deps for the relay (Docker). Pinned to the versions that this
+# project was developed against — bump deliberately.
+#
+# Capture-only deps (Playwright) are intentionally NOT
+# here. They live on the host where the browser does, and the Docker container
+# only ever runs the server / paste-curl bootstrap / WebSocket pump.
+
+fastapi==0.136.1
+# fastapi only asks for starlette>=0.46; the relay's GZipMiddleware call uses
+# `exclude_content_types` (with `type/*` matching), so pin the one it was
+# tested against rather than whatever resolves on the next image build.
+starlette==1.7.0
+# httpx backs llm_client's provider calls. This lived ONLY in the deploy repo
+# for months (added there after an identical crash loop) and a sync from the
+# laptop deleted it again — a fix made downstream is a fix that gets reverted.
+# It belongs here, in the source of truth.
+httpx==0.28.1
+uvicorn[standard]==0.47.0
+curl_cffi==0.15.0
+pydantic==2.13.4
+python-multipart==0.0.29
+websockets==16.0
+# DB layer (phase A) — SQLAlchemy 2.x async + Alembic
+# for versioned migrations. aiosqlite is the async SQLite driver; swap to
+# asyncpg if/when DATABASE_URL points at Postgres.
+sqlalchemy[asyncio]==2.0.35
+alembic==1.13.3
+aiosqlite==0.20.0
+python-dotenv==1.0.1
+# Backend the websockets lib uses for HTTP-CONNECT + SOCKS5 proxy tunneling.
+# We route the OF realtime WS through the same per-account proxy as REST,
+# so the egress IP matches; without python-socks, websockets would fall back
+# to a direct TCP connect even when proxy=... is passed (silent leak).
+python-socks==2.5.1
+# Perceptual hashing for vault duplicate detection (service/vault_dupes.py) and
+# frame downscaling before a vision call (vault_ai_api). Previously host-only —
+# it now runs IN the relay, so the image needs it. vault_dupes still imports it
+# lazily: a missing image library must degrade dupe detection, not boot the
+# relay into a crash loop.
+Pillow==12.2.0
+# The Fansly runtime (fansly/fansly_client.py, fansly_shim.py) imports requests
+# at module load, and server.py reaches it through transaction_ingest ->
+# fansly_backend, so a missing requests means the relay does not boot. It used
+# to arrive only as a transitive dep of the google-* packages (removed with
+# push_to_sheets, cleanup R3); pinned to the version those images carried.
+requests==2.34.2

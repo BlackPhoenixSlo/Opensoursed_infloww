@@ -1,0 +1,50 @@
+{
+ "hasMore": false,
+ "items": [
+  {
+   "id": 59001,
+   "message": "Synthetic promotion 1",
+   "rawMessage": "Synthetic promotion 1",
+   "hasRelatedPromo": false,
+   "price": 0,
+   "type": "all",
+   "canClaim": true,
+   "claimsCount": 1,
+   "subscribeCounts": 10,
+   "subscribeDays": 7,
+   "createdAt": "2026-10-01T00:00:00+00:00",
+   "finishedAt": null,
+   "isFinished": false
+  },
+  {
+   "id": 59002,
+   "message": "Synthetic promotion 2",
+   "rawMessage": "Synthetic promotion 2",
+   "hasRelatedPromo": false,
+   "price": 3,
+   "type": "all",
+   "canClaim": true,
+   "claimsCount": 5,
+   "subscribeCounts": 0,
+   "subscribeDays": 30,
+   "createdAt": "2026-09-20T00:00:00+00:00",
+   "finishedAt": "2026-10-05T00:00:00+00:00",
+   "isFinished": false
+  },
+  {
+   "id": 59003,
+   "message": "Synthetic promotion 3",
+   "rawMessage": "Synthetic promotion 3",
+   "hasRelatedPromo": false,
+   "price": 4.95,
+   "type": "all",
+   "canClaim": false,
+   "claimsCount": 0,
+   "subscribeCounts": null,
+   "subscribeDays": 0,
+   "createdAt": "2026-09-12T20:47:59+00:00",
+   "finishedAt": "2026-09-12T20:48:22+00:00",
+   "isFinished": true
+  }
+ ]
+}

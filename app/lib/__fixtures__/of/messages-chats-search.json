@@ -1,0 +1,98 @@
+{
+ "list": [
+  {
+   "withUser": {
+    "id": 3020,
+    "_view": "m"
+   },
+   "canNotSendReason": null,
+   "canSendMessage": true,
+   "canGoToProfile": true,
+   "unreadMessagesCount": 0,
+   "hasUnreadTips": false,
+   "isMutedNotifications": false,
+   "lastMessage": {
+    "id": 11656908832812,
+    "isOpened": false,
+    "createdAt": "2026-10-13T19:34:07+00:00",
+    "text": "<p>Synthetic message 1</p>",
+    "giphyId": null,
+    "lockedText": false,
+    "isFree": false,
+    "mediaCount": 40,
+    "isTip": false,
+    "fromUser": {
+     "id": 3020,
+     "_view": "i"
+    }
+   },
+   "lastReadMessageId": "11696232998219",
+   "hasPurchasedFeed": false,
+   "countPinnedMessages": 0,
+   "isCallReady": false
+  },
+  {
+   "withUser": {
+    "id": 3036,
+    "_view": "m"
+   },
+   "canNotSendReason": null,
+   "canSendMessage": true,
+   "canGoToProfile": true,
+   "unreadMessagesCount": 0,
+   "hasUnreadTips": false,
+   "isMutedNotifications": false,
+   "lastMessage": {
+    "id": 11652476379139,
+    "isOpened": false,
+    "createdAt": "2026-10-13T12:05:07+00:00",
+    "text": "<p>Synthetic message 2</p>",
+    "giphyId": null,
+    "lockedText": false,
+    "isFree": true,
+    "mediaCount": 0,
+    "isTip": false,
+    "fromUser": {
+     "id": 3036,
+     "_view": "i"
+    }
+   },
+   "lastReadMessageId": "11652476379139",
+   "hasPurchasedFeed": false,
+   "countPinnedMessages": 0,
+   "isCallReady": false
+  },
+  {
+   "withUser": {
+    "id": 3037,
+    "_view": "m"
+   },
+   "canNotSendReason": "unsubscribed",
+   "canSendMessage": false,
+   "canGoToProfile": true,
+   "unreadMessagesCount": 0,
+   "hasUnreadTips": false,
+   "isMutedNotifications": false,
+   "lastMessage": {
+    "id": 11300093439715,
+    "isOpened": false,
+    "createdAt": "2026-09-18T01:02:31+00:00",
+    "text": "<p>Synthetic message 3</p>",
+    "giphyId": null,
+    "lockedText": false,
+    "isFree": true,
+    "mediaCount": 0,
+    "isTip": false,
+    "fromUser": {
+     "id": 3037,
+     "_view": "i"
+    }
+   },
+   "lastReadMessageId": "11300093439715",
+   "hasPurchasedFeed": false,
+   "countPinnedMessages": 0,
+   "isCallReady": false
+  }
+ ],
+ "hasMore": false
+}

@@ -1,0 +1,9 @@
+{
+  "name": "Inflowwww",
+  "url": "https://your-org.github.io/openinflowwww",
+  "repo": "https://github.com/YOUR_ORG/openinflowwww",
+  "description": "Inflowwww is a free, open-source (MIT), self-hosted alternative to Infloww for OnlyFans agencies. No per-creator fee, no earnings-based tiers. Each agency's data stays in the app's own database, apart from two optional integrations listed under Privacy.",
+  "captureDate": "2026-10-11",
+  "inflowwUrl": "https://infloww.com",
+  "appUrl": "http://localhost:3001"
+}

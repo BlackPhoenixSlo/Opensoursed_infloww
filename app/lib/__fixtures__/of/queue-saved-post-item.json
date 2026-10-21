@@ -1,0 +1,31 @@
+{
+  "_source": "captured live on onlyfans.com (account 1001 = the sandbox creator) 2026-10-17 through the browser's network panel, scrubbed (synthetic text, fan and creator): GET /api2/v2/schedules/later/post?limit=10",
+  "list": [
+    {
+      "id": 1767124147,
+      "type": "post",
+      "publishDateTime": null,
+      "createdDateTime": "2026-10-17T17:26:08+00:00",
+      "entity": {
+        "responseType": "post",
+        "id": 2824438622,
+        "postedAt": "2026-10-17T17:26:08+00:00",
+        "postedAtPrecise": "1792257968.000000",
+        "text": "<p>Synthetic saved post</p>",
+        "isMarkdownDisabled": true,
+        "canDelete": true,
+        "canEdit": true,
+        "isMediaReady": true,
+        "isOpened": true,
+        "canToggleFavorite": true,
+        "tipsAmount": "$0",
+        "isPublishedWithPeriod": true,
+        "rawText": "Synthetic saved post",
+        "tweetSend": false,
+        "canViewMedia": true
+      }
+    }
+  ],
+  "hasMore": false,
+  "syncInProcess": false
+}

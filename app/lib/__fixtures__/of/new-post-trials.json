@@ -1,0 +1,56 @@
+{
+  "_source": "Read through the real relay (GET only, account 80000112) on 2026-10-17 and scrubbed: ids renumbered, names, usernames, messages, links and pictures synthetic. GET /api/of/v2/trials (a bare list; each row carries its owner `user`, cut here to id, name, username).",
+  "list": [
+    {
+      "id": 2001,
+      "trialLinkName": "Synthetic link 1",
+      "url": "https://onlyfans.com/action/trial/synthetic1",
+      "subscribeDays": 7,
+      "subscribeCounts": 1,
+      "claimCounts": 0,
+      "clicksCounts": 0,
+      "expiredAt": "2026-11-12T06:17:19+00:00",
+      "createdAt": "2026-10-13T06:17:19+00:00",
+      "isFinished": false,
+      "user": {
+        "id": 1,
+        "name": "Your Model",
+        "username": "yourmodel"
+      }
+    },
+    {
+      "id": 2002,
+      "trialLinkName": "Synthetic link 2",
+      "url": "https://onlyfans.com/action/trial/synthetic2",
+      "subscribeDays": 7,
+      "subscribeCounts": 1,
+      "claimCounts": 0,
+      "clicksCounts": 0,
+      "expiredAt": null,
+      "createdAt": "2026-04-29T14:19:49+00:00",
+      "isFinished": false,
+      "user": {
+        "id": 1,
+        "name": "Your Model",
+        "username": "yourmodel"
+      }
+    },
+    {
+      "id": 2003,
+      "trialLinkName": "Synthetic link 3",
+      "url": "https://onlyfans.com/action/trial/synthetic3",
+      "subscribeDays": 7,
+      "subscribeCounts": 100,
+      "claimCounts": 0,
+      "clicksCounts": 0,
+      "expiredAt": null,
+      "createdAt": "2026-04-28T18:22:20+00:00",
+      "isFinished": false,
+      "user": {
+        "id": 1,
+        "name": "Your Model",
+        "username": "yourmodel"
+      }
+    }
+  ]
+}

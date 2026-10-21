@@ -1,0 +1,592 @@
+@import "tailwindcss" source(none);
+@source "./**/*.{njk,md,html,js}";
+
+/* Light, monochrome, Framer-ish: black on white with cream bands, black pills, one dark closing band.
+   One accent (green) for "true / free", yellow for the parody badges.
+   No web fonts: the stack is the platform's own UI face (zero external requests). */
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --color-ink: #0d0d0d;
+  --color-muted: rgba(0, 0, 0, 0.62);
+  --color-line: rgba(0, 0, 0, 0.1);
+  --color-cream: #f1ede5;
+  --color-band: #f4f4f5;
+  --color-mint: #b9e1b4;
+  --color-forest: #00805e;
+  --color-sun: #fcd879;
+}
+
+@layer base {
+  html {
+    color-scheme: light;
+    background-color: #fff;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    html {
+      scroll-behavior: smooth;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      animation: none !important;
+      transition: none !important;
+    }
+  }
+
+  /* Type scale: body 1.0625rem, small .875rem (text-sm), h3 1.25rem, h2 .section-title, h1 .h-page (.h-display on /). */
+  body {
+    @apply bg-white font-sans text-ink antialiased;
+    font-size: 1.0625rem;
+    line-height: 1.6;
+  }
+
+  /* The earnings slider (pricing-block.njk): a visible ink thumb with a white ring, a filled track
+     (main.js sets --fill), and a focus ring on the thumb. */
+  input[type="range"] {
+    appearance: none;
+    background: transparent;
+  }
+
+  input[type="range"]::-webkit-slider-runnable-track {
+    height: 6px;
+    border-radius: 9999px;
+    background: linear-gradient(to right, var(--color-ink) var(--fill, 0%), rgba(0, 0, 0, 0.12) var(--fill, 0%));
+  }
+
+  input[type="range"]::-webkit-slider-thumb {
+    appearance: none;
+    width: 1.5rem;
+    height: 1.5rem;
+    margin-top: calc(3px - 0.75rem);
+    border-radius: 9999px;
+    background: var(--color-ink);
+    box-shadow:
+      0 0 0 3px #fff,
+      0 2px 8px 3px rgba(0, 0, 0, 0.25);
+  }
+
+  input[type="range"]::-moz-range-track {
+    height: 6px;
+    border-radius: 9999px;
+    background: rgba(0, 0, 0, 0.12);
+  }
+
+  input[type="range"]::-moz-range-progress {
+    height: 6px;
+    border-radius: 9999px;
+    background: var(--color-ink);
+  }
+
+  input[type="range"]::-moz-range-thumb {
+    width: 1.5rem;
+    height: 1.5rem;
+    border: 0;
+    border-radius: 9999px;
+    background: var(--color-ink);
+    box-shadow:
+      0 0 0 3px #fff,
+      0 2px 8px 3px rgba(0, 0, 0, 0.25);
+  }
+
+  input[type="range"]:focus-visible {
+    outline: none;
+  }
+
+  input[type="range"]:focus-visible::-webkit-slider-thumb {
+    box-shadow:
+      0 0 0 3px #fff,
+      0 0 0 5px var(--color-ink);
+  }
+
+  input[type="range"]:focus-visible::-moz-range-thumb {
+    box-shadow:
+      0 0 0 3px #fff,
+      0 0 0 5px var(--color-ink);
+  }
+
+  /* Forced colours drop the gradient track and the background-colour thumb, so redraw both in system
+     colours. One block per vendor pseudo: a browser drops a rule whose selector list it can't parse. */
+  @media (forced-colors: active) {
+    input[type="range"]::-webkit-slider-runnable-track {
+      forced-color-adjust: none;
+      background: GrayText;
+    }
+
+    input[type="range"]::-moz-range-track {
+      forced-color-adjust: none;
+      background: GrayText;
+    }
+
+    input[type="range"]::-webkit-slider-thumb {
+      forced-color-adjust: none;
+      background: ButtonText;
+      box-shadow: none;
+      border: 2px solid Canvas;
+    }
+
+    input[type="range"]::-moz-range-thumb {
+      forced-color-adjust: none;
+      background: ButtonText;
+      box-shadow: none;
+      border: 2px solid Canvas;
+    }
+
+    input[type="range"]:focus-visible::-webkit-slider-thumb {
+      outline: 2px solid Highlight;
+    }
+
+    input[type="range"]:focus-visible::-moz-range-thumb {
+      outline: 2px solid Highlight;
+    }
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-ink);
+    outline-offset: 3px;
+    border-radius: 6px;
+  }
+
+  /* Clears the sticky header (95px at 320px wide, about 100px on desktop) with room to spare, for anchors and for focus moved by Tab. */
+  html {
+    scroll-padding-top: 9rem;
+  }
+
+  summary {
+    list-style: none;
+  }
+
+  summary::-webkit-details-marker {
+    display: none;
+  }
+
+  code {
+    font-size: 0.9em;
+  }
+}
+
+@layer components {
+  .wrap {
+    @apply mx-auto w-full max-w-6xl px-5 sm:px-8;
+  }
+
+  .btn-primary {
+    @apply inline-flex min-h-11 items-center justify-center gap-2 rounded-full border border-transparent bg-ink px-5 py-2.5 text-sm font-medium text-white hover:bg-black/80 motion-safe:transition-colors;
+  }
+
+  .btn-secondary {
+    @apply inline-flex min-h-11 items-center justify-center gap-2 rounded-full border border-black/15 bg-white px-5 py-2.5 text-sm font-medium text-ink hover:border-black/40 motion-safe:transition-colors;
+  }
+
+  /* The transparent borders on .btn-primary and .btn-light are for forced colours, which paints them.
+     Buttons on an ink band: the white pill is the primary, the outline the secondary. */
+  .btn-light {
+    @apply inline-flex min-h-11 items-center justify-center gap-2 rounded-full border border-transparent bg-white px-5 py-2.5 text-sm font-medium text-ink hover:bg-white/85 motion-safe:transition-colors;
+  }
+
+  .btn-outline-light {
+    @apply inline-flex min-h-11 items-center justify-center gap-2 rounded-full border border-white/30 px-5 py-2.5 text-sm font-medium text-white hover:border-white/70 motion-safe:transition-colors;
+  }
+
+  /* A white pill with a green dot: readable on white, cream and grey bands alike. */
+  .eyebrow {
+    @apply inline-flex items-center gap-2 rounded-full bg-white px-3 py-1 text-sm font-medium text-ink ring-1 ring-black/10 before:size-1.5 before:rounded-full before:bg-forest before:content-[''];
+  }
+
+  /* h1 on landing-style pages. */
+  .h-display {
+    @apply font-semibold text-balance text-ink;
+    font-size: clamp(2.5rem, 6vw, 4.5rem);
+    line-height: 1.04;
+    letter-spacing: -0.035em;
+  }
+
+  /* h1 on inner pages: a step above .section-title, below .h-display. */
+  .h-page {
+    @apply font-semibold text-balance text-ink;
+    font-size: clamp(2.25rem, 4.5vw, 3.5rem);
+    line-height: 1.05;
+    letter-spacing: -0.035em;
+    word-spacing: 0.02em;
+  }
+
+  /* h2 for every section. */
+  .section-title {
+    @apply font-semibold text-balance text-ink;
+    font-size: clamp(1.9rem, 3.5vw, 2.75rem);
+    line-height: 1.1;
+    letter-spacing: -0.03em;
+  }
+
+  /* Section rhythm: white, then cream, with a hairline at each change. The closing band is ink. */
+  .band-cream {
+    @apply border-t border-line bg-cream;
+  }
+
+  .band-ink {
+    @apply bg-ink text-white;
+
+    & :focus-visible {
+      outline-color: #fff;
+    }
+  }
+
+  /* The one screenshot frame. Phones and desktops alike; the cream shows while the image loads. */
+  .shot {
+    @apply rounded-2xl border border-ink/10 bg-cream shadow-[0_24px_48px_-20px_rgba(0,0,0,0.3)];
+  }
+
+  .lede {
+    @apply mt-4 max-w-2xl text-lg text-pretty text-muted;
+  }
+
+  /* Cards: rounded-2xl everywhere; edges are ring-1 ring-black/10 where a card needs one. */
+  .card {
+    @apply rounded-2xl bg-cream p-6;
+  }
+
+  .their-quote {
+    @apply mt-4 border-l-2 border-black/20 pl-3 text-sm text-muted;
+  }
+
+  .text-link {
+    @apply font-medium text-ink underline decoration-black/30 underline-offset-4 hover:decoration-ink;
+  }
+
+  .badge-parody {
+    @apply inline-flex items-center rounded-full bg-sun px-2.5 py-0.5 text-xs font-medium text-ink;
+  }
+
+  /* Posts with `straight: true` (sincere advice) carry this label instead of the Parody badge. */
+  .badge-straight {
+    @apply inline-flex items-center rounded-full bg-white px-2.5 py-0.5 text-xs font-medium text-ink ring-1 ring-black/15;
+  }
+
+  .chip-free {
+    @apply inline-flex items-center rounded-full bg-mint px-2 py-0.5 font-medium text-ink;
+  }
+
+  /* Feature status, coloured by its label: <span class="status-chip" data-status="Built">. */
+  .status-chip {
+    @apply inline-flex rounded-full bg-white px-2 py-0.5 text-xs font-medium whitespace-nowrap text-ink ring-1 ring-black/20;
+
+    &[data-status="Built"],
+    &[data-status="$0"] {
+      @apply bg-mint ring-0;
+    }
+
+    &[data-status="NotBuiltYet"] {
+      @apply bg-sun ring-0;
+    }
+
+    &[data-status="Partly built"] {
+      @apply bg-sun/50 ring-0;
+    }
+
+    /* Keeps its ring: the feature grid's cards are cream too. */
+    &[data-status="Yours to run"] {
+      @apply bg-cream;
+    }
+  }
+
+  /* The ladder table (pricing-block.njk): the active row says "current" in text, not only in cream.
+     The pill's alt text is empty; main.js sets aria-current on the row for assistive tech. */
+  tr[data-active] > th {
+    @apply font-semibold;
+
+    &::after {
+      @apply ml-2 inline-block rounded-full bg-ink px-2 py-0.5 text-xs font-medium text-white;
+      content: "current";
+      content: "current" / "";
+    }
+  }
+
+  /* Comparison table (compare-table.njk): Feature | Infloww says | Inflowwww. Below sm the header is
+     visually hidden and each row stacks into a card, with the column names as labels, so nothing clips. */
+  .compare {
+    @apply w-full text-left text-sm sm:min-w-[44rem];
+
+    & thead {
+      @apply bg-band max-sm:sr-only;
+    }
+
+    & th,
+    & td {
+      @apply px-5 py-3 align-top;
+    }
+
+    & thead th {
+      @apply font-semibold text-ink;
+    }
+
+    & tbody tr {
+      @apply border-t border-line max-sm:block max-sm:px-5 max-sm:py-4;
+    }
+
+    & tbody th {
+      @apply font-medium text-ink max-sm:block max-sm:p-0 max-sm:text-base max-sm:font-semibold sm:w-52;
+    }
+
+    & tbody td {
+      @apply max-sm:block max-sm:p-0;
+    }
+
+    & tbody td:nth-of-type(1) {
+      @apply text-muted max-sm:pt-1;
+    }
+
+    & tbody td:nth-of-type(2) {
+      @apply text-ink max-sm:pt-2;
+    }
+
+    /* The chip keeps its own column, so a wrapped line never starts under it. */
+    & tbody td > div {
+      @apply flex items-start gap-2;
+
+      & > .status-chip {
+        @apply shrink-0;
+      }
+
+      & > span:last-child {
+        @apply min-w-0 break-words;
+      }
+    }
+  }
+
+  .nav-link {
+    @apply inline-flex min-h-11 items-center px-3 text-sm text-ink hover:text-muted;
+  }
+
+  /* Markdown pages: blog posts, case studies, legal. */
+  .prose {
+    @apply max-w-[68ch] text-lg leading-relaxed text-ink;
+
+    & > * + * {
+      @apply mt-5;
+    }
+
+    & h2 {
+      @apply mt-12 text-2xl font-semibold tracking-tight sm:text-3xl;
+    }
+
+    & h3 {
+      @apply mt-8 text-xl font-semibold;
+    }
+
+    & a {
+      @apply font-medium underline decoration-black/30 underline-offset-4 hover:decoration-ink;
+    }
+
+    & ul {
+      @apply list-disc space-y-2 pl-6;
+    }
+
+    & ol {
+      @apply list-decimal space-y-2 pl-6;
+    }
+
+    & strong {
+      @apply font-semibold;
+    }
+
+    /* A plain callout box. No "Their claim" label: posts use it for our own pitch, and
+       actual Infloww quotes are labelled in the text with their source and date. */
+    & blockquote {
+      @apply rounded-l-none rounded-r-2xl border-l-4 border-ink bg-white px-5 py-4 text-base text-ink ring-1 ring-black/10;
+    }
+
+    & :not(pre) > code {
+      @apply rounded bg-black/[0.05] px-1 py-px break-words;
+    }
+
+    & pre {
+      @apply overflow-x-auto rounded-2xl bg-ink p-4 text-sm text-mint;
+    }
+
+    /* Tables stay tables (display: block drops their semantics in WebKit); post.njk wraps each one in a
+       focusable overflow box instead. */
+    & table {
+      @apply w-full text-left text-base;
+    }
+
+    & th {
+      @apply border-b border-black/20 px-3 py-2 font-semibold;
+    }
+
+    & td {
+      @apply border-b border-line px-3 py-2 tabular-nums;
+    }
+
+    & hr {
+      @apply my-10 border-line;
+    }
+  }
+}
+
+/* /login/ and /signup/ (auth.njk, `bare: true` in base.njk): dark pages in the shape of theirs. One orange for links
+   and the ready button, a muted brown for the button while the form is still invalid, pink for field errors. */
+@layer base {
+  html.auth-dark {
+    color-scheme: dark;
+    background-color: #0c0c0c;
+  }
+
+  html.auth-dark body {
+    background-color: transparent;
+    color: #fff;
+  }
+}
+
+@layer components {
+  /* Two field sizes, keyed on the form's data-mode (auth.njk authForm): their app's login screen (16px labels 8px
+     above a 48px #161616 field, radius 8) and their signup page (20px labels, 58px #111111 fields, radius 12). */
+  .auth-label {
+    @apply block text-xl font-medium text-white;
+  }
+
+  .auth-label + .auth-input,
+  .auth-label + .auth-pw {
+    @apply mt-3;
+  }
+
+  .auth-input {
+    @apply block h-[58px] w-full rounded-xl border border-transparent bg-[#111111] px-5 text-lg text-white placeholder:text-white/50 focus-visible:border-[#f88056] focus-visible:outline-none;
+  }
+
+  .auth-form[data-mode="login"] {
+    & .auth-label {
+      @apply text-base;
+    }
+
+    & .auth-label + .auth-input,
+    & .auth-label + .auth-pw {
+      @apply mt-2;
+    }
+
+    & .auth-input {
+      @apply h-12 rounded-lg bg-[#161616] px-4 text-base;
+    }
+  }
+
+  .auth-form .auth-input:user-invalid {
+    @apply bg-[#23141a];
+  }
+
+  .auth-hint {
+    @apply mt-3 text-sm text-[#a4a4a4];
+  }
+
+  /* Their inline "Email is invalid" line (16px #fb609f, a 20px circle-bang, 8px under the field): shown by CSS once
+     the browser marks the field :user-invalid. */
+  .auth-field-error,
+  .auth-alert {
+    @apply mt-2 text-base text-[#fb609f];
+    padding-left: 1.75rem;
+    background: no-repeat left 0.125rem / 1.25rem
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fb609f' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 7v6M12 16.5v.5'/%3E%3C/svg%3E");
+  }
+
+  .auth-field-error {
+    display: none;
+  }
+
+  .auth-input:user-invalid ~ .auth-field-error {
+    display: block;
+  }
+
+  .auth-input:user-invalid ~ .auth-hint {
+    display: none;
+  }
+
+  /* Password plus eye button: inside the field (login: a 20px icon) or a separate #272727 square beside it (signup,
+     `.auth-pw-attached`). The icon follows the field's type, which main.js flips. */
+  .auth-pw {
+    @apply relative;
+
+    & .auth-input {
+      @apply pr-12;
+    }
+  }
+
+  .auth-eye {
+    @apply absolute inset-y-0 right-0 flex w-12 items-center justify-center rounded-r-lg text-white/85 hover:text-white focus-visible:outline-2 focus-visible:outline-[#f88056];
+
+    & svg {
+      @apply size-5;
+    }
+  }
+
+  .auth-pw-attached {
+    & .auth-input {
+      @apply pr-20;
+    }
+
+    & .auth-eye {
+      @apply w-16 rounded-r-xl bg-[#272727] hover:bg-[#303030];
+
+      & svg {
+        @apply size-6;
+      }
+    }
+  }
+
+  .auth-pw .i-eye,
+  .auth-pw:has(input[type="text"]) .i-eye-off {
+    display: none;
+  }
+
+  .auth-pw:has(input[type="text"]) .i-eye {
+    display: block;
+  }
+
+  /* Their agree box: an 18px outline (2px #313131), orange with a white tick once ticked. */
+  .auth-check {
+    @apply size-[18px] shrink-0 appearance-none rounded-[3px] border-2 border-[#313131] bg-transparent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#f88056];
+  }
+
+  .auth-check:checked {
+    @apply border-[#f88056];
+    background: #f88056 no-repeat center / 14px
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23fff' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m3.5 8.5 3 3 6-7'/%3E%3C/svg%3E");
+  }
+
+  /* Their ticked "Remember me": a 16px #f88056 square, radius 4, white tick. */
+  .auth-fake-check {
+    @apply flex size-4 shrink-0 items-center justify-center rounded-[4px] bg-[#f88056] p-0.5 text-white;
+  }
+
+  .auth-link {
+    @apply font-medium text-[#f88056] hover:underline hover:underline-offset-4;
+  }
+
+  .auth-underline {
+    @apply text-white underline decoration-white/40 underline-offset-[6px] hover:decoration-white;
+  }
+
+  .auth-forgot summary::-webkit-details-marker {
+    display: none;
+  }
+
+  /* Orange once every field is valid, brown before, as theirs. Not `disabled`, so a click still gets the
+     browser's own message on the field that is wrong. */
+  .auth-submit {
+    @apply flex h-[58px] w-full items-center justify-center rounded-xl bg-[#f88056] text-lg font-medium text-[#0c0c0c] hover:bg-[#ff8d65] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#f88056] motion-safe:transition-colors;
+  }
+
+  .auth-form:invalid .auth-submit {
+    background-color: #4b2d22;
+    color: #4b4b4b;
+  }
+
+  .auth-form[data-mode="login"] .auth-submit {
+    @apply h-12 rounded-lg text-base;
+  }
+
+  .auth-form[data-mode="login"]:invalid .auth-submit {
+    background-color: #45291e;
+    color: #1b100b;
+  }
+}

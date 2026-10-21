@@ -1,0 +1,59 @@
+[
+  {
+    "id": 3771028,
+    "countSubscribers": 0,
+    "countTransitions": 0,
+    "campaignCode": 7,
+    "campaignName": "Synthetic tracking link 1",
+    "createdAt": "2026-07-31T16:22:50+00:00",
+    "endDate": null,
+    "user": {
+      "view": "s",
+      "id": 1001,
+      "name": "Synth Model",
+      "username": "synthmodel",
+      "avatar": "https://public.onlyfans.com/files/d/d8/d8d901536293e500bd741649e8d4389e/avatar.jpg",
+      "isVerified": true
+    },
+    "sharedWith": null,
+    "isDeleted": false
+  },
+  {
+    "id": 3307981,
+    "countSubscribers": 0,
+    "countTransitions": 0,
+    "campaignCode": 6,
+    "campaignName": "Synthetic tracking link 2",
+    "createdAt": "2026-05-22T16:20:49+00:00",
+    "endDate": null,
+    "user": {
+      "view": "s",
+      "id": 1001,
+      "name": "Synth Model",
+      "username": "synthmodel",
+      "avatar": "https://public.onlyfans.com/files/d/d8/d8d901536293e500bd741649e8d4389e/avatar.jpg",
+      "isVerified": true
+    },
+    "sharedWith": null,
+    "isDeleted": false
+  },
+  {
+    "id": 1517764,
+    "countSubscribers": 1,
+    "countTransitions": 2,
+    "campaignCode": 5,
+    "campaignName": "Synthetic tracking link 3",
+    "createdAt": "2025-02-02T20:22:22+00:00",
+    "endDate": null,
+    "user": {
+      "view": "s",
+      "id": 1001,
+      "name": "Synth Model",
+      "username": "synthmodel",
+      "avatar": "https://public.onlyfans.com/files/d/d8/d8d901536293e500bd741649e8d4389e/avatar.jpg",
+      "isVerified": true
+    },
+    "sharedWith": null,
+    "isDeleted": false
+  }
+]

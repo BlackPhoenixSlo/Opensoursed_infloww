@@ -1,0 +1,31 @@
+{
+ "hasMore": false,
+ "items": [
+  {
+   "id": 55001,
+   "date": "2026-10-08T15:00:00+00:00",
+   "text": "<p>Synthetic direct message</p>",
+   "isFree": false,
+   "mediaCount": 0,
+   "sentCount": 1,
+   "viewedCount": 1,
+   "purchasedCount": 2,
+   "price": 4.99,
+   "canUnsend": false,
+   "isCanceled": false
+  },
+  {
+   "id": 55002,
+   "date": "2026-10-07T09:30:00+00:00",
+   "text": "<p>Synthetic free message</p>",
+   "isFree": true,
+   "mediaCount": 0,
+   "sentCount": 1,
+   "viewedCount": 0,
+   "purchasedCount": 0,
+   "price": 0,
+   "canUnsend": false,
+   "isCanceled": false
+  }
+ ]
+}

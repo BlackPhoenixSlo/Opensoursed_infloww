@@ -1,0 +1,24 @@
+{
+  "_note": "Synthetic: GET /streams/users/blocked's shape (OF's SettingsStreamingBlockedUsers reads list and hasMore). No real fans.",
+  "pages": [
+    {
+      "path": "/api/of/v2/streams/users/blocked?limit=10",
+      "body": {
+        "list": [
+          { "id": 700001, "name": "Fan 1", "username": "fan1", "avatar": "https://public.onlyfans.com/files/synthetic/a1.jpg", "isVerified": true, "isActive": true },
+          { "id": 700002, "name": "u700002", "username": "u700002", "avatar": null, "isActive": true }
+        ],
+        "hasMore": true
+      }
+    },
+    {
+      "path": "/api/of/v2/streams/users/blocked?limit=10&offset=2",
+      "body": { "list": [{ "id": 700003, "name": "Fan 3", "username": "fan3", "avatar": null, "isActive": true }], "hasMore": false }
+    }
+  ],
+  "rows": [
+    { "name": "Fan 1", "username": "@fan1", "verified": true },
+    { "name": "u700002", "username": "@u700002", "verified": false },
+    { "name": "Fan 3", "username": "@fan3", "verified": false }
+  ]
+}

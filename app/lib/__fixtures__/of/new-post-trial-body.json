@@ -1,0 +1,48 @@
+{
+  "_about": "Create link (New post's 'Create new trial link' tile > settings/subscription/trial-links/modal-1). form: the dialog's state; relay: the app's POST /api/of/v2/trials body; of: what of_client.create_trial_link sends to OF's POST /api2/v2/trials.",
+  "_source": "OF web bundle build 202610091632, read statically (not observed live: no logged-in onlyfans.com tab and no write is ever sent): the trial dialog's saveForm sends {subscribeDays, subscribeCounts, expireDays, trialLinkName: name.replace(/^[ ]+/g, '')}; defaults 7 / 10 / 7 / ''.",
+  "cases": [
+    {
+      "name": "defaults with a name",
+      "form": {
+        "name": "Synthetic link",
+        "limit": 10,
+        "expiration": 7,
+        "duration": 7
+      },
+      "relay": {
+        "name": "Synthetic link",
+        "subscribe_counts": 10,
+        "expire_days": 7,
+        "subscribe_days": 7
+      },
+      "of": {
+        "trialLinkName": "Synthetic link",
+        "subscribeDays": 7,
+        "subscribeCounts": 10,
+        "expireDays": 7
+      }
+    },
+    {
+      "name": "no name, no limits, no expiration, a month",
+      "form": {
+        "name": "  ",
+        "limit": 0,
+        "expiration": 0,
+        "duration": 30
+      },
+      "relay": {
+        "name": "",
+        "subscribe_counts": 0,
+        "expire_days": 0,
+        "subscribe_days": 30
+      },
+      "of": {
+        "trialLinkName": "",
+        "subscribeDays": 30,
+        "subscribeCounts": 0,
+        "expireDays": 0
+      }
+    }
+  ]
+}

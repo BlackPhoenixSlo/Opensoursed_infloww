@@ -1,0 +1,51 @@
+---
+layout: page.njk
+title: "Privacy policy"
+description: "This site sets no cookies, loads nothing from third parties and runs no analytics. The app keeps each agency's data in its own database."
+---
+{#- Follows infloww.com/privacy-policy: what the site collects, then what the app sends elsewhere. -#}
+<h2>This website</h2>
+<ul>
+  <li>It is static HTML and CSS, plus one small script for the copy buttons, the pricing slider and the sign-in forms, all served from this site.</li>
+  <li>It sets no cookies and stores nothing in your browser.</li>
+  <li>It loads no fonts, scripts or images from anyone else, and runs no analytics or tracking pixels.</li>
+  <li>Its sign-up and sign-in forms send your username and password straight to the Inflowwww app at <code>{{ site.appUrl }}</code>, never to this site. When the app sends you back with an error, the error and your username ride after the <code>#</code> in the address, which your browser does not send to this site's host; the password is never in the address.</li>
+</ul>
+
+<h2>Hosting</h2>
+<p>
+  GitHub Pages serves this site. GitHub handles every request to serve it and keeps its own logs, under the
+  <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub General Privacy Statement</a>.
+  We don't get those logs. Links to the repository take you to GitHub, under the same statement.
+</p>
+
+<h2>The self-hosted app</h2>
+<p>
+  Inflowwww runs on the server it is installed on. Its database (<code>service/chatterly.db</code>, SQLite) and the
+  captured sessions (<code>service/sessions/</code>) live there.
+</p>
+<p>
+  One app serves many agencies. Each agency account sees only its own creators and their chats. The exception:
+  whoever runs the app can make an account the master, and the master sees every agency.
+</p>
+<p>
+  The project receives no data from your install. The items below send data out only when you use them. OnlyFans
+  itself is not on the list: OnlyFans traffic goes through the proxies you configure, and through the server's own IP
+  when none is set.
+</p>
+<ul>
+  <li>The LLM keys (in <code>.env</code> or on the Creators page): requests go to that provider, under its terms.</li>
+  <li>Fan photos: with <code>DEEPINFRA_API_KEY</code> set, photos fans send are described by DeepInfra by default, together with the fan's recent messages. That covers every fan who has paid and a few reads for fans who haven't, whether or not an automation is on. The per-account setting <code>image_describe_enabled</code> turns it off.</li>
+  <li>The vault describe pass: with <code>DEEPINFRA_API_KEY</code> set, it sends your vault's images to DeepInfra.</li>
+  <li>The <code>tunnel</code> profile: traffic goes through a Cloudflare quick tunnel.</li>
+  <li>The chat's translate toggle: message text goes to Google Translate's free endpoint. It needs no key, so nothing else warns you.</li>
+  <li>The proxy check: it calls api.ipify.org and ipinfo.io to see which IP a proxy exits from.</li>
+  <li>Vault Pro's Google Drive import, if a Drive key is set: the Drive links you paste go to Google's Drive API. The key can't be set from the dashboard on a fresh install (that card needs an admin account, which the current build never creates); a <code>GOOGLE_DRIVE_API_KEY</code> in the relay's environment, for example in <code>docker-compose.override.yml</code>, also turns it on.</li>
+  <li>GIFs: the dashboard loads GIFs in chats from media.giphy.com, and the incoming-message hook asks giphy.com for the title of each GIF a fan sends, by default.</li>
+  <li>Webhooks: an owner-configured webhook can forward events, including fan messages, to a URL you choose.</li>
+  <li>The legacy Google Sheets export automation, if you turn it on: it writes to Google Sheets.</li>
+  <li>Building the app image downloads its font from Google Fonts. At runtime the font is served from your server.</li>
+</ul>
+
+<h2>Questions</h2>
+<p><a href="{{ '/contact/' | url }}">Contact us</a>. Others can read it, so leave out anything personal.</p>

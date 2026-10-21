@@ -1,0 +1,18 @@
+{
+  "accounts": [
+    {
+      "id": "1001",
+      "nickname": "Synth",
+      "color": "#F59E0B",
+      "incogniton_profile_id": null,
+      "platform": "onlyfans",
+      "name": null,
+      "created_at": "2026-01-01T00:00:00",
+      "last_used_at": "2026-10-17T00:00:00",
+      "has_session": true,
+      "session_dead_at": null,
+      "session_dead_reason": null
+    }
+  ],
+  "active_account_id": "1001"
+}

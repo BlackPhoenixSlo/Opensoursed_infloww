@@ -1,0 +1,89 @@
+{#- The six questions from their FAQ (infloww.com, captured site.captureDate), answered for this repo.
+    Native <details>, no JS. Shared by the landing page and, later, /pricing/. -#}
+{%- macro faqItem(question) -%}
+<details class="group py-2">
+  <summary class="flex min-h-11 cursor-pointer items-center justify-between gap-4 py-3 text-lg font-medium text-ink">
+    {{ question }}
+    <svg class="size-5 shrink-0 text-muted group-open:rotate-45 motion-safe:transition-transform" aria-hidden="true" focusable="false"><use href="#i-plus" /></svg>
+  </summary>
+  <div class="space-y-3 pb-4 text-muted">{{ caller() }}</div>
+</details>
+{%- endmacro %}
+<section id="faq" aria-labelledby="faq-title" class="wrap py-20 sm:py-28">
+  <p class="eyebrow">Help</p>
+  <h2 id="faq-title" class="section-title mt-3">Frequently asked questions</h2>
+  <div class="mt-10 divide-y divide-line border-y border-line">
+    {% call faqItem("Why do I need Inflowwww?") %}
+      <p>
+        You might not. It's built for teams with someone who can rent a server and paste commands into a
+        terminal. If that's you and you'd rather not pay per creator, it gives you Messages Pro, Smart Messages,
+        Vault Pro, Scripts, creator, employee and fan reports, and Auto Post and Auto Story, on your own server.
+        Some screens, like OF Manager and Share for Share, are still NotBuiltYet; the
+        <a class="text-link" href="{{ '/roadmap/' | url }}">roadmap</a> lists them.
+      </p>
+      <p>
+        If you'd rather not run a server,
+        <a class="text-link" href="{{ '/openinflowwww-vs-infloww/' | url }}#stay">here is who should stay on Infloww</a>.
+      </p>
+    {% endcall %}
+    {% call faqItem("What makes Inflowwww different from other platforms?") %}
+      <p>
+        It isn't a platform. It is MIT-licensed code you run yourself, so no vendor sits between you and your
+        creators' accounts, and nobody else holds your data.
+      </p>
+    {% endcall %}
+    {% call faqItem("Is Inflowwww safe?") %}
+      <p>
+        We make no safety promises. Inflowwww is an independent reverse-engineering of OnlyFans' public web
+        API, and running it against a live account may violate OnlyFans' Terms of Service. Use it at your own risk.
+      </p>
+      <p>
+        What we can say: sessions and the database stay on your server, and you can read every line of code that
+        touches them. Access is a share token for the dashboard plus per-user logins for the owner (at
+        <code>/login</code>) and each chatter (at <code>/chatter-login</code>); chatters don't need the share token.
+      </p>
+      <p>
+        Today the relay (the background service that talks to OnlyFans) lets anyone who reaches it register, with no
+        setting and no share token, and any registered account can list every user and creator account. It stores
+        the owner's and chatters' dashboard passwords in plain text (creators' OnlyFans passwords never reach it),
+        the lanes panel (the relay's rate-limit page at <code>/lanes-panel</code>) can change its limits and restart it
+        with no login, <code>ADMIN_PASSWORD</code> alone unlocks
+        "view as", transfer and delete, and logins have no rate limit. Run it only on a private network or over a VPN
+        (WireGuard or Tailscale) until these are fixed; they are listed under
+        <a class="text-link" href="{{ '/roadmap/' | url }}#known-gaps">Known gaps</a> on the roadmap, and the
+        <a class="text-link" href="{{ '/help/#security' | url }}">security notes</a> say what to do if you must expose it.
+      </p>
+    {% endcall %}
+    {% call faqItem("How much does Inflowwww cost?") %}
+      <p>
+        $0, for any number of creators at any earnings. You pay for your server, your proxies (you supply them;
+        none are built in) and, if you add LLM keys, the provider's usage.
+      </p>
+      <p class="text-sm">
+        Theirs: <q>Starting at as little as $40 a month…</q> (infloww.com FAQ, captured <span class="whitespace-nowrap">{{ site.captureDate }}</span>).
+      </p>
+    {% endcall %}
+    {% call faqItem("What metrics can I track?") %}
+      <p>
+        {#- First-use glosses: the landing spells out PPV in its feature list and session capture here;
+            /pricing/ spells out session capture on the Fansly card and PPV here. -#}
+        {%- set ppv = " (PPVs, tips and messages)." if page.url == "/" else ": pay-per-view (PPV) messages, tips and other messages." %}
+        Whatever the Creator, Employee and Fan reports and the Message dashboard show{{ ppv }}
+        It all sits in one SQLite file on your disk, so you can query anything else yourself.
+      </p>
+    {% endcall %}
+    {% call faqItem("How do I get started?") %}
+      <p>
+        Follow the <a class="text-link" href="{{ site.repo }}/blob/main/README.md#quick-start">README Quick start</a>:
+        create the Docker network (<code>docker network create n8n_default</code>), the state files and an
+        <code>.env</code> with a <code>SHARE_TOKEN</code>, then run <code>docker compose up -d --build</code>. The
+        <a class="text-link" href="{{ '/#deploy' | url }}">deploy section on the home page</a> has all eight commands. (The network name comes from the
+        maintainer's own Traefik setup; you don't need n8n.) Register the owner at <code>/login</code>, then
+        capture an OnlyFans session{{ " (signing in to OnlyFans once in Chrome so the relay can act on the account)" if page.url == "/" }}
+        with the Chrome extension in <code>loginExtensionMulti/</code> (load it in
+        <code>chrome://extensions</code> with Developer mode &gt; Load unpacked). The desktop app's own capture
+        button does not work against this relay today; use the Chrome extension.
+      </p>
+    {% endcall %}
+  </div>
+</section>

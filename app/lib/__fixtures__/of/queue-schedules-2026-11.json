@@ -1,0 +1,28 @@
+{
+  "list": [
+    {
+      "id": 1457214731,
+      "type": "post",
+      "publishDateTime": "2026-11-26T02:14:00+00:00",
+      "createdDateTime": "2026-04-28T03:48:00+00:00",
+      "entity": {
+        "responseType": "post",
+        "id": 2433845504,
+        "postedAt": "2026-11-26T02:14:00+00:00",
+        "postedAtPrecise": "1795659240.000000",
+        "text": "<p>Synthetic scheduled post 1</p>",
+        "isMarkdownDisabled": true,
+        "canDelete": true,
+        "canEdit": true,
+        "isMediaReady": true,
+        "isOpened": true,
+        "canToggleFavorite": true,
+        "tipsAmount": "$0",
+        "rawText": "Synthetic scheduled post 1",
+        "tweetSend": false,
+        "canViewMedia": true
+      }
+    }
+  ],
+  "syncInProcess": false
+}

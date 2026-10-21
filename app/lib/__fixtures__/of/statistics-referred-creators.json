@@ -1,0 +1,22 @@
+{
+ "list": [
+  {
+   "id": 900006,
+   "name": "Synthetic Creator F",
+   "username": "u_synthetic_f",
+   "avatar": null,
+   "earnings": 12.4,
+   "joinDate": "2026-09-01T00:00:00+00:00"
+  },
+  {
+   "id": 900010,
+   "name": "u900010",
+   "username": "u900010",
+   "avatar": null,
+   "earnings": 0,
+   "joinDate": "2026-08-15T00:00:00+00:00"
+  }
+ ],
+ "marker": null,
+ "hasMore": false
+}

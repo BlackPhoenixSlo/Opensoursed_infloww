@@ -1,0 +1,80 @@
+[
+  {
+    "code": "you_and_your_posts",
+    "title": "Related to you and your posts",
+    "items": [
+      {
+        "code": "fund_raising_goal_reached",
+        "title": "Campaign goal reached",
+        "isEnabled": true,
+        "value": 1
+      },
+      {
+        "code": "new_tips_fund_raising",
+        "title": "New Campaign Contribution",
+        "isEnabled": true,
+        "value": 1
+      },
+      {
+        "code": "new_comment",
+        "title": "New comment",
+        "isEnabled": true,
+        "value": 1
+      },
+      {
+        "code": "new_favorite",
+        "title": "New Likes",
+        "isEnabled": true,
+        "value": 1
+      },
+      {
+        "code": "new_subscriber",
+        "title": "New Subscriber",
+        "isEnabled": true,
+        "value": 1
+      },
+      {
+        "code": "new_subscriber_trial",
+        "title": "New subscription from trial",
+        "isEnabled": true,
+        "value": 1
+      },
+      {
+        "code": "new_tips",
+        "title": "New Tip",
+        "isEnabled": true,
+        "value": 1
+      },
+      {
+        "code": "returning_subscriber",
+        "title": "Returning Subscriber",
+        "isEnabled": true,
+        "value": 1
+      }
+    ]
+  },
+  {
+    "code": "subscriptions",
+    "title": "Subscriptions and following",
+    "items": [
+      {
+        "code": "promoreg_for_expired",
+        "title": "Discounts from users I used to follow",
+        "isEnabled": true,
+        "value": 1
+      },
+      {
+        "code": "new_stream",
+        "title": "New Stream",
+        "isEnabled": true,
+        "value": 1
+      },
+      {
+        "code": "reminder_stream",
+        "title": "Upcoming stream reminders",
+        "isEnabled": true,
+        "value": 1
+      }
+    ]
+  }
+]

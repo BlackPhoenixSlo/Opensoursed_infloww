@@ -1,0 +1,23 @@
+{#- The README's Quick start, one copy: index.njk passes it to deploy-band.njk as deployCmd, help.njk wraps it in <pre><code>.
+    switch-to-openinflowwww.njk splits the same commands into steps; keep them word for word. -#}
+git clone {{ site.repo }}.git openinflowwww
+cd openinflowwww
+
+# openinflowwww-app joins the external network n8n_default; it must exist.
+docker network create n8n_default
+
+# Bind-mounted state files. They must exist as files, not directories.
+echo '{"proxies": []}' &gt; service/proxies.json
+touch service/chatterly.db
+mkdir -p service/sessions
+
+# Compose reads .env beside docker-compose.yml. Nothing in it is strictly
+# required: without SHARE_TOKEN the share-link gate is off (sign-in is the
+# only gate), and without the session secrets every rebuild signs all users out.
+cat &gt; .env &lt;&lt;ENV
+SHARE_TOKEN=$(openssl rand -hex 24)
+SESSION_SECRET=$(openssl rand -hex 32)
+CHATTER_SESSION_SECRET=$(openssl rand -hex 32)
+ENV
+
+docker compose up -d --build

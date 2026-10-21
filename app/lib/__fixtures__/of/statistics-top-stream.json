@@ -1,0 +1,27 @@
+{
+ "purchases": {
+  "id": 53001,
+  "startedAt": "2026-10-05T20:00:00+00:00",
+  "price": 0,
+  "viewsCount": 12,
+  "purchaseAmount": 0,
+  "likesCount": 4,
+  "commentsCount": 2,
+  "tipsCount": 1,
+  "tipsSum": 5
+ },
+ "tips": {
+  "id": 53001,
+  "startedAt": "2026-10-05T20:00:00+00:00",
+  "price": 0,
+  "viewsCount": 12,
+  "purchaseAmount": 0,
+  "likesCount": 4,
+  "commentsCount": 2,
+  "tipsCount": 1,
+  "tipsSum": 5
+ },
+ "views": null,
+ "likes": null,
+ "comments": null
+}

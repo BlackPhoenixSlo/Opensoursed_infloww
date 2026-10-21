@@ -1,0 +1,88 @@
+{
+  "_source": "captured: GET /api/of/v2/posts/2433845504 through the Relay (account 80000112), 2026-10-17; scrubbed (synthetic author, text and CDN paths)",
+  "author": {
+    "view": "a",
+    "avatar": "https://public.onlyfans.com/files/2/28/28d9297cfeb0200dea9eb1d6fc2b303a/avatar.jpg",
+    "avatarThumbs": {
+      "c50": "https://thumbs.onlyfans.com/public/files/thumbs/c50/2/28/28d9297cfeb0200dea9eb1d6fc2b303a/avatar.jpg",
+      "c144": "https://thumbs.onlyfans.com/public/files/thumbs/c144/2/28/28d9297cfeb0200dea9eb1d6fc2b303a/avatar.jpg"
+    },
+    "header": "https://public.onlyfans.com/files/d/dc/dcbbbe02fd256385bbc516a81ffb4f21/header.jpg",
+    "headerSize": {
+      "width": 1280,
+      "height": 720
+    },
+    "headerThumbs": {
+      "w480": "https://thumbs.onlyfans.com/public/files/thumbs/w480/d/dc/dcbbbe02fd256385bbc516a81ffb4f21/header.jpg",
+      "w760": "https://thumbs.onlyfans.com/public/files/thumbs/w760/d/dc/dcbbbe02fd256385bbc516a81ffb4f21/header.jpg"
+    },
+    "id": 1001,
+    "name": "Synth Model",
+    "username": "synthmodel",
+    "canLookStory": true,
+    "canCommentStory": true,
+    "hasNotViewedStory": true,
+    "isVerified": true,
+    "canPayInternal": true,
+    "hasScheduledStream": false,
+    "hasStream": false,
+    "hasStories": true,
+    "tipsEnabled": true,
+    "tipsTextEnabled": true,
+    "tipsMin": 5,
+    "tipsMinInternal": 1,
+    "tipsMax": 200,
+    "canEarn": true,
+    "canAddSubscriber": false,
+    "subscribePrice": 0,
+    "hasStripe": false,
+    "isStripeExist": false,
+    "subscriptionBundles": [
+      {
+        "id": 9997,
+        "discount": 15,
+        "duration": 3,
+        "price": 0,
+        "canBuy": false
+      },
+      {
+        "id": 9282,
+        "discount": 40,
+        "duration": 6,
+        "price": 0,
+        "canBuy": false
+      }
+    ],
+    "displayName": "",
+    "canSendChatToAll": true,
+    "creditsMin": 10,
+    "creditsMax": 400,
+    "isPaywallPassed": true,
+    "creditsMinAlternatives": 5,
+    "payPalStatus": [],
+    "canCreateLists": true,
+    "showMediaCount": true,
+    "showPostsInFeed": true,
+    "subscribedBy": true,
+    "canTrialSend": false
+  },
+  "responseType": "post",
+  "id": 2433845504,
+  "postedAt": "2026-11-26T02:14:00+00:00",
+  "postedAtPrecise": "1795659240.000000",
+  "text": "<p>Synthetic scheduled post 1</p>",
+  "isMarkdownDisabled": true,
+  "canDelete": true,
+  "canEdit": true,
+  "isMediaReady": true,
+  "isOpened": true,
+  "canToggleFavorite": true,
+  "canEditText": true,
+  "canEditMedia": true,
+  "canEditSchedule": true,
+  "canEditVote": true,
+  "tipsAmount": "$0",
+  "rawText": "Synthetic scheduled post 1",
+  "tweetSend": false,
+  "canViewMedia": true
+}

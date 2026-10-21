@@ -1,0 +1,68 @@
+[
+  {
+    "code": "you_and_your_posts",
+    "title": "Related to you and your posts",
+    "items": [
+      {
+        "code": "new_tips_fund_raising",
+        "title": "New Campaign Contribution",
+        "isEnabled": true,
+        "value": 1
+      },
+      {
+        "code": "new_comment",
+        "title": "New comment",
+        "isEnabled": true,
+        "value": 1
+      },
+      {
+        "code": "new_favorite",
+        "title": "New Likes",
+        "isEnabled": true,
+        "value": 1
+      },
+      {
+        "code": "new_subscriber",
+        "title": "New Subscriber",
+        "isEnabled": true,
+        "value": 1
+      },
+      {
+        "code": "new_subscriber_trial",
+        "title": "New subscription from trial",
+        "isEnabled": true,
+        "value": 1
+      },
+      {
+        "code": "new_tips",
+        "title": "New Tip",
+        "isEnabled": true,
+        "value": 1
+      }
+    ]
+  },
+  {
+    "code": "subscriptions",
+    "title": "Subscriptions and following",
+    "items": [
+      {
+        "code": "new_stream",
+        "title": "New Stream",
+        "isEnabled": true,
+        "value": 1
+      }
+    ]
+  },
+  {
+    "code": "messages",
+    "title": "New messages",
+    "items": [
+      {
+        "code": "new_chat_message",
+        "title": "Important Direct Messages",
+        "isEnabled": true,
+        "value": 1
+      }
+    ]
+  }
+]

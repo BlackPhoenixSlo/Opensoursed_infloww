@@ -1,0 +1,51 @@
+---
+layout: base.njk
+ogType: article
+---
+{#- Follows their template: headline claim, stat tiles, lead, then About ... Results, a founder quote and "Next steps".
+    The fictional frame lives here, not in each body, so no study can ship without it. -#}
+<article class="wrap max-w-3xl pt-16 pb-20 sm:pt-24 sm:pb-28">
+  <p><a class="text-link inline-flex min-h-11 items-center text-sm" href="{{ '/case-studies/' | url }}">All case studies</a></p>
+  <p class="mt-4 flex flex-wrap items-center gap-2 text-sm">
+    <span class="badge-parody">Fictional case study</span>
+    {%- if agency %}<span class="text-muted">{{ agency }}</span>{% endif %}
+  </p>
+  <h1 class="h-page mt-4">{{ title }}</h1>
+  {%- if tagline %}
+  <p class="lede">{{ tagline }}</p>
+  {%- endif %}
+  <p class="mt-6 rounded-2xl bg-cream px-5 py-4 text-sm text-ink">
+    <strong class="font-semibold">Fictional, and labelled so. Real users have not written in yet.</strong>
+    {{ agency or "This agency" }} does not exist, and neither do the people quoted. The feature names, routes and
+    arithmetic are real, and the practice in the middle works. It parodies the case-study format on
+    <a class="text-link" href="{{ site.inflowwUrl }}/case-studies">infloww.com/case-studies</a>. Inflowwww is not affiliated with Infloww.
+  </p>
+  {%- if stats %}
+  <dl class="mt-10 grid grid-cols-2 gap-px overflow-hidden rounded-2xl bg-line ring-1 ring-black/10">
+    {%- for stat in stats %}
+    <div class="flex flex-col-reverse justify-end bg-white px-5 py-6">
+      <dt class="mt-2 text-sm text-muted">{{ stat.label }}</dt>
+      <dd class="text-4xl font-semibold tracking-[-0.04em] tabular-nums sm:text-5xl">{{ stat.value }}</dd>
+    </div>
+    {%- endfor %}
+  </dl>
+  {%- endif %}
+  {#- Markdown tables stay tables, inside a focusable overflow box (see .prose table in main.css). -#}
+  {%- set tableOpen = '<div class="overflow-x-auto" role="region" aria-label="Table" tabindex="0"><table>' %}
+  <div class="prose mt-10">
+    {{ content | replace("<table>", tableOpen) | replace("</table>", "</table></div>") | safe }}
+  </div>
+  {%- if quote %}
+  <figure class="mt-12 rounded-2xl bg-ink px-6 py-8 text-white sm:px-10">
+    <blockquote class="text-xl leading-relaxed font-medium text-pretty sm:text-2xl">
+      <p>“{{ quote }}”</p>
+    </blockquote>
+    <figcaption class="mt-4 text-sm text-white/80">{{ quoteBy }} (fictional)</figcaption>
+  </figure>
+  {%- endif %}
+  {#- One call to action: the deploy band below. The study ends on its practice, not a second button. -#}
+  <p class="mt-12 max-w-[68ch] text-lg font-medium text-ink">Copy the practice above. It works with any tool, including a spreadsheet.</p>
+</article>
+
+{% include "deploy-band.njk" %}
+

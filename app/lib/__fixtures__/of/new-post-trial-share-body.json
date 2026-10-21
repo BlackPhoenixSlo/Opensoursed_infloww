@@ -1,0 +1,12 @@
+{
+  "_about": "Share link's statistics with another user > Share. relay: the app's POST /api/of/v2/trials/share-access; of: of_client.share_trial_stats' body.",
+  "_source": "OF web bundle build 202610091632, read statically (not observed live: no logged-in onlyfans.com tab and no write is ever sent): the share dialog's onShareLink sends {trialId, userId} (the picked performers-search user).",
+  "relay": {
+    "trial_id": 2001,
+    "user_id": 3001
+  },
+  "of": {
+    "trialId": 2001,
+    "userId": 3001
+  }
+}

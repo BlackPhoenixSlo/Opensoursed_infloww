@@ -1,0 +1,46 @@
+{
+  "_source": "captured live on onlyfans.com (account 1001 = the sandbox creator) 2026-10-17 through the browser's network panel, scrubbed (synthetic text, fan and creator): GET /api2/v2/schedules for one day with a scheduled message (its entity carries scheduledAt)",
+  "list": [
+    {
+      "id": 1767132802,
+      "type": "chat",
+      "publishDateTime": "2026-12-15T11:00:00+00:00",
+      "createdDateTime": "2026-10-17T17:31:47+00:00",
+      "entity": {
+        "responseType": "message",
+        "id": 48844793592,
+        "text": "<p>Synthetic scheduled message</p>",
+        "rawText": "Synthetic scheduled message",
+        "giphyId": null,
+        "lockedText": false,
+        "isNew": true,
+        "isFree": true,
+        "isOpened": false,
+        "price": 0,
+        "isMediaReady": true,
+        "mediaCount": 0,
+        "media": [],
+        "previews": [],
+        "createdAt": "2026-10-17T17:31:47+00:00",
+        "changedAt": "2026-10-17T17:31:47+00:00",
+        "scheduledAt": "2026-12-15T11:00:00+00:00",
+        "isTip": false,
+        "cancelSeconds": 1000000,
+        "isLiked": false,
+        "canPurchase": false,
+        "isMarkdownDisabled": true,
+        "releaseForms": [],
+        "userIds": [
+          "5001"
+        ],
+        "sentRulesType": "user",
+        "sentRulesExtra": "synthfan",
+        "isFromQueue": true,
+        "queueId": 48844793592,
+        "canUnsendQueue": true,
+        "unsendSecondsQueue": 1000000
+      }
+    }
+  ],
+  "syncInProcess": false
+}

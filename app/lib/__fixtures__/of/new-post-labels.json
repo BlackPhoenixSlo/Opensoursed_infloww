@@ -1,0 +1,37 @@
+{
+  "_source": "Read through the real relay (GET only, account 80000112) on 2026-10-17 and scrubbed: ids renumbered, names, usernames, messages, links and pictures synthetic. GET /api/of/v2/labels (OF: {list, order, sort, hasMore, nextOffset, hashSort}; each label's posts dropped).",
+  "list": [
+    {
+      "id": "archived",
+      "name": "Archive",
+      "type": "archived",
+      "isClearInProgress": false,
+      "postsCount": 1
+    },
+    {
+      "id": "private_archived",
+      "name": "Private Archive",
+      "type": "private_archived",
+      "isClearInProgress": false,
+      "postsCount": 0
+    },
+    {
+      "id": 3101,
+      "name": "Label 3",
+      "type": "custom",
+      "isClearInProgress": false,
+      "postsCount": 3
+    },
+    {
+      "id": 3102,
+      "name": "Label 4",
+      "type": "custom",
+      "isClearInProgress": false,
+      "postsCount": 5
+    }
+  ],
+  "order": "asc",
+  "sort": "default",
+  "hasMore": false,
+  "nextOffset": 20
+}

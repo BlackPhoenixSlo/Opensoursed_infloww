@@ -1,0 +1,104 @@
+{
+  "_about": "Start campaign (New post's 'Start profile promotion' tile > settings/subscription/promotion-campaign/modal-1). form: the dialog's state; relay: the app's POST /api/of/v2/promotions body; of: what of_client.create_promo sends to OF's POST /api2/v2/promotions.",
+  "_source": "OF web bundle build 202610091632, read statically (not observed live: no logged-in onlyfans.com tab and no write is ever sent): ModalPromotion saveForm sends {discount, message, finishDays, subscribeCounts, subscribeDays, type:[...all?, ...expired?]}; a free trial is discount 100 and its subscribeDays is the trial duration; a discount's subscribeDays is its finishDays.",
+  "cases": [
+    {
+      "name": "default free trial for new subscribers",
+      "form": {
+        "audience": "new",
+        "kind": "trial",
+        "limit": 10,
+        "expiration": 7,
+        "duration": 7,
+        "percent": 5,
+        "message": ""
+      },
+      "relay": {
+        "discount": 100,
+        "subscribe_counts": 10,
+        "subscribe_days": 7,
+        "finish_days": 7,
+        "message": "",
+        "type": [
+          "all"
+        ]
+      },
+      "of": {
+        "discount": 100,
+        "message": "",
+        "finishDays": 7,
+        "subscribeCounts": 10,
+        "subscribeDays": 7,
+        "type": [
+          "all"
+        ]
+      }
+    },
+    {
+      "name": "first month discount for expired subscribers, no limit",
+      "form": {
+        "audience": "expired",
+        "kind": "discount",
+        "limit": 0,
+        "expiration": 14,
+        "duration": 7,
+        "percent": 30,
+        "message": "Synthetic offer"
+      },
+      "relay": {
+        "discount": 30,
+        "subscribe_counts": 0,
+        "subscribe_days": 14,
+        "finish_days": 14,
+        "message": "Synthetic offer",
+        "type": [
+          "expired"
+        ]
+      },
+      "of": {
+        "discount": 30,
+        "message": "Synthetic offer",
+        "finishDays": 14,
+        "subscribeCounts": 0,
+        "subscribeDays": 14,
+        "type": [
+          "expired"
+        ]
+      }
+    },
+    {
+      "name": "free trial for both, no expiration",
+      "form": {
+        "audience": "both",
+        "kind": "trial",
+        "limit": 100,
+        "expiration": 0,
+        "duration": 30,
+        "percent": 5,
+        "message": ""
+      },
+      "relay": {
+        "discount": 100,
+        "subscribe_counts": 100,
+        "subscribe_days": 30,
+        "finish_days": 0,
+        "message": "",
+        "type": [
+          "all",
+          "expired"
+        ]
+      },
+      "of": {
+        "discount": 100,
+        "message": "",
+        "finishDays": 0,
+        "subscribeCounts": 100,
+        "subscribeDays": 30,
+        "type": [
+          "all",
+          "expired"
+        ]
+      }
+    }
+  ]
+}

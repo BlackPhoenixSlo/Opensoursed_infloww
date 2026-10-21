@@ -1,0 +1,11 @@
+[
+  { "tag": "getting-started", "label": "Getting started", "blurb": "Profile setup, verification, first posts and first fans. No software needed.", "startHere": ["onlyfans-creator-signup", "onlyfans-checklist", "onlyfans-must-knows"] },
+  { "tag": "money", "label": "Money and taxes", "blurb": "Pricing, payouts, tips and taxes, with the tax and payout posts written straight and linked to the official pages. Not tax advice.", "startHere": ["average-taxes-to-pay", "how-much-do-onlyfans-creators-make", "onlyfans-payout-not-in-bank"] },
+  { "tag": "chatting", "label": "Chatting and PPV", "blurb": "Welcome messages, PPV pricing and pacing, live streams, boundaries and fan conversations, for creators and their chatters.", "startHere": ["onlyfans-messages", "ppv-frequency", "handle-boundaries"] },
+  { "tag": "content-ideas", "label": "Content ideas", "blurb": "Monthly calendars, niches and formats that give fans a reason to reply.", "startHere": ["10-onlyfans-content-ideas", "better-onlyfans-pictures", "halloween-content"] },
+  { "tag": "promotion", "label": "Promotion", "blurb": "X, Reddit, Instagram, TikTok, YouTube and Discord, one channel at a time, inside each platform's rules.", "startHere": ["reddit-3-things-to-know", "instagram-onlyfans-promotions", "apps-to-post-onlyfans-content"] },
+  { "tag": "platforms", "label": "Platforms and rules", "blurb": "OnlyFans, Fansly and the alternatives: what the rules say and where to get support.", "startHere": ["fansly", "4-things-about-fanvue", "onlyfans-alternatives"] },
+  { "tag": "agency", "label": "Agency operations", "blurb": "Running managers, chatters and creator rosters without a software bill that grows with every creator you sign.", "startHere": ["onlyfans-manager-roles", "scale-onlyfans-agency", "onlyfans-legal-consideration"] },
+  { "tag": "creator-life", "label": "Creator life", "blurb": "Safety, boundaries, stigma and wellbeing, written sincerely.", "startHere": ["onlyfans-creators-safety", "onlyfans-without-showing-your-face", "bulletproof-mindset-onlyfans"] },
+  { "tag": "product", "label": "Product", "blurb": "What each Inflowwww screen does, which route it lives on, and which ones are still stubs.", "startHere": ["getting-started-with-infloww", "infloww-role-permissions", "infloww-passwordless-account-sharing"] }
+]

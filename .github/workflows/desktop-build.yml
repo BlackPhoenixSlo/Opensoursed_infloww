@@ -1,0 +1,97 @@
+name: Build desktop apps
+
+# Builds the Inflowwww desktop app on cloud runners — no local Windows/Mac needed.
+#   • prep-src: check out ONLY desktop/ on Linux and publish it as an artifact.
+#   • windows:  build the native NSIS installer (.exe) from that artifact.
+#   • macos:    arm64 + x64 .dmg (unsigned), from the same artifact.
+#   • linux:    x64 + arm64 .AppImage, from the same artifact.
+#
+# Trigger: Actions tab → Run workflow, OR push a tag:
+#   git tag desktop-v0.1.0 && git push origin desktop-v0.1.0 --force
+# Download installers from the run's "Artifacts" section.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "desktop-v*"
+
+jobs:
+  prep-src:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: desktop
+          sparse-checkout-cone-mode: false
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-src
+          path: desktop
+          include-hidden-files: true # keep .gitignore etc.
+          if-no-files-found: error
+
+  windows:
+    needs: prep-src
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-src
+          path: desktop
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+        working-directory: desktop
+      - run: npm run dist:win
+        working-directory: desktop
+      - uses: actions/upload-artifact@v4
+        with:
+          name: infloww-rea-windows-installer
+          path: desktop/dist/*.exe
+          if-no-files-found: error
+
+  macos:
+    needs: prep-src
+    runs-on: macos-14
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-src
+          path: desktop
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+        working-directory: desktop
+      - run: npm run dist:mac
+        working-directory: desktop
+      - uses: actions/upload-artifact@v4
+        with:
+          name: infloww-rea-macos-dmg
+          path: desktop/dist/*.dmg
+          if-no-files-found: error
+
+  linux:
+    needs: prep-src
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-src
+          path: desktop
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+        working-directory: desktop
+      - run: npm run dist:linux
+        working-directory: desktop
+      - uses: actions/upload-artifact@v4
+        with:
+          name: infloww-rea-linux-appimage
+          path: desktop/dist/*.AppImage
+          if-no-files-found: error

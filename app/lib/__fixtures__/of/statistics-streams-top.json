@@ -1,0 +1,31 @@
+{
+ "items": [
+  {
+   "id": 57001,
+   "startedAt": "2026-10-10T20:00:00+00:00",
+   "price": 0,
+   "duration": 1800,
+   "viewsCount": 2,
+   "purchaseAmount": 0,
+   "likesCount": 1,
+   "commentsCount": 0,
+   "tipsCount": 1,
+   "tipsSum": 5,
+   "media": null
+  },
+  {
+   "id": 57002,
+   "startedAt": "2026-10-02T19:00:00+00:00",
+   "price": 0,
+   "duration": 1800,
+   "viewsCount": 0,
+   "purchaseAmount": 0,
+   "likesCount": 0,
+   "commentsCount": 0,
+   "tipsCount": 0,
+   "tipsSum": 0,
+   "media": null
+  }
+ ],
+ "hasMore": false
+}

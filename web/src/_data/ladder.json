@@ -1,0 +1,19 @@
+{
+  "source": "https://infloww.com/pricing",
+  "sourceLabel": "infloww.com/pricing",
+  "note": "Infloww for OnlyFans and Fansly: price per creator profile per month, by the creator's monthly earnings. Verbatim from docs/infloww-landing-snapshot.md section 4 (the pricing page's own JS chunk).",
+  "brackets": [
+    { "label": "Under $500", "inflowwPrice": 40, "ours": 0 },
+    { "label": "$500.01 – $1,000", "inflowwPrice": 50, "ours": 0 },
+    { "label": "$1,000.01 – $2,000", "inflowwPrice": 65, "ours": 0 },
+    { "label": "$2,000.01 – $5,000", "inflowwPrice": 70, "ours": 0 },
+    { "label": "$5,000.01 – $7,500", "inflowwPrice": 90, "ours": 0 },
+    { "label": "$7,500.01 – $10,000", "inflowwPrice": 125, "ours": 0 },
+    { "label": "$10,000.01 – $15,000", "inflowwPrice": 175, "ours": 0 },
+    { "label": "$15,000.01 – $30,000", "inflowwPrice": 225, "ours": 0 },
+    { "label": "$30,000.01 – $45,000", "inflowwPrice": 275, "ours": 0 },
+    { "label": "$45,000.01 – $60,000", "inflowwPrice": 300, "ours": 0 },
+    { "label": "$60,000.01 – $75,000", "inflowwPrice": 400, "ours": 0 },
+    { "label": "Over $75,000", "inflowwPrice": 500, "ours": 0 }
+  ]
+}

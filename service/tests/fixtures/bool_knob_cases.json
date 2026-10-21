@@ -1,0 +1,20 @@
+{
+  "note": "The ONE truth table for a catalogued `type: \"bool\"` automation knob, shared by both implementations of it: service/automations/_common.py::bool_knob and app/lib/boolKnob.ts::boolKnob. Two halves of one rule that cannot share code across the wire, so they share this table instead — add a row here and whichever half drifts goes red. Read by test_automation_rules_api.case_bool_knob_matches_the_typescript_half and app/lib/boolKnob.test.ts.",
+  "contract": "A key that is present-but-null SAYS NOTHING, so it means what an absent key means: the declared default. Every other stored value is read with PYTHON truthiness, because the relay is the side that acts on it — an empty list or an empty object is OFF on both sides, not ON on one of them.",
+  "cases": [
+    { "name": "absent, default on",        "absent": true,  "default": true,  "expect": true  },
+    { "name": "absent, default off",       "absent": true,  "default": false, "expect": false },
+    { "name": "stored null, default on",   "value": null,   "default": true,  "expect": true  },
+    { "name": "stored null, default off",  "value": null,   "default": false, "expect": false },
+    { "name": "explicit true beats a false default", "value": true,  "default": false, "expect": true  },
+    { "name": "explicit false beats a true default", "value": false, "default": true,  "expect": false },
+    { "name": "0 is off",                  "value": 0,      "default": true,  "expect": false },
+    { "name": "1 is on",                   "value": 1,      "default": false, "expect": true  },
+    { "name": "empty string is off",       "value": "",     "default": true,  "expect": false },
+    { "name": "a non-empty string is on",  "value": "x",    "default": false, "expect": true  },
+    { "name": "the string \"false\" is ON — it is non-empty, and this is why a bool knob must never be typed by hand into raw JSON", "value": "false", "default": false, "expect": true },
+    { "name": "empty list is off",         "value": [],     "default": true,  "expect": false },
+    { "name": "empty object is off",       "value": {},     "default": true,  "expect": false },
+    { "name": "a non-empty list is on",    "value": [0],    "default": false, "expect": true  }
+  ]
+}

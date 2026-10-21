@@ -1,0 +1,87 @@
+{#- Their nav, our pages: Pricing · Download · Resources (dropdown) · Help, then Book a demo + the primary CTA.
+    No JS: the Resources dropdown and the mobile menu are native <details>; the mobile menu lists Resources inline.
+    main.js only adds closing on Escape, an outside click, or focus leaving the menu. -#}
+{%- set resourcesNav = [
+  { label: "Blog", href: "/blog/" },
+  { label: "Case studies", href: "/case-studies/" },
+  { label: "Roadmap", href: "/roadmap/" },
+  { label: "Changelog", href: "/changelog/" }
+] -%}
+{#- Exact match is the page itself; a section link (/blog/) also marks its subpages (posts, /blog/page/N/). -#}
+{%- macro current(href, pageUrl) -%}{% if href == pageUrl %} aria-current="page"{% elif pageUrl and pageUrl.startsWith(href) %} aria-current="true"{% endif %}{%- endmacro -%}
+{%- set demo -%}
+<button type="button" class="btn-secondary line-through" title="There is no demo call" disabled>
+  Book a demo<span class="sr-only"> (there is no demo call)</span>
+</button>
+{%- endset %}
+
+<header class="sticky top-0 z-40 border-b border-line bg-white/90 backdrop-blur">
+  {#- One line on a phone, so the sticky header stays short at 320px; the full sentence from sm up and in the footer. -#}
+  <p class="border-b border-line bg-band px-3 py-1 text-center text-xs leading-snug text-muted sm:px-5 sm:py-1.5">
+    <span class="sm:hidden">Unofficial parody. The software is real.</span>
+    <span class="max-sm:hidden">Unofficial parody of infloww.com. Not affiliated with Infloww. The software is real; the jokes are ours.</span>
+  </p>
+  <div class="wrap flex items-center justify-between gap-6 py-3">
+    <a href="{{ '/' | url }}" class="flex min-h-11 items-center gap-2 text-lg font-semibold tracking-tight text-ink">
+      <svg class="size-7" aria-hidden="true" focusable="false"><use href="#i-logo" /></svg>
+      {{ site.name }}
+    </a>
+
+    <nav aria-label="Primary" class="hidden flex-1 md:block">
+      <ul class="flex items-center">
+        <li><a class="nav-link" href="{{ '/pricing/' | url }}"{{ current('/pricing/', page.url) }}>Pricing</a></li>
+        <li><a class="nav-link" href="{{ '/download/' | url }}"{{ current('/download/', page.url) }}>Download</a></li>
+        <li>
+          <details class="group relative">
+            <summary class="nav-link cursor-pointer gap-1">
+              Resources
+              <svg class="size-4 group-open:rotate-180 motion-safe:transition-transform" aria-hidden="true" focusable="false"><use href="#i-chevron" /></svg>
+            </summary>
+            <ul class="absolute top-full left-0 mt-2 w-52 rounded-2xl bg-white p-2 shadow-lg ring-1 ring-black/10">
+              {%- for item in resourcesNav %}
+              <li><a class="flex min-h-11 items-center rounded-xl px-3 text-sm text-ink hover:bg-band" href="{{ item.href | url }}"{{ current(item.href, page.url) }}>{{ item.label }}</a></li>
+              {%- endfor %}
+            </ul>
+          </details>
+        </li>
+        <li><a class="nav-link" href="{{ '/help/' | url }}"{{ current('/help/', page.url) }}>Help</a></li>
+      </ul>
+    </nav>
+
+    <div class="hidden items-center gap-3 md:flex">
+      {{ demo | safe }}
+      <a class="btn-secondary" href="{{ '/login/' | url }}">Log in</a>
+      <a class="btn-secondary" href="{{ '/signup/' | url }}">Register</a>
+      <a class="btn-primary" href="{{ '/#deploy' | url }}">Deploy it yourself</a>
+    </div>
+
+    <details class="md:hidden">
+      <summary class="btn-secondary cursor-pointer px-4">
+        <svg class="size-5" aria-hidden="true" focusable="false"><use href="#i-menu" /></svg>
+        Menu
+      </summary>
+      <nav aria-label="Primary" class="absolute inset-x-0 top-full max-h-[calc(100dvh-9rem)] overflow-y-auto border-b border-line bg-white shadow-lg">
+        <ul class="wrap py-3">
+          <li><a class="flex min-h-11 items-center text-base text-ink" href="{{ '/pricing/' | url }}"{{ current('/pricing/', page.url) }}>Pricing</a></li>
+          <li><a class="flex min-h-11 items-center text-base text-ink" href="{{ '/download/' | url }}"{{ current('/download/', page.url) }}>Download</a></li>
+          <li class="mt-2">
+            <p id="mobile-resources" class="text-sm font-medium text-muted">Resources</p>
+            <ul aria-labelledby="mobile-resources" class="border-l border-line pl-4">
+              {%- for item in resourcesNav %}
+              <li><a class="flex min-h-11 items-center text-base text-ink" href="{{ item.href | url }}"{{ current(item.href, page.url) }}>{{ item.label }}</a></li>
+              {%- endfor %}
+            </ul>
+          </li>
+          <li><a class="flex min-h-11 items-center text-base text-ink" href="{{ '/help/' | url }}"{{ current('/help/', page.url) }}>Help</a></li>
+          <li class="mt-3 flex flex-col gap-3 pb-2">
+            {#- Phones get no tooltip, so the struck-through button becomes a plain link. -#}
+            <a class="flex min-h-11 items-center justify-center text-sm text-muted underline underline-offset-4" href="{{ '/#deploy' | url }}">No demo call. Deploy instead</a>
+            <a class="btn-secondary" href="{{ '/login/' | url }}">Log in</a>
+            <a class="btn-secondary" href="{{ '/signup/' | url }}">Register</a>
+            <a class="btn-primary" href="{{ '/#deploy' | url }}">Deploy it yourself</a>
+          </li>
+        </ul>
+      </nav>
+    </details>
+  </div>
+</header>

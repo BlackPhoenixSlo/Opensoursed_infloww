@@ -1,0 +1,62 @@
+{
+ "list": [
+  {
+   "responseType": "message",
+   "text": "<p>Synthetic message 1</p>",
+   "giphyId": null,
+   "lockedText": false,
+   "isFree": false,
+   "price": 11,
+   "isMediaReady": true,
+   "mediaCount": 1,
+   "media": [
+    {
+     "id": 2544001210,
+     "type": "video",
+     "convertedToVideo": false,
+     "canView": false,
+     "hasError": false,
+     "createdAt": null,
+     "isReady": true,
+     "files": {
+      "full": {
+       "url": null,
+       "width": 1920,
+       "height": 1080,
+       "size": 0,
+       "sources": []
+      }
+     },
+     "duration": 1822
+    }
+   ],
+   "previews": [],
+   "isTip": false,
+   "isReportedByMe": false,
+   "isCouplePeopleMedia": false,
+   "queueId": 40246497584,
+   "isMarkdownDisabled": true,
+   "fromUser": {
+    "id": 3002,
+    "_view": "s"
+   },
+   "isFromQueue": true,
+   "canUnsendQueue": true,
+   "unsendSecondsQueue": 1000000,
+   "id": 9690554176426,
+   "isOpened": false,
+   "isNew": false,
+   "createdAt": "2026-05-19T01:39:07+00:00",
+   "changedAt": "2026-05-19T01:39:07+00:00",
+   "cancelSeconds": 1000000,
+   "isLiked": false,
+   "canPurchase": true,
+   "canPurchaseReason": "",
+   "canReport": true,
+   "canBePinned": true,
+   "isPinned": true,
+   "isAddedToBookmarks": false,
+   "chatUserId": 3002
+  }
+ ]
+}

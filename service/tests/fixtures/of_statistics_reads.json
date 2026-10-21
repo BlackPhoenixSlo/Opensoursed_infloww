@@ -1,0 +1,1672 @@
+{
+ "_note": "Synthetic, PII-free OF Statistics responses keyed by OF path (a `?format=` / `?filter=` suffix when one path answers per format or block). Shapes are the ones the relay's live GETs returned on 2026-10-17 (scrubbed: only key names kept) or, where marked in the tests, OF's own client (app.js module 977600 and the statistics-* chunks); every name, username, text and amount is invented. URLs only on example.invalid.",
+ "/earnings/chart": {
+  "tips": {
+   "chartCount": [
+    {
+     "date": "2026-10-01T00:00:00+00:00",
+     "count": 0
+    },
+    {
+     "date": "2026-10-02T00:00:00+00:00",
+     "count": 2
+    }
+   ],
+   "chartAmount": [
+    {
+     "date": "2026-10-01T00:00:00+00:00",
+     "count": 0
+    },
+    {
+     "date": "2026-10-02T00:00:00+00:00",
+     "count": 8
+    }
+   ],
+   "total": 8,
+   "gross": 10,
+   "delta": 0
+  }
+ },
+ "/payouts/chargebacks": {
+  "list": [
+   {
+    "id": 81001,
+    "createdAt": "2026-10-03T10:00:00+00:00",
+    "payment": {
+     "createdAt": "2026-09-20T10:00:00+00:00",
+     "amount": 5,
+     "fee": 1,
+     "net": 4
+    },
+    "user": {
+     "id": 900001,
+     "name": "Synthetic Fan A",
+     "username": "u_synthetic_a"
+    }
+   }
+  ],
+  "marker": 1791000000
+ },
+ "/users/me/stats/top/message": {
+  "purchases": {
+   "id": 52001,
+   "text": "<p>Synthetic top message</p>",
+   "date": "2026-10-04T12:00:00+00:00",
+   "purchasedCount": 1,
+   "price": 5
+  }
+ },
+ "/users/me/stats/top/stream": {
+  "purchases": null,
+  "tips": {
+   "id": 53001,
+   "description": "Synthetic stream",
+   "startedAt": "2026-10-05T20:00:00+00:00"
+  },
+  "views": {
+   "id": 53001,
+   "description": "Synthetic stream",
+   "startedAt": "2026-10-05T20:00:00+00:00"
+  },
+  "likes": null,
+  "comments": null
+ },
+ "/users/me/stats/top/story": {
+  "tips": null,
+  "views": {
+   "id": 54001,
+   "createdAt": "2026-10-06T09:00:00+00:00",
+   "viewersCount": 3
+  },
+  "likes": {
+   "id": 54001,
+   "createdAt": "2026-10-06T09:00:00+00:00",
+   "viewersCount": 3
+  },
+  "comments": null
+ },
+ "/users/me/stats/top/fan": {
+  "total": {
+   "id": 900002,
+   "name": "Synthetic Fan B",
+   "username": "u_synthetic_b"
+  },
+  "subscriptions": null,
+  "tips": null,
+  "messages": {
+   "id": 900002,
+   "name": "Synthetic Fan B",
+   "username": "u_synthetic_b"
+  },
+  "streams": null
+ },
+ "/streaks": {
+  "list": [
+   {
+    "id": 1,
+    "startDate": "2026-10-05T00:00:00+00:00",
+    "endDate": "2026-10-07T00:00:00+00:00",
+    "isActive": false,
+    "postsCount": 2,
+    "daysCount": 3,
+    "streamsDuration": 0,
+    "storiesCount": 1,
+    "chatsCount": 4,
+    "frozenDays": [
+     "2026-10-06"
+    ]
+   }
+  ],
+  "hasMore": false
+ },
+ "/streaks/top": {
+  "id": 2,
+  "startDate": "2026-09-10T00:00:00+00:00",
+  "endDate": "2026-09-14T00:00:00+00:00",
+  "isActive": false,
+  "postsCount": 2,
+  "daysCount": 5,
+  "streamsDuration": 0,
+  "storiesCount": 1,
+  "chatsCount": 4,
+  "frozenDays": []
+ },
+ "/users/me/stats/today-activity": {
+  "stories": 0,
+  "posts": 0,
+  "chats": 1,
+  "streams": 0
+ },
+ "/users/me/stats/messages/direct": {
+  "hasMore": false,
+  "items": [
+   {
+    "id": 55001,
+    "date": "2026-10-08T15:00:00+00:00",
+    "text": "<p>Synthetic direct message</p>",
+    "sentCount": 1,
+    "viewedCount": 1,
+    "purchasedCount": 0,
+    "price": 0
+   }
+  ]
+ },
+ "/users/me/stats/messages/group": {
+  "hasMore": false,
+  "items": [
+   {
+    "id": 56001,
+    "date": "2026-10-09T15:00:00+00:00",
+    "text": "<p>Synthetic mass message</p>",
+    "sentCount": 4,
+    "viewedCount": 2,
+    "isCanceled": false,
+    "canUnsend": true
+   }
+  ]
+ },
+ "/messages/queue/chart": {
+  "direct_messages": {
+   "chart": [
+    {
+     "date": "2026-10-01T00:00:00+00:00",
+     "count": 1
+    },
+    {
+     "date": "2026-10-02T00:00:00+00:00",
+     "count": 0
+    }
+   ],
+   "total": 1,
+   "delta": 0
+  },
+  "direct_messages_purchases": {
+   "chart": [
+    {
+     "date": "2026-10-01T00:00:00+00:00",
+     "count": 0
+    },
+    {
+     "date": "2026-10-02T00:00:00+00:00",
+     "count": 0
+    }
+   ],
+   "total": 0,
+   "delta": 0
+  }
+ },
+ "/messages/queue/56001/buyers": {
+  "list": [
+   {
+    "id": 900003,
+    "name": "Synthetic Fan C",
+    "username": "u_synthetic_c"
+   }
+  ],
+  "hasMore": false,
+  "marker": null
+ },
+ "/subscriptions/subscribers/latest": {
+  "users": [
+   {
+    "id": 900004,
+    "name": "Synthetic Fan D",
+    "username": "u_synthetic_d",
+    "subscribedOnDuration": "1 month",
+    "subscribedOnData": {
+     "price": 0,
+     "subscribeAt": "2026-10-01T00:00:00+00:00",
+     "expiredAt": "2026-11-01T00:00:00+00:00"
+    }
+   }
+  ],
+  "hasMore": false
+ },
+ "/subscriptions/subscribers/top": {
+  "users": [
+   {
+    "id": 900005,
+    "name": "Synthetic Fan E",
+    "username": "u_synthetic_e",
+    "subscribedOnData": {
+     "totalSumm": 12,
+     "subscribesSumm": 0,
+     "tipsSumm": 7,
+     "messagesSumm": 5,
+     "postsSumm": 0,
+     "streamsSumm": 0
+    }
+   }
+  ],
+  "hasMore": false
+ },
+ "/streams/top": {
+  "items": [
+   {
+    "id": 57001,
+    "description": "Synthetic stream",
+    "startedAt": "2026-10-10T20:00:00+00:00",
+    "purchasesSumm": 0,
+    "tipsSumm": 0,
+    "viewsCount": 2
+   }
+  ],
+  "hasMore": false
+ },
+ "/stories/top": {
+  "items": [
+   {
+    "id": 58001,
+    "createdAt": "2026-10-11T09:00:00+00:00",
+    "tipsSumm": 0,
+    "viewersCount": 4
+   }
+  ],
+  "hasMore": false
+ },
+ "/promotions": {
+  "items": [
+   {
+    "id": 59001,
+    "message": "Synthetic promo",
+    "rawMessage": "Synthetic promo",
+    "hasRelatedPromo": false,
+    "price": 3,
+    "type": "all",
+    "canClaim": true,
+    "claimsCount": 1,
+    "subscribeCounts": 1,
+    "subscribeDays": 30,
+    "createdAt": "2026-10-01T00:00:00+00:00",
+    "finishedAt": null,
+    "isFinished": false
+   }
+  ],
+  "hasMore": false
+ },
+ "/trials/stats": {
+  "items": [
+   {
+    "id": 60001,
+    "trialLinkName": "Synthetic trial",
+    "url": "https://example.invalid/trial/60001",
+    "subscribeDays": 7,
+    "subscribeCounts": 0,
+    "claimCounts": 2,
+    "clicksCounts": 5,
+    "expiredAt": null,
+    "createdAt": "2026-10-01T00:00:00+00:00",
+    "isFinished": false,
+    "user": {
+     "id": 900010,
+     "name": "Synthetic Creator N",
+     "username": "u_synthetic_n"
+    }
+   }
+  ],
+  "hasMore": false
+ },
+ "/campaigns": {
+  "list": [
+   {
+    "id": 61001,
+    "countSubscribers": 1,
+    "countTransitions": 9,
+    "campaignCode": 7,
+    "campaignName": "Synthetic link",
+    "createdAt": "2026-10-01T00:00:00+00:00",
+    "endDate": null,
+    "user": {
+     "id": 900010,
+     "name": "Synthetic Creator N",
+     "username": "u_synthetic_n"
+    },
+    "sharedWith": [],
+    "isDeleted": false
+   },
+   {
+    "id": 61002,
+    "countSubscribers": 0,
+    "countTransitions": 0,
+    "campaignCode": 8,
+    "campaignName": "Synthetic link 2",
+    "createdAt": "2026-10-01T00:00:00+00:00",
+    "endDate": "2026-10-31 23:59:59",
+    "user": {
+     "id": 900010,
+     "name": "Synthetic Creator N",
+     "username": "u_synthetic_n"
+    },
+    "sharedWith": [],
+    "isDeleted": false
+   }
+  ],
+  "hasMore": false
+ },
+ "/users/me/referrals": {
+  "list": [
+   {
+    "id": 900006,
+    "name": "Synthetic Creator F",
+    "username": "u_synthetic_f",
+    "earnings": 0,
+    "joinDate": "2026-09-01T00:00:00+00:00"
+   }
+  ],
+  "hasMore": false
+ },
+ "/subscriptions/subscribers/chart": {
+  "subscribes": [
+   {
+    "date": "2026-10-01T00:00:00+00:00",
+    "count": 0
+   }
+  ],
+  "earnings": [
+   {
+    "date": "2026-10-01T00:00:00+00:00",
+    "count": 0
+   }
+  ],
+  "subscribers": 0,
+  "total": 0,
+  "delta": 0
+ },
+ "/posts/chart": {
+  "posts": {
+   "chart": [
+    {
+     "date": "2026-10-01T00:00:00+00:00",
+     "count": 0
+    },
+    {
+     "date": "2026-10-02T00:00:00+00:00",
+     "count": 1
+    }
+   ],
+   "total": 1,
+   "delta": 0
+  },
+  "purchases": {
+   "chart": [
+    {
+     "date": "2026-10-01T00:00:00+00:00",
+     "count": 0
+    },
+    {
+     "date": "2026-10-02T00:00:00+00:00",
+     "count": 0
+    }
+   ],
+   "total": 0,
+   "delta": 0
+  },
+  "tips": {
+   "chart": [
+    {
+     "date": "2026-10-01T00:00:00+00:00",
+     "count": 0
+    },
+    {
+     "date": "2026-10-02T00:00:00+00:00",
+     "count": 0
+    }
+   ],
+   "total": 0,
+   "delta": 0
+  },
+  "views": {
+   "chart": [
+    {
+     "date": "2026-10-01T00:00:00+00:00",
+     "count": 0
+    },
+    {
+     "date": "2026-10-02T00:00:00+00:00",
+     "count": 3
+    }
+   ],
+   "total": 3,
+   "delta": 0
+  },
+  "likes": {
+   "chart": [
+    {
+     "date": "2026-10-01T00:00:00+00:00",
+     "count": 0
+    },
+    {
+     "date": "2026-10-02T00:00:00+00:00",
+     "count": 1
+    }
+   ],
+   "total": 1,
+   "delta": 0
+  },
+  "comments": {
+   "chart": [
+    {
+     "date": "2026-10-01T00:00:00+00:00",
+     "count": 0
+    },
+    {
+     "date": "2026-10-02T00:00:00+00:00",
+     "count": 0
+    }
+   ],
+   "total": 0,
+   "delta": 0
+  }
+ },
+ "/payouts/transactions": {
+  "list": [
+   {
+    "id": "tx_synthetic_1",
+    "createdAt": "2026-10-02T10:00:00+00:00",
+    "amount": 5,
+    "net": 4,
+    "fee": 1,
+    "description": "Synthetic tip",
+    "status": "done",
+    "user": {
+     "id": 900007,
+     "name": "Synthetic Fan G",
+     "username": "u_synthetic_g"
+    }
+   }
+  ],
+  "marker": 1791000002,
+  "hasMore": false,
+  "nextMarker": 1791000001
+ },
+ "/posts/top": {
+  "items": [
+   {
+    "id": 7101,
+    "text": "Synthetic post",
+    "postedAt": "2026-10-02T10:00:00+00:00"
+   }
+  ],
+  "hasMore": false
+ },
+ "/users/me/profile/stats": {
+  "chart": {
+   "visitors": [
+    {
+     "date": "2026-10-01T00:00:00+00:00",
+     "count": 0
+    },
+    {
+     "date": "2026-10-02T00:00:00+00:00",
+     "count": 3
+    }
+   ]
+  },
+  "topCountries": [
+   {
+    "countryName": "Synthetic Country",
+    "count": 3
+   }
+  ],
+  "topDomains": [
+   {
+    "domain": "synthetic.example",
+    "count": 1
+   }
+  ]
+ },
+ "/payouts/chart": {
+  "total": 0,
+  "delta": 0,
+  "chartAmount": [
+   {
+    "date": "2026-10-01T00:00:00+00:00",
+    "count": 0
+   },
+   {
+    "date": "2026-10-02T00:00:00+00:00",
+    "count": 0
+   }
+  ],
+  "chartCount": [
+   {
+    "date": "2026-10-01T00:00:00+00:00",
+    "count": 0
+   },
+   {
+    "date": "2026-10-02T00:00:00+00:00",
+    "count": 0
+   }
+  ]
+ },
+ "/payouts/referrals/chart": {
+  "total": 0,
+  "delta": 0,
+  "chartAmount": [
+   {
+    "date": "2026-10-01T00:00:00+00:00",
+    "count": 0
+   },
+   {
+    "date": "2026-10-02T00:00:00+00:00",
+    "count": 0
+   }
+  ],
+  "chartCount": [
+   {
+    "date": "2026-10-01T00:00:00+00:00",
+    "count": 0
+   },
+   {
+    "date": "2026-10-02T00:00:00+00:00",
+    "count": 0
+   }
+  ]
+ },
+ "/payouts/chargebacks/chart": {
+  "total": 5,
+  "delta": 0,
+  "chartAmount": [
+   {
+    "date": "2026-10-01T00:00:00+00:00",
+    "count": 0
+   },
+   {
+    "date": "2026-10-02T00:00:00+00:00",
+    "count": 5
+   }
+  ],
+  "chartCount": [
+   {
+    "date": "2026-10-01T00:00:00+00:00",
+    "count": 0
+   },
+   {
+    "date": "2026-10-02T00:00:00+00:00",
+    "count": 1
+   }
+  ]
+ },
+ "/promotions/chart": {
+  "claims": {
+   "chart": [
+    {
+     "date": "2026-10-01T00:00:00+00:00",
+     "count": 0
+    },
+    {
+     "date": "2026-10-02T00:00:00+00:00",
+     "count": 1
+    }
+   ],
+   "total": 1,
+   "delta": 0
+  },
+  "offers": {
+   "chart": [
+    {
+     "date": "2026-10-01T00:00:00+00:00",
+     "count": 1
+    },
+    {
+     "date": "2026-10-02T00:00:00+00:00",
+     "count": 0
+    }
+   ],
+   "total": 1,
+   "delta": 0
+  }
+ },
+ "/trials/chart": {
+  "claims": {
+   "chart": [
+    {
+     "date": "2026-10-01T00:00:00+00:00",
+     "count": 0
+    },
+    {
+     "date": "2026-10-02T00:00:00+00:00",
+     "count": 2
+    }
+   ],
+   "total": 2,
+   "delta": 0
+  },
+  "offers": {
+   "chart": [
+    {
+     "date": "2026-10-01T00:00:00+00:00",
+     "count": 1
+    },
+    {
+     "date": "2026-10-02T00:00:00+00:00",
+     "count": 0
+    }
+   ],
+   "total": 1,
+   "delta": 0
+  }
+ },
+ "/campaigns/chart": {
+  "clicks": [
+   {
+    "date": "2026-10-01T00:00:00+00:00",
+    "count": 0
+   },
+   {
+    "date": "2026-10-02T00:00:00+00:00",
+    "count": 9
+   }
+  ],
+  "claims": [
+   {
+    "date": "2026-10-01T00:00:00+00:00",
+    "count": 0
+   },
+   {
+    "date": "2026-10-02T00:00:00+00:00",
+    "count": 1
+   }
+  ],
+  "total": 1,
+  "delta": 0
+ },
+ "/stories/chart": {
+  "stories": {
+   "chart": [
+    {
+     "date": "2026-10-01T00:00:00+00:00",
+     "count": 0
+    },
+    {
+     "date": "2026-10-02T00:00:00+00:00",
+     "count": 1
+    }
+   ],
+   "total": 1,
+   "delta": 0
+  },
+  "views": {
+   "chart": [
+    {
+     "date": "2026-10-01T00:00:00+00:00",
+     "count": 0
+    },
+    {
+     "date": "2026-10-02T00:00:00+00:00",
+     "count": 4
+    }
+   ],
+   "total": 4,
+   "delta": 0
+  }
+ },
+ "/streams/chart": {
+  "duration": {
+   "chart": [
+    {
+     "date": "2026-10-01T00:00:00+00:00",
+     "count": 0
+    },
+    {
+     "date": "2026-10-02T00:00:00+00:00",
+     "count": 30
+    }
+   ],
+   "total": 30,
+   "delta": 0
+  },
+  "purchases": {
+   "chart": [
+    {
+     "date": "2026-10-01T00:00:00+00:00",
+     "count": 0
+    },
+    {
+     "date": "2026-10-02T00:00:00+00:00",
+     "count": 0
+    }
+   ],
+   "total": 0,
+   "delta": 0
+  }
+ },
+ "/streams/57001/viewers": {
+  "list": [
+   {
+    "id": 900008,
+    "name": "Synthetic Fan H",
+    "username": "u_synthetic_h"
+   }
+  ],
+  "hasMore": false
+ },
+ "/stories/58001/viewers": {
+  "list": [
+   {
+    "id": 900009,
+    "name": "Synthetic Fan I",
+    "username": "u_synthetic_i"
+   }
+  ],
+  "hasMore": false
+ },
+ "/payouts/vat/chart": {
+  "total": 2,
+  "delta": 0,
+  "chartAmount": [
+   {
+    "date": "2026-10-01T00:00:00+00:00",
+    "count": 0
+   },
+   {
+    "date": "2026-10-02T00:00:00+00:00",
+    "count": 2
+   }
+  ],
+  "chartCount": [
+   {
+    "date": "2026-10-01T00:00:00+00:00",
+    "count": 0
+   },
+   {
+    "date": "2026-10-02T00:00:00+00:00",
+    "count": 1
+   }
+  ]
+ },
+ "/posts/59001/stats": {
+  "lookCount": 12,
+  "uniqueLookCount": 9,
+  "lookAll": {},
+  "lookChart": [
+   {
+    "date": "2026-10-01T00:00:00+00:00",
+    "count": 4
+   },
+   {
+    "date": "2026-10-02T00:00:00+00:00",
+    "count": 8
+   }
+  ],
+  "uniqueLookChart": [
+   {
+    "date": "2026-10-01T00:00:00+00:00",
+    "count": 3
+   },
+   {
+    "date": "2026-10-02T00:00:00+00:00",
+    "count": 6
+   }
+  ],
+  "likeCount": 3,
+  "likeAll": {},
+  "likeChart": [
+   {
+    "date": "2026-10-01T00:00:00+00:00",
+    "count": 1
+   },
+   {
+    "date": "2026-10-02T00:00:00+00:00",
+    "count": 2
+   }
+  ],
+  "commentCount": 1,
+  "commentAll": {},
+  "commentChart": [
+   {
+    "date": "2026-10-01T00:00:00+00:00",
+    "count": 0
+   },
+   {
+    "date": "2026-10-02T00:00:00+00:00",
+    "count": 1
+   }
+  ],
+  "tipCount": 1,
+  "tipSum": 5,
+  "tipAll": {},
+  "tipChart": [
+   {
+    "date": "2026-10-01T00:00:00+00:00",
+    "count": 0
+   },
+   {
+    "date": "2026-10-02T00:00:00+00:00",
+    "count": 1
+   }
+  ],
+  "tipSumChart": [
+   {
+    "date": "2026-10-01T00:00:00+00:00",
+    "count": 0
+   },
+   {
+    "date": "2026-10-02T00:00:00+00:00",
+    "count": 5
+   }
+  ],
+  "purchasedCount": 2,
+  "purchasedSumm": 10,
+  "purchasesChart": [
+   {
+    "date": "2026-10-01T00:00:00+00:00",
+    "count": 1
+   },
+   {
+    "date": "2026-10-02T00:00:00+00:00",
+    "count": 1
+   }
+  ],
+  "lookDuration": 40,
+  "lookDurationAverage": 4
+ },
+ "/stories/58001/stats": {
+  "storyLookCount": 6,
+  "lookAll": {},
+  "storyLookChart": [
+   {
+    "date": "2026-10-01T00:00:00+00:00",
+    "count": 2
+   },
+   {
+    "date": "2026-10-02T00:00:00+00:00",
+    "count": 4
+   }
+  ],
+  "storyLikeCount": 2,
+  "storyLikeAll": {},
+  "storyLikeChart": [
+   {
+    "date": "2026-10-01T00:00:00+00:00",
+    "count": 1
+   },
+   {
+    "date": "2026-10-02T00:00:00+00:00",
+    "count": 1
+   }
+  ],
+  "storyCommentCount": 0,
+  "storyCommentAll": {},
+  "storyCommentChart": [
+   {
+    "date": "2026-10-01T00:00:00+00:00",
+    "count": 0
+   },
+   {
+    "date": "2026-10-02T00:00:00+00:00",
+    "count": 0
+   }
+  ],
+  "storyTipCount": 1,
+  "storyTipSum": 3,
+  "storyTipAll": {},
+  "storyTipChart": [
+   {
+    "date": "2026-10-01T00:00:00+00:00",
+    "count": 0
+   },
+   {
+    "date": "2026-10-02T00:00:00+00:00",
+    "count": 1
+   }
+  ],
+  "storyTipSumChart": [
+   {
+    "date": "2026-10-01T00:00:00+00:00",
+    "count": 0
+   },
+   {
+    "date": "2026-10-02T00:00:00+00:00",
+    "count": 3
+   }
+  ]
+ },
+ "/streams/57001/stats": {
+  "stream_look_count": 7,
+  "stream_look_all": [],
+  "stream_look_chart": [
+   {
+    "date": "2026-10-01T00:00:00+00:00",
+    "count": 3
+   },
+   {
+    "date": "2026-10-02T00:00:00+00:00",
+    "count": 4
+   }
+  ],
+  "stream_like_count": 2,
+  "stream_like_all": [],
+  "stream_like_chart": [
+   {
+    "date": "2026-10-01T00:00:00+00:00",
+    "count": 1
+   },
+   {
+    "date": "2026-10-02T00:00:00+00:00",
+    "count": 1
+   }
+  ],
+  "stream_comment_count": 1,
+  "stream_comment_all": [],
+  "stream_comment_chart": [
+   {
+    "date": "2026-10-01T00:00:00+00:00",
+    "count": 0
+   },
+   {
+    "date": "2026-10-02T00:00:00+00:00",
+    "count": 1
+   }
+  ],
+  "stream_tip_count": 1,
+  "stream_tip_all": [],
+  "stream_tip_chart": [
+   {
+    "date": "2026-10-01T00:00:00+00:00",
+    "count": 0
+   },
+   {
+    "date": "2026-10-02T00:00:00+00:00",
+    "count": 1
+   }
+  ],
+  "stream_tip_sum": 4,
+  "stream_duration": 900
+ },
+ "/posts/59001/buyers": {
+  "list": [
+   {
+    "id": 900101,
+    "name": "Synthetic Fan J",
+    "username": "u_synthetic_j"
+   }
+  ],
+  "hasMore": true
+ },
+ "/posts/59001/tips": {
+  "list": [
+   {
+    "id": 900102,
+    "name": "Synthetic Fan K",
+    "username": "u_synthetic_k"
+   }
+  ],
+  "hasMore": false
+ },
+ "/subscriptions/subscribers": {
+  "list": [
+   {
+    "id": 900103,
+    "name": "Synthetic Fan L",
+    "username": "u_synthetic_l"
+   }
+  ],
+  "hasMore": false
+ },
+ "/campaigns/60001/claimers": {
+  "list": [
+   {
+    "id": 900104,
+    "name": "Synthetic Fan M",
+    "username": "u_synthetic_m"
+   }
+  ],
+  "hasMore": false
+ },
+ "/fans-activity/list?format=table": {
+  "data": {
+   "Mon": {
+    "0": {
+     "ratio": 0
+    },
+    "1": {
+     "ratio": 0
+    },
+    "2": {
+     "ratio": 0
+    },
+    "3": {
+     "ratio": 0
+    },
+    "4": {
+     "ratio": 0
+    },
+    "5": {
+     "ratio": 0
+    },
+    "6": {
+     "ratio": 0
+    },
+    "7": {
+     "ratio": 0
+    },
+    "8": {
+     "ratio": 0
+    },
+    "9": {
+     "ratio": 0
+    },
+    "10": {
+     "ratio": 0
+    },
+    "11": {
+     "ratio": 0
+    },
+    "12": {
+     "ratio": 0
+    },
+    "13": {
+     "ratio": 0
+    },
+    "14": {
+     "ratio": 0
+    },
+    "15": {
+     "ratio": 0
+    },
+    "16": {
+     "ratio": 0
+    },
+    "17": {
+     "ratio": 0
+    },
+    "18": {
+     "ratio": 0
+    },
+    "19": {
+     "ratio": 0
+    },
+    "20": {
+     "ratio": 0
+    },
+    "21": {
+     "ratio": 0
+    },
+    "22": {
+     "ratio": 0
+    },
+    "23": {
+     "ratio": 0
+    }
+   },
+   "Tue": {
+    "0": {
+     "ratio": 0
+    },
+    "1": {
+     "ratio": 0
+    },
+    "2": {
+     "ratio": 0
+    },
+    "3": {
+     "ratio": 0
+    },
+    "4": {
+     "ratio": 0
+    },
+    "5": {
+     "ratio": 0
+    },
+    "6": {
+     "ratio": 0
+    },
+    "7": {
+     "ratio": 0
+    },
+    "8": {
+     "ratio": 0
+    },
+    "9": {
+     "ratio": 0
+    },
+    "10": {
+     "ratio": 0
+    },
+    "11": {
+     "ratio": 0
+    },
+    "12": {
+     "ratio": 0
+    },
+    "13": {
+     "ratio": 0
+    },
+    "14": {
+     "ratio": 0
+    },
+    "15": {
+     "ratio": 0
+    },
+    "16": {
+     "ratio": 0
+    },
+    "17": {
+     "ratio": 0
+    },
+    "18": {
+     "ratio": 0
+    },
+    "19": {
+     "ratio": 0
+    },
+    "20": {
+     "ratio": 0
+    },
+    "21": {
+     "ratio": 0
+    },
+    "22": {
+     "ratio": 0
+    },
+    "23": {
+     "ratio": 0
+    }
+   },
+   "Wed": {
+    "0": {
+     "ratio": 0
+    },
+    "1": {
+     "ratio": 0
+    },
+    "2": {
+     "ratio": 0
+    },
+    "3": {
+     "ratio": 0
+    },
+    "4": {
+     "ratio": 0
+    },
+    "5": {
+     "ratio": 0
+    },
+    "6": {
+     "ratio": 0
+    },
+    "7": {
+     "ratio": 0
+    },
+    "8": {
+     "ratio": 0
+    },
+    "9": {
+     "ratio": 0
+    },
+    "10": {
+     "ratio": 0
+    },
+    "11": {
+     "ratio": 0
+    },
+    "12": {
+     "ratio": 0
+    },
+    "13": {
+     "ratio": 0
+    },
+    "14": {
+     "ratio": 0
+    },
+    "15": {
+     "ratio": 0
+    },
+    "16": {
+     "ratio": 0
+    },
+    "17": {
+     "ratio": 0
+    },
+    "18": {
+     "ratio": 0
+    },
+    "19": {
+     "ratio": 0
+    },
+    "20": {
+     "ratio": 0
+    },
+    "21": {
+     "ratio": 0
+    },
+    "22": {
+     "ratio": 0
+    },
+    "23": {
+     "ratio": 0
+    }
+   },
+   "Thu": {
+    "0": {
+     "ratio": 0
+    },
+    "1": {
+     "ratio": 0
+    },
+    "2": {
+     "ratio": 0
+    },
+    "3": {
+     "ratio": 0
+    },
+    "4": {
+     "ratio": 0
+    },
+    "5": {
+     "ratio": 0
+    },
+    "6": {
+     "ratio": 0
+    },
+    "7": {
+     "ratio": 0
+    },
+    "8": {
+     "ratio": 0
+    },
+    "9": {
+     "ratio": 0
+    },
+    "10": {
+     "ratio": 0
+    },
+    "11": {
+     "ratio": 0
+    },
+    "12": {
+     "ratio": 0
+    },
+    "13": {
+     "ratio": 0
+    },
+    "14": {
+     "ratio": 0
+    },
+    "15": {
+     "ratio": 0
+    },
+    "16": {
+     "ratio": 0
+    },
+    "17": {
+     "ratio": 0
+    },
+    "18": {
+     "ratio": 0
+    },
+    "19": {
+     "ratio": 0
+    },
+    "20": {
+     "ratio": 0
+    },
+    "21": {
+     "ratio": 0
+    },
+    "22": {
+     "ratio": 0
+    },
+    "23": {
+     "ratio": 0
+    }
+   },
+   "Fri": {
+    "0": {
+     "ratio": 0
+    },
+    "1": {
+     "ratio": 0
+    },
+    "2": {
+     "ratio": 0
+    },
+    "3": {
+     "ratio": 0
+    },
+    "4": {
+     "ratio": 0
+    },
+    "5": {
+     "ratio": 0
+    },
+    "6": {
+     "ratio": 0
+    },
+    "7": {
+     "ratio": 0
+    },
+    "8": {
+     "ratio": 0
+    },
+    "9": {
+     "ratio": 0
+    },
+    "10": {
+     "ratio": 0
+    },
+    "11": {
+     "ratio": 0
+    },
+    "12": {
+     "ratio": 0
+    },
+    "13": {
+     "ratio": 0
+    },
+    "14": {
+     "ratio": 0
+    },
+    "15": {
+     "ratio": 0
+    },
+    "16": {
+     "ratio": 0
+    },
+    "17": {
+     "ratio": 0
+    },
+    "18": {
+     "ratio": 0
+    },
+    "19": {
+     "ratio": 0
+    },
+    "20": {
+     "ratio": 0
+    },
+    "21": {
+     "ratio": 0.25
+    },
+    "22": {
+     "ratio": 0
+    },
+    "23": {
+     "ratio": 0
+    }
+   },
+   "Sat": {
+    "0": {
+     "ratio": 0
+    },
+    "1": {
+     "ratio": 0
+    },
+    "2": {
+     "ratio": 0
+    },
+    "3": {
+     "ratio": 0
+    },
+    "4": {
+     "ratio": 0
+    },
+    "5": {
+     "ratio": 0
+    },
+    "6": {
+     "ratio": 0
+    },
+    "7": {
+     "ratio": 0
+    },
+    "8": {
+     "ratio": 0
+    },
+    "9": {
+     "ratio": 0
+    },
+    "10": {
+     "ratio": 0
+    },
+    "11": {
+     "ratio": 0
+    },
+    "12": {
+     "ratio": 0
+    },
+    "13": {
+     "ratio": 0
+    },
+    "14": {
+     "ratio": 0
+    },
+    "15": {
+     "ratio": 0
+    },
+    "16": {
+     "ratio": 0
+    },
+    "17": {
+     "ratio": 0
+    },
+    "18": {
+     "ratio": 0
+    },
+    "19": {
+     "ratio": 0
+    },
+    "20": {
+     "ratio": 0
+    },
+    "21": {
+     "ratio": 0
+    },
+    "22": {
+     "ratio": 0
+    },
+    "23": {
+     "ratio": 0
+    }
+   },
+   "Sun": {
+    "0": {
+     "ratio": 0
+    },
+    "1": {
+     "ratio": 0
+    },
+    "2": {
+     "ratio": 0
+    },
+    "3": {
+     "ratio": 0
+    },
+    "4": {
+     "ratio": 0
+    },
+    "5": {
+     "ratio": 0
+    },
+    "6": {
+     "ratio": 0
+    },
+    "7": {
+     "ratio": 0
+    },
+    "8": {
+     "ratio": 0
+    },
+    "9": {
+     "ratio": 0
+    },
+    "10": {
+     "ratio": 0
+    },
+    "11": {
+     "ratio": 0
+    },
+    "12": {
+     "ratio": 0
+    },
+    "13": {
+     "ratio": 0
+    },
+    "14": {
+     "ratio": 0
+    },
+    "15": {
+     "ratio": 0
+    },
+    "16": {
+     "ratio": 0
+    },
+    "17": {
+     "ratio": 0
+    },
+    "18": {
+     "ratio": 0
+    },
+    "19": {
+     "ratio": 0
+    },
+    "20": {
+     "ratio": 0
+    },
+    "21": {
+     "ratio": 0
+    },
+    "22": {
+     "ratio": 0
+    },
+    "23": {
+     "ratio": 0
+    }
+   }
+  }
+ },
+ "/fans-activity/list?format=hours": {
+  "data": [
+   {
+    "ratio": 0
+   },
+   {
+    "ratio": 0
+   },
+   {
+    "ratio": 0
+   },
+   {
+    "ratio": 0
+   },
+   {
+    "ratio": 0
+   },
+   {
+    "ratio": 0
+   },
+   {
+    "ratio": 0
+   },
+   {
+    "ratio": 0
+   },
+   {
+    "ratio": 0
+   },
+   {
+    "ratio": 0
+   },
+   {
+    "ratio": 0
+   },
+   {
+    "ratio": 0
+   },
+   {
+    "ratio": 0
+   },
+   {
+    "ratio": 0
+   },
+   {
+    "ratio": 0
+   },
+   {
+    "ratio": 0
+   },
+   {
+    "ratio": 0
+   },
+   {
+    "ratio": 0
+   },
+   {
+    "ratio": 0
+   },
+   {
+    "ratio": 0
+   },
+   {
+    "ratio": 0
+   },
+   {
+    "ratio": 0.5
+   },
+   {
+    "ratio": 0
+   },
+   {
+    "ratio": 0
+   }
+  ]
+ },
+ "/users/me/profile/stats?filter=topCountries": {
+  "topCountries": {
+   "rows": [
+    {
+     "rank": 1,
+     "countryCode": "XX",
+     "countryName": "Synthetic Country",
+     "viewsCount": {
+      "total": 3,
+      "guests": 2,
+      "users": 1
+     }
+    }
+   ],
+   "hasMore": false,
+   "totals": {
+    "guests": "2",
+    "users": "1"
+   }
+  }
+ },
+ "/payouts/requests": {
+  "list": [
+   {
+    "invoiceId": 70001,
+    "createdAt": "2026-10-03T10:00:00+00:00",
+    "amount": 20,
+    "currency": "USD",
+    "state": "done",
+    "rejectReason": null
+   }
+  ],
+  "marker": 1791000003
+ },
+ "/payouts/requests/referral": {
+  "list": [
+   {
+    "invoiceId": 70002,
+    "createdAt": "2026-10-04T10:00:00+00:00",
+    "amount": 2,
+    "currency": "USD",
+    "state": "done",
+    "rejectReason": null
+   }
+  ],
+  "marker": 1791000004
+ },
+ "/posts/59001/favorites": {
+  "list": [
+   {
+    "id": 900105,
+    "name": "Synthetic Fan O",
+    "username": "u_synthetic_o"
+   }
+  ],
+  "hasMore": false
+ }
+}

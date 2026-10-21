@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <title>Add OnlyFans Account</title>
+    <link rel="stylesheet" href="local.css" />
+    <link rel="stylesheet" href="capture.css" />
+  </head>
+  <body>
+    <div class="card">
+      <h1>Add OnlyFans account</h1>
+      <p class="sub">Four steps. This window keeps track and saves on its own when everything is in.</p>
+
+      <ol class="steps">
+        <li class="step" id="step-app">
+          <span class="dot"></span>
+          <span><strong>Sign in to Inflowwww</strong><span class="detail" id="step-app-detail">in the main window, as the agency owner.</span></span>
+        </li>
+        <li class="step" id="step-of">
+          <span class="dot"></span>
+          <span><strong>Sign in to OnlyFans</strong><span class="detail">In the OnlyFans window: email, Next, then password. If a Cloudflare “verify you are human” check appears, wait a few seconds; it usually passes on its own.</span></span>
+        </li>
+        <li class="step" id="step-msgs">
+          <span class="dot"></span>
+          <span><strong>Open your Messages</strong><span class="detail">in OnlyFans, so it signs a request we can copy.</span></span>
+        </li>
+        <li class="step" id="step-save">
+          <span class="dot"></span>
+          <span><strong>Save to Inflowwww</strong><span class="detail">Automatic once the steps above are done.</span></span>
+        </li>
+      </ol>
+
+      <div class="banner" id="hint" role="status" aria-live="polite">Starting…</div>
+
+      <details class="tech">
+        <summary>Technical details</summary>
+        <div class="mono" id="diag"></div>
+      </details>
+
+      <div class="row">
+        <button id="cancel" type="button">Cancel</button>
+        <button id="reopen" type="button">Reopen OnlyFans</button>
+        <button id="finish" class="primary" type="button" disabled>Save now</button>
+      </div>
+    </div>
+    <script src="capture.js"></script>
+  </body>
+</html>

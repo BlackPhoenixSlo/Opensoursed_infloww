@@ -1,0 +1,59 @@
+{
+  "manifest_version": 3,
+  "name": "Inflowwww Login Capture (OF + Fansly)",
+  "version": "2.1.4",
+  "description": "One-click login capture for OnlyFans (curl) and Fansly (session), for the Inflowwww relay.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "permissions": ["storage", "tabs", "cookies", "scripting", "clipboardWrite"],
+  "host_permissions": [
+    "https://onlyfans.com/*",
+    "https://*.onlyfans.com/*",
+    "https://fansly.com/*",
+    "https://*.fansly.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Inflowwww Login Capture",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["https://onlyfans.com/*"],
+      "js": ["interceptor.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://onlyfans.com/*"],
+      "js": ["bridge.js"],
+      "run_at": "document_start",
+      "world": "ISOLATED"
+    },
+    {
+      "matches": ["https://fansly.com/*"],
+      "js": ["fansly_interceptor.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://fansly.com/*"],
+      "js": ["fansly_bridge.js"],
+      "run_at": "document_start",
+      "world": "ISOLATED"
+    }
+  ],
+  "web_accessible_resources": [
+    { "resources": ["icons/icon16.png"], "matches": ["<all_urls>"] }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+ "list": [
+  {
+   "id": 81001,
+   "createdAt": "2026-10-03T10:00:00+00:00",
+   "payment": {
+    "createdAt": "2026-09-20T10:00:00+00:00",
+    "amount": 5,
+    "fee": 1,
+    "net": 4,
+    "description": "Synthetic payment description"
+   }
+  },
+  {
+   "id": 81002,
+   "createdAt": "2026-10-01T08:30:00+00:00",
+   "payment": {
+    "createdAt": "2026-09-18T21:15:00+00:00",
+    "amount": 0,
+    "fee": 0,
+    "net": 0,
+    "description": null
+   }
+  }
+ ],
+ "marker": 1791000000
+}

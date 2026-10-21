@@ -1,0 +1,502 @@
+{
+  "_about": "A free trial link's claimers with what each spent (Growth > Free trial links / Profile promotion Details). OF's /subscriptions/subscribers?filter[trial_id] as the relay's link_metrics walks it. PII-free: synthetic ids, names, usernames, dates and amounts; only the shape is OF's.",
+  "_source": "A user-supplied HAR of OF's own trial-link claimers list (2026-10-18): GET /api2/v2/subscriptions/subscribers?limit=10&offset=0|10&format=infinite&filter[trial_id]=<id>, {list, hasMore}. OF answered offset 0 with 9 fans and offset 10 with 10 different fans, hasMore true on both: a short page does not end the list, and the offset moves by the limit, not by the rows returned. Expired fans are listed too (subscribedOnExpiredNow). subscribedOnData.subscribeAt is ISO with +00:00; totalSumm = subscribesSumm + postsSumm + messagesSumm + streamsSumm + tipsSumm, in dollars. Rows trimmed to the fields read here.",
+  "request": {
+    "of": {
+      "method": "GET",
+      "path": "/subscriptions/subscribers",
+      "params": [
+        {
+          "limit": 10,
+          "offset": 0,
+          "format": "infinite",
+          "filter[trial_id]": 4242
+        },
+        {
+          "limit": 10,
+          "offset": 10,
+          "format": "infinite",
+          "filter[trial_id]": 4242
+        }
+      ]
+    }
+  },
+  "pages": [
+    {
+      "list": [
+        {
+          "id": 70000001,
+          "name": "Synth Fan A",
+          "username": "synthfana",
+          "subscribedOn": true,
+          "subscribedOnData": {
+            "subscribeAt": "2026-09-01T11:00:00+00:00",
+            "subscribedOnExpiredNow": false,
+            "totalSumm": 67.19,
+            "subscribesSumm": 0,
+            "postsSumm": 48,
+            "messagesSumm": 19.19,
+            "streamsSumm": 0,
+            "tipsSumm": 0,
+            "subscribes": [
+              {
+                "type": "trial",
+                "action": "subscribe",
+                "price": 0,
+                "duration": 30
+              }
+            ]
+          }
+        },
+        {
+          "id": 70000002,
+          "name": "",
+          "username": "u70000002",
+          "subscribedOn": true,
+          "subscribedOnData": {
+            "subscribeAt": "2026-09-02T12:00:00+00:00",
+            "subscribedOnExpiredNow": false,
+            "totalSumm": 0,
+            "subscribesSumm": 0,
+            "postsSumm": 0,
+            "messagesSumm": 0,
+            "streamsSumm": 0,
+            "tipsSumm": 0,
+            "subscribes": [
+              {
+                "type": "trial",
+                "action": "subscribe",
+                "price": 0,
+                "duration": 30
+              }
+            ]
+          }
+        },
+        {
+          "id": 70000003,
+          "name": "Synth Fan C",
+          "username": "synthfanc",
+          "subscribedOn": true,
+          "subscribedOnData": {
+            "subscribeAt": "2026-09-03T13:00:00+00:00",
+            "subscribedOnExpiredNow": false,
+            "totalSumm": 0,
+            "subscribesSumm": 0,
+            "postsSumm": 0,
+            "messagesSumm": 0,
+            "streamsSumm": 0,
+            "tipsSumm": 0,
+            "subscribes": [
+              {
+                "type": "trial",
+                "action": "subscribe",
+                "price": 0,
+                "duration": 30
+              }
+            ]
+          }
+        },
+        {
+          "id": 70000004,
+          "name": "Synth Fan D",
+          "username": "synthfand",
+          "subscribedOn": true,
+          "subscribedOnData": {
+            "subscribeAt": "2026-09-04T14:00:00+00:00",
+            "subscribedOnExpiredNow": false,
+            "totalSumm": 6.99,
+            "subscribesSumm": 6.99,
+            "postsSumm": 0,
+            "messagesSumm": 0,
+            "streamsSumm": 0,
+            "tipsSumm": 0,
+            "subscribes": [
+              {
+                "type": "trial",
+                "action": "subscribe",
+                "price": 0,
+                "duration": 30
+              }
+            ]
+          }
+        },
+        {
+          "id": 70000005,
+          "name": "Synth Fan E",
+          "username": "synthfane",
+          "subscribedOn": false,
+          "subscribedOnData": {
+            "subscribeAt": "2026-09-05T15:00:00+00:00",
+            "subscribedOnExpiredNow": true,
+            "totalSumm": 0,
+            "subscribesSumm": 0,
+            "postsSumm": 0,
+            "messagesSumm": 0,
+            "streamsSumm": 0,
+            "tipsSumm": 0,
+            "subscribes": [
+              {
+                "type": "trial",
+                "action": "subscribe",
+                "price": 0,
+                "duration": 30
+              }
+            ]
+          }
+        },
+        {
+          "id": 70000006,
+          "name": "Synth Fan F",
+          "username": "synthfanf",
+          "subscribedOn": true,
+          "subscribedOnData": {
+            "subscribeAt": "2026-09-06T16:00:00+00:00",
+            "subscribedOnExpiredNow": false,
+            "totalSumm": 0,
+            "subscribesSumm": 0,
+            "postsSumm": 0,
+            "messagesSumm": 0,
+            "streamsSumm": 0,
+            "tipsSumm": 0,
+            "subscribes": [
+              {
+                "type": "trial",
+                "action": "subscribe",
+                "price": 0,
+                "duration": 30
+              }
+            ]
+          }
+        },
+        {
+          "id": 70000007,
+          "name": "Synth Fan G",
+          "username": "synthfang",
+          "subscribedOn": true,
+          "subscribedOnData": {
+            "subscribeAt": "2026-09-07T17:00:00+00:00",
+            "subscribedOnExpiredNow": false,
+            "totalSumm": 25,
+            "subscribesSumm": 0,
+            "postsSumm": 0,
+            "messagesSumm": 0,
+            "streamsSumm": 0,
+            "tipsSumm": 25,
+            "subscribes": [
+              {
+                "type": "trial",
+                "action": "subscribe",
+                "price": 0,
+                "duration": 30
+              }
+            ]
+          }
+        },
+        {
+          "id": 70000008,
+          "name": "Synth Fan H",
+          "username": "synthfanh",
+          "subscribedOn": true,
+          "subscribedOnData": {
+            "subscribeAt": "2026-09-08T18:00:00+00:00",
+            "subscribedOnExpiredNow": false,
+            "totalSumm": 0,
+            "subscribesSumm": 0,
+            "postsSumm": 0,
+            "messagesSumm": 0,
+            "streamsSumm": 0,
+            "tipsSumm": 0,
+            "subscribes": [
+              {
+                "type": "trial",
+                "action": "subscribe",
+                "price": 0,
+                "duration": 30
+              }
+            ]
+          }
+        },
+        {
+          "id": 70000009,
+          "name": "Synth Fan I",
+          "username": "synthfani",
+          "subscribedOn": false,
+          "subscribedOnData": {
+            "subscribeAt": "2026-09-09T19:00:00+00:00",
+            "subscribedOnExpiredNow": true,
+            "totalSumm": 0,
+            "subscribesSumm": 0,
+            "postsSumm": 0,
+            "messagesSumm": 0,
+            "streamsSumm": 0,
+            "tipsSumm": 0,
+            "subscribes": [
+              {
+                "type": "trial",
+                "action": "subscribe",
+                "price": 0,
+                "duration": 30
+              }
+            ]
+          }
+        }
+      ],
+      "hasMore": true
+    },
+    {
+      "list": [
+        {
+          "id": 70000010,
+          "name": "Synth Fan J",
+          "username": "synthfanj",
+          "subscribedOn": true,
+          "subscribedOnData": {
+            "subscribeAt": "2026-09-10T10:00:00+00:00",
+            "subscribedOnExpiredNow": false,
+            "totalSumm": 0,
+            "subscribesSumm": 0,
+            "postsSumm": 0,
+            "messagesSumm": 0,
+            "streamsSumm": 0,
+            "tipsSumm": 0,
+            "subscribes": [
+              {
+                "type": "trial",
+                "action": "subscribe",
+                "price": 0,
+                "duration": 30
+              }
+            ]
+          }
+        },
+        {
+          "id": 70000011,
+          "name": "Synth Fan K",
+          "username": "synthfank",
+          "subscribedOn": true,
+          "subscribedOnData": {
+            "subscribeAt": "2026-09-11T11:00:00+00:00",
+            "subscribedOnExpiredNow": false,
+            "totalSumm": 0,
+            "subscribesSumm": 0,
+            "postsSumm": 0,
+            "messagesSumm": 0,
+            "streamsSumm": 0,
+            "tipsSumm": 0,
+            "subscribes": [
+              {
+                "type": "trial",
+                "action": "subscribe",
+                "price": 0,
+                "duration": 30
+              }
+            ]
+          }
+        },
+        {
+          "id": 70000012,
+          "name": "Synth Fan L",
+          "username": "synthfanl",
+          "subscribedOn": true,
+          "subscribedOnData": {
+            "subscribeAt": "2026-09-12T12:00:00+00:00",
+            "subscribedOnExpiredNow": false,
+            "totalSumm": 26.99,
+            "subscribesSumm": 9.99,
+            "postsSumm": 12,
+            "messagesSumm": 0,
+            "streamsSumm": 0,
+            "tipsSumm": 5,
+            "subscribes": [
+              {
+                "type": "trial",
+                "action": "subscribe",
+                "price": 0,
+                "duration": 30
+              }
+            ]
+          }
+        },
+        {
+          "id": 70000013,
+          "name": "Synth Fan M",
+          "username": "synthfanm",
+          "subscribedOn": true,
+          "subscribedOnData": {
+            "subscribeAt": "2026-09-13T13:00:00+00:00",
+            "subscribedOnExpiredNow": false,
+            "totalSumm": 0,
+            "subscribesSumm": 0,
+            "postsSumm": 0,
+            "messagesSumm": 0,
+            "streamsSumm": 0,
+            "tipsSumm": 0,
+            "subscribes": [
+              {
+                "type": "trial",
+                "action": "subscribe",
+                "price": 0,
+                "duration": 30
+              }
+            ]
+          }
+        },
+        {
+          "id": 70000014,
+          "name": "Synth Fan N",
+          "username": "synthfann",
+          "subscribedOn": false,
+          "subscribedOnData": {
+            "subscribeAt": "2026-09-14T14:00:00+00:00",
+            "subscribedOnExpiredNow": true,
+            "totalSumm": 0,
+            "subscribesSumm": 0,
+            "postsSumm": 0,
+            "messagesSumm": 0,
+            "streamsSumm": 0,
+            "tipsSumm": 0,
+            "subscribes": [
+              {
+                "type": "trial",
+                "action": "subscribe",
+                "price": 0,
+                "duration": 30
+              }
+            ]
+          }
+        },
+        {
+          "id": 70000015,
+          "name": "Synth Fan O",
+          "username": "synthfano",
+          "subscribedOn": true,
+          "subscribedOnData": {
+            "subscribeAt": "2026-09-15T15:00:00+00:00",
+            "subscribedOnExpiredNow": false,
+            "totalSumm": 0,
+            "subscribesSumm": 0,
+            "postsSumm": 0,
+            "messagesSumm": 0,
+            "streamsSumm": 0,
+            "tipsSumm": 0,
+            "subscribes": [
+              {
+                "type": "trial",
+                "action": "subscribe",
+                "price": 0,
+                "duration": 30
+              }
+            ]
+          }
+        },
+        {
+          "id": 70000016,
+          "name": "Synth Fan P",
+          "username": "synthfanp",
+          "subscribedOn": true,
+          "subscribedOnData": {
+            "subscribeAt": "2026-09-16T16:00:00+00:00",
+            "subscribedOnExpiredNow": false,
+            "totalSumm": 30.5,
+            "subscribesSumm": 0,
+            "postsSumm": 0,
+            "messagesSumm": 30.5,
+            "streamsSumm": 0,
+            "tipsSumm": 0,
+            "subscribes": [
+              {
+                "type": "trial",
+                "action": "subscribe",
+                "price": 0,
+                "duration": 30
+              }
+            ]
+          }
+        },
+        {
+          "id": 70000017,
+          "name": "Synth Fan Q",
+          "username": "synthfanq",
+          "subscribedOn": true,
+          "subscribedOnData": {
+            "subscribeAt": "2026-09-17T17:00:00+00:00",
+            "subscribedOnExpiredNow": false,
+            "totalSumm": 0,
+            "subscribesSumm": 0,
+            "postsSumm": 0,
+            "messagesSumm": 0,
+            "streamsSumm": 0,
+            "tipsSumm": 0,
+            "subscribes": [
+              {
+                "type": "trial",
+                "action": "subscribe",
+                "price": 0,
+                "duration": 30
+              }
+            ]
+          }
+        },
+        {
+          "id": 70000018,
+          "name": "Synth Fan R",
+          "username": "synthfanr",
+          "subscribedOn": true,
+          "subscribedOnData": {
+            "subscribeAt": "2026-09-18T18:00:00+00:00",
+            "subscribedOnExpiredNow": false,
+            "totalSumm": 0,
+            "subscribesSumm": 0,
+            "postsSumm": 0,
+            "messagesSumm": 0,
+            "streamsSumm": 0,
+            "tipsSumm": 0,
+            "subscribes": [
+              {
+                "type": "trial",
+                "action": "subscribe",
+                "price": 0,
+                "duration": 30
+              }
+            ]
+          }
+        },
+        {
+          "id": 70000019,
+          "name": "Synth Fan S",
+          "username": "synthfans",
+          "subscribedOn": true,
+          "subscribedOnData": {
+            "subscribeAt": "2026-09-19T19:00:00+00:00",
+            "subscribedOnExpiredNow": false,
+            "totalSumm": 0,
+            "subscribesSumm": 0,
+            "postsSumm": 0,
+            "messagesSumm": 0,
+            "streamsSumm": 0,
+            "tipsSumm": 0,
+            "subscribes": [
+              {
+                "type": "trial",
+                "action": "subscribe",
+                "price": 0,
+                "duration": 30
+              }
+            ]
+          }
+        }
+      ],
+      "hasMore": true
+    }
+  ],
+  "totals": {
+    "fans": 19,
+    "total": 156.67,
+    "subs": 16.98,
+    "posts": 60,
+    "messages": 49.69,
+    "streams": 0,
+    "tips": 30,
+    "spent": 5
+  }
+}

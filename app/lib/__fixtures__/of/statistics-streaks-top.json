@@ -1,0 +1,14 @@
+{
+ "id": 7,
+ "startDate": "2026-07-01T08:00:00+00:00",
+ "endDate": "2026-07-12T20:00:00+00:00",
+ "isActive": false,
+ "postsCount": 3,
+ "daysCount": 11,
+ "streamsDuration": 0,
+ "storiesCount": 5,
+ "chatsCount": 8,
+ "frozenDays": [
+  "2026-07-06T00:00:00+00:00"
+ ]
+}

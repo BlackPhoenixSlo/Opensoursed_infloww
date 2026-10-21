@@ -1,0 +1,39 @@
+{
+  "_source": "Read through the real relay (GET only, account 80000112) on 2026-10-17 and scrubbed: ids renumbered, names, usernames, messages, links and pictures synthetic. GET /api/of/v2/posts/tagged-friend-users?search=<a query> (OF: {items, hasMore}; each item {id, name, type, user}; user cut to id, name, username, hiddenForRf).",
+  "items": [
+    {
+      "id": 4001,
+      "name": "Synthetic Creator 1",
+      "type": "user",
+      "user": {
+        "id": 4001,
+        "name": "Synthetic Creator 1",
+        "username": "creator1",
+        "hiddenForRf": false
+      }
+    },
+    {
+      "id": 4002,
+      "name": "Synthetic Creator 2",
+      "type": "user",
+      "user": {
+        "id": 4002,
+        "name": "Synthetic Creator 2",
+        "username": "creator2",
+        "hiddenForRf": false
+      }
+    },
+    {
+      "id": 4003,
+      "name": "Synthetic Creator 3",
+      "type": "user",
+      "user": {
+        "id": 4003,
+        "name": "Synthetic Creator 3",
+        "username": "creator3",
+        "hiddenForRf": false
+      }
+    }
+  ],
+  "hasMore": true
+}

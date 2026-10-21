@@ -1,0 +1,133 @@
+{
+  "ok": true,
+  "runs": [
+    {
+      "name": "inapp-1440",
+      "url": "/messages-pro",
+      "viewport": [
+        1440,
+        900
+      ],
+      "file": null,
+      "overflowX": false,
+      "wide": [],
+      "panes": "three",
+      "consoleErrors": [],
+      "offHostRequests": [],
+      "failures": [],
+      "ok": true
+    },
+    {
+      "name": "inapp-1280",
+      "url": "/messages-pro",
+      "viewport": [
+        1280,
+        800
+      ],
+      "file": "docs/screenshots/messages-pro-1280.png",
+      "overflowX": false,
+      "wide": [],
+      "panes": "three",
+      "consoleErrors": [],
+      "offHostRequests": [],
+      "failures": [],
+      "ok": true
+    },
+    {
+      "name": "inapp-768",
+      "url": "/messages-pro",
+      "viewport": [
+        768,
+        1024
+      ],
+      "file": "docs/screenshots/messages-pro-768.png",
+      "overflowX": false,
+      "wide": [],
+      "panes": "one",
+      "consoleErrors": [],
+      "offHostRequests": [],
+      "failures": [],
+      "ok": true
+    },
+    {
+      "name": "inapp-390",
+      "url": "/messages-pro",
+      "viewport": [
+        390,
+        844
+      ],
+      "file": null,
+      "overflowX": false,
+      "wide": [],
+      "panes": "one",
+      "consoleErrors": [],
+      "offHostRequests": [],
+      "failures": [],
+      "ok": true
+    },
+    {
+      "name": "window-1440",
+      "url": "/messages-pro?window=1",
+      "viewport": [
+        1440,
+        900
+      ],
+      "file": null,
+      "overflowX": false,
+      "wide": [],
+      "panes": "three",
+      "consoleErrors": [],
+      "offHostRequests": [],
+      "failures": [],
+      "ok": true
+    },
+    {
+      "name": "window-1280",
+      "url": "/messages-pro?window=1",
+      "viewport": [
+        1280,
+        800
+      ],
+      "file": null,
+      "overflowX": false,
+      "wide": [],
+      "panes": "three",
+      "consoleErrors": [],
+      "offHostRequests": [],
+      "failures": [],
+      "ok": true
+    },
+    {
+      "name": "window-768",
+      "url": "/messages-pro?window=1",
+      "viewport": [
+        768,
+        1024
+      ],
+      "file": null,
+      "overflowX": false,
+      "wide": [],
+      "panes": "one",
+      "consoleErrors": [],
+      "offHostRequests": [],
+      "failures": [],
+      "ok": true
+    },
+    {
+      "name": "window-390",
+      "url": "/messages-pro?window=1",
+      "viewport": [
+        390,
+        844
+      ],
+      "file": null,
+      "overflowX": false,
+      "wide": [],
+      "panes": "one",
+      "consoleErrors": [],
+      "offHostRequests": [],
+      "failures": [],
+      "ok": true
+    }
+  ]
+}

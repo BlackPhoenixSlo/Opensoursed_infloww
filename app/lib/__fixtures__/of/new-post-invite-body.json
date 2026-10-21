@@ -1,0 +1,10 @@
+{
+  "_about": "Tag other creators: Invite new user > Save. relay: POST /api/of/v2/guests; of: of_client.create_guest's body (OF answers with the guest and its invite token).",
+  "_source": "OF web bundle build 202610091632, read statically (not observed live: no logged-in onlyfans.com tab and no write is ever sent): releaseForms/saveGuest -> POST /guests/ {name}.",
+  "relay": {
+    "name": "Synthetic Guest"
+  },
+  "of": {
+    "name": "Synthetic Guest"
+  }
+}

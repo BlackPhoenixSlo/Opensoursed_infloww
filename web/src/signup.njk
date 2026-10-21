@@ -1,0 +1,63 @@
+---
+layout: base.njk
+bare: true
+title: "Sign up"
+referrer: "origin-when-cross-origin"
+description: "Create an Inflowwww agency owner account with a username and a password, nothing else. Each agency on the app sees only its own creators."
+---
+{#- Follows signup.infloww.com (docs/infloww-landing-snapshot.md §8): dark, form left, pitch right, same field order.
+    Email address becomes the app's username. The form signs up on the app itself (auth.njk). No Turnstile: their
+    "Let us know you're human" box is a struck-through line. -#}
+{%- from "auth.njk" import authForm, usernameField, passwordField, submitButton, handoffNote, logo, badges, notice with context -%}
+<div class="min-h-dvh bg-[#121212]">
+  <div class="wrap pt-5">{{ logo() }}</div>
+  <div class="wrap grid gap-14 pt-10 pb-16 sm:pt-14 md:grid-cols-2 md:gap-16 lg:gap-24 lg:pt-20 lg:pb-24">
+    <section aria-labelledby="signup-title" class="w-full max-w-lg">
+      <h1 id="signup-title" class="text-4xl font-medium tracking-tight sm:text-[43px]">Sign up</h1>
+      {%- call authForm("register") %}
+        {{ usernameField("name.agency", true) }}
+        {{ passwordField("new-password", "Create a password", "Must be at least 6 characters", true) }}
+
+        <div class="mt-6 flex items-start gap-3">
+          {#- No name: the box is checked in the browser and never sent. -#}
+          <input id="agree" type="checkbox" required class="auth-check mt-1.5" />
+          <label for="agree" class="text-lg text-white/85">
+            I agree to the <a class="auth-underline" href="{{ '/legal/privacy/' | url }}">Privacy Policy</a> and
+            <a class="auth-underline" href="{{ '/legal/terms/' | url }}">Terms of Service</a>
+          </label>
+        </div>
+
+        {#- Their Cloudflare Turnstile box. Phones get no tooltip; the screen-reader text says the same. -#}
+        <p class="mt-8 text-base text-white/70">
+          <span class="line-through" title="No CAPTCHA on this page.">Let us know you're human</span><span class="sr-only"> (No CAPTCHA on this page.)</span>
+          <span aria-hidden="true">We'll take your word for it.</span>
+        </p>
+
+        <div class="mt-6">{{ submitButton("Sign up without email") }}</div>
+        {{ handoffNote() }}
+      {%- endcall %}
+      <p class="mt-8 text-base text-white/85">
+        Already have an account? <a class="auth-link" href="{{ '/login/' | url }}">Log in</a>
+      </p>
+      <p class="mt-2 text-sm text-white/60">Chatters don't sign up here. They join through an invite link from their agency's owner.</p>
+    </section>
+
+    {#- Facts: docs/routes.md "Sign-in (app)", agencies and their creators. -#}
+    <section aria-labelledby="signup-pitch" class="md:pt-6">
+      <h2 id="signup-pitch" class="text-[clamp(2.25rem,4vw,3.75rem)] leading-[1.08] font-semibold tracking-tight text-balance">
+        Accelerate your agency's success. Not ours.
+      </h2>
+      <p class="mt-6 max-w-xl text-xl text-pretty text-white/90">
+        Sign up and access every built feature for 7 days, then the 7 after that, and so on—no credit card needed,
+        because there is no card form. Get started in just two fields.
+      </p>
+      <p class="mt-4 max-w-xl text-base text-pretty text-white/60">
+        One Inflowwww app serves many agencies. Each owner signs up with their own username, chatters get their own
+        logins through their owner's invite, and each agency account sees only its own creators and their chats (the
+        one exception is in the <a class="auth-underline" href="{{ '/legal/privacy/' | url }}">Privacy Policy</a>).
+      </p>
+      {{ badges() }}
+    </section>
+  </div>
+  {{ notice() }}
+</div>

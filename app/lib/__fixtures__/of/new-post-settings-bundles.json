@@ -1,0 +1,5 @@
+{
+  "_source": "Read through the real relay (GET only, account 80000112) on 2026-10-17 and scrubbed: ids renumbered, names, usernames, messages, links and pictures synthetic. GET /api/of/v2/users/me/settings, only the bundle dialog's fields.",
+  "canAddSubscriberByBundle": false,
+  "bundleMaxPrice": 250
+}

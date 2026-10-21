@@ -1,0 +1,29 @@
+{
+ "list": [
+  {
+   "id": 1,
+   "startDate": "2026-10-03T08:00:00+00:00",
+   "endDate": "2026-10-03T20:00:00+00:00",
+   "isActive": false,
+   "postsCount": 1,
+   "daysCount": 1,
+   "streamsDuration": 0,
+   "storiesCount": 0,
+   "chatsCount": 2,
+   "frozenDays": []
+  },
+  {
+   "id": 2,
+   "startDate": "2026-10-12T08:00:00+00:00",
+   "endDate": "2026-10-16T20:00:00+00:00",
+   "isActive": true,
+   "postsCount": 1,
+   "daysCount": 5,
+   "streamsDuration": 0,
+   "storiesCount": 0,
+   "chatsCount": 2,
+   "frozenDays": []
+  }
+ ],
+ "hasMore": false
+}

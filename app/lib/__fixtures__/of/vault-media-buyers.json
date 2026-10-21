@@ -1,0 +1,194 @@
+{
+  "list": [
+    {
+      "id": 5000045,
+      "type": "audio",
+      "convertedToVideo": false,
+      "canView": true,
+      "hasError": false,
+      "createdAt": "2024-05-21T13:13:47+00:00",
+      "isReady": true,
+      "counters": {
+        "likesCount": 0,
+        "tipsSumm": 0,
+        "buyersCount": 1
+      },
+      "files": {
+        "full": {
+          "url": "https://cdn2.onlyfans.com/files/6/64/64890dece16f342ec058d80aa54edaf4/0229.mp3",
+          "width": 0,
+          "height": 0,
+          "size": 0,
+          "sources": []
+        },
+        "thumb": null,
+        "preview": null,
+        "squarePreview": null
+      },
+      "duration": 4,
+      "hasPosts": false,
+      "listStates": [
+        {
+          "id": 703,
+          "type": "posts",
+          "name": "Posts",
+          "hasMedia": false,
+          "canAddMedia": false
+        },
+        {
+          "id": 701,
+          "type": "stories",
+          "name": "Stories",
+          "hasMedia": false,
+          "canAddMedia": false
+        },
+        {
+          "id": 702,
+          "type": "messages",
+          "name": "Messages",
+          "hasMedia": true,
+          "canAddMedia": false
+        },
+        {
+          "id": 717,
+          "type": "streams",
+          "name": "Streams",
+          "hasMedia": false,
+          "canAddMedia": false
+        }
+      ],
+      "hasCustomPreview": false,
+      "videoSources": {
+        "720": null,
+        "240": null
+      }
+    },
+    {
+      "id": 5000046,
+      "type": "audio",
+      "convertedToVideo": false,
+      "canView": true,
+      "hasError": false,
+      "createdAt": "2024-05-21T13:16:54+00:00",
+      "isReady": true,
+      "counters": {
+        "likesCount": 0,
+        "tipsSumm": 0,
+        "buyersCount": 1
+      },
+      "files": {
+        "full": {
+          "url": "https://cdn2.onlyfans.com/files/b/b3/b37949d6acf12a1907e9ecde9bb0b514/0230.mp3",
+          "width": 0,
+          "height": 0,
+          "size": 0,
+          "sources": []
+        },
+        "thumb": null,
+        "preview": null,
+        "squarePreview": null
+      },
+      "duration": 29,
+      "hasPosts": false,
+      "listStates": [
+        {
+          "id": 703,
+          "type": "posts",
+          "name": "Posts",
+          "hasMedia": false,
+          "canAddMedia": false
+        },
+        {
+          "id": 701,
+          "type": "stories",
+          "name": "Stories",
+          "hasMedia": false,
+          "canAddMedia": false
+        },
+        {
+          "id": 702,
+          "type": "messages",
+          "name": "Messages",
+          "hasMedia": true,
+          "canAddMedia": false
+        },
+        {
+          "id": 717,
+          "type": "streams",
+          "name": "Streams",
+          "hasMedia": false,
+          "canAddMedia": false
+        }
+      ],
+      "hasCustomPreview": false,
+      "videoSources": {
+        "720": null,
+        "240": null
+      }
+    },
+    {
+      "id": 5000052,
+      "type": "audio",
+      "convertedToVideo": false,
+      "canView": true,
+      "hasError": false,
+      "createdAt": "2024-05-21T13:32:09+00:00",
+      "isReady": true,
+      "counters": {
+        "likesCount": 0,
+        "tipsSumm": 0,
+        "buyersCount": 1
+      },
+      "files": {
+        "full": {
+          "url": "https://cdn2.onlyfans.com/files/8/8e/8e33778851415041791aa58713cbb43d/0251.mp3",
+          "width": 0,
+          "height": 0,
+          "size": 0,
+          "sources": []
+        },
+        "thumb": null,
+        "preview": null,
+        "squarePreview": null
+      },
+      "duration": 35,
+      "hasPosts": false,
+      "listStates": [
+        {
+          "id": 703,
+          "type": "posts",
+          "name": "Posts",
+          "hasMedia": false,
+          "canAddMedia": false
+        },
+        {
+          "id": 701,
+          "type": "stories",
+          "name": "Stories",
+          "hasMedia": false,
+          "canAddMedia": false
+        },
+        {
+          "id": 702,
+          "type": "messages",
+          "name": "Messages",
+          "hasMedia": true,
+          "canAddMedia": false
+        },
+        {
+          "id": 717,
+          "type": "streams",
+          "name": "Streams",
+          "hasMedia": false,
+          "canAddMedia": false
+        }
+      ],
+      "hasCustomPreview": false,
+      "videoSources": {
+        "720": null,
+        "240": null
+      }
+    }
+  ],
+  "hasMore": true
+}

@@ -1,0 +1,68 @@
+# Builds web/ (Eleventy + Tailwind) and publishes it to GitHub Pages.
+# One-time repo setting: Settings > Pages > Source = "GitHub Actions".
+name: site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - ".github/workflows/site.yml"
+  workflow_dispatch:
+
+# The build job runs third-party install and build tools, so it only reads; the deploy job alone may publish.
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      PATH_PREFIX: /openinflowwww/
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: web
+      - run: pnpm build
+        working-directory: web
+      # Every root-relative href, src and srcset candidate (either quote style) must carry the prefix, or it 404s on Pages.
+      - name: Check internal URLs carry PATH_PREFIX
+        working-directory: web
+        run: |
+          bad=$(grep -rhoE "(href|src|srcset)=(\"[^\"]*\"|'[^']*')" dist --include='*.html' \
+            | grep -oE "(=[\"']|,[[:space:]]*)/[^[:space:],\"']*" | sed -E "s/^(=[\"']|,[[:space:]]*)//" \
+            | grep -v "^${PATH_PREFIX}" || true)
+          if [ -n "$bad" ]; then
+            echo "Root-relative URLs without the ${PATH_PREFIX} prefix:"
+            echo "$bad" | sort | uniq -c | sort -rn | head -50
+            exit 1
+          fi
+          echo "All root-relative href, src and srcset values start with ${PATH_PREFIX}."
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

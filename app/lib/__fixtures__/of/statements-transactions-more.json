@@ -1,0 +1,73 @@
+{
+  "list": [
+    {
+      "amount": 5,
+      "vatAmount": 1.1,
+      "taxAmount": 0,
+      "mediaTaxAmount": 0,
+      "net": 4.0,
+      "fee": 1.0,
+      "createdAt": "2026-10-12T09:41:07+00:00",
+      "currency": "USD",
+      "description": "Subscription from <a href=\"https://onlyfans.com/synthfan1\">Synth Fan One</a>",
+      "descriptionDetails": {
+        "type": "subscription",
+        "params": {
+          "URL": "https://onlyfans.com/synthfan1",
+          "NAME": "Synth Fan One"
+        }
+      },
+      "status": "done",
+      "user": {
+        "view": "t",
+        "id": 100000,
+        "name": "Synth Fan One",
+        "username": "synthfan1",
+        "isVerified": false,
+        "isDeleted": false,
+        "isActive": true,
+        "avatar": "https://public.onlyfans.com/files/synthetic/avatar-0.jpg",
+        "avatarThumbs": {
+          "c50": "https://thumbs.onlyfans.com/synthetic/c50/avatar-0.jpg",
+          "c144": "https://thumbs.onlyfans.com/synthetic/c144/avatar-0.jpg"
+        },
+        "displayName": "Synth Fan One"
+      },
+      "id": "382c19cd47b1223bcfb9f56fe051e14c"
+    },
+    {
+      "amount": 4,
+      "vatAmount": 0.88,
+      "taxAmount": 0,
+      "mediaTaxAmount": 0,
+      "net": 3.2,
+      "fee": 0.8,
+      "createdAt": "2026-08-03T18:22:15+00:00",
+      "currency": "USD",
+      "description": "Payment for message from <span>Synth Fan Two</span>",
+      "descriptionDetails": {
+        "type": "message",
+        "params": {
+          "NAME": "Synth Fan Two"
+        }
+      },
+      "status": "done",
+      "user": {
+        "view": "t",
+        "id": 100001,
+        "name": "Synth Fan Two",
+        "username": "synthfan2",
+        "isVerified": false,
+        "isDeleted": true,
+        "isActive": true,
+        "avatar": "",
+        "avatarThumbs": null,
+        "displayName": "Synth Fan Two"
+      },
+      "id": "360ebe8964fab73553a60189969cc478"
+    }
+  ],
+  "marker": 1792200000,
+  "hasMore": true,
+  "nextMarker": 1785781335
+}

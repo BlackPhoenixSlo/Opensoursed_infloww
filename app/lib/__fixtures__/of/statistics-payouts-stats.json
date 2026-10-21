@@ -1,0 +1,42 @@
+{
+ "list": {
+  "months": {
+   "1777680000": {
+    "subscribes": [
+     {
+      "time": 70.16,
+      "net": 12.78,
+      "gross": 38.56
+     }
+    ],
+    "total_net": 83.8,
+    "total_gross": 46.27
+   },
+   "1714608000": {
+    "chat_messages": [
+     {
+      "time": 98.04,
+      "net": 22.72,
+      "gross": 64.74
+     }
+    ],
+    "total_net": 40.26,
+    "total_gross": 90.51
+   }
+  },
+  "total": {
+   "subscribes": {
+    "total_net": 37.44,
+    "total_gross": 82.86
+   },
+   "all": {
+    "total_net": 17.2,
+    "total_gross": 30.56
+   },
+   "chat_messages": {
+    "total_net": 62.33,
+    "total_gross": 66.74
+   }
+  }
+ }
+}

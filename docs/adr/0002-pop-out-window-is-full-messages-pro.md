@@ -1,0 +1,20 @@
+# The Pop-out window is a full Messages Pro, not a one-Fan page
+
+Infloww's Multi-Window opens a complete Messages Pro in another window (`docs/infloww-screens.md` §3.3, C[H545992]). The Clone and our app both pop out a single Thread instead. In the Clone, `body.ft-popout` hides the Fan List and both tab strips (`ui-redesign/infloww-exact/messages.html:85`). In our app, `app/app/messages-pro/[accountId]/[fanId]/page.tsx` renders only `ChatSurface`. We follow Infloww over both of them. `/messages-pro` renders one component tree in two layouts: in-app, and windowed, which drops the app sidebar and top bar and is selected by `?window=1`, the target of the sidebar's pop-out link. `/messages-pro/[accountId]/[fanId]` stops being its own page and becomes a Deep link into that tree. The link opens with the Fan List scrolled to the Fan, the Thread open and Fan insights closed. Having one tree means every later phase changes Messages Pro in one place instead of two.
+
+## Considered Options
+
+- **Keep the one-Fan page (the Clone's behaviour and ours today).** Rejected because the window would lack the Fan List and Fan insights, and every phase would have to maintain two layouts.
+
+## Consequences
+
+- `PinnedSidePanel` is retired. It is the one-Fan page's left column of Pinned messages, not a list of Fans (`app/components/chat/PinnedPanel.tsx:235`, `ChatSurface.tsx:871`). Pinned messages stay reachable through `PinnedBar` and `PinnedPopover` in the same file.
+- ASSUMPTION: by house precedent (the one-Fan page header comment, `[fanId]/page.tsx:5`), the Chat header's pop-out opens a Pop-out window at the Fan's Deep link. Under that assumption it does not open a Fan tab, even though the Clone's "Pop out" pins a tab (`messages.html:707`, `#tbOpen` title). This is overturned if the Phase 3 spec finds Infloww's "Open new" opens a Fan tab.
+
+## Amended 2026-10-12
+
+The Consequences ASSUMPTION is overturned: the Chat header's pop-out does not open a Pop-out window. Phase 3 F1 finds that Infloww's Chat header button is "Open in new tab" and adds or focuses that Fan's Fan tab (`docs/spec/phase-03-chat-header-message-list.md:21` row H9, `:304-307` F1). Its evidence: the screenshot-built Clone labels the button "Open in new tab" with an external-link icon (`orig:516`), the help centre names the Fan tabs strip's entry "Open in new tab" (C[H262067, H406874]), and the current Clone pins a tab (`ui-redesign/infloww-exact/messages.js:2588-2596`, commit `5949d64`). The new consequence: the Chat header renders Phase 1's `OpenInNewTabButton`, and a Pop-out window for one Fan opens from the right-click "Open in a new window" on a Fan List row or a Fan tab, at the Deep link plus `?window=1`. Phase 0 ships its Thread pop-out link and its `windowed.test.tsx` case 7 as written, and Phase 3 removes the link and rewrites that case. The decision itself stands: the Pop-out window is a full Messages Pro on one tree. That the button adds a Fan tab is inferred from its label, and Phase 3 F1 carries that inference as its own ASSUMPTION.
+
+## Amended 2026-10-18
+
+The in-app layout is gone. Messages Pro is always a window of its own, as in Infloww, and never replaces the main app screen. The sidebar's "Messages Pro" item, in the expanded row and the collapsed rail, opens `/messages-pro` in a popup named `messages-pro`, and a second click focuses that window (`openPopout`, `app/lib/nav.ts`). Every other link into Messages Pro from the main app does the same: Messages rows, tips, Auto-follow chat and Group's inbox link. The separate pop-out arrow went with it. `AppShell` picks the layout from the route: every `/messages-pro` URL renders without the app sidebar or top bar, so `?window=1` no longer selects anything and old bookmarks, `/inbox`, `/chat/*` and notification deep links all land in that layout. The Window header loses the shell controls that existed only in-app: the sidebar toggle, the time zone, the avatar menu, and the inline scope switcher and error badge. These stay in the main window. Sign-in lands on the Dashboard.

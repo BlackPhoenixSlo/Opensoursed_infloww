@@ -1,0 +1,49 @@
+{
+  "_about": "Settings > Subscription's bundles (settings/subscription, settings/subscription/promotion-campaign and its Add bundle dialog modal-2): a priced model with two bundles, OF's options, and the create, edit and delete calls with OF's error answer. PII-free: synthetic ids, prices and options.",
+  "_source": "OF web bundle build 202610091632, read statically (app.js module 112995: bundles/saveBundle POSTs /subscriptions/bundles {discount, duration}, or with an id PUTs /subscriptions/bundles/{id} {discount, duration, id}; deleteBundle DELETEs /subscriptions/bundles/{id}; settings-promotion-campaign: isAddBundleDisabled). No call was sent live. The error body is OF's {error: {code, message}} shape with a synthetic message.",
+  "me": {
+    "id": 1001,
+    "username": "synthmodel",
+    "subscribePrice": 9.99,
+    "isPerformer": true,
+    "canEarn": true,
+    "canCreatePromotion": true,
+    "canCreateTrial": true,
+    "subscriptionBundles": [
+      { "id": 900001, "discount": 15, "duration": 3, "price": 25.47, "canBuy": false },
+      { "id": 900002, "discount": 0, "duration": 6, "price": 59.94, "canBuy": false }
+    ]
+  },
+  "settings": {
+    "canAddSubscriberByBundle": {
+      "discounts": { "0": "No discount", "5": "5% discount", "10": "10% discount", "15": "15% discount" },
+      "durations": { "3": "3 months", "6": "6 months", "12": "12 months" }
+    },
+    "bundleMaxPrice": 250
+  },
+  "rows": [
+    { "price": " $25.47 USD ", "time": " total for 3 months ", "discount": " -15% " },
+    { "price": " $59.94 USD ", "time": " total for 6 months ", "discount": null }
+  ],
+  "create": {
+    "form": { "discount": 10, "duration": 12 },
+    "amount": 107.89,
+    "relay": { "method": "POST", "path": "/api/of/v2/subscriptions/bundles", "body": { "discount": 10, "duration": 12 } },
+    "of": { "method": "POST", "path": "/subscriptions/bundles", "body": { "discount": 10, "duration": 12 } }
+  },
+  "edit": {
+    "id": 900001,
+    "relay": { "method": "PUT", "path": "/api/of/v2/subscriptions/bundles/900001", "body": { "discount": 10, "duration": 3 } },
+    "of": { "method": "PUT", "path": "/subscriptions/bundles/900001", "body": { "discount": 10, "duration": 3, "id": 900001 } }
+  },
+  "delete": {
+    "id": 900002,
+    "relay": { "method": "DELETE", "path": "/api/of/v2/subscriptions/bundles/900002" },
+    "of": { "method": "DELETE", "path": "/subscriptions/bundles/900002" }
+  },
+  "error": {
+    "status": 502,
+    "body": { "detail": { "upstream_status": 400, "upstream_body": "{\"error\":{\"code\":0,\"message\":\"Synthetic bundle error\"}}" } },
+    "message": "Synthetic bundle error"
+  }
+}

@@ -1,0 +1,197 @@
+{
+  "list": [
+    {
+      "amount": 5,
+      "vatAmount": 1.1,
+      "taxAmount": 0,
+      "mediaTaxAmount": 0,
+      "net": 4.0,
+      "fee": 1.0,
+      "createdAt": "2026-10-12T09:41:07+00:00",
+      "currency": "USD",
+      "description": "Subscription from <a href=\"https://onlyfans.com/synthfan1\">Synth Fan One</a>",
+      "descriptionDetails": {
+        "type": "subscription",
+        "params": {
+          "URL": "https://onlyfans.com/synthfan1",
+          "NAME": "Synth Fan One"
+        }
+      },
+      "status": "done",
+      "user": {
+        "view": "t",
+        "id": 100000,
+        "name": "Synth Fan One",
+        "username": "synthfan1",
+        "isVerified": false,
+        "isDeleted": false,
+        "isActive": true,
+        "avatar": "https://public.onlyfans.com/files/synthetic/avatar-0.jpg",
+        "avatarThumbs": {
+          "c50": "https://thumbs.onlyfans.com/synthetic/c50/avatar-0.jpg",
+          "c144": "https://thumbs.onlyfans.com/synthetic/c144/avatar-0.jpg"
+        },
+        "displayName": "Synth Fan One"
+      },
+      "id": "382c19cd47b1223bcfb9f56fe051e14c"
+    },
+    {
+      "amount": 4,
+      "vatAmount": 0.88,
+      "taxAmount": 0,
+      "mediaTaxAmount": 0,
+      "net": 3.2,
+      "fee": 0.8,
+      "createdAt": "2026-08-03T18:22:15+00:00",
+      "currency": "USD",
+      "description": "Payment for message from <span>Synth Fan Two</span>",
+      "descriptionDetails": {
+        "type": "message",
+        "params": {
+          "NAME": "Synth Fan Two"
+        }
+      },
+      "status": "done",
+      "user": {
+        "view": "t",
+        "id": 100001,
+        "name": "Synth Fan Two",
+        "username": "synthfan2",
+        "isVerified": false,
+        "isDeleted": true,
+        "isActive": true,
+        "avatar": "",
+        "avatarThumbs": null,
+        "displayName": "Synth Fan Two"
+      },
+      "id": "360ebe8964fab73553a60189969cc478"
+    },
+    {
+      "amount": 25,
+      "vatAmount": 5.5,
+      "taxAmount": 0,
+      "mediaTaxAmount": 0,
+      "net": 20.0,
+      "fee": 5.0,
+      "createdAt": "2026-08-03T17:05:48+00:00",
+      "currency": "USD",
+      "description": "Payment for message from <span>Synth Fan Two</span>",
+      "descriptionDetails": {
+        "type": "message",
+        "params": {
+          "NAME": "Synth Fan Two"
+        }
+      },
+      "status": "done",
+      "user": {
+        "view": "t",
+        "id": 100001,
+        "name": "Synth Fan Two",
+        "username": "synthfan2",
+        "isVerified": false,
+        "isDeleted": true,
+        "isActive": true,
+        "avatar": "",
+        "avatarThumbs": null,
+        "displayName": "Synth Fan Two"
+      },
+      "id": "59f78a4a8438289df25bf0b0f4449cc5"
+    },
+    {
+      "amount": 4,
+      "vatAmount": 0.88,
+      "taxAmount": 0,
+      "mediaTaxAmount": 0,
+      "net": 3.2,
+      "fee": 0.8,
+      "createdAt": "2026-08-03T16:47:30+00:00",
+      "currency": "USD",
+      "description": "Payment for message from <span>Synth Fan Two</span>",
+      "descriptionDetails": {
+        "type": "message",
+        "params": {
+          "NAME": "Synth Fan Two"
+        }
+      },
+      "status": "done",
+      "user": {
+        "view": "t",
+        "id": 100001,
+        "name": "Synth Fan Two",
+        "username": "synthfan2",
+        "isVerified": false,
+        "isDeleted": true,
+        "isActive": true,
+        "avatar": "",
+        "avatarThumbs": null,
+        "displayName": "Synth Fan Two"
+      },
+      "id": "5eb25b56d9399679c419a6d7913d2c43"
+    },
+    {
+      "amount": 30,
+      "vatAmount": 6.6,
+      "taxAmount": 0,
+      "mediaTaxAmount": 0,
+      "net": 24.0,
+      "fee": 6.0,
+      "createdAt": "2026-08-03T16:12:02+00:00",
+      "currency": "USD",
+      "description": "Payment for message from <span>Synth Fan Two</span>",
+      "descriptionDetails": {
+        "type": "message",
+        "params": {
+          "NAME": "Synth Fan Two"
+        }
+      },
+      "status": "done",
+      "user": {
+        "view": "t",
+        "id": 100001,
+        "name": "Synth Fan Two",
+        "username": "synthfan2",
+        "isVerified": false,
+        "isDeleted": true,
+        "isActive": true,
+        "avatar": "",
+        "avatarThumbs": null,
+        "displayName": "Synth Fan Two"
+      },
+      "id": "5642863023cb2669684615589b7ee621"
+    },
+    {
+      "amount": 15,
+      "vatAmount": 3.3,
+      "taxAmount": 0,
+      "mediaTaxAmount": 0,
+      "net": 12.0,
+      "fee": 3.0,
+      "createdAt": "2026-08-03T15:58:44+00:00",
+      "currency": "USD",
+      "description": "Payment for message from <span>Synth Fan Two</span>",
+      "descriptionDetails": {
+        "type": "message",
+        "params": {
+          "NAME": "Synth Fan Two"
+        }
+      },
+      "status": "done",
+      "user": {
+        "view": "t",
+        "id": 100001,
+        "name": "Synth Fan Two",
+        "username": "synthfan2",
+        "isVerified": false,
+        "isDeleted": true,
+        "isActive": true,
+        "avatar": "",
+        "avatarThumbs": null,
+        "displayName": "Synth Fan Two"
+      },
+      "id": "43fcbffe451fbd4e6687972b130a97ba"
+    }
+  ],
+  "marker": 1792200000,
+  "hasMore": false,
+  "nextMarker": null
+}

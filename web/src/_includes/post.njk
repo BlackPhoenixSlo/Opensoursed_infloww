@@ -1,0 +1,115 @@
+---
+layout: base.njk
+ogType: article
+---
+{#- The usual blog post anatomy: breadcrumb, H1, subtitle, byline, body, author box.
+    Prev/next and "More in" stay inside the post's bucket, in index order. -#}
+{%- set bucket = tags | bucketFor %}
+{%- if bucket %}
+{%- set bucketPosts = [] %}
+{%- for hub in collections.bucketHubs %}{% if hub.tag == bucket.tag %}{% set bucketPosts = hub.own %}{% endif %}{% endfor %}
+{%- set previousPost = bucketPosts | getPreviousCollectionItem(page) %}
+{%- set nextPost = bucketPosts | getNextCollectionItem(page) %}
+{%- set morePosts = bucketPosts | moreInBucket(page.url, 3) %}
+{%- endif %}
+<article class="wrap max-w-3xl pt-12 pb-20 sm:pt-20 sm:pb-28">
+  <nav aria-label="Breadcrumb">
+    <ol class="flex flex-wrap items-center gap-1 text-sm text-muted">
+      <li><a class="text-link inline-flex min-h-11 items-center" href="{{ '/blog/' | url }}">Blog</a></li>
+      {%- if bucket %}
+      <li aria-hidden="true">/</li>
+      <li><a class="text-link inline-flex min-h-11 items-center" href="{{ ('/blog/tag/' ~ bucket.tag ~ '/') | url }}">{{ bucket.label }}</a></li>
+      {%- endif %}
+    </ol>
+  </nav>
+  <h1 class="h-page mt-4">{{ title }}</h1>
+  {%- if description %}
+  <p class="mt-4 text-lg text-pretty text-muted sm:text-xl">{{ description }}</p>
+  {%- endif %}
+  {#- The date is shown here only; cards leave it out, because every post shares it. -#}
+  <p class="mt-6 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted">
+    <span>By the maintainers</span>
+    <span class="whitespace-nowrap"><span aria-hidden="true" class="mr-2">·</span><time datetime="{{ page.date | isoDate }}">{{ page.date | readableDate }}</time></span>
+    <span class="whitespace-nowrap"><span aria-hidden="true" class="mr-2">·</span>{{ content | readingTime }}</span>
+  </p>
+  {%- if parodyOf %}
+  {#- Posts with `straight: true` in front matter give sincere advice (safety, money, rules),
+      so they get a plain "Straight advice" label instead of the Parody badge. -#}
+  <div class="mt-6 rounded-2xl px-5 py-4 text-sm text-muted ring-1 ring-black/10">
+    {%- if straight %}
+    <p class="badge-straight mb-1.5 flex w-fit">Straight advice</p>
+    <p>Written in reply to
+    {%- else %}
+    <p class="badge-parody mb-1.5 flex w-fit">Parody</p>
+    <p>A parody of
+    {%- endif %}
+    <a class="text-link" href="{{ site.inflowwUrl }}/blog/{{ parodyOf }}">“{{ parodyTitle or parodyOf }}”</a>
+    ({% if parodyDate %}infloww.com, published {{ parodyDate }}; {% else %}infloww.com; {% endif %}their page stamped Oct 10, 2026).
+    {%- if straight %} The advice here is sincere; any joke is in the closing box.{% else %} The advice is meant; the jokes are about software, and they stay out of the steps.{% endif %}
+    Inflowwww is not affiliated with Infloww.</p>
+  </div>
+  {%- endif %}
+
+  {#- Two rewrites of the rendered body, so the posts' markdown stays as written:
+      - the closing pitch's "Deploy it yourself" goes to the install band on /, like every other link with that name;
+      - markdown tables stay tables, inside a focusable overflow box (see .prose table in main.css). -#}
+  {%- set pitchFrom = 'href="' ~ site.repo ~ '">Deploy it yourself</a>' %}
+  {%- set pitchTo = 'href="' ~ ('/#deploy' | url) ~ '">Deploy it yourself</a>' %}
+  {%- set tableOpen = '<div class="overflow-x-auto" role="region" aria-label="Table" tabindex="0"><table>' %}
+  <div class="prose mt-10">
+    {{ content | replace(pitchFrom, pitchTo) | replace("<table>", tableOpen) | replace("</table>", "</table></div>") | safe }}
+  </div>
+
+  {#- Other bucket tags link to their pages; free tags have no page, so they are plain text. -#}
+  {%- if tags.length > 1 %}
+  <ul class="mt-10 flex flex-wrap items-center gap-x-3 gap-y-2 text-sm" aria-label="Topics">
+    {%- for tag in tags %}
+    {%- set tagBucket = [tag] | bucketFor %}
+    {%- if tagBucket and tag != bucket.tag %}
+    <li><a class="inline-flex min-h-11 items-center rounded-full bg-cream px-4 text-ink hover:bg-band" href="{{ ('/blog/tag/' ~ tag ~ '/') | url }}">{{ tagBucket.label }}</a></li>
+    {%- elif not tagBucket %}
+    <li class="text-muted">#{{ tag }}</li>
+    {%- endif %}
+    {%- endfor %}
+  </ul>
+  {%- endif %}
+
+  <aside aria-labelledby="author-title" class="mt-12 flex items-start gap-4 rounded-2xl bg-cream p-6">
+    <svg class="size-10 shrink-0" aria-hidden="true" focusable="false"><use href="#i-logo" /></svg>
+    <div>
+      <h2 id="author-title" class="text-base font-semibold">About the author</h2>
+      <p class="mt-1 text-muted">The maintainers. Based wherever the app is installed.</p>
+    </div>
+  </aside>
+
+  {%- if previousPost or nextPost %}
+  <nav aria-label="Previous and next in {{ bucket.label }}" class="mt-12 grid gap-4 border-t border-line pt-8 sm:grid-cols-2">
+    {%- if previousPost %}
+    <a class="flex flex-col rounded-2xl bg-white p-6 ring-1 ring-black/10 hover:bg-cream" href="{{ previousPost.url | url }}" rel="prev">
+      <span class="text-sm text-muted">Previous in {{ bucket.label }}</span>
+      <span class="mt-1 block font-semibold">{{ previousPost.data.title }}</span>
+    </a>
+    {%- endif %}
+    {%- if nextPost %}
+    <a class="flex flex-col rounded-2xl bg-white p-6 ring-1 ring-black/10 hover:bg-cream sm:col-start-2" href="{{ nextPost.url | url }}" rel="next">
+      <span class="text-sm text-muted">Next in {{ bucket.label }}</span>
+      <span class="mt-1 block font-semibold">{{ nextPost.data.title }}</span>
+    </a>
+    {%- endif %}
+  </nav>
+  {%- endif %}
+
+  {%- if morePosts and morePosts.length %}
+  <section aria-labelledby="more-title" class="mt-12">
+    <h2 id="more-title" class="text-2xl font-semibold tracking-tight">More in {{ bucket.label }}</h2>
+    <ul class="mt-4 divide-y divide-line border-y border-line">
+      {%- for post in morePosts %}
+      <li><a class="flex min-h-11 items-center py-3 font-medium text-ink hover:underline hover:underline-offset-4" href="{{ post.url | url }}">{{ post.data.title }}</a></li>
+      {%- endfor %}
+    </ul>
+    <p class="mt-4"><a class="text-link inline-flex min-h-11 items-center text-sm" href="{{ ('/blog/tag/' ~ bucket.tag ~ '/') | url }}">All posts in {{ bucket.label }}</a></p>
+  </section>
+  {%- endif %}
+</article>
+
+{% include "deploy-band.njk" %}

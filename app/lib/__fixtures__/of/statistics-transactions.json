@@ -1,0 +1,194 @@
+{
+ "list": [
+  {
+   "amount": 63.91,
+   "vatAmount": 15.05,
+   "taxAmount": 0,
+   "mediaTaxAmount": 0,
+   "net": 33.68,
+   "fee": 63.28,
+   "createdAt": "2026-05-19T13:57:39+00:00",
+   "currency": "USD",
+   "description": "Subscription from <a href=\"https://onlyfans.com/u1\">Fan One</a>",
+   "descriptionDetails": {
+    "type": "subscription",
+    "params": {
+     "URL": "https://onlyfans.com/u1",
+     "NAME": "Fan One"
+    }
+   },
+   "status": "done",
+   "user": {
+    "view": "t",
+    "id": 900,
+    "name": "Fan 1",
+    "username": "u900",
+    "isVerified": false,
+    "isDeleted": false,
+    "isActive": true,
+    "avatar": null,
+    "avatarThumbs": null,
+    "displayName": ""
+   },
+   "id": "a2b07792dbd92bdfee1b3b5e9"
+  },
+  {
+   "amount": 48.8,
+   "vatAmount": 95.79,
+   "taxAmount": 0,
+   "mediaTaxAmount": 0,
+   "net": 18.12,
+   "fee": 78.08,
+   "createdAt": "2024-05-21T14:50:42+00:00",
+   "currency": "USD",
+   "description": "Payment for message from <a href=\"https://onlyfans.com/u2\">Fan Two</a>",
+   "descriptionDetails": {
+    "type": "message",
+    "params": {
+     "NAME": "Fan One"
+    }
+   },
+   "status": "done",
+   "user": {
+    "view": "t",
+    "id": 901,
+    "name": "Fan 2",
+    "username": "u901",
+    "isVerified": false,
+    "isDeleted": true,
+    "isActive": true,
+    "avatar": null,
+    "avatarThumbs": null,
+    "displayName": ""
+   },
+   "id": "46d0508329f6412f9c8484fa0"
+  },
+  {
+   "amount": 86.19,
+   "vatAmount": 43.9,
+   "taxAmount": 0,
+   "mediaTaxAmount": 0,
+   "net": 22.64,
+   "fee": 50.94,
+   "createdAt": "2024-05-21T13:38:58+00:00",
+   "currency": "USD",
+   "description": "Payment for message from <a href=\"https://onlyfans.com/u2\">Fan Two</a>",
+   "descriptionDetails": {
+    "type": "message",
+    "params": {
+     "NAME": "Fan One"
+    }
+   },
+   "status": "done",
+   "user": {
+    "view": "t",
+    "id": 902,
+    "name": "Fan 3",
+    "username": "u902",
+    "isVerified": false,
+    "isDeleted": true,
+    "isActive": true,
+    "avatar": null,
+    "avatarThumbs": null,
+    "displayName": ""
+   },
+   "id": "53aa5f03d28eed2692b07d6d2"
+  },
+  {
+   "amount": 91.7,
+   "vatAmount": 64.83,
+   "taxAmount": 0,
+   "mediaTaxAmount": 0,
+   "net": 42.6,
+   "fee": 31.05,
+   "createdAt": "2024-05-21T13:26:03+00:00",
+   "currency": "USD",
+   "description": "Payment for message from <a href=\"https://onlyfans.com/u2\">Fan Two</a>",
+   "descriptionDetails": {
+    "type": "message",
+    "params": {
+     "NAME": "Fan One"
+    }
+   },
+   "status": "done",
+   "user": {
+    "view": "t",
+    "id": 903,
+    "name": "Fan 4",
+    "username": "u903",
+    "isVerified": false,
+    "isDeleted": true,
+    "isActive": true,
+    "avatar": null,
+    "avatarThumbs": null,
+    "displayName": ""
+   },
+   "id": "83601236119a192dc68630fab"
+  },
+  {
+   "amount": 14.63,
+   "vatAmount": 99.74,
+   "taxAmount": 0,
+   "mediaTaxAmount": 0,
+   "net": 41.16,
+   "fee": 61.88,
+   "createdAt": "2024-05-21T13:17:15+00:00",
+   "currency": "USD",
+   "description": "Payment for message from <a href=\"https://onlyfans.com/u2\">Fan Two</a>",
+   "descriptionDetails": {
+    "type": "message",
+    "params": {
+     "NAME": "Fan One"
+    }
+   },
+   "status": "done",
+   "user": {
+    "view": "t",
+    "id": 904,
+    "name": "Fan 5",
+    "username": "u904",
+    "isVerified": false,
+    "isDeleted": true,
+    "isActive": true,
+    "avatar": null,
+    "avatarThumbs": null,
+    "displayName": ""
+   },
+   "id": "e5d35a98371d54612607ba32c"
+  },
+  {
+   "amount": 87.74,
+   "vatAmount": 58.54,
+   "taxAmount": 0,
+   "mediaTaxAmount": 0,
+   "net": 88.65,
+   "fee": 15.86,
+   "createdAt": "2024-05-21T13:14:20+00:00",
+   "currency": "USD",
+   "description": "Payment for message from <a href=\"https://onlyfans.com/u2\">Fan Two</a>",
+   "descriptionDetails": {
+    "type": "message",
+    "params": {
+     "NAME": "Fan One"
+    }
+   },
+   "status": "done",
+   "user": {
+    "view": "t",
+    "id": 905,
+    "name": "Fan 6",
+    "username": "u905",
+    "isVerified": false,
+    "isDeleted": true,
+    "isActive": true,
+    "avatar": null,
+    "avatarThumbs": null,
+    "displayName": ""
+   },
+   "id": "578c447d9f6e1409ed7f9949f"
+  }
+ ],
+ "marker": 1792238000,
+ "hasMore": false,
+ "nextMarker": null
+}

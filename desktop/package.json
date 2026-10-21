@@ -1,0 +1,102 @@
+{
+  "name": "openinflowwww-desktop",
+  "productName": "Inflowwww",
+  "version": "0.2.2",
+  "private": true,
+  "description": "Desktop shell for Inflowwww",
+  "author": "Inflowwww contributors",
+  "license": "UNLICENSED",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "lint:syntax": "for f in *.js lib/*.js renderer/*.js capture/*.js; do node --check \"$f\" || exit 1; done",
+    "test": "node --test 'test/**/*.test.js'",
+    "dist": "electron-builder",
+    "dist:mac": "electron-builder --mac",
+    "dist:win": "electron-builder --win",
+    "dist:linux": "electron-builder --linux",
+    "pack": "electron-builder --dir"
+  },
+  "devDependencies": {
+    "electron": "^43.4.1",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "org.openinflowwww.desktop",
+    "productName": "Inflowwww",
+    "copyright": "Copyright © Inflowwww contributors",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "config-preload.js",
+      "toast-preload.js",
+      "lib/**/*",
+      "capture/**/*",
+      "renderer/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "protocols": [
+      {
+        "name": "Inflowwww app link",
+        "schemes": [
+          "inflowwww"
+        ]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.business",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "identity": null,
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "icon": "build/icon.icns"
+    },
+    "dmg": {
+      "writeUpdateInfo": false
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "${productName}-Setup-${version}.${ext}",
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "category": "Office",
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "icon": "build/icon.png"
+    }
+  }
+}

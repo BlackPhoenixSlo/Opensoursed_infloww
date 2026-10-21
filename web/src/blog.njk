@@ -1,0 +1,91 @@
+---
+layout: base.njk
+pagination:
+  data: collections.blogIndex
+  size: 24
+  alias: posts
+  addAllPagesToCollections: true
+permalink: "blog/{% if pagination.pageNumber > 0 %}page/{{ pagination.pageNumber + 1 }}/{% endif %}"
+eleventyComputed:
+  title: "{% if pagination.pageNumber > 0 %}Inflowwww Blog, page {{ pagination.pageNumber + 1 }}{% else %}Inflowwww Blog: OnlyFans, Fansly and agency guides for $0{% endif %}"
+  description: "{% if pagination.pageNumber > 0 %}Page {{ pagination.pageNumber + 1 }} of the Inflowwww blog: creator and agency guides from the free, self-hosted alternative to Infloww.{% else %}Guides on money, content, promotion, chatting and agency operations, each one answering a post on the Infloww blog. Written by the free, self-hosted alternative.{% endif %}"
+---
+{#- Title, category row and, on page 1, the featured post; then on page 1 a cream "Start here" band with a row
+    per bucket; then the card grid. Numbered pages instead of a "Load More" button, so the site needs no JS. -#}
+{%- set featured = collections.featuredPost %}
+<section class="wrap pt-16 sm:pt-24">
+  <h1 class="h-page">Inflowwww Blog</h1>
+  <p class="lede">Guides for creators and agencies on money, content, promotion and chatting. Each one answers a post on the Infloww blog, then tells you the software bill: $0 at every bracket.</p>
+
+  {%- if collections.bucketHubs.length %}
+  <nav aria-label="Blog categories" class="mt-8">
+    <ul class="flex flex-wrap gap-1.5 text-sm sm:max-w-[40rem]">
+      <li class="shrink-0"><a class="inline-flex min-h-11 items-center rounded-full px-3.5 {{ 'bg-ink text-white' if pagination.pageNumber == 0 else 'bg-white text-ink ring-1 ring-black/10 hover:bg-cream' }}" href="{{ '/blog/' | url }}"{% if pagination.pageNumber == 0 %} aria-current="page"{% endif %}>All</a></li>
+      {%- for hub in collections.bucketHubs %}
+      <li class="shrink-0"><a class="inline-flex min-h-11 items-center rounded-full bg-white px-3.5 text-ink ring-1 ring-black/10 hover:bg-cream" href="{{ ('/blog/tag/' ~ hub.tag ~ '/') | url }}">{{ hub.label }}</a></li>
+      {%- endfor %}
+    </ul>
+  </nav>
+  {%- endif %}
+
+  {%- if pagination.pageNumber == 0 and featured %}
+  {%- set featuredBucket = featured.data.tags | bucketFor %}
+  <article class="relative mt-10 grid gap-6 rounded-2xl bg-ink p-8 text-white hover:bg-black/85 sm:p-10 motion-safe:transition-colors lg:grid-cols-[3fr_1fr] lg:items-end">
+    <div>
+      <p class="flex flex-wrap items-center gap-2 text-sm">
+        <span class="inline-flex items-center rounded-full bg-sun px-3 py-1 text-xs font-medium text-ink">Featured</span>
+        {%- if featuredBucket %}<span class="text-white/80">{{ featuredBucket.label }}</span>{% endif %}
+      </p>
+      <h2 class="mt-4 text-2xl font-semibold tracking-tight text-balance sm:text-4xl">
+        <a class="after:absolute after:inset-0 after:rounded-2xl hover:underline hover:underline-offset-4" href="{{ featured.url | url }}">{{ featured.data.title }}</a>
+      </h2>
+      {%- if featured.data.description %}
+      <p class="mt-4 max-w-2xl text-lg text-pretty text-white/80">{{ featured.data.description }}</p>
+      {%- endif %}
+    </div>
+    <p class="flex flex-wrap items-center gap-2 text-sm text-white/80 lg:justify-end">
+      {%- if featured.data.straight %}<span class="badge-straight">Straight advice</span>
+      {%- elif featured.data.parodyOf %}<span class="badge-parody">Parody</span>
+      {%- else %}<span>The maintainers</span>{% endif %}
+      <span>· {{ featured.content | readingTime }}</span>
+    </p>
+  </article>
+  {%- endif %}
+</section>
+
+{%- if pagination.pageNumber == 0 and collections.bucketHubs.length %}
+<section aria-labelledby="start-title" class="band-cream mt-16">
+  <div class="wrap py-20 sm:py-28">
+    <h2 id="start-title" class="text-2xl font-semibold tracking-tight">Start here</h2>
+    <p class="mt-2 max-w-2xl text-pretty text-muted">The most useful first read in each category, picked by hand.</p>
+    <div class="mt-10 grid gap-10 lg:grid-cols-2 lg:gap-x-12">
+    {%- for hub in collections.bucketHubs %}
+    <div>
+      <div class="flex flex-wrap items-baseline justify-between gap-x-4">
+        <h3 class="text-xl font-semibold tracking-tight">{{ hub.label }}</h3>
+        <a class="text-link inline-flex min-h-11 items-center text-sm" href="{{ ('/blog/tag/' ~ hub.tag ~ '/') | url }}">All {{ hub.posts.length }} post{% if hub.posts.length != 1 %}s{% endif %}<span class="sr-only"> in {{ hub.label }}</span></a>
+      </div>
+      {%- set posts = hub.startPosts %}
+      {%- set compact = true %}
+      {%- set phoneRows = 1 %}
+      {% include "post-list.njk" %}
+    </div>
+    {%- endfor %}
+    </div>
+  </div>
+</section>
+{%- endif %}
+
+<section class="wrap pt-16 pb-20 sm:pb-28">
+
+  <h2 class="text-2xl font-semibold tracking-tight">
+    All posts{% if pagination.pages.length > 1 %}<span class="text-muted">, page {{ pagination.pageNumber + 1 }} of {{ pagination.pages.length }}</span>{% endif %}
+  </h2>
+  {%- set posts = pagination.items %}
+  {%- set compact = false %}
+  {%- set cardHeading = 3 %}
+  {%- set pagerHrefs = pagination.hrefs %}
+  {%- set pagerIndex = pagination.pageNumber %}
+  {%- set pagerLabel = "Blog pages" %}
+  {% include "post-list.njk" %}
+</section>

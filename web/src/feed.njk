@@ -1,0 +1,33 @@
+---
+permalink: feed.xml
+eleventyExcludeFromCollections: true
+---
+{#- RSS 2.0 with every post, in index order (bucket, then title): all posts share one date,
+    so "newest N" would cut by file name. Every text node goes through `escape`. -#}
+{%- set posts = collections.postIndex -%}
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>{{ site.name | escape }} Blog</title>
+    <link>{{ site.url }}/blog/</link>
+    <atom:link href="{{ site.url }}/feed.xml" rel="self" type="application/rss+xml" />
+    <description>Guides for creators and agencies, each one answering a post on the Infloww blog. From the free, self-hosted alternative. Unofficial parody of the Infloww blog; not affiliated with Infloww.</description>
+    <language>en</language>
+    {%- if posts.length %}
+    <lastBuildDate>{{ (posts | newestFirst)[0].date | rssDate }}</lastBuildDate>
+    {%- endif %}
+    {%- for post in posts %}
+    {%- set bucket = post.data.tags | bucketFor %}
+    <item>
+      <title>{{ post.data.title | escape }}</title>
+      <link>{{ site.url }}{{ post.url }}</link>
+      <guid isPermaLink="true">{{ site.url }}{{ post.url }}</guid>
+      <pubDate>{{ post.date | rssDate }}</pubDate>
+      {%- if bucket %}
+      <category>{{ bucket.label | escape }}</category>
+      {%- endif %}
+      <description>{{ post.data.description | escape }} Not affiliated with Infloww.</description>
+    </item>
+    {%- endfor %}
+  </channel>
+</rss>

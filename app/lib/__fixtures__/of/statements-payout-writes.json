@@ -1,0 +1,50 @@
+{
+  "withdrawal": {
+    "request": {
+      "method": "POST",
+      "path": "/api2/v2/payouts/requests",
+      "body": {
+        "withdrawal_amount": 4.4
+      }
+    },
+    "response": {
+      "status": 400,
+      "body": {
+        "error": {
+          "code": 0,
+          "message": "Not enough funds to request a payout"
+        }
+      }
+    }
+  },
+  "periodChange": {
+    "request": {
+      "method": "PATCH",
+      "path": "/api2/v2/payouts/requests",
+      "body": {
+        "withdrawalPeriod": "weekly"
+      }
+    },
+    "response": {
+      "status": 200,
+      "body": {
+        "success": true
+      }
+    }
+  },
+  "periodRestore": {
+    "request": {
+      "method": "PATCH",
+      "path": "/api2/v2/payouts/requests",
+      "body": {
+        "withdrawalPeriod": "manual"
+      }
+    },
+    "response": {
+      "status": 200,
+      "body": {
+        "success": true
+      }
+    }
+  }
+}

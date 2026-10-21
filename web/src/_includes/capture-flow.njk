@@ -1,0 +1,22 @@
+{#- The capture flow, shared by /help/, /switch-to-openinflowwww/ and /download/. Permissions come from
+    loginExtensionMulti/manifest.json; the names from the manifest and the Creators page card. -#}
+<p>
+  Capturing a session means signing in to the creator's OnlyFans once, so the dashboard can use that login. The creator
+  cannot paste it themselves: the Creators page is owner-only. They need Chrome on a computer, not a phone. They install
+  the extension (open <code>chrome://extensions</code>, turn on Developer mode, click Load unpacked and pick the
+  <code>loginExtensionMulti</code> folder the owner sends them), log in on onlyfans.com, open Messages, click Copy
+  curl, and send the copied text to the owner over a channel they would trust with their password. The owner pastes it
+  on the Creators page. No password is shared. The copied text is a live login to their account, so treat it like one.
+</p>
+<p>
+  In <code>chrome://extensions</code> it is listed as "Inflowwww Login Capture (OF + Fansly)"; the Creators page card calls
+  it "Chatterly Login Capture". Both are old names of the same extension. On the Creators page, from a computer (the
+  card is hidden on phones), ignore the Install Chrome Extension button, paste the copied text into the Paste cURL card
+  and click Bootstrap from cURL.
+</p>
+<p>
+  The folder is <a href="{{ site.repo }}/tree/main/loginExtensionMulti"><code>loginExtensionMulti/</code></a> at the top
+  of the repository. Its manifest asks Chrome for access to onlyfans.com and fansly.com only, and for permission to
+  read those sites' cookies, see the open tabs, run its scripts on those sites, keep its own settings and write to the
+  clipboard. Remove the extension after the capture.
+</p>

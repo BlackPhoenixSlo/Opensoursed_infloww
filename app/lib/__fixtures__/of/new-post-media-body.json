@@ -1,0 +1,82 @@
+{
+  "_about": "Add media with several files in one pick, audio among them: each file uploads through POST /api/of/v2/upload (part `file`), one after another in the picked order; each accepted upload's send_with is appended to the draft; Post sends them as media_files; of_client.create_post sends them as mediaFiles. Nothing here was uploaded: the send_with claims are synthetic, in upload_media's fresh-claim shape (_send_with: {processId, host, name}).",
+  "_source": "OF web bundle build 202610091632, read statically (not observed live): MakeFeedPost getDataObject: mediaFiles = uploadedFilesUrl (photos, videos and audio).",
+  "text": "Synthetic post",
+  "uploads": [
+    {
+      "name": "photo.jpg",
+      "type": "image/jpeg",
+      "send_with": [
+        {
+          "processId": "synthetic-p1",
+          "host": "convert.example",
+          "name": "photo.jpg"
+        }
+      ]
+    },
+    {
+      "name": "clip.mp4",
+      "type": "video/mp4",
+      "send_with": [
+        {
+          "processId": "synthetic-p2",
+          "host": "convert.example",
+          "name": "clip.mp4"
+        }
+      ]
+    },
+    {
+      "name": "voice.mp3",
+      "type": "audio/mpeg",
+      "send_with": [
+        {
+          "processId": "synthetic-p3",
+          "host": "convert.example",
+          "name": "voice.mp3"
+        }
+      ]
+    }
+  ],
+  "relay": {
+    "text": "Synthetic post",
+    "media_files": [
+      {
+        "processId": "synthetic-p1",
+        "host": "convert.example",
+        "name": "photo.jpg"
+      },
+      {
+        "processId": "synthetic-p2",
+        "host": "convert.example",
+        "name": "clip.mp4"
+      },
+      {
+        "processId": "synthetic-p3",
+        "host": "convert.example",
+        "name": "voice.mp3"
+      }
+    ],
+    "price": 0
+  },
+  "of": {
+    "text": "Synthetic post",
+    "mediaFiles": [
+      {
+        "processId": "synthetic-p1",
+        "host": "convert.example",
+        "name": "photo.jpg"
+      },
+      {
+        "processId": "synthetic-p2",
+        "host": "convert.example",
+        "name": "clip.mp4"
+      },
+      {
+        "processId": "synthetic-p3",
+        "host": "convert.example",
+        "name": "voice.mp3"
+      }
+    ],
+    "price": 0
+  }
+}

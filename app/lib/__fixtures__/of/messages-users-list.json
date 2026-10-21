@@ -1,0 +1,3137 @@
+{
+  "2014": {
+    "view": "m",
+    "avatar": "https://public.onlyfans.com/files/8/8d/8d15b9d87c8d62ad243477b1b6419e9a/synthetic.jpg",
+    "avatarThumbs": {
+      "c50": "https://thumbs.onlyfans.com/files/b/bf/bfc2e419319bef4947ce3a8212de9a79/synthetic.jpg",
+      "c144": "https://thumbs.onlyfans.com/files/9/9a/9a220f2cf12f14d469e9903bf753aa37/synthetic.jpg"
+    },
+    "header": "https://public.onlyfans.com/files/2/26/264ff3230a17cee845ddce0ec87b2006/synthetic.jpg",
+    "headerSize": {
+      "width": 1832,
+      "height": 1178
+    },
+    "headerThumbs": {
+      "w480": "https://thumbs.onlyfans.com/files/7/7f/7fb27c2bd8535af9b69f3c110b7841b4/synthetic.jpg",
+      "w760": "https://thumbs.onlyfans.com/files/0/0e/0e1c6eed7ab6d58d2b9f31757c6b2d0f/synthetic.jpg"
+    },
+    "id": 2014,
+    "name": "Synth User 1",
+    "username": "synthuser1",
+    "canLookStory": true,
+    "canCommentStory": true,
+    "hasNotViewedStory": true,
+    "isVerified": true,
+    "canPayInternal": true,
+    "hasScheduledStream": false,
+    "hasStream": false,
+    "hasStories": true,
+    "tipsEnabled": true,
+    "tipsTextEnabled": true,
+    "tipsMin": 5,
+    "tipsMinInternal": 1,
+    "tipsMax": 200,
+    "canEarn": true,
+    "canAddSubscriber": true,
+    "subscribePrice": 5,
+    "subscriptionBundles": [],
+    "displayName": "Synth Rename 2",
+    "notice": "",
+    "isPaywallRequired": true,
+    "isActive": true,
+    "isRestricted": false,
+    "canRestrict": true,
+    "subscribedBy": true,
+    "subscribedByExpire": false,
+    "subscribedByExpireDate": "2027-05-15T17:11:47+00:00",
+    "subscribedByAutoprolong": false,
+    "subscribedIsExpiredNow": false,
+    "currentSubscribePrice": 0,
+    "subscribedOn": true,
+    "subscribedOnExpire": false,
+    "subscribedOnExpiredNow": false,
+    "subscribedOnDuration": "7 months",
+    "listsStates": [
+      {
+        "id": "tagged",
+        "type": "tagged",
+        "name": "Tagged",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "recent",
+        "type": "recent",
+        "name": "Recent (last 24 hours)",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "purchased",
+        "type": "purchased",
+        "name": "Purchased",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "muted",
+        "type": "muted",
+        "name": "Muted",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "friends",
+        "type": "friends",
+        "name": "Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "following",
+        "type": "following",
+        "name": "Following",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "fans",
+        "type": "fans",
+        "name": "Fans",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "1320999428",
+        "type": "custom",
+        "name": "Synth list 1",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "755017382",
+        "type": "close_friends",
+        "name": "Close Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "755017319",
+        "type": "bookmarks",
+        "name": "Bookmarks",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "1290765913",
+        "type": "custom",
+        "name": "Synth list 2",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      }
+    ],
+    "lastSeen": "2026-10-17T11:44:43+00:00",
+    "canReport": true,
+    "isPerformer": true,
+    "isRealPerformer": true,
+    "isAdultContent": true,
+    "canTrialSend": false,
+    "allowIncomingCalls": false,
+    "isFriend": false,
+    "isBlocked": false,
+    "isPendingAutoprolong": false,
+    "customNickname": "Synth Rename 2"
+  },
+  "2016": {
+    "view": "m",
+    "avatar": "https://public.onlyfans.com/files/4/4c/4c6d31e777ebfce7672764c6d2f7de23/synthetic.jpg",
+    "avatarThumbs": {
+      "c50": "https://thumbs.onlyfans.com/files/a/a6/a6ee74441821d3b356b3898b2db20a2e/synthetic.jpg",
+      "c144": "https://thumbs.onlyfans.com/files/2/22/224e5fc9c2c64f539897e88b6d425093/synthetic.jpg"
+    },
+    "header": "https://public.onlyfans.com/files/f/f8/f84db77272a9843225800ada22c9fbac/synthetic.jpg",
+    "headerSize": {
+      "width": 3078,
+      "height": 1026
+    },
+    "headerThumbs": {
+      "w480": "https://thumbs.onlyfans.com/files/c/c4/c4de34f5807dc05631122da122fe19c5/synthetic.jpg",
+      "w760": "https://thumbs.onlyfans.com/files/f/f2/f25b5852d4c33718e898b2b0a722edd2/synthetic.jpg"
+    },
+    "id": 2016,
+    "name": "Synth User 3",
+    "username": "synthuser2",
+    "canLookStory": false,
+    "canCommentStory": false,
+    "hasNotViewedStory": false,
+    "isVerified": true,
+    "canPayInternal": true,
+    "hasScheduledStream": false,
+    "hasStream": false,
+    "hasStories": false,
+    "tipsEnabled": false,
+    "tipsTextEnabled": true,
+    "tipsMin": 5,
+    "tipsMinInternal": 1,
+    "tipsMax": 200,
+    "canEarn": true,
+    "canAddSubscriber": true,
+    "subscribePrice": 15,
+    "subscriptionBundles": [
+      {
+        "id": 5518240,
+        "discount": 30,
+        "duration": 3,
+        "price": 31.5,
+        "canBuy": true
+      },
+      {
+        "id": 5518242,
+        "discount": 40,
+        "duration": 6,
+        "price": 54,
+        "canBuy": true
+      },
+      {
+        "id": 5518243,
+        "discount": 50,
+        "duration": 12,
+        "price": 90,
+        "canBuy": true
+      }
+    ],
+    "displayName": "Synth Rename 4",
+    "notice": "",
+    "isPaywallRequired": true,
+    "isActive": true,
+    "isRestricted": false,
+    "canRestrict": true,
+    "subscribedBy": null,
+    "subscribedByExpire": null,
+    "subscribedByExpireDate": "2026-06-08T23:49:27+00:00",
+    "subscribedByAutoprolong": null,
+    "subscribedIsExpiredNow": true,
+    "currentSubscribePrice": null,
+    "subscribedOn": true,
+    "subscribedOnExpire": false,
+    "subscribedOnExpiredNow": false,
+    "subscribedOnDuration": "4 months",
+    "listsStates": [
+      {
+        "id": "tagged",
+        "type": "tagged",
+        "name": "Tagged",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "recent",
+        "type": "recent",
+        "name": "Recent (last 24 hours)",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "purchased",
+        "type": "purchased",
+        "name": "Purchased",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "muted",
+        "type": "muted",
+        "name": "Muted",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "friends",
+        "type": "friends",
+        "name": "Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "following",
+        "type": "following",
+        "name": "Following",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "fans",
+        "type": "fans",
+        "name": "Fans",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "1320999428",
+        "type": "custom",
+        "name": "Synth list 1",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "755017382",
+        "type": "close_friends",
+        "name": "Close Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "755017319",
+        "type": "bookmarks",
+        "name": "Bookmarks",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "1290765913",
+        "type": "custom",
+        "name": "Synth list 2",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      }
+    ],
+    "lastSeen": "2026-10-17T11:43:35+00:00",
+    "canReport": true,
+    "isPerformer": true,
+    "isRealPerformer": true,
+    "isAdultContent": true,
+    "canTrialSend": false,
+    "allowIncomingCalls": false,
+    "isFriend": false,
+    "isBlocked": false,
+    "promotions": [
+      {
+        "id": 66489218,
+        "message": "<p>Synthetic message 23</p>",
+        "rawMessage": "<p>Synthetic message 23</p>",
+        "hasRelatedPromo": false,
+        "price": 0,
+        "type": "expired",
+        "canClaim": true,
+        "claimsCount": 1855,
+        "subscribeCounts": null,
+        "subscribeDays": 30,
+        "createdAt": "2026-10-12T03:57:39+00:00",
+        "finishedAt": "2026-10-20T03:57:39+00:00",
+        "isFinished": false
+      }
+    ],
+    "isPendingAutoprolong": false,
+    "customNickname": "Synth Rename 4"
+  },
+  "2013": {
+    "view": "m",
+    "avatar": "https://public.onlyfans.com/files/b/bd/bd0973917176ee2a672ce08e6feb94bf/synthetic.jpg",
+    "avatarThumbs": {
+      "c50": "https://thumbs.onlyfans.com/files/e/ea/ea60a429f34bc50a874928b4d784e7f1/synthetic.jpg",
+      "c144": "https://thumbs.onlyfans.com/files/9/91/91cc8efd558a64a84cfcfd8c5066085e/synthetic.jpg"
+    },
+    "header": "https://public.onlyfans.com/files/f/ff/ffd0fda14107865963f3e2628eca3876/synthetic.jpg",
+    "headerSize": {
+      "width": 1920,
+      "height": 480
+    },
+    "headerThumbs": {
+      "w480": "https://thumbs.onlyfans.com/files/7/7b/7b32b06750e99fb93f572a6174a5e01e/synthetic.jpg",
+      "w760": "https://thumbs.onlyfans.com/files/d/dc/dcf91b89cda895cfd3ada998ec96b613/synthetic.jpg"
+    },
+    "id": 2013,
+    "name": "Synth User 5",
+    "username": "synthuser3",
+    "canLookStory": true,
+    "canCommentStory": true,
+    "hasNotViewedStory": false,
+    "isVerified": true,
+    "canPayInternal": true,
+    "hasScheduledStream": false,
+    "hasStream": false,
+    "hasStories": false,
+    "tipsEnabled": true,
+    "tipsTextEnabled": true,
+    "tipsMin": 5,
+    "tipsMinInternal": 1,
+    "tipsMax": 200,
+    "canEarn": true,
+    "canAddSubscriber": false,
+    "subscribePrice": 0,
+    "displayName": "Synth Rename 6",
+    "isPaywallRequired": true,
+    "isActive": true,
+    "isRestricted": false,
+    "canRestrict": true,
+    "subscribedBy": true,
+    "subscribedByExpire": false,
+    "subscribedByExpireDate": "2035-02-17T07:53:39+00:00",
+    "subscribedByAutoprolong": true,
+    "subscribedIsExpiredNow": false,
+    "currentSubscribePrice": 0,
+    "subscribedOn": false,
+    "subscribedOnExpire": null,
+    "subscribedOnExpiredNow": null,
+    "subscribedOnDuration": null,
+    "listsStates": [
+      {
+        "id": "tagged",
+        "type": "tagged",
+        "name": "Tagged",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "recent",
+        "type": "recent",
+        "name": "Recent (last 24 hours)",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "purchased",
+        "type": "purchased",
+        "name": "Purchased",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "muted",
+        "type": "muted",
+        "name": "Muted",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "friends",
+        "type": "friends",
+        "name": "Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "following",
+        "type": "following",
+        "name": "Following",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "fans",
+        "type": "fans",
+        "name": "Fans",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "755017382",
+        "type": "close_friends",
+        "name": "Close Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "755017319",
+        "type": "bookmarks",
+        "name": "Bookmarks",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "1290765913",
+        "type": "custom",
+        "name": "Synth list 2",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      }
+    ],
+    "lastSeen": null,
+    "canReport": true,
+    "isPerformer": true,
+    "isRealPerformer": true,
+    "isAdultContent": false,
+    "canTrialSend": false,
+    "allowIncomingCalls": false,
+    "isFriend": false,
+    "isBlocked": false,
+    "isPendingAutoprolong": false,
+    "customNickname": "Synth Rename 6"
+  },
+  "2005": {
+    "view": "m",
+    "avatar": "https://public.onlyfans.com/files/a/a4/a4b1558618fa315b601fe626f14f30d4/synthetic.jpg",
+    "avatarThumbs": {
+      "c50": "https://thumbs.onlyfans.com/files/6/64/64cf9711a27cd0eead37b65caf153a53/synthetic.jpg",
+      "c144": "https://thumbs.onlyfans.com/files/b/be/be0fb5a036bc94791091574cdc3f6207/synthetic.jpg"
+    },
+    "header": "https://public.onlyfans.com/files/7/7f/7fa7b0ee7def604d8dbc8a5f0ce1bb13/synthetic.jpg",
+    "headerSize": {
+      "width": 2088,
+      "height": 1150
+    },
+    "headerThumbs": {
+      "w480": "https://thumbs.onlyfans.com/files/7/73/732e91ad374b7f108df9791ef351d62b/synthetic.jpg",
+      "w760": "https://thumbs.onlyfans.com/files/4/45/4507e82fe4f5a3d787fd2abf545994f6/synthetic.jpg"
+    },
+    "id": 2005,
+    "name": "Synth User 7",
+    "username": "synthuser4",
+    "canLookStory": true,
+    "canCommentStory": true,
+    "hasNotViewedStory": true,
+    "isVerified": true,
+    "canPayInternal": true,
+    "hasScheduledStream": false,
+    "hasStream": false,
+    "hasStories": true,
+    "tipsEnabled": true,
+    "tipsTextEnabled": true,
+    "tipsMin": 5,
+    "tipsMinInternal": 1,
+    "tipsMax": 200,
+    "canEarn": true,
+    "canAddSubscriber": false,
+    "subscribePrice": 0,
+    "displayName": "",
+    "isPaywallRequired": true,
+    "isActive": true,
+    "isRestricted": false,
+    "canRestrict": true,
+    "subscribedBy": true,
+    "subscribedByExpire": false,
+    "subscribedByExpireDate": "2035-07-08T07:54:11+00:00",
+    "subscribedByAutoprolong": true,
+    "subscribedIsExpiredNow": false,
+    "currentSubscribePrice": 0,
+    "subscribedOn": false,
+    "subscribedOnExpire": null,
+    "subscribedOnExpiredNow": null,
+    "subscribedOnDuration": null,
+    "listsStates": [
+      {
+        "id": "tagged",
+        "type": "tagged",
+        "name": "Tagged",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "recent",
+        "type": "recent",
+        "name": "Recent (last 24 hours)",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "purchased",
+        "type": "purchased",
+        "name": "Purchased",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "muted",
+        "type": "muted",
+        "name": "Muted",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "friends",
+        "type": "friends",
+        "name": "Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "following",
+        "type": "following",
+        "name": "Following",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "fans",
+        "type": "fans",
+        "name": "Fans",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "755017382",
+        "type": "close_friends",
+        "name": "Close Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "755017319",
+        "type": "bookmarks",
+        "name": "Bookmarks",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "1290765913",
+        "type": "custom",
+        "name": "Synth list 2",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      }
+    ],
+    "lastSeen": "2026-10-17T11:42:16+00:00",
+    "canReport": true,
+    "isPerformer": true,
+    "isRealPerformer": true,
+    "isAdultContent": false,
+    "canTrialSend": false,
+    "allowIncomingCalls": false,
+    "isFriend": false,
+    "isBlocked": false,
+    "isPendingAutoprolong": false
+  },
+  "2011": {
+    "view": "m",
+    "avatar": "https://public.onlyfans.com/files/0/0b/0b92d408f6af865a2a0d840b7ef1bfed/synthetic.jpg",
+    "avatarThumbs": {
+      "c50": "https://thumbs.onlyfans.com/files/f/f9/f9b05470035d788eb3eff2cf5f952547/synthetic.jpg",
+      "c144": "https://thumbs.onlyfans.com/files/9/9b/9bc2ffea60abcf342ed9b2b75e976f26/synthetic.jpg"
+    },
+    "header": "https://public.onlyfans.com/files/5/59/5907adc1efacdda576717eb5d3b47fa3/synthetic.jpg",
+    "headerSize": {
+      "width": 774,
+      "height": 288
+    },
+    "headerThumbs": {
+      "w480": "https://thumbs.onlyfans.com/files/a/ac/acfdc747b3789e0924789f67b1003010/synthetic.jpg",
+      "w760": "https://thumbs.onlyfans.com/files/7/7c/7c293d2ea4e867ca0d31c01b1f4ac1d5/synthetic.jpg"
+    },
+    "id": 2011,
+    "name": "Synth User 8",
+    "username": "synthuser5",
+    "canLookStory": true,
+    "canCommentStory": true,
+    "hasNotViewedStory": true,
+    "isVerified": true,
+    "canPayInternal": true,
+    "hasScheduledStream": false,
+    "hasStream": false,
+    "hasStories": true,
+    "tipsEnabled": true,
+    "tipsTextEnabled": true,
+    "tipsMin": 5,
+    "tipsMinInternal": 1,
+    "tipsMax": 200,
+    "canEarn": true,
+    "canAddSubscriber": false,
+    "subscribePrice": 0,
+    "displayName": "Synth Rename 9",
+    "isPaywallRequired": true,
+    "isActive": true,
+    "isRestricted": false,
+    "canRestrict": true,
+    "subscribedBy": true,
+    "subscribedByExpire": false,
+    "subscribedByExpireDate": "2035-02-12T17:48:27+00:00",
+    "subscribedByAutoprolong": true,
+    "subscribedIsExpiredNow": false,
+    "currentSubscribePrice": 0,
+    "subscribedOn": false,
+    "subscribedOnExpire": null,
+    "subscribedOnExpiredNow": null,
+    "subscribedOnDuration": null,
+    "listsStates": [
+      {
+        "id": "tagged",
+        "type": "tagged",
+        "name": "Tagged",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "recent",
+        "type": "recent",
+        "name": "Recent (last 24 hours)",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "purchased",
+        "type": "purchased",
+        "name": "Purchased",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "muted",
+        "type": "muted",
+        "name": "Muted",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "friends",
+        "type": "friends",
+        "name": "Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "following",
+        "type": "following",
+        "name": "Following",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "fans",
+        "type": "fans",
+        "name": "Fans",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "1320999428",
+        "type": "custom",
+        "name": "Synth list 1",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "755017382",
+        "type": "close_friends",
+        "name": "Close Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "755017319",
+        "type": "bookmarks",
+        "name": "Bookmarks",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "1290765913",
+        "type": "custom",
+        "name": "Synth list 2",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      }
+    ],
+    "lastSeen": "2026-10-17T11:42:53+00:00",
+    "canReport": true,
+    "isPerformer": true,
+    "isRealPerformer": true,
+    "isAdultContent": true,
+    "canTrialSend": false,
+    "allowIncomingCalls": false,
+    "isFriend": false,
+    "isBlocked": false,
+    "isPendingAutoprolong": false,
+    "customNickname": "Synth Rename 9"
+  },
+  "2004": {
+    "view": "m",
+    "avatar": "https://public.onlyfans.com/files/f/fe/fe54212beee55d8e529986f7278e8b5d/synthetic.jpg",
+    "avatarThumbs": {
+      "c50": "https://thumbs.onlyfans.com/files/1/1f/1ffc09ddc2cec49bc130aa38ebb37863/synthetic.jpg",
+      "c144": "https://thumbs.onlyfans.com/files/1/19/19c37ffd4e920abddc3e79a7846ebf78/synthetic.jpg"
+    },
+    "header": "https://public.onlyfans.com/files/1/15/15836cc5ba2b60ba654e0f4171bd4c74/synthetic.jpg",
+    "headerSize": {
+      "width": 3069,
+      "height": 954
+    },
+    "headerThumbs": {
+      "w480": "https://thumbs.onlyfans.com/files/8/8d/8da16907e511ad5243331e31768f227e/synthetic.jpg",
+      "w760": "https://thumbs.onlyfans.com/files/9/96/96d522b91b0f36ab7ed6b202305efb51/synthetic.jpg"
+    },
+    "id": 2004,
+    "name": "Synth User 10",
+    "username": "synthuser6",
+    "canLookStory": true,
+    "canCommentStory": true,
+    "hasNotViewedStory": true,
+    "isVerified": true,
+    "canPayInternal": true,
+    "hasScheduledStream": false,
+    "hasStream": false,
+    "hasStories": true,
+    "tipsEnabled": true,
+    "tipsTextEnabled": true,
+    "tipsMin": 5,
+    "tipsMinInternal": 1,
+    "tipsMax": 200,
+    "canEarn": true,
+    "canAddSubscriber": false,
+    "subscribePrice": 0,
+    "displayName": "Synth Rename 10",
+    "isPaywallRequired": true,
+    "isActive": true,
+    "isRestricted": false,
+    "canRestrict": true,
+    "subscribedBy": true,
+    "subscribedByExpire": false,
+    "subscribedByExpireDate": "2036-05-11T18:49:03+00:00",
+    "subscribedByAutoprolong": true,
+    "subscribedIsExpiredNow": false,
+    "currentSubscribePrice": 0,
+    "subscribedOn": false,
+    "subscribedOnExpire": null,
+    "subscribedOnExpiredNow": null,
+    "subscribedOnDuration": null,
+    "listsStates": [
+      {
+        "id": "tagged",
+        "type": "tagged",
+        "name": "Tagged",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "recent",
+        "type": "recent",
+        "name": "Recent (last 24 hours)",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "purchased",
+        "type": "purchased",
+        "name": "Purchased",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "muted",
+        "type": "muted",
+        "name": "Muted",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "friends",
+        "type": "friends",
+        "name": "Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "following",
+        "type": "following",
+        "name": "Following",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "fans",
+        "type": "fans",
+        "name": "Fans",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "755017382",
+        "type": "close_friends",
+        "name": "Close Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "755017319",
+        "type": "bookmarks",
+        "name": "Bookmarks",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "1290765913",
+        "type": "custom",
+        "name": "Synth list 2",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      }
+    ],
+    "lastSeen": "2026-10-17T11:42:37+00:00",
+    "canReport": true,
+    "isPerformer": true,
+    "isRealPerformer": true,
+    "isAdultContent": true,
+    "canTrialSend": false,
+    "allowIncomingCalls": false,
+    "isFriend": false,
+    "isBlocked": false,
+    "isPendingAutoprolong": false,
+    "customNickname": "Synth Rename 10"
+  },
+  "2020": {
+    "view": "m",
+    "avatar": "https://public.onlyfans.com/files/0/00/00e646696cd694aecf6ea05326b0c6a9/synthetic.jpg",
+    "avatarThumbs": {
+      "c50": "https://thumbs.onlyfans.com/files/f/fc/fcd9fd8a27cc75a83d8a4e5716146e2e/synthetic.jpg",
+      "c144": "https://thumbs.onlyfans.com/files/2/2a/2ac2221432c72d7d8c89feb1e1605fc5/synthetic.jpg"
+    },
+    "header": "https://public.onlyfans.com/files/c/c2/c24c3de2bc1a02e59d85b9274b4d8abf/synthetic.jpg",
+    "headerSize": {
+      "width": 3829,
+      "height": 2730
+    },
+    "headerThumbs": {
+      "w480": "https://thumbs.onlyfans.com/files/3/3d/3d64443c32daeef9765068c4250a4bb4/synthetic.jpg",
+      "w760": "https://thumbs.onlyfans.com/files/4/48/488449483f620efe126c36b6aa5a984a/synthetic.jpg"
+    },
+    "id": 2020,
+    "name": "Synth User 11",
+    "username": "synthuser7",
+    "canLookStory": true,
+    "canCommentStory": true,
+    "hasNotViewedStory": false,
+    "isVerified": true,
+    "canPayInternal": true,
+    "hasScheduledStream": false,
+    "hasStream": false,
+    "hasStories": false,
+    "tipsEnabled": true,
+    "tipsTextEnabled": true,
+    "tipsMin": 5,
+    "tipsMinInternal": 1,
+    "tipsMax": 200,
+    "canEarn": true,
+    "canAddSubscriber": false,
+    "subscribePrice": 0,
+    "displayName": "Synth Rename 12",
+    "isPaywallRequired": true,
+    "isActive": true,
+    "isRestricted": false,
+    "canRestrict": true,
+    "subscribedBy": true,
+    "subscribedByExpire": false,
+    "subscribedByExpireDate": "2035-07-01T10:45:32+00:00",
+    "subscribedByAutoprolong": true,
+    "subscribedIsExpiredNow": false,
+    "currentSubscribePrice": 0,
+    "subscribedOn": false,
+    "subscribedOnExpire": null,
+    "subscribedOnExpiredNow": null,
+    "subscribedOnDuration": null,
+    "listsStates": [
+      {
+        "id": "tagged",
+        "type": "tagged",
+        "name": "Tagged",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "recent",
+        "type": "recent",
+        "name": "Recent (last 24 hours)",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "purchased",
+        "type": "purchased",
+        "name": "Purchased",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "muted",
+        "type": "muted",
+        "name": "Muted",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "friends",
+        "type": "friends",
+        "name": "Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "following",
+        "type": "following",
+        "name": "Following",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "fans",
+        "type": "fans",
+        "name": "Fans",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "755017382",
+        "type": "close_friends",
+        "name": "Close Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "755017319",
+        "type": "bookmarks",
+        "name": "Bookmarks",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "1290765913",
+        "type": "custom",
+        "name": "Synth list 2",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      }
+    ],
+    "lastSeen": "2026-10-17T11:43:32+00:00",
+    "canReport": true,
+    "isPerformer": true,
+    "isRealPerformer": true,
+    "isAdultContent": true,
+    "canTrialSend": false,
+    "allowIncomingCalls": false,
+    "isFriend": false,
+    "isBlocked": false,
+    "isPendingAutoprolong": false,
+    "customNickname": "Synth Rename 12"
+  },
+  "2002": {
+    "view": "m",
+    "avatar": "https://public.onlyfans.com/files/3/32/32e93f3f06ffd6ad1c5637a95735b6a2/synthetic.jpg",
+    "avatarThumbs": {
+      "c50": "https://thumbs.onlyfans.com/files/a/af/afa9340767d07417fa84510e9130f9d2/synthetic.jpg",
+      "c144": "https://thumbs.onlyfans.com/files/1/14/149074931d87c6e1c5d8ac2d9aaaed76/synthetic.jpg"
+    },
+    "header": "https://public.onlyfans.com/files/c/ce/cec4e28230fb97601ccf43a3f977eaa6/synthetic.jpg",
+    "headerSize": {
+      "width": 1683,
+      "height": 673
+    },
+    "headerThumbs": {
+      "w480": "https://thumbs.onlyfans.com/files/1/1c/1c5afe5e40cfbc9a15364feddaa4f1ac/synthetic.jpg",
+      "w760": "https://thumbs.onlyfans.com/files/0/07/07e8a9fc188b779395e31e0a07250a73/synthetic.jpg"
+    },
+    "id": 2002,
+    "name": "Synth User 13",
+    "username": "synthuser8",
+    "canLookStory": false,
+    "canCommentStory": false,
+    "hasNotViewedStory": false,
+    "isVerified": true,
+    "canPayInternal": true,
+    "hasScheduledStream": false,
+    "hasStream": false,
+    "hasStories": false,
+    "tipsEnabled": false,
+    "tipsTextEnabled": true,
+    "tipsMin": 5,
+    "tipsMinInternal": 1,
+    "tipsMax": 200,
+    "canEarn": true,
+    "canAddSubscriber": true,
+    "subscribePrice": 14.99,
+    "subscriptionBundles": [
+      {
+        "id": 10865487,
+        "discount": 25,
+        "duration": 3,
+        "price": 33.73,
+        "canBuy": true
+      },
+      {
+        "id": 10865491,
+        "discount": 35,
+        "duration": 6,
+        "price": 58.46,
+        "canBuy": true
+      },
+      {
+        "id": 10865492,
+        "discount": 50,
+        "duration": 12,
+        "price": 89.94,
+        "canBuy": true
+      }
+    ],
+    "displayName": "Synth Rename 14",
+    "notice": "",
+    "isPaywallRequired": true,
+    "isActive": true,
+    "isRestricted": false,
+    "canRestrict": true,
+    "subscribedBy": null,
+    "subscribedByExpire": null,
+    "subscribedByExpireDate": "2026-06-11T20:50:48+00:00",
+    "subscribedByAutoprolong": null,
+    "subscribedIsExpiredNow": true,
+    "currentSubscribePrice": null,
+    "subscribedOn": true,
+    "subscribedOnExpire": false,
+    "subscribedOnExpiredNow": false,
+    "subscribedOnDuration": "4 months",
+    "listsStates": [
+      {
+        "id": "tagged",
+        "type": "tagged",
+        "name": "Tagged",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "recent",
+        "type": "recent",
+        "name": "Recent (last 24 hours)",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "purchased",
+        "type": "purchased",
+        "name": "Purchased",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "muted",
+        "type": "muted",
+        "name": "Muted",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "friends",
+        "type": "friends",
+        "name": "Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "following",
+        "type": "following",
+        "name": "Following",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "fans",
+        "type": "fans",
+        "name": "Fans",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "755017382",
+        "type": "close_friends",
+        "name": "Close Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "755017319",
+        "type": "bookmarks",
+        "name": "Bookmarks",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "1290765913",
+        "type": "custom",
+        "name": "Synth list 2",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      }
+    ],
+    "lastSeen": null,
+    "canReport": true,
+    "isPerformer": true,
+    "isRealPerformer": true,
+    "isAdultContent": false,
+    "canTrialSend": false,
+    "allowIncomingCalls": false,
+    "isFriend": false,
+    "isBlocked": false,
+    "promotions": [
+      {
+        "id": 62428269,
+        "message": "<p>Synthetic message 24</p>",
+        "rawMessage": "<p>Synthetic message 24</p>",
+        "hasRelatedPromo": true,
+        "price": 0,
+        "type": "expired",
+        "canClaim": true,
+        "claimsCount": 27640,
+        "subscribeCounts": null,
+        "subscribeDays": 14,
+        "createdAt": "2026-06-22T18:15:00+00:00",
+        "finishedAt": null,
+        "isFinished": false
+      }
+    ],
+    "isPendingAutoprolong": false,
+    "customNickname": "Synth Rename 14"
+  },
+  "2017": {
+    "view": "m",
+    "avatar": "https://public.onlyfans.com/files/8/85/85290f4074433bac20a7073393367116/synthetic.png",
+    "avatarThumbs": {
+      "c50": "https://thumbs.onlyfans.com/files/1/17/1744095d59bb918dd051da3d02b4b958/synthetic.png",
+      "c144": "https://thumbs.onlyfans.com/files/3/37/373878a9a3339c302b2f333013aa8ca7/synthetic.png"
+    },
+    "header": "https://public.onlyfans.com/files/6/61/6121d416016a6755abcfe17be28041cf/synthetic.jpg",
+    "headerSize": {
+      "width": 1920,
+      "height": 1080
+    },
+    "headerThumbs": {
+      "w480": "https://thumbs.onlyfans.com/files/1/11/111a015c35518a2317c35c384f0317a2/synthetic.jpg",
+      "w760": "https://thumbs.onlyfans.com/files/7/70/7025607abc061dbe25f291ee8ac717e4/synthetic.jpg"
+    },
+    "id": 2017,
+    "name": "Synth User 15",
+    "username": "synthuser9",
+    "canLookStory": true,
+    "canCommentStory": true,
+    "hasNotViewedStory": true,
+    "isVerified": true,
+    "canPayInternal": true,
+    "hasScheduledStream": false,
+    "hasStream": false,
+    "hasStories": true,
+    "tipsEnabled": true,
+    "tipsTextEnabled": true,
+    "tipsMin": 5,
+    "tipsMinInternal": 1,
+    "tipsMax": 200,
+    "canEarn": true,
+    "canAddSubscriber": false,
+    "subscribePrice": 0,
+    "displayName": "Synth Rename 16",
+    "isPaywallRequired": true,
+    "isActive": true,
+    "isRestricted": false,
+    "canRestrict": true,
+    "subscribedBy": true,
+    "subscribedByExpire": false,
+    "subscribedByExpireDate": "2036-05-30T18:10:01+00:00",
+    "subscribedByAutoprolong": true,
+    "subscribedIsExpiredNow": false,
+    "currentSubscribePrice": 0,
+    "subscribedOn": false,
+    "subscribedOnExpire": null,
+    "subscribedOnExpiredNow": null,
+    "subscribedOnDuration": null,
+    "listsStates": [
+      {
+        "id": "tagged",
+        "type": "tagged",
+        "name": "Tagged",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "recent",
+        "type": "recent",
+        "name": "Recent (last 24 hours)",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "purchased",
+        "type": "purchased",
+        "name": "Purchased",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "muted",
+        "type": "muted",
+        "name": "Muted",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "friends",
+        "type": "friends",
+        "name": "Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "following",
+        "type": "following",
+        "name": "Following",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "fans",
+        "type": "fans",
+        "name": "Fans",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "755017382",
+        "type": "close_friends",
+        "name": "Close Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "755017319",
+        "type": "bookmarks",
+        "name": "Bookmarks",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "1290765913",
+        "type": "custom",
+        "name": "Synth list 2",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      }
+    ],
+    "lastSeen": "2026-10-17T11:44:50+00:00",
+    "canReport": true,
+    "isPerformer": true,
+    "isRealPerformer": true,
+    "isAdultContent": false,
+    "canTrialSend": false,
+    "allowIncomingCalls": false,
+    "isFriend": false,
+    "isBlocked": false,
+    "isPendingAutoprolong": false,
+    "customNickname": "Synth Rename 16"
+  },
+  "2008": {
+    "view": "m",
+    "avatar": "https://public.onlyfans.com/files/1/18/1878378926ea4cf6c36b161cc9cb216d/synthetic.jpg",
+    "avatarThumbs": {
+      "c50": "https://thumbs.onlyfans.com/files/7/73/7314ce6ab8a05c0b000be571e78eec1f/synthetic.jpg",
+      "c144": "https://thumbs.onlyfans.com/files/6/60/60c6704d41db8146e14ad18f7309a58f/synthetic.jpg"
+    },
+    "header": "https://public.onlyfans.com/files/4/47/47703b038b9442abf8148a48ec912ecf/synthetic.jpg",
+    "headerSize": {
+      "width": 1189,
+      "height": 616
+    },
+    "headerThumbs": {
+      "w480": "https://thumbs.onlyfans.com/files/9/91/9100b775df8e3650169f61b289a9185f/synthetic.jpg",
+      "w760": "https://thumbs.onlyfans.com/files/d/d9/d9b3d0da54231f2b43997703c8703b40/synthetic.jpg"
+    },
+    "id": 2008,
+    "name": "Synth User 17",
+    "username": "synthuser10",
+    "canLookStory": true,
+    "canCommentStory": true,
+    "hasNotViewedStory": false,
+    "isVerified": true,
+    "canPayInternal": true,
+    "hasScheduledStream": false,
+    "hasStream": false,
+    "hasStories": false,
+    "tipsEnabled": true,
+    "tipsTextEnabled": true,
+    "tipsMin": 5,
+    "tipsMinInternal": 1,
+    "tipsMax": 200,
+    "canEarn": true,
+    "canAddSubscriber": false,
+    "subscribePrice": 0,
+    "displayName": "Synth Rename 18",
+    "notice": "",
+    "isPaywallRequired": true,
+    "isActive": true,
+    "isRestricted": false,
+    "canRestrict": true,
+    "subscribedBy": true,
+    "subscribedByExpire": false,
+    "subscribedByExpireDate": "2033-04-03T09:23:18+00:00",
+    "subscribedByAutoprolong": true,
+    "subscribedIsExpiredNow": false,
+    "currentSubscribePrice": 0,
+    "subscribedOn": true,
+    "subscribedOnExpire": false,
+    "subscribedOnExpiredNow": false,
+    "subscribedOnDuration": "1 year",
+    "listsStates": [
+      {
+        "id": "tagged",
+        "type": "tagged",
+        "name": "Tagged",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "recent",
+        "type": "recent",
+        "name": "Recent (last 24 hours)",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "purchased",
+        "type": "purchased",
+        "name": "Purchased",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "muted",
+        "type": "muted",
+        "name": "Muted",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "1165234001",
+        "type": "custom",
+        "name": "Synth list 3",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "friends",
+        "type": "friends",
+        "name": "Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "following",
+        "type": "following",
+        "name": "Following",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "fans",
+        "type": "fans",
+        "name": "Fans",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "1320999428",
+        "type": "custom",
+        "name": "Synth list 1",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "1165234649",
+        "type": "custom",
+        "name": "Synth list 4",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "755017382",
+        "type": "close_friends",
+        "name": "Close Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "755017319",
+        "type": "bookmarks",
+        "name": "Bookmarks",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "1290765913",
+        "type": "custom",
+        "name": "Synth list 2",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "1209104430",
+        "type": "custom",
+        "name": "Synth list 5",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      }
+    ],
+    "lastSeen": "2026-10-17T11:45:47+00:00",
+    "canReport": true,
+    "isPerformer": true,
+    "isRealPerformer": true,
+    "isAdultContent": true,
+    "canTrialSend": false,
+    "allowIncomingCalls": false,
+    "isFriend": false,
+    "isBlocked": false,
+    "isPendingAutoprolong": false,
+    "customNickname": "Synth Rename 18"
+  },
+  "2012": {
+    "view": "m",
+    "avatar": "https://public.onlyfans.com/files/c/cc/ccd08f849a7867e84dcc92ce40c00fcb/synthetic.png",
+    "avatarThumbs": {
+      "c50": "https://thumbs.onlyfans.com/files/7/7e/7e460b23bbdf37f45281bfa11f72ae19/synthetic.png",
+      "c144": "https://thumbs.onlyfans.com/files/7/7b/7bcaca330afdad737f1de2bdb538ea39/synthetic.png"
+    },
+    "header": "https://public.onlyfans.com/files/b/bc/bccd864097c5a39b489408c0351b5513/synthetic.png",
+    "headerSize": {
+      "width": 940,
+      "height": 348
+    },
+    "headerThumbs": {
+      "w480": "https://thumbs.onlyfans.com/files/5/5a/5a259e0990fe50c3dc5ff4dcb1754c41/synthetic.png",
+      "w760": "https://thumbs.onlyfans.com/files/4/4b/4b328f6ff9fd4b07ad05d9b47d86c16d/synthetic.png"
+    },
+    "id": 2012,
+    "name": "Synth User 19",
+    "username": "synthuser11",
+    "canLookStory": true,
+    "canCommentStory": true,
+    "hasNotViewedStory": true,
+    "isVerified": true,
+    "canPayInternal": true,
+    "hasScheduledStream": true,
+    "hasStream": false,
+    "hasStories": true,
+    "tipsEnabled": true,
+    "tipsTextEnabled": true,
+    "tipsMin": 5,
+    "tipsMinInternal": 1,
+    "tipsMax": 200,
+    "canEarn": true,
+    "canAddSubscriber": false,
+    "subscribePrice": 0,
+    "displayName": "Synth Rename 20",
+    "isPaywallRequired": true,
+    "isActive": true,
+    "isRestricted": false,
+    "canRestrict": true,
+    "subscribedBy": true,
+    "subscribedByExpire": false,
+    "subscribedByExpireDate": "2036-02-06T21:20:22+00:00",
+    "subscribedByAutoprolong": false,
+    "subscribedIsExpiredNow": false,
+    "currentSubscribePrice": 0,
+    "subscribedOn": false,
+    "subscribedOnExpire": null,
+    "subscribedOnExpiredNow": null,
+    "subscribedOnDuration": null,
+    "listsStates": [
+      {
+        "id": "tagged",
+        "type": "tagged",
+        "name": "Tagged",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "recent",
+        "type": "recent",
+        "name": "Recent (last 24 hours)",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "purchased",
+        "type": "purchased",
+        "name": "Purchased",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "muted",
+        "type": "muted",
+        "name": "Muted",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "friends",
+        "type": "friends",
+        "name": "Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "following",
+        "type": "following",
+        "name": "Following",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "fans",
+        "type": "fans",
+        "name": "Fans",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "1320999428",
+        "type": "custom",
+        "name": "Synth list 1",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "755017382",
+        "type": "close_friends",
+        "name": "Close Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "755017319",
+        "type": "bookmarks",
+        "name": "Bookmarks",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "1290765913",
+        "type": "custom",
+        "name": "Synth list 2",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      }
+    ],
+    "lastSeen": "2026-10-17T11:45:24+00:00",
+    "canReport": true,
+    "isPerformer": true,
+    "isRealPerformer": true,
+    "isAdultContent": true,
+    "canTrialSend": false,
+    "allowIncomingCalls": false,
+    "isFriend": false,
+    "isBlocked": false,
+    "isPendingAutoprolong": false,
+    "customNickname": "Synth Rename 20"
+  },
+  "2003": {
+    "view": "m",
+    "avatar": "https://public.onlyfans.com/files/5/51/516fa070608997b5892d7eb7a5677b07/synthetic.jpg",
+    "avatarThumbs": {
+      "c50": "https://thumbs.onlyfans.com/files/d/d9/d931428fbb7e2dfba484b258d693434a/synthetic.jpg",
+      "c144": "https://thumbs.onlyfans.com/files/5/5b/5b20179f9265e2c77a8954de64cf0b86/synthetic.jpg"
+    },
+    "header": "https://public.onlyfans.com/files/d/da/daa951029690d0403dc8f1f1e3eb52ed/synthetic.jpg",
+    "headerSize": {
+      "width": 2730,
+      "height": 4096
+    },
+    "headerThumbs": {
+      "w480": "https://thumbs.onlyfans.com/files/b/ba/baca9f83eff974a835c6ad79203645aa/synthetic.jpg",
+      "w760": "https://thumbs.onlyfans.com/files/6/60/60fd09dd46622c16b7a1f48ecf2a6ef2/synthetic.jpg"
+    },
+    "id": 2003,
+    "name": "Synth User 21",
+    "username": "synthuser12",
+    "canLookStory": true,
+    "canCommentStory": false,
+    "hasNotViewedStory": true,
+    "isVerified": true,
+    "canPayInternal": true,
+    "hasScheduledStream": false,
+    "hasStream": false,
+    "hasStories": true,
+    "tipsEnabled": true,
+    "tipsTextEnabled": true,
+    "tipsMin": 5,
+    "tipsMinInternal": 1,
+    "tipsMax": 200,
+    "canEarn": true,
+    "canAddSubscriber": false,
+    "subscribePrice": 0,
+    "displayName": "Synth Rename 22",
+    "isPaywallRequired": true,
+    "isActive": true,
+    "isRestricted": false,
+    "canRestrict": true,
+    "subscribedBy": true,
+    "subscribedByExpire": false,
+    "subscribedByExpireDate": "2035-06-27T16:20:34+00:00",
+    "subscribedByAutoprolong": true,
+    "subscribedIsExpiredNow": false,
+    "currentSubscribePrice": 0,
+    "subscribedOn": false,
+    "subscribedOnExpire": null,
+    "subscribedOnExpiredNow": null,
+    "subscribedOnDuration": null,
+    "listsStates": [
+      {
+        "id": "tagged",
+        "type": "tagged",
+        "name": "Tagged",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "recent",
+        "type": "recent",
+        "name": "Recent (last 24 hours)",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "purchased",
+        "type": "purchased",
+        "name": "Purchased",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "muted",
+        "type": "muted",
+        "name": "Muted",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "friends",
+        "type": "friends",
+        "name": "Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "following",
+        "type": "following",
+        "name": "Following",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "fans",
+        "type": "fans",
+        "name": "Fans",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "755017382",
+        "type": "close_friends",
+        "name": "Close Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "755017319",
+        "type": "bookmarks",
+        "name": "Bookmarks",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "1290765913",
+        "type": "custom",
+        "name": "Synth list 2",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      }
+    ],
+    "lastSeen": "2026-10-17T11:42:59+00:00",
+    "canReport": true,
+    "isPerformer": true,
+    "isRealPerformer": true,
+    "isAdultContent": false,
+    "canTrialSend": false,
+    "allowIncomingCalls": false,
+    "isFriend": false,
+    "isBlocked": false,
+    "isPendingAutoprolong": false,
+    "customNickname": "Synth Rename 22"
+  },
+  "2015": {
+    "view": "m",
+    "avatar": "https://public.onlyfans.com/files/1/18/186d31cb59431d60d467c594ed1e9c22/synthetic.jpg",
+    "avatarThumbs": {
+      "c50": "https://thumbs.onlyfans.com/files/a/a8/a806b4c2944c8006a5d1af5b1c6d33d2/synthetic.jpg",
+      "c144": "https://thumbs.onlyfans.com/files/d/d6/d6c9a54eb896c7923329d03452a38539/synthetic.jpg"
+    },
+    "header": "https://public.onlyfans.com/files/4/4f/4fa3f2ed6dcf9b58be700673a81788d1/synthetic.jpg",
+    "headerSize": {
+      "width": 2820,
+      "height": 998
+    },
+    "headerThumbs": {
+      "w480": "https://thumbs.onlyfans.com/files/f/f2/f25075ef8f636494dcac4f705971261f/synthetic.jpg",
+      "w760": "https://thumbs.onlyfans.com/files/6/6b/6bd9001da82d7470dfc8a5f7df9dbbba/synthetic.jpg"
+    },
+    "id": 2015,
+    "name": "Synth User 23",
+    "username": "synthuser13",
+    "canLookStory": false,
+    "canCommentStory": false,
+    "hasNotViewedStory": false,
+    "isVerified": true,
+    "canPayInternal": true,
+    "hasScheduledStream": false,
+    "hasStream": false,
+    "hasStories": false,
+    "tipsEnabled": false,
+    "tipsTextEnabled": true,
+    "tipsMin": 5,
+    "tipsMinInternal": 1,
+    "tipsMax": 200,
+    "canEarn": true,
+    "canAddSubscriber": true,
+    "subscribePrice": 0,
+    "displayName": "Synth Rename 23",
+    "notice": "",
+    "isPaywallRequired": true,
+    "isActive": true,
+    "isRestricted": false,
+    "canRestrict": true,
+    "subscribedBy": null,
+    "subscribedByExpire": null,
+    "subscribedByExpireDate": "2025-02-12T17:45:04+00:00",
+    "subscribedByAutoprolong": null,
+    "subscribedIsExpiredNow": true,
+    "currentSubscribePrice": null,
+    "subscribedOn": true,
+    "subscribedOnExpire": false,
+    "subscribedOnExpiredNow": false,
+    "subscribedOnDuration": "1 year",
+    "listsStates": [
+      {
+        "id": "tagged",
+        "type": "tagged",
+        "name": "Tagged",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "recent",
+        "type": "recent",
+        "name": "Recent (last 24 hours)",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "purchased",
+        "type": "purchased",
+        "name": "Purchased",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "muted",
+        "type": "muted",
+        "name": "Muted",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "friends",
+        "type": "friends",
+        "name": "Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "following",
+        "type": "following",
+        "name": "Following",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "fans",
+        "type": "fans",
+        "name": "Fans",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "1320999428",
+        "type": "custom",
+        "name": "Synth list 1",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "755017382",
+        "type": "close_friends",
+        "name": "Close Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "755017319",
+        "type": "bookmarks",
+        "name": "Bookmarks",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "1290765913",
+        "type": "custom",
+        "name": "Synth list 2",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      }
+    ],
+    "lastSeen": "2026-10-17T11:43:19+00:00",
+    "canReport": true,
+    "isPerformer": true,
+    "isRealPerformer": true,
+    "isAdultContent": true,
+    "canTrialSend": false,
+    "allowIncomingCalls": false,
+    "isFriend": false,
+    "isBlocked": false,
+    "isPendingAutoprolong": false,
+    "customNickname": "Synth Rename 23"
+  },
+  "2007": {
+    "view": "m",
+    "avatar": "https://public.onlyfans.com/files/d/d8/d872db010fdb382cf30a4e4ae969b8d3/synthetic.jpg",
+    "avatarThumbs": {
+      "c50": "https://thumbs.onlyfans.com/files/c/c7/c770b3af76f9f07af0d5c22a3ae59881/synthetic.jpg",
+      "c144": "https://thumbs.onlyfans.com/files/a/a7/a77e7e941ff6f33b5950c04fe145ff43/synthetic.jpg"
+    },
+    "header": "https://public.onlyfans.com/files/7/7c/7cdca7a7c3ee74d862a1a7c8015ef0cd/synthetic.jpg",
+    "headerSize": {
+      "width": 4680,
+      "height": 3276
+    },
+    "headerThumbs": {
+      "w480": "https://thumbs.onlyfans.com/files/e/e6/e6ea97c5150f9c1b26d91fab866199b4/synthetic.jpg",
+      "w760": "https://thumbs.onlyfans.com/files/3/3e/3e6fb52fd8440902c996adaee33e34a5/synthetic.jpg"
+    },
+    "id": 2007,
+    "name": "Synth User 24",
+    "username": "synthuser14",
+    "canLookStory": false,
+    "canCommentStory": false,
+    "hasNotViewedStory": false,
+    "isVerified": true,
+    "canPayInternal": true,
+    "hasScheduledStream": false,
+    "hasStream": false,
+    "hasStories": false,
+    "tipsEnabled": false,
+    "tipsTextEnabled": true,
+    "tipsMin": 5,
+    "tipsMinInternal": 1,
+    "tipsMax": 200,
+    "canEarn": true,
+    "canAddSubscriber": true,
+    "subscribePrice": 0,
+    "displayName": "Synth Rename 25",
+    "notice": "",
+    "isPaywallRequired": true,
+    "isActive": true,
+    "isRestricted": false,
+    "canRestrict": true,
+    "subscribedBy": null,
+    "subscribedByExpire": null,
+    "subscribedByExpireDate": "2025-02-12T19:50:13+00:00",
+    "subscribedByAutoprolong": null,
+    "subscribedIsExpiredNow": true,
+    "currentSubscribePrice": null,
+    "subscribedOn": true,
+    "subscribedOnExpire": false,
+    "subscribedOnExpiredNow": false,
+    "subscribedOnDuration": "11 months",
+    "listsStates": [
+      {
+        "id": "tagged",
+        "type": "tagged",
+        "name": "Tagged",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "recent",
+        "type": "recent",
+        "name": "Recent (last 24 hours)",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "purchased",
+        "type": "purchased",
+        "name": "Purchased",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "muted",
+        "type": "muted",
+        "name": "Muted",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "friends",
+        "type": "friends",
+        "name": "Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "following",
+        "type": "following",
+        "name": "Following",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "fans",
+        "type": "fans",
+        "name": "Fans",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "755017382",
+        "type": "close_friends",
+        "name": "Close Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "755017319",
+        "type": "bookmarks",
+        "name": "Bookmarks",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "1290765913",
+        "type": "custom",
+        "name": "Synth list 2",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      }
+    ],
+    "lastSeen": "2026-10-17T11:43:39+00:00",
+    "canReport": true,
+    "isPerformer": true,
+    "isRealPerformer": true,
+    "isAdultContent": true,
+    "canTrialSend": false,
+    "allowIncomingCalls": false,
+    "isFriend": false,
+    "isBlocked": false,
+    "isPendingAutoprolong": false,
+    "customNickname": "Synth Rename 25"
+  },
+  "2019": {
+    "view": "m",
+    "avatar": "https://public.onlyfans.com/files/5/5a/5a25ab61f9a23ad1abd6960d09de713b/synthetic.jpg",
+    "avatarThumbs": {
+      "c50": "https://thumbs.onlyfans.com/files/e/ea/eab8ae1b4689e0411afd0a83eeaf1a23/synthetic.jpg",
+      "c144": "https://thumbs.onlyfans.com/files/1/1c/1c0661423e3765f2d43d54be7afd28f1/synthetic.jpg"
+    },
+    "header": "https://public.onlyfans.com/files/e/ee/ee3fcf5f09fbba098434a6a93a5df342/synthetic.jpg",
+    "headerSize": {
+      "width": 4584,
+      "height": 2488
+    },
+    "headerThumbs": {
+      "w480": "https://thumbs.onlyfans.com/files/5/56/56878b5d572df70d621b805e85127596/synthetic.jpg",
+      "w760": "https://thumbs.onlyfans.com/files/8/8c/8c2375f72e9d2af5a1d0018004d9081f/synthetic.jpg"
+    },
+    "id": 2019,
+    "name": "Synth User 26",
+    "username": "synthuser15",
+    "canLookStory": true,
+    "canCommentStory": true,
+    "hasNotViewedStory": false,
+    "isVerified": true,
+    "canPayInternal": true,
+    "hasScheduledStream": false,
+    "hasStream": false,
+    "hasStories": false,
+    "tipsEnabled": true,
+    "tipsTextEnabled": true,
+    "tipsMin": 5,
+    "tipsMinInternal": 1,
+    "tipsMax": 200,
+    "canEarn": true,
+    "canAddSubscriber": false,
+    "subscribePrice": 0,
+    "displayName": "Synth Rename 27",
+    "isPaywallRequired": true,
+    "isActive": true,
+    "isRestricted": false,
+    "canRestrict": true,
+    "subscribedBy": true,
+    "subscribedByExpire": false,
+    "subscribedByExpireDate": "2035-08-15T19:01:27+00:00",
+    "subscribedByAutoprolong": true,
+    "subscribedIsExpiredNow": false,
+    "currentSubscribePrice": 0,
+    "subscribedOn": false,
+    "subscribedOnExpire": null,
+    "subscribedOnExpiredNow": null,
+    "subscribedOnDuration": null,
+    "listsStates": [
+      {
+        "id": "tagged",
+        "type": "tagged",
+        "name": "Tagged",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "recent",
+        "type": "recent",
+        "name": "Recent (last 24 hours)",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "purchased",
+        "type": "purchased",
+        "name": "Purchased",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "muted",
+        "type": "muted",
+        "name": "Muted",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "1165235349",
+        "type": "custom",
+        "name": "Synth list 6",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "1165234001",
+        "type": "custom",
+        "name": "Synth list 3",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "1167106451",
+        "type": "custom",
+        "name": "Synth list 7",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "friends",
+        "type": "friends",
+        "name": "Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "following",
+        "type": "following",
+        "name": "Following",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "fans",
+        "type": "fans",
+        "name": "Fans",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "1234059711",
+        "type": "custom",
+        "name": "Synth list 8",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "755017382",
+        "type": "close_friends",
+        "name": "Close Friends",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "755017319",
+        "type": "bookmarks",
+        "name": "Bookmarks",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "1290765913",
+        "type": "custom",
+        "name": "Synth list 2",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      }
+    ],
+    "lastSeen": "2026-10-17T11:41:59+00:00",
+    "canReport": true,
+    "isPerformer": true,
+    "isRealPerformer": true,
+    "isAdultContent": false,
+    "canTrialSend": false,
+    "allowIncomingCalls": false,
+    "isFriend": false,
+    "isBlocked": false,
+    "isPendingAutoprolong": false,
+    "customNickname": "Synth Rename 27"
+  },
+  "2001": {
+    "view": "m",
+    "avatar": "https://public.onlyfans.com/files/2/2c/2cf708c2943b9c87a05b7e4c3fae21fe/synthetic.jpg",
+    "avatarThumbs": {
+      "c50": "https://thumbs.onlyfans.com/files/4/40/40b09606b1c860b0f30746117f6086f1/synthetic.jpg",
+      "c144": "https://thumbs.onlyfans.com/files/e/e1/e1b967faea438beb1ca5b6ebf99c0af1/synthetic.jpg"
+    },
+    "header": "https://public.onlyfans.com/files/0/0c/0c445386675efc2130d65c70b1eae3e8/synthetic.jpg",
+    "headerSize": {
+      "width": 3600,
+      "height": 1080
+    },
+    "headerThumbs": {
+      "w480": "https://thumbs.onlyfans.com/files/a/ad/adc4f91ab07d674c19c8c93f3128d361/synthetic.jpg",
+      "w760": "https://thumbs.onlyfans.com/files/a/a8/a86651477da3c9fa97f43c9329242283/synthetic.jpg"
+    },
+    "id": 2001,
+    "name": "Synth User 28",
+    "username": "synthuser16",
+    "canLookStory": true,
+    "canCommentStory": true,
+    "hasNotViewedStory": true,
+    "isVerified": true,
+    "canPayInternal": true,
+    "hasScheduledStream": false,
+    "hasStream": false,
+    "hasStories": true,
+    "tipsEnabled": true,
+    "tipsTextEnabled": true,
+    "tipsMin": 5,
+    "tipsMinInternal": 1,
+    "tipsMax": 200,
+    "canEarn": true,
+    "canAddSubscriber": false,
+    "subscribePrice": 0,
+    "displayName": "Synth Rename 29",
+    "isPaywallRequired": true,
+    "isActive": true,
+    "isRestricted": false,
+    "canRestrict": true,
+    "subscribedBy": true,
+    "subscribedByExpire": false,
+    "subscribedByExpireDate": "2036-06-25T18:27:23+00:00",
+    "subscribedByAutoprolong": true,
+    "subscribedIsExpiredNow": false,
+    "currentSubscribePrice": 0,
+    "subscribedOn": false,
+    "subscribedOnExpire": null,
+    "subscribedOnExpiredNow": null,
+    "subscribedOnDuration": null,
+    "listsStates": [
+      {
+        "id": "tagged",
+        "type": "tagged",
+        "name": "Tagged",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "recent",
+        "type": "recent",
+        "name": "Recent (last 24 hours)",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "purchased",
+        "type": "purchased",
+        "name": "Purchased",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "muted",
+        "type": "muted",
+        "name": "Muted",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "friends",
+        "type": "friends",
+        "name": "Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "following",
+        "type": "following",
+        "name": "Following",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "fans",
+        "type": "fans",
+        "name": "Fans",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "1320999428",
+        "type": "custom",
+        "name": "Synth list 1",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "755017382",
+        "type": "close_friends",
+        "name": "Close Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "755017319",
+        "type": "bookmarks",
+        "name": "Bookmarks",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "1290765913",
+        "type": "custom",
+        "name": "Synth list 2",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      }
+    ],
+    "lastSeen": "2026-10-17T11:44:28+00:00",
+    "canReport": true,
+    "isPerformer": true,
+    "isRealPerformer": true,
+    "isAdultContent": true,
+    "canTrialSend": false,
+    "allowIncomingCalls": false,
+    "isFriend": false,
+    "isBlocked": false,
+    "isPendingAutoprolong": false,
+    "customNickname": "Synth Rename 29"
+  },
+  "2006": {
+    "view": "m",
+    "avatar": "https://public.onlyfans.com/files/7/7d/7d4e31d02bc7fdd4bcb3fe1753171929/synthetic.jpg",
+    "avatarThumbs": {
+      "c50": "https://thumbs.onlyfans.com/files/a/a2/a28d9c27e0c6b895efba28105bf77ffd/synthetic.jpg",
+      "c144": "https://thumbs.onlyfans.com/files/c/c0/c02366d97b0aa4ef217d7e7521bcffe9/synthetic.jpg"
+    },
+    "header": "https://public.onlyfans.com/files/9/97/97fb7fc78e5b873dead5449ba13bc469/synthetic.jpg",
+    "headerSize": {
+      "width": 4347,
+      "height": 2800
+    },
+    "headerThumbs": {
+      "w480": "https://thumbs.onlyfans.com/files/d/dc/dcfb6f1cf7a95008f65db08ab9be6dcf/synthetic.jpg",
+      "w760": "https://thumbs.onlyfans.com/files/a/ac/accd21b4bb3f48cd7c6abec6678420d9/synthetic.jpg"
+    },
+    "id": 2006,
+    "name": "Synth User 30",
+    "username": "synthuser17",
+    "canLookStory": true,
+    "canCommentStory": true,
+    "hasNotViewedStory": false,
+    "isVerified": true,
+    "canPayInternal": true,
+    "hasScheduledStream": false,
+    "hasStream": false,
+    "hasStories": false,
+    "tipsEnabled": true,
+    "tipsTextEnabled": true,
+    "tipsMin": 5,
+    "tipsMinInternal": 1,
+    "tipsMax": 200,
+    "canEarn": true,
+    "canAddSubscriber": false,
+    "subscribePrice": 0,
+    "displayName": "Synth Rename 31",
+    "isPaywallRequired": true,
+    "isActive": true,
+    "isRestricted": false,
+    "canRestrict": true,
+    "subscribedBy": true,
+    "subscribedByExpire": false,
+    "subscribedByExpireDate": "2036-05-06T20:43:40+00:00",
+    "subscribedByAutoprolong": true,
+    "subscribedIsExpiredNow": false,
+    "currentSubscribePrice": 0,
+    "subscribedOn": false,
+    "subscribedOnExpire": null,
+    "subscribedOnExpiredNow": null,
+    "subscribedOnDuration": null,
+    "listsStates": [
+      {
+        "id": "tagged",
+        "type": "tagged",
+        "name": "Tagged",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "recent",
+        "type": "recent",
+        "name": "Recent (last 24 hours)",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "purchased",
+        "type": "purchased",
+        "name": "Purchased",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "muted",
+        "type": "muted",
+        "name": "Muted",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "friends",
+        "type": "friends",
+        "name": "Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "following",
+        "type": "following",
+        "name": "Following",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "fans",
+        "type": "fans",
+        "name": "Fans",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "1320999428",
+        "type": "custom",
+        "name": "Synth list 1",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "755017382",
+        "type": "close_friends",
+        "name": "Close Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "755017319",
+        "type": "bookmarks",
+        "name": "Bookmarks",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "1290765913",
+        "type": "custom",
+        "name": "Synth list 2",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      }
+    ],
+    "lastSeen": "2026-10-17T11:42:40+00:00",
+    "canReport": true,
+    "isPerformer": true,
+    "isRealPerformer": true,
+    "isAdultContent": false,
+    "canTrialSend": false,
+    "allowIncomingCalls": false,
+    "isFriend": false,
+    "isBlocked": false,
+    "isPendingAutoprolong": false,
+    "customNickname": "Synth Rename 31"
+  },
+  "2009": {
+    "view": "m",
+    "avatar": "https://public.onlyfans.com/files/4/4e/4e3f213b91178c7ea6342237317d298f/synthetic.jpg",
+    "avatarThumbs": {
+      "c50": "https://thumbs.onlyfans.com/files/a/ae/aec95480832cc92af11c23dd794c40f1/synthetic.jpg",
+      "c144": "https://thumbs.onlyfans.com/files/9/95/9569d0e8b8d1332c473a7b789f040fa9/synthetic.jpg"
+    },
+    "header": "https://public.onlyfans.com/files/5/57/5742b2726b7486054478bfb6efd32de9/synthetic.jpg",
+    "headerSize": {
+      "width": 1843,
+      "height": 1382
+    },
+    "headerThumbs": {
+      "w480": "https://thumbs.onlyfans.com/files/b/b5/b5665d7abcb3534f718f2f6b5f3e1c5f/synthetic.jpg",
+      "w760": "https://thumbs.onlyfans.com/files/5/53/5399e8f6f3211f8321ea1e04ea5c45ba/synthetic.jpg"
+    },
+    "id": 2009,
+    "name": "Synth User 32",
+    "username": "synthuser18",
+    "canLookStory": true,
+    "canCommentStory": true,
+    "hasNotViewedStory": false,
+    "isVerified": true,
+    "canPayInternal": true,
+    "hasScheduledStream": false,
+    "hasStream": false,
+    "hasStories": false,
+    "tipsEnabled": true,
+    "tipsTextEnabled": true,
+    "tipsMin": 5,
+    "tipsMinInternal": 1,
+    "tipsMax": 200,
+    "canEarn": true,
+    "canAddSubscriber": false,
+    "subscribePrice": 0,
+    "displayName": "Synth Rename 33",
+    "notice": "",
+    "isPaywallRequired": true,
+    "isActive": true,
+    "isRestricted": false,
+    "canRestrict": true,
+    "subscribedBy": true,
+    "subscribedByExpire": false,
+    "subscribedByExpireDate": "2035-06-07T09:24:34+00:00",
+    "subscribedByAutoprolong": true,
+    "subscribedIsExpiredNow": false,
+    "currentSubscribePrice": 0,
+    "subscribedOn": true,
+    "subscribedOnExpire": false,
+    "subscribedOnExpiredNow": false,
+    "subscribedOnDuration": "1 year",
+    "listsStates": [
+      {
+        "id": "tagged",
+        "type": "tagged",
+        "name": "Tagged",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "recent",
+        "type": "recent",
+        "name": "Recent (last 24 hours)",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "purchased",
+        "type": "purchased",
+        "name": "Purchased",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "muted",
+        "type": "muted",
+        "name": "Muted",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "friends",
+        "type": "friends",
+        "name": "Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "following",
+        "type": "following",
+        "name": "Following",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "fans",
+        "type": "fans",
+        "name": "Fans",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "755017382",
+        "type": "close_friends",
+        "name": "Close Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "755017319",
+        "type": "bookmarks",
+        "name": "Bookmarks",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "1290765913",
+        "type": "custom",
+        "name": "Synth list 2",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      }
+    ],
+    "lastSeen": "2026-10-17T11:41:40+00:00",
+    "canReport": true,
+    "isPerformer": true,
+    "isRealPerformer": true,
+    "isAdultContent": false,
+    "canTrialSend": false,
+    "allowIncomingCalls": false,
+    "isFriend": false,
+    "isBlocked": false,
+    "isPendingAutoprolong": false,
+    "customNickname": "Synth Rename 33"
+  },
+  "2018": {
+    "view": "m",
+    "avatar": "https://public.onlyfans.com/files/0/0c/0cb440c2b56ab1bbb0d88006c88d8d11/synthetic.jpg",
+    "avatarThumbs": {
+      "c50": "https://thumbs.onlyfans.com/files/e/e4/e4780211771602dab6f129d08a3a8c2e/synthetic.jpg",
+      "c144": "https://thumbs.onlyfans.com/files/a/a4/a443dc4e0a2adbb778516a8f6fa245b6/synthetic.jpg"
+    },
+    "header": "https://public.onlyfans.com/files/b/b8/b8ab37479484b87d164c5ffcb173343c/synthetic.png",
+    "headerSize": {
+      "width": 1206,
+      "height": 1458
+    },
+    "headerThumbs": {
+      "w480": "https://thumbs.onlyfans.com/files/d/da/da5081de5ef37099986140b5a9525ffd/synthetic.png",
+      "w760": "https://thumbs.onlyfans.com/files/b/ba/baaa20fa1df02d6a7d5974723ffd63c1/synthetic.png"
+    },
+    "id": 2018,
+    "name": "Synth User 34",
+    "username": "synthuser19",
+    "canLookStory": true,
+    "canCommentStory": false,
+    "hasNotViewedStory": false,
+    "isVerified": true,
+    "canPayInternal": true,
+    "hasScheduledStream": false,
+    "hasStream": false,
+    "hasStories": false,
+    "tipsEnabled": true,
+    "tipsTextEnabled": true,
+    "tipsMin": 5,
+    "tipsMinInternal": 1,
+    "tipsMax": 200,
+    "canEarn": true,
+    "canAddSubscriber": false,
+    "subscribePrice": 0,
+    "displayName": "Synth Rename 35",
+    "isPaywallRequired": true,
+    "isActive": true,
+    "isRestricted": false,
+    "canRestrict": true,
+    "subscribedBy": true,
+    "subscribedByExpire": false,
+    "subscribedByExpireDate": "2036-05-09T23:52:09+00:00",
+    "subscribedByAutoprolong": true,
+    "subscribedIsExpiredNow": false,
+    "currentSubscribePrice": 0,
+    "subscribedOn": false,
+    "subscribedOnExpire": null,
+    "subscribedOnExpiredNow": null,
+    "subscribedOnDuration": null,
+    "listsStates": [
+      {
+        "id": "tagged",
+        "type": "tagged",
+        "name": "Tagged",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "recent",
+        "type": "recent",
+        "name": "Recent (last 24 hours)",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "purchased",
+        "type": "purchased",
+        "name": "Purchased",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "muted",
+        "type": "muted",
+        "name": "Muted",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "friends",
+        "type": "friends",
+        "name": "Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "following",
+        "type": "following",
+        "name": "Following",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "fans",
+        "type": "fans",
+        "name": "Fans",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "1320999428",
+        "type": "custom",
+        "name": "Synth list 1",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "755017382",
+        "type": "close_friends",
+        "name": "Close Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "755017319",
+        "type": "bookmarks",
+        "name": "Bookmarks",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "1290765913",
+        "type": "custom",
+        "name": "Synth list 2",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      }
+    ],
+    "lastSeen": null,
+    "canReport": true,
+    "isPerformer": true,
+    "isRealPerformer": true,
+    "isAdultContent": false,
+    "canTrialSend": false,
+    "allowIncomingCalls": false,
+    "isFriend": false,
+    "isBlocked": false,
+    "isPendingAutoprolong": false,
+    "customNickname": "Synth Rename 35"
+  },
+  "2010": {
+    "view": "m",
+    "avatar": "https://public.onlyfans.com/files/2/2a/2aadcbb64f932a418e0c0dba03313ab3/synthetic.jpg",
+    "avatarThumbs": {
+      "c50": "https://thumbs.onlyfans.com/files/e/ee/ee4213869883a94545db4c31fb151254/synthetic.jpg",
+      "c144": "https://thumbs.onlyfans.com/files/0/06/06fafd5b13cdbf707ddc80c701572441/synthetic.jpg"
+    },
+    "header": "https://public.onlyfans.com/files/5/5d/5d791766d7f8ac114941a4094282c9cb/synthetic.jpg",
+    "headerSize": {
+      "width": 792,
+      "height": 454
+    },
+    "headerThumbs": {
+      "w480": "https://thumbs.onlyfans.com/files/6/68/68277a5378ea62428580fdb2d230035a/synthetic.jpg",
+      "w760": "https://thumbs.onlyfans.com/files/1/11/11da7337b58354315b3563650043caed/synthetic.jpg"
+    },
+    "id": 2010,
+    "name": "Synth User 18",
+    "username": "synthuser20",
+    "canLookStory": false,
+    "canCommentStory": false,
+    "hasNotViewedStory": false,
+    "isVerified": true,
+    "canPayInternal": true,
+    "hasScheduledStream": false,
+    "hasStream": false,
+    "hasStories": false,
+    "tipsEnabled": false,
+    "tipsTextEnabled": true,
+    "tipsMin": 5,
+    "tipsMinInternal": 1,
+    "tipsMax": 200,
+    "canEarn": true,
+    "canAddSubscriber": true,
+    "subscribePrice": 9.99,
+    "subscriptionBundles": [
+      {
+        "id": 10629404,
+        "discount": 5,
+        "duration": 3,
+        "price": 28.47,
+        "canBuy": true
+      },
+      {
+        "id": 10629405,
+        "discount": 10,
+        "duration": 6,
+        "price": 53.95,
+        "canBuy": true
+      },
+      {
+        "id": 10629406,
+        "discount": 15,
+        "duration": 12,
+        "price": 101.9,
+        "canBuy": true
+      }
+    ],
+    "displayName": "",
+    "notice": "",
+    "isPaywallRequired": true,
+    "isActive": true,
+    "isRestricted": false,
+    "canRestrict": true,
+    "subscribedBy": null,
+    "subscribedByExpire": null,
+    "subscribedByExpireDate": "2026-01-14T16:50:01+00:00",
+    "subscribedByAutoprolong": null,
+    "subscribedIsExpiredNow": true,
+    "currentSubscribePrice": null,
+    "subscribedOn": true,
+    "subscribedOnExpire": false,
+    "subscribedOnExpiredNow": false,
+    "subscribedOnDuration": "18 days",
+    "listsStates": [
+      {
+        "id": "tagged",
+        "type": "tagged",
+        "name": "Tagged",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "recent",
+        "type": "recent",
+        "name": "Recent (last 24 hours)",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "purchased",
+        "type": "purchased",
+        "name": "Purchased",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "muted",
+        "type": "muted",
+        "name": "Muted",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "friends",
+        "type": "friends",
+        "name": "Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "following",
+        "type": "following",
+        "name": "Following",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "fans",
+        "type": "fans",
+        "name": "Fans",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "1320999428",
+        "type": "custom",
+        "name": "Synth list 1",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "755017382",
+        "type": "close_friends",
+        "name": "Close Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "755017319",
+        "type": "bookmarks",
+        "name": "Bookmarks",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      }
+    ],
+    "lastSeen": "2026-10-17T11:43:09+00:00",
+    "canReport": true,
+    "isPerformer": true,
+    "isRealPerformer": true,
+    "isAdultContent": false,
+    "canTrialSend": false,
+    "allowIncomingCalls": false,
+    "isFriend": false,
+    "isBlocked": false,
+    "promotions": [
+      {
+        "id": 66628024,
+        "message": "<p>Synthetic message 25</p>",
+        "rawMessage": "<p>Synthetic message 25</p>",
+        "hasRelatedPromo": false,
+        "price": 3.5,
+        "type": "expired",
+        "canClaim": true,
+        "claimsCount": 4,
+        "subscribeCounts": null,
+        "subscribeDays": 0,
+        "createdAt": "2026-10-15T22:38:18+00:00",
+        "finishedAt": "2026-11-14T22:38:18+00:00",
+        "isFinished": false
+      }
+    ],
+    "isPendingAutoprolong": false
+  }
+}

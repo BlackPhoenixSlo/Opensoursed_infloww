@@ -1,0 +1,78 @@
+{#- "Ours vs theirs": one row per feature Infloww headlines (docs/infloww-landing-snapshot.md §2, §4, §8).
+    theirs: their exact words only, with where on the page in brackets. Never a paraphrase.
+    ours: status from README.md and docs/routes.md, checked against app/ and service/. Stubs are NotBuiltYet;
+    never round a stub up to Built. Their line first, then ours. Below sm each row stacks into a card (no
+    sideways scroll), with visible labels (aria-hidden spans) standing in for the hidden header. Chip colours: .status-chip in main.css. -#}
+{%- set rows = [
+  { feature: "Messages Pro", theirs: "“Messages Pro is the fastest chatting solution on the market…”", status: "Built", ours: "<code>/messages-pro</code>: chat list, thread, fan insights" },
+  { feature: "Message online fans", theirs: "“Message online fans” (the “Grow your revenue faster.” block)", status: "Not built", ours: "No online-fans filter in <code>/messages-pro</code>; the fan insights rail shows Last seen" },
+  { feature: "Smart Messages", theirs: "“Smart Messages™”, “in beta” (feature grid)", status: "Built", ours: "<code>/growth/smart-messages</code>: mass and scheduled messages" },
+  { feature: "Vault Pro", theirs: "“Vault Pro ™” (pricing, OnlyFans plan)", status: "Built", ours: "<code>/growth/vault-pro</code> for the owner; chatters attach media from the chat composer" },
+  { feature: "Split Inbox", theirs: "“Split Inbox”, “up to 9 groups” (feature grid)", status: "Not built", ours: "One unified inbox, no split groups" },
+  { feature: "Scripts", theirs: "“Scripts” (pricing, Fansly plan)", status: "Built", ours: "<code>/growth/scripts</code>" },
+  { feature: "Auto-renew campaigns", theirs: "“Auto-renew campaigns” (feature grid)", status: "Not built", ours: "Auto-follow and Profile promotion exist; auto-renew does not" },
+  { feature: "Free trial & tracking links", theirs: "“Free trial & tracking links” (feature grid)", status: "Built", ours: "<code>/growth/free-trial-links</code>, <code>/growth/tracking-links</code>" },
+  { feature: "Insights panel", theirs: "“Insights panel” (feature grid)", status: "Built", ours: "The fan insights rail in Messages Pro" },
+  { feature: "Unique proxies", theirs: "“Each creator is assigned a unique IP…”", status: "Yours to run", ours: "Your proxies, in <code>service/proxies.json</code> and Creators &gt; Custom proxy" },
+  { feature: "Block sensitive words", theirs: "“Sensitive word blocker” (pricing, OnlyFans plan)", status: "Partly built", ours: "An optional banned-words list (off by default) can block sends from the legacy automations; Smart Messages and what chatters type are not checked." },
+  { feature: "AI Copilot", theirs: "“Your digital clone”, “In Beta”", status: "Not built", ours: "No Copilot. Optional LLM keys go in your <code>.env</code>, billed by the provider" },
+  { feature: "Employee shifts", theirs: "“Shift scheduling” (pricing, mym and Fanvue plans)", status: "NotBuiltYet", ours: "<code>/employees/shifts</code>" },
+  { feature: "Roles and permissions", theirs: "“Roles and permissions” (pricing, Fansly, mym and Fanvue plans)", status: "Partly built", ours: "Two fixed roles, owner and chatter; no custom roles. The owner signs in at <code>/login</code>, chatters at <code>/chatter-login</code>" },
+  { feature: "Fan reports", theirs: "“Fan reports” (the “Make more by knowing what drives your growth.” block)", status: "Built", ours: "<code>/analytics/fan-reports</code>" },
+  { feature: "Employee reports", theirs: "“Employee reports” (same block)", status: "Built", ours: "<code>/analytics/employee-reports</code>" },
+  { feature: "Message dashboard", theirs: "“Message dashboard” (pricing, OnlyFans plan)", status: "Built", ours: "<code>/analytics/message-dashboard</code>: PPVs, tips, messages, customs" },
+  { feature: "Smart lists", theirs: "“Smart Lists ™” (pricing, OnlyFans plan)", status: "Built", ours: "<code>/growth/smart-lists</code>" },
+  { feature: "Share for Share", theirs: "“Share for Share” (a row in their comparison tables)", status: "NotBuiltYet", ours: "Three pages under <code>/share-for-share</code>" },
+  { feature: "24/7 support", theirs: "“24/7 technical support”", status: "Not offered", ours: "The README and GitHub issues. No SLA" },
+  { feature: "Uptime guarantee", theirs: "“With 99.99% uptime in the last 90 days…”", status: "Yours to run", ours: "Your VPS. We publish no uptime figure" },
+  { feature: "Price per creator", theirs: "“Starting at just $40”; $500 at “Over $75,000” (pricing slider)", status: "$0", ours: "Any number of creators, at any earnings" }
+] -%}
+{%- set legend = [
+  ["Built", "in the app today."],
+  ["Partly built", "some of it is in the app; the row says what is missing."],
+  ["NotBuiltYet", "the page exists, the feature does not."],
+  ["Not built", "no page at all."],
+  ["Yours to run", "it depends on your server."],
+  ["Not offered", "a service, not software; we don't sell it."]
+] -%}
+<section id="compare" aria-labelledby="compare-title" class="band-cream">
+<div class="wrap py-20 sm:py-28">
+  <p class="eyebrow">Ours vs theirs</p>
+  <h2 id="compare-title" class="section-title mt-2">Every feature they headline, row by row</h2>
+  <p class="lede">Where we lose, the table says so.</p>
+  <ul class="mt-6 flex flex-wrap gap-x-6 gap-y-2 text-sm text-muted" aria-label="What the labels mean">
+    {%- for item in legend %}
+    <li><span class="status-chip mr-1" data-status="{{ item[0] }}">{{ item[0] }}</span> {{ item[1] }}</li>
+    {%- endfor %}
+  </ul>
+  <div class="mt-8 rounded-2xl bg-white ring-1 ring-black/10 sm:overflow-x-auto" role="region" aria-labelledby="compare-caption" tabindex="0">
+    {#- Cell styles live in .compare (main.css), so the 22 rows stay light. -#}
+    <table class="compare">
+      <caption id="compare-caption" class="px-5 pt-5 pb-3 text-left text-sm text-muted">
+        Infloww's headline features against this repository
+      </caption>
+      <thead>
+        <tr><th scope="col">Feature</th><th scope="col">Infloww's page says</th><th scope="col">Inflowwww</th></tr>
+      </thead>
+      <tbody>
+        {%- for row in rows %}
+        {#- Phone cards: the feature name is a level-3 heading (role, since a th may not hold an h3), and the
+            column labels are aria-hidden spans, so a screen reader hears the column header once, not twice. -#}
+        <tr>
+          <th scope="row"><span role="heading" aria-level="3">{{ row.feature }}</span></th>
+          <td><span class="font-medium text-ink sm:hidden" aria-hidden="true">Infloww's page says: </span>{{ row.theirs }}</td>
+          <td><span class="mb-1 block font-medium sm:hidden" aria-hidden="true">Inflowwww</span><div><span class="status-chip" data-status="{{ row.status }}">{{ row.status }}</span><span>{{ row.ours | safe }}</span></div></td>
+        </tr>
+        {%- endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="mt-4 text-sm text-muted">
+    Our column follows the README and the
+    <a class="text-link" href="{{ site.repo }}/blob/main/docs/routes.md">route map</a>. Their column quotes infloww.com
+    and infloww.com/pricing word for word (captured <span class="whitespace-nowrap">{{ site.captureDate }}</span>; the Share for Share row is from their
+    comparison pages, stamped Oct 10, 2026). The brackets say where on their page the words appear.
+  </p>
+  <a class="text-link mt-4 inline-flex min-h-11 items-center" href="{{ '/openinflowwww-vs-infloww/' | url }}">Every row, with their words and ours</a>
+</div>
+</section>

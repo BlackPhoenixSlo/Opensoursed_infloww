@@ -1,0 +1,315 @@
+"use client";
+
+/**
+ * notifSettings — local preferences for the in-tab notification toaster.
+ *
+ * Persisted in localStorage so popouts inherit the same choices and the
+ * user never has to reconfigure after a refresh. No server roundtrip;
+ * this is purely a UI preference.
+ *
+ * Two orthogonal flags per type:
+ *   • toast   — show a transient toast top-right when the type arrives
+ *   • bubble  — render with a coloured accent ring + larger sticker
+ *               (used to make tips/purchases pop relative to chatter)
+ *
+ * Plus one switch per platform (Infloww's per-platform notification
+ * switches): a platform switched off pings nothing for its accounts.
+ */
+
+import { isAlertSoundId, type AlertSoundId } from "./alertSounds";
+import { persistJSON, readJSON } from "./persist";
+import type { FanId } from "@/lib/fanId";
+import type { Platform } from "@/lib/platform";
+
+export type NotifTypeKey =
+  | "message"
+  | "purchases"
+  | "tip"
+  | "subscribed"
+  | "commented"
+  | "mentioned"
+  | "favorited";
+
+export const NOTIF_TYPES: { key: NotifTypeKey; label: string; icon: string }[] = [
+  { key: "message",    label: "Messages",     icon: "💬" },
+  { key: "purchases",  label: "Purchases",    icon: "💰" },
+  { key: "tip",        label: "Tips",         icon: "💸" },
+  { key: "subscribed", label: "Subscribers",  icon: "⭐" },
+  { key: "mentioned",  label: "Mentions",     icon: "@" },
+  { key: "commented",  label: "Comments",     icon: "💭" },
+  { key: "favorited",  label: "Likes",        icon: "♡" },
+];
+
+export interface NotifSettings {
+  /** Master switch — when false, no toasts at all. */
+  enabled: boolean;
+  /** Per-type toast visibility. */
+  toast: Record<NotifTypeKey, boolean>;
+  /** Per-type "bubble" emphasis (larger sticker + coloured ring). */
+  bubble: Record<NotifTypeKey, boolean>;
+  /** Use the OS-level Notification API when the tab is not focused. */
+  osPing: boolean;
+  /** Per-platform switch: off mutes every account on that platform. */
+  platforms: Record<Platform, boolean>;
+  /** Alert sounds (lib/alertSounds): on/off and which of the 12, per kind.
+   *  "message" is an inbound DM (independent of its toast toggle, gated by
+   *  `enabled`); "reminder" is the Composer's Timed reminder reaching zero. */
+  sounds: Record<AlertKind, SoundPref>;
+}
+
+export type AlertKind = "message" | "reminder";
+
+export interface SoundPref {
+  on: boolean;
+  sound: AlertSoundId;
+}
+
+export const ALERT_KINDS: { key: AlertKind; label: string }[] = [
+  { key: "message", label: "New message" },
+  { key: "reminder", label: "Timed reminder" },
+];
+
+export const DEFAULT_NOTIF_SETTINGS: NotifSettings = {
+  enabled: true,
+  toast: {
+    message: false,
+    purchases: true,
+    tip: true,
+    subscribed: false,
+    mentioned: false,
+    commented: false,
+    favorited: false,
+  },
+  bubble: {
+    message: false,
+    purchases: true,
+    tip: true,
+    subscribed: false,
+    mentioned: false,
+    commented: false,
+    favorited: false,
+  },
+  osPing: true,
+  platforms: { onlyfans: true, fansly: true },
+  // A reminder is something the user set, so it sounds; a message sound is
+  // opt-in, like the message toast.
+  sounds: {
+    message: { on: false, sound: "s1" },
+    reminder: { on: true, sound: "s1" },
+  },
+};
+
+function readSoundPref(raw: unknown, def: SoundPref): SoundPref {
+  const p = (raw && typeof raw === "object" ? raw : {}) as Partial<SoundPref>;
+  return {
+    on: typeof p.on === "boolean" ? p.on : def.on,
+    sound: isAlertSoundId(p.sound) ? p.sound : def.sound,
+  };
+}
+
+const STORAGE_KEY = "chatterly:notif-settings:v1";
+
+export function readNotifSettings(): NotifSettings {
+  const parsed = readJSON<Partial<NotifSettings>>(STORAGE_KEY);
+  if (!parsed) return DEFAULT_NOTIF_SETTINGS;
+  return {
+    enabled: parsed.enabled ?? DEFAULT_NOTIF_SETTINGS.enabled,
+    toast: { ...DEFAULT_NOTIF_SETTINGS.toast, ...(parsed.toast ?? {}) },
+    bubble: { ...DEFAULT_NOTIF_SETTINGS.bubble, ...(parsed.bubble ?? {}) },
+    osPing: parsed.osPing ?? DEFAULT_NOTIF_SETTINGS.osPing,
+    platforms: { ...DEFAULT_NOTIF_SETTINGS.platforms, ...(parsed.platforms ?? {}) },
+    sounds: {
+      message: readSoundPref(parsed.sounds?.message, DEFAULT_NOTIF_SETTINGS.sounds.message),
+      reminder: readSoundPref(parsed.sounds?.reminder, DEFAULT_NOTIF_SETTINGS.sounds.reminder),
+    },
+  };
+}
+
+export function writeNotifSettings(s: NotifSettings): void {
+  persistJSON(STORAGE_KEY, s);
+  // Defer the dispatch so subscribers (other instances of the hook in
+  // the bell + toaster) don't run their setSettings while the original
+  // caller is still inside React's render/commit phase. queueMicrotask
+  // lets the current task finish first.
+  try {
+    queueMicrotask(() => {
+      try { window.dispatchEvent(new CustomEvent("chatterly:notif-settings")); } catch { /* ignore */ }
+    });
+  } catch { /* ignore */ }
+}
+
+// ── last-used bell filter ─────────────────────────────────────────────
+//
+// The bell dropdown's active filter chip (All / Tips / Purchases / …).
+// Persisted so a chatter who lives on the Tips or Purchases view doesn't
+// have to re-click it after every reload / popout.
+
+const FILTER_KEY = "chatterly:notif-filter:v1";
+
+export function readNotifFilterId(): string | null {
+  if (typeof window === "undefined") return null;
+  try { return window.localStorage.getItem(FILTER_KEY); } catch { return null; }
+}
+
+export function writeNotifFilterId(id: string): void {
+  try { window.localStorage.setItem(FILTER_KEY, id); } catch { /* ignore */ }
+}
+
+/** Maps OF notification.type values into our internal NotifTypeKey set. */
+export function mapOfTypeToKey(rawType: string | undefined | null): NotifTypeKey | null {
+  if (!rawType) return null;
+  const t = rawType.toLowerCase();
+  if (t === "message" || t === "messages" || t === "chatmessage") return "message";
+  if (t === "tip" || t === "tips") return "tip";
+  if (t === "purchase" || t === "purchases" || t === "paided_message") return "purchases";
+  if (t === "subscribed" || t === "subscriber" || t === "subscription") return "subscribed";
+  if (t === "commented" || t === "comment") return "commented";
+  if (t === "mentioned" || t === "mention") return "mentioned";
+  if (t === "favorited" || t === "favorite" || t === "like" || t === "liked") return "favorited";
+  return null;
+}
+
+// ── local notification history ────────────────────────────────────────
+//
+// OF's persisted /users/notifications list omits some event types (likes
+// in particular — confirmed by hitting the relay: even on accounts with
+// favorited count = 51, the list endpoint returns []). The SSE `toasts`
+// stream does push them, so we mirror those into localStorage to back the
+// bell's dropdown — that way the user can still see recent likes /
+// mentions / etc. in the list, not just the transient toast.
+//
+// Capped to last 100 per account; entries older than 7d are pruned on
+// every read. Shared across popouts via storage event.
+
+export interface CachedNotification {
+  id: string;
+  accountId: string;
+  /** Raw OF type string ("favorited", "paided_message", …). */
+  type: string;
+  typeKey: NotifTypeKey | null;
+  user: {
+    id?: FanId;
+    name?: string;
+    username?: string;
+    avatar?: string;
+  };
+  /** Raw HTML text (anchors, img, etc) — bell renders this with the same
+   *  strip-tags logic as live toasts. */
+  text: string;
+  replacePairs?: Record<string, string>;
+  /** ISO timestamp. */
+  createdAt: string;
+  /** A message row whose fan was answered since: who answered ("" unknown). */
+  respondedBy?: string;
+}
+
+const HISTORY_KEY = "chatterly:notif-history:v1";
+const HISTORY_MAX_PER_ACCOUNT = 100;
+// EVICT-BY: created-at — see plan/17_cache_strategy.md §7
+const HISTORY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+type HistoryMap = Record<string, CachedNotification[]>;
+
+function prune(items: CachedNotification[]): CachedNotification[] {
+  const cutoff = Date.now() - HISTORY_TTL_MS;
+  return items
+    .filter((n) => {
+      const t = Date.parse(n.createdAt);
+      return Number.isFinite(t) && t >= cutoff;
+    })
+    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+    .slice(0, HISTORY_MAX_PER_ACCOUNT);
+}
+
+export function readNotifHistory(): HistoryMap {
+  const parsed = readJSON<HistoryMap>(HISTORY_KEY);
+  if (!parsed || typeof parsed !== "object") return {};
+  const out: HistoryMap = {};
+  for (const [aid, list] of Object.entries(parsed)) {
+    if (Array.isArray(list)) out[aid] = prune(list);
+  }
+  return out;
+}
+
+function writeNotifHistory(h: HistoryMap): void {
+  persistJSON(HISTORY_KEY, h);
+  try {
+    queueMicrotask(() => {
+      try { window.dispatchEvent(new CustomEvent("chatterly:notif-history")); } catch { /* ignore */ }
+    });
+  } catch { /* ignore */ }
+}
+
+export function appendNotifHistory(n: CachedNotification): void {
+  if (typeof window === "undefined") return;
+  const h = readNotifHistory();
+  const list = h[n.accountId] ?? [];
+  // Dedup on id — re-pushing the same notif (locale variant, double SSE)
+  // shouldn't double-list.
+  if (list.some((x) => x.id === n.id)) return;
+  h[n.accountId] = prune([n, ...list]);
+  writeNotifHistory(h);
+}
+
+/**
+ * Patch the `user` field of an existing history entry. Used to backfill
+ * the resolved numeric id after an async username→id lookup so the
+ * bell row's href becomes canonical (no redirect detour).
+ */
+export function patchNotifHistoryUser(
+  accountId: string,
+  notifId: string,
+  patch: Partial<CachedNotification["user"]>,
+): void {
+  if (typeof window === "undefined") return;
+  const h = readNotifHistory();
+  const list = h[accountId];
+  if (!list) return;
+  let dirty = false;
+  for (let i = 0; i < list.length; i++) {
+    if (list[i].id !== notifId) continue;
+    list[i] = { ...list[i], user: { ...list[i].user, ...patch } };
+    dirty = true;
+    break;
+  }
+  if (dirty) {
+    h[accountId] = list;
+    writeNotifHistory(h);
+  }
+}
+
+/** Mark `fanId`'s unanswered message rows on `accountId` as answered by `by`
+ *  (the relay's `chat_responded`), so the bell shows "<by> has responded". */
+export function markNotifHistoryResponded(accountId: string, fanId: FanId, by: string): void {
+  if (typeof window === "undefined") return;
+  const h = readNotifHistory();
+  const list = h[accountId];
+  if (!list) return;
+  let dirty = false;
+  h[accountId] = list.map((n) => {
+    if (n.typeKey !== "message" || n.respondedBy !== undefined || String(n.user.id) !== String(fanId)) return n;
+    dirty = true;
+    return { ...n, respondedBy: by };
+  });
+  if (dirty) writeNotifHistory(h);
+}
+
+// ── badge events ──────────────────────────────────────────────────────
+//
+// Tab-local badge counter. Each tab starts at 0 on load; arrivals bump
+// by 1; clicks/bell-open reset to 0. We don't share across tabs — every
+// window has its own bell with its own counter, per the simplified UX
+// spec.
+
+export const NOTIF_ARRIVED_EVENT = "chatterly:notif-arrived";
+export const NOTIF_CLEARED_EVENT = "chatterly:notif-cleared";
+
+export function dispatchNotifArrived(): void {
+  if (typeof window === "undefined") return;
+  try { window.dispatchEvent(new CustomEvent(NOTIF_ARRIVED_EVENT)); } catch { /* ignore */ }
+}
+
+export function dispatchNotifCleared(): void {
+  if (typeof window === "undefined") return;
+  try { window.dispatchEvent(new CustomEvent(NOTIF_CLEARED_EVENT)); } catch { /* ignore */ }
+}

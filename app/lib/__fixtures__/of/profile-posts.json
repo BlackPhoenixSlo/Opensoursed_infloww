@@ -1,0 +1,250 @@
+[
+  {
+    "author": {
+      "id": 1001,
+      "_view": "a"
+    },
+    "responseType": "post",
+    "id": 2825446247,
+    "postedAt": "2026-10-16T23:52:00+00:00",
+    "postedAtPrecise": "1792194720.000000",
+    "text": "Synthetic post text 1",
+    "isMarkdownDisabled": true,
+    "canDelete": true,
+    "canComment": true,
+    "canEdit": true,
+    "mediaCount": 2,
+    "isMediaReady": true,
+    "isOpened": true,
+    "canToggleFavorite": true,
+    "tipsAmount": "$0",
+    "rawText": "Synthetic post text 1",
+    "tweetSend": false,
+    "media": [
+      {
+        "id": 4685369087,
+        "type": "photo",
+        "convertedToVideo": false,
+        "canView": true,
+        "hasError": false,
+        "createdAt": "2026-09-14T03:00:26+00:00",
+        "isReady": true,
+        "files": {
+          "full": {
+            "url": "https://cdn2.onlyfans.com/files/9/9d/9df28cd0dea5c31d5efa6f433e0a8148/0006.jpg",
+            "width": 750,
+            "height": 746,
+            "size": 0,
+            "sources": []
+          },
+          "thumb": {
+            "url": "https://cdn2.onlyfans.com/files/e/e5/e50dd3457d01761e703dba65fe5ea85f/0007.jpg",
+            "width": 300,
+            "height": 300,
+            "size": 0
+          },
+          "preview": {
+            "url": "https://cdn2.onlyfans.com/files/9/9d/9df28cd0dea5c31d5efa6f433e0a8148/0006.jpg",
+            "width": 750,
+            "height": 746,
+            "size": 0
+          },
+          "squarePreview": {
+            "url": "https://cdn2.onlyfans.com/files/0/01/01ac85afd53e0e5c269585b076229f8a/0008.jpg",
+            "width": 960,
+            "height": 960,
+            "size": 0
+          }
+        },
+        "duration": 0,
+        "releaseForms": [],
+        "hasCustomPreview": false,
+        "videoSources": {
+          "720": null,
+          "240": null
+        }
+      },
+      {
+        "id": 4685369075,
+        "type": "photo",
+        "convertedToVideo": false,
+        "canView": true,
+        "hasError": false,
+        "createdAt": "2026-09-14T03:00:24+00:00",
+        "isReady": true,
+        "files": {
+          "full": {
+            "url": "https://cdn2.onlyfans.com/files/f/f9/f9c1f0d80fc5b78f3fa3d11584dacf65/0009.jpg",
+            "width": 750,
+            "height": 746,
+            "size": 0,
+            "sources": []
+          },
+          "thumb": {
+            "url": "https://cdn2.onlyfans.com/files/3/3c/3c961e8d6e352337e7bec56a1ad60902/0010.jpg",
+            "width": 300,
+            "height": 300,
+            "size": 0
+          },
+          "preview": {
+            "url": "https://cdn2.onlyfans.com/files/f/f9/f9c1f0d80fc5b78f3fa3d11584dacf65/0009.jpg",
+            "width": 750,
+            "height": 746,
+            "size": 0
+          },
+          "squarePreview": {
+            "url": "https://cdn2.onlyfans.com/files/a/a6/a622f2863f5cf817260331ddb716ecf4/0011.jpg",
+            "width": 960,
+            "height": 960,
+            "size": 0
+          }
+        },
+        "duration": 0,
+        "releaseForms": [],
+        "hasCustomPreview": false,
+        "videoSources": {
+          "720": null,
+          "240": null
+        }
+      }
+    ],
+    "canViewMedia": true
+  },
+  {
+    "author": {
+      "id": 1001,
+      "_view": "a"
+    },
+    "responseType": "post",
+    "id": 2632659864,
+    "postedAt": "2026-07-26T03:16:12+00:00",
+    "postedAtPrecise": "1785035772.000000",
+    "text": "Synthetic post text 2",
+    "isMarkdownDisabled": true,
+    "canDelete": true,
+    "canComment": true,
+    "canEdit": true,
+    "favoritesCount": 1,
+    "mediaCount": 1,
+    "isMediaReady": true,
+    "isOpened": true,
+    "canToggleFavorite": true,
+    "tipsAmount": "$0",
+    "rawText": "Synthetic post text 2",
+    "tweetSend": false,
+    "media": [
+      {
+        "id": 4590308947,
+        "type": "photo",
+        "convertedToVideo": false,
+        "canView": true,
+        "hasError": false,
+        "createdAt": "2026-07-26T00:12:21+00:00",
+        "isReady": true,
+        "files": {
+          "full": {
+            "url": "https://cdn2.onlyfans.com/files/e/ef/ef965db2f2ab062269cc26b83a052537/0012.jpg",
+            "width": 1024,
+            "height": 1536,
+            "size": 0,
+            "sources": []
+          },
+          "thumb": {
+            "url": "https://cdn2.onlyfans.com/files/f/f3/f3f516b920fbd65323db6c45081c6830/0013.jpg",
+            "width": 300,
+            "height": 300,
+            "size": 0
+          },
+          "preview": {
+            "url": "https://cdn2.onlyfans.com/files/7/75/75d62abb6a8b435d393b601770c67151/0014.jpg",
+            "width": 960,
+            "height": 1440,
+            "size": 0
+          },
+          "squarePreview": {
+            "url": "https://cdn2.onlyfans.com/files/f/fa/fa078aa6595e2550ae41b3880fc5da2c/0015.jpg",
+            "width": 960,
+            "height": 960,
+            "size": 0
+          }
+        },
+        "duration": 0,
+        "releaseForms": [],
+        "hasCustomPreview": false,
+        "videoSources": {
+          "720": null,
+          "240": null
+        }
+      }
+    ],
+    "canViewMedia": true
+  },
+  {
+    "author": {
+      "id": 1001,
+      "_view": "a"
+    },
+    "responseType": "post",
+    "id": 2632658690,
+    "postedAt": "2026-07-26T03:12:52+00:00",
+    "postedAtPrecise": "1785035572.000000",
+    "text": "Synthetic post text 3",
+    "isMarkdownDisabled": true,
+    "canDelete": true,
+    "canComment": true,
+    "canEdit": true,
+    "mediaCount": 1,
+    "isMediaReady": true,
+    "isOpened": true,
+    "canToggleFavorite": true,
+    "tipsAmount": "$0",
+    "rawText": "Synthetic post text 3",
+    "tweetSend": false,
+    "media": [
+      {
+        "id": 4515325325,
+        "type": "photo",
+        "convertedToVideo": false,
+        "canView": true,
+        "hasError": false,
+        "createdAt": "2026-06-15T01:43:39+00:00",
+        "isReady": true,
+        "files": {
+          "full": {
+            "url": "https://cdn2.onlyfans.com/files/e/e3/e3d845dfae2b800fcfe89243ffcdfdad/0016.jpg",
+            "width": 1024,
+            "height": 1536,
+            "size": 0,
+            "sources": []
+          },
+          "thumb": {
+            "url": "https://cdn2.onlyfans.com/files/f/f2/f21c497fb0ff6438407051bb75018b8e/0017.jpg",
+            "width": 300,
+            "height": 300,
+            "size": 0
+          },
+          "preview": {
+            "url": "https://cdn2.onlyfans.com/files/3/34/345448075e97efb5e93a83c74eed3151/0018.jpg",
+            "width": 960,
+            "height": 1440,
+            "size": 0
+          },
+          "squarePreview": {
+            "url": "https://cdn2.onlyfans.com/files/2/27/27984f5c695a5ebebb68e4bbcff48e6c/0019.jpg",
+            "width": 960,
+            "height": 960,
+            "size": 0
+          }
+        },
+        "duration": 0,
+        "releaseForms": [],
+        "hasCustomPreview": false,
+        "videoSources": {
+          "720": null,
+          "240": null
+        }
+      }
+    ],
+    "canViewMedia": true
+  }
+]

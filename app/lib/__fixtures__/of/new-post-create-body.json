@@ -1,0 +1,241 @@
+{
+  "source": "OF's create-post body: MakeFeedPost-72b1f13f.js getDataObject(), build 202610091632-c45cc0ac3f (docs/plans/of-manager-api-catalogue.md). `body` is what New post sends the Relay (POST /api/of/v2/posts, ofMirrorPost collectPost); `of` is what the Relay's of_client.create_post sends OF for it (computed offline, nothing sent). Ids are synthetic: vault media from new-post-vault-media.json, labels from profile-labels.json, creators from new-post-tags.json.",
+  "ofKeys": [
+    "text",
+    "mediaFiles",
+    "price",
+    "preview",
+    "labelIds",
+    "isScheduled",
+    "scheduledDate",
+    "isPublishedWithPeriod",
+    "expireDays",
+    "votingType",
+    "votingOptions",
+    "votingDue",
+    "votingCorrectIndex",
+    "fundRaisingTargetAmount",
+    "fundRaisingTipsPresets",
+    "lockedText",
+    "rfTag",
+    "rfGuest",
+    "rfPartner",
+    "mediaEditorFiles",
+    "saveUploads",
+    "tweetSend",
+    "isConsentAccepted"
+  ],
+  "now": "2026-10-17T12:00:00+02:00",
+  "cases": [
+    {
+      "name": "text only",
+      "text": "Synthetic post",
+      "draft": {},
+      "body": {
+        "text": "Synthetic post",
+        "media_files": [],
+        "price": 0
+      },
+      "of": {
+        "text": "Synthetic post",
+        "mediaFiles": [],
+        "price": 0
+      }
+    },
+    {
+      "name": "media and price",
+      "text": "Synthetic paid post",
+      "draft": {
+        "media_files": [
+          5001,
+          5002
+        ],
+        "price": 9.99
+      },
+      "body": {
+        "text": "Synthetic paid post",
+        "media_files": [
+          5001,
+          5002
+        ],
+        "price": 9.99
+      },
+      "of": {
+        "text": "Synthetic paid post",
+        "mediaFiles": [
+          5001,
+          5002
+        ],
+        "price": 9.99
+      }
+    },
+    {
+      "name": "media only",
+      "text": "",
+      "draft": {
+        "media_files": [
+          5003
+        ]
+      },
+      "body": {
+        "text": "",
+        "media_files": [
+          5003
+        ],
+        "price": 0
+      },
+      "of": {
+        "text": "",
+        "mediaFiles": [
+          5003
+        ],
+        "price": 0
+      }
+    },
+    {
+      "name": "poll",
+      "text": "Synthetic poll",
+      "draft": {
+        "voting": {
+          "type": 1,
+          "options": [
+            "Yes",
+            "",
+            "No"
+          ]
+        },
+        "voting_due": 3
+      },
+      "body": {
+        "text": "Synthetic poll",
+        "media_files": [],
+        "price": 0,
+        "voting_type": 1,
+        "voting_options": [
+          "Yes",
+          "No"
+        ],
+        "voting_due": 3
+      },
+      "of": {
+        "text": "Synthetic poll",
+        "mediaFiles": [],
+        "price": 0,
+        "votingType": 1,
+        "votingOptions": [
+          "Yes",
+          "No"
+        ],
+        "votingDue": 3
+      }
+    },
+    {
+      "name": "quiz",
+      "text": "Synthetic quiz",
+      "draft": {
+        "voting": {
+          "type": 2,
+          "options": [
+            "A",
+            "",
+            "B"
+          ],
+          "correct": 2
+        }
+      },
+      "body": {
+        "text": "Synthetic quiz",
+        "media_files": [],
+        "price": 0,
+        "voting_type": 2,
+        "voting_options": [
+          "A",
+          "B"
+        ],
+        "voting_due": 7,
+        "voting_correct_index": 1
+      },
+      "of": {
+        "text": "Synthetic quiz",
+        "mediaFiles": [],
+        "price": 0,
+        "votingType": 2,
+        "votingOptions": [
+          "A",
+          "B"
+        ],
+        "votingDue": 7,
+        "votingCorrectIndex": 1
+      }
+    },
+    {
+      "name": "schedule and expiration",
+      "text": "Synthetic scheduled post",
+      "draft": {
+        "posted_at": "2026-10-20T18:30:00+02:00",
+        "expire_days": 7
+      },
+      "body": {
+        "text": "Synthetic scheduled post",
+        "media_files": [],
+        "price": 0,
+        "posted_at": "2026-10-20T18:30:00+02:00",
+        "expire_days": 7
+      },
+      "of": {
+        "text": "Synthetic scheduled post",
+        "mediaFiles": [],
+        "price": 0,
+        "isScheduled": 1,
+        "scheduledDate": "2026-10-20T18:30:00+02:00",
+        "expireDays": 7
+      }
+    },
+    {
+      "name": "labels and tagged users",
+      "text": "Synthetic tagged post",
+      "draft": {
+        "label_ids": [
+          8717758,
+          8717761
+        ],
+        "tagged_users": [
+          2001,
+          2002
+        ]
+      },
+      "body": {
+        "text": "Synthetic tagged post",
+        "media_files": [],
+        "price": 0,
+        "tagged_users": [
+          2001,
+          2002
+        ],
+        "label_ids": [
+          8717758,
+          8717761
+        ]
+      },
+      "of": {
+        "text": "Synthetic tagged post",
+        "mediaFiles": [],
+        "price": 0,
+        "labelIds": [
+          8717758,
+          8717761
+        ],
+        "userTags": [
+          2001,
+          2002
+        ],
+        "rfTag": [
+          2001,
+          2002
+        ],
+        "rfGuest": [],
+        "rfPartner": []
+      }
+    }
+  ]
+}

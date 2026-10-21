@@ -1,0 +1,21 @@
+{
+ "list": [
+  {
+   "invoiceId": "60000000",
+   "createdAt": "2025-01-26T21:05:40+00:00",
+   "amount": 85.23,
+   "currency": "USD",
+   "state": "approved",
+   "rejectReason": null
+  },
+  {
+   "invoiceId": "60000001",
+   "createdAt": "2024-06-05T13:02:48+00:00",
+   "amount": 95.73,
+   "currency": "USD",
+   "state": "approved",
+   "rejectReason": null
+  }
+ ],
+ "marker": 1792238001
+}

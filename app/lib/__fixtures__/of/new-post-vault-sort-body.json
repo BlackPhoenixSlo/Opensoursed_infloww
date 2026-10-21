@@ -1,0 +1,13 @@
+{
+  "_about": "New post's vault dialog > folder Sort > Name, descending. relay: what the app posts to /admin/vault-ai/of-folders/sort (useVaultCache.sortOfFolders; the account id synthetic); of: of_client.sort_vault_lists' body for POST /api2/v2/vault/lists/sort.",
+  "_source": "Captured at the write interceptor in front of a second relay (2026-10-17, never sent on; account id replaced). OF side: OF web bundle build 202610091632, read statically: vault/lists/sort -> POST {sort: default|name|recent|media|custom, order: asc|desc}.",
+  "relay": {
+    "account_id": "1",
+    "sort": "name",
+    "order": "desc"
+  },
+  "of": {
+    "sort": "name",
+    "order": "desc"
+  }
+}

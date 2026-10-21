@@ -1,0 +1,65 @@
+{
+  "_about": "A Profile promotion's claimers with what each spent (Growth > Profile promotions Details). OF's /subscriptions/subscribers?filter[promoId] as the relay's link_metrics walks it. PII-free: synthetic ids, names, usernames, dates and amounts; only the shape is OF's.",
+  "_source": "Live reads in the operator's logged-in OnlyFans tab (2026-10-18, .scratch/growth-todo/capture.md 0.1): GET /api2/v2/subscriptions/subscribers?limit=10&offset=0&format=infinite&filter[promoId]=<id>, {list, hasMore}; limit 20 returned the same rows. Promotion claimers carry the same subscribedOnData as trial claimers (subscribeAt ISO with +00:00, totalSumm = subscribesSumm + postsSumm + messagesSumm + streamsSumm + tipsSumm, in dollars). Nothing in subscribes[] names the promotion; only the filter and subscribeAt tie the fan to it. The third row has no subscribedOnData (the fallback: first-seen time, spend unknown). Rows trimmed to the fields read here.",
+  "request": {
+    "of": {
+      "method": "GET",
+      "path": "/subscriptions/subscribers",
+      "params": [
+        { "limit": 20, "offset": 0, "format": "infinite", "filter[promoId]": 4343 }
+      ]
+    }
+  },
+  "pages": [
+    {
+      "list": [
+        {
+          "id": 71000001,
+          "name": "Synth Promo Fan A",
+          "username": "synthpromoa",
+          "subscribedOn": true,
+          "subscribedOnData": {
+            "subscribeAt": "2026-08-04T09:30:00+00:00",
+            "subscribedOnExpiredNow": false,
+            "totalSumm": 12.5,
+            "subscribesSumm": 0,
+            "postsSumm": 0,
+            "messagesSumm": 7.5,
+            "streamsSumm": 0,
+            "tipsSumm": 5,
+            "subscribes": [
+              { "type": "regular", "action": "prolong", "price": 0, "duration": 30 }
+            ]
+          }
+        },
+        {
+          "id": 71000002,
+          "name": "Synth Promo Fan B",
+          "username": "synthpromob",
+          "subscribedOn": true,
+          "subscribedOnData": {
+            "subscribeAt": "2026-08-06T18:00:00+00:00",
+            "subscribedOnExpiredNow": false,
+            "totalSumm": 3,
+            "subscribesSumm": 3,
+            "postsSumm": 0,
+            "messagesSumm": 0,
+            "streamsSumm": 0,
+            "tipsSumm": 0,
+            "subscribes": [
+              { "type": "regular", "action": "prolong", "price": 3, "duration": 30 }
+            ]
+          }
+        },
+        {
+          "id": 71000003,
+          "name": "Synth Promo Fan C",
+          "username": "synthpromoc",
+          "subscribedOn": null
+        }
+      ],
+      "hasMore": false
+    }
+  ],
+  "totals": { "fans": 3, "with_data": 2, "total": 15.5, "messages": 7.5, "tips": 5, "subs": 3, "spent": 2 }
+}

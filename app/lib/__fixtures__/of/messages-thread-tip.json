@@ -1,0 +1,46 @@
+{
+ "_derived": "No tip exists in the Creator's chats (With Tips is empty live, 0 isTip in the scanned threads); this message is a fan message of messages-thread.json with OF's tip fields as its web app reads them (82027 hasTips: isTip && tipAmount) and as OF's websocket sends a tip (price 0, tipAmount in dollars, tipText the fan's note: service/tests/test_event_transcoder_tip.py).",
+ "list": [
+  {
+   "responseType": "message",
+   "text": "I sent you a $10.00 tip ",
+   "giphyId": null,
+   "lockedText": false,
+   "isFree": true,
+   "price": 0,
+   "isMediaReady": true,
+   "mediaCount": 0,
+   "media": [],
+   "previews": [],
+   "isTip": true,
+   "isReportedByMe": false,
+   "isCouplePeopleMedia": false,
+   "queueId": 48776990679,
+   "isMarkdownDisabled": true,
+   "fromUser": {
+    "id": 2006,
+    "_view": "s"
+   },
+   "isFromQueue": true,
+   "canUnsendQueue": true,
+   "unsendSecondsQueue": 1000000,
+   "id": 11700000000001,
+   "isOpened": false,
+   "isNew": false,
+   "createdAt": "2026-10-17T10:06:08+00:00",
+   "changedAt": "2026-10-17T10:06:08+00:00",
+   "cancelSeconds": 80360,
+   "isLiked": false,
+   "canPurchase": false,
+   "canPurchaseReason": "free",
+   "canReport": true,
+   "canBePinned": true,
+   "isPinned": false,
+   "isAddedToBookmarks": false,
+   "chatUserId": 2006,
+   "tipAmount": 10,
+   "tipText": "<p>Synthetic tip note</p>"
+  }
+ ],
+ "hasMore": false
+}

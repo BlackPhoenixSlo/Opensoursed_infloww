@@ -1,0 +1,118 @@
+{
+  "list": [
+    {
+      "id": 3000,
+      "type": "stories",
+      "name": "Stories",
+      "hasMedia": true,
+      "canUpdate": false,
+      "canDelete": false,
+      "videosCount": 2,
+      "photosCount": 438,
+      "gifsCount": 0,
+      "audiosCount": 0,
+      "medias": [
+        {
+          "type": "photo",
+          "url": "https://cdn2.onlyfans.com/files/2/2a/2aa3ac4c192ff69aeffbd395284b2c84/2aa3ac4c192f.jpg"
+        }
+      ]
+    },
+    {
+      "id": 3001,
+      "type": "messages",
+      "name": "Messages",
+      "hasMedia": true,
+      "canUpdate": false,
+      "canDelete": false,
+      "videosCount": 13,
+      "photosCount": 92,
+      "gifsCount": 2,
+      "audiosCount": 9,
+      "medias": [
+        {
+          "type": "photo",
+          "url": "https://cdn2.onlyfans.com/files/9/94/947688185c849f44f4c5d3c08ce205ec/947688185c84.jpg"
+        }
+      ]
+    },
+    {
+      "id": 3002,
+      "type": "posts",
+      "name": "Posts",
+      "hasMedia": true,
+      "canUpdate": false,
+      "canDelete": false,
+      "videosCount": 114,
+      "photosCount": 35,
+      "gifsCount": 0,
+      "audiosCount": 0,
+      "medias": [
+        {
+          "type": "photo",
+          "url": "https://cdn2.onlyfans.com/files/f/f0/f0f89c8e5518576287b17504b56ed97b/f0f89c8e5518.jpg"
+        }
+      ]
+    },
+    {
+      "id": 3003,
+      "type": "custom",
+      "name": "Synthetic folder 1",
+      "hasMedia": false,
+      "canUpdate": true,
+      "canDelete": true,
+      "videosCount": 0,
+      "photosCount": 0,
+      "gifsCount": 0,
+      "audiosCount": 0,
+      "medias": []
+    },
+    {
+      "id": 3004,
+      "type": "custom",
+      "name": "Synthetic folder 2",
+      "hasMedia": false,
+      "canUpdate": true,
+      "canDelete": true,
+      "videosCount": 0,
+      "photosCount": 0,
+      "gifsCount": 0,
+      "audiosCount": 0,
+      "medias": []
+    },
+    {
+      "id": 3016,
+      "type": "streams",
+      "name": "Streams",
+      "hasMedia": true,
+      "canUpdate": false,
+      "canDelete": false,
+      "videosCount": 8,
+      "photosCount": 0,
+      "gifsCount": 0,
+      "audiosCount": 0,
+      "medias": [
+        {
+          "type": "video",
+          "url": "https://cdn2.onlyfans.com/files/8/88/88d61b00fd9f566b638901102a17c8e0/88d61b00fd9f.jpg"
+        }
+      ]
+    }
+  ],
+  "all": {
+    "videosCount": 137,
+    "photosCount": 565,
+    "gifsCount": 2,
+    "audiosCount": 9,
+    "medias": [
+      {
+        "type": "photo",
+        "url": "https://cdn2.onlyfans.com/files/f/f0/f0f89c8e5518576287b17504b56ed97b/f0f89c8e5518.jpg"
+      }
+    ]
+  },
+  "hasMore": false,
+  "canCreateVaultLists": true,
+  "order": "desc",
+  "sort": "recent"
+}

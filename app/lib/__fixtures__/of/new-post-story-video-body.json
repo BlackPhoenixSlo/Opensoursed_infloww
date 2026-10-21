@@ -1,0 +1,39 @@
+{
+  "_about": "Add to story with a video: one multipart POST /api/of/v2/stories/upload (part `file`, the video's own type); the relay's post_story uploads it (upload_media, a fresh claim) and sends OF's POST /stories with the claim. The claim is synthetic: nothing was uploaded.",
+  "_source": "OF web bundle build 202610091632, read statically (not observed live): stories take a convert claim in mediaFiles with the rf* arrays (of_client.create_story).",
+  "file": {
+    "name": "clip.mp4",
+    "type": "video/mp4"
+  },
+  "relay": {
+    "method": "POST",
+    "path": "/api/of/v2/stories/upload",
+    "part": "file"
+  },
+  "upload": {
+    "ready": true,
+    "send_with": [
+      {
+        "processId": "synthetic-p9",
+        "host": "convert.example",
+        "name": "clip.mp4"
+      }
+    ]
+  },
+  "of": {
+    "method": "POST",
+    "path": "/stories",
+    "body": {
+      "mediaFiles": [
+        {
+          "processId": "synthetic-p9",
+          "host": "convert.example",
+          "name": "clip.mp4"
+        }
+      ],
+      "rfTag": [],
+      "rfGuest": [],
+      "rfPartner": []
+    }
+  }
+}

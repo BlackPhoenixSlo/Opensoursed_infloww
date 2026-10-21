@@ -1,0 +1,129 @@
+{
+ "list": [
+  {
+   "responseType": "message",
+   "text": "Synthetic message 1",
+   "giphyId": null,
+   "lockedText": false,
+   "isFree": true,
+   "price": 0,
+   "isMediaReady": true,
+   "mediaCount": 2,
+   "media": [
+    {
+     "id": 4543104986,
+     "type": "photo",
+     "convertedToVideo": false,
+     "canView": true,
+     "hasError": false,
+     "createdAt": null,
+     "isReady": true,
+     "files": {
+      "full": {
+       "url": "https://public.onlyfans.com/files/0/00/synthetic/synthetic.jpg",
+       "width": 3840,
+       "height": 2880,
+       "size": 0,
+       "sources": []
+      },
+      "thumb": {
+       "url": "https://public.onlyfans.com/files/0/00/synthetic/synthetic.jpg",
+       "width": 300,
+       "height": 300,
+       "size": 0
+      },
+      "preview": {
+       "url": "https://public.onlyfans.com/files/0/00/synthetic/synthetic.jpg",
+       "width": 960,
+       "height": 720,
+       "size": 0
+      },
+      "squarePreview": {
+       "url": "https://public.onlyfans.com/files/0/00/synthetic/synthetic.jpg",
+       "width": 960,
+       "height": 960,
+       "size": 0
+      }
+     },
+     "duration": 0,
+     "hasCustomPreview": false,
+     "videoSources": {
+      "720": null,
+      "240": null
+     }
+    },
+    {
+     "id": 4543104990,
+     "type": "photo",
+     "convertedToVideo": false,
+     "canView": true,
+     "hasError": false,
+     "createdAt": null,
+     "isReady": true,
+     "files": {
+      "full": {
+       "url": "https://public.onlyfans.com/files/0/00/synthetic/synthetic.jpg",
+       "width": 3840,
+       "height": 2880,
+       "size": 0,
+       "sources": []
+      },
+      "thumb": {
+       "url": "https://public.onlyfans.com/files/0/00/synthetic/synthetic.jpg",
+       "width": 300,
+       "height": 300,
+       "size": 0
+      },
+      "preview": {
+       "url": "https://public.onlyfans.com/files/0/00/synthetic/synthetic.jpg",
+       "width": 960,
+       "height": 720,
+       "size": 0
+      },
+      "squarePreview": {
+       "url": "https://public.onlyfans.com/files/0/00/synthetic/synthetic.jpg",
+       "width": 960,
+       "height": 960,
+       "size": 0
+      }
+     },
+     "duration": 0,
+     "hasCustomPreview": false,
+     "videoSources": {
+      "720": null,
+      "240": null
+     }
+    }
+   ],
+   "previews": [],
+   "isTip": false,
+   "isReportedByMe": false,
+   "isCouplePeopleMedia": false,
+   "queueId": 46772687195,
+   "isMarkdownDisabled": true,
+   "fromUser": {
+    "id": 3037,
+    "_view": "t"
+   },
+   "isFromQueue": true,
+   "canUnsendQueue": true,
+   "unsendSecondsQueue": 1000000,
+   "id": 11237697296494,
+   "isOpened": false,
+   "isNew": false,
+   "createdAt": "2026-09-13T11:57:26+00:00",
+   "changedAt": "2026-09-13T11:57:26+00:00",
+   "cancelSeconds": 0,
+   "isLiked": false,
+   "canPurchase": false,
+   "canPurchaseReason": "free",
+   "canReport": true,
+   "canBePinned": true,
+   "isPinned": false,
+   "isAddedToBookmarks": false,
+   "chatUserId": 3037
+  }
+ ],
+ "hasMore": true,
+ "nextLastId": "11184117461692"
+}

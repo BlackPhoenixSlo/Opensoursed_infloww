@@ -1,0 +1,66 @@
+{
+  "_about": "Format text: editor = the editor's DOM as the browser's editing commands leave it (b, i, font); html = ofHtml's OF markup; relay = the app's POST /api/of/v2/posts body; of = of_client.create_post's body (text passed through).",
+  "_source": "OF web bundle build 202610091632, read statically (not observed live): MakeFeedPost's text is the tiptap editor's getHTML(); TEXT_EDITOR classes m-editor-fc__gray|blue-1|blue-2|default and m-editor-fs__lg|l|default|s|sm; sanitizer tags strong, span, em, br, p. The strong > em > span nesting is assumed from tiptap's mark order.",
+  "cases": [
+    {
+      "name": "bold and italic",
+      "editor": "<p>Hello <b>bold</b> and <i>italic</i></p>",
+      "html": "<p>Hello <strong>bold</strong> and <em>italic</em></p>",
+      "relay": {
+        "text": "<p>Hello <strong>bold</strong> and <em>italic</em></p>",
+        "media_files": [],
+        "price": 0
+      },
+      "of": {
+        "text": "<p>Hello <strong>bold</strong> and <em>italic</em></p>",
+        "mediaFiles": [],
+        "price": 0
+      }
+    },
+    {
+      "name": "text colour and size in one span",
+      "editor": "<p><font color=\"#00aff0\" size=\"7\">Big blue</font> plain</p>",
+      "html": "<p><span class=\"m-editor-fc__blue-1 m-editor-fs__lg\">Big blue</span> plain</p>",
+      "relay": {
+        "text": "<p><span class=\"m-editor-fc__blue-1 m-editor-fs__lg\">Big blue</span> plain</p>",
+        "media_files": [],
+        "price": 0
+      },
+      "of": {
+        "text": "<p><span class=\"m-editor-fc__blue-1 m-editor-fs__lg\">Big blue</span> plain</p>",
+        "mediaFiles": [],
+        "price": 0
+      }
+    },
+    {
+      "name": "bold grey line, then a plain line",
+      "editor": "<p><b><font color=\"#8a96a3\">grey bold</font></b></p><p>second</p>",
+      "html": "<p><strong><span class=\"m-editor-fc__gray\">grey bold</span></strong></p><p>second</p>",
+      "relay": {
+        "text": "<p><strong><span class=\"m-editor-fc__gray\">grey bold</span></strong></p><p>second</p>",
+        "media_files": [],
+        "price": 0
+      },
+      "of": {
+        "text": "<p><strong><span class=\"m-editor-fc__gray\">grey bold</span></strong></p><p>second</p>",
+        "mediaFiles": [],
+        "price": 0
+      }
+    },
+    {
+      "name": "no formatting stays plain text",
+      "editor": "<p>Just text</p>",
+      "html": null,
+      "relay": {
+        "text": "Just text",
+        "media_files": [],
+        "price": 0
+      },
+      "of": {
+        "text": "Just text",
+        "mediaFiles": [],
+        "price": 0
+      }
+    }
+  ]
+}

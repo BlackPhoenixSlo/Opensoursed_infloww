@@ -1,0 +1,42 @@
+---
+layout: base.njk
+# One page per 20 posts of each bucket in _data/buckets.json; free tags get no page.
+pagination:
+  data: collections.bucketPages
+  size: 1
+  alias: bucketPage
+  addAllPagesToCollections: true
+permalink: "{{ bucketPage.href }}"
+eleventyComputed:
+  title: "{{ bucketPage.label }}{% if bucketPage.pageNumber > 0 %}, page {{ bucketPage.pageNumber + 1 }}{% endif %} | Inflowwww Blog"
+  description: "{% if bucketPage.pageNumber > 0 %}Page {{ bucketPage.pageNumber + 1 }}: {% endif %}{{ bucketPage.blurb }}"
+---
+<section class="wrap pt-16 pb-8 sm:pt-24">
+  <nav aria-label="Breadcrumb">
+    <ol class="flex flex-wrap items-center gap-1 text-sm text-muted">
+      <li><a class="text-link inline-flex min-h-11 items-center" href="{{ '/blog/' | url }}">Blog</a></li>
+      <li aria-hidden="true">/</li>
+      <li aria-current="page">{{ bucketPage.label }}</li>
+    </ol>
+  </nav>
+  <h1 class="h-page mt-2">{{ bucketPage.label }}</h1>
+  <p class="lede">{{ bucketPage.blurb }}</p>
+  {#- "Start here": the bucket's startHere slugs from buckets.json, on the first page only. -#}
+  {%- if bucketPage.pageNumber == 0 and bucketPage.startPosts.length %}
+  <section aria-labelledby="start-title" class="mt-10 max-w-3xl">
+    <h2 id="start-title" class="text-2xl font-semibold tracking-tight">Start here</h2>
+    {%- set posts = bucketPage.startPosts %}
+    {%- set compact = true %}
+    {% include "post-list.njk" %}
+  </section>
+  {%- endif %}
+  <h2 class="mt-12 text-2xl font-semibold tracking-tight">
+    {{ bucketPage.total }} post{% if bucketPage.total != 1 %}s{% endif %}{% if bucketPage.hrefs.length > 1 %}<span class="text-muted">, page {{ bucketPage.pageNumber + 1 }} of {{ bucketPage.hrefs.length }}</span>{% endif %}
+  </h2>
+  {%- set posts = bucketPage.posts %}
+  {%- set compact = false %}
+  {%- set pagerHrefs = bucketPage.hrefs %}
+  {%- set pagerIndex = bucketPage.pageNumber %}
+  {%- set pagerLabel = bucketPage.label ~ " pages" %}
+  {% include "post-list.njk" %}
+</section>

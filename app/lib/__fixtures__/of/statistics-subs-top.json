@@ -1,0 +1,19 @@
+{
+ "users": [
+  {
+   "id": 900005,
+   "name": "Synthetic Fan E",
+   "username": "u_synthetic_e",
+   "avatar": null,
+   "subscribedOnData": {
+    "totalSumm": 12,
+    "subscribesSumm": 0,
+    "tipsSumm": 7,
+    "messagesSumm": 5,
+    "postsSumm": 0,
+    "streamsSumm": 0
+   }
+  }
+ ],
+ "hasMore": false
+}

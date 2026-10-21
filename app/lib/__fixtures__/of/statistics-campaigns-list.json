@@ -1,0 +1,29 @@
+{
+ "list": [
+  {
+   "id": 61001,
+   "countSubscribers": 1,
+   "countTransitions": 9,
+   "campaignCode": 7,
+   "campaignName": "Synthetic link",
+   "createdAt": "2026-10-01T00:00:00+00:00",
+   "endDate": null,
+   "user": { "view": "s", "id": 9001, "name": "Synthetic Creator", "username": "synthetic_creator", "avatar": null },
+   "sharedWith": null,
+   "isDeleted": false
+  },
+  {
+   "id": 61002,
+   "countSubscribers": 0,
+   "countTransitions": 2,
+   "campaignCode": 8,
+   "campaignName": "Synthetic ended link",
+   "createdAt": "2026-09-20T23:30:00+00:00",
+   "endDate": "2026-09-21 03:01:31",
+   "user": { "view": "s", "id": 9001, "name": "Synthetic Creator", "username": "synthetic_creator", "avatar": null },
+   "sharedWith": null,
+   "isDeleted": true
+  }
+ ],
+ "hasMore": false
+}

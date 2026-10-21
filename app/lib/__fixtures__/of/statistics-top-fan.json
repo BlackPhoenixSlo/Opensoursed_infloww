@@ -1,0 +1,52 @@
+{
+ "total": {
+  "id": 900002,
+  "name": "Synthetic Fan B",
+  "username": "u_synthetic_b",
+  "avatar": null,
+  "subscribedOnDuration": "3 months",
+  "subscribedOnData": {
+   "price": 9.99,
+   "totalSumm": 42.5,
+   "subscribesSumm": 29.97,
+   "tipsSumm": 7.53,
+   "messagesSumm": 5,
+   "postsSumm": 0,
+   "streamsSumm": 0
+  }
+ },
+ "subscriptions": {
+  "id": 900002,
+  "name": "Synthetic Fan B",
+  "username": "u_synthetic_b",
+  "avatar": null,
+  "subscribedOnDuration": "3 months",
+  "subscribedOnData": {
+   "price": 9.99,
+   "totalSumm": 42.5,
+   "subscribesSumm": 29.97,
+   "tipsSumm": 7.53,
+   "messagesSumm": 5,
+   "postsSumm": 0,
+   "streamsSumm": 0
+  }
+ },
+ "tips": null,
+ "messages": {
+  "id": 900002,
+  "name": "Synthetic Fan B",
+  "username": "u_synthetic_b",
+  "avatar": null,
+  "subscribedOnDuration": "3 months",
+  "subscribedOnData": {
+   "price": 9.99,
+   "totalSumm": 42.5,
+   "subscribesSumm": 29.97,
+   "tipsSumm": 7.53,
+   "messagesSumm": 5,
+   "postsSumm": 0,
+   "streamsSumm": 0
+  }
+ },
+ "streams": null
+}

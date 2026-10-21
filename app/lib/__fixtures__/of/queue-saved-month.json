@@ -1,0 +1,58 @@
+{
+  "_source": "guess: OF's bundles, build 202610091632 (not captured: the live account has nothing saved for later and no queued message, and no logged-in OF tab was available to REA): a month's /schedules with saved-for-later items beside scheduled ones (app.js schedule module `b` and `R`)",
+  "list": [
+    {
+      "id": 5101,
+      "type": "post",
+      "publishDateTime": "2026-11-03T08:00:00+00:00",
+      "entity": {
+        "id": 7101,
+        "text": "<p>Synthetic scheduled post</p>",
+        "isMediaReady": true
+      }
+    },
+    {
+      "id": 5102,
+      "type": "post",
+      "publishDateTime": "2026-11-03T12:00:00+00:00",
+      "entity": {
+        "id": 7102,
+        "text": "<p>Synthetic saved post</p>",
+        "isPublishedWithPeriod": true,
+        "isMediaReady": true
+      }
+    },
+    {
+      "id": 5103,
+      "type": "post",
+      "publishDateTime": "2026-11-03T15:00:00+00:00",
+      "entity": {
+        "id": 7103,
+        "text": "<p>Synthetic saved post 2</p>",
+        "isPublishedWithPeriod": true,
+        "isMediaReady": true
+      }
+    },
+    {
+      "id": 5104,
+      "type": "chat",
+      "publishDateTime": "2026-11-05T09:00:00+00:00",
+      "entity": {
+        "id": 6104,
+        "text": "<p>Synthetic saved message</p>",
+        "scheduledAt": null
+      }
+    },
+    {
+      "id": 5105,
+      "type": "chat",
+      "publishDateTime": "2026-11-06T09:00:00+00:00",
+      "entity": {
+        "id": 6105,
+        "text": "<p>Synthetic scheduled message</p>",
+        "scheduledAt": "2026-11-06T09:00:00+00:00"
+      }
+    }
+  ],
+  "syncInProcess": false
+}

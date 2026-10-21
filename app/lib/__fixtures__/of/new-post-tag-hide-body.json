@@ -1,0 +1,12 @@
+{
+  "_about": "Tag other creators: a row's More > Hide from list. relay: PATCH /api/of/v2/release-forms/toggle-show; of: of_client.toggle_release_form's body.",
+  "_source": "OF web bundle build 202610091632, read statically (not observed live: no logged-in onlyfans.com tab and no write is ever sent): releaseForms/hideReleaseForms -> PATCH /release-forms/toggle-show {entityId, entityType}.",
+  "relay": {
+    "entity_id": 3001,
+    "entity_type": "user"
+  },
+  "of": {
+    "entityId": 3001,
+    "entityType": "user"
+  }
+}

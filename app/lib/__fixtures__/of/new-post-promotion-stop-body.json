@@ -1,0 +1,15 @@
+{
+  "_about": "Stop promotion (a running campaign's card: New post's right column, Home, settings Profile promotions). The app sends POST /api/of/v2/promotions/{id}/finish with no body; of_client.finish_promo sends OF's own.",
+  "_source": "OF web bundle build 202610091632, read statically (not observed live: no logged-in onlyfans.com tab and no write is ever sent): users/finishPromotion -> POST /promotions/{id}/finish, no body.",
+  "promo_id": 1001,
+  "relay": {
+    "method": "POST",
+    "path": "/api/of/v2/promotions/1001/finish",
+    "body": null
+  },
+  "of": {
+    "method": "POST",
+    "path": "/promotions/1001/finish",
+    "body": null
+  }
+}

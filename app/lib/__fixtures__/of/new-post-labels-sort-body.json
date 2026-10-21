@@ -1,0 +1,12 @@
+{
+  "_about": "ADD LABELS > Sort > Name, ascending. relay: POST /api/of/v2/labels/sort; of: of_client.sort_labels' body.",
+  "_source": "OF web bundle build 202610091632, read statically (not observed live: no logged-in onlyfans.com tab and no write is ever sent): labels/savePostLabelsOrder -> POST /labels/sort {sort: recent|name|posts|custom, order: asc|desc}.",
+  "relay": {
+    "sort": "name",
+    "order": "asc"
+  },
+  "of": {
+    "sort": "name",
+    "order": "asc"
+  }
+}

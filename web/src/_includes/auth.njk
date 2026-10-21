@@ -1,0 +1,143 @@
+{#- Shared parts of /signup/ and /login/: dark pages shaped like theirs (signup.infloww.com and the Infloww app's
+    login screen), our words. The form posts (urlencoded, top-level, so no CORS) to the app's /site-auth
+    (app/app/site-auth/route.ts). That signs in or registers through the relay and lands on the app's /messages-pro,
+    signed in; on failure it sends the visitor back here with #error=<code>&username=<name> (a fragment, so the
+    host's logs never see it), which main.js shows with the wording below. The .auth-* classes are in main.css. -#}
+
+{%- macro authForm(mode) -%}
+<form method="post" action="{{ site.appUrl }}/site-auth" data-auth-form data-mode="{{ mode }}" class="auth-form">
+  {%- if mode == "register" %}
+  <input type="hidden" name="mode" value="register" />
+  {%- endif %}
+  {#- Filled in by main.js from #error=. The codes come from app/app/site-auth/route.ts. -#}
+  <p id="auth-error" role="alert" hidden class="auth-alert mt-6"></p>
+  <ul hidden data-auth-messages>
+    <li data-code="wrong">Wrong username or password.</li>
+    <li data-code="taken">That username is taken. Pick another, or sign in if it is yours.</li>
+    <li data-code="reserved">That username is reserved. Pick another.</li>
+    {%- if mode == "register" %}
+    <li data-code="invalid">Check the username (3 to 32 characters: a–z, 0–9, dot, underscore or hyphen) and the password (at least 6 characters).</li>
+    {%- else %}
+    <li data-code="invalid">Enter your username and password. Usernames are 3 to 32 characters: a–z, 0–9, dot, underscore or hyphen.</li>
+    {%- endif %}
+    <li data-code="disabled">This chatter login is switched off. Ask your agency's owner to turn it back on.</li>
+    <li data-code="unavailable">The app is up, but its sign-in service did not answer. Try again in a minute.</li>
+    <li data-code="">That did not work. Try again.</li>
+  </ul>
+  {{ caller() }}
+</form>
+{%- endmacro -%}
+
+{#- Their "Email address" field is our username: the app keeps no email. The app's own input rules
+    (app/components/auth/Landing.tsx); the app lowercases it on submit. `\-` keeps the pattern valid under the v flag.
+    The title is the browser's pattern-mismatch message. The pink line under the field is theirs too; CSS shows it
+    once the browser marks the field :user-invalid, so it needs no JS. -#}
+{%- macro usernameField(placeholder, hint = false, spacing = "mt-8") -%}
+<div class="{{ spacing }}">
+  <label for="username" class="auth-label">Username</label>
+  <input
+    id="username" name="username" type="text" class="auth-input"
+    placeholder="{{ placeholder }}"
+    autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false"
+    required minlength="3" maxlength="32" pattern="[a-zA-Z0-9_.\-]{3,32}"
+    title="3 to 32 characters: a–z, 0–9, dot, underscore or hyphen. Capitals become lowercase."
+    {%- if hint %} aria-describedby="username-hint"{% endif %}
+  />
+  <p class="auth-field-error" aria-hidden="true">Username is invalid. Enter a correct username, not an email</p>
+  {%- if hint %}
+  <p id="username-hint" class="auth-hint">3 to 32 characters: a–z, 0–9, dot, underscore or hyphen. Capitals become lowercase.</p>
+  {%- endif %}
+</div>
+{%- endmacro -%}
+
+{#- A real password field. It is sent only in the form body to the app, never in a URL. The eye button is their
+    toggle (inside the field on their login, a separate square on their sign-up: `attached`); main.js unhides it and
+    flips the field's type, and the icon follows the type in CSS, so without JS the field is a plain password field. -#}
+{%- macro passwordField(autocomplete, placeholder, hint = "", attached = false) -%}
+<div class="mt-6">
+  <label for="password" class="auth-label">Password</label>
+  <div class="auth-pw{% if attached %} auth-pw-attached{% endif %}">
+    <input
+      id="password" name="password" type="password" class="auth-input"
+      placeholder="{{ placeholder }}"
+      autocomplete="{{ autocomplete }}" required maxlength="256"
+      {%- if hint %} minlength="6" aria-describedby="password-hint"{% endif %}
+    />
+    <button type="button" data-reveal="password" aria-controls="password" hidden class="auth-eye">
+      <svg class="i-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M10.6 5.1A10 10 0 0 1 12 5c5 0 8.6 3.6 9.8 7a11 11 0 0 1-2.4 3.6M6.6 6.6A11 11 0 0 0 2.2 12c1.2 3.4 4.8 7 9.8 7a10 10 0 0 0 5.4-1.6" /><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" /><path d="m3 3 18 18" /></svg>
+      <svg class="i-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M2.2 12C3.4 8.6 7 5 12 5s8.6 3.6 9.8 7c-1.2 3.4-4.8 7-9.8 7s-8.6-3.6-9.8-7Z" /><circle cx="12" cy="12" r="3" /></svg>
+      <span class="sr-only"><span data-reveal-label>Show</span> password</span>
+    </button>
+  </div>
+  {%- if hint %}
+  <p id="password-hint" class="auth-hint">{{ hint }}</p>
+  {%- endif %}
+</div>
+{%- endmacro -%}
+
+{%- macro submitButton(label) -%}
+<button type="submit" class="auth-submit">{{ label }}</button>
+{%- endmacro -%}
+
+{%- macro handoffNote() -%}
+<p class="mt-4 text-sm text-pretty text-white/60">
+  This signs you in to the app at <code>{{ site.appUrl }}</code>; your password goes there, not to this site.
+</p>
+{%- endmacro -%}
+
+{#- Their white "IF" square and INFLOWW wordmark, redrawn (not their asset): our "IF" square, and a wordmark that
+    runs two w's past theirs, the extra two fading out. -#}
+{%- macro logo(mark = "size-10") -%}
+<a href="{{ '/' | url }}" class="inline-flex min-h-11 items-center gap-3 text-white" aria-label="{{ site.name }} home">
+  <svg class="{{ mark }} shrink-0" viewBox="0 0 40 40" aria-hidden="true" focusable="false">
+    <rect width="40" height="40" rx="9" fill="#fff" />
+    <rect x="9" y="10" width="5" height="20" fill="#0c0c0c" />
+    <rect x="17" y="10" width="5" height="20" fill="#0c0c0c" />
+    <rect x="17" y="10" width="14" height="5" fill="#0c0c0c" />
+    <rect x="17" y="18" width="10" height="4.5" fill="#0c0c0c" />
+    <circle cx="30" cy="28" r="2.5" fill="#f88056" />
+  </svg>
+  <span class="text-[1.65rem] leading-none font-extrabold tracking-tight uppercase">Infloww<span class="text-white/70">w</span><span class="text-white/55">w</span></span>
+</a>
+{%- endmacro -%}
+
+{#- Their two badges: a laurel "Community Choice (Since 2022) #1 OnlyFans Management Tool" under five stars, and a
+    shield "Trusted by 4,000+ agencies" with customer avatars. Ours: no award, no stars filled in, and the five
+    agencies are the made-up case studies (their initials stand in for the avatars). -#}
+{%- macro badges() -%}
+<ul aria-label="Badges" class="mt-12 flex flex-wrap items-center gap-x-12 gap-y-8 text-white/60">
+  <li class="flex items-center gap-3">
+    <svg class="h-14 w-6 shrink-0" viewBox="0 0 24 56" fill="currentColor" aria-hidden="true" focusable="false"><use href="#auth-laurel" /></svg>
+    <span class="text-center">
+      <span class="block text-sm tracking-[0.3em]" aria-hidden="true">☆☆☆☆☆</span>
+      <span class="block text-xs">Community Choice (Since never)</span>
+      <strong class="block text-base leading-tight font-semibold">Voted #1 by nobody.<br />We weren't in the poll.</strong>
+    </span>
+    <svg class="h-14 w-6 shrink-0 -scale-x-100" viewBox="0 0 24 56" fill="currentColor" aria-hidden="true" focusable="false"><use href="#auth-laurel" /></svg>
+  </li>
+  <li class="flex items-center gap-3">
+    <svg class="size-14 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 2.5 4 5.5v6c0 5 3.4 8.7 8 10 4.6-1.3 8-5 8-10v-6Z" /><path d="m8.5 12 2.5 2.5 4.5-5" /></svg>
+    <span>
+      <span class="block text-xs">Trusted by</span>
+      <a class="block text-base font-semibold text-white/75 hover:text-white" href="{{ '/case-studies/' | url }}">5 agencies, all fictional</a>
+      <span class="mt-1 flex items-center" aria-hidden="true">
+        {%- for initials in ["ET", "FC", "LI", "PP", "SS"] %}
+        <span class="-ml-1.5 flex size-6 items-center justify-center rounded-full bg-neutral-700 text-[0.55rem] font-bold text-white/80 ring-2 ring-[#121212] first:ml-0">{{ initials }}</span>
+        {%- endfor %}
+        <svg class="ml-2 size-5 text-[#f88056]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M7 17 17 7M8 7h9v9" /></svg>
+      </span>
+    </span>
+  </li>
+</ul>
+<svg class="hidden" aria-hidden="true" focusable="false">
+  <symbol id="auth-laurel" viewBox="0 0 24 56"><path d="M20 54C9 48 4 36 6 22 7 15 10 8 15 3l1.5 1C12 9 9 15 8.2 22 6.6 35 11 46 21 52Z" /><ellipse cx="4.5" cy="40" rx="2.4" ry="5" transform="rotate(-35 4.5 40)" /><ellipse cx="3.6" cy="30" rx="2.2" ry="4.6" transform="rotate(-15 3.6 30)" /><ellipse cx="4.6" cy="20" rx="2.1" ry="4.4" transform="rotate(10 4.6 20)" /><ellipse cx="8" cy="11" rx="2" ry="4.2" transform="rotate(30 8 11)" /><ellipse cx="12.5" cy="47" rx="2.4" ry="4.8" transform="rotate(-70 12.5 47)" /></symbol>
+</svg>
+{%- endmacro -%}
+
+{#- Their pages have no site header, so the header strip's line moves here. -#}
+{%- macro notice() -%}
+<p class="wrap pb-6 text-center text-xs text-white/60">
+  Unofficial parody of infloww.com. Not affiliated with Infloww. The software is real; the jokes are ours.
+  <a class="underline underline-offset-4 hover:text-white" href="{{ '/' | url }}">Back to the site</a>
+</p>
+{%- endmacro -%}

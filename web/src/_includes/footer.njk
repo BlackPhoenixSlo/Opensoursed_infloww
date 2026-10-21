@@ -1,0 +1,71 @@
+{#- Same five columns as theirs: Product / Company / Resources / Legal / Comparison, pointing at our real pages. -#}
+{%- set footerColumns = [
+  { title: "Product", links: [
+    { label: "Pricing", href: "/pricing/" },
+    { label: "Download", href: "/download/" },
+    { label: "Roadmap", href: "/roadmap/" },
+    { label: "Changelog", href: "/changelog/" },
+    { label: "Status", href: "/status/" }
+  ] },
+  { title: "Company", links: [
+    { label: "Customer success", href: "/customer-success/" },
+    { label: "Contact", href: "/contact/" },
+    { label: "Affiliate", href: "/affiliate/" }
+  ] },
+  { title: "Resources", links: [
+    { label: "Blog", href: "/blog/" },
+    { label: "Case studies", href: "/case-studies/" },
+    { label: "Help center", href: "/help/" },
+    { label: "GitHub", href: site.repo }
+  ] },
+  { title: "Legal", links: [
+    { label: "Terms", href: "/legal/terms/" },
+    { label: "Privacy", href: "/legal/privacy/" },
+    { label: "Cookies", href: "/legal/cookies/" },
+    { label: "Complaints", href: "/legal/complaints/" }
+  ] },
+  { title: "Comparison", links: [
+    { label: "vs. Infloww", href: "/openinflowwww-vs-infloww/" },
+    { label: "Switch to Inflowwww", href: "/switch-to-openinflowwww/" },
+    { label: "Enterprise", href: "/enterprise/" }
+  ] }
+] -%}
+<footer class="mt-24 border-t border-line bg-band">
+  <div class="wrap grid gap-10 py-14 lg:grid-cols-6">
+    <div class="lg:col-span-1">
+      <p class="flex items-center gap-2 text-lg font-semibold text-ink">
+        <svg class="size-7" aria-hidden="true" focusable="false"><use href="#i-logo" /></svg>
+        {{ site.name }}
+      </p>
+      <p class="mt-3 max-w-xs text-sm text-muted">The $0 management tool for creator agencies.</p>
+    </div>
+    <div class="grid grid-cols-2 gap-8 sm:grid-cols-3 lg:col-span-5 lg:grid-cols-5">
+      {%- for column in footerColumns %}
+      <nav aria-labelledby="footer-{{ column.title | slugify }}" class="text-sm">
+        <h2 id="footer-{{ column.title | slugify }}" class="font-semibold text-ink">{{ column.title }}</h2>
+        <ul class="mt-2 text-muted">
+          {%- for link in column.links %}
+          <li><a class="inline-flex min-h-11 items-center hover:text-ink lg:min-h-8" href="{{ link.href | url }}"{% if link.href == page.url %} aria-current="page"{% endif %}>{{ link.label }}</a></li>
+          {%- endfor %}
+        </ul>
+      </nav>
+      {%- endfor %}
+    </div>
+  </div>
+  <div class="wrap">
+    <div class="border-t border-line py-6 text-sm leading-relaxed text-muted">
+      <p>
+        Inflowwww is MIT licensed. Messages Pro, Vault Pro, Smart Messages and Smart Lists are names Infloww uses;
+        where an Inflowwww screen uses one, the name describes the equivalent screen. Infloww is a trademark of its
+        owner. This site parodies infloww.com and is not affiliated with, endorsed by or connected to Infloww. It is
+        not affiliated with or endorsed by OnlyFans either. Quotes and prices from
+        infloww.com and infloww.com/pricing were captured on {{ site.captureDate }}; quotes from other infloww.com
+        pages come from their pages stamped Oct 10, 2026. All of it is reproduced for comparison and commentary.
+      </p>
+      <p class="mt-3">
+        Maintained by the GitHub account that owns the <a class="underline hover:text-ink" href="{{ site.repo }}">repository</a>;
+        to reach the maintainers, open an issue or a discussion there (<a class="underline hover:text-ink" href="{{ '/legal/terms/#maintainers' | url }}">who maintains this</a>).
+      </p>
+    </div>
+  </div>
+</footer>

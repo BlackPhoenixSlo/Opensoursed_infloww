@@ -1,0 +1,75 @@
+{%- set pageTitle = title if (site.name in title) else (title ~ " | " ~ site.name) -%}
+{#- Every meta description and link preview carries the non-affiliation line (the header strip says the same
+    on the page). The meta description always ends with it: an existing ending is folded in. Page text over 130
+    characters is replaced by its first sentence when that is 50-130 characters long, else cut at a word under 130,
+    so the total stays within 160; the suffix is never cut. -#}
+{%- set notAffiliated = "Not affiliated with Infloww." -%}
+{%- set describe = (description or site.description) | replace(r/,\s*not affiliated with infloww\.?$/i, ".") | replace(r/\s*not affiliated with infloww\.?$/i, "") | trim -%}
+{%- if describe.length > 130 -%}
+  {%- set firstSentence = describe | replace(r/([.!?])\s+(?=[A-Z]).*$/, "$1") -%}
+  {%- if firstSentence.length >= 50 and firstSentence.length <= 130 %}{% set describe = firstSentence -%}
+  {%- else %}{% set describe = describe | truncate(130, false, "…") | replace(r/[\s.,;:!?]+…$/, "…") %}{% endif -%}
+{%- endif -%}
+{%- set pageDescription = describe ~ " " ~ notAffiliated -%}
+{%- set shareDescription = ogDescription or pageDescription -%}
+{%- if "affiliated" not in shareDescription %}{% set shareDescription = shareDescription ~ " " ~ notAffiliated %}{% endif -%}
+{#- Pages serves 404.html for every missing URL, so it must not claim a canonical or be indexed. -#}
+{%- set isNotFound = page.url == "/404.html" -%}
+<!doctype html>
+{#- bare: true (/login/, /signup/) drops the site header and footer for a dark page shaped like theirs; the page
+    carries the not-affiliated line itself (auth.njk notice()). -#}
+<html lang="en"{% if bare %} class="auth-dark"{% endif %}>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ pageTitle }}</title>
+    <meta name="description" content="{{ pageDescription }}" />
+    {%- if isNotFound %}
+    <meta name="robots" content="noindex" />
+    {%- else %}
+    <link rel="canonical" href="{{ site.url }}{{ page.url }}" />
+    {%- endif %}
+    <meta name="theme-color" content="{{ '#0c0c0c' if bare else '#ffffff' }}" />
+    {%- if referrer %}
+    {#- /login/ and /signup/ post to the app (often http://localhost). Under the default
+        strict-origin-when-cross-origin an https page posting to http sends Origin: null, which the app refuses. -#}
+    <meta name="referrer" content="{{ referrer }}" />
+    {%- endif %}
+    <meta property="og:type" content="{{ ogType or 'website' }}" />
+    <meta property="og:site_name" content="{{ site.name }}" />
+    <meta property="og:title" content="{{ pageTitle }}" />
+    <meta property="og:description" content="{{ shareDescription }}" />
+    {%- if not isNotFound %}
+    <meta property="og:url" content="{{ site.url }}{{ page.url }}" />
+    {%- endif %}
+    <meta property="og:image" content="{{ site.url }}/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="{{ pageTitle }}" />
+    <meta name="twitter:description" content="{{ shareDescription }}" />
+    <meta name="twitter:image" content="{{ site.url }}/og.png" />
+    <link rel="icon" type="image/svg+xml" href="{{ '/favicon.svg' | url }}" />
+    <link rel="apple-touch-icon" href="{{ '/apple-touch-icon.png' | url }}" />
+    <link rel="alternate" type="application/rss+xml" title="{{ site.name }} blog" href="{{ '/feed.xml' | url }}" />
+    <link rel="stylesheet" href="{{ '/assets/main.css' | url }}" />
+    <script src="{{ '/assets/main.js' | url }}" defer></script>
+  </head>
+  <body>
+    {% include "sprite.njk" %}
+    <a
+      href="#main"
+      class="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-50 focus:rounded-full focus:bg-ink focus:px-4 focus:py-2 focus:font-medium focus:text-white"
+      >Skip to content</a
+    >
+    {%- if not bare %}
+    {% include "header.njk" %}
+    {%- endif %}
+    <main id="main">
+      {{ content | safe }}
+    </main>
+    {%- if not bare %}
+    {% include "footer.njk" %}
+    {%- endif %}
+  </body>
+</html>

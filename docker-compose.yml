@@ -1,0 +1,369 @@
+# OF Relay full stack — replaces `./scripts/start.sh`.
+#
+#   docker compose up -d --build       # build + start relay + Next.js UI
+#   docker compose logs -f             # tail both services
+#   docker compose down                # graceful stop (SIGTERM → 10s grace)
+#
+# What's running after `up`:
+#   openinflowwww-relay  127.0.0.1:8787  — FastAPI / uvicorn  (the Python relay)
+#   openinflowwww-app    127.0.0.1:3001  — Next.js prod build (the /inbox UI)
+#
+# The Next container reaches the relay container by DNS (`http://openinflowwww-relay:8787`)
+# over the internal compose network. The browser only ever talks to 3001
+# (behind Traefik, the relay's own paths go to the relay directly; see its labels).
+#
+# Persisted on the host (so a rebuild never wipes your auth or history):
+#   ./service/chatterly.db        SQLite event store
+#   ./service/sessions/           captured OF sessions
+#   ./service/proxies.json        proxy registry
+#
+# To expose publicly: run `tailscale funnel --bg 3001` on the host (same as
+# start.sh's funnel block), OR put Caddy/Traefik in front and add a third
+# service. Don't change the `127.0.0.1:` ports here — sign-in (plus the
+# optional SHARE_TOKEN gate) is the only auth, so direct LAN exposure is
+# intentionally opt-in.
+
+services:
+  openinflowwww-relay:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: openinflowwww-relay:latest
+    container_name: openinflowwww-relay
+    restart: unless-stopped
+    # ── Blast radius ────────────────────────────────────────────────
+    # NO container on this stack had a CPU ceiling until 2026-08-22
+    # (`NanoCpus=0` on every one), which is what let one unbounded loop in
+    # transaction_ingest take both vCPUs on 08-21 and starve dockerd, sshd and
+    # the SQLite writer with it — the box could not be logged into to kill the
+    # thing, and Hostinger capped it before anyone here noticed. The ceiling is
+    # the fix that does not care WHICH loop misbehaves next.
+    #
+    # These are CEILINGS, not reservations: an idle container costs nothing, so
+    # the margin is free until something runs away. Sized so the whole stack
+    # stays under the core count with real headroom (2 vCPU prod:
+    # 1.2 + 0.4 + 0.1 = 1.7, host peaks at ~85%, the OS keeps a slice to
+    # schedule ssh on). Sustained 100% is what the provider's cap triggers on.
+    # Normal relay load sits far below 1.2 — the 08-21 spin measured ~1.02.
+    #
+    # ⚠️ `mem_limit` is the one that BITES: exceeding it is an OOM-kill, not a
+    # slowdown. Set well above steady state, as a runaway backstop only.
+    #
+    # To change a limit on one machine use compose's own mechanism — a local
+    # `docker-compose.override.yml` (gitignored), so there is exactly one way
+    # to override a limit.
+    cpus: 1.2
+    mem_limit: 2g
+    # Docker's default soft limit is 1024 descriptors, and the relay spends them
+    # on more than sockets: a curl handle per worker thread per account, three
+    # per SQLite connection (db + -wal + -shm), one per session file the
+    # isolation gate reads. A vault pane that releases 500 tiles at once used to
+    # sail past 1024 and the process started failing at the FLOOR — sqlite
+    # answering "unable to open database file", scandir answering EMFILE
+    # [Errno 24] (2026-07-28). `vault_stills._MAX_INFLIGHT_FETCHES` is the real
+    # fix; this is the headroom that keeps the NEXT uncapped fan-out from
+    # costing the whole process.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    ports:
+      - "127.0.0.1:8787:8787"
+    networks:
+      # n8n_default so Traefik can route the relay's own paths straight here
+      # (labels below) instead of through Next; see the app's labels.
+      - default
+      - n8n_default
+    environment:
+      # Optional share-link gate; empty (default) = sign-in is the only gate.
+      # Turn it on per-boot with
+      #   SHARE_TOKEN=$(openssl rand -hex 24) docker compose up -d
+      SHARE_TOKEN: "${SHARE_TOKEN:-}"
+      # Where the video scrub storyboard cache lives. Bind-mounted below
+      # so it persists across container restarts — without this every
+      # `docker compose down` wipes hours of accumulated extracts and
+      # every hover becomes a cold 3-7s build through the proxy.
+      STORYBOARD_DIR: "/app/service/storyboard_cache"
+      # The three permanent vault image stores + the generic /img byte cache.
+      # These all defaulted to /tmp INSIDE the container, which meant every
+      # `up -d --build` threw them away. That is the broken-tile bug: OF CDN
+      # urls are time-signed and stop resolving after a couple of days, so
+      # once the local bytes are gone the mirror's stored url can no longer
+      # re-fetch them and the tile stays blank forever. Bind-mounted here so
+      # a rebuild keeps the pictures.
+      VAULT_THUMB_DIR: "/app/service/vault_thumbs"
+      VAULT_POSTER_DIR: "/app/service/vault_posters"
+      VAULT_IMAGE_DIR: "/app/service/vault_images"
+      IMG_CACHE_DIR: "/app/service/img_cache"
+      # LLM provider keys (DeepSeek) for service/llm_client.py. They also
+      # ride in via service/.env, but that file is NOT in the image (the
+      # Dockerfile COPY is a .py allow-list) and is not mounted — declaring them
+      # here is what actually delivers them, and it means a host
+      # that exports them (or a compose .env) flows them through on a clean build
+      # — the same Phase-F allowlist footgun as the Dockerfile. The `:-` empty
+      # default keeps compose from warning when the key is only in service/.env;
+      # llm_client recovers the real value from that file when the env is blank.
+      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
+      # Vision (Qwen3-VL 30B/235B) for the vault describe pass. Missing this is
+      # NOT a visible error: every describe call raises LLMError, the sweep
+      # counts the item as "done", and the vault ends up 100% undescribed with a
+      # green progress bar. A key pasted into Setup → Keys now survives a
+      # rebuild (service/secrets is bind-mounted below); the env still wins for
+      # ADMIN_PASSWORD alone, so that one can be rotated out of band.
+      DEEPINFRA_API_KEY: "${DEEPINFRA_API_KEY:-}"
+      # Z.ai (GLM) — chat only, and only for an account an operator has pointed
+      # at it. Nothing routes here by default, so a blank value is the normal
+      # state rather than a misconfiguration.
+      ZAI_API_KEY: "${ZAI_API_KEY:-}"
+      # Founder second factor (auth._read_admin_password), and the ONE key where
+      # the environment outranks the Setup → Keys store — which is what makes
+      # rotating it possible at all. It only works if it is NAMED here: the relay
+      # has no `env_file`, and service/.env is neither COPYed by the Dockerfile
+      # (line 41 is an explicit .py allow-list) nor bind-mounted, so an unnamed
+      # var reaches nothing. Set the value in the COMPOSE-level env — the .env
+      # beside this file — not in service/.env, which the container never sees.
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
+      # Cookie-signing HMAC keys: auth.py (friend sessions) and chatters.py
+      # (chatter sessions). Each falls back to a random key written to
+      # service/.session_secret / .chatter_secret — and BOTH of those are
+      # .dockerignore'd and bind-mounted nowhere, so the fallback lives only in
+      # the container's writable layer. Every `up -d --build` therefore mints a
+      # NEW key and signs every user out, which is exactly what the advertised
+      # "re-run the one-liner to update" path does. Naming them here is what
+      # makes a value in the compose-level .env reach the process; the on-VPS
+      # installer has generated both into that file since day one and they have
+      # been going nowhere.
+      # They lived in the deploy repo's compose and never in this one, so the
+      # 2026-07-21 sync quietly overwrote them out of it — the same repo-only-fix
+      # clobber that took the Dockerfile's whole-package COPY down on 2026-08-21.
+      SESSION_SECRET: "${SESSION_SECRET:-}"
+      CHATTER_SESSION_SECRET: "${CHATTER_SESSION_SECRET:-}"
+      # Inflowwww proxy pool (Add creator › "Inflowwww proxy"): the proxy
+      # lines, comma-separated, read at startup. Format: docs/proxies.md.
+      INFLOWW_PROXIES: "${INFLOWW_PROXIES:-}"
+      # Sign-in throttle (service/login_throttle.py): the IPs/CIDRs whose
+      # X-Forwarded-For is believed. Unset or empty = loopback + private ranges.
+      # TRUSTED_PROXIES: "${TRUSTED_PROXIES:-}"
+    volumes:
+      # File bind-mount for the SQLite event store. WAL + SHM sidecars
+      # are created in /app/service/ inside the container; on `docker
+      # compose down` (SIGTERM) SQLite checkpoints them back into the
+      # bind-mounted file. Avoid `docker kill` if you can.
+      - ./service/chatterly.db:/app/service/chatterly.db
+      - ./service/sessions:/app/service/sessions
+      - ./service/proxies.json:/app/service/proxies.json
+      # Setup → Keys / Server keys (secrets_store). A DIRECTORY, not the JSON
+      # file: Docker materialises a missing bind-mount path as a directory, so
+      # mounting the file would break a first deploy on a fresh host. Before
+      # this existed nothing persisted it and every rebuild silently wiped the
+      # founder password along with every pasted key.
+      - ./service/secrets:/app/service/secrets
+      # Storyboard cache. Each video gets a dir of 12 small jpgs (~10-25
+      # KB each) keyed by URL hash. Survives container rebuilds so a
+      # familiar vault stays scrub-warm.
+      - ./service/storyboard_cache:/app/service/storyboard_cache
+      # Permanent vault stills: 300px thumbs, full-frame previews, and DRM
+      # poster frames — keyed by media id, so they survive OF re-signing the
+      # url. Same reasoning as the storyboard cache above, and the same
+      # reason it has to be a bind mount: these bytes are unrecoverable once
+      # the signature they came from has expired.
+      - ./service/vault_thumbs:/app/service/vault_thumbs
+      - ./service/vault_posters:/app/service/vault_posters
+      - ./service/vault_images:/app/service/vault_images
+      # Generic /img proxy byte cache (chat bubbles, avatars, wall media),
+      # keyed by host+path with the signature stripped.
+      - ./service/img_cache:/app/service/img_cache
+    healthcheck:
+      # ⚠️ These numbers are a load-shedding decision, not boilerplate. On
+      # 2026-08-21/22 the box lost ~90% of its CPU to hypervisor steal, /livez
+      # could not answer inside a 5s timeout, and the autoheal sidecar below
+      # read "saturated" as "dead" — ~40 restarts in 6h, each one handing the
+      # ingest loops another cold boot to walk. A healthcheck that restarts a
+      # busy container is an outage amplifier. So: a timeout long enough for a
+      # starved event loop to answer, a start_period long enough to cover the
+      # pumps connecting and the ingest boot grace, and enough retries that one
+      # slow probe is never a verdict.
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8787/livez"]
+      interval: 60s
+      timeout: 30s
+      start_period: 200s
+      # Probe every 5s DURING start_period so `depends_on: service_healthy`
+      # below still releases the app in seconds, not at the first 60s interval.
+      # Requires Docker Engine 25+ / Compose 2.20+.
+      start_interval: 5s
+      retries: 5
+    labels:
+      # Picked up by the autoheal sidecar — when this container goes
+      # unhealthy (5 failed checks ~= 5 min of not answering), autoheal
+      # restarts it. `restart:
+      # unless-stopped` only catches actual exits, not hangs or
+      # deadlocks where the process stays alive but stops answering.
+      autoheal: "true"
+      # Traefik sends the relay's own paths here directly, skipping the Next
+      # hop (capped at 0.4 CPU) for every API call, /img stream and SSE.
+      # Exactly the paths app/next.config.ts rewrites to the relay unchanged
+      # (no path rewrite, and app/proxy.ts matches none of them), so the
+      # relay gets the same request either way; its own gates (share token,
+      # sessions, account isolation) already guard all of them. Prefixes end
+      # in `/` because PathPrefix is a plain string match: `/chatter` would
+      # take Next's /chatter-login. `/admin/manage` is a Next page.
+      # The longer rule outranks the app's Host-only router.
+      traefik.enable: "true"
+      traefik.docker.network: "n8n_default"
+      traefik.http.routers.openinflowwww-relay.rule: "Host(`your-host.example.com`) && (PathPrefix(`/api/of/`) || (PathPrefix(`/admin/`) && !Path(`/admin/manage`)) || Path(`/img`) || PathPrefix(`/img/`) || Path(`/events`) || PathPrefix(`/auth/`) || PathPrefix(`/chatter/`))"
+      traefik.http.routers.openinflowwww-relay.entrypoints: "websecure"
+      traefik.http.routers.openinflowwww-relay.tls.certresolver: "mytlschallenge"
+      traefik.http.services.openinflowwww-relay.loadbalancer.server.port: "8787"
+    # Cap container log growth. Without this the JSON-file driver writes
+    # forever; a week of OF traffic at INFO can balloon to 1+ GB.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  openinflowwww-app:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+      # Next bakes rewrite destinations in at build time (see app/Dockerfile),
+      # so the relay hostname has to be passed here, not only at runtime.
+      args:
+        RELAY_URL: "http://openinflowwww-relay:8787"
+    image: openinflowwww-app:latest
+    container_name: openinflowwww-app
+    restart: unless-stopped
+    # Ceiling — see the relay's block above. Next in prod is mostly a rewrite
+    # proxy to the relay, so it needs far less.
+    cpus: 0.4
+    mem_limit: 1g
+    ports:
+      - "127.0.0.1:3001:3001"
+    networks:
+      # default is the compose-internal network (so relay can resolve).
+      # n8n_default is the network the host's n8n-traefik-1 is on — putting
+      # the app there lets Traefik discover it via Docker labels (below)
+      # and route your-host.example.com/* → openinflowwww-app:3001 with the
+      # already-working Let's Encrypt cert.
+      - default
+      - n8n_default
+    environment:
+      # `openinflowwww-relay` resolves to the sibling container on the compose network.
+      # next.config.ts's rewrites() forwards /api/of/*, /admin/*, /events,
+      # /ws/*, /img, /health to this URL.
+      RELAY_URL: "http://openinflowwww-relay:8787"
+    depends_on:
+      openinflowwww-relay:
+        # service_healthy is the correct signal now that the relay's
+        # HEALTHCHECK probes /livez (process-alive only) instead of
+        # /health (which 503s with no sessions and used to deadlock
+        # fresh deploys). The app waits until uvicorn is actually
+        # answering, but no longer until a session exists — that step
+        # happens through the app itself (paste-cURL via Settings or the
+        # desktop shell's Add OnlyFans Account).
+        condition: service_healthy
+    healthcheck:
+      # `next start` doesn't expose a dedicated health endpoint, but `/`
+      # is the home redirect to /inbox and is always served in prod.
+      # node:20-bookworm-slim has neither curl nor wget; use the node
+      # runtime that's already in the image. Exit 0 if status < 400,
+      # else 1. Network errors throw and exit 1 too.
+      test:
+        - CMD
+        - node
+        - -e
+        - |
+          require('http').get('http://127.0.0.1:3001/', r => process.exit(r.statusCode < 400 ? 0 : 1)).on('error', () => process.exit(1));
+      interval: 60s
+      timeout: 30s
+      start_period: 200s
+      start_interval: 5s
+      retries: 5
+    labels:
+      autoheal: "true"
+      # Traefik discovery via the n8n-traefik-1 sidecar already running on
+      # this host. Host is the duckdns name; cert resolver name comes from
+      # n8n-traefik's CLI args (--certificatesresolvers.mytlschallenge.*).
+      # Port 3001 is the in-container Next prod port — Traefik talks to it
+      # over the n8n_default network, NOT through the 127.0.0.1 host bind.
+      traefik.enable: "true"
+      traefik.docker.network: "n8n_default"
+      traefik.http.routers.openinflowwww.rule: "Host(`your-host.example.com`)"
+      traefik.http.routers.openinflowwww.entrypoints: "websecure"
+      traefik.http.routers.openinflowwww.tls.certresolver: "mytlschallenge"
+      traefik.http.services.openinflowwww.loadbalancer.server.port: "3001"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ─── autoheal ───────────────────────────────────────────────────
+  # Restarts containers that go unhealthy. `restart: unless-stopped` on
+  # the other services only kicks in on actual process exit; a request
+  # handler stuck in a deadlock keeps the process alive but stops
+  # serving — autoheal catches that case by reacting to Docker's
+  # healthcheck verdict instead of process state.
+  openinflowwww-autoheal:
+    image: willfarrell/autoheal:latest
+    container_name: openinflowwww-autoheal
+    restart: unless-stopped
+    # A watchdog that can starve the box it watches would be its own
+    # incident. It polls docker every 10s and does nothing else.
+    cpus: 0.1
+    mem_limit: 128m
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal
+      AUTOHEAL_INTERVAL: "10"        # seconds between scans
+      AUTOHEAL_START_PERIOD: "60"    # grace before first action
+    volumes:
+      # RW socket access — autoheal calls `POST /containers/<id>/restart`
+      # via the docker API. `:ro` on a unix socket gives surprising
+      # behavior across Docker versions; stick with the upstream default.
+      - /var/run/docker.sock:/var/run/docker.sock
+    logging:
+      driver: json-file
+      options:
+        max-size: "2m"
+        max-file: "2"
+
+  # ─── tunnel (opt-in) ─────────────────────────────────────────────
+  # Cloudflare quick tunnel. Exposes the Next.js UI (port 3001) to a
+  # public https://<random>.trycloudflare.com URL with TLS termination at
+  # Cloudflare's edge — no router config, no account, no domain.
+  #
+  # Start with:
+  #   docker compose --profile tunnel up -d
+  #   docker compose logs -f openinflowwww-tunnel       # wait for the trycloudflare line
+  #
+  # The subdomain changes every restart (quick tunnels are stateless).
+  # SHARE_TOKEN is the only auth between a leaked URL and full account
+  # access — keep it secret, rotate it if leaked.
+  openinflowwww-tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: openinflowwww-tunnel
+    restart: unless-stopped
+    # Opt-in profile, so usually not running at all — but leaving an
+    # uncapped container behind is exactly what this pass exists to stop. Not
+    # counted in the 1.7 budget above; prod fronts with Traefik instead.
+    cpus: 0.25
+    mem_limit: 256m
+    profiles: ["tunnel"]
+    command: tunnel --no-autoupdate --url http://openinflowwww-app:3001
+    depends_on:
+      openinflowwww-app:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+networks:
+  # External network created by the separate n8n compose stack on this
+  # host. We attach `openinflowwww-app` and `openinflowwww-relay` to it so
+  # n8n-traefik-1 can route the duckdns host to them via the Traefik labels
+  # declared on each service (the relay's own paths to the relay, the rest to Next).
+  # `external: true` means compose won't try to create or delete it.
+  n8n_default:
+    external: true

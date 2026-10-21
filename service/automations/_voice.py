@@ -1,0 +1,735 @@
+"""service/automations/_voice.py — whose voice is this account writing in?
+
+ONE question, one file: is the creator on this account a woman (every account
+that has ever run here) or a man (the new lane)? Every string that reads
+differently because of that answer lives HERE, in both lanes, and `_common`
+re-exports the female ones so nothing else had to move.
+
+WHY A LANE AND NOT A PERSONA EDIT
+---------------------------------
+The persona box is prose, prepended to a system prompt that then states the
+creator's identity as a RULE a few lines below it — `welcome_chatter_for_info`
+says "a real 22yo girl" outright, and `_persona`'s canon block says "THESE ARE
+THE FACTS ABOUT YOU ... you must never say anything that contradicts them" over
+labels reading "Why she started OF". A model handed prose-context and a rule
+takes the rule, so no amount of persona text fixes a string that is not
+conditional on anything. It has to be a lane.
+
+WHY THE TEXT LIVES HERE AND NOT IN `_common`
+--------------------------------------------
+The first cut of this module kept the female text in `_common` and patched it —
+`base.replace(FRAME_HER, FRAME_HIM)`. Two things were wrong with that and both
+are the same thing: the varying spans were not first-class. Edit a comma in
+`_common` and the male branch silently serves female text, so the mechanism
+needed a test asserting its own anchors still matched — a test that exists only
+because the design is fragile is the design telling you it is fragile. And the
+`base` argument itself was an artifact of the import direction (`_common`
+imports this module, so this module could not import back), i.e. an API bent
+around a dependency edge rather than an ownership decision.
+
+Owning both lanes fixes all of it: the blocks are BUILT from their varying
+parts, so there is no patching, nothing to drift, and no anchor test.
+
+THE ONE INVARIANT
+-----------------
+`voice` is NULL on every existing row and `norm_voice` maps NULL/""/garbage to
+`VOICE_HER`. Everything below returns the EXACT text that shipped before this
+module existed when the voice is `VOICE_HER`. That is not a nicety — it is the
+whole safety argument for adding a second lane to prompts that earn money today,
+and `tests/test_voice_lane.py` asserts it rather than trusting it.
+
+Same shape as `_language.py`, deliberately: a nullable per-account column, one
+module owning the variance, a `norm_*` that collapses everything unknown to the
+default, and an async loader the engines call once per run.
+
+HOW ENGINES USE IT
+------------------
+Resolve ONCE per run and read fields off the bundle:
+
+    v = await _common.load_voice_blocks(account_id)   # ONE row read
+    ...
+    f"{v.painful_texting}\\n\\n{v.live_proof}"
+
+⚠️ `live_proof` is the REFUSAL and nothing else — it never carries an offer, so
+no engine can inherit a $100-$200 pitch by rendering it (three once did). The
+bundle has no customs-offer block at all any more: Auto-reply and the info-gather
+lane only chat ("no selling"). The one engine that sold customs (the legacy AI
+Chatter) was removed, and its customs conditions and per-fan narrowing with it.
+
+The loader lives in `_common`, not here, because it needs the account row and
+this module deliberately does not import the database — see the import block.
+There is no `load_account_voice`: engines take the whole bundle, never a bare
+voice string.
+
+Not `_voice.painful_texting(CONST, voice)` at each site. `PAINFUL_TEXTING` and
+`LIVE_PROOF_GUARDRAIL` are interpolated raw at ~11 places across six engines;
+a per-constant wrapper call would make extending the lane a matter of
+remembering to wrap each one, where forgetting renders female text on a male
+account with no error anywhere. A bundle turns that silent-wrong into an
+AttributeError and keeps new voice-varying blocks a one-file change.
+
+WHAT IS **NOT** HERE
+--------------------
+The FAN. He is male in both lanes — this account's fans are men either way — so
+every "him/his/he" in a prompt is correct as written and none of it routes
+through this file. Only the CREATOR's half flips.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+# NO database import, deliberately. This module is text + normalisation and
+# nothing else; the account read that resolves a bundle lives in `_common`
+# (`load_voice_blocks`), which already owns the account loaders and already reads
+# the row this needs. Keeping storage out means `blocks()` is a pure function of
+# its arguments, which is what makes the byte-identity test a real proof rather
+# than a fixture-dependent one.
+
+VOICE_HER = "her"          # the shipped default: a female creator
+VOICE_HIM = "him"          # the male lane
+_VOICES = (VOICE_HER, VOICE_HIM)
+
+
+def parse_voice(v: object) -> str | None:
+    """A legal voice, or None when the value is not one.
+
+    THE normalisation boundary, in its honest form. `norm_voice` below is this
+    plus the storage default, and the two exist separately because the callers
+    genuinely differ:
+
+      • reading STORAGE, a bad value must degrade to the shipped lane — the
+        failure mode is "stays a girl", which is the safe direction on a send
+        path. That is `norm_voice`.
+      • validating an API WRITE, a bad value must be rejected — a typo'd 'hom'
+        silently resolving to "her" is the exact silent-wrong-gender failure the
+        lane exists to prevent. That is this function.
+
+    Before this split the API had to ask "was it recognised?" by re-deriving
+    `str(v).strip().lower()` itself and comparing — a second copy of the
+    normalisation that would drift the day this one changed."""
+    if not isinstance(v, str):
+        return None
+    s = v.strip().lower()
+    return s if s in _VOICES else None
+
+
+def norm_voice(v: object) -> str:
+    """Any stored value → a legal voice. NULL, "", whitespace, an unknown string
+    and a non-string all collapse to `VOICE_HER`, so a corrupt column can never
+    silently flip an account's identity.
+
+    Call it on values arriving from storage; everything downstream takes an
+    already-normalised `str` and compares directly, so a reader never has to
+    wonder which side of the boundary it is on."""
+    return parse_voice(v) or VOICE_HER
+
+
+# ── The felt cost of texting ─────────────────────────────────────────
+# Governs everything below it in the prompt and is the brevity governor — the
+# reason replies read as texts rather than paragraphs. Its MECHANIC transfers to
+# a male lane untouched (terseness reads as authority); only the opening FRAME
+# and the FLOOR clause carry gender. Building the block from those two parts is
+# what lets the male lane keep the governor instead of trading it for
+# correctness by switching the whole block off.
+_PAINFUL_FRAME = {
+    VOICE_HER: (
+        "texting is a chore, like a girl half-glued to her phone — you write "
+        "the LEAST you can."
+    ),
+    VOICE_HIM: (
+        "texting is a chore — you write the LEAST you can; a short line reads "
+        "like a man with better things to do."
+    ),
+}
+# Hers requires every reply to carry "heat, a tease, or warmth"; his may land as
+# flat certainty or amusement instead. Same rule (never a dead one-word filler),
+# register corrected.
+_PAINFUL_FLOOR = {
+    VOICE_HER: (
+        "but short NEVER means dead — even a tiny reply carries heat, a tease, "
+        "or warmth"
+    ),
+    VOICE_HIM: (
+        "but short NEVER means dead — even a tiny reply lands: heat, amusement, "
+        "or flat certainty"
+    ),
+}
+
+
+def _painful_texting(voice: str) -> str:
+    """Operator's framing, verbatim source intent:
+      "texting is painful — we write as few words as possible while still saying
+       all we can. we dont overthink shortening: if typing a little longer is
+       easier than agonizing over the perfect short line, do that. usually short
+       works perfectly. writing a little longer JUST to amuse ourselves is worth
+       it. but if a short text punches the emotion, we take the short one. in
+       short: typing is painful UNLESS we get positive emotion out of it."
+    Injected at the TOP of the conversational system prompt as the governing
+    feel, above the mechanical HOW-YOU-TEXT rules."""
+    return (
+        "THE FEEL OF TEXTING (governs everything below):\n"
+        f"{_PAINFUL_FRAME[voice]} "
+        "dont agonize over the perfect tiny line — longer is fine if it comes "
+        "easier, but usually short just works. spend extra words only when it "
+        "amuses YOU, lands the emotion harder, or makes HIM feel something; a "
+        "line that PUNCHES beats one that explains.\n"
+        f"{_PAINFUL_FLOOR[voice]} — never a flat 'ok'/'lol' anyone could've "
+        "sent, never parroting him, never dodging his point. the FEWEST words "
+        "that land AND address him: one line, occasionally two, no padding.\n"
+        "if he ASKED something, answer it in as few words as it takes, then "
+        "STOP.\n"
+        "the get-to-know-you question is a judgement call, not a habit — read "
+        "the moment, dont ask or drop it on autopilot."
+    )
+
+
+# ── Live proof / FaceTime ────────────────────────────────────────────
+# Fans constantly push for FaceTime / a live call / an on-demand selfie / "prove
+# you're real". Left unaddressed the model fumbles with weak coy half-deflections
+# ("hm okay") that read badly. The RULE is neutral and identical in both lanes;
+# only the two worked examples carry a voice — and they matter more than they
+# look, being the only concrete register the model is shown for a refusal, which
+# is exactly where an alpha persona most needs to sound like itself.
+#
+_LIVE_PROOF_EXAMPLES = {
+    VOICE_HER: (
+        "e.g. \"i don't do facetime babe, but stay n talk to me\" or \"no live "
+        "calls hun, you get me right here\"."
+    ),
+    VOICE_HIM: (
+        "e.g. \"i don't do facetime. talk to me here\" or \"no live calls. you get "
+        "me right here or not at all\"."
+    ),
+}
+
+
+# ⚠️ THE OFFER MUST NEVER BE SPLICED INTO `live_proof`. It once was, and since
+# `live_proof` is the REFUSAL guardrail every conversational engine renders, three
+# engines inherited a $100-$200 custom offer they were never built to make
+# (`send_followup` and `reply_mass_funnel` carried it into 1,869 of 2,073 customs
+# prompts on prod). The offer then became its own block (`_CUSTOMS_CARVE_OUT` /
+# `VoiceBlocks.customs_offer`); with the "no selling" ruling no engine rendered
+# that block any more, so it was deleted, and the per-account flag
+# that gated it went with it.
+
+
+def _live_proof_guardrail(voice: str) -> str:
+    return (
+        "LIVE PROOF / FACETIME (hard rule): facetime, live/video calls, 'prove "
+        "you're real', on-demand selfies — a BLUNT, direct no; never half-agree, "
+        "no apology, no coy fumbling. one short flat refusal + one pivot back to "
+        f"chatting or teasing, {_LIVE_PROOF_EXAMPLES[voice]}"
+    )
+
+
+# ── Off-platform deflections ─────────────────────────────────────────
+# `guard_offplatform` DISCARDS the model's draft and sends one of these verbatim
+# when a reply leaks contact info or a meetup. That makes them the one place a
+# canned voice reaches a fan with no model in the loop and no toggle over it —
+# "mmm i only do this on here babe" from an alpha persona ends that thread. Fans
+# push for contact details constantly, which is why the guard exists at all, so
+# this fires often enough to matter on day one.
+#
+# Equal length in both lanes on purpose: the caller picks with a seeded rng, so a
+# matching count keeps the pick stable in shape and makes a future third lane
+# obviously wrong if it ships a different one.
+OFF_DEFLECTIONS = {
+    VOICE_HER: (
+        "im all urs right here babe 😏",
+        "only on here 😉 tell me more",
+        "ive got u right here",
+    ),
+    VOICE_HIM: (
+        "im right here. talk to me",
+        "only on here. go on",
+        "not happening. what else",
+    ),
+}
+
+
+# ── Persona canon labels ─────────────────────────────────────────────
+# `_persona.PERSONA_FACT_FIELDS` labels two slots in the third person female.
+# They render inside "THESE ARE THE FACTS ABOUT YOU", so on a male account the
+# prompt asserts, as unbreakable fact, that the creator is a woman — strictly
+# worse than a stray pronoun in a style line. Only the LABELS differ; the KEYS
+# are storage and never move, so an account can be flipped either way without
+# touching `persona_facts_json`.
+_FACT_LABELS = {
+    VOICE_HER: {},          # every label as PERSONA_FACT_FIELDS declares it
+    VOICE_HIM: {
+        # The two operator-only slots. Easy to miss — they are the last entries in
+        # the slate and the only ones the 🪄 Enrich pass never touches, so they get
+        # read less than the rest. `limits` in particular is where "no live calls"
+        # is typed, which makes it load-bearing for the customs carve-out below.
+        "kinks": "What he's into",
+        "limits": "What he won't do",
+    },
+}
+
+
+def fact_labels(voice: object) -> dict[str, str]:
+    """Label OVERRIDES for the persona canon, keyed by field. Empty for the
+    female lane, so the caller's `.get(key, declared_label)` is a no-op — one
+    dict lookup hoisted out of the field render loop rather than a
+    per-field call that mostly returns its own argument.
+
+    Returns a COPY. The female entry is a mutable `{}` and handing the module's
+    own dict to a caller is an escape hatch onto shared state that nothing
+    needs."""
+    return dict(_FACT_LABELS[norm_voice(voice)])
+
+
+# ── Persona canon PLACEHOLDERS ───────────────────────────────────────
+# The example text under each canon box. Same column of the same concept as the
+# label above — what the operator writes AGAINST.
+#
+# ⚠️ TOTAL PER LANE, AND DELIBERATELY NOT THE SAME SHAPE AS `_FACT_LABELS`.
+#
+# The labels above are OVERRIDES because 21 of the 26 are the field's NAME, not
+# her copy: "Age", "Kids", "Pets" are what the slot is called, in any lane.
+# A placeholder is never that. It is a worked example of the creator's own life,
+# so every one of them carries a voice and there is no such thing as a neutral
+# default to fall back to. Both lanes are therefore written out in full and
+# `fact_placeholders` is TOTAL — the caller indexes it and cannot express
+# "fall through to the other lane", which is the whole point:
+#
+#   the first cut kept only HER table and derived his by regexing it for
+#   she/her/girl/woman and blanking the matches. It caught only what the word
+#   list knew — `job | "content creator, waitressed before"` sailed through, so
+#   21 of 26 shipped as her copy — and where it did fire it only DELETED, so
+#   `tattoos` lost its hint instead of getting one. Replacing the regex with a
+#   `.get(key, hers[key])` fallback would have kept the same defect in a quieter
+#   form: a canon slot added later with no male value silently serves hers.
+#
+# `assert_canon_parity` below binds both tables to the declared slate AT IMPORT,
+# so that slot cannot exist. Keys are storage and never move (`her_type` is
+# "His type" here, same column), so an account can be flipped either way without
+# touching `persona_facts_json`.
+_FACT_PLACEHOLDERS: dict[str, dict[str, str]] = {
+    # HER: the table exactly as it shipped, moved here from `_persona` — one
+    # column, one owner. It had no other reader.
+    VOICE_HER: {
+        "age": "22",
+        "job": "content creator, waitressed before",
+        "home_city": "Córdoba",
+        "relationship": "single",
+        "kids": "none",
+        "family": "mum, one older brother",
+        "tattoos": "script on her ribs, small rose on left wrist",
+        "kinks": "you fill this in — Enrich never guesses",
+        "limits": "you fill this in — Enrich never guesses",
+    },
+    VOICE_HIM: {
+        "age": "32",
+        "job": "content creator, construction before",
+        "home_city": "Austin",
+        "relationship": "single",
+        "kids": "none",
+        "family": "mum, one older brother",
+        "tattoos": "sleeve on his right arm, script across his chest",
+        # Not examples at all — an instruction, and identical in both lanes on
+        # purpose: 🪄 Enrich never proposes either.
+        "kinks": "you fill this in — Enrich never guesses",
+        "limits": "you fill this in — Enrich never guesses",
+    },
+}
+
+
+def fact_placeholders(voice: object) -> dict[str, str]:
+    """The placeholder for EVERY declared canon slot, in this lane. TOTAL, not
+    overrides — see the block above for why this column cannot be sparse the way
+    `fact_labels` is.
+
+    A COPY, and `norm_voice` so a corrupt column reads as the shipped lane."""
+    return dict(_FACT_PLACEHOLDERS[norm_voice(voice)])
+
+
+# ── Talking ABOUT the creator, in the third person ───────────────────
+# Everything else in this module is text the creator SAYS. This is the one shape
+# that isn't: a prompt that instructs a model to author her background canon
+# ("fill in the profile of a creator so her chat AI never has to improvise an
+# answer about herself"). It is third-person instruction with no register in it —
+# the register lives in the `persona` box, which the operator writes — so unlike
+# a refusal example or a nudge line there is nothing to rewrite per lane except
+# the grammar.
+#
+# That is why this is three words and not a per-lane copy of the prompt, and it
+# is NOT the `base.replace(FRAME_HER, FRAME_HIM)` the header rejects: these are
+# interpolated INTO a template at the varying spans, the same way
+# `_PAINFUL_FRAME` is. Nothing patches a rendered string.
+#
+# ⚠️ Do not reach for this to de-gender creator VOICE. A reply, a caption or a
+# canned line carries register, and swapping its pronouns leaves a woman's
+# sentence with a man's pronouns in it — which is the entire reason every other
+# table in this file is written out twice.
+@dataclass(frozen=True)
+class CreatorPronouns:
+    subject: str        # she / he
+    possessive: str     # her / his
+    reflexive: str      # herself / himself
+
+
+_PRONOUNS = {
+    VOICE_HER: CreatorPronouns("she", "her", "herself"),
+    VOICE_HIM: CreatorPronouns("he", "his", "himself"),
+}
+
+
+def pronouns(voice: object) -> CreatorPronouns:
+    """The creator's third-person pronouns for THIS lane. See the block above for
+    the one job this has and the several it does not."""
+    return _PRONOUNS[norm_voice(voice)]
+
+
+def assert_canon_parity(declared: tuple[tuple[str, str], ...]) -> None:
+    """Bind both lane tables to the canon slate, AT IMPORT.
+
+    `_persona` owns the slate and calls this the moment it has declared it, so a
+    new canon field with no male form cannot boot the relay — the same discipline
+    as `script_packs._assert_lane_parity`, and stronger than a test, which only
+    fails for whoever runs it.
+
+    It lives here and takes the slate as an argument because the dependency runs
+    that way: `_persona` imports this module, never the reverse.
+
+    NOT a rediscovery of the regex this replaced. The word scan is applied ONLY to
+    the label column, where a value is one to three words NAMING a field — a scan
+    is adequate for "Her ex" and inadequate for "content creator, waitressed
+    before", which is exactly why the placeholder column is checked for COVERAGE
+    instead.
+
+    ⚠️ `raise AssertionError`, never a bare `assert` — matching
+    `script_packs._assert_lane_parity` in mechanism as well as in timing. A bare
+    `assert` is stripped by `-O`/`PYTHONOPTIMIZE`, so the whole guard would
+    silently evaporate under a flag nobody sets today, which is exactly the kind
+    of "off in production only" that makes an import-time check worse than the
+    test it replaced."""
+    import re
+
+    def _check(ok: object, msg: str) -> None:
+        if not ok:
+            raise AssertionError(msg)
+
+    keys = {k for k, _ in declared}
+    for lane, table in _FACT_PLACEHOLDERS.items():
+        _check(set(table) == keys,
+               f"{lane} placeholders vs canon slate — missing "
+               f"{sorted(keys - set(table))}, unknown {sorted(set(table) - keys)}")
+    female = re.compile(r"\b(she|her|hers|herself|girl|girls|woman|women)\b", re.I)
+    for lane, overrides in _FACT_LABELS.items():
+        _check(not set(overrides) - keys,
+               f"{lane} label override for an undeclared slot: "
+               f"{sorted(set(overrides) - keys)}")
+    him = _FACT_LABELS[VOICE_HIM]
+    ungendered = [k for k, label in declared if female.search(label) and k not in him]
+    _check(not ungendered, f"gendered label with no male form: {ungendered}")
+    still = [k for k, v in him.items() if female.search(v)]
+    _check(not still, f"male label override is still female: {still}")
+
+
+# ── The humanizer: pushback register + emoji vocabulary ──────────────
+# STYLE_HUMANIZER is the opt-in "text like a real person" block. Almost all of it
+# is genuinely neutral — lowercase, no em-dash, don't echo his words, vary the
+# length, at most one question — and transfers to a male creator untouched.
+#
+# TWO SPANS DO NOT.
+#
+# 1. "tease, be a lil BRATTY, push back sometimes". Bratty is a submissive-playful
+#    register: it reads as someone performing for approval. On a dom it inverts the
+#    whole power axis the lane exists to establish — and it is the one line in the
+#    block that tells the model what ATTITUDE to hold, so it is load-bearing
+#    exactly where being wrong costs most.
+#
+# 2. "0-1 emoji, never the same emoji twice" names a BUDGET and no VOCABULARY. The
+#    model then picks from what it associates with an OF creator, which is the
+#    female sexting set — 🥺 🥰 😘 💦 🥵 💕. Those do not read as flirty-from-a-man,
+#    they read as a woman typing. Naming the set is the whole fix; the budget was
+#    never the problem.
+_HUMANIZER_PUSHBACK = {
+    VOICE_HER: (
+        "- not always sweet — tease, be a lil bratty, push back sometimes.\n"
+    ),
+    VOICE_HIM: (
+        "- never eager, NEVER seeking his approval. tease by withholding, not "
+        "performing; push back, let a flat one-liner do the work — amusement, "
+        "not enthusiasm.\n"
+    ),
+}
+# 0-1 emoji stays the budget in BOTH lanes — this only names which ones exist.
+# Deliberately short: a long list gets sampled evenly and reads like a rotation.
+# These are the ones that survive coming from a man without softening him.
+_EMOJI_VOCAB = {
+    VOICE_HER: "",     # unchanged — the shipped block names no set, and must not
+    VOICE_HIM: (
+        # 💦 and 🥵 are back in the ban after the 2026-08-15 compaction dropped
+        # them. They are not "cutesy", so the catch-all does not reach them —
+        # and they are the two most likely to appear in an explicit thread,
+        # which is exactly where a man typing like a woman is most obvious.
+        "- emoji: 😏 😈 🔥 💪 🖤 🐺 only, one at most, often none. NEVER "
+        "🥺 🥰 😘 💕 😍 🙈 💦 🥵 or anything cutesy — that reads as a woman.\n"
+    ),
+}
+
+# ⚠️ The vocabulary above lives inside the HUMANIZER, which is an OPT-IN style
+# block (`style_config_json`, per automation). That is fine for the engines that
+# carry the humanizer — and a trap for the ones that do not.
+#
+# `send_followup` is one that does not. Its prompt asks for "real emojis" and then
+# says nothing at all about WHICH, so the model picks, and a model writing a
+# flirty DM picks 😘🥰🥺 — the female set — with nothing to stop it. On the male
+# accounts the only thing holding that back was `strip_emojis: true`, i.e. an
+# account-wide switch that removes ALL emoji, including the dry ones he should be
+# using. Turning that switch off to "let his emoji through" would have handed the
+# model a free choice it gets wrong.
+#
+# So the vocabulary is exposed as a STANDALONE bundle field too. Hers is "" —
+# every prompt that appends it is byte-identical for her, which is why this can be
+# added to an engine without touching the female lane at all.
+EMOJI_VOCAB_RULE = {
+    VOICE_HER: "",
+    VOICE_HIM: (
+        "\n\nEMOJI (hard rule): 😏 😈 🔥 💪 🖤 🐺 only, one at most, often none. "
+        "NEVER 🥺 🥰 😘 💕 😍 🙈 or anything cutesy — that reads as a woman."
+    ),
+}
+
+
+# ── The texter noun ──────────────────────────────────────────────────
+# "guy" and not "man": the whole line exists to set a TEXTING register (short,
+# lowercase, casual), and "man" reads formal enough to pull the register the
+# wrong way. The age beside it already carries the seniority.
+_TEXTER_NOUN = {VOICE_HER: "girl", VOICE_HIM: "guy"}
+
+# What the creator calls a fan whose real name we could not resolve. This IS
+# creator voice, not fan gender: "babe" is what SHE says, and it is the fallback
+# baked into send_followup. From a male creator to a straight male fan it is the
+# same wrong-register tell as a female FaceTime refusal.
+#
+# "boy" over the original "man": operator call 2026-08-03, off live output. The
+# dom lane was already landing it unprompted — a fan opened "Yes Sir, please" and
+# the reply came back "Good boy." — so it is the word the persona actually uses,
+# and it carries the power dynamic that "man" (neutral, peer-to-peer) throws away.
+#
+# ⚠️ THIS FIRES ON A MISSING NAME, NOT ON A DYNAMIC. `of_display_name` is empty
+# for ~80% of fans, so whatever sits here is what the account calls a STRANGER on
+# an unsolicited nudge or a post-buy bridge. That rules out anything a fan has to
+# have opted into — harder degradation belongs in the model's in-scene reply,
+# where it can read his signals, not in a constant keyed off an empty column.
+_FAN_ADDRESS = {VOICE_HER: "babe", VOICE_HIM: "boy"}
+
+
+def _humanizer(voice: str) -> str:
+    """The "text like a real person" block, built from its varying spans.
+
+    Female output is byte-identical to the golden STYLE_HUMANIZER (asserted, not
+    assumed) — re-pinned 2026-08-15 when the skeleton was compressed ~50%; the
+    female pushback line is the varying span, and the female emoji vocab is ""
+    because the block deliberately names no set for her."""
+    return (
+        "TEXT LIKE A REAL PERSON, NOT AN AI:\n"
+        "- lowercase always, even 'i'. no em-dash or semicolon, ever.\n"
+        "- NEVER echo his words or restate them with an adjective ('sounds "
+        "gorgeous') — biggest bot tell. react in your OWN words.\n"
+        "- vary length wildly. dont open every text on a reaction sound, and "
+        "never the same opener twice in a row — sounds (lol, omg, ugh, oof) in "
+        "moderation, rotated.\n"
+        "- a tiny typo is fine (dont, im, ur, gonna).\n"
+        f"{_HUMANIZER_PUSHBACK[voice]}"
+        "- AT MOST ONE question, never two.\n"
+        f"{_EMOJI_VOCAB[voice]}"
+        "- never explain yourself. 0-1 emoji, never the same emoji twice."
+    )
+
+
+# ── Unlock reactions ─────────────────────────────────────────────────
+# The (since-removed) AI Chatter watcher fired one of these the instant an unlock landed, with NO
+# model in the loop — the bot only speaks "in voice" again the next time the fan
+# actually writes. That makes this the SECOND canned-text surface after
+# `OFF_DEFLECTIONS`, and the worse-placed of the two: it lands on the highest-
+# emotion beat in the funnel, immediately after money moved.
+#
+# Hers is squealing — "omg enjoy babe 😘", "eeek ok enjoy 💕 dont be shy after".
+# From a 38-year-old combat-sports coach that is not a wrong pet name, it is a
+# different person answering. His are flat approval: the sale is acknowledged and
+# the frame stays his.
+#
+# Equal length in both lanes, same reason as OFF_DEFLECTIONS — the caller picks
+# with a seeded rng and a matching count keeps the pick stable in shape.
+UNLOCK_REACTIONS = {
+    VOICE_HER: (
+        "omg enjoy babe 😘",
+        "mmm enjoy 🙈 tell me what u think after",
+        "ur the best 😏 enjoy",
+        "eeek ok enjoy 💕 dont be shy after",
+    ),
+    VOICE_HIM: (
+        "good man. enjoy",
+        "thats what i like. tell me what you think after",
+        "knew you would 😏 enjoy it",
+        "go on then. dont be shy after",
+    ),
+}
+
+# The fallback when the account's line pack has no rung for an escalation. NOT a
+# rare path — the prod catalog runs ~34% empty rungs, so this ships often.
+UNLOCK_PROMPT_FALLBACK = {
+    VOICE_HER: "unlock this babe 😏",
+    VOICE_HIM: "unlock it ",
+}
+
+# The aftercare fallback, same "pack has no line" path as above.
+AFTERCARE_FALLBACK = {
+    VOICE_HER: "mmm come here babe",
+    VOICE_HIM: "come here",
+}
+
+# ── Re-engage nudges ─────────────────────────────────────────────────
+# The THIRD model-free surface. `_run_nudge` picks one of these verbatim, so —
+# like OFF_DEFLECTIONS and UNLOCK_REACTIONS — no prompt rule can reach it.
+#
+# Hers leans on 🙈 and 🥺 six times across fifteen lines, and both of those are on
+# the male lane's EXPLICIT BAN list in `_EMOJI_VOCAB`. That is the sharpest form
+# of the drift this module exists to stop: the prompt tells him never to type 🥺
+# while the code types it for him, unprompted, into an unsolicited message.
+#
+# The register differs beyond emoji. Hers MISSES him — "i miss to talk with u",
+# "dont leave me like this" — which is the pull that works from her. The same
+# beat from a dom inverts: he is not pining, he noticed the silence and expects
+# an answer. Five beats, three lines each, mirroring hers so a repeatedly-nudged
+# fan never redraws the same line.
+#
+# ⚠️ HIS ARE NATIVE ENGLISH ON PURPOSE. Hers are hand-written in the non-native
+# register (see `_NUDGE_LINES`) because the non-native layer cannot reach
+# canned text — including the space-before-'?' tic baked at 4-in-15.
+# Broken English is a fact about those personas, not about all creators: it reads
+# wrong on a 38-year-old English-speaking coach. If a male account ever wants the
+# non-native register, that is a second pool here, not an edit to these.
+NUDGE_LINES = {
+    VOICE_HER: (
+        # still there?
+        "hey {name} u still there ? 🙈",
+        "{name} u still there 🙈 or no",
+        "hey {name} u are still with me ? 🙈",
+        # miss talking / what are u up to
+        "i miss to talk with u {name} 🥺 what u doing",
+        "miss talk with u {name} 🥺 what u up to now",
+        "i am missing u {name} 🥺 hiw is ur day",
+        # went quiet / everything ok
+        "{name} why u so quiet.. all ok with u",
+        "u become so quiet {name}.. everything is ok ?",
+        "u go quiet on me {name}.. is everything fine",
+        # cant stop thinking / u around
+        "i cant stop to think about our chat 😏 u are around {name}?",
+        "our chat is still in my head 😏 u around {name} ?",
+        "cant stop think about what we say 😏 {name} u there",
+        # dont leave me hanging
+        "hey u 👀 {name} dont make me wait so much",
+        "hey u 👀 dont leave me like this {name}",
+        "{name} 👀 dont let me waiting here",
+    ),
+    VOICE_HIM: (
+        # still there?
+        "{name} you still there",
+        "still with me {name} or what",
+        "you there {name}",
+        # what are you up to — NOT "i miss you"
+        "what you up to {name}",
+        "{name} what you doing over there",
+        "hows your day going {name}",
+        # went quiet / everything ok
+        "{name} you went quiet.. all good",
+        "quiet all of a sudden {name}.. everything ok",
+        "you go quiet on me {name}.. all good over there",
+        # still thinking about the chat — confident, not pining
+        "been thinking about our chat 😏 you around {name}",
+        "our chat stuck with me 😏 {name} you there",
+        "still thinking about what you said 😏 {name}",
+        # dont keep me waiting — his time, not his longing
+        "{name} dont keep me waiting",
+        "dont leave me hanging {name} 👀",
+        "{name} 👀 im waiting",
+    ),
+}
+
+# ⚠️ The ONE worked example in the selling prompt — the model is shown exactly one
+# sentence of what a sell-caption sounds like, and writes every caption against it.
+# Hers puts the creator's own body in the frame in the second person's imagination,
+# which is the whole technique. Left unlaned it hands a male creator female anatomy
+# to narrate as his own, in the single most load-bearing line of the engine that
+# closes sales.
+SELL_CAPTION_EXAMPLE = {
+    VOICE_HER: "'here we go babe, legs spread apart, waiting for you'",
+    VOICE_HIM: "'this is me after the gym, still dripping, thinking about you'",
+}
+
+
+# ── The bundle ───────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class VoiceBlocks:
+    """Every voice-varying prompt block, resolved for one account.
+
+    Frozen and built once per run. Engines read fields off it rather than
+    calling a wrapper per constant — see the module docstring on why that
+    distinction is load-bearing across ~11 interpolation sites."""
+    voice: str
+    painful_texting: str
+    live_proof: str
+    off_deflections: tuple[str, ...]
+    # The opt-in "text like a real person" block. Laned for two spans: the
+    # pushback ATTITUDE (bratty inverts a dom) and the emoji VOCABULARY (unnamed,
+    # the model reaches for the female sexting set).
+    humanizer: str
+    # The noun in "HOW YOU TEXT (a real 22yo girl, not an assistant)" — the style
+    # header of both forked chat builders. One word, but it sits four lines above
+    # the live-proof rule, so laning the blocks around it and leaving this would
+    # hand the model a prompt that states the creator's gender twice, differently.
+    # A contradicting prompt is worse than a consistently wrong one: the model
+    # picks per generation and the account reads as female in some replies only.
+    texter_noun: str
+    # What to call a fan whose name we could not resolve — "babe" is hers.
+    # NOT a rare path: `of_display_name` is empty for ~80% of fans, so on a male
+    # account this is the DEFAULT address, not the exception.
+    fan_address: str
+    # Canned, model-free, fired the instant an unlock lands. See UNLOCK_REACTIONS.
+    unlock_reactions: tuple[str, ...]
+    # Fallback escalation line when the account's pack has no rung (~34% of prod).
+    unlock_prompt: str
+    aftercare: str
+    # Canned re-engage pool, model-free. Hers types banned-for-him emoji.
+    nudge_lines: tuple[str, ...]
+    # The emoji set as a STANDALONE rule, for engines with no humanizer. "" for her.
+    emoji_vocab: str
+    # The one worked example the sell-caption prompt shows the model.
+    sell_caption_example: str
+
+    @property
+    def is_male(self) -> bool:
+        return self.voice == VOICE_HIM
+
+
+def blocks(voice: object) -> VoiceBlocks:
+    """The bundle for one account (`voice` normalised here, so callers may pass
+    raw input)."""
+    v = norm_voice(voice)
+    return VoiceBlocks(
+        voice=v,
+        painful_texting=_painful_texting(v),
+        live_proof=_live_proof_guardrail(v),
+        off_deflections=OFF_DEFLECTIONS[v],
+        humanizer=_humanizer(v),
+        texter_noun=_TEXTER_NOUN[v],
+        fan_address=_FAN_ADDRESS[v],
+        unlock_reactions=UNLOCK_REACTIONS[v],
+        unlock_prompt=UNLOCK_PROMPT_FALLBACK[v],
+        aftercare=AFTERCARE_FALLBACK[v],
+        nudge_lines=NUDGE_LINES[v],
+        emoji_vocab=EMOJI_VOCAB_RULE[v],
+        sell_caption_example=SELL_CAPTION_EXAMPLE[v],
+    )
+
+
+# The default lane, built once at import. `_common` re-exports the fields off
+# this so every existing importer of PAINFUL_TEXTING / LIVE_PROOF_GUARDRAIL
+# keeps working untouched — the text moved, nothing else did.
+HER = blocks(VOICE_HER)

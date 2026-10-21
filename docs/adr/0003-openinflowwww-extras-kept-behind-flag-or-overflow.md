@@ -1,0 +1,27 @@
+# Inflowwww extras are kept, behind the Legacy flag or an Extras overflow (flag removed 2026-10-20)
+
+Messages Pro carries controls that Infloww lacks: the AI strip, the Persona button, the Scheduled chip, Owe reply, broadcast, Group chat, Free previews and All Models. Parity would be simplest if we deleted them. We keep every one, and no extra may displace an Infloww element. An extra that is an automation is hidden unless the Legacy flag (`OPENINFLOWW_LEGACY_AUTOMATIONS`, `app/lib/flags.ts`) is on. Every other extra stays visible inside the Extras overflow of its Region. Each extra says "Inflowwww extra" in its tooltip and gets a one-line entry under "Ours" in `docs/messages-pro-parity.md`. With the flag off, no extra appears outside an overflow. With the flag on, every extra appears. We reuse the existing flag instead of adding a new one, because it already means "show the pre-Infloww automation surfaces" and is read per request (`docs/routes.md`).
+
+The plan places these extras by name. The AI strip and the Persona button go behind the flag (plan Phase 3). Owe reply and Free previews go into an overflow (Phases 2 and 4).
+
+ASSUMPTION: All Models and Group chat are not automations. With the flag off, they sit in the Window header's Extras overflow, and with the flag on they return to the header. This reads Phase 1's "absent unless the legacy flag is on" as "absent from the header", so that it agrees with the binding constraint that non-automation extras stay visible. It is overturned if the human meant them to be fully hidden without the flag.
+
+ASSUMPTION: the Scheduled chip and broadcast are not automations, so they go into the overflows of the Chat header and the Fan List's "New" menu. This is overturned if the queue they show is automation-driven.
+
+## Considered Options
+
+- **Delete the extras.** Rejected because the plan forbids it (Phase 7: "No extra is deleted").
+- **Leave them where they are.** Rejected because they displace Infloww elements, so the Geometry cannot match the Clone.
+- **A new flag just for Messages Pro extras.** Rejected because it would be a second switch with the same meaning as the Legacy flag.
+
+## Amended 2026-10-12
+
+The second ASSUMPTION is overturned for broadcast and stands for the Scheduled chip. Broadcast is an automation. The Clone's Broadcast page edits the `nudge_online`, `mass_nudge` and `online_blast` rules (`ui-redesign/infloww-exact/outreach-broadcast.js:287`). Each of our counterparts is a tab of the flag-only `/automations` page (`app/components/automations/ReadyMadePanel.tsx:64-66`), which answers 404 when the flag is off (`app/proxy.ts:16-20`). This is the ADR's own overturn clause, found by Phase 7 (`docs/spec/phase-07-ours-kept-marked.md:15`, and the Broadcast ASSUMPTION under its Gap table). The new consequence: broadcast goes behind the Legacy flag as the last item of the Fan List's "New" menu, linking to `/automations?ready=nudge_online`, and it has no overflow entry. The Scheduled chip stays a non-automation extra in the Chat header's Extras overflow, because it shows only direct one-Fan sends (`app/components/chat/ScheduledForChat.tsx:31-33`) and `scheduled_send` is "a 'send later' clock in the composer, not an automation" (`ui-redesign/infloww-exact/INFLOWW_REA_FEATURE_INVENTORY.md:45-46`).
+
+## Amended 2026-10-20
+
+The Legacy flag is gone (cleanup Phase 3). `OPENINFLOWW_LEGACY_AUTOMATIONS`, `app/lib/flags.ts`, `FlagsContext` and `app/proxy.ts` were deleted with the `/automations` page and the Settings Legacy tabs; an old `/automations` link now redirects to My Automations (`app/next.config.ts`). The extras that sat behind the flag went with it: the AI strip, the Persona button, "Restrict from automations" and the New menu's Broadcast link. Every remaining extra is listed in `app/lib/openinflowwwwExtras.ts` with its `hosts`, stays inside an Extras overflow or its own host, and still says "Inflowwww extra" in its tooltip. The rest of this record stands for those extras; read its flag clauses as history.
+
+## Amended 2026-10-21
+
+In Fan insights, every extra now shows by default. Nothing there is hidden behind a "+" any more, at the owner's request. Fan identity, the Mass exclude switch and Unsold PPVs are Insights blocks of their own (Fan, Mass exclude, Unsold PPVs sent), each still labelled "Inflowwww extra". The AI profile (Generated profile note) and Persona claims show in the Notes tab; they are no longer treated as flag-only automations, so they are kept although the 2026-10-20 cleanup had removed them with the flag. The two Mass exclude switches are now one: MASSppvEXCLUDE is merged into MASSdmEXCLUDE, which keeps a Fan out of every mass send, priced or not. Every Insights block can now be dragged to a new place and removed, and the head's "+", once the overflow trigger, adds a removed block back; the layout is saved per browser (`app/components/chat/useInsightsBlocks.ts`). The default order is the selling order: Fan, Spending behavior, Unsold PPVs sent, Notes, Mass exclude, Subscription, Profile, Lists. Organization metrics is removed by default and can be added back from the "+". Layouts saved before these defaults are reset once. Extra Fan stats (Last message in, Last seen, Subscribed at, Renewed at, Expires or Expired, Posts) is dropped. The extras audit (`app/app/messages-pro/extras.test.tsx`) allows these extras' identities inside Fan insights. Outside Fan insights nothing changes: the Chat header and Fan List keep their Extras overflows.

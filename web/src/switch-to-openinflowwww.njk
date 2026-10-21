@@ -1,0 +1,180 @@
+---
+layout: base.njk
+title: "Switch to Inflowwww: the migration steps, what you keep and what you lose"
+description: "How to move an agency to self-hosted Inflowwww, step by step, plus an honest list of what you give up."
+---
+{#- Follows infloww.com/switch-crm: a stability pitch, a support promise, a migration offer. Ours is the README quick start. -#}
+<section class="wrap max-w-3xl pt-16 sm:pt-24">
+  <p class="eyebrow">Switch to Inflowwww</p>
+  <h1 class="h-page mt-4">Upgrade to the most self&#8209;hosted CRM on the market</h1>
+  <p class="lede">
+    The steps below are the README's Quick start, plus proxies and chatters. Budget an evening for the server and a few minutes per creator for the sessions.
+    Then read what you lose before you cancel anything.
+  </p>
+  <p class="mt-4 max-w-2xl font-medium text-ink">
+    Setup and updates mean typing a few commands on a server. After that, everyone on the team works in a browser.
+  </p>
+  <div class="mt-8 flex flex-wrap gap-3">
+    <a class="btn-primary" href="{{ site.repo }}/blob/main/README.md#quick-start">Open the quick start</a>
+    <a class="btn-secondary" href="{{ '/openinflowwww-vs-infloww/' | url }}">Compare first</a>
+  </div>
+</section>
+
+<section aria-labelledby="before" class="wrap mt-16 max-w-3xl">
+  <h2 id="before" class="text-2xl font-semibold tracking-tight sm:text-3xl">Before you switch</h2>
+  <div class="prose mt-4">
+    <p>
+      Inflowwww is an independent reverse-engineering of OnlyFans' public web API. Running it against a live
+      account may violate OnlyFans' Terms of Service. Use it at your own risk. The project is not affiliated with or
+      endorsed by OnlyFans. <a href="{{ '/legal/terms/#disclaimer' | url }}">Read the disclaimer first.</a>
+    </p>
+  </div>
+</section>
+
+<section aria-labelledby="steps" class="wrap mt-16 max-w-3xl">
+  <h2 id="steps" class="text-2xl font-semibold tracking-tight sm:text-3xl">The migration, step by step</h2>
+  <div class="prose mt-4">
+    <p>You need a server with Docker Engine 25+ and Compose 2.20+. The healthchecks use <code>start_interval</code>, which older versions don't support. On Ubuntu 24.04, install it with <a href="https://docs.docker.com/engine/install/ubuntu/">Docker's own Ubuntu instructions</a>; the distro's <code>docker.io</code> package may be older; check <code>docker version</code>.</p>
+
+    <h3>1. Clone the repository</h3>
+    <p>Cloning downloads the repository (the project's source folder) to the server.</p>
+    <pre class="overflow-x-auto whitespace-pre"><code>git clone {{ site.repo }}.git openinflowwww
+cd openinflowwww</code></pre>
+
+    <h3>2. Create the network, the state files and .env</h3>
+    <p>The app joins an external network called <code>n8n_default</code>, so it has to exist. (The network name comes from the maintainer's own Traefik setup; you don't need n8n.) The state files are bind-mounted, so they have to exist as files, not directories.</p>
+    <pre class="overflow-x-auto whitespace-pre"><code>docker network create n8n_default
+echo '{"proxies": []}' &gt; service/proxies.json
+touch service/chatterly.db
+mkdir -p service/sessions
+
+cat &gt; .env &lt;&lt;ENV
+SHARE_TOKEN=$(openssl rand -hex 24)
+SESSION_SECRET=$(openssl rand -hex 32)
+CHATTER_SESSION_SECRET=$(openssl rand -hex 32)
+ENV</code></pre>
+    <p>Without <code>SHARE_TOKEN</code> the share-link gate is off (sign-in is the only gate), and without the session secrets every rebuild signs everyone out. <code>ADMIN_PASSWORD</code> is optional. It is the only check on the admin actions (view as another user, transfer or delete a user), so anyone signed in who knows it can use them on any account; if you set it, make it long and random. Without it those actions are refused.</p>
+
+    <h3>3. Start the stack</h3>
+    <pre class="overflow-x-auto whitespace-pre"><code>docker compose up -d --build</code></pre>
+    <p>
+      This starts <code>openinflowwww-relay</code> (127.0.0.1:8787), <code>openinflowwww-app</code> (127.0.0.1:3001) and
+      <code>openinflowwww-autoheal</code>. A server usually has no browser, so from your own computer forward the port with
+      <code>ssh -L 3001:127.0.0.1:3001 user@server</code> and open <code>http://127.0.0.1:3001/?t=&lt;SHARE_TOKEN&gt;</code>
+      there (<code>grep SHARE_TOKEN .env</code> on the server prints the token; it is remembered after the first visit).
+      Register the owner account on the Sign in / Register screen at <code>/login</code> first. Ignore the installer
+      link on the login screen; it points at an older setup.
+    </p>
+    <p>
+      127.0.0.1 only works on the server itself, or through your <code>ssh -L</code> tunnel. Your laptop, your phone and your chatters reach the dashboard at the
+      server's URL. The relay and the app bind to 127.0.0.1 on the host, and the app also joins the external
+      <code>n8n_default</code> network with Traefik labels; if you run Traefik on that network it will be published.
+      One way is a domain behind a reverse proxy on the server: point Caddy or nginx at <code>127.0.0.1:3001</code>, or
+      use the Traefik labels in <code>docker-compose.yml</code>, which expect your own Traefik on the
+      <code>n8n_default</code> network with a <code>websecure</code> entrypoint and a cert resolver named
+      <code>mytlschallenge</code>. Put your host (in place of <code>your-host.example.com</code>) and those names in a
+      <code>docker-compose.override.yml</code>, which the repository already ignores, so <code>git pull</code> stays
+      clean; don't edit the tracked file. The other is the <code>tunnel</code> profile:
+      <code>docker compose --profile tunnel up -d</code> starts a Cloudflare quick tunnel,
+      <code>docker compose logs openinflowwww-tunnel</code> shows its trycloudflare.com URL, and the URL changes on every
+      restart. Both make the dashboard public, so before either, read the
+      <a href="{{ '/help/#security' | url }}">security notes</a>; use the quick tunnel only to try it, not for a live team.
+    </p>
+
+    <h3>4. Capture each creator's session</h3>
+    {% include "capture-flow.njk" %}
+    <p>
+      The creator's account will be seen from the server's IP (or the proxy you assign) from then on; assign a proxy before
+      pasting if that matters (step 5 shows where).
+    </p>
+    <p>
+      The desktop app's own capture button does not work against this relay today; use the Chrome extension. The
+      accounts appear in Creators &gt; Manage creators (<code>/creators</code>). If a session stops working, capture it
+      again the same way.
+    </p>
+    <p>
+      Fansly: a Fansly client lives in the repo; the Docker image (a packaged copy of the app) does not ship it yet. The Creators page already shows a
+      Connect Fansly card; on the Docker install it doesn't work yet, so skip it.
+    </p>
+
+    <h3>5. Add your proxies</h3>
+    <p>
+      Assign a proxy to each creator in Creators &gt; Custom proxy (<code>/creators/proxy</code>). The list is kept in
+      <code>service/proxies.json</code>, the proxy registry on the host. You supply the proxies; none are built in.
+    </p>
+
+    <h3>6. Invite your chatters</h3>
+    <p>
+      Invite each chatter from Employees &gt; Manage employees &gt; Chatters (<code>/employees</code>): under "Invite a new
+      chatter", the "Mint invite URL" button makes a one-time <code>/chatter-login?token=...</code> link that expires after
+      24 hours, and they pick a username and password there. Logins
+      are a share token for the dashboard, then per-user logins: the owner at <code>/login</code>, each chatter at
+      <code>/chatter-login</code>. Chatters sign in with their own login; the share token is for the owner (it does not stop anyone from registering;
+      see <a href="{{ '/help/#security' | url }}">Security notes</a>). Owner pages such as Creators, Vault Pro and Tracking links are hidden from chatters.
+    </p>
+  </div>
+</section>
+
+<section aria-labelledby="support" class="wrap mt-16 max-w-3xl">
+  <h2 id="support" class="text-2xl font-semibold tracking-tight sm:text-3xl">Support during the move</h2>
+  <div class="prose mt-4">
+    <p>
+      Infloww's switch page describes its private Telegram support as "Real human support, no AI"
+      (infloww.com/switch-crm, page stamped Oct 10, 2026).
+    </p>
+    <p><strong>Ours: real human support, no AI. The human is you.</strong></p>
+    <p>
+      In practice that means the README, the code, and the issue tracker on <a href="{{ site.repo }}/issues">GitHub</a>.
+      The LLM keys (<code>DEEPSEEK_API_KEY</code>, <code>DEEPINFRA_API_KEY</code>,
+      <code>ZAI_API_KEY</code>) are optional, billed by their providers, and the dashboard works without any of them.
+    </p>
+  </div>
+</section>
+
+{#- What you keep and what you lose: two cards side by side from md up. -#}
+<div class="wrap mt-16 grid max-w-3xl grid-cols-1 gap-5 md:grid-cols-2">
+<section aria-labelledby="keep" class="rounded-2xl bg-white p-6 ring-1 ring-black/10">
+  <h2 id="keep" class="text-2xl font-semibold tracking-tight sm:text-3xl">What you keep</h2>
+  <div class="prose mt-4 text-base">
+    <ul>
+      <li><strong>Your creators and your team.</strong> Accounts come across by capturing their sessions again; chatters get new logins.</li>
+      <li><strong>The core screens.</strong> Messages Pro, Smart Messages, Smart lists, Vault Pro, Scripts, Creator, Employee and Fan reports, the Message dashboard, Auto Post and Auto Story.</li>
+      <li><strong>Your data, on your server.</strong> The SQLite file, the sessions and the proxy list sit next to the compose file. Back them up like passwords: <code>chatterly.db</code> and <code>proxies.json</code> hold passwords in plain text.</li>
+      <li><strong>Your phone workflow, mostly.</strong> The web app is responsive, and Messages Pro shows one pane at a time on small screens.</li>
+    </ul>
+    <p>There is no importer from Infloww. Scripts and lists need to be set up again.</p>
+  </div>
+</section>
+
+<section aria-labelledby="lose" class="rounded-2xl bg-white p-6 ring-1 ring-black/10">
+  <h2 id="lose" class="text-2xl font-semibold tracking-tight sm:text-3xl">What you lose</h2>
+  <div class="prose mt-4 text-base">
+    <ul>
+      <li><strong>Support and an SLA.</strong> Nobody is on call for your agency, and no uptime figure is promised.</li>
+      <li><strong>Fansly, Fanvue and MYM, for now.</strong> Inflowwww supports OnlyFans. A Fansly client lives in the repo; the Docker image does not ship it yet.</li>
+      <li><strong>Some screens.</strong> All 12 OF Manager sections, all 3 Share for Share sections, Shift schedule, the Settings tabs and the in-app Help center are NotBuiltYet stubs.</li>
+      <li><strong>A native phone app.</strong> There isn't one.</li>
+      <li><strong>AI Copilot.</strong> No AI Copilot. A legacy AI chatter and in-chat AI strip sit behind <code>OPENINFLOWW_LEGACY_AUTOMATIONS=1</code>, off by default and unsupported.</li>
+      <li><strong>Built-in proxies.</strong> You bring your own.</li>
+      <li><strong>Someone else running the server.</strong> Updates, backups and restarts are your job now.</li>
+    </ul>
+    <p>If that list decides it, read <a href="{{ '/openinflowwww-vs-infloww/#stay' | url }}">Who should stay on Infloww</a>.</p>
+  </div>
+</section>
+</div>
+
+<section aria-labelledby="risk" class="wrap mt-16 max-w-3xl pb-20 sm:pb-28">
+  <h2 id="risk" class="text-2xl font-semibold tracking-tight sm:text-3xl">The financial risk of your move</h2>
+  <div class="prose mt-4">
+    <p>
+      Infloww's comparison pages say "We'll take on the financial risk of your move", with 60 days of migration
+      coverage for agencies that qualify (page stamped Oct 10, 2026).
+    </p>
+    <p>
+      We don't offer coverage, because our side of the overlap costs one server. Move one creator first, let the team settle
+      in, then move the rest. Cancel the old plan only when you're sure.
+    </p>
+  </div>
+</section>
+
+{% include "deploy-band.njk" %}

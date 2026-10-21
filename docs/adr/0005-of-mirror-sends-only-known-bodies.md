@@ -1,0 +1,8 @@
+# The OF mirror sends only Known bodies; every other control shows the Read-only note
+
+The OF mirror shows every control of the OnlyFans creator UI, but OnlyFans's private API is undocumented and we know the request body for only a few of them (post, schedule, Co-tags, vault and disk media, story upload, tracking link, trial link, promotion). We decided that a Mirror page control writes only when `service/of_client.py` already sends that exact body, confirmed against live OnlyFans or read from OnlyFans's own JS. This effort adds no OnlyFans endpoint and no guessed field, and no Relay route unless `of_client.py` already sends its body. Every other control (labels, Save for later, poll, quiz, expiration, bundles, prices, row deletes, most settings) stays enabled in OnlyFans's markup and answers with the Read-only note, never with fake success. Fields the Relay does not return render empty and are never invented. We chose this because a guessed write runs against a real Creator's OnlyFans account, where a wrong or rejected request cannot be taken back and can put the account at risk, while a read-only control costs only a feature that can be wired once its body is confirmed. This differs from Messages Pro's Not wired state on purpose: the Read-only note leaves the captured markup untouched, and with the click fallback no Silent control is left.
+
+## Considered Options
+
+- **Infer bodies from OnlyFans's network shape and ship them.** Rejected because an unconfirmed write lands on a live account.
+- **Disable controls with no Known body, as Messages Pro does with Not wired.** Rejected because it changes OnlyFans's look on every page and still leaves the user without an explanation of why nothing happens.

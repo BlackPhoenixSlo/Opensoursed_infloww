@@ -1,0 +1,70 @@
+---
+layout: base.njk
+bare: true
+title: "Sign in"
+referrer: "origin-when-cross-origin"
+description: "Sign in to Inflowwww. Agency owners and chatters each have their own username and password; one app serves many agencies."
+---
+{#- Infloww has no web sign-in page (docs/infloww-landing-snapshot.md §8); this follows their app's login screen: logo,
+    "Welcome to Infloww", news link and version on the left; Email address, Password, "Remember me", "Forgot
+    password?", Login and the terms line on the right. -#}
+{%- from "auth.njk" import authForm, usernameField, passwordField, submitButton, handoffNote, logo, notice with context -%}
+<div class="flex min-h-dvh flex-col bg-[#0c0c0c]">
+  {#- Their columns: text from x 313, the 355px form from x 715 (757 wide in all, 77 between). -#}
+  <div class="mx-auto grid w-full max-w-[821px] flex-1 content-center gap-12 px-5 py-14 sm:px-8 md:grid-cols-[1fr_355px] md:gap-[77px] lg:py-24">
+    <section aria-labelledby="login-title" class="max-md:contents md:flex md:flex-col">
+      <div>
+        {{ logo("size-8") }}
+        <h1 id="login-title" class="mt-6 text-[28px] leading-tight font-normal tracking-tight">Welcome to Inflowwww</h1>
+      </div>
+      {#- On a phone the news and version go below the form (max-md:contents lets order-last reach the grid). -#}
+      <div class="max-md:order-last md:mt-auto md:pt-16">
+        <p class="text-base text-pretty">
+          To stay up-to-date on our latest releases and other updates, check out
+          <a class="auth-link" href="{{ '/changelog/' | url }}">Inflowwww News</a>, which is a git log.
+        </p>
+        <p class="mt-4 text-sm text-white/[0.62]">Version 0.0.0.wwww</p>
+      </div>
+    </section>
+
+    <section aria-label="Log in" class="w-full">
+      {%- call authForm("login") %}
+        {{ usernameField("name.not-an-email", false, "") }}
+        {{ passwordField("current-password", "Password") }}
+
+        <div class="my-6 flex flex-wrap items-center justify-between gap-x-4 gap-y-3 text-base">
+          {#- Their "Remember me" box. The app always remembers you (service/auth.py: a session lasts until 30 days
+              without use), so this is a picture of a ticked box, not a form control. -#}
+          <p class="flex items-center gap-3">
+            <span class="auth-fake-check" aria-hidden="true">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="m3.5 8.5 3 3 6-7" /></svg>
+            </span>
+            <span>Remember me <span class="text-sm text-white/[0.62]">(always)</span></span>
+          </p>
+          {#- Their "Forgot password?" link. The app has no reset flow (app/components/auth/Landing.tsx, service/auth.py). -#}
+          <details class="auth-forgot relative">
+            <summary class="auth-link cursor-pointer list-none">Forgot password?</summary>
+            <p class="absolute right-0 z-10 mt-2 w-64 rounded-xl bg-[#1f1f1f] p-4 text-sm text-white/85 shadow-lg ring-1 ring-white/10">
+              There is no reset link. The app keeps no email address to send one to.
+            </p>
+          </details>
+        </div>
+
+        {{ submitButton("Login") }}
+        <p class="mt-4 text-sm text-pretty text-white/[0.62]">
+          By using Inflowwww, you agree to our <a class="auth-link" href="{{ '/legal/privacy/' | url }}">Privacy Policy</a>
+          and <a class="auth-link" href="{{ '/legal/terms/' | url }}">Terms of Service</a>
+        </p>
+        {{ handoffNote() }}
+      {%- endcall %}
+      <p class="mt-8 text-base text-white/85">
+        Don't have an account? <a class="auth-link" href="{{ '/signup/' | url }}">Sign up</a>
+      </p>
+      {#- app/app/site-auth/route.ts falls back to the chatter sign-in, as the app's /login does. -#}
+      <p class="mt-2 text-sm text-white/60">
+        Chatters log in here too, with the username they picked when they opened their owner's invite.
+      </p>
+    </section>
+  </div>
+  {{ notice() }}
+</div>

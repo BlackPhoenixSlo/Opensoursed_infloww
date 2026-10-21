@@ -1,0 +1,15 @@
+{
+ "items": [
+  {
+   "id": 60001,
+   "trialLinkName": "Synthetic trial",
+   "subscribeDays": 60,
+   "subscribeCounts": null,
+   "claimCounts": 2,
+   "isFinished": true,
+   "createdAt": "2026-09-25T00:00:00+00:00",
+   "expiredAt": "2026-10-10T00:00:00+00:00"
+  }
+ ],
+ "hasMore": false
+}

@@ -1,0 +1,29 @@
+---
+layout: page.njk
+title: "Talk to our team"
+description: "Our team is whoever reads the code and sends a fix. They read the issue tracker."
+---
+{#- Follows infloww.com/contact. -#}
+<h2>Where to write</h2>
+<ul>
+  <li><strong>Something is broken:</strong> <a href="{{ site.repo }}/issues/new">open an issue</a>.</li>
+  <li><strong>A question or an idea:</strong> <a href="{{ site.repo }}/issues/new">open an issue</a> and say it is a question.</li>
+  <li><strong>Legal and trademark notices:</strong> open an issue on the repository; we reply within 7 days. There is no private notice channel yet; issues are public and need a free GitHub account, and they open when the repository does. A legal-notice address will be added before the repository goes public.</li>
+  <li><strong>You fixed it:</strong> send a <a href="{{ site.repo }}/pulls">pull request</a>.</li>
+</ul>
+
+<h2>What to put in an issue</h2>
+<ul>
+  <li>What you did, what you expected and what happened instead.</li>
+  <li>The commit you run (<code>git rev-parse --short HEAD</code>) and your <code>docker compose version</code>.</li>
+  <li>The relevant lines from <code>docker compose logs</code>; remove fan names and message text first.</li>
+</ul>
+<p>
+  Never paste your <code>.env</code>, your <code>SHARE_TOKEN</code>, session files or OnlyFans cookies. Anyone who can see the repository can read its issues.
+</p>
+
+<h2>Theirs, for comparison</h2>
+<p>
+  Infloww's contact page is a four-field form under "Talk to our team", next to a support email address, a meeting
+  booking link and a Telegram invite (infloww.com/contact, page stamped Oct 10, 2026).
+</p>

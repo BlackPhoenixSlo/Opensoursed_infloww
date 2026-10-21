@@ -1,0 +1,43 @@
+{
+  "_about": "Settings > Subscription's bundles for a free page (subscribePrice 0) and for a priced page with no bundles and no options left: OF grays the section header (m-disabled-block) and each bundle (g-disabled) while free, and disables Add bundle when free or when every offered duration already has a bundle (isAddBundleDisabled). PII-free, synthetic.",
+  "_source": "OF web bundle build 202610091632, settings-promotion-campaign (SettingsPromotionCampaign.isAddBundleDisabled, SettingsBundle), read statically.",
+  "free": {
+    "me": {
+      "id": 1001,
+      "username": "synthmodel",
+      "subscribePrice": 0,
+      "isPerformer": true,
+      "canEarn": true,
+      "canCreatePromotion": false,
+      "canCreateTrial": false,
+      "subscriptionBundles": [{ "id": 900001, "discount": 15, "duration": 3, "price": 0, "canBuy": false }]
+    },
+    "settings": { "canAddSubscriberByBundle": false, "bundleMaxPrice": 250 }
+  },
+  "empty": {
+    "me": {
+      "id": 1001,
+      "username": "synthmodel",
+      "subscribePrice": 4.99,
+      "isPerformer": true,
+      "canEarn": true,
+      "canCreatePromotion": true,
+      "canCreateTrial": true,
+      "subscriptionBundles": []
+    },
+    "settings": { "canAddSubscriberByBundle": { "discounts": { "0": "No discount" }, "durations": { "3": "3 months" } }, "bundleMaxPrice": 250 }
+  },
+  "full": {
+    "me": {
+      "id": 1001,
+      "username": "synthmodel",
+      "subscribePrice": 4.99,
+      "isPerformer": true,
+      "canEarn": true,
+      "canCreatePromotion": true,
+      "canCreateTrial": true,
+      "subscriptionBundles": [{ "id": 900003, "discount": 0, "duration": 3, "price": 14.97, "canBuy": false }]
+    },
+    "settings": { "canAddSubscriberByBundle": { "discounts": { "0": "No discount" }, "durations": { "3": "3 months" } }, "bundleMaxPrice": 250 }
+  }
+}

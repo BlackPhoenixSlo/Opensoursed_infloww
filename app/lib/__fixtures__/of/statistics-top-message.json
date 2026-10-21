@@ -1,0 +1,15 @@
+{
+ "purchases": {
+  "id": 52001,
+  "date": "2026-10-04T12:00:00+00:00",
+  "text": "<p>Synthetic top message</p>",
+  "rawText": "<p>Synthetic top message</p>",
+  "isFree": false,
+  "price": 5,
+  "purchasedCount": 3,
+  "viewedCount": 14,
+  "mediaCount": 0,
+  "media": [],
+  "canUnsend": true
+ }
+}

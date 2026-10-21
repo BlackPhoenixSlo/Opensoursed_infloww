@@ -1,0 +1,81 @@
+---
+layout: page.njk
+title: "Download Inflowwww"
+description: "The download is a URL: Inflowwww runs in a browser from your server, on phones too, plus a desktop shell you build."
+---
+{#- Follows infloww.com/download: one section per surface, then theirs for comparison. -#}
+<p>
+  <strong>There is no app to download.</strong> Someone installs Inflowwww on a server once; then everyone opens it in
+  a browser, on a computer or a phone.
+</p>
+<p><strong>Setup and updates mean typing a few commands on a server. After that, everyone on the team works in a browser.</strong></p>
+<p>{% include "tos.njk" %}</p>
+
+<h2>Web: your server's URL</h2>
+<p>
+  The web app is the download. Run the <a href="{{ '/help/' | url }}">Quick start</a>, then forward the port from your
+  own computer (<code>ssh -L 3001:127.0.0.1:3001 user@server</code>) and open
+  <code>http://127.0.0.1:3001/?t=&lt;SHARE_TOKEN&gt;</code>; see <a href="{{ '/help/#first-login' | url }}">First login</a>.
+  The token is remembered after the first visit. From any other machine, use the server's URL: the domain you put in front of port 3001 with a reverse
+  proxy, or the <code>tunnel</code> profile's Cloudflare URL (see <a href="{{ '/help/' | url }}">Help</a>).
+</p>
+
+<h2 id="capture">Capture a session</h2>
+{% include "capture-flow.njk" %}
+<p>
+  The creator's account will be seen from the server's IP (or the proxy you assign) from then on; assign a proxy before
+  pasting if that matters.
+</p>
+
+<h2>Phone: the same web app</h2>
+<p>
+  Open your server's URL (not 127.0.0.1) on your phone. The layout is responsive: the sidebar becomes a drawer and
+  Messages Pro shows one pane at a time. There is no native app in the App Store or on Google Play.
+</p>
+<img
+  src="{{ '/img/phone-messages-pro-list.webp' | url }}"
+  srcset="{{ '/img/phone-messages-pro-list.webp' | url }} 1x, {{ '/img/phone-messages-pro-list-780.webp' | url }} 2x"
+  width="390" height="844"
+  class="shot mx-auto h-auto w-full max-w-56"
+  alt="Messages Pro chat list on a phone"
+  loading="lazy" decoding="async">
+
+<h2>Desktop: build the Electron shell</h2>
+<p>
+  Most teams can skip this: the web app in a browser is the same product. The desktop app lives in
+  <code>desktop/</code>. It asks for your server URL on first launch and loads the web UI from there, so everyone signs
+  in as they would in the browser. The desktop app's own capture button does not work against this relay today, and
+  it does not capture Fansly sessions; use the Chrome extension.
+</p>
+<pre class="break-all whitespace-pre-wrap"><code>cd desktop
+npm install
+npm start          # run it
+npm run dist:mac   # arm64 and x64 .dmg in desktop/dist/
+npm run dist:win   # Windows .exe installer (builds on macOS too)</code></pre>
+<p>
+  Builds are unsigned. An app you build yourself opens normally. If you copy the .dmg to another Mac, macOS may say the
+  app "is damaged and can't be opened"; that is the missing signature. The desktop README's only workaround is
+  right-click &gt; Open the first time, and it says to sign and notarize the build before handing it to a
+  non-technical team. On Windows, SmartScreen asks you to confirm (More info &gt; Run anyway). Details are in <a href="{{ site.repo }}/blob/main/desktop/README.md">desktop/README.md</a>.
+</p>
+<img
+  src="{{ '/img/desktop-shell.webp' | url }}"
+  srcset="{{ '/img/desktop-shell-640.webp' | url }} 640w, {{ '/img/desktop-shell.webp' | url }} 1280w"
+  sizes="(min-width: 768px) 720px, 100vw"
+  width="1280" height="800"
+  class="shot h-auto w-full"
+  alt="Inflowwww desktop app showing the Messages Pro inbox"
+  loading="lazy" decoding="async">
+
+<h2>Where are the binaries?</h2>
+<p>
+  We don't host any. There is no download server and no installer on this site: you build the app from source you can
+  read, and git clone downloads it. The checkout page is a git clone.
+</p>
+
+<h2>Theirs, for comparison</h2>
+<p>
+  Infloww's download page offers a desktop app as Mac <code>.dmg</code> files for Apple Silicon and Intel, asks for
+  macOS 12 or later, 8GB of RAM and 10GB of free storage, and has a "Looking for the Windows download?" toggle
+  (infloww.com/download, page stamped Oct 10, 2026).
+</p>

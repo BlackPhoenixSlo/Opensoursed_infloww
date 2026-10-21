@@ -1,0 +1,216 @@
+---
+layout: page.njk
+title: "Help center"
+description: "Get Inflowwww running and run a team on it: Quick start, first login, sessions, security notes, updates and backups."
+---
+{#- On-page contents: one tile per h2, so the long page has a way in. -#}
+<nav aria-labelledby="on-this-page">
+  <p id="on-this-page" class="text-sm font-medium text-muted">On this page</p>
+  {%- set onPage = [
+    ["quick-start", "Quick start"],
+    ["first-login", "First login"],
+    ["capture", "Capture a session"],
+    ["reaching-it", "Reaching it from other machines"],
+    ["security", "Security notes"],
+    ["team", "Running a team"],
+    ["optional-settings", "Optional settings"],
+    ["backups", "Backups"],
+    ["updating", "Updating"],
+    ["docs", "Docs in the repository"],
+    ["stuck", "Still stuck?"]
+  ] %}
+  <ul class="mt-3 grid list-none grid-cols-1 gap-2 space-y-0 pl-0 sm:grid-cols-3">
+    {%- for item in onPage %}
+    <li><a class="flex min-h-11 items-center rounded-xl bg-white px-4 py-2 text-sm no-underline ring-1 ring-black/10 hover:bg-cream" href="#{{ item[0] }}">{{ item[1] }}</a></li>
+    {%- endfor %}
+  </ul>
+</nav>
+<p><strong>Setup and updates mean typing a few commands on a server. After that, everyone on the team works in a browser.</strong></p>
+<p>
+  Who does what: the owner rents the server and invites the team; a technical friend runs the commands below, sets up
+  the web address and locks it down (see <a href="#security">Security notes</a>), and zips the
+  <code>loginExtensionMulti</code> folder for the owner to send to each creator; each creator captures their session (signs in to OnlyFans
+  once in Chrome so the relay can act on the account) on a computer; each chatter signs in from an invite link.
+</p>
+<p>
+  If nobody on your team has done that before, ask someone who has, or read
+  <a href="{{ '/openinflowwww-vs-infloww/#stay' | url }}">Who should stay on Infloww</a> first.
+</p>
+
+<h2 id="quick-start">Quick start</h2>
+<p>
+  You need Docker Engine 25+ with Compose 2.20+. On Ubuntu 24.04, install it with
+  <a href="https://docs.docker.com/engine/install/ubuntu/">Docker's own Ubuntu instructions</a>; the distro's
+  <code>docker.io</code> package may be older; check <code>docker version</code>. These are the steps from the README:
+</p>
+<ol>
+  <li>Clone the repository (download the project's source folder) and <code>cd</code> into it.</li>
+  <li>Create the external Docker network the app joins: <code>docker network create n8n_default</code>. (The network name comes from the maintainer's own Traefik setup; you don't need n8n.)</li>
+  <li>Create the bind-mounted state files. They must be files, not directories.</li>
+  <li>Write a <code>.env</code> with a share token and two session secrets.</li>
+  <li>Start it.</li>
+</ol>
+<pre class="overflow-x-auto whitespace-pre"><code>{% include "quickstart-cmd.njk" %}</code></pre>
+<p>Run this once. To update later, see <a href="#updating">Updating</a>.</p>
+
+<h2 id="first-login">First login</h2>
+<p>
+  A server usually has no browser, and the app listens on 127.0.0.1 only. From your own computer, forward the port with
+  <code>ssh -L 3001:127.0.0.1:3001 user@server</code>, then open <code>http://127.0.0.1:3001/?t=&lt;SHARE_TOKEN&gt;</code>
+  in your browser. <code>grep SHARE_TOKEN .env</code> on the server prints the token; it is remembered after the first
+  visit. The first screen is Sign in / Register at <code>/login</code>: register the owner account there first, then
+  add each OnlyFans account by capturing its session, then invite chatters. Ignore the installer link on the login
+  screen; it points at an older setup.
+</p>
+
+<h2 id="capture">Capture a session</h2>
+{% include "capture-flow.njk" %}
+<p>
+  The creator's account will be seen from the server's IP (or the proxy you assign) from then on; assign a proxy before
+  pasting if that matters.
+</p>
+<p>
+  The desktop app's own capture button does not work against this relay today; use the Chrome extension. If a session
+  stops working, capture it again the same way.
+</p>
+
+<h2 id="reaching-it">Reaching it from other machines</h2>
+<p>
+  Both a public domain and a quick tunnel make the dashboard public. Read the
+  <a href="#security">security notes</a> first: use a private network or a VPN, or a second login in front of it; the
+  tunnel is for trying it only.
+</p>
+<p>
+  To give your chatters a normal web address, someone technical sets up a domain for the server once; the details are
+  below.
+</p>
+<p>
+  127.0.0.1 only works on the server itself, or through your <code>ssh -L</code> tunnel. Your laptop, your phone and your chatters use the server's URL. The
+  relay and the app bind to 127.0.0.1 on the host, and the app also joins the external <code>n8n_default</code>
+  network with Traefik labels; if you run Traefik on that network it will be published.
+</p>
+<p>
+  One way is a domain behind a reverse proxy on the server: point Caddy or nginx at <code>127.0.0.1:3001</code>, or use
+  the Traefik labels in <code>docker-compose.yml</code>, which expect your own Traefik on the <code>n8n_default</code>
+  network with a <code>websecure</code> entrypoint and a cert resolver named <code>mytlschallenge</code>. Put your host
+  (in place of <code>your-host.example.com</code>) and those names in a <code>docker-compose.override.yml</code>,
+  which the repository already ignores, so <code>git pull</code> stays clean; don't edit the tracked file. The other is
+  the <code>tunnel</code> profile: <code>docker compose --profile tunnel up -d</code> starts a Cloudflare quick tunnel,
+  <code>docker compose logs openinflowwww-tunnel</code> shows its trycloudflare.com URL, and the URL changes on every
+  restart.
+</p>
+
+<h2 id="security">Security notes</h2>
+<p>
+  In plain words: today anyone who can open your server's address can make an account on it, and a panel that
+  restarts it needs no login. What the code does today:
+</p>
+<ul>
+  <li>Sign-up has no setting and needs no share token: anyone who reaches <code>/login</code> can register.</li>
+  <li>Any registered account can list every user and every creator account on the server.</li>
+  <li>The owner's and chatters' dashboard passwords are stored in plain text (<code>service/auth.py</code>). Creators'
+    OnlyFans passwords never reach the server; the extension captures a session, not a password.</li>
+  <li>The lanes panel (the relay's rate-limit page at <code>/lanes-panel</code>) can change the relay's limits and restart it with no login.</li>
+  <li><code>ADMIN_PASSWORD</code> alone unlocks "view as another user", transfer and delete: any signed-in account that
+    knows it can use them on any user.</li>
+  <li>Logins have no rate limit.</li>
+</ul>
+<p>
+  Run it only on a private network or over a VPN (WireGuard or Tailscale) until these are fixed. Putting basic auth in
+  front of the whole relay breaks fans' tracking links (<code>/t/</code>) and the desktop app, so if you must expose it,
+  protect everything except <code>/t/</code> at your reverse proxy. All six are listed under
+  <a href="{{ '/roadmap/#known-gaps' | url }}">Known gaps</a> on the roadmap.
+</p>
+<p>
+  The passwords sit in <code>service/chatterly.db</code> and the proxy logins in <code>service/proxies.json</code>, so
+  guard both like the sessions folder, and don't reuse a password from anywhere else.
+</p>
+
+<h2 id="team">Running a team</h2>
+<ul>
+  <li>Logins are a share token for the dashboard plus per-user logins: the owner at <code>/login</code>, each chatter at <code>/chatter-login</code>. Chatters sign in with their own login; the share token is for the owner (it does not stop anyone from registering; see <a href="#security">Security notes</a>).</li>
+  <li>Invite each chatter from Employees &gt; Manage employees &gt; Chatters (<code>/employees</code>): under "Invite a new chatter", the "Mint invite URL" button makes a one-time <code>/chatter-login?token=...</code> link that expires after 24 hours, and they pick a username and password there.</li>
+  <li>Owner pages such as Creators, Vault Pro and Tracking links are hidden from chatters.</li>
+  <li>After signing in at <code>/chatter-login</code>, a chatter sees Dashboard, Messages Pro, Smart Messages, Scripts, Analytics and Settings for the creators they are linked to. In a chat they insert Scripts and attach media from the vault, limited to the folders the owner grants; a new chatter sees the whole vault until the owner picks folders.</li>
+  <li>Fan notes live in the fan insights rail in Messages Pro (<code>/messages-pro</code>).</li>
+  <li>There is no shift schedule yet: <code>/employees/shifts</code> is a NotBuiltYet stub.</li>
+</ul>
+<p>Moving from Infloww? See <a href="{{ '/switch-to-openinflowwww/' | url }}">Switch to Inflowwww</a>.</p>
+
+<h2 id="optional-settings">Optional settings</h2>
+<ul>
+  <li><code>ADMIN_PASSWORD</code>: optional. It is the only check on the admin actions (view as another user, transfer or delete a user, set another agency's AI keys), so anyone signed in who knows it can use them on any account. If you set it, use a long random value (<code>openssl rand -hex 32</code>) in <code>.env</code>, then run <code>docker compose up -d</code>. Without it those actions are refused with a 503.</li>
+  <li>LLM keys (<code>DEEPSEEK_API_KEY</code>, <code>DEEPINFRA_API_KEY</code>, <code>ZAI_API_KEY</code>): the dashboard works without them.</li>
+</ul>
+
+<h2 id="backups">Backups</h2>
+<p>
+  The state lives in files next to the compose file. The <code>service/</code> ones are bind-mounted into the relay;
+  <code>.env</code> is read by Compose:
+</p>
+<ul>
+  <li><code>service/chatterly.db</code>: the SQLite store.</li>
+  <li><code>service/sessions/</code>: the captured sessions.</li>
+  <li><code>service/proxies.json</code>: the proxy registry.</li>
+  <li><code>service/secrets/</code>: the server keys and the admin password.</li>
+  <li><code>.env</code>: the share token and the session secrets.</li>
+  <li>The vault image folders (<code>service/vault_thumbs/</code>, <code>vault_posters/</code>, <code>vault_images/</code>): once OnlyFans' signed URLs expire, those images can't be downloaded again.</li>
+</ul>
+<p>
+  The database runs in WAL mode inside the container, so do not just copy the file while the relay is running. Use
+  SQLite's backup API from inside the container. From the install folder:
+</p>
+<pre class="overflow-x-auto whitespace-pre"><code>mkdir -p backups
+docker exec openinflowwww-relay python -c "import sqlite3; d = sqlite3.connect('/tmp/chatterly-backup.db'); sqlite3.connect('/app/service/chatterly.db').backup(d); d.close()"
+docker cp openinflowwww-relay:/tmp/chatterly-backup.db backups/chatterly-$(date +%F).db
+sudo tar czf backups/state-$(date +%F).tgz service/sessions service/proxies.json service/secrets service/vault_thumbs service/vault_posters service/vault_images .env</code></pre>
+<p>
+  The relay runs as root and keeps the secrets file readable by root only, which is why <code>tar</code> needs
+  <code>sudo</code>. <code>chatterly.db</code> and <code>proxies.json</code> hold passwords in plain text, so encrypt
+  each archive before it leaves the server (with <code>age</code> or <code>gpg</code>) and keep the key somewhere
+  other than the backup.
+</p>
+<p>
+  To test a backup, restore it to a scratch copy. Stock Debian and Ubuntu images don't ship the <code>sqlite3</code>
+  command, so install it once with <code>sudo apt install sqlite3</code>.
+</p>
+<pre class="overflow-x-auto whitespace-pre"><code>mkdir -p restore-test
+cp backups/chatterly-2026-10-12.db restore-test/chatterly.db
+sqlite3 restore-test/chatterly.db "PRAGMA integrity_check;"   # prints: ok</code></pre>
+<p>A real restore means stopping the stack, putting the files back, and starting it again:</p>
+<pre class="overflow-x-auto whitespace-pre"><code>docker compose down
+cp backups/chatterly-2026-10-12.db service/chatterly.db
+sudo tar xzf backups/state-2026-10-12.tgz
+docker compose up -d</code></pre>
+<p>
+  <code>docker compose down</code> lets SQLite checkpoint and close cleanly. The compose file asks you to avoid
+  <code>docker kill</code> for the same reason.
+</p>
+
+<h2 id="updating">Updating</h2>
+<p>
+  Back up first: <code>service/chatterly.db</code>, <code>service/sessions/</code>, <code>service/proxies.json</code>,
+  <code>service/secrets/</code>, <code>.env</code> and the vault folders (<code>service/vault_thumbs/</code>,
+  <code>service/vault_posters/</code>, <code>service/vault_images/</code>). Copy the database with the
+  <a href="#backups">backup command above</a> (sqlite3's backup API), not <code>cp</code>, while it runs. Then, from the install folder:
+</p>
+<pre class="overflow-x-auto whitespace-pre"><code>git pull &amp;&amp; docker compose up -d --build</code></pre>
+<p>
+  Never re-paste the Quick start on a running install. From inside the install folder it clones a second copy into
+  <code>openinflowwww/openinflowwww</code> and restarts the containers on that copy's empty database and new
+  <code>.env</code>, so the dashboard comes back empty and everyone is signed out. Your data is still in the original
+  folder: <code>cd</code> back to it and run <code>docker compose up -d</code>.
+</p>
+
+<h2 id="docs">Docs in the repository</h2>
+<ul>
+  <li><a href="{{ site.repo }}/blob/main/README.md">README.md</a>: install, surfaces, layout, disclaimer.</li>
+  <li><a href="{{ site.repo }}/blob/main/docs/routes.md">docs/routes.md</a>: every screen, its route and whether it is built.</li>
+  <li><a href="{{ site.repo }}/blob/main/docs/platforms.md">docs/platforms.md</a>: web, phone and desktop.</li>
+</ul>
+
+<h2 id="stuck">Still stuck?</h2>
+<p>
+  Read the <a href="{{ '/#faq' | url }}">FAQ</a>, check your containers on the <a href="{{ '/status/' | url }}">status page</a>,
+  or <a href="{{ site.repo }}/issues/new">open an issue</a>. No SLA, no hold music, no desk.
+</p>

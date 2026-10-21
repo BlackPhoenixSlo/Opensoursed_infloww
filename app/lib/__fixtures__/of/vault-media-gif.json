@@ -1,0 +1,161 @@
+{
+  "list": [
+    {
+      "id": 5000037,
+      "type": "gif",
+      "convertedToVideo": true,
+      "canView": true,
+      "hasError": false,
+      "createdAt": "2026-05-03T16:32:36+00:00",
+      "isReady": true,
+      "counters": {
+        "likesCount": 0,
+        "tipsSumm": 0,
+        "buyersCount": 0
+      },
+      "files": {
+        "full": {
+          "url": "https://cdn2.onlyfans.com/files/b/b9/b9770d455ef9584ebb31f3f1d2c19b7d/0208_source.mp4",
+          "width": 480,
+          "height": 480,
+          "size": 0,
+          "sources": []
+        },
+        "thumb": {
+          "url": "https://cdn2.onlyfans.com/files/6/68/6807ce83c6e634e9673fac5100bda190/150x150_0209.jpg",
+          "width": 150,
+          "height": 150,
+          "size": 0
+        },
+        "preview": {
+          "url": "https://cdn2.onlyfans.com/files/3/3e/3e8456172792ec8d795dbf97bde2dfb3/480x480_0210.jpg",
+          "width": 480,
+          "height": 480,
+          "size": 0
+        },
+        "squarePreview": {
+          "url": "https://cdn2.onlyfans.com/files/c/c9/c9128a276bd92f4e936ee756f5c8aed1/960x960_0211.jpg",
+          "width": 960,
+          "height": 960,
+          "size": 0
+        }
+      },
+      "duration": 1,
+      "hasPosts": false,
+      "listStates": [
+        {
+          "id": 703,
+          "type": "posts",
+          "name": "Posts",
+          "hasMedia": false,
+          "canAddMedia": false
+        },
+        {
+          "id": 701,
+          "type": "stories",
+          "name": "Stories",
+          "hasMedia": false,
+          "canAddMedia": false
+        },
+        {
+          "id": 702,
+          "type": "messages",
+          "name": "Messages",
+          "hasMedia": true,
+          "canAddMedia": false
+        },
+        {
+          "id": 717,
+          "type": "streams",
+          "name": "Streams",
+          "hasMedia": false,
+          "canAddMedia": false
+        }
+      ],
+      "hasCustomPreview": false,
+      "videoSources": {
+        "720": null,
+        "240": null
+      }
+    },
+    {
+      "id": 5000038,
+      "type": "gif",
+      "convertedToVideo": true,
+      "canView": true,
+      "hasError": false,
+      "createdAt": "2026-05-03T15:57:42+00:00",
+      "isReady": true,
+      "counters": {
+        "likesCount": 0,
+        "tipsSumm": 0,
+        "buyersCount": 0
+      },
+      "files": {
+        "full": {
+          "url": "https://cdn2.onlyfans.com/files/a/a0/a03910be734c0fe040d95a5bbc878115/0212_source.mp4",
+          "width": 540,
+          "height": 540,
+          "size": 0,
+          "sources": []
+        },
+        "thumb": {
+          "url": "https://cdn2.onlyfans.com/files/f/f7/f7687ef66bcf3bc466d6da8351ae7d71/150x150_0213.jpg",
+          "width": 150,
+          "height": 150,
+          "size": 0
+        },
+        "preview": {
+          "url": "https://cdn2.onlyfans.com/files/4/4b/4bb6e2cf2e13c40691955737d6fcd1c1/540x540_0214.jpg",
+          "width": 540,
+          "height": 540,
+          "size": 0
+        },
+        "squarePreview": {
+          "url": "https://cdn2.onlyfans.com/files/e/ef/ef6f2908853934801d3664059d6150fb/960x960_0215.jpg",
+          "width": 960,
+          "height": 960,
+          "size": 0
+        }
+      },
+      "duration": 4,
+      "hasPosts": false,
+      "listStates": [
+        {
+          "id": 703,
+          "type": "posts",
+          "name": "Posts",
+          "hasMedia": false,
+          "canAddMedia": false
+        },
+        {
+          "id": 701,
+          "type": "stories",
+          "name": "Stories",
+          "hasMedia": false,
+          "canAddMedia": false
+        },
+        {
+          "id": 702,
+          "type": "messages",
+          "name": "Messages",
+          "hasMedia": true,
+          "canAddMedia": false
+        },
+        {
+          "id": 717,
+          "type": "streams",
+          "name": "Streams",
+          "hasMedia": false,
+          "canAddMedia": false
+        }
+      ],
+      "hasCustomPreview": false,
+      "videoSources": {
+        "720": null,
+        "240": null
+      }
+    }
+  ],
+  "hasMore": false
+}

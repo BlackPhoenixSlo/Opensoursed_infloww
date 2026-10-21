@@ -1,0 +1,5 @@
+{
+  "scripts": {
+    "build:site": "pnpm -C web build"
+  }
+}

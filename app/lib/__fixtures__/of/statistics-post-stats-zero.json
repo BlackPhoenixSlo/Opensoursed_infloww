@@ -1,0 +1,114 @@
+{
+  "isAvailable": true,
+  "hasStats": true,
+  "hasVideo": false,
+  "hasAudio": false,
+  "lookCount": 0,
+  "lookChart": [
+    {
+      "date": "2026-10-15T00:00:00+00:00",
+      "count": 0
+    },
+    {
+      "date": "2026-10-16T00:00:00+00:00",
+      "count": 0
+    },
+    {
+      "date": "2026-10-17T00:00:00+00:00",
+      "count": 0
+    }
+  ],
+  "uniqueLookCount": 0,
+  "uniqueLookChart": [
+    {
+      "date": "2026-10-15T00:00:00+00:00",
+      "count": 0
+    },
+    {
+      "date": "2026-10-16T00:00:00+00:00",
+      "count": 0
+    },
+    {
+      "date": "2026-10-17T00:00:00+00:00",
+      "count": 0
+    }
+  ],
+  "lookDuration": 0,
+  "lookDurationAverage": 0,
+  "likeCount": 0,
+  "likeChart": [
+    {
+      "date": "2026-10-15T00:00:00+00:00",
+      "count": 0
+    },
+    {
+      "date": "2026-10-16T00:00:00+00:00",
+      "count": 0
+    },
+    {
+      "date": "2026-10-17T00:00:00+00:00",
+      "count": 0
+    }
+  ],
+  "commentCount": 0,
+  "commentChart": [
+    {
+      "date": "2026-10-15T00:00:00+00:00",
+      "count": 0
+    },
+    {
+      "date": "2026-10-16T00:00:00+00:00",
+      "count": 0
+    },
+    {
+      "date": "2026-10-17T00:00:00+00:00",
+      "count": 0
+    }
+  ],
+  "tipCount": 0,
+  "tipChart": [
+    {
+      "date": "2026-10-15T00:00:00+00:00",
+      "count": 0
+    },
+    {
+      "date": "2026-10-16T00:00:00+00:00",
+      "count": 0
+    },
+    {
+      "date": "2026-10-17T00:00:00+00:00",
+      "count": 0
+    }
+  ],
+  "tipSum": 0,
+  "tipSumChart": [
+    {
+      "date": "2026-10-15T00:00:00+00:00",
+      "count": 0
+    },
+    {
+      "date": "2026-10-16T00:00:00+00:00",
+      "count": 0
+    },
+    {
+      "date": "2026-10-17T00:00:00+00:00",
+      "count": 0
+    }
+  ],
+  "purchasedCount": 0,
+  "purchasedSumm": 0,
+  "purchasesChart": [
+    {
+      "date": "2026-10-15T00:00:00+00:00",
+      "count": 0
+    },
+    {
+      "date": "2026-10-16T00:00:00+00:00",
+      "count": 0
+    },
+    {
+      "date": "2026-10-17T00:00:00+00:00",
+      "count": 0
+    }
+  ]
+}

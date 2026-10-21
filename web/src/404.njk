@@ -1,0 +1,32 @@
+---
+layout: base.njk
+title: "Page not found"
+description: "This page is NotBuiltYet. Inflowwww is free and open source, so you could build it."
+permalink: 404.html
+eleventyExcludeFromCollections: true
+---
+<section class="wrap py-24 text-center sm:py-32">
+  <p class="eyebrow">404</p>
+  <h1 class="h-page mx-auto mt-4 max-w-2xl">This page is NotBuiltYet</h1>
+  <p class="lede mx-auto">
+    It isn't here. Check the address, or try one of these. If a link on this site sent you here,
+    <a class="text-link" href="{{ site.repo }}/issues/new">open an issue</a> and we'll fix it.
+  </p>
+  <div class="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
+    <a class="btn-primary w-full sm:w-auto" href="{{ '/' | url }}">Back to the home page</a>
+    <a class="btn-secondary w-full sm:w-auto" href="{{ '/help/' | url }}">Help center</a>
+  </div>
+  <nav aria-label="Popular pages" class="mt-10">
+    <ul class="flex flex-wrap justify-center gap-2 text-sm">
+      {%- for item in [
+        { label: "Pricing", href: "/pricing/" },
+        { label: "Download", href: "/download/" },
+        { label: "Roadmap", href: "/roadmap/" },
+        { label: "Blog", href: "/blog/" },
+        { label: "Case studies", href: "/case-studies/" }
+      ] %}
+      <li><a class="inline-flex min-h-11 items-center rounded-full bg-white px-4 text-ink ring-1 ring-black/10 hover:bg-cream" href="{{ item.href | url }}">{{ item.label }}</a></li>
+      {%- endfor %}
+    </ul>
+  </nav>
+</section>

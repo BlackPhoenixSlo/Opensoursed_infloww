@@ -1,0 +1,225 @@
+{
+  "withUser": {
+    "view": "m",
+    "avatar": "https://public.onlyfans.com/files/7/7d/7d4e31d02bc7fdd4bcb3fe1753171929/synthetic.jpg",
+    "avatarThumbs": {
+      "c50": "https://thumbs.onlyfans.com/files/a/a2/a28d9c27e0c6b895efba28105bf77ffd/synthetic.jpg",
+      "c144": "https://thumbs.onlyfans.com/files/c/c0/c02366d97b0aa4ef217d7e7521bcffe9/synthetic.jpg"
+    },
+    "header": "https://public.onlyfans.com/files/9/97/97fb7fc78e5b873dead5449ba13bc469/synthetic.jpg",
+    "headerSize": {
+      "width": 4347,
+      "height": 2800
+    },
+    "headerThumbs": {
+      "w480": "https://thumbs.onlyfans.com/files/d/dc/dcfb6f1cf7a95008f65db08ab9be6dcf/synthetic.jpg",
+      "w760": "https://thumbs.onlyfans.com/files/a/ac/accd21b4bb3f48cd7c6abec6678420d9/synthetic.jpg"
+    },
+    "id": 2006,
+    "name": "Synth User 30",
+    "username": "synthuser17",
+    "canLookStory": true,
+    "canCommentStory": true,
+    "hasNotViewedStory": false,
+    "isVerified": true,
+    "canPayInternal": true,
+    "hasScheduledStream": false,
+    "hasStream": false,
+    "hasStories": false,
+    "tipsEnabled": true,
+    "tipsTextEnabled": true,
+    "tipsMin": 5,
+    "tipsMinInternal": 1,
+    "tipsMax": 200,
+    "canEarn": true,
+    "canAddSubscriber": false,
+    "subscribePrice": 0,
+    "displayName": "Synth Rename 31",
+    "isPaywallRequired": true,
+    "isActive": true,
+    "isRestricted": false,
+    "canRestrict": true,
+    "subscribedBy": true,
+    "subscribedByExpire": false,
+    "subscribedByExpireDate": "2036-05-06T20:43:40+00:00",
+    "subscribedByAutoprolong": true,
+    "subscribedIsExpiredNow": false,
+    "currentSubscribePrice": 0,
+    "subscribedOn": false,
+    "subscribedOnExpire": null,
+    "subscribedOnExpiredNow": null,
+    "subscribedOnDuration": null,
+    "listsStates": [
+      {
+        "id": "tagged",
+        "type": "tagged",
+        "name": "Tagged",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "recent",
+        "type": "recent",
+        "name": "Recent (last 24 hours)",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": "SYSTEM_LIST"
+      },
+      {
+        "id": "purchased",
+        "type": "purchased",
+        "name": "Purchased",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "muted",
+        "type": "muted",
+        "name": "Muted",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "friends",
+        "type": "friends",
+        "name": "Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "following",
+        "type": "following",
+        "name": "Following",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "fans",
+        "type": "fans",
+        "name": "Fans",
+        "hasUser": false,
+        "canAddUser": false,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "1320999428",
+        "type": "custom",
+        "name": "Synth list 1",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      },
+      {
+        "id": "755017382",
+        "type": "close_friends",
+        "name": "Close Friends",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "755017319",
+        "type": "bookmarks",
+        "name": "Bookmarks",
+        "hasUser": false,
+        "canAddUser": true,
+        "cannotAddUserReason": null
+      },
+      {
+        "id": "1290765913",
+        "type": "custom",
+        "name": "Synth list 2",
+        "hasUser": true,
+        "canAddUser": false,
+        "cannotAddUserReason": "ALREADY_EXISTS"
+      }
+    ],
+    "lastSeen": "2026-10-17T11:47:56+00:00",
+    "canReport": true,
+    "isPerformer": true,
+    "isRealPerformer": true,
+    "isAdultContent": false,
+    "canTrialSend": false,
+    "allowIncomingCalls": false,
+    "isFriend": false,
+    "isBlocked": false,
+    "isPendingAutoprolong": false
+  },
+  "canNotSendReason": null,
+  "canSendMessage": true,
+  "canGoToProfile": true,
+  "unreadMessagesCount": 0,
+  "hasUnreadTips": false,
+  "isMutedNotifications": false,
+  "lastMessage": {
+    "id": 11706310608197,
+    "isOpened": false,
+    "createdAt": "2026-10-17T10:06:08+00:00",
+    "text": "<p>Synthetic message 6</p>",
+    "giphyId": null,
+    "lockedText": false,
+    "isFree": true,
+    "mediaCount": 0,
+    "isTip": false,
+    "fromUser": {
+      "view": "i",
+      "avatar": "https://public.onlyfans.com/files/7/7d/7d4e31d02bc7fdd4bcb3fe1753171929/synthetic.jpg",
+      "avatarThumbs": {
+        "c50": "https://thumbs.onlyfans.com/files/a/a2/a28d9c27e0c6b895efba28105bf77ffd/synthetic.jpg",
+        "c144": "https://thumbs.onlyfans.com/files/c/c0/c02366d97b0aa4ef217d7e7521bcffe9/synthetic.jpg"
+      },
+      "header": "https://public.onlyfans.com/files/9/97/97fb7fc78e5b873dead5449ba13bc469/synthetic.jpg",
+      "headerSize": {
+        "width": 4347,
+        "height": 2800
+      },
+      "headerThumbs": {
+        "w480": "https://thumbs.onlyfans.com/files/d/dc/dcfb6f1cf7a95008f65db08ab9be6dcf/synthetic.jpg",
+        "w760": "https://thumbs.onlyfans.com/files/a/ac/accd21b4bb3f48cd7c6abec6678420d9/synthetic.jpg"
+      },
+      "id": 2006,
+      "name": "Synth User 30",
+      "username": "synthuser17",
+      "canLookStory": true,
+      "canCommentStory": true,
+      "hasNotViewedStory": false,
+      "isVerified": true,
+      "canPayInternal": true,
+      "hasScheduledStream": false,
+      "hasStream": false,
+      "hasStories": false,
+      "tipsEnabled": true,
+      "tipsTextEnabled": true,
+      "tipsMin": 5,
+      "tipsMinInternal": 1,
+      "tipsMax": 200,
+      "canEarn": true,
+      "canAddSubscriber": false,
+      "subscribePrice": 0,
+      "displayName": "Synth Rename 31",
+      "isPaywallRequired": true,
+      "isActive": true,
+      "isRestricted": false,
+      "canRestrict": true,
+      "subscribedBy": true,
+      "subscribedByExpire": false,
+      "subscribedByExpireDate": "2036-05-06T20:43:40+00:00",
+      "subscribedByAutoprolong": true,
+      "subscribedIsExpiredNow": false,
+      "currentSubscribePrice": 0,
+      "subscribedOn": false,
+      "subscribedOnExpire": null,
+      "subscribedOnExpiredNow": null,
+      "subscribedOnDuration": null
+    }
+  },
+  "lastReadMessageId": 11706310608197,
+  "hasPurchasedFeed": false,
+  "countPinnedMessages": 0,
+  "isCallReady": false
+}

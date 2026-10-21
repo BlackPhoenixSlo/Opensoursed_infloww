@@ -1,0 +1,74 @@
+[
+  {
+    "code": "you_and_your_posts",
+    "title": "Related to you and your posts",
+    "items": [
+      {
+        "code": "new_likes_digest",
+        "title": "New Likes Summary",
+        "isEnabled": false,
+        "value": 0
+      },
+      {
+        "code": "fund_raising_goal_reached",
+        "title": "Campaign goal reached",
+        "isEnabled": false,
+        "value": 0
+      },
+      {
+        "code": "new_tips_fund_raising",
+        "title": "New Campaign Contribution",
+        "isEnabled": true,
+        "value": 1
+      },
+      {
+        "code": "new_referal",
+        "title": "New Referral",
+        "isEnabled": true,
+        "value": 1
+      },
+      {
+        "code": "new_subscriber",
+        "title": "New Subscriber",
+        "isEnabled": true,
+        "value": 1
+      },
+      {
+        "code": "new_subscriber_trial",
+        "title": "New subscription from trial",
+        "isEnabled": true,
+        "value": 1
+      },
+      {
+        "code": "new_tips",
+        "title": "New Tip",
+        "isEnabled": true,
+        "value": 1
+      },
+      {
+        "code": "autoprolong",
+        "title": "Renewal",
+        "isEnabled": true,
+        "value": 1
+      },
+      {
+        "code": "returning_subscriber",
+        "title": "Returning Subscriber",
+        "isEnabled": true,
+        "value": 1
+      }
+    ]
+  },
+  {
+    "code": "subscriptions",
+    "title": "Subscriptions and following",
+    "items": [
+      {
+        "code": "reminder_stream",
+        "title": "Upcoming stream reminders",
+        "isEnabled": false,
+        "value": 0
+      }
+    ]
+  }
+]

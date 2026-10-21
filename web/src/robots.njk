@@ -1,0 +1,9 @@
+---
+permalink: robots.txt
+eleventyExcludeFromCollections: true
+---
+{#- Crawlers only read /robots.txt at the host root, so under a project PATH_PREFIX this file is inert. -#}
+User-agent: *
+Allow: /
+
+Sitemap: {{ site.url }}/sitemap.xml

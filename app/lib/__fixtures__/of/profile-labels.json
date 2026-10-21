@@ -1,0 +1,85 @@
+{
+  "list": [
+    {
+      "id": "archived",
+      "name": "Archive",
+      "type": "archived",
+      "isClearInProgress": false,
+      "postsCount": 1,
+      "posts": [
+        {
+          "type": "photo",
+          "canViewMedia": true,
+          "postId": "80256026",
+          "url": "https://cdn2.onlyfans.com/files/4/47/47bdc6f468b741063e80b7797790ed65/0126.jpg"
+        }
+      ]
+    },
+    {
+      "id": "private_archived",
+      "name": "Private Archive",
+      "type": "private_archived",
+      "isClearInProgress": false,
+      "postsCount": 0,
+      "posts": []
+    },
+    {
+      "id": 8717758,
+      "name": "Label 2",
+      "type": "custom",
+      "isClearInProgress": false,
+      "postsCount": 3,
+      "posts": [
+        {
+          "type": "text",
+          "canViewMedia": true,
+          "postId": "2488345744"
+        },
+        {
+          "type": "photo",
+          "canViewMedia": true,
+          "postId": "1510069347",
+          "url": "https://cdn2.onlyfans.com/files/2/26/2615222b491c2f652252a3ddf1bc16cb/0127.jpg"
+        },
+        {
+          "type": "photo",
+          "canViewMedia": true,
+          "postId": "1492094775",
+          "url": "https://cdn2.onlyfans.com/files/e/e6/e6b1d611c78dab7788b7befded015ae0/0128.jpg"
+        }
+      ]
+    },
+    {
+      "id": 8717761,
+      "name": "Label 3",
+      "type": "custom",
+      "isClearInProgress": false,
+      "postsCount": 5,
+      "posts": [
+        {
+          "type": "photo",
+          "canViewMedia": true,
+          "postId": "1562655488",
+          "url": "https://cdn2.onlyfans.com/files/5/58/58b97abcaf4a230bd0cc91a460e4c0be/0129.jpg"
+        },
+        {
+          "type": "photo",
+          "canViewMedia": true,
+          "postId": "1508816686",
+          "url": "https://cdn2.onlyfans.com/files/8/85/85bae1154a88d6e48a323023d297f5fc/0130.jpg"
+        },
+        {
+          "type": "photo",
+          "canViewMedia": true,
+          "postId": "1510067222",
+          "url": "https://cdn2.onlyfans.com/files/9/9b/9b670c961204f64db5be0d16d6696805/0131.jpg"
+        }
+      ]
+    }
+  ],
+  "order": "asc",
+  "sort": "default",
+  "hasMore": false,
+  "nextOffset": 20,
+  "hashSort": "e755705c7c507288d6c4d03a5fe1a6ed"
+}

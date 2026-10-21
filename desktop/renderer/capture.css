@@ -1,0 +1,22 @@
+/* Add OnlyFans Account dialog. A file, not a <style> block: the page's CSP
+   (style-src 'self') blocks inline styles. */
+body { align-items: flex-start; height: auto; min-height: 100vh; }
+.card { max-width: 420px; margin: 0 auto; }
+.steps { list-style: none; margin: 14px 0 10px; padding: 0; }
+.step { display: flex; align-items: flex-start; gap: 10px; padding: 9px 8px; font-size: 14px; line-height: 1.4; border-radius: 8px; color: var(--muted); }
+.step strong { display: block; font-weight: 600; }
+.step .detail { display: none; font-size: 12px; margin-top: 2px; color: var(--muted); }
+.dot { width: 20px; height: 20px; margin-top: 1px; border-radius: 50%; border: 2px solid var(--border); flex: none; display: flex; align-items: center; justify-content: center; font-size: 11px; }
+.step.done { color: var(--text); }
+.step.done .dot { background: #2ea043; border-color: #2ea043; color: #fff; }
+.step.current { color: var(--text); background: #1b1b26; }
+.step.current .dot { border-color: var(--accent); }
+.step.current .detail { display: block; }
+.step.current.blocked .dot { border-color: var(--danger); }
+.banner { font-size: 13px; color: var(--muted); background: #0e0e14; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; line-height: 1.5; }
+.banner.ok { color: #2ea043; border-color: rgba(46, 160, 67, 0.4); }
+.banner.err { color: var(--danger); border-color: rgba(255, 92, 122, 0.4); }
+.tech { margin-top: 12px; font-size: 12px; color: var(--muted); }
+.tech summary { cursor: pointer; }
+.tech .mono { margin-top: 6px; white-space: pre-wrap; font-size: 11px; -webkit-user-select: text; user-select: text; }
+button:disabled { opacity: 0.5; cursor: default; }

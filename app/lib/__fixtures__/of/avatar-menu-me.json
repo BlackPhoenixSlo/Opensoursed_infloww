@@ -1,0 +1,24 @@
+{
+  "id": 1001,
+  "name": "Synth Model",
+  "username": "synthmodel",
+  "avatar": "https://public.onlyfans.com/files/6/6b/6b51d098dd84bbe3d15667b9844e1753/avatar.jpg",
+  "avatarThumbs": {
+    "c50": "https://thumbs.onlyfans.com/files/7/73/738f88ee667dec4e0f14528dd0c84dd5/avatar.jpg",
+    "c144": "https://thumbs.onlyfans.com/files/3/31/31c15f60d89ce4481664528e78d7581e/avatar.jpg"
+  },
+  "isVerified": true,
+  "isVisibleOnline": true,
+  "subscribersCount": 70,
+  "subscribesCount": 117,
+  "notificationsCount": 182,
+  "chatMessagesCount": 0,
+  "isPerformer": true,
+  "canEarn": true,
+  "canReceiveManualPayout": true,
+  "isPaymentCardConnected": false,
+  "isCreditsEnabled": true,
+  "creditBalance": 0,
+  "canConnectOfAccount": true,
+  "connectedOfAccounts": []
+}

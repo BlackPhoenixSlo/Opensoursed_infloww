@@ -1,0 +1,23 @@
+{
+  "isAvailable": true,
+  "hasStats": true,
+  "hasVideo": false,
+  "hasAudio": false,
+  "lookCount": 9,
+  "lookChart": [{"date": "2026-10-15T00:00:00+00:00", "count": 4}, {"date": "2026-10-16T00:00:00+00:00", "count": 3}, {"date": "2026-10-17T00:00:00+00:00", "count": 2}],
+  "uniqueLookCount": 6,
+  "uniqueLookChart": [{"date": "2026-10-15T00:00:00+00:00", "count": 3}, {"date": "2026-10-16T00:00:00+00:00", "count": 2}, {"date": "2026-10-17T00:00:00+00:00", "count": 1}],
+  "lookDuration": 312,
+  "lookDurationAverage": 34,
+  "likeCount": 3,
+  "likeChart": [{"date": "2026-10-15T00:00:00+00:00", "count": 1}, {"date": "2026-10-16T00:00:00+00:00", "count": 2}, {"date": "2026-10-17T00:00:00+00:00", "count": 0}],
+  "commentCount": 1,
+  "commentChart": [{"date": "2026-10-15T00:00:00+00:00", "count": 0}, {"date": "2026-10-16T00:00:00+00:00", "count": 1}, {"date": "2026-10-17T00:00:00+00:00", "count": 0}],
+  "tipCount": 2,
+  "tipChart": [{"date": "2026-10-15T00:00:00+00:00", "count": 0}, {"date": "2026-10-16T00:00:00+00:00", "count": 1}, {"date": "2026-10-17T00:00:00+00:00", "count": 1}],
+  "tipSum": 7.5,
+  "tipSumChart": [{"date": "2026-10-15T00:00:00+00:00", "count": 0}, {"date": "2026-10-16T00:00:00+00:00", "count": 5}, {"date": "2026-10-17T00:00:00+00:00", "count": 2.5}],
+  "purchasedCount": 2,
+  "purchasedSumm": 12,
+  "purchasesChart": [{"date": "2026-10-15T00:00:00+00:00", "count": 1}, {"date": "2026-10-16T00:00:00+00:00", "count": 1}, {"date": "2026-10-17T00:00:00+00:00", "count": 0}]
+}

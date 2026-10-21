@@ -1,0 +1,65 @@
+{
+  "id": 1001,
+  "name": "Synth Model",
+  "username": "synthmodel",
+  "avatar": "https://public.onlyfans.com/files/6/6b/6b51d098dd84bbe3d15667b9844e1753/avatar.jpg",
+  "avatarThumbs": {
+    "c50": "https://thumbs.onlyfans.com/files/7/73/738f88ee667dec4e0f14528dd0c84dd5/avatar.jpg",
+    "c144": "https://thumbs.onlyfans.com/files/3/31/31c15f60d89ce4481664528e78d7581e/avatar.jpg"
+  },
+  "header": "https://public.onlyfans.com/files/e/ef/ef0982430e6da43fff8a70224bc9e7bb/header.jpg",
+  "headerSize": {
+    "width": 1280,
+    "height": 720
+  },
+  "headerThumbs": {
+    "w480": "https://thumbs.onlyfans.com/files/9/92/92b05c736c12a4935acbeaadb960c365/header.jpg",
+    "w760": "https://thumbs.onlyfans.com/files/4/4c/4c330e724aee6e027598e84efd2ea07c/header.jpg"
+  },
+  "about": "<p>Synthetic bio line one.<br /><br />Synthetic bio line two.</p>",
+  "isMarkdownDisabledForAbout": true,
+  "location": "Synthland",
+  "website": null,
+  "wishlist": null,
+  "joinDate": "2020-11-24T00:00:00+00:00",
+  "isVerified": true,
+  "hasStories": true,
+  "subscribePrice": 0,
+  "subscriptionBundles": [
+    {
+      "id": 10906997,
+      "discount": 15,
+      "duration": 3,
+      "price": 0,
+      "canBuy": false
+    },
+    {
+      "id": 10912282,
+      "discount": 40,
+      "duration": 6,
+      "price": 0,
+      "canBuy": false
+    }
+  ],
+  "postsCount": 573,
+  "archivedPostsCount": 1,
+  "privateArchivedPostsCount": 0,
+  "photosCount": 460,
+  "videosCount": 106,
+  "audiosCount": 0,
+  "mediasCount": 566,
+  "favoritesCount": 76,
+  "favoritedCount": 46,
+  "subscribersCount": 70,
+  "showSubscribersCount": false,
+  "showMediaCount": true,
+  "subscribesCount": 117,
+  "hasLabels": true,
+  "pinnedPostsCount": 0,
+  "canCreatePromotion": false,
+  "canCreateTrial": false,
+  "finishedStreamsCount": 8,
+  "lastSeen": "2026-10-17T10:54:38+00:00",
+  "isVisibleOnline": true,
+  "hasPinnedPosts": false
+}

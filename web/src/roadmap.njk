@@ -1,0 +1,91 @@
+---
+layout: base.njk
+title: "Product roadmap"
+description: "What Inflowwww has shipped and what is planned, taken from the repository's route list. Planned items have no dates."
+---
+{#- Answers infloww.com/product-roadmap. Same frame as page.njk, but full width so the status board gets three
+    columns: Shipped (Built), Planned (Partly built: the page exists, the feature does not), Known gaps (Not built). -#}
+<article class="wrap pt-16 pb-8 sm:pt-24">
+  <h1 class="h-page max-w-3xl">{{ title }}</h1>
+  <p class="lede">{{ description }}</p>
+  <div class="prose mt-10">
+    <h2>Scope</h2>
+    <p>
+      The screens an agency CRM needs (inbox, reports, growth tools, team management) on web, phone and desktop,
+      plus one section of our own, My Automations, with two automations in it: Auto Post and Auto Story. The README
+      notes that some screens exist only in an older UI the relay still serves, not yet in the main app.
+    </p>
+  </div>
+  <div class="mt-10 grid grid-cols-1 items-start gap-5 lg:grid-cols-3">
+    <section aria-labelledby="shipped" class="rounded-2xl bg-white p-6 ring-1 ring-black/10">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h2 id="shipped" class="text-xl font-semibold tracking-tight text-ink">Shipped</h2>
+        <span class="status-chip" data-status="Built">Built</span>
+      </div>
+      <div class="prose mt-4 text-base">
+      <ul class="list-none space-y-0 divide-y divide-line pl-0">
+        <li class="py-3"><strong>Dashboard</strong></li>
+        <li class="py-3"><strong>Messages Pro:</strong> chat list, thread, fan insights, pop-out chat windows</li>
+        <li class="py-3"><strong>Analytics:</strong> Creator reports, Employee reports, Fan reports, Message dashboard</li>
+        <li class="py-3"><strong>Growth:</strong> Smart Messages, Smart lists, Auto-follow, Profile promotion, Free trial links, Tracking links, Vault Pro, Scripts</li>
+        <li class="py-3"><strong>My Automations:</strong> Auto Post, Auto Story</li>
+        <li class="py-3"><strong>Creators:</strong> Manage creators, Custom proxy</li>
+        <li class="py-3"><strong>Employees:</strong> Manage employees</li>
+        <li class="py-3"><strong>Surfaces:</strong> the responsive web app for phones, and the Electron desktop shell (see <a href="{{ '/download/' | url }}">Download</a>)</li>
+      </ul>
+      </div>
+    </section>
+    <section aria-labelledby="planned" class="rounded-2xl bg-white p-6 ring-1 ring-black/10">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h2 id="planned" class="text-xl font-semibold tracking-tight text-ink">Planned</h2>
+        <span class="status-chip" data-status="Partly built">Partly built</span>
+      </div>
+      <div class="prose mt-4 text-base">
+      <p>
+        These pages exist in the app and show a NotBuiltYet empty state: the page is real, the feature is not.
+      </p>
+      <ul class="list-none space-y-0 divide-y divide-line pl-0">
+        <li class="py-3"><strong>OF Manager:</strong> Home, New post, Notifications, Messages Basic, Vault, Queue, Collections, Statements, Statistics, Bank, My profile, OF settings</li>
+        <li class="py-3"><strong>Share for Share:</strong> Discover creators, Requests, S4S schedule</li>
+        <li class="py-3"><strong>Employees:</strong> Shift schedule</li>
+        <li class="py-3"><strong>Settings:</strong> the tabs from Your Account to About Inflowwww</li>
+        <li class="py-3"><strong>Help center</strong> inside the app (this site has <a href="{{ '/help/' | url }}">one</a>)</li>
+      </ul>
+      <p>
+        To pick one up, check the <a href="{{ site.repo }}/blob/main/docs/routes.md">route list</a> and open a pull request.
+        To ask for something new, <a href="{{ site.repo }}/issues/new">open an issue</a>.
+      </p>
+      </div>
+    </section>
+    <section aria-labelledby="known-gaps" class="rounded-2xl bg-white p-6 ring-1 ring-black/10">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h2 id="known-gaps" class="text-xl font-semibold tracking-tight text-ink">Known gaps</h2>
+        <span class="status-chip" data-status="Not built">Not built</span>
+      </div>
+      <div class="prose mt-4 text-base">
+      <p>
+        Security work the code still needs; the <a href="{{ '/help/#security' | url }}">security notes</a> describe the
+        same six. Until they are fixed, run it only on a private network or over a VPN (WireGuard or Tailscale).
+      </p>
+      <ul class="list-none space-y-0 divide-y divide-line pl-0">
+        <li class="py-3"><strong>Closing sign-up (Not built, known gap):</strong> sign-up has no setting and needs no share token; anyone who can reach the server can register at <code>/login</code>.</li>
+        <li class="py-3"><strong>Hiding the roster (Not built, known gap):</strong> any registered account can list every user and every creator account on the server.</li>
+        <li class="py-3"><strong>Hashed passwords (Not built, known gap):</strong> the owner's and chatters' dashboard passwords are stored in plain text in <code>service/chatterly.db</code>. Creators' OnlyFans passwords never reach the server.</li>
+        <li class="py-3"><strong>A login for the lanes panel (Not built, known gap):</strong> the lanes panel (the relay's rate-limit page at <code>/lanes-panel</code>) can change the limits and restart the relay with no login or share token.</li>
+        <li class="py-3"><strong>A role check on admin actions (Not built, known gap):</strong> <code>ADMIN_PASSWORD</code> alone unlocks "view as another user", transfer and delete for any signed-in account that knows it.</li>
+        <li class="py-3"><strong>Login rate limits (Not built, known gap):</strong> logins and admin-password checks have no rate limit.</li>
+      </ul>
+      </div>
+    </section>
+  </div>
+  <div class="prose mt-12">
+    <h2>Not on the roadmap</h2>
+    <p>
+      <strong>AI:</strong> No AI Copilot. A legacy AI chatter and in-chat AI strip sit behind
+      <code>OPENINFLOWW_LEGACY_AUTOMATIONS=1</code>, off by default and unsupported. It is a setting on the app
+      container: uncomment it under <code>openinflowwww-app</code> in <code>docker-compose.yml</code>, or set it in a
+      <code>docker-compose.override.yml</code>, then run <code>docker compose up -d</code>. Without the flag the old
+      routes return 404 in the app.
+    </p>
+  </div>
+</article>

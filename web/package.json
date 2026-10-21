@@ -1,0 +1,16 @@
+{
+  "name": "openinflowwww-site",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tailwindcss -i src/main.css -o dist/assets/main.css --watch=always & eleventy --serve --port=8080",
+    "build": "tailwindcss -i src/main.css -o dist/assets/main.css --minify && eleventy",
+    "preview": "python3 -m http.server 4173 --bind 127.0.0.1 --directory dist"
+  },
+  "devDependencies": {
+    "@11ty/eleventy": "^3.1.6",
+    "@tailwindcss/cli": "^4.3.3",
+    "tailwindcss": "^4.3.3"
+  }
+}

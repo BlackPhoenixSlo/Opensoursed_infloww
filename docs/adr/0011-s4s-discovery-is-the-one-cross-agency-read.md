@@ -1,0 +1,11 @@
+# S4S Discovery is the one deliberate cross-agency read inside a Deployment
+
+Agency isolation holds everywhere: the Relay answers 403 for any Creator outside the caller's Agency (`assert_account_owned` in `service/auth.py`, `_account_isolation_middleware` in `service/server.py`). Share for Share needs an Agency to find Creators it does not own, and the roadmap binds that search to "creator and agency records in the same shared database/deployment … never a global/public directory". We decided that exactly one read crosses Agency isolation, Discovery, and that it returns only the S4S projection of Creators whose S4S profile is opted in (off by default) and visible: display name, @username, avatar URL, the Primary post's caption and media (ids and kinds, with a still of each item while the Creator stays listed, ADR-0015), Daily limit and opt-in state, and never fan data, earnings, proxy, notes or credentials. Every other S4S route, read or write, is checked with `assert_account_owned` on the caller's own Creator, and an S4S slot is always posted by the caller's own Creator on its own OnlyFans account, so no Agency ever operates another Agency's account. The reason is that S4S has no value without seeing other Agencies, while a single named, allow-listed read keeps the exception small enough to test with cross-agency negative cases. The hard-to-reverse part is consent: once Agencies opt in and see each other's projections, narrowing the field list or withdrawing Discovery takes back something already shown.
+
+ASSUMPTION: the projection's field list is the plan's Phase 3 list, which the plan flags for the owner's confirmation; overturned by the owner's own list, which changes only this ADR's field list, not the one-read rule.
+
+## Considered Options
+
+- **No cross-agency read; S4S only between an Agency's own Creators.** Rejected: the roadmap requires Discovery across "any agency in this same database/deployment, including the user's own agency".
+- **Loosen the isolation middleware for S4S routes in general.** Rejected: every S4S route would then need its own field filtering, and one missed filter leaks another Agency's data.
+- **A directory shared across Deployments.** Rejected by the roadmap's "never search across separate deployments".

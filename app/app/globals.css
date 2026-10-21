@@ -1,0 +1,351 @@
+/* Tailwind 4 — single `@import "tailwindcss"` brings the whole framework.
+ * Theme tokens go inside @theme { ... } per the v4 convention; consumed
+ * via the `text-fg`, `bg-bg-elev`, etc. utilities Tailwind generates.
+ *
+ * Palette matches the existing /ui/ relay UI so the new app feels like
+ * a continuation, not a fork. The dark theme is the default (the @theme
+ * block); a light variant is layered on via `[data-theme="light"]` and
+ * picked by TopNav's theme toggle (stored in localStorage). */
+
+@import "tailwindcss";
+
+@theme {
+  /* Dark palette = the real Infloww desktop app's tokens (REA extraction,
+   * docs/infloww-of-manager-rea.md §3; Infloww names in brackets). */
+
+  /* Surfaces */
+  --color-chrome:    #000000;  /* title bar, icon rail, banner [element-reverse-emphasis-00] */
+  --color-bg:        #151515;  /* page header + content [tc-B-nav / tc-Home-B1] */
+  --color-bg-elev-1: #262626;  /* creator column, cards on the page [tc-B1] */
+  --color-bg-elev-2: #353535;  /* hover / raised [tc-B-model-hover] */
+  --color-panel:     #171717;  /* panels, menus, modals [surface-level-01-opaque-00] */
+  --color-selected:  #384360;  /* selected row [tc-B-model-active] */
+  --color-hb-bg:     #0d0d0d;  /* HB (new design system) page body, `bg-hb-bg` [surface-level-00-emphasis-opaque-00] */
+
+  /* Text */
+  --color-fg:        #d9d9d9;  /* [tc-T1] */
+  --color-fg-dim:    #b8b8b8;  /* [tc-T2] */
+  --color-muted:     #999999;  /* [tc-T3] */
+
+  /* Lines */
+  --color-border:       #444444;  /* [tc-L1] */
+  --color-border-light: #666666;  /* [tc-T4] */
+
+  /* Sidebar (HB menu, docs/infloww-sidebar-palette.md). The fills
+   * are washes over the chrome; light values below. */
+  --color-nav-fg:        rgb(255 255 255 / 62%);   /* idle item [element-emphasis-01] */
+  --color-nav-fg-active: #ffffff;                  /* selected item, platform name [element-emphasis-00] */
+  --color-nav-hover:     rgb(255 255 255 / 5.5%);  /* hover + selected fill [surface-level-02-emphasis-01] */
+  --color-nav-surface:   rgb(255 255 255 / 9%);    /* platform card, dividers, pop-out button [surface-level-02-emphasis-00] */
+
+  /* Accent — Infloww's primary blue [tc-M1]; the link blue and the orange
+   * call-to-action are separate roles. */
+  --color-accent:       #3467ff;
+  --color-accent-hover: #5a85ff;
+  --color-link:         #3364f3;
+  --color-cta:          #f88056;  /* [action-primary] */
+
+  /* Status */
+  --color-ok:    #58a744;  /* [signal-go] */
+  --color-warn:  #ffa15f;  /* [tc-W1] */
+  --color-err:   #ff7c71;  /* [tc-D1] */
+  --color-pink:  #fb609f;  /* [signal-stop] */
+  --color-info:  #05a2dc;  /* unread / "new" signals [signal-guide] */
+
+  /* Type — Infloww ships Suisse Int'l (licensed); Inter is the free stand-in,
+   * loaded by next/font in app/layout.tsx as --font-inter. */
+  --font-sans: var(--font-inter), "Inter", -apple-system, BlinkMacSystemFont,
+               "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  /* The app shell's horizontal bound — `max-w-shell`, worn by the top bar,
+   * the impersonation banner and every dashboard page so they line up on
+   * the same two edges. Was `max-w-7xl` (1280px), which on a laptop threw
+   * away a couple hundred pixels per side that dense tables (paid messages,
+   * the customs queue, the stats grid) had real use for. 1800px is a cap for
+   * ultrawides rather than a target: on anything up to it the page is
+   * effectively full-bleed and the only inset is the container's own
+   * padding, which is the point. Narrow reading surfaces — Settings, Setup,
+   * Home — deliberately keep their own tighter max widths. */
+  --container-shell: 1800px;
+}
+
+/* Infloww's Settings tokens (ADR-0009): read only by components under
+ * app/components/settings/. Values from the Ground-truth table of
+ * docs/plans/settings-tabs.md (Dashboard bundle, CSS module rxwf7) and the
+ * gap table of docs/spec/settings-tabs/phase-00-shell-tokens-blob.md.
+ * Geometry and type are theme-independent; the colour slots here are the
+ * dark palette measured on the live capture (ticket 20), and the measured light
+ * values override them under html[data-theme="light"] below. Not a Tailwind
+ * theme namespace, so a plain :root block. */
+:root {
+  /* geometry */
+  --if-header-h:      48px;
+  --if-tab-h:         64px;
+  --if-row-px:        16px;
+  --if-panel-pad:     24px;
+  --if-section-gap:   40px;
+  --if-field-gap:     30px;
+  --if-label-gap:     8px;
+  --if-input-w:       448px;
+  --if-input-radius:  8px;
+  --if-toggle-h:      72px;
+  --if-toggle-radius: 4px;
+
+  /* type */
+  --if-fs-lg:            16px;
+  --if-fs:               14px;
+  --if-fs-sm:            12px;
+  --if-fs-table:         13px;
+  --if-fw-title:         500;
+  --if-section-title-pb: 16px;
+
+  /* colours, dark: measured on the live Infloww 5.7.20 capture
+   * (.scratch/infloww-live/03-settings-time-tracking.png; the neutrals read as
+   * Infloww's --tc-* tokens). Where Infloww's Settings value equals a core
+   * token the slot aliases it, so a palette change lands in one place. */
+  --if-bg:             var(--color-bg);          /* [tc-B-nav] #151515 */
+  --if-list-bg:        var(--color-bg-elev-1);   /* [tc-B1] #262626 */
+  --if-fg-0:           #ffffff;                  /* [tc-T0] */
+  --if-fg:             #d9d9d9;                  /* [tc-T1] */
+  --if-fg-2:           #b8b8b8;                  /* [tc-T2] */
+  --if-fg-3:           #999999;                  /* [tc-T3] */
+  --if-accent:         var(--color-accent);      /* [tc-M1] */
+  --if-accent-bg:      var(--color-bg-elev-2);   /* [tc-M-B] #353535 */
+  --if-line:           #444444;                  /* [tc-L1] */
+  --if-danger:         var(--color-err);
+  --if-input-disabled: #262626;
+  --if-input-readonly: #1a1a1a;                  /* [tc-B-th] ._disabled-input_rxwf7_242 */
+  /* The 1cat4 filled card (Messaging): --surface-level-00-emphasis-00. The
+   * bordered rxwf7 card has no fill, so it does not read this slot. */
+  --if-card-bg:        rgba(255, 255, 255, 0.055);
+  --if-switch-off:     rgba(255, 255, 255, 0.25);
+  --if-switch-on:      #2d74ff;
+}
+
+/* Tell the UA which native widgets to render (scrollbars, default form
+ * fields, browser autofill). Without this, light mode still shows dark
+ * scrollbars + form text on macOS / iOS Safari. */
+:root { color-scheme: dark; }
+html[data-theme="light"] { color-scheme: light; }
+
+/* Light theme — same token names, Infloww's light values (the `default`
+ * entry of themeColorConfig and HB `.theme-light`, REA extraction,
+ * docs/infloww-sidebar-palette.md; Infloww names in brackets). Tailwind v4's `bg-bg`,
+ * `text-fg`, etc. compile to `var(--color-...)`, so overriding the
+ * variable at higher specificity swaps colors live; no utility
+ * regeneration needed.
+ *
+ * Why `html[data-theme="light"]` (specificity 0,1,1) instead of plain
+ * `[data-theme="light"]` (0,1,0): @theme emits to `:root` (0,1,0) and
+ * source order on equal specificity is fragile across Tailwind builds.
+ * Bumping the override one notch sidesteps any cascade surprises. */
+html[data-theme="light"] {
+  --color-bg:        #ffffff;  /* [tc-B-nav] */
+  --color-bg-elev-1: #f5f5f5;  /* [tc-B1] */
+  --color-bg-elev-2: #e4e4e4;  /* [tc-B-model-hover] */
+  --color-panel:     #ffffff;  /* [surface-level-01-emphasis-opaque-00] */
+  --color-hb-bg:     #f2f2f2;  /* [surface-level-00-emphasis-opaque-00] */
+
+  --color-fg:        #151515;  /* [tc-T1] */
+  --color-fg-dim:    #666666;  /* [tc-T2] */
+  --color-muted:     #999999;  /* [tc-T3] */
+
+  --color-border:       #e6e6e6;  /* [tc-L1] */
+  --color-border-light: #d9d9d9;  /* [tc-T4] */
+
+  --color-chrome:   #ffffff;  /* [element-reverse-emphasis-00] */
+  --color-selected: #d7e4ff;  /* [tc-B-model-active] */
+
+  --color-nav-fg:        rgb(0 0 0 / 62%);
+  --color-nav-fg-active: #000000;
+  --color-nav-hover:     rgb(0 0 0 / 5.5%);
+  --color-nav-surface:   rgb(0 0 0 / 9%);
+
+  --color-accent:       #3467ff;  /* [tc-M1] */
+  --color-accent-hover: #2a55e0;
+  --color-link:         #3364f3;
+  --color-cta:          #fe7d50;  /* [action-primary] */
+
+  --color-ok:    #52b03b;  /* [signal-go] */
+  --color-warn:  #ffa15f;  /* [tc-W1] */
+  --color-err:   #ff7c71;  /* [tc-D1] */
+  --color-pink:  #ff5c9e;  /* [signal-stop] */
+  --color-info:  #00a4e1;  /* [signal-guide] */
+
+  /* Infloww's Settings colours, light (`:root` --tc-*, see the --if-* block above). */
+  --if-bg:             #ffffff;
+  --if-list-bg:        #f5f5f5;
+  --if-fg-0:           #000000;
+  --if-fg:             #151515;
+  --if-fg-2:           #666666;
+  --if-fg-3:           #999999;
+  --if-accent-bg:      #eff4ff;
+  --if-line:           #e6e6e6;
+  --if-danger:         #ff7c71;
+  --if-input-disabled: #fafafa;
+  --if-input-readonly: #fafafa;
+  --if-card-bg:        rgba(0, 0, 0, 0.055);
+  --if-switch-off:     rgba(0, 0, 0, 0.25);
+  --if-switch-on:      #2d74ff;
+}
+
+/* The public site's dark sign-in look (web/src/main.css .auth-*: near-black
+ * page, white text, orange accent, system font stack) for the signed-out
+ * /login page (components/auth/Landing.tsx), which the site's /signup/ and
+ * /login/ hand off to. Scoped to that page's wrapper; the app shell keeps its
+ * theme. The :has() rule paints html/body while it is mounted, so overscroll
+ * never shows the app background behind it. */
+[data-look="site"] {
+  --color-bg:     #0c0c0c;
+  --color-fg:     #ffffff;
+  --color-fg-dim: rgba(255, 255, 255, 0.6);
+  --color-accent: #f88056;  /* Infloww's --element-action-primary-emphasis-00 */
+  color-scheme: dark;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+               Helvetica, Arial, sans-serif;
+}
+html:has([data-look="site"]),
+html:has([data-look="site"]) body {
+  background: #0c0c0c;
+  color-scheme: dark;
+}
+
+/* The help messenger (components/assistant/AssistantWidget.tsx) is always
+ * light, as Infloww's own Intercom messenger is, whatever the app's theme.
+ * Scoped like `data-look="site"`: the panel's token utilities (and
+ * AnswerText's, which it renders) pick these values up. */
+[data-look="messenger"] {
+  --color-bg:           #ffffff;
+  --color-bg-elev-1:    #f2f2f2;
+  --color-bg-elev-2:    #e4e4e4;
+  --color-panel:        #ffffff;
+  --color-fg:           #151515;
+  --color-fg-dim:       #666666;
+  --color-muted:        #999999;
+  --color-border:       #e6e6e6;
+  --color-border-light: #d9d9d9;
+  color-scheme: light;
+  /* Intercom's messenger sets the system stack, not the app's Inter. */
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+               Helvetica, Arial, sans-serif;
+}
+
+html, body {
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  /* Block iOS Safari's double-tap-to-zoom. Pinch-zoom is killed by the
+   * `gesturestart` listener in app/layout.tsx; this rule completes the
+   * picture. `manipulation` keeps panning + tap recognition; only the
+   * zoom gestures get suppressed. */
+  touch-action: manipulation;
+}
+
+/* Spinner used by the loading-state UI. Kept global because it's tiny
+ * and styled inline via animations the rest of the app doesn't need.  */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+/* Toast slide-in for NotificationToaster cards. */
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(-6px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0)    scale(1); }
+}
+.animate-toast-in { animation: toast-in 180ms ease-out both; }
+
+/* Skeleton shimmer — diagonal light bar sliding across a placeholder
+ * tile so the user sees motion while video storyboards are being
+ * extracted on the relay. Pairs with .scrub-shimmer below; the keyframe
+ * runs the gradient from off-left to off-right of the parent tile.    */
+@keyframes scrub-shimmer {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+.scrub-shimmer {
+  position: absolute; inset: 0; overflow: hidden;
+  background-color: var(--color-bg-elev-1);
+}
+.scrub-shimmer::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(
+    100deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.12) 40%,
+    rgba(255, 255, 255, 0.20) 50%,
+    rgba(255, 255, 255, 0.12) 60%,
+    transparent 100%
+  );
+  animation: scrub-shimmer 1.4s linear infinite;
+}
+
+/* Utility: hide scrollbars on a horizontally-scrolling strip (chip rows,
+ * the chat-folder filter strip, etc.). Tailwind v4 doesn't ship this by
+ * default — small enough to inline here. */
+.no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+
+/* Scrollbar: subtle. Default browser styling looks shouty on dark bg. */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 5px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--color-border-light); }
+
+/* Mobile-only utilities — Tailwind covers most of this with `md:`
+ * prefixes, but a body-level overflow guard lives here so individual
+ * components don't have to repeat the same overrides.                  */
+@media (max-width: 767px) {
+  /* Prevent horizontal overflow caused by long usernames / fan ids
+   * in dense rows. Pairs with `min-w-0` on the truncate target.        */
+  body { overflow-x: hidden; }
+}
+
+/* `--vvh` follows `window.visualViewport.height` (px) when the inline
+ * boot script in app/layout.tsx is alive (modern browsers); fallback
+ * to `100dvh` otherwise. This is the only height unit we use for chat
+ * surfaces — `dvh` alone doesn't shrink when the iOS Safari keyboard
+ * opens, so the composer would slide under it. `visualViewport.height`
+ * does shrink, keeping the composer above the keyboard.                */
+:root { --vvh: 100dvh; }
+
+/* `.h-chat` — chat-surface height that tracks the visible viewport.
+ * Single `height:` declaration so PostCSS/Tailwind v4 doesn't strip
+ * the rule (which it does to dual-declaration legacy/modern fallbacks
+ * like `height: 100vh; height: 100dvh;` — bit us once already). PC is
+ * unaffected because vvh ≈ 100dvh when no keyboard is up.              */
+/* `--chrome-top` is the sticky chrome above the page: Infloww's 52px top
+ * bar, plus the free-trial banner under it while one shows (40px and its
+ * 8px bottom margin; FreeTrialBanner). The docked sidebar and the fixed
+ * dropdowns sit under it. `--shell-top` is what `.h-chat` and the
+ * full-height pages subtract: the chrome by default, 0 in a Pop-out window
+ * (AppShell sets it), where the panes take the full window height, more
+ * on OF Manager (OfManagerChrome).                                       */
+:root { --chrome-top: 52px; --shell-top: var(--chrome-top); }
+html:has([data-trial-banner]) { --chrome-top: 100px; }
+.h-chat { height: calc(var(--vvh) - var(--shell-top, 3.5rem)); }
+
+/* `.vault-video` — the vault preview player.
+ * Chrome's native control bar is near-black, which on dark media made the
+ * timeline almost invisible and scrubbing to a time a guessing game. Lighten
+ * the panel, fatten the timeline, and give the time readouts a shadow so they
+ * survive a bright frame. WebKit/Blink pseudo-elements only; other engines
+ * keep their stock controls, so this is purely additive.                     */
+.vault-video::-webkit-media-controls-panel {
+  background: linear-gradient(to top, rgb(0 0 0 / 0.78), rgb(0 0 0 / 0.10));
+}
+.vault-video::-webkit-media-controls-timeline {
+  height: 6px;
+  margin: 0 10px;
+}
+.vault-video::-webkit-media-controls-current-time-display,
+.vault-video::-webkit-media-controls-time-remaining-display {
+  color: #fff;
+  text-shadow: 0 1px 2px rgb(0 0 0 / 0.85);
+}

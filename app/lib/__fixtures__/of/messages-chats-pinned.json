@@ -1,0 +1,84 @@
+{
+  "list": [
+    {
+      "withUser": {
+        "id": 2016,
+        "_view": "m"
+      },
+      "canNotSendReason": null,
+      "canSendMessage": true,
+      "canGoToProfile": true,
+      "unreadMessagesCount": 0,
+      "hasUnreadTips": false,
+      "isMutedNotifications": false,
+      "lastMessage": null,
+      "lastReadMessageId": 11705383406180,
+      "hasPurchasedFeed": false,
+      "countPinnedMessages": 1,
+      "isCallReady": false
+    },
+    {
+      "withUser": {
+        "id": 2021,
+        "_view": "m"
+      },
+      "canNotSendReason": "unsubscribed",
+      "canSendMessage": false,
+      "canGoToProfile": true,
+      "unreadMessagesCount": 0,
+      "hasUnreadTips": false,
+      "isMutedNotifications": false,
+      "lastMessage": {
+        "id": 9898841186083,
+        "isOpened": false,
+        "createdAt": "2026-06-05T02:26:13+00:00",
+        "text": "<p>Synthetic message 20</p>",
+        "giphyId": null,
+        "lockedText": false,
+        "isFree": true,
+        "mediaCount": 0,
+        "isTip": false,
+        "fromUser": {
+          "id": 2021,
+          "_view": "i"
+        }
+      },
+      "lastReadMessageId": "9898841186083",
+      "hasPurchasedFeed": false,
+      "countPinnedMessages": 1,
+      "isCallReady": false
+    },
+    {
+      "withUser": {
+        "id": 2012,
+        "_view": "m"
+      },
+      "canNotSendReason": null,
+      "canSendMessage": true,
+      "canGoToProfile": true,
+      "unreadMessagesCount": 0,
+      "hasUnreadTips": false,
+      "isMutedNotifications": true,
+      "lastMessage": {
+        "id": 11705438010136,
+        "isOpened": false,
+        "createdAt": "2026-10-17T08:18:17+00:00",
+        "text": "<p>Synthetic message 12</p>",
+        "giphyId": null,
+        "lockedText": false,
+        "isFree": false,
+        "mediaCount": 2,
+        "isTip": false,
+        "fromUser": {
+          "id": 2012,
+          "_view": "i"
+        }
+      },
+      "lastReadMessageId": 11705878895386,
+      "hasPurchasedFeed": false,
+      "countPinnedMessages": 1,
+      "isCallReady": false
+    }
+  ],
+  "hasMore": false
+}

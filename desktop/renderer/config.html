@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <title>Inflowwww — Settings</title>
+    <link rel="stylesheet" href="local.css" />
+  </head>
+  <body>
+    <div class="card">
+      <div class="problem" id="problem" hidden>
+        <strong>Inflowwww didn't load.</strong> Fix the URL or token, then Save &amp; Open to retry.
+        <div class="mono" id="problemDetail"></div>
+      </div>
+      <h1>Connect to Inflowwww</h1>
+      <p class="sub" id="intro">
+        Enter your Inflowwww server and your share link token. Inflowwww may then
+        ask you to sign in with your own username and password — a separate,
+        normal step; the token only gets the app to the door.
+      </p>
+
+      <label for="url">Server URL</label>
+      <input id="url" type="url" spellcheck="false" autocomplete="off" placeholder="https://your-inflowwww-server" />
+
+      <label for="token">Share token</label>
+      <input id="token" type="password" spellcheck="false" autocomplete="off" placeholder="paste your token" />
+      <div class="hint" id="tokenHint">This is the <code>t=</code> value from your Inflowwww link.</div>
+
+      <label class="check"><input id="skip" type="checkbox" /> Don't show this again</label>
+      <figure class="reopen" id="reopenHint" hidden>
+        <img src="settings-hint-mac.png" alt="Inflowwww menu, Settings… (⌘,)" width="384" height="150" />
+        <figcaption>Reopen it anytime from the Inflowwww menu → Settings… (⌘,)</figcaption>
+      </figure>
+
+      <label>Advanced</label>
+      <label class="check"><input id="hwAccel" type="checkbox" /> Hardware acceleration</label>
+      <label class="check"><input id="secureDns" type="checkbox" /> Use secure DNS (DNS over HTTPS)</label>
+      <div class="hint">
+        Turn hardware acceleration off if windows go blank or crash. Turn secure DNS on if the app
+        can't reach your server on this network. Both apply after a restart.
+      </div>
+      <div class="row tight">
+        <button id="restart" type="button">Restart</button>
+      </div>
+
+      <div class="error" id="err"></div>
+
+      <div class="row">
+        <button id="quit" type="button">Quit</button>
+        <button id="save" class="primary" type="button">Save &amp; Open</button>
+      </div>
+    </div>
+    <script src="config.js"></script>
+  </body>
+</html>

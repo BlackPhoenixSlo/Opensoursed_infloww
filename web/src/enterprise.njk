@@ -1,0 +1,112 @@
+---
+layout: base.njk
+title: "Inflowwww Enterprise: self-hosted, MIT licensed, $0"
+description: "The Inflowwww enterprise plan: self-hosting, your own backups and proxies, the MIT license in full, and no vendor lock-in. Same software as every other plan."
+---
+{#- Follows infloww.com/onlyfans-crm-enterprise. One joke (the plan), then the facts. -#}
+<section class="wrap max-w-3xl pt-16 sm:pt-24">
+  <p class="eyebrow">Enterprise</p>
+  <h1 class="h-page mt-4">Enterprise plan: $0</h1>
+  <p class="lede">Includes the same software as the free plan, because there is only one.</p>
+  <p class="mt-6 rounded-2xl bg-cream px-5 py-4 text-sm text-ink">
+    Infloww's enterprise page cites "$2.61 billion USD in revenue generated in 2024 by Infloww users"
+    (infloww.com/onlyfans-crm-enterprise, page stamped Oct 10, 2026). We don't publish a revenue figure for our
+    users, and their 24/7 support and dedicated account managers have no equivalent here.
+  </p>
+</section>
+
+<section aria-labelledby="who" class="wrap mt-16 max-w-3xl">
+  <h2 id="who" class="text-2xl font-semibold tracking-tight sm:text-3xl">Who this is for</h2>
+  <div class="prose mt-4">
+    <p>
+      The README describes the project as an independent reverse-engineering of OnlyFans' public web API for personal /
+      educational use. Nothing here is sold, and there is no enterprise contract. An agency can run it, but tell your
+      creators before you connect theirs.
+    </p>
+    <p>{% include "tos.njk" %}</p>
+  </div>
+</section>
+
+<section aria-labelledby="hosting" class="wrap mt-16 max-w-3xl">
+  <h2 id="hosting" class="text-2xl font-semibold tracking-tight sm:text-3xl">Self-hosting</h2>
+  <div class="prose mt-4">
+    <p>
+      Inflowwww runs with Docker Compose on a server you control: a Python relay (FastAPI) that holds the captured
+      sessions, a Next.js dashboard, and an autoheal container. The install is the
+      <a href="{{ '/help/' | url }}">Quick start</a> from the README. The relay and the app bind to 127.0.0.1 on the host,
+      and the app also joins the external <code>n8n_default</code> network with Traefik labels; if you run Traefik on
+      that network it will be published. Otherwise making it reachable is a step you choose: a reverse proxy in front
+      of the app, or the optional Cloudflare quick tunnel profile. Put local edits in a
+      <code>docker-compose.override.yml</code> (the repository ignores it), not in the tracked file.
+    </p>
+  </div>
+</section>
+
+<section aria-labelledby="backups" class="wrap mt-16 max-w-3xl">
+  <h2 id="backups" class="text-2xl font-semibold tracking-tight sm:text-3xl">Your backups</h2>
+  <div class="prose mt-4">
+    <p>
+      Everything that matters is on the host: <code>service/chatterly.db</code> (SQLite), <code>service/sessions/</code>,
+      <code>service/proxies.json</code>, <code>service/secrets/</code> and <code>.env</code>, plus the vault image folders
+      (<code>service/vault_thumbs/</code>, <code>vault_posters/</code>, <code>vault_images/</code>), which can't be
+      downloaded again once OnlyFans' signed URLs expire. The <code>service/</code> ones are bind-mounted into the relay;
+      Compose reads <code>.env</code>. Back them up on your schedule, to your storage, and keep the copies as private as passwords:
+      <code>chatterly.db</code> and <code>proxies.json</code> hold passwords in plain text. 
+      <a href="{{ '/help/#backups' | url }}">Help &gt; Backups</a> has the backup commands and a restore test.
+    </p>
+  </div>
+</section>
+
+<section aria-labelledby="proxies" class="wrap mt-16 max-w-3xl">
+  <h2 id="proxies" class="text-2xl font-semibold tracking-tight sm:text-3xl">Your proxies</h2>
+  <div class="prose mt-4">
+    <p>
+      You choose the proxy provider and assign one per creator in Creators &gt; Custom proxy (<code>/creators/proxy</code>).
+      The registry is <code>service/proxies.json</code> on your server.
+    </p>
+  </div>
+</section>
+
+<section aria-labelledby="lock-in" class="wrap mt-16 max-w-3xl">
+  <h2 id="lock-in" class="text-2xl font-semibold tracking-tight sm:text-3xl">No vendor lock-in</h2>
+  <div class="prose mt-4">
+    <ul>
+      <li>The data is one SQLite file you can open with any SQLite client.</li>
+      <li>The code is one MIT-licensed repository (the project's source folder). Fork it, change it, and keep running your fork.</li>
+      <li>There is no account with us, no licence key and no contract to end.</li>
+    </ul>
+  </div>
+</section>
+
+<section aria-labelledby="license" class="wrap mt-16 max-w-3xl">
+  <h2 id="license" class="text-2xl font-semibold tracking-tight sm:text-3xl">The license, in full</h2>
+  <div class="prose mt-4">
+    <p>This is the text of <a href="{{ site.repo }}/blob/main/LICENSE">LICENSE</a> in the repository.</p>
+    <p>The project was renamed; the copyright line below is the original and is reproduced as it stands in the file.</p>
+    <pre><code>MIT License
+
+Copyright (c) 2026 Chatterly contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.</code></pre>
+  </div>
+  <div class="mt-10 flex flex-wrap gap-3">
+    <a class="btn-primary" href="{{ '/#deploy' | url }}">Deploy it yourself</a>
+    <a class="btn-secondary" href="{{ '/switch-to-openinflowwww/' | url }}">How to switch</a>
+  </div>
+</section>

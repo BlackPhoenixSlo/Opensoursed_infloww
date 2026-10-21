@@ -1,0 +1,455 @@
+{
+ "list": [
+  {
+   "id": "1299098471",
+   "type": "custom",
+   "name": "Synthetic list 1",
+   "usersCount": 1,
+   "postsCount": 27,
+   "order": "default",
+   "direction": "asc",
+   "canUpdate": true,
+   "canDelete": true,
+   "canManageUsers": true,
+   "canAddUsers": true,
+   "canPinnedToFeed": true,
+   "isPinnedToFeed": false,
+   "canPinnedToChat": true,
+   "isPinnedToChat": false,
+   "sortList": [],
+   "users": [
+    {
+     "id": 3021,
+     "_view": "t"
+    }
+   ]
+  },
+  {
+   "id": "1209107594",
+   "type": "custom",
+   "name": "Synthetic list 2",
+   "usersCount": 0,
+   "postsCount": 0,
+   "order": "default",
+   "direction": "asc",
+   "canUpdate": true,
+   "canDelete": true,
+   "canManageUsers": true,
+   "canAddUsers": true,
+   "canPinnedToFeed": true,
+   "isPinnedToFeed": false,
+   "canPinnedToChat": true,
+   "isPinnedToChat": false,
+   "sortList": [],
+   "users": []
+  },
+  {
+   "id": "1295193661",
+   "type": "custom",
+   "name": "Synthetic list 3",
+   "usersCount": 0,
+   "postsCount": 0,
+   "order": "default",
+   "direction": "asc",
+   "canUpdate": true,
+   "canDelete": true,
+   "canManageUsers": true,
+   "canAddUsers": true,
+   "canPinnedToFeed": true,
+   "isPinnedToFeed": false,
+   "canPinnedToChat": true,
+   "isPinnedToChat": true,
+   "sortList": [],
+   "users": []
+  },
+  {
+   "id": "1295553133",
+   "type": "custom",
+   "name": "Synthetic list 4",
+   "usersCount": 0,
+   "postsCount": 0,
+   "order": "default",
+   "direction": "asc",
+   "canUpdate": true,
+   "canDelete": true,
+   "canManageUsers": true,
+   "canAddUsers": true,
+   "canPinnedToFeed": true,
+   "isPinnedToFeed": false,
+   "canPinnedToChat": true,
+   "isPinnedToChat": true,
+   "sortList": [],
+   "users": []
+  },
+  {
+   "id": "1165235349",
+   "type": "custom",
+   "name": "Synthetic list 5",
+   "usersCount": 4,
+   "postsCount": 11622,
+   "order": "default",
+   "direction": "asc",
+   "canUpdate": true,
+   "canDelete": true,
+   "canManageUsers": true,
+   "canAddUsers": true,
+   "canPinnedToFeed": true,
+   "isPinnedToFeed": false,
+   "canPinnedToChat": true,
+   "isPinnedToChat": false,
+   "sortList": [],
+   "users": [
+    {
+     "id": 3022,
+     "_view": "t"
+    },
+    {
+     "id": 3023,
+     "_view": "t"
+    },
+    {
+     "id": 3024,
+     "_view": "t"
+    }
+   ]
+  },
+  {
+   "id": "1165234001",
+   "type": "custom",
+   "name": "Synthetic list 6",
+   "usersCount": 4,
+   "postsCount": 2235,
+   "order": "default",
+   "direction": "asc",
+   "canUpdate": true,
+   "canDelete": true,
+   "canManageUsers": true,
+   "canAddUsers": true,
+   "canPinnedToFeed": true,
+   "isPinnedToFeed": false,
+   "canPinnedToChat": true,
+   "isPinnedToChat": false,
+   "sortList": [],
+   "users": [
+    {
+     "id": 3023,
+     "_view": "t"
+    },
+    {
+     "id": 3025,
+     "_view": "t"
+    },
+    {
+     "id": 3024,
+     "_view": "t"
+    }
+   ]
+  },
+  {
+   "id": "1167106451",
+   "type": "custom",
+   "name": "Synthetic list 7",
+   "usersCount": 2,
+   "postsCount": 717,
+   "order": "default",
+   "direction": "asc",
+   "canUpdate": true,
+   "canDelete": true,
+   "canManageUsers": true,
+   "canAddUsers": true,
+   "canPinnedToFeed": true,
+   "isPinnedToFeed": false,
+   "canPinnedToChat": true,
+   "isPinnedToChat": false,
+   "sortList": [],
+   "users": [
+    {
+     "id": 3004,
+     "_view": "t"
+    },
+    {
+     "id": 3026,
+     "_view": "t"
+    }
+   ]
+  },
+  {
+   "id": "1167107713",
+   "type": "custom",
+   "name": "Synthetic list 8",
+   "usersCount": 1,
+   "postsCount": 12,
+   "order": "default",
+   "direction": "asc",
+   "canUpdate": true,
+   "canDelete": true,
+   "canManageUsers": true,
+   "canAddUsers": true,
+   "canPinnedToFeed": true,
+   "isPinnedToFeed": false,
+   "canPinnedToChat": true,
+   "isPinnedToChat": false,
+   "sortList": [],
+   "users": [
+    {
+     "id": 3027,
+     "_view": "t"
+    }
+   ]
+  },
+  {
+   "id": "following",
+   "type": "following",
+   "name": "Following",
+   "usersCount": 117,
+   "postsCount": 101877,
+   "order": "last_activity",
+   "direction": "desc",
+   "canUpdate": false,
+   "canDelete": false,
+   "canManageUsers": false,
+   "canAddUsers": false,
+   "canPinnedToFeed": false,
+   "isPinnedToFeed": false,
+   "canPinnedToChat": true,
+   "isPinnedToChat": true,
+   "sortList": [],
+   "users": [
+    {
+     "id": 3028,
+     "_view": "t"
+    },
+    {
+     "id": 3029,
+     "_view": "t"
+    },
+    {
+     "id": 3025,
+     "_view": "t"
+    }
+   ]
+  },
+  {
+   "id": "1320999428",
+   "type": "custom",
+   "name": "Synthetic list 9",
+   "usersCount": 26,
+   "postsCount": 59969,
+   "order": "default",
+   "direction": "asc",
+   "canUpdate": true,
+   "canDelete": true,
+   "canManageUsers": true,
+   "canAddUsers": true,
+   "canPinnedToFeed": true,
+   "isPinnedToFeed": false,
+   "canPinnedToChat": true,
+   "isPinnedToChat": false,
+   "sortList": [],
+   "users": [
+    {
+     "id": 3002,
+     "_view": "t"
+    },
+    {
+     "id": 3030,
+     "_view": "t"
+    },
+    {
+     "id": 3031,
+     "_view": "t"
+    }
+   ]
+  },
+  {
+   "id": "1165234649",
+   "type": "custom",
+   "name": "Synthetic list 10",
+   "usersCount": 3,
+   "postsCount": 1766,
+   "order": "default",
+   "direction": "asc",
+   "canUpdate": true,
+   "canDelete": true,
+   "canManageUsers": true,
+   "canAddUsers": true,
+   "canPinnedToFeed": true,
+   "isPinnedToFeed": false,
+   "canPinnedToChat": true,
+   "isPinnedToChat": true,
+   "sortList": [],
+   "users": [
+    {
+     "id": 3032,
+     "_view": "t"
+    },
+    {
+     "id": 3023,
+     "_view": "t"
+    },
+    {
+     "id": 3025,
+     "_view": "t"
+    }
+   ]
+  },
+  {
+   "id": "1234059711",
+   "type": "custom",
+   "name": "Synthetic list 11",
+   "usersCount": 1,
+   "postsCount": 598,
+   "order": "default",
+   "direction": "asc",
+   "canUpdate": true,
+   "canDelete": true,
+   "canManageUsers": true,
+   "canAddUsers": true,
+   "canPinnedToFeed": true,
+   "isPinnedToFeed": false,
+   "canPinnedToChat": true,
+   "isPinnedToChat": false,
+   "sortList": [],
+   "users": [
+    {
+     "id": 3004,
+     "_view": "t"
+    }
+   ]
+  },
+  {
+   "id": "755017382",
+   "type": "close_friends",
+   "name": "Close Friends",
+   "usersCount": 1,
+   "postsCount": 598,
+   "order": "default",
+   "direction": "asc",
+   "canUpdate": true,
+   "canDelete": true,
+   "canManageUsers": true,
+   "canAddUsers": true,
+   "canPinnedToFeed": true,
+   "isPinnedToFeed": false,
+   "canPinnedToChat": true,
+   "isPinnedToChat": false,
+   "sortList": [],
+   "users": [
+    {
+     "id": 3004,
+     "_view": "t"
+    }
+   ]
+  },
+  {
+   "id": "755017319",
+   "type": "bookmarks",
+   "name": "Bookmarks",
+   "usersCount": 3,
+   "postsCount": 4777,
+   "order": "default",
+   "direction": "asc",
+   "canUpdate": true,
+   "canDelete": true,
+   "canManageUsers": true,
+   "canAddUsers": true,
+   "canPinnedToFeed": true,
+   "isPinnedToFeed": false,
+   "canPinnedToChat": true,
+   "isPinnedToChat": false,
+   "sortList": [],
+   "users": [
+    {
+     "id": 3032,
+     "_view": "t"
+    },
+    {
+     "id": 3033,
+     "_view": "t"
+    },
+    {
+     "id": 3025,
+     "_view": "t"
+    }
+   ]
+  },
+  {
+   "id": "1290765913",
+   "type": "custom",
+   "name": "Synthetic list 12",
+   "usersCount": 150,
+   "postsCount": 152917,
+   "order": "default",
+   "direction": "asc",
+   "canUpdate": true,
+   "canDelete": true,
+   "canManageUsers": true,
+   "canAddUsers": true,
+   "canPinnedToFeed": true,
+   "isPinnedToFeed": false,
+   "canPinnedToChat": true,
+   "isPinnedToChat": false,
+   "sortList": [],
+   "users": [
+    {
+     "id": 3002,
+     "_view": "t"
+    },
+    {
+     "id": 3034,
+     "_view": "t"
+    },
+    {
+     "id": 3035,
+     "_view": "t"
+    }
+   ]
+  },
+  {
+   "id": "1284242319",
+   "type": "custom",
+   "name": "Synthetic list 13",
+   "usersCount": 0,
+   "postsCount": 0,
+   "order": "default",
+   "direction": "asc",
+   "canUpdate": true,
+   "canDelete": true,
+   "canManageUsers": true,
+   "canAddUsers": true,
+   "canPinnedToFeed": true,
+   "isPinnedToFeed": false,
+   "canPinnedToChat": true,
+   "isPinnedToChat": false,
+   "sortList": [],
+   "users": []
+  },
+  {
+   "id": "1209104430",
+   "type": "custom",
+   "name": "Synthetic list 14",
+   "usersCount": 1,
+   "postsCount": 1470,
+   "order": "default",
+   "direction": "asc",
+   "canUpdate": true,
+   "canDelete": true,
+   "canManageUsers": true,
+   "canAddUsers": true,
+   "canPinnedToFeed": true,
+   "isPinnedToFeed": false,
+   "canPinnedToChat": true,
+   "isPinnedToChat": true,
+   "sortList": [],
+   "users": [
+    {
+     "id": 3025,
+     "_view": "t"
+    }
+   ]
+  }
+ ],
+ "hasMore": false,
+ "order": "desc",
+ "sort": "name"
+}

@@ -1,0 +1,77 @@
+# keep the build context small (and the image clean)
+.git
+.gitignore
+
+# never bake secrets or local DB state into an image
+service/.session_secret
+service/.chatter_secret
+.session_secret
+.chatter_secret
+# NOTE: dockerignore patterns are ROOTED (unlike gitignore) — a bare `*.db`
+# matches only files at the context root. The `**/` twins are the ones that
+# actually exclude DB files at depth (service/), keeping the COPY layer small.
+*.db
+*.db-*
+*.db.*
+**/*.db
+**/*.db-*
+**/*.db.*
+.env
+.claude/
+.run_public/
+venv/
+.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# Next.js app belongs to its own image (app/Dockerfile) — the relay build
+# context doesn't need any of it, and the build artefacts are huge.
+app/node_modules/
+app/.next/
+app/.turbo/
+
+# capture artefacts that don't belong in the runtime image
+service/sessions/
+service/proxies.json
+# Bind-mounted image caches — they can be gigabytes, and the container gets
+# them from the host mount, never from the build context.
+service/storyboard_cache/
+service/vault_thumbs/
+service/vault_posters/
+service/s4s_media/
+service/vault_images/
+service/img_cache/
+service/audit/
+service/chunks/
+service/crawl/
+service/hunt_all/
+service/note_capture/
+service/note_nickname/
+service/schedule_capture/
+service/schedule_note_hunt/
+service/*.html
+service/*.png
+
+# repo housekeeping / one-off files
+apireferece
+bookmark_error_curl
+errors*
+Todo.txt
+CHANGES.md
+_sweep.md
+theOFchrackedextension/
+*.md
+!README.md
+
+
+# fansly/ holds capture tooling, .har captures and sessions/session.json (a live
+# auth token). The relay needs only its five runtime modules; send nothing else.
+fansly/*
+!fansly/fansly_client.py
+!fansly/fansly_shim.py
+!fansly/fansly_signer.py
+!fansly/fansly_vault.py
+!fansly/fansly_ws.py
+**/*.har
