@@ -192,6 +192,22 @@ const nick = () => screen.getByPlaceholderText("Fan Seven") as HTMLInputElement;
 const notes = () => screen.getByPlaceholderText(/loves bondage/) as HTMLTextAreaElement;
 const tags = () => screen.getByPlaceholderText("whale, EU, kink:feet") as HTMLInputElement;
 
+describe("Fan insights avatar", () => {
+  it("loads OF's signed avatar through the relay's /img for the chat's account", () => {
+    const chat = { withUser: { id: 7, name: "Fan Seven", username: "fan7", avatar: "https://cdn.example.invalid/av.jpg" } } as never;
+    const { container } = render(
+      <QueryClientProvider client={qc}>
+        <FanDrawer open onClose={vi.fn()} accountId="acct-a" fanId={7} chat={chat} />
+      </QueryClientProvider>,
+    );
+    const src = container.querySelector("img")!.getAttribute("src")!;
+    expect(src.startsWith("/img?")).toBe(true);
+    const q = new URLSearchParams(src.slice("/img?".length));
+    expect(q.get("u")).toBe("https://cdn.example.invalid/av.jpg");
+    expect(q.get("account_id")).toBe("acct-a");
+  });
+});
+
 describe("Fan insights edits", () => {
   it("leaving the Nickname saves the custom nickname to our mirror and writes it to OnlyFans", async () => {
     const user = userEvent.setup();

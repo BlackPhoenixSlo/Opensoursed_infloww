@@ -13,6 +13,7 @@ OF faked (no request leaves the process).
   case_vault_carrier_keeps_the_live_verified_posted_at
   case_expiry_target_labels
   case_poll_and_quiz
+  case_create_post_logs_the_poll_never_its_text
   case_route_forwards_every_field
   case_create_label_posts_name
   case_label_route_is_registered
@@ -27,6 +28,7 @@ import _harness  # noqa: F401 — MUST be first (binds temp DB before engine imp
 _harness.bootstrap()
 
 import asyncio  # noqa: E402
+import logging  # noqa: E402
 
 import of_client  # noqa: E402
 import server  # noqa: E402
@@ -114,6 +116,43 @@ def case_poll_and_quiz():
                       voting_correct_index=2)
     assert body["votingType"] == 2 and body["votingCorrectIndex"] == 2, body
     assert "votingType" not in _post_body(voting_type=1), "no options, no poll"
+
+
+class _Tap(logging.Handler):
+    """The of-client logger's formatted records."""
+
+    def __init__(self):
+        super().__init__(logging.DEBUG)
+        self.lines: list[tuple[int, str]] = []
+
+    def emit(self, record):
+        self.lines.append((record.levelno, record.getMessage()))
+
+
+def _logged_create(**kw) -> list[tuple[int, str]]:
+    tap, log = _Tap(), logging.getLogger("of-client")
+    old = log.level
+    log.addHandler(tap)
+    log.setLevel(logging.DEBUG)
+    try:
+        c = _client()
+        c.request_json = lambda method, path, **_kw: {"id": 9911}
+        c.create_post("Synthetic post", auto_tag=False, **kw)
+    finally:
+        log.removeHandler(tap)
+        log.setLevel(old)
+    return [(lvl, m) for lvl, m in tap.lines if m.startswith("create_post ")]
+
+
+def case_create_post_logs_the_poll_never_its_text():
+    # 02-gaps G2: the relay log has to prove a poll went out, without the
+    # caption or the options (fan-facing content stays out of logs): the exact
+    # line leaves no room for either.
+    (lvl, line), = _logged_create(voting_type=1, voting_options=["Yes", "No"], voting_due=7)
+    assert lvl == logging.INFO, lvl
+    assert line == "create_post has_voting=True options_count=2 of_post_id=9911", line
+    (_lvl, line), = _logged_create()
+    assert line == "create_post has_voting=False options_count=0 of_post_id=9911", line
 
 
 def case_route_forwards_every_field():

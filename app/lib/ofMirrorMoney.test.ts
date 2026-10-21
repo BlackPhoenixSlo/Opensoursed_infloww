@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   amountError,
   applyMoney,
+  earningsChart,
   minSumMessage,
   moneyOf,
   moneyParts,
@@ -18,6 +19,7 @@ import {
   type PayoutUser,
 } from "./ofMirrorMoney";
 import { RelayError } from "./relay";
+import { linesOf } from "./ofMirrorChart";
 import { applyData, partsOf } from "./ofMirrorData";
 import type { Transaction } from "./ofMirrorFeeds";
 
@@ -42,7 +44,6 @@ describe("moneyParts", () => {
     expect(moneyParts("statements/stats/earnings/state-date-range")).toEqual(["balances", "earningStats"]);
     expect(moneyParts("statements/referrals")).toEqual(["balances", "referralBalance"]);
     expect(moneyParts("statistics/statements/referrals/earnings")).toEqual(["balances", "referralBalance"]);
-    expect(moneyParts("statements/stats/disputes")).toEqual(["balances", "chargebacks"]);
     expect(moneyParts("statistics/statements/disputes")).toEqual(["balances"]); // its ratio follows the period: ofMirrorStats
     expect(moneyParts("statistics/overview/earnings/state-period-dropdown")).toEqual(["balances"]);
     for (const p of ["statements/support", "statistics/engagement/messages", "statistics/fans/top-fans", "bank/index", "bank/payout_types", "home/index"]) expect(moneyParts(p)).toEqual([]);
@@ -51,7 +52,6 @@ describe("moneyParts", () => {
   it("reads OF's fields: /payouts/stats from its list", () => {
     expect(moneyOf("earningStats", { list: { total: { all: { total_net: 1 } } } })).toEqual({ earningStats: { total: { all: { total_net: 1 } } } });
     expect(moneyOf("referralBalance", { referralEarnings: 3, pendingEarnings: 1 })).toEqual({ referralEarnings: 3 });
-    expect(moneyOf("chargebacks", { chargebacksRatio: 0.25 })).toEqual({ chargebacksRatio: 0.25 });
     expect(moneyOf("balances", null)).toEqual({});
   });
 });
@@ -120,10 +120,6 @@ describe("balances", () => {
       const select = doc.querySelector(".balance-block .v-select")!;
       expect([select.classList.contains("v-input--is-disabled"), select.getAttribute("title"), select.querySelector("[role='button']"), !!select.querySelector(".v-input__slot[data-oi-wired]")]).toEqual([true, null, null, true]);
     }
-    const doc = load("statements/stats/disputes");
-    expect(texts(doc, ".b-statements-balances__sum")).toEqual(["—", "—"]);
-    expect(texts(doc, ".m-statistics-alert .alert-text-wrapper > p")).toEqual(["Chargeback ratio —"]);
-    expect(doc.querySelector<HTMLButtonElement>(".b-holder-options")!.disabled).toBe(true);
   });
 
   it("the balance box's header collapses and expands it, in either scope", () => {
@@ -215,6 +211,79 @@ describe("Earning Statistics", () => {
   });
 });
 
+describe("Earning Statistics: OF's expanded row and chart", () => {
+  const page = "statements/stats/earnings";
+  const at = (y: number, m: number, d: number) => new Date(y, m, d, 12).getTime() / 1000;
+  // OF's months: each category's earnings (gross, net, time), summed per month by OF itself.
+  const ITEMS: EarningStats = {
+    total: { all: { total_gross: 60, total_net: 48 }, subscribes: { total_gross: 10, total_net: 8 }, tips: { total_gross: 50, total_net: 40 } },
+    months: {
+      [sec(2026, 9)]: { total_gross: 35, total_net: 28, subscribes: [{ gross: 10, net: 8, time: at(2026, 9, 2) }], tips: [{ gross: 20, net: 16, time: at(2026, 9, 3) }, { gross: 5, net: 4, time: at(2026, 9, 9) }] },
+      [sec(2026, 8)]: { total_gross: 25, total_net: 20, tips: [{ gross: 25, net: 20, time: at(2026, 8, 20) }] },
+    },
+  };
+  const head = (doc: Document, title: string) =>
+    [...doc.querySelectorAll<HTMLElement>(".b-stats-wrap > .b-stats-row > .b-stats-row__head")].find((h) => visible(h) && h.querySelector(".b-stats-row__month")!.textContent!.trim() === title)!;
+  const open = (doc: Document) => [...doc.querySelectorAll(".b-stats-wrap > .b-stats-row.m-expanded")].filter(visible);
+  const sums = (doc: Document) =>
+    [...open(doc)[0].querySelectorAll(".b-stats-row__content > .b-stats-row__label:not(.m-total)")].map((r) => [...r.querySelectorAll(".b-stats-row__val")].map((v) => v.textContent!.trim()).join(" "));
+
+  it("a month's head expands it alone: its date range, its categories summed from its earnings, its totals; All time's head brings All time back", () => {
+    const doc = load(page);
+    applyMoney(doc, page, { earningStats: ITEMS }, NOW);
+    expect(open(doc).map((r) => r.querySelector(".b-stats-row__month")!.textContent!.trim())).toEqual(["All time"]);
+    expect(linesOf(open(doc)[0].querySelector("canvas")!)?.lines).toHaveLength(6); // All time's chart is drawn, not blank
+    head(doc, "September, 2026").click();
+    expect(linesOf(open(doc)[0].querySelector("canvas")!)?.lines).toHaveLength(6);
+    expect(open(doc).map((r) => r.querySelector(".b-stats-row__month")!.textContent!.trim())).toEqual(["September, 2026"]);
+    expect(texts(doc, ".b-stats-row__body .b-date-value")).toEqual(["September, 2026", "September, 2026"]);
+    expect(sums(doc)).toEqual(["$0.00 $0.00", "$25.00 $20.00", "$0.00 $0.00", "$0.00 $0.00", "$0.00 $0.00"]);
+    expect(texts(doc, ".b-stats-row__body .m-total .m-total-item .b-stats-row__val")).toEqual(["$25.00", "$20.00"]);
+    expect([...doc.querySelectorAll(".b-stats-row__body")].filter(visible)).toHaveLength(1);
+    head(doc, "October, 2026").click();
+    expect(sums(doc)).toEqual(["$10.00 $8.00", "$25.00 $20.00", "$0.00 $0.00", "$0.00 $0.00", "$0.00 $0.00"]);
+    expect([...doc.querySelectorAll(".b-stats-row__body")].filter(visible)).toHaveLength(1);
+    head(doc, "All time").click();
+    expect(open(doc).map((r) => r.querySelector(".b-stats-row__month")!.textContent!.trim())).toEqual(["All time"]);
+    expect(sums(doc)).toEqual(["$10.00 $8.00", "$50.00 $40.00", "$0.00 $0.00", "$0.00 $0.00", "$0.00 $0.00"]);
+    expect(texts(doc, ".b-stats-row__body .b-date-value")).toEqual(["Sep 1, 2026", "Oct 16, 2026"]);
+    head(doc, "All time").click(); // OF's head expands; it never collapses
+    expect(open(doc)).toHaveLength(1);
+  });
+
+  it("a category row picks its line (m-current); a refetch keeps the open month and the pick; no data restores byte for byte", () => {
+    const doc = load(page);
+    const html = doc.documentElement.innerHTML;
+    applyMoney(doc, page, { earningStats: ITEMS }, NOW);
+    head(doc, "October, 2026").click();
+    open(doc)[0].querySelector<HTMLElement>(".b-stats-row__label.m-tips")!.click();
+    expect(texts(doc, ".b-stats-row__body .b-stats-row__label.m-current .b-stats-row__name")).toEqual(["Tips"]);
+    applyMoney(doc, page, { earningStats: ITEMS }, NOW);
+    expect(open(doc).map((r) => r.querySelector(".b-stats-row__month")!.textContent!.trim())).toEqual(["October, 2026"]);
+    expect(texts(doc, ".b-stats-row__body .b-stats-row__label.m-current .b-stats-row__name")).toEqual(["Tips"]);
+    applyMoney(doc, page, {}, NOW);
+    expect(doc.documentElement.innerHTML).toBe(html);
+    head(doc, "All time").click(); // no data: nothing to expand
+    expect(doc.documentElement.innerHTML).toBe(html);
+  });
+
+  it("the chart: OF's 15 slots to the period's end, each earning's gross in its nearest slot, summed up; the picked line bright", () => {
+    const start = new Date(2026, 9, 1).getTime();
+    const end = new Date(2026, 10, 1).getTime() - 1;
+    const spec = earningsChart([ITEMS.months![sec(2026, 9)]], start, end, "tips");
+    expect(spec.labels).toHaveLength(15);
+    expect([spec.labels[0], spec.labels[14]]).toEqual(["01 Oct 26", "31 Oct 26"]);
+    expect(spec.lines.map((l) => l.title)).toEqual(["Subscriptions", "Tips", "Posts", "Messages", "Referrals", "Streams"]);
+    const subs = spec.lines[0].values;
+    const tips = spec.lines[1].values;
+    expect([subs[0], subs[1], subs[14]]).toEqual([0, 10, 10]); // slots ~2.07 days apart: Oct 2 noon -> slot 1 (Oct 3 01:36), then summed up
+    expect([tips[0], tips[3], tips[4], tips[14]]).toEqual([0, 20, 25, 25]); // Oct 3 -> slot 1, Oct 9 -> slot 4
+    expect(tips[1]).toBe(20);
+    expect(spec.lines.map((l) => l.color)).toEqual(["rgba(33,150,243,0.4)", "#00bcd4", "rgba(236,64,122,0.4)", "rgba(255,112,67,0.4)", "rgba(149,117,205,0.4)", "rgba(255,160,0,0.4)"]);
+    expect(spec.lines.every((l) => l.kind === "money")).toBe(true);
+  });
+});
+
 describe("referral earnings and chargeback ratio", () => {
   it("Statements' Referrals box and its minimum", () => {
     const doc = load("statements/referrals");
@@ -259,14 +328,6 @@ describe("referral earnings and chargeback ratio", () => {
     applyMoney(doc, "statistics/statements/referrals/earnings", { meId: 1001, referralEarnings: 0 });
     expect(texts(doc, ".b-referrals-state__copy-url__link")).toEqual(["https://onlyfans.com?ref=1001"]);
     expect(texts(doc, ".b-referrals-state__count")).toEqual(["$0.00"]);
-  });
-
-  it("Chargeback ratio, rounded to two decimals, on Statements' disputes page (Statistics': ofMirrorStats)", () => {
-    for (const p of ["statements/stats/disputes"]) {
-      const doc = load(p);
-      applyMoney(doc, p, { chargebacksRatio: 1.236 });
-      expect(texts(doc, ".m-statistics-alert .alert-text-wrapper > p")).toEqual(["Chargeback ratio 1.24%"]);
-    }
   });
 });
 
@@ -480,5 +541,21 @@ describe("Statements' Support (the header's ?)", () => {
     expect(texts(doc, "form.contact_form ~ p, .g-default-text")[0]).toBe("If you have any questions, please fill out the form below to contact us.");
     const send = [...doc.querySelectorAll<HTMLButtonElement>("form.contact_form button")].find((b) => b.textContent!.trim() === "Send")!;
     expect([send.disabled, send.title]).toEqual([true, "Not available in Inflowwww yet"]);
+  });
+});
+
+describe("Statistics' sidebar Request withdrawal (Statements', in OF's g-btn__row)", () => {
+  const sidebar = (doc: Document) => doc.querySelector<HTMLButtonElement>(".balance-block .g-btn__row > button")!;
+
+  it.each(["statistics/statements/earnings", "statistics/overview/earnings"])("%s: wired, disabled as OF draws it until the balances allow it, then OF's dialog", (page) => {
+    const doc = load(page);
+    expect([sidebar(doc).disabled, sidebar(doc).title, sidebar(doc).hasAttribute("data-oi-wired")]).toEqual([true, "", true]);
+    const a = actions();
+    applyMoney(doc, page, { balances: LIVE, payoutUser: USER, actions: a }, SAT);
+    expect(sidebar(doc).disabled).toBe(true);
+    applyMoney(doc, page, { balances: RICH, payoutUser: USER, actions: a }, SAT);
+    expect(sidebar(doc).disabled).toBe(false);
+    sidebar(doc).click();
+    expect(dialog(doc)!.querySelector(".modal-title")!.textContent!.trim()).toBe("Manual payouts");
   });
 });

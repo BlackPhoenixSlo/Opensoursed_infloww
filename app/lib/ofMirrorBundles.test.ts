@@ -2,11 +2,11 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 // ofMirrorWrites first: its SUBMITS keys come from ofMirrorOffers, which imports it back.
-import { bindWrites, NOT_YET, ofErrorMessage, type WriteHandlers } from "./ofMirrorWrites";
+import { bindWrites, ofErrorMessage, type WriteHandlers } from "./ofMirrorWrites";
 import type { OfMe } from "./ofMirrorIdentity";
-import { BUNDLE_MODAL, bindBundleDialog, bundleAmount, collectBundle, type BundleSettings } from "./ofMirrorOffers";
+import { BUNDLE_MODAL, bindBundleDialog, bundleAmount, collectBundle, NO_BUNDLES_LEFT, type BundleSettings } from "./ofMirrorOffers";
 import { CARRY_MS, frameNavigate } from "./ofMirrorPost";
-import { applySubscription, bindSubscription, type Bundle, type SubData, type SubHandlers } from "./ofMirrorSubscription";
+import { applySubscription, bindSubscription, PRICE_FIRST, type Bundle, type SubData, type SubHandlers } from "./ofMirrorSubscription";
 import { RelayError } from "./relay";
 
 /** Settings > Subscription's bundles: the rows, Add bundle and its dialog, the delete, OF's gray and OF's error. */
@@ -91,7 +91,7 @@ describe("the bundle rows", () => {
     const a = addBundle();
     expect(a.hasAttribute("href")).toBe(false);
     expect(a.hasAttribute("disabled")).toBe(true);
-    expect(a.title).toBe(NOT_YET);
+    expect(a.title).toBe(PRICE_FIRST);
     // Priced again (another model): the link comes back.
     applySubscription(d, PAGE, data(free.empty), free.empty.me, undefined, false, free.empty.settings);
     expect(a.getAttribute("href")).toBe(`/of-manager/${BUNDLE_MODAL}`);
@@ -101,7 +101,7 @@ describe("the bundle rows", () => {
   it("every offered duration has a bundle: Add bundle is disabled (OF's isAddBundleDisabled)", () => {
     const d = load(PAGE);
     applySubscription(d, PAGE, data(free.full), free.full.me, undefined, false, free.full.settings);
-    expect(addBundle().hasAttribute("disabled")).toBe(true);
+    expect([addBundle().hasAttribute("disabled"), addBundle().title]).toEqual([true, NO_BUNDLES_LEFT]);
     expect(header().classList.contains("m-disabled-block")).toBe(false);
   });
 

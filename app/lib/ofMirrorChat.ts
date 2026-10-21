@@ -27,7 +27,7 @@
  * - Tag other creators (state-tag-people): New post's tag dialog (bindTags) over the chat; a row toggles a tag on the
  *   draft, sent as OF's chat fields: a creator (`rfTag`, the Relay's `tagged_users`), a guest (`rfGuest`, `rf_guest`), a
  *   release-form link or document (`rfPartner`, `rf_partner`).
- * - Scripts (OfChatSidePanel, beside the chat): a picked script or saved reply replaces the draft's text, media, free
+ * - Scripts (OfManagerChrome's Fan insights column, over the chat's right edge): a picked script or saved reply replaces the draft's text, media, free
  *   previews, price, locked text, tags and GIF (applyScript), as Messages Pro's composer applies one.
  * - Header menu (state-header-menu) and the header's bell: Hide chat (POST …/hide, then the chat list) and Mute / Unmute
  *   notifications (POST / DELETE …/mute, labelled from the chat's real state). The menu's other items stay inert links.
@@ -76,6 +76,7 @@ import { CHAT_VAULT, MASS_VAULT } from "@/lib/ofMirrorRow";
 import { TYPES, vaultHref, viewOf, type VaultView } from "@/lib/ofMirrorVault";
 import { dateTimeFields, GREY, localIso, message, minuteAhead, note, NOTE_STYLE, openModal, schedulePill, SELECT_MODEL, textOf, TOO_SOON } from "@/lib/ofMirrorWrites";
 import { fromWallClock, useAgencyZone, wallClock } from "@/lib/ofMirrorFeeds";
+import { ofPrice } from "@/lib/ofMirrorPostCard";
 import { MIN_PRICE, PRICE_NOTE } from "@/lib/sendGuards";
 
 /** The Chat draft (sessionStorage JSON): thumbs[i] is the picture of media_files[i] (vault ids, in click order). */
@@ -237,6 +238,8 @@ export const MASS_PICKED_TITLE = "New message to selected list";
 
 export const chatDraftKey = (accountId: string, chat: string) => `oi:chat:${accountId}:${chat}`;
 export const massDraftKey = (accountId: string) => `oi:mass:${accountId}`;
+/** New message's page, `?to=<list>` from a list page's Send message (OF's sendlist-<list>): opens with that list ticked. */
+export const MASS_SEND = "/of-manager/messages/send";
 
 function load<T>(storage: Storage, key: string, fresh: T): T {
   try {
@@ -249,6 +252,12 @@ function load<T>(storage: Storage, key: string, fresh: T): T {
 export const loadChatDraft = (storage: Storage, accountId: string, chat: string): ChatDraft =>
   load<ChatDraft>(storage, chatDraftKey(accountId, chat), { text: "", media_files: [], thumbs: [] });
 export const loadMassDraft = (storage: Storage, accountId: string): MassDraft => load<MassDraft>(storage, massDraftKey(accountId), { text: "", user_lists: [] });
+/** Tick `list` on the Mass draft's Send to (and off its Exclude, as a list ticked on one tab is off the other). */
+export function tickMassList(storage: Storage, accountId: string, list: string): void {
+  const d = loadMassDraft(storage, accountId);
+  const next = { ...d, user_lists: d.user_lists.includes(list) ? d.user_lists : [...d.user_lists, list], excluded_user_lists: d.excluded_user_lists?.filter((l) => l !== list) };
+  storage.setItem(massDraftKey(accountId), JSON.stringify(next));
+}
 
 /**
  * A composer's vault dialog's ticked tiles (OF's "N / 40 Selected"), kept over its tabs and folders (each its own page)
@@ -476,7 +485,7 @@ export function bindChat(doc: Document, page: string, ctx: ChatContext): () => v
     const { price, scheduled_date: at, media_files: media, reply_to: reply, reply_text: quoted, giphy_id: gif, tags = [] } = draftOf();
     const parts = [
       ...(reply ? [`Replying to “${(quoted ?? "").slice(0, 60)}${(quoted ?? "").length > 60 ? "…" : ""}”`] : []),
-      ...(price ? [`Price: $${price}`] : []),
+      ...(price ? [`Price: ${ofPrice(price)}`] : []),
       ...(at ? [`Scheduled for ${stamp(new Date(at))}`] : []),
       ...(media.length ? [`${media.length} media`] : []),
       ...(gif ? ["GIF"] : []),
@@ -564,7 +573,7 @@ export function bindChat(doc: Document, page: string, ctx: ChatContext): () => v
     if (send.disabled) return;
     const body = collectMessage(hasFormatting(editor) ? ofHtml(editor) : textOf(editor), draftOf());
     if (typeof body === "string") return note(doc, send, body, true);
-    if (body.price > 0 && !h.confirm(`Send this message to ${ctx.fan?.name || "this fan"} for $${body.price}?`)) return;
+    if (body.price > 0 && !h.confirm(`Send this message to ${ctx.fan?.name || "this fan"} for ${ofPrice(body.price)}?`)) return;
     send.disabled = true;
     doc.getElementById("oi-note")?.remove();
     h.send(sendPath(chat!, body), body).then(
@@ -1046,7 +1055,7 @@ export function bindMass(doc: Document, ctx: ChatContext, page = "messages/send"
       ...(d.media_files?.length ? [`${d.media_files.length} media`] : []),
       ...(d.giphy_id ? ["GIF"] : []),
       ...(d.tags?.length ? [`Tagged: ${d.tags.map((t) => t.name || `#${t.id}`).join(", ")}`] : []),
-      ...(d.price ? [`Price: $${d.price}`] : []),
+      ...(d.price ? [`Price: ${ofPrice(d.price)}`] : []),
       ...(d.save_for_later ? ["Saved for later"] : d.scheduled_date ? [`Scheduled for ${at(d.scheduled_date)}`] : []),
     ];
     schedulePill(doc, editor, d.edit_id ? (d.save_for_later ? "Saved for later" : d.scheduled_date ? at(d.scheduled_date) : null) : null);
@@ -1259,7 +1268,7 @@ export function bindMass(doc: Document, ctx: ChatContext, page = "messages/send"
     const audience = [
       ...(body.user_lists.length ? [`${users(count)} on ${names || `${body.user_lists.length} lists`}`] : []),
       ...(body.user_ids?.length ? [`${users(body.user_ids.length)} picked`] : []),
-    ].join(" and ") + (body.price ? ` for $${body.price}` : "");
+    ].join(" and ") + (body.price ? ` for ${ofPrice(body.price)}` : "");
     const when = body.save_for_later ? "for later" : body.scheduled_date ? `for ${at(body.scheduled_date)}` : "";
     const ask = draft.edit_id
       ? `Save this message ${when} to ${audience}?`
@@ -1336,6 +1345,7 @@ export function useOfChat(frameRef: RefObject<HTMLIFrameElement | null>, src: st
   const detail = useQuery(mirrorQuery<OFChatItem>(accountId, chat && chatPath(chat), isChat));
   const mass = page.startsWith("messages/send");
   const massView = mass ? massViewOf(params.get("list")) : undefined;
+  const massTo = mass ? params.get("to") : null;
   const lists = useQuery(mirrorQuery(accountId, USER_LISTS, mass));
   const listRows = rowsOf<UserList>(lists.data);
   // The Users tab: the Creator's recent chats' fans (OF's Users tab lists its recent chats' users too).
@@ -1367,6 +1377,14 @@ export function useOfChat(frameRef: RefObject<HTMLIFrameElement | null>, src: st
   const tagKey = JSON.stringify(tagView);
   const tags = useQuery(mirrorQuery<TaggedFriendUsersResp>(accountId, tagsRoute(tagView), tagPage));
   const tagItems = accountId && tagPage ? (tags.data?.items ?? rowsOf<TaggedFriendUser>(tags.data)) : undefined;
+
+  // A list page's Send message (`?to=<list>`): New message opens with that list ticked; the URL then drops it, so
+  // unticking it sticks. Before the bind below, which reads the draft.
+  useEffect(() => {
+    if (!massTo || !accountId) return;
+    tickMassList(window.sessionStorage, accountId, massTo);
+    router.replace(MASS_SEND);
+  }, [massTo, accountId, router]);
 
   useEffect(() => {
     const frame = frameRef.current;

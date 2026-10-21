@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { applySubscription, ASKS, bindSubscription, campaignLink, LIST_MAX_HEIGHT, listOf, mePromotions, subscriptionParts, trialLength, type SubData, type SubHandlers } from "./ofMirrorSubscription";
-import { bindWrites, ofConfirm, READ_ONLY } from "./ofMirrorWrites";
+import { applySubscription, ASKS, OF_DISALLOWS, PRICE_FIRST, bindSubscription, campaignLink, LIST_MAX_HEIGHT, listOf, mePromotions, subscriptionParts, trialLength, type SubData, type SubHandlers } from "./ofMirrorSubscription";
+import { bindWrites, NOT_YET, ofConfirm, READ_ONLY } from "./ofMirrorWrites";
+import { NO_BUNDLES_LEFT } from "./ofMirrorOffers";
 
 const PROMOTIONS = "settings/subscription/promotion-campaign";
 const TRACKING = "settings/subscription/tracking-links";
@@ -373,7 +374,9 @@ describe("OF's create gates", () => {
     const a = link("Create new free trial link");
     expect(a.hasAttribute("href")).toBe(false);
     expect(a.getAttribute("aria-disabled")).toBe("true");
-    expect(a.title).toBe("Not available in Inflowwww yet");
+    expect(a.title).toBe(OF_DISALLOWS); // the account's state, not a missing feature
+    applySubscription(d, TRIALS, { trials: { rows: [trial] } }, { ...ME, subscribePrice: 0, canCreateTrial: false });
+    expect(link("Create new free trial link").title).toBe(PRICE_FIRST);
     expect(buttons(rows()[0])).toEqual([["Delete", false], ["Copy link", true]]);
     // A link shared with the model keeps its Copy link.
     applySubscription(d, TRIALS, { trials: { rows: [trial] } }, { ...ME, canCreateTrial: false }, undefined, true);
@@ -387,9 +390,25 @@ describe("OF's create gates", () => {
     const ok = { ...ME, isPerformer: true, canCreatePromotion: true, canEarn: true };
     applySubscription(d, PROMOTIONS, {}, ok);
     expect(link("Start promotion campaign").hasAttribute("href")).toBe(true);
-    for (const off of [{ subscribePrice: 0 }, { isPerformer: false }, { canCreatePromotion: false }, { canEarn: false }]) {
+    expect(link("Start promotion campaign").hasAttribute("title")).toBe(false);
+    const cases: [object, string][] = [[{ subscribePrice: 0 }, PRICE_FIRST], [{ isPerformer: false }, OF_DISALLOWS], [{ canCreatePromotion: false }, OF_DISALLOWS], [{ canEarn: false }, OF_DISALLOWS]];
+    for (const [off, why] of cases) {
       applySubscription(d, PROMOTIONS, {}, { ...ok, ...off });
-      expect(link("Start promotion campaign").hasAttribute("disabled"), JSON.stringify(off)).toBe(true);
+      const a = link("Start promotion campaign");
+      expect([a.hasAttribute("disabled"), a.title], JSON.stringify(off)).toEqual([true, why]);
+    }
+  });
+
+  it("Add bundle: its tooltip names why OF disables it (no price, or no bundle left), never a missing feature", () => {
+    const d = load(PROMOTIONS);
+    const settings = { canAddSubscriberByBundle: { discounts: { "10": "10%" }, durations: { "3": "3 months" } } };
+    const add = () => link("Add bundle");
+    applySubscription(d, PROMOTIONS, {}, ME, undefined, false, settings);
+    expect([add().hasAttribute("disabled"), add().hasAttribute("title")]).toEqual([false, false]);
+    for (const [me, s, why] of [[{ ...ME, subscribePrice: 0 }, settings, PRICE_FIRST], [ME, { canAddSubscriberByBundle: false as const }, NO_BUNDLES_LEFT]] as const) {
+      applySubscription(d, PROMOTIONS, {}, me, undefined, false, s);
+      expect([add().hasAttribute("disabled"), add().title]).toEqual([true, why]);
+      expect(add().title).not.toBe(NOT_YET);
     }
   });
 });

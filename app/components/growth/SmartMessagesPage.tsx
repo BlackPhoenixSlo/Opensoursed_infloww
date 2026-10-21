@@ -36,17 +36,18 @@ import { IfButton, IfCreatorSelect, IfLearn, IfSelect, IfTabs, InflowwPageHeader
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useTabParam } from "@/hooks/useTabParam";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
+import { SMART_MESSAGES_TABS, type SmartMessagesTab as TabKey } from "@/lib/pageTabs";
 
 import AutomatedMessagesTab, { AutomatedEditor, AutomatedMessageCards, type WiredTrigger } from "./AutomatedMessagesTab";
 import CreateMessage from "./CreateMessagePopUp";
 import MassMessagesSection from "./MassMessagesSection";
-import { SM, type CapturedControl } from "./smartMessagesControls";
-
-type TabKey = "automated" | "mass";
-type ParentTab = { key: TabKey; control: CapturedControl; body: ReactNode };
+import { SM } from "./smartMessagesControls";
 
 // `?tab=` values: each tab's key, and `scheduled`, an alias of Mass Messages.
-const LOOKUP: Record<string, TabKey> = { automated: "automated", mass: "mass", scheduled: "mass" };
+const LOOKUP: Record<string, TabKey> = {
+  ...Object.fromEntries(SMART_MESSAGES_TABS.map((t): [string, TabKey] => [t.key, t.key])),
+  scheduled: "mass",
+};
 
 /** The header's creator select: 160px, the avatar alone below `sm` (ticket 00's phone rule). */
 const CHIP = "w-14 sm:w-[160px]";
@@ -63,19 +64,17 @@ export default function SmartMessagesPage({
   const [picked, setPicked] = useState<string | null>(null);
   const accountId = picked ?? accounts[0]?.id ?? null;
 
-  const tabs: ParentTab[] = [
-    { key: "automated", control: SM.tabAutomated, body: <AutomatedMessagesTab accountId={accountId} /> },
-    { key: "mass", control: SM.tabMass, body: <MassMessagesSection /> },
-  ];
+  const bodies: Record<TabKey, ReactNode> = {
+    automated: <AutomatedMessagesTab accountId={accountId} />,
+    mass: <MassMessagesSection />,
+  };
   const [tab, setTab] = useState<TabKey>("automated");
   const [creating, setCreating] = useState(false);
   // The pop-up's wired cards open their row's editor, on the select's Creator.
   const [opened, setOpened] = useState<WiredTrigger | null>(null);
 
-  // useTabParam takes a type predicate; `in` is the whole check.
-  useTabParam("tab", (v): v is string => v in LOOKUP, (v) => setTab(LOOKUP[v]));
+  useTabParam("tab", (v): v is string => Object.hasOwn(LOOKUP, v), (v) => setTab(LOOKUP[v]));
 
-  const current = tabs.find((t) => t.key === tab)!;
   return (
     <div className="flex min-h-full min-w-0 flex-col">
       <InflowwPageHeader
@@ -112,13 +111,13 @@ export default function SmartMessagesPage({
       <IfTabs
         aria-label="Smart Messages"
         idPrefix="sm"
-        tabs={tabs.map((t) => ({ value: t.key, label: t.control.label }))}
+        tabs={SMART_MESSAGES_TABS.map((t) => ({ value: t.key, label: t.label }))}
         value={tab}
         onChange={setTab}
       />
-      <div key={current.key} role="tabpanel" id={`sm-panel-${current.key}`} aria-labelledby={`sm-tab-${current.key}`}
+      <div key={tab} role="tabpanel" id={`sm-panel-${tab}`} aria-labelledby={`sm-tab-${tab}`}
         className="min-w-0">
-        {current.body}
+        {bodies[tab]}
       </div>
 
       <CreateMessage

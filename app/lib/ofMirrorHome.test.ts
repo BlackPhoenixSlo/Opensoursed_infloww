@@ -105,7 +105,13 @@ describe("home: the home feed", () => {
     expect(rs.map((r) => r.querySelector("div.b-post")!.classList.contains("m-pinned"))).toEqual([false, true]);
     expect(rs.map((r) => r.querySelector(".b-post__date-remaining"))).toEqual([null, null]);
     for (const r of rs) expect(r.textContent).not.toMatch(PLACEHOLDER);
-    for (const a of rs[0].querySelectorAll(".b-post__avatar a, a.b-username")) expect(a.getAttribute("href")).toBe("#");
+    // OF's profile links: another creator's OF profile in a new tab, the Creator's own My profile in the top frame; the
+    // date the post on onlyfans.com.
+    expect(rs.map((r) => [...r.querySelectorAll(".b-post__avatar a, a.b-username")].map((a) => `${a.getAttribute("href")} ${a.getAttribute("target")} ${a.getAttribute("rel")}`))).toEqual([
+      ["https://onlyfans.com/deltafour _blank noopener noreferrer", "https://onlyfans.com/deltafour _blank noopener noreferrer"],
+      ["/of-manager/profile _top null", "/of-manager/profile _top null"],
+    ]);
+    expect(rs.map((r) => r.querySelector(".b-post__date")!.getAttribute("href"))).toEqual(["https://onlyfans.com/11/deltafour", "https://onlyfans.com/12/synthcreator"]);
     expect(visible(doc.querySelector(".b-feed-content .user_posts > .empty-message")!)).toBe(false);
     // Labels and Post statistics are the Creator's own-post controls: another creator's row has OF's Send Tip in
     // Post statistics' place instead, shown but never sending (disabled, with the tooltip).
@@ -316,6 +322,22 @@ describe("home: the composer", () => {
     for (const [label, state] of Object.entries(HOME_TOOLS)) if (state !== own) expect(TOOL(doc, label).getAttribute("href"), label).toBe(`/of-manager/home/${state}`);
   });
 
+  it.each(["home/state-poll", "home/state-quiz", "home/state-format-text", "new-post/state-poll", "new-post/state-quiz", "new-post/state-format-text"])(
+    "%s: no backdrop over the page (the panel closes by its own control; a click on Post, a format button or Add to story is theirs, not a way back)",
+    (page) => {
+      const doc = load(page);
+      expect(doc.querySelector(".b-make-post__voting, .js-text-editor-toolbar")).not.toBeNull();
+      expect(doc.querySelector("a.of-state-backdrop")).toBeNull();
+    },
+  );
+
+  it.each([["home/state-poll", "add_poll"], ["home/state-quiz", "add_quiz"]])("%s: its own tool is disabled while its panel is open, as on New post", (page, attr) => {
+    for (const p of [page, page.replace("home/", "new-post/")]) {
+      const tool = load(p).querySelector<HTMLButtonElement>(`form.b-create-post-form button[at-attr='${attr}']`)!;
+      expect(tool.disabled, p).toBe(true);
+    }
+  });
+
   it("home/state-poll: typed options go on Home's draft, its duration opens Home's period dialog, whose Save returns to Home's poll; Post sends them", async () => {
     const s = memory();
     const h = composer();
@@ -352,6 +374,28 @@ describe("home: the composer", () => {
     expect(h.createPost).toHaveBeenCalledTimes(1);
     expect(h.createPost).toHaveBeenCalledWith(expect.objectContaining({ text: "Synthetic poll", voting_type: 1, voting_due: 3 }));
     expect(h.navigate).toHaveBeenCalledTimes(2); // the duration and its Save; Post stays on Home
+    unbind();
+  });
+
+  it("home/state-poll: Post from the panel sends the poll once and empties the panel with the draft, so a second Post cannot look like a poll and send text alone", async () => {
+    const s = memory();
+    const h = composer();
+    const doc = load("home/state-poll");
+    const unbind = bindPost(doc, "home/state-poll", { handlers: h, storage: s, accountId: "1", draftId: "home:1" });
+    const options = () => [...doc.querySelectorAll<HTMLInputElement>(".b-make-post__voting .vote-input input[at-attr='input']")];
+    options().forEach((o, i) => {
+      o.value = ["Yes", "No"][i] ?? "";
+      o.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    type(doc, "Synthetic poll");
+    doc.querySelector<HTMLButtonElement>(POST)!.click();
+    await flush();
+    expect(h.createPost).toHaveBeenCalledTimes(1);
+    expect(h.createPost).toHaveBeenCalledWith(expect.objectContaining({ text: "Synthetic poll", voting_type: 1, voting_options: ["Yes", "No"] }));
+    expect(h.navigate).not.toHaveBeenCalled();
+    expect(options().map((o) => o.value)).toEqual(options().map(() => ""));
+    expect(doc.querySelector(".b-make-post__voting .b-post-piece .b-post-piece__value")?.textContent).toBe("7 days");
+    expect(s.getItem("oi:new-post:home:1")).toBeNull();
     unbind();
   });
 
@@ -476,7 +520,7 @@ describe("home: the composer", () => {
     expect(rows(doc)).toHaveLength(2);
   });
 
-  it("home/state-vault: the Creator's vault media in the dialog over Home; a tile pick goes on Home's draft", () => {
+  it("home/state-vault: the Creator's vault media in the dialog over Home; a tile pick goes on Home's draft, not to the feed's viewer", () => {
     const doc = load(HOME_VAULT);
     expect(partsOf(HOME_VAULT)).toEqual(["home", "stories", "promotions", "events", "vaultLists", "vaultMedia"]);
     applyData(doc, HOME_VAULT, { vaultMedia: [{ id: 61, type: "photo", files: { thumb: { url: "https://cdn.example/61.jpg" } } }], picked: [] });
@@ -484,8 +528,12 @@ describe("home: the composer", () => {
     expect(tile).not.toBeNull();
     const s = memory();
     const unbind = bindPost(doc, HOME_VAULT, { handlers: composer(), storage: s, accountId: "1", draftId: "home:1" });
+    // Home's post actions are bound too: a vault tile is no post picture (the vault's `data-oi-media` is its id).
+    const unbindActions = bindPostActions(doc, handlers());
     tile.click();
     expect(JSON.parse(s.getItem("oi:new-post:home:1")!).media_files).toEqual([61]);
+    expect(doc.getElementById("oi-vault-viewer")).toBeNull();
+    unbindActions();
     unbind();
   });
 });

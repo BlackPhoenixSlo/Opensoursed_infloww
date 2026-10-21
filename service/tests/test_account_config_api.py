@@ -226,35 +226,49 @@ async def case_both_lanes_ride_along_for_the_dropdown():
 
 async def case_cotag_settings_roundtrip():
     """The Brain's co-performer tag knobs: video rule NULL ≡ OFF (a collab
-    opt-in), username NULL ≡ the global handle, absent keys = unchanged, junk
-    handles 422."""
+    opt-in), username blank ≡ "No co-creator tag" (ticket 85), absent keys =
+    unchanged, junk handles 422, and the account's own handle saves as none."""
+    import account_config_api
+
     aid = "acc_bc_cotag"
     await _seed_account(aid)
     resp = await get_account_config(account_id=aid)
     assert resp["config"]["cotag_tag_videos"] is False, resp["config"]
     assert resp["config"]["cotag_username"] is None, resp["config"]
-    # The editor's placeholder is the default that actually runs.
-    assert resp["cotag_default_username"] == "", resp["cotag_default_username"]
+    assert "cotag_default_username" not in resp, resp.keys()
 
-    out = await put_account_config(_ConfigBody(account_id=aid, config={
-        "cotag_tag_videos": True, "cotag_username": " @SomeOne.Else "}))
-    c = out["config"]
-    assert c["cotag_tag_videos"] is True, c           # opt-in stored
-    assert c["cotag_username"] == "someone.else", c   # trimmed, un-@'d, folded
+    # Who the account is, as /users/me would say — a test must not reach OF.
+    real_own = account_config_api._own_handle
+    account_config_api._own_handle = lambda _aid: "thecreator"
+    try:
+        out = await put_account_config(_ConfigBody(account_id=aid, config={
+            "cotag_tag_videos": True, "cotag_username": " @SomeOne.Else "}))
+        c = out["config"]
+        assert c["cotag_tag_videos"] is True, c           # opt-in stored
+        assert c["cotag_username"] == "someone.else", c   # trimmed, un-@'d, folded
 
-    # Absent keys = unchanged — an older client saving a persona can't clear them.
-    c = (await put_account_config(
-        _ConfigBody(account_id=aid, config={"persona": "hi"})))["config"]
-    assert c["cotag_tag_videos"] is True and c["cotag_username"] == "someone.else", c
+        # Absent keys = unchanged — an older client saving a persona can't clear them.
+        c = (await put_account_config(
+            _ConfigBody(account_id=aid, config={"persona": "hi"})))["config"]
+        assert c["cotag_tag_videos"] is True and c["cotag_username"] == "someone.else", c
 
-    # Unchecking the box stores NULL (sparse), a blanked username clears the
-    # override — both columns back to "the default".
-    await put_account_config(_ConfigBody(account_id=aid, config={
-        "cotag_tag_videos": False, "cotag_username": ""}))
-    async with get_session() as s:
-        row = await s.get(AccountAiConfig, aid)
-    assert row.cotag_tag_videos is None and row.cotag_username is None, (
-        row.cotag_tag_videos, row.cotag_username)
+        # Unchecking the box and picking "No co-creator tag" both store NULL.
+        await put_account_config(_ConfigBody(account_id=aid, config={
+            "cotag_tag_videos": False, "cotag_username": ""}))
+        async with get_session() as s:
+            row = await s.get(AccountAiConfig, aid)
+        assert row.cotag_tag_videos is None and row.cotag_username is None, (
+            row.cotag_tag_videos, row.cotag_username)
+
+        # An account cannot tag itself: its own handle is stored as no tag.
+        c = (await put_account_config(_ConfigBody(account_id=aid, config={
+            "cotag_username": "@TheCreator"})))["config"]
+        assert c["cotag_username"] is None, c
+        async with get_session() as s:
+            row = await s.get(AccountAiConfig, aid)
+        assert row.cotag_username is None, row.cotag_username
+    finally:
+        account_config_api._own_handle = real_own
 
     try:
         await put_account_config(_ConfigBody(

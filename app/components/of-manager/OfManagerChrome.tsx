@@ -15,7 +15,9 @@
  * Creator window URL does), so each creator's OF page can sit in its own window.
  * On an open OF chat (`/of-manager/messages/chat?chat=<fanId>`, one creator) Infloww's 280px Fan insights column sits
  * over the view's right edge (the chat page leaves it the room, so OF keeps its wide layout): Messages Pro's FanDrawer,
- * pinned, in Infloww's palette; below lg the header's Fan insights button opens it as its slide-over instead.
+ * pinned, in Infloww's palette, with the Scripts picker (TemplatePicker) over it: a picked script, or an unsold PPV's
+ * "Send to chat", goes on the mirror's Chat draft (applyScript), shown in OF's composer in the frame. Below lg the
+ * header's Fan insights button opens it as its slide-over instead. It is the chat's one Fan insights mount.
  */
 
 import Link from "next/link";
@@ -26,6 +28,7 @@ import { Bell, ChevronDown, ChevronsLeft, ChevronsRight, ExternalLink, Info, Max
 
 import { FanDrawer } from "@/components/chat/FanDrawer";
 import { InflowwPalette } from "@/components/chat/InflowwPalette";
+import { TemplatePicker } from "@/components/chat/TemplatePicker";
 
 import { useGrantedPages } from "@/components/shell/useGrantedPages";
 import { AccountAvatarPicture } from "@/components/ui/AccountAvatarPicture";
@@ -39,7 +42,9 @@ import { useIsDesktop } from "@/hooks/useIsDesktop";
 import { useRosterCounts } from "@/hooks/useRosterCounts";
 import { fanIdFromParam, type FanId } from "@/lib/fanId";
 import { deniedPage, findNavLink } from "@/lib/nav";
+import { applyScript, type PickedScript } from "@/lib/ofMirrorChat";
 import { OF_INSIGHTS_ATTR } from "@/lib/ofMirrorChrome";
+import { chatPath, mirrorQuery } from "@/lib/ofMirrorData";
 import { ofMeQuery } from "@/lib/ofMirrorIdentity";
 import { relay, type AccountMeta, type OFChatItem } from "@/lib/relay";
 import { subscribeToStorage } from "@/lib/storageSync";
@@ -100,9 +105,12 @@ function showInsights(on: boolean) {
   insightsListeners.forEach((f) => f());
 }
 
-/** The open chat's row from the chat list the mirror reads (Messages Pro's ["chats", ...] cache), else the fan id alone. */
-function useChatItem(accountId: string | null, fanId: FanId | null): OFChatItem | null {
+/** The open chat's row from the chat list the mirror reads (Messages Pro's ["chats", ...] cache), else the chat the
+ *  mirror's page reads (`fan`, the chat's `?chat=`: the same query as useOfChat's, so no second request), else the fan
+ *  id alone. */
+function useChatItem(accountId: string | null, fanId: FanId | null, fan: string | null): OFChatItem | null {
   const qc = useQueryClient();
+  const read = useQuery(mirrorQuery<OFChatItem>(accountId, fan != null && fanId != null ? chatPath(fan) : null, true)).data;
   const subscribe = useCallback((cb: () => void) => qc.getQueryCache().subscribe(cb), [qc]);
   const row = useSyncExternalStore(
     subscribe,
@@ -110,7 +118,7 @@ function useChatItem(accountId: string | null, fanId: FanId | null): OFChatItem 
     () => null,
   );
   const bare = useMemo(() => (fanId == null ? null : { withUser: { id: fanId } }), [fanId]);
-  return row ?? bare;
+  return row ?? (read?.withUser ? read : null) ?? bare;
 }
 
 export function OfManagerChrome({ children }: { children: React.ReactNode }) {
@@ -142,8 +150,10 @@ export function OfManagerChrome({ children }: { children: React.ReactNode }) {
   }, []);
   const viewRef = useRef<HTMLDivElement>(null);
   // Fan insights: an open chat of one creator with a live session (no chat, All creators: none).
-  const fanId = fanIdFromParam(useSearchParams()?.get("chat"));
-  const chat = useChatItem(scoped?.id ?? null, pathname === "/of-manager/messages/chat" ? fanId : null);
+  const fan = useSearchParams()?.get("chat") ?? null;
+  const fanId = fanIdFromParam(fan);
+  const onChat = pathname === "/of-manager/messages/chat" && viewTools;
+  const chat = useChatItem(scoped?.id ?? null, onChat ? fanId : null, onChat ? fan : null);
   const insights = viewTools && chat ? { accountId: scoped.id, fanId: chat.withUser.id, chat } : null;
   const desktop = useIsDesktop();
   const pinnedOn = useSyncExternalStore(subscribeInsights, insightsShown, () => true);
@@ -156,7 +166,8 @@ export function OfManagerChrome({ children }: { children: React.ReactNode }) {
     const view = viewRef.current;
     if (!view || !pinned) return;
     const mark = (on: boolean) =>
-      view.querySelectorAll("iframe").forEach((f) => f.contentDocument?.documentElement.toggleAttribute(OF_INSIGHTS_ATTR, on));
+      // Mid-swap a frame's document can have no <html> yet; its load marks it.
+      view.querySelectorAll("iframe").forEach((f) => f.contentDocument?.documentElement?.toggleAttribute(OF_INSIGHTS_ATTR, on));
     const onLoad = () => mark(true);
     mark(true);
     view.addEventListener("load", onLoad, true); // a frame's load does not bubble; capture sees each page's
@@ -165,6 +176,10 @@ export function OfManagerChrome({ children }: { children: React.ReactNode }) {
       mark(false);
     };
   }, [pinned, viewKey]);
+  const pick = (t: PickedScript) => {
+    if (!insights || fan == null) return;
+    applyScript(window.sessionStorage, insights.accountId, fan, t, viewRef.current?.querySelector("iframe")?.contentDocument ?? null);
+  };
 
   const btn = "w-6 h-6 grid place-items-center rounded text-[var(--ofm-fg)] hover:opacity-80";
   return (
@@ -223,12 +238,17 @@ export function OfManagerChrome({ children }: { children: React.ReactNode }) {
           {noCreators ? <NoCreators /> : sessionGone ? <SessionGone /> : children}
           {insights && !desktop && sheet && (
             <InflowwPalette className="contents">
-              <FanDrawer open onClose={() => setSheet(false)} {...insights} />
+              <FanDrawer open onClose={() => setSheet(false)} onComposeWith={pick} {...insights} />
             </InflowwPalette>
           )}
           {pinned && insights && (
-            <InflowwPalette className="absolute inset-y-0 right-0 flex">
-              <FanDrawer pinned open onClose={() => showInsights(false)} {...insights} />
+            <InflowwPalette className="absolute inset-y-0 right-0 flex w-70 flex-col">
+              <div className="shrink-0 flex items-center gap-2 px-3 py-2 border-l border-b border-[var(--inf-rule,var(--color-border))]">
+                <TemplatePicker accountId={insights.accountId} onPick={pick} messagesPro />
+              </div>
+              <div className="flex-1 min-h-0 flex">
+                <FanDrawer pinned open onClose={() => showInsights(false)} onComposeWith={pick} {...insights} />
+              </div>
             </InflowwPalette>
           )}
         </div>

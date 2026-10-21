@@ -21,6 +21,11 @@ loaded again and the sweep goes on with the next control.
   inert when its href is # or the page itself; it never shows a note.
 - A [data-oi-wired] control must give an allow-listed write, a navigation, a file chooser, a change to its own markup,
   or a note that is not the Read-only note; the queue calendar's selected day may stay inert (it already shows that day).
+  Its centre must be its own (elementFromPoint): one under a State page's backdrop with no dialog, menu or focused
+  field open over it fails, as the operator's click would go back instead (Home's poll page once sent Post's click to
+  Home, and nothing posted).
+- An open State menu's items (each scrolled into view) are over the page's backdrop: none has its centre on it (My
+  profile's More menu lay under it, so Statistics and Copy link went back to the profile).
 - No Relay write from an unmarked control; no write off the allow-list (POST /api/of/v2/posts, /upload, /stories/upload,
   /campaigns, /trials, /promotions, /streams; the settings saves: PATCH /users/me, /users/me/reply-on-subscribe,
   /users/me/settings/security, /users/settings/notifications, /users/settings/story, PUT /users/me/settings/security).
@@ -33,7 +38,7 @@ All Creators (the scope key removed before every load): the same pages, sweep an
   STAND_IN_SRC, read as text: New post, Settings, Messages and the rest show the first model with a session in All
   models, and their actions are that model's) may write, each write with that model's X-Account-Id (STAND_IN);
 - each send control on a page that does not stand in, made sendable as an operator would (Post: text in the composer),
-  clicked on its page gives exactly "Select a model to save changes": Post and Add to story (home) and the stream
+  clicked on its page gives exactly "Select a model to save changes": Post, Add to story (home), Start campaign (home/state-promotion) and the stream
   schedule form's SCHEDULE.
 Prints one {"check","want","got"} line per check, one {scope, page, controls, links, wired, readonly} line per page and
 one {scope, pages, controls, links, wired, readonly} line per pass.
@@ -81,7 +86,7 @@ MARKED=[
     (lambda p: p=="messages/chat/state-vault", "input[name='media_vault_search']", False, 1),
     (lambda p: p=="settings/subscription/tracking-links/modal-1", ".modal-footer button[type='submit']", False, 1),
     (lambda p: p in ("settings/subscription/promotion-campaign/modal-1","settings/subscription/trial-links/modal-1",
-                     "new-post/state-promotion","new-post/state-trial-link"), ".modal-footer button[type='submit']", False, 1),
+                     "new-post/state-promotion","new-post/state-trial-link","home/state-promotion"), ".modal-footer button[type='submit']", False, 1),
     (lambda p: p.startswith("new-post/"), "button[aria-label='Record video'], button[aria-label='Record voice']", False, 2),
     (lambda p: p.startswith("new-post/"), "input[name='feed-search-input']", False, 1),
     (lambda p: p=="streaming/dashboard/create", ".g-page__header > button.g-btn", False, 1),
@@ -105,6 +110,7 @@ SEND=[
     ("settings/subscription/trial-links/modal-1", ".modal-footer button[type='submit']", None, "Select a model to save changes"),
     ("new-post/state-promotion", ".modal-footer button[type='submit']", None, "Select a model to save changes"),
     ("new-post/state-trial-link", ".modal-footer button[type='submit']", None, "Select a model to save changes"),
+    ("home/state-promotion", ".modal-footer button[type='submit']", None, "Select a model to save changes"),
     ("streaming/dashboard/create", ".g-page__header > button.g-btn", None, "Select a model to save changes"),
 ]
 SECTIONS=("new-post","home","streaming","profile","queue","collections","notifications","statements","statistics","messages","vault","bank","settings")
@@ -115,9 +121,14 @@ def pages():
         if m:=re.match(r'^  "([^"]+)": \{', line): section=m[1]
         elif (m:=re.match(r'^      "([^"]*)": "', line)) and section:
             sub=m[1]
-            if section in SECTIONS:
+            if section in SECTIONS and f"{section}/{sub}" not in redirected():
                 out.append(f"{section}/{sub or 'index'}")
     return out
+def redirected():
+    """The pages whose URL opens another page (REDIRECTS of app/lib/of-mirror-route.ts, read as text): not swept."""
+    src=open(os.path.join(ROOT,"app/lib/of-mirror-route.ts")).read()
+    block=src[src.index("const REDIRECTS"):]
+    return set(re.findall(r'^  "([^"]+)":', block[:block.index("};")], re.M))
 def stand_in_re():
     """OfMirrorFrame's stand-in pages: STAND_IN_SRC of app/lib/ofMirrorProfile.ts, read as text (a JS regex literal)."""
     src=open(os.path.join(ROOT,"app/lib/ofMirrorProfile.ts")).read()
@@ -181,6 +192,12 @@ HELPERS=r"""() => {
     // The mouse lands on the control (a checkbox: or its label), or on a link laid over it (a State page backdrop or opener); anything else on top
     // (a page layer over an off-canvas menu, the cell of a control without pointer events) means no operator can click it.
     const own = target.contains(hit) || el.contains(hit) || (el.matches('input') && !!labelOf(el)?.contains(hit));
+    // A Wired control (its own mark, as below) under a State page's backdrop with no dialog, menu or focused field open
+    // over it: the operator's click goes back instead of to the control (Home's poll panel backdrop took Post's click,
+    // and Post never posted). An open menu or field closes on a click outside, as OF's.
+    const mine = el.matches('input') ? !!el.closest('[data-oi-wired]') : el.matches('[data-oi-wired]') || !!el.querySelector('[data-oi-wired]');
+    if (mine && !own && hit.closest('a.of-state-backdrop') && !hit.closest('.modal') && !document.querySelector('.of-state-menu, .m-focused'))
+      return { covered: `${desc(el)} (on top: ${desc(hit)})` };
     if (!own && !hit.closest('a[href]')) return { skip: `${desc(el)} (on top: ${desc(hit)})` };
     // Marked as bindWrites reads the mark: a checkbox inside [data-oi-wired] (the change path); a button whose mark is on it
     // or on a part of it (the click fallback), not a button nested in a Wired row.
@@ -193,6 +210,21 @@ HELPERS=r"""() => {
   window.__deadState = (i) => { const e = window.__dead[i][0]; return e.isConnected ? snap(e) : null; };
 }"""
 NOTE="document.getElementById('oi-note')?.textContent ?? null"
+# An open State menu's items, each scrolled into view: the ones whose centre is the page's backdrop (null: no menu open).
+MENU_HIT=r"""() => {
+  const items = [...document.querySelectorAll('.of-state-menu .v-list-item, .of-state-menu [role=menuitem]')].filter((e, i, all) => all.indexOf(e) === i && e.checkVisibility());
+  if (!items.length) return null;
+  // Only the items the menu shows now: one its scroll box clips is a wheel away (a script's scrollTop doesn't take on
+  // these state pages, so it can't be brought into view here).
+  return items.flatMap((e) => {
+    const r = e.getBoundingClientRect();
+    const box = e.closest('.of-state-menu').getBoundingClientRect();
+    const x = r.left + r.width / 2, y = r.top + r.height / 2;
+    if (y < Math.max(box.top, 0) || y > Math.min(box.bottom, innerHeight)) return [];
+    const hit = document.elementFromPoint(x, y);
+    return hit?.closest('a.of-state-backdrop') ? [e.textContent.trim().replace(/\s+/g, ' ').slice(0, 30)] : [];
+  });
+}"""
 def session(b, scope_js):
     """A fresh context and page with scope_js run before every load; returns (page, sent writes as (method, path,
     X-Account-Id, body), file choosers, console errors)."""
@@ -302,15 +334,20 @@ def sweep(b, scope, only=()):
         for _, sel, text in [d for d in DISABLED if d[0]==page]:
             got=fr.evaluate("([sel, text]) => [...document.querySelectorAll(sel)].filter(e => e.textContent.trim() === text).map(e => [e.disabled, e.title])", [sel, text])
             check(f"{scope or 'all creators'} {page}: {text} is disabled with the tooltip", got, [[True, NOT_YET]])
+        # An open menu's own items take their clicks: none lies under the backdrop (My profile's More menu once did, inside
+        # the content column's stacking context, so Statistics and Copy link went back to the profile).
+        if (menu:=fr.evaluate(MENU_HIT)) is not None: check(f"{scope or 'all creators'} {page}: the open menu's items are over the backdrop", menu, [])
         total=fr.evaluate("window.__deadList()")
         counts={"controls":0,"links":0,"wired":0,"readonly":0}
-        silent=[]; unmarked_writes=[]; off_list=[]; wired_ro=[]; skipped=[]; shot=False
+        silent=[]; unmarked_writes=[]; off_list=[]; wired_ro=[]; covered=[]; skipped=[]; shot=False
         i=0
         while i<total:
             try: probe=fr.evaluate("i => window.__deadProbe(i)", i)
             except Exception as e: probe={"skip":f"#{i}: {str(e)[:80]}"}
             if "skip" in probe:
                 skipped.append(probe["skip"]); i+=1; continue
+            if "covered" in probe:
+                covered.append(f"#{i} {probe['covered']}"); i+=1; continue
             box=pg.locator(f"iframe[src='/of-mirror/pages/{page}.html']").bounding_box()
             before=(len(sent), len(choosers))
             pg.mouse.click(box["x"]+probe["x"], box["y"]+probe["y"])
@@ -352,6 +389,7 @@ def sweep(b, scope, only=()):
         check(f"{label}: no Relay write from an unmarked control", unmarked_writes, [])
         check(f"{label}: no Relay write off the allow-list", off_list, [])
         check(f"{label}: no Wired control shows the Read-only note", wired_ro, [])
+        check(f"{label}: no Wired control under a backdrop with nothing open over it", covered, [])
         print(json.dumps({"scope":scope or "all creators", "page":page, **counts}))
         for k in totals: totals[k]+=counts[k]
         if skipped: print(json.dumps({"scope":scope or "all creators","page":page,"skipped (hidden or gone by their turn)":skipped}))

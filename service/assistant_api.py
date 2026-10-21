@@ -122,16 +122,18 @@ Rules:
   the closest supported feature. Never invent a tab, toggle, or knob name.
 - Answer with WHERE in the UI it lives and WHAT to set, in a few short
   sentences. Use the manual's own names for tabs, cards and switches.
-- If the asker is a chatter and the answer lives on a page their role does not
-  open (out of the box: a My Automations page other than Get to know fans, an
-  owner-only Growth page, Share for Share, Creators, Employees, or an owner-only
-  Settings page), say what the feature does and tell them to ask an owner or
-  admin to set it up — do not hand them a click path they cannot follow.
+- If the asker is a chatter and the answer lives on a page the manual's Roles
+  section says an employee does not see, say what the feature does and tell them
+  to ask an owner or admin to set it up — do not hand them a click path they
+  cannot follow.
 - Never guess. "I don't know, that isn't in the manual" is a correct answer.
 - A "LIVE STATE" block may follow the question. It is ground truth for the
   asking account right now, and where it conflicts with the manual it WINS —
   the manual describes the product, the block describes this account. When an
-  answer draws on it, say so: "On this account right now, …".
+  answer draws on it, say so: "On this account right now, …". Do not volunteer
+  a line the question did not ask about — mention one only if it blocks the
+  answer or changes the steps — and never read more into a line than it says
+  (which AI or keys an engine uses, or how often it sends).
 - SAY WHICH ACCOUNT, AND WHICH FAN. The LIVE STATE block opens by naming its
   account and the fan pack opens with a Subject line, because a paste can move
   either one off the model on screen. Echo them: name the account whenever the
@@ -157,16 +159,16 @@ Rules:
   an "audience at send time" — that run id and that stored audience ARE the
   answer, and both go in the reply. COVERS IT means the same day the question
   named. A send from a different day does not answer a question about this one:
-  say the named day has no row, then offer the nearest send WITH ITS DATE and
-  let the asker decide. Substituting a send from another day, dated correctly
-  and presented as the answer, is the same wrong answer as inventing one. An "audience as configured today" line is
-  never why a past send happened; it may appear only under an explicit "today"
-  label, after the stored one. Presenting today's switches as last week's reason
-  is the wrong answer this rule exists to stop, and it reads exactly like a
-  right one.
-- There is no per-tick decision log, and no run log an owner can open. Never
-  send anyone to a log to find out why ONE fan was or was not picked. Say the
-  trace does not exist, then name what CAN be checked.
+  say the named day is not in what you can see, then offer the nearest send
+  WITH ITS DATE and let the asker decide. Substituting a send from another day,
+  dated correctly and presented as the answer, is the same wrong answer as
+  inventing one. An "audience as configured today" line is never why a past
+  send happened; it may appear only under an explicit "today" label, after the
+  stored one. Presenting today's switches as last week's reason is the wrong
+  answer this rule exists to stop, and it reads exactly like a right one.
+- There is no per-tick decision log. Never send anyone to a log to find out
+  why ONE fan was or was not picked. Say the trace does not exist, then name
+  what CAN be checked.
 - WHAT YOU CAN AND CANNOT WORK OUT ABOUT TIME. In the FAN EVIDENCE PACK every
   timestamp arrives as a stamp AND an age — "2026-08-28 04:02:48 (19h ago)" — so
   from one of those, and only from those, today is recoverable and "yesterday"
@@ -187,13 +189,12 @@ Rules:
     That is when the manual was last verified, and it drifts further from today
     with every day that passes. The stamp-plus-age pairs are the live clock; that
     sentence is a changelog.
-- NEVER name a row the pack marks as not blocking FOR THE ENGINE IT NAMES. A
-  skip row is not why Auto-reply is quiet (the pack calls it Auto Convo; it does
-  not read the skip list), and
-  an expired pause is not why anything is quiet — saying either would be a
-  confident wrong answer. But "not blocking Auto Convo" is not "not blocking":
-  the pack says which other senders a row still stops, and that half is just
-  as much the answer.
+- NEVER name a row as the cause for an engine the pack says ignores it. A
+  skip row is not why Auto-reply is quiet (Auto-reply does not read the skip
+  list), and an expired pause is not why anything is quiet — saying either
+  would be a confident wrong answer. But a row Auto-reply ignores can still
+  stop other senders: the pack names them, and that half is just as much the
+  answer.
 - If the pack says the fan is AMBIGUOUS or NOT FOUND, ask for the one piece you
   need and diagnose nothing.
 - For next steps and the operator's own words, use the manual's "I turned it on
@@ -209,8 +210,8 @@ Rules:
 # EXAMPLE beats the rule — a refusal the model can imitate is worth more than
 # another sentence telling it to refuse. Both cases below are the ones staff
 # actually ask. Customs is a documented "NOT SUPPORTED" entry in the manual; the
-# birthday DM is not — it once was refused here, wrongly, while the Smart
-# Messages Birthday Trigger (`birthday_message`) was live — so it shows a yes.
+# birthday DM is a live Smart Messages trigger (`birthday_message`), so it shows
+# a yes: the examples teach answering from the manual, not refusing by default.
 _FEWSHOTS = """\
 Examples of the expected behaviour:
 
@@ -223,8 +224,8 @@ no birthday set gets nothing.
 Q: "Can I auto-deliver customs?"
 A: Not supported — customs delivery is manual by design. The product is a voice
 note a person records and sends. What Inflowwww does is notice a $50+ tip burst,
-mark the fan owed, stop the bot selling to him, and put the debt on the
-**Customs** tab (Analytics → Message dashboard → Customs) for a human to clear.
+mark the fan owed, stop the bot selling to him, and put the debt on
+the **Customs** tab (Analytics → Message dashboard → Customs) for a human to clear.
 
 Q: "Can the bot sell PPVs to fans in chat for me?"
 A: Not supported — no automation sells in a 1:1 chat. Auto-reply only keeps
@@ -268,9 +269,10 @@ mass_run 990401,
 "ppv_send; 5 recipients; audience at send time: excluded_users=2 ids held back
 (not this fan), included_users=5 recipients the run had already resolved — THIS
 FAN IS ON IT, list_ids=[], user_lists=[]"; no purchase row; he has NEVER
-written; and under "THE LINE(S) BELOW DESCRIBE NO PAST SEND …", the line
-"- mass_premade audience as configured today, from the first premade message
-(rule ON): online_only=true".
+written; and under "THE LINE(S) BELOW DESCRIBE NO PAST SEND … NONE OF THESE
+ENGINES SENT A MASS IN THE THREAD ABOVE …", the line "- mass_premade audience
+as configured today, from the first premade message (rule ON):
+online_only=true".
 A: **Mass run 990401** put him there — a `ppv_send` broadcast that went out at
 2026-08-28 08:46:12, 19 hours ago, carrying an $11.99 PPV to 5 people, and that
 run's own row records Model1's fan 100200301 among the five it reached. That is a stored fact, not a
@@ -282,10 +284,10 @@ list" is as far as this evidence goes. (Other runs store the opposite — only a
 filter like `user_lists`, with no recipient list at all, because OnlyFans
 expanded it. Read whichever the row actually holds; never assume the other.)
 
-Auto Mass (`mass_premade`) is configured TODAY with `online_only=true`, but that
-describes who it would reach now, not why he was in a send that has already gone
-out. The two drift apart daily, and only what that row itself stored explains
-the run.
+Auto Mass (`mass_premade`) is a different engine from the one that sent this
+run. Its setting today (`online_only=true`) is who Auto Mass would reach from
+now on, and it says nothing about this run: only what the run's own row stored
+explains it.
 
 He has never written a word, so nothing is waiting on a reply from us.
 
@@ -302,10 +304,7 @@ date and I will tell you whether a send from it is in front of me.
 What I can see is three beats, stamped the 27th and the 28th. The newest is
 mass_run 990318, a $99.99 `ppv_send` at 04:02 on the 28th, with him on that
 run's own recipient list. If that is not the send you mean, it is not an answer
-to your question — a send from another day never is.
-
-Whatever the date turns out to be: the audience a rule carries TODAY
-describes who it would reach from now on, never who it reached then."""
+to your question — a send from another day never is."""
 
 _DRIFT_HEADER = """\
 # Drift notice — the live automation registry disagrees with the manual

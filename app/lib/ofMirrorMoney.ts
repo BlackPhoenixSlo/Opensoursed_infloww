@@ -7,9 +7,11 @@
  *   `withdrawalPeriodOptions`, which are its menu's options) and the minimum withdrawal amount `minPayoutSumm` in its
  *   captured sentence (fixture app/lib/__fixtures__/of/statements-balances.json);
  * - Statements' Earning Statistics shows `/payouts/stats` (OF reads its `list`): the all-time net, gross and net per
- *   category and in total, the date range, and one row per month (newest first) with its net;
+ *   category and in total, the date range, and one row per month (newest first) with its net. As OF's
+ *   StatementsEarningStatisticsList, one row is expanded (All time first; a row's head expands it): its chart (each
+ *   category's gross summed up over the period, the picked category's line bright), its date range and its category
+ *   rows (a month's: its items summed); a category row picks its line;
  * - Referrals' "Current referral earnings" shows `/payments/referrals/balance`'s `referralEarnings`;
- * - Chargebacks' "Chargeback ratio N%" shows `/payouts/chargebacks/ratio`'s `chargebacksRatio` (OF's last 30 days).
  * Field names and selectors are OF's own (build 202610091632: statements.js, statistics-statements.js,
  * statements-earning-stats.js, app.js module 874727). All models (but on Statements' Earnings, which shows the first
  * model: standInModel), no data yet or a relay error: each figure a dash, as the generator draws Statements (no example
@@ -22,7 +24,7 @@
  * - the payout frequency select opens its menu of `withdrawalPeriodOptions`; picking another sends OF's
  *   `PATCH /payouts/requests {withdrawalPeriod}`, the select disabled while it saves, the old one back if it fails (OF
  *   shows no message); the line under it is OF's minSumMessage for the frequency;
- * - "Request withdrawal" shows only for manual payouts and is enabled by OF's own rule (disabledManualWithdraw: a balance
+ * - "Request withdrawal" (Statements' box and Statistics' sidebar) shows only for manual payouts and is enabled by OF's own rule (disabledManualWithdraw: a balance
  *   at least the minimum, and the account able to receive a manual payout or with a payouts issue, which opens Billing
  *   Support instead); it opens OF's "Manual payouts" dialog (amount between the minimum and OF's max, its Max button and
  *   messages), whose Request withdrawal sends `POST /payouts/requests {withdrawal_amount}`; OF's answer shows in its
@@ -36,18 +38,18 @@ import { useScope } from "@/contexts/ScopeContext";
 import { relay } from "@/lib/relay";
 import { make } from "@/lib/ofMirrorData";
 import { ofMeQuery } from "@/lib/ofMirrorIdentity";
+import { clearChart, drawLines, type LinesSpec } from "@/lib/ofMirrorChart";
 import { basePage } from "@/lib/ofMirrorRow";
 import { note } from "@/lib/ofMirrorWrites";
 import { parseSendFailure } from "@/lib/sendFailure";
 
-export type MoneyPart = "balances" | "earningStats" | "referralBalance" | "chargebacks";
+export type MoneyPart = "balances" | "earningStats" | "referralBalance";
 
 /** Relay route per part (`X-Account-Id` from the scope). */
 export const MONEY_ROUTES: Record<MoneyPart, string> = {
   balances: "/api/of/v2/payouts/balances",
   earningStats: "/api/of/v2/payouts/stats",
   referralBalance: "/api/of/v2/payments/referrals/balance",
-  chargebacks: "/api/of/v2/payouts/chargebacks/ratio",
 };
 
 /** The money parts `page` (a state page: its page's) shows. Balances: every Statements page but Support, and Statistics' Overview and Statements tabs. */
@@ -57,7 +59,6 @@ export function moneyParts(page: string): MoneyPart[] {
   if (/^statements\/(?!support$)/.test(p) || /^statistics\/(overview|statements)\//.test(p)) parts.push("balances");
   if (p === "statements/stats/earnings") parts.push("earningStats");
   if (p === "statements/referrals" || p === "statistics/statements/referrals/earnings") parts.push("referralBalance");
-  if (p === "statements/stats/disputes") parts.push("chargebacks"); // Statistics' ratio follows its period: ofMirrorStats
   return parts;
 }
 
@@ -88,10 +89,13 @@ export interface MoneyActions {
 }
 
 type Sums = { total_gross?: number | null; total_net?: number | null };
-/** `/payouts/stats`'s `list`: totals per category (`all` the sum) and per month (key: the month's start, unix seconds). */
+/** One earning in a month's category list (OF's `time` in unix seconds). */
+type EarningItem = { gross?: number | null; net?: number | null; time?: number | null };
+/** `/payouts/stats`'s `list`: totals per category (`all` the sum) and per month (key: the month's start, unix seconds:
+ * its sums and, per category, its earnings). */
 export interface EarningStats {
   total?: Record<string, Sums | undefined> | null;
-  months?: Record<string, Sums | undefined> | null;
+  months?: Record<string, (Sums & Record<string, unknown>) | undefined> | null;
 }
 
 export interface MoneyData {
@@ -100,7 +104,6 @@ export interface MoneyData {
   balances?: Balances;
   earningStats?: EarningStats;
   referralEarnings?: number | null;
-  chargebacksRatio?: number | null;
   payoutUser?: PayoutUser;
   /** A frequency change is being saved (OF's disabledWithdrawalPeriod). */
   periodSaving?: boolean;
@@ -116,8 +119,7 @@ export function moneyOf(part: MoneyPart, body: unknown): MoneyData {
     const l = o.list && typeof o.list === "object" ? o.list : o; // OF reads `.list`
     return { earningStats: l as EarningStats };
   }
-  if (part === "referralBalance") return { referralEarnings: o.referralEarnings as number | null };
-  return { chargebacksRatio: o.chargebacksRatio as number | null };
+  return { referralEarnings: o.referralEarnings as number | null };
 }
 
 // This module's own undo list per page (ofMirrorData's restore must not undo these, nor these its rows).
@@ -310,6 +312,9 @@ export function withdrawError(err: unknown): string {
   return parseSendFailure((err as { body?: unknown } | null)?.body).reason || TEXTS.debug_alert_message;
 }
 
+/** Request withdrawal (the generator marks it data-oi-wired): Statements' box's (g-btn__wrapper) and Statistics' sidebar's (g-btn__row). */
+const WITHDRAW = ".balance-block .g-btn__wrapper > button[data-oi-wired], .balance-block .g-btn__row > button[data-oi-wired]";
+
 function applyBalances(doc: Document, data: MoneyData, now: Date) {
   const b = data.balances!;
   for (const el of doc.querySelectorAll(".b-statements__current-balance__value > span, .b-statements-balances__col.m-current .b-statements-balances__sum")) setMoney(doc, el, b.payoutAvailable);
@@ -334,7 +339,7 @@ function applyBalances(doc: Document, data: MoneyData, now: Date) {
     setAttr(doc, slot.querySelector("input[at-attr='dropdown']"), "disabled", open ? null : "disabled");
   }
   // Request withdrawal: manual payouts only (OF's v-if), enabled by OF's rule.
-  for (const btn of doc.querySelectorAll(".balance-block .g-btn__wrapper > button[data-oi-wired]")) {
+  for (const btn of doc.querySelectorAll(WITHDRAW)) {
     const wrap = btn.parentElement!;
     setAttr(doc, wrap, "style", isManualWithdrawal(b) ? wrap.getAttribute("style") : "display:none");
     setAttr(doc, btn, "disabled", withdrawDisabled(b, data.payoutUser) ? "disabled" : null);
@@ -398,7 +403,158 @@ function setSums(doc: Document, row: Element, s: Sums | undefined) {
   setMoney(doc, vals.at(-1), s?.total_net ?? 0);
 }
 
-function applyEarningStats(doc: Document, stats: EarningStats, now: Date) {
+/** OF's earnings chart lines (StatementsEarningStatisticsList's chartDataMap, in its order): category, title, colour. */
+const LINES: [string, string, string][] = [
+  ["subscribes", "Subscriptions", "#2196f3"],
+  ["tips", "Tips", "#00bcd4"],
+  ["post", "Posts", "#ec407a"],
+  ["chat_messages", "Messages", "#ff7043"],
+  ["ref", "Referrals", "#9575cd"],
+  ["stream", "Streams", "#ffa000"],
+];
+type Month = NonNullable<NonNullable<EarningStats["months"]>[string]>;
+const itemsOf = (m: Month | undefined, key: string): EarningItem[] => (Array.isArray(m?.[key]) ? (m[key] as EarningItem[]) : []);
+/** A month's category: its earnings summed (OF's getNormalizedStats). */
+const sumsOf = (m: Month | undefined, key: string): Sums =>
+  itemsOf(m, key).reduce<{ total_gross: number; total_net: number }>((s, it) => ({ total_gross: s.total_gross + (num(it?.gross) ?? 0), total_net: s.total_net + (num(it?.net) ?? 0) }), { total_gross: 0, total_net: 0 });
+/** OF's dim line: the colour at 40%. */
+const fade = (hex: string) => `rgba(${[1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)).join(",")},0.4)`;
+const pad2 = (n: number) => String(n).padStart(2, "0");
+/** OF's "DD MMM YY". */
+const dayLabel = (ms: number) => {
+  const d = new Date(ms);
+  return `${pad2(d.getDate())} ${d.toLocaleDateString("en-US", { month: "short" })} ${String(d.getFullYear()).slice(2)}`;
+};
+
+/**
+ * OF's earnings chart over `start`..`end` (ms) from `months`' earnings (buildChart, prepareData): 15 slots (fewer under
+ * 15 seconds), the last at `end`; each earning's gross added to the slot nearest its time, then summed up slot by slot;
+ * `current`'s line in its colour, the others dimmed.
+ */
+export function earningsChart(months: (Month | undefined)[], start: number, end: number, current: string): LinesSpec {
+  const secs = (end - start) / 1000;
+  const n = secs < 15 ? Math.max(1, Math.floor(secs)) : 15;
+  const unit = (end - start) / n;
+  const dates = Array.from({ length: n }, (_, i) => (i === n - 1 ? end : Math.round(start + i * unit)));
+  const lines = LINES.map(([key, title, color]) => {
+    const values = new Array<number>(n).fill(0);
+    for (const m of months)
+      for (const it of itemsOf(m, key)) {
+        const t = num(it?.time);
+        const g = num(it?.gross);
+        if (t === null || g === null) continue;
+        let at = 0;
+        for (let i = 1; i < n; i++) if (Math.abs(dates[i] - t * 1000) < Math.abs(dates[at] - t * 1000)) at = i;
+        values[at] += g;
+      }
+    for (let i = 1; i < n; i++) values[i] += values[i - 1];
+    return { title, values, color: key === current ? color : fade(color), kind: "money" as const };
+  });
+  return { labels: dates.map(dayLabel), lines };
+}
+
+/** Earning Statistics on a page: its data, its rows (All time: "all", a month: its start in ms) and OF's state. */
+interface EarningView {
+  stats: EarningStats;
+  now: Date;
+  rows: Map<HTMLElement, "all" | number>;
+  months: Map<number, Month | undefined>;
+  expanded: "all" | number;
+  current: string;
+}
+const earningViews = new WeakMap<Document, EarningView>();
+const earningBound = new WeakSet<Document>();
+
+/** Draw `spec` on `canvas`; restoreMoney blanks it and puts its captured size back. */
+function drawEarnings(doc: Document, canvas: HTMLCanvasElement, spec: LinesSpec) {
+  const was = ["style", "width", "height"].map((a) => [a, canvas.getAttribute(a)] as const);
+  track(doc, () => {
+    clearChart(canvas);
+    for (const [a, v] of was) if (v === null) canvas.removeAttribute(a);
+    else canvas.setAttribute(a, v);
+  });
+  drawLines(canvas, spec);
+}
+
+/** Show the expanded row (OF's updateExpand): only it has a body, with its chart, date range and sums. */
+function showEarning(doc: Document) {
+  const v = earningViews.get(doc);
+  if (!v) return;
+  let all: HTMLElement | undefined;
+  for (const [el, key] of v.rows) {
+    if (key === "all") all = el;
+    else el.querySelector(":scope > .b-stats-row__body")?.remove();
+    setClass(doc, el, "m-expanded", key === v.expanded);
+  }
+  const allBody = all?.querySelector<HTMLElement>(":scope > .b-stats-row__body");
+  if (!all || !allBody) return;
+  setAttr(doc, allBody, "style", v.expanded === "all" ? null : "display:none");
+  const total = v.stats.total ?? {};
+  const month = v.expanded === "all" ? undefined : v.months.get(v.expanded);
+  let body = allBody;
+  let start: number;
+  let end: number;
+  let from: string;
+  let to: string;
+  if (v.expanded === "all") {
+    // OF's mergeData: from the earliest month (none: today), to now.
+    const first = Math.min(...v.months.keys());
+    start = Number.isFinite(first) ? first : new Date(v.now.getFullYear(), v.now.getMonth(), v.now.getDate()).getTime();
+    end = v.now.getTime();
+    [from, to] = [longDay(new Date(start)), longDay(v.now)];
+  } else {
+    const row = [...v.rows].find(([, k]) => k === v.expanded)![0];
+    body = allBody.cloneNode(true) as HTMLElement;
+    body.removeAttribute("style");
+    row.appendChild(body);
+    const d = new Date(v.expanded);
+    start = new Date(d.getFullYear(), d.getMonth(), 1).getTime();
+    end = new Date(d.getFullYear(), d.getMonth() + 1, 1).getTime() - 1;
+    from = to = monthTitle(d).trim();
+  }
+  const dates = body.querySelectorAll(".b-date-value");
+  if (dates.length === 2) {
+    setText(doc, dates[0], from);
+    setText(doc, dates[1], to);
+  }
+  for (const [cls, key] of CATEGORIES) {
+    const row = body.querySelector(`.b-stats-row__content > .b-stats-row__label.${cls}`);
+    if (!row) continue;
+    setSums(doc, row, v.expanded === "all" ? total[key] : sumsOf(month, key));
+    setClass(doc, row, "m-current", key === v.current);
+  }
+  const sums = v.expanded === "all" ? total.all : month;
+  const items = [...body.querySelectorAll(".m-total .m-total-item")];
+  setMoney(doc, items[0]?.querySelector(".b-stats-row__val"), sums?.total_gross ?? 0);
+  setMoney(doc, items[1]?.querySelector(".b-stats-row__val"), sums?.total_net ?? 0);
+  const canvas = body.querySelector("canvas");
+  if (canvas) drawEarnings(doc, canvas, earningsChart(v.expanded === "all" ? [...v.months.values()] : [month], start, end, v.current));
+}
+
+/** A row's head expands that row; a category row in the open body picks its line (one listener per page). */
+function bindEarning(doc: Document) {
+  if (earningBound.has(doc)) return;
+  earningBound.add(doc);
+  doc.addEventListener("click", (ev) => {
+    const v = earningViews.get(doc);
+    const t = ev.target as Element | null;
+    if (!v || !t?.closest) return;
+    const head = t.closest(".b-stats-wrap > .b-stats-row > .b-stats-row__head");
+    const key = head && v.rows.get(head.parentElement as HTMLElement);
+    if (key !== undefined && key !== null) {
+      v.expanded = key;
+      return showEarning(doc);
+    }
+    const label = t.closest(".b-stats-row__body .b-stats-row__content > .b-stats-row__label");
+    const cat = label && CATEGORIES.find(([cls]) => label.classList.contains(cls))?.[1];
+    if (cat) {
+      v.current = cat;
+      showEarning(doc);
+    }
+  });
+}
+
+function applyEarningStats(doc: Document, stats: EarningStats, now: Date, prev: EarningView | undefined) {
   const rows = [...doc.querySelectorAll<HTMLElement>(".b-stats-wrap > .b-stats-row")];
   const all = rows.find((r) => r.querySelector(".b-stats-row__content"));
   const monthTpl = rows.find((r) => r !== all);
@@ -406,48 +562,43 @@ function applyEarningStats(doc: Document, stats: EarningStats, now: Date) {
   const total = stats.total ?? {};
   // OF shows 0 for an absent sum.
   setMoney(doc, all.querySelector(".b-stats-row__total-net > span"), total.all?.total_net ?? 0);
-  for (const [cls, key] of CATEGORIES) {
-    const row = all.querySelector(`.b-stats-row__content > .b-stats-row__label.${cls}`);
-    if (row) setSums(doc, row, total[key]);
-  }
-  const items = [...all.querySelectorAll(".m-total .m-total-item")];
-  setMoney(doc, items[0]?.querySelector(".b-stats-row__val"), total.all?.total_gross ?? 0);
-  setMoney(doc, items[1]?.querySelector(".b-stats-row__val"), total.all?.total_net ?? 0);
   const months = Object.entries(stats.months ?? {})
     .map(([k, m]) => ({ at: new Date(Number(k) * 1000), m }))
     .filter(({ at }) => !Number.isNaN(at.getTime()))
     .sort((a, b) => b.at.getTime() - a.at.getTime());
-  const dates = all.querySelectorAll(".b-date-value");
-  if (dates.length === 2) {
-    setText(doc, dates[0], longDay(months.at(-1)?.at ?? now));
-    setText(doc, dates[1], longDay(now));
-  }
-  if (!monthTpl) return;
-  const tpl = make(monthTpl); // the generator's hidden template
-  tpl.style.removeProperty("display");
-  if (!tpl.getAttribute("style")) tpl.removeAttribute("style");
-  tpl.classList.remove("m-expanded");
-  tpl.querySelector(".b-stats-row__body")?.remove();
-  for (const r of rows) {
-    if (r === all) continue;
-    const was = r.getAttribute("style");
-    track(doc, () => (was === null ? r.removeAttribute("style") : r.setAttribute("style", was)));
-    r.setAttribute("style", `${was ?? ""};display:none`);
-  }
-  const wrap = monthTpl.parentElement!;
-  for (const { at, m } of months) {
-    const el = tpl.cloneNode(true) as HTMLElement;
-    const title = el.querySelector(".b-stats-row__month");
-    if (title) title.textContent = monthTitle(at);
-    const net = el.querySelector(".b-stats-row__total-net > span");
-    if (net) {
-      const n = num(m?.total_net) ?? 0;
-      net.textContent = ` ${usd(n)} `;
-      net.classList.toggle("m-zero-value", n === 0);
+  const view: EarningView = { stats, now, rows: new Map([[all, "all"]]), months: new Map(months.map(({ at, m }) => [at.getTime(), m])), expanded: "all", current: prev?.current ?? "subscribes" };
+  if (prev && prev.expanded !== "all" && view.months.has(prev.expanded)) view.expanded = prev.expanded;
+  earningViews.set(doc, view);
+  bindEarning(doc);
+  if (monthTpl) {
+    const tpl = make(monthTpl); // the generator's hidden template
+    tpl.style.removeProperty("display");
+    if (!tpl.getAttribute("style")) tpl.removeAttribute("style");
+    tpl.classList.remove("m-expanded");
+    tpl.querySelector(".b-stats-row__body")?.remove();
+    for (const r of rows) {
+      if (r === all) continue;
+      const was = r.getAttribute("style");
+      track(doc, () => (was === null ? r.removeAttribute("style") : r.setAttribute("style", was)));
+      r.setAttribute("style", `${was ?? ""};display:none`);
     }
-    wrap.appendChild(el);
-    track(doc, () => el.remove());
+    const wrap = monthTpl.parentElement!;
+    for (const { at, m } of months) {
+      const el = tpl.cloneNode(true) as HTMLElement;
+      const title = el.querySelector(".b-stats-row__month");
+      if (title) title.textContent = monthTitle(at);
+      const net = el.querySelector(".b-stats-row__total-net > span");
+      if (net) {
+        const n = num(m?.total_net) ?? 0;
+        net.textContent = ` ${usd(n)} `;
+        net.classList.toggle("m-zero-value", n === 0);
+      }
+      wrap.appendChild(el);
+      track(doc, () => el.remove());
+      view.rows.set(el, at.getTime());
+    }
   }
+  showEarning(doc);
 }
 
 /** Show `data` on `doc` (the capture again for what it lacks; idempotent). */
@@ -456,13 +607,11 @@ export function applyMoney(doc: Document, page: string, data: MoneyData, now: Da
   const parts = moneyParts(page);
   if (parts.includes("balances") && data.balances) applyBalances(doc, data, now);
   payouts.set(doc, { balances: parts.includes("balances") ? data.balances : undefined, user: data.payoutUser, actions: data.actions });
-  if (parts.includes("earningStats") && data.earningStats) applyEarningStats(doc, data.earningStats, now);
+  const view = earningViews.get(doc);
+  earningViews.delete(doc);
+  if (parts.includes("earningStats") && data.earningStats) applyEarningStats(doc, data.earningStats, now, view);
   if (parts.includes("referralBalance") && data.referralEarnings !== undefined) {
     for (const el of doc.querySelectorAll(".g-box__header__inner__value > span, .b-referrals-state__count")) setMoney(doc, el, data.referralEarnings);
-  }
-  const ratio = num(data.chargebacksRatio);
-  if (parts.includes("chargebacks") && ratio !== null) {
-    for (const el of doc.querySelectorAll(".m-statistics-alert .alert-text-wrapper > p")) swapIn(doc, el, /\d[\d.,]*%|—/, `${Math.round(ratio * 100) / 100}%`);
   }
   if (parts.includes("referralBalance")) {
     const url = data.meId == null || data.meId === "" ? null : `https://onlyfans.com?ref=${encodeURIComponent(String(data.meId))}`;
@@ -504,7 +653,7 @@ function bindStatements(doc: Document) {
     bound.add(slot);
     bindPeriodSelect(doc, slot);
   }
-  for (const btn of doc.querySelectorAll<HTMLButtonElement>(".balance-block .g-btn__wrapper > button[data-oi-wired]")) {
+  for (const btn of doc.querySelectorAll<HTMLButtonElement>(WITHDRAW)) {
     if (bound.has(btn)) continue;
     bound.add(btn);
     btn.addEventListener("click", () => {
@@ -719,7 +868,6 @@ export function useOfMoney(frameRef: RefObject<HTMLIFrameElement | null>, src: s
   const balances = useQuery(q("balances")).data;
   const stats = useQuery(q("earningStats")).data;
   const referral = useQuery(q("referralBalance")).data;
-  const chargebacks = useQuery(q("chargebacks")).data;
   const me = useQuery({ ...ofMeQuery(accountId), enabled: !!accountId && (parts.includes("referralBalance") || parts.includes("balances")) }).data;
   const meId = me?.id;
   // OF's fetchPayoutsReceive: canReceiveManualPayout as /payouts/check-receive has it now.
@@ -771,7 +919,6 @@ export function useOfMoney(frameRef: RefObject<HTMLIFrameElement | null>, src: s
           ...moneyOf("balances", balances),
           ...moneyOf("earningStats", stats),
           ...moneyOf("referralBalance", referral),
-          ...moneyOf("chargebacks", chargebacks),
           meId,
           payoutUser,
           periodSaving,
@@ -785,5 +932,5 @@ export function useOfMoney(frameRef: RefObject<HTMLIFrameElement | null>, src: s
     if (frame.contentDocument?.readyState === "complete") apply();
     frame.addEventListener("load", apply);
     return () => frame.removeEventListener("load", apply);
-  }, [frameRef, src, page, accountId, qc, balances, stats, referral, chargebacks, me, meId, receive, periodSaving]);
+  }, [frameRef, src, page, accountId, qc, balances, stats, referral, me, meId, receive, periodSaving]);
 }

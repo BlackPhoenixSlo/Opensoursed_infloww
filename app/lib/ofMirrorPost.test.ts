@@ -1010,6 +1010,28 @@ describe("picked vault media on the composer (index capture)", () => {
     expect(loadDraft(s, "1")).toEqual(empty());
     unbind();
   });
+
+  it.each(["new-post/index", "home/index"])("%s: each thumb's X drops that file from the draft and the row; the last one's removes the row and disables Post (U5)", (page) => {
+    document.documentElement.innerHTML = readFileSync(resolve(__dirname, `../public/of-mirror/pages/${page}.html`), "utf8");
+    const d = document;
+    const s = memoryStorage();
+    const id = page.startsWith("home/") ? "home:1" : "1";
+    saveDraft(s, id, { ...empty(), media_files: [62, { processId: "p1" }], thumbs: THUMBS });
+    const unbind = bindPost(d, page, { handlers: handlers(), storage: s, accountId: "1", draftId: page.startsWith("home/") ? id : undefined });
+    const xs = () => [...d.querySelectorAll<HTMLButtonElement>("#oi-post-thumbs button[aria-label='Delete']")];
+    expect(xs()).toHaveLength(2);
+    expect(xs()[0].querySelector("use")!.getAttribute("href")).toBe("#icon-close");
+    xs()[1].click();
+    expect(loadDraft(s, id)).toEqual({ ...empty(), media_files: [62], thumbs: [THUMBS[0]] });
+    expect(srcs(d)).toEqual([THUMBS[0]]);
+    expect(post(d).disabled).toBe(false);
+    xs()[0].click();
+    expect(loadDraft(s, id)).toEqual(empty());
+    expect(rows(d)).toHaveLength(0);
+    expect(post(d).disabled).toBe(true);
+    expect(d.getElementById("oi-note")).toBeNull();
+    unbind();
+  });
 });
 
 describe("Co-tags on the composer", () => {
@@ -1248,6 +1270,16 @@ describe("expiration and fundraising target dialogs (state-expiration, state-tar
   const tab = (d: Document, text: string) => [...d.querySelectorAll<HTMLButtonElement>(".modal.show .b-tabs__nav__link")].find((b) => b.textContent?.trim() === text)!;
   const target = (d: Document) => d.querySelector<HTMLInputElement>(".modal.show input[at-attr='input']")!;
 
+  it.each(["new-post/state-expiration", "home/state-expiration"])("%s: the period chips wrap inside the 344px dialog, so 30 days is whole and takes its own click (U10)", (page) => {
+    document.documentElement.innerHTML = readFileSync(resolve(__dirname, `../public/of-mirror/pages/${page}.html`), "utf8");
+    const row = document.querySelector(".modal.show .b-tabs__nav__list")!;
+    expect([...row.querySelectorAll(".b-tabs__nav__link")].map((b) => b.textContent?.trim())).toContain("30 days");
+    expect(getComputedStyle(row).flexWrap).toBe("wrap");
+    // Tag people's tabs (another small dialog) stay OF's one scrolled row.
+    document.documentElement.innerHTML = readFileSync(resolve(__dirname, `../public/of-mirror/pages/${page.replace("expiration", "tag-people")}.html`), "utf8");
+    expect(getComputedStyle(document.querySelector(".modal.show .b-tabs__nav__list")!).flexWrap).not.toBe("wrap");
+  });
+
   it("a period tab fills the field and is current; Save stores expire_days and returns to the composer", () => {
     const { d, s, h, unbind } = bindBoth("state-expiration");
     tab(d, "7 days").click();
@@ -1466,6 +1498,19 @@ describe("post extras on the composer (index capture)", () => {
     expect(d.getElementById("oi-post-summary")).toBeNull();
     expect(loadDraft(s, "1")).toEqual({ ...empty(), text: "Synthetic post" });
     unbind();
+  });
+
+  it("the summary names the picked labels from the Relay's list; it counts them while one is unknown (U22)", () => {
+    const labelItems = [{ id: 11, name: "Summer" }, { id: 12, name: "Beach" }];
+    const s = memoryStorage();
+    saveDraft(s, "1", { ...empty(), text: "Synthetic post", label_ids: [11, 12] });
+    const named = bindBoth("index", s, handlers(), { labelItems });
+    expect(named.d.getElementById("oi-post-summary")!.textContent).toBe("Labels: Summer, Beach · Clear");
+    named.unbind();
+    saveDraft(s, "1", { ...empty(), text: "Synthetic post", label_ids: [11, 13] });
+    const unknown = bindBoth("index", s, handlers(), { labelItems });
+    expect(unknown.d.getElementById("oi-post-summary")!.textContent).toBe("Labels: 2 · Clear");
+    unknown.unbind();
   });
 
   it("the summary names a chosen poll length", () => {

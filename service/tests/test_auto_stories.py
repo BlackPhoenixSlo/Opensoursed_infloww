@@ -50,7 +50,7 @@ import automations.auto_stories as as_mod  # noqa: E402,F401 — registers
 import automations.unsend_messages as un_mod  # noqa: E402,F401 — registers
 from automation_executor import run_once  # noqa: E402
 from db.engine import get_session  # noqa: E402
-from db.models import Account, ScheduledJob  # noqa: E402
+from db.models import Account, AccountAiConfig, ScheduledJob  # noqa: E402
 
 KIND = "auto_stories"
 
@@ -345,23 +345,21 @@ async def case_hide_upload_unsend_leg():
 # overlay OF's story editor emits.
 
 async def case_story_mentions_cotag_on_unknown_media():
-    """No describe row → we cannot prove she's alone → tag."""
+    """No describe row → we cannot prove she's alone → tag (on an account with
+    a co-creator to tag; nobody is tagged by default since ticket 85)."""
     aid = "acc_as_cotag"
     await _seed_account(aid)
+    async with get_session() as s:
+        s.add(AccountAiConfig(account_id=aid, utc_offset=0, daily_cost_cap_cents=100,
+                              cotag_username="cohandle"))
     fake = _use_fake([_photo(1), _photo(2)])
-    import os
-
     import media_cotag
     media_cotag.reset_caches()
 
-    os.environ["OF_COTAG_USERNAME"] = "partner"
-    try:
-        res = await run_once(aid, KIND, payload={"folder_id": 42, "per_run": 2})
-    finally:
-        os.environ.pop("OF_COTAG_USERNAME", None)
+    res = await run_once(aid, KIND, payload={"folder_id": 42, "per_run": 2})
 
     assert res["posted"] == 2, res
-    assert fake.posted_mentions == ["@partner", "@partner"], fake.posted_mentions
+    assert fake.posted_mentions == ["@cohandle", "@cohandle"], fake.posted_mentions
 
 
 async def case_story_skips_cotag_on_solo_media():

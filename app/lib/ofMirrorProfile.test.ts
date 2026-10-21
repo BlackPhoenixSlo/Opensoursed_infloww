@@ -2,12 +2,12 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { applyData } from "./ofMirrorData";
-import { formatCount } from "./ofMirrorIdentity";
+import { applyIdentity, formatCount } from "./ofMirrorIdentity";
 import { ARCHIVE_PATH, bindProfile, PROFILE_CHANGE, standInModel, type Highlight, type MediaPost, type MirrorProfile, type ProfileHandlers, type ProfileUser } from "./ofMirrorProfile";
 import type { MirrorPost, Promotion } from "./ofMirrorFeeds";
 import type { PostLabel } from "./ofMirrorData";
-import { bindStory } from "./ofMirrorPost";
-import { VIEWER } from "./ofMirrorVault";
+import { bindStory, highlightItems } from "./ofMirrorPost";
+import { STORY_PHOTO_MS, VIEWER } from "./ofMirrorVault";
 
 const capture = (p: string) => readFileSync(resolve(__dirname, `../public/of-mirror/pages/${p}.html`), "utf8");
 const load = (p: string) => {
@@ -71,7 +71,9 @@ describe.each(["profile/index", "profile/media", "profile/state-more-menu"])("%s
     const doc = load(p);
     const off = [...doc.querySelectorAll<HTMLButtonElement>("button[disabled]")].filter((b) => !b.closest("[data-oi-template]"));
     for (const b of off) expect(b.title, b.outerHTML.slice(0, 120)).toBe(NOT_YET);
-    for (const sel of ["button[aria-label='Compact view']", "button[aria-label='Sort']", "button.m-user-status"]) expect(doc.querySelector(sel)?.hasAttribute("disabled"), sel).toBe(true);
+    for (const sel of ["button[aria-label='Compact view']", "button[aria-label='Sort']"]) expect(doc.querySelector(sel)?.hasAttribute("disabled"), sel).toBe(true);
+    const status = doc.querySelector("button.m-user-status");
+    if (status) expect([status.hasAttribute("disabled"), status.hasAttribute("data-oi-wired"), status.hasAttribute("data-oi-user-status")]).toEqual([false, true, true]);
   });
 });
 
@@ -90,13 +92,95 @@ describe("My profile's counts, label tabs and highlights", () => {
     const [one, two] = tiles.slice(3) as HTMLButtonElement[];
     expect([one.disabled, one.title, two.disabled]).toEqual([false, "", false]);
     expect([one, two].map((t) => [t.dataset.oiFull, t.dataset.oiType])).toEqual([[`/img?u=${H1.cover}`, "photo"], [`/img?u=${H2.cover}`, "photo"]]);
+    expect([one, two].map((t) => t.dataset.oiHighlight)).toEqual([String(H1.id), String(H2.id)]);
     // OF's highlight `cover` is the cover story's picture URL.
     expect([one, two].map((t) => t.querySelector("img")?.getAttribute("src"))).toEqual([`/img?u=${H1.cover}`, `/img?u=${H2.cover}`]);
     applyData(doc, "profile/index", {});
     expect(doc.documentElement.innerHTML).toBe(html);
   });
 
-  it("a highlight tile opens its cover in the viewer (in either scope); Escape closes it", () => {
+  it("a highlight tile plays its stories in order (GET /stories/highlights/{id}); none or a failure is a note", async () => {
+    const doc = load("profile/index");
+    applyData(doc, "profile/index", { profile: PROFILE }, (u) => `/img?u=${u}`);
+    // OF's answer: the highlight with its stories (normalizr `highlights` entity, `{stories: [...]}`).
+    const answer = {
+      id: H1.id,
+      title: H1.title,
+      stories: [
+        { id: 1, isWatched: true, media: [{ id: 11, type: "photo", files: { full: { url: "https://cdn.example/h1.jpg" } } }] },
+        { id: 2, media: [{ id: 12, type: "video", files: { full: { url: "https://cdn.example/h2.mp4" } } }] },
+      ],
+    };
+    const highlightStories = vi.fn(async (id: string) => (id === String(H1.id) ? highlightItems(answer, (u) => `/img?u=${u}`) : []));
+    const unbind = bindStory(doc, { addStory: vi.fn(), highlightStories });
+    const tiles = shown(doc, ".stories-list .b-story-item") as HTMLButtonElement[];
+    tiles[3].click();
+    await flush();
+    expect(highlightStories).toHaveBeenCalledWith(String(H1.id));
+    const viewer = doc.getElementById(VIEWER)!;
+    expect(viewer.querySelector("img")!.getAttribute("src")).toBe("/img?u=https://cdn.example/h1.jpg"); // not the cover
+    viewer.querySelector<HTMLButtonElement>("button[aria-label='Next']")!.click();
+    expect(viewer.querySelector("video")!.getAttribute("src")).toBe("/img?u=https://cdn.example/h2.mp4");
+    viewer.querySelector<HTMLButtonElement>("button[aria-label='Close']")!.click();
+    tiles[4].click();
+    await flush();
+    expect(doc.getElementById(VIEWER)).toBeNull();
+    expect(doc.getElementById("oi-note")!.textContent).toBe("No story to show");
+    highlightStories.mockRejectedValueOnce(new Error("boom"));
+    tiles[3].click();
+    await flush();
+    expect(doc.getElementById("oi-note")!.textContent).toBe("Could not load the highlight: boom");
+    unbind();
+  });
+
+  it("with a Creator: a highlight tile plays its own stories (highlightStories by its id) in OF's story player, then closes", async () => {
+    vi.useFakeTimers();
+    try {
+      const doc = load("profile/index");
+      applyData(doc, "profile/index", { profile: PROFILE }, (u) => `/img?u=${u}`);
+      const stories = [{ src: "/img?u=s1.jpg", type: "photo" }, { src: "/img?u=s2.mp4", type: "video" }, { src: "/img?u=s3.jpg", type: "photo" }];
+      const highlightStories = vi.fn((_id: string) => Promise.resolve(stories));
+      const unbind = bindStory(doc, { addStory: vi.fn(), highlightStories });
+      const tile = (shown(doc, ".stories-list .b-story-item") as HTMLButtonElement[])[4];
+      expect(tile.dataset.oiHighlight).toBe(String(H2.id));
+      tile.click();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(highlightStories.mock.calls).toEqual([[String(H2.id)]]);
+      const viewer = doc.getElementById(VIEWER)!;
+      const media = () => viewer.querySelector("[data-oi-viewer-media]")!;
+      const widths = () => [...viewer.querySelectorAll<HTMLElement>("[data-oi-story-bars] > span > span")].map((b) => b.style.width);
+      // OF's header: the highlight's title and cover, a segment per story.
+      expect(viewer.querySelector(".b-story-header__author__title")!.textContent).toBe(H2.title);
+      expect(viewer.querySelector(".b-story-header__author img")!.getAttribute("src")).toBe(`/img?u=${H2.cover}`);
+      expect([media().getAttribute("src"), widths()]).toEqual(["/img?u=s1.jpg", ["100%", "0px", "0px"]]); // the current one filling to full
+      // A photo for 5 s, then the next story; a video to its end.
+      await vi.advanceTimersByTimeAsync(STORY_PHOTO_MS);
+      expect([media().tagName, media().getAttribute("src"), widths().slice(0, 1)]).toEqual(["VIDEO", "/img?u=s2.mp4", ["100%"]]);
+      await vi.advanceTimersByTimeAsync(STORY_PHOTO_MS);
+      expect(media().getAttribute("src")).toBe("/img?u=s2.mp4");
+      media().dispatchEvent(new Event("ended"));
+      expect(media().getAttribute("src")).toBe("/img?u=s3.jpg");
+      await vi.advanceTimersByTimeAsync(STORY_PHOTO_MS);
+      expect(doc.getElementById(VIEWER)).toBeNull();
+      unbind();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("highlightItems: the answer's stories' media in order; no stories list, none", () => {
+    const img = (u: string) => `/img?u=${u}`;
+    const photo = (url: string) => ({ id: 1, media: [{ id: 2, type: "photo", files: { full: { url } } }] });
+    expect(highlightItems({ stories: [photo("https://cdn.example/a.jpg"), photo("https://cdn.example/b.jpg")] }, img)).toEqual([
+      { src: img("https://cdn.example/a.jpg"), type: "photo" },
+      { src: img("https://cdn.example/b.jpg"), type: "photo" },
+    ]);
+    expect(highlightItems({ id: 1 }, img)).toEqual([]);
+    expect(highlightItems(null, img)).toEqual([]);
+    expect(highlightItems([photo("https://cdn.example/a.jpg")], img)).toEqual([]);
+  });
+
+  it("a highlight tile opens its cover in the viewer with no single Creator; Escape closes it", () => {
     const doc = load("profile/index");
     applyData(doc, "profile/index", { profile: PROFILE }, (u) => `/img?u=${u}`);
     const unbind = bindStory(doc, null);
@@ -208,7 +292,7 @@ describe("bindProfile", () => {
     unbind();
   });
 
-  it.each(["profile/index", "profile/state-more-menu"])("%s: Copy link to profile copies the Creator's OF link and notes it; All Creators asks for a model", async (p) => {
+  it.each(["profile/index", "profile/state-more-menu"])("%s: Copy link to profile copies the Creator's OF link and OF's toast says so; All Creators asks for a model", async (p) => {
     const doc = load(p);
     const writeText = vi.fn(() => Promise.resolve());
     Object.defineProperty(doc.defaultView!.navigator, "clipboard", { value: { writeText }, configurable: true });
@@ -218,7 +302,10 @@ describe("bindProfile", () => {
     for (const copy of copies) {
       click(copy);
       await flush();
-      expect(doc.getElementById("oi-note")?.textContent).toBe("Link copied");
+      // A toast, not the note: the note sat in the header's button row and pushed EDIT PROFILE aside.
+      expect(doc.querySelector("#oi-toast .toast__text")?.textContent).toBe("Link copied");
+      expect(doc.getElementById("oi-note")).toBeNull();
+      doc.getElementById("oi-toast")?.remove();
     }
     expect(writeText).toHaveBeenCalledWith("https://onlyfans.com/livemodel");
     unbind();
@@ -229,13 +316,83 @@ describe("bindProfile", () => {
     doc.getElementById("oi-note")?.remove();
   });
 
+  it("the status menu: the Creator's status, OF's two rows, a pick shown at once and saved; a failed save puts it back", async () => {
+    const doc = load("profile/index");
+    const status = doc.querySelector<HTMLElement>("[data-oi-user-status]")!;
+    const setVisible = vi.fn(() => Promise.resolve());
+    let unbind = bindProfile(doc, handlers({ visible: false, setVisible }));
+    expect(status.textContent?.trim()).toBe("Invisible");
+    click(status);
+    const rows = () => [...doc.querySelectorAll<HTMLElement>("#oi-menu [role='menuitem']")];
+    expect(rows().map((r) => [r.textContent?.trim(), r.querySelector("input")?.checked])).toEqual([["Available", false], ["Invisible", true]]);
+    click(rows()[0]);
+    expect(status.textContent?.trim()).toBe("Available");
+    expect(setVisible).toHaveBeenCalledWith(true);
+    unbind();
+    const failing = vi.fn(() => Promise.reject(new Error("boom")));
+    unbind = bindProfile(doc, handlers({ visible: true, setVisible: failing }));
+    click(status);
+    click(rows()[1]);
+    expect(status.textContent?.trim()).toBe("Invisible");
+    await flush();
+    expect(failing).toHaveBeenCalledWith(false);
+    expect(status.textContent?.trim()).toBe("Available");
+    expect(doc.getElementById("oi-note")?.textContent).toContain("Could not change the status");
+    unbind();
+    doc.getElementById("oi-note")?.remove();
+    unbind = bindProfile(doc, handlers({ setVisible: null }));
+    click(status);
+    expect(doc.getElementById("oi-menu")).toBeNull();
+    expect(doc.getElementById("oi-note")?.textContent).toBe("Select a model to save changes");
+    unbind();
+    doc.getElementById("oi-note")?.remove();
+  });
+
+  it.each(["profile/index", "profile/media"])("%s: the compact header holds More over the cover and turns sticky past 180px of scroll, as OF's", (p) => {
+    const doc = load(p);
+    const header = doc.querySelector<HTMLElement>(".js-compact-sticky-header")!;
+    const back = header.querySelector(".g-page__header__btn")!;
+    const more = header.querySelector(".b-compact-header__settings .dropdown-toggle")!;
+    const sticky = [...header.querySelectorAll<HTMLElement>("[data-oi-sticky-only]")];
+    const extra = () => sticky.filter((e) => e.style.display !== "none").map((e) => e.getAttribute("aria-label"));
+    // The full header has Edit profile and Copy link; More is the compact header's only, as OF's.
+    expect(doc.querySelector(".b-profile__header__user [aria-label='More']")).toBeNull();
+    expect(header.querySelector(".b-group-profile-btns")!.lastElementChild!.classList.contains("b-compact-header__settings")).toBe(true);
+    const scrollTo = (y: number) => {
+      Object.defineProperty(window, "scrollY", { value: y, configurable: true });
+      window.dispatchEvent(new Event("scroll"));
+    };
+    scrollTo(0);
+    const unbind = bindProfile(doc, handlers());
+    const sections = header.querySelector(".b-profile__sections")!;
+    const state = () => [header.classList.contains("m-sticky"), back.className.match(/m-(?:white|light|default-color)/g), more.className.match(/m-(?:light|dark)\b/g), sections.classList.contains("d-flex"), extra()];
+    const top = [false, ["m-white", "m-light"], ["m-light"], true, []];
+    expect(state()).toEqual(top);
+    scrollTo(180);
+    expect(state()).toEqual(top);
+    scrollTo(181);
+    expect(state()).toEqual([true, ["m-default-color"], ["m-dark"], false, ["Edit profile", "Copy link to profile"]]);
+    const [edit, copy] = sticky;
+    expect([edit.getAttribute("href"), copy.hasAttribute("data-oi-copy-link"), copy.hasAttribute("data-oi-wired")]).toEqual(["/of-manager/settings/profile", true, true]);
+    scrollTo(40);
+    expect(state()).toEqual(top);
+    unbind();
+    scrollTo(500);
+    expect(header.classList.contains("m-sticky")).toBe(false);
+    scrollTo(0);
+  });
+
   it("More info expands the bio and Collapse info folds it; Spotify's title folds and opens its section", () => {
     const doc = load("profile/index");
+    // A bio taller than its 85px fold (jsdom lays nothing out).
+    Object.defineProperty(doc.querySelector(".b-user-info__content > .g-truncated-text")!, "scrollHeight", { configurable: true, value: 200 });
     const unbind = bindProfile(doc, handlers());
     const bio = doc.querySelector<HTMLElement>("[data-oi-bio-toggle]")!;
     const text = bio.parentElement!.querySelector<HTMLElement>(".g-truncated-text")!;
+    expect([bio.style.display, text.classList.contains("m-over-limit"), text.classList.contains("m-collapsed")]).toEqual(["", true, true]);
     click(bio);
-    expect([bio.textContent?.trim(), text.classList.contains("m-collapsed"), text.style.maxHeight]).toEqual(["Collapse info", false, "none"]);
+    // OF's expanded box: its own 20vh with a scroll bar (m-over-limit:not(.m-collapsed)), no inline height.
+    expect([bio.textContent?.trim(), text.classList.contains("m-collapsed"), text.style.maxHeight]).toEqual(["Collapse info", false, ""]);
     click(bio);
     expect([bio.textContent?.trim(), text.classList.contains("m-collapsed"), text.style.maxHeight]).toEqual(["More info", true, "85px"]);
     const spotify = doc.querySelector<HTMLElement>("[data-oi-collapse]")!;
@@ -244,6 +401,50 @@ describe("bindProfile", () => {
     click(spotify);
     expect([spotify.parentElement!.classList.contains("m-active"), (spotify.nextElementSibling as HTMLElement).style.display]).toEqual([true, ""]);
     unbind();
+  });
+
+  it("the bio keeps the Creator's line breaks with no captured gap; More info shows only while it overflows its fold (U16)", () => {
+    const doc = load("profile/index");
+    const p = doc.querySelector<HTMLElement>(".b-user-info__text > p")!;
+    expect([p.querySelectorAll("br").length, p.style.whiteSpace]).toEqual([0, "pre-line"]);
+    applyIdentity(doc, { username: "livemodel", about: "First line<br />Second line" });
+    expect(p.textContent).toBe("First line\nSecond line");
+    let refit = () => {};
+    const observed: Element[] = [];
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(cb: () => void) {
+        refit = cb;
+      }
+      observe(el: Element) {
+        observed.push(el);
+      }
+      disconnect() {}
+    });
+    const text = doc.querySelector<HTMLElement>(".b-user-info__text")!;
+    let height = 40;
+    Object.defineProperty(text.parentElement!, "scrollHeight", { configurable: true, get: () => height });
+    try {
+      const unbind = bindProfile(doc, handlers());
+      const bio = doc.querySelector<HTMLElement>("[data-oi-bio-toggle]")!;
+      const box = text.parentElement!;
+      const state = () => [bio.style.display, box.classList.contains("m-over-limit"), box.classList.contains("m-collapsed")];
+      // A short bio: whole, unfaded, no More info (OF shows it only over the limit).
+      expect(observed).toEqual([text]);
+      expect(state()).toEqual(["none", false, false]);
+      // Its text grew (a longer bio, a narrower frame): folded, with More info.
+      height = 300;
+      refit();
+      expect(state()).toEqual(["", true, true]);
+      click(bio);
+      expect(state()).toEqual(["", true, false]);
+      // Short again while open: whole, folded state reset.
+      height = 40;
+      refit();
+      expect([...state(), bio.textContent?.trim(), bio.getAttribute("aria-expanded"), box.style.maxHeight]).toEqual(["none", false, false, "More info", "false", "85px"]);
+      unbind();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("the Media tab's Photo marks itself current, keeps the filter on the frame and tells ofMirrorData", () => {
@@ -262,13 +463,28 @@ describe("bindProfile", () => {
 });
 
 describe("profile/state-more-menu: the header's More menu", () => {
-  it("Statistics opens Statistics' Overview (as OF's), QR code is disabled with the tooltip, Copy link to profile is wired", () => {
+  it("Statistics opens Statistics' Overview (as OF's), QR code Settings' QR code page, Copy link to profile is wired", () => {
     const doc = load("profile/state-more-menu");
     const items = [...doc.querySelectorAll<HTMLElement>("[role='menuitem']")];
     const item = (t: string) => items.find((i) => i.textContent?.trim().toLowerCase() === t)!;
     expect(item("statistics").querySelector("a.of-state-link")?.getAttribute("href")).toBe("/of-manager/statistics/overview/earnings");
-    expect([item("qr code").getAttribute("aria-disabled"), item("qr code").title, item("qr code").querySelector("a")]).toEqual(["true", NOT_YET, null]);
+    expect([item("qr code").getAttribute("aria-disabled"), item("qr code").querySelector("a.of-state-link")?.getAttribute("href")]).toEqual([null, "/of-manager/settings/qrcode"]);
     expect([item("copy link to profile").hasAttribute("data-oi-copy-link"), item("copy link to profile").querySelector("a")]).toEqual([true, null]);
+  });
+
+  it("the open menu's content column stops being a stacking context under the backdrop, so its items take their clicks (U2)", () => {
+    const doc = load("profile/state-more-menu");
+    // OF's own rule (its CSS is linked, not inline): the content column is position relative, z-index 0.
+    const of = doc.createElement("style");
+    of.textContent = ".l-wrapper__content { position: relative; z-index: 0; }";
+    doc.head.prepend(of);
+    const column = doc.querySelector(".l-wrapper__content")!;
+    expect(column.querySelector(".of-state-menu [role='menuitem']")).not.toBeNull();
+    expect(doc.querySelector("a.of-state-backdrop")).not.toBeNull();
+    expect(getComputedStyle(column).zIndex).toBe("auto");
+    // A page with no open menu keeps OF's.
+    load("profile/index").head.prepend(of);
+    expect(getComputedStyle(document.querySelector(".l-wrapper__content")!).zIndex).toBe("0");
   });
 });
 

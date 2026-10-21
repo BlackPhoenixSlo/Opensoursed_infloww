@@ -8,6 +8,7 @@
  *   (below), in All models acting for New post's stand-in, as the rest of New post. As OF's PromoteProfile, the
  *   promotion tile opens Settings > Subscription instead while an "all" promotion is claimable. After Start campaign or
  *   Create link there, OF goes to Settings > Subscription (#promotion) or its free trial links; Cancel returns to New post.
+ *   Home's promotion tile opens the same dialog over Home (home/state-promotion); Start campaign and Cancel return to Home.
  * - "Start profile promotion" > the promotion campaign dialog (settings/subscription/promotion-campaign/modal-1, OF's
  *   ModalPromotion): the audience tabs (New subscribers, Expired subscribers, Both new and expired), the kind tabs (Free
  *   trial, First month discount: disabled where OF's isDiscountDisabled holds), the Offer limit, Offer expiration and
@@ -179,6 +180,8 @@ export function bundleOptions(settings: BundleSettings | undefined, existing: nu
   const list = (o: Record<string, string> | undefined) => Object.entries(o ?? {}).map(([value, label]) => ({ value: String(Number(value)), label }));
   return { discounts: list(c.discounts), durations: list(c.durations).filter((d) => !existing.includes(Number(d.value))) };
 }
+/** The bundle dialog's block, and Add bundle's tooltip, when OF has no bundle duration or discount left to offer. */
+export const NO_BUNDLES_LEFT = "OnlyFans offers no more subscription bundles for this page";
 /** The bundle's total (OF's amount: months x price x (100 - discount) / 100, rounded to cents). */
 export const bundleAmount = (f: BundleForm, price: number) => Math.round(f.duration * price * (100 - f.discount)) / 100;
 /**
@@ -189,7 +192,7 @@ export function bundleBlock(o: { noModel?: boolean; settings: BundleSettings | u
   const max = Number(o.settings?.bundleMaxPrice ?? 0);
   if (o.noModel) return SELECT_MODEL;
   if (!o.settings) return "Loading OnlyFans' bundle options";
-  if (!o.discounts.length || !o.durations.length) return "OnlyFans offers no more subscription bundles for this page";
+  if (!o.discounts.length || !o.durations.length) return NO_BUNDLES_LEFT;
   if (max && o.amount > max) return `Maximum bundle price is $${max}`; // OF's bundle_max_price_error
   return "";
 }
@@ -202,9 +205,10 @@ const FORM_STATE = "data-oi-offer";
 export const PROMOTION_MODAL = "settings/subscription/promotion-campaign/modal-1";
 export const BUNDLE_MODAL = "settings/subscription/promotion-campaign/modal-2";
 export const TRIAL_MODAL = "settings/subscription/trial-links/modal-1";
-/** The same two dialogs over New post (its tiles'). */
+/** The same two dialogs over New post (its tiles'), and the promotion one over Home (its strip's tile). */
 export const NEW_POST_PROMOTION = "new-post/state-promotion";
 export const NEW_POST_TRIAL = "new-post/state-trial-link";
+export const HOME_PROMOTION = "home/state-promotion";
 const TRIAL_PAGE = "settings/subscription/trial-links";
 /** Where OF goes after either dialog saves on New post (MODALS.PROMOTION's and ModalTrial's isPostsCreatePage push). */
 export const AFTER_NEW_POST_PROMOTION = "/of-manager/settings/subscription#promotion";
@@ -677,7 +681,7 @@ function bindPromotionCards(doc: Document, handlers: OfferHandlers | null): () =
   return () => doc.removeEventListener("click", onClick);
 }
 
-/** The story strip's offer tiles (New post's links, Home's disabled promotion). */
+/** The story strip's offer tiles (New post's links, Home's promotion). */
 const PROMOTION_TILE = "Start profile promotion";
 const TRIAL_TILE = "Create new trial link";
 
@@ -685,9 +689,10 @@ const TRIAL_TILE = "Create new trial link";
  * The story strip's offer tiles, as OF's (its `canCreatePromotion ? promote-profile`, `canCreateTrial ? create-trial-
  * link-btn`): hidden where users/me says the model cannot (only an explicit false; unknown: shown). The promotion
  * tile's link goes to Settings > Subscription while an "all" promotion is claimable (OF's PromoteProfile), else to its
- * dialog over New post.
+ * dialog over the page it is on (`page`, its path under of-mirror/pages: Home's, else New post's).
  */
-export function applyOfferTiles(doc: Document, me: OfMe | undefined): void {
+export function applyOfferTiles(doc: Document, me: OfMe | undefined, page: string): void {
+  const dialog = page.startsWith("home/") ? HOME_PROMOTION : NEW_POST_PROMOTION;
   const flags = (me ?? {}) as { canCreatePromotion?: boolean; canCreateTrial?: boolean; promotions?: MePromotion[] | null };
   const claimable = (flags.promotions ?? []).some((p) => p?.type === "all" && p.canClaim);
   for (const tile of doc.querySelectorAll<HTMLElement>(".b-story-item.m-create")) {
@@ -695,7 +700,7 @@ export function applyOfferTiles(doc: Document, me: OfMe | undefined): void {
     const off = text === PROMOTION_TILE ? flags.canCreatePromotion === false : text === TRIAL_TILE ? flags.canCreateTrial === false : null;
     if (off === null) continue;
     tile.style.display = off ? "none" : "";
-    if (text === PROMOTION_TILE && tile instanceof HTMLAnchorElement) tile.href = claimable ? AFTER_NEW_POST_PROMOTION : `/of-manager/${NEW_POST_PROMOTION}`;
+    if (text === PROMOTION_TILE && tile instanceof HTMLAnchorElement) tile.href = claimable ? AFTER_NEW_POST_PROMOTION : `/of-manager/${dialog}`;
   }
 }
 
@@ -706,8 +711,8 @@ export function bindOffers(
   ctx: { me?: OfMe; settings?: BundleSettings; trialView: TrialView; handlers: OfferHandlers | null },
 ): () => void {
   const unbinds = [bindPromotionCards(doc, ctx.handlers)];
-  if (page.startsWith("new-post/") || page.startsWith("home/")) applyOfferTiles(doc, ctx.me);
-  if (page === PROMOTION_MODAL || page === NEW_POST_PROMOTION) unbinds.push(bindPromotionDialog(doc, ctx.me));
+  if (page.startsWith("new-post/") || page.startsWith("home/")) applyOfferTiles(doc, ctx.me, page);
+  if (page === PROMOTION_MODAL || page === NEW_POST_PROMOTION || page === HOME_PROMOTION) unbinds.push(bindPromotionDialog(doc, ctx.me));
   if (page === BUNDLE_MODAL) unbinds.push(bindBundleDialog(doc, ctx.me, ctx.settings, !ctx.handlers));
   if (page === TRIAL_MODAL || page === NEW_POST_TRIAL) unbinds.push(bindTrialDialog(doc, ctx.me));
   if (page === TRIAL_PAGE || page.startsWith(`${TRIAL_PAGE}/`)) unbinds.push(bindTrialPage(doc, ctx.trialView, ctx.handlers));

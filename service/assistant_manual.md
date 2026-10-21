@@ -29,7 +29,6 @@ The sidebar, top to bottom:
   Customs, Posts, My Feed and Top Posts. The customs queue is **Analytics →
   Message dashboard → Customs**.
 - **Messages Pro** — the chat workspace. It opens in a window of its own.
-  **Focus** works the owe-reply queue one fan at a time.
 - **Growth** — Smart Messages, Smart lists, Auto-follow, Vault Pro, Scripts,
   Profile promotion, Free trial links, Tracking links and Sensitive words.
 - **Share for Share** — Discover creators, Requests, S4S schedule and S4S
@@ -47,12 +46,12 @@ Clock button and the avatar menu (theme, Log out). There is no model picker: a
 page that shows one creator has its own creator select.
 
 **Old names people still use.** "Stuff" is now Analytics → Message dashboard,
-"Inbox" is Messages Pro, "Stats" is Analytics, "Setup" is Creators → Manage
-creators (accounts) plus Creators → Custom proxy and Settings → AI keys. The
-old `/messages`, `/inbox`, `/stats`, `/customs` and `/setup` addresses redirect
-to the new pages. The old **+ New ▾** menu is gone: Messages Pro's **+** button
-holds **Mass message**, **Message online fans** and **Post** (which opens OF
-Manager → New post).
+"Auto Convo" is My Automations → Auto-reply, "Inbox" is Messages Pro, "Stats"
+is Analytics, "Setup" is Creators → Manage creators (accounts) plus Creators →
+Custom proxy and Settings → AI keys. The old `/messages`, `/inbox`, `/stats`,
+`/customs` and `/setup` addresses redirect to the new pages. The old **+ New ▾**
+menu is Messages Pro's **+** button, which holds **Mass message**, **Message
+online fans** and **Post** (which opens OF Manager → New post).
 
 ## Roles — who can see what
 
@@ -73,25 +72,14 @@ tracking, Messaging settings, AI keys and Audit log are the owner's.
 The Message dashboard, Customs tab included, is visible to employees by default, because
 a chatter needs to know when a fan is owed a custom.
 
-**Rule for answering a chatter:** if the thing they are asking about is
-configured on a page their role does not open — out of the box, a My
-Automations page other than Get to know fans, one of Growth's owner pages, Share
-for Share, Creators, Employees or an owner-only Settings page — tell them the feature
-exists, say what it does, and tell them to **ask an owner or admin to set it
-up** — do not hand them a click path they cannot follow.
-
 ## Where the automations actually live
 
-**There is no Automations page any more.** The old one — the Brain card, the
-Automation rules list with **+ New rule**, the 12 "Ready-made posts &
-broadcasts" tabs and the Automation runs log — is gone, and an old
-`/automations` link lands on My Automations → Auto Post. Automations are set up
-in these places now:
+Automations are set up in these places:
 
 - **My Automations** — one page per automation: **Auto Post**, **Auto Story**,
-  **Auto Mass** (ready-made broadcasts on timers), **Auto-reply** (it was
-  once called Auto Convo), **Auto Funnel**, **Get to know fans** and
-  **Gen-Info**. Each page has its own creator select and its own switch.
+  **Auto Mass** (ready-made broadcasts on timers), **Auto-reply**, **Auto
+  Funnel**, **Get to know fans** and **Gen-Info**. Each page has its own
+  creator select and its own switch.
 - **Growth → Smart Messages → Automated Messages** — the per-fan triggers:
   **Nudge**, **Delayed welcome**, **Purchased**, **Nearing expiry**,
   **Expired**, **Resubscribe** and **Birthday**. A trigger that is not set up
@@ -103,29 +91,42 @@ in these places now:
   running).
 - **Share for Share** — the S4S posts a creator swaps with a partner.
 
-**Everything else has no page any more:** the Brain (persona, clock, daily cap,
-models), Follow-ups, the Audience fence, ⚡ Reply Instant, the rules list and
-the run log. A rule that already exists keeps running as it was set, but nobody
-can create, edit or switch it from the app. When someone asks how to set one of
-these up, say there is no screen for it now and that the deployment operator has
-to change it — do not send them looking for a tab.
+The AI that writes to fans is **Auto-reply** (My Automations → **Auto-reply**,
+`/growth/auto-reply`, the `autoreply` engine) plus the warm-up **Get to know
+fans** rule, and every AI call runs on the keys in **Settings → AI keys**.
+(**Growth → Scripts** is the saved script library chatters paste from, not an
+automation.)
 
-**There is no AI Chatter, AI Upseller or Tip Reward any more.** The AI seller,
-the upseller, tip rewards, tip requests and Make It Right were removed from the
-product. The AI that writes to fans today is **Auto-reply** (My Automations →
-**Auto-reply**, `/growth/auto-reply`, the `autoreply` engine) plus the warm-up
-**Get to know fans** rule, and every AI call runs on the keys in **Settings → AI
-keys**. If someone asks for one of the removed features, say plainly that it no
-longer exists — do not send them looking for it. (**Growth → Scripts** is the
-saved script library chatters paste from, not an automation.)
+Describing media runs **on demand**: on **Growth → Vault Pro**, **Describe all**
+(or describing one item) has an image-reading AI write down what is in each
+photo or video. It sends nothing to fans, needs a DeepInfra key, and refuses to
+start once the account's daily AI cap is used up.
 
-**The 💸 PPV Library and 🧠 Vault AI automations are gone too.** The PPV Library
-rotator, the Vault AI arc teases, the daily vault reminder, applying approved
-Vault AI items and the background describe sweep were removed; their old rules
-no longer run. What is left is describing media **on demand**: on **Growth →
-Vault Pro**, **Describe all** (or describing one item) has an image-reading AI
-write down what is in each photo or video. It sends nothing to fans, needs a
-DeepInfra key, and refuses to start once the account's daily AI cap is used up.
+## Removed or operator-only
+
+Asked about one of these, say what the table says — plainly, once — and point
+at the nearest live thing. Never send anyone looking for a tab. **Removed**
+means it is not in the product and an old rule of it does not run.
+**Operator-only** means there is no screen: a rule that already exists keeps
+running as it was set, and only the deployment operator can add, change or stop
+one.
+
+| Asked about | What to say | Nearest live thing |
+|---|---|---|
+| The Automations page: the Brain card, the rules list with **+ New rule**, the 12 "Ready-made posts & broadcasts" tabs, the Automation runs log | Removed. An old `/automations` link lands on My Automations → Auto Post. | The pages listed above |
+| The Brain: persona, location, clock, daily AI cap, creator facts, models | Operator-only, raising the daily cap included (see "The Brain"). | **Model info** on My Automations → Get to know fans |
+| Follow-ups (`send_followup`) | Operator-only. | Writing to him from the chat; the Nudge trigger for fans who come online |
+| The Audience fence | Operator-only, and its folder sync is removed. | — |
+| ⚡ Reply Instant, real-time dispatch for an inbound message | Operator-only. | Auto-reply |
+| Apply profiles, Backfill chat history, Customs owed (`apply_profiles`, `scrape_chats`, `customs_watch`) | Operator-only. | Gen-Info; the Customs queue on Analytics → Message dashboard → Customs |
+| A repeating `send_mass_message` rule | Operator-only. | Auto Mass; a one-off from Messages Pro → **+** → Mass message |
+| A run log, or a per-tick log of why a fan was or was not picked | There is no run log an owner can open; the deployment operator reads it. Nothing records a per-fan decision. | The checklist in "I turned it on and nothing happened" |
+| AI Chatter, AI Upseller, Tip Reward, tip requests, Make It Right | Removed. Older message rows can carry its label, **"AI Chatter"**. | Auto-reply and Get to know fans (see "Which autochat is which") |
+| 💸 PPV Library rotator, 🧠 Vault AI (arc teases, the daily vault reminder, applying approved items, the background describe sweep) | Removed. | Growth → Vault Pro → **Describe all**; Auto Post and Auto Mass to sell the vault |
+| **Restrict from automations**, the Restrictions list in Settings | Removed. A fan restricted that way earlier stays skipped. | "Stopping the bot on one fan" |
+| The MASSppvEXCLUDE list | Merged into MASSdmEXCLUDE on 2026-10-21. A MASSppvEXCLUDE list may still sit on OnlyFans; nothing reads it. | MASSdmEXCLUDE |
+| Auto-follow's like or "ping" (unfollow + re-follow) mode | Removed. A rule saved with one, or with no action, is skipped and does nothing. | Growth → Auto-follow (follow only) |
+| Export / Import settings | Removed. | Copy a raw-JSON box somewhere safe before editing it |
 
 ## "Enabled" means two different things
 
@@ -140,11 +141,9 @@ lifecycle ones), Growth → Auto-follow, the **Auto-activate campaign** switch o
 Growth → Profile promotion and the **Auto-unsend (automation)** card on Smart
 Messages → Mass Messages.
 
-**2. No switch in the app at all:** Follow-ups, the Audience fence,
-⚡ Reply Instant, and the rule-only kinds (Apply profiles, Backfill chat
-history, Customs owed). Their pages are gone; a rule that already exists keeps
-running, and only the deployment operator can add, change or stop one. There is
-no **+ New rule** button anywhere any more, and no run log an owner can open.
+**2. No switch in the app at all:** the operator-only automations in "Removed
+or operator-only" — Follow-ups, the Audience fence, ⚡ Reply Instant, and the
+rule-only kinds (Apply profiles, Backfill chat history, Customs owed).
 
 ## The AI key — nothing writes without it
 
@@ -171,8 +170,8 @@ panel naming the model and the provider.
 
 ## Which autochat is which
 
-There are two, and **neither one pitches**. There is no AI seller any more —
-selling is done by people and the mass sends.
+There are two, and **neither one pitches**. No AI sells — selling is done by
+people and the mass sends.
 
 **Get to know fans (`welcome_chatter_for_info`)** is the warm-up (info-gather).
 It talks to fans who have not bought anything, asking one gentle question at a
@@ -191,11 +190,7 @@ Auto-reply, if it is on and he is in its audience.
 
 **Auto-reply (`autoreply`)** is a keep-warm safety net: when nobody answered a
 fan in time it sends one casual line matched to the tone of the chat. Never a
-PPV, never a tip ask, never a profile question. Older text and the evidence
-lines still call it **Auto Convo** — same engine.
-
-Older message rows can still carry the label **"AI Chatter"** — those were
-written by the removed seller before it was deleted.
+PPV, never a tip ask, never a profile question.
 
 ## Messaging fans who come online
 
@@ -259,14 +254,13 @@ also immediately clears a paused account (see below).
 
 ## The Brain (persona, clock, daily cap, models)
 
-**There is no Brain page any more.** Each account still has a brain — persona,
-location, creator (female/male), language, creator clock, a **daily AI cap**
-(a fresh account starts at 100¢ = $1.00, and at the cap the runs report ok but
-do less), the nine creator facts, the model and its per-purpose model choices, and
-the time-of-day lines and images the welcome uses — and every AI lane reads it,
-but nothing in the app edits it. The one part an operator can still change is
-**Model info**, the short note every chat prompt pins: it is on **My Automations
-→ Get to know fans**. For anything else in the brain (raising the daily cap
+Each account has a brain — persona, location, creator (female/male), language,
+creator clock, a **daily AI cap** (a fresh account starts at 100¢ = $1.00, and
+at the cap the runs report ok but do less), the nine creator facts, the model
+and its per-purpose model choices, and the time-of-day lines and images the
+welcome uses. Every AI lane reads it, and it has no page: nothing in the app
+edits it. The one part an operator can change is **Model info**, the short note
+every chat prompt pins: it is on **My Automations → Get to know fans**. For anything else in the brain (raising the daily cap
 included), say the deployment operator has to change it.
 
 ## Adding an employee (a chatter's login)
@@ -304,10 +298,9 @@ on — registering there logs the owner out of that browser.
 
 ## Stopping the bot on one fan
 
-There is no "stop automations for this one fan" switch any more: the old
-**Restrict from automations** row and the Restrictions list in Settings are
-gone. A fan restricted that way earlier stays skipped. What exists, on that
-fan's chat:
+There is no "stop automations for this one fan" switch (for **Restrict from
+automations** and the Restrictions list, see "Removed or operator-only"). What
+exists, on that fan's chat:
 
 - **Add to MASSdmEXCLUDE** — in the chat header's Extras overflow, and as the
   Mass exclude block of Fan insights. Keeps him out of every mass send, priced
@@ -315,9 +308,8 @@ fan's chat:
   It leaves welcomes, AI replies, nudges and 1:1 chat alone. This is the one
   opt-out list the mass sends subtract, and it is mirrored to a pinned OnlyFans
   list of the same name. The line flips to **Remove from MASSdmEXCLUDE** once
-  he is on it. (There used to be a second, PPV-only list, MASSppvEXCLUDE; it was
-  merged into MASSdmEXCLUDE on 2026-10-21. A MASSppvEXCLUDE list may still sit
-  on OnlyFans; nothing reads it any more.)
+  he is on it. (MASSppvEXCLUDE is merged into it; see "Removed or
+  operator-only".)
 - **Restrict** — the ⋯ menu ("More actions") in the chat header, after a
   confirm. It restricts him on OnlyFans (he is sent nothing) and hides the chat
   so the dead thread leaves the inbox. From then on he is out of every unread
@@ -466,8 +458,7 @@ Each of these is per model. Work down the steps in order.
 
 The full shape: welcome every new fan → warm-up chatter for fans who have not
 bought → Auto-reply keeps quiet chats warm → selling through the mass sends,
-which skip anyone over your spend line. (There is no AI seller: the bot chats,
-people and the mass sends sell.)
+which skip anyone over your spend line.
 
 **First, build the segment.** Growth → Smart lists → **Create list**. Name it
 "Over $400". Leave **Match any condition** unticked. One condition: field
@@ -552,7 +543,7 @@ There is no one-click onboarding wizard — every step is its own Save button.
 
 ## "Make money from the vault without chatting"
 
-The 💸 PPV Library rotator that did this was removed. Nearest real
+There is no vault rotator (see "Removed or operator-only"). Nearest real
 things: **My Automations → Auto Post** (paid feed posts on a timer) and
 **My Automations → Auto Mass** (ready-made broadcasts on timers). To silence
 the chat lanes as well, switch off My Automations → Auto-reply and
@@ -603,8 +594,8 @@ phone-width screen — on a phone there is no raw-JSON path at all.
 **1. A rule payload** — the per-run settings of one automation. Three pages can
 open it: My Automations → **Auto Story** (**Edit raw JSON** in the page header),
 and the **Auto Post** and **Auto Mass** editors (**Edit raw JSON →**, which
-swaps the form for the JSON). No other rule's payload can be opened from the app
-(the rules list and its editor are gone). The Auto Funnel editor's **Edit raw
+swaps the form for the JSON). No other rule's payload can be opened from the
+app. The Auto Funnel editor's **Edit raw
 JSON →** edits the funnel itself, not a rule.
 
 It takes one JSON object — the whole payload, e.g.
@@ -652,7 +643,7 @@ pools as JSON (copy in / out)** section, then **Apply JSON** and Save.
 
 ## Backing it up before you edit
 
-There is no Export / Import settings button any more. Before hand-editing a
+There is no Export / Import settings button. Before hand-editing a
 raw-JSON box, copy what it shows somewhere safe, so a dropped key can be pasted
 back.
 
@@ -713,8 +704,7 @@ casual line matched to the tone of the recent messages, to keep the conversation
 alive. It never pitches: no PPV, no tip ask, no content offer.
 
 **Where:** My Automations → **Auto-reply** (`/growth/auto-reply`) — the switch,
-the delay, WHO it answers and the reply-style boxes. (It used to be the 💬 Auto
-Convo tab; this page is the only one now.)
+the delay, WHO it answers and the reply-style boxes.
 
 **How to enable:** switch it on and Save. That one switch writes the settings
 **and** creates or wakes the `autoreply` rule; switching it off parks the rule.
@@ -735,7 +725,8 @@ last 16 messages · quiet hours · 200 candidates and 25 replies per run.
 - **Describe photos fans send** — the photo in the message being answered is
   described once by the vision model and the reply reacts to it. Needs a
   **DeepInfra** key in Settings → AI keys; without one it simply stays off.
-- **Skip photo-only messages** — a message that is only a photo gets no reply.
+- **Don't reply to photo-only messages** — a message that is only a photo gets
+  no reply.
 Off, keyless or failed: the reply never claims to know what is in the photo.
 
 **Prerequisites:** a **DeepSeek** key in Settings → AI keys (the page shows an
@@ -780,11 +771,9 @@ The whole welcome is written by the app, so it goes out with no AI key.
 quiet: up to three AI-written nudges as the silence grows, each optionally with a
 time-of-day photo.
 
-**Where:** It has no page any more — the Brain's Follow-ups section and the rules list
-were its only screens. A rule that already exists keeps running.
+**Where:** Operator-only (see "Removed or operator-only"): no page.
 
-**How to enable:** Not from the app; the deployment operator has to add the
-rule.
+**How to enable:** Not from the app; the deployment operator adds the rule.
 
 **Key knobs:** the three silence thresholds in hours (real defaults **26 / 64 /
 120**) · `with_image` · `limit` 200 fans per run, highest lifetime spend first ·
@@ -916,7 +905,8 @@ comes from your pools.
 detector creates one per fan, timed a few minutes out. It re-checks the fan is
 still online and still eligible, then sends.
 
-**Where:** No screen of its own. It appears in run logs under this name.
+**Where:** No screen of its own; the operator's run log shows it under this
+name.
 
 **How to enable:** Nothing to enable — it exists only because Nudge Online
 created it.
@@ -935,10 +925,10 @@ calls underneath.
 **Where:** For a one-off blast use **Messages Pro → + → Mass message** (or
 Growth → Smart Messages → **New Message** → **OF mass message**; **Message
 online fans** is the same composer in its online mode). That composer sends
-straight away, or at the time you schedule, and creates no rule. A saved,
-repeating blast of this kind cannot be created from the app. In practice you
+straight away, or at the time you schedule, and creates no rule. In practice you
 also reach this engine through the features that call it (Auto Mass, funnel
-openers).
+openers). A saved, repeating blast is operator-only (see "Removed or
+operator-only").
 
 **Key knobs:** text · **price in DOLLARS** · media and free previews · audience
 (fan ids, saved lists, OnlyFans audiences like "fans"/"following", online only) ·
@@ -1179,8 +1169,8 @@ chatter schedules a message.
 **What it does:** Tags fans who tipped for a custom and have not received it, and
 **stops the AI selling to them** until it ships. It sends the fan nothing.
 
-**Where:** The rule has no page any more (it was added from the rules list); a
-rule that already exists keeps running. The work queue is **Analytics → Message
+**Where:** The rule is operator-only (see "Removed or operator-only"). The work
+queue is **Analytics → Message
 dashboard → Customs** — visible to chatters. A debt clears two ways: someone clears it there, or the watch's next
 sweep sees the voice note actually go out to that fan and clears it itself.
 
@@ -1244,8 +1234,8 @@ my fans" in OnlyFans' own Fans and following settings.
   (by Auto-follow or by a welcome / lifecycle follow) is not followed again.
 - The counts are only the fans Auto-follow followed, not every follow on the
   account.
-- It has no like or "ping" (unfollow + re-follow) mode any more. A rule saved
-  with one of those, or with no action, is skipped and does nothing.
+- It only follows (see "Removed or operator-only" for the like and "ping"
+  modes).
 
 ## kind: promo_reactivate — Keep promos running
 
@@ -1279,8 +1269,8 @@ per campaign (0 = unlimited).
 
 **What it does:** Reads each fan's stored chat history and has the AI write him a
 profile — a nickname tag, a one-line bio and a fact sheet — plus the facts it
-found (age, city, job, hobbies, language). It writes **no questions or teases**
-any more; lines a fan already had stay, nothing new is added. After each profile
+found (age, city, job, hobbies, language). It writes **no questions or
+teases**; lines a fan already had stay, nothing new is added. After each profile
 it fills the fan drawer's tabs on OnlyFans: the **Nickname** (Name/City,Country/
 Age/Job, e.g. Garrett/Delta,Canada/30/Paramedic) and the **Fan notes** (a
 200-character fact sheet: Recent, Intr, Job, Rel, Kinks, then the bio). The
@@ -1318,9 +1308,8 @@ still has the one it wrote last, so a note typed in the drawer is kept.
 nickname and a 200-character fact-sheet note. By default into Inflowwww only; tick
 "push to OF" and it also writes them onto OnlyFans where the whole team sees them.
 
-**Where:** It has no page any more as a rule (it was added from the rules list); a rule that
-already exists keeps running. It also runs automatically as the second half of
-Onboard pre-AI fans.
+**Where:** As a rule, operator-only (see "Removed or operator-only"). It also
+runs automatically as the second half of Onboard pre-AI fans.
 
 **Key knobs:** `limit` 500 per run · `force_ids` bypass the 24-hour cooldown ·
 `push_to_of` (off).
@@ -1360,8 +1349,7 @@ pushed to OnlyFans.
 **What it does:** Pulls conversation history down from OnlyFans to fill gaps the
 live message feed missed.
 
-**Where:** It has no page any more as a rule (it was added from the rules list); a rule that
-already exists keeps running.
+**Where:** Operator-only (see "Removed or operator-only").
 
 **Key knobs:** `limit` chats per sweep (the editor suggests 50; a blank value
 actually covers 100) · `max_pages` 40 · `fan_ids` to backfill specific chats.
@@ -1373,7 +1361,7 @@ actually covers 100) · `max_pages` 40 · `fan_ids` to backfill specific chats.
 - The sweep walks the inbox most-recently-active first, so quiet old chats sit
   past whatever limit you set — name the fan in `fan_ids` to reach him.
 - Every connected account gets one automatic sweep when the relay restarts, so
-  you will see backfill runs nobody scheduled.
+  the operator's run log shows backfill runs nobody scheduled.
 
 ## kind: smart_list_sync — Smart List → OnlyFans list sync
 
@@ -1420,11 +1408,16 @@ stayed up untouched. Owner-only.
   reason), the partner's post, and **Cancel** on a slot.
 - **S4S settings** — the **Primary post** your partners publish (**Create
   post** / **Manage posts**, up to 20, each with up to 5 items via **Add from
-  Vault**), **Limit daily S4S** (1, 2 or 3), the discoverability settings ("Take
-  part in Share for Share", "Profile shown to partners").
+  Vault**), **Limit daily S4S** (1, 2 or 3), and two discoverability switches:
+  **Take part in Share for Share** (the opt-in, off by default) and **Allow …
+  to appear on the Discover Creators page**. Under them, **Profile shown to
+  partners** is a read-only preview of the creator's OnlyFans name, @username
+  and avatar — there is nothing to turn on there.
 
-**How to enable:** turn on "Take part in Share for Share" and agree a slot.
-Accepted slots post on their own.
+**How to enable:** create a **Primary post** (a request needs one on both
+sides, and a creator without one is not listed on Discover creators), turn on
+**Take part in Share for Share**, and agree a slot. Accepted slots post on
+their own.
 
 **Caveats:**
 - At the slot time the partner's caption goes up with an @mention of the
@@ -1462,8 +1455,8 @@ via OnlyFans' API. Unsend and resend instead. (Feed *posts* can be edited.)
 
 **A true "the moment he logs in" trigger.** Login detection is polling, about
 once a minute — that is Nudge Online, and it is the closest thing that exists.
-Real-time dispatch for an inbound **message** (⚡ Reply Instant) has no page any
-more.
+Real-time dispatch for an inbound **message** (⚡ Reply Instant) is
+operator-only (see "Removed or operator-only").
 
 **Automatic delivery of a custom.** Deliberate product ruling, not a gap. The
 product is a **voice note**, a person records and sends it, and the amount tipped
@@ -1526,15 +1519,14 @@ Work down this list:
    30 min for the first day, hourly for the first week, then every 6 hours.
 2. **Is there an enabled rule?** Check that the automation's own page shows it
    switched on (My Automations, or the trigger's row on Growth → Smart
-   Messages). An automation with no page any more cannot be checked from the
-   app.
+   Messages). An operator-only automation (see "Removed or operator-only")
+   cannot be checked from the app.
 3. **Is dry run still on?** The **Keep promos running** card on Growth →
    Profile promotion defaults to dry run.
 4. **Is the agency AI key set?** Settings → AI keys. Without it every
    AI-written message fails closed — Auto-reply, follow-ups, profiles. The
    welcome and the nudges still send, because their text is not AI-written.
-5. **Is the daily AI cap used up?** The cap has no page any more (see "The
-   Brain"). Runs at the cap still report "ok" and just do less.
+5. **Is the daily AI cap used up?** The cap has no page (see "The Brain"). Runs at the cap still report "ok" and just do less.
 6. **Is a cooldown eating it?** Most senders skip a fan any automation or chatter
    touched recently — commonly 6 or 12 hours. An empty cooldown box means the
    default, not off. A guard with no box on its page can only be changed
@@ -1543,13 +1535,13 @@ Work down this list:
    for a fan restricted on OnlyFans — a hard skip.
 8. **Is he owed a custom?** A fan on the Analytics → Message dashboard → Customs
    queue is deliberately withheld from selling until the debt is cleared.
-9. **Is the Audience fence on and Enforce halted?** It has no page any more,
-   and its folder sync was removed, so an account left in Enforce halts the
-   gated automations once its last snapshot is a day old. The deployment
-   operator has to check it.
+9. **Is the Audience fence on and Enforce halted?** It is operator-only, with
+   no folder sync, so an account left in Enforce halts the gated automations
+   once its last snapshot is a day old. The deployment operator has to check
+   it.
 10. **Did a page's Save wipe the setting?** Several pages rebuild their whole
     payload on Save and drop anything set through raw JSON. Re-check after
     saving.
-11. **There is no run log an owner can open** any more. Ask the deployment
-    operator to read it — and check a paused account's badge on Creators →
+11. **Need the run log?** It is operator-only (see "Removed or
+    operator-only"): ask the deployment operator to read it — and check a paused account's badge on Creators →
     Manage creators first, since a paused account writes no runs at all.

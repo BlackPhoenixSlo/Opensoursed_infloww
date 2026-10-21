@@ -6,17 +6,19 @@
  * labels: the compact header's Photos, Videos, Likes and Fans counts, the Posts and Media tabs' counts, the wall's label
  * tabs (All, Archive and Private Archive when it has some, then each label; only All is open, as the Relay's posts route
  * has no label filter) and the Media tab's All, Photo and Video counts, and appends a tile per highlight to the story
- * strip (its cover and title; a click opens the cover in the Vault's viewer, ofMirrorPost's bindStory: the Relay reads no
- * highlight's own stories). applyRecent fills the sidebar's Recent strip with the
+ * strip (its cover and title; a click plays its stories in the Vault's viewer, ofMirrorPost's bindStory, from GET
+ * /stories/highlights/{id}; with no single Creator, its cover). applyRecent fills the sidebar's Recent strip with the
  * Creator's three newest media posts. bindProfile works the page's own controls in place: Story archive opens a box
  * under the strip with the Creator's archived stories (GET /stories/archive), Copy link to profile copies
- * https://onlyfans.com/<username>, More info and Spotify's title collapse and expand, and the Media tab's All, Photo
+ * https://onlyfans.com/<username> (OF's toast says so), the status menu sets Available or Invisible (PATCH /users/me
+ * isVisibleOnline, as OF's UsersStatus), More info (only for a bio taller than its fold: fitBio) and Spotify's title
+ * collapse and expand, the compact header turns sticky past 180px of scroll as OF's (stickHeader), and the Media tab's All, Photo
  * and Video filter the grid (PROFILE_CHANGE: ofMirrorData redraws it). In All models the page shows the first model
  * (standInModel), never the generator's placeholders; so do Statements' Earnings and Release forms.
  */
 
 import { useEffect, type RefObject } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useScope } from "@/contexts/ScopeContext";
 import { useUser } from "@/contexts/UserContext";
 import { useAccounts, useActiveAccounts } from "@/hooks/useAccounts";
@@ -25,8 +27,10 @@ import { proxyImage } from "@/lib/mediaUrl";
 import { stillUrl } from "@/lib/ofMedia";
 import { fill, make, setAttr, setText, track, valid, type PostLabel } from "@/lib/ofMirrorData";
 import type { MirrorPost } from "@/lib/ofMirrorFeeds";
-import { formatCount, ofMeQuery } from "@/lib/ofMirrorIdentity";
-import { message, note } from "@/lib/ofMirrorWrites";
+import { fitBio, foldBio, formatCount, ofMeQuery } from "@/lib/ofMirrorIdentity";
+import { showMenu } from "@/lib/ofMirrorMenu";
+import { message, note, SELECT_MODEL } from "@/lib/ofMirrorWrites";
+import { toast } from "@/lib/ofMirrorPost";
 
 /** My profile's pages (profile/index, profile/media, profile/state-*). */
 const PROFILE_SRC = /^\/of-mirror\/pages\/profile\//;
@@ -160,7 +164,8 @@ export function applyProfile(doc: Document, p: MirrorProfile, img: (u: string) =
     if (clones.length) fill(doc, [tpl], clones, [tpl.parentElement]);
   }
 
-  // A tile per highlight, after the strip's own: a copy of Create highlight, its cover viewable (`data-oi-full`).
+  // A tile per highlight, after the strip's own: a copy of Create highlight, stamped with its id (`data-oi-highlight`:
+  // bindStory plays its stories) and its cover (`data-oi-full`: what the viewer shows without a read).
   const create = [...doc.querySelectorAll<HTMLElement>(".stories-list .b-story-item.m-create")].find((t) => words(t) === "Create highlight");
   const strip = create?.parentElement;
   if (!create || !strip) return;
@@ -171,6 +176,7 @@ export function applyProfile(doc: Document, p: MirrorProfile, img: (u: string) =
     el.removeAttribute("title");
     el.classList.replace("m-create", "m-gradient-overlay");
     el.querySelector(".b-story-item__icon")?.remove();
+    el.dataset.oiHighlight = String(h.id);
     const inside = el.querySelector(".b-story-item__inside");
     inside?.classList.add("m-default-bg");
     const text = el.querySelector(".b-story-item__text");
@@ -238,12 +244,21 @@ export const ofKind = (posts: MediaPost[], kind: string) => (kind === "photo" ||
 export interface ProfileHandlers {
   /** The Creator's OF username (Copy link to profile); null in All Creators. */
   username: string | null;
+  /** The Creator's status (users/me isVisibleOnline: Available or Invisible); undefined while not known. */
+  visible?: boolean;
+  /** Save the status (PATCH /users/me isVisibleOnline); null in All Creators. */
+  setVisible?: ((on: boolean) => Promise<unknown>) | null;
   /** GET a Relay path; null in All Creators. */
   read: ((path: string) => Promise<unknown>) | null;
   img: (u: string) => string;
 }
 
 export const ARCHIVE_PATH = "/api/of/v2/stories/archive?limit=20";
+/** OF's status menu (UsersStatus): its rows, by isVisibleOnline. */
+const STATUS_ROWS = [
+  { value: "true", label: "Available" },
+  { value: "false", label: "Invisible" },
+];
 const ARCHIVE_BOX = "[data-oi-story-archive-box]";
 
 /** A story's date: OF's "Oct 3, 2026". */
@@ -302,11 +317,66 @@ function openArchive(doc: Document, tile: HTMLElement, h: ProfileHandlers) {
   );
 }
 
+/** How far the frame scrolls before My profile's compact header turns sticky (OF's ProfileStickyHeader: scrollY > 180). */
+export const STICKY_HEADER_PX = 180;
+
+/**
+ * OF's ProfileStickyHeader on `doc`: the compact header (back, name, counts, More) lies over the cover; OF's CSS keeps it
+ * sticky at top -56px, so it scrolls away with the cover. Past STICKY_HEADER_PX it takes m-sticky (OF's CSS: top 0, a
+ * .2s slide back in, the page's colour, its name dark, the counts (no longer d-flex) swapped for the status): the
+ * back button and More turn dark (GoBack's m-default-color, UsersAction's m-dark for m-light) and Edit profile and Copy link to profile show
+ * before More. Back above it, the header is OF's top-of-page one again.
+ */
+function stickHeader(doc: Document): void {
+  const header = doc.querySelector(".js-compact-sticky-header");
+  const on = (doc.defaultView?.scrollY ?? 0) > STICKY_HEADER_PX;
+  if (!header || header.classList.contains("m-sticky") === on) return;
+  header.classList.toggle("m-sticky", on);
+  const back = header.querySelector(".g-page__header__btn");
+  back?.classList.toggle("m-default-color", on);
+  back?.classList.toggle("m-white", !on);
+  back?.classList.toggle("m-light", !on);
+  const more = header.querySelector(".b-compact-header__settings .dropdown-toggle");
+  more?.classList.toggle("m-dark", on);
+  more?.classList.toggle("m-light", !on);
+  const sections = header.querySelector(".b-profile__sections");
+  sections?.classList.toggle("d-flex", !on);
+  sections?.classList.toggle("align-items-center", !on);
+  for (const el of header.querySelectorAll<HTMLElement>("[data-oi-sticky-only]")) el.style.display = on ? "" : "none";
+}
+
 /** Bind My profile's in-place controls on `doc` (see the module comment). Returns an unbind. */
 export function bindProfile(doc: Document, h: ProfileHandlers): () => void {
+  // The status button names the Creator's status (the capture's "Available" while it is not known).
+  const status = doc.querySelector<HTMLElement>("[data-oi-user-status]");
+  let visible = h.visible ?? true;
+  const showStatus = (on: boolean) => {
+    const text = status && [...status.childNodes].find((n) => n.nodeType === 3 && n.nodeValue?.trim());
+    if (text) text.nodeValue = ` ${STATUS_ROWS.find((r) => r.value === String(on))!.label} `;
+  };
+  if (typeof h.visible === "boolean") showStatus(h.visible);
   const onClick = (ev: MouseEvent) => {
     const t = ev.target as Element | null;
     if (!t?.closest) return;
+    // OF's status menu: a pick shows at once and is saved; a failed save puts the status back.
+    const st = t.closest<HTMLElement>("[data-oi-user-status]");
+    if (st) {
+      ev.preventDefault();
+      if (!h.setVisible) return note(doc, st, SELECT_MODEL);
+      const save = h.setVisible;
+      showMenu(doc, st, [{ name: "status", options: STATUS_ROWS, value: String(visible) }], (_, v) => {
+        const was = visible;
+        visible = v === "true";
+        if (visible === was) return;
+        showStatus(visible);
+        save(visible).catch((e) => {
+          visible = was;
+          showStatus(was);
+          note(doc, st, `Could not change the status: ${message(e)}`, true);
+        });
+      });
+      return;
+    }
     const archive = t.closest<HTMLElement>("[data-oi-story-archive]");
     if (archive) {
       ev.preventDefault();
@@ -323,8 +393,9 @@ export function bindProfile(doc: Document, h: ProfileHandlers): () => void {
       if (!h.username) return note(doc, copy, "Select a model to copy its link");
       const clipboard = doc.defaultView?.navigator.clipboard;
       if (!clipboard) return note(doc, copy, "Could not copy the link", true);
+      // OF's toast, not the inline note: a note in the header's button row pushes EDIT PROFILE aside while it shows.
       clipboard.writeText(`https://onlyfans.com/${h.username}`).then(
-        () => note(doc, copy, "Link copied"),
+        () => void toast(doc, "Link copied"),
         () => note(doc, copy, "Could not copy the link", true),
       );
       return;
@@ -332,18 +403,7 @@ export function bindProfile(doc: Document, h: ProfileHandlers): () => void {
     const bio = t.closest<HTMLElement>("[data-oi-bio-toggle]");
     if (bio) {
       ev.preventDefault();
-      const text = bio.parentElement?.querySelector<HTMLElement>(".g-truncated-text");
-      const open = bio.getAttribute("aria-expanded") === "true";
-      bio.setAttribute("aria-expanded", String(!open));
-      bio.textContent = open ? " More info " : " Collapse info ";
-      if (text) {
-        text.classList.toggle("m-collapsed", open);
-        if (open) text.style.maxHeight = text.dataset.oiMaxHeight ?? "";
-        else {
-          text.dataset.oiMaxHeight = text.style.maxHeight;
-          text.style.maxHeight = "none";
-        }
-      }
+      foldBio(bio, bio.parentElement?.querySelector<HTMLElement>(".g-truncated-text"), bio.getAttribute("aria-expanded") !== "true");
       return;
     }
     const collapse = t.closest<HTMLElement>("[data-oi-collapse]");
@@ -366,13 +426,30 @@ export function bindProfile(doc: Document, h: ProfileHandlers): () => void {
     }
   };
   doc.addEventListener("click", onClick, true);
-  return () => doc.removeEventListener("click", onClick, true);
+  // More info follows the bio's height: now, and whenever its text (ofMirrorIdentity's) or the frame's width changes it.
+  const fit = () => fitBio(doc);
+  fit();
+  const RO = doc.defaultView?.ResizeObserver;
+  const ro = RO ? new RO(fit) : null;
+  for (const el of doc.querySelectorAll(".b-user-info .b-user-info__text")) ro?.observe(el);
+  const win = doc.defaultView;
+  const stick = () => stickHeader(doc);
+  stick();
+  win?.addEventListener("scroll", stick, { passive: true });
+  return () => {
+    doc.removeEventListener("click", onClick, true);
+    win?.removeEventListener("scroll", stick);
+    ro?.disconnect();
+  };
 }
 
 /** My profile's pages: bind its in-place controls on every frame load (the archive and the link need a single model). */
 export function useOfProfile(frameRef: RefObject<HTMLIFrameElement | null>, src: string): void {
   const { accountId } = useScope();
-  const username = useQuery(ofMeQuery(accountId)).data?.username ?? null;
+  const me = useQuery(ofMeQuery(accountId)).data;
+  const username = me?.username ?? null;
+  const visible = me?.isVisibleOnline;
+  const qc = useQueryClient();
   const mine = PROFILE_SRC.test(src);
 
   useEffect(() => {
@@ -380,6 +457,10 @@ export function useOfProfile(frameRef: RefObject<HTMLIFrameElement | null>, src:
     if (!frame || !mine) return;
     const h: ProfileHandlers = {
       username: accountId ? username : null,
+      visible: accountId ? visible : undefined,
+      setVisible: accountId
+        ? (on) => relay.patch("/api/of/v2/users/me", { isVisibleOnline: on }, { accountId }).then(() => qc.invalidateQueries({ queryKey: ofMeQuery(accountId).queryKey }))
+        : null,
       read: accountId ? (path) => relay.get(path, { accountId }) : null,
       img: (u) => proxyImage(u, accountId),
     };
@@ -395,5 +476,5 @@ export function useOfProfile(frameRef: RefObject<HTMLIFrameElement | null>, src:
       frame.removeEventListener("load", bind);
       unbind?.();
     };
-  }, [frameRef, src, mine, accountId, username]);
+  }, [frameRef, src, mine, accountId, username, visible, qc]);
 }

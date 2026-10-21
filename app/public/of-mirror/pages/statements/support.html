@@ -188,6 +188,12 @@
 .v-select--is-menu-active, .b-dropdown-wrapper.m-show-dropdown { z-index: 10 !important; }
 /* A sticky column is its own stacking context: one holding the open menu goes over the backdrop with it. */
 .l-sidebar-column:has(.m-show-dropdown) { z-index: 2; }
+/* The content column (z-index 0) is one too, under the backdrop: holding an open menu (My profile's More) it stops being
+   one, so the menu's own header (sticky, z-index 6) and the menu go over the backdrop and take their clicks. */
+.l-wrapper__content:has(.of-state-menu) { z-index: auto; }
+/* The Expiration dialog's chips are OF's drag-scrolled row, wider than its 344px modal: they wrap, so "30 days" is
+   whole and its click is its own, not the modal backdrop's way back. */
+.modal-body:has(input[name='periodValue']) .b-tabs__nav__list { flex-wrap: wrap; row-gap: 8px; }
 .of-state-menu { position: absolute !important; top: 100% !important; left: 0 !important; min-width: 100%; z-index: 50; background: var(--bg-color, #fff); }
 .of-state-menu.m-dropdown-list { left: auto !important; right: 0 !important; }
 </style>

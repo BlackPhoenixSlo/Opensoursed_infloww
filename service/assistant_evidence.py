@@ -38,6 +38,7 @@ from db.models import (
 )
 
 CAP_CHARS = 4000
+TIMELINE_SCAN = 40           # message rows read, newest first
 TIMELINE_LINES = 14          # rendered thread lines, after bubble runs collapse
 LABEL_CAP = 60               # a nickname is a label, not a paragraph
 MAX_LISTS = 8                # …so one row type cannot eat the whole pack
@@ -100,6 +101,10 @@ _AUDIENCE_HOMES: dict[str, AudienceHome] = {
 }
 
 
+# The rule kinds whose sends are tagged with a different `automation_kind`
+# (send_welcome.py, send_followup.py `_PURPOSE`); every other one tags its own.
+BEAT_TAG = {"send_followup": "followup", "send_welcome": "welcome"}
+
 def audience_home(kind: str) -> AudienceHome:
     """Where `kind` keeps its audience, and what to call that place."""
     return _AUDIENCE_HOMES.get(kind, _RULE_AUDIENCE)
@@ -152,6 +157,10 @@ class Evidence(NamedTuple):
     # (kind, its audience config as stored, rule enabled) for the mass engines
     # worth describing. Raw, like everything else here.
     audiences: list[tuple[str, str | None, bool]]
+    # True when none of them sent a mass on this thread (no rule is left for
+    # what did, or no mass row was read): they are OTHER
+    # engines' audiences.
+    audiences_other: bool
 
 
 # ── Formatting primitives ─────────────────────────────────────────────
@@ -476,7 +485,7 @@ def skip_line(skip: SkipList | None) -> str:
     return (f"- skip_list: reason '{skip.reason or ''}', added {at(skip.added_at)} "
             "— the info-gather lane, Follow up quiet fans and Nudge Online read "
             "the skip list with NO reason filter, so this row stops all three. "
-            "Auto Convo does not read it.")
+            "Auto-reply does not read it.")
 
 
 # ── The two tiers, and the cap ────────────────────────────────────────
@@ -514,8 +523,12 @@ def proven_lines(ev: Evidence) -> list[str]:
         f"completed={bool(ev.drip.completed)}, updated {at(ev.drip.updated_at)}.")
     out.append(
         "- ABSENCE IS EVIDENCE — this account has NO rule at all of these "
-        "scheduled fan-facing kinds, so no run of one can ever reach him here: "
-        + ", ".join(ev.missing) + "."
+        "scheduled fan-facing kinds: "
+        + ", ".join(k + (f' (its beats read "{BEAT_TAG[k]}")' if k in BEAT_TAG
+                         else "") for k in ev.missing)
+        + ". None of them reaches him FROM NOW ON; that says nothing about a "
+        "send from before a rule was deleted, which only a beat in the thread "
+        "tagged as listed above can show, and only if it is among the rows read."
         if ev.missing else
         "- every fan-facing kind has a rule row on this account; the LIVE "
         "STATE block says which of them are switched on.")
@@ -594,9 +607,15 @@ def thread_lines(ev: Evidence) -> Thread:
     # Alexj it claimed 08-23 while only the 27th and 28th survived, telling the
     # model a date was in range when the evidence for it was gone. A false
     # range is worse than no range, and the honest version has to be built where
-    # the shedding happens, not here.
+    # the shedding happens, not here. The scan SIZE names no date, so the head
+    # can state it: older than the oldest beat shown means not shown or not
+    # read, never absent.
     head = ["- thread, newest first. Directions, times, engines and amounts "
-            "only; message text is deliberately excluded:"]
+            "only; message text is deliberately excluded. Only his newest "
+            f"{TIMELINE_SCAN} stored messages were read, and not all are shown: "
+            "a date older than the oldest beat below was not shown or not "
+            "read, so say it is not in what you can see — never that no row "
+            "exists for it:"]
     if any(b.price_cents for b in shown):
         head.append(
             '  ("no LINKED purchase row" means no transactions row points at '
@@ -614,7 +633,12 @@ def thread_lines(ev: Evidence) -> Thread:
         tail.insert(0, "  THE LINE(S) BELOW DESCRIBE NO PAST SEND. They are who "
                        "each engine would reach FROM NOW ON — never why anyone "
                        "was in a broadcast that has already gone out. For that, "
-                       "read the mass_run summary on the beat itself.")
+                       "read the mass_run summary on the beat itself."
+                    + (" NONE OF THESE ENGINES SENT A MASS IN THE THREAD ABOVE: "
+                       "no rule is left for what did, or no mass is in the "
+                       "rows read. Name them as other engines, never "
+                       "as the one that sent it or its successor."
+                       if ev.audiences_other else ""))
     tail.append("  NOTE: a list broadcast hands the audience to "
                 "OnlyFans and writes NO per-fan row, so its absence above is "
                 "not proof he was left out of one.")
@@ -635,7 +659,9 @@ def current_lines(ev: Evidence) -> Current:
                      "info-gather lane is finished with him."
                      if ev.is_payer else
                      "NO — he has never bought content. A SUBSCRIPTION IS NOT A "
-                     "PURCHASE, however large that lifetime number looks."))
+                     "PURCHASE, however large that lifetime number looks. Only "
+                     "the info-gather lane reads this; no mass stream filters "
+                     "on it."))
     core = [_pause_line(ev.fan.automation_paused_until),
             "- muted-creator hard skip: "
             + ("YES — a peer creator we follow whose chat is muted. Every "
@@ -667,7 +693,7 @@ def _turn_line(ev: Evidence) -> str:
         return (f"- turn ownership: the FAN spoke last ({at(turn.ts)}). He is a "
                 "candidate for every engine that answers an unanswered message.")
     return (f"- turn ownership: WE spoke last ({turn.kind or 'a human'}, "
-            f"{at(turn.ts)}). Auto Convo and the info-gather lane only speak when "
+            f"{at(turn.ts)}). Auto-reply and the info-gather lane only speak when "
             "the FAN spoke last, so neither will re-open him on its own. A mass "
             "broadcast does not take the turn and was skipped for this line; "
             "the one blind spot is a blast fired from the OnlyFans app, which "

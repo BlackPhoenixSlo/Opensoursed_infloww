@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { applyData, chatRowsOf, chatUser, DATA_PAGES, LIST_POSTS, listPostsPath, listSubline, pendingPartners, isVaultPage, mirrorQuery, postTypeOf, nextOffset, nextVaultOffset, partsOf, rowsOf, toggleTile, pageRows, uniqueRows, usersListPath, vaultMediaOf, vaultPageMedia, vaultPagesQuery, withChatUsers, type MirrorData } from "./ofMirrorData";
-import { feedTime, NOTIFICATIONS, ofMoney, queueDay, queueMonth, queueTypes, TEMPLATES, zoneNote, type MirrorNotification, type MirrorPost, type PastStream, type Payout, type QueueItem, type Transaction } from "./ofMirrorFeeds";
-import type { OFChatItem, OFMessage, OFUserMini, VaultList, VaultMedia, VaultMediaResp } from "./relay";
+import { applyData, chatRowsOf, chatUser, DATA_PAGES, LIST_POSTS, listPostsPath, listSubline, pendingPartners, isVaultPage, markerPagesQuery, mirrorQuery, postTypeOf, nextFeedOffset, nextMarker, nextOffset, nextVaultOffset, partsOf, rowsOf, toggleTile, pageRows, uniqueRows, usersListPath, vaultMediaOf, vaultPageMedia, vaultPagesQuery, withChatUsers, type MirrorData } from "./ofMirrorData";
+import { feedTime, notificationText, NOTIFICATIONS, ofMoney, queueDay, queueMonth, queueTypes, TEMPLATES, zoneNote, type MirrorNotification, type MirrorPost, type PastStream, type Payout, type QueueItem, type Transaction } from "./ofMirrorFeeds";
+import { relay, type OFChatItem, type OFMessage, type OFUserMini, type VaultList, type VaultMedia, type VaultMediaResp } from "./relay";
 import { bindWrites, NOT_YET, READ_ONLY } from "./ofMirrorWrites";
 import { applyIdentity } from "./ofMirrorIdentity";
 import type { MediaPost } from "./ofMirrorProfile";
@@ -466,6 +466,13 @@ describe("applyData", () => {
     expect(cards[0].querySelector(".g-avatar .g-avatar__img-wrapper > img")!.getAttribute("src")).toBe("https://cdn.example/delta.jpg");
     for (const c of cards) expect(c.textContent).not.toMatch(PLACEHOLDER);
     expect(cards.map((c) => c.querySelector(".b-list-titles a")?.getAttribute("href"))).toEqual(Array(2).fill("/of-manager/collections/user-lists/list?list=31"));
+    // OF's profile links (avatar, name, handle): the user's OF profile, in a new tab.
+    expect(cards.map((c) => [...c.querySelectorAll(".b-fans__item__header > a.g-avatar, a.b-username, a.g-user-realname__wrapper")].map((a) => `${a.getAttribute("href")} ${a.getAttribute("target")} ${a.getAttribute("rel")}`))).toEqual(
+      ["delta", "echo"].map((h) => Array(3).fill(`https://onlyfans.com/${h} _blank noopener noreferrer`)),
+    );
+    expect(cards.flatMap((c) => [...c.querySelectorAll("a[href='#']")])).toEqual([]);
+    // The header's Send message: New message with this list ticked.
+    expect(doc.querySelector('a[aria-label="Send message"]')!.getAttribute("href")).toBe("/of-manager/messages/send?to=31");
   });
 
   it("collections: each list's subline and avatar stack as OF's UsersList (counts short, empty lists \"empty\")", () => {
@@ -784,9 +791,9 @@ describe("collections/bookmarks/all: the Creator's bookmarked posts", () => {
     expect(POST_TPL.querySelector("div.b-post .b-post__text")?.textContent).toMatch(/Lorem/);
   });
 
-  it("clones the post template per bookmark, in order, each with its own author, linking nowhere", () => {
+  it("clones the post template per bookmark, in order, each with its own author, linking to the author's OF profile", () => {
     const doc = load(BOOKMARKS_PAGE);
-    atFixtureNow(() => applyData(doc, BOOKMARKS_PAGE, { bookmarks: BOOKMARKS, templates: { post: POST_TPL } }, (u) => `/img?u=${u}`));
+    atFixtureNow(() => applyData(doc, BOOKMARKS_PAGE, { bookmarks: BOOKMARKS, templates: { post: POST_TPL }, me: { id: 9 } }, (u) => `/img?u=${u}`));
     const rows = marks(doc);
     expect(rows).toHaveLength(3);
     expect(rows.map((r) => r.querySelector(".b-username .g-user-name")!.firstChild!.textContent)).toEqual([" Alpha One ", " Beta Two ", ""]);
@@ -794,7 +801,18 @@ describe("collections/bookmarks/all: the Creator's bookmarked posts", () => {
     expect(rows.map((r) => r.querySelector(".g-user-username")!.textContent)).toEqual(["@alphaone", "@betatwo", ""]);
     expect(rows.map((r) => [...r.querySelectorAll(".b-post__avatar img")].map((i) => i.getAttribute("src")))).toEqual([["/img?u=https://cdn.example/a51.jpg"], [], []]);
     expect(rows.map((r) => r.querySelector(".b-post__avatar .g-avatar__placeholder")?.textContent ?? null)).toEqual([null, " BT ", "  "]);
-    expect(rows.map((r) => [...r.querySelectorAll(".b-post__avatar a, a.b-username")].map((a) => a.getAttribute("href")))).toEqual(Array(3).fill(["#", "#"]));
+    // OF's profile links: the author's OF profile in a new tab (no author: inert); the date the post on onlyfans.com.
+    const profile = (h: string) => [`https://onlyfans.com/${h}`, "_blank", "noopener noreferrer"];
+    expect(rows.map((r) => [...r.querySelectorAll(".b-post__avatar a, a.b-username")].map((a) => [a.getAttribute("href"), a.getAttribute("target"), a.getAttribute("rel")]))).toEqual([
+      [profile("alphaone"), profile("alphaone")],
+      [profile("betatwo"), profile("betatwo")],
+      [["#", "_top", null], ["#", "_top", null]],
+    ]);
+    expect(rows.map((r) => { const a = r.querySelector(".b-post__date")!; return [a.getAttribute("href"), a.getAttribute("target"), a.getAttribute("aria-disabled")]; })).toEqual([
+      ["https://onlyfans.com/801/alphaone", "_blank", null],
+      ["https://onlyfans.com/802/betatwo", "_blank", null],
+      ["#", null, "true"],
+    ]);
     expect(rows.map((r) => r.querySelector(".b-post__text")!.textContent!.trim())).toEqual(["Alpha One wall post", "Beta bookmarked post", "No author post"]);
     expect(rows.map((r) => r.querySelector(".b-post__date > span")!.textContent)).toEqual([" 4 hours ago ", " Yesterday ", " Oct 8 "]);
     expect(rows.map((r) => r.querySelector("div.b-post")!.classList.contains("m-pinned"))).toEqual([true, false, false]);
@@ -851,6 +869,20 @@ describe("collections/bookmarks/all: the Creator's bookmarked posts", () => {
     };
     expect(tools()).toEqual([[true, true], [true, true], [true, true]]);
     expect(tools({ id: 51 })).toEqual([[false, false], [true, true], [true, true]]);
+  });
+
+  it("author links wait for the Creator's id: inert while `me` is unknown, then My profile for the own post, OF's profile for another's", () => {
+    const links = (me?: { id: number }) => {
+      const doc = load(BOOKMARKS_PAGE);
+      applyData(doc, BOOKMARKS_PAGE, { bookmarks: BOOKMARKS, templates: { post: POST_TPL }, me });
+      return marks(doc).map((r) => [...r.querySelectorAll(".b-post__avatar a, a.b-username")].map((a) => `${a.getAttribute("href")} ${a.getAttribute("target")}`));
+    };
+    expect(links()).toEqual(Array(3).fill(Array(2).fill("# _top")));
+    expect(links({ id: 51 })).toEqual([
+      Array(2).fill("/of-manager/profile _top"),
+      Array(2).fill("https://onlyfans.com/betatwo _blank"),
+      Array(2).fill("# _top"),
+    ]);
   });
 
   it("a bookmark's More click notes Read-only, calls nothing and is not marked wired", () => {
@@ -1143,7 +1175,7 @@ const notifRows = (doc: Document) =>
   ]);
 const WANT_NOTIFS = [
   [" Alpha One ", " @alphaone ", "subscribed to your profile", " Oct 10 ", "Oct 10, 10:05 am", true, "icon-follow", ["/img?u=https://cdn.example/alphaone.jpg"]],
-  [" alphatwo ", " @alphatwo ", "tipped you $5.00 on your post", " Oct 9 ", "Oct 9, 9:30 pm", false, "icon-price", []],
+  [" alphatwo ", " @alphatwo ", 'tipped you $5.00 on <a href="https://onlyfans.com/1/alpha" target="_blank" rel="noopener noreferrer">your post</a>', " Oct 9 ", "Oct 9, 9:30 pm", false, "icon-price", []],
   [" 203 ", " @u203 ", "commented: nice", null, null, false, null, []],
 ];
 
@@ -1179,6 +1211,23 @@ describe("notifications: the Creator's notifications", () => {
     // Its list buttons (no Relay write behind them) stay disabled with the tooltip.
     for (const b of rows.flatMap((r) => [...r.querySelectorAll("button[at-attr='add_to_list']")])) expect([b.hasAttribute("disabled"), b.getAttribute("title")]).toEqual([true, NOT_YET]);
     for (const r of rows) expect(r.textContent).not.toMatch(PLACEHOLDER);
+    // OF's profile links (the user's avatar, name and handle): their OF profile, in a new tab (those tabs' rows have none).
+    expect(rows.map((r) => [...new Set([...r.querySelectorAll("a.g-avatar, a.b-username, a.g-user-username")].map((a) => `${a.getAttribute("href")} ${a.getAttribute("target")} ${a.getAttribute("rel")}`))])).toEqual(
+      ["alphaone", "alphatwo", "u203"].map((h) => (add ? [`https://onlyfans.com/${h} _blank noopener noreferrer`] : [])),
+    );
+  });
+
+  it("a notification's text keeps its OF links (an OF chat opens here) and nothing else of its markup", () => {
+    const html = (s: string) => {
+      const box = document.createElement("div");
+      box.replaceChildren(...notificationText(document, s));
+      return box.innerHTML;
+    };
+    expect(html(" <p>bought your <a href='https://onlyfans.com/my/chats/chat/4242?firstId=9'>message</a> for <b>$6.00</b></p> ")).toBe(
+      'bought your <a href="/of-manager/messages/chat?chat=4242" target="_top">message</a> for $6.00',
+    );
+    expect(html('<a href="/123/alpha">post</a>')).toBe('<a href="https://onlyfans.com/123/alpha" target="_blank" rel="noopener noreferrer">post</a>');
+    expect(html('<a href="javascript:alert(1)">x</a> <a href="https://evil.example/">y</a> <img src=x onerror="alert(1)"><script>alert(1)</script>z')).toBe("x y z");
   });
 
   it("no example row; Creator A's rows then Creator B's leave only B's; no data restores the page byte for byte", () => {
@@ -1556,13 +1605,16 @@ describe("statements/earnings: the Creator's earning transactions (OF's captured
     expect(prompts(doc)).toEqual([false, false, false, true]);
     doc.querySelector<HTMLButtonElement>(".infinite-loading-container .btn-try-infinite")!.click();
     expect(next).toHaveBeenCalledTimes(1);
-    // In view: an IntersectionObserver on OF's loading row asks once, and stops watching.
+    // In view: an IntersectionObserver on OF's loading row asks once, and stops watching. Its root is the frame's own
+    // document, so its 300px margin reaches below the frame (the top page's viewport clips a row just under the frame's end).
     const seen: Element[] = [];
     const stop = vi.fn();
     let fire: (e: { isIntersecting: boolean }[]) => void = () => {};
+    let options: IntersectionObserverInit | undefined;
     vi.stubGlobal("IntersectionObserver", class {
-      constructor(cb: typeof fire) {
+      constructor(cb: typeof fire, init?: IntersectionObserverInit) {
         fire = cb;
+        options = init;
       }
       observe(el: Element) {
         seen.push(el);
@@ -1573,6 +1625,7 @@ describe("statements/earnings: the Creator's earning transactions (OF's captured
       applyData(doc, EARNINGS, { transactions: MORE.list, zone: TZ, transactionsMore: { loading: false, error: null, next } });
       expect(prompts(doc)).toEqual([false, false, false, false]);
       expect(seen).toEqual([doc.querySelector(".infinite-loading-container")]);
+      expect(options).toEqual({ root: doc, rootMargin: "0px 0px 300px 0px" });
       fire([{ isIntersecting: false }]);
       expect(next).toHaveBeenCalledTimes(1);
       fire([{ isIntersecting: true }]);
@@ -1982,5 +2035,110 @@ describe("feedTime: OF's post time (UtilsTime, type feed)", () => {
     ]);
     expect(["2026-10-17T23:59:00", "2026-10-16T12:00:00", "2026-01-02T08:00:00", "2025-12-31T08:00:00"].map(at)).toEqual(["Yesterday", "Oct 16", "Jan 2", "Dec 31, 2025"]);
     expect(["2026-10-18T18:00:00", "2026-10-19T09:05:00", "2026-11-02T21:30:00", "2027-01-03T08:00:00"].map(at)).toEqual(["in 3 hours", "Tomorrow, 9:05 am", "Nov 2, 9:30 pm", "Jan 3 2027, 8:00 am"]);
+  });
+});
+
+describe("Home's feed and My profile's wall: OF's infinite scroll (U4)", () => {
+  const P = (n: number, from = 1) => Array.from({ length: n }, (_, i) => ({ id: from + i }));
+  const io = () => {
+    const seen: Element[] = [];
+    let fire: (e: { isIntersecting: boolean }[]) => void = () => {};
+    vi.stubGlobal("IntersectionObserver", class {
+      constructor(cb: typeof fire) {
+        fire = cb;
+      }
+      observe(el: Element) {
+        seen.push(el);
+      }
+      disconnect() {}
+    });
+    return { seen, fire: (v: boolean) => fire([{ isIntersecting: v }]) };
+  };
+
+  it("the wall's next page is OF's tailMarker while it says hasMore with rows and a marker that moved", () => {
+    expect(nextMarker({ list: P(20), hasMore: true, tailMarker: "1760000000.000000" }, [], null)).toBe("1760000000.000000");
+    expect(nextMarker({ list: P(20), hasMore: true, tailMarker: 1760000000 }, [], null)).toBe("1760000000");
+    expect(nextMarker({ list: P(20), hasMore: false, tailMarker: "1" }, [], null)).toBeUndefined();
+    expect(nextMarker({ list: [], hasMore: true, tailMarker: "1" }, [], null)).toBeUndefined();
+    expect(nextMarker({ list: P(20), hasMore: true }, [], null)).toBeUndefined();
+    expect(nextMarker({ list: P(20), hasMore: true, tailMarker: "7" }, [], "7")).toBeUndefined();
+    expect(nextMarker(P(20), [], null)).toBeUndefined();
+  });
+
+  it("the wall reads its first page, then each before the last one's marker", async () => {
+    const get = vi.spyOn(relay, "get").mockResolvedValue({ list: [] });
+    try {
+      const o = markerPagesQuery("a1", "/api/of/v2/users/9/posts?limit=20&format=infinite", true);
+      expect(o.queryKey).toEqual(["of-mirror-data", "a1", "/api/of/v2/users/9/posts?limit=20&format=infinite", "pages"]);
+      const fn = o.queryFn as unknown as (c: { pageParam: string | null }) => Promise<unknown>;
+      await fn({ pageParam: null });
+      await fn({ pageParam: "1760000000.5" });
+      expect(get.mock.calls.map((c) => c[0])).toEqual(["/api/of/v2/users/9/posts?limit=20&format=infinite", "/api/of/v2/users/9/posts?limit=20&format=infinite&before_publish_time=1760000000.5"]);
+      expect(markerPagesQuery("a1", null, true).enabled).toBe(false);
+    } finally {
+      get.mockRestore();
+    }
+  });
+
+  it("Home's next offset: OF's hasMore/nextOffset when it sends a list; a bare array has more when it is a full page", () => {
+    expect(nextFeedOffset(P(20), [P(20)])).toBe(20);
+    expect(nextFeedOffset(P(20, 21), [P(20), P(20, 21)])).toBe(40);
+    expect(nextFeedOffset(P(7), [P(20), P(7)])).toBeUndefined();
+    expect(nextFeedOffset([], [[]])).toBeUndefined();
+    expect(nextFeedOffset({ list: P(20), hasMore: true }, [{ list: P(20) }])).toBe(20);
+    expect(nextFeedOffset({ list: P(20), hasMore: false }, [{ list: P(20) }])).toBeUndefined();
+  });
+
+  it("Home: OF's loading row trails the feed, asks for the next page in view, spins while it loads, and offers Retry on an error", () => {
+    const doc = load("home/index");
+    const box = doc.querySelector(".b-feed-content > .infinite-loading-container")!;
+    expect(box).not.toBeNull();
+    const prompts = () => [...box.querySelectorAll<HTMLElement>(":scope > .infinite-status-prompt")].map((p) => p.style.display !== "none");
+    expect(prompts()).toEqual([false, false, false, false]);
+    const next = vi.fn();
+    const posts = [{ id: 11, author: { id: 515 } }, { id: 12, author: { id: 4242 } }] as MirrorPost[];
+    const w = io();
+    try {
+      applyData(doc, "home/index", { home: posts, templates: { post: POST_TPL }, homeMore: { loading: false, error: null, next } });
+      expect(w.seen).toEqual([box]);
+      const rows = [...doc.querySelectorAll(".b-feed-content .user_posts [data-oi-post]")];
+      expect(rows).toHaveLength(2);
+      expect(rows.every((r) => r.compareDocumentPosition(box) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+      w.fire(false);
+      expect(next).not.toHaveBeenCalled();
+      w.fire(true);
+      expect(next).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    applyData(doc, "home/index", { home: posts, templates: { post: POST_TPL }, homeMore: { loading: true, error: null, next } });
+    expect(prompts()).toEqual([true, false, false, false]);
+    applyData(doc, "home/index", { home: posts, templates: { post: POST_TPL }, homeMore: { loading: false, error: "boom", next } });
+    expect(prompts()).toEqual([false, false, false, true]);
+    box.querySelector<HTMLButtonElement>(".infinite-status-prompt:last-child button")!.click();
+    expect(next).toHaveBeenCalledTimes(2);
+    applyData(doc, "home/index", {});
+    expect(prompts()).toEqual([false, false, false, false]);
+  });
+
+  it("My profile: OF's loading row stays under the wall's rows and asks for the next page in view; none when the wall is empty", () => {
+    const doc = load("profile/index");
+    const box = doc.querySelector(".user_posts .infinite-loading-container")!;
+    expect(box).not.toBeNull();
+    const next = vi.fn();
+    const w = io();
+    try {
+      applyData(doc, "profile/index", { posts: [{ id: 1 }, { id: 2 }, { id: 3 }] as MirrorPost[], postsMore: { loading: false, error: null, next } });
+      const rows = [...doc.querySelectorAll(".user_posts .vue-recycle-scroller__item-view")].filter((r) => !r.closest("[style*='display:none']") && r.querySelector("div.b-post"));
+      expect(rows).toHaveLength(3);
+      expect(rows.every((r) => r.compareDocumentPosition(box) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+      expect(w.seen).toEqual([box]);
+      w.fire(true);
+      expect(next).toHaveBeenCalledTimes(1);
+      applyData(doc, "profile/index", { posts: [], postsMore: { loading: false, error: null, next } });
+      expect(w.seen).toEqual([box]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

@@ -123,6 +123,8 @@ export const SUBMITS: Record<string, Submit> = {
   "settings/subscription/promotion-campaign/modal-1": PROMOTION_SUBMIT, // ofMirrorOffers' PROMOTION_MODAL
   // Over New post OF goes on to Settings > Subscription (#promotion) once the campaign starts.
   "new-post/state-promotion": { ...PROMOTION_SUBMIT, then: () => AFTER_NEW_POST_PROMOTION }, // NEW_POST_PROMOTION
+  // Over Home OF stays on Home (its Cancel's way back).
+  "home/state-promotion": PROMOTION_SUBMIT, // HOME_PROMOTION
   "settings/subscription/promotion-campaign/modal-2": { // BUNDLE_MODAL
     button: ".modal-footer button", // Save
     fields: ".modal.show .v-select input",
@@ -168,8 +170,12 @@ export const NOTE_STYLE = "padding:6px 16px;font-size:13px;line-height:18px";
 export const GREY = "#8a96a3";
 /** OF's "Dark mode" switch (settings/display): it switches our theme (useOfTheme), not a read-only OF setting. */
 const DARK_MODE = "dark_mode_switcher";
-/** Where a click is not the click fallback's: links and State page openers (of-state-link, of-state-backdrop, inert `#`), and the video player. */
-const NOT_FALLBACK = "a[href], .video-js";
+/**
+ * Where a click is not the click fallback's: links and State page openers (of-state-link, of-state-backdrop, inert `#`),
+ * the video player, and a dialog a binder built (`[data-oi-dialog]`: Collections' list dialogs, Statements' payout and
+ * alert dialogs), whose every control is its binder's; a failed Save there once also said "Read-only".
+ */
+const NOT_FALLBACK = "a[href], .video-js, [data-oi-dialog]";
 /**
  * Nor at or inside the clicked control: a Wired control (its binder's) and a form field (the change path's). A dropdown's
  * readonly input is no field, and a control nested in a Wired row or a label is still the fallback's.
@@ -517,7 +523,9 @@ export function prefillStream(doc: Document, date: string | null, time: string |
     if (input && value && !input.value) input.value = value;
   };
   fill(STREAM_DATE, d && new Date(d[0], d[1] - 1, d[2]).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }));
-  fill(STREAM_TIME, time && parseTime(time) ? time : null);
+  // The time field is the browser's time input (streamPickers): its value is 24h "13:15".
+  const t = time ? parseTime(time) : null;
+  fill(STREAM_TIME, t && `${pad(t[0])}:${pad(t[1])}`);
 }
 
 /** The tracking link modal's POST /campaigns body (its name, trimmed; never a code), or the validation note. */
@@ -560,6 +568,7 @@ export const ofErrorMessage = (e: unknown): string | null => (e instanceof Relay
 export function bindWrites(doc: Document, path: string, handlers: WriteHandlers | null): () => void {
   takeCarried(doc);
   const unbindBank = path.startsWith("bank/") ? bankNote(doc) : () => {};
+  const unbindPickers = path === "streaming/dashboard/create" ? streamPickers(doc) : () => {};
   const page = settingsPage(path);
   const map = page !== null && Object.hasOwn(WRITABLE, page) ? WRITABLE[page] : {};
   const entry = Object.hasOwn(SUBMITS, path) ? SUBMITS[path] : null;
@@ -586,17 +595,18 @@ export function bindWrites(doc: Document, path: string, handlers: WriteHandlers 
 
   const onInput = (ev: Event) => {
     if (form) doc.getElementById("oi-note")?.remove(); // a validation note is stale once the form changes
-    // A form's text editor: OF's own script raises its label and counts its text.
-    const editor = form ? (ev.target as Element | null)?.closest?.("[contenteditable][data-placeholder]") : null;
-    if (editor) {
+    // A form's text editor, or a WRITABLE one (Edit profile's Bio): OF's own script raises its label and counts its text.
+    const editor = (ev.target as Element | null)?.closest?.("[contenteditable][data-placeholder]");
+    if (editor && (form || writable(editor))) {
       const len = textOf(editor).length;
       editor.setAttribute("data-is-empty", String(!len));
       const count = editor.closest(".g-input__wrapper")?.querySelector(".count-block");
       if (count) count.textContent = count.textContent!.replace(/\d+(?=\/)/, String(len));
     }
-    // A form's text field (a modal's name): its label floats clear of the value and its counter counts.
-    const input = form ? (ev.target as Element | null)?.closest?.<HTMLInputElement>(".v-input input[type='text']") : null;
-    if (input) {
+    // A text field (a modal's name, Edit profile's Display name): its label floats clear of the value and its counter
+    // counts.
+    const input = (ev.target as Element | null)?.closest?.<HTMLInputElement>(".v-input input[type='text']");
+    if (input && (form || writable(input))) {
       floatLabel(input, !!input.value);
       const counter = input.closest(".v-input")?.querySelector(".v-counter");
       if (counter) counter.textContent = counter.textContent!.replace(/^\s*\d+/, String([...input.value].length));
@@ -701,6 +711,37 @@ export function bindWrites(doc: Document, path: string, handlers: WriteHandlers 
     doc.removeEventListener("click", onClick);
     doc.removeEventListener("submit", onSubmit);
     unbindBank();
+    unbindPickers();
+  };
+}
+
+/**
+ * The stream form's Date and Time (OF's two vdatetime fields), as the Add to queue modal's (dateTimeFields): a click on
+ * the date opens OF's day popup (ofMirrorDatepicker, from `today` on); the time is the browser's time input, its picker
+ * opened from OF's clock icon. Returns the remover of the popup's trigger.
+ */
+function streamPickers(doc: Document, today: Date = new Date()): () => void {
+  const date = doc.querySelector<HTMLInputElement>(STREAM_DATE);
+  const time = doc.querySelector<HTMLInputElement>(STREAM_TIME);
+  const box = date?.closest(".vdatetime");
+  if (!date || !time || !box) return () => {};
+  const dayOf = (d: Date): Day => ({ y: d.getFullYear(), m: d.getMonth() + 1, d: d.getDate() });
+  date.readOnly = true;
+  time.type = "time";
+  const style = doc.head.appendChild(doc.createElement("style"));
+  style.textContent = ".create-scheduled__time .vdatetime{position:relative}.create-scheduled__time input::-webkit-calendar-picker-indicator{opacity:0;position:absolute;right:0;top:0;width:44px;height:100%;cursor:pointer}";
+  const open = () => {
+    const at = parseDate(date.value);
+    const day = at ? { y: at[0], m: at[1], d: at[2] } : dayOf(today);
+    openDatepicker(doc, { start: day, end: day, today: dayOf(today), userStart: null, single: true, future: true, onApply: (d) => {
+      date.value = tabDate(d);
+      date.dispatchEvent(new Event("input", { bubbles: true })); // SCHEDULE's gate and the stale note follow it
+    } });
+  };
+  box.addEventListener("click", open);
+  return () => {
+    box.removeEventListener("click", open);
+    style.remove();
   };
 }
 

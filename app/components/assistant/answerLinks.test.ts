@@ -1,26 +1,24 @@
 /**
  * answerLinks — click paths resolve, and prose does not.
  *
- * Three jobs here. The first is the resolver itself: the shapes the bot
+ * Two jobs here. The first is the resolver itself: the shapes the bot
  * actually writes ("Growth → Auto-follow", a three-segment path, a label with
  * the sentence running on past it) have to land on the right route with the
  * right slice of text underlined.
  *
- * The second is the DRIFT GUARD: answerLinks.ts copies three tab tables rather
- * than importing their page components into the widget's bundle, so the copies
- * can rot. These cases read the owning source files and assert every key still
- * exists — renaming a tab fails here instead of quietly sending readers to a
- * default tab.
- *
- * The third reads the help manual itself: every path it writes must name a
- * real page one arrow down, so a renamed page fails here, not in an answer.
+ * The second reads the help manual itself: every path it writes must name a
+ * real page one arrow down, and every step it walks through must be a page or
+ * tab the resolver knows, so a renamed page fails here, not in an answer.
  */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { MESSAGES_TABS, SMART_MESSAGES_TABS, findPaths } from "./answerLinks";
+import { isDivider, isGroup, SETTINGS_TABS, SIDEBAR, SIDEBAR_FOOTER } from "@/lib/nav";
+import { MESSAGE_DASHBOARD_TABS, SMART_MESSAGES_TABS } from "@/lib/pageTabs";
+
+import { BARE, findPaths } from "./answerLinks";
 
 /** The single hit in `text`, or null. Fails loudly on more than one. */
 function only(text: string) {
@@ -74,6 +72,28 @@ describe("findPaths", () => {
     });
   });
 
+  it("never starts a new path on the word after an arrow", () => {
+    // "Settings" is a head of its own (Your Account and the rest); as the
+    // segment of a path the walk could not finish, it must not relink there.
+    expect(only("Growth → Smart lists → Settings")).toEqual({
+      href: "/growth/smart-lists",
+      text: "Growth → Smart lists",
+    });
+  });
+
+  it("never links the head word inside a longer page name", () => {
+    // "Settings" stands alone as a link, but "Role Settings" is its own page.
+    expect(findPaths("the owner's, Role Settings and Sales Settings included")).toEqual([]);
+    expect(only("open Settings for it")?.href).toBe("/settings");
+  });
+
+  it("keeps a closing bracket out of a path written inside brackets", () => {
+    expect(only("(the same timers, My Automations → Auto Mass) to send it")).toEqual({
+      href: "/growth/auto-mass",
+      text: "My Automations → Auto Mass",
+    });
+  });
+
   it("stops at the label when the sentence runs on past it", () => {
     // The failure this prevents: underlining "Auto Post and press New auto
     // post" and resolving it to nothing.
@@ -83,8 +103,21 @@ describe("findPaths", () => {
     });
   });
 
-  it("falls back to the group's first page when the last segment is unknown", () => {
-    expect(only("Growth → Something We Never Shipped")?.href).toBe("/growth/smart-messages");
+  it("falls back to the deepest page it named when the last segment is unknown", () => {
+    expect(only("Analytics → Message dashboard → Something We Never Shipped")).toEqual({
+      href: "/analytics/message-dashboard",
+      text: "Analytics → Message dashboard",
+    });
+  });
+
+  it("links nothing for a group with no page under it", () => {
+    // A group is a sidebar heading; its first page is a sibling, not a parent.
+    expect(findPaths("Growth → Something We Never Shipped")).toEqual([]);
+    expect(findPaths("Open Growth for that.")).toEqual([]);
+  });
+
+  it.each([...BARE])("links a bare mention of %s", (label) => {
+    expect(only(`Ask an owner to open ${label} for you.`)?.text).toBe(label);
   });
 
   it("links a bare mention of an unambiguous section", () => {
@@ -141,66 +174,50 @@ describe("findPaths", () => {
   });
 });
 
-// ── Drift guard ─────────────────────────────────────────────────────
-
-/** Every `key: "..."` inside the `array` literal (TABS by default) of `file`. */
-function tabKeysIn(file: string, array = "TABS"): Set<string> {
-  const src = readFileSync(resolve(__dirname, "..", "..", file), "utf-8");
-  const start = src.indexOf(`const ${array}`);
-  expect(start, `${file} has no ${array} array`).toBeGreaterThan(-1);
-  const end = src.indexOf("];", start);
-  const body = src.slice(start, end);
-  const keys = new Set<string>();
-  for (const m of body.matchAll(/key:\s*"([^"]+)"/g)) keys.add(m[1]);
-  expect(keys.size, `${file} ${array} parsed empty`).toBeGreaterThan(0);
-  return keys;
-}
-
-/** Every key of the `LOOKUP` map in `file` (the values `?tab=` may name). */
-function lookupKeysIn(file: string): Set<string> {
-  const src = readFileSync(resolve(__dirname, "..", "..", file), "utf-8");
-  const m = /const LOOKUP[^=]*=\s*\{([^}]*)\}/.exec(src);
-  expect(m, `${file} has no LOOKUP map`).not.toBeNull();
-  const keys = new Set<string>();
-  for (const k of m![1].matchAll(/(\w+):/g)) keys.add(k[1]);
-  return keys;
-}
-
-describe("the copied tab tables still match the pages that own them", () => {
-  const cases: Array<[string, () => Set<string>, Record<string, string>, string]> = [
-    ["app/analytics/message-dashboard/page.tsx", () => tabKeysIn("app/analytics/message-dashboard/page.tsx"), MESSAGES_TABS, "MESSAGES_TABS"],
-    ["components/growth/SmartMessagesPage.tsx", () => lookupKeysIn("components/growth/SmartMessagesPage.tsx"), SMART_MESSAGES_TABS, "SMART_MESSAGES_TABS"],
-  ];
-
-  it.each(cases)("%s", (where, keysOf, table, name) => {
-    const real = keysOf();
-    for (const [label, key] of Object.entries(table)) {
-      expect(
-        real.has(key),
-        `${name}["${label}"] → "${key}" is not handled by ${where}`,
-      ).toBe(true);
-    }
-  });
-});
-
 // ── The manual's own paths ──────────────────────────────────────────
 
 describe("every path the help manual writes names a real page", () => {
-  // Joined back into paragraphs: a path the source wraps is one path in an answer.
+  // Joined back into paragraphs, since a path the source wraps is one path in
+  // an answer, and with the bold markers gone, as AnswerText resolves it.
   const manual = readFileSync(resolve(__dirname, "..", "..", "..", "service", "assistant_manual.md"), "utf-8")
-    .replace(/(?<!\n)\n(?!\n)/g, " ");
-  // A head with pages below it, then its first segment up to the next arrow or
-  // the end of the phrase.
-  const PATH = /\b(OF Manager|Analytics|Growth|Share for Share|My Automations|Creators|Employees|Settings) → ([^\n→,;:()."*`]+)/g;
-  const paths = [...new Set([...manual.matchAll(PATH)].map((m) => `${m[1]} → ${m[2].trim()}`))];
+    .replace(/(?<!\n)\n(?!\n)/g, " ")
+    .replace(/\*\*/g, "");
+  const heads = [...SIDEBAR, ...SIDEBAR_FOOTER].flatMap((n) => (isDivider(n) ? [] : [n.label]));
+  const SEG = `[^\\n→,;:."\`*]+`;
+  const esc = (l: string) => l.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const PATH = new RegExp(`\\b(?:${heads.map(esc).join("|")})\\s*→\\s*${SEG}(?:\\s*→\\s*${SEG})*`, "g");
+  const paths = [...new Set([...manual.matchAll(PATH)].map((m) => m[0].trim()))];
+  // Every label one arrow below anything, to probe whether a place HAS
+  // pages or tabs below it.
+  const LABELS = [
+    ...[...SIDEBAR, ...SIDEBAR_FOOTER].flatMap((n) => (isGroup(n) ? n.children.map((c) => c.label) : [])),
+    ...SETTINGS_TABS.map((t) => t.label),
+    ...MESSAGE_DASHBOARD_TABS.map((t) => t.label),
+    ...SMART_MESSAGES_TABS.map((t) => t.label),
+  ];
+  // A button a path walks through, not a page or a tab.
+  const STEPS = new Set(["New Message"]);
+
+  const hrefOf = (parts: string[]) => findPaths(parts.join(" → "))[0]?.href;
 
   it("finds paths to check", () => {
-    expect(paths.length).toBeGreaterThan(20);
+    expect(paths.length).toBeGreaterThan(40);
   });
 
   it.each(paths)("%s", (path) => {
+    const parts = path.split(/\s*→\s*/).map((p) => p.trim());
     const hit = findPaths(path)[0];
     // Resolving the first segment is what carries the link past "Head → ".
     expect(hit && path.slice(hit.start, hit.end).includes("→"), `"${path}" names no page`).toBe(true);
+    // Below a place with pages or tabs, a segment must name one of them. The
+    // walk is checked up to the first segment that names nothing: past it the
+    // path is inside a page (a row, a card, a switch), not the nav.
+    for (let i = 1; i < parts.length; i++) {
+      const above = hrefOf(parts.slice(0, i));
+      if (hrefOf(parts.slice(0, i + 1)) !== above) continue;
+      const hasBelow = LABELS.some((l) => hrefOf([...parts.slice(0, i), l]) !== above);
+      expect(!hasBelow || STEPS.has(parts[i]), `"${path}": "${parts[i]}" names no page or tab`).toBe(true);
+      break;
+    }
   });
 });

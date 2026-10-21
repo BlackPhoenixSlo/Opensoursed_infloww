@@ -43,6 +43,7 @@
 import type { MouseEvent } from "react";
 import {
   AlarmClockCheck,
+  AtSign,
   CalendarClock,
   ChartColumn,
   Database,
@@ -329,6 +330,9 @@ export const SETTINGS_TABS: NavLink[] = [
   { label: "Sales Settings", href: "/settings/sales", icon: ChartColumn, chatterHidden: true },
   { label: "Time tracking", href: "/settings/time-tracking", icon: AlarmClockCheck, chatterHidden: true },
   { label: "Messaging settings", href: "/settings/messaging", icon: MessageCircle, chatterHidden: true },
+  // Who a creator's media sends @-tag (account config, owner-only route): mass messages, posts,
+  // automations and stories. Blank = no tag, the default.
+  { label: "Co-creator tag", href: "/settings/cotag", icon: AtSign, chatterHidden: true },
   { label: "AI keys", href: "/settings/ai-keys", icon: KeyRound, chatterHidden: true },
   // The `actions` log with readable names and a date filter (roadmap W6 6.16); its route is owner-only.
   { label: "Audit log", href: "/settings/audit", icon: History, chatterHidden: true },

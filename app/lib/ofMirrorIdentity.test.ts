@@ -133,6 +133,27 @@ describe("applyIdentity", () => {
     expect(count("subscribersCount").textContent).toBe(" 13 ");
   });
 
+  it("My profile's bio details: OF's location, website and wishlist rows after the bio, in its scoped style; redrawn on each apply; More info refits to them (U16)", () => {
+    document.documentElement.innerHTML = readFileSync(resolve(__dirname, "../public/of-mirror/pages/profile/index.html"), "utf8");
+    const d = document;
+    const box = d.querySelector<HTMLElement>(".b-user-info__content > .g-truncated-text")!;
+    const more = d.querySelector<HTMLElement>("[data-oi-bio-toggle]")!;
+    // jsdom lays nothing out: the box's content is 30px a row.
+    Object.defineProperty(box, "scrollHeight", { configurable: true, get: () => 30 * box.children.length });
+    applyIdentity(d, { about: "Line one", location: "Paris", website: "example.com", wishlist: null });
+    const rows = () => [...box.querySelectorAll("p.b-user-info__detail")].map((r) => [r.querySelector("use")?.getAttribute("href"), r.lastElementChild!.tagName, r.textContent, r.lastElementChild!.getAttribute("href")]);
+    expect(rows()).toEqual([
+      ["#icon-location", "SPAN", "Paris", null],
+      ["#icon-link", "A", "example.com", "https://example.com"],
+    ]);
+    expect([...box.querySelectorAll("p.b-user-info__detail, p.b-user-info__detail > *")].every((e) => e.hasAttribute("data-v-2def40d5"))).toBe(true);
+    for (const icon of ["icon-location", "icon-link", "icon-trial"]) expect(d.getElementById(icon)).not.toBeNull();
+    expect([more.style.display, box.classList.contains("m-over-limit")]).toEqual(["", true]); // 90px: over OF's 85
+    applyIdentity(d, { about: "Only line", location: "", wishlist: "https://wish.example/list" });
+    expect(rows()).toEqual([["#icon-trial", "A", "https://wish.example/list", "https://wish.example/list"]]);
+    expect([more.style.display, box.classList.contains("m-over-limit")]).toEqual(["none", false]);
+  });
+
   it("formatCount: OF's B4, by digit count, OF's own rounding at the edges", () => {
     const ns = [0, 16, 867, 999, 1000, 1530, 1999, 2698, 9999, 14_093, 99_999, 123_456, 999_950, 999_999, 1_000_000, 1_234_567, 9_999_999, 12_345_678];
     expect(ns.map(formatCount)).toEqual(["0", "16", "867", "999", "1.0K", "1.5K", "2.0K", "2.7K", "10.0K", "14.1K", "100.0K", "123.5K", "1000.0K", "1000.0K", "1.00M", "1.23M", "10.00M", "12.3M"]);

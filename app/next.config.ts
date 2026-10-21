@@ -99,6 +99,8 @@ const nextConfig: NextConfig = {
       to("/of-manager/settings/security/reserved_usernames", "/of-manager/settings/security"),
       // Infloww's Statistics menu lands on Statements › Earnings; OF's own links name Overview (scripts/of-mirror.mjs LINK_INDEX).
       to("/of-manager/statistics", "/of-manager/statistics/statements/earnings"),
+      // Statements' Chargebacks is Statistics' (OF redirects /my/stats/disputes there; scripts/of-mirror.mjs REDIRECTS).
+      to("/of-manager/statements/stats/disputes", "/of-manager/statistics/statements/disputes"),
       // The pre-Infloww /automations page is gone: Auto Posts lives in My Automations…
       {
         source: "/automations",

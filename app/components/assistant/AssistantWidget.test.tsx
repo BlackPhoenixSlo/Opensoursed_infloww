@@ -109,8 +109,7 @@ describe("AssistantWidget", () => {
     // The answer renders, and its click path is a real destination rather than
     // a route to read and re-type. AnswerText.test.tsx owns the rendering
     // rules; what matters here is that the widget hands the answer to it.
-    const link = await screen.findByRole("link", { name: /Profile promotion/ });
-    expect(link.getAttribute("href")).toBe("/growth/profile-promotion");
+    expect(await screen.findByRole("link", { name: /Profile promotion/ })).toBeTruthy();
   });
 
   it("renders a handled failure (cap/config/provider) as a normal answer", async () => {

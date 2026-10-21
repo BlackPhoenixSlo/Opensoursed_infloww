@@ -50,25 +50,8 @@ import TipsTab from "@/components/messages/TipsTab";
 import TopPostsTab from "@/components/messages/TopPostsTab";
 import TopTippersCard from "@/components/messages/TopTippersCard";
 import { useReportRange } from "@/hooks/useReportRange";
+import { MESSAGE_DASHBOARD_TABS as TABS, type MessageDashboardTab as Tab } from "@/lib/pageTabs";
 import { cn } from "@/lib/utils";
-
-type Tab = "direct" | "mass" | "ppv" | "tips" | "all" | "posts" | "myfeed" | "top" | "customs";
-
-/** The strip, in order. Also the parser's allow-list and the table that
- *  components/assistant/answerLinks.ts copies — its drift guard reads the
- *  `key:` literals out of this file, so a renamed tab fails that suite
- *  instead of quietly sending a help-bot reader to the default tab. */
-const TABS: Array<{ key: Tab; label: string }> = [
-  { key: "direct",  label: "Direct messages" },
-  { key: "mass",    label: "OnlyFans mass messages" },
-  { key: "ppv",     label: "PPV"       },
-  { key: "tips",    label: "Tips"      },
-  { key: "all",     label: "All"       },
-  { key: "customs", label: "Customs"   },
-  { key: "posts",   label: "Posts"     },
-  { key: "myfeed",  label: "My Feed"   },
-  { key: "top",     label: "Top Posts" },
-];
 
 const TAB_KEYS = new Set<string>(TABS.map((t) => t.key));
 const DEFAULT_TAB: Tab = "direct";

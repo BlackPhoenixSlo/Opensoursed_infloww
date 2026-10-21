@@ -358,15 +358,19 @@ async def case_the_drift_gate_speaks_in_both_directions():
     prompt = _with_manual(_manual_with_kinds(documented))
 
     assert "`moon_lander` was removed; say it was removed." in prompt, prompt[-2000:]
-    assert "`autoreply` (Auto Convo (reply when the team is slow)): EXISTS" in prompt, \
+    assert "`autoreply` (Auto-reply (reply when the team is slow)): EXISTS" in prompt, \
         prompt[-2000:]
     assert "detailed docs haven't caught up" in prompt, prompt[-2000:]
     assert "Where they conflict with the manual, THESE WIN." in prompt
 
-    # And it stays silent when the manual and the registry agree — the shipped
-    # manual is expected to be one of those days.
+    # And it stays silent when the manual and the registry agree.
     clean = _with_manual(_manual_with_kinds(live))
     assert "Drift notice" not in clean, clean[-2000:]
+
+
+async def case_the_shipped_manual_covers_every_live_kind():
+    """Not the gate's logic but the manual's state: a kind added or retired
+    without a manual edit fails here, before the model ever sees the notice."""
     shipped = assistant_api._build_system_prompt()
     assert "Drift notice" not in shipped, shipped[-2000:]
 
@@ -399,10 +403,10 @@ async def case_the_live_state_block_rides_the_user_message():
 
     assert assistant_state.HEADER in user, user
     assert "paused: no" in user, user
-    assert "auto_posts: ON, every 6h" in user, user
+    assert "auto_posts: ON, checks every 6h" in user, user
     # One rule of this kind, so rule and kind are the same thing and the run
     # rides the line plainly.
-    assert "auto_posts: ON, every 6h, last run 2h ago ok" in user, user
+    assert "auto_posts: ON, checks every 6h, last run 2h ago ok" in user, user
     # The block rides the user message ONLY: the header sentence never enters
     # the cached system prompt — the static addendum is all it may say there.
     assert assistant_state.HEADER not in system
@@ -430,7 +434,7 @@ async def case_config_flags_appear_and_secrets_never_leak():
     await _ask(question="is auto convo on?", account_id=aid)
     user = spy.calls[-1]["messages"][1]["content"]
 
-    assert "auto_convo (config): enabled=true" in user, user
+    assert "autoreply (config): enabled=true" in user, user
     assert "reply_instant (config): enabled=false" in user, user  # absent = OFF
     for msg in spy.calls[-1]["messages"]:
         assert "sk-PLANTED-SECRET" not in msg["content"], \
@@ -485,7 +489,7 @@ async def case_the_state_block_respects_the_cap_dropping_last_run_first():
     # 80 rules of ONE kind: every line is id-stamped, because unlabelled they
     # would read as 80 restatements of one fact instead of 80 rules.
     import re as _re
-    assert _re.search(r'auto_posts #\d+ "r\d+": ON, every 1h', state), state[:400]
+    assert _re.search(r'auto_posts #\d+ "r\d+": ON, checks every 1h', state), state[:400]
     assert "last run" not in state, "the cap must shed last_run detail first"
     assert "sharing one run history" in state, \
         "the group's one fact must outlive its 200 detail lines"
@@ -555,9 +559,9 @@ async def case_a_planted_skip_row_comes_back_verbatim_and_his_words_do_not():
 
 async def case_a_skip_row_names_who_it_stops_and_who_ignores_it():
     """`old_fan_pre_ai` once had an engine-specific exemption; that engine is gone
-    (2026-10-18). Every remaining skip-list reader takes ANY row, and Auto Convo
+    (2026-10-18). Every remaining skip-list reader takes ANY row, and Auto-reply
     reads none — the pack must say both halves, or the model blames the row for
-    Auto Convo's silence."""
+    Auto-reply's silence."""
     aid, fan_id = "acc_v3_oldfan", 600100200
     await _seed_fan(aid, fan_id)
     async with get_session() as s:
@@ -570,7 +574,7 @@ async def case_a_skip_row_names_who_it_stops_and_who_ignores_it():
 
     assert "'old_fan_pre_ai'" in user, user
     assert "read the skip list with NO reason filter" in user, user
-    assert "Auto Convo does not read it." in user, user
+    assert "Auto-reply does not read it." in user, user
 
 
 async def case_a_subscription_only_spender_fails_the_content_payer_gate():
@@ -605,9 +609,9 @@ async def case_a_broadcast_does_not_take_the_turn():
     await _seed_fan(aid, fan_id)
     t0 = datetime.utcnow() - timedelta(hours=36)
     async with get_session() as s:
-        # A not-yet-retired rule of the removed ppv_send kind (its PPV Library
-        # blob is unmapped now): the pivot reads its rule payload like any other.
-        s.add(AutomationRule(account_id=aid, name="ppv", kind="ppv_send",
+        # A live mass rule of ANOTHER kind than the one that sent the blast:
+        # the pivot reads its rule payload like any other.
+        s.add(AutomationRule(account_id=aid, name="mass", kind="send_mass_message",
                              trigger_json=json.dumps({"every_seconds": 14400}),
                              steps_json=json.dumps({"ppv_id": 7}),
                              is_enabled=True))
@@ -652,8 +656,10 @@ async def case_a_broadcast_does_not_take_the_turn():
     assert "turn ownership: WE spoke last (autoreply" in user, user
     assert "A mass broadcast does not take the turn" in user, user
     # …and the pivot to "what would include him today" reads the rule payload.
-    assert ("ppv_send audience as configured today, from the rule payload "
-            "(rule ON): nothing set") in user, user
+    assert ("send_mass_message audience as configured today, from the rule "
+            "payload (rule ON): nothing set") in user, user
+    # …and says it is not the engine that sent the blast.
+    assert "NONE OF THESE ENGINES SENT A MASS IN THE THREAD ABOVE" in user, user
     # The then-vs-now warning is said ONCE for the group, not per line.
     assert user.count("DESCRIBE NO PAST SEND") == 1, user.count("DESCRIBE NO PAST SEND")
     assert '"ppvs"' not in user, "a non-audience payload key leaked into the pack"
@@ -741,7 +747,37 @@ async def case_absence_is_only_claimed_for_rule_driven_kinds():
 
     assert "send_followup" in absence, absence      # the case this was built for
     assert "scheduled_send" not in absence, absence
+    assert "send_mass_message" not in absence, absence   # rule-less one-offs
     assert "scheduled fan-facing kinds" in absence, absence
+
+
+async def case_every_live_kind_is_classified_for_absence():
+    """`_FAN_FACING_KINDS` is a hand list; a rule-driven DM kind left off it
+    drops out of the ABSENCE line. Every live kind is either on it or exempt
+    here, with the reason."""
+    exempt = {
+        "apply_profiles": "writes nicknames and notes, sends no DM",
+        "auto_follow": "a follow notification, never a DM",
+        "customs_watch": "marks a tip as owed work; a human sends the custom",
+        "auto_posts": "a feed post, not a message to one fan",
+        "auto_stories": "a story, not a message to one fan",
+        "gen_info": "builds fan profiles, sends nothing",
+        "nudge_online_fire": "nudge_online's own one-shot; nudge_online is listed",
+        "priority_mass": "launched by hand from the composer, no standing rule",
+        "process_old_fans": "flags and profiles fans, sends nothing",
+        "promo_reactivate": "re-creates a profile promotion, sends nothing",
+        "s4s_check": "checks a partner post, sends nothing",
+        "s4s_post": "a feed post for a partner creator",
+        "scheduled_send": "enqueued by a human from the composer",
+        "send_mass_message": "composer one-offs and funnel openers run with no rule",
+        "scrape_chats": "reads chats, sends nothing",
+        "smart_list_sync": "mirrors lists to OnlyFans, sends nothing",
+        "unsend_messages": "removes messages, sends none",
+    }
+    live = {row["kind"] for row in automation_rules_api._kind_catalog()}
+    listed = set(assistant_fan_pack._FAN_FACING_KINDS)
+    assert not listed & set(exempt), sorted(listed & set(exempt))
+    assert live <= listed | set(exempt), sorted(live - listed - set(exempt))
 
 
 async def case_a_bought_ppv_and_a_content_payer_read_as_paid():
@@ -922,7 +958,7 @@ async def case_a_pasted_model_name_moves_both_blocks_to_that_account():
     user = _user_of(spy)
 
     assert f"on account {other} (Zeta9)" in user, user
-    assert "autoreply: ON, every 1m" in user, "the state block stayed on the "\
+    assert "autoreply: ON, checks every 1m" in user, "the state block stayed on the "\
         "scoped account"
     # …and the state block SAYS which model it is describing. Unlabelled, it
     # silently describes a different account than the reader is looking at.
@@ -1052,7 +1088,7 @@ async def case_the_renderer_runs_with_no_database_at_all():
         memberships=[], rows=[row], paid_ids=set(), runs={},
         money=[("tip", 1, 4500)], missing=["send_followup"],
         is_payer=True, muted_creator=False,
-        audiences=[])
+        audiences=[], audiences_other=False)
 
     out = assistant_evidence.render(ev)
     assert "Subject: fan 123456789 \"Rae/Lisbon/41\" on account acc_pure (Rae)" \
@@ -1060,7 +1096,8 @@ async def case_the_renderer_runs_with_no_database_at_all():
     assert "- skip_list: no row." in out, out
     assert "turn ownership: the FAN spoke last" in out, out
     assert "1 x tip $45.00" in out, out
-    assert "so no run of one can ever reach him here: send_followup." in out, out
+    assert ('scheduled fan-facing kinds: send_followup (its beats read "followup"). '
+            "None of them reaches him FROM NOW ON") in out, out
     assert len(out) <= assistant_evidence.CAP_CHARS, len(out)
 
 
@@ -1191,7 +1228,7 @@ async def case_two_rules_of_one_kind_are_never_one_confident_sentence():
     assert _re.search(r'unsend_messages #\d+ "old unsend": OFF', user), user
     # The unambiguous kind keeps its short line — the stamp costs prompt budget
     # and buys nothing when there is only one row to point at.
-    assert "auto_posts: ON, every 6h" in user, user
+    assert "auto_posts: ON, checks every 6h" in user, user
     assert "auto_posts #" not in user, user
     assert ("An account may hold MORE THAN ONE rule of the same kind"
             in spy.calls[-1]["messages"][0]["content"]), \
@@ -1281,16 +1318,19 @@ async def case_a_named_recipient_set_cannot_read_as_a_blast():
     assert "list_ids=[]" in user and "user_lists=[]" in user, user
     assert 'ref="ppv_3kw5zq"' in user, "the one diagnostic key was shed"
     assert "THE LINE(S) BELOW DESCRIBE NO PAST SEND" in user, user
+    # mass_premade sent it AND has a rule: its line is the sender's own today.
+    assert "NONE OF THESE ENGINES SENT" not in user, user
     system = spy.calls[-1]["messages"][0]["content"]
     assert "that run id and that stored audience ARE the" in system, \
         "the THEN-vs-NOW rule no longer names the stored run as the answer"
 
 
 async def case_a_retired_kinds_send_still_gets_a_today_to_pivot_to():
-    """The fan's newest mass came from `ppv_send`, a kind with no rule any more.
-    The pack only described the audiences of kinds that put a broadcast on his
-    thread, so it described none, and THEN-vs-NOW had no "today" to pivot to.
-    With no rule left for any kind on the thread, today's mass rules stand in."""
+    """The fan's newest mass came from `ppv_send`, a kind with no rule. With no
+    rule left for any kind on the thread, today's mass rules stand in, so
+    THEN-vs-NOW has a "today" to pivot to, and they are labelled as OTHER
+    engines. A leftover row of the retired kind counts as no rule, so it never
+    suppresses the stand-in."""
     aid, fan_id = "acc_v3_retired", 800100778
     await _seed_fan(aid, fan_id)
     async with get_session() as s:
@@ -1298,6 +1338,10 @@ async def case_a_retired_kinds_send_still_gets_a_today_to_pivot_to():
                              trigger_json=json.dumps({"every_seconds": 14400}),
                              steps_json=json.dumps(
                                  {"messages": [{"online_only": True}]}),
+                             is_enabled=True))
+        s.add(AutomationRule(account_id=aid, name="ppv", kind="ppv_send",
+                             trigger_json=json.dumps({"every_seconds": 14400}),
+                             steps_json=json.dumps({"ppv_id": 7}),
                              is_enabled=True))
         s.add(MassRun(id=5397, account_id=aid, automation_kind="ppv_send",
                       audience_filter=json.dumps({
@@ -1315,6 +1359,8 @@ async def case_a_retired_kinds_send_still_gets_a_today_to_pivot_to():
 
     assert ("mass_premade audience as configured today, from the first premade "
             "message (rule ON): online_only=true") in user, user
+    assert "NONE OF THESE ENGINES SENT A MASS IN THE THREAD ABOVE" in user, user
+    assert "ppv_send audience as configured today" not in user, user
 
 
 async def case_a_name_that_lives_in_another_column_is_still_ambiguous():
@@ -1704,6 +1750,7 @@ _harness.run(
     case_no_account_cap_is_an_answer_about_the_asker,
     case_no_account_over_http_takes_a_session_and_nothing_else,
     case_the_drift_gate_speaks_in_both_directions,
+    case_the_shipped_manual_covers_every_live_kind,
     case_the_front_matter_never_reaches_the_model,
     case_the_live_state_block_rides_the_user_message,
     case_config_flags_appear_and_secrets_never_leak,
@@ -1718,6 +1765,7 @@ _harness.run(
     case_two_fans_one_nickname_makes_the_bot_ask,
     case_the_fans_own_display_name_is_matched_but_never_quoted,
     case_absence_is_only_claimed_for_rule_driven_kinds,
+    case_every_live_kind_is_classified_for_absence,
     case_a_bought_ppv_and_a_content_payer_read_as_paid,
     case_a_model_the_caller_does_not_own_is_never_retargeted_to,
     case_a_nickname_alone_resolves_the_fan,

@@ -15,12 +15,17 @@ vi.mock("@/components/chat/FanDrawer", () => ({
     </aside>
   ),
 }));
+// Messages Pro's Scripts picker stands in as a button picking one script.
+const SCRIPT = vi.hoisted(() => ({ source: "local", text: "Script hi", displayText: "Script hi", mediaCount: 1, price: 0, lockedText: false, isWelcome: false, media: [{ id: 61, type: "photo" }], previews: [], taggedUsers: [] }));
+vi.mock("@/components/chat/TemplatePicker", () => ({
+  TemplatePicker: (p: { accountId: string; onPick(t: unknown): void }) => <button type="button" data-account={p.accountId} onClick={() => p.onPick(SCRIPT)}>Scripts</button>,
+}));
 const media = vi.hoisted(() => ({ desktop: true }));
 vi.stubGlobal("matchMedia", (q: string) => ({ matches: media.desktop, media: q, addEventListener: () => {}, removeEventListener: () => {} }));
 vi.mock("@/components/ui/AccountAvatarPicture", () => ({ AccountAvatarPicture: () => null }));
 // The `account` blob holds each creator's Tag (useCreatorProfiles); every other read is the notification count.
 const TAGS = { tab: "account", config: { creators: { profiles: { "2": { tag: "VIP" } } } } };
-const get = vi.fn(async (path: string, _opts?: unknown) => (path === "/admin/settings/account" ? TAGS : { all: 250 }));
+const get = vi.fn(async (path: string, _opts?: unknown): Promise<unknown> => (path === "/admin/settings/account" ? TAGS : { all: 250 }));
 vi.mock("@/lib/relay", () => ({ relay: { get: (path: string, opts?: unknown) => get(path, opts) }, RelayError: class extends Error {} }));
 let accounts: { id: string; nickname: string; has_session: boolean; session_dead_at?: string }[] = [];
 let granted: Set<string> | null = null;
@@ -34,6 +39,7 @@ vi.mock("@/hooks/useAccounts", () => ({
 
 import { renderWithProviders } from "@/test-utils";
 import { ScopeProvider } from "@/contexts/ScopeContext";
+import { chatDraftKey } from "@/lib/ofMirrorChat";
 import { CreatorColumn, OfManagerChrome, hasCreatorColumn } from "./OfManagerChrome";
 
 const ui = () => renderWithProviders(<ScopeProvider><OfManagerChrome><p>OF view</p></OfManagerChrome></ScopeProvider>);
@@ -290,7 +296,7 @@ describe("OfManagerChrome Fan insights", () => {
     expect(aside).toHaveAttribute("data-fan", "42");
     expect(aside).toHaveTextContent("bare");
     // Messages Pro's Infloww palette: the wrapper re-declares --inf-insights for the drawer.
-    expect(aside.parentElement!.style.getPropertyValue("--inf-insights")).toBe("#0d0d0d");
+    expect((aside.closest(".absolute") as HTMLElement).style.getPropertyValue("--inf-insights")).toBe("#0d0d0d");
     expect(screen.getByText("OF view")).toBeInTheDocument();
     act(() => queryClient.setQueryData(["chats", "model", "1", null, null, null, 20], {
       pages: [{ rows: [{ __accountId: "1", withUser: { id: 42, name: "Fan Forty-Two" } }], hasMore: false }], pageParams: [0],
@@ -341,11 +347,41 @@ describe("OfManagerChrome Fan insights", () => {
     renderWithProviders(<ScopeProvider><OfManagerChrome><iframe title="OF view" /></OfManagerChrome></ScopeProvider>);
     const page = () => (screen.getByTitle("OF view") as HTMLIFrameElement).contentDocument!.documentElement;
     const aside = screen.getByRole("complementary", { name: "Fan insights" });
-    expect(aside.parentElement).toHaveClass("absolute", "right-0");
-    expect(aside.parentElement!.parentElement).toContainElement(screen.getByTitle("OF view"));
+    expect(aside.closest(".absolute")).toHaveClass("absolute", "right-0");
+    expect(aside.closest(".absolute")!.parentElement).toContainElement(screen.getByTitle("OF view"));
     expect(page()).toHaveAttribute("data-oi-insights");
     fireEvent.click(screen.getByRole("button", { name: "Fan insights" }));
     expect(page()).not.toHaveAttribute("data-oi-insights");
+  });
+
+  it("is the chat's one Fan insights, with the chat the mirror's page reads when the chats cache has no row", async () => {
+    chatPage();
+    localStorage.setItem("chatterly:scope", "model:1");
+    get.mockImplementation(async (path: string) => (path === "/api/of/v2/chats/42" ? { withUser: { id: 42, name: "Mirror Fan" } } : { all: 250 }));
+    ui();
+    expect(await screen.findByText("Mirror Fan")).toBeInTheDocument();
+    expect(screen.getAllByRole("complementary", { name: "Fan insights" })).toHaveLength(1);
+    expect(get).toHaveBeenCalledWith("/api/of/v2/chats/42", { accountId: "1" });
+    get.mockImplementation(async (path: string) => (path === "/admin/settings/account" ? TAGS : { all: 250 }));
+  });
+
+  it("a script picked over the column goes on the chat's draft", () => {
+    chatPage();
+    localStorage.setItem("chatterly:scope", "model:1");
+    sessionStorage.clear();
+    ui();
+    fireEvent.click(screen.getByRole("button", { name: "Scripts" }));
+    expect(JSON.parse(sessionStorage.getItem(chatDraftKey("1", "42"))!)).toMatchObject({ text: "Script hi", media_files: [61] });
+  });
+
+  it("a frame mid-swap (a document with no <html> yet) is skipped, not a TypeError", () => {
+    chatPage();
+    localStorage.setItem("chatterly:scope", "model:1");
+    const blank = document.createElement("iframe");
+    Object.defineProperty(blank, "contentDocument", { value: { documentElement: null } });
+    const Swap = () => <div ref={(el) => { if (el && !el.contains(blank)) el.appendChild(blank); }} />;
+    expect(() => renderWithProviders(<ScopeProvider><OfManagerChrome><Swap /></OfManagerChrome></ScopeProvider>)).not.toThrow();
+    expect(() => fireEvent.click(screen.getByRole("button", { name: "Fan insights" }))).not.toThrow();
   });
 
   it("below lg the toggle opens the slide-over, closed by default", () => {

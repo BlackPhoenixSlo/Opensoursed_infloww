@@ -101,9 +101,14 @@ with sync_playwright() as p:
     step("open the price dialog (state page) from the chat", lambda: price.click(), price.get_attribute("href"), "messages/chat/state-price")
     back=frame().locator("a.g-btn.m-flat:has-text('Cancel')").first
     step("click the dialog's Cancel (closes)", lambda: back.click(), back.get_attribute("href"), "messages/chat")
-    step("sidebar Statistics", side(f"{M}/statistics"), f"{M}/statistics", "statistics/overview/earnings")
-    step("click statistics Engagement > Messages", inframe(f"{M}/statistics/engagement/messages"), f"{M}/statistics/engagement/messages", "statistics/engagement/messages")
-    step("click statistics Posts tab", inframe(f"{M}/statistics/engagement/posts"), f"{M}/statistics/engagement/posts", "statistics/engagement/posts")
+    # Infloww's Statistics lands on Statements › Earnings (app/next.config.ts); OF's top tabs land where OF lands them
+    # (Engagement on Posts: scripts/of-mirror.mjs REDIRECTS), and Statements' Chargebacks is Statistics'.
+    step("sidebar Statistics", side(f"{M}/statistics"), f"{M}/statistics/statements/earnings", "statistics/statements/earnings")
+    step("click statistics Engagement tab (Posts)", inframe(f"{M}/statistics/engagement/posts"), f"{M}/statistics/engagement/posts", "statistics/engagement/posts")
+    step("click statistics Messages chip", inframe(f"{M}/statistics/engagement/messages"), f"{M}/statistics/engagement/messages", "statistics/engagement/messages")
+    step("click statistics Statements tab (Earnings)", inframe(f"{M}/statistics/statements/earnings"), f"{M}/statistics/statements/earnings", "statistics/statements/earnings")
+    step("sidebar Statements", side(f"{M}/statements"), f"{M}/statements", "statements/index")
+    step("click Statements' Chargebacks (Statistics')", inframe(f"{M}/statistics/statements/disputes"), f"{M}/statistics/statements/disputes", "statistics/statements/disputes")
     step("sidebar OF Manager > Go live", side(f"{M}/streaming"), f"{M}/streaming", "streaming/index")
 
     # Page states (a live capture's dialogs and dropdowns): the control opens the state page; Cancel, the backdrop and a menu's control go back.

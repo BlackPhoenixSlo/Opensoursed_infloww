@@ -101,7 +101,13 @@ export function monthWeeks(month: Day): Day[][] {
 /** OF's scoped-style marks (DatePickerWrapper's, as captured): 45647.css styles the grid only under them. */
 const V = 'data-v-f708a5fa=""';
 
-const when = (x: Day, today: Day) => (dayNum(x) < dayNum(today) ? "v-past" : dayNum(x) === dayNum(today) ? "v-present" : "v-future");
+/**
+ * A day cell's tense class. OF's popup CSS styles `v-future` as unpickable (faded, no selection circle), the right look
+ * for its streaks range; a `future` (schedule) picker's days from tomorrow on are the pickable ones, so they take
+ * `v-past`, the class OF's CSS draws as pickable.
+ */
+const when = (x: Day, today: Day, future = false) =>
+  dayNum(x) < dayNum(today) ? "v-past" : dayNum(x) === dayNum(today) ? "v-present" : future ? "v-past" : "v-future";
 
 /** OF's getDayClasses for `x`. */
 function dayClasses(s: State, x: Day): string {
@@ -145,7 +151,7 @@ function render(s: State): string {
     .map((week) => {
       const cells = week
         .map((x) => {
-          const cls = ["v-calendar-weekly__day", when(x, s.today), outside(x) ? "v-outside" : ""].filter(Boolean).join(" ");
+          const cls = ["v-calendar-weekly__day", when(x, s.today, s.future), outside(x) ? "v-outside" : ""].filter(Boolean).join(" ");
           return `<div role="cell" class="${cls}" data-oi-day="${isoDay(x)}"><div class="v-calendar-weekly__day-label"><span class="${dayClasses(s, x)}">${x.d}</span></div>${events(s, x, week)}</div>`;
         })
         .join("");

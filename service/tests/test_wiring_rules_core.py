@@ -244,7 +244,10 @@ def case_switch_parks_all_duplicates_and_never_duplicates():
 # ── PATCH ownership: owner of another Agency 403; linked chatter allowed ─
 
 def case_patch_is_ownership_gated():
-    rid = asyncio.run(_add_rule(ACC_A, "gen_info", enabled=False, every=86400))
+    # apply_profiles, not an OPT_IN_KINDS kind: those also need their My
+    # Automations page, which the built-in Admin these logins hold never grants
+    # (test_role_enforcement.py covers that gate).
+    rid = asyncio.run(_add_rule(ACC_A, "apply_profiles", enabled=False, every=86400))
 
     assert _patch(OWNER_B, rid, {"is_enabled": True}).status_code == 403
     assert _patch(CHATTER_B, rid, {"is_enabled": True}).status_code == 403

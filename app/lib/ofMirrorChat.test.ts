@@ -14,6 +14,7 @@ import {
   loadMassDraft,
   loadVaultPick,
   massDraftKey,
+  tickMassList,
   MASS_PICKED_TITLE,
   massViewOf,
   massRequest,
@@ -201,6 +202,17 @@ describe("bindChat: the composer", () => {
     expect(h.confirm).toHaveBeenCalledWith("Send this message to Fan A for $12?");
     expect(h.send).not.toHaveBeenCalled();
     expect(loadChatDraft(storage, ACCOUNT, CHAT).price).toBe(12);
+  });
+
+  it("a price with cents shows them, as OF's formatPrice: the summary and the confirm say $12.50", () => {
+    const doc = loadPage("chat");
+    const storage = memoryStorage();
+    saveDraft(storage, draft({ text: "ppv", price: 12.5, media_files: [61], thumbs: ["t"] }));
+    const h = handlers({ confirm: vi.fn(() => false) });
+    bindChat(doc, "messages/chat", ctxOf(h, storage));
+    expect(doc.getElementById("oi-chat-summary")!.textContent).toContain("Price: $12.50");
+    send(doc).click();
+    expect(h.confirm).toHaveBeenCalledWith("Send this message to Fan A for $12.50?");
   });
 
   it("a confirmed PPV sends price and media; a scheduled one goes to the scheduled route", () => {
@@ -484,6 +496,17 @@ describe("bindMass: New message", () => {
     await flush();
     expect(storage.getItem(massDraftKey(ACCOUNT))).toBeNull();
     expect(noteText(doc)).toBe("Sent");
+  });
+
+  it("a list page's Send message (tickMassList) ticks its list on Send to, keeps the draft, and takes it off Exclude", () => {
+    const storage = memoryStorage();
+    storage.setItem(massDraftKey(ACCOUNT), JSON.stringify({ text: "kept", user_lists: ["fans"], excluded_user_lists: ["following", "42"] }));
+    tickMassList(storage, ACCOUNT, "following");
+    tickMassList(storage, ACCOUNT, "following");
+    expect(loadMassDraft(storage, ACCOUNT)).toEqual({ text: "kept", user_lists: ["fans", "following"], excluded_user_lists: ["42"] });
+    const doc = loadPage("send");
+    bindMass(doc, ctxOf(handlers(), storage, { chat: null, lists: [...lists, { id: "following", name: "Following", usersCount: 1 }] }));
+    expect(rows(doc).filter((r) => r.querySelector<HTMLInputElement>("input")!.checked).map((r) => r.textContent!.replace(/\s+/g, " ").trim().split(" ")[0])).toContain("Following");
   });
 
   it("a schedule from the Queue's \"+\": named under the editor, sent as scheduled_date after its own confirm; Clear drops it", async () => {

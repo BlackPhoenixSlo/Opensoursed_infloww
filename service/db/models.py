@@ -1482,7 +1482,7 @@ class AccountAiConfig(Base):
     # untagged. The describe-verdict decision itself is never weakened by this.
     cotag_tag_videos: Mapped[bool | None] = mapped_column(Boolean)
     # The handle to tag, stored without the '@' (media_cotag folds it the way OF
-    # stores usernames). NULL → OF_COTAG_USERNAME → the built-in '' (nobody).
+    # stores usernames). NULL = no co-creator tag, the default (ticket 85).
     cotag_username: Mapped[str | None] = mapped_column(String)
     # Split Inbox (ADR-0004): JSON {group_count: 1..9, assignments: {"<fanId>":
     # 1..group_count}}, owned by split_inbox_api. `assignments` holds only

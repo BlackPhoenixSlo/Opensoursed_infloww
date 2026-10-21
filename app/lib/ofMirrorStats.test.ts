@@ -536,3 +536,25 @@ describe("applyStats with earnings in the period", () => {
     expect(texts(doc, "[data-name='period']")).toEqual([]); // OF draws no period row for All time
   });
 });
+
+describe("OF's own landings (scripts/of-mirror.mjs REDIRECTS, from the captures' url -> final_url)", () => {
+  const hrefOf = (doc: Document, sel: string, text: string) =>
+    [...doc.querySelectorAll<HTMLAnchorElement>(sel)].filter((a) => a.textContent?.trim() === text).map((a) => a.getAttribute("href"));
+  it("Statistics' top tabs land where OF lands them: Statements on Earnings, Engagement on Posts, Fans on Subscriptions", () => {
+    for (const p of ["statistics/overview/earnings", "statistics/reach/promotions", "statistics/statements/payout-request"]) {
+      const doc = load(p);
+      expect(hrefOf(doc, "a.b-tabs__nav__link", "Statements")).toEqual(["/of-manager/statistics/statements/earnings"]);
+      expect(hrefOf(doc, "a.b-tabs__nav__link", "Engagement")).toEqual(["/of-manager/statistics/engagement/posts"]);
+      expect(hrefOf(doc, "a.b-tabs__nav__link", "Fans")).toEqual(["/of-manager/statistics/fans/subscriptions"]);
+    }
+  });
+  it("Statements' Chargebacks is Statistics › Statements › Chargebacks (OF redirects /my/stats/disputes there): no copy of it under Statements", () => {
+    for (const p of ["statements/earnings", "statements/stats/earnings"]) {
+      const doc = load(p);
+      const links = [...doc.querySelectorAll<HTMLAnchorElement>("a[href]")].filter((a) => /chargebacks/i.test(a.textContent ?? "")).map((a) => a.getAttribute("href"));
+      expect(links.length).toBeGreaterThan(0);
+      expect(new Set(links)).toEqual(new Set(["/of-manager/statistics/statements/disputes"]));
+    }
+    expect(() => capture("statements/stats/disputes")).toThrow();
+  });
+});

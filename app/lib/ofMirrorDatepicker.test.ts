@@ -58,6 +58,18 @@ describe("OF's Custom date picker in a page", () => {
     expect([...document.querySelectorAll(".vdatetime-popup__actions button")].map((b) => b.textContent!.trim())).toEqual(["Cancel", "Apply"]);
   });
 
+  it("a day's tense class: a range picker's later days v-future (faded, unpickable); a future picker's v-past (pickable)", () => {
+    const tense = (iso: string) => ["v-past", "v-present", "v-future"].filter((c) => document.querySelector(`[data-oi-day='${iso}']`)!.classList.contains(c));
+    document.body.innerHTML = "";
+    openDatepicker(document, { start: TODAY, end: TODAY, today: TODAY, userStart: START, onApply: vi.fn() });
+    expect([tense("2026-10-16"), tense("2026-10-17"), tense("2026-10-20")]).toEqual([["v-past"], ["v-present"], ["v-future"]]);
+    closeDatepicker(document);
+    openDatepicker(document, { start: TODAY, end: TODAY, today: TODAY, userStart: null, single: true, future: true, onApply: vi.fn() });
+    expect([tense("2026-10-16"), tense("2026-10-17"), tense("2026-10-20")]).toEqual([["v-past"], ["v-present"], ["v-past"]]);
+    expect(document.querySelector("[data-oi-day='2026-10-16'] span")!.className).toBe("vc-disabled"); // before today: greyed
+    closeDatepicker(document);
+  });
+
   it("picking: a start, the next month, an end, then Apply hands the days back and closes", () => {
     const onApply = open();
     click("[data-oi-day='2026-09-03']");

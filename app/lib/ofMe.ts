@@ -39,6 +39,10 @@ export interface OfMe {
   subscribesCount?: number | null;
   rawAbout?: string | null;
   about?: string | null;
+  /** My profile's details under the bio (OF's UserInfo rows). */
+  location?: string | null;
+  website?: string | null;
+  wishlist?: string | null;
   /** The avatar menu's own rows, by OF's sidebar rules: the name's verified badge, the avatar's online dot, and
    *  the bank row (OF's dropdown_menu_item_bank "Bank (to earn)" for a model that can be paid out, else the capture's "Add bank (to earn)"). */
   isVerified?: boolean;

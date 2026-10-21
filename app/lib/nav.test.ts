@@ -66,7 +66,7 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
   });
 
   it("shows an owner every Settings tab but the master's System tab", () => {
-    expect(visibleLinks(SETTINGS_TABS, OWNER)).toHaveLength(13);
+    expect(visibleLinks(SETTINGS_TABS, OWNER)).toHaveLength(14);
   });
 
   it("hides owner-only sections from a chatter-only session", () => {
@@ -142,6 +142,7 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
       "/settings/sales",
       "/settings/time-tracking",
       "/settings/messaging",
+      "/settings/cotag",
       "/settings/ai-keys",
       "/settings/audit",
     ]);

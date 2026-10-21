@@ -14,15 +14,14 @@
  * chat or list row's page shows that example row: see useOfRow. My profile, the avatar menu, Messages, the Queue,
  * Statements' Earnings, New post, Statistics, the Vault and Release forms in All models show the first model (ScopeOverride), with a
  * "Showing <model>" line over the frame: see standInModel and useStandIn. OF's --vh and its phone bar (main.js setVHVariable,
- * WebsiteHeader's isXSMQ) are set from the frame's own size: see ofMirrorPhone. A chat has Messages Pro's Fan insights
- * and Scripts beside it: see OfChatSidePanel.
+ * WebsiteHeader's isXSMQ) are set from the frame's own size: see ofMirrorPhone. A chat's Fan insights and Scripts are the
+ * chrome's (OfManagerChrome), over the frame's right edge.
  */
 
 import { useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { ScopeOverride, useScope } from "@/contexts/ScopeContext";
-import { OfChatSidePanel } from "@/components/of-manager/OfChatSidePanel";
 import { useAccountLabel } from "@/hooks/useAccounts";
 import { useOfChat } from "@/lib/ofMirrorChat";
 import { useOfCollections } from "@/lib/ofMirrorCollections";
@@ -149,10 +148,7 @@ function Frame({ src, title, standIn }: { src: string; title: string; standIn: s
   return (
     <div className="flex flex-col h-chat">
       {standIn && <StandInHint accountId={standIn} />}
-      <div className="flex flex-1 min-h-0">
-        <iframe key={src} ref={ref} src={src} title={title} className={`block w-full flex-1 min-w-0 min-h-0 border-0 ${dark ? "bg-[#161618]" : "bg-white"}`} />
-        <OfChatSidePanel frameRef={ref} src={src} />
-      </div>
+      <iframe key={src} ref={ref} src={src} title={title} className={`block w-full flex-1 min-w-0 min-h-0 border-0 ${dark ? "bg-[#161618]" : "bg-white"}`} />
     </div>
   );
 }

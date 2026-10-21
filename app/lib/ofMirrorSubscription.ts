@@ -36,7 +36,7 @@ import { proxyImage } from "@/lib/mediaUrl";
 import { fillSlot, make, plain, setAvatar, valid } from "@/lib/ofMirrorData";
 import { onOffer, promotionTitle, type Promotion } from "@/lib/ofMirrorFeeds";
 import { ofMeQuery, type OfMe } from "@/lib/ofMirrorIdentity";
-import { bundleOptions, trialsRoute, trialViewOf, type BundleSettings } from "@/lib/ofMirrorOffers";
+import { bundleOptions, NO_BUNDLES_LEFT, trialsRoute, trialViewOf, type BundleSettings } from "@/lib/ofMirrorOffers";
 import { toast } from "@/lib/ofMirrorPost";
 import { message, note, NOT_YET, ofConfirm, ofErrorMessage, type Ask } from "@/lib/ofMirrorWrites";
 
@@ -424,12 +424,17 @@ function sharedLine(doc: Document, line: HTMLElement, shared: boolean, username:
   line.replaceChildren(name, value);
 }
 
+/** Why OF disables a create button (OF shows no reason; ours names the account's state, not a missing feature). */
+export const PRICE_FIRST = "Set a subscription price first";
+export const OF_DISALLOWS = "OnlyFans doesn't allow this on this account";
+
 /**
- * One of OF's create buttons (an <a> to its dialog here) as OF disables it: OF's disabled look, no link, and the house
- * tooltip (OF shows no reason). `off` null: the model is not read yet, so the button stays as it is.
+ * One of OF's create buttons (an <a> to its dialog here) as OF disables it: OF's disabled look, no link, and `why` as
+ * its tooltip. `why` "": enabled; null: the model is not read yet, so the button stays as it is.
  */
-function gate(doc: Document, dialog: string, off: boolean | null) {
-  if (off === null) return;
+function gate(doc: Document, dialog: string, why: string | null) {
+  if (why === null) return;
+  const off = why !== "";
   for (const a of doc.querySelectorAll<HTMLAnchorElement>(`a.g-btn[href$='/${dialog}'], a.g-btn[data-oi-href$='/${dialog}']`)) {
     if (off && a.hasAttribute("href")) {
       a.setAttribute("data-oi-href", a.getAttribute("href")!);
@@ -442,7 +447,7 @@ function gate(doc: Document, dialog: string, off: boolean | null) {
     a.setAttribute("aria-disabled", String(off));
     // OF's [disabled] g-btn takes no pointer events; this one keeps them so its tooltip shows.
     a.classList.toggle("g-pointer-events-auto", off);
-    if (off) a.title = NOT_YET;
+    if (off) a.title = why;
     else a.removeAttribute("title");
   }
 }
@@ -504,7 +509,7 @@ export function applySubscription(
     }
     if (free !== null) header("Profile promotion campaign")?.classList.toggle("m-disabled-block", free || me?.canCreatePromotion === false);
     // OF's "Start promotion campaign": disabled with no price, or for a page that is no performer's, may not promote or earn.
-    gate(doc, "promotion-campaign/modal-1", me ? !(Number(me.subscribePrice) > 0) || !me.isPerformer || !me.canCreatePromotion || !me.canEarn : null);
+    gate(doc, "promotion-campaign/modal-1", me ? (!(Number(me.subscribePrice) > 0) ? PRICE_FIRST : !me.isPerformer || !me.canCreatePromotion || !me.canEarn ? OF_DISALLOWS : "") : null);
   }
   if (parts.includes("bundles")) {
     const t = tpl("bundle-row");
@@ -512,7 +517,7 @@ export function applySubscription(
     if (free !== null) header("Subscription bundles")?.classList.toggle("m-disabled-block", free);
     // OF's isAddBundleDisabled: no price, or no duration in canAddSubscriberByBundle left without a bundle.
     const left = bundleOptions(settings, (data.bundles?.rows ?? []).map((b) => Number(b.duration))).durations;
-    gate(doc, "promotion-campaign/modal-2", me ? free || !left.length : null);
+    gate(doc, "promotion-campaign/modal-2", me ? (free ? PRICE_FIRST : !left.length ? NO_BUNDLES_LEFT : "") : null);
   }
   for (const part of ["campaigns", "trials"] as const) {
     if (!parts.includes(part)) continue;
@@ -521,7 +526,7 @@ export function applySubscription(
     if (t) put(t, rows.map((r) => (part === "campaigns" ? campaignRow(doc, t, r, me?.username) : trialRow(doc, t, r, trialsShared, !me || !!me.canCreateTrial))));
     // OF's "Create new free trial link": disabled while the model may not create free trials (authUser.canCreateTrial).
     if (part === "trials") {
-      gate(doc, "trial-links/modal-1", me ? !me.canCreateTrial : null);
+      gate(doc, "trial-links/modal-1", me ? (me.canCreateTrial ? "" : free ? PRICE_FIRST : OF_DISALLOWS) : null);
       // OF's header line: hint_trial_link(_disabled)_title, gray while disabled.
       const hint = doc.querySelector("#trial .b-menu-list__el.m-reset-bb");
       if (hint && me) {

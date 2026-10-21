@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 
 import { OfMirrorFrame } from "@/components/of-manager/OfMirrorFrame";
 import { findNavLink } from "@/lib/nav";
-import { mirrorPageOf } from "@/lib/of-mirror-route";
+import { mirrorPageOf, mirrorRedirectOf } from "@/lib/of-mirror-route";
 
 /** OF Manager: a static mirror of the OnlyFans creator UI, one section per sidebar item (docs/routes.md). */
 
@@ -25,6 +25,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 
 export default async function Page({ params }: Props) {
   const { section, path } = await params;
+  const to = mirrorRedirectOf(section, path);
+  if (to) redirect(to);
   const page = pageOf(section, path);
   if (!page) notFound();
   return <OfMirrorFrame src={page.src} title={page.title} />;

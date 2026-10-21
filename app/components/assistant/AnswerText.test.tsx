@@ -24,12 +24,21 @@ describe("AnswerText", () => {
     expect(screen.getByText("Name").tagName).toBe("STRONG");
   });
 
-  it("links the click path inside bold, to the right tab", () => {
+  it("links the click path inside bold", () => {
+    // Where it points is answerLinks.test.ts's job; here, that it is a link.
     render(<AnswerText text="Go to **Growth → Profile promotion** and press Create." />);
-    const link = screen.getByRole("link", { name: /Profile promotion/ });
-    expect(link.getAttribute("href")).toBe("/growth/profile-promotion");
+    const link = screen.getByRole("link", { name: "Growth → Profile promotion" });
     // The link sits INSIDE the bold run — bold and linked, not one or other.
     expect(link.closest("strong")).not.toBeNull();
+  });
+
+  it("links a half-bolded path as one path", () => {
+    // Resolved span by span, the bold "Settings" would link on its own to
+    // Your Account; as one path, every piece of it opens one place.
+    render(<AnswerText text="Open Growth → **Smart lists** → **Settings**, then Save." />);
+    const links = screen.getAllByRole("link");
+    expect(links.map((l) => l.textContent)).toEqual(["Growth → ", "Smart lists"]);
+    expect(new Set(links.map((l) => l.getAttribute("href"))).size).toBe(1);
   });
 
   it("renders bullet and numbered lists as lists", () => {

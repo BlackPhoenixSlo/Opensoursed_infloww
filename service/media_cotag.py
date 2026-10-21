@@ -27,24 +27,24 @@ Three things this module is deliberately paranoid about:
   3. **The tag can never cost a send.** `of_client` retries once without the
      auto-added tag if OF rejects the body (see `_post_dropping_auto_cotag`).
 
-Config (env, read live so a restart is not needed to change the handle):
-  OF_COTAG_ENABLED   "0" kills the whole feature. Default on.
-  OF_COTAG_USERNAME  handle to tag. Default empty: nobody is tagged until an
-                     agency sets this (or a per-account handle).
-  OF_COTAG_USER_ID   numeric OF user id, skips the per-account lookup entirely.
-                     Set this only if the SAME id is taggable from every
-                     account — it is not validated against the friend list.
+Config (env, read live):
+  OF_COTAG_ENABLED   "0" kills the whole feature. Default on. It is the only
+                     env knob, and it can only turn tagging off, never add one.
 
-Per-account overrides (the Brain panel → account_ai_config, read live through
-the same sync engine, 60s cache):
+Per-account settings (Settings › Co-creator tag → account_ai_config, read
+live through the same sync engine, 60s cache):
   cotag_tag_videos   NULL ≡ OFF (most creators are solo — their videos really
                      are just them). Ticked ON, any send attaching a vault
                      VIDEO tags even when the describe verdict says solo:
                      video describes are cut from stills and miss the POV
                      partner — Blake1/Blake2 clips shipped untagged exactly
                      this way, so the collab accounts turn this on.
-  cotag_username     handle to tag on THIS account, no '@'. NULL → the env →
-                     the built-in default.
+  cotag_username     the co-creator to tag on THIS account, no '@'. Blank =
+                     no co-creator tag, the default (ticket 85, 2026-10-21:
+                     the global handle this replaced was the test creator's
+                     own, which can never resolve there, so every media send
+                     on it logged an ERROR). The config API's save stores the
+                     account's own handle as blank.
 """
 from __future__ import annotations
 
@@ -56,14 +56,12 @@ from typing import Any, Iterable
 
 log = logging.getLogger("of-relay.media_cotag")
 
-DEFAULT_HANDLE = ""
-
 
 def fold_handle(raw: Any) -> str:
     """A username the way OF stores it: trimmed, no `@`, case-folded.
 
-    The ONE definition — the env reader, the Brain-column reader and the config
-    API's save path all fold through here, so "what counts as the same handle"
+    The ONE definition — the Brain-column reader and the config API's save
+    path both fold through here, so "what counts as the same handle"
     cannot drift between the writer and the readers."""
     return str(raw or "").strip().lstrip("@").lower()
 
@@ -77,7 +75,7 @@ _ID_HIT_TTL_S = 3600.0
 _ID_MISS_TTL_S = 300.0
 # Bound the verdict cache so a long-lived relay can't grow it without limit.
 _VERDICT_CACHE_MAX = 20_000
-# The Brain overrides move when an operator hits Save; the save path also drops
+# The per-account settings move when an operator hits Save; the save path also drops
 # the caches, so this TTL only covers a second relay worker / a raw DB edit.
 _CFG_TTL_S = 60.0
 
@@ -103,7 +101,7 @@ def enabled() -> bool:
 
 
 def _account_cfg(account_id: str) -> tuple[bool, str | None]:
-    """This account's Brain overrides: (always tag videos, username or None).
+    """This account's settings: (always tag videos, username or None).
 
     No row / NULL columns / a lookup that fails → (False, None): the video rule
     is an OPT-IN for collab accounts, so every failure path lands on the
@@ -129,33 +127,18 @@ def _account_cfg(account_id: str) -> tuple[bool, str | None]:
     except Exception:
         log.exception(
             "cotag: brain config lookup failed (account=%s) — using the "
-            "defaults (video rule off, global handle)", account_id)
+            "defaults (video rule off, no co-creator)", account_id)
     _acct_cfg[account_id] = (now, (always, username))
     return always, username
 
 
-def handle(account_id: Any = None) -> str:
-    """The username to tag, normalised the way OF stores it (no `@`, folded).
-
-    Per-account Brain override first, then the env, then the built-in default.
-    A blanked env still means "nobody to tag" when no override is set. Takes
-    the account id in whatever shape the caller holds (str, int, None, "") —
-    falsy means "no account context, global answer"."""
-    if account_id:
-        _always, override = _account_cfg(str(account_id))
-        if override:
-            return override
-    raw = os.environ.get("OF_COTAG_USERNAME")
-    return fold_handle(raw if raw is not None else DEFAULT_HANDLE)
-
-
-def _pinned_id() -> int | None:
-    raw = (os.environ.get("OF_COTAG_USER_ID") or "").strip()
-    try:
-        return int(raw) if raw else None
-    except ValueError:
-        log.error("OF_COTAG_USER_ID=%r is not a number — ignoring it", raw)
-        return None
+def handle(account_id: Any) -> str:
+    """The co-creator to tag on this account, normalised the way OF stores it
+    (no `@`, folded); '' means nobody. Takes the account id in whatever shape
+    the caller holds (str, int, None, "") — falsy means no account, nobody."""
+    if not account_id:
+        return ""
+    return _account_cfg(str(account_id))[1] or ""
 
 
 # ── Is anyone else in this? ─────────────────────────────────────────
@@ -317,8 +300,8 @@ def lookup_tag_id(client, want: str | None = None) -> int | None:
     Public because "can this account tag @handle?" is a question worth asking
     from outside a send (`_probe_cotag_taggable.py` is the ops answer to it),
     and a second implementation of this match would be free to pass while the
-    real resolver fails. Unlike `tag_user_id` it neither caches nor honours the
-    `OF_COTAG_USER_ID` pin: a probe wants the truth from OF, not our shortcut.
+    real resolver fails. Unlike `tag_user_id` it never caches: a probe wants the
+    truth from OF, not our shortcut.
     """
     if want is None:
         want = handle(getattr(client, "account_id", None))
@@ -340,10 +323,6 @@ def lookup_tag_id(client, want: str | None = None) -> int | None:
 
 def tag_user_id(client) -> int | None:
     """The numeric OF id to put in `userTags` for this account, or None."""
-    pinned = _pinned_id()
-    if pinned is not None:
-        return pinned
-
     account_id = str(getattr(client, "account_id", "") or "")
     want = handle(account_id)
     if not want:
@@ -416,9 +395,8 @@ def story_mention(account_id: str, media_ids: Any) -> str | None:
     except Exception:
         log.exception("cotag: story check failed — mentioning, because a check "
                       "we could not run is not evidence that she is alone")
-    # A blanked OF_COTAG_USERNAME means "nobody to tag" on BOTH paths — the
-    # userTags side already resolves it to no id, and falling back to the
-    # built-in default here would resurrect a handle the operator cleared.
+    # No co-creator means "nobody to tag" on BOTH paths — the userTags side
+    # already resolves it to no id.
     want = handle(account_id)
     return f"@{want}" if want else None
 
@@ -436,7 +414,7 @@ def forget_tag_id(account_id: str) -> None:
 
 
 def forget_account_cfg(account_id: str) -> None:
-    """Drop ONE account's cached Brain overrides and resolved id — the Brain
+    """Drop ONE account's cached settings and resolved id — the settings
     save path calls this so a new username/video rule applies on the very next
     send instead of after the TTLs drain.
 

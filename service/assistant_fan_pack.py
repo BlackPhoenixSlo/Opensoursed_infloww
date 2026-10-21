@@ -46,7 +46,6 @@ log = logging.getLogger("of-relay.assistant_fan_pack")
 
 RESOLVE_TIMEOUT_S = 0.3      # three small indexed reads: who is he?
 TIMEOUT_S = 1.5              # the evidence itself (local, indexed reads)
-_TIMELINE_SCAN = 40          # message rows read
 _NICKNAME_PROBES = 4         # pasted lines tried as a nickname
 
 # Names what was missing, not "the manual only": the two blocks fail
@@ -73,16 +72,16 @@ _MASS_KINDS = frozenset({"mass_premade", "send_mass_message"})
 #
 # ⚠️ SCHEDULED KINDS ONLY. The claim "no rule ⇒ nothing of that kind reaches
 # him" is only true for kinds that ONLY ever run off a rule. `scheduled_send`
-# is enqueued straight from the chat composer by a human — it reaches a fan on
-# an account with no rule at all, so listing it here would make the pack's
-# most decisive line a false one.
+# is enqueued straight from the chat composer by a human, and
+# `send_mass_message` is every composer one-off and funnel opener — both reach
+# a fan on an account with no rule at all, so listing either here would make
+# the pack's most decisive line a false one.
 _FAN_FACING_KINDS: tuple[str, ...] = (
-    "autoreply", "customs_watch",
+    "autoreply",
     "mass_premade", "nudge_online",
     "purchase_followup",
     "expiry_message", "expired_message", "resubscribe_message", "birthday_message",
-    "reply_mass_funnel", "send_followup",
-    "send_mass_message", "send_welcome",
+    "reply_mass_funnel", "send_followup", "send_welcome",
     "welcome_chatter_for_info",
 )
 
@@ -298,6 +297,7 @@ async def _pack(subject: Subject) -> str:
 
     account_id, label, fan = subject.account_id, subject.label, subject.fan
     fan_id = int(fan.fan_id)
+    live_kinds = {row["kind"] for row in automation_rules_api._kind_catalog()}
     async with get_session() as s:
         skip = await s.get(SkipList, (account_id, fan_id))
         banned = await s.get(Blacklist, fan_id)
@@ -308,6 +308,9 @@ async def _pack(subject: Subject) -> str:
                 select(AutomationRule.kind, AutomationRule.steps_json,
                        AutomationRule.is_enabled)
                 .where(AutomationRule.account_id == account_id))).all()]
+        # LIVE kinds only: a leftover row of a retired kind reaches nobody from
+        # now on, so it has no "today" to describe and must not stand in for one.
+        rules = [r for r in rules if r[0] in live_kinds]
         rule_kinds = {k for k, _s, _o in rules}
         memberships = (await s.execute(
             select(List.name, List.kind, ListMember.added_at)
@@ -326,7 +329,7 @@ async def _pack(subject: Subject) -> str:
                    Message.is_tip, Message.is_unsent, Message.message_id)
             .where(Message.account_id == account_id, Message.fan_id == fan_id)
             .order_by(Message.created_at.desc())
-            .limit(_TIMELINE_SCAN)
+            .limit(ev.TIMELINE_SCAN)
         )).all()
         money = (await s.execute(
             select(Transaction.kind, func.count(Transaction.id),
@@ -357,12 +360,16 @@ async def _pack(subject: Subject) -> str:
     # other rule's audience is noise against a 4k cap.
     blasted = {r.automation_kind for r in rows
                if r.mass_run_id is not None and r.automation_kind}
-    if not any(k in blasted for k, _s, _on in rules):
+    blasted &= rule_kinds
+    other_engines = not blasted
+    if other_engines:
         # THEN-vs-NOW needs somewhere to pivot TO. "Why did he get that mass
         # last Tuesday" with no surviving send row is the spec's own example,
         # and the honest answer is "unknown — here is what would include him
-        # today", which needs today's audience even when nothing was found —
-        # or when what was found came from a kind with no rule left (ppv_send).
+        # today", which needs today's audience even when nothing was found, or
+        # when what sent it has no rule left (a one-off composer send, a
+        # funnel opener, a retired kind). Those lines then describe OTHER
+        # engines than the one that sent it, and the pack says so.
         blasted = {k for k, _s, on in rules if on and k in _MASS_KINDS}
     # Every engine's audience lives in its rule payload; WHERE inside it is the
     # renderer's table to answer (`ev.audience_home`), not a branch over here.
@@ -372,7 +379,6 @@ async def _pack(subject: Subject) -> str:
     # THE SHARED PREDICATE — the single copy of its question.
     is_payer = fan_id in await content_payer_fans(account_id, [fan_id])
 
-    live_kinds = {row["kind"] for row in automation_rules_api._kind_catalog()}
     missing = sorted((set(_FAN_FACING_KINDS) & live_kinds) - rule_kinds)
 
     return ev.render(ev.Evidence(
@@ -381,7 +387,7 @@ async def _pack(subject: Subject) -> str:
         drip=drip, memberships=memberships, rows=rows, paid_ids=paid_ids,
         runs=runs, money=money, missing=missing, is_payer=is_payer,
         muted_creator=should_skip_muted_creator(fan),
-        audiences=audiences))
+        audiences=audiences, audiences_other=other_engines))
 
 
 async def build(scoped: str, question: str) -> FanPack:

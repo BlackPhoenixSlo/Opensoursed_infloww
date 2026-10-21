@@ -312,6 +312,7 @@ export function drawChart(canvas: HTMLCanvasElement, spec: ChartSpec): void {
 /** Blank `canvas` and stop its hover. */
 export function clearChart(canvas: HTMLCanvasElement): void {
   specs.delete(canvas);
+  linesSpecs.delete(canvas);
   (canvas.closest(".b-chart") ?? canvas.parentElement)?.querySelector(`[${TOOLTIP}]`)?.remove();
   const ctx = context(canvas);
   if (ctx) {

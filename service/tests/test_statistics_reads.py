@@ -429,7 +429,10 @@ def case_payout_invoice_download_streams_the_file_and_never_leaks_the_url():
 def case_per_item_stats_headers():
     body = _one("/api/of/v2/posts/stats", {"post_id": 59001}, "/posts/59001/stats", {"withChart": "true"})
     assert body["purchasedSumm"] == 10 and body["uniqueLookCount"] == 9, body
-    status, _, sent = _get("/api/of/v2/posts/stats")  # the item id is required
+    # No item id: the mirror's capability probe, a 2xx (no red console line) and no OF request.
+    status, body, sent = _get("/api/of/v2/posts/stats")
+    assert (status, body, sent) == (200, {"supported": True}, []), (status, body, sent)
+    status, _, sent = _get("/api/of/v2/posts/stats", {"post_id": 0})
     assert status == 422 and sent == [], status
 
 

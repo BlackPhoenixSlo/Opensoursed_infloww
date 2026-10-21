@@ -603,10 +603,8 @@ SHARED_ONLY = {
     "/growth/get-to-know-fans": "its account config (Model info) is Messages Pro's and Auto Post's too",
     "/growth/gen-info": "its automation rules and enqueue routes are Auto Post's too",
     "/employees": "its writes are owner-only; it reads vault lists for folder access",
-    "/of-manager/profile": "its users, posts and labels are Collections', Home's and Messages Pro's too",
     "/share-for-share/settings": "its S4S profiles and the rail's requests are the other S4S pages' too",
     "/of-manager/collections": "its lists, labels, fans and user lookups are other pages' too; bookmarks are Bookmarks'",
-    "/of-manager/home": "its profile, posts, stories and user search are other pages' too",
 }
 
 
@@ -658,6 +656,35 @@ def case_a_chatter_lacking_only_a_page_gets_403_on_one_of_its_routes():
     finally:
         _reset()
     assert failures == [], f"no 403 for: {failures}"
+
+
+def case_the_strips_streams_are_homes_and_a_highlights_stories_my_profiles():
+    """Home's story strip reads streams/feed, My profile's highlight tiles stories/highlights/{id}: each is its
+    page's alone, not Go live's `/streams` nor Home's `/stories` (the longest prefix wins)."""
+    feed, highlight = "/api/of/v2/streams/feed", "/api/of/v2/stories/highlights/1195022"
+    assert permissions.route_pages(feed, "GET") == ("/of-manager/home",)
+    assert permissions.route_pages(highlight, "GET") == ("/of-manager/profile",)
+    assert "/of-manager/streaming" in permissions.route_pages("/api/of/v2/streams", "GET")
+    try:
+        for path, page, other in ((feed, "/of-manager/home", "/of-manager/streaming"),
+                                  (highlight, "/of-manager/profile", "/of-manager/home")):
+            _roles(OWNER_A, True, {EMP_A: "role-page"}, _role("role-page", _only(page)))
+
+            def _granted(fake, path=path):
+                r = CHATTER_A.get(path)
+                assert r.status_code == 200, f"{path}: {r.status_code} {r.text}"
+                assert len(fake.calls) == 1, fake.calls
+            _with_fake_of(_granted)
+            _roles(OWNER_A, True, {EMP_A: "role-other"}, _role("role-other", _only(other)))
+
+            def _refused(fake, path=path, page=page):
+                r = CHATTER_A.get(path)
+                want = {"detail": f"Your role does not allow {permissions.PAGE_MAP[page][0]}"}
+                assert r.status_code == 403 and r.json() == want, f"{path}: {r.status_code} {r.text}"
+                assert fake.calls == [], fake.calls
+            _with_fake_of(_refused)
+    finally:
+        _reset()
 
 
 def case_a_growth_link_page_alone_reads_the_fan_lists_its_list_select_offers():

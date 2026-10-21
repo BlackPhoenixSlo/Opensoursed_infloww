@@ -3,7 +3,7 @@
 Mocks the login (as settings_values.py) and the relay's GET /api/of/v2/payouts/balances, /payouts/stats,
 /payments/referrals/balance and /payouts/chargebacks/ratio with SYNTHETIC values, sets scope `model:acc1`, and checks in
 the frame: the balance box (Statements) and sidebar (Statistics) amounts, payout frequency and its line (OF's minSumMessage); Earning
-Statistics' all-time net and month rows; the referral earnings; the chargeback ratio. Every money request is a GET with
+Statistics' all-time net and month rows, a month's head expanding that month (and All time's All time); the referral earnings; the chargeback ratio. Every money request is a GET with
 X-Account-Id. Screenshot: /tmp/of-mirror-shots/inapp-money.png. Exit 1 on a failed check.
 """
 import datetime, json, os, sys, time
@@ -72,7 +72,15 @@ with sync_playwright() as p:
             got=fr[0].evaluate(TEXT, sel)
             print(json.dumps({"page":page,"sel":sel,"want":want,"got":got}))
             if got!=want: failures.append(f"{page}: {sel} is {got!r}, expected {want!r}")
-        if page=="statements/stats/earnings": pg.screenshot(path=f"{SHOTS}/inapp-money.png")
+        if page=="statements/stats/earnings":
+            pg.screenshot(path=f"{SHOTS}/inapp-money.png")
+            # OF's one expanded row: a month's head expands it (its body, its range), All time's brings All time back.
+            OPEN="() => [...document.querySelectorAll('.b-stats-wrap > .b-stats-row.m-expanded')].filter(e => !e.closest(\"[style*='display:none']\")).map(e => [e.querySelector('.b-stats-row__month').textContent.trim(), !!e.querySelector('.b-stats-row__body canvas')])"
+            for title, want in (("September, 2026", [["September, 2026", True]]), ("All time", [["All time", True]])):
+                fr[0].locator(".b-stats-row__head", has_text=title).click(); pg.wait_for_timeout(300)
+                got=fr[0].evaluate(OPEN)
+                print(json.dumps({"page":page,"click":title,"want":want,"got":got}))
+                if got!=want: failures.append(f"{page}: after a click on {title!r} the expanded row is {got!r}, expected {want!r}")
     missing=set(SOURCES)-seen
     if missing: failures.append(f"sources never fetched: {sorted(missing)}")
     bad=[s for s in sent if s[0]!="GET" or not s[2]]

@@ -20,7 +20,7 @@
  * a real post row's like, comments and (the Creator's own post) More menu are ofMirrorHome's; another creator's post's
  * More button is disabled with the "Not available in Inflowwww yet" tooltip; collections' writes are ofMirrorCollections'.
  * Home and the notifications tabs keep no example (the generator drops Home's example post, fan stories, alerts and
- * promo cards, and every tab's example rows and counts; the creators' story tiles come from GET /stories): with no data they show OF's own empty states. Elsewhere, all models, no data yet or a relay error: the examples stay (and their
+ * promo cards, and every tab's example rows and counts; the story tiles are the Creator's own active stories, GET /users/{id}/stories, then the creators GET /stories lists: stripUsers, with GET /streams/feed's live and scheduled streams and the watched creators after the promotion tile: applyStories): with no data they show OF's own empty states. Elsewhere, all models, no data yet or a relay error: the examples stay (and their
  * ?row= links still work, see useOfRow). The query is read from the app URL;
  * the frame's src never carries it.
  */
@@ -35,7 +35,7 @@ import { proxyImage } from "@/lib/mediaUrl";
 import { stillUrl } from "@/lib/ofMedia";
 import { basePage, CHAT_VAULT, HOME_VAULT, homeDraft, keepQuery, MASS_VAULT, VAULT_DIALOG } from "@/lib/ofMirrorRow";
 import { loadDraft } from "@/lib/ofMirrorPost";
-import { loadVaultPick, vaultPickKey } from "@/lib/ofMirrorChat";
+import { loadVaultPick, MASS_SEND, vaultPickKey } from "@/lib/ofMirrorChat";
 import { formatCount, ofMeQuery } from "@/lib/ofMirrorIdentity";
 import { LIST_SORTS, vaultListsPath, vaultMediaPath, viewOf } from "@/lib/ofMirrorVault";
 import { message, NOT_YET } from "@/lib/ofMirrorWrites";
@@ -82,6 +82,9 @@ import {
   type Payout,
   type Promotion,
   type QueueItem,
+  stripUsers,
+  type FeedStream,
+  type StoryEntry,
   type StoryUser,
   type MorePages,
   type Template,
@@ -236,6 +239,8 @@ export interface MirrorData {
   posts?: MirrorPost[];
   /** The wall while `posts` is not here: still loading (null), or the Relay's error text. */
   postsStatus?: string | null;
+  /** The wall's pages after the first (OF's infinite scroll: applyPosts). */
+  postsMore?: MorePages;
   /** My profile's Media tab and Recent strip: the Creator's photo posts then video posts, as the Relay sends them (merged when shown). */
   profileMedia?: MediaPost[];
   /** The Media grid while `profileMedia` is not here: still loading (null), or the Relay's error text. */
@@ -270,8 +275,11 @@ export interface MirrorData {
   authors?: Record<string, OFUserMini>;
   /** Home's feed while `home` is not here: still loading (null), or the Relay's error text. */
   homeStatus?: string | null;
-  /** Home's story strip: the creators with stories (the Relay's GET /stories). */
+  /** Home's feed's pages after the first (OF's infinite scroll: applyHome). */
+  homeMore?: MorePages;
+  /** Home's story strip: the creators with stories (the Relay's GET /stories), and the live and scheduled streams (GET /streams/feed). */
   stories?: StoryUser[];
+  streams?: FeedStream[];
   /** Home's right column: the Creator's promotions (the Relay's `/promotions` items), its subscription price and itself (the bubble's avatar). */
   promotions?: Promotion[];
   subscribePrice?: number | null;
@@ -373,6 +381,29 @@ export function fill(doc: Document, examples: HTMLElement[], clones: HTMLElement
 const unit = (el: Element) => el.closest<HTMLElement>(".vue-recycle-scroller__item-view") ?? (el as HTMLElement);
 export const nameOf = (u: OFUserMini | null | undefined) => u?.name?.trim() || u?.username || (u ? String(u.id) : "");
 export const handleOf = (u: OFUserMini) => u.username || `u${u.id}`;
+/**
+ * Where a user's name and avatar go: the Creator's own (`me`, their id) My profile, anyone else's OF profile,
+ * https://onlyfans.com/<handle> (by `u<id>` without one; the mirror has no other user's profile, as the chat list's
+ * avatar); none for a user with neither id nor handle.
+ */
+export function userHref(u: { id?: unknown; username?: string | null } | null | undefined, me?: string | null): string | null {
+  const id = u?.id == null || u.id === "" ? null : String(u.id);
+  if (id == null && !u?.username) return null;
+  if (me != null && id === me) return "/of-manager/profile";
+  return `https://onlyfans.com/${encodeURIComponent(u?.username || `u${id}`)}`;
+}
+/** Point the cloned row's user links `links` at `href` (none: they stay as captured): My profile in the frame's top, an OF
+ *  profile in a new tab. */
+export function linkUser(links: Iterable<Element>, href: string | null) {
+  if (!href) return;
+  const away = href.startsWith("https://");
+  for (const a of links) {
+    a.setAttribute("href", href);
+    a.setAttribute("target", away ? "_blank" : "_top");
+    if (away) a.setAttribute("rel", "noopener noreferrer");
+    else a.removeAttribute("rel");
+  }
+}
 const sameId = (a: unknown, b: string | null | undefined) => b != null && String(a) === b;
 /** OF message text (HTML) as plain text, parsed inertly. */
 export const plain = (html: string | null | undefined) => (html ? (new DOMParser().parseFromString(html, "text/html").body.textContent ?? "").trim() : "");
@@ -1214,6 +1245,8 @@ function applyListUsers(doc: Document, page: string, list: string | null, people
       }
     }
     for (const a of el.querySelectorAll("a[href='/of-manager/messages/chat']")) a.setAttribute("href", `/of-manager/messages/chat?chat=${encodeURIComponent(String(u.id))}`);
+    // The card's avatar, name and handle (OF's profile links): the user's OF profile.
+    linkUser(el.querySelectorAll(".b-fans__item__header > a.g-avatar, a.b-username, a.g-user-realname__wrapper"), userHref(u));
     for (const x of el.querySelectorAll(".b-fans__item__list, .b-btn-collapse")) x.remove(); // the example's subscription details
     return el;
   });
@@ -1223,10 +1256,12 @@ function applyListUsers(doc: Document, page: string, list: string | null, people
 
 /**
  * A list's Users and Posts tabs keep the open `list` (as its row's link); the Posts tab's type chips (OF's ?postType=)
- * each link their own type of it, `type`'s chip (null: All) marked current as OF marks it.
+ * each link their own type of it, `type`'s chip (null: All) marked current as OF marks it. The header's Send message opens
+ * New message with the list ticked (`?to=`, OF's sendlist-<list>; useOfChat ticks it).
  */
 function applyListTabs(doc: Document, list: string, type: string | null) {
   const q = `?list=${encodeURIComponent(list)}`;
+  for (const a of doc.querySelectorAll(`a[aria-label="Send message"][href^="${MASS_SEND}"]`)) setAttr(doc, a, "href", `${MASS_SEND}?to=${encodeURIComponent(list)}`);
   for (const p of LIST_TABS) keepQuery(doc, p, q);
   track(doc, () => LIST_TABS.forEach((p) => keepQuery(doc, p, "")));
   for (const a of doc.querySelectorAll(".g-page-content__header a.b-tabs__nav__link")) {
@@ -1307,7 +1342,7 @@ export function applyData(doc: Document, page: string, data: MirrorData, img: (u
   const grid = page === "profile/media";
   if (parts.includes("posts") && !grid && data.postsStatus !== undefined) applyProfileStatus(doc, data.postsStatus);
   if (parts.includes("posts") && !grid && data.posts) {
-    applyPosts(doc, data.posts, img);
+    applyPosts(doc, data.posts, img, data.me?.username, data.postsMore);
     if (data.posts.length) hideEmpty(doc, ".user_posts");
   }
   if (parts.includes("profileMedia") && grid && data.profileMediaStatus !== undefined) applyProfileStatus(doc, data.profileMediaStatus);
@@ -1329,8 +1364,8 @@ export function applyData(doc: Document, page: string, data: MirrorData, img: (u
   if (parts.includes("payouts") && data.payouts) applyPayouts(doc, data.payouts);
   if (parts.includes("referrals") && data.referrals && data.templates?.payoutRow) applyPayouts(doc, data.referrals, data.templates.payoutRow);
   if (parts.includes("home") && data.homeStatus !== undefined) applyFeedStatus(doc, data.homeStatus);
-  if (parts.includes("stories") && data.stories) applyStories(doc, data.stories, img);
-  if (parts.includes("home") && data.home && data.templates?.post) applyHome(doc, data.home, data.authors ?? {}, data.templates.post, img, data.me && String(data.me.id));
+  if (parts.includes("stories") && (data.stories || data.streams)) applyStories(doc, data.stories ?? [], img, { me: data.me, streams: data.streams, now: data.now });
+  if (parts.includes("home") && data.home && data.templates?.post) applyHome(doc, data.home, data.authors ?? {}, data.templates.post, img, data.me && String(data.me.id), data.homeMore);
   if (parts.includes("promotions") && data.promotions) applyPromotions(doc, data.promotions, data.subscribePrice, data.me, img);
   if (parts.includes("events") && data.events) applyEvents(doc, data.events, data.now ?? new Date());
 }
@@ -1339,6 +1374,8 @@ export function applyData(doc: Document, page: string, data: MirrorData, img: (u
 export const USER_LISTS = "/api/of/v2/lists?limit=50";
 /** Home's story strip: the creators the Creator follows with stories. */
 export const STORIES_FEED = "/api/of/v2/stories";
+/** Home's story strip: the live and scheduled streams (OF's streams/feed). */
+export const STREAMS_FEED = "/api/of/v2/streams/feed";
 export const VAULT_LISTS = "/api/of/v2/vault/lists?view=main&limit=50";
 export const chatPath = (chat: string) => `/api/of/v2/chats/${encodeURIComponent(chat)}`;
 /** The vault media the page's view (`?list ?type ?field ?sort ?q`) asks for: the Vault page's and the vault dialogs' tiles. */
@@ -1389,6 +1426,29 @@ export function nextOffset(last: unknown, pages: unknown[]): number | undefined 
   if (!(last as { hasMore?: unknown } | null)?.hasMore || !rowsOf(last)?.length) return undefined;
   const next = (last as { nextOffset?: unknown }).nextOffset;
   return typeof next === "number" ? next : pages.reduce<number>((n, p) => n + (rowsOf(p)?.length ?? 0), 0);
+}
+
+/** Home's feed's and My profile's wall's page size (OF's GET /posts and GET /users/{id}/posts, 20 a page). */
+export const POSTS_PAGE = 20;
+
+/**
+ * Home's feed's next offset (GET /posts, offset-paged): OF's `{list, hasMore, nextOffset?}` as nextOffset; a bare
+ * array (the Relay passes OF's answer as it comes) has more when it is a full page.
+ */
+export function nextFeedOffset(last: unknown, pages: unknown[]): number | undefined {
+  if (!Array.isArray(last)) return nextOffset(last, pages);
+  return last.length >= POSTS_PAGE ? pages.reduce<number>((n, p) => n + (rowsOf(p)?.length ?? 0), 0) : undefined;
+}
+
+/**
+ * My profile's wall's next page (GET /users/{id}/posts?format=infinite): OF's `tailMarker`, sent back as
+ * `before_publish_time`, while OF says `hasMore` with rows and a marker that moved (the same one again would loop).
+ */
+export function nextMarker(last: unknown, _pages: unknown[], lastParam: string | null): string | undefined {
+  const o = last as { hasMore?: unknown; tailMarker?: unknown } | null | undefined;
+  const tail = typeof o?.tailMarker === "number" ? String(o.tailMarker) : o?.tailMarker;
+  if (!o?.hasMore || !rowsOf(last)?.length || typeof tail !== "string" || !tail || tail === lastParam) return undefined;
+  return tail;
 }
 
 /** Rows once each by id, where each first came (OF's offset pages overlap, as the Vault's: vaultPageMedia); id-less rows all stay. */
@@ -1497,13 +1557,26 @@ export function vaultPagesQuery(accountId: string | null, path: string | null) {
   });
 }
 
-/** An offset-paged read: `route` (with its query: limit, filters) a page at a time from offset 0 (nextOffset). */
-export function offsetPagesQuery(accountId: string | null, route: string | null, enabled: boolean) {
+/** An offset-paged read: `route` (with its query: limit, filters) a page at a time from offset 0 (`next`: nextOffset). */
+export function offsetPagesQuery(accountId: string | null, route: string | null, enabled: boolean, next: (last: unknown, pages: unknown[]) => number | undefined = nextOffset) {
   return infiniteQueryOptions({
     queryKey: ["of-mirror-data", accountId, route, "pages"],
     queryFn: ({ pageParam }) => relay.get<unknown>(`${route}&offset=${pageParam}`, { accountId }),
     initialPageParam: 0,
-    getNextPageParam: nextOffset,
+    getNextPageParam: next,
+    enabled: !!accountId && !!route && enabled,
+    staleTime: 60_000,
+    retry: false,
+  });
+}
+
+/** A marker-paged read (OF's format=infinite): `route` first, then each page before the last one's tailMarker (nextMarker). */
+export function markerPagesQuery(accountId: string | null, route: string | null, enabled: boolean) {
+  return infiniteQueryOptions({
+    queryKey: ["of-mirror-data", accountId, route, "pages"],
+    queryFn: ({ pageParam }) => relay.get<unknown>(pageParam ? `${route}&before_publish_time=${encodeURIComponent(pageParam)}` : route!, { accountId }),
+    initialPageParam: null as string | null,
+    getNextPageParam: nextMarker,
     enabled: !!accountId && !!route && enabled,
     staleTime: 60_000,
     retry: false,
@@ -1614,10 +1687,14 @@ export function useOfData(frameRef: RefObject<HTMLIFrameElement | null>, src: st
   const ofMeStatus = ofMeQ.isError ? message(ofMeQ.error) : ofMeQ.isPending ? null : undefined;
   const meId = ofMe?.id;
   const me = meId != null ? `/api/of/v2/users/${enc(String(meId))}` : null;
-  const posts = useQuery(q("posts", me && `${me}/posts?limit=20`));
+  // My profile's wall: OF's pages of 20, each next one (before the last one's tailMarker) when OF's loading row scrolls into view.
+  const posts = useInfiniteQuery(markerPagesQuery(accountId, me && `${me}/posts?limit=${POSTS_PAGE}&format=infinite`, parts.includes("posts")));
+  const postRows = useMemo(() => uniqueRows(pageRows<MirrorPost>(posts.data?.pages)), [posts.data]);
   const photos = useQuery(q("profileMedia", me && `${me}/posts/photos?limit=24`));
   const videos = useQuery(q("profileMedia", me && `${me}/posts/videos?limit=24`));
   const highlights = useQuery(q("profile", me && `${me}/stories/highlights`));
+  // Home's strip: the Creator's own active stories (OF's userStories tile).
+  const myStories = useQuery(q("stories", me && `${me}/stories`));
   const bookmarks = useQuery(q("bookmarks", "/api/of/v2/posts/bookmarks/all?limit=20"));
   // The month the queue's calendar shows: read from the frame once it has loaded (see apply).
   const [month, setMonth] = useState<Month | null>(null);
@@ -1633,10 +1710,13 @@ export function useOfData(frameRef: RefObject<HTMLIFrameElement | null>, src: st
   const transactions = useInfiniteQuery(offsetPagesQuery(accountId, `${TRANSACTIONS}?limit=${TRANSACTIONS_PAGE}`, parts.includes("transactions")));
   const payouts = useQuery(q("payouts", "/api/of/v2/payouts/requests?limit=20"));
   const referrals = useQuery(q("referrals", "/api/of/v2/payouts/requests/referral?limit=20"));
-  const home = useQuery(q("home", "/api/of/v2/posts?limit=20"));
+  // Home's feed: OF's pages of 20 by offset, each next one when OF's loading row scrolls into view (MorePages).
+  const home = useInfiniteQuery(offsetPagesQuery(accountId, `/api/of/v2/posts?limit=${POSTS_PAGE}`, parts.includes("home"), nextFeedOffset));
+  const homeRows = useMemo(() => uniqueRows(pageRows<MirrorPost>(home.data?.pages)), [home.data]);
   const stories = useQuery(q("stories", STORIES_FEED));
+  const streams = useQuery(q("stories", STREAMS_FEED));
   // The home feed's (or a list's Posts tab's) authors (its posts carry only their author's id), as the chat list's partners.
-  const feedPages = parts.includes("listPosts") ? (listPosts.data?.pages ?? []).map((p) => rowsOf<MirrorPost>(p) ?? []) : [rowsOf<MirrorPost>(home.data) ?? []];
+  const feedPages = parts.includes("listPosts") ? (listPosts.data?.pages ?? []).map((p) => rowsOf<MirrorPost>(p) ?? []) : (home.data?.pages ?? []).map((p) => rowsOf<MirrorPost>(p) ?? []);
   const { reads: authorPages, key: authorsKey } = usePageUsers(accountId, feedPages, (p: MirrorPost) => p.author?.id, parts.includes("home") || parts.includes("listPosts"));
   const promotions = useQuery(q("promotions", "/api/of/v2/promotions"));
   const events = useQuery(q("events", eventsRoute(new Date()))); // one key a day
@@ -1710,8 +1790,9 @@ export function useOfData(frameRef: RefObject<HTMLIFrameElement | null>, src: st
       usersStatus: status(people),
       labels: rowsOf<PostLabel>(labels.data),
       labelsStatus: status(labels),
-      posts: rowsOf<MirrorPost>(posts.data),
-      postsStatus: me ? status(posts) : ofMeStatus,
+      posts: postRows,
+      postsStatus: me ? feedStatus(posts, null) : ofMeStatus,
+      postsMore: morePages(posts),
       // Both lists or none: one missing (an error, or not here yet) leaves the empty grid.
       profileMedia: photoPosts && videoPosts ? [...photoPosts.map((p) => ({ ...p, _kind: "photo" as const })), ...videoPosts.map((p) => ({ ...p, _kind: "video" as const }))] : undefined,
       profileMediaStatus: !me ? ofMeStatus : photos.isError ? message(photos.error) : videos.isError ? message(videos.error) : photos.isPending || videos.isPending ? null : undefined,
@@ -1728,9 +1809,11 @@ export function useOfData(frameRef: RefObject<HTMLIFrameElement | null>, src: st
       payouts: rowsOf<Payout>(payouts.data),
       referrals: rowsOf<Payout>(referrals.data),
       statementsStatus,
-      home: rowsOf<MirrorPost>(home.data),
+      home: homeRows,
       homeStatus: feedStatus(home, need ? template : null),
-      stories: rowsOf<StoryUser>(stories.data),
+      homeMore: morePages(home),
+      stories: stripUsers(meId != null ? { id: meId, name: ofMe?.name, username: ofMe?.username, avatar: ofMe?.avatar, isVerified: ofMe?.isVerified } : undefined, rowsOf<StoryEntry>(myStories.data), rowsOf<StoryUser>(stories.data)),
+      streams: rowsOf<FeedStream>(streams.data),
       // Keyed by id; OF sends [] when it resolves none.
       authors: authorPages.some((a) => a.data) ? Object.assign({}, ...authorPages.map((a) => (a.data && typeof a.data === "object" && !Array.isArray(a.data) ? a.data : {}))) : undefined,
       // OF's `{hasMore, items}` (service/of_promos.py).
@@ -1741,7 +1824,7 @@ export function useOfData(frameRef: RefObject<HTMLIFrameElement | null>, src: st
       templates: need && template.data ? { [need]: template.data } : undefined,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- partnersKey and authorsKey stand for partners and authorPages (new arrays each render)
-  }, [chat, list, label, postType, listPosts.data, listPosts.error, listPosts.isPending, listPosts.isFetchingNextPage, listPosts.isFetchNextPageError, listPosts.hasNextPage, listPosts.fetchNextPage, parts, chatList.pages, chatList.isPending, chatList.isPlaceholderData, chatList.isError, chatList.error, chatList.isFetchingMore, chatList.hasMore, partnersKey, listQuery, detail.data, thread.data, isPinnedPage, pinned.data, isGallery, gTab, gallery.data, gallery.isPlaceholderData, gallery.isError, gallery.error, gallery.isPending, gallery.isFetchingNextPage, gallery.hasNextPage, gallery.isFetchNextPageError, vault.data, vaultSearch, vaultPage, vaultMedia.data, vaultPages.data, vaultRead.error, vaultRead.isPending, lists.data, lists.error, lists.isPending, members.data, members.error, members.isPending, subscribers.data, subscribers.error, subscribers.isPending, labels.data, labels.error, labels.isPending, posts.data, posts.error, posts.isPending, photos.data, photos.error, photos.isPending, videos.data, videos.error, videos.isPending, highlights.data, ofMeStatus, bookmarks.data, queue.data, zone, notifications.data, notifications.error, relatedUser, notificationCounts.data, newTags, pastStreams.data, transactions.data, transactions.isFetchingNextPage, transactions.isFetchNextPageError, transactions.error, transactions.hasNextPage, transactions.fetchNextPage, payouts.data, referrals.data, statementsStatus, home.data, home.error, stories.data, authorsKey, promotions.data, ofMe, meId, events.data, need, template.data, template.error]);
+  }, [chat, list, label, postType, listPosts.data, listPosts.error, listPosts.isPending, listPosts.isFetchingNextPage, listPosts.isFetchNextPageError, listPosts.hasNextPage, listPosts.fetchNextPage, parts, chatList.pages, chatList.isPending, chatList.isPlaceholderData, chatList.isError, chatList.error, chatList.isFetchingMore, chatList.hasMore, partnersKey, listQuery, detail.data, thread.data, isPinnedPage, pinned.data, isGallery, gTab, gallery.data, gallery.isPlaceholderData, gallery.isError, gallery.error, gallery.isPending, gallery.isFetchingNextPage, gallery.hasNextPage, gallery.isFetchNextPageError, vault.data, vaultSearch, vaultPage, vaultMedia.data, vaultPages.data, vaultRead.error, vaultRead.isPending, lists.data, lists.error, lists.isPending, members.data, members.error, members.isPending, subscribers.data, subscribers.error, subscribers.isPending, labels.data, labels.error, labels.isPending, postRows, posts.error, posts.isPending, posts.isFetchingNextPage, posts.isFetchNextPageError, posts.hasNextPage, posts.fetchNextPage, photos.data, photos.error, photos.isPending, videos.data, videos.error, videos.isPending, highlights.data, ofMeStatus, bookmarks.data, queue.data, zone, notifications.data, notifications.error, relatedUser, notificationCounts.data, newTags, pastStreams.data, transactions.data, transactions.isFetchingNextPage, transactions.isFetchNextPageError, transactions.error, transactions.hasNextPage, transactions.fetchNextPage, payouts.data, referrals.data, statementsStatus, homeRows, home.error, home.isPending, home.isFetchingNextPage, home.isFetchNextPageError, home.hasNextPage, home.fetchNextPage, stories.data, streams.data, myStories.data, authorsKey, promotions.data, ofMe, meId, events.data, need, template.data, template.error]);
 
   useEffect(() => {
     const frame = frameRef.current;

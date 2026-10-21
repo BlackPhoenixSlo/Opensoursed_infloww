@@ -19,6 +19,8 @@
  *   /posts/{id}, only on a second click, which the item asks for). Each success refetches the page's rows.
  *   Another creator's post's More has OF's "Copy link to post" only (https://onlyfans.com/<post id>/<author's handle>,
  *   to the clipboard; hide and report have no Relay route), disabled with the tooltip without the handle (ofMirrorFeeds).
+ * - A post's picture, and a My profile Media tab tile: its files (ofMirrorPostCard's stamp) in the Vault's viewer, the
+ *   first one first, previous and next through the rest (OF's media viewer); a locked file is not among them.
  * A failure shows the status note in red. The clicks it owns never reach bindWrites' click fallback, and the boxes it
  * adds are data-oi-wired (their fields are not the read-only change path's).
  */
@@ -34,6 +36,8 @@ import { useAppliedSettings } from "@/lib/appliedSettings";
 import { proxyImage } from "@/lib/mediaUrl";
 import { bindUserLists, openUsers } from "@/lib/ofMirrorStatsKit";
 import { openPostStats, postStatsProbe } from "@/lib/ofMirrorStatsPostStat";
+import { MEDIA, mediaOf } from "@/lib/ofMirrorPostCard";
+import { openViewer } from "@/lib/ofMirrorVault";
 import { useGrantedPages } from "@/components/shell/useGrantedPages";
 
 export interface PostHandlers {
@@ -303,6 +307,13 @@ export function bindPostActions(doc: Document, h: PostHandlers): () => void {
     const t = ev.target as Element | null;
     if (!t?.closest) return;
     if (!t.closest(MENU) && !t.closest(MORE)) closeMenus(doc); // a click anywhere else closes an open menu
+    // A post's picture (or a Media tab tile): its files in the viewer, from the one shown.
+    const media = t.closest(`[${MEDIA}]`);
+    if (media) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      return openViewer(doc, mediaOf(media));
+    }
     const row = t.closest<HTMLElement>(ROW);
     if (!row) return;
     const id = row.dataset.oiPost!;

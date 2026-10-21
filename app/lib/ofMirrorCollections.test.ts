@@ -112,6 +112,12 @@ describe("helpers", () => {
   it("a list is open on the collections page, the list page and its Posts tab", () => {
     expect(["collections/index", "collections/user-lists/list", "collections/user-lists/list/posts", "collections/user-lists/subscriptions"].map(openListPage)).toEqual([true, true, true, false]);
   });
+  it.each(["subscriptions", "subscriptions/posts", "subscriptions/expired", "subscriptions/attention"])("Following's %s: Send message opens New message, as the list page's, never the sendlist-following capture (U6)", (sub) => {
+    const html = readFileSync(resolve(__dirname, `../public/of-mirror/pages/collections/user-lists/${sub}.html`), "utf8");
+    const d = new DOMParser().parseFromString(html, "text/html");
+    expect(d.querySelector("a[href*='sendlist-following']")).toBeNull();
+    expect(d.querySelector("a[aria-label='Send message']")?.getAttribute("href")).toBe("/of-manager/messages/send");
+  });
   it("usernames: without @, split on commas and spaces, once each", () => {
     expect(usernames(" @alpha, beta  @gamma,@alpha ")).toEqual(["alpha", "beta", "gamma"]);
     expect(usernames(" , ")).toEqual([]);
@@ -154,6 +160,22 @@ describe("Create new list", () => {
     await flush();
     expect(dialog(doc)!.querySelector(".v-messages__message")!.textContent).toBe("Could not save: Name taken");
     expect(save(doc).disabled).toBe(false);
+  });
+
+  it("a failed Save, clicked, shows only its error, never the Read-only note too (bound with bindWrites, as the frame binds it; U13)", async () => {
+    const doc = load("collections/index");
+    const h = handlers({ createList: vi.fn(() => Promise.reject(new Error("Name taken"))) });
+    bindCollections(doc, "collections/index", { lists: null, list: null }, h);
+    bindWrites(doc, "collections/index", null);
+    doc.querySelector<HTMLButtonElement>(CREATE_LIST)!.click();
+    const input = field(doc);
+    input.value = "Dupe";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    save(doc).click();
+    await flush();
+    expect(h.createList).toHaveBeenCalledWith("Dupe");
+    expect(dialog(doc)!.querySelector(".v-messages__message")!.textContent).toBe("Could not save: Name taken");
+    expect(noteText(doc)).toBeNull();
   });
 
   it("Cancel, Escape and the backdrop close it", () => {

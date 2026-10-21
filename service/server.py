@@ -5686,6 +5686,11 @@ def of_schedule_stream(body: dict = Body(...)):
     (scheduledDate local ISO with offset). Response carries the stream `.id`."""
     return _proxy(lambda: _get_client().schedule_stream(**body))
 
+@app.get("/api/of/v2/streams/feed")
+def of_streams_feed():
+    """Live and scheduled streams for Home's story strip (OF's streams/feed)."""
+    return _proxy(lambda: _get_client().streams_feed())
+
 @app.get("/api/of/v2/users/{user_id}/streams")
 def of_user_streams(user_id: str, limit: int = Query(8, ge=1, le=50), offset: int = Query(0, ge=0)):
     """A creator's past live streams (Streaming dashboard). `user_id` numeric or 'me'."""
@@ -5844,6 +5849,12 @@ def of_user_highlights(user_id: str):
     """Highlights for a creator. `user_id` accepts numeric id or 'me'."""
     return _proxy(lambda: _get_client().user_highlights(user_id))
 
+@app.get("/api/of/v2/stories/highlights/{highlight_id}")
+def of_highlight(highlight_id: int = PathParam(..., ge=1)):
+    """One highlight with its stories (`{..., stories: [...]}`), as OF's profile
+    plays it (My profile's highlight tiles)."""
+    return _proxy(lambda: _get_client().highlight(highlight_id))
+
 @app.get("/api/of/v2/users/{user_id}/posts/photos")
 def of_user_photos(user_id: str, limit: int = Query(10, ge=1, le=50), offset: int = Query(0, ge=0)):
     """Photo posts by a creator."""
@@ -5906,8 +5917,12 @@ def of_posts_top(
 # `/posts/{id}/...` could only be mapped through `/posts`, which carries the
 # post writes of Home, New post and My profile.
 @app.get("/api/of/v2/posts/stats")
-def of_post_stats(post_id: int = Query(..., ge=1)):
-    """Full stat / the post stats popup header: OF's /posts/{post_id}/stats?withChart=true."""
+def of_post_stats(post_id: int | None = Query(None, ge=1)):
+    """Full stat / the post stats popup header: OF's /posts/{post_id}/stats?withChart=true.
+    With no post_id: {"supported": true} and no OF request, the mirror's probe that
+    this relay has the per-item reads (a 2xx, so the browser logs no error)."""
+    if post_id is None:
+        return {"supported": True}
     return _proxy(lambda: _get_client().post_stats(post_id))
 
 @app.get("/api/of/v2/posts/buyers")

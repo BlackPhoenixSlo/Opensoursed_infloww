@@ -416,12 +416,21 @@ export const viewerItem = (el: HTMLElement): ViewerItem | null => (el.dataset.oi
 
 const ROUND = "position:absolute;width:40px;height:40px;border:0;border-radius:50%;background:rgba(0,0,0,.5);color:#fff;font-size:28px;line-height:1;cursor:pointer";
 
+/** Whose stories the viewer plays (story mode): their name and avatar, as OF's story header. */
+export interface StoryAuthor { name: string; avatar?: string | null }
+
+/** How long OF's story player shows a photo before the next story. */
+export const STORY_PHOTO_MS = 5000;
+
 /**
  * `items[start]` full size over the page, as OF's viewer (PhotoSwipe / video.js): a photo, a video with its player, a GIF
  * looping, an audio's player; with more than one item, previous and next buttons and the ← / → keys step through them
- * (stopping at either end). Closed by ×, the backdrop or Escape.
+ * (stopping at either end). Closed by ×, the backdrop or Escape. `story` (a story strip's or highlight's tile): OF's
+ * story player instead: a segment per story across the top (the seen ones full, the current one filling), its author's
+ * header under them, each photo for STORY_PHOTO_MS and each video to its end, then the next story; after the last it
+ * closes.
  */
-export function openViewer(doc: Document, items: ViewerItem[], start = 0) {
+export function openViewer(doc: Document, items: ViewerItem[], start = 0, story?: StoryAuthor) {
   closeViewer(doc);
   if (!items.length) return;
   let at = Math.min(Math.max(start, 0), items.length - 1);
@@ -443,6 +452,63 @@ export function openViewer(doc: Document, items: ViewerItem[], start = 0) {
   const prev = button("Previous", "‹", "left:8px;top:calc(50% - 20px)");
   const next = button("Next", "›", "right:8px;top:calc(50% - 20px)");
   const many = items.length > 1;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const bars: HTMLElement[] = [];
+  if (story) {
+    // OF's story header (b-story-header): the segments, then the author's avatar and name, over a dark gradient.
+    const head = doc.createElement("div");
+    head.className = "b-story-header";
+    head.style.cssText = "position:absolute;left:0;right:0;top:0;z-index:2;padding:12px 56px 40px 12px;pointer-events:none;background:linear-gradient(rgba(0,0,0,.66),transparent)";
+    const segs = doc.createElement("div");
+    segs.dataset.oiStoryBars = "";
+    segs.style.cssText = "display:flex;gap:4px;margin-bottom:10px";
+    for (let i = 0; i < items.length; i++) {
+      const seg = doc.createElement("span");
+      seg.style.cssText = "flex:1;height:3px;border-radius:2px;background:rgba(255,255,255,.35);overflow:hidden";
+      const fill = doc.createElement("span");
+      fill.style.cssText = "display:block;height:100%;width:0;background:#fff";
+      seg.append(fill);
+      segs.append(seg);
+      bars.push(fill);
+    }
+    const author = doc.createElement("div");
+    author.className = "b-story-header__author";
+    author.style.cssText = "display:flex;align-items:center;gap:8px;color:#fefefe;font-size:13px";
+    if (story.avatar) {
+      const pic = doc.createElement("img");
+      pic.src = story.avatar;
+      pic.alt = "";
+      pic.style.cssText = "width:38px;height:38px;border-radius:50%;object-fit:cover";
+      author.append(pic);
+    }
+    const name = doc.createElement("span");
+    name.className = "b-story-header__author__title g-user-name";
+    name.style.fontWeight = "600";
+    name.textContent = story.name;
+    author.append(name);
+    head.append(segs, author);
+    box.append(head);
+  }
+  /** Story mode: the segments for story `at` (its own filling over `ms`, 0: by the video's time), and the next story after it. */
+  const play = (media: HTMLImageElement | HTMLMediaElement) => {
+    if (!story) return;
+    clearTimeout(timer);
+    bars.forEach((b, i) => {
+      b.style.transition = "none";
+      b.style.width = i < at ? "100%" : "0";
+    });
+    const bar = bars[at];
+    if ("autoplay" in media && items[at].type !== "gif") {
+      media.loop = false;
+      media.addEventListener("timeupdate", () => (bar.style.width = `${media.duration ? (100 * media.currentTime) / media.duration : 0}%`));
+      media.addEventListener("ended", () => (at === items.length - 1 ? shut() : step(1)));
+      return;
+    }
+    void bar.offsetWidth; // (the reset width applies before the transition starts)
+    bar.style.transition = `width ${STORY_PHOTO_MS}ms linear`;
+    bar.style.width = "100%";
+    timer = setTimeout(() => (at === items.length - 1 ? shut() : step(1)), STORY_PHOTO_MS);
+  };
   const show = () => {
     const { src, type } = items[at];
     const media = doc.createElement(type === "photo" || !type ? "img" : type === "audio" ? "audio" : "video") as HTMLImageElement | HTMLMediaElement;
@@ -463,6 +529,7 @@ export function openViewer(doc: Document, items: ViewerItem[], start = 0) {
     next.disabled = at === items.length - 1;
     prev.style.opacity = prev.disabled ? ".3" : "";
     next.style.opacity = next.disabled ? ".3" : "";
+    play(media);
   };
   const step = (by: number) => {
     const to = at + by;
@@ -478,6 +545,7 @@ export function openViewer(doc: Document, items: ViewerItem[], start = 0) {
     ev.preventDefault();
   };
   const shut = () => {
+    clearTimeout(timer);
     doc.removeEventListener("keydown", onKey);
     closers.delete(doc);
     box.remove();

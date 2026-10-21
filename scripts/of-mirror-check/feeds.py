@@ -26,7 +26,7 @@ than localhost is aborted and fails the check (even one whose path a mock matche
    loaded, the still-less post with no picture, the zero-count post with no badge); the sidebar's recent strip shows
    the 3 newest; both /posts/photos and /posts/videos are requested, each with limit=24.
    On `collections/bookmarks/all`: exactly account 1's bookmarked posts in order ([author name, @handle, text, date]
-   per post), the author links "#", "No bookmarks yet" hidden, no `Fan N`/`@fanN`/`Lorem`/placeholder text in the
+   per post), the author links their OF profile (https://onlyfans.com/<handle>, in a new tab), "No bookmarks yet" hidden, no `Fan N`/`@fanN`/`Lorem`/placeholder text in the
    rows; every row picture (avatar and post media) through /img? with account_id=1 and loaded, the avatar-less author
    with none; the bookmarks request carries limit=20; the borrowed post row is one same-origin GET of
    /of-mirror/pages/profile/index.html (and no other page is fetched); every bookmark's More (another creator's post)
@@ -133,13 +133,14 @@ BROW=".l-main-content.m-r-side .g-page-content__body [data-oi-data]"  # in its r
 BROWS=f"""[...document.querySelectorAll('{BROW}')].filter(e => e.checkVisibility())
   .map(e => [e.querySelector('.b-username .g-user-name')?.textContent.trim() ?? '', e.querySelector('.g-user-username')?.textContent.trim() ?? '',
              e.querySelector('.b-post__text')?.textContent.trim() ?? '', e.querySelector('.b-post__date > span')?.textContent.trim() ?? ''])"""
-# Per bookmark row: [[the /img? u param, account_id, loaded with a size] per picture (avatar first), [author link hrefs]].
+# Per bookmark row: [[the /img? u param, account_id, loaded with a size] per picture (avatar first), [[author link href, target]]].
 BPICS=f"""[...document.querySelectorAll('{BROW}')].filter(e => e.checkVisibility())
   .map(e => [[...e.querySelectorAll('.b-post__avatar img, .post_media img.b-post__media__img')].map(i => {{ const s = i.getAttribute('src');
       const q = s?.startsWith('/img?') ? new URLSearchParams(s.slice(5)) : null; return [q ? q.get('u') : s, q?.get('account_id') ?? null, i.complete && i.naturalWidth > 0]; }}),
-    [...e.querySelectorAll('.b-post__avatar a, a.b-username')].map(a => a.getAttribute('href'))])"""
+    [...e.querySelectorAll('.b-post__avatar a, a.b-username')].map(a => [a.getAttribute('href'), a.getAttribute('target')])])"""
 def bpic(name): return [f"https://cdn.example.invalid/{name}.jpg", "1", True]
-WANT_BPICS=[[[bpic("a61"), bpic("b41")], ["#","#"]], [[bpic("a62")], ["#","#"]], [[bpic("b43")], ["#","#"]]]
+def profile(handle): return [[f"https://onlyfans.com/{handle}", "_blank"]]*2
+WANT_BPICS=[[[bpic("a61"), bpic("b41")], profile("alphaone")], [[bpic("a62")], profile("alphatwo")], [[bpic("b43")], profile("alphathree")]]
 BLEFTOVER=f"""[...document.querySelectorAll('{BROW} *')].filter(e => !e.children.length && e.checkVisibility())
   .map(e => e.textContent.trim()).filter(t => /Fan \\d|@fan\\d|Lorem|Your Model|@yourmodel/.test(t))"""
 EMPTY_SHOWN="[...document.querySelectorAll('.l-main-content.m-r-side .g-page-content__body > .empty-message')].filter(e => e.checkVisibility()).map(e => e.textContent.trim())"
@@ -472,7 +473,7 @@ with sync_playwright() as p:
         check("bookmarks: \"No bookmarks yet\" hidden while rows show", fr.evaluate(EMPTY_SHOWN), [])
         check("bookmarks: no example text in the rows", fr.evaluate(BLEFTOVER), [])
         fr.evaluate(f"document.querySelectorAll('{BROW} img').forEach(i => i.loading = 'eager')")
-        check("bookmarks: pictures through /img with account_id=1, loaded; the avatar-less author none; author links #", settle(pg, fr, WANT_BPICS, BPICS), WANT_BPICS)
+        check("bookmarks: pictures through /img with account_id=1, loaded; the avatar-less author none; author links their OF profile", settle(pg, fr, WANT_BPICS, BPICS), WANT_BPICS)
         pg.screenshot(path=f"{SHOTS}/inapp-feeds-bookmarks.png")
         mores=fr.locator(f"{BROW} .b-post__tools__more button[aria-label='More']")
         check("bookmarks: another creator's More is disabled with the tooltip", mores.evaluate_all("bs => bs.map(b => [b.disabled, b.title])"), [[True, NOT_YET]]*len(WANT_BOOKMARKS))

@@ -19,6 +19,7 @@ insert values and the conflict `set_`, so an existing row keeps it).
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -227,11 +228,24 @@ def _serialize(row: AccountAiConfig | None) -> dict[str, Any]:
         "audience_auto_add": bool(getattr(row, "audience_auto_add", None)) if row else False,
         # Co-performer tagging (media_cotag). NULL ≡ OFF for the video rule
         # (most creators are solo — it's a collab-account opt-in); NULL
-        # username ≡ "use the global handle" (the UI shows it as the
-        # placeholder rather than a value).
+        # username ≡ "No co-creator tag".
         "cotag_tag_videos": bool(getattr(row, "cotag_tag_videos", None)) if row else False,
         "cotag_username": getattr(row, "cotag_username", None) if row else None,
     }
+
+
+def _own_handle(account_id: str) -> str:
+    """The account's own OF username, folded; '' when OF cannot say. Asked at
+    save only, so a stored co-creator is never the account itself."""
+    import automation_executor as ax
+
+    try:
+        me = ax._make_client(account_id).me() or {}
+    except Exception:
+        log.warning("cotag: /users/me failed (account=%s) — saving the handle "
+                    "as given", account_id, exc_info=True)
+        return ""
+    return media_cotag.fold_handle(me.get("username"))
 
 
 async def _audience_status(account_id: str, cfg: dict[str, Any]) -> dict[str, Any]:
@@ -353,9 +367,6 @@ async def get_account_config(account_id: str = Query(...)) -> dict[str, Any]:
         # What the Model info box (My Automations › Get to know fans) prefills
         # while `model_notes` is empty; its blank label lines never reach a prompt.
         "model_notes_template": MODEL_NOTES_TEMPLATE,
-        # What a NULL cotag_username resolves to (env → built-in) — the editor's
-        # placeholder, so the default the box shows is the default that runs.
-        "cotag_default_username": media_cotag.handle(),
         # Include-only audience status (mirror health, ledger, outside queue).
         "audience": audience,
     }
@@ -608,6 +619,10 @@ async def put_account_config(body: _ConfigBody = Body(...)) -> dict[str, Any]:
             raise HTTPException(
                 422, "cotag_username must be an OnlyFans handle "
                      "(letters, numbers, . _ -)")
+        # An account is never on its own tagged-friend list, so tagging
+        # itself is "No co-creator tag" (NULL), decided once, here.
+        if u and u == await asyncio.to_thread(_own_handle, body.account_id):
+            u = ""
         cotag_username = u or None
 
     now = datetime.utcnow()

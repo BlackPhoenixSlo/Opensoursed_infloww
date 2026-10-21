@@ -1605,6 +1605,13 @@ class OFClient:
         """GET /api2/v2/users/{user_id}/stories/highlights — a creator's highlights."""
         return self.get_json(f"{API_BASE}/users/{user_id}/stories/highlights")
 
+    def highlight(self, highlight_id: int) -> dict:
+        """GET /api2/v2/stories/highlights/{id} — one highlight with its stories,
+        as OF's profile opens it (build 202610161317, module 502365 `g`, store
+        action fetchHighlightsById: normalizr's `highlights` entity, `{stories:
+        [story, ...]}`, stories in play order)."""
+        return self.get_json(f"{API_BASE}/stories/highlights/{int(highlight_id)}")
+
     def user_photos(self, user_id: str | int, *, limit: int = 10, offset: int = 0) -> list:
         """GET /api2/v2/users/{user_id}/posts/photos — photo posts only."""
         return self.get_json(f"{API_BASE}/users/{user_id}/posts/photos",
@@ -2162,8 +2169,41 @@ class OFClient:
     # ── Stories feed (for me as a fan) ─────────────────────────
 
     def stories_feed(self) -> list:
-        """GET /api2/v2/stories — all stories from creators I follow."""
-        return self.get_json(f"{API_BASE}/stories")
+        """GET /api2/v2/stories — all stories from creators I follow.
+
+        OF's own web client (build 202610161317, module 502365) no longer
+        reads this path: its strip reads GET /stories/map[?list_id=] (one stub
+        per creator, `{storyId, userId, ...}`, no profile) and then
+        GET /stories/items?map[<userId>]=<storyId> for the media. Not moved
+        here: the strip needs each creator's profile too, and neither answer's
+        fields are checked live (02-gaps G5). Until then a refusal or an
+        answer with no list in it is logged, so a retired /stories can't empty
+        the strip silently."""
+        try:
+            out = self.get_json(f"{API_BASE}/stories")
+        except OFDeniedError:
+            raise
+        except OFAPIError as e:
+            log_of.warning("stories_feed: OF refused GET /stories (%s); OF's web "
+                           "client reads /stories/map now",
+                           getattr(e.response, "status_code", None))
+            raise
+        if not isinstance(out, list) and not isinstance(
+                out.get("list") if isinstance(out, dict) else None, list):
+            log_of.warning("stories_feed: GET /stories answered no list (%s); OF's "
+                           "web client reads /stories/map now", type(out).__name__)
+        return out
+
+    def streams_feed(self, *, limit: int = 10) -> dict:
+        """GET /api2/v2/streams/feed — the live and scheduled streams Home's
+        story strip shows (build 202610161317, module 622365 `GQ`, store action
+        fetchStreamsFeed): `{list: [stream, ...]}`, each with `user`,
+        `isScheduled`, `isActive`, `startedAt`, `scheduledAt`, `thumbUrl` and a
+        scheduled one's cover `media`. OF's client sends limit=10 and
+        skip_users=all, then reads each creator with users/list; asked here
+        without skip_users so each stream keeps its creator (as `chats`'s
+        skip_users=None does), which is unchecked live (status-stories.md)."""
+        return self.get_json(f"{API_BASE}/streams/feed", params={"limit": limit})
 
     def my_stories_archive(self, *, limit: int = 20, offset: int = 0) -> dict:
         """GET /api2/v2/stories/archive — my own archived (expired) stories."""
@@ -3225,8 +3265,13 @@ class OFClient:
         if carrier_posted_at:   body["postedAt"] = carrier_posted_at
         if giphy_id:            body["giphyId"] = str(giphy_id)
         retry_plan = self._apply_cotags(body, media_files, tagged_users, auto_tag)
-        return self._post_dropping_auto_cotag(
+        result = self._post_dropping_auto_cotag(
             f"{API_BASE}/posts", body, retry_plan)
+        # Proof a poll went out (02-gaps G2); never the text or the options.
+        log_of.info("create_post has_voting=%s options_count=%d of_post_id=%s",
+                    "votingOptions" in body, len(body.get("votingOptions") or ()),
+                    result.get("id") if isinstance(result, dict) else None)
+        return result
 
     @staticmethod
     def _post_body(text: str, *, media_files=None, price: int | float = 0,

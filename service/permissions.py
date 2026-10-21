@@ -273,9 +273,10 @@ PAGE_MAP: dict[str, tuple[str, tuple[str, ...]]] = {
         "/admin/stats/revenue", "/admin/stats/per-model", "/admin/stats/per-employee", "/admin/stats/referrals",
         "/admin/shifts/clocked-in", "/api/of/v2/subscriptions/count", _SUBS_CHART, _ME)),
     # posts/likes: an own post's "N Likes" (also My profile's). Its Post statistics (posts/stats: per-post earnings)
-    # stays Statistics'.
+    # stays Statistics'. streams/feed: the story strip's live and scheduled streams (not Go live's `/streams`).
     "/of-manager/home": ("Home", (
-        _ME, "/api/of/v2/posts", "/api/of/v2/stories", "/api/of/v2/users/search", "/api/of/v2/posts/likes")),
+        _ME, "/api/of/v2/posts", "/api/of/v2/stories", "/api/of/v2/users/search", "/api/of/v2/posts/likes",
+        "/api/of/v2/streams/feed")),
     "/of-manager/streaming": ("Go live", (_ME, "/api/of/v2/streams")),
     # labels: ADD LABELS (its rows, + and Sort); guests and release-forms: the tag dialog's Invite new user,
     # Release form tab and a row's hide; users/search, posts/search: the right column's search; promotions, trials,
@@ -339,8 +340,10 @@ PAGE_MAP: dict[str, tuple[str, tuple[str, ...]]] = {
         "/api/of/v2/posts/stats", "/api/of/v2/posts/buyers", "/api/of/v2/posts/tips", "/api/of/v2/posts/likes",
         "/api/of/v2/promotions/claims", "/api/of/v2/trials/claims", "/api/of/v2/campaigns/claimers")),
     "/of-manager/bank": ("Bank", (_ME, "/api/of/v2/payouts/balances", "/api/of/v2/payouts/check-receive")),
+    # stories/highlights: a highlight tile's stories, which only My profile's strip draws (not Home's `/stories`).
     "/of-manager/profile": ("My profile", (
-        _ME, "/api/of/v2/users/", "/api/of/v2/posts", "/api/of/v2/labels", "/api/of/v2/posts/likes")),
+        _ME, "/api/of/v2/users/", "/api/of/v2/posts", "/api/of/v2/labels", "/api/of/v2/posts/likes",
+        "/api/of/v2/stories/highlights")),
     # Its Tag user and Release form tabs and a row's hide (release-forms/toggle-show).
     "/of-manager/release-forms": ("Release forms", (
         _ME, "/api/of/v2/posts/tagged-friend-users", "/api/of/v2/release-forms")),

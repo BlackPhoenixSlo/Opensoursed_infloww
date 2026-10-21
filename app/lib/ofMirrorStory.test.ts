@@ -42,7 +42,7 @@ describe("Add to story (story strip)", () => {
     vi.useRealTimers();
   });
 
-  it("the glob finds the own tile on home index and its 10 States, and new-post index and its 12 States", () => {
+  it("the glob finds the own tile on home index and its 11 States, and new-post index and its 12 States", () => {
     expect(ownPages).toEqual([
       "home/index",
       "home/state-avatar-menu",
@@ -50,6 +50,7 @@ describe("Add to story (story strip)", () => {
       "home/state-feed-tabs-edit",
       "home/state-format-text",
       "home/state-poll",
+      "home/state-promotion",
       "home/state-quiz",
       "home/state-schedule",
       "home/state-tag-people",
@@ -263,10 +264,17 @@ describe("Add to story (story strip)", () => {
     expect(others(load(page)).map(label)).toEqual(want);
   });
 
-  it("home/index: Start profile promotion is disabled quietly, with the tooltip (its campaign form has no Known body)", () => {
-    const [tile] = others(load("home/index"));
-    expect(tile.disabled).toBe(true);
-    expect(tile.title).toBe("Not available in Inflowwww yet");
+  it("home/index: Start profile promotion links to the promotion campaign dialog over Home, and the strip lets it go", () => {
+    const d = load("home/index");
+    const unbind = bindStory(d, { addStory: vi.fn() });
+    const [tile] = others(d);
+    expect(tile.closest("a")?.getAttribute("href")).toBe("/of-manager/home/state-promotion");
+    expect(tile.matches(":disabled")).toBe(false);
+    const click = new MouseEvent("click", { bubbles: true, cancelable: true });
+    tile.dispatchEvent(click);
+    expect(click.defaultPrevented).toBe(false);
+    expect(d.getElementById("oi-note")).toBeNull();
+    unbind();
   });
 
   it("new-post/index: Go live, Send message, Start profile promotion and Create new trial link are links to their OF Manager pages (the strip lets them go)", () => {

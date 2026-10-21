@@ -9,8 +9,9 @@ def target(a):
         section, _, sub = a[len("/of-manager/"):].strip("/").partition("/")
     else:
         section, sub = "settings", a.strip("/")
-    # The section root shows its index page (SECTION_INDEX in scripts/of-mirror.mjs); the others' index.html.
-    index = {"settings": "profile", "statistics": "overview/earnings"}.get(section, "index")
+    # The section root shows its index page (SECTION_INDEX in scripts/of-mirror.mjs; Statistics redirects to Statements ›
+    # Earnings, app/next.config.ts); the others' index.html.
+    index = {"settings": "profile", "statistics": "statements/earnings"}.get(section, "index")
     return section, sub, f"/of-manager/{section}" + (f"/{sub}" if sub else ""), f"/of-mirror/pages/{section}/{sub or index}.html"
 pages=sys.argv[1:] or ["fans"]
 user={"user_id":"u1","username":"tester","is_admin":False}

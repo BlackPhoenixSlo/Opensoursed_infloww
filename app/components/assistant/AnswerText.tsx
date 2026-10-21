@@ -21,34 +21,31 @@ import type { ReactNode } from "react";
 import Link from "next/link";
 
 import { cn } from "@/lib/utils";
-import { findPaths } from "./answerLinks";
+import { findPaths, type PathHit } from "./answerLinks";
 
 /** `**bold**` · `*italic*` · `` `code` `` — first match wins, left to right. */
 const INLINE_RE = /`([^`\n]+)`|\*\*([^\n]+?)\*\*|\*([^*\n]+?)\*/g;
 
-/** Wrap every click path in `text` in a <Link>; everything else is a string.
- *
- * `run` disambiguates keys only: several calls land in ONE sibling array, so
- * without it the second run's first link would collide with the first run's.
- */
-function linkPaths(text: string, run: number): ReactNode[] {
-  const hits = findPaths(text);
-  if (hits.length === 0) return [text];
-
+/** `text`, which starts at `offset` in the plain run, with the parts of it
+ *  inside a hit wrapped in a <Link>. `key` disambiguates sibling spans. */
+function linked(text: string, offset: number, hits: PathHit[], key: number): ReactNode[] {
   const out: ReactNode[] = [];
   let last = 0;
   hits.forEach((h, i) => {
-    if (h.start > last) out.push(text.slice(last, h.start));
+    const start = Math.max(h.start - offset, 0);
+    const end = Math.min(h.end - offset, text.length);
+    if (end <= start) return; // this hit lies outside the span
+    if (start > last) out.push(text.slice(last, start));
     out.push(
       <Link
-        key={`l${run}-${i}`}
+        key={`l${key}-${i}`}
         href={h.href}
         className="text-accent underline decoration-accent/40 underline-offset-2 hover:decoration-accent"
       >
-        {text.slice(h.start, h.end)}
+        {text.slice(start, end)}
       </Link>,
     );
-    last = h.end;
+    last = end;
   });
   if (last < text.length) out.push(text.slice(last));
   return out;
@@ -56,48 +53,56 @@ function linkPaths(text: string, run: number): ReactNode[] {
 
 /** Inline markdown → nodes. Code spans are opaque: no links inside them.
  *
+ * Click paths are found on the PLAIN text, markers gone, because the bot bolds
+ * a path's labels the way the manual does: "My Automations → **Client
+ * masses** → **Settings**" is one path, and resolved span by span its last
+ * word would link on its own, to Settings. A path that crosses spans comes out
+ * as one link per span, all to the same place.
+ *
  * The result is always ONE element's children, so keys only have to be unique
  * within this call — no caller-supplied prefix needed.
  */
 function inline(text: string): ReactNode[] {
-  const out: ReactNode[] = [];
+  const spans: Array<{ kind: "text" | "code" | "bold" | "italic"; text: string }> = [];
   let last = 0;
-  let i = 0;
   let m: RegExpExecArray | null;
   INLINE_RE.lastIndex = 0;
-
   while ((m = INLINE_RE.exec(text))) {
-    const [raw, code, bold, italic] = m;
-    if (m.index > last) out.push(...linkPaths(text.slice(last, m.index), i));
+    const [, code, bold, italic] = m;
+    if (m.index > last) spans.push({ kind: "text", text: text.slice(last, m.index) });
+    if (code !== undefined) spans.push({ kind: "code", text: code });
+    else if (bold !== undefined) spans.push({ kind: "bold", text: bold });
+    else spans.push({ kind: "italic", text: italic });
+    last = INLINE_RE.lastIndex;
+  }
+  if (last < text.length) spans.push({ kind: "text", text: text.slice(last) });
 
-    if (code !== undefined) {
-      out.push(
+  // A code span reads as a line break, so no path runs into or through one.
+  const hits = findPaths(spans.map((s) => (s.kind === "code" ? "\n".repeat(s.text.length) : s.text)).join(""));
+  let offset = 0;
+  return spans.flatMap((s, i): ReactNode[] => {
+    const at = offset;
+    offset += s.text.length;
+    if (s.kind === "code") {
+      return [
         <code
           key={`c${i}`}
           className="px-1 py-0.5 rounded bg-bg-elev-1 border border-border text-[11px] font-mono break-words"
         >
-          {code}
+          {s.text}
         </code>,
-      );
-    } else if (bold !== undefined) {
-      out.push(
-        <strong key={`b${i}`} className="font-semibold text-fg">
-          {linkPaths(bold, i)}
-        </strong>,
-      );
-    } else if (italic !== undefined) {
-      out.push(<em key={`i${i}`}>{linkPaths(italic, i)}</em>);
-    } else {
-      // Unreachable: every alternative in INLINE_RE captures. Emitting the raw
-      // match keeps this total rather than silently dropping text.
-      out.push(raw);
+      ];
     }
-
-    last = INLINE_RE.lastIndex;
-    i++;
-  }
-  if (last < text.length) out.push(...linkPaths(text.slice(last), i));
-  return out;
+    const body = linked(s.text, at, hits, i);
+    if (s.kind === "bold") {
+      return [
+        <strong key={`b${i}`} className="font-semibold text-fg">
+          {body}
+        </strong>,
+      ];
+    }
+    return s.kind === "italic" ? [<em key={`i${i}`}>{body}</em>] : body;
+  });
 }
 
 /**

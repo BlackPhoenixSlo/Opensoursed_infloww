@@ -88,6 +88,89 @@ function applyDrawer(doc: Document, me: OfMe): void {
   }
 }
 
+/**
+ * The bio's More info `btn` and its truncated box `box`, open (Collapse info: OF's own expanded box, 20vh with a scroll
+ * bar) or folded (its captured max-height, faded at the foot).
+ */
+export function foldBio(btn: HTMLElement, box: HTMLElement | null | undefined, open: boolean) {
+  btn.setAttribute("aria-expanded", String(open));
+  btn.textContent = open ? " Collapse info " : " More info ";
+  if (!box) return;
+  box.classList.toggle("m-collapsed", !open);
+  if (open) {
+    box.dataset.oiMaxHeight ??= box.style.maxHeight;
+    box.style.removeProperty("max-height");
+  } else if (box.dataset.oiMaxHeight !== undefined) box.style.maxHeight = box.dataset.oiMaxHeight;
+}
+
+/** The folded bio's height (OF's g-truncated-text on the profile, as captured), when its box gives none. */
+const BIO_FOLD = 85;
+
+/**
+ * As OF's truncated text: a bio (its text and its detail rows, the box's whole content) taller than its folded box is
+ * over the limit (m-over-limit, folded until More info), any other shows whole, with no fade and no More info.
+ */
+export function fitBio(doc: Document) {
+  for (const btn of doc.querySelectorAll<HTMLElement>("[data-oi-bio-toggle]")) {
+    const box = btn.parentElement?.querySelector<HTMLElement>(".g-truncated-text");
+    const text = box?.querySelector<HTMLElement>(".b-user-info__text");
+    if (!box || !text) continue;
+    const over = box.scrollHeight > (parseFloat(box.dataset.oiMaxHeight || box.style.maxHeight) || BIO_FOLD);
+    box.classList.toggle("m-over-limit", over);
+    if (over) {
+      btn.style.removeProperty("display");
+      box.classList.toggle("m-collapsed", btn.getAttribute("aria-expanded") !== "true");
+    } else {
+      foldBio(btn, box, false);
+      box.classList.remove("m-collapsed");
+      btn.style.display = "none";
+    }
+  }
+}
+
+/** My profile's details under the bio (OF's UserInfo, in its order): `/users/me`'s field and its icon. */
+const BIO_DETAILS = [
+  ["location", "icon-location"],
+  ["website", "icon-link"],
+  ["wishlist", "icon-trial"],
+] as const;
+
+/**
+ * My profile's bio details: OF's location, website and wishlist rows (p.b-user-info__detail, in the bio's truncated
+ * box after its text, with the text's scoped-style attribute), redrawn on each apply; then More info refits to them.
+ */
+function applyBioDetails(doc: Document, me: OfMe): void {
+  const text = doc.querySelector<HTMLElement>(".b-user-info__content .b-user-info__text");
+  const box = text?.closest<HTMLElement>(".g-truncated-text");
+  if (!text || !box) return;
+  const scope = [...text.attributes].find((a) => a.name.startsWith("data-v-"))?.name;
+  const scoped = (el: Element) => {
+    if (scope) el.setAttribute(scope, "");
+    return el;
+  };
+  for (const row of box.querySelectorAll("[data-oi-bio-detail]")) row.remove();
+  for (const [key, icon] of BIO_DETAILS) {
+    const v = str(me[key])?.trim();
+    if (!v) continue;
+    const row = scoped(doc.createElement("p"));
+    row.className = "b-user-info__detail m-break-word m-markdown";
+    row.setAttribute("data-oi-bio-detail", key);
+    row.innerHTML = `<svg class="m-initial-icon m-icon-extra-sm g-icon" data-icon-name="${icon}" aria-hidden="true"><use href="#${icon}" xlink:href="#${icon}"></use></svg>`;
+    scoped(row.firstElementChild!);
+    // The location is text; the website and wishlist are links, opened in a new tab as OF's.
+    const value = scoped(doc.createElement(key === "location" ? "span" : "a"));
+    if (key !== "location") {
+      value.setAttribute("href", /^https?:\/\//i.test(v) ? v : `https://${v}`);
+      value.setAttribute("rel", "nofollow noopener");
+      value.setAttribute("target", "_blank");
+    }
+    value.textContent = v;
+    row.append(value);
+    box.append(row);
+  }
+  fitBio(doc);
+}
+
 /** Replace the mirror's placeholders in `doc` with `me`. Idempotent, and re-applies over earlier values; fields `me` lacks keep the placeholders. */
 export function applyIdentity(doc: Document, me: OfMe, imageUrl: (url: string) => string = (u) => u): void {
   const username = str(me.username);
@@ -153,6 +236,7 @@ export function applyIdentity(doc: Document, me: OfMe, imageUrl: (url: string) =
   }
   applyNavCounts(doc, me);
   applyDrawer(doc, me);
+  applyBioDetails(doc, me);
   const header = str(me.header);
   if (header) doc.querySelector("img.b-profile__header__cover-img")?.setAttribute("src", imageUrl(header));
   const avatar = str(me.avatar);

@@ -100,6 +100,22 @@ describe("bindWrites", () => {
     unbind();
   });
 
+  it("settings/profile: Display name's and Bio's counters follow typing; the Bio takes its own click, no State page link over it (U18)", () => {
+    const page = "settings/profile";
+    const d = loadPage(page);
+    expect(d.querySelector(".input-text-editor .of-state-link")).toBeNull();
+    const unbind = bindWrites(d, page, handlers());
+    const name = d.getElementById("input-name") as HTMLInputElement;
+    name.value = "Ana";
+    fire(name, "input");
+    expect(name.closest(".v-input")!.querySelector(".v-counter")!.textContent!.trim()).toBe("3 / 40");
+    const bio = d.querySelector("[data-placeholder='Bio']")!;
+    bio.innerHTML = "<p>Hello</p>";
+    fire(bio, "input");
+    expect(bio.closest(".g-input__wrapper")!.querySelector(".count-block")!.textContent!.trim()).toBe("5/1000");
+    unbind();
+  });
+
   it.each(["bank/index", "bank/payments", "bank/dac7/edit"])("%s: one grey line under the title says the bank details stay on onlyfans.com, linking there; unbind removes it", (page) => {
     const d = loadPage(page);
     const unbind = bindWrites(d, page, null);
@@ -122,7 +138,7 @@ describe("bindWrites", () => {
   it("re-enables Save and shows the error when saving fails", async () => {
     const d = doc(PROFILE);
     const h = { ...handlers(), saveProfile: vi.fn(() => Promise.reject(new Error("relay 502"))) };
-    const unbind = bindWrites(d, "settings/profile/state-bio-focus", h);
+    const unbind = bindWrites(d, "settings/profile", h);
     fire(d.querySelector("[data-placeholder='Bio']")!, "input");
     d.querySelector("button")!.click();
     expect(h.saveProfile).toHaveBeenCalledWith({ about: "Line one\nLine two" });
@@ -179,7 +195,7 @@ describe("bindWrites", () => {
     const h = handlers();
     const unbind = bindWrites(d, CREATE, h);
     const day = ahead(2);
-    fillStream(d, day, "6:30 pm", "Synthetic stream");
+    fillStream(d, day, "18:30", "Synthetic stream"); // the browser's time input gives 24h
     const editor = d.querySelector(".create-scheduled__description [contenteditable]")!;
     fire(editor, "input");
     expect(editor.getAttribute("data-is-empty")).toBe("false"); // the label moves up, as OF's script does
@@ -579,6 +595,22 @@ describe("bindWrites click fallback: an unwired button on any Mirror page shows 
     unbind();
   });
 
+  it("is silent on every control of a dialog a binder built ([data-oi-dialog]): a failed Save shows only its own error (U13)", () => {
+    const d = doc(`
+      <div data-oi-dialog data-oi-wired><div class="modal"><form><div class="modal-footer">
+        <button type="submit" id="save"><span id="save-text">Save</span></button><button type="button" id="max">Max</button>
+      </div></form></div></div>
+      <button id="other">Other</button>`);
+    const unbind = bindWrites(d, "collections/index", handlers());
+    for (const id of ["save", "save-text", "max"]) {
+      click(d.getElementById(id)!);
+      expect(noteOf(d), id).toBeNull();
+    }
+    click(d.getElementById("other")!);
+    expect(noteOf(d)?.textContent).toBe(READ_ONLY); // contrast: the page's own unwired button
+    unbind();
+  });
+
   it.each(scopes)("covers a dropdown's read-only input and a button nested in a Wired row or a label (%s scope)", (_scope, h) => {
     // settings/security/watermarks: OF's position dropdown is a [role=button] whose middle is a readonly <input>
     const s = loadPage("settings/security/watermarks");
@@ -763,7 +795,7 @@ describe("SUBMITS", () => {
   it("names one submit button in each mirrored page", () => {
     const text: Record<string, string> = {
       [CREATE]: "Schedule", [TRACKING]: "Create Link", [PROMOTION]: "Start campaign", [BUNDLE]: "Save", [TRIAL]: "Create link",
-      "new-post/state-promotion": "Start campaign", "new-post/state-trial-link": "Create link",
+      "new-post/state-promotion": "Start campaign", "new-post/state-trial-link": "Create link", "home/state-promotion": "Start campaign",
     };
     expect(Object.keys(SUBMITS).sort()).toEqual(Object.keys(text).sort());
     for (const [page, { button }] of Object.entries(SUBMITS)) {
@@ -821,7 +853,7 @@ describe("schedule form parsing", () => {
     const d = loadPage(CREATE);
     prefillStream(d, "2026-10-21", "1:15 pm");
     const value = (n: string) => d.querySelector<HTMLInputElement>(`input[name='${n}']`)!.value;
-    expect([value("date"), value("time")]).toEqual(["Oct 21, 2026", "1:15 pm"]);
+    expect([value("date"), value("time")]).toEqual(["Oct 21, 2026", "13:15"]);
     expect(collectStream(d, new Date(2026, 9, 17, 12))).toEqual({ description: "", scheduledDate: localIso(new Date(2026, 9, 21, 13, 15)), isShowTips: true });
     // A typed value stays; a value that does not parse fills nothing.
     fillStream(d, "2026-10-22", "9:00");
@@ -830,6 +862,24 @@ describe("schedule form parsing", () => {
     const e = loadPage(CREATE);
     prefillStream(e, "someday", "noon");
     expect([e.querySelector<HTMLInputElement>("input[name='date']")!.value, e.querySelector<HTMLInputElement>("input[name='time']")!.value]).toEqual(["", ""]);
+  });
+
+  it("Date opens OF's day popup and Apply fills it; Time is the browser's time input; unbind drops the trigger (U11)", () => {
+    const d = loadPage(CREATE);
+    const unbind = bindWrites(d, CREATE, null);
+    const date = d.querySelector<HTMLInputElement>("input[name='date']")!;
+    const time = d.querySelector<HTMLInputElement>("input[name='time']")!;
+    expect([date.readOnly, time.type]).toEqual([true, "time"]);
+    d.querySelector<HTMLElement>(".create-scheduled__time .v-datetime__icon")!.click();
+    expect(d.querySelector("[data-oi-picker]")).not.toBeNull();
+    d.querySelector<HTMLElement>("[data-oi-picker-apply]")!.click();
+    const now = new Date();
+    expect(date.value).toBe(now.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }));
+    expect(d.querySelector("[data-oi-picker]")).toBeNull();
+    expect(d.getElementById("oi-note")).toBeNull(); // not the Read-only note
+    unbind();
+    date.click();
+    expect(d.querySelector("[data-oi-picker]")).toBeNull();
   });
 
   it("requires the time at least a minute ahead", () => {

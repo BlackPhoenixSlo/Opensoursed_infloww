@@ -72,7 +72,7 @@ export interface BrainConfig {
    * so an old client can't clear them while saving something else.
    */
   cotag_tag_videos?: boolean;
-  /** Handle to tag, no '@'. null = the global default (see cotag_default_username). */
+  /** Co-creator to tag, no '@'. null / '' = No co-creator tag (the default). */
   cotag_username?: string | null;
   /** Get to know fans' short "Model info" note, pinned into every chat prompt. Server semantics: absent key =
    *  unchanged; null = no note (the box then prefills `model_notes_template`). */
@@ -121,9 +121,6 @@ export interface AccountConfigResp {
   languages: LanguageOption[]; // language codes + labels for the dropdown
   /** Creator-canon fields, ordered by how often fans ask. Single source of truth. */
   persona_fact_fields: PersonaFactField[];
-  /** What a null cotag_username resolves to (env → built-in "", i.e. nobody) — the
-   *  editor's placeholder, so the default the box shows is the default that runs. */
-  cotag_default_username?: string;
   /** What the Model info box prefills while `model_notes` is empty (labelled blank lines the prompt skips). */
   model_notes_template?: string;
 }

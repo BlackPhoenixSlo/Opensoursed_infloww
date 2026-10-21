@@ -8,9 +8,9 @@ import type { OfMe } from "./ofMirrorIdentity";
 import { promotionText } from "./ofMirrorStatsReach";
 import { streakTime } from "./ofMirrorStatsOverview";
 import { bindUserLists, drawPair, usersLink, usersRoute } from "./ofMirrorStatsKit";
-import { durationText, postStatRows, postStatsRoute } from "./ofMirrorStatsPostStat";
+import { durationText, postStatRows, postStatsProbe, postStatsRoute } from "./ofMirrorStatsPostStat";
 import { ELSEWHERE } from "./ofMirrorTooltip";
-import { relay } from "./relay";
+import { relay, RelayError } from "./relay";
 import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { PICK_DEFAULTS, applyStats, firstMarker, listRoute, nextParam, periodOf, startOf, statsRoute, type PagedBody, type Picks, type StatsData } from "./ofMirrorStats";
@@ -759,5 +759,24 @@ describe("Card More menus and Post statistics", () => {
     const plainRow = doc.querySelector("[data-oi-table='posts'] tbody tr[data-oi-data]")!;
     expect(plainRow.querySelector("[data-oi-users]")).toBeNull();
     expect(plainRow.querySelector<HTMLButtonElement>(".b-top-statistic__btns button")!.title).toBe(NOT_YET);
+  });
+});
+
+describe("postStatsProbe: the phase-1 Relay's per-item reads, found with a 2xx (no red console line on every page)", () => {
+  it("true for {supported: true} and an older Relay's 422; false for anything else, a 404 or a 403", async () => {
+    const answers: [() => Promise<unknown>, boolean][] = [
+      [() => Promise.resolve({ supported: true }), true],
+      [() => Promise.reject(new RelayError(422, { detail: "post_id" })), true],
+      [() => Promise.resolve([]), false],
+      [() => Promise.resolve({ supported: "yes" }), false],
+      [() => Promise.reject(new RelayError(404, null)), false],
+      [() => Promise.reject(new RelayError(403, null)), false],
+    ];
+    for (const [answer, want] of answers) {
+      const get = vi.spyOn(relay, "get").mockImplementation(answer as never);
+      expect(await postStatsProbe("acct-1").queryFn()).toBe(want);
+      expect(get).toHaveBeenCalledWith("/api/of/v2/posts/stats", { accountId: "acct-1" });
+      get.mockRestore();
+    }
   });
 });

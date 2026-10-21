@@ -20,12 +20,17 @@ import { relay, RelayError } from "@/lib/relay";
 export const POST_STATS_PROBE = "/api/of/v2/posts/stats";
 /**
  * Whether the Relay has the phase-1 per-item reads (omf-statistics-relay-2, `/posts/stats` among them): that route
- * without a post id answers 422 (its own check, no OnlyFans request); an older Relay answers 404, and a role without
- * Statistics 403. The query answers true only for the 422.
+ * without a post id answers `{supported: true}` (no OnlyFans request, and a 2xx, so the browser logs no error on every
+ * page); a Relay from before that answers 422 there, one without the route 404, and a role without Statistics 403. The
+ * query answers true for `{supported: true}` or the 422.
  */
 export const postStatsProbe = (accountId: string | null | undefined) => ({
   queryKey: ["of-mirror-data", accountId, POST_STATS_PROBE],
-  queryFn: () => relay.get<unknown>(POST_STATS_PROBE, { accountId }).then(() => false, (e: unknown) => e instanceof RelayError && e.status === 422),
+  queryFn: () =>
+    relay.get<unknown>(POST_STATS_PROBE, { accountId }).then(
+      (body) => isObj(body) && body.supported === true,
+      (e: unknown) => e instanceof RelayError && e.status === 422,
+    ),
 });
 
 /** The Relay route of a post's stats, or null for a non-numeric id. */

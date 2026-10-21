@@ -37,7 +37,8 @@ subscription shows the mocked price and its Save, after the confirm, sends `PATC
 OF's success toast "Changes were saved" and stay on the page; the unmapped web push permission switch is
 disabled with the tooltip "Not available in Inflowwww yet" (`inapp-writes-price.png`, `inapp-writes-webpush.png`); the stream schedule form's
 SCHEDULE (`streaming/dashboard/create`) sends nothing and shows "Enter a date and a time" while the form is empty, and with
-tomorrow's date, 6:30 pm and a description sends exactly one `POST /api/of/v2/streams` `{description, scheduledDate,
+tomorrow picked in the Date field's day popup (written as OF's "Oct 13, 2026"), 18:30 in the Time field's time input and a
+description sends exactly one `POST /api/of/v2/streams` `{description, scheduledDate,
 isShowTips: true}` and lands on `/of-manager/queue`. A second pass runs in the all-models
 scope (`chatterly:scope` removed before every load): typing a display name and clicking SAVE sends no PATCH and shows
 "Select a model to save changes", the welcome message switch sends nothing, shows that note and flips back, and the filled
@@ -234,7 +235,7 @@ unless noted, 1-6 on `home` and on `new-post`:
    `data-oi-wired`; a click opens the in-place archive box right after the strip, sends nothing but GETs, shows no note
    and stays on the page. No console errors. The strip's tiles are covered in both scopes by
    `app/lib/ofMirrorStory.test.ts` and `app/lib/ofMirrorProfile.test.ts`, as are
-   Home's "Start profile promotion" (disabled, with the tooltip "Not available in Inflowwww yet") and New post's
+   Home's "Start profile promotion" (a link to the promotion dialog over Home, `home/state-promotion`) and New post's
    "Go live", "Send message", "Start profile promotion" and "Create new trial link" links.
 
 It prints one `{"check","want","got"}` line per check and exits 1 on a failure (screenshots `inapp-story-home.png`,
@@ -243,7 +244,7 @@ It prints one `{"check","want","got"}` line per check and exits 1 on a failure (
 
     python3 -I scripts/of-mirror-check/story.py
 
-collections.py checks collections writes (app/lib/ofMirrorCollections.ts) in the frame, relay mocked: the list page's More menu, a user
+collections_writes.py checks collections writes (app/lib/ofMirrorCollections.ts) in the frame, relay mocked: the list page's More menu, a user
 card's Lists menu and the header's + (OF's "Create new list" / "Create new label" dialog) send their relay writes;
 with all models nothing is sent.
 
@@ -261,7 +262,7 @@ removed): the + shows "Select a model to save changes" and nothing is sent. Scre
 /tmp/of-mirror-shots/inapp-collections-more.png, inapp-collections-card.png, inapp-collections-create.png,
 inapp-collections-label.png. Exit 1 on a failed check.
 
-    python3 -I scripts/of-mirror-check/collections.py
+    python3 -I scripts/of-mirror-check/collections_writes.py
 
 feeds.py checks the Phase 4 feed pages (`app/lib/ofMirrorData.ts`, `app/lib/ofMirrorFeeds.ts`) with the same login
 mocks, the top bar's Creator list (accounts 1 and 2) and `GET /api/of/v2/users/me` per account (`{"id": 1, ...}`,
@@ -281,20 +282,20 @@ one whose path a mock matches). Checks, scope `model:1` unless noted:
    a row (the still-less post with no picture, the zero-count post with no badge); the sidebar's recent strip keeps its
    3 example tiles; `/posts/photos` and `/posts/videos` are each requested with `limit=24`.
 3. `collections/bookmarks/all`: exactly account 1's bookmarked posts in order ([author name, @handle, text, date] per
-   post), the author links `#`, "No bookmarks yet" hidden, the avatar-less author with no picture; the request carries
+   post), the author links their OF profile (`https://onlyfans.com/<handle>`, target `_blank`), "No bookmarks yet" hidden, the avatar-less author with no picture; the request carries
    `limit=20`; the borrowed post row is one same-origin GET of `/of-mirror/pages/profile/index.html` and no other page
    is fetched; every bookmark's More (another creator's post) is disabled with the tooltip "Not available in Inflowwww yet" and a click shows no note. On `collections`, "Create new list" opens OF's
-   "Create new list" dialog (collections.py checks its write); with All Creators it shows "Select a model to save changes".
+   "Create new list" dialog (collections_writes.py checks its write); with All Creators it shows "Select a model to save changes".
 4. `statements/earnings`: exactly account 1's transactions in order ([date, time, amount, fee, net, description,
    status tips] per row: money with two decimals, an absent fee or net empty, the fan link as text, the done row
    "Complete", the pending row "Earning will become available in 5 days", the refunded row no status tip), no example
-   row, the empty row hidden; one request, `limit=20`.
+   row, the empty row hidden; OF's pages of 10: two requests, `limit=10` with `offset=0` and `offset=10`.
 5. `statements/payouts` and `statements/referrals`: exactly account 1's payout requests in order ([date, time, invoice,
    amount, status class, status text, status icon] per row, OF's fields `invoiceId`, `state`, `rejectReason`: approved
    "Payout has been processed", rejected with its "Reason:" line the payout's `rejectReason` or no line, pending OF's
    `pending` span with only `#icon-loading`); Referrals hides "This list is
    empty" and borrows its row by one same-origin GET of `/of-mirror/pages/statements/payouts.html`, Payouts fetches no
-   page; "Request withdrawal" stays disabled; one request each, exactly `limit=20`.
+   page; "Request withdrawal" stays disabled (the mocked balances are empty); one request each, exactly `limit=20`.
 6. The six queue pages (browser time zone Europe/Ljubljana, the clock fixed at 2026-10-12 12:00): exactly the
    synthetic items by day, soonest first ([day, [[colour mark, time, text] per item]] per section), each mark in OF's
    colour, "Media" for a media-only item, a stream its description, the out-of-month message dropped; the Messages tab
@@ -327,7 +328,7 @@ render empty if wrong, never as examples:
 
     python3 -I scripts/of-mirror-check/feeds.py
 
-queue.py checks the queue rows' More menu (`app/lib/ofMirrorQueue.ts`) with the same login mocks, scope `model:1` and
+queue_menu.py checks the queue rows' More menu (`app/lib/ofMirrorQueue.ts`) with the same login mocks, scope `model:1` and
 synthetic wrapped `/schedules` items (answered by their `publish_date` span) and the clock fixed at 2026-10-12 12:00 on
 `queue/state-list-view`: the post and message menus' entries, the right column's day, Edit post disabled with "Not
 available in Inflowwww yet", Post now's exact `PUT /api/of/v2/schedules/<schedule id>/publish` (and the queue
@@ -336,7 +337,7 @@ refetched), Delete post with the confirm dismissed sending nothing and Delete me
 `publish_date` span and shown, back greyed out on today's month), a day click (the right column's day and its items)
 and the type tabs, all in place and sending nothing (screenshots `inapp-queue-menu.png`, `inapp-queue-november.png`):
 
-    python3 -I scripts/of-mirror-check/queue.py
+    python3 -I scripts/of-mirror-check/queue_menu.py
 
 dead.py is the Phase 6 sign-off: no Silent control (`app/lib/ofMirrorWrites.ts` `bindWrites`' click fallback and change
 path). Pages: every page of `new-post`, `home`, `streaming`, `profile`, `queue`, `collections`, `notifications`, `statements`, `statistics`, `messages`, `vault` and `bank`, and
@@ -358,7 +359,12 @@ Failures, Single Creator (scope `model:1`):
 2. A control in `a[href]` (a link, a State page opener or backdrop) that neither navigates to a localhost
    `/of-manager/` URL nor stays inert (href `#` or the page itself), or shows a note.
 3. A `[data-oi-wired]` control that shows the Read-only note, or gives no allow-listed write, navigation, file
-   chooser, markup change or other note.
+   chooser, markup change or other note; or one whose centre is not its own but a State page's backdrop with no dialog,
+   menu or focused field open over it (`a.of-state-backdrop` outside `.modal`, no `.of-state-menu` or `.m-focused`): the
+   click would go back instead (Home's poll page once took Post's click to Home, so nothing posted). Also an open
+   State menu item (`.of-state-menu`, one the menu shows: an item its scroll box clips is a wheel away) whose centre is
+   that backdrop: My profile's More menu lay under it, so Statistics and Copy link went back to the profile. Pages whose
+   URL redirects (`REDIRECTS` in `app/lib/of-mirror-route.ts`: Following's Users pages) are not swept.
 4. A Relay write from an unmarked control, or any write off the allow-list (`POST /api/of/v2/posts`, `/upload`,
    `/stories/upload`, `/campaigns`, `/trials`, `/promotions`, `/streams`); exact bodies stay with each Phase's own check.
 5. A measured Wired control (plan Ground truth 5) without `data-oi-wired` on the page that binds it: Post
@@ -374,7 +380,7 @@ All Creators (`chatterly:scope` removed before every load): the same pages, swee
 read as text: New post, Settings, Messages, the Queue, Statistics, the Vault and the rest show the first model with a
 session in All models, and their actions are that model's) may write, each write with that model's `X-Account-Id`. The
 send controls on the other pages, made sendable first (Post with text typed), give exactly "Select a model to save
-changes": Post and Add to story (`home`) and the stream schedule form's SCHEDULE; the New post and Settings ones act as
+changes": Post, Add to story (`home`) and Start campaign (`home/state-promotion`) and the stream schedule form's SCHEDULE; the New post and Settings ones act as
 the stand-in model. `DISABLED` (submits with no Known body) is empty. New post's Record video and Record voice
 (the not-supported popup) and its right column search box are marked. `dead.py settings` sweeps every settings page.
 
@@ -406,27 +412,39 @@ changed checkbox or field shows it too (a checkbox flips back; new-post's panel 
   trial link".
 - `home` and `home/state-*`. Writes: "Add to story", the composer's Post and "Add media" (New post's, in place) and its
   dialogs `home/state-vault`, `home/state-tag-people`, `home/state-schedule` (as on New post). Data: the feed, the
-  promotions and scheduled events, the vault dialog's media. Disabled with a tooltip: "Start profile promotion", Add poll,
-  Add quiz, Expiration period, Your target, Format Text, Record video and voice. Read-only: fans' story tiles, every other
-  button.
+  promotions and scheduled events, the strip in OF's order (live streams from `/streams/feed`, the Creator's own stories
+  from `/users/{id}/stories`, the creators with new stories, the promotion tile, the creators whose stories are all
+  watched, the scheduled streams), the vault dialog's media. Links: "Start profile promotion" (`home/state-promotion`: the promotion campaign dialog over Home, as New post's; Start
+  campaign writes `POST /api/of/v2/promotions`, then it and Cancel go back to Home), the Creator's own scheduled stream
+  (the queue). Disabled with a tooltip: Add poll,
+  Add quiz, Expiration period, Your target, Format Text, Record video and voice. Read-only: live stream tiles and other
+  creators' scheduled ones, every other button.
 - `profile`, `profile/state-more-menu`, `profile/media`. Writes: the own posts' like, comments and More menu (as Home's).
-  Data: `profile` and its State pages the wall posts (`GET /users/<id>/posts?limit=20`), `profile/media` the photo and
-  video posts, all three the counts and label tabs (`/users/me`, `/labels`), the Recent strip, the highlights
+  Data: `profile` and its State pages the wall posts (`GET /users/<id>/posts?limit=20&format=infinite`, the next page
+  by its `tailMarker` as `before_publish_time`), `profile/media` the photo and video posts, all three the counts, the
+  bio's location, website and wishlist rows and the label tabs (`/users/me`, `/labels`), the Recent strip, the highlights
   (`/users/<id>/stories/highlights`) and the promotions. Wired in place: "Story archive" (`GET /stories/archive`), Copy
-  link to profile, More info, Spotify's title, the media tabs. Links: Photos, Videos, Fans, "Go live", the More menu's
-  Statistics. Disabled with the tooltip: "Create highlight" (no highlight write), the highlight tiles, the label tabs
-  but All, QR code, the status menu, the wall's search, compact view and sort, the sidebar search, Sign in with Spotify,
-  each post's Labels, Post statistics and bookmark.
+  link to profile, More info (only while the bio is over OF's 85px), Spotify's title, the media tabs, the status menu
+  (Available / Invisible: `PATCH /users/me` `{isVisibleOnline}`), the highlight tiles (each plays its stories in the
+  viewer, `GET /stories/highlights/<id>`; with no single Creator, its cover). Links: Photos, Videos, Fans, "Go live",
+  the More menu's Statistics and QR code (Settings' QR code page). Disabled with the tooltip: "Create highlight" (no
+  highlight write), the label tabs but All, the wall's search, compact view and sort, the sidebar search, Sign in with
+  Spotify, each post's Labels (no Relay route labels an existing post), Post statistics and bookmark (no Relay
+  post-bookmark route); another creator's post's Send Tip (no Relay tip route, and it spends money). The footer's
+  Privacy, Cookie Notice and Terms of Service stay `#` (no OF host link in the pages).
 - `queue/*`. Writes: none. Data: `queue` and `queue/state-list-view` (`/schedules`), `queue/state-tab-messages`
   (`/messages/queue`), `queue/saved-for-later-posts` and `-messages` (`/schedules/later/post`, `/chat`);
   `queue/state-tab-streams` keeps its capture. Read-only: item and row actions, every other button.
-- `collections/*`. Writes (`app/lib/ofMirrorCollections.ts`, collections.py): on `collections` and
+- `collections/*`. Writes (`app/lib/ofMirrorCollections.ts`, collections_writes.py): on `collections` and
   `collections/user-lists/*`, "Create new list" (OF's dialog, `POST /lists`); on `collections/post-labels/*` the "+"
   ("Create new label", `POST /labels`); the list's More (Rename `PATCH /lists/<id>`, Add users `POST /lists/users`,
   Clear `DELETE /lists/<id>/users`, Delete `DELETE /lists/<id>`); a user card's Lists (`POST` / `DELETE
   /lists/<id>/users/<uid>`). Data: `collections` and `collections/user-lists/list` the user lists (`/lists`) and the
   open (else the first) list's users (`/lists/<id>/users`), Fans (`subscribers/active`) the active subscribers
-  (`/subscribers?type=active`), the Following pages the lists only (no subscriptions read: "Nothing found"),
+  (`/subscribers?type=active`), the Following pages (`subscriptions` and its chips, captured with no card) redirect to
+  the Following list's page (`list?list=following`, `/lists/following/users`; `app/lib/of-mirror-route.ts`
+  REDIRECTS); a list page's Send message opens New message with that list ticked (`messages/send?to=<list>`;
+  `sendlist-following` redirects there, its `list-users` and `list-exclude` to New message's tabs),
   `collections/post-labels/archived` the labels (`/labels`; a label's posts: OF's "No posts yet"),
   `collections/bookmarks/all` the bookmarked posts. No example list, card or post is kept. Disabled with the tooltip:
   the bookmarks "+", Search, Sort, Filter, Pin to home, the card tools but Lists, a More or Lists with nothing to do.
@@ -434,16 +452,24 @@ changed checkbox or field shows it too (a checkbox flips back; new-post's panel 
 - `notifications/*`. Writes: none. Data: `notifications`, `notifications/subscribed`, `notifications/commented` and
   `notifications/mentioned` (`/users/notifications`, the tab's `type`); `notifications/tip` and the other tabs keep
   their examples. Read-only: the tab filters' buttons and every other button.
-- `statements/*`. Writes: none. Data: `statements/earnings` (`/payouts/transactions`), `statements/payouts`
-  (`/payouts/requests`), `statements/referrals` (`/payouts/requests/referral`). Wired: the balance box header
-  (collapse) and Copy link. Disabled with the tooltip: Request withdrawal, the payout frequency and payout account
-  menus, Earning Statistics' date range and the Billing Support form. Read-only: none.
-- `statistics/*` (`app/lib/ofMirrorStats.ts`). Writes: none. Data, for the period picked in OF's period menu
+- `statements/*`. Writes: the payout frequency menu (`PATCH /payouts/requests {"withdrawalPeriod": …}`, the old one
+  back unless the reply has `success`) and Request withdrawal (manual payouts only, enabled by OF's rule: OF's Manual
+  payouts dialog, then `POST /payouts/requests {"withdrawal_amount": …}`, OF's answer or error in its alert). Data:
+  `statements/earnings` (`/payouts/transactions?limit=10&offset=…`), `statements/payouts` (`/payouts/requests`),
+  `statements/referrals` (`/payouts/requests/referral`), the balances (`/payouts/balances`) and Earning Statistics
+  (`/payouts/stats`: All time and a row per month; one row open at a time, a row's head opening it to its chart,
+  date range and categories, a category row picking the chart's line). Wired: the balance box
+  header (collapse) and Copy link. The sidebar's Chargebacks is Statistics' (`statistics/statements/disputes`, where
+  OF redirects `/my/stats/disputes`). Disabled with the tooltip: the payout account menu, Earning Statistics' date
+  range and the Billing Support form. Read-only: none.
+- `statistics/*` (`app/lib/ofMirrorStats.ts`). Statistics, and each top tab, lands where OF lands it (the generator
+  reads OF's redirects from the captures): Statistics and its Statements tab on Statements › Earnings, Engagement on
+  Posts, Fans on Subscriptions. Writes: the sidebar's Request withdrawal (Statements', above). Data, for the period picked in OF's period menu
   (wired: data-oi-period): the figures (`/users/me/stats/overview?by=…&start=…&end=…`, `/payouts/stats`), Engagement ›
   Messages' table (`/users/me/stats/messages/group`), Reach › Profile visitors' tables and chart
   (`/users/me/profile/stats`), the Chargebacks ratio, Payout Requests, Referrals and Statistics › Statements ›
   Earnings' table (`/payouts/transactions`); no captured figure is kept (" — " until the relay answers). Disabled with
-  the tooltip: the menu's Custom, Request withdrawal, the earnings radios, Search messages, Unsend, and every section
+  the tooltip: the menu's Custom, the payout frequency, the earnings radios, Search messages, Unsend, and every section
   with no relay route (OF's empty state titled "Not available in Inflowwww yet"). Read-only: none.
 - `bank/*`. Writes: none, ever (we never write bank details). Data: none (the relay reads no bank account or payout
   system): "Your bank account data" and the selected payout system say they are managed on OnlyFans, Select payout

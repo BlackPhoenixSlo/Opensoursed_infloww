@@ -62,7 +62,7 @@ FAIL_NOTE = (
 # key of each blob is ever serialized, because these same blobs sit next to
 # per-agency LLM keys and prompts leave the box for a third-party provider.
 _CONFIG_FLAGS: tuple[tuple[str, str], ...] = (
-    ("auto_convo", "autoreply_config_json"),
+    ("autoreply", "autoreply_config_json"),
     ("reply_instant", "webhook_config_json"),
 )
 
@@ -148,7 +148,8 @@ def _rule_line(row: dict[str, Any], head: str, run: str) -> tuple[str, str]:
     if row["is_enabled"]:
         bits = [f"{head}: ON"]
         if row.get("every_seconds"):
-            bits.append(_human_every(int(row["every_seconds"])))
+            # The tick, not a send rate: "every 1m" read as "sends every minute".
+            bits.append("checks " + _human_every(int(row["every_seconds"])))
         if not row.get("kind_registered", True):
             bits.append("no runner registered — inert")
     else:

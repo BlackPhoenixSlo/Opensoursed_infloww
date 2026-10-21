@@ -20,7 +20,8 @@ Save for Later (marked wired) sends nothing, stores save_for_later in the draft 
 Extras: new-post/state-labels lists the mocked Relay's "Alpha label" (11) from GET /api/of/v2/labels; checking it and
 typing two options on new-post/state-poll send nothing, add label_ids [11] and the poll to the draft and show no note;
 the poll's "7 days" piece opens new-post/state-expiration titled "POLL DURATION", whose "3 days" tab and Save return to
-the poll with the piece at "3 days" and the options kept; Post then sends exactly one POST /api/of/v2/posts with
+the poll with the piece at "3 days" and the options kept; New post (loaded afresh) names the label in its summary
+("Labels: Alpha label"); Post then sends exactly one POST /api/of/v2/posts with
 label_ids [11], voting_type 1, voting_options ["Yes","No"] and voting_due 3, and stays with the toast.
 Error: with the mock answering 502, the page shows the red "Could not post: <relay text>" note, Post is enabled again,
 the draft is kept and the page stays on New post.
@@ -290,6 +291,10 @@ with sync_playwright() as p:
         check("extras: nothing sent before Post", sent, [])
         fr=open_new_post()
     if fr:
+        for _ in range(40):
+            if "Alpha label" in fr.evaluate("document.getElementById('oi-post-summary')?.textContent ?? ''"): break
+            pg.wait_for_timeout(250)
+        check("extras: the summary names the label (after a full load)", "Labels: Alpha label ·" in fr.evaluate("document.getElementById('oi-post-summary')?.textContent ?? ''"), True)
         fr.locator(EDITOR).fill("Synthetic post")
         fr.locator(POST).click()
         check("extras: OF's toast", wait_toast(pg, fr), POSTED)

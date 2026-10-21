@@ -50,7 +50,8 @@
  *
  * Add to story (every Mirror page with a story strip; OF's own tile is on home, new-post and their State pages): a click
  * on the tile opens a hidden image or video picker; the picked file is published as the Creator's Story through one multipart
- * POST /api/of/v2/stories/upload (part `file`); the tile is disabled until the upload settles, then "Added to story" shows under the strip, or a red
+ * POST /api/of/v2/stories/upload (part `file`); the tile is disabled until the upload settles, then "Added to story" shows under the strip (and the Creator's own stories are
+ * read again, so Home's strip shows the new one), or a red
  * "Could not add: <message>" note stays; either way the picker is reset so the same file can be picked again. A picked file
  * that is neither image/* nor video/* (an empty type included) sends nothing and shows a red "Could not add: choose an image
  * or a video"; a cancelled picker sends nothing and shows nothing. All-Creators scope: no picker, the select-a-model note.
@@ -73,22 +74,23 @@
  */
 
 import { useEffect, useMemo, type RefObject } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useScope } from "@/contexts/ScopeContext";
 import { relay, toChoice, type TaggedFriendUser, type TaggedFriendUsersResp, type VaultMedia, type VaultUploadResp } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
 import { avatarOf } from "@/lib/ofMirrorAvatar";
-import { fill, make, mirrorQuery, own, plain, rowsOf, toggleTile, VAULT_LISTS, vaultMediaOf } from "@/lib/ofMirrorData";
+import { fill, linkUser, make, mirrorQuery, own, plain, rowsOf, toggleTile, userHref, VAULT_LISTS, vaultMediaOf } from "@/lib/ofMirrorData";
 import { sortOfFolders } from "@/hooks/useVaultCache";
 import { HOME_VAULT, homeDraft, VAULT_DIALOG } from "@/lib/ofMirrorRow";
 import { ofMeQuery, type OfMe } from "@/lib/ofMirrorIdentity";
 import { floatLabel } from "@/lib/ofMirrorSettings";
-import { FIELDS, openViewer, TYPES, vaultHref, viewerItem, viewOf, type VaultView, type ViewerItem } from "@/lib/ofMirrorVault";
+import { FIELDS, openViewer, TYPES, vaultHref, viewerItem, viewOf, type StoryAuthor, type VaultView, type ViewerItem } from "@/lib/ofMirrorVault";
 import { applyFormat, COLORS, hasFormatting, ofHtml, setOfHtml, SIZES, type FormatCommand } from "@/lib/ofMirrorFormat";
 import { closeMenu, ORDER_GROUP, showMenu, type MenuGroup } from "@/lib/ofMirrorMenu";
 import { GREY, localIso, message, minuteAhead, note, NOTE_STYLE, QUEUE, READ_ONLY, scheduleAt, schedulePill, SELECT_MODEL, textOf, TOO_SOON } from "@/lib/ofMirrorWrites";
 import { fromWallClock, storyItems, useAgencyZone, wallClock, type StoryEntry } from "@/lib/ofMirrorFeeds";
+import { ofPrice } from "@/lib/ofMirrorPostCard";
 import { mirrorPageOfHref, mirrorPageOfPath } from "@/lib/of-mirror-route";
 
 /**
@@ -2012,12 +2014,11 @@ export function recordPopup(doc: Document, closed?: () => void): HTMLElement {
 const FEED_SEARCH = "input[name='feed-search-input']";
 const SEARCH_RESULTS = "oi-search-results";
 
-/** Where a search result opens: a user's chat; a post, My profile when it is the model's own, else its author's chat. */
+/** Where a search result opens (userHref): a user's OF profile; a post, My profile when it is the model's own, else its
+ *  author's OF profile. */
 export function searchHref(kind: "user" | "post", item: SearchUser | SearchPost, meId?: number | string): string | null {
-  const chat = (id: number | string | undefined) => (id != null && id !== "" ? `/of-manager/messages/chat?chat=${encodeURIComponent(String(id))}` : null);
-  if (kind === "user") return chat((item as SearchUser).id);
-  const author = (item as SearchPost).author?.id;
-  return meId != null && author != null && String(author) === String(meId) ? "/of-manager/profile" : chat(author);
+  const me = meId == null ? null : String(meId);
+  return kind === "user" ? userHref(item as SearchUser, me) : userHref((item as SearchPost).author, me);
 }
 
 /** A search response's rows: a bare array, or OF's `{list}` / `{items}`. */
@@ -2025,7 +2026,7 @@ const rowsIn = <T,>(r: unknown): T[] => (Array.isArray(r) ? (r as T[]) : ((r as 
 
 /**
  * Wire the right column's search (New post's and Home's): typing (400 ms after it stops) runs OF's users search and posts
- * search, and a list under the box shows "Users" and "Posts" rows, each a link to its OF Manager page (searchHref); the
+ * search, and a list under the box shows "Users" and "Posts" rows, each a link to its OF profile or My profile (searchHref); the
  * submit (Enter or the search button) runs it at once and never reloads the frame; an empty box clears the list.
  * All-Creators: the select-a-model note. Returns an unbind.
  */
@@ -2058,15 +2059,13 @@ function bindFeedSearch(doc: Document, ctx: PostContext): () => void {
       a.className = "b-rows-lists__item__text m-with-rectangle-hover g-text-ellipsis";
       a.style.cssText = "display:block;padding:6px 16px";
       a.textContent = text;
-      if (href) {
-        a.href = href;
-        a.target = "_top";
-      } else a.setAttribute("aria-disabled", "true");
+      if (href) linkUser([a], href);
+      else a.setAttribute("aria-disabled", "true");
       return a;
     };
     if (!users.length && !posts.length) box.append(head("Nothing found"));
     // OF's names and texts come HTML-escaped (and a post's text as markup): shown as text.
-    if (users.length) box.append(head("Users"), ...users.map((u) => link(searchHref("user", u), `${plain(u.name)}${u.username ? ` @${u.username}` : ""}`.trim())));
+    if (users.length) box.append(head("Users"), ...users.map((u) => link(searchHref("user", u, ctx.meId), `${plain(u.name)}${u.username ? ` @${u.username}` : ""}`.trim())));
     if (posts.length) {
       box.append(
         head("Posts"),
@@ -2134,6 +2133,11 @@ export function bindPost(doc: Document, page: string, given: PostContext): () =>
     const u = ctx.tagItems?.map(toChoice).find((t) => t.id === id);
     return u ? u.name : String(id);
   };
+  /** The picked labels' names from the Relay's list ("Summer, Beach"); null while any is unknown (the summary counts them). */
+  const labelNames = (ids: number[]) => {
+    const names = ids.map((id) => ctx.labelItems?.find((l) => Number(l.id) === id)?.name);
+    return names.every(Boolean) ? names.join(", ") : null;
+  };
   /** "Scheduled for … · Tagged: … · Poll: … · Clear" under the editor while the draft has extras (note's grey, persistent). */
   const summary = () => {
     const { posted_at: at, save_for_later: later, tagged_users: tags, voting, voting_due: due, expire_days: days, fund_raising_target: target, label_ids: labels, price, edit_id: editing } = draftOf(ctx);
@@ -2143,13 +2147,13 @@ export function bindPost(doc: Document, page: string, given: PostContext): () =>
     if (priceBtn) lock(priceBtn, !!(days || target));
     const parts = [
       ...(editing ? [later ? EDITING_LATER : EDITING] : []),
-      ...(price ? [`Price: $${price}`] : []),
+      ...(price ? [`Price: ${ofPrice(price)}`] : []),
       ...(later ? ["Saved for later"] : at ? [`Scheduled for ${when(wallClock(new Date(at), ctx.zone))}`] : []),
       ...(tags.length ? [`Tagged: ${tags.map(tagName).join(", ")}`] : []),
       ...(voting ? [`${voting.type === 2 ? "Quiz" : "Poll"}: ${voting.options.filter((o) => o.trim()).length} options${due === undefined ? "" : `, ${daysText(due)}`}`] : []),
       ...(days ? [`Expires after ${days} ${days === 1 ? "day" : "days"}`] : []),
-      ...(target ? [`Target: $${target}`] : []),
-      ...(labels?.length ? [`Labels: ${labels.length}`] : []),
+      ...(target ? [`Target: ${ofPrice(target)}`] : []),
+      ...(labels?.length ? [`Labels: ${labelNames(labels) ?? labels.length}`] : []),
     ];
     schedulePill(doc, editor, editing ? (later ? "Saved for later" : at ? when(wallClock(new Date(at), ctx.zone)) : null) : null);
     const old = doc.getElementById("oi-post-summary");
@@ -2178,8 +2182,8 @@ export function bindPost(doc: Document, page: string, given: PostContext): () =>
   /**
    * The draft's picked media as one row of 64px squares directly before the actions bar, in click order: each OF's vault
    * tile picture markup with the draft's thumb as its src. A picture that fails to load (a video, or a `blob:` URL dead
-   * after a full reload) leaves a plain square in OF's grey; its media stays in the draft. Rebuilt from the draft; no row
-   * while nothing is picked.
+   * after a full reload) leaves a plain square in OF's grey; its media stays in the draft. Each square's X drops that
+   * file. Rebuilt from the draft; no row while nothing is picked.
    */
   const media = () => {
     doc.getElementById(THUMBS_ROW)?.remove();
@@ -2191,10 +2195,10 @@ export function bindPost(doc: Document, page: string, given: PostContext): () =>
     row.dataset.oiData = "";
     row.style.cssText = "display:flex;flex-wrap:wrap;gap:8px;padding:8px 16px";
     row.append(
-      ...thumbs.map((src) => {
+      ...thumbs.map((src, at) => {
         const item = doc.createElement("div");
         item.className = "b-photos__item";
-        item.style.cssText = "width:64px;height:64px;flex:none;border-radius:6px;overflow:hidden";
+        item.style.cssText = "position:relative;width:64px;height:64px;flex:none;border-radius:6px;overflow:hidden";
         const img = doc.createElement("img");
         img.alt = "";
         img.className = "b-photos__item__img";
@@ -2203,7 +2207,16 @@ export function bindPost(doc: Document, page: string, given: PostContext): () =>
           item.style.background = GREY;
         });
         img.src = src;
-        item.append(img);
+        // OF's X on an attached file's preview: it drops that file from the post.
+        const remove = doc.createElement("button");
+        remove.type = "button";
+        remove.className = "b-dropzone__preview__delete g-btn m-rounded m-reset-width m-thumb-r-corner-pos m-btn-remove m-sm-icon-size";
+        remove.style.cssText = "position:absolute;top:4px;right:4px;z-index:1";
+        remove.setAttribute("aria-label", "Delete");
+        remove.setAttribute("data-oi-wired", "");
+        remove.dataset.oiRemoveMedia = String(at);
+        remove.innerHTML = `<svg data-icon-name="icon-close" aria-hidden="true" class="g-icon"><use href="#icon-close" xlink:href="#icon-close"></use></svg>`;
+        item.append(img, remove);
         return item;
       }),
     );
@@ -2289,6 +2302,13 @@ export function bindPost(doc: Document, page: string, given: PostContext): () =>
       ev.preventDefault();
       return update(NO_EXTRAS);
     }
+    const remove = target.closest<HTMLElement>("[data-oi-remove-media]");
+    if (remove) {
+      ev.preventDefault();
+      const at = Number(remove.dataset.oiRemoveMedia);
+      const { media_files, thumbs } = draftOf(ctx);
+      return update({ media_files: media_files.filter((_, i) => i !== at), thumbs: thumbs.filter((_, i) => i !== at) });
+    }
     if (target.closest("[data-oi-discard]")) {
       ev.preventDefault();
       if (keep) clearDraft(keep.storage, keep.accountId);
@@ -2318,6 +2338,11 @@ export function bindPost(doc: Document, page: string, given: PostContext): () =>
         show("");
         summary();
         media();
+        // An open poll or quiz panel empties too: its options went with the post, and the draft no longer has them.
+        for (const input of doc.querySelectorAll<HTMLInputElement>(`${VOTE_ROW} ${OPTION}`)) input.value = "";
+        for (const r of doc.querySelectorAll<HTMLInputElement>(`${VOTE_ROW} input[type='radio']`)) r.checked = false;
+        const due = doc.querySelector(`${VOTING_PIECE} .b-post-piece__value`);
+        if (due) due.textContent = daysText(VOTING_DAYS);
         handlers.posted?.();
         toast(doc, body.save_for_later ? SAVED_TOAST : body.posted_at ? `${SCHEDULED_TOAST} ${when(wallClock(new Date(body.posted_at), ctx.zone))}` : POSTED_TOAST);
       },
@@ -2428,6 +2453,12 @@ const flightOf = (accountId: string) => {
   return flights.get(accountId)!;
 };
 
+/** A Creator's active stories read (ofMirrorData's Home strip: GET /users/{id}/stories). */
+const OWN_STORIES = /^\/api\/of\/v2\/users\/[^/]+\/stories$/;
+/** A story was added: the Creator's own stories are read again, so it shows in Home's strip. */
+const refetchOwnStories = (qc: QueryClient, accountId: string | null) =>
+  void qc.invalidateQueries({ predicate: (q) => q.queryKey[0] === "of-mirror-data" && q.queryKey[1] === accountId && OWN_STORIES.test(String(q.queryKey[2])) });
+
 /**
  * new-post, home and their state-* pages: bind the composer on every frame load (posts only with a single Creator). Home's
  * composer keeps its own draft and uploads, and a post from it refreshes the feed's queries.
@@ -2457,11 +2488,15 @@ export function useOfPost(frameRef: RefObject<HTMLIFrameElement | null>, src: st
   const tagView = tagViewOf(tagPage ? params : new URLSearchParams());
   const tags = useQuery(mirrorQuery<TaggedFriendUsersResp>(accountId, tagsRoute(tagView), tagPage));
   const tagItems = accountId ? (tags.data?.items ?? rowsOf<TaggedFriendUser>(tags.data)) : undefined;
-  const labels = useQuery(mirrorQuery<PostLabelsResp>(accountId, LABELS, path === LABEL_PAGE));
+  // Fetched on the labels dialog, and on the composer while the draft has labels: the summary names them.
+  const keep = typeof window === "undefined" ? null : keepOf({ storage: window.sessionStorage, accountId, draftId });
+  const draftLabels = !!path && !!keep && !!loadDraft(keep.storage, keep.accountId).label_ids?.length;
+  const labels = useQuery(mirrorQuery<PostLabelsResp>(accountId, LABELS, path === LABEL_PAGE || draftLabels));
   const labelItems = accountId && labels.data ? labelsOf(labels.data) : undefined;
   const labelSort = labels.data && !Array.isArray(labels.data) ? { sort: (labels.data as { sort?: string }).sort, order: (labels.data as { order?: string }).order } : undefined;
   const { mutateAsync: addVaultStory } = useMutation({
     mutationFn: (body: VaultStoryBody) => relay.post(STORIES, body, { accountId }),
+    onSuccess: () => refetchOwnStories(qc, accountId),
   });
   // The vault dialog's tiles' own query (ofMirrorData's), so Add to story reads the media the tiles show; its folders'
   // (their sort).
@@ -2540,7 +2575,7 @@ export const NOT_STORY_MEDIA = "Could not add: choose an image or a video";
 export const STORY = {
   own: ".b-story-item.m-story-item-own",
   tile: ".b-story-item",
-  viewable: "[data-oi-story-user], [data-oi-story], [data-oi-full]",
+  viewable: "[data-oi-story-user], [data-oi-story], [data-oi-highlight], [data-oi-full]",
   strip: ".stories-list",
 };
 
@@ -2548,6 +2583,22 @@ export interface StoryHandlers {
   addStory(file: File): Promise<unknown>;
   /** A creator's current stories, as viewer items (GET /users/{id}/stories). */
   userStories?(userId: string): Promise<ViewerItem[]>;
+  /** A highlight's stories in order, as viewer items (GET /stories/highlights/{id}). */
+  highlightStories?(highlightId: string): Promise<ViewerItem[]>;
+}
+
+/** A story tile's header in the story player: its name (a creator's, a highlight's title) and its avatar, else its picture. */
+function tileAuthor(tile: HTMLElement): StoryAuthor {
+  const name = tile.querySelector(".b-story-item__text")?.textContent?.trim() || tile.title.trim();
+  const pic = tile.querySelector(".b-story-item__icon img") ?? tile.querySelector(".b-story-item__inside > img");
+  return { name, avatar: pic?.getAttribute("src") ?? null };
+}
+
+/** A highlight's viewer items from OF's GET /stories/highlights/{id} answer (`{..., stories: [...]}`, read from OF's app.js:
+ *  unconfirmed against a real account); anything else: none. */
+export function highlightItems(r: unknown, img: (u: string) => string): ViewerItem[] {
+  const stories = (r as { stories?: unknown } | null)?.stories;
+  return Array.isArray(stories) ? storyItems(stories as StoryEntry[], img) : [];
 }
 
 /** What a viewable tile shows without a read: its stories (`data-oi-story`), else its own file (`data-oi-full`). */
@@ -2564,9 +2615,11 @@ function tileItems(tile: HTMLElement): ViewerItem[] {
 
 /**
  * Wire OF's story strip in `doc` (any Mirror page; a page without the strip is left alone). A viewable tile (STORY.viewable)
- * opens its media in the Vault's viewer (previous / next through a creator's stories): the stories the feed carried,
+ * plays its media in the Vault's viewer as OF's story player (openViewer's story mode, the tile's name and avatar in its
+ * header; previous / next through a creator's stories): the stories the feed carried,
  * else the creator's current stories read through `handlers.userStories` (a failure or none: a note under the strip).
- * Every other tile but "Add to story" ("Go live", "Create highlight", ...) sends nothing and shows the Read-only note under the strip,
+ * A highlight tile (`data-oi-highlight`) plays the highlight's stories in order, read through `handlers.highlightStories`
+ * (a failure or none: a note); with no such handler, its cover. Every other tile but "Add to story" ("Go live", "Create highlight", ...) sends nothing and shows the Read-only note under the strip,
  * in either scope (bindWrites' click fallback leaves them to this, as its note would sit inside the scroller). These tiles are not marked
  * `data-oi-wired`. A strip without "Add to story" (My profile's) gets nothing more. "Add to story": a click opens a
  * hidden image picker appended to the body; a picked file goes to `handlers.addStory`, then "Added to story" shows
@@ -2581,12 +2634,22 @@ export function bindStory(doc: Document, handlers: StoryHandlers | null): () => 
   if (!strip) return () => {};
   // Not readOnly(panel): it anchors the note on the button (inside the scroller's views) and catches the own tile too.
   const viewStory = (tile: HTMLElement) => {
+    // A highlight (My profile) plays its stories, read on each click as OF's fetchHighlightsById; no single Creator: its cover.
+    const play = (items: ViewerItem[]) => openViewer(doc, items, 0, tileAuthor(tile));
+    const highlight = tile.dataset.oiHighlight;
+    if (highlight && handlers?.highlightStories) {
+      handlers.highlightStories(highlight).then(
+        (got) => (got.length ? play(got) : note(doc, strip, "No story to show", true)),
+        (e) => note(doc, strip, `Could not load the highlight: ${message(e)}`, true),
+      );
+      return;
+    }
     const items = tileItems(tile);
-    if (items.length) return openViewer(doc, items);
+    if (items.length) return play(items);
     const user = tile.dataset.oiStoryUser;
     if (!user || !handlers?.userStories) return note(doc, strip, handlers ? "No story to show" : SELECT_MODEL, !!handlers);
     handlers.userStories(user).then(
-      (got) => (got.length ? openViewer(doc, got) : note(doc, strip, "No story to show", true)),
+      (got) => (got.length ? play(got) : note(doc, strip, "No story to show", true)),
       (e) => note(doc, strip, `Could not load the story: ${message(e)}`, true),
     );
   };
@@ -2648,8 +2711,10 @@ export function bindStory(doc: Document, handlers: StoryHandlers | null): () => 
 /** Every Mirror page: bind the story strip (bindStory) on every frame load (a Story only with a single Creator). */
 export function useOfStory(frameRef: RefObject<HTMLIFrameElement | null>, src: string): void {
   const { accountId } = useScope();
+  const qc = useQueryClient();
   const { mutateAsync: addStory } = useMutation({
     mutationFn: (file: File) => relay.uploadFile("/api/of/v2/stories/upload", file, "file", { accountId }),
+    onSuccess: () => refetchOwnStories(qc, accountId),
   });
 
   const userStories = useMemo(
@@ -2657,6 +2722,11 @@ export function useOfStory(frameRef: RefObject<HTMLIFrameElement | null>, src: s
       const r = await relay.get<unknown>(`/api/of/v2/users/${encodeURIComponent(userId)}/stories`, { accountId });
       return storyItems(rowsOf<StoryEntry>(r) ?? [], (u) => proxyImage(u, accountId));
     },
+    [accountId],
+  );
+  const highlightStories = useMemo(
+    () => async (id: string) =>
+      highlightItems(await relay.get<unknown>(`/api/of/v2/stories/highlights/${encodeURIComponent(id)}`, { accountId }), (u) => proxyImage(u, accountId)),
     [accountId],
   );
 
@@ -2667,7 +2737,7 @@ export function useOfStory(frameRef: RefObject<HTMLIFrameElement | null>, src: s
     const bind = () => {
       unbind?.();
       const doc = frame.contentDocument;
-      unbind = doc?.body ? bindStory(doc, accountId ? { addStory, userStories } : null) : undefined;
+      unbind = doc?.body ? bindStory(doc, accountId ? { addStory, userStories, highlightStories } : null) : undefined;
     };
     if (frame.contentDocument?.readyState === "complete") bind();
     frame.addEventListener("load", bind);
@@ -2675,5 +2745,5 @@ export function useOfStory(frameRef: RefObject<HTMLIFrameElement | null>, src: s
       frame.removeEventListener("load", bind);
       unbind?.();
     };
-  }, [frameRef, src, accountId, addStory, userStories]);
+  }, [frameRef, src, accountId, addStory, userStories, highlightStories]);
 }

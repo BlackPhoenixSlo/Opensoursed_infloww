@@ -428,18 +428,19 @@ describe("Right column search", () => {
     await flush();
     expect(h.searchUsers).toHaveBeenCalledWith("syn");
     expect(h.searchPosts).toHaveBeenCalledWith("syn");
-    const links = [...d.querySelectorAll<HTMLAnchorElement>("#oi-search-results a")].map((a) => [a.textContent, a.getAttribute("href")]);
+    const links = [...d.querySelectorAll<HTMLAnchorElement>("#oi-search-results a")].map((a) => [a.textContent, a.getAttribute("href"), a.getAttribute("target")]);
     expect(links).toEqual([
-      ["Synthetic Fan @fan1", "/of-manager/messages/chat?chat=5001"],
-      ["Fan & Co @fan2", "/of-manager/messages/chat?chat=5002"],
-      ["Hello · @yourmodel", "/of-manager/profile"],
-      ["Other <3 & more · @creator2", "/of-manager/messages/chat?chat=88"],
+      ["Synthetic Fan @fan1", "https://onlyfans.com/fan1", "_blank"],
+      ["Fan & Co @fan2", "https://onlyfans.com/fan2", "_blank"],
+      ["Hello · @yourmodel", "/of-manager/profile", "_top"],
+      ["Other <3 & more · @creator2", "https://onlyfans.com/creator2", "_blank"],
     ]);
     expect(d.getElementById("oi-note")).toBeNull();
   });
 
-  it("searchHref: a user's chat; the model's own post its profile", () => {
-    expect(searchHref("user", { id: 1 })).toBe("/of-manager/messages/chat?chat=1");
+  it("searchHref: a user's OF profile; the model's own post its profile", () => {
+    expect(searchHref("user", { id: 1 })).toBe("https://onlyfans.com/u1");
+    expect(searchHref("user", { id: 1, username: "fan1" }, 1)).toBe("/of-manager/profile");
     expect(searchHref("post", { id: 2, author: { id: 3 } }, 3)).toBe("/of-manager/profile");
     expect(searchHref("post", { id: 2 })).toBeNull();
   });

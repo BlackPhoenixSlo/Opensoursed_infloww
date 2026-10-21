@@ -63,7 +63,7 @@ describe("applySettings", () => {
     const p = doc(`
       <div class="v-input"><fieldset><legend style="width: 0px;"></legend></fieldset><label class="v-label">Website URL</label><div class="g-input__wrapper"><input id="input-website" type="text"><div class="v-counter">0 / 100</div></div></div>
       <div class="v-input v-input--is-label-active v-input--is-dirty"><label class="v-label v-label--active">Location</label><input id="input-location" type="text" value="x"></div>`);
-    applySettings(p, "profile/state-bio-focus", { me: { website: "https://example.com", location: "" } });
+    applySettings(p, "profile", { me: { website: "https://example.com", location: "" } });
     expect(input(p, "input-website").value).toBe("https://example.com");
     expect(p.querySelector(".v-counter")!.textContent).toBe("19 / 100");
     // The floating label moves up for a filled field and back down for an empty one.

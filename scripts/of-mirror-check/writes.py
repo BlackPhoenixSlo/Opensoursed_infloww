@@ -11,8 +11,8 @@ the welcome switch sends {enabled: true} with the toast, the fans auto-follow to
 price shows the real price and its Save (after the confirm) sends PATCH /users/me {subscribePrice: 12.5} with the toast,
 staying on the page, the web push permission switch (the browser's, no Relay write) is disabled with the tooltip "Not
 available in Inflowwww yet", and the stream schedule form (streaming/dashboard/create): SCHEDULE with the form
-empty sends nothing and shows the validation note; with tomorrow's date (OF's "Oct 13, 2026" form), 6:30 pm
-and a description it sends exactly one POST /api/of/v2/streams {description, scheduledDate (local ISO with
+empty sends nothing and shows the validation note; with tomorrow picked in the Date field's day popup (shown as OF's
+"Oct 13, 2026"), 6:30 pm in the Time field's time input and a description it sends exactly one POST /api/of/v2/streams {description, scheduledDate (local ISO with
 offset), isShowTips: true} and lands on /of-manager/queue.
 Then, with the scope key cleared before every load (all models, two creators listed): the Settings pages stand in
 with the first creator (ofMirrorProfile's STAND_IN_SRC), so typing a name + SAVE sends its PATCH and the welcome
@@ -83,9 +83,16 @@ SAVED_TOAST="Changes were saved"
 SUBMIT=".g-page__header > button.g-btn"
 TOMORROW=date.today()+timedelta(days=1)
 def fill_stream(fr):
-    """Tomorrow (as OF formats it), 6:30 pm and a description; returns the expected POST body."""
-    fr.locator("input[name='date']").fill(TOMORROW.strftime("%b %d, %Y"))
-    fr.locator("input[name='time']").fill("6:30 pm")
+    """Tomorrow picked in OF's day popup (the Date field's), 6:30 pm in the Time field's time input and a description;
+    returns the expected POST body."""
+    fr.locator(".vdatetime:has(input[name='date'])").click()
+    fr.locator(".vdatetime-popup").wait_for(state="visible")
+    if TOMORROW.month!=date.today().month: fr.locator("[data-oi-month='next']").click()
+    fr.locator(f"[data-oi-day='{TOMORROW.isoformat()}'] .v-calendar-weekly__day-label span").click()
+    fr.locator("[data-oi-picker-apply]").click()
+    check("schedule form: the day popup fills the date as OF shows it", fr.evaluate("document.querySelector(\"input[name='date']\").value"), f"{TOMORROW.strftime('%b')} {TOMORROW.day}, {TOMORROW.year}")
+    check("schedule form: the time is a time input", fr.evaluate("document.querySelector(\"input[name='time']\").type"), "time")
+    fr.locator("input[name='time']").fill("18:30")
     fr.locator(".create-scheduled__description [contenteditable]").fill("Synthetic stream")
     at=datetime(TOMORROW.year, TOMORROW.month, TOMORROW.day, 18, 30).astimezone()
     return {"description":"Synthetic stream","scheduledDate":at.isoformat(),"isShowTips":True}

@@ -28,6 +28,7 @@ import {
   AFTER_NEW_POST_TRIAL,
   applyOfferTiles,
   NEW_POST_PROMOTION,
+  HOME_PROMOTION,
   NEW_POST_TRIAL,
   PROMOTION_MODAL,
   TRIAL_MODAL,
@@ -71,7 +72,7 @@ describe("promotion campaign (Start campaign)", () => {
     expect(promotionBody(c.form)).toEqual(c.relay);
   });
 
-  it.each([PROMOTION_MODAL, NEW_POST_PROMOTION])("drives the captured dialog (%s): tabs, dropdowns and message give each fixture body", (page) => {
+  it.each([PROMOTION_MODAL, NEW_POST_PROMOTION, HOME_PROMOTION])("drives the captured dialog (%s): tabs, dropdowns and message give each fixture body", (page) => {
     for (const c of cases) {
       const doc = loadPage(page);
       const unbind = bindPromotionDialog(doc, me);
@@ -268,22 +269,42 @@ describe("New post's offer tiles and dialogs (OF's PromoteProfile and CreateTria
 
   it("hides a tile where users/me says the model cannot (OF's v-if), shows it when unknown", () => {
     const doc = loadPage("new-post/index");
-    applyOfferTiles(doc, undefined);
+    applyOfferTiles(doc, undefined, "new-post/index");
     expect(tiles(doc)["Start profile promotion"].style.display).toBe("");
-    applyOfferTiles(doc, { canCreatePromotion: false, canCreateTrial: true } as unknown as OfMe);
+    applyOfferTiles(doc, { canCreatePromotion: false, canCreateTrial: true } as unknown as OfMe, "new-post/index");
     expect(tiles(doc)["Start profile promotion"].style.display).toBe("none");
     expect(tiles(doc)["Create new trial link"].style.display).toBe("");
-    applyOfferTiles(doc, { canCreatePromotion: true, canCreateTrial: false } as unknown as OfMe);
+    applyOfferTiles(doc, { canCreatePromotion: true, canCreateTrial: false } as unknown as OfMe, "new-post/index");
     expect(tiles(doc)["Start profile promotion"].style.display).toBe("");
     expect(tiles(doc)["Create new trial link"].style.display).toBe("none");
   });
 
   it("a claimable \"all\" promotion sends the promotion tile to Settings > Subscription, as OF's PromoteProfile", () => {
     const doc = loadPage("new-post/index");
-    applyOfferTiles(doc, { canCreatePromotion: true, promotions: [{ type: "all", canClaim: true }] } as unknown as OfMe);
+    applyOfferTiles(doc, { canCreatePromotion: true, promotions: [{ type: "all", canClaim: true }] } as unknown as OfMe, "new-post/index");
     expect(tiles(doc)["Start profile promotion"].getAttribute("href")).toBe(AFTER_NEW_POST_PROMOTION);
-    applyOfferTiles(doc, { canCreatePromotion: true, promotions: [{ type: "expired", canClaim: true }] } as unknown as OfMe);
+    applyOfferTiles(doc, { canCreatePromotion: true, promotions: [{ type: "expired", canClaim: true }] } as unknown as OfMe, "new-post/index");
     expect(tiles(doc)["Start profile promotion"].getAttribute("href")).toBe("/of-manager/new-post/state-promotion");
+  });
+
+  it("Home's promotion tile opens the dialog over Home (Settings > Subscription while an \"all\" promotion is claimable)", () => {
+    const doc = loadPage("home/index");
+    const tile = () => tiles(doc)["Start profile promotion"];
+    expect(tile().getAttribute("href")).toBe("/of-manager/home/state-promotion");
+    applyOfferTiles(doc, { canCreatePromotion: true, promotions: [{ type: "all", canClaim: true }] } as unknown as OfMe, "home/index");
+    expect(tile().getAttribute("href")).toBe(AFTER_NEW_POST_PROMOTION);
+    applyOfferTiles(doc, { canCreatePromotion: true } as unknown as OfMe, "home/index");
+    expect(tile().getAttribute("href")).toBe("/of-manager/home/state-promotion");
+  });
+
+  it("Home's promotion dialog is Settings' over Home: its feed behind, Cancel, the backdrop and Start campaign back to Home", () => {
+    const doc = loadPage(HOME_PROMOTION);
+    expect(doc.querySelector(".b-feed-content .user_posts")).not.toBeNull();
+    expect(doc.querySelector(".modal.show .modal-footer a")?.getAttribute("href")).toBe("/of-manager/home");
+    expect(doc.querySelector(".modal.show a.of-state-backdrop")?.getAttribute("href")).toBe("/of-manager/home");
+    expect(doc.querySelectorAll(".modal.show .v-input.v-select:not(.v-input--is-disabled)").length).toBe(3);
+    expect(SUBMITS[HOME_PROMOTION].send).toBe(SUBMITS[PROMOTION_MODAL].send);
+    expect(SUBMITS[HOME_PROMOTION].then(doc)).toBe("/of-manager/home");
   });
 
   it("their submits send Settings' bodies to the same routes, then go where OF goes from New post", () => {

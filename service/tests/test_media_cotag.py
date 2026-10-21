@@ -26,8 +26,7 @@ sites. These cases pin both halves.
   case_rejection_invalidates_the_cached_id  ...nor cost a 400 on every send after
   case_operator_tag_rejection_still_raises
   case_lookup_failure_tags_anyway        a DB error is not proof she's alone
-  case_lookup_tag_id_ignores_the_pin_and_the_cache   the probe's entry point
-  case_pinned_env_id_skips_the_lookup
+  case_lookup_tag_id_ignores_the_cache   the probe's entry point
 
 The Brain's per-account overrides (account_ai_config, 2026-08-19 — a video the
 describe pass read as solo still shows the POV partner, which is how Blake1/2
@@ -37,9 +36,16 @@ creators are solo):
   case_solo_video_not_tagged_by_default  the video rule ships OFF, no row needed
   case_null_brain_row_keeps_the_video_default   a row with NULLs ≡ no row
   case_video_rule_on_tags_solo_videos    the opt-in, photos still verdict-only
-  case_brain_username_overrides_the_env  ...on the userTags AND story paths
+  case_brain_username_is_folded_on_both_paths  ...the userTags AND story paths
   case_brain_username_change_invalidates_the_cached_id
   case_forget_account_cfg_re_resolves    the Brain save path's narrow drop
+
+"Tag a co-creator, which one, or no one" (ticket 85, 2026-10-21 — the built-in
+default handle was the test creator's own, so every media send there logged an
+ERROR for a tag that could never resolve):
+
+  case_no_handle_configured_means_no_tag     the default: no tag, no lookup, no ERROR
+  case_a_real_miss_still_logs_the_error      a configured miss stays loud
 
 Run: ./venv/bin/python service/tests/test_media_cotag.py
 """
@@ -93,10 +99,16 @@ def _seed_vault(rows: dict[int, dict | None], *, kind: str = "photo") -> None:
     )
 
 
+# The co-creator the cases below tag. Nothing is tagged by default (ticket 85),
+# so the decision cases run as an account whose Brain HAS a co-creator to tag.
+COHANDLE = "cohandle"
+
+
 def _seed_brain(**cols) -> None:
     """This account's Brain row (account_ai_config), the way a Save stores it.
-    Called with no columns it writes a row of NULLs — an account whose operator
-    saved a persona and never touched the tag section."""
+    The co-creator is COHANDLE unless `cotag_username` is given; every other
+    column not given is NULL."""
+    cols.setdefault("cotag_username", COHANDLE)
     names = "".join(f", {k}" for k in cols)
     binds = "".join(f", :{k}" for k in cols)
     _sync_exec((
@@ -134,7 +146,7 @@ def _client(*, friend_hit: bool = True, reject_status: int | None = None,
              "user": {"id": 999, "username": "someoneelse"}},
             {"id": TAG_ID, "name": "Founder", "type": "user",
              "user": {"id": TAG_ID,
-                      "username": handle_in_list or media_cotag.handle()}},
+                      "username": handle_in_list or COHANDLE}},
         ], "hasMore": False}
 
     def _post_json(path, json_body=None):
@@ -159,12 +171,36 @@ def _client(*, friend_hit: bool = True, reject_status: int | None = None,
 
 
 def _reset():
+    """Fresh caches, no env, and the account's Brain row back to tagging
+    COHANDLE."""
     media_cotag.reset_caches()
-    # The shipped default is "" (nobody to tag); these cases exercise a
-    # configured deployment, so give the built-in default a handle.
-    media_cotag.DEFAULT_HANDLE = "partner"
-    for key in ("OF_COTAG_ENABLED", "OF_COTAG_USER_ID", "OF_COTAG_USERNAME"):
-        os.environ.pop(key, None)
+    os.environ.pop("OF_COTAG_ENABLED", None)
+    _seed_brain()
+
+
+class _Errors:
+    """Collects ERROR records from media_cotag's logger for one block."""
+
+    def __enter__(self):
+        import logging
+
+        self.records: list = []
+        outer = self
+
+        class _H(logging.Handler):
+            def emit(self, record):
+                if record.levelno >= logging.ERROR:
+                    outer.records.append(record.getMessage())
+
+        self._h = _H()
+        logging.getLogger("of-relay.media_cotag").addHandler(self._h)
+        return self.records
+
+    def __exit__(self, *exc):
+        import logging
+
+        logging.getLogger("of-relay.media_cotag").removeHandler(self._h)
+        return False
 
 
 SOLO = {"people_count": 1, "partner_visible": False, "primary_folder": "nude_stills"}
@@ -531,53 +567,22 @@ def case_lookup_failure_tags_anyway():
         _reset()
 
 
-def case_blank_handle_disables_both_paths():
-    """`OF_COTAG_USERNAME=""` is an operator clearing the handle. The userTags
-    path resolves it to no id; the story path must agree rather than fall back
-    to the built-in default."""
+def case_lookup_tag_id_ignores_the_cache():
+    """The public probe entry point. `tag_user_id` serves a cached id, which
+    would make a probe report a tag OF has not agreed to since. `lookup_tag_id`
+    always asks OF."""
     _reset()
-    os.environ["OF_COTAG_USERNAME"] = ""
-    try:
-        c = _client()
-        c.send_message(4242, "here you go", media_files=[20])
-        assert "userTags" not in c.last_body(), c.last_body()
-        assert media_cotag.story_mention(ACCOUNT, [20]) is None
-    finally:
-        os.environ.pop("OF_COTAG_USERNAME", None)
-        _reset()
+    c = _client()
+    assert media_cotag.tag_user_id(c) == TAG_ID
+    assert media_cotag.tag_user_id(c) == TAG_ID
+    assert c.friend_lookups == 1, "sends should serve the cached id"
 
+    assert media_cotag.lookup_tag_id(c) == TAG_ID
+    assert c.friend_lookups == 2, c.friend_lookups
+    media_cotag.lookup_tag_id(c)
+    assert c.friend_lookups == 3, "probe must not serve a cached answer"
 
-def case_lookup_tag_id_ignores_the_pin_and_the_cache():
-    """The public probe entry point. `tag_user_id` short-circuits on the pin and
-    on its cache — both of which would make a probe report a tag OF has never
-    agreed to. `lookup_tag_id` always asks OF."""
-    _reset()
-    os.environ["OF_COTAG_USER_ID"] = "424242"
-    try:
-        c = _client()
-        assert media_cotag.tag_user_id(c) == 424242, "pin should win for sends"
-        assert c.friend_lookups == 0, "the pin should cost no OF call"
-
-        assert media_cotag.lookup_tag_id(c) == TAG_ID, "probe must ask OF, not the pin"
-        assert c.friend_lookups == 1, c.friend_lookups
-        media_cotag.lookup_tag_id(c)
-        assert c.friend_lookups == 2, "probe must not serve a cached answer"
-
-        assert media_cotag.lookup_tag_id(_client(friend_hit=False)) is None
-    finally:
-        _reset()
-
-
-def case_pinned_env_id_skips_the_lookup():
-    _reset()
-    os.environ["OF_COTAG_USER_ID"] = "424242"
-    try:
-        c = _client(friend_hit=False)
-        c.send_message(4242, "here you go", media_files=[20])
-        assert c.last_body().get("userTags") == [424242], c.last_body()
-        assert c.friend_lookups == 0, c.friend_lookups
-    finally:
-        _reset()
+    assert media_cotag.lookup_tag_id(_client(friend_hit=False)) is None
 
 
 # ── The Brain's per-account overrides ───────────────────────────────
@@ -627,11 +632,10 @@ def case_video_rule_on_tags_solo_videos():
         _reset()
 
 
-def case_brain_username_overrides_the_env():
-    """The Brain's username wins over the env on BOTH tag paths, and the raw
-    stored value is folded the way OF stores handles ('@CustomGuy' ≡ customguy)."""
+def case_brain_username_is_folded_on_both_paths():
+    """The Brain's username drives BOTH tag paths, and the raw stored value is
+    folded the way OF stores handles ('@CustomGuy' ≡ customguy)."""
     _reset()
-    os.environ["OF_COTAG_USERNAME"] = "envhandle"
     _seed_brain(cotag_username="@CustomGuy")
     try:
         c = _client(handle_in_list="customguy")
@@ -679,6 +683,49 @@ def case_forget_account_cfg_re_resolves():
     assert c.friend_lookups == 2, ("the id cache should have been dropped",
                                    c.friend_lookups)
     assert "someone_else" in media_cotag._acct_cfg, "other accounts must survive"
+
+
+
+# ── Tag a co-creator, which one, or no one (ticket 85) ──────────────
+
+def case_no_handle_configured_means_no_tag():
+    """The default is "No co-creator tag": no Brain row, or a blank username
+    (NULL or '') → partner media goes out untagged, OF is never asked, the story
+    path agrees, and nothing is logged at ERROR — there was nothing to tag."""
+    _reset()
+    try:
+        for seed in ("no row", None, ""):
+            media_cotag.reset_caches()
+            _clear_brain()
+            if seed != "no row":
+                _seed_brain(cotag_username=seed)
+            with _Errors() as errs:
+                c = _client()
+                c.send_message(4242, "collab", media_files=[20])
+                c.send_mass_message("blast", user_lists=["fans"], media_files=[21])
+                mention = media_cotag.story_mention(ACCOUNT, [20])
+            assert "userTags" not in c.captured[0][1], c.captured[0][1]
+            assert c.captured[0][1].get("rfTag") == [], c.captured[0][1]
+            assert "rfTag" not in c.last_body(), c.last_body()
+            assert c.friend_lookups == 0, c.friend_lookups
+            assert mention is None, mention
+            assert errs == [], errs
+            assert media_cotag.handle(ACCOUNT) == "", media_cotag.handle(ACCOUNT)
+    finally:
+        _clear_brain()
+        _reset()
+
+
+def case_a_real_miss_still_logs_the_error():
+    """A configured co-creator who does not resolve is the case the ERROR
+    exists for — it stays loud, once per cached miss."""
+    _reset()
+    with _Errors() as errs:
+        c = _client(friend_hit=False)
+        c.send_message(4242, "collab", media_files=[20])
+        c.send_message(4242, "again", media_files=[21])
+    assert "userTags" not in c.last_body(), c.last_body()
+    assert len(errs) == 1 and "NOT in" in errs[0], errs
 
 
 _harness.run()

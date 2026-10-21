@@ -371,7 +371,8 @@ export function FanDrawer({
     chat.withUser.username ||
     `fan ${fanId}`;
 
-  const avatar = chat.withUser.avatar || fan?.avatar_url || null;
+  // OF signs its CDN URLs for the account's egress IP: through the relay's /img, as the chat list's avatars.
+  const avatar = proxyImage(chat.withUser.avatar || fan?.avatar_url, accountId) || null;
 
   // Live subscription from OF's /users/{id}.subscribedOnData (same path the
   // desktop app uses), falling back to our DB status while OF is in flight.

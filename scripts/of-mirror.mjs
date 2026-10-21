@@ -204,6 +204,10 @@ let pageFans = new Set();
 const accountNames = new Map(); // username, lowercased -> the display names seen with it
 const isModel = (h) => MODEL_HANDLES.has(h) && !pageFans.has(h);
 const BUILT = new Set(); // pageKey of every page this run writes, known before any is built
+// OF's own redirects under /my/statistics and /my/stats, from the page captures' manifests (url -> final_url, OF paths):
+// a top tab ("/my/statistics/statements") lands where OF lands it (Statements › Earnings), not on the first sub-tab by
+// name, and "/my/stats/disputes" (Statements' Chargebacks) is Statistics › Statements › Chargebacks, as OF redirects it.
+const REDIRECTS = new Map();
 
 /** "onlyfans.com/my/chats/send\uFE56list=users.html" (dump file) or "onlyfans.com/my/vault" (link) -> "/my/chats/send?list=users", "/my/vault"; null off onlyfans.com. */
 function ofPathOf(rel) {
@@ -221,6 +225,7 @@ function ofPathOf(rel) {
 /** OF path -> { section, sub }, or null if no page of ours stands for it. */
 function routeOfPath(p) {
   if (!p) return null;
+  p = REDIRECTS.get(p) ?? p;
   const own = p.match(/^\/([\w.-]+)(?:\/([\w-]+))?$/); // "/<username>", "/<username>/media"
   if (own && isModel(own[1].toLowerCase())) return { section: "profile", sub: (own[2] || "").toLowerCase() };
   for (const [re, section, tpl] of ROUTES) {
@@ -770,6 +775,12 @@ const OVERRIDES = `<style id="of-mirror-overrides">
 .v-select--is-menu-active, .b-dropdown-wrapper.m-show-dropdown { z-index: 10 !important; }
 /* A sticky column is its own stacking context: one holding the open menu goes over the backdrop with it. */
 .l-sidebar-column:has(.m-show-dropdown) { z-index: 2; }
+/* The content column (z-index 0) is one too, under the backdrop: holding an open menu (My profile's More) it stops being
+   one, so the menu's own header (sticky, z-index 6) and the menu go over the backdrop and take their clicks. */
+.l-wrapper__content:has(.of-state-menu) { z-index: auto; }
+/* The Expiration dialog's chips are OF's drag-scrolled row, wider than its 344px modal: they wrap, so "30 days" is
+   whole and its click is its own, not the modal backdrop's way back. */
+.modal-body:has(input[name='periodValue']) .b-tabs__nav__list { flex-wrap: wrap; row-gap: 8px; }
 .of-state-menu { position: absolute !important; top: 100% !important; left: 0 !important; min-width: 100%; z-index: 50; background: var(--bg-color, #fff); }
 .of-state-menu.m-dropdown-list { left: auto !important; right: 0 !important; }
 </style>`;
@@ -1019,12 +1030,16 @@ function openState(body, modal, { cls, part, index, back }) {
   return { body, modal };
 }
 
-/** A state page whose dialog or popup is not a menu: a backdrop link, a date picker's overlay and Cancel/Close buttons go back to `back`. */
-function closePopup(body, modal, back) {
+/**
+ * A state page whose dialog or popup is not a menu: a backdrop link, a date picker's overlay and Cancel/Close buttons go
+ * back to `back`. One its own control closes (`ownClose`: a composer panel, the queue's tabs) gets no backdrop over the
+ * page, as OF's panel stays open on a click elsewhere: the page's controls under it stay theirs.
+ */
+function closePopup(body, modal, back, ownClose) {
   const close = (h) => h.replace(/<div class="vdatetime-overlay"><\/div>/g, `<a class="vdatetime-overlay" href="${back}" target="_top" aria-label="Close"></a>`);
   const dialog = modal.match(/<div\b[^>]*\sclass="modal[\s"][^>]*>/);
   if (dialog) modal = modal.slice(0, dialog.index + dialog[0].length) + anchor("of-state-backdrop", back, "Close") + modal.slice(dialog.index + dialog[0].length);
-  else body = anchor("of-state-backdrop", back, "Close") + body;
+  else if (!ownClose) body = anchor("of-state-backdrop", back, "Close") + body;
   return { body: openModal(close(body), back), modal: close(modal) };
 }
 
@@ -1032,13 +1047,13 @@ function closePopup(body, modal, back) {
 
 // Home shows no captured example: what has a Relay source is drawn at runtime (app/lib/ofMirrorData.ts, ofMirrorFeeds.ts),
 // the rest goes. Its composer posts in place, as OF's (app/lib/ofMirrorPost.ts): "Add media" uploads, and its vault,
-// schedule, tag, poll, quiz, expiration, target and format tools open over Home itself (HOME_DIALOGS: Home's own State
-// pages, built from New post's captures of the same dialogs and panels). Record video/voice (no source anywhere) are
+// schedule, tag, poll, quiz, expiration, target and format tools, and the strip's promotion tile, open over Home itself
+// (HOME_DIALOGS: Home's own State pages, built from New post's captures of the same dialogs and panels). Record video/voice (no source anywhere) are
 // disabled with a tooltip (no Read-only note crowding the toolbar).
 const NOT_YET = ["Record video", "Record voice"];
 const NOT_YET_TITLE = "Not available in Inflowwww yet";
-/** New post's dialog captures (posts__create__state-<name>) that are also Home's State pages, home/state-<name>. */
-const HOME_DIALOGS = ["vault", "schedule", "tag-people", "poll", "quiz", "expiration", "target", "format-text"];
+/** New post's dialog captures (posts__create__state-<name>, and its promotion OFFER_STATE) that are also Home's State pages, home/state-<name>. */
+const HOME_DIALOGS = ["vault", "schedule", "tag-people", "poll", "quiz", "expiration", "target", "format-text", "promotion"];
 
 /** The first element with class `cls` in `html` removed (`keep`: replaced by keep(element)). */
 function dropEl(html, cls, keep = () => "") {
@@ -1268,13 +1283,14 @@ function pinToHome(modal) {
 
 /**
  * Home and its State pages: no example stays. The expired-subscription alerts (no source) go; the feed's example posts
- * and their infinite-loading footer give way to OF's empty message, which ofMirrorFeeds' applyHome replaces with the
- * Creator's feed (or a loading or error line); the right column's price line (no bundle count) is hidden until
+ * give way to OF's empty message, which ofMirrorFeeds' applyHome replaces with the Creator's feed (or a loading or error
+ * line), and their infinite-loading footer moves after the feed (applyHome's next pages); the right column's price line (no bundle count) is hidden until
  * ofMirrorIdentity shows the Creator's own price, its promotion cards become one hidden template (applyPromotions shows
  * the Creator's live promotions in its copies) and the ad banner goes. The composer gets OF's Post button after "Go live"
  * (ofMirrorPost posts in place); its tools open Home's own State pages (main's HOME_DIALOGS links; the format panel's
- * close returns to Home), and the story strip's "Start profile promotion" is disabled with a tooltip (its campaign form
- * has no Known body). The Scheduled events widget's "+" opens Home's schedule dialog; applyEvents
+ * close returns to Home), and the story strip's "Start profile promotion" opens the promotion campaign dialog over Home
+ * (home/state-promotion, as OF's PromoteProfile shows ModalPromotion over the page it is on; ofMirrorOffers'
+ * applyOfferTiles hides it or sends it to Settings > Subscription as OF's PromoteProfile). The Scheduled events widget's "+" opens Home's schedule dialog; applyEvents
  * lists the queue's next items there. The header's More menu (not captured) is disabled with the tooltip too.
  */
 function homePage(html) {
@@ -1282,7 +1298,9 @@ function homePage(html) {
   html = dropEl(html, "user_posts", (el) => {
     const open = el.match(/^<div\b[^>]*>/)[0];
     const scope = open.match(/\sdata-v-[0-9a-f]+=""/)?.[0] ?? "";
-    return `${open}<div${scope} class="empty-message"><span>No posts yet</span></div></div>`;
+    // OF's infinite loading row (all its prompts hidden), after the feed: applyHome's next page when it scrolls into view.
+    const more = elements(el, "div", "infinite-loading-container")[0]?.el ?? "";
+    return `${open}<div${scope} class="empty-message"><span>No posts yet</span></div></div>${more}`;
   });
   html = feedAside(html, "home");
   html = html.replace(
@@ -1298,10 +1316,7 @@ function homePage(html) {
   );
   // The header's More menu (no captured menu): disabled with a tooltip.
   html = html.replace(/(\sclass="g-page__header\b[\s\S]*?)<button\b((?:(?!disabled=)[^>])*\saria-label="More")/, `$1<button disabled="disabled" title="${NOT_YET_TITLE}"$2`);
-  html = html.replace(
-    /<button\b((?:(?!disabled=)[^>])*\sclass="b-story-item m-create"[^>]*)>(?=(?:(?!<\/button>)[\s\S])*?Start profile promotion)/,
-    `<button disabled="disabled" title="${NOT_YET_TITLE}"$1>`,
-  );
+  html = storyTile(html, "Start profile promotion", tileLink(`${MANAGER}/home/state-promotion`));
   return html;
 }
 
@@ -1820,6 +1835,11 @@ const queueTabs = (html) =>
  * tab's posts (its More, pin, Like, Comment and Bookmark): kept in those pages' sprite, whose captures hold no post.
  */
 const POST_ICONS = " #icon-more #icon-pin-on #icon-post-cat #icon-loading #icon-like #icon-comment #icon-statements #icon-funds #icon-bookmark";
+/**
+ * What ofMirrorPostCard draws on a post row (Home, My profile, Bookmarks, a list's Posts tab): a poll's or quiz's
+ * marks, a price's lock, the locked media's type icons and the media counter.
+ */
+const POST_CARD_ICONS = " #icon-poll #icon-quiz #icon-done #icon-close #icon-locked #icon-media #icon-video #icon-voice #icon-gif";
 /** Collections' list rows: their avatar stacks' default avatar (ofMirrorData's, a member with no picture or name). */
 const LIST_ICONS = " #icon-profile";
 const postRowsPage = (route) => route.section === "collections" && /^(?:bookmarks\/|user-lists\/list\/posts$)/.test(route.sub);
@@ -1994,6 +2014,8 @@ function collectionsPage(html, sub) {
   }
   // The index's Send message: New message, as the list page's.
   html = html.replace(/<a href="#"(\s[^>]*\saria-label="Send message")/, `<a href="${MANAGER}/messages/send"$1 target="_top"`);
+  // Following's Send message: New message, as the list page's (OF's sendlist-following capture has no list rows to tick).
+  html = html.replaceAll(`href="${MANAGER}/messages/send/sendlist-following"`, `href="${MANAGER}/messages/send"`);
   // Tabs and chips with no page of their own (Fans' Expired ... Fan Stats).
   html = deadLinkOff(html, (attrs, text) => /\sclass="b-tabs__nav__link\b/.test(attrs) && text !== "Users");
   // All Bookmarks' empty state: its picture was scrubbed to a grey square; OF's own empty feed picture instead.
@@ -2185,7 +2207,10 @@ const EXTRA_ICONS = [
   [(r) => r.section === "messages", MESSAGES_ICONS],
   [(r) => QUEUE_ICON_SECTIONS.has(r.section), QUEUE_ICONS],
   [postRowsPage, POST_ICONS],
+  [(r) => postRowsPage(r) || r.section === "home" || r.section === "profile", POST_CARD_ICONS],
   [(r) => r.section === "collections", LIST_ICONS],
+  // My profile's bio details (ofMirrorIdentity's applyBioDetails: location, website, wishlist).
+  [(r) => r.section === "profile", "#icon-location #icon-link #icon-trial"],
 ];
 
 /** A figure slot: a dash, `key` (if any) the figure ofMirrorStats writes there; a money slot is OF's UtilsMoney span. */
@@ -2360,7 +2385,7 @@ function fanCard(box) {
  * zone), the summaries, sidebar rows and main chart summaries (STAT_FIGURES), the Statements sidebar's Earnings rows
  * (statementsAside), Overview › Earnings' all-time net, period sums per category (PERIOD_ROWS) and month rows,
  * Engagement › Messages' mass messages, Statements › Earnings' earnings, Reach › Profile visitors' stat and country rows
- * (hidden templates, their figures dashes), the chargeback ratio and the charts' lines; ofMirrorMoney: the balances
+ * (hidden templates, their figures dashes), the chargeback ratio and the charts' lines; ofMirrorMoney: the balances, Request withdrawal
  * and referral earnings. What has no source (the Top Message/Fan cards, streaks, the fan tables) shows OF's clean state
  * or empty row saying "Not available in Inflowwww yet"; a captured "No … during selected period" and a Top card keep
  * OF's own text in data-oi-empty, shown instead once the figures prove the period empty. The account alerts go. Every
@@ -2587,7 +2612,8 @@ function statisticsPage(html, sub) {
   // A sidebar row opens its chart in OF (not here): no pointer.
   html = html.replace(/(<div class="b-elements-determinant) g-pointer-cursor/g, "$1");
   html = html.replace(/<input\b((?:(?!disabled=)[^>])*\stype="(?:radio|search)")/g, `<input disabled="disabled" title="${NOT_YET_TITLE}"$1`);
-  html = html.replace(/(<button\b[^>]*\sdisabled="disabled"[^>]*)>(\s*Request withdrawal\s*<\/button>)/g, `$1 title="${NOT_YET_TITLE}">$2`);
+  // The sidebar's Request withdrawal (captured disabled): ofMirrorMoney's, as Statements', disabled until the balances allow it.
+  html = html.replace(/(<button\b[^>]*\sdisabled="disabled"[^>]*)>(\s*Request withdrawal\s*<\/button>)/g, '$1 data-oi-wired="">$2');
   return notYetWhere(html, (attrs) => !/\sdata-oi-(?:period|wired)=/.test(attrs));
 }
 
@@ -2665,14 +2691,17 @@ const PROFILE_EMPTY = (scope) => `<div${scope} class="empty-message" data-oi-emp
  * header's Photos, Videos, Likes and Fans, the Posts and Media tabs, the label and media type tabs) goes: ofMirrorFeeds'
  * applyProfile shows the Creator's own from /users/me. Photos and Videos open the Media tab and Fans the Fans list, as
  * OF's do. The wall and the Media grid keep one example row, hidden, as the template ofMirrorFeeds copies per post (Home
- * and All bookmarks borrow the wall's), with OF's "No posts yet" under it; the label tabs keep "All" and one hidden
+ * and All bookmarks borrow the wall's), with OF's "No posts yet" under it and OF's infinite loading row (the wall's next
+ * pages, applyPosts); the label tabs keep "All" and one hidden
  * tab (applyProfile copies it per label; a label's posts have no Relay route, so it is disabled with the tooltip); the
  * Media tab's All, Photo and Video filter the grid in place (data-oi-wired: ofMirrorProfile). The sidebar's Recent strip
  * keeps one hidden tile and is hidden until applyRecent shows the Creator's latest media. The story strip: Story
  * archive lists the archived stories in place (ofMirrorProfile; its picture is the Creator's, as OF's, not a fan's), Go live opens Go live, and
  * Create highlight (no Relay write) is disabled. The price lines (no bundle count) hide until ofMirrorIdentity shows the
  * Creator's price, the promotion cards become hidden templates (applyPromotions) and the ad banner goes. Copy link to
- * profile, More info and Spotify's collapse work in place; the status menu, the wall's search, compact view and sort, the
+ * profile, More info (shown when the bio, its line breaks kept, overflows), Spotify's collapse and the status menu
+ * (Available / Invisible) work in place, the compact header's sticky-only Edit profile and Copy link wait hidden for
+ * ofMirrorProfile's stickHeader; the wall's search, compact view and sort, the
  * sidebar search, Sign in with Spotify and each post's Labels and bookmark are disabled with the tooltip, and the post
  * row's `#` links (date, media) are marked so. A post's "N Likes" and "N Comments" open its likers and its comments
  * (ofMirrorHome); its Post statistics is disabled with the tooltip too, and ofMirrorHome enables it (OF's popup) for a
@@ -2687,6 +2716,13 @@ function profilePage(html, sub) {
   );
   // The Media tab's header More opens the same menu page as the wall's.
   if (sub === "media") html = html.replace(/(<div\b[^>]*\sclass="b-compact-header__settings\b[^"]*"[^>]*>)(?!<a class="of-state-link")/, `$1<a class="of-state-link" href="${MANAGER}/profile/state-more-menu" target="_top" aria-label="Toggle"></a>`);
+  // OF's ProfileStickyHeader puts Edit profile and Copy link to profile (wired below) before More once it turns sticky
+  // (past 180px of scroll): hidden here, ofMirrorProfile's stickHeader shows them with its m-sticky.
+  const icon = (name) => `<svg data-v-261264ea="" data-icon-name="${name}" aria-hidden="true" class="g-icon"><use href="#${name}" xlink:href="#${name}"></use></svg>`;
+  const stickyBtn = 'data-oi-sticky-only="" style="display:none" class="g-btn m-icon m-icon-only m-sm-size m-with-round-hover m-default-color"';
+  html = html.replace(/(<div\b[^>]*\sclass="b-group-profile-btns b-btns-group d-flex"[^>]*>)/, `$1` +
+    `<a data-v-261264ea="" ${stickyBtn} href="${MANAGER}/settings/profile" target="_top" aria-label="Edit profile">${icon("icon-settings")}</a>` +
+    `<button data-v-261264ea="" type="button" ${stickyBtn} aria-label="Copy link to profile">${icon("icon-share")}</button>`);
   // The Posts and Media tabs: their words only.
   html = html.replace(/(<span\b[^>]*\sclass="b-tabs__nav__text">)\s*\d[\d.,KkMm]*\s+(posts|Media)\s*</g, (_, open, w) => `${open} ${w === "posts" ? "Posts" : "Media"} <`);
   // The wall's label tabs: "All", and one hidden tab, disabled.
@@ -2704,17 +2740,21 @@ function profilePage(html, sub) {
   html = html.replace(/<a\b([^>]*)\shref="[^"]*"([^>]*\sclass="b-tabs__nav__link\b[^"]*"[^>]*)>(<span\b[^>]*\sclass="b-tabs__nav__text">)\s*(All|Photo|Video)\s+\d+\s*(<\/span>)<\/a>/g, (_, pre, attrs, open, kind, close) =>
     `<button type="button" data-oi-wired="" data-oi-media-tab="${kind.toLowerCase()}"${pre}${attrs.replace(/\s(target|tabindex)="[^"]*"/g, "")}>${open} ${kind} ${close}</button>`,
   );
-  // The wall's search, compact view and sort; the sidebar's search; the status menu.
+  // The wall's search, compact view and sort; the sidebar's search.
   html = notYetWhere(html, (attrs) =>
     /\saria-label="(?:Compact view|Sort)"/.test(attrs) ||
-    /\sclass="g-btn m-gray m-with-round-hover m-icon m-icon-only m-default-color m-sm-size"/.test(attrs) ||
-    /\sclass="btn dropdown-toggle m-user-status"/.test(attrs),
+    /\sclass="g-btn m-gray m-with-round-hover m-icon m-icon-only m-default-color m-sm-size"/.test(attrs),
   );
+  // The status menu (Available / Invisible: ofMirrorProfile, PATCH /users/me isVisibleOnline).
+  html = html.replace(/<button\b([^>]*\sclass="btn dropdown-toggle m-user-status")/g, '<button data-oi-wired="" data-oi-user-status=""$1');
   html = html.replace(/<input\b((?:(?!disabled=)[^>])*\sname="feed-search-input"[^>]*)>/, `<input disabled="disabled" ${off}$1>`);
   html = html.replace(/(<button\b[^>]*\saria-label="Search")(?![^>]*\stitle=)/, `$1 ${off}`);
   // Copy link to profile (the header's icon button), More info, Spotify's collapse: in place.
   html = html.replace(/<button\b([^>]*\saria-label="Copy link to profile")/g, '<button data-oi-wired="" data-oi-copy-link=""$1');
   html = html.replace(/<button\b([^>]*\sclass="link-trunc\b)/g, '<button data-oi-wired="" data-oi-bio-toggle=""$1');
+  // The bio's lines: the Creator's own (ofMirrorIdentity writes them as newlines, which pre-line breaks as OF's <br>s);
+  // the captured bio's <br>s would leave a gap under it. More info shows only when the bio overflows (ofMirrorProfile).
+  html = html.replace(/(<div\b[^>]*\sclass="b-user-info__text\b[^"]*"[^>]*>)<p>([\s\S]*?)<\/p>/g, (_, open, inner) => `${open}<p style="white-space: pre-line">${inner.replace(/\s*<br\s*\/?>/g, "")}</p>`);
   html = html.replace(/<button\b([^>]*\sclass="b-section-title m-row m-collapsible\b)/g, '<button data-oi-wired="" data-oi-collapse=""$1');
   html = html.replace(/<a href="#"([^>]*\sclass="g-btn m-rounded m-block m-spotify\b)/g, `<a href="#" aria-disabled="true" ${off}$1`);
   // The story strip.
@@ -2746,7 +2786,6 @@ function profilePage(html, sub) {
   html = eachEl(html, "user_posts", (posts) => {
     const open = posts.match(/^<div\b[^>]*>/)[0];
     const scope = open.match(/\sdata-v-[0-9a-f]+=""/)?.[0] ?? "";
-    posts = dropEl(posts, "infinite-loading-container");
     posts = dropEl(posts, "vue-recycle-scroller__item-wrapper", (wrapper) => {
       const wopen = wrapper.match(/^<div\b[^>]*>/)[0].replace(/\sstyle="[^"]*"/, ' style="min-height: 0px;"');
       const view = elements(wrapper, "div", "vue-recycle-scroller__item-view")[0]?.el;
@@ -2770,13 +2809,14 @@ function profilePage(html, sub) {
 
 /**
  * My profile's More menu page: Statistics opens Statistics' Overview (as OF's); Copy link to profile copies in place (ofMirrorProfile); QR
- * code (its dialog was never captured) is disabled with the tooltip.
+ * code (its dialog was never captured) opens Settings' QR code page, which draws the same code.
  */
 function profileMenu(html) {
   return html.replace(/(<div\b[^>]*\srole="menuitem"[^>]*)>(<a class="of-state-link" href="[^"]*"[^>]*><\/a>)\s*(statistics|QR code|Copy link to profile)\s*</gi, (_, open, link, text) => {
     const t = text.toLowerCase();
     if (t === "statistics") return `${open}>${link.replace(/href="[^"]*"/, `href="${MANAGER}/statistics/${SECTION_INDEX.statistics}"`)} ${text} <`;
-    if (t === "qr code") return `${open} aria-disabled="true" title="${NOT_YET_TITLE}" style="opacity:.5;cursor:default"> ${text} <`;
+    // OF's QR code opens its profile QR code (the QRCode of Settings' QR code page) in a dialog: that page here.
+    if (t === "qr code") return `${open}>${link.replace(/href="[^"]*"/, `href="${MANAGER}/settings/qrcode"`)} ${text} <`;
     return `${open} data-oi-wired="" data-oi-copy-link=""> ${text} <`;
   });
 }
@@ -3070,7 +3110,7 @@ function buildPageAs(rel, raw, ids, live, route, strict) {
   // Modals and menus hold the same fan data as the page.
   const portalHtml = portal ? rowLinks(scrubData(rewrite(rel, portal, pii, strict), route.section, pii)) : "";
   let modal = portal ? openModal(portalHtml, live.back) : "";
-  const offerState = route.section === "new-post" && Object.hasOwn(OFFER_STATES, route.sub) ? OFFER_STATES[route.sub] : null;
+  const offerState = (route.section === "new-post" || route.section === "home") && Object.hasOwn(OFFER_STATES, route.sub) ? OFFER_STATES[route.sub] : null;
   if (offerState) modal = settingsPart(modal, offerState.modal, "modal");
   else if (route.section === "new-post" || (route.section === "home" && HOME_DIALOGS.some((d) => route.sub === `state-${d}`))) modal = composerDialog(modal, route.section);
   if (route.section === "home" && route.sub === "state-feed-tabs-edit") modal = pinToHome(modal);
@@ -3080,7 +3120,7 @@ function buildPageAs(rel, raw, ids, live, route, strict) {
   if (route.section === "messages" && (route.sub === "chat/state-vault" || route.sub === "send/state-vault")) modal = composerDialog(modal, `messages/${route.sub.split("/")[0]}`);
   if (route.section === "messages") modal = notYetWhere(modal, (attrs) => /\sclass="[^"]*\bcustom-datepicker-button-save-later\b/.test(attrs));
   if (live?.state) ({ body, modal } = openState(body, modal, live.state));
-  else if (live?.popup) ({ body, modal } = closePopup(body, modal, live.back));
+  else if (live?.popup) ({ body, modal } = closePopup(body, modal, live.back, live.ownClose));
   if (route.section === "messages" && route.sub === "state-filter-dropdown") [body, modal] = [chatSortMenu(body), chatSortMenu(modal)];
   if (route.section === "messages" && route.sub === "chat/state-header-menu") [body, modal] = [chatHeaderTools(body, route.sub), chatHeaderTools(modal, route.sub)];
   if (route.section === "profile" && live?.state) [body, modal] = [profileMenu(body), profileMenu(modal)];
@@ -3276,7 +3316,6 @@ const sentence = (s) => s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
 
 // Page-title suffix per state capture name (the captures' own names are working labels).
 const STATE_LABELS = {
-  "bio-focus": "Bio editor focused",
   "country-picker": "Country picker",
   options: "Position options",
   "bundle-discount-dropdown": "Bundle discount",
@@ -3358,6 +3397,18 @@ function loadPagesDir(dir) {
     }
     const file = path.join(dir, name);
     if (url.hostname !== "onlyfans.com" || !fs.existsSync(file)) continue;
+    if (!state && e.url && e.final_url) {
+      let from = null;
+      try {
+        from = ofPathOf(`onlyfans.com${new URL(e.url).pathname}`);
+      } catch {
+        // no usable url: no redirect
+      }
+      const to = ofPathOf(`onlyfans.com${url.pathname}`);
+      // Statistics' only: Collections' "User Lists" keeps our list page (ofMirrorCollections draws the lists there), where
+      // OF lands it on Following.
+      if (from && to && from !== to && /^\/my\/stat/.test(from)) REDIRECTS.set(from, to);
+    }
     const rel = `onlyfans.com${url.pathname.replace(/\/+$/, "") || "/index"}.html`;
     out.push({ slug, state, rel, query: url.search, raw: fs.readFileSync(file, "utf8") });
   }
@@ -3555,6 +3606,7 @@ function main() {
     const label = STATE_LABELS[c.state] || sentence(c.state.replace(/-/g, " "));
     pageStates.push({ ...c, ...rule, section: route.section, baseSub: route.sub, sub, base, app, portal, ctl, label, drawer });
   }
+  pageStates.push(...offerStates(live.filter((l) => l.label), dump.get(pageKey("new-post", ""))));
   // Home's composer is New post's: its dialogs and panels open over Home (home/state-<name>), each Home's own page with
   // New post's captured dialog: the modal (vault, tag, expiration, target), the schedule popup in place of Home's empty
   // one, or the composer's panel (poll and quiz above the text, the format panel atop the toolbar) put into Home's.
@@ -3579,7 +3631,13 @@ function main() {
       if (!mine || !theirs) fail("Home's or New post's capture has no schedule popup (.vdatetime)");
       app = app.slice(0, mine.at) + theirs.el + app.slice(mine.at + mine.el.length);
     }
-    if (st.state === "poll" || st.state === "quiz") app = homePanel(app, st.app, "b-make-post__voting-wrapper", "b-make-post__main-wrapper", ["m-placeholder-height"]);
+    if (st.state === "poll" || st.state === "quiz") {
+      app = homePanel(app, st.app, "b-make-post__voting-wrapper", "b-make-post__main-wrapper", ["m-placeholder-height"]);
+      // Its own tool is disabled while the panel is open, as OF's New post draws it.
+      const tool = new RegExp(`(<button\\b[^>]*\\bat-attr="add_${st.state}")`);
+      if (!tool.test(app)) fail(`Home's capture has no add_${st.state} button for its ${st.state} panel`);
+      app = app.replace(tool, '$1 disabled="disabled"');
+    }
     if (st.state === "format-text") app = homePanel(app, st.app, "js-text-editor-toolbar", "b-make-post__sticky-panel");
     pageStates.push({ ...st, slug: `home__state-${st.state}`, rel: homeBase.rel, raw: homeBase.raw, section: "home", sub: `state-${st.state}`, base: homeBase, app });
   }
@@ -3598,7 +3656,6 @@ function main() {
   const priceState = postPriceState(pageStates, dump.get(pageKey("new-post", "")));
   if (priceState) pageStates.push(priceState);
   pageStates.push(...sendStates(pageStates, dump.get(pageKey("messages", "send"))));
-  pageStates.push(...offerStates(live.filter((l) => l.label), dump.get(pageKey("new-post", ""))));
   const foldersState = chatFoldersState(pageStates, dump.get(pageKey("messages", "")));
   if (foldersState) pageStates.push(foldersState);
   for (const st of pageStates) {
@@ -3629,6 +3686,9 @@ function main() {
     if (!settings(st.base)) continue;
     const ctl = findControl(mainOf(st.app), st.portal);
     if (!ctl) continue; // a bare modal: same as its modal page
+    // Edit profile's Bio focused (bio-focus): the page itself with its editor focused (FOCUS_ONLY), as the editor is live
+    // (ofMirrorWrites); a link over it would take the click that types there.
+    if (ctl.cls === "input-text-editor") continue;
     let from = st.base;
     if (ctl.part === "modal") {
       const id = st.portal.match(/\sid="(\w+)___BV_modal_outer_"/)?.[1];
@@ -3707,7 +3767,7 @@ function main() {
       for (const l of statesFrom(st.section, st.baseSub).links) if (l.href !== here && !links.some((k) => k.spec === l.spec)) links.push({ ...l, optional: true });
     }
     const state = st.ctl && { ...st.ctl, label: st.label, back };
-    const live = { app: st.app, portal: st.portal, back, links, controls, state, popup: !st.ctl, drawer: st.drawer };
+    const live = { app: st.app, portal: st.portal, back, links, controls, state, popup: !st.ctl, ownClose: !!st.close, drawer: st.drawer };
     const page = buildPage(st.rel, st.raw, ids, live, { section: st.section, sub: st.sub, label: st.label });
     if (page) write(st.section, st.sub, page);
     else fail(`state capture ${st.slug} has no <main>`);

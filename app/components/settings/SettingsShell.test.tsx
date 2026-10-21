@@ -90,7 +90,7 @@ describe("Settings header", () => {
   });
 });
 
-// The 13 Settings tabs in nav order (docs/infloww-screens.md §3.10, plus AI keys and the Audit log).
+// The 14 Settings tabs in nav order (docs/infloww-screens.md §3.10, plus Co-creator tag, AI keys and the Audit log).
 const SETTINGS = [
   "/settings/account",
   "/settings/preferences",
@@ -102,6 +102,7 @@ const SETTINGS = [
   "/settings/sales",
   "/settings/time-tracking",
   "/settings/messaging",
+  "/settings/cotag",
   "/settings/ai-keys",
   "/settings/audit",
   "/settings/about",
@@ -112,7 +113,7 @@ const rows = () => Array.from(document.querySelectorAll<HTMLAnchorElement>('[dat
 const hrefs = () => rows().map((r) => r.getAttribute("href"));
 
 describe("Tab list", () => {
-  it("lists the 13 Settings tabs in nav order, each with an icon", () => {
+  it("lists the 14 Settings tabs in nav order, each with an icon", () => {
     renderLayout();
     expect(hrefs()).toEqual(SETTINGS);
     for (const r of rows()) expect(r.querySelector("svg")).not.toBeNull();
@@ -130,11 +131,11 @@ describe("Tab list", () => {
     expect(current.map((r) => r.getAttribute("href"))).toEqual(["/settings/account"]);
   });
 
-  it("leaves the six Blob tabs, Security (organization), AI keys and the Audit log out for a Chatter-only session", () => {
+  it("leaves the six Blob tabs, Security (organization), Co-creator tag, AI keys and the Audit log out for a Chatter-only session", () => {
     session = { user: null, chatter: { username: "fixture-chatter" } };
     renderLayout();
     expect(hrefs()).toEqual(
-      SETTINGS.filter((h) => !BLOB.includes(h) && h !== "/settings/ai-keys" && h !== "/settings/security-org" && h !== "/settings/audit"),
+      SETTINGS.filter((h) => !BLOB.includes(h) && h !== "/settings/cotag" && h !== "/settings/ai-keys" && h !== "/settings/security-org" && h !== "/settings/audit"),
     );
     expect(hrefs()).toHaveLength(4);
   });
