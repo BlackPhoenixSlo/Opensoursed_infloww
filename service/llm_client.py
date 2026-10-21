@@ -60,7 +60,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import tenant_keys
 from db.engine import get_session
-from db.models import AccountAiConfig, GrokCall, GrokDailyCost
+from db.models import AccountAiConfig, GrokCall, GrokDailyCost, GrokUserDailyCost
 from llm_providers import (
     LLMProvider, PROVIDERS, fallback_key, house_key)
 
@@ -438,6 +438,26 @@ async def _tenant_api_key(account_id: str, prov: LLMProvider,
     return key
 
 
+async def _user_api_key(user_id: str, prov: LLMProvider, purpose: str) -> str:
+    """The credential a call with NO account bills: the asking agency's own key
+    for the provider, else the purpose's deployment fallback
+    (`llm_providers._FALLBACK_KEY_ENVS` — today only the help bot on DeepSeek).
+
+    NEVER the house key. `_tenant_api_key` hands an un-owned account the house
+    key because there is no tenant to leak across; here there IS one — the
+    asker — and the house key would make the deployment pay for anything any
+    signup sends. With neither key it fails closed, exactly as an owner without
+    a key does.
+    """
+    key = await tenant_keys.get_key(user_id, prov.name) or fallback_key(purpose, prov.name)
+    if key:
+        return key
+    log.warning("tenant_key_missing provider=%s account=- owner=%s", prov.name, user_id)
+    raise LLMKeyError("missing", prov.name, purpose, detail=(
+        f"agency {user_id!r} has no {prov.name!r} API key — add it in "
+        f"Settings → AI keys (no account)"))
+
+
 async def llm_key_available(account_id: str, provider: str,
                             purpose: str = "") -> bool:
     """Would `_tenant_api_key` hand this account a key for `provider`? The same
@@ -614,8 +634,21 @@ async def cap_state(account_id: str | None, provider: str) -> dict[str, Any]:
     }
 
 
+def _ledger(account_id: str | None, user_id: str | None):
+    """The daily rollup a call reserves against: (table, its scope column, key).
+
+    An account's call rolls up per account in `grok_daily_cost`. A call with no
+    account — `user_id` set, see `chat` — rolls up per agency in
+    `grok_user_daily_cost`, the same shape keyed on `users.id`, because
+    `grok_daily_cost.account_id` is a foreign key to `accounts`.
+    """
+    if user_id is not None:
+        return GrokUserDailyCost, GrokUserDailyCost.user_id, user_id
+    return GrokDailyCost, GrokDailyCost.account_id, account_id
+
+
 async def _reserve(day: str, account_id: str | None, reserve_cents: int, cap_cents: int,
-                   now: datetime, provider: str) -> int:
+                   now: datetime, provider: str, user_id: str | None = None) -> int:
     """Atomically reserve `reserve_cents` against the per-(day, account,
     provider) cap.
 
@@ -631,11 +664,12 @@ async def _reserve(day: str, account_id: str | None, reserve_cents: int, cap_cen
     reservation didn't fit. SQLite serializes writers, so the increment + check
     are race-free even under the worker fan-out.
     """
+    Cost, scope, key = _ledger(account_id, user_id)
     stmt = (
-        sqlite_insert(GrokDailyCost)
+        sqlite_insert(Cost)
         .values(
             day=day,
-            account_id=account_id,
+            **{scope.key: key},
             provider=provider,
             cost_cents=reserve_cents,
             call_count=1,
@@ -643,15 +677,15 @@ async def _reserve(day: str, account_id: str | None, reserve_cents: int, cap_cen
             updated_at=now,
         )
         .on_conflict_do_update(
-            index_elements=["day", "account_id", "provider"],
+            index_elements=["day", scope.key, "provider"],
             set_={
-                "cost_cents": GrokDailyCost.cost_cents + reserve_cents,
-                "call_count": GrokDailyCost.call_count + 1,
+                "cost_cents": Cost.cost_cents + reserve_cents,
+                "call_count": Cost.call_count + 1,
                 "updated_at": now,
             },
-            where=(GrokDailyCost.cost_cents + reserve_cents <= cap_cents),
+            where=(Cost.cost_cents + reserve_cents <= cap_cents),
         )
-        .returning(GrokDailyCost.cost_cents)
+        .returning(Cost.cost_cents)
     )
     async with get_session() as s:
         total = (await s.execute(stmt)).scalar_one_or_none()
@@ -660,18 +694,18 @@ async def _reserve(day: str, account_id: str | None, reserve_cents: int, cap_cen
             # DO UPDATE skipped (cap breach on an existing row). Flag it (05 §7
             # step 2) and report the capped state.
             existing = await s.scalar(
-                select(GrokDailyCost.cost_cents).where(
-                    GrokDailyCost.day == day,
-                    GrokDailyCost.account_id == account_id,
-                    GrokDailyCost.provider == provider,
+                select(Cost.cost_cents).where(
+                    Cost.day == day,
+                    scope == key,
+                    Cost.provider == provider,
                 )
             )
             await s.execute(
-                sa_update(GrokDailyCost)
+                sa_update(Cost)
                 .where(
-                    GrokDailyCost.day == day,
-                    GrokDailyCost.account_id == account_id,
-                    GrokDailyCost.provider == provider,
+                    Cost.day == day,
+                    scope == key,
+                    Cost.provider == provider,
                 )
                 .values(is_capped=True, updated_at=now)
             )
@@ -684,15 +718,15 @@ async def _reserve(day: str, account_id: str | None, reserve_cents: int, cap_cen
             # never return an over-cap total): a single call's reserve alone
             # exceeds the cap. Back out the row we just inserted and report.
             await s.execute(
-                sa_update(GrokDailyCost)
+                sa_update(Cost)
                 .where(
-                    GrokDailyCost.day == day,
-                    GrokDailyCost.account_id == account_id,
-                    GrokDailyCost.provider == provider,
+                    Cost.day == day,
+                    scope == key,
+                    Cost.provider == provider,
                 )
                 .values(
-                    cost_cents=GrokDailyCost.cost_cents - reserve_cents,
-                    call_count=GrokDailyCost.call_count - 1,
+                    cost_cents=Cost.cost_cents - reserve_cents,
+                    call_count=Cost.call_count - 1,
                     is_capped=True,
                     updated_at=now,
                 )
@@ -703,24 +737,26 @@ async def _reserve(day: str, account_id: str | None, reserve_cents: int, cap_cen
 
 
 async def _adjust_daily(day: str, account_id: str | None, cost_delta: int,
-                        count_delta: int, now: datetime, provider: str) -> None:
+                        count_delta: int, now: datetime, provider: str,
+                        user_id: str | None = None) -> None:
     """Reconcile the rollup after the call: apply the (actual - reserved) cost
     delta on success, or release the whole reservation on failure. No-op when
     both deltas are zero (the common case while seed prices are 0). Scoped to the
     (day, account_id, provider) row the matching _reserve created."""
     if cost_delta == 0 and count_delta == 0:
         return
+    Cost, scope, key = _ledger(account_id, user_id)
     async with get_session() as s:
         await s.execute(
-            sa_update(GrokDailyCost)
+            sa_update(Cost)
             .where(
-                GrokDailyCost.day == day,
-                GrokDailyCost.account_id == account_id,
-                GrokDailyCost.provider == provider,
+                Cost.day == day,
+                scope == key,
+                Cost.provider == provider,
             )
             .values(
-                cost_cents=GrokDailyCost.cost_cents + cost_delta,
-                call_count=GrokDailyCost.call_count + count_delta,
+                cost_cents=Cost.cost_cents + cost_delta,
+                call_count=Cost.call_count + count_delta,
                 updated_at=now,
             )
         )
@@ -869,11 +905,12 @@ async def chat(
     model: str,
     messages: list[dict],
     purpose: str,
-    account_id: str,
+    account_id: str | None,
     fan_id: int | None = None,
     response_format: dict | None = None,
     temperature: float = 0.7,
     reasoning_effort: str = "",
+    user_id: str | None = None,
 ) -> LLMResult:
     """Call an OpenAI-compatible LLM (DeepSeek, DeepInfra or Z.ai) with full cost + audit.
 
@@ -892,6 +929,12 @@ async def chat(
         purpose:         attribution tag (gen_info / welcome / welcome_chatter_for_info_reply / …).
         account_id:      per-account cap + audit attribution, AND the agency
                          whose API key pays for the call (_tenant_api_key).
+                         None with `user_id` set for a call with no account.
+        user_id:         ONLY for a call with no account (account_id None): the
+                         agency (`users.id`) that pays — its own key, else the
+                         purpose's fallback, never the house key
+                         (_user_api_key) — and whose per-agency daily cap
+                         bounds it (`grok_user_daily_cost`, default cap).
         fan_id:          optional fan attribution.
         response_format: e.g. {"type": "json_object"} for structured output.
         temperature:     sampling temperature.
@@ -910,6 +953,8 @@ async def chat(
         LLMConfigError, LLMCapExceeded, LLMHTTPError — and LLMKeyError (a
         subclass of both) when the key is missing or the provider rejects it.
     """
+    if user_id is not None and account_id is not None:
+        raise LLMConfigError("chat() bills an account OR an agency, not both")
     mdl, prov = _resolve(model)
     # Before the cap reservation and the audit row, exactly where the old
     # combined _resolve raised: a call with no usable credential must cost
@@ -917,7 +962,8 @@ async def chat(
     # provider would reject.
     stored_effort = "" if reasoning_effort else await _account_effort(account_id, mdl)
     effort = _resolve_effort(mdl, reasoning_effort, stored=stored_effort)
-    api_key = await _tenant_api_key(account_id, prov, purpose)
+    api_key = (await _user_api_key(user_id, prov, purpose) if user_id is not None
+               else await _tenant_api_key(account_id, prov, purpose))
 
     url = prov.base_url.rstrip("/") + "/chat/completions"
     endpoint = httpx.URL(url).path  # e.g. "/chat/completions" (deepseek)
@@ -929,7 +975,7 @@ async def chat(
     est_in = _estimate_input_tokens(messages)
     reserve_mc = _cost_millicents(model, est_in, _ASSUMED_OUTPUT_TOKENS)
     cap_mc = await _get_cap_cents(account_id) * _MILLICENTS_PER_CENT  # cap is stored in cents
-    await _reserve(day, account_id, reserve_mc, cap_mc, now, prov.name)  # raises LLMCapExceeded
+    await _reserve(day, account_id, reserve_mc, cap_mc, now, prov.name, user_id)  # raises LLMCapExceeded
 
     # ── Build the OpenAI-compatible body ────────────────────────────────
     body: dict[str, Any] = {
@@ -1008,7 +1054,7 @@ async def chat(
             await _finalize_call(call_id, status="error", error_text=msg[:2000],
                                  latency_ms=latency_ms,
                                  prompt_json=_redacted_json(body))
-            await _adjust_daily(day, account_id, -reserve_mc, -1, now, prov.name)  # release reservation
+            await _adjust_daily(day, account_id, -reserve_mc, -1, now, prov.name, user_id)  # release reservation
             log.warning("llm_client: %s call failed model=%s purpose=%s status=%s latency=%dms",
                         prov.name, model, purpose, e.response.status_code, latency_ms)
             if kind:
@@ -1029,7 +1075,7 @@ async def chat(
             await _finalize_call(call_id, status="error", error_text=msg[:2000],
                                  latency_ms=latency_ms,
                                  prompt_json=_redacted_json(body))
-            await _adjust_daily(day, account_id, -reserve_mc, -1, now, prov.name)
+            await _adjust_daily(day, account_id, -reserve_mc, -1, now, prov.name, user_id)
             log.warning("llm_client: %s call errored model=%s purpose=%s latency=%dms (%s)",
                         prov.name, model, purpose, latency_ms, type(e).__name__)
             raise LLMHTTPError(msg) from e
@@ -1077,7 +1123,7 @@ async def chat(
         cost_cents=actual_mc,  # millicents (see _cost_millicents)
     )
     # Reconcile the rollup with the real cost (delta vs. the estimate reserved).
-    await _adjust_daily(day, account_id, actual_mc - reserve_mc, 0, now, prov.name)
+    await _adjust_daily(day, account_id, actual_mc - reserve_mc, 0, now, prov.name, user_id)
 
     # reasoning= is DIAGNOSTIC ONLY and is deliberately not a column. Providers
     # that report it count it INSIDE completion_tokens (confirmed on both), so

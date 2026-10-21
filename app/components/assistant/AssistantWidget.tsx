@@ -46,6 +46,12 @@
  * visibly — and the request goes out exactly as it does under a scoped model.
  * The server is never handed a null account, so billing scope and answer scope
  * stay the same thing.
+ *
+ * NO ACCOUNT AT ALL (a new agency that has connected nothing yet) is the one
+ * case the request carries no `account_id`: the server then answers from the
+ * manual alone and bills the signed-in agency (service/assistant_api.py). The
+ * composer stays live, and a hint names the connect path — rendered through
+ * AnswerText, so it is a link to the page that does it.
  */
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
@@ -74,6 +80,11 @@ export const HELP_PATH = "/help-center";
  *  pydantic `max_length` would 422 past it, which is the one failure the
  *  200-always contract does NOT cover. Stop it in the composer instead. */
 const MAX_QUESTION_CHARS = 1000;
+
+/** Above the composer when no account is connected. The path is the manual's
+ *  own ("Connecting an OnlyFans account"), so AnswerText links it. */
+const NO_ACCOUNT_HINT =
+  "No account connected yet — answers come from the manual. To connect one: Creators → Manage creators → Add creator.";
 
 /** The endpoint's response contract. `error` is a machine tag for the log
  *  (cap | config | provider | empty_answer | empty_question); `answer` is
@@ -179,7 +190,6 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const ask = useCallback(async (question: string) => {
-    if (!accountId) return;
     const id = nextId.current++;
     setTurns((list) => [...list, { id, question, answer: null, error: null }]);
     try {
@@ -187,7 +197,8 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
         "/admin/assistant/ask",
         // No `role` — the server derives who is asking from the session, and a
         // role read out of this body would be client-supplied theater.
-        { question, account_id: accountId },
+        // No account connected yet → no `account_id`: a manual-only answer.
+        accountId ? { question, account_id: accountId } : { question },
         { accountId, employeeId },
       );
       const answer = (r?.answer || "").trim();
@@ -292,7 +303,7 @@ export function AssistantPanel({
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   // An in-flight answer does NOT lock the composer: concurrent turns are fine —
   // `settle()` matches answers to turns by id, never by order.
-  const canSend = !!accountId && draft.trim().length > 0;
+  const canSend = draft.trim().length > 0;
   const empty = turns.length === 0;
   const page = variant === "page";
   // The page spans the shell panel; its content keeps the messenger's measure.
@@ -418,70 +429,67 @@ export function AssistantPanel({
 
       {/* Where Intercom's Home / News / Messages / Help bar sits: our composer. */}
       <div className="shrink-0 border-t border-[#ededed] bg-white">
-        {accountId ? (
-          <div className={cn("px-4 pt-2.5 pb-4 flex flex-col gap-2", column)}>
-            {/* In all-models scope nothing on screen names an account, but the
-                server bills each answer to one and scopes its live-state reads
-                to it — so the account in play must be visible, not inferred. */}
-            {!scoped && (
-              <label className="flex items-center gap-1.5 px-1">
-                <span className="text-[11px] text-muted shrink-0">
-                  Answering about
-                </span>
-                <select
-                  value={accountId}
-                  onChange={(e) => setPicked(e.target.value)}
-                  className="min-w-0 max-w-[60%] truncate bg-transparent text-[11px] font-medium text-fg-dim hover:text-fg focus:outline-none cursor-pointer"
-                  aria-label="Account the help bot answers about"
-                >
-                  {accounts.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.nickname || a.id}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-            <div className="flex items-end gap-2 rounded-3xl border border-border bg-panel py-1.5 pl-4 pr-1.5 focus-within:border-fg-dim">
-              <textarea
-                ref={composerRef}
-                value={draft}
-                onChange={(e) => setDraft(e.target.value.slice(0, MAX_QUESTION_CHARS))}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    send();
-                  }
-                }}
-                placeholder="Ask a question…"
-                title="Answers come from the product manual; 'not supported' is a real answer. Enter to send · Shift+Enter for a new line"
-                rows={1}
-                className="flex-1 min-w-0 max-h-28 resize-none bg-transparent py-1.5 text-[14px] leading-5 text-fg placeholder:text-muted focus:outline-none [field-sizing:content]"
-              />
-              {/* Always "Ask" — the per-turn "thinking…" row shows progress, and
-                  the composer stays live while an answer is in flight. */}
-              <button
-                type="button"
-                onClick={send}
-                disabled={!canSend}
-                className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[#151515] text-white transition-opacity disabled:opacity-25"
-                aria-label="Ask"
-                title="Send"
-              >
-                <ArrowUp className="h-4 w-4" aria-hidden />
-              </button>
+        <div className={cn("px-4 pt-2.5 pb-4 flex flex-col gap-2", column)}>
+          {/* No live account at all (none connected yet, or the roster has
+              not loaded): the server answers from the manual alone, and the
+              one thing worth pointing at is where to connect one. */}
+          {!accountId && (
+            <div className="px-1 text-[11px] leading-4 text-muted">
+              <AnswerText text={NO_ACCOUNT_HINT} />
             </div>
+          )}
+          {/* In all-models scope nothing on screen names an account, but the
+              server bills each answer to one and scopes its live-state reads
+              to it — so the account in play must be visible, not inferred. */}
+          {accountId && !scoped && (
+            <label className="flex items-center gap-1.5 px-1">
+              <span className="text-[11px] text-muted shrink-0">
+                Answering about
+              </span>
+              <select
+                value={accountId}
+                onChange={(e) => setPicked(e.target.value)}
+                className="min-w-0 max-w-[60%] truncate bg-transparent text-[11px] font-medium text-fg-dim hover:text-fg focus:outline-none cursor-pointer"
+                aria-label="Account the help bot answers about"
+              >
+                {accounts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.nickname || a.id}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          <div className="flex items-end gap-2 rounded-3xl border border-border bg-panel py-1.5 pl-4 pr-1.5 focus-within:border-fg-dim">
+            <textarea
+              ref={composerRef}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value.slice(0, MAX_QUESTION_CHARS))}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  send();
+                }
+              }}
+              placeholder="Ask a question…"
+              title="Answers come from the product manual; 'not supported' is a real answer. Enter to send · Shift+Enter for a new line"
+              rows={1}
+              className="flex-1 min-w-0 max-h-28 resize-none bg-transparent py-1.5 text-[14px] leading-5 text-fg placeholder:text-muted focus:outline-none [field-sizing:content]"
+            />
+            {/* Always "Ask" — the per-turn "thinking…" row shows progress, and
+                the composer stays live while an answer is in flight. */}
+            <button
+              type="button"
+              onClick={send}
+              disabled={!canSend}
+              className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[#151515] text-white transition-opacity disabled:opacity-25"
+              aria-label="Ask"
+              title="Send"
+            >
+              <ArrowUp className="h-4 w-4" aria-hidden />
+            </button>
           </div>
-        ) : (
-          // Only reachable with NO live account at all (none captured yet, or
-          // the roster hasn't loaded) — all-models scope now falls back to the
-          // picker above. The server still needs one account_id per question,
-          // so say so instead of firing a request that can only 422.
-          <div className={cn("px-5 py-4 text-[13px] text-fg-dim leading-relaxed", column)}>
-            No account to answer about yet — the help bot scopes each answer to
-            one model. Connect an account and the composer unlocks.
-          </div>
-        )}
+        </div>
       </div>
     </div>
   );

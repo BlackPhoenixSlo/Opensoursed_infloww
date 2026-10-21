@@ -100,6 +100,9 @@ describe("findPaths", () => {
 
   it("resolves the groups below the sidebar's divider", () => {
     expect(only("Creators → Manage creators shows the badge.")?.href).toBe("/creators");
+    // The connect-an-account path the help bot gives a user with no account
+    // (assistant_api's no-account rule): the button's name stays prose.
+    expect(only("Creators → Manage creators → Add creator.")?.href).toBe("/creators");
     expect(only("Employees → Manage employees → + Add employee")?.href).toBe("/employees");
   });
 

@@ -15,6 +15,10 @@ and never the system prompt; config blobs are whitelisted so a planted secret
 never reaches a prompt; a fetch failure degrades to a docs-only answer with an
 honest note; and the block respects its cap by shedding last_run detail first.
 
+No account yet: with `account_id` omitted the answer is manual-only (no state,
+no pack), billed to the signed-in user, refused to anyone else, and the prompt
+carries the connect path the widget links.
+
 v3 (fan evidence pack): a pasted chat header resolves to ONE fan; stored rows
 come back verbatim under PROVEN and his own WORDS never do; a skip row the
 engine exempts is marked not-blocking (the fans-badge bug, in prose); a
@@ -49,6 +53,7 @@ os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"  # read per call; a case flips it back
 from fastapi import HTTPException  # noqa: E402
 
 import assistant_api  # noqa: E402
+import auth  # noqa: E402
 from automations import _common  # noqa: E402
 from automations._common import DEFAULT_MODEL, MODEL_PURPOSES  # noqa: E402
 import assistant_evidence  # noqa: E402
@@ -217,6 +222,109 @@ async def case_the_account_gate_is_not_optional():
     finally:
         os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"
     assert spy.calls == [], "a gated request still bought a completion"
+
+
+# ── No account connected yet ──────────────────────────────────────────
+
+def _as_user(uid: str = "u_no_accounts"):
+    """Sign a user with NO accounts in for one block; returns the reset token."""
+    return auth._request_user.set(auth.AuthedUser(uid, "fresh", frozenset()))
+
+
+async def case_no_account_answers_from_the_manual_billed_to_the_asker():
+    """A brand-new agency asks before connecting anything: manual only, no
+    LIVE STATE or fan pack, and the agency — not some account — pays."""
+    spy = _Spy("Creators → Manage creators → Add creator.")
+    _patch(spy)
+    await _ask()                                     # an account ask, for the prompt
+    token = _as_user()
+    try:
+        out = await ask(AskBody(question="how do I connect my OnlyFans account?"))
+    finally:
+        auth._request_user.reset(token)
+    assert out == {"answer": "Creators → Manage creators → Add creator.",
+                   "error": None}, out
+    kw = spy.calls[-1]
+    assert kw["account_id"] is None and kw["user_id"] == "u_no_accounts", kw
+    assert kw["purpose"] == "help_assistant", kw["purpose"]
+    system, user = kw["messages"]
+    assert assistant_api.NO_ACCOUNT_NOTE in user["content"], user["content"]
+    assert "LIVE STATE" not in user["content"], user["content"]
+    assert "FAN EVIDENCE PACK" not in user["content"], user["content"]
+    # One cached prompt for both kinds of asker, and it knows the connect path.
+    assert system["content"] == spy.calls[-2]["messages"][0]["content"], \
+        "the no-account ask built a second system prompt — prefix cache split"
+    assert "**Creators → Manage creators → Add creator**" in system["content"]
+    assert "Creators → Manage creators → Add creator" in assistant_api._read_manual()[0], \
+        "the manual no longer documents the connect path the prompt points at"
+
+
+async def case_no_account_still_needs_a_signed_in_user():
+    """Omitting the account must not open the route: no session is a 401 even
+    with ALLOW_ANONYMOUS_ADMIN on, a chatter (who always has an account in
+    scope) is a 401, and an EMPTY account id is still refused outright."""
+    spy = _Spy()
+    _patch(spy)
+    for chatter in (None, chatters.ChatterIdentity(
+            id_="ch_3", username="c", display_name=None, color=None,
+            owner_user_ids=frozenset({"u3"}), account_ids=frozenset({AID}))):
+        token = chatters._request_chatter.set(chatter)
+        try:
+            await ask(AskBody(question="where is the vault?"))
+        except HTTPException as e:
+            assert e.status_code == 401, e.status_code
+        else:
+            raise AssertionError(f"a no-account ask without a user got through ({chatter})")
+        finally:
+            chatters._request_chatter.reset(token)
+    try:
+        AskBody(question="q", account_id="")
+    except Exception:
+        pass
+    else:
+        raise AssertionError("an empty account_id would no-op the account gate")
+    assert spy.calls == [], "a refused ask still bought a completion"
+
+
+async def case_no_account_cap_is_an_answer_about_the_asker():
+    _patch(_Spy(raises=LLMCapExceeded(None, 100, 200)))
+    token = _as_user()
+    try:
+        out = await ask(AskBody(question="where is the vault?"))
+    finally:
+        auth._request_user.reset(token)
+    assert out == {"answer": "Today's help-bot budget is used up — try again tomorrow.",
+                   "error": "cap"}, out
+
+
+def case_no_account_over_http_takes_a_session_and_nothing_else():
+    """Through the real middleware: a user with ZERO accounts, signed in, gets
+    an answer to a body with no account_id; the same body with no cookie is a
+    401 (ALLOW_ANONYMOUS_ADMIN is on in this file, and must not open it)."""
+    import asyncio
+    from db.models import User
+
+    async def _seed():
+        async with get_session() as s:
+            if await s.get(User, "u_http_fresh") is None:
+                s.add(User(id="u_http_fresh", username="http_fresh", password="pw-fresh"))
+    asyncio.run(_seed())
+    spy = _Spy("Creators → Manage creators → Add creator.")
+    _patch(spy)
+
+    anon = _harness.make_client()
+    r = anon.post("/admin/assistant/ask", json={"question": "where is the vault?"})
+    assert r.status_code == 401, (r.status_code, r.text)
+
+    client = _harness.make_client()
+    r = client.post("/auth/login", json={"username": "http_fresh", "password": "pw-fresh"})
+    assert r.status_code == 200, (r.status_code, r.text)
+    r = client.post("/admin/assistant/ask",
+                    json={"question": "how do I connect my OnlyFans account?"})
+    assert r.status_code == 200, (r.status_code, r.text)
+    assert r.json() == {"answer": "Creators → Manage creators → Add creator.",
+                        "error": None}, r.json()
+    assert len(spy.calls) == 1 and spy.calls[0]["user_id"] == "u_http_fresh", spy.calls
 
 
 def _manual_with_kinds(kinds: list[str]) -> Path:
@@ -1591,6 +1699,10 @@ _harness.run(
     case_provider_failures_come_back_as_friendly_answers,
     case_the_role_is_derived_from_the_session_not_the_body,
     case_the_account_gate_is_not_optional,
+    case_no_account_answers_from_the_manual_billed_to_the_asker,
+    case_no_account_still_needs_a_signed_in_user,
+    case_no_account_cap_is_an_answer_about_the_asker,
+    case_no_account_over_http_takes_a_session_and_nothing_else,
     case_the_drift_gate_speaks_in_both_directions,
     case_the_front_matter_never_reaches_the_model,
     case_the_live_state_block_rides_the_user_message,

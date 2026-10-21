@@ -59,7 +59,17 @@ two is the database, so every line of the pack is testable without one. THIS
 file is the HTTP layer: the prompt, the drift gate, the route, and no
 diagnosis at all.
 
-  POST /admin/assistant/ask  {question, account_id} → {answer, error}
+  POST /admin/assistant/ask  {question, account_id?} → {answer, error}
+
+NO ACCOUNT YET. A signed-in agency that has not connected an OnlyFans account
+still needs "where is X?" answered — connecting one is the first thing it asks
+about. With `account_id` omitted the answer is manual-only: no LIVE STATE, no
+fan pack, a note in the user message that nothing is connected, and the prompt
+points anything that needs an account at Creators → Manage creators → Add
+creator (the widget links the path). It takes a signed-in USER (`require_user`;
+no anonymous asker, and a chatter always has an account in scope), and it bills
+that agency: its own key, else the help-bot fallback, under a per-agency daily
+cap (`llm_client.chat(user_id=…)`, `grok_user_daily_cost`).
 
 `error` is a machine tag for the log (null on success); `answer` is ALWAYS a
 human sentence — a used-up cap or a missing agency key comes back 200 with a
@@ -87,7 +97,7 @@ from pydantic import BaseModel, Field
 import assistant_fan_pack
 import assistant_state
 import llm_client
-from auth import assert_account_owned, get_request_user
+from auth import assert_account_owned, get_request_user, require_user
 from automations._common import resolve_model  # the one model resolver
 from chatters import get_request_chatter
 from llm_client import (LLMCapExceeded, LLMConfigError, LLMHTTPError, LLMKeyError,
@@ -189,7 +199,12 @@ Rules:
 - For next steps and the operator's own words, use the manual's "I turned it on
   and nothing happened" checklist and its "Stopping the bot on one fan"
   section. Neither lists the raw reason strings, so take a row's MEANING from
-  the pack line that carries it, and the WORDING from the manual."""
+  the pack line that carries it, and the WORDING from the manual.
+- If the question says NO ACCOUNT IS CONNECTED YET, answer where-is and how-to
+  questions from the manual as usual. When the answer needs a connected
+  account — connecting one, or anything that acts on a creator's chats, fans,
+  posts or stats — say to connect an account first, and write the path exactly
+  as **Creators → Manage creators → Add creator**."""
 
 # EXAMPLE beats the rule — a refusal the model can imitate is worth more than
 # another sentence telling it to refuse. Both cases below are the ones staff
@@ -412,9 +427,18 @@ def _user_block(question: str, role: str, state: str | None = None,
     return "\n\n".join(parts)
 
 
+# Rides the user message when no account is connected, so the cached system
+# prompt stays one prompt for every asker.
+NO_ACCOUNT_NOTE = (
+    "NO ACCOUNT IS CONNECTED YET: this asker has no OnlyFans account in the "
+    "app, so there is no live state to read.")
+
+
 class AskBody(BaseModel):
     question: str = Field(..., max_length=MAX_QUESTION_CHARS)
-    account_id: str = Field(..., min_length=1)  # empty would no-op the gate
+    # Omitted = no account connected yet (see the module docstring). Empty is
+    # still refused: "" would no-op `assert_account_owned`.
+    account_id: str | None = Field(None, min_length=1)
     # No `role` field, deliberately — see the module docstring.
 
 
@@ -422,40 +446,26 @@ def _answer(text: str, error: str | None = None) -> dict[str, Any]:
     return {"answer": text, "error": error}
 
 
-@router.post("/admin/assistant/ask")
-async def ask(body: AskBody = Body(...)) -> dict[str, Any]:
-    assert_account_owned(body.account_id)
-    question = body.question.strip()
-    if not question:
-        return _answer("Ask me something about the product.", "empty_question")
-
-    role = _asker_role()
-    # Resolution comes FIRST: the paste may name a different model, and the live
-    # state block has to describe the account the question is actually about.
-    target = await assistant_fan_pack.build(body.account_id, question)
-    assert_account_owned(target.account_id)   # belt: _resolve_account already filters
-    state = await assistant_state.build(target.account_id, target.label)
-    # One rule for both lines below: the SCOPED account owns this answer's
-    # settings AND its bill, even when the paste named another account. The
-    # daily AI budget is per account, so naming one in a question must not
-    # reach into its config or spend its money. `resolve_model` is total —
-    # there is no failure branch to write here.
-    model = await resolve_model(body.account_id, PURPOSE)
+async def _complete(model: str, user_content: str, *, account_id: str | None,
+                    user_id: str | None = None,
+                    capped: str = "This account's AI budget is used up for today.",
+                    ) -> dict[str, Any]:
+    """One help-bot completion, every provider failure turned into an answer."""
     try:
         result = await llm_client.chat(
             model=model,
             purpose=PURPOSE,
-            account_id=body.account_id,      # pays — see above
+            account_id=account_id,
+            user_id=user_id,
             messages=[
                 {"role": "system", "content": system_prompt()},
-                {"role": "user",
-                 "content": _user_block(question, role, state, target.block)},
+                {"role": "user", "content": user_content},
             ],
             temperature=0.3,
         )
     except LLMCapExceeded:
-        log.info("assistant: cap exceeded for account=%s", body.account_id)
-        return _answer("This account's AI budget is used up for today.", "cap")
+        log.info("assistant: cap exceeded for account=%s user=%s", account_id, user_id)
+        return _answer(capped, "cap")
     except LLMKeyError as e:
         log.warning("assistant: llm key %s provider=%s", e.kind, e.provider)
         p = key_error_payload(e)
@@ -477,9 +487,49 @@ async def ask(body: AskBody = Body(...)) -> dict[str, Any]:
         log.warning("assistant: empty answer from %s", result.model)
         return _answer(
             "The AI came back empty — try asking again.", "empty_answer")
-    # The model answered without rows it should have had — be honest about why.
-    if state is None:
-        answer += assistant_state.FAIL_NOTE
-    if not target.ok:
-        answer += assistant_fan_pack.FAIL_NOTE
     return _answer(answer)
+
+
+@router.post("/admin/assistant/ask")
+async def ask(body: AskBody = Body(...)) -> dict[str, Any]:
+    if body.account_id is None:
+        # No account to gate on, so the gate is the session itself: a signed-in
+        # user of this deployment, never an anonymous caller.
+        user = require_user(detail="sign in required")
+    else:
+        assert_account_owned(body.account_id)
+    question = body.question.strip()
+    if not question:
+        return _answer("Ask me something about the product.", "empty_question")
+
+    role = _asker_role()
+    if body.account_id is None:
+        # Manual only, billed to the asking agency. No account → no pin to
+        # read, so the model is the purpose default.
+        return await _complete(
+            await resolve_model("", PURPOSE),
+            _user_block(question, role, NO_ACCOUNT_NOTE),
+            account_id=None, user_id=user.id,
+            capped="Today's help-bot budget is used up — try again tomorrow.")
+
+    # Resolution comes FIRST: the paste may name a different model, and the live
+    # state block has to describe the account the question is actually about.
+    target = await assistant_fan_pack.build(body.account_id, question)
+    assert_account_owned(target.account_id)   # belt: _resolve_account already filters
+    state = await assistant_state.build(target.account_id, target.label)
+    # One rule for both lines below: the SCOPED account owns this answer's
+    # settings AND its bill, even when the paste named another account. The
+    # daily AI budget is per account, so naming one in a question must not
+    # reach into its config or spend its money. `resolve_model` is total —
+    # there is no failure branch to write here.
+    model = await resolve_model(body.account_id, PURPOSE)
+    out = await _complete(
+        model, _user_block(question, role, state, target.block),
+        account_id=body.account_id)      # pays — see above
+    if out["error"] is None:
+        # The model answered without rows it should have had — be honest about why.
+        if state is None:
+            out["answer"] += assistant_state.FAIL_NOTE
+        if not target.ok:
+            out["answer"] += assistant_fan_pack.FAIL_NOTE
+    return out

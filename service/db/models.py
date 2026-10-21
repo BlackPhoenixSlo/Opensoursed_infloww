@@ -2259,6 +2259,30 @@ class GrokDailyCost(Base):
     updated_at: Mapped[datetime] = _ts_now()
 
 
+class GrokUserDailyCost(Base):
+    """The same daily soft-cap rollup as `grok_daily_cost`, for an LLM call that
+    has NO account to bill: one row per (day, agency, provider).
+
+    Today that is only the help bot asked by an agency with no OnlyFans account
+    connected yet (`assistant_api`). `grok_daily_cost.account_id` is a foreign
+    key to `accounts`, so there is no account row to key the cap on, and its
+    NULL rollup row cannot cap anything — SQLite treats NULLs in a composite PK
+    as distinct, so ON CONFLICT never fires on it. `llm_client._reserve` writes
+    this table with the same one-statement reserve-and-check, under the same
+    default cap. `user_id` is NOT NULL, and deleting the agency deletes its rows."""
+    __tablename__ = "grok_user_daily_cost"
+
+    day: Mapped[str] = mapped_column(String, primary_key=True)  # 'YYYY-MM-DD' UTC
+    user_id: Mapped[str] = mapped_column(
+        String, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    provider: Mapped[str] = mapped_column(String, primary_key=True)
+    cost_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    call_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_capped: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    updated_at: Mapped[datetime] = _ts_now()
+
+
 # ── §4.9 Realtime / event inbox ─────────────────────────────────────
 
 class EventInbox(Base):

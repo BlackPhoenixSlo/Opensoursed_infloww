@@ -3,7 +3,7 @@
  *
  * The answers themselves are the server's job (service/tests/test_assistant_api.py
  * covers those). What can only go wrong HERE is the request shape — a `role`
- * field the server must never be handed, an unscoped account fired anyway — and
+ * field the server must never be handed, an account_id with no account behind it — and
  * the 200-always contract: a used-up cap comes back as `{answer, error:"cap"}`
  * and has to READ as an answer, because a bot that looks broken exactly when
  * someone needs config help is the failure mode the endpoint exists to avoid.
@@ -203,14 +203,32 @@ describe("AssistantWidget", () => {
     expect(await screen.findByText("an answer")).toBeTruthy();
   });
 
-  it("gates only when there is no account at all", async () => {
+  it("answers with no account at all: no account_id sent, the connect page linked", async () => {
     scope.accountId = null;
     roster.list = [];
+    relayPost.mockResolvedValue({
+      answer: "Connect one first: **Creators → Manage creators → Add creator**.",
+      error: null,
+    });
     await openPanel();
 
-    expect(screen.queryByPlaceholderText("Ask a question…")).toBeNull();
-    expect(screen.getByText(/No account to answer about yet/)).toBeTruthy();
-    expect(relayPost).not.toHaveBeenCalled();
+    // The hint above the composer is itself a link to the connect page.
+    const hint = screen.getByRole("link", { name: /Creators → Manage creators/ });
+    expect(hint.getAttribute("href")).toBe("/creators");
+    expect(screen.queryByLabelText("Account the help bot answers about")).toBeNull();
+
+    await ask("how do I connect my OnlyFans account?");
+    await waitFor(() => expect(relayPost).toHaveBeenCalledTimes(1));
+    const [, body, ctx] = relayPost.mock.calls[0];
+    // Omitted, not null or "": the server reads a missing id as "no account yet".
+    expect(body).toEqual({ question: "how do I connect my OnlyFans account?" });
+    expect(ctx).toMatchObject({ accountId: null, employeeId: 7 });
+    await waitFor(() =>
+      expect(screen.getAllByRole("link", { name: /Creators → Manage creators/ })).toHaveLength(2),
+    );
+    for (const a of screen.getAllByRole("link", { name: /Creators → Manage creators/ })) {
+      expect(a.getAttribute("href")).toBe("/creators");
+    }
   });
 
   it("hides the launcher and the dock on /help-center, where the page is the panel", async () => {

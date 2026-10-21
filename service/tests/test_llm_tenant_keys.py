@@ -43,10 +43,10 @@ import llm_providers  # noqa: E402
 import tenant_keys  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import (  # noqa: E402
-    Account, AccountAiConfig, AccountHealth, GrokCall, Session, User,
-    UserAccount, UserLlmKey,
+    Account, AccountAiConfig, AccountHealth, GrokCall, GrokDailyCost,
+    GrokUserDailyCost, Session, User, UserAccount, UserLlmKey,
 )
-from llm_client import LLMConfigError, chat  # noqa: E402
+from llm_client import LLMCapExceeded, LLMConfigError, chat  # noqa: E402
 
 # Every case drives this one model, so every call resolves to deepseek and the
 # house key under test is a single env var.
@@ -111,6 +111,19 @@ async def _bearer_for(account_id: str, purpose: str = "gen_info") -> str:
     try:
         await chat(model=MODEL, messages=[{"role": "user", "content": "hi"}],
                    purpose=purpose, account_id=account_id)
+    finally:
+        llm_client.httpx.AsyncClient = orig
+    return _KeyCapturingClient.last_bearer
+
+
+async def _bearer_for_agency(user_id: str, purpose: str = "help_assistant") -> str:
+    """The credential chat() sent for a call with NO account, billed to an agency."""
+    _KeyCapturingClient.last_bearer = ""
+    orig = llm_client.httpx.AsyncClient
+    llm_client.httpx.AsyncClient = _KeyCapturingClient
+    try:
+        await chat(model=MODEL, messages=[{"role": "user", "content": "hi"}],
+                   purpose=purpose, account_id=None, user_id=user_id)
     finally:
         llm_client.httpx.AsyncClient = orig
     return _KeyCapturingClient.last_bearer
@@ -963,6 +976,89 @@ async def case_the_fallback_policy_is_one_reviewable_row():
         assert env not in house_envs, (
             f"{env} IS a provider's house key — a fallback must be its own "
             f"credential, or this deployment pays for agency SENDING too")
+
+
+async def case_a_call_with_no_account_bills_the_asker_and_never_the_house():
+    """The help bot asked before any account is connected bills the ASKING
+    agency: its own key, else the help-bot fallback — and never the house key,
+    which `account_id=""` would reach (an un-owned account has no tenant; this
+    call does). No other purpose gets the fallback this way either."""
+    keyed = await _seed_user("fresh_agency_with_key")
+    await tenant_keys.set_keys(keyed, {HOUSE_PROVIDER: "sk-fresh-own"})
+    bare = await _seed_user("fresh_agency_no_key")
+    assert _house_key(), "the harness must inject a house key for this to mean anything"
+
+    assert await _bearer_for_agency(keyed) == "sk-fresh-own"
+
+    real = llm_providers._api_key
+    llm_providers._api_key = lambda env: (
+        "sk-deployment-help" if env == "HELP_ASSISTANT_DEEPSEEK_KEY" else real(env))
+    try:
+        assert await _bearer_for_agency(bare) == "sk-deployment-help"
+        _KeyCapturingClient.calls = 0
+        for purpose in ("gen_info", "autoreply", ""):
+            try:
+                await _bearer_for_agency(bare, purpose)
+                raise AssertionError(f"a no-account {purpose!r} call found a key")
+            except LLMConfigError:
+                pass
+        assert _KeyCapturingClient.calls == 0, "a refused call still went out"
+    finally:
+        llm_providers._api_key = real
+
+    # No fallback set: refused, even though the house key is right there.
+    try:
+        await _bearer_for_agency(bare)
+        raise AssertionError("a keyless agency's no-account call reached a key")
+    except LLMConfigError:
+        pass
+
+    try:
+        await chat(model=MODEL, messages=[{"role": "user", "content": "hi"}],
+                   purpose="help_assistant", account_id="acct_x", user_id=keyed)
+        raise AssertionError("a call billed to an account AND an agency went out")
+    except LLMConfigError:
+        pass
+
+
+async def case_a_call_with_no_account_is_capped_per_agency():
+    """One signup cannot drain the deployment's help-bot key: no-account calls
+    reserve against a per-agency daily row (the default cap, $1), refused
+    before anything is sent once it is spent — and one agency's spent budget
+    is not another's. Deleting the agency deletes its rows."""
+    spent = await _seed_user("fresh_agency_spent")
+    other = await _seed_user("fresh_agency_fresh")
+    for uid in (spent, other):
+        await tenant_keys.set_keys(uid, {HOUSE_PROVIDER: "sk-" + uid[:6]})
+    day = datetime.utcnow().strftime("%Y-%m-%d")
+    cap_mc = llm_client._DEFAULT_CAP_CENTS * llm_client._MILLICENTS_PER_CENT
+    async with get_session() as s:
+        s.add(GrokUserDailyCost(day=day, user_id=spent, provider=HOUSE_PROVIDER,
+                                cost_cents=cap_mc, call_count=40))
+
+    _KeyCapturingClient.calls = 0
+    try:
+        await _bearer_for_agency(spent)
+        raise AssertionError("a spent agency's no-account call went out")
+    except LLMCapExceeded:
+        pass
+    assert _KeyCapturingClient.calls == 0, "the cap refused AFTER sending"
+
+    async with get_session() as s:
+        before = await s.scalar(select(GrokDailyCost.call_count).where(
+            GrokDailyCost.day == day, GrokDailyCost.account_id.is_(None)))
+    assert await _bearer_for_agency(other) == "sk-" + other[:6]
+    async with get_session() as s:
+        row = await s.get(GrokUserDailyCost, (day, other, HOUSE_PROVIDER))
+        after = await s.scalar(select(GrokDailyCost.call_count).where(
+            GrokDailyCost.day == day, GrokDailyCost.account_id.is_(None)))
+        assert row is not None and row.call_count == 1, row
+        assert 0 <= row.cost_cents < cap_mc, row.cost_cents  # reserve reconciled
+        assert after == before, "a no-account call landed on the account rollup"
+        await s.execute(sa_delete(User).where(User.id == other))
+    async with get_session() as s:
+        assert await s.get(GrokUserDailyCost, (day, other, HOUSE_PROVIDER)) is None, \
+            "deleting the agency left its spend rows behind"
 
 
 _harness.run()
