@@ -93,8 +93,8 @@ ENV</code></pre>
       again the same way.
     </p>
     <p>
-      Fansly: a Fansly client lives in the repo; the Docker image (a packaged copy of the app) does not ship it yet. The Creators page already shows a
-      Connect Fansly card; on the Docker install it doesn't work yet, so skip it.
+      Fansly is partly built: the Docker image (a packaged copy of the app) ships the Fansly client, and 4 of the
+      Fansly Manager's 16 pages are built, behind a setting.
     </p>
 
     <h3>5. Add your proxies</h3>
@@ -151,10 +151,9 @@ ENV</code></pre>
   <div class="prose mt-4 text-base">
     <ul>
       <li><strong>Support and an SLA.</strong> Nobody is on call for your agency, and no uptime figure is promised.</li>
-      <li><strong>Fansly, Fanvue and MYM, for now.</strong> Inflowwww supports OnlyFans. A Fansly client lives in the repo; the Docker image does not ship it yet.</li>
-      <li><strong>Some screens.</strong> All 12 OF Manager sections, all 3 Share for Share sections, Shift schedule, the Settings tabs and the in-app Help center are NotBuiltYet stubs.</li>
+      <li><strong>Fansly, Fanvue and MYM, for now.</strong> Inflowwww supports OnlyFans. Fansly is partly built: 4 of the Fansly Manager's 16 pages.</li>
+      <li><strong>Some screens.</strong> OF Manager is there, but most of its pages show placeholder data.</li>
       <li><strong>A native phone app.</strong> There isn't one.</li>
-      <li><strong>AI Copilot.</strong> No AI Copilot. A legacy AI chatter and in-chat AI strip sit behind <code>OPENINFLOWW_LEGACY_AUTOMATIONS=1</code>, off by default and unsupported.</li>
       <li><strong>Built-in proxies.</strong> You bring your own.</li>
       <li><strong>Someone else running the server.</strong> Updates, backups and restarts are your job now.</li>
     </ul>

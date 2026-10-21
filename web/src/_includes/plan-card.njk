@@ -18,29 +18,31 @@
       { label: "Message dashboard", route: "/analytics/message-dashboard" },
       { label: "Creator, Employee and Fan reports", route: "/analytics/creator-reports, /analytics/employee-reports, /analytics/fan-reports" },
       { label: "Scripts", route: "/growth/scripts" },
-      { label: "Auto Post and Auto Story", route: "/growth/auto-post, /growth/auto-story" },
+      { label: "Auto Post, Auto Story, Auto Mass, Auto-reply and Auto Funnel", route: "/growth/auto-post, /growth/auto-story, /growth/auto-mass, /growth/auto-reply, /growth/auto-funnel" },
+      { label: "Share for Share", route: "/share-for-share" },
+      { label: "Shift schedule and time tracking", route: "/employees/shifts" },
+      { label: "AI Copilot in the composer, on your own LLM key", route: "/messages-pro" },
       { label: "Custom proxy", route: "/creators/proxy" },
       { label: "Manage employees", route: "/employees" },
       { label: "Team logins: a share token for the dashboard plus per-user logins: the owner at /login, each chatter at /chatter-login", route: "/login, /chatter-login" }
     ],
     missing: [
-      { label: "No AI Copilot." },
-      { label: "Shift schedule", note: "NotBuiltYet" },
-      { label: "OF Manager, 12 sections", note: "NotBuiltYet" }
+      { label: "OF Manager", note: "partly built, most pages show placeholder data" },
+      { label: "Auto-renew campaigns" }
     ],
     empty: ""
   },
   fansly: {
     name: "Fansly",
-    status: "NotBuiltYet",
-    summary: "A Fansly client lives in the repo; the Docker image (a packaged copy of the app) does not ship it yet.",
+    status: "Partly built",
+    summary: "The Docker image (a packaged copy of the app) ships the Fansly client. 4 of the Fansly Manager's 16 pages are built, behind a setting.",
     cta: { label: "Read fansly/", href: site.repo ~ "/tree/main/fansly" },
     included: [
       { label: "The Fansly client, in the repository", route: "fansly/" },
       { label: "Session capture (signing in to Fansly once in Chrome so the relay can act on the account) with the Chrome extension", route: "loginExtensionMulti/" }
     ],
     missing: [],
-    empty: "In plain words: the code is started, but the version you install can't connect to Fansly yet. The Creators page already shows a Connect Fansly card; on the Docker install it doesn't work yet, so skip it."
+    empty: "In plain words: Fansly is started, not finished. The built Fansly Manager pages are Notifications, Lists, Scheduled Posts and Earning Statistics."
   },
   mym: {
     name: "mym",

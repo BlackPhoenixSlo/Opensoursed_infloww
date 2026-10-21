@@ -113,12 +113,11 @@ description: "Get Inflowwww running and run a team on it: Quick start, first log
   <li>The lanes panel (the relay's rate-limit page at <code>/lanes-panel</code>) can change the relay's limits and restart it with no login.</li>
   <li><code>ADMIN_PASSWORD</code> alone unlocks "view as another user", transfer and delete: any signed-in account that
     knows it can use them on any user.</li>
-  <li>Logins have no rate limit.</li>
 </ul>
 <p>
   Run it only on a private network or over a VPN (WireGuard or Tailscale) until these are fixed. Putting basic auth in
   front of the whole relay breaks fans' tracking links (<code>/t/</code>) and the desktop app, so if you must expose it,
-  protect everything except <code>/t/</code> at your reverse proxy. All six are listed under
+  protect everything except <code>/t/</code> at your reverse proxy. All five are listed under
   <a href="{{ '/roadmap/#known-gaps' | url }}">Known gaps</a> on the roadmap.
 </p>
 <p>
@@ -133,7 +132,7 @@ description: "Get Inflowwww running and run a team on it: Quick start, first log
   <li>Owner pages such as Creators, Vault Pro and Tracking links are hidden from chatters.</li>
   <li>After signing in at <code>/chatter-login</code>, a chatter sees Dashboard, Messages Pro, Smart Messages, Scripts, Analytics and Settings for the creators they are linked to. In a chat they insert Scripts and attach media from the vault, limited to the folders the owner grants; a new chatter sees the whole vault until the owner picks folders.</li>
   <li>Fan notes live in the fan insights rail in Messages Pro (<code>/messages-pro</code>).</li>
-  <li>There is no shift schedule yet: <code>/employees/shifts</code> is a NotBuiltYet stub.</li>
+  <li>Shifts live in Employees &gt; Shift schedule (<code>/employees/shifts</code>); chatters clock in and out from the top bar.</li>
 </ul>
 <p>Moving from Infloww? See <a href="{{ '/switch-to-openinflowwww/' | url }}">Switch to Inflowwww</a>.</p>
 

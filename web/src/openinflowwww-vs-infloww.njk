@@ -23,7 +23,7 @@ description: "Inflowwww vs. Infloww, row by row: price, platforms, support, team
   { topic: "Platforms",
     theirs: '"Manage creators across OnlyFans, Fansly, Fanvue and MYM."',
     theirsSource: "infloww.com meta description, " ~ captured,
-    ours: "OnlyFans. A Fansly client lives in the repo (the project's source folder); the Docker image (a packaged copy of the app) does not ship it yet. No Fanvue, no MYM.",
+    ours: "OnlyFans. Fansly is partly built: the Docker image (a packaged copy of the app) ships the Fansly client, and 4 of the Fansly Manager's 16 pages are built. No Fanvue, no MYM.",
     oursSource: "README: Repository layout (fansly/)",
     lose: true },
   { topic: "Uptime",
@@ -96,25 +96,22 @@ description: "Inflowwww vs. Infloww, row by row: price, platforms, support, team
   { topic: "Sensitive words",
     theirs: "Sensitive word blocker, listed on their OnlyFans card.",
     theirsSource: "infloww.com/pricing, " ~ captured,
-    ours: "Partly built: the agency's Growth > Sensitive words list blocks matching sends from the mass, funnel and chat automations; Smart Messages and what chatters type are not checked.",
-    oursSource: "service/automations/_wordfilter.py",
-    lose: true },
+    ours: "Built: the agency's Growth > Sensitive words list blocks matching sends from the mass, funnel and chat automations, and the composers warn when a message holds one.",
+    oursSource: "/growth/sensitive-words" },
   { topic: "Shift scheduling",
     theirs: "Employee shifts",
     theirsSource: "infloww.com, " ~ captured,
-    ours: "The Shift schedule page is a NotBuiltYet stub.",
-    oursSource: "/employees/shifts",
-    lose: true },
+    ours: "Built: a week shift schedule, clock in and out, and clocked hours in the reports.",
+    oursSource: "/employees/shifts" },
   { topic: "AI",
     theirs: '"Increase efficiency with our AI Copilot", tagged "In Beta".',
     theirsSource: "infloww.com, " ~ captured,
-    ours: "No AI Copilot. The dashboard works without any LLM key.",
-    oursSource: "README: optional variables",
-    lose: true },
+    ours: "Built: the composer's AI button suggests three replies to edit and send, on your own LLM key. The dashboard works without one.",
+    oursSource: "/messages-pro" },
   { topic: "Screens we haven't built",
     theirs: "Not applicable. This row is about us.",
     theirsSource: "",
-    ours: "NotBuiltYet stubs: all 12 OF Manager sections, all 3 Share for Share sections, Shift schedule, the Settings tabs and the in-app Help center.",
+    ours: "Partly built: OF Manager (most pages show placeholder data) and the Fansly Manager (4 of 16 pages). Auto-renew campaigns are not built.",
     oursSource: "docs/routes.md",
     lose: true },
   { topic: "Getting started",
@@ -264,8 +261,8 @@ description: "Inflowwww vs. Infloww, row by row: price, platforms, support, team
     <ul>
       <li>You want someone to call when something breaks, at any hour. They advertise 24/7 support; we have none.</li>
       <li>You need an uptime commitment from a vendor. We can't give one, because we don't run your server.</li>
-      <li>You manage creators on Fansly, Fanvue or MYM. We support OnlyFans; a Fansly client lives in the repo, but the Docker image does not ship it yet.</li>
-      <li>You rely on shift scheduling, Share for Share or the OF Manager screens. Ours are NotBuiltYet stubs.</li>
+      <li>You manage creators on Fansly, Fanvue or MYM. We support OnlyFans; Fansly is partly built.</li>
+      <li>You rely on the OF Manager screens. Ours mostly show placeholder data.</li>
       <li>You don't want to run a server, apply updates, or own backups. Self-hosting makes those your job.</li>
       <li>Stay, or wait for the <a href="{{ '/roadmap/#known-gaps' | url }}">known gaps</a> to close, if nobody on your side can put the dashboard behind a VPN or a second login.</li>
       <li>Your team needs a native phone app. Neither of us offers one: their download page lists none, and their roadmap lists a mobile dashboard as in progress ({{ stamped }}). Ours is a responsive web app.</li>

@@ -40,7 +40,7 @@ ogDescription: "Free, self-hosted, no per-creator fee. Your data stays on your s
     No credit card, no demo call. Setup means a few commands on a server; after that everyone works in a browser.
   </p>
   <p class="mx-auto mt-1 max-w-4xl text-sm text-pretty text-muted">
-    Today it belongs on a private network or a VPN. A Fansly client lives in the repo; the Docker image does not ship it yet. {% include "tos.njk" %}
+    Today it belongs on a private network or a VPN. Fansly is <a class="underline hover:text-ink" href="#built">partly built</a>. {% include "tos.njk" %}
   </p>
   {#- Below sm only the phone shot shows (the <source>); from sm up the desktop shot, with the phone set low on its
       right edge so it clears the desktop top bar. The overlay phone is lazy: hidden below sm, so phones skip it. -#}
@@ -143,10 +143,7 @@ ogDescription: "Free, self-hosted, no per-creator fee. Your data stays on your s
         {% call check("Creator, employee and fan reports.") %}One stats report, three views.{% endcall %}
         {% call check("Sales attribution.") %}Chatter logins put the chatter's name on every message; unclear sales wait in a Sales needing attribution card for the owner.{% endcall %}
         {% call check("Your own database.") %}One SQLite file. Query anything the reports don't show.{% endcall %}
-        <li class="flex gap-3">
-          <svg class="mt-0.5 size-5 shrink-0 text-muted" aria-hidden="true" focusable="false"><use href="#i-x" /></svg>
-          <span><strong class="font-semibold text-ink">Employee shifts.</strong> <span class="text-muted">Shift schedule ships in our NotBuiltYet edition: the page is real, the feature is not.</span></span>
-        </li>
+        {% call check("Employee shifts.") %}A week shift schedule, clock in and out, and clocked hours in the reports.{% endcall %}
       </ul>
       <a class="btn-primary mt-8" href="#deploy">Deploy it yourself</a>
     </div>
@@ -170,15 +167,14 @@ ogDescription: "Free, self-hosted, no per-creator fee. Your data stays on your s
   <div>
     <p class="flex flex-wrap items-center gap-2">
       <span class="eyebrow">My Automations</span>
-      <span class="rounded-full border border-black/20 px-2.5 py-0.5 text-xs font-medium text-ink">No AI Copilot</span>
+      <span class="rounded-full border border-black/20 px-2.5 py-0.5 text-xs font-medium text-ink">AI Copilot, your key</span>
     </p>
     <h2 id="auto-title" class="section-title mt-3">Increase efficiency with automations you can read</h2>
     <p class="lede">Scheduled work you set once.</p>
     <ul class="mt-8 space-y-4">
-      {% call check("Auto Post.") %}Recurring posts on a schedule.{% endcall %}
-      {% call check("Auto Story.") %}The same, for stories.{% endcall %}
-      {% call check("Auto-follow.") %}Under Growth.{% endcall %}
-      {% call check("Optional LLM keys.") %}DeepSeek, DeepInfra or Z.ai, billed by the provider. The dashboard works without them.{% endcall %}
+      {% call check("Auto Post and Auto Story.") %}Recurring posts and stories on a schedule.{% endcall %}
+      {% call check("Auto Mass, Auto-reply, Auto Funnel.") %}Saved mass messages on an interval, a reply to fans nobody answered, and message funnels.{% endcall %}
+      {% call check("AI Copilot.") %}The composer's AI button suggests three replies; you edit one and press Send. It uses your own DeepSeek, DeepInfra or Z.ai key, billed by the provider. The dashboard works without one.{% endcall %}
     </ul>
     <a class="btn-primary mt-8" href="#deploy">Deploy it yourself</a>
   </div>
@@ -227,7 +223,7 @@ ogDescription: "Free, self-hosted, no per-creator fee. Your data stays on your s
   {%- set grid = [
     { name: "Vault Pro", status: "Built", body: "The owner's media library at <code>/growth/vault-pro</code>. Chatters attach media from the chat composer." },
     { name: "Smart Messages", status: "Built", body: "Mass and scheduled messages at <code>/growth/smart-messages</code>." },
-    { name: "AI Copilot", status: "Not built", body: "No Copilot. Optional LLM keys go in your <code>.env</code>, billed by the provider." },
+    { name: "AI Copilot", status: "Built", body: "The composer's AI button suggests three replies to edit and send, on your own LLM key." },
     { name: "Messages Pro", status: "Built", body: "Chat list, thread and fan insights at <code>/messages-pro</code>." },
     { name: "Analytics", status: "Built", body: "Creator, employee and fan reports, plus the Message dashboard." },
     { name: "Scripts", status: "Built", body: "Saved messages at <code>/growth/scripts</code>." },
@@ -246,6 +242,47 @@ ogDescription: "Free, self-hosted, no per-creator fee. Your data stays on your s
     {%- endfor %}
   </ul>
   <a class="text-link mt-6 inline-flex min-h-11 items-center" href="#compare">Every feature, row by row</a>
+</section>
+
+{#- Built / not built: the short version of /roadmap/, checked against app/lib/nav.ts and service/. -#}
+<section id="built" aria-labelledby="built-title" class="wrap pb-20 sm:pb-28">
+  <p class="eyebrow">Status</p>
+  <h2 id="built-title" class="section-title mt-3">What's built, and what isn't</h2>
+  <p class="lede">Straight from the code, not the pitch deck.</p>
+  <div class="mt-10 grid grid-cols-1 items-start gap-5 lg:grid-cols-2">
+    <div class="rounded-2xl bg-white p-6 ring-1 ring-black/10">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h3 class="text-xl font-semibold tracking-tight text-ink">Built</h3>
+        <span class="status-chip" data-status="Built">Built</span>
+      </div>
+      <ul class="mt-4 divide-y divide-line text-sm text-muted">
+        <li class="py-3"><strong class="text-ink">Messages Pro:</strong> chat list, thread, fan insights, Split Inbox, pop-out windows, AI Copilot</li>
+        <li class="py-3"><strong class="text-ink">Analytics:</strong> creator, employee and fan reports, Message dashboard, sales records</li>
+        <li class="py-3"><strong class="text-ink">Growth:</strong> Smart Messages, Smart lists, Auto-follow, Profile promotion, free trial and tracking links, Vault Pro, Scripts, Sensitive words</li>
+        <li class="py-3"><strong class="text-ink">My Automations:</strong> Auto Post, Auto Story, Auto Mass, Auto-reply, Auto Funnel</li>
+        <li class="py-3"><strong class="text-ink">Share for Share:</strong> Discover creators, Requests, S4S schedule, S4S settings</li>
+        <li class="py-3"><strong class="text-ink">Team:</strong> employees, org chart, custom roles, shift schedule, time tracking</li>
+        <li class="py-3"><strong class="text-ink">Everything else:</strong> Settings, the in-app Help center and its help bot, sign-in rate limits, the phone layout and the desktop app</li>
+      </ul>
+    </div>
+    <div class="rounded-2xl bg-white p-6 ring-1 ring-black/10">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h3 class="text-xl font-semibold tracking-tight text-ink">Not built yet</h3>
+        <span class="status-chip" data-status="Not built">Not built</span>
+      </div>
+      <ul class="mt-4 divide-y divide-line text-sm text-muted">
+        <li class="py-3"><strong class="text-ink">OF Manager (partly):</strong> every page is there, but most show placeholder data and few controls save; New post and Add to story do post</li>
+        <li class="py-3"><strong class="text-ink">Fansly (partly):</strong> the image ships the Fansly client; 4 of the Fansly Manager's 16 pages are built, behind a setting</li>
+        <li class="py-3"><strong class="text-ink">Auto-renew campaigns</strong></li>
+        <li class="py-3"><strong class="text-ink">Security:</strong> sign-up can't be closed, any account can list every user, dashboard passwords are plain text, the lanes panel has no login, and admin actions need only <code>ADMIN_PASSWORD</code>. Run it on a private network or a VPN</li>
+        <li class="py-3"><strong class="text-ink">Support:</strong> no help desk, no SLA, no uptime figure</li>
+      </ul>
+    </div>
+  </div>
+  <p class="mt-6 text-sm text-muted">
+    The full list is on the <a class="text-link" href="{{ '/roadmap/' | url }}">roadmap</a>. The code is on
+    <a class="text-link" href="{{ site.repo }}">GitHub</a>.
+  </p>
 </section>
 
 {% include "compare-table.njk" %}
