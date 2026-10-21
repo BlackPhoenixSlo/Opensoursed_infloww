@@ -53,7 +53,7 @@ npm run dev        # same, but enables the DevTools menu item
 
 Precedence: env `OPENINFLOWW_URL` > the URL saved in the Settings screen.
 Every launch opens the Settings screen first, pre-filled with the saved URL (or
-`http://inflowwww.com` when none is saved); only the origin is saved, so a
+`https://app.inflowwww.com` when none is saved); only the origin is saved, so a
 pasted `#hash`, path or query is dropped. Tick **Don't show this again** to go
 straight to the app on later launches; reopen Settings from the app menu
 (**Inflowwww → Settings…**, ⌘,). When `OPENINFLOWW_URL` is set to a valid http(s)

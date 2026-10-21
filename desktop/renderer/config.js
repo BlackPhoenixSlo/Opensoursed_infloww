@@ -5,7 +5,7 @@
 // Also the load-failure screen: main.js opens it with ?desc=&url= when the app
 // failed to load; we render that read-only (textContent, never innerHTML).
 
-const DEFAULT_SERVER_URL = "http://inflowwww.com";
+const DEFAULT_SERVER_URL = "https://app.inflowwww.com";
 
 const urlEl = document.getElementById("url");
 const tokenEl = document.getElementById("token");
