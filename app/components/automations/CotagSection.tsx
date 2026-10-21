@@ -6,28 +6,39 @@
  * mounts it on Settings › Co-creator tag (CotagTab) with its own Save (the
  * account-config PUT, `account_ai_config.cotag_*`: every media send of the creator).
  *
- * "Tag a co-creator, which one, or no one" (ticket 85). The pick list is this
- * account's OF tagged-friend list — the same call the chat composer's tag
- * picker makes, and the only ids OF accepts in a tag — so a pick can't be a
- * handle OF refuses. "No co-creator tag" is the default and hands the form ''.
- * An account never appears on its own list, and the server stores an own
- * handle as no tag.
+ * "Tag a co-creator, which one, or no one" (ticket 85). The co-creator can be
+ * any OnlyFans creator: typing searches OF's creators (performers-search, the
+ * share dialog's username autocomplete) and a result is the pick, stored as its
+ * handle. At send time media_cotag resolves that handle through the account's
+ * tagged-friend list, the only ids OF accepts in a message/post tag, so a
+ * creator who hasn't accepted the tag yet goes untagged there (logged, never a
+ * lost send); a story's @handle overlay needs no list. "No co-creator tag" is
+ * the default and hands the form ''. The server stores an own handle as no tag.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/primitives";
 import { useAccountConfig, useSaveAccountConfig, type AccountConfigResp } from "@/hooks/useAccountConfig";
 
-import { relay, type TaggedFriendUsersResp } from "@/lib/relay";
+import { relay } from "@/lib/relay";
 
 export interface CotagPatch {
   cotag_tag_videos?: boolean;
   cotag_username?: string;
 }
 
-const selectCls =
+/** One row of OF's performers-search. */
+interface FoundCreator {
+  id: number | string;
+  name?: string | null;
+  username?: string | null;
+}
+
+const DEBOUNCE_MS = 250;
+
+const inputCls =
   "w-full rounded-lg bg-bg-elev-1 border border-border text-sm px-2 py-1.5 text-fg focus:outline-none focus:ring-2 focus:ring-accent/40";
 
 export default function CotagSection({ accountId, tagVideos, username, onChange }: {
@@ -37,23 +48,31 @@ export default function CotagSection({ accountId, tagVideos, username, onChange 
   username: string | null;
   onChange: (patch: CotagPatch) => void;
 }) {
-  const friendsQ = useQuery<TaggedFriendUsersResp>({
-    queryKey: ["tagged-friend-users", accountId, "cotag"],
-    enabled: !!accountId,
-    // 50 is the relay route's cap (`limit` le=50; more is a 422). One page:
-    // a creator's accepted co-performers are a handful.
-    queryFn: () => relay.get<TaggedFriendUsersResp>(
-      "/api/of/v2/posts/tagged-friend-users?limit=50&offset=0",
-      { accountId: accountId ?? undefined }),
+  const [raw, setRaw] = useState("");
+  const [query, setQuery] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setQuery(raw.trim().replace(/^@/, "")), DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [raw]);
+  const searchQ = useQuery<FoundCreator[]>({
+    queryKey: ["performers-search", accountId, query],
+    enabled: !!accountId && !!query,
+    queryFn: () => relay.get<FoundCreator[] | { list?: FoundCreator[] }>(
+      `/api/of/v2/users/performers-search?query=${encodeURIComponent(query)}&limit=10`,
+      { accountId: accountId ?? undefined },
+    ).then((r) => (Array.isArray(r) ? r : (r?.list ?? []))),
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
-  const friends = (friendsQ.data?.items ?? [])
-    .map((u) => ({ username: (u.user?.username ?? "").toLowerCase(),
-                   name: u.user?.name ?? u.name ?? "" }))
+  const found = (searchQ.data ?? [])
+    .map((u) => ({ username: (u.username ?? "").toLowerCase(), name: u.name ?? "" }))
     .filter((f) => f.username);
   const picked = (username ?? "").toLowerCase();
-  const onList = friends.some((f) => f.username === picked);
+  const pick = (handle: string) => {
+    onChange({ cotag_username: handle });
+    setRaw("");
+    setQuery("");
+  };
 
   return (
     <div className="space-y-2">
@@ -62,41 +81,53 @@ export default function CotagSection({ accountId, tagVideos, username, onChange 
       </span>
       <p className="text-[11px] text-fg-dim">
         Pick the co-creator automated sends @-tag (OF’s release-form rule) whenever the
-        attached media isn’t provably solo, or no one. The list is this account’s
-        OnlyFans tagged-friend list: a co-creator appears once they have accepted this
-        account’s tag request.
+        attached media isn’t provably solo, or no one. Search any OnlyFans creator. Messages
+        and posts carry the tag once the creator has accepted this account’s tag request;
+        stories show the @handle either way.
       </p>
-      <label className="block space-y-1 max-w-xs">
-        <span className="text-[11px] text-fg-dim">Co-creator to tag</span>
-        <select
-          aria-label="Co-creator to tag"
-          className={selectCls}
-          value={picked}
-          onChange={(e) => onChange({ cotag_username: e.target.value })}
-        >
-          <option value="">No co-creator tag</option>
-          {picked && !onList && (
-            // Only a loaded list can say a pick is off it; until then it shows plain.
-            <option value={picked}>
-              @{picked}{friendsQ.isSuccess
-                ? " (not on this account’s tagged-friend list, won’t tag)" : ""}
-            </option>
+      <div className="space-y-1 max-w-xs">
+        <span className="block text-[11px] text-fg-dim">Co-creator to tag</span>
+        <div className="flex items-center gap-2 text-sm text-fg">
+          <span data-testid="cotag-pick">{picked ? `@${picked}` : "No co-creator tag"}</span>
+          {picked && (
+            <button type="button" className="text-[11px] text-fg-dim underline"
+              onClick={() => pick("")}>
+              Remove
+            </button>
           )}
-          {friends.map((f) => (
-            <option key={f.username} value={f.username}>
-              @{f.username}{f.name ? ` (${f.name})` : ""}
-            </option>
-          ))}
-        </select>
-        {friendsQ.isLoading && (
-          <span className="block text-[11px] text-fg-dim">Loading co-creators…</span>
+        </div>
+        <input
+          type="search"
+          aria-label="Search creators"
+          placeholder="Search creators by name or @username"
+          className={inputCls}
+          value={raw}
+          onChange={(e) => setRaw(e.target.value)}
+        />
+        {query && searchQ.isLoading && (
+          <span className="block text-[11px] text-fg-dim">Searching…</span>
         )}
-        {friendsQ.isError && (
+        {query && searchQ.isError && (
           <span className="block text-[11px] text-err">
-            Couldn’t load this account’s co-creators from OnlyFans. The saved pick is kept.
+            Couldn’t search OnlyFans creators. The saved pick is kept.
           </span>
         )}
-      </label>
+        {query && searchQ.isSuccess && found.length === 0 && (
+          <span className="block text-[11px] text-fg-dim">No creators found.</span>
+        )}
+        {query && found.length > 0 && (
+          <ul className="rounded-lg border border-border divide-y divide-border">
+            {found.map((f) => (
+              <li key={f.username}>
+                <button type="button" className="w-full px-2 py-1.5 text-left text-sm text-fg hover:bg-bg-elev-1"
+                  onClick={() => pick(f.username)}>
+                  @{f.username}{f.name ? ` (${f.name})` : ""}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
       <label
         className="flex items-start gap-2 text-sm text-fg"
         title="For accounts whose videos feature a co-performer. The AI describe for a video is cut from stills, so a POV clip often reads as solo when the co-performer is plainly in it. With this on, every send that attaches a video carries the tag regardless of the describe verdict. Off (the default — most creators are solo), videos follow the describe verdict like photos do."

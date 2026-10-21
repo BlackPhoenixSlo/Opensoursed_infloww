@@ -39,13 +39,12 @@ describe("CotagTab", () => {
   it("shows the scoped creator's co-creator tag, off when blank", async () => {
     relayGet.mockImplementation((path: string) => Promise.resolve(path.startsWith("/admin/account-config")
       ? { account_id: "acc1", config: { cotag_tag_videos: false, cotag_username: null } }
-      : { items: [], hasMore: false }));
+      : []));
     renderTab();
     expect(screen.getByRole("heading", { name: "Co-creator tag" })).toBeTruthy();
     expect(screen.getByText(/mass messages, mass posts, automations and\s+stories/)).toBeTruthy();
-    const select = await screen.findByLabelText("Co-creator to tag") as HTMLSelectElement;
-    expect(select.value).toBe("");
-    expect(select.selectedOptions[0].textContent).toBe("No co-creator tag");
+    await screen.findByLabelText("Search creators");
+    expect(screen.getByTestId("cotag-pick").textContent).toBe("No co-creator tag");
     expect(relayGet.mock.calls.some(([p]) => String(p).startsWith("/admin/account-config"))).toBe(true);
   });
 
