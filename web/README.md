@@ -61,7 +61,11 @@ Markdown body. End with one "> **The pitch.** ..." box.
 
 Case studies work the same way in `web/src/case-studies/`, and they can also take an optional `stats` list of `{label, value}`. The voice and truth rules are in `docs/parody-voice.md`. Quotes from Infloww must come from `docs/infloww-landing-snapshot.md` or `docs/infloww-site-inventory.md`, with the capture date.
 
-## Deploy (GitHub Pages)
+## Deploy
+
+The live site, https://inflowwww.com, is not served by GitHub Pages. It is `web/dist`, built on the app's own server from a checkout of the public repo and served as static files by an nginx container behind the server's Traefik (app.inflowwww.com is the app on the same host). The build sets `url` and `appUrl` in `src/_data/site.json` to the deployment's site and app URLs in a throwaway copy (the tracked file is left alone), then runs `pnpm build`; nginx serves the new files as soon as they are written, with no restart.
+
+### GitHub Pages (optional)
 
 `.github/workflows/site.yml` builds with `PATH_PREFIX=/openinflowwww/` and deploys on every push to `main` that touches `web/`. It can also be run by hand. After the build it fails if any root-relative `href`, `src` or `srcset` in `web/dist` lacks the prefix. You only need to change one setting, once: **Settings > Pages > Build and deployment > Source = "GitHub Actions"**. The site is then served at https://your-org.github.io/openinflowwww/.
 
