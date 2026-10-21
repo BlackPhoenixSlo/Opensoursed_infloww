@@ -26,6 +26,9 @@ RUN pnpm install --frozen-lockfile
 # `docker build` beside a stack whose relay service is named `relay`.
 ARG RELAY_URL=http://relay:8787
 ENV RELAY_URL=$RELAY_URL
+# The public site the app links back to (lib/site.ts). Empty = its default.
+ARG NEXT_PUBLIC_SITE_URL=
+ENV NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL
 COPY . .
 RUN pnpm build
 

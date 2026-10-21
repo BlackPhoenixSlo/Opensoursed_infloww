@@ -32,16 +32,15 @@
  * Only the configured site may post here (Origin check), so another site
  * cannot sign a visitor into an account it picked. The check is by origin, so
  * the WHOLE site origin is trusted: for the default that is every page on
- * https://your-org.github.io, i.e. any GitHub Pages site of that
- * account, not only this project's. The site pages send their origin because
+ * https://inflowwww.com. The site pages send their origin because
  * they set `<meta name="referrer" content="origin-when-cross-origin">`: under
  * the default strict-origin-when-cross-origin an https page posting to http
  * (http://localhost included) sends `Origin: null`, which is refused here.
  *
  * Redirect targets are fixed here, never read from the request. SITE_URL
  * (env, read once at start) overrides the default site, e.g. for a local
- * preview of web/; a malformed value falls back to the default. It applies to
- * this route only (Landing.tsx's "Back to the site" link uses lib/site.ts).
+ * preview of web/; a malformed value falls back to the default (lib/site.ts,
+ * which NEXT_PUBLIC_SITE_URL sets at build time for the app's own site links).
  */
 
 import { SITE_URL } from "@/lib/site";

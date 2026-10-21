@@ -230,6 +230,9 @@ services:
       # so the relay hostname has to be passed here, not only at runtime.
       args:
         RELAY_URL: "http://openinflowwww-relay:8787"
+        # The public site (web/) the app links back to; empty = lib/site.ts's
+        # default. Rebuild the app after changing SITE_URL.
+        NEXT_PUBLIC_SITE_URL: "${SITE_URL:-}"
     image: openinflowwww-app:latest
     container_name: openinflowwww-app
     restart: unless-stopped
@@ -252,6 +255,8 @@ services:
       # next.config.ts's rewrites() forwards /api/of/*, /admin/*, /events,
       # /ws/*, /img, /health to this URL.
       RELAY_URL: "http://openinflowwww-relay:8787"
+      # The one origin allowed to post the site's login/signup forms (/site-auth).
+      SITE_URL: "${SITE_URL:-}"
     depends_on:
       openinflowwww-relay:
         # service_healthy is the correct signal now that the relay's
