@@ -19,7 +19,7 @@
 #
 # One-liner (paste into the Hostinger / VPS terminal — runs start to finish, no
 # questions asked):
-#   bash <(curl -fsSL https://raw.githubusercontent.com/YOUR_ORG/openinflowwww/main/deploy/deploy-here.sh)
+#   bash <(curl -fsSL https://raw.githubusercontent.com/BlackPhoenixSlo/Opensoursed_infloww/main/deploy/deploy-here.sh)
 #
 # Modes (same one-liner, just prefix an env var). Re-run anytime to switch — it's
 # idempotent and keeps your .env, database, and sessions:
@@ -37,7 +37,7 @@
 
 set -euo pipefail
 
-REPO_URL="${REPO_URL:-https://github.com/YOUR_ORG/openinflowwww.git}"
+REPO_URL="${REPO_URL:-https://github.com/BlackPhoenixSlo/Opensoursed_infloww.git}"
 BRANCH="${BRANCH:-main}"
 DIR="${DIR:-$HOME/openinflowwww}"
 
@@ -92,7 +92,7 @@ grep -q '^DEEPSEEK_API_KEY=.\+' .env || echo "  note: no DeepSeek key yet — th
 # ---------- 5. choose exposure: stable Traefik route (preferred) or quick tunnel ----------
 DOMAIN="${DOMAIN:-}"
 
-# The base compose attaches `openinfloww-app` to the external `n8n_default` network so a
+# The base compose attaches `openinflowwww-app` to the external `n8n_default` network so a
 # host Traefik can reach it. On a box without an n8n stack that network is
 # absent and `compose up` would refuse to start — create an empty stand-in so
 # the bare-VPS tunnel path still boots. No-op if it already exists.
@@ -113,17 +113,29 @@ if [ -n "$DOMAIN" ]; then
   # Traefik network. Regenerated every run (idempotent).
   cat > docker-compose.override.yml <<YAML
 services:
-  openinfloww-app:
+  openinflowwww-app:
     networks:
       - default
       - $TNET
     labels:
       traefik.enable: "true"
       traefik.docker.network: "$TNET"
-      traefik.http.routers.openinfloww.rule: "Host(\`$DOMAIN\`)"
-      traefik.http.routers.openinfloww.entrypoints: "websecure"
-      traefik.http.routers.openinfloww.tls.certresolver: "$CR"
-      traefik.http.services.openinfloww.loadbalancer.server.port: "3001"
+      traefik.http.routers.openinflowwww.rule: "Host(\`$DOMAIN\`)"
+      traefik.http.routers.openinflowwww.entrypoints: "websecure"
+      traefik.http.routers.openinflowwww.tls.certresolver: "$CR"
+      traefik.http.services.openinflowwww.loadbalancer.server.port: "3001"
+  # The relay's own paths (same list as docker-compose.yml) go straight to it;
+  # without this its router keeps the base file's placeholder host.
+  openinflowwww-relay:
+    networks:
+      - default
+      - $TNET
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: "$TNET"
+      traefik.http.routers.openinflowwww-relay.rule: "Host(\`$DOMAIN\`) && (PathPrefix(\`/api/of/\`) || (PathPrefix(\`/admin/\`) && !Path(\`/admin/manage\`)) || Path(\`/img\`) || PathPrefix(\`/img/\`) || Path(\`/events\`) || PathPrefix(\`/auth/\`) || PathPrefix(\`/chatter/\`))"
+      traefik.http.routers.openinflowwww-relay.entrypoints: "websecure"
+      traefik.http.routers.openinflowwww-relay.tls.certresolver: "$CR"
 networks:
   $TNET:
     external: true
@@ -161,7 +173,10 @@ if [ "${TUNNEL:-}" = "1" ]; then
   say "TUNNEL=1 → Cloudflare quick tunnel (random https url, changes on every restart)"
   cat > docker-compose.override.yml <<'YAML'
 services:
-  openinfloww-app:
+  openinflowwww-app:
+    labels:
+      traefik.enable: "false"
+  openinflowwww-relay:
     labels:
       traefik.enable: "false"
 YAML
@@ -171,10 +186,10 @@ YAML
   say "waiting for the Cloudflare tunnel URL"
   URL=""
   for _ in $(seq 1 30); do
-    URL=$(docker logs openinfloww-tunnel 2>&1 | grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' | tail -1 || true)
+    URL=$(docker logs openinflowwww-tunnel 2>&1 | grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' | tail -1 || true)
     [ -n "$URL" ] && break; printf '.'; sleep 4
   done; echo
-  [ -z "$URL" ] && { echo "⚠ tunnel URL not seen yet. Check: docker logs -f openinfloww-tunnel | grep trycloudflare"; exit 0; }
+  [ -z "$URL" ] && { echo "⚠ tunnel URL not seen yet. Check: docker logs -f openinflowwww-tunnel | grep trycloudflare"; exit 0; }
   cat <<DONE
 
 ────────────────────────────────────────────────────────────
@@ -183,7 +198,7 @@ YAML
   URL:  ${URL}   ← random, changes every restart
   dir:  ${DIR}   branch: ${BRANCH}
 
-Current URL anytime: docker logs openinfloww-tunnel | grep trycloudflare | tail -1
+Current URL anytime: docker logs openinflowwww-tunnel | grep trycloudflare | tail -1
 Want a STABLE url?    DOMAIN=you.duckdns.org bash $DIR/deploy/deploy-here.sh
 ────────────────────────────────────────────────────────────
 DONE
@@ -203,9 +218,12 @@ say "exposing the dashboard on http://$IP:$PORT (plain http — see footer to ad
 # this with the base 127.0.0.1 bind, adding a public one.)
 cat > docker-compose.override.yml <<YAML
 services:
-  openinfloww-app:
+  openinflowwww-app:
     ports:
       - "0.0.0.0:$PORT:3001"
+    labels:
+      traefik.enable: "false"
+  openinflowwww-relay:
     labels:
       traefik.enable: "false"
 YAML

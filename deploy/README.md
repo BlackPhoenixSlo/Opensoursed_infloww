@@ -17,7 +17,7 @@ The entry script lives at [`scripts/deploy-here.sh`](../scripts/deploy-here.sh).
 Zero hassle. No domain, no DNS. Paste this and you get `http://<your-ip>:3000`:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/YOUR_ORG/openinflowwww/main/deploy/deploy-here.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/BlackPhoenixSlo/Opensoursed_infloww/main/deploy/deploy-here.sh)
 ```
 
 - ✅ stable URL, instant, nothing to configure
@@ -38,7 +38,7 @@ subdomains that point at your server.
 2. Run:
 
 ```bash
-DOMAIN=yourname.duckdns.org bash <(curl -fsSL https://raw.githubusercontent.com/YOUR_ORG/openinflowwww/main/deploy/deploy-here.sh)
+DOMAIN=yourname.duckdns.org bash <(curl -fsSL https://raw.githubusercontent.com/BlackPhoenixSlo/Opensoursed_infloww/main/deploy/deploy-here.sh)
 ```
 
 The script finds the box's Traefik, auto-detects its network + cert-resolver, and
@@ -53,7 +53,7 @@ Same as Option 2 but with a domain you own. Add a DNS **A-record** for the host
 (e.g. `app.yourdomain.com`) pointing at your server's IP, then:
 
 ```bash
-DOMAIN=app.yourdomain.com bash <(curl -fsSL https://raw.githubusercontent.com/YOUR_ORG/openinflowwww/main/deploy/deploy-here.sh)
+DOMAIN=app.yourdomain.com bash <(curl -fsSL https://raw.githubusercontent.com/BlackPhoenixSlo/Opensoursed_infloww/main/deploy/deploy-here.sh)
 ```
 
 ---
@@ -64,7 +64,7 @@ For a quick demo without any domain. Gives a random Cloudflare URL that **change
 on every restart**:
 
 ```bash
-TUNNEL=1 bash <(curl -fsSL https://raw.githubusercontent.com/YOUR_ORG/openinflowwww/main/deploy/deploy-here.sh)
+TUNNEL=1 bash <(curl -fsSL https://raw.githubusercontent.com/BlackPhoenixSlo/Opensoursed_infloww/main/deploy/deploy-here.sh)
 ```
 
 ---
