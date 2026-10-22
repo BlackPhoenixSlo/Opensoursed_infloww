@@ -21,6 +21,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { relay, RelayError } from "@/lib/relay";
 import { Button, Card, Input } from "@/components/ui/primitives";
+import { cn } from "@/lib/utils";
 import { proxyText, useProxyList, type ProxyChoice } from "@/components/setup/creatorFlow";
 
 export interface RemoteLoginStatus {
@@ -69,6 +70,7 @@ export default function BrowserbaseLoginCard({ onLinked, initialNickname = "", p
   const [password, setPassword] = useState("");
   const [jobId, setJobId] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [howOpen, setHowOpen] = useState(false);
   const linkedRef = useRef<string | null>(null);
   const liveRef = useRef<HTMLDivElement | null>(null);
 
@@ -119,11 +121,21 @@ export default function BrowserbaseLoginCard({ onLinked, initialNickname = "", p
     <Card className="space-y-4 max-md:border-0 max-md:bg-transparent max-md:p-0">
       <div>
         <h2 className="text-base font-semibold mb-1">Try Browserbase login</h2>
+        {/* On a phone the explanation folds behind "How it works", so the email, password and start button fit on the
+            first screen. */}
         {!running && (
-          <p className="text-sm text-fg-dim leading-relaxed">
-            The login runs in a remote browser on Browserbase&apos;s network, so no extension is needed and it works on a
-            phone. If OnlyFans shows a verification check or asks for a 2FA code, you solve it yourself in the live view.
-          </p>
+          <>
+            <button
+              type="button" aria-expanded={howOpen} onClick={() => setHowOpen((o) => !o)}
+              className="md:hidden text-sm text-cta hover:underline"
+            >
+              How it works
+            </button>
+            <p className={cn("text-sm text-fg-dim leading-relaxed", !howOpen && "max-md:hidden")}>
+              The login runs in a remote browser on Browserbase&apos;s network, so no extension is needed and it works on a
+              phone. If OnlyFans shows a verification check or asks for a 2FA code, you solve it yourself in the live view.
+            </p>
+          </>
         )}
         <p className="mt-2 text-sm">
           <span className="text-fg-dim">Proxy for this account: </span>{proxy ? proxyText(proxy, proxiesQ.data) : "unchanged (the one it is on now)"}

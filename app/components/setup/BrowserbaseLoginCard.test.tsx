@@ -1,7 +1,8 @@
 /**
  * BrowserbaseLoginCard — the operator-facing states of the served Browserbase login.
  *
- *   - the copy says the login runs on Browserbase's network, needs no extension, and names the flow's proxy;
+ *   - the copy says the login runs on Browserbase's network, needs no extension, and names the flow's proxy; on a phone
+ *     that explanation folds behind "How it works" so the form and its button fit the first screen;
  *   - no proxy picker of its own: the start sends the flow's Proxy selection (the Inflowwww proxy, or a custom label);
  *   - a success names the attached proxy and hands the account on at once (onLinked), like Paste cURL;
  *   - while the job runs the form is replaced by plain-language progress, the live view, a full-screen link and Stop login;
@@ -65,6 +66,18 @@ describe("BrowserbaseLoginCard", () => {
     // No proxy picker of its own: the flow's Proxy selection is the one.
     expect(screen.queryByRole("combobox")).toBeNull();
     expect(screen.queryByText(/No proxies yet/)).toBeNull();
+  });
+
+  it("folds the explanation behind How it works on a phone, so the form fits the first screen", () => {
+    render(<BrowserbaseLoginCard proxy={{ type: "infloww" }} />, { wrapper });
+    const how = screen.getByRole("button", { name: "How it works" });
+    const text = screen.getByText(/The login runs in a remote browser/);
+    expect(how).toHaveClass("md:hidden");
+    expect(how).toHaveAttribute("aria-expanded", "false");
+    expect(text).toHaveClass("max-md:hidden");
+    fireEvent.click(how);
+    expect(how).toHaveAttribute("aria-expanded", "true");
+    expect(text).not.toHaveClass("max-md:hidden");
   });
 
   it("starts with the flow's Inflowwww proxy, and with a custom proxy by its label", async () => {

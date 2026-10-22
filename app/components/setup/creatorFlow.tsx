@@ -149,7 +149,8 @@ export function FlowModal({ title, onClose, footer, children, closable = true }:
 }) {
   // The steps read white on the modal (`._content-wrap`: `color:var(--element-emphasis-00)`), not HbModal's 62% body.
   return (
-    <HbModal title={title} width={600} onClose={onClose} footer={footer} closable={closable}>
+    // On a phone the modal may take the whole screen (less HbModal's 16px frame), not 80% of it.
+    <HbModal title={title} width={600} onClose={onClose} footer={footer} closable={closable} className="max-md:max-h-[calc(100dvh-2rem)]">
       <div className={cn("text-[14px] leading-normal", HB_WHITE)}>{children}</div>
     </HbModal>
   );

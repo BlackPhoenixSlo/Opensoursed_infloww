@@ -73,7 +73,8 @@ function Section({ k, children }: { k: SectionKey; children: ReactNode }) {
   const s = SECTIONS[k];
   return (
     <section id={s.id} aria-label={s.name} title={EXTRA_LABEL} tabIndex={-1} className="space-y-2 focus:outline-none">
-      <p className="text-xs text-muted">{EXTRA_LABEL}</p>
+      {/* Dropped on a phone, where the space goes to the sign-in itself; the section's title still says it. */}
+      <p className="hidden md:block text-xs text-muted">{EXTRA_LABEL}</p>
       {children}
     </section>
   );
