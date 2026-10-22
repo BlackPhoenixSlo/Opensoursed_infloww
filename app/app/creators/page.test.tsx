@@ -510,6 +510,29 @@ describe("/creators — Add creator, Infloww's steps", () => {
     expect(btn("Connect OnlyFans")).toBeEnabled();
   });
 
+  it("with a pool, Inflowwww proxy is the default, and Browserbase login starts on it with no proxy picker of its own", async () => {
+    poolRelay();
+    renderWithProviders(<Page />);
+    await open();
+    details();
+    fireEvent.click(btn("Next: Link creator account"));
+    await within(dialog()).findByText("Which platform’s account would you like to link?");
+    fireEvent.click(btn("Next"));
+    await waitFor(() => expect(within(dialog()).getByRole("radio", { name: /^Inflowwww proxy/ })).toBeChecked());
+    fireEvent.click(btn("Connect OnlyFans"));
+    const bb = await within(dialog()).findByRole("region", { name: "Browserbase login" });
+    expect(within(bb).getByText("Proxy for this account:").parentElement).toHaveTextContent("Proxy for this account: Inflowwww proxy");
+    expect(within(bb).queryByRole("combobox")).toBeNull();
+    // Paste cURL binds the pool too: no Attach proxy select.
+    expect(within(within(dialog()).getByRole("region", { name: "Paste cURL" })).queryByRole("combobox")).toBeNull();
+    fireEvent.change(within(bb).getByLabelText("OnlyFans email"), { target: { value: "a@b.c" } });
+    fireEvent.change(within(bb).getByLabelText("OnlyFans password"), { target: { value: "pw" } });
+    fireEvent.click(within(bb).getByRole("button", { name: "Try Browserbase login" }));
+    await waitFor(() => expect(relayPost).toHaveBeenCalledWith("/admin/login/remote/start", expect.objectContaining({
+      backend: "browserbase", proxy: "infloww", nickname: "Nova",
+    })));
+  });
+
   /** A relay with a 3-proxy pool: `proxy-pool/assign` puts the account on it (or fails with `assignError`); the
    *  session reload fails `reloadFailures` times. */
   const poolRelay = (assignError?: Error, reloadFailures = 0) => {
@@ -707,15 +730,20 @@ describe("/creators — Add creator, Infloww's steps", () => {
     }
   });
 
-  it("is reachable from the empty roster, and on a phone the sign-in shows the desktop-only line instead of the forms", async () => {
+  it("is reachable from the empty roster, and on a phone the sign-in is Browserbase login, Paste cURL desktop-only", async () => {
     renderWithProviders(<Page />);
     await screen.findByText("No data");
     await toLogin();
-    const line = within(dialog()).getByText("Session capture, proxies and keys are desktop-only.");
+    // No extension on a phone: Paste cURL is hidden below md, Browserbase login (a remote browser) shows at every width.
+    const paste = within(dialog()).getByRole("region", { name: "Paste cURL" }).parentElement!;
+    expect(paste).toHaveClass("hidden", "md:block");
+    const bb = within(dialog()).getByRole("region", { name: "Browserbase login" });
+    expect(bb.closest(".hidden")).toBeNull();
+    expect(within(bb).getByLabelText("OnlyFans email")).toBeInTheDocument();
+    const line = within(dialog()).getByText("Paste cURL needs the desktop browser extension.");
     expect(line).toHaveClass("md:hidden");
-    const forms = within(dialog()).getByRole("region", { name: "Paste cURL" }).parentElement!;
-    expect(forms).toHaveClass("hidden", "md:block");
-    expect(forms).not.toContainElement(line);
+    expect(paste).not.toContainElement(line);
+    expect(within(dialog()).queryByText(/Session capture, proxies and keys are desktop-only/)).toBeNull();
   });
 
   it("captures through the same route, then Linked, Account details and success save the account's details", async () => {
@@ -1253,11 +1281,28 @@ describe("/creators — the row's ⋮ menu", () => {
     fireEvent.click(within(openMenu("Charlie")).getByRole("menuitem", { name: "Log in to account via OnlyFans" }));
     const d = screen.getByRole("dialog", { name: "Link creator account" });
     const paste = within(d).getByRole("region", { name: "Paste cURL" });
+    // A re-login keeps the account's proxy: Browserbase login binds nothing either.
+    const bb = within(d).getByRole("region", { name: "Browserbase login" });
+    expect(within(bb).getByText("Proxy for this account:").parentElement).toHaveTextContent("unchanged");
     fireEvent.change(within(paste).getByPlaceholderText(/^curl /), { target: { value: "curl 'https://onlyfans.com/api2/v2/x'" } });
     fireEvent.click(within(paste).getByRole("button", { name: "Bootstrap from cURL" }));
     await within(d).findByText("Creator account is linked to Inflowwww");
     expect(await within(d).findByText("Inflowwww proxy")).toBeInTheDocument();
     expect(relayPost).not.toHaveBeenCalledWith("/admin/proxy-pool/assign", expect.anything());
+  });
+
+  it("a re-login through Browserbase sends No proxy, so the relay keeps the account's binding", async () => {
+    fleet();
+    proxies = () => Promise.resolve({ proxies: [], pool: { size: 2, account_ids: ["acct-c"] }, accounts: [] });
+    relayPost.mockImplementation(() => Promise.resolve({}));
+    renderWithProviders(<Page />);
+    await waitFor(() => expect(connCell("Charlie")).toHaveTextContent("Disconnected"));
+    fireEvent.click(within(openMenu("Charlie")).getByRole("menuitem", { name: "Log in to account via OnlyFans" }));
+    const bb = within(screen.getByRole("dialog", { name: "Link creator account" })).getByRole("region", { name: "Browserbase login" });
+    fireEvent.change(within(bb).getByLabelText("OnlyFans email"), { target: { value: "a@b.c" } });
+    fireEvent.change(within(bb).getByLabelText("OnlyFans password"), { target: { value: "pw" } });
+    fireEvent.click(within(bb).getByRole("button", { name: "Try Browserbase login" }));
+    await waitFor(() => expect(relayPost).toHaveBeenCalledWith("/admin/login/remote/start", expect.objectContaining({ proxy: "none" })));
   });
 });
 

@@ -8,8 +8,8 @@ No browser and NO network: `_bb_request` / `urlopen` / the page are faked.
       start_login defaults to "local", which is refused up front
       (BackendUnavailable); an unknown backend is a ValueError.
   case_env_and_proxy_fail_loud:
-      missing BROWSERBASE_API_KEY / BROWSERBASE_PROJECT_ID / proxy raise before
-      any session exists (the proxy pick is required: it is what gets bound).
+      missing BROWSERBASE_API_KEY / BROWSERBASE_PROJECT_ID, an unknown proxy
+      choice or a custom proxy without a label raise before any session exists.
   case_session_payload_shape:
       the create body asks for Browserbase's managed proxies (`proxies: true`),
       projectId from env, solveCaptchas False; our proxy is never in it.
@@ -36,10 +36,17 @@ No browser and NO network: `_bb_request` / `urlopen` / the page are faked.
       the interceptor snapshot becomes paste-curl's parsed shape with the
       x-relay-* headers the extension adds.
   case_capture_binds_before_persist:
-      the proxy is bound to the captured user-id, then from_request persists,
-      then the bootstrap hooks run; a failed bind persists nothing.
+      the flow's proxy is bound to the captured user-id with the paste path's
+      registry calls (Inflowwww proxy: assign_pool; custom: assign_account;
+      No proxy: nothing), then from_request persists, then the bootstrap hooks
+      run; a failed bind persists nothing.
+  case_api_proxy_choice:
+      no proxy given: the Inflowwww proxy when the relay has a pool, else none;
+      "infloww" without a pool 409s; a custom label is checked for visibility
+      (another user's or a pool label 404s); unknown choice / custom without a
+      label 400.
   case_api_gates:
-      400 missing proxy (never a 422 echoing the password), 400 unknown backend, 501 local, 404 unknown proxy, 503 env missing,
+      400 missing password (never a 422 echoing it), 400 unknown backend, 501 local, 404 unknown proxy, 503 env missing,
       404 unknown job, 403 another principal's job; /admin/login is audit-
       skipped and chatter-blocked.
 
@@ -88,7 +95,7 @@ def _set_env(key="bb_test_key", project="proj-xyz"):
 
 def _job(**kw):
     now = time.time()
-    base = dict(id=uuid.uuid4().hex, email="e@x.com", proxy_label="p", principal=None,
+    base = dict(id=uuid.uuid4().hex, email="e@x.com", principal=None,
                 created_at=now, expires_at=now + 30)
     base.update(kw)
     return rl.RemoteLoginJob(**base)
@@ -106,7 +113,7 @@ def case_backend_selector():
     import inspect
     assert inspect.signature(rl.start_login).parameters["backend"].default == rl.BACKEND_LOCAL
     _set_env()
-    kw = dict(email="a@b", password="p", proxy_label="p", principal=None)
+    kw = dict(email="a@b", password="p", principal=None)
     _raises(rl.BackendUnavailable, rl.start_login, **kw)
     _raises(ValueError, rl.start_login, **kw, backend="nope")
 
@@ -117,7 +124,9 @@ def case_env_and_proxy_fail_loud():
     _set_env(project=None)
     assert "BROWSERBASE_PROJECT_ID" in str(_raises(RuntimeError, rl._bb_create_session))
     _set_env()
-    _raises(ValueError, rl.start_login, email="a@b", password="p", proxy_label="",
+    _raises(ValueError, rl.start_login, email="a@b", password="p", proxy=rl.PROXY_CUSTOM,
+            proxy_label="", principal=None, backend=rl.BACKEND_BROWSERBASE)
+    _raises(ValueError, rl.start_login, email="a@b", password="p", proxy="bogus",
             principal=None, backend=rl.BACKEND_BROWSERBASE)
     assert not rl._jobs, "no job may be registered by a refused start"
 
@@ -251,14 +260,18 @@ def _with_fakes(urlopen, fn):
 def _persist_fakes(order):
     import server
     import session_bootstrap
-    orig = (proxy_registry.assign_account, session_bootstrap.from_request, server.post_bootstrap_hooks)
+    orig = (proxy_registry.assign_account, proxy_registry.assign_pool,
+            session_bootstrap.from_request, server.post_bootstrap_hooks)
     proxy_registry.assign_account = lambda label, aid: order.append(("bind", label, aid))
+    proxy_registry.assign_pool = lambda aid: order.append(("pool", aid)) or ({}, False)
     session_bootstrap.from_request = lambda parsed, **kw: (
-        order.append(("persist", parsed["headers"]["user-id"])) or Path("/x/accounts/777/session_T.json"))
+        order.append(("persist", parsed["headers"]["user-id"], kw.get("nickname")))
+        or Path("/x/accounts/777/session_T.json"))
     server.post_bootstrap_hooks = lambda aid: order.append(("hooks", aid))
 
     def restore():
-        proxy_registry.assign_account, session_bootstrap.from_request, server.post_bootstrap_hooks = orig
+        (proxy_registry.assign_account, proxy_registry.assign_pool,
+         session_bootstrap.from_request, server.post_bootstrap_hooks) = orig
     return restore
 
 
@@ -269,7 +282,7 @@ def case_managed_login_binds_proxy():
     order, seen = [], {}
     restore = _persist_fakes(order)
     calls, urlopen = _fake_browserbase()
-    job = _job(proxy_label="hu-1")
+    job = _job(proxy=rl.PROXY_CUSTOM, proxy_label="hu-1")
 
     def _body(page, ctx):
         seen["live"] = job.public()  # mid-job status, as the card polls it
@@ -285,7 +298,7 @@ def case_managed_login_binds_proxy():
     assert seen["live"]["message"] == "browser ready", seen["live"]
     assert "proxy_fallback" not in seen["live"]
     assert job.message == "session captured; proxy hu-1 attached for all later traffic", job.message
-    assert order == [("bind", "hu-1", "777"), ("persist", "777"), ("hooks", "777")], order
+    assert order == [("bind", "hu-1", "777"), ("persist", "777", None), ("hooks", "777")], order
     assert _GOTOS == [f"s1 {rl.OF_HOME}"], _GOTOS
     creates = [b for m, u, b in calls if (m, u) == ("POST", f"{_BB}/sessions")]
     assert creates == [{"projectId": "proj-xyz", "proxies": True,
@@ -395,24 +408,30 @@ class _Page:
 
 
 def case_capture_binds_before_persist():
-    import server
-    import session_bootstrap
     order = []
-    orig = (proxy_registry.assign_account, session_bootstrap.from_request, server.post_bootstrap_hooks)
-    proxy_registry.assign_account = lambda label, aid: order.append(("bind", label, aid))
-
-    def _persist(parsed, **kw):
-        order.append(("persist", parsed["headers"]["user-id"], kw["nickname"]))
-        return Path("/x/accounts/777/session_T.json")
-
-    session_bootstrap.from_request = _persist
-    server.post_bootstrap_hooks = lambda aid: order.append(("hooks", aid))
+    restore = _persist_fakes(order)
     try:
-        job = _job(proxy_label="hu-1", nickname="Bella")
+        job = _job(proxy=rl.PROXY_CUSTOM, proxy_label="hu-1", nickname="Bella")
         rl._capture_and_persist(job, _Page(), _Ctx())
         assert order == [("bind", "hu-1", "777"), ("persist", "777", "Bella"), ("hooks", "777")], order
         assert job.state == rl.STATE_DONE and job.account_id == "777"
         assert job.session_file == "session_T.json"
+
+        # The Inflowwww proxy (the default): assign_pool, as POST /admin/proxy-pool/assign does.
+        order.clear()
+        job = _job()
+        assert job.proxy == rl.PROXY_INFLOWWW
+        rl._capture_and_persist(job, _Page(), _Ctx())
+        assert order == [("pool", "777"), ("persist", "777", None), ("hooks", "777")], order
+        assert job.message == "session captured; the Inflowwww proxy attached for all later traffic", job.message
+        assert job.public()["proxy"] == rl.PROXY_INFLOWWW and job.public()["proxy_label"] == ""
+
+        # No proxy: nothing is bound, so a re-login keeps the account's binding.
+        order.clear()
+        job = _job(proxy=rl.PROXY_NONE)
+        rl._capture_and_persist(job, _Page(), _Ctx())
+        assert order == [("persist", "777", None), ("hooks", "777")], order
+        assert job.message == "session captured; no proxy attached (server IP)", job.message
 
         order.clear()
 
@@ -420,12 +439,19 @@ def case_capture_binds_before_persist():
             raise KeyError(label)
 
         proxy_registry.assign_account = _bad_bind
-        job = _job(proxy_label="gone")
+        job = _job(proxy=rl.PROXY_CUSTOM, proxy_label="gone")
         e = _raises(RuntimeError, rl._capture_and_persist, job, _Page(), _Ctx())
         assert "one egress" in str(e)
+
+        def _no_pool(aid):
+            raise LookupError("no Inflowwww proxies are set up on this relay")
+
+        proxy_registry.assign_pool = _no_pool
+        e = _raises(RuntimeError, rl._capture_and_persist, _job(), _Page(), _Ctx())
+        assert "Inflowwww proxy" in str(e) and "one egress" in str(e), e
         assert order == [], "nothing may be persisted when the bind fails"
     finally:
-        proxy_registry.assign_account, session_bootstrap.from_request, server.post_bootstrap_hooks = orig
+        restore()
 
 
 def case_live_server_is_the_serving_module():
@@ -442,12 +468,55 @@ def case_live_server_is_the_serving_module():
         sys.modules.pop("service.server", None)
 
 
+def case_api_proxy_choice():
+    import remote_login_api
+    proxy_registry.upsert({"label": "mine-1", "host": "203.0.113.11", "port": 12323})
+    proxy_registry.upsert({"label": "theirs-1", "host": "203.0.113.12", "port": 12323, "user_id": "u-other"})
+    seen = []
+    orig = (rl.start_login, proxy_registry.pool_entries)
+    rl.start_login = lambda **kw: seen.append(kw) or _job(proxy=kw["proxy"], proxy_label=kw["proxy_label"])
+    base = {"email": "a@b.c", "password": OF_PW, "backend": "browserbase"}
+    start = lambda **kw: client.post("/admin/login/remote/start", json={**base, **kw})
+    try:
+        proxy_registry.pool_entries = lambda: [{"label": "infloww-0000aaaa", "pool": True}]
+        r = start()
+        assert r.status_code == 200, r.text
+        assert seen[-1]["proxy"] == rl.PROXY_INFLOWWW and seen[-1]["proxy_label"] == "", seen[-1]
+        assert r.json()["proxy"] == rl.PROXY_INFLOWWW and r.json()["proxy_label"] == ""
+        assert start(proxy="none").status_code == 200 and seen[-1]["proxy"] == rl.PROXY_NONE
+        r = start(proxy_label="mine-1")  # a label alone means custom
+        assert r.status_code == 200 and seen[-1]["proxy"] == rl.PROXY_CUSTOM, r.text
+        assert seen[-1]["proxy_label"] == "mine-1"
+
+        proxy_registry.pool_entries = lambda: []
+        assert start().status_code == 200 and seen[-1]["proxy"] == rl.PROXY_NONE, "no pool: the flow's default is none"
+        r = start(proxy="infloww")
+        assert r.status_code == 409 and "Inflowwww" in r.text, r.text
+        n = len(seen)
+        assert start(proxy="custom").status_code == 400
+        assert start(proxy="bogus").status_code == 400
+        assert start(proxy="custom", proxy_label="missing").status_code == 404
+        # Visibility: another user's proxy is invisible to a signed-in user.
+        real_user = remote_login_api.remote_login.live_server()._get_request_user
+        remote_login_api.remote_login.live_server()._get_request_user = lambda: type("U", (), {"id": "u-me", "account_ids": frozenset()})()
+        try:
+            assert start(proxy="custom", proxy_label="theirs-1").status_code == 404
+        finally:
+            remote_login_api.remote_login.live_server()._get_request_user = real_user
+        assert len(seen) == n, "no job may start on a refused proxy"
+    finally:
+        rl.start_login, proxy_registry.pool_entries = orig
+        rl._jobs.clear()
+
+
 def case_api_gates():
     proxy_registry.upsert({"label": "hu-1", "host": "203.0.113.10", "port": 12323,
                            "username": "puser", "password": PROXY_PW})
     base = {"email": "a@b.c", "password": OF_PW, "proxy_label": "hu-1"}
-    r = client.post("/admin/login/remote/start", json={"email": "a@b.c", "password": OF_PW})
-    assert r.status_code == 400 and OF_PW not in r.text, r.text  # never a 422 echoing the body
+    r = client.post("/admin/login/remote/start", json={"email": "a@b.c", "proxy_label": 7})
+    assert r.status_code in (400, 422) and OF_PW not in r.text, r.text
+    r = client.post("/admin/login/remote/start", json={"email": "a@b.c", "password": ""})
+    assert r.status_code == 400, r.text  # never a 422 echoing the body
     r = client.post("/admin/login/remote/start", json={**base, "backend": "nope"})
     assert r.status_code == 400, r.text
     r = client.post("/admin/login/remote/start", json=base)  # default: local

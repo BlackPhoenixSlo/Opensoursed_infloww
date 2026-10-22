@@ -6,8 +6,8 @@ Creators › Add creator › Proxy selection offers three choices:
 
 | choice | what the account egresses through |
 | --- | --- |
-| **Inflowwww proxy** | one proxy from the relay's env pool, the least-used, kept |
-| **No proxy (server IP)** (default) | the relay's own server IP |
+| **Inflowwww proxy** (default when the relay has a pool) | one proxy from the relay's env pool, the least-used, kept |
+| **No proxy (server IP)** (default without a pool) | the relay's own server IP |
 | **Custom proxy** | one of your proxies from Creators › Custom proxy |
 
 Accounts are linked with the Chatterly Login Capture extension and the **Paste cURL**
@@ -17,8 +17,10 @@ login** (below). The relay image ships no browser.
 ## Browserbase login
 
 Add creator › sign-in › **Try Browserbase login**: the creator's OnlyFans email and
-password plus one of your custom proxies (required). `POST /admin/login/remote/start
-{backend:"browserbase"}` (`service/remote_login.py`) creates a Browserbase session on
+password; the proxy is the flow's Proxy selection (the card has no picker of its own).
+It needs no extension, so on a phone it is the sign-in step's only form (Paste cURL is
+desktop-only). `POST /admin/login/remote/start {backend:"browserbase", proxy,
+proxy_label}` (`service/remote_login.py`) creates a Browserbase session on
 Browserbase's managed proxies (`proxies: true`), drives it over CDP with Playwright's
 `connect_over_cdp`, and fills in OnlyFans' login form. Any Cloudflare / captcha / 2FA
 check is solved by a person in Browserbase's live view, shown in the card while the job
@@ -28,13 +30,20 @@ runs; `solveCaptchas` is always false. Once logged in, the login extension's own
 saved by `session_bootstrap.from_request` and `server.post_bootstrap_hooks`, the
 paste-curl path.
 
+- `proxy`: `"infloww"` binds with `proxies.assign_pool` and `"custom"` (+ `proxy_label`)
+  with `proxies.assign_account`, the registry calls behind `POST /admin/proxy-pool/assign`
+  and `/admin/proxies/assign` that Paste cURL's attach step makes; `"none"` binds nothing
+  (a row's re-login sends it, so the account keeps its proxy). Omitted: `"custom"` when
+  `proxy_label` is given, else the flow's default (`"infloww"` with a pool, else
+  `"none"`). `"infloww"` without a pool is a 409 before any session; a custom label gets
+  the same visibility check as binding one (another user's is a 404).
+
 - Needs `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID` in the relay's env (503
   without them), on a plan that includes proxies.
 - The login itself runs on Browserbase's network; our proxy is never sent to
   Browserbase (the owner's call). It is attached to the account before the session is
   saved, so all later traffic for the account egresses through it, as with an
-  extension-captured login. The proxy pick stays required, because it is what gets
-  bound. (Sending our proxy as Browserbase's external proxy was dropped: IPRoyal ISP
+  extension-captured login. (Sending our proxy as Browserbase's external proxy was dropped: IPRoyal ISP
   proxies that work from the relay answer Browserbase's connect with 403.)
 - A session that can't be created, or an OnlyFans page that won't load, fails the job
   at once with the error.

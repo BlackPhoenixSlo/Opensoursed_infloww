@@ -8,13 +8,16 @@
  *   creators-details  "Creator details": Display image, Creator name, Gender. Done saves the Creator and closes;
  *                     "Next: Link creator account" saves it and goes on. Both say "New creator added".
  *   select-platform   OnlyFans or Fansly; a platform the Creator already has an account on is disabled.
- *   select-proxy      OnlyFans only, step 1 of 3: Inflowwww proxy (the relay's pool), No proxy (the default) or a
- *                     custom proxy whose check passed; "Connect OnlyFans".
+ *   select-proxy      OnlyFans only, step 1 of 3: Inflowwww proxy (the relay's pool; the default when it has one, else
+ *                     No proxy), No proxy or a custom proxy whose check passed; "Connect OnlyFans".
  *   login             Infloww's embedded OnlyFans sign-in (`OfLogin`) is ours: Paste cURL (the browser extension) and
- *                     Try Browserbase login (a remote browser on Browserbase's network, a custom proxy attached afterwards, a human solving any challenge),
- *                     Inflowwww extras, preset with the flow's Creator name and custom proxy (under Inflowwww proxy Paste
- *                     cURL has no proxy select, and its attach step binds a pool proxy); Fansly's is the Fansly paste
- *                     session. "Still unable…" opens Infloww's Select your role and Alternative method screens.
+ *                     Try Browserbase login (a remote browser on Browserbase's network, a human solving any challenge),
+ *                     Inflowwww extras, preset with the flow's Creator name and Proxy selection, which both bind after
+ *                     the capture (under Inflowwww proxy Paste cURL has no proxy select, and its attach step binds a
+ *                     pool proxy; the Browserbase job binds the same on the relay). On a phone only Browserbase login
+ *                     shows (no extension there), with a line saying Paste cURL is desktop-only. Fansly's is the
+ *                     Fansly paste session, desktop-only. "Still unable…" opens Infloww's Select your role and
+ *                     Alternative method screens.
  *   linked            "Creator account is linked to Inflowwww": the account and the proxy the relay has it on (read
  *                     back from GET /admin/proxies, not the radio picked); step 2 of 3.
  *   creator-details   "Account details": Nickname, Tag, Assigned employees, Internal notes; step 3 of 3. Saved to the
@@ -48,8 +51,12 @@ import { useCreatorProfiles, type CreatorDetails, type DraftCreator } from "@/li
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { cn } from "@/lib/utils";
 
-/** The page's one line for phones, also shown in the modal there (spec, Mobile). */
-export const DESKTOP_ONLY_LINE = "Session capture, proxies and keys are desktop-only.";
+/** The page's one line for phones (spec, Mobile). */
+export const DESKTOP_ONLY_LINE = "Paste cURL (the browser extension) and keys are desktop-only. On a phone, link a creator with Browserbase login.";
+/** The OnlyFans sign-in's line for phones, under the Browserbase card. */
+export const MOBILE_PASTE_LINE = "Paste cURL needs the desktop browser extension.";
+/** The Fansly sign-in's line for phones. */
+export const MOBILE_FANSLY_LINE = "The Fansly paste session is desktop-only.";
 
 /** Our sign-in sections. */
 const SECTIONS = {
@@ -95,7 +102,11 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
   const [draftId, setDraftId] = useState<string | undefined>(draft?.id);
   const taken = linkAnother?.linked ?? [];
   const [platform, setPlatform] = useState<Platform>(at === "fansly" ? "fansly" : taken.includes("onlyfans") ? "fansly" : "onlyfans");
-  const [proxy, setProxy] = useState<ProxyChoice>({ type: "none" });
+  // The Proxy selection: the Inflowwww proxy by default when the relay has a pool, else No proxy. A row's recovery
+  // (`at`) skips the step and binds nothing, so the account keeps the proxy it is on.
+  const proxiesQ = useProxyList();
+  const [picked, setProxy] = useState<ProxyChoice | null>(at ? { type: "none" } : null);
+  const proxy: ProxyChoice = picked ?? (proxiesQ.data?.pool?.size ? { type: "infloww" } : { type: "none" });
   const [accountId, setAccountId] = useState<string | null>(null);
   const [account, setAccount] = useState<AccountDetails | null>(null);
   const [busy, setBusy] = useState(false);
@@ -196,27 +207,33 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
       body = (
         <div className="space-y-4">
           <p className={STEP_TITLE}>{T.linkPlatformAccount(PLATFORM_LABEL[platform])}</p>
-          <p className="md:hidden text-sm text-fg-dim" title={EXTRA_LABEL}>{DESKTOP_ONLY_LINE}</p>
-          <div className="hidden md:block space-y-6">
-            {of ? (
-              <>
+          {of ? (
+            <div className="space-y-6">
+              {/* No extension on a phone: Paste cURL is desktop-only, and Browserbase login is the step's content. */}
+              <div className="hidden md:block">
                 <Section k="paste">
                   <PasteCurlCard
                     extInstalled={extInstalled} onLinked={linked} initialNickname={at ? "" : details.name} initialProxyLabel={proxyLabel}
                     attach={proxy.type === "infloww" ? bindPoolProxy : undefined}
                   />
                 </Section>
-                <Section k="browserbase">
-                  <BrowserbaseLoginCard onLinked={linked} initialNickname={at ? "" : details.name} initialProxyLabel={proxyLabel} />
-                </Section>
-                <button type="button" onClick={() => setStep("role")} className="text-sm text-cta hover:underline">
-                  {T.stillUnable}
-                </button>
-              </>
-            ) : (
-              <Section k="fansly"><FanslyPasteSessionCard onLinked={linked} initialNickname={at ? "" : details.name} formId={FANSLY_FORM_ID} /></Section>
-            )}
-          </div>
+              </div>
+              <Section k="browserbase">
+                <BrowserbaseLoginCard onLinked={linked} initialNickname={at ? "" : details.name} proxy={at ? undefined : proxy} />
+              </Section>
+              <p className="md:hidden text-sm text-fg-dim" title={EXTRA_LABEL}>{MOBILE_PASTE_LINE}</p>
+              <button type="button" onClick={() => setStep("role")} className="text-sm text-cta hover:underline">
+                {T.stillUnable}
+              </button>
+            </div>
+          ) : (
+            <>
+              <p className="md:hidden text-sm text-fg-dim" title={EXTRA_LABEL}>{MOBILE_FANSLY_LINE}</p>
+              <div className="hidden md:block">
+                <Section k="fansly"><FanslyPasteSessionCard onLinked={linked} initialNickname={at ? "" : details.name} formId={FANSLY_FORM_ID} /></Section>
+              </div>
+            </>
+          )}
         </div>
       );
       footer = at ? <FlowButton onClick={onClose}>{T.cancel}</FlowButton> : (

@@ -23,10 +23,13 @@ for this repo:
 BROWSERBASE'S NETWORK, OUR PROXY AFTERWARDS (owner's call: "we can just use
 their proxies and then we attach ours"). The session is created with
 Browserbase's managed proxies (`proxies: true`); our proxy is never sent to
-Browserbase. The proxy the operator picks is still required, and it is bound to
-the account BEFORE the session is saved, so every later relay call for the
-account egresses through it, as with an extension-captured login. A session
-that can't be created, or an OnlyFans page that won't load, fails loudly.
+Browserbase. The account's proxy is the Add creator flow's Proxy selection,
+bound the way the paste-curl path binds it (`bind_proxy`): the Inflowwww proxy
+through `proxies.assign_pool`, a custom proxy through `proxies.assign_account`
+(the registry calls behind POST /admin/proxy-pool/assign and /admin/proxies/
+assign), or nothing for No proxy. It is bound BEFORE the session is saved, so
+every later relay call for the account egresses through it. A session that
+can't be created, or an OnlyFans page that won't load, fails loudly.
 
 SECRETS. BROWSERBASE_API_KEY / BROWSERBASE_PROJECT_ID come from the env only.
 The OnlyFans password lives as a local of the worker thread, is never stored
@@ -64,6 +67,12 @@ INTERCEPTOR_PATH = HERE.parent / "loginExtensionMulti" / "interceptor.js"
 BACKEND_LOCAL = "local"
 BACKEND_BROWSERBASE = "browserbase"
 BACKENDS = (BACKEND_LOCAL, BACKEND_BROWSERBASE)
+
+# The Add creator flow's Proxy selection (app: creatorFlow.ProxyChoice).
+PROXY_INFLOWWW = "infloww"   # the relay's env pool (never named to the client)
+PROXY_NONE = "none"          # the relay's own server IP; nothing is bound
+PROXY_CUSTOM = "custom"      # one of the user's proxies, by label
+PROXY_CHOICES = (PROXY_INFLOWWW, PROXY_NONE, PROXY_CUSTOM)
 
 BROWSERBASE_API = "https://api.browserbase.com/v1"
 BB_HTTP_TIMEOUT_S = 30
@@ -176,10 +185,11 @@ def scrub(text: Any, *secrets: str | None) -> str:
 class RemoteLoginJob:
     id: str
     email: str
-    proxy_label: str
     principal: str | None
     created_at: float
     expires_at: float
+    proxy: str = PROXY_INFLOWWW
+    proxy_label: str = ""   # PROXY_CUSTOM only
     backend: str = BACKEND_BROWSERBASE
     nickname: str | None = None
     make_active: bool = True
@@ -226,6 +236,7 @@ class RemoteLoginJob:
                 "error": self.error,
                 "account_id": self.account_id,
                 "session_file": self.session_file,
+                "proxy": self.proxy,
                 "proxy_label": self.proxy_label,
                 "live_view_url": None if self.state in _TERMINAL else self.live_view_url,
                 "expires_at": self.expires_at,
@@ -262,9 +273,10 @@ def _register(job: RemoteLoginJob) -> None:
 
 # ── Entry points ────────────────────────────────────────────────────────────
 
-def start_login(*, email: str, password: str, proxy_label: str,
-                principal: str | None, nickname: str | None = None,
-                make_active: bool = True, backend: str = BACKEND_LOCAL) -> RemoteLoginJob:
+def start_login(*, email: str, password: str, principal: str | None,
+                proxy: str = PROXY_INFLOWWW, proxy_label: str = "",
+                nickname: str | None = None, make_active: bool = True,
+                backend: str = BACKEND_LOCAL) -> RemoteLoginJob:
     """Start a served login and return its job. The password goes to the worker
     thread only. The request's context is copied into the thread so the
     post-bootstrap hooks link the new account to the signed-in user."""
@@ -276,12 +288,15 @@ def start_login(*, email: str, password: str, proxy_label: str,
             "relay ships no Chromium) — use backend=\"browserbase\"")
     if not email or not password:
         raise ValueError("email and password are required")
-    if not proxy_label:
-        raise ValueError("a proxy is required (it is bound to the account for all later traffic)")
+    if proxy not in PROXY_CHOICES:
+        raise ValueError(f"unknown proxy choice {proxy!r} (expected one of {PROXY_CHOICES})")
+    if proxy == PROXY_CUSTOM and not proxy_label:
+        raise ValueError("a custom proxy needs its label")
     _bb_env()  # fail before a job exists when the env is not set
     now = time.time()
     job = RemoteLoginJob(
-        id=uuid.uuid4().hex, email=email, proxy_label=proxy_label, principal=principal,
+        id=uuid.uuid4().hex, email=email, principal=principal,
+        proxy=proxy, proxy_label=proxy_label if proxy == PROXY_CUSTOM else "",
         created_at=now, expires_at=now + JOB_WINDOW_S, backend=backend,
         nickname=nickname, make_active=make_active, message="starting browser",
     )
@@ -611,11 +626,32 @@ def _request_from_capture(cap: dict[str, Any], cookies: list[dict], user_agent: 
             "method": "GET", "headers": headers, "cookies": cookies, "data": None}
 
 
+def bind_proxy(job: RemoteLoginJob, account_id: str) -> None:
+    """Bind the flow's proxy choice to `account_id` with the registry calls
+    the paste-curl path's attach step makes: POST /admin/proxy-pool/assign
+    (`assign_pool`: kept if already on the pool, else the least-used) and
+    POST /admin/proxies/assign (`assign_account`). No proxy binds nothing, so
+    a re-login keeps whatever the account is on."""
+    import proxies as proxy_registry
+
+    if job.proxy == PROXY_INFLOWWW:
+        proxy_registry.assign_pool(account_id)
+    elif job.proxy == PROXY_CUSTOM:
+        proxy_registry.assign_account(job.proxy_label, account_id)
+
+
+def proxy_text(job: RemoteLoginJob) -> str:
+    if job.proxy == PROXY_INFLOWWW:
+        return "the Inflowwww proxy"
+    if job.proxy == PROXY_CUSTOM:
+        return f"proxy {job.proxy_label}"
+    return "no proxy (server IP)"
+
+
 def _capture_and_persist(job: RemoteLoginJob, page, context) -> None:
     """Bind the proxy, persist through paste-curl's pipeline, run the bootstrap
     endpoint's hooks. The proxy is bound BEFORE anything is persisted: when the
     bind fails nothing is written (one egress)."""
-    import proxies as proxy_registry
     import session_bootstrap
 
     job.set_state(STATE_CAPTURING, "capturing session")
@@ -630,10 +666,12 @@ def _capture_and_persist(job: RemoteLoginJob, page, context) -> None:
     uid = parsed["headers"]["user-id"]
 
     try:
-        proxy_registry.assign_account(job.proxy_label, uid)
+        bind_proxy(job, uid)
     except Exception as e:  # noqa: BLE001
+        import proxies as proxy_registry
+        why = proxy_registry.scrub_pool_secrets(str(e))
         raise RuntimeError(
-            f"proxy bind failed for {job.proxy_label!r}; nothing was saved (one egress)") from e
+            f"binding {proxy_text(job)} failed ({why}); nothing was saved (one egress)") from e
 
     try:
         path = session_bootstrap.from_request(
@@ -646,4 +684,6 @@ def _capture_and_persist(job: RemoteLoginJob, page, context) -> None:
         job.session_file = path.name
 
     live_server().post_bootstrap_hooks(aid)
-    job.set_state(STATE_DONE, f"session captured; proxy {job.proxy_label} attached for all later traffic")
+    job.set_state(STATE_DONE, (
+        "session captured; no proxy attached (server IP)" if job.proxy == PROXY_NONE
+        else f"session captured; {proxy_text(job)} attached for all later traffic"))
