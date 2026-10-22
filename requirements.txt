@@ -1,9 +1,9 @@
 # Runtime deps for the relay (Docker). Pinned to the versions that this
 # project was developed against — bump deliberately.
 #
-# Capture-only deps (Playwright) are intentionally NOT
-# here. They live on the host where the browser does, and the Docker container
-# only ever runs the server / paste-curl bootstrap / WebSocket pump.
+# No browser is installed: the served Browserbase login (service/remote_login.py)
+# drives a REMOTE Chromium over CDP, which needs only the playwright client
+# (its bundled driver; `playwright install` is never run).
 
 fastapi==0.136.1
 # fastapi only asks for starlette>=0.46; the relay's GZipMiddleware call uses
@@ -44,3 +44,5 @@ Pillow==12.2.0
 # to arrive only as a transitive dep of the google-* packages (removed with
 # push_to_sheets, cleanup R3); pinned to the version those images carried.
 requests==2.34.2
+# The served Browserbase login: Playwright connect_over_cdp, no local browser.
+playwright==1.63.0

@@ -10,9 +10,10 @@
  *   select-platform   OnlyFans or Fansly; a platform the Creator already has an account on is disabled.
  *   select-proxy      OnlyFans only, step 1 of 3: Inflowwww proxy (the relay's pool), No proxy (the default) or a
  *                     custom proxy whose check passed; "Connect OnlyFans".
- *   login             Infloww's embedded OnlyFans sign-in (`OfLogin`) is ours: Paste cURL (the browser extension), an
- *                     Inflowwww extra, preset with the flow's Creator name and custom proxy (under Inflowwww proxy it
- *                     has no proxy select, and its attach step binds a pool proxy); Fansly's is the Fansly paste
+ *   login             Infloww's embedded OnlyFans sign-in (`OfLogin`) is ours: Paste cURL (the browser extension) and
+ *                     Try Browserbase login (a remote browser on Browserbase's network, a custom proxy attached afterwards, a human solving any challenge),
+ *                     Inflowwww extras, preset with the flow's Creator name and custom proxy (under Inflowwww proxy Paste
+ *                     cURL has no proxy select, and its attach step binds a pool proxy); Fansly's is the Fansly paste
  *                     session. "Still unable…" opens Infloww's Select your role and Alternative method screens.
  *   linked            "Creator account is linked to Inflowwww": the account and the proxy the relay has it on (read
  *                     back from GET /admin/proxies, not the radio picked); step 2 of 3.
@@ -32,6 +33,7 @@ import { ExternalLink, UserPlus } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
 import PasteCurlCard from "@/components/setup/PasteCurlCard";
+import BrowserbaseLoginCard from "@/components/setup/BrowserbaseLoginCard";
 import FanslyPasteSessionCard, { FANSLY_FORM_ID, FANSLY_T } from "@/components/setup/FanslyPasteSessionCard";
 import {
   CreatorsDetailsForm, EditCreatorForm, FlowButton, FlowModal, HB_DIM, LinkedLine, RADIO, RADIO_GROUP, RADIO_ITEM,
@@ -49,9 +51,10 @@ import { cn } from "@/lib/utils";
 /** The page's one line for phones, also shown in the modal there (spec, Mobile). */
 export const DESKTOP_ONLY_LINE = "Session capture, proxies and keys are desktop-only.";
 
-/** Our two sign-in sections. */
+/** Our sign-in sections. */
 const SECTIONS = {
   paste: { id: "add-creator-paste-curl", name: "Paste cURL" },
+  browserbase: { id: "add-creator-browserbase", name: "Browserbase login" },
   fansly: { id: "add-creator-fansly", name: "Fansly paste session" },
 } as const;
 export type SectionKey = keyof typeof SECTIONS;
@@ -202,6 +205,9 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
                     extInstalled={extInstalled} onLinked={linked} initialNickname={at ? "" : details.name} initialProxyLabel={proxyLabel}
                     attach={proxy.type === "infloww" ? bindPoolProxy : undefined}
                   />
+                </Section>
+                <Section k="browserbase">
+                  <BrowserbaseLoginCard onLinked={linked} initialNickname={at ? "" : details.name} initialProxyLabel={proxyLabel} />
                 </Section>
                 <button type="button" onClick={() => setStep("role")} className="text-sm text-cta hover:underline">
                   {T.stillUnable}

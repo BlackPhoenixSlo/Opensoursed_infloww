@@ -2,8 +2,9 @@
 """
 Session bootstrap.
 
-One way for the user to register a working session here (the direct and
-remote logins call `persist_session` themselves):
+One way for the user to register a working session here (the served
+Browserbase login, remote_login.py, enters at `from_request` with the same
+parsed shape):
 
   C) "paste-curl"
      Caller pastes a single `curl ...` command from browser DevTools
@@ -153,7 +154,21 @@ def from_curl(curl_text: str, *,
     existing session (since static_param is per-OF-revision, identical for
     all users at that revision).
     """
-    parsed = parse_curl(curl_text)
+    return from_request(parse_curl(curl_text),
+                        static_param_override=static_param_override,
+                        account_id=account_id, nickname=nickname,
+                        make_active=make_active)
+
+
+def from_request(parsed: dict, *,
+                 static_param_override: str | None = None,
+                 account_id: str | None = None,
+                 nickname: str | None = None,
+                 make_active: bool = True) -> Path:
+    """`from_curl` past the parse: `parsed` is `parse_curl`'s shape
+    ({url, headers (lowercase names), cookies, ...}). The served remote login
+    (remote_login.py) builds it from a live browser's signed request, so both
+    paths derive, verify and persist identically."""
     h = parsed["headers"]
     required = ("user-id", "x-bc", "x-of-rev", "sign", "time", "user-agent")
     missing = [k for k in required if not h.get(k)]

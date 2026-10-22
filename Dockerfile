@@ -9,9 +9,10 @@
 # Companion image: app/Dockerfile builds the Next.js /inbox UI.
 # Wired together in docker-compose.yml at the repo root.
 #
-# What is NOT included: anything that drives a real browser (Playwright,
-# capture scripts, dev `--reload` watcher). Auth state arrives via the
-# loginExtensionMulti paste-curl flow once the container is running.
+# What is NOT included: a browser (no Chromium), capture scripts, the dev
+# `--reload` watcher. Auth state arrives via the loginExtensionMulti
+# paste-curl flow, or the served Browserbase login (service/remote_login.py),
+# which drives a REMOTE browser over CDP with the playwright client only.
 
 FROM python:3.13-slim
 
@@ -64,6 +65,9 @@ COPY fansly/fansly_client.py fansly/fansly_shim.py fansly/fansly_signer.py \
 #   /app/service/proxies.json — proxy registry
 #   /app/service/chatterly.db — SQLite event store (WAL + SHM created beside it)
 RUN mkdir -p /app/service/sessions
+# The login extension's interceptor, injected by the Browserbase login
+# (remote_login.INTERCEPTOR_PATH) so its capture matches the extension's.
+COPY loginExtensionMulti/interceptor.js loginExtensionMulti/
 
 EXPOSE 8787
 

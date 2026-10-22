@@ -11,8 +11,43 @@ Creators › Add creator › Proxy selection offers three choices:
 | **Custom proxy** | one of your proxies from Creators › Custom proxy |
 
 Accounts are linked with the Chatterly Login Capture extension and the **Paste cURL**
-card (`POST /admin/session/bootstrap {mode:"paste-curl"}`). The relay image ships no
-browser, so there is no in-app password login.
+card (`POST /admin/session/bootstrap {mode:"paste-curl"}`), or with **Try Browserbase
+login** (below). The relay image ships no browser.
+
+## Browserbase login
+
+Add creator › sign-in › **Try Browserbase login**: the creator's OnlyFans email and
+password plus one of your custom proxies (required). `POST /admin/login/remote/start
+{backend:"browserbase"}` (`service/remote_login.py`) creates a Browserbase session on
+Browserbase's managed proxies (`proxies: true`), drives it over CDP with Playwright's
+`connect_over_cdp`, and fills in OnlyFans' login form. Any Cloudflare / captcha / 2FA
+check is solved by a person in Browserbase's live view, shown in the card while the job
+runs; `solveCaptchas` is always false. Once logged in, the login extension's own
+`interceptor.js` (added as an init script) supplies the signed headers and
+`x-relay-static-param`, the chosen proxy is bound to the account, and the session is
+saved by `session_bootstrap.from_request` and `server.post_bootstrap_hooks`, the
+paste-curl path.
+
+- Needs `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID` in the relay's env (503
+  without them), on a plan that includes proxies.
+- The login itself runs on Browserbase's network; our proxy is never sent to
+  Browserbase (the owner's call). It is attached to the account before the session is
+  saved, so all later traffic for the account egresses through it, as with an
+  extension-captured login. The proxy pick stays required, because it is what gets
+  bound. (Sending our proxy as Browserbase's external proxy was dropped: IPRoyal ISP
+  proxies that work from the relay answer Browserbase's connect with 403.)
+- A session that can't be created, or an OnlyFans page that won't load, fails the job
+  at once with the error.
+- The password is never stored, logged or audited (`/admin/login` is audit-skipped)
+  and is scrubbed from every job message. `/admin/login` is owner-only for chatters.
+- `backend` defaults to `"local"`, which this build refuses (501): no local browser.
+- The session lives about 5 minutes (Browserbase's default); the login, the human's
+  part included, must land within about 3¾ minutes; the rest is kept for the capture.
+- `service/scripts/browserbase_of_smoketest.py` creates the same managed-proxy session,
+  prints its egress IP and checks that OnlyFans' login form renders (exit 0 on PASS, 2
+  when the session is refused, 1 otherwise);
+  `service/scripts/browserbase_of_login_attended.py` (env `OF_EMAIL`, `OF_PASSWORD`)
+  is one attended login on the same session that saves and binds nothing.
 
 ## Inflowwww proxy pool
 

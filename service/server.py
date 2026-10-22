@@ -138,6 +138,7 @@ from s4s_requests_api import router as _s4s_requests_router, expire_callers_requ
 from s4s_schedule_api import router as _s4s_schedule_router  # noqa: E402
 from s4s_media import router as _s4s_media_router  # noqa: E402
 from account_security_api import router as _account_security_router  # noqa: E402
+from remote_login_api import router as _remote_login_router  # noqa: E402 — served Browserbase login
 from auth import (  # noqa: E402
     router as _auth_router,
     admin_router as _auth_admin_router,
@@ -362,6 +363,7 @@ app.include_router(_s4s_media_router, dependencies=[Depends(_expire_s4s_requests
 app.include_router(_auth_router)
 # The sign-in form, personal 2FA, the sign-in 2FA step and Log out other sessions (/auth/sign-in, /auth/2fa/*, /auth/sessions/*).
 app.include_router(_account_security_router)
+app.include_router(_remote_login_router)
 app.include_router(_auth_admin_router)
 app.include_router(_auth_impersonate_router)
 # Chatter principal — separate from User. /chatter/* is the chatter-facing
@@ -1703,6 +1705,22 @@ def _sync_and_link_after_bootstrap(account_id: str) -> None:
         fut.result(timeout=10)
     except Exception:
         log.exception("bootstrap sync+link failed for account %s", account_id)
+
+
+def post_bootstrap_hooks(account_id: str):
+    """What every session registration runs once the session is on disk, in
+    order: drop the pooled client, clear the dead-session pause, load the
+    client, restart the WS pump so the new cookies are used immediately, then
+    mirror into SQL and link the account to the signed-in user (ordered, not
+    raced — see _sync_and_link_after_bootstrap; unauthed callers still get the
+    sync). Shared by POST /admin/session/bootstrap and the served Browserbase
+    login (remote_login.py). Returns the loaded OFClient."""
+    _invalidate_client(account_id)
+    _kick_clear_session_dead(account_id)
+    c = _load_client(account_id)
+    _restart_account_pump(account_id)
+    _sync_and_link_after_bootstrap(account_id)
+    return c
 
 
 # ── Per-account OF call priority lanes ────────────────────────────────
@@ -9399,18 +9417,7 @@ def bootstrap_session(body: _BootstrapBody = Body(...)) -> dict[str, Any]:
 
     # Resolve which account dir we ended up in (path = .../accounts/<id>/session_*.json)
     actual_aid = path.parent.name
-    _invalidate_client(actual_aid)
-    _kick_clear_session_dead(actual_aid)
-    c = _load_client(actual_aid)
-    # Kick the WS pump too so the new cookies are used immediately.
-    _restart_account_pump(actual_aid)
-    # Phase A: mirror the new on-disk state into SQL, then link it to the
-    # signed-in friend so it shows up in their ScopeSwitcher + passes the
-    # ownership gate. Ordered, not raced — see _sync_and_link_after_bootstrap.
-    # Unauthed callers (founder curl flows) still get the sync; the account
-    # stays visible there because _resolve_account_id skips the gate when
-    # there's no request user.
-    _sync_and_link_after_bootstrap(actual_aid)
+    c = post_bootstrap_hooks(actual_aid)
     return {
         "ok": True,
         "session_file": path.name,

@@ -141,6 +141,10 @@ services:
       # Inflowwww proxy pool (Add creator › "Inflowwww proxy"): the proxy
       # lines, comma-separated, read at startup. Format: docs/proxies.md.
       INFLOWW_PROXIES: "${INFLOWW_PROXIES:-}"
+      # Setup › "Try Browserbase login" (service/remote_login.py). Unset = the
+      # card's start call fails with "BROWSERBASE_API_KEY is not set".
+      BROWSERBASE_API_KEY: "${BROWSERBASE_API_KEY:-}"
+      BROWSERBASE_PROJECT_ID: "${BROWSERBASE_PROJECT_ID:-}"
       # Sign-in throttle (service/login_throttle.py): the IPs/CIDRs whose
       # X-Forwarded-For is believed. Unset or empty = loopback + private ranges.
       # TRUSTED_PROXIES: "${TRUSTED_PROXIES:-}"

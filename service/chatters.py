@@ -752,6 +752,7 @@ _CHATTER_BLOCKED_ADMIN_PREFIXES: tuple[str, ...] = (
     "/admin/proxies",      # proxy registry — owner-only
     "/admin/proxy-pool",   # Inflowwww proxy pool assign/unbind — owner-only, like /admin/proxies
     "/admin/session",      # session bootstrap / capture — owner-only
+    "/admin/login",        # served Browserbase login (OnlyFans credentials) — owner-only, like /admin/session
     "/admin/rev",          # drift detection — owner-only
     "/admin/audit",        # multi-tenant audit log
     "/admin/secrets",      # the SERVER's house keys — founder-only

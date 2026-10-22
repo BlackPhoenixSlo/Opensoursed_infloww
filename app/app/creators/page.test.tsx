@@ -456,7 +456,7 @@ describe("/creators — Add creator, Infloww's steps", () => {
     expect(screen.getByText("Nova Two deleted")).toBeInTheDocument();
   });
 
-  it("goes platform, then proxy, then the sign-in: Paste cURL alone, an extra, preset with the name", async () => {
+  it("goes platform, then proxy, then the sign-in: Paste cURL and Browserbase login, extras, preset with the name", async () => {
     renderWithProviders(<Page />);
     await toLogin();
     // Step 1's Next saved the Creator first (addCreators).
@@ -468,16 +468,18 @@ describe("/creators — Add creator, Infloww's steps", () => {
     // The OnlyFans sign-in keeps the proxy step's dots (#68).
     expect(within(d).getByText("Step 1 of 3")).toBeInTheDocument();
     const sections = within(d).getAllByRole("region");
-    expect(sections.map((s) => s.getAttribute("aria-label"))).toEqual(["Paste cURL"]);
+    expect(sections.map((s) => s.getAttribute("aria-label"))).toEqual(["Paste cURL", "Browserbase login"]);
     for (const s of sections) {
       expect(s).toHaveAttribute("title", EXTRA_LABEL);
       expect(within(s).getByText(EXTRA_LABEL)).toBeInTheDocument();
     }
     expect(within(sections[0]).getByRole("heading", { name: "Paste cURL" })).toBeInTheDocument();
     expect(within(sections[0]).getByDisplayValue("Nova")).toBeInTheDocument();
-    // No in-app password sign-in: the relay ships no browser.
+    // The only password sign-in is the Browserbase card (a remote browser through a required proxy).
     expect(within(d).queryByRole("heading", { name: "Log in to OnlyFans" })).toBeNull();
-    expect(within(d).queryByLabelText("Password")).toBeNull();
+    expect(within(sections[0]).queryByText(/Password/)).toBeNull();
+    expect(within(sections[1]).getByRole("heading", { name: "Try Browserbase login" })).toBeInTheDocument();
+    expect(within(sections[1]).getByRole("button", { name: "Try Browserbase login" })).toBeDisabled();
     // No proxy (the default): Paste cURL keeps its own Attach proxy select.
     expect(within(sections[0]).getByRole("combobox")).toHaveValue("");
     // Infloww's last resort: Select your role, then the alternative method.

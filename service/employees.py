@@ -1327,6 +1327,9 @@ _AUDIT_SKIP_PREFIXES = (
     "/app/",             # static UI
     "/admin/shifts/clock-heartbeat",  # the clocked-in tab's renew, every 30-60 s of activity
     "/admin/agency-notifications",    # marking a notification read
+    # The served Browserbase login (remote_login_api): its start body carries
+    # the OnlyFans PASSWORD, which must never be written to the actions table.
+    "/admin/login",
 )
 # Note: do NOT include "/" here — every absolute path starts with "/", so
 # `startswith("/")` would silently skip every endpoint. The root path is
