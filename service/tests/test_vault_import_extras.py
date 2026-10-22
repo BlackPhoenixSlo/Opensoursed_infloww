@@ -9,7 +9,6 @@ hashtags, and the routes that drive them.
   case_fan_send_uses_the_fan_gate          the DM goes through send_gate, foldering does not
   case_fan_timeout_is_not_a_carrier_alarm  a timed-out fan send raises no carrier alarm
   case_fan_refusal_stops_the_run           "Cannot send message" stops the batch
-  case_upload_to_vault_routes_by_send_to   send_to -> the message path, else the carrier
   case_fan_send_reads_the_vault_id         the message's media id IS the vault id
   case_fan_send_polls_the_chat_for_the_id  ...read off a page pinned to the message
   case_fan_send_poll_is_bounded            a few tries, read errors tolerated, then the hash
@@ -82,27 +81,43 @@ gdrive._session = _no_network
 
 
 class _Client:
-    """An OFClient stand-in for `vault_upload.start`: records each upload's
-    send_to and gate, and lands every file as a fresh vault id. `fail` maps a
-    file name to the exception its upload raises."""
+    """An OFClient stand-in for `vault_upload.start`: records each file's way
+    into the vault (a carrier, or `send_to` a fan) and its gate, and lands
+    every file as a fresh vault id. `fail` maps a file name to the exception
+    its carrier or send raises."""
 
     def __init__(self, fail: dict | None = None):
         self.calls: list[dict] = []
         self.filed: list[tuple] = []
+        self.ids: dict[str, int] = {}
         self._next = 700
         self.fail = fail or {}
         self.filing_fails: set[int] = set()
 
-    def upload_to_vault(self, path, **kw):
+    def upload_claim(self, path):
         name = Path(path).name
-        self.calls.append({"name": name, "send_to": kw.get("send_to"),
-                           "gate": kw.get("gate")})
-        if name in self.fail:
-            raise self.fail[name]
-        self._next += 1
-        return {"vault_id": self._next, "ready": True, "deduped": False,
-                "hidden": False, "carrier_post_id": None, "carrier_deleted": None,
-                "message_id": 99 if kw.get("send_to") else None}
+        return of_client.UploadClaim(media={"name": name}, dedupe_key=name, size=1)
+
+    def _land(self, send_with, send_to, gate) -> list[int]:
+        names = [m["name"] for m in send_with]
+        self.calls += [{"name": n, "send_to": send_to, "gate": gate} for n in names]
+        for n in names:
+            if n in self.fail:
+                raise self.fail[n]
+            self._next += 1
+            self.ids[n] = self._next
+        return [self.ids[n] for n in names]
+
+    def materialize_to_vault(self, send_with, *, gate, **_):
+        return {"media": [{"id": v} for v in self._land(send_with, None, gate)],
+                "carrier_post_id": None, "carrier_deleted": None}
+
+    def materialize_via_message(self, send_with, fan_id, *, gate, **_):
+        (vid,) = self._land(send_with, fan_id, gate)
+        return {"vault_id": vid, "message_id": 99}
+
+    def vault_media_lookup_hash(self, key, size):
+        return {"id": self.ids[key]}
 
     def add_media_to_vault_list(self, list_id, ids):
         if list_id in self.filing_fails:
@@ -236,34 +251,6 @@ def case_fan_refusal_stops_the_run():
         assert [i["status"] for i in st["items"]] == ["failed"] * 3, st["items"]
         assert "refused" in st["items"][0]["error"]
         assert "stopped first" in st["items"][1]["error"], st["items"][1]
-
-
-class _UploadSelf:
-    """A stand-in `self` for the unbound `OFClient.upload_to_vault`."""
-
-    def __init__(self):
-        self.path_taken = None
-
-    def upload_media(self, *_a, **_k):
-        return {"ready": True, "deduped": False, "send_with": [{"processId": "p1"}],
-                "dedupe_key": "k", "size": 16}
-
-    def materialize_via_message(self, send_with, fan_id, **kw):
-        self.path_taken = ("message", fan_id)
-        return {"vault_id": 1, "message_id": 2}
-
-    def materialize_to_vault(self, send_with, **kw):
-        self.path_taken = ("carrier",)
-        return {"vault_id": 1, "carrier_post_id": 3, "carrier_deleted": True}
-
-
-def case_upload_to_vault_routes_by_send_to():
-    s = _UploadSelf()
-    res = of_client.OFClient.upload_to_vault(s, "/x.jpg", send_to=31337)
-    assert s.path_taken == ("message", 31337) and res["ready"] is True, (s.path_taken, res)
-    s = _UploadSelf()
-    of_client.OFClient.upload_to_vault(s, "/x.jpg", send_to=None)
-    assert s.path_taken == ("carrier",), s.path_taken
 
 
 class _FanSelf:
@@ -696,12 +683,14 @@ class _OFUser:
             status_code, text = 404, "not found"
         raise of_client.OFAPIError("404", response=R404())
 
-    def upload_to_vault(self, path, *, gate=None, send_to=None, **kw):
+    def upload_claim(self, path):
+        return of_client.UploadClaim(media={"name": Path(path).name})
+
+    def materialize_via_message(self, send_with, fan_id, *, gate, **_):
         sent = gate(lambda: {"id": 5555, "text": "", "media": [{"id": 901}],
                              "createdAt": "2026-10-18T10:00:00+00:00"})
-        self.uploads.append((Path(path).name, send_to))
-        return {"vault_id": 901, "message_id": sent["id"], "ready": True,
-                "deduped": False, "hidden": False, "carrier_post_id": None}
+        self.uploads.append((send_with[0]["name"], fan_id))
+        return {"vault_id": 901, "message_id": sent["id"]}
 
 
 def _patched(server, client):

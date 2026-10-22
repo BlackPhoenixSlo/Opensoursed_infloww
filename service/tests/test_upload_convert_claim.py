@@ -9,7 +9,7 @@ refuses a claim that names our client-built key or omits `file[uploadToken]`.
 
 Both paths now build the claim in one place (`_claim_uploaded`). These cases
 pin the multipart body convert receives, field by field and in order, for the
-chat route, `upload_to_vault`, and the vault's claim retry — image, single-part
+chat route, `upload_claim`, and the vault's claim retry — image, single-part
 video and multipart video. OF is faked: no request leaves the process.
 
   case_image_chat_and_vault_send_the_same_claim
@@ -85,9 +85,6 @@ class _Fake:
         c._proxy_retry = lambda fn, **_k: fn()
         c.post_json = self._post_json
         c.http = SimpleNamespace(proxies={}, put=self._put, post=self._convert_post)
-        c.materialize_to_vault = lambda send_with, **_k: {
-            "vault_id": 99, "still_transcoding": False, "carrier_post_id": 1,
-            "carrier_deleted": True, "note": "vault id 99"}
         return c
 
     def _post_json(self, url, *, json_body):
@@ -162,13 +159,13 @@ def _chat_body(name: str, data: bytes, ct: str) -> list:
 
 
 def _vault_body(name: str, data: bytes) -> list:
-    """The convert body upload_to_vault produces for the same file."""
+    """The convert body upload_claim produces for the same file."""
     fake = _Fake()
     with tempfile.TemporaryDirectory() as td:
         p = Path(td) / name
         p.write_bytes(data)
-        res = _with_fakes(lambda: fake.client().upload_to_vault(str(p)))
-    assert res["vault_id"] == 99, res
+        res = _with_fakes(lambda: fake.client().upload_claim(str(p)))
+    assert res.media, res
     (body,) = fake.convert_bodies
     return body
 
@@ -219,16 +216,16 @@ def case_multipart_video_chat_and_vault_send_the_same_claim():
 
 
 def case_claim_retry_sends_the_same_claim():
-    # A hung claim is retried by upload_to_vault on bytes already in S3; the
+    # A hung claim is retried by upload_claim on bytes already in S3; the
     # retry must name the same key and token as the first attempt.
     fake = _Fake(convert_fails=[RuntimeError("Operation timed out"),
                                 RuntimeError("Operation timed out")])
     with tempfile.TemporaryDirectory() as td:
         p = Path(td) / "photo.png"
         p.write_bytes(b"\x89PNG retry bytes")
-        res = _with_fakes(lambda: fake.client().upload_to_vault(
+        res = _with_fakes(lambda: fake.client().upload_claim(
             str(p), claim_retry_delays=(0,)))
-    assert res["vault_id"] == 99 and res["claim_retries"] == 1, res
+    assert res.media and res.retries == 1, res
     first, timeout_retry, ladder_retry = fake.convert_bodies
     assert first == timeout_retry == ladder_retry, fake.convert_bodies
     assert _normalised(first) == _expected("photo.png", "etag-1"), first

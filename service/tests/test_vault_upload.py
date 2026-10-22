@@ -46,6 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import gdrive              # noqa: E402
 import of_client           # noqa: E402
+import vault_carrier      # noqa: E402
 import vault_upload        # noqa: E402
 
 failures: list[str] = []
@@ -243,9 +244,6 @@ class _Recorder:
         self.deleted.append(post_id)
         return {}
 
-    def vault_media_lookup_hash(self, key, size):
-        return None
-
 
 rec = _Recorder()
 seen_intent: list = []
@@ -260,7 +258,8 @@ check("the intent carries the marker a sweep searches for",
       seen_intent, [of_client.VAULT_MARKER])
 check("the id hook still fires straight after the create",
       rec.order[2], "carrier:9001")
-check("vault id comes off the carrier", res["vault_id"], 555)
+check("the carrier's media come back as listed", res["media"],
+      [{"id": 555, "isReady": True}])
 check("the carrier is deleted", rec.deleted, [9001])
 
 # The scenario the record exists for: the POST is sent, the response is lost.
@@ -338,22 +337,28 @@ print("\nvault_upload._upload_one: hidden dedupe hit")
 
 
 class _FakeClient:
-    """Whatever `upload_to_vault` was told to return, plus a call log."""
-    def __init__(self, result=None, raises=None):
-        self.result = result or {}
-        self.raises = raises
-        self.calls: list = []
+    """`upload_claim` answers `claim` (a fresh claim by default). A carrier
+    records its intent, then raises `raises` or lists `vault_id`."""
+    def __init__(self, claim=None, *, vault_id=1, raises=None):
+        self.claim = claim or of_client.UploadClaim(media={"processId": "p"})
+        self.vault_id, self.raises = vault_id, raises
 
-    def upload_to_vault(self, path, **kw):
-        self.calls.append(path)
-        # Faithful to the real thing: a dedupe hit short-circuits BEFORE
-        # materialize_to_vault, so the intent hook never fires for one. Only a
-        # file that is about to be posted records an intent.
-        if kw.get("on_carrier_intent") and not self.result.get("deduped"):
-            kw["on_carrier_intent"](of_client.VAULT_MARKER)
+    def upload_claim(self, path):
+        return self.claim
+
+    def materialize_to_vault(self, send_with, *, on_carrier_intent, **_):
+        on_carrier_intent(of_client.VAULT_MARKER)
         if self.raises:
             raise self.raises
-        return self.result
+        return {"media": [{"id": self.vault_id}], "carrier_post_id": None,
+                "carrier_deleted": None}
+
+
+def _one(state, item, client, limits):
+    """One file the way a run uploads it: staged, then carried."""
+    up = vault_upload._Uploader(state, client, None, None, limits)
+    with up.running():
+        up.add(item)
 
 
 def _run_state(td: Path, run_id: str = "42-20260101T000000-abc123") -> dict:
@@ -371,9 +376,8 @@ with tempfile.TemporaryDirectory() as td:
     media.write_bytes(b"x" * 32)
     item = vault_upload._item("photo.jpg", str(media), "local", 32)
     state["items"] = [item]
-    client = _FakeClient({"vault_id": 77, "ready": True, "deduped": True,
-                          "hidden": True, "note": "dedupe hit — HIDDEN"})
-    vault_upload._upload_one(state, item, client, None, vault_upload.Limits())
+    client = _FakeClient(of_client.UploadClaim(vault_id=77, hidden=True))
+    _one(state, item, client, vault_upload.Limits())
     check("a hidden hit is NOT reported done", item["status"], "skipped")
     check("the operator is told why", "HIDDEN" in (item["error"] or ""), True)
     check("the id is not passed off as an import", item["vault_id"], 77)
@@ -383,10 +387,8 @@ with tempfile.TemporaryDirectory() as td:
     # A visible hit is still an ordinary success.
     item2 = vault_upload._item("ok.jpg", str(media), "local", 32)
     state["items"] = [item2]
-    vault_upload._upload_one(
-        state, item2, _FakeClient({"vault_id": 78, "ready": True,
-                                   "deduped": True, "hidden": False}),
-        None, vault_upload.Limits())
+    _one(state, item2, _FakeClient(of_client.UploadClaim(vault_id=78)),
+         vault_upload.Limits())
     check("a visible dedupe hit is done", item2["status"], "done")
 
     # And the intent SURVIVES a lost response, on disk, in the run record.
@@ -394,11 +396,11 @@ with tempfile.TemporaryDirectory() as td:
     logging.getLogger("of-relay.vault_upload").setLevel(logging.CRITICAL)
     item3 = vault_upload._item("big.mov", str(media), "local", 32)
     state["items"] = [item3]
-    vault_upload._upload_one(state, item3,
-                             _FakeClient(raises=TimeoutError("read timed out")),
-                             None, vault_upload.Limits())
+    _one(state, item3, _FakeClient(raises=OSError("read timed out")),
+         vault_upload.Limits())
     logging.getLogger("of-relay.vault_upload").setLevel(logging.NOTSET)
-    check("a failed upload keeps its carrier intent", bool(item3["carrier_intent"]), True)
+    check("a failed carrier keeps its intent", bool(item3["carrier_intent"]), True)
+    check("…and fails the file", item3["status"], "failed")
     on_disk = vault_upload.read_state(state["run_id"]) or {}
     check("and the intent is on DISK, not just in memory",
           bool((on_disk.get("items") or [{}])[0].get("carrier_intent")), True)
@@ -407,15 +409,15 @@ with tempfile.TemporaryDirectory() as td:
     print("\nvault_upload.Limits: an override reaches the post-compression check")
     small = vault_upload._item("photo.jpg", str(media), "local", 32)
     state["items"] = [small]
-    vault_upload._upload_one(state, small, _FakeClient({"vault_id": 1, "ready": True}),
-                            None, vault_upload.Limits(max_bytes=16))
+    _one(state, small, _FakeClient(),
+         vault_upload.Limits(max_bytes=16))
     check("32 bytes is refused by a 16-byte ceiling", small["status"], "skipped")
     check("the message quotes the OVERRIDE, not the module constant",
           "over the 0 MB per-file limit" in (small["error"] or ""), True)
     passing = vault_upload._item("photo.jpg", str(media), "local", 32)
     state["items"] = [passing]
-    vault_upload._upload_one(state, passing, _FakeClient({"vault_id": 1, "ready": True}),
-                            None, vault_upload.Limits(max_bytes=1024))
+    _one(state, passing, _FakeClient(),
+         vault_upload.Limits(max_bytes=1024))
     check("and the same file passes a 1 KB ceiling", passing["status"], "done")
 vault_upload.SPOOL_ROOT = _spool_root_orig
 
@@ -608,14 +610,18 @@ class _GateClient:
         self.gate_seen = "not passed"
         self.writes: list = []
 
-    def upload_to_vault(self, path, **kw):
-        self.gate_seen = kw.get("gate")
-        kw["on_carrier_intent"](of_client.VAULT_MARKER)
-        kw["on_carrier"](9001)
-        # carrier_deleted False: the per-file delete failed, so _cleanup_carriers
-        # has to retry it — through the gate.
-        return {"vault_id": 5, "ready": True, "deduped": False, "hidden": False,
-                "carrier_post_id": 9001, "carrier_deleted": False}
+    def upload_claim(self, path):
+        return of_client.UploadClaim(media={"processId": path})
+
+    def materialize_to_vault(self, send_with, *, on_carrier_intent, on_carrier,
+                             gate, **_):
+        self.gate_seen = gate
+        on_carrier_intent(of_client.VAULT_MARKER)
+        on_carrier(9001)
+        # Never `on_carrier_deleted`: the carrier's own delete failed, so
+        # _cleanup_carriers has to retry it — through the gate.
+        return {"media": [{"id": 5}], "carrier_post_id": 9001,
+                "carrier_deleted": False}
 
     def delete_post(self, pid):
         self.writes.append(("delete", pid))
@@ -644,23 +650,6 @@ with tempfile.TemporaryDirectory() as td:
     check("so did the foldering call", ("file", 7, (5,)) in gc_.writes, True)
     check("and both were counted by the gate", len(gated), 2)
 
-    # Pacing is `limits.pace_s` and nothing else. It used to be "did the caller
-    # pass a gate?", so a test double, a metrics wrapper — any gate but the
-    # relay's own — silently turned pacing off.
-    slept: list[float] = []
-    _sleep_orig = vault_upload.time.sleep
-    vault_upload.time.sleep = lambda n: slept.append(n)
-    try:
-        b1, b2 = td / "b1.jpg", td / "b2.jpg"
-        b1.write_bytes(b"y" * 8)
-        b2.write_bytes(b"z" * 8)
-        vault_upload.start("42", client=_GateClient(),
-                           local_paths=[str(b1), str(b2)],
-                           gate=_recording_gate,
-                           limits=vault_upload.Limits(pace_s=3))
-    finally:
-        vault_upload.time.sleep = _sleep_orig
-    check("a gate does not disable pacing — pace_s does", slept, [3])
 vault_upload.SPOOL_ROOT = _spool_root_orig
 vault_upload.LOCK_DIR = _spool_root_orig / "locks"
 
@@ -1291,6 +1280,546 @@ vault_upload._collect = _collect_orig
 vault_upload._save = _save_orig
 vault_upload.SPOOL_ROOT = _spool_root_orig2
 vault_upload.LOCK_DIR = _lock_dir_orig2
+
+
+# ── many files, one carrier ───────────────────────────────────────────────
+# OnlyFans paces post CREATION (~1 per 10 s), not media per post, so a batch
+# puts up to `carrier_batch` claims on one carrier. These run the real
+# `upload_claim`, `materialize_to_vault` and `vault_carrier.attribute` against
+# a fake OnlyFans, so the attribution of ids back to files is the production
+# code, not a stand-in.
+print("\nvault_upload: claims share a carrier")
+
+# Misses are re-read until the post's ids are all placed; a fake index that
+# never answers would hold every such test for ten minutes. The lag test below
+# turns it back on, with sleep stubbed.
+_hash_wait_orig = vault_carrier.HASH_WAIT_S
+vault_carrier.HASH_WAIT_S = 0
+
+
+class _FakeOF:
+    """Just enough OnlyFans for the real upload_claim/materialize_to_vault.
+
+    File names steer it: `dup*` is already in the vault, `bad*` is refused by
+    convert, anything else gets a fresh claim. `order` reorders a carrier's
+    media in `get_post`; `hash_misses` are names the hash lookup cannot find;
+    `delete_fails` makes every DELETE a 500; `busy` are names OnlyFans lists
+    with isReady=false (still transcoding); `lag` are names the hash index
+    misses on their first lookup (MEASURED: it trails the post by seconds);
+    `clock` is advanced half a second per upload, for the pacing test."""
+    upload_claim = of_client.OFClient.upload_claim
+    materialize_to_vault = of_client.OFClient.materialize_to_vault
+    _VAULT_MARKER = of_client.VAULT_MARKER
+
+    def __init__(self, *, order=None, hash_misses=(), delete_fails=False,
+                 create_raises=None, spool=None, run_id=None, drop=(), late=(),
+                 busy=(), clock=None, lag=()):
+        self.order = order or (lambda media: media)
+        # `drop`: claims OnlyFans accepts but never lists (MEASURED: a .webp).
+        # `late`: claims listed only from the second poll on.
+        self.drop, self.late, self.busy = set(drop), set(late), set(busy)
+        self.clock = clock
+        self.lag, self.lookups = set(lag), {}
+        self.polls: dict[int, int] = {}
+        self.hash_misses = set(hash_misses)
+        self.delete_fails = delete_fails
+        self.create_raises = create_raises
+        self.spool, self.run_id = spool, run_id
+        self.posts: dict[int, list] = {}
+        self.created: list[list[str]] = []      # names on each carrier, in order
+        self.intents_on_disk: list[dict] = []   # name -> intent, read at POST time
+        self.deleted: list[int] = []
+        self.vid = {}                           # name -> the vault id OF minted
+        self._pid = 9000
+
+    def upload_media(self, path, **kw):
+        if self.clock is not None:
+            self.clock[0] += 0.5
+        name = Path(path).name
+        key = f"etag-{name}"
+        if name.startswith("dup"):
+            return {"ready": True, "deduped": True, "vault_id": 100 + len(name),
+                    "hidden": False, "dedupe_key": key, "size": 8}
+        if name.startswith("bad"):
+            return {"ready": False, "rejected": True, "upload_key": None,
+                    "note": "convert register failed: 504"}
+        return {"ready": True, "deduped": False, "dedupe_key": key, "size": 8,
+                "send_with": [{"processId": name, "host": "h", "name": name}]}
+
+    def create_post(self, text, *, media_files, **kw):
+        if self.create_raises:
+            raise self.create_raises
+        names = [m["processId"] for m in media_files]
+        if self.spool and self.run_id:
+            disk = json.loads((self.spool / self.run_id / "run.json").read_text())
+            self.intents_on_disk.append(
+                {i["name"]: i.get("carrier_intent") for i in disk["items"]
+                 if i["name"] in names})
+        self._pid += 1
+        for n in names:
+            self.vid.setdefault(n, 5000 + len(self.vid))
+        self.created.append(names)
+        self.posts[self._pid] = names
+        return {"id": self._pid}
+
+    def get_post(self, pid):
+        self.polls[pid] = self.polls.get(pid, 0) + 1
+        media = [{"id": self.vid[n], "isReady": n not in self.busy}
+                 for n in self.posts[pid]
+                 if n not in self.drop
+                 and (n not in self.late or self.polls[pid] > 1)]
+        return {"media": self.order(media)}
+
+    def delete_post(self, pid):
+        self.deleted.append(pid)
+        if self.delete_fails:
+            raise of_client.OFAPIError("500 for /posts", response=_Resp(500))
+        return {}
+
+    def vault_media_lookup_hash(self, key, size):
+        name = key.removeprefix("etag-")
+        self.lookups[name] = self.lookups.get(name, 0) + 1
+        if name in self.lag and self.lookups[name] == 1:
+            return None
+        if name in self.hash_misses or name in self.drop or name not in self.vid:
+            return None
+        return {"id": self.vid[name], "isReady": name not in self.busy}
+
+
+def _batch_run(td: Path, names: list[str], fake: _FakeOF, **limits) -> dict:
+    vault_upload.SPOOL_ROOT = td
+    vault_upload.LOCK_DIR = td / "locks"
+    paths = []
+    for n in names:
+        p = td / "src" / n
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(n.encode().ljust(8, b"."))
+        paths.append(str(p))
+    rid = vault_upload.begin("42")
+    fake.spool, fake.run_id = td, rid
+    logging.getLogger("of-relay.vault_upload").setLevel(logging.CRITICAL)
+    logging.getLogger("of-client").setLevel(logging.CRITICAL)
+    try:
+        return vault_upload.start("42", client=fake, local_paths=paths, run_id=rid,
+                                  limits=vault_upload.Limits(pace_s=0, **limits))
+    finally:
+        logging.getLogger("of-relay.vault_upload").setLevel(logging.NOTSET)
+        logging.getLogger("of-client").setLevel(logging.NOTSET)
+
+
+def _by_name(st: dict) -> dict:
+    return {i["name"]: i for i in st["items"]}
+
+
+_fresh = [f"f{n:02d}.jpg" for n in range(13)]
+_mixed = (_fresh[:5] + ["dup0.jpg"] + _fresh[5:6] + ["bad0.jpg"] + _fresh[6:10]
+          + ["dup01.jpg"] + _fresh[10:])
+
+with tempfile.TemporaryDirectory() as td:
+    fake = _FakeOF()
+    st = _batch_run(Path(td), _mixed, fake)
+    items = _by_name(st)
+    check("13 new files + 2 dedupe hits + 1 refused claim -> carriers of 10 and 3",
+          [len(c) for c in fake.created], [10, 3])
+    check("each carrier carries the claims in file order",
+          fake.created, [_fresh[:10], _fresh[10:]])
+    check("every new file is done", {items[n]["status"] for n in _fresh}, {"done"})
+    check("…with the vault id OnlyFans minted for ITS bytes",
+          all(items[n]["vault_id"] == fake.vid[n] for n in _fresh), True)
+    check("…and the ids are distinct",
+          len({items[n]["vault_id"] for n in _fresh}), 13)
+    check("a dedupe hit rides no carrier",
+          (items["dup0.jpg"]["status"], items["dup0.jpg"]["carrier_post_id"],
+           items["dup0.jpg"]["carrier_intent"]), ("done", None, None))
+    check("a refused claim fails on its own and rides no carrier",
+          (items["bad0.jpg"]["status"], items["bad0.jpg"]["carrier_intent"]),
+          ("failed", None))
+    check("the intent was ON DISK for every file on a carrier before its POST",
+          [all(v and v.get("marker") == of_client.VAULT_MARKER for v in snap.values())
+           and len(snap) == len(names)
+           for snap, names in zip(fake.intents_on_disk, fake.created)], [True, True])
+    check("every file on a carrier shares its id",
+          {items[n]["carrier_post_id"] for n in _fresh[:10]}, {9001})
+    check("each carrier deleted once, from its own finally", fake.deleted, [9001, 9002])
+    check("…and recorded deleted on every file it carried",
+          all(items[n]["carrier_deleted"] is True for n in _fresh), True)
+    check("nothing outstanding", vault_upload.carriers_outstanding("42", [st]), (0, 0))
+    check("the mirror hook's ids are the per-file ids",
+          sorted(vault_upload.landed_ids(st)),
+          sorted([fake.vid[n] for n in _fresh] + [items["dup0.jpg"]["vault_id"],
+                                                  items["dup01.jpg"]["vault_id"]]))
+    check("the known-carrier set still names both",
+          vault_upload._known_carriers("42") >= {"9001", "9002"}, True)
+
+# Position on the post is never the authority — only each file's own hash is.
+# OnlyFans listing the media in another order than `mediaFiles` must not hand
+# any file its neighbour's id.
+with tempfile.TemporaryDirectory() as td:
+    fake = _FakeOF(order=lambda media: list(reversed(media)))
+    st = _batch_run(Path(td), _fresh[:4], fake)
+    items = _by_name(st)
+    check("a reversed media list is attributed by hash, correctly",
+          [items[n]["vault_id"] for n in _fresh[:4]],
+          [fake.vid[n] for n in _fresh[:4]])
+
+# The swap the order fallback allowed: [img, vid1, vid2] listed as
+# [img, vid2, vid1] and NO hash answering (index lag, a 429). Position would
+# hand vid1 and vid2 each other's ids, both "done".
+with tempfile.TemporaryDirectory() as td:
+    trio = ["f00.jpg", "v1.mp4", "v2.mp4"]
+    fake = _FakeOF(order=lambda media: [media[0], media[2], media[1]],
+                   hash_misses=set(trio))
+    st = _batch_run(Path(td), trio, fake)
+    items = _by_name(st)
+    check("reordered media + every hash missing -> every file fails, none swapped",
+          [(items[n]["status"], items[n]["vault_id"]) for n in trio],
+          [("failed", None)] * 3)
+    check("…and each says why",
+          all("could not be told apart" in items[n]["error"] for n in trio), True)
+    check("…and the carrier still went", fake.deleted, [9001])
+
+# Same swap, but only the image's hash answers: still nothing by position.
+with tempfile.TemporaryDirectory() as td:
+    fake = _FakeOF(order=lambda media: [media[0], media[2], media[1]],
+                   hash_misses={"v1.mp4", "v2.mp4"})
+    st = _batch_run(Path(td), ["f00.jpg", "v1.mp4", "v2.mp4"], fake)
+    items = _by_name(st)
+    check("two misses among three -> the hashed file lands, the two fail",
+          [(items[n]["status"], items[n]["vault_id"])
+           for n in ("f00.jpg", "v1.mp4", "v2.mp4")],
+          [("done", fake.vid["f00.jpg"]), ("failed", None), ("failed", None)])
+
+# ONE miss is closed by elimination, which needs no order: the post lists n
+# distinct ids, the hash placed n-1 of them, the last id is the last claim's.
+with tempfile.TemporaryDirectory() as td:
+    fake = _FakeOF(order=lambda media: list(reversed(media)),
+                   hash_misses={"f02.jpg"})
+    st = _batch_run(Path(td), _fresh[:4], fake)
+    items = _by_name(st)
+    check("a single hash miss on a reordered carrier is filled by elimination",
+          [(items[n]["status"], items[n]["vault_id"]) for n in _fresh[:4]],
+          [("done", fake.vid[n]) for n in _fresh[:4]])
+
+# The index trails the post: a miss is re-read, not failed — the live run that
+# found this lost 9 of 13 files to a single pass.
+with tempfile.TemporaryDirectory() as td:
+    vault_carrier.HASH_WAIT_S = 600
+    _sleep_orig = time.sleep
+    naps: list = []
+    time.sleep = lambda n: naps.append(n)
+    try:
+        fake = _FakeOF(order=lambda media: list(reversed(media)),
+                       lag={"f00.jpg", "f01.jpg", "f03.jpg"})
+        st = _batch_run(Path(td), _fresh[:4], fake)
+    finally:
+        time.sleep = _sleep_orig
+        vault_carrier.HASH_WAIT_S = 0
+    items = _by_name(st)
+    check("hash misses from index lag are re-read, and every file lands right",
+          [(items[n]["status"], items[n]["vault_id"]) for n in _fresh[:4]],
+          [("done", fake.vid[n]) for n in _fresh[:4]])
+    check("…one re-read pass, of the misses only",
+          (len(naps), [fake.lookups[n] for n in _fresh[:4]]), (1, [2, 2, 1, 2]))
+
+# …but not when a claim is missing from the post: then the leftover id is not
+# the leftover claim's to take.
+_grace_orig = of_client._CARRIER_MISSING_GRACE_S
+of_client._CARRIER_MISSING_GRACE_S = 0
+try:
+    with tempfile.TemporaryDirectory() as td:
+        fake = _FakeOF(drop={"f03.jpg"}, hash_misses={"f02.jpg"})
+        st = _batch_run(Path(td), _fresh[:4], fake)
+        items = _by_name(st)
+        check("no elimination when the post lists fewer media than claims",
+              [(items[n]["status"], items[n]["vault_id"]) for n in _fresh[:4]],
+              [("done", fake.vid["f00.jpg"]), ("done", fake.vid["f01.jpg"]),
+               ("failed", None), ("failed", None)])
+finally:
+    of_client._CARRIER_MISSING_GRACE_S = _grace_orig
+
+# A video still transcoding is listed with its permanent id: the carrier does
+# not wait for it, and only THAT file is flagged.
+with tempfile.TemporaryDirectory() as td:
+    fake = _FakeOF(busy={"v1.mp4"})
+    st = _batch_run(Path(td), ["f00.jpg", "v1.mp4", "f01.jpg"], fake)
+    items = _by_name(st)
+    check("a transcoding video does not hold its carrier: one poll",
+          fake.polls.get(9001), 1)
+    check("…every file lands with its own id",
+          [(items[n]["status"], items[n]["vault_id"])
+           for n in ("f00.jpg", "v1.mp4", "f01.jpg")],
+          [("done", fake.vid[n]) for n in ("f00.jpg", "v1.mp4", "f01.jpg")])
+    check("…and only the video is still transcoding",
+          [items[n]["still_transcoding"] for n in ("f00.jpg", "v1.mp4", "f01.jpg")],
+          [False, True, False])
+
+# A claim OnlyFans drops must not hold its carrier for the full timeout, and a
+# claim that is merely SLOW must not be cut off by its quicker neighbours.
+_grace_orig = of_client._CARRIER_MISSING_GRACE_S
+try:
+    of_client._CARRIER_MISSING_GRACE_S = 0
+    with tempfile.TemporaryDirectory() as td:
+        fake = _FakeOF(drop={"f01.jpg"})
+        t = time.time()
+        st = _batch_run(Path(td), _fresh[:3], fake)
+        items = _by_name(st)
+        check("a dropped claim does not wait out the 600 s poll", time.time() - t < 30, True)
+        check("…it fails alone, and its neighbours keep their own ids",
+              [(items[n]["status"], items[n]["vault_id"]) for n in _fresh[:3]],
+              [("done", fake.vid["f00.jpg"]), ("failed", None),
+               ("done", fake.vid["f02.jpg"])])
+    of_client._CARRIER_MISSING_GRACE_S = 10
+    with tempfile.TemporaryDirectory() as td:
+        fake = _FakeOF(late={"f01.jpg"})
+        st = _batch_run(Path(td), _fresh[:3], fake)
+        check("a claim listed a poll late is waited for, not lost",
+              [i["status"] for i in st["items"]], ["done"] * 3)
+        check("…and was polled for", fake.polls.get(9001), 2)
+finally:
+    of_client._CARRIER_MISSING_GRACE_S = _grace_orig
+
+# One carrier that cannot be deleted is ONE scheduled post on the feed.
+with tempfile.TemporaryDirectory() as td:
+    fake = _FakeOF(delete_fails=True)
+    st = _batch_run(Path(td), _fresh[:3], fake)
+    items = _by_name(st)
+    check("a carrier delete failure flags every file it carried",
+          [items[n]["carrier_deleted"] for n in _fresh[:3]], [False] * 3)
+    check("…the end-of-run cleanup retried it ONCE, not once per file",
+          fake.deleted, [9001, 9001])
+    check("…and the alarm counts one post, not three",
+          vault_upload.carriers_outstanding("42", [st]), (1, 0))
+
+# carrier_batch=1 is the old one-carrier-per-file behaviour.
+with tempfile.TemporaryDirectory() as td:
+    fake = _FakeOF()
+    st = _batch_run(Path(td), _fresh[:3], fake, carrier_batch=1)
+    check("carrier_batch=1 posts one carrier per file", fake.created,
+          [[n] for n in _fresh[:3]])
+    check("…each deleted", fake.deleted, [9001, 9002, 9003])
+    check("…each file done with its own id",
+          [(i["status"], i["vault_id"]) for i in st["items"]],
+          [("done", fake.vid[n]) for n in _fresh[:3]])
+    check("carrier_batch below 1 is read as 1",
+          vault_upload.Limits(carrier_batch=0).checked().carrier_batch, 1)
+
+# The gate gave up waiting on the carrier create: the post may still be made,
+# so every file on it keeps the intent open — and it is one possible post.
+from concurrent.futures import TimeoutError as _FT  # noqa: E402
+with tempfile.TemporaryDirectory() as td:
+    fake = _FakeOF(create_raises=_FT())
+    st = _batch_run(Path(td), _fresh[:3], fake)
+    check("a timed-out carrier write leaves every file on it write-pending",
+          [(i["status"], i["carrier_write_pending"]) for i in st["items"]],
+          [("failed", True)] * 3)
+    check("…and is counted as ONE post that may exist",
+          vault_upload.carriers_outstanding("42", [st]), (0, 1))
+
+# A gate CANCELLED out of the carrier create is the same lost race: the relay's
+# `_hop` surfaces a loop-side cancel as concurrent.futures' CancelledError.
+from concurrent.futures import CancelledError as _FC  # noqa: E402
+with tempfile.TemporaryDirectory() as td:
+    st = _batch_run(Path(td), _fresh[:3], _FakeOF(create_raises=_FC()))
+    check("a cancelled carrier write leaves every file on it write-pending",
+          [(i["status"], i["carrier_write_pending"]) for i in st["items"]],
+          [("failed", True)] * 3)
+    check("…one possible post", vault_upload.carriers_outstanding("42", [st]), (0, 1))
+
+# asyncio's own CancelledError is a BaseException: it must not walk past the
+# batch and leave its files `uploading` forever.
+with tempfile.TemporaryDirectory() as td:
+    fake = _FakeOF(create_raises=asyncio.CancelledError())
+    try:
+        _batch_run(Path(td), _fresh[:3], fake)
+        check("asyncio.CancelledError propagates out of the run", "returned", "raised")
+    except asyncio.CancelledError:
+        check("asyncio.CancelledError propagates out of the run", "raised", "raised")
+    rid = fake.run_id
+    disk = vault_upload.read_state(rid) or {}
+    check("…after failing every file on the carrier, write-pending",
+          [(i["status"], i.get("carrier_write_pending")) for i in disk.get("items", [])],
+          [("failed", True)] * 3)
+
+# One file blowing up the loop (a save on a full disk) must not strand the
+# claims already staged: they are carried, then the run stops.
+with tempfile.TemporaryDirectory() as td:
+    _upload_one_orig = vault_upload._upload_one
+
+    def _boom(state, item, *a, **kw):
+        if item["name"] == "f03.jpg":
+            raise OSError("No space left on device")
+        return _upload_one_orig(state, item, *a, **kw)
+    vault_upload._upload_one = _boom
+    try:
+        fake = _FakeOF()
+        st = _batch_run(Path(td), _fresh[:5], fake)
+    finally:
+        vault_upload._upload_one = _upload_one_orig
+    items = _by_name(st)
+    check("an exception mid-batch still carries the claims staged before it",
+          fake.created, [_fresh[:3]])
+    check("…which land with their own ids",
+          [(items[n]["status"], items[n]["vault_id"]) for n in _fresh[:3]],
+          [("done", fake.vid[n]) for n in _fresh[:3]])
+    check("…and the run says it failed, the rest not uploaded",
+          (st["status"], items["f04.jpg"]["status"]), ("failed", "failed"))
+
+# media_prep crashing on one file is that file's failure, not the batch's.
+with tempfile.TemporaryDirectory() as td:
+    _prepare_orig = vault_upload.media_prep.prepare
+
+    def _prep(path, *a, **kw):
+        if Path(path).name == "f01.jpg":
+            raise RuntimeError("ffprobe exploded")
+        return _prepare_orig(path, *a, **kw)
+    vault_upload.media_prep.prepare = _prep
+    try:
+        fake = _FakeOF()
+        st = _batch_run(Path(td), _fresh[:3], fake)
+    finally:
+        vault_upload.media_prep.prepare = _prepare_orig
+    items = _by_name(st)
+    check("a prepare crash fails that file alone",
+          [items[n]["status"] for n in _fresh[:3]], ["done", "failed", "done"])
+    check("…the others still share a carrier, and the run finishes",
+          (fake.created, st["status"]), ([["f00.jpg", "f02.jpg"]], "done"))
+
+# Housekeeping after a file lands (the Drive memo, the spool unlink) failing on
+# one file must not leave the files after it on the same carrier unrecorded.
+with tempfile.TemporaryDirectory() as td:
+    td = Path(td)
+    vault_upload.SPOOL_ROOT = td
+    rid = "42-20260101T000000-1a2b3c"
+    (td / rid).mkdir(parents=True)
+    state = vault_upload._new_state(rid, "42", None)
+    batch = []
+    fake = _FakeOF()
+    for n in _fresh[:3]:
+        it = vault_upload._item(n, None, "drive", 8)
+        it.update(status="uploading", drive_md5=f"md5-{n}")
+        batch.append(vault_upload._Staged(it, of_client.UploadClaim(
+            media={"processId": n}, dedupe_key=f"etag-{n}", size=8), None))
+    state["items"] = [s.item for s in batch]
+    _memo_orig = vault_upload._memo_remember
+    vault_upload._memo_remember = lambda *a: (_ for _ in ()).throw(
+        OSError("No space left on device"))
+    logging.getLogger("of-relay.vault_upload").setLevel(logging.CRITICAL)
+    try:
+        vault_upload._carry(state, batch, fake, None)
+        raised = None
+    except Exception as e:  # noqa: BLE001
+        raised = e
+    finally:
+        vault_upload._memo_remember = _memo_orig
+        logging.getLogger("of-relay.vault_upload").setLevel(logging.NOTSET)
+    check("a failing memo write does not escape the carrier", raised, None)
+    check("…and every file on it is recorded done with its own id",
+          [(s.item["status"], s.item["vault_id"]) for s in batch],
+          [("done", fake.vid[n]) for n in _fresh[:3]])
+vault_upload.SPOOL_ROOT = _spool_root_orig
+
+# Shared ids, read back off disk by the cleanup and the sweep.
+_shared = []
+for n in range(10):
+    it = vault_upload._item(f"s{n}.jpg", None, "local", 1)
+    it.update(carrier_post_id=7777, carrier_deleted=False, carrier_key="k7777",
+              status="done", vault_id=n)
+    _shared.append(it)
+_shared_run = {"run_id": "42-20260101T000000-5ba7ed", "account_id": "42",
+               "status": "done", "finished_at": vault_upload._now(),
+               "items": [dict(i) for i in _shared]}
+check("ten files sharing one undeleted carrier are ONE outstanding carrier",
+      vault_upload.carriers_outstanding("42", [_shared_run]), (1, 0))
+_del = _SweepClient()
+vault_upload._cleanup_carriers(_shared_run, _del)
+check("_cleanup_carriers deletes a shared carrier once", _del.deleted, [7777])
+check("…and marks every file on it deleted",
+      {i["carrier_deleted"] for i in _shared_run["items"]}, {True})
+
+with tempfile.TemporaryDirectory() as td:
+    td = Path(td)
+    vault_upload.SPOOL_ROOT = td
+    vault_upload.LOCK_DIR = td / "locks"
+    rj = _write_run(td, "42-20260101T000000-5ba7ee", status="done",
+                    items=[dict(i) for i in _shared])
+    _sw = _SweepClient()
+    res = vault_upload.sweep(lambda aid: _sw)
+    check("the sweep deletes a shared carrier once", _sw.deleted, [7777])
+    check("…counts it once", res["carriers_deleted"], 1)
+    check("…and records it on every file",
+          {i["carrier_deleted"] for i in json.loads(rj.read_text())["items"]}, {True})
+
+    # No session for the account: one failure per carrier, said as what it is.
+    rj.write_text(json.dumps({**json.loads(rj.read_text()),
+                              "items": [dict(i) for i in _shared]}))
+    res = vault_upload.sweep(lambda aid: (_ for _ in ()).throw(RuntimeError("503")))
+    check("no client: the shared carrier is one failure, nothing marked deleted",
+          (res["carriers_failed"],
+           {i["carrier_deleted"] for i in json.loads(rj.read_text())["items"]}),
+          (1, {False}))
+
+# Appended files that have queued up while the run was busy share a carrier.
+with tempfile.TemporaryDirectory() as td:
+    td = Path(td)
+    vault_upload.SPOOL_ROOT = td
+    vault_upload.LOCK_DIR = td / "locks"
+    rid = vault_upload.begin("42", keep_open=True)
+    for n in _fresh[:3]:
+        p = td / n
+        p.write_bytes(b"z" * 8)
+        vault_upload.append(rid, str(p))
+    vault_upload.close(rid)
+    fake = _FakeOF(spool=td, run_id=rid)
+    st = vault_upload.start("42", client=fake, run_id=rid,
+                            limits=vault_upload.Limits(pace_s=0))
+    check("three queued appended files ride one carrier", fake.created, [_fresh[:3]])
+    check("…and all land", [i["status"] for i in st["items"]], ["done"] * 3)
+
+# Pacing is between CARRIERS, counted from the end of the last one — and it is
+# `limits.pace_s` and nothing else. It used to be "did the caller pass a
+# gate?", so a test double, a metrics wrapper — any gate but the relay's own —
+# silently turned pacing off; this run passes a gate on purpose.
+class _StubTime:
+    """`vault_upload.time` with a clock that only moves when told to."""
+    def __init__(self, clock, slept):
+        self._clock, self._slept = clock, slept
+
+    def monotonic(self):
+        return self._clock[0]
+
+    def sleep(self, n):
+        self._slept.append(n)
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
+with tempfile.TemporaryDirectory() as td:
+    slept: list[float] = []
+    clock = [1000.0]
+    _time_orig = vault_upload.time
+    vault_upload.time = _StubTime(clock, slept)
+    try:
+        fake = _FakeOF(clock=clock)
+        vault_upload.SPOOL_ROOT = Path(td)
+        vault_upload.LOCK_DIR = Path(td) / "locks"
+        paths = []
+        for n in _fresh[:12]:
+            p = Path(td) / n
+            p.write_bytes(n.encode().ljust(8, b"."))
+            paths.append(str(p))
+        vault_upload.start("42", client=fake, local_paths=paths,
+                           gate=_recording_gate,
+                           limits=vault_upload.Limits(pace_s=3))
+    finally:
+        vault_upload.time = _time_orig
+    check("12 files at 10 per carrier pace once, before the second carrier",
+          (len(fake.created), len(slept)), (2, 1))
+    check("…for what is left of the gap: 3 s less the 1 s two uploads took",
+          slept, [2.0])
+vault_upload.SPOOL_ROOT = _spool_root_orig
+vault_upload.LOCK_DIR = _spool_root_orig / "locks"
+vault_carrier.HASH_WAIT_S = _hash_wait_orig
 
 
 print()

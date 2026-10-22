@@ -195,11 +195,11 @@ check("a 5041 is not a 504", of_client.convert_rejected(
 
 
 # ── the claim-retry loop branches on that one predicate ──────────────────
-print("\nof_client.upload_to_vault claim retries")
+print("\nof_client.upload_claim claim retries")
 
 
 def _client_whose_claim(fails_with: dict, then=None):
-    """An OFClient with only the three methods upload_to_vault calls."""
+    """An OFClient with only the two methods upload_claim calls."""
     c = of_client.OFClient.__new__(of_client.OFClient)
     calls = {"claims": 0}
 
@@ -212,7 +212,6 @@ def _client_whose_claim(fails_with: dict, then=None):
 
     c.upload_media = _upload_media
     c._claim_uploaded = _claim
-    c.materialize_to_vault = lambda *a, **k: {"vault_id": 1, "note": "ok"}
     return c, calls
 
 
@@ -223,26 +222,26 @@ hung = {**refused, "rejected": False, "note": "bytes in S3 but claim failed: tim
 
 c, calls = _client_whose_claim(refused)
 t0 = time.monotonic()
-res = c.upload_to_vault("/tmp/clip_mp4.mp4", claim_retry_delays=(20, 60))
+res = c.upload_claim("/tmp/clip_mp4.mp4", claim_retry_delays=(20, 60))
 elapsed = time.monotonic() - t0
 check("a REFUSED claim is not retried at all", calls["claims"], 0)
 check("...so it costs no wall clock, not the 80s the ladder would sleep",
       elapsed < 2.0, True)
 check("and the operator still gets the note that explains why",
-      "refused to register" in (res["note"] or ""), True)
+      "refused to register" in (res.note or ""), True)
 
 c, calls = _client_whose_claim(hung)
-res = c.upload_to_vault("/tmp/clip.mov", claim_retry_delays=(0, 0))
+res = c.upload_claim("/tmp/clip.mov", claim_retry_delays=(0, 0))
 check("a HUNG claim is retried, on every delay in the ladder", calls["claims"], 2)
 check("the first failure's note survives an exhausted ladder",
-      "claim failed" in (res["note"] or ""), True)
+      "claim failed" in (res.note or ""), True)
 
 c, calls = _client_whose_claim(
     hung, then={"ready": True, "rejected": False, "send_with": [{"processId": 7}],
                 "upload_key": "k", "etag": "e", "note": "claim re-registered"})
-res = c.upload_to_vault("/tmp/clip.mov", claim_retry_delays=(0, 0))
-check("a retry that succeeds stops the ladder and lands a vault id",
-      (calls["claims"], res["vault_id"], res["claim_retries"]), (1, 1, 1))
+res = c.upload_claim("/tmp/clip.mov", claim_retry_delays=(0, 0))
+check("a retry that succeeds stops the ladder with a claim to carry",
+      (calls["claims"], bool(res.media), res.retries), (1, True, 1))
 
 
 # ── everything below needs real media ────────────────────────────────────

@@ -180,9 +180,12 @@ _S3_BASE = "https://of2transcoder.s3-accelerate.amazonaws.com/"
 _PART_CONCURRENCY = int(os.environ.get("VAULT_UPLOAD_PART_CONCURRENCY") or 8)
 # OnlyFans throttles POST /posts to about one per ten seconds — measured live
 # when a batch of small files tripped `400 "Please allow 10 seconds"`. This is
-# the floor a bulk import paces itself against: 40 files cannot take less than
-# ~7 minutes of carrier spacing no matter how fast the uploads are.
+# the floor a bulk import paces itself against, per CARRIER — which is why
+# vault_upload puts many files' claims on one.
 _CARRIER_MIN_GAP_S = 11
+# How long a carrier that lists some of its claims waits for the rest before
+# reading what it has. See materialize_to_vault.
+_CARRIER_MISSING_GRACE_S = 30
 # How long to wait on the convert claim. FLAT, not scaled by file size.
 #
 # THIS COMMENT IS THE CANONICAL RECORD OF THE HAR EVIDENCE. It was previously
@@ -230,7 +233,7 @@ def convert_rejected(exc: BaseException) -> bool:
     worth a retry.
 
     Asked at BOTH decision sites — the inline retry in `upload_media` and the
-    claim-retry loop in `upload_to_vault` — so that "is this worth waiting on?"
+    claim-retry loop in `upload_claim` — so that "is this worth waiting on?"
     has one answer. The loop cannot catch an exception (`_claim_uploaded`
     returns its failure as data), so it reads the `rejected` flag that function
     sets from this same predicate.
@@ -328,6 +331,27 @@ class OFDeactivatedError(OFDeniedError):
 # Set by remove_carrier for its one DELETE: the only write a deactivated
 # Creator still gets, because it takes something OFF its OnlyFans.
 _CARRIER_REMOVAL: ContextVar[bool] = ContextVar("of_carrier_removal", default=False)
+
+
+class UploadClaim(NamedTuple):
+    """`OFClient.upload_claim`'s answer — exactly one of three outcomes:
+
+      * fresh bytes, claimed: `media` — the one claim object a post or a
+        message references (with `dedupe_key`/`size`, the S3 ETag and byte
+        size the vault hash is keyed on) — waits for a carrier or a fan send
+        to give it a vault id;
+      * already in the vault (a dedupe hit): `vault_id`, `hidden` if the
+        creator removed it there;
+      * failed: neither, and `note` says why.
+
+    `retries` is how many times the claim was re-run on bytes already in S3."""
+    media: dict | None = None
+    dedupe_key: str | None = None
+    size: int | None = None
+    vault_id: int | None = None
+    hidden: bool = False
+    note: str | None = None
+    retries: int = 0
 
 
 def remove_carrier(client, post_id) -> Any:
@@ -3532,7 +3556,7 @@ class OFClient:
     # step was `convert_register` below, whose `{processId, host, extra}` is
     # what `mediaFiles` actually wants; and a claim only becomes a VAULT item
     # once something references it — see materialize_to_vault. upload_media →
-    # materialize_to_vault → upload_to_vault is the full flow.
+    # materialize_to_vault, with upload_claim wrapping the first half.
 
     def convert_register(self, *, s3_etag: str, s3_location: str, s3_key: str,
                          s3_bucket: str, filename: str, secure: bool = False,
@@ -3850,7 +3874,7 @@ class OFClient:
             etag = _put(put_url, path.read_bytes())
 
         # Step 4: the convert claim. ONE builder — `_claim_uploaded`, the same
-        # call upload_to_vault's retry makes — so the first claim and a retry
+        # call upload_claim's retry makes — so the first claim and a retry
         # can never send different bodies. They were built twice once and
         # drifted; the chat path is this method, so it gets the vault's claim.
         #
@@ -3881,7 +3905,7 @@ class OFClient:
             # object, and letting it escape turned a recoverable "claim failed" into
             # an unhandled crash mid-batch.
             #
-            # The shape here (ready:false + note) is load-bearing: upload_to_vault
+            # The shape here (ready:false + note) is load-bearing: upload_claim
             # reads it and re-runs ONLY the claim via _claim_uploaded, which is
             # why the S3 bytes are not wasted. Keep both fields.
             #
@@ -3918,7 +3942,7 @@ class OFClient:
             return {
                 "vault_id": None,
                 "ready": False,
-                # Read by upload_to_vault's claim-retry loop: a refusal must
+                # Read by upload_claim's claim-retry loop: a refusal must
                 # not be retried, a hang must.
                 "rejected": rejected,
                 "send_with": None,
@@ -3982,7 +4006,6 @@ class OFClient:
     _VAULT_MARKER = VAULT_MARKER
 
     def materialize_to_vault(self, send_with: list, *,
-                             dedupe_key: str | None = None, size: int | None = None,
                              carrier_days: int = CARRIER_DAYS,
                              timeout_s: int = 600,
                              poll_interval_s: float = 2.0,
@@ -3990,10 +4013,16 @@ class OFClient:
                              on_carrier_intent=None,
                              on_carrier_deleted=None,
                              gate=None) -> dict:
-        """Turn a fresh upload claim into a real vault media id.
+        """Put fresh upload claims into the vault on ONE carrier post.
 
-        `send_with` is `upload_media()["send_with"]` (claim-object form).
-        Returns `{vault_id, carrier_post_id, carrier_deleted, note}`.
+        `send_with` is one or more claim objects (`upload_claim().media`
+        entries). OnlyFans paces post creation (~1 per 10 s), not media per
+        post, so a batch import puts many claims on one carrier.
+
+        Returns `{media, carrier_post_id, carrier_deleted}`: `media` is what
+        the post listed, `[{id, isReady, ...}]`, in whatever order OnlyFans
+        chose. Which id is whose is not this method's to say — see
+        `vault_carrier.attribute`.
 
         TWO hooks, because the dangerous window is the POST itself:
 
@@ -4068,9 +4097,7 @@ class OFClient:
         if post_id is None:
             raise OFAPIError(
                 f"vault carrier post returned no id: {str(resp)[:300]}")
-        vault_id = None
-        seen_id = None          # an id that exists but is still transcoding
-        transcoding = False
+        media: list = []
         try:
             if on_carrier is not None:
                 # Inside the try, so a hook that cannot record the id still gets
@@ -4078,38 +4105,30 @@ class OFClient:
                 # told the item failed. Logging and polling on regardless left a
                 # live carrier that nothing on disk knew about.
                 on_carrier(post_id)
+            # Done the moment every claim is LISTED with an id — ready or not.
+            # The id is the real, permanent vault id from its first appearance
+            # (MEASURED: a 23-minute video's row appears within seconds and
+            # reports isReady=false for many minutes, finishing on its own long
+            # after the carrier is gone; even images list isReady=false at
+            # first). Waiting for isReady kept a video's neighbours on a live
+            # carrier for up to `timeout_s`.
             deadline = _time.time() + timeout_s
+            settled_at = None
             while _time.time() < deadline:
-                detail = self.get_post(post_id)
-                media = detail.get("media") or []
-                with_ids = [m for m in media if m.get("id") is not None]
-                if with_ids:
-                    seen_id = with_ids[0]["id"]
-                ready = [m for m in with_ids if m.get("isReady") is not False]
-                if media and len(ready) == len(media):
-                    vault_id = ready[0]["id"]
+                media = [m for m in (self.get_post(post_id).get("media") or [])
+                         if m.get("id") is not None]
+                if len(media) >= len(send_with):
                     break
+                if media:
+                    # Some listed, a claim MISSING. A slow row must not be cut
+                    # off by its quicker neighbours, but a claim OnlyFans
+                    # silently drops — MEASURED LIVE 2026-10-22: a .webp
+                    # accepted by convert never appeared on its carrier nor
+                    # under its hash — must not hold the rest for `timeout_s`.
+                    settled_at = settled_at or _time.time()
+                    if _time.time() - settled_at >= _CARRIER_MISSING_GRACE_S:
+                        break
                 _time.sleep(poll_interval_s)
-            # Timed out while still transcoding. MEASURED: a 23-minute video's
-            # vault row appears within seconds and simply reports isReady=false
-            # for many minutes afterwards, finishing on its own long after the
-            # carrier is gone. The id is already the real, permanent vault id,
-            # so returning it beats failing an import whose media is in fact
-            # sitting in the vault.
-            if vault_id is None and seen_id is not None:
-                log_of.info("vault media %s still transcoding after %ss — "
-                            "accepting the id anyway", seen_id, timeout_s)
-                vault_id = seen_id
-                transcoding = True
-            # Transcoding a long video can outrun any timeout we pick. The hash
-            # lookup is the fallback handle, and it is keyed on the S3 ETag —
-            # `dedupe_key`, NOT the file md5, which stops matching the moment an
-            # upload goes multipart (see s3_etag_and_md5). Carrier-id polling
-            # above stays the primary path; this is the safety net.
-            if vault_id is None and dedupe_key and size:
-                hit = self.vault_media_lookup_hash(dedupe_key, size)
-                if hit:
-                    vault_id = hit.get("id")
         finally:
             deleted = False
             try:
@@ -4134,16 +4153,8 @@ class OFClient:
                         "vault: could not record that carrier %s was deleted — "
                         "the sweep will re-check it against OnlyFans", post_id)
 
-        return {
-            "vault_id": vault_id,
-            "still_transcoding": transcoding,
-            "carrier_post_id": post_id,
-            "carrier_deleted": deleted,
-            "note": (f"vault id {vault_id}"
-                     + (" (still transcoding — it will finish on its own)" if transcoding else "")
-                     if vault_id
-                     else "carrier ready but no media id surfaced before timeout"),
-        }
+        return {"media": media, "carrier_post_id": post_id,
+                "carrier_deleted": deleted}
 
     def materialize_via_message(self, send_with: list, fan_id: int, *,
                                 dedupe_key: str | None = None,
@@ -4166,8 +4177,8 @@ class OFClient:
         so newer messages cannot push it out of view — a few times (`polls`),
         else by the S3-ETag hash. Bounded on purpose: these reads are unpaced,
         and the send has already happened, so a read that fails is a reason to
-        try the hash, never to fail a file whose message went out. Same return
-        shape as `materialize_to_vault`, with no carrier and the `message_id`.
+        try the hash, never to fail a file whose message went out. Returns
+        `{vault_id, still_transcoding, message_id, note}` (no carrier).
         """
         import time as _time
 
@@ -4235,7 +4246,7 @@ class OFClient:
                         watermark_text: str | None = None,
                         timeout_s: int | None = None) -> dict:
         """The convert claim for bytes already sitting in S3 — THE one claim
-        builder. upload_media's first claim and upload_to_vault's retry both
+        builder. upload_media's first claim and upload_claim's retry both
         come through here, so chat uploads and vault imports send the same body.
 
         `upload_key` and `upload_token` are what signed/create answered (OF's
@@ -4265,7 +4276,7 @@ class OFClient:
         ~4.3 minutes of waiting for an answer that could not change — while the
         docstrings above it claimed the opposite.
 
-        Private: the retry that uses it lives in upload_to_vault, so callers
+        Private: the retry that uses it lives in upload_claim, so callers
         never have to know that a `ready:false` result is half-recoverable.
 
         Returns the same `send_with` shape as upload_media, or `ready: False`
@@ -4294,30 +4305,19 @@ class OFClient:
                 "dedupe_key": etag, "size": size, "filename": filename,
                 "note": f"claim re-registered — processId {send_with.get('processId')}"}
 
-    def upload_to_vault(self, file_path: str | Path, *,
-                        content_type: str | None = None,
-                        watermark_text: str | None = None,
-                        carrier_days: int = CARRIER_DAYS,
-                        timeout_s: int = 600,
-                        claim_retry_delays: tuple = (20, 60),
-                        on_carrier=None,
-                        on_carrier_intent=None,
-                        on_carrier_deleted=None,
-                        gate=None,
-                        send_to: int | None = None) -> dict:
-        """Upload a file and leave it sitting in the vault. The whole feature,
-        end to end: dedupe -> S3 (multipart when needed) -> convert claim ->
-        carrier -> vault id.
+    def upload_claim(self, file_path: str | Path, *,
+                     content_type: str | None = None,
+                     watermark_text: str | None = None,
+                     claim_retry_delays: tuple = (20, 60)) -> UploadClaim:
+        """Get a file's bytes onto OnlyFans as far as a CLAIM: dedupe -> S3
+        (multipart when needed) -> convert claim. The vault id comes after, from
+        whatever references the claim — `materialize_to_vault` (a carrier
+        post, shared by many claims) or `materialize_via_message` (a fan send).
 
-        Returns `{vault_id, ready, deduped, hidden, still_transcoding,
-        carrier_post_id, carrier_deleted, claim_retries, note}` — everything a
-        caller needs and nothing about the steps. `still_transcoding` means the
-        vault id is real and permanent but OnlyFans had not finished the encode
-        when the carrier went away; the item is usable, just not yet playable,
-        and a caller that reports it as a plain success is hiding the one thing
-        an operator would want to know before sending it to a fan.
+        Returns an `UploadClaim`: fresh bytes with `media` set, a dedupe
+        hit with `vault_id` set, or a failure with only `note`.
 
-        In particular a claim that failed AFTER the bytes reached S3 is retried
+        A claim that failed AFTER the bytes reached S3 is retried
         HERE, on `claim_retry_delays`: the expensive half is done and the S3
         object persists, so re-running just the claim beats re-uploading half a
         gigabyte. A caller re-driving that from outside would have to know the
@@ -4326,20 +4326,11 @@ class OFClient:
         `convert_rejected` says convert REFUSED the object rather than hanging
         on it — see the loop below.
 
-        A dedupe hit short-circuits with the existing id and no carrier at all.
-        `hidden` is true when that id is a vault item the creator REMOVED:
-        hiding is OnlyFans' only delete and it is one-way, so the id is real,
-        invisible, and cannot be resurrected by re-uploading the same bytes.
-        Reporting such a hit as a plain success is how an operator loses media
-        for good — see vault_upload._upload_one.
-
-        `gate`, `on_carrier`, `on_carrier_intent` and `on_carrier_deleted` are
-        passed through to materialize_to_vault; see there.
-
-        `send_to` (a fan's numeric id) swaps the carrier for Infloww's way: the
-        fresh file is SENT to that fan in chat, and the message's media id is
-        the vault id — see `materialize_via_message`. A dedupe hit still sends
-        nothing.
+        A dedupe hit needs nothing after it. `hidden` is true when that id is
+        a vault item the creator REMOVED: hiding is OnlyFans' only delete and
+        it is one-way, so the id is real, invisible, and cannot be resurrected
+        by re-uploading the same bytes. Reporting such a hit as a plain success
+        is how an operator loses media for good — see vault_upload._settle.
         """
         import time as _time
 
@@ -4389,30 +4380,12 @@ class OFClient:
                                    up.get("filename"))
                     break
         if not up.get("ready"):
-            return {"vault_id": None, "ready": False, "deduped": False,
-                    "hidden": False, "still_transcoding": False,
-                    "carrier_post_id": None,
-                    "carrier_deleted": None, "claim_retries": claim_retries,
-                    "note": up.get("note")}
+            return UploadClaim(note=up.get("note"), retries=claim_retries)
         if up.get("deduped"):
-            return {"vault_id": up.get("vault_id"), "ready": True, "deduped": True,
-                    "hidden": bool(up.get("hidden")), "still_transcoding": False,
-                    "carrier_post_id": None, "carrier_deleted": None,
-                    "claim_retries": claim_retries, "note": up.get("note")}
-
-        if send_to:
-            res = self.materialize_via_message(
-                up["send_with"], send_to, dedupe_key=up.get("dedupe_key"),
-                size=up.get("size"), gate=gate)
-        else:
-            res = self.materialize_to_vault(
-                up["send_with"], dedupe_key=up.get("dedupe_key"), size=up.get("size"),
-                carrier_days=carrier_days, timeout_s=timeout_s, on_carrier=on_carrier,
-                on_carrier_intent=on_carrier_intent,
-                on_carrier_deleted=on_carrier_deleted, gate=gate)
-        return {**res, "ready": res.get("vault_id") is not None,
-                "deduped": False, "hidden": False,
-                "claim_retries": claim_retries}
+            return UploadClaim(vault_id=up.get("vault_id"),
+                               hidden=bool(up.get("hidden")), retries=claim_retries)
+        return UploadClaim(media=up["send_with"][0], dedupe_key=up.get("dedupe_key"),
+                           size=up.get("size"), retries=claim_retries)
 
     # ── Stories ────────────────────────────────────────────────
     # Captured live (HAR: "pick image from vault and upload it as story").

@@ -8,7 +8,7 @@ long sequence of small, individually-failable, individually-DANGEROUS steps:
 a carrier that outlives its run is a scheduled post that eventually publishes
 to the creator's whole feed.
 
-So this module is built around two rules the reference implementation breaks:
+So this module is built around three rules the reference implementation breaks:
 
   1. **The INTENT to create a carrier is written to disk before the carrier
      exists**, and the record survives the process. The id itself cannot be
@@ -18,7 +18,8 @@ So this module is built around two rules the reference implementation breaks:
      its response did not, and no id was ever learned. `of_client` holds the id
      on the stack and deletes it in a `finally`, which a SIGKILL does not run.
   2. **The spool is the run's own responsibility.** Files land in
-     `service/vault_spool/<run_id>/`, are deleted as each one succeeds, and the
+     `service/vault_spool/<run_id>/`, are deleted as each one lands in the
+     vault (a file waiting for its carrier keeps its copy until then), and the
      directory goes when the run ends — including when it ends badly. A VPS
      that fills its disk with abandoned gigabytes takes SQLite down with it.
   3. **"Is this live?" is asked in exactly one place.** Every carrier decision
@@ -31,13 +32,22 @@ So this module is built around two rules the reference implementation breaks:
      third way to ask it, and adding one is how the deleted-a-live-carrier bug
      came back twice.
 
-FILES are processed one at a time on purpose, and that is not a bandwidth
-decision — OnlyFans throttles post creation to about one per ten seconds, and
-every file needs one carrier post, so parallel files would only queue up against
-that limit while multiplying the number of live carriers at any instant. (The
-PARTS of a single file do upload concurrently; see of_client._PART_CONCURRENCY,
-measured at 2x on a home connection — it lives there because it is a property of
-the S3 transport, not of a batch.)
+FILES SHARE CARRIERS, `Limits.carrier_batch` (default 10) to a post. OnlyFans
+throttles post CREATION to about one per ten seconds, not media per post, so
+one carrier per file made a 40-image import forty carriers and seven-plus
+minutes of mostly waiting; ten claims on one carrier make it four. The bytes
+still go up one file at a time — dedupe check, S3, convert claim, each failing
+or skipping on its own (`_upload_one`) — and only the claims that come out of
+that wait for the next carrier (`_carry`), which mints all their vault ids at
+once and is deleted once. Every file on it carries the same intent, id, deleted
+flag and `carrier_key`, so the invariants above hold per carrier and every
+count of carriers counts carriers, not files. `vault_carrier.py` decides which
+of a carrier's vault ids is whose, from each file's own bytes, never from where
+it sits on the post; a file it cannot place fails alone. (The PARTS of a single
+file upload concurrently; see of_client._PART_CONCURRENCY, measured at 2x on a
+home connection — it lives there because it is a property of the S3 transport,
+not of a batch.) Fan-send runs stay one file per message: that path posts
+nothing.
 
 State lives in `<spool>/<run_id>/run.json` rather than a DB table: it must be
 readable by a sweep that runs before anything else boots, it is per-run garbage
@@ -46,6 +56,7 @@ never-half-written small file.
 """
 from __future__ import annotations
 
+import asyncio
 import html
 import json
 import logging
@@ -57,20 +68,30 @@ import subprocess
 import threading
 import time
 import uuid
+from concurrent.futures import CancelledError as _FuturesCancelled
 from concurrent.futures import TimeoutError as FuturesTimeout
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, NamedTuple
 
 import atomic_json
 import gdrive
 import media_prep
 import of_client
+import vault_carrier
 from vault_ai_effective import normalize_tags
 
 log = logging.getLogger("of-relay.vault_upload")
+
+# A gated write the caller stopped waiting for — timed out, or cancelled (the
+# relay's `_hop` surfaces a loop-side cancel as concurrent.futures'
+# CancelledError, an Exception; asyncio's own is a BaseException). Either way
+# the write may still have gone out. NOT a socket timeout: curl_cffi raises its
+# own `Timeout` (an OSError, not the builtin TimeoutError — checked on 3.12),
+# so a slow create is never mistaken for one of these.
+_MAYBE_WRITTEN = (FuturesTimeout, _FuturesCancelled, asyncio.CancelledError)
 
 HERE = Path(__file__).resolve().parent
 SPOOL_ROOT = Path(os.environ.get("VAULT_SPOOL_DIR") or (HERE / "vault_spool"))
@@ -82,8 +103,8 @@ LOCK_DIR = SPOOL_ROOT / "locks"
 STAGE_ROOT = SPOOL_ROOT / "incoming"
 
 # Caps. Per-file size is the one an operator actually tunes; the batch cap
-# exists because every file costs a carrier post, and a runaway batch is a
-# runaway number of scheduled posts on a real feed.
+# exists because new files cost carrier posts (one per `Limits.carrier_batch`),
+# and a runaway batch is a runaway number of scheduled posts on a real feed.
 MAX_FILES = int(os.environ.get("VAULT_UPLOAD_MAX_FILES") or 40)
 # THERE IS NO MEASURED SIZE CEILING. This used to sit at 200 MB, recorded as a
 # "MEASURED CEILING" because a 443 MB object drew 504s out of
@@ -123,14 +144,19 @@ MIN_FREE_BYTES = int(os.environ.get("VAULT_UPLOAD_MIN_FREE_MB") or 2048) * 1024 
 # the very file that proves the point (see MAX_MB above).
 MAX_DOWNLOAD_MB = int(os.environ.get("VAULT_DOWNLOAD_MAX_MB") or 5000)
 MAX_DOWNLOAD_BYTES = MAX_DOWNLOAD_MB * 1024 * 1024
-# Pause between files. MEASURED, not guessed: OnlyFans throttles POST /posts to
-# roughly one per ten seconds and 400s with "Please allow 10 seconds" when a
-# batch of small files outruns it. This is the STANDALONE backstop only: the
+# Minimum gap between CARRIER posts. MEASURED, not guessed: OnlyFans throttles
+# POST /posts to roughly one per ten seconds and 400s with "Please allow 10
+# seconds" when a batch of small files outruns it. Counted from the end of the
+# previous carrier, so time spent uploading the next batch's bytes is part of
+# the gap rather than added to it. This is the STANDALONE backstop only: the
 # relay's own write gate already spaces every write for the account, so the
 # route passes `Limits(pace_s=0)` and sleeping here on top of it would double
-# the cost of every file. That is a stated policy, not something inferred from
-# whether a gate was injected (see start()).
+# the cost of every carrier. That is a stated policy, not something inferred
+# from whether a gate was injected (see start()).
 PACE_S = float(os.environ.get("VAULT_UPLOAD_PACE_S") or 11.0)
+# How many new files ride on one carrier post. See the module docstring; 1 is
+# the old one-carrier-per-file behaviour.
+CARRIER_BATCH = max(1, int(os.environ.get("VAULT_UPLOAD_CARRIER_BATCH") or 10))
 
 # The vocabulary. Declared once so the writer, the reconciler, the HTTP status
 # route, the CLI's mark map and the dashboard are all naming the same states —
@@ -185,6 +211,7 @@ class Limits:
     target_bytes: int = media_prep.TARGET_MB * 1024 * 1024
     min_free_bytes: int = MIN_FREE_BYTES
     pace_s: float = PACE_S
+    carrier_batch: int = CARRIER_BATCH
 
     @property
     def compress_enabled(self) -> bool:
@@ -199,6 +226,8 @@ class Limits:
     def checked(self) -> "Limits":
         """The same limits, made coherent — loudly where an operator set them."""
         out = self
+        if out.carrier_batch < 1:
+            out = replace(out, carrier_batch=1)
         if not out.compress_enabled and out.max_download_bytes > out.max_bytes:
             # Nothing between the fetch and the upload can shrink this file, so
             # a bigger fetch ceiling can only ever buy a wasted download.
@@ -445,11 +474,12 @@ def carriers_outstanding(account_id: str, runs: list[dict]) -> tuple[int, int]:
     for st in runs:
         if _run_is_live(st, cache):
             continue
-        for i in st.get("items") or []:
-            if i.get("carrier_post_id"):
-                if not i.get("carrier_deleted"):
-                    undeletable += 1
-            elif _intent_unresolved(i):
+        # Counted in CARRIERS, not files: up to `carrier_batch` files ride one
+        # post, and ten files naming one live post are one post on the feed.
+        for riders in _carriers(st.get("items") or []).values():
+            if _live_post(riders):
+                undeletable += 1
+            elif any(_intent_unresolved(i) for i in riders):
                 unrecorded += 1
     return undeletable, unrecorded
 
@@ -1212,9 +1242,10 @@ def start(account_id: str, *, client, gate=None,
         state["phase"] = "uploading"
         _save(state)
 
-        for item in [i for i in items if i["status"] == "pending"]:
-            up.upload(item)
-        _drain_inbox(up)
+        with up.running():
+            for item in [i for i in items if i["status"] == "pending"]:
+                up.add(item)
+            _drain_inbox(up)
         _file_into_folder(state, client, gate)
         state["status"] = "done"
     except Exception as e:
@@ -1253,37 +1284,115 @@ def start(account_id: str, *, client, gate=None,
     return state
 
 
-class _Uploader:
-    """Uploads one run's files one after another, with the pacing between them.
+class _Staged(NamedTuple):
+    """A file whose bytes are claimed (`_upload_one`), waiting for its vault id."""
+    item: dict
+    claim: of_client.UploadClaim
+    # The name the bytes went up under, when media_prep renamed them.
+    renamed: str | None
 
-    One place for "upload, save, space the carriers", shared by the batch's own
-    loop and the files `append()` hands in later — they were two copies, and
-    the second had lost the first's rule about not sleeping after the last file.
+
+class _Uploader:
+    """Uploads one run's files in order, and turns their claims into vault ids.
+
+    One place for "upload, save, carry, space the carriers", shared by the
+    batch's own files and the ones `append()` hands in later — they were two
+    copies, and the second had lost the first's rule about pacing.
+
+    Each file's bytes go up on their own (`add`); the claims wait here until
+    `batch` of them are staged or nothing more is on its way (`flush`). A
+    carrier run puts them on one carrier post (`_carry`); a fan-send run sends
+    each in a message of its own (`_send`), so its batch is 1.
     """
 
     def __init__(self, state: dict, client, gate, send_gate, limits: Limits):
         self.state, self.client, self.limits = state, client, limits
         self.gate, self.send_gate = gate, send_gate
-        self._last: dict | None = None
+        # A fan run sends each claim in a message of its own; a carrier run
+        # puts up to `carrier_batch` on one post.
+        if state.get("fan_id"):
+            self.batch, self._deliver = 1, self._send
+        else:
+            self.batch, self._deliver = limits.carrier_batch, self._carry
+        self.staged: list[_Staged] = []
+        # When the last carrier finished (monotonic), or None before the first.
+        self._carried_at: float | None = None
 
-    def upload(self, item: dict) -> None:
-        # Space the CARRIERS, and only them, and BEFORE the next file rather
-        # than after each one: sleeping after every item — dedupe hits, skipped
-        # files, the last file — added ~11s of nothing to each, and a 40-file
-        # re-run that had nothing to do spent seven minutes asleep. `pace_s` is
-        # 0 wherever a gate already spaces the account's writes; see `start`.
-        if (self.limits.pace_s and self._last is not None
-                and self._last.get("carrier_post_id")):
-            time.sleep(self.limits.pace_s)
-        _upload_one(self.state, item, self.client, self.gate, self.limits,
-                    send_gate=self.send_gate)
+    def add(self, item: dict) -> None:
+        staged = _upload_one(self.state, item, self.client, self.limits)
         _save(self.state)
-        self._last = item
+        if staged is not None:
+            self.staged.append(staged)
+            if len(self.staged) >= self.batch:
+                self.flush()
+
+    def flush(self) -> None:
+        batch, self.staged = self.staged, []
+        if not batch:
+            return
+        try:
+            self._deliver(batch)
+        except BaseException:
+            try:
+                _save(self.state)
+            except Exception:  # noqa: BLE001 — never mask what is propagating
+                log.exception("vault batch %s: could not save after a carrier "
+                              "was interrupted", self.state["run_id"])
+            raise
+        _save(self.state)
+
+    def _send(self, batch: list[_Staged]) -> None:
+        (staged,) = batch
+        _send(self.state, staged, self.client, self.send_gate)
+
+    def _carry(self, batch: list[_Staged]) -> None:
+        # Space the CARRIERS, and only them. Counted from the end of the last
+        # one, so the seconds this batch spent uploading are part of the gap,
+        # not added to it. `pace_s` is 0 wherever a gate already spaces the
+        # account's writes; see `start`.
+        if self.limits.pace_s and self._carried_at is not None:
+            wait = self.limits.pace_s - (time.monotonic() - self._carried_at)
+            if wait > 0:
+                time.sleep(wait)
+        if _carry(self.state, batch, self.client, self.gate):
+            self._carried_at = time.monotonic()
+
+    @contextmanager
+    def running(self):
+        """Every claim staged inside is given its vault id before this exits."""
+        try:
+            yield self
+        except Exception:
+            # One file broke the run (a full disk on a save, most likely). The
+            # claims already staged are bytes in S3 that only want their
+            # carrier: post it, so they land as they would have, then stop.
+            # Its own failure is the carrier's to record, never this one's.
+            try:
+                self.flush()
+            except Exception:  # noqa: BLE001 — the original error is the story
+                log.exception("vault batch %s: carrying the staged claims on "
+                              "the way out failed", self.state["run_id"])
+            raise
+        except BaseException:
+            # Interrupted, not failed: posting a carrier now is a write nobody
+            # asked for. Claims nothing carried are not in the vault; say so on
+            # each and let the run end.
+            for s in self.staged:
+                s.item.update(status="failed",
+                              error="uploaded, but the import stopped before it "
+                                    "reached the vault — add it again")
+            self.staged = []
+            raise
+        self.flush()
 
 
 def _drain_inbox(up: _Uploader) -> None:
     """Upload what `append()` hands this run, as it arrives, until `close()`
     or `OPEN_IDLE_S` of silence. A no-op for a run that was never opened.
+
+    Claims are flushed whenever the inbox is momentarily empty: files that
+    queued up while earlier ones were uploading share a carrier, and nothing
+    waits for more to arrive.
 
     Silence means no file AND none on its way: while an append is still
     crossing the wire (`receiving`) the run keeps waiting, so a file that takes
@@ -1295,6 +1404,8 @@ def _drain_inbox(up: _Uploader) -> None:
     if box is None:
         return
     while True:
+        if box.q.empty():
+            up.flush()
         try:
             got = box.q.get(timeout=OPEN_IDLE_S)
         except queue.Empty:
@@ -1303,29 +1414,31 @@ def _drain_inbox(up: _Uploader) -> None:
                     continue
             log.info("vault run %s: no file for %ss — no longer taking files",
                      run_id, OPEN_IDLE_S)
-            got = None
+            break
         if got is None:
             break
-        _upload_appended(up, got)
-    for got in _stop_taking(run_id):
-        _upload_appended(up, got)
+        for item in _admit(state, [got], up.limits):
+            up.add(item)
+    for item in _admit(state, _stop_taking(run_id), up.limits):
+        up.add(item)
 
 
-def _upload_appended(up: _Uploader, got: tuple) -> None:
-    """One appended file: the same per-file and files-per-import caps as the
-    batch (`_apply_caps`, counting on from the batch's own tally), then the
-    same upload."""
-    state = up.state
-    path, meta = got
-    p = Path(path)
-    it = _item(p.name, str(p), "local", p.stat().st_size if p.exists() else None)
-    it["meta"] = meta or None
-    state["admitted"] = _apply_caps([it], up.limits,
-                                    already=state.get("admitted") or 0)
-    state["items"].append(it)
+def _admit(state: dict, group: list[tuple], limits: Limits) -> list[dict]:
+    """Appended `(path, meta)` files onto the run's record, through the same
+    per-file and files-per-import caps as the batch (`_apply_caps`, counting
+    on from the batch's own tally). Returns the ones to upload."""
+    items = []
+    for path, meta in group:
+        p = Path(path)
+        it = _item(p.name, str(p), "local", p.stat().st_size if p.exists() else None)
+        it["meta"] = meta or None
+        items.append(it)
+    if not items:
+        return []
+    state["admitted"] = _apply_caps(items, limits, already=state.get("admitted") or 0)
+    state["items"].extend(items)
     _save(state)
-    if it["status"] == "pending":
-        up.upload(it)
+    return [it for it in items if it["status"] == "pending"]
 
 
 # ── collection ────────────────────────────────────────────────────────────
@@ -1519,6 +1632,10 @@ def _item(name, path, source, size, *, status="pending", error=None,
             # the dashboard both read.
             "carrier_intent": None, "carrier_scan_clear": None,
             "carrier_write_pending": None,
+            # Which carrier this file rode, shared by every file on it and
+            # stamped with its intent (`_carrier_hooks`): `_carriers` groups by
+            # it, so a shared carrier is counted once and deleted once.
+            "carrier_key": None,
             "deduped": None, "hidden": None,
             "still_transcoding": None,
             "compressed_from": None, "claim_retries": 0,
@@ -1556,33 +1673,31 @@ def guard_space(incoming: int, limits: Limits | None = None, *,
 
 # ── one file ──────────────────────────────────────────────────────────────
 
-def _upload_one(state: dict, item: dict, client, gate, limits: Limits, *,
-                send_gate=None) -> None:
-    """One file: upload, mint a vault id, drop the spooled copy.
-
-    Raises `of_client.FanSendRefused` (after marking the item) when the linked
-    fan cannot be sent to: every later file would be refused the same way."""
-    path = item.get("path")
-    if not path or not Path(path).exists():
-        item.update(status="failed",
-                    error=("file missing from spool" if item.get("spooled")
-                           else "file no longer exists on disk"))
-        return
+def _carrier_hooks(state: dict, items: list[dict]):
+    """`(on_carrier_intent, on_carrier, on_carrier_deleted)` for one carrier
+    and EVERY file riding on it. One carrier is one post on the feed whatever
+    it carries, so each fact about it is written onto all of its files at once
+    and saved once — a file that missed the intent is a file whose lost carrier
+    no sweep would go looking for."""
+    key = uuid.uuid4().hex
 
     def note_carrier_intent(marker: str) -> None:
         # Written BEFORE the create call goes out. If the response is lost — a
         # timeout on a slow attach, a proxy error, a SIGKILL — OnlyFans may have
         # created the post anyway and we will never learn its id. This record is
-        # what tells sweep() to go looking for a post carrying `marker`.
-        item["carrier_intent"] = {"at": _now(), "marker": marker}
-        item["carrier_deleted"] = False
+        # what tells sweep() to go looking for a post carrying `marker`. The
+        # key is what lets `carriers_outstanding` count a lost batch as one.
+        intent = {"at": _now(), "marker": marker}
+        for it in items:
+            it.update(carrier_intent=intent, carrier_key=key, carrier_deleted=False)
         _save(state)
 
     def remember_carrier(post_id) -> None:
         # Before the poll, before anything else — this narrows the sweep from
         # "a marker-bearing post" to an exact id.
-        item["carrier_post_id"] = post_id
-        item["carrier_deleted"] = False
+        for it in items:
+            it["carrier_post_id"] = post_id
+            it["carrier_deleted"] = False
         _save(state)
 
     def carrier_gone(post_id) -> None:
@@ -1591,9 +1706,26 @@ def _upload_one(state: dict, item: dict, client, gate, limits: Limits, *,
         # value cannot say this on that path, and an item left claiming a live
         # carrier that OnlyFans has actually deleted is a red banner nothing can
         # ever clear.
-        item["carrier_post_id"] = post_id
-        item["carrier_deleted"] = True
+        for it in items:
+            it["carrier_post_id"] = post_id
+            it["carrier_deleted"] = True
         _save(state)
+
+    return note_carrier_intent, remember_carrier, carrier_gone
+
+
+def _upload_one(state: dict, item: dict, client, limits: Limits) -> _Staged | None:
+    """One file's bytes: up to S3 and claimed (`OFClient.upload_claim`).
+
+    A fresh claim comes back `_Staged`, the item left `uploading`, for
+    `_Uploader.flush` to give it a vault id. Everything else — a dedupe hit, a
+    failed claim, a skip — is settled here and returns None."""
+    path = item.get("path")
+    if not path or not Path(path).exists():
+        item.update(status="failed",
+                    error=("file missing from spool" if item.get("spooled")
+                           else "file no longer exists on disk"))
+        return None
 
     # Normalise the container first. Not a size pass any more: OF demonstrably
     # accepts multi-gigabyte objects, and the failure that used to justify
@@ -1611,11 +1743,18 @@ def _upload_one(state: dict, item: dict, client, gate, limits: Limits, *,
                         path=_run_dir(state["run_id"]))
     except Exception as e:  # noqa: BLE001 — one file, not the whole run
         item.update(status="failed", error=f"{type(e).__name__}: {e}")
-        return
-    upload_path, prepared = media_prep.prepare(
-        path, _run_dir(state["run_id"]),
-        over_mb=limits.compress_over_mb, target_mb=limits.target_mb,
-        mime=item.get("mime_type"))
+        return None
+    try:
+        upload_path, prepared = media_prep.prepare(
+            path, _run_dir(state["run_id"]),
+            over_mb=limits.compress_over_mb, target_mb=limits.target_mb,
+            mime=item.get("mime_type"))
+    except Exception as e:  # noqa: BLE001 — one file, not the whole run
+        log.exception("vault: preparing %s failed", item["name"])
+        item.update(status="failed", error=f"{type(e).__name__}: {e}")
+        return None
+    renamed = (Path(upload_path).name
+               if prepared and str(upload_path) != str(path) else None)
     if prepared:
         # `compressed_from` is the dashboard's "<before> → <after>" pair. It
         # stays honest for a remux: both numbers are real, and the second is
@@ -1634,95 +1773,173 @@ def _upload_one(state: dict, item: dict, client, gate, limits: Limits, *,
                            + (" even after preparation" if prepared else "")
                            + " — raise VAULT_UPLOAD_MAX_MB if that is not what "
                              "you meant"))
-        if prepared and str(upload_path) != str(path):
+        if renamed:
             Path(upload_path).unlink(missing_ok=True)
-        return
+        return None
 
     item["status"] = "uploading"
     _save(state)
-    refused: Exception | None = None
     try:
-        # Sent to the linked fan when the run has one — through the gate that
-        # runs it as a fan DM — else a carrier post through the carrier gate.
-        fan = int(state["fan_id"]) if state.get("fan_id") else None
-        res = client.upload_to_vault(str(upload_path),
-                                     on_carrier=remember_carrier,
-                                     on_carrier_intent=note_carrier_intent,
-                                     on_carrier_deleted=carrier_gone,
-                                     gate=(send_gate or gate) if fan else gate,
-                                     send_to=fan)
-        item["message_id"] = res.get("message_id")
-        item["vault_id"] = res.get("vault_id")
-        item["deduped"] = bool(res.get("deduped"))
-        item["hidden"] = bool(res.get("hidden"))
-        item["claim_retries"] = res.get("claim_retries") or 0
-        item["still_transcoding"] = bool(res.get("still_transcoding"))
-        if res.get("carrier_post_id"):
-            item["carrier_post_id"] = res["carrier_post_id"]
-            item["carrier_deleted"] = bool(res.get("carrier_deleted"))
-        # There is deliberately no "clear the intent" branch here. An intent is
-        # only ever written from inside `materialize_to_vault`, which then
-        # either returns an id or raises — a dedupe hit short-circuits earlier
-        # and never fires the hook at all. Clearing an intent on a guess would
-        # mean deciding, from no evidence, that a carrier we cannot see does not
-        # exist; only a completed marker scan is allowed to conclude that.
-        if res.get("hidden"):
-            # The bytes ARE on OnlyFans, under an id the creator removed —
-            # hiding is OF's only delete and it is one-way, so re-uploading the
-            # same file can never restore it. Calling that "done" is how twenty
-            # photos are lost with a green tick beside each one.
-            item.update(status="skipped",
-                        error="already in the vault but HIDDEN (removed there) — "
-                              "OnlyFans dedupes on the bytes, so re-uploading "
-                              "cannot bring it back")
-        elif res.get("vault_id"):
-            item["status"] = "done"
-        else:
-            # `note` names the file that was actually UPLOADED, which after a
-            # remux is media_prep's output, not anything the operator can find
-            # on their disk. Say which of their items it was.
-            note = res.get("note") or "no vault id"
-            if prepared and str(upload_path) != str(path):
-                note = f"{note} (uploaded as {Path(upload_path).name}, "\
-                       f"normalised from {item['name']})"
-            item.update(status="failed", error=note)
-    except Exception as e:
+        claim = client.upload_claim(str(upload_path))
+    except Exception as e:  # noqa: BLE001 — one file, not the whole run
         log.exception("vault upload failed for %s", item["name"])
         item.update(status="failed", error=f"{type(e).__name__}: {e}")
-        if isinstance(e, FuturesTimeout) and fan:
-            # Same lost race as below, but the write was a chat message to the
-            # fan, not a carrier: nothing will ever publish to the feed, so it
-            # must not raise the carrier alarm or put the account on the
-            # schedule scan. It is still worth saying — the message may yet go.
-            item["message_write_pending"] = True
-            item["error"] = ("timed out waiting to send — the message to the "
-                             "fan may still go out; check the chat before "
-                             "re-importing this file")
-        elif isinstance(e, FuturesTimeout):
-            # The write gate gave up waiting. The route cancels the queued
-            # coroutine, but a cancel that loses the race still creates the
-            # post — so this intent cannot be scanned for: a marker scan run
-            # NOW would correctly find nothing and wrongly conclude the
-            # carrier never existed. Leave it outstanding; the sweep keeps
-            # looking, and retention keeps the record.
-            item["carrier_write_pending"] = True
+        claim = None
+    # Clear the prepared copy as soon as it is no longer needed — the whole
+    # point of "push it up and let go of it" is that the disk stays flat. A
+    # staged claim no longer needs it either: its bytes are in S3.
+    if renamed:
+        Path(upload_path).unlink(missing_ok=True)
+    if claim is None:
+        return None
+    item["claim_retries"] = claim.retries
+    if claim.media:
+        return _Staged(item, claim, renamed)
+    _settle(item, claim.vault_id, note=claim.note, hidden=claim.hidden,
+            deduped=claim.vault_id is not None, renamed=renamed)
+    _land(state, item)
+    return None
+
+
+def _settle(item: dict, vault_id, *, note: str | None = None,
+            still_transcoding: bool = False, hidden: bool = False,
+            deduped: bool = False, renamed: str | None = None) -> None:
+    """Write one file's outcome onto its item: done under `vault_id`, skipped
+    when that id is HIDDEN, else failed with `note`. `renamed` is the name the
+    bytes went up under when media_prep normalised them.
+
+    Carrier fields are not touched here: `_carrier_hooks` writes them as the
+    carrier happens. There is deliberately no "clear the intent" branch either
+    — clearing an intent on a guess would mean deciding, from no evidence, that
+    a carrier we cannot see does not exist; only a completed marker scan is
+    allowed to conclude that."""
+    item.update(vault_id=vault_id, deduped=deduped, hidden=hidden,
+                still_transcoding=still_transcoding)
+    if hidden:
+        # The bytes ARE on OnlyFans, under an id the creator removed — hiding
+        # is OF's only delete and it is one-way, so re-uploading the same file
+        # can never restore it. Calling that "done" is how twenty photos are
+        # lost with a green tick beside each one.
+        item.update(status="skipped",
+                    error="already in the vault but HIDDEN (removed there) — "
+                          "OnlyFans dedupes on the bytes, so re-uploading "
+                          "cannot bring it back")
+    elif vault_id:
+        item["status"] = "done"
+    else:
+        # `note` names the file that was actually UPLOADED, which after a remux
+        # is media_prep's output, not anything the operator can find on their
+        # disk. Say which of their items it was.
+        note = note or "no vault id"
+        if renamed:
+            note = f"{note} (uploaded as {renamed}, normalised from {item['name']})"
+        item.update(status="failed", error=note)
+
+
+def _land(state: dict, item: dict) -> None:
+    """A settled file's last housekeeping: remember a Drive file's vault id,
+    and drop the spooled copy of anything that made it.
+
+    Never raises. The file IS in the vault by now; a full disk refusing the
+    memo write or a stubborn unlink costs a re-download next time or a file
+    `_clear_spool` takes later, and must not leave the files after it on the
+    same carrier unrecorded."""
+    if item["status"] != "done":
+        return
+    try:
+        if item.get("drive_md5") and item.get("vault_id"):
+            _memo_remember(state["account_id"], item["drive_md5"], item["vault_id"])
+        if item.get("spooled") and item.get("path"):
+            Path(item["path"]).unlink(missing_ok=True)
+            item["path"] = None
+    except Exception:  # noqa: BLE001
+        log.exception("vault: housekeeping after %s landed failed", item.get("name"))
+
+
+def _send(state: dict, staged: _Staged, client, gate) -> None:
+    """A fan-send run's vault id: the claim sent to the linked fan, in a
+    message of its own, through the gate that runs it as a fan DM.
+
+    Raises `of_client.FanSendRefused` (after marking the item) when the linked
+    fan cannot be sent to: every later file would be refused the same way."""
+    item, claim = staged.item, staged.claim
+    try:
+        res = client.materialize_via_message(
+            [claim.media], int(state["fan_id"]), dedupe_key=claim.dedupe_key,
+            size=claim.size, gate=gate)
+    except Exception as e:
+        log.exception("vault send failed for %s", item["name"])
+        item.update(status="failed", error=f"{type(e).__name__}: {e}")
         if isinstance(e, of_client.FanSendRefused):
             item["error"] = str(e)
-            refused = e
+            raise
+        if isinstance(e, _MAYBE_WRITTEN):
+            # The same lost race as a carrier's (see `_carry`), but the write
+            # was a chat message to the fan: nothing will ever publish to the
+            # feed, so it must not raise the carrier alarm or put the account
+            # on the schedule scan. It is still worth saying — it may yet go.
+            item.update(message_write_pending=True,
+                        error="timed out waiting to send — the message to the "
+                              "fan may still go out; check the chat before "
+                              "re-importing this file")
+        return
+    item["message_id"] = res.get("message_id")
+    _settle(item, res.get("vault_id"), note=res.get("note"),
+            still_transcoding=bool(res.get("still_transcoding")),
+            renamed=staged.renamed)
+    _land(state, item)
 
-    # Clear the spooled copy as soon as it is no longer needed — the whole
-    # point of "push it up and let go of it" is that the disk stays flat.
-    # The prepared copy is always ours to delete; the source only if we
-    # spooled it (a local file is the operator's own original).
-    if prepared and str(upload_path) != str(path):
-        Path(upload_path).unlink(missing_ok=True)
-    if item["status"] == "done" and item.get("drive_md5") and item.get("vault_id"):
-        _memo_remember(state["account_id"], item["drive_md5"], item["vault_id"])
-    if item["status"] == "done" and item.get("spooled"):
-        Path(path).unlink(missing_ok=True)
-        item["path"] = None
-    if refused is not None:
-        raise refused
+
+def _carry(state: dict, batch: list[_Staged], client, gate) -> bool:
+    """ONE carrier post for every claim in `batch`, and each file settled from
+    its share of it. Returns whether a create call may have gone out (what
+    pacing counts from).
+
+    The carrier's intent, id and deletion are recorded on every file in the
+    batch (`_carrier_hooks`), so the safety story is the per-file one with a
+    bigger payload. Which vault id is whose is `vault_carrier.attribute`'s to
+    say, and a file it cannot place fails alone rather than taking a
+    neighbour's id."""
+    items = [s.item for s in batch]
+    intent, remember, gone = _carrier_hooks(state, items)
+    try:
+        res = client.materialize_to_vault(
+            [s.claim.media for s in batch], on_carrier=remember,
+            on_carrier_intent=intent, on_carrier_deleted=gone, gate=gate)
+        placed = vault_carrier.attribute(
+            client, res["media"], [(s.claim.dedupe_key, s.claim.size) for s in batch])
+    except BaseException as e:
+        log.exception("vault carrier for %d files failed", len(items))
+        for it in items:
+            it.update(status="failed", error=f"{type(e).__name__}: {e}")
+            if isinstance(e, _MAYBE_WRITTEN):
+                # The gate gave up on (or was cancelled out of) a carrier
+                # write. The route cancels the queued coroutine, but a cancel
+                # that loses the race still creates the post — so this intent
+                # cannot be scanned for: a marker scan run NOW would correctly
+                # find nothing and wrongly conclude the carrier never existed.
+                # Leave it outstanding; the sweep keeps looking, and retention
+                # keeps the record.
+                it["carrier_write_pending"] = True
+        if not isinstance(e, Exception):
+            raise
+        # The intent is written just before the create goes out.
+        return any(it.get("carrier_intent") for it in items)
+    pid = res["carrier_post_id"]
+    for s, got in zip(batch, placed, strict=True):
+        if len(batch) == 1:
+            note = "carrier ready but no media id surfaced before timeout"
+        else:
+            note = (f"carrier {pid} took this file but its vault id could not "
+                    f"be told apart from the other {len(batch) - 1} on it — it "
+                    f"may still be in the vault; re-importing it is safe, "
+                    f"OnlyFans will recognise the bytes")
+        _settle(s.item, got.vault_id, note=note,
+                still_transcoding=got.transcoding, renamed=s.renamed)
+    # Every outcome is written before any housekeeping runs.
+    for it in items:
+        _land(state, it)
+    return True
 
 
 def _gate(gate):
@@ -1765,30 +1982,66 @@ def _file_into_folder(state: dict, client, gate=None) -> None:
         state["filing_error"] = ("could not file " + "; ".join(errors))
 
 
-def _cleanup_carriers(state: dict, client, gate=None) -> None:
-    """Delete any carrier still recorded as live. Normally a no-op — the
-    per-file path deletes its own — but this is what catches the ones a
-    mid-run exception skipped."""
-    run = _gate(gate)
-    for it in state["items"]:
-        pid = it.get("carrier_post_id")
-        if not pid or it.get("carrier_deleted"):
+def _carriers(items: list) -> dict[str, list[dict]]:
+    """Every carrier the items record -> the files that rode it, grouped by
+    `carrier_key`: up to `carrier_batch` files share one post, and it is one
+    post — counted once, deleted once. A record from before files shared
+    carriers has no key; each of its files had a carrier of its own."""
+    out: dict[str, list[dict]] = {}
+    for n, it in enumerate(items):
+        if (it.get("carrier_intent") or it.get("carrier_post_id")
+                or it.get("carrier_write_pending")):
+            out.setdefault(it.get("carrier_key") or f"item-{n}", []).append(it)
+    return out
+
+
+def _live_post(riders: list[dict]):
+    """The post id of a carrier still recorded as live, else None."""
+    return next((i["carrier_post_id"] for i in riders
+                 if i.get("carrier_post_id") and not i.get("carrier_deleted")), None)
+
+
+def _delete_live_carriers(items: list, remove: Callable[[Any], Any]
+                          ) -> tuple[int, int, int]:
+    """`remove(post_id)` once per carrier still recorded as live, every file on
+    it marked deleted once it is gone. Returns `(deleted, already_gone,
+    failed)`.
+
+    A post OnlyFans says does not exist cannot publish, so a 404 is this having
+    already worked — most often by the `finally` in materialize_to_vault, whose
+    caller then raised before the fact could be recorded. Calling it a failure
+    left a permanent alarm."""
+    deleted = gone = failed = 0
+    for riders in _carriers(items).values():
+        pid = _live_post(riders)
+        if pid is None:
             continue
+        names = ", ".join(str(it.get("name")) for it in riders)
         try:
-            run(lambda p=pid: of_client.remove_carrier(client, p))
-            it["carrier_deleted"] = True
-        except Exception as e:
-            # A post OnlyFans says does not exist cannot publish, so a 404 here
-            # is this having already worked — most often by the `finally` in
-            # materialize_to_vault, whose caller then raised before the fact
-            # could be recorded. Calling it a failure left a permanent alarm.
-            if of_client.post_is_gone(e):
-                it["carrier_deleted"] = True
-                log.info("vault: carrier %s (%s) was already gone",
-                         pid, it.get("name"))
+            remove(pid)
+            deleted += 1
+            log.warning("vault: deleted carrier %s (%s), left live by its run",
+                        pid, names)
+        except Exception as e:  # noqa: BLE001
+            if not of_client.post_is_gone(e):
+                failed += 1
+                log.error("VAULT CARRIER LEFT BEHIND: post %s (%s) — %s",
+                          pid, names, e)
                 continue
-            log.error("VAULT CARRIER LEFT BEHIND: post %s (%s) — %s",
-                      pid, it.get("name"), e)
+            gone += 1
+            log.info("vault: carrier %s (%s) was already gone", pid, names)
+        for it in riders:
+            it["carrier_deleted"] = True
+    return deleted, gone, failed
+
+
+def _cleanup_carriers(state: dict, client, gate=None) -> None:
+    """Delete any carrier still recorded as live. Normally a no-op — every
+    carrier deletes itself in `materialize_to_vault`'s `finally` — but this is
+    what catches the ones a mid-run exception skipped."""
+    run = _gate(gate)
+    _delete_live_carriers(
+        state["items"], lambda pid: run(lambda: of_client.remove_carrier(client, pid)))
 
 
 def _clear_spool(state: dict) -> None:
@@ -2039,33 +2292,19 @@ def sweep(client_for: Callable[[str], Any], *, keep_hours: int = 48) -> dict:
         if _account_is_live(aid, now_cache):
             continue
         items = state.get("items") or []
-        live = [i for i in items
-                if i.get("carrier_post_id") and not i.get("carrier_deleted")]
+        live = sum(1 for riders in _carriers(items).values() if _live_post(riders))
         if live:
             try:
                 client = client_for(aid)
-                for it in live:
-                    try:
-                        of_client.remove_carrier(client, it["carrier_post_id"])
-                        it["carrier_deleted"] = True
-                        changed = True
-                        fixed += 1
-                        log.warning("vault sweep: deleted orphaned carrier %s",
-                                    it["carrier_post_id"])
-                    except Exception as e:
-                        # 404 means somebody already deleted it — most often the
-                        # `finally` whose caller raised before it could record
-                        # the fact. Gone is gone; it cannot publish.
-                        if of_client.post_is_gone(e):
-                            it["carrier_deleted"] = True
-                            changed = True
-                            continue
-                        failed += 1
-                        log.error("vault sweep: carrier %s STILL LIVE — %s",
-                                  it["carrier_post_id"], e)
-            except Exception as e:
-                failed += len(live)
+            except Exception as e:  # noqa: BLE001
+                failed += live
                 log.error("vault sweep: no client for account %s — %s", aid, e)
+            else:
+                got, gone, lost = _delete_live_carriers(
+                    items, lambda pid: of_client.remove_carrier(client, pid))
+                fixed += got
+                failed += lost
+                changed = changed or bool(got or gone)
         # An intent is only ever retired by a scan that actually completed.
         # Anything less — a listing that failed, one we could not page to the
         # end of, one abandoned because an import started — leaves it exactly
