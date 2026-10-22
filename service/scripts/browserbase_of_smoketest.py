@@ -73,7 +73,7 @@ def main() -> int:
                     return 1
                 time.sleep(SETTLE_S)
                 challenge = rl._detect_challenge(page)
-                email = rl._find_first(page, rl._EMAIL_SELECTORS) is not None
+                email = page.query_selector(rl._EMAIL_FIELD) is not None
                 blank = _body_is_blank(page)
                 print(f"[*] detect_challenge={challenge}  email_input={email}  body_blank={blank}")
                 if email and not challenge:

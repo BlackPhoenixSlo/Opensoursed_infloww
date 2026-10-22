@@ -76,6 +76,7 @@ PROXY_CHOICES = (PROXY_INFLOWWW, PROXY_NONE, PROXY_CUSTOM)
 
 BROWSERBASE_API = "https://api.browserbase.com/v1"
 BB_HTTP_TIMEOUT_S = 30
+BB_VIEWPORT = {"width": 1280, "height": 800}
 
 
 def live_server():
@@ -116,19 +117,18 @@ STATE_ERROR = "error"
 STATE_CANCELLED = "cancelled"
 _TERMINAL = {STATE_DONE, STATE_ERROR, STATE_CANCELLED}
 
-# OnlyFans login DOM: ordered fallbacks. A stale selector only stalls the job in
-# `typing`; the human can finish the form by hand in the live view.
-_EMAIL_SELECTORS = (
-    'input[name="email"]', 'input[type="email"]',
-    'input[inputmode="email"]', 'input#email', 'input[name="username"]',
-)
-_PASSWORD_SELECTORS = (
-    'input[name="password"]', 'input[type="password"]', 'input#password',
-)
-_SUBMIT_SELECTORS = (
-    'button[type="submit"]', 'button[at-attr="submit"]',
-    'form button:has-text("Log")', 'button:has-text("Log in")',
-)
+# OnlyFans login DOM. The form is rendered by OnlyFans' JS AFTER
+# domcontentloaded (on Browserbase's managed proxies it is often not there yet),
+# so the fields are waited for, never looked up once. The email input is
+# type="text", name="email".
+FORM_WAIT_S = 30          # the login form must show within this
+FIELD_TIMEOUT_MS = 5_000  # one fill / read / click attempt
+FILL_ATTEMPTS = 3         # fill, then retype key by key, verifying each time
+_EMAIL_FIELD = 'input[name="email"], input[type="email"], input[autocomplete="username"]'
+_PASSWORD_FIELD = 'input[name="password"], input[type="password"]'
+_SUBMIT_BUTTON = 'button[type="submit"]'
+# The cookie banner OnlyFans shows some egresses (EU): decline the optional ones.
+_COOKIE_ONLY_NECESSARY = 'button:has-text("Only necessary cookies")'
 _OTP_SELECTORS = (
     'input[name="code"]', 'input[autocomplete="one-time-code"]',
     'input[name="otp"]',
@@ -409,12 +409,14 @@ def _bb_env() -> tuple[str, str]:
 
 def _bb_session_payload(project_id: str) -> dict[str, Any]:
     """The create-session body: Browserbase's managed proxies (our proxy is
-    never sent to Browserbase; it is bound to the account afterwards), and
-    automated captcha solving OFF (it defaults to on)."""
+    never sent to Browserbase; it is bound to the account afterwards),
+    automated captcha solving OFF (it defaults to on), and a common laptop
+    viewport, so the live view stays readable on a phone (the default is
+    2560x1440)."""
     return {
         "projectId": project_id,
         "proxies": True,
-        "browserSettings": {"solveCaptchas": False},
+        "browserSettings": {"solveCaptchas": False, "viewport": dict(BB_VIEWPORT)},
     }
 
 
@@ -493,27 +495,74 @@ def _find_first(page, selectors):
     return None
 
 
+class LoginFormError(RuntimeError):
+    """OnlyFans' login form could not be filled. The message never carries
+    the typed values."""
+
+
 def _type_credentials(page, email: str, password: str) -> None:
-    em = _find_first(page, _EMAIL_SELECTORS)
-    if em:
-        try:
-            em.fill(email)
-        except Exception:  # noqa: BLE001
-            pass
-    pw = _find_first(page, _PASSWORD_SELECTORS)
-    if pw:
-        try:
-            pw.fill(password)
-        except Exception:  # noqa: BLE001
-            pass
-    submit = _find_first(page, _SUBMIT_SELECTORS)
+    fill_login_form(page, email, password)
+    submit_login_form(page)
+
+
+def fill_login_form(page, email: str, password: str, *, wait_s: float = FORM_WAIT_S) -> None:
+    """Wait for OnlyFans' login form, decline the optional cookies, type the
+    email and the password, and verify each field holds exactly what was typed
+    (retyping it when not). Raises LoginFormError instead of leaving the job
+    sitting on a half-filled form."""
+    em = page.locator(_EMAIL_FIELD).first
+    pw = page.locator(_PASSWORD_FIELD).first
     try:
-        if submit:
-            submit.click()
-        elif pw:
-            pw.press("Enter")
+        em.wait_for(state="visible", timeout=int(wait_s * 1000))
+    except Exception:  # noqa: BLE001
+        why = " (a human-verification challenge is on screen)" if _detect_challenge(page) else ""
+        raise LoginFormError(f"the OnlyFans login form did not appear within {wait_s:.0f}s{why}") from None
+    _dismiss_cookie_banner(page)
+    _fill_verified(em, email, "email")
+    _fill_verified(pw, password, "password")
+
+
+def _dismiss_cookie_banner(page) -> None:
+    """Best effort: the banner does not block the form, it only crowds the
+    live view."""
+    try:
+        btn = page.locator(_COOKIE_ONLY_NECESSARY).first
+        if btn.is_visible():
+            btn.click(timeout=FIELD_TIMEOUT_MS)
     except Exception:  # noqa: BLE001
         pass
+
+
+def _fill_verified(field, value: str, what: str) -> None:
+    for attempt in range(FILL_ATTEMPTS):
+        try:
+            if attempt == 0:
+                field.fill(value, timeout=FIELD_TIMEOUT_MS)
+            else:  # the page swallowed the fill: clear and type key by key
+                field.click(timeout=FIELD_TIMEOUT_MS)
+                field.fill("", timeout=FIELD_TIMEOUT_MS)
+                field.press_sequentially(value, delay=30, timeout=FIELD_TIMEOUT_MS * 4)
+            if field.input_value(timeout=FIELD_TIMEOUT_MS) == value:
+                return
+        except Exception as e:  # noqa: BLE001 — Playwright's message echoes the value
+            log.info("filling the OnlyFans %s field, attempt %d: %s",
+                     what, attempt + 1, type(e).__name__)
+    raise LoginFormError(f"couldn't fill the OnlyFans {what} field — the login form did not take it")
+
+
+def submit_login_form(page) -> None:
+    """Click LOG IN (enabled once both fields hold a value), else press Enter
+    in the password field. A failed submit is left to the human in the live
+    view."""
+    try:
+        page.locator(_SUBMIT_BUTTON).first.click(timeout=FIELD_TIMEOUT_MS)
+        return
+    except Exception as e:  # noqa: BLE001
+        log.info("clicking OnlyFans' LOG IN failed: %s", type(e).__name__)
+    try:
+        page.locator(_PASSWORD_FIELD).first.press("Enter", timeout=FIELD_TIMEOUT_MS)
+    except Exception as e:  # noqa: BLE001
+        log.info("pressing Enter in OnlyFans' password field failed: %s", type(e).__name__)
 
 
 def _detect_challenge(page) -> bool:

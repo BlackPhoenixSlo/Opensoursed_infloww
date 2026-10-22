@@ -12,7 +12,23 @@ No browser and NO network: `_bb_request` / `urlopen` / the page are faked.
       choice or a custom proxy without a label raise before any session exists.
   case_session_payload_shape:
       the create body asks for Browserbase's managed proxies (`proxies: true`),
-      projectId from env, solveCaptchas False; our proxy is never in it.
+      projectId from env, solveCaptchas False, a 1280x800 viewport (readable
+      live view on a phone); our proxy is never in it.
+  case_form_waited_filled_verified:
+      the typing waits for OnlyFans' late-rendered form (it is not there at
+      domcontentloaded: the live bug left the email empty), declines the
+      optional cookies, fills email then password, verifies both, then clicks
+      LOG IN.
+  case_swallowed_fill_is_retyped:
+      a fill the page swallows (the field still reads empty) is retyped key by
+      key and verified.
+  case_form_never_appears_fails_fast:
+      no login form: the job fails with a clear error well inside the window,
+      instead of sitting on "entering credentials" until the session expires;
+      nothing is typed and the password is never in the error.
+  case_field_never_takes_value_fails:
+      a field that never holds what was typed fails with which field; the
+      password field is not touched after the email failed.
   case_managed_login_binds_proxy:
       a served job on a managed-proxy session: ONE create, the live view is
       that session's, OnlyFans loads, the chosen proxy is bound before the
@@ -148,7 +164,8 @@ def case_session_payload_shape():
     assert session["id"] == "s1"
     assert (seen["path"], seen["method"]) == ("/sessions", "POST")
     assert seen["body"] == {"projectId": "proj-xyz", "proxies": True,
-                            "browserSettings": {"solveCaptchas": False}}, seen["body"]
+                            "browserSettings": {"solveCaptchas": False,
+                                                 "viewport": {"width": 1280, "height": 800}}}, seen["body"]
 
 
 _BB = "https://api.browserbase.com/v1"
@@ -302,7 +319,8 @@ def case_managed_login_binds_proxy():
     assert _GOTOS == [f"s1 {rl.OF_HOME}"], _GOTOS
     creates = [b for m, u, b in calls if (m, u) == ("POST", f"{_BB}/sessions")]
     assert creates == [{"projectId": "proj-xyz", "proxies": True,
-                        "browserSettings": {"solveCaptchas": False}}], creates
+                        "browserSettings": {"solveCaptchas": False,
+                                                 "viewport": {"width": 1280, "height": 800}}}], creates
     assert ("POST", f"{_BB}/sessions/s1", {"projectId": "proj-xyz", "status": "REQUEST_RELEASE"}) in calls
 
 
@@ -452,6 +470,136 @@ def case_capture_binds_before_persist():
         assert order == [], "nothing may be persisted when the bind fails"
     finally:
         restore()
+
+
+# ── Typing into OnlyFans' login form ─────────────────────────────────────────
+
+class _Field:
+    """A fake Playwright locator for one input / button. `swallow` fills are
+    dropped (the field keeps reading empty)."""
+
+    def __init__(self, log, name, *, visible=True, appears=True, swallow=0):
+        self.log, self.name, self.visible, self.appears = log, name, visible, appears
+        self.swallow, self.value = swallow, ""
+
+    @property
+    def first(self):
+        return self
+
+    def wait_for(self, state="visible", timeout=None):
+        self.log.append(("wait", self.name, timeout))
+        if not self.appears:
+            raise Exception(f"Timeout {timeout}ms exceeded waiting for {self.name}")
+
+    def is_visible(self):
+        return self.visible
+
+    def click(self, timeout=None):
+        self.log.append(("click", self.name))
+
+    def fill(self, value, timeout=None):
+        if value:
+            self.log.append(("fill", self.name))
+        if self.swallow > 0 and value:
+            self.swallow -= 1
+            return
+        self.value = value
+
+    def press_sequentially(self, value, delay=None, timeout=None):
+        self.log.append(("type", self.name))
+        if self.swallow > 0:
+            self.swallow -= 1
+            return
+        self.value = value
+
+    def input_value(self, timeout=None):
+        return self.value
+
+    def press(self, key, timeout=None):
+        self.log.append(("press", self.name, key))
+
+
+class _FormPage:
+    def __init__(self, **email_kw):
+        self.log = []
+        self.fields = {
+            rl._EMAIL_FIELD: _Field(self.log, "email", **email_kw),
+            rl._PASSWORD_FIELD: _Field(self.log, "password"),
+            rl._SUBMIT_BUTTON: _Field(self.log, "submit"),
+            rl._COOKIE_ONLY_NECESSARY: _Field(self.log, "only-necessary-cookies"),
+        }
+
+    def locator(self, sel):
+        return self.fields[sel]
+
+    def goto(self, *_a, **_k):
+        return None
+
+    def evaluate(self, *_a):
+        return False
+
+    @property
+    def frames(self):
+        return []
+
+
+def case_form_waited_filled_verified():
+    page = _FormPage()
+    rl._type_credentials(page, "a@b.com", OF_PW)
+    assert page.log == [
+        ("wait", "email", rl.FORM_WAIT_S * 1000),
+        ("click", "only-necessary-cookies"),
+        ("fill", "email"), ("fill", "password"),
+        ("click", "submit"),
+    ], page.log
+    assert page.fields[rl._EMAIL_FIELD].value == "a@b.com"
+    assert page.fields[rl._PASSWORD_FIELD].value == OF_PW
+    # No banner on screen: nothing to decline.
+    page = _FormPage()
+    page.fields[rl._COOKIE_ONLY_NECESSARY].visible = False
+    rl.fill_login_form(page, "a@b.com", OF_PW)
+    assert ("click", "only-necessary-cookies") not in page.log, page.log
+
+
+def case_swallowed_fill_is_retyped():
+    page = _FormPage(swallow=1)
+    rl.fill_login_form(page, "a@b.com", OF_PW)
+    assert page.fields[rl._EMAIL_FIELD].value == "a@b.com"
+    assert [e for e in page.log if e[1] == "email"][-1] == ("type", "email"), page.log
+
+
+def case_form_never_appears_fails_fast():
+    _set_env()
+    _NAV_ERRORS.clear()
+    calls, urlopen = _fake_browserbase()
+    page = _FormPage(appears=False)
+    orig = _FakeBrowserCtx.__init__
+
+    def _ctx_init(self, cdp_url):
+        self.pages = [page]
+
+    _FakeBrowserCtx.__init__ = _ctx_init
+    job = _job()
+    t0 = time.monotonic()
+    try:
+        _with_fakes(urlopen, lambda: rl._run_login(job, OF_PW))
+    finally:
+        _FakeBrowserCtx.__init__ = orig
+    assert time.monotonic() - t0 < 5, "must fail fast, not wait out the job window"
+    assert job.state == rl.STATE_ERROR, (job.state, job.error)
+    assert "the OnlyFans login form did not appear" in job.error, job.error
+    assert OF_PW not in job.error
+    assert not [e for e in page.log if e[0] in ("fill", "type", "click")], page.log
+    assert any(b and b.get("status") == "REQUEST_RELEASE" for _m, _u, b in calls)
+
+
+def case_field_never_takes_value_fails():
+    page = _FormPage(swallow=99)
+    e = _raises(rl.LoginFormError, rl.fill_login_form, page, "a@b.com", OF_PW)
+    assert "email field" in str(e) and "a@b.com" not in str(e), e
+    attempts = [x for x in page.log if x[1] == "email" and x[0] in ("fill", "type")]
+    assert len(attempts) == rl.FILL_ATTEMPTS, page.log  # one fill, then key-by-key retypes
+    assert not [x for x in page.log if x[1] in ("password", "submit")], page.log
 
 
 def case_live_server_is_the_serving_module():

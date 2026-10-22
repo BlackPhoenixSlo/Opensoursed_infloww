@@ -60,7 +60,6 @@ def main() -> int:
                 if err:
                     print(f"\n==> NAVIGATION FAILED: {rl.scrub(err, password)}", flush=True)
                     return 1
-                time.sleep(4)
                 print("[*] typing credentials ...", flush=True)
                 rl._type_credentials(page, email, password)
                 deadline = time.time() + POLL_WINDOW_S
