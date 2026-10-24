@@ -43,78 +43,78 @@ picsum.photos (Unsplash License). No real account, fan or session was used.
 | `dashboard-phone-780.webp` | 780x1688 | 35,890 | Phone, 2x | (same as above) |
 | `dashboard-combo.webp` | 1440x900 | 56,444 | Desktop with the phone shot over its bottom-right | Inflowwww dashboard showing $1,005,875 in creator earnings this month |
 | `dashboard-combo-720.webp` | 720x450 | 22,776 | Combo, half size | (same as above) |
-| `dashboard-kpis.webp` | 1280x800 | 78,988 | Dashboard scrolled to Per-model KPIs: 20 model cards, each with total revenue incl. pending, PPV/post/tip/sub/rebill/other chips, fans, new subs, LTV, ARPU, messages, PPVs sold (top: Ava Monroe $180,009) | Per-model KPI cards for 20 creators, led by $180,009 in revenue |
-| `dashboard-kpis-640.webp` | 640x400 | 27,242 | Same, half size | (same as above) |
-| `dashboard-kpis-phone.webp` | 390x844 | 25,086 | Phone (390x844 viewport @2x, downsized) | Per-model KPI cards for 20 creators, led by $180,009 in revenue |
-| `dashboard-kpis-phone-780.webp` | 780x1688 | 59,800 | Phone, 2x | (same as above) |
-| `dashboard-kpis-combo.webp` | 1440x900 | 90,158 | Desktop with the phone shot over its bottom-right | Per-model KPI cards for 20 creators, led by $180,009 in revenue |
-| `dashboard-kpis-combo-720.webp` | 720x450 | 32,006 | Combo, half size | (same as above) |
-| `messages-pro.webp` | 1280x800 | 45,136 | Messages Pro (1600x1000 viewport, downsized): Ava's chats with spend chips and an open thread scrolled to the latest with 9 bubbles: short fan and creator lines, a photo, a paid $45 PPV, a $50 tip and the composer's script hint; phone: the All Models chat list | Messages Pro inbox with a fan thread showing a paid PPV and a $50 tip |
-| `messages-pro-640.webp` | 640x400 | 15,738 | Same, half size | (same as above) |
-| `messages-pro-phone.webp` | 390x844 | 24,154 | Phone (390x844 viewport @2x, downsized) | Messages Pro inbox with a fan thread showing a paid PPV and a $50 tip |
-| `messages-pro-phone-780.webp` | 780x1688 | 54,436 | Phone, 2x | (same as above) |
-| `messages-pro-combo.webp` | 1440x900 | 64,206 | Desktop with the phone shot over its bottom-right | Messages Pro inbox with a fan thread showing a paid PPV and a $50 tip |
-| `messages-pro-combo-720.webp` | 720x450 | 23,860 | Combo, half size | (same as above) |
-| `messages-pro-thread.webp` | 1280x800 | 55,722 | Messages Pro thread (1600x1000 viewport, downsized), 10 bubbles to the latest, with the Fan insights column: $11,134.68 total spend, PPV and tip totals, purchases over time | A fan chat in Messages Pro with Fan insights showing $11,134 total spend |
-| `messages-pro-thread-640.webp` | 640x400 | 19,274 | Same, half size | (same as above) |
-| `messages-pro-thread-phone.webp` | 390x844 | 24,236 | Phone (390x844 viewport @2x, downsized) | A fan chat in Messages Pro with Fan insights showing $11,134 total spend |
-| `messages-pro-thread-phone-780.webp` | 780x1688 | 56,302 | Phone, 2x | (same as above) |
-| `messages-pro-thread-combo.webp` | 1440x900 | 74,174 | Desktop with the phone shot over its bottom-right | A fan chat in Messages Pro with Fan insights showing $11,134 total spend |
-| `messages-pro-thread-combo-720.webp` | 720x450 | 27,076 | Combo, half size | (same as above) |
+| `dashboard-kpis.webp` | 1280x800 | 78,218 | Dashboard scrolled to Per-model KPIs: 20 model cards, each with total revenue incl. pending, PPV/post/tip/sub/rebill/other chips, fans, new subs, LTV, ARPU, messages, PPVs sold (top: Ava Monroe $180,009) | Per-model KPI cards for 20 creators, led by $180,009 in revenue |
+| `dashboard-kpis-640.webp` | 640x400 | 26,914 | Same, half size | (same as above) |
+| `dashboard-kpis-phone.webp` | 390x844 | 24,532 | Phone (390x844 viewport @2x, downsized) | Per-model KPI cards for 20 creators, led by $180,009 in revenue |
+| `dashboard-kpis-phone-780.webp` | 780x1688 | 58,538 | Phone, 2x | (same as above) |
+| `dashboard-kpis-combo.webp` | 1440x900 | 88,958 | Desktop with the phone shot over its bottom-right | Per-model KPI cards for 20 creators, led by $180,009 in revenue |
+| `dashboard-kpis-combo-720.webp` | 720x450 | 31,624 | Combo, half size | (same as above) |
+| `messages-pro.webp` | 1280x800 | 44,988 | Messages Pro (1600x1000 viewport, downsized): Ava's chats with spend chips and an open thread scrolled to the latest with 9 bubbles: short fan and creator lines, a photo, a paid $45 PPV, a $50 tip and the composer's script hint; phone: the All Models chat list | Messages Pro inbox with a fan thread showing a paid PPV and a $50 tip |
+| `messages-pro-640.webp` | 640x400 | 15,694 | Same, half size | (same as above) |
+| `messages-pro-phone.webp` | 390x844 | 24,190 | Phone (390x844 viewport @2x, downsized) | Messages Pro inbox with a fan thread showing a paid PPV and a $50 tip |
+| `messages-pro-phone-780.webp` | 780x1688 | 54,474 | Phone, 2x | (same as above) |
+| `messages-pro-combo.webp` | 1440x900 | 64,162 | Desktop with the phone shot over its bottom-right | Messages Pro inbox with a fan thread showing a paid PPV and a $50 tip |
+| `messages-pro-combo-720.webp` | 720x450 | 23,844 | Combo, half size | (same as above) |
+| `messages-pro-thread.webp` | 1280x800 | 55,366 | Messages Pro thread (1600x1000 viewport, downsized), 10 bubbles to the latest, with the Fan insights column: $11,135 total spend, PPV and tip totals, purchases over time | A fan chat in Messages Pro with Fan insights showing $11,135 total spend |
+| `messages-pro-thread-640.webp` | 640x400 | 19,170 | Same, half size | (same as above) |
+| `messages-pro-thread-phone.webp` | 390x844 | 24,116 | Phone (390x844 viewport @2x, downsized) | A fan chat in Messages Pro with Fan insights showing $11,135 total spend |
+| `messages-pro-thread-phone-780.webp` | 780x1688 | 55,892 | Phone, 2x | (same as above) |
+| `messages-pro-thread-combo.webp` | 1440x900 | 73,308 | Desktop with the phone shot over its bottom-right | A fan chat in Messages Pro with Fan insights showing $11,135 total spend |
+| `messages-pro-thread-combo-720.webp` | 720x450 | 26,936 | Combo, half size | (same as above) |
 | `creators.webp` | 1280x800 | 56,282 | Manage creators: 20 connected OnlyFans creators with nicknames, accounts and assigned chatters | Manage creators list with 20 connected OnlyFans creators |
 | `creators-640.webp` | 640x400 | 21,750 | Same, half size | (same as above) |
 | `creators-phone.webp` | 390x844 | 16,588 | Phone (390x844 viewport @2x, downsized) | Manage creators list with 20 connected OnlyFans creators |
 | `creators-phone-780.webp` | 780x1688 | 37,384 | Phone, 2x | (same as above) |
 | `creators-combo.webp` | 1440x900 | 65,462 | Desktop with the phone shot over its bottom-right | Manage creators list with 20 connected OnlyFans creators |
 | `creators-combo-720.webp` | 720x450 | 25,292 | Combo, half size | (same as above) |
-| `creator-reports.webp` | 1280x800 | 47,174 | Creator reports: earnings summary (subscriptions, posts, messages, tips, referrals, streams) with change badges and the earnings trend | Creator reports with an earnings summary and a daily earnings chart |
-| `creator-reports-640.webp` | 640x400 | 19,770 | Same, half size | (same as above) |
-| `creator-reports-phone.webp` | 390x844 | 27,510 | Phone (390x844 viewport @2x, downsized) | Creator reports with an earnings summary and a daily earnings chart |
-| `creator-reports-phone-780.webp` | 780x1688 | 59,222 | Phone, 2x | (same as above) |
-| `creator-reports-combo.webp` | 1440x900 | 71,764 | Desktop with the phone shot over its bottom-right | Creator reports with an earnings summary and a daily earnings chart |
-| `creator-reports-combo-720.webp` | 720x450 | 29,522 | Combo, half size | (same as above) |
-| `creator-reports-table.webp` | 1280x800 | 44,780 | Creator reports scrolled to the Creator statistics table, gross: header row and 15 of the 20 creators with subscription, post, message and tip earnings (Ava $7,212.78 subs, $14,220.00 posts, $32,125.00 messages) | Creator statistics table with per-creator earnings for 20 creators |
-| `creator-reports-table-640.webp` | 640x400 | 16,564 | Same, half size | (same as above) |
-| `creator-reports-table-phone.webp` | 390x844 | 12,636 | Phone (390x844 viewport @2x, downsized) | Creator statistics table with per-creator earnings for 20 creators |
-| `creator-reports-table-phone-780.webp` | 780x1688 | 28,110 | Phone, 2x | (same as above) |
-| `creator-reports-table-combo.webp` | 1440x900 | 59,712 | Desktop with the phone shot over its bottom-right | Creator statistics table with per-creator earnings for 20 creators |
-| `creator-reports-table-combo-720.webp` | 720x450 | 22,260 | Combo, half size | (same as above) |
-| `employee-reports.webp` | 1280x800 | 46,646 | Employee reports: employee sales over 30 days and the sales ranking | Employee reports chart of chatter sales over the last 30 days |
-| `employee-reports-640.webp` | 640x400 | 17,086 | Same, half size | (same as above) |
-| `employee-reports-phone.webp` | 390x844 | 18,070 | Phone (390x844 viewport @2x, downsized) | Employee reports chart of chatter sales over the last 30 days |
-| `employee-reports-phone-780.webp` | 780x1688 | 40,750 | Phone, 2x | (same as above) |
-| `employee-reports-combo.webp` | 1440x900 | 58,298 | Desktop with the phone shot over its bottom-right | Employee reports chart of chatter sales over the last 30 days |
-| `employee-reports-combo-720.webp` | 720x450 | 22,176 | Combo, half size | (same as above) |
-| `sales-records.webp` | 1280x800 | 60,912 | Sales records: the latest sales with employee, creator, fan, earnings and Reassign | Sales records table listing each sale with its chatter and creator |
-| `sales-records-640.webp` | 640x400 | 22,256 | Same, half size | (same as above) |
+| `creator-reports.webp` | 1280x800 | 45,322 | Creator reports: earnings summary (subscriptions, posts, messages, tips, referrals, streams) with change badges and the earnings trend | Creator reports with an earnings summary and a daily earnings chart |
+| `creator-reports-640.webp` | 640x400 | 18,676 | Same, half size | (same as above) |
+| `creator-reports-phone.webp` | 390x844 | 27,046 | Phone (390x844 viewport @2x, downsized) | Creator reports with an earnings summary and a daily earnings chart |
+| `creator-reports-phone-780.webp` | 780x1688 | 58,092 | Phone, 2x | (same as above) |
+| `creator-reports-combo.webp` | 1440x900 | 69,906 | Desktop with the phone shot over its bottom-right | Creator reports with an earnings summary and a daily earnings chart |
+| `creator-reports-combo-720.webp` | 720x450 | 28,480 | Combo, half size | (same as above) |
+| `creator-reports-table.webp` | 1280x800 | 40,958 | Creator reports scrolled to the Creator statistics table, gross: header row and 15 of the 20 creators with subscription, post, message and tip earnings (whole dollars: Ava $7,213 subs, $14,220 tips, $32,125 messages) | Creator statistics table with per-creator earnings for 20 creators |
+| `creator-reports-table-640.webp` | 640x400 | 14,438 | Same, half size | (same as above) |
+| `creator-reports-table-phone.webp` | 390x844 | 10,830 | Phone (390x844 viewport @2x, downsized) | Creator statistics table with per-creator earnings for 20 creators |
+| `creator-reports-table-phone-780.webp` | 780x1688 | 23,864 | Phone, 2x | (same as above) |
+| `creator-reports-table-combo.webp` | 1440x900 | 51,588 | Desktop with the phone shot over its bottom-right | Creator statistics table with per-creator earnings for 20 creators |
+| `creator-reports-table-combo-720.webp` | 720x450 | 19,244 | Combo, half size | (same as above) |
+| `employee-reports.webp` | 1280x800 | 46,806 | Employee reports: employee sales over 30 days and the sales ranking | Employee reports chart of chatter sales over the last 30 days |
+| `employee-reports-640.webp` | 640x400 | 17,172 | Same, half size | (same as above) |
+| `employee-reports-phone.webp` | 390x844 | 18,254 | Phone (390x844 viewport @2x, downsized) | Employee reports chart of chatter sales over the last 30 days |
+| `employee-reports-phone-780.webp` | 780x1688 | 41,300 | Phone, 2x | (same as above) |
+| `employee-reports-combo.webp` | 1440x900 | 58,366 | Desktop with the phone shot over its bottom-right | Employee reports chart of chatter sales over the last 30 days |
+| `employee-reports-combo-720.webp` | 720x450 | 22,226 | Combo, half size | (same as above) |
+| `sales-records.webp` | 1280x800 | 57,978 | Sales records: the latest sales with employee, creator, fan, earnings and Reassign | Sales records table listing each sale with its chatter and creator |
+| `sales-records-640.webp` | 640x400 | 21,238 | Same, half size | (same as above) |
 | `sales-records-phone.webp` | 390x844 | 23,352 | Phone (390x844 viewport @2x, downsized) | Sales records table listing each sale with its chatter and creator |
 | `sales-records-phone-780.webp` | 780x1688 | 53,474 | Phone, 2x | (same as above) |
-| `sales-records-combo.webp` | 1440x900 | 80,394 | Desktop with the phone shot over its bottom-right | Sales records table listing each sale with its chatter and creator |
-| `sales-records-combo-720.webp` | 720x450 | 30,354 | Combo, half size | (same as above) |
+| `sales-records-combo.webp` | 1440x900 | 79,208 | Desktop with the phone shot over its bottom-right | Sales records table listing each sale with its chatter and creator |
+| `sales-records-combo-720.webp` | 720x450 | 29,706 | Combo, half size | (same as above) |
 | `message-dashboard.webp` | 1280x800 | 45,114 | Message dashboard: direct messages sent by chatters with creator, message and Unsend | Message dashboard listing chatters' sent messages |
 | `message-dashboard-640.webp` | 640x400 | 16,548 | Same, half size | (same as above) |
 | `message-dashboard-phone.webp` | 390x844 | 17,010 | Phone (390x844 viewport @2x, downsized) | Message dashboard listing chatters' sent messages |
 | `message-dashboard-phone-780.webp` | 780x1688 | 38,612 | Phone, 2x | (same as above) |
 | `message-dashboard-combo.webp` | 1440x900 | 56,910 | Desktop with the phone shot over its bottom-right | Message dashboard listing chatters' sent messages |
 | `message-dashboard-combo-720.webp` | 720x450 | 21,650 | Combo, half size | (same as above) |
-| `fan-reports.webp` | 1280x800 | 44,798 | Fan reports: new fans and renewals over 30 days per creator | Fan reports chart of new fans and renewals |
-| `fan-reports-640.webp` | 640x400 | 17,748 | Same, half size | (same as above) |
-| `fan-reports-phone.webp` | 390x844 | 17,306 | Phone (390x844 viewport @2x, downsized) | Fan reports chart of new fans and renewals |
-| `fan-reports-phone-780.webp` | 780x1688 | 38,310 | Phone, 2x | (same as above) |
-| `fan-reports-combo.webp` | 1440x900 | 62,910 | Desktop with the phone shot over its bottom-right | Fan reports chart of new fans and renewals |
-| `fan-reports-combo-720.webp` | 720x450 | 25,156 | Combo, half size | (same as above) |
+| `fan-reports.webp` | 1280x800 | 44,674 | Fan reports: new fans and renewals over 30 days per creator | Fan reports chart of new fans and renewals |
+| `fan-reports-640.webp` | 640x400 | 17,828 | Same, half size | (same as above) |
+| `fan-reports-phone.webp` | 390x844 | 17,180 | Phone (390x844 viewport @2x, downsized) | Fan reports chart of new fans and renewals |
+| `fan-reports-phone-780.webp` | 780x1688 | 38,008 | Phone, 2x | (same as above) |
+| `fan-reports-combo.webp` | 1440x900 | 62,690 | Desktop with the phone shot over its bottom-right | Fan reports chart of new fans and renewals |
+| `fan-reports-combo-720.webp` | 720x450 | 24,704 | Combo, half size | (same as above) |
 | `vault-pro.webp` | 1280x800 | 86,046 | Vault Pro: folders with counts (Beach day, Gym & fitness, Travel ...) and the media grid | Vault Pro media library with folders and photo thumbnails |
 | `vault-pro-640.webp` | 640x400 | 31,928 | Same, half size | (same as above) |
 | `vault-pro-phone.webp` | 390x844 | 20,706 | Phone (390x844 viewport @2x, downsized) | Vault Pro media library with folders and photo thumbnails |
 | `vault-pro-phone-780.webp` | 780x1688 | 48,910 | Phone, 2x | (same as above) |
 | `vault-pro-combo.webp` | 1440x900 | 92,582 | Desktop with the phone shot over its bottom-right | Vault Pro media library with folders and photo thumbnails |
 | `vault-pro-combo-720.webp` | 720x450 | 36,474 | Combo, half size | (same as above) |
-| `scripts.webp` | 1280x800 | 44,818 | Scripts: script tags and sequences (Holiday special, Gym selfie lead-in, Bundle offer ...) with prices | Scripts library with message sequences and PPV prices |
-| `scripts-640.webp` | 640x400 | 17,206 | Same, half size | (same as above) |
-| `scripts-phone.webp` | 390x844 | 16,704 | Phone (390x844 viewport @2x, downsized) | Scripts library with message sequences and PPV prices |
-| `scripts-phone-780.webp` | 780x1688 | 38,266 | Phone, 2x | (same as above) |
-| `scripts-combo.webp` | 1440x900 | 59,676 | Desktop with the phone shot over its bottom-right | Scripts library with message sequences and PPV prices |
-| `scripts-combo-720.webp` | 720x450 | 23,080 | Combo, half size | (same as above) |
+| `scripts.webp` | 1280x800 | 44,472 | Scripts: script tags and sequences (Holiday special, Gym selfie lead-in, Bundle offer ...) with prices | Scripts library with message sequences and PPV prices |
+| `scripts-640.webp` | 640x400 | 17,114 | Same, half size | (same as above) |
+| `scripts-phone.webp` | 390x844 | 16,586 | Phone (390x844 viewport @2x, downsized) | Scripts library with message sequences and PPV prices |
+| `scripts-phone-780.webp` | 780x1688 | 37,952 | Phone, 2x | (same as above) |
+| `scripts-combo.webp` | 1440x900 | 59,110 | Desktop with the phone shot over its bottom-right | Scripts library with message sequences and PPV prices |
+| `scripts-combo-720.webp` | 720x450 | 22,936 | Combo, half size | (same as above) |
 | `smart-messages.webp` | 1280x800 | 42,762 | Smart Messages: active automated messages (nudge, welcome, purchase follow-up, expiry, birthday) | Smart Messages list of active automated messages |
 | `smart-messages-640.webp` | 640x400 | 15,374 | Same, half size | (same as above) |
 | `smart-messages-phone.webp` | 390x844 | 17,428 | Phone (390x844 viewport @2x, downsized) | Smart Messages list of active automated messages |
@@ -133,12 +133,12 @@ picsum.photos (Unsplash License). No real account, fan or session was used.
 | `auto-follow-phone-780.webp` | 780x1688 | 50,252 | Phone, 2x | (same as above) |
 | `auto-follow-combo.webp` | 1440x900 | 61,116 | Desktop with the phone shot over its bottom-right | Auto-follow stats per creator |
 | `auto-follow-combo-720.webp` | 720x450 | 23,556 | Combo, half size | (same as above) |
-| `tracking-links.webp` | 1280x800 | 61,466 | Tracking links: links with clicks, subscribers, conversion and earnings | Tracking links table with clicks, subscribers and earnings |
-| `tracking-links-640.webp` | 640x400 | 23,360 | Same, half size | (same as above) |
+| `tracking-links.webp` | 1280x800 | 60,580 | Tracking links: links with clicks, subscribers, conversion and earnings | Tracking links table with clicks, subscribers and earnings |
+| `tracking-links-640.webp` | 640x400 | 23,070 | Same, half size | (same as above) |
 | `tracking-links-phone.webp` | 390x844 | 23,566 | Phone (390x844 viewport @2x, downsized) | Tracking links table with clicks, subscribers and earnings |
 | `tracking-links-phone-780.webp` | 780x1688 | 51,994 | Phone, 2x | (same as above) |
-| `tracking-links-combo.webp` | 1440x900 | 82,288 | Desktop with the phone shot over its bottom-right | Tracking links table with clicks, subscribers and earnings |
-| `tracking-links-combo-720.webp` | 720x450 | 31,514 | Combo, half size | (same as above) |
+| `tracking-links-combo.webp` | 1440x900 | 82,144 | Desktop with the phone shot over its bottom-right | Tracking links table with clicks, subscribers and earnings |
+| `tracking-links-combo-720.webp` | 720x450 | 31,444 | Combo, half size | (same as above) |
 | `employees.webp` | 1280x800 | 48,190 | Manage employees for Northstar Studio: 12 people with roles and assigned creators | Manage employees list with roles and assigned creators |
 | `employees-640.webp` | 640x400 | 18,082 | Same, half size | (same as above) |
 | `employees-phone.webp` | 390x844 | 19,014 | Phone (390x844 viewport @2x, downsized) | Manage employees list with roles and assigned creators |

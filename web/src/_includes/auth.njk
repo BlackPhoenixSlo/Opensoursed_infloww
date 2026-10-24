@@ -21,6 +21,8 @@
     <li data-code="invalid">Enter your username and password. Usernames are 3 to 32 characters: a–z, 0–9, dot, underscore or hyphen.</li>
     {%- endif %}
     <li data-code="disabled">This chatter login is switched off. Ask your agency's owner to turn it back on.</li>
+    <li data-code="throttled">Too many sign-in attempts from your network. Wait a minute and try again.</li>
+    <li data-code="workspace">This username exists in more than one workspace. Sign in at your workspace address.</li>
     <li data-code="unavailable">The app is up, but its sign-in service did not answer. Try again in a minute.</li>
     <li data-code="">That did not work. Try again.</li>
   </ul>
@@ -85,17 +87,18 @@
 </p>
 {%- endmacro -%}
 
-{#- Their white "IF" square and INFLOWW wordmark, redrawn (not their asset): our "IF" square, and a wordmark that
+{#- Their white "IF" square and INFLOWW wordmark, redrawn (not their asset): our "OIF" square, and a wordmark that
     runs two w's past theirs, the extra two fading out. -#}
 {%- macro logo(mark = "size-10") -%}
 <a href="{{ '/' | url }}" class="inline-flex min-h-11 items-center gap-3 text-white" aria-label="{{ site.name }} home">
   <svg class="{{ mark }} shrink-0" viewBox="0 0 40 40" aria-hidden="true" focusable="false">
     <rect width="40" height="40" rx="9" fill="#fff" />
-    <rect x="9" y="10" width="5" height="20" fill="#0c0c0c" />
-    <rect x="17" y="10" width="5" height="20" fill="#0c0c0c" />
-    <rect x="17" y="10" width="14" height="5" fill="#0c0c0c" />
-    <rect x="17" y="18" width="10" height="4.5" fill="#0c0c0c" />
-    <circle cx="30" cy="28" r="2.5" fill="#f88056" />
+    <rect x="6" y="12" width="7" height="16" rx="3.5" fill="none" stroke="#0c0c0c" stroke-width="4" />
+    <rect x="18" y="10" width="4" height="20" fill="#0c0c0c" />
+    <rect x="25" y="10" width="4" height="20" fill="#0c0c0c" />
+    <rect x="25" y="10" width="11" height="4" fill="#0c0c0c" />
+    <rect x="25" y="18" width="8" height="4" fill="#0c0c0c" />
+    <circle cx="33" cy="28" r="2.5" fill="#f88056" />
   </svg>
   <span class="text-[1.65rem] leading-none font-extrabold tracking-tight uppercase">Infloww<span class="text-white/70">w</span><span class="text-white/55">w</span></span>
 </a>
