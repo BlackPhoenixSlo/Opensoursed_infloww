@@ -419,4 +419,53 @@ async def case_closing_ppv_save_validation():
     assert off == {"closing_ppv_price_cents": 1500}, off
 
 
+
+async def case_capped_account_still_cuts_and_skiplists_but_calls_no_llm():
+    """Today's LLM cap is spent (ADR 0025, free3): a fan-scoped (W7) run makes
+    no LLM call and replies to no one, but its non-LLM work still lands — the
+    runaway cut sends its closing PPV and writes skip_list('too_long'), and a
+    content payer is still skip-listed 'spent'. A capped sweep stops before
+    its whole-account gather."""
+    from datetime import datetime
+    from db.models import GrokDailyCost
+    import llm_client
+    aid = "acc_gc_capped"
+    await _seed_runaway(aid, 7701)             # due the closing PPV
+    await _seed_fan(aid, 7702)                 # an ordinary turn: needs the LLM
+    await _add_msgs(aid, 7702, [("in", "hey")])
+    await _seed_fan(aid, 7703)                 # bought content
+    await _add_msgs(aid, 7703, [("in", "hi")])
+    await _seed_tx(aid, 7703, "ppv_message", status="pending")
+    model = await wc.resolve_model(aid, wc._PURPOSE, None)
+    async with get_session() as s:
+        s.add(GrokDailyCost(
+            day=datetime.utcnow().strftime("%Y-%m-%d"), account_id=aid,
+            provider=llm_client.MODELS[model].provider, cost_cents=10**9,
+            call_count=1, is_capped=True, updated_at=datetime.utcnow()))
+    fake = _use_fake()
+
+    async def _no_llm(**kw):
+        raise AssertionError(f"a capped run called the LLM: {kw.get('purpose')}")
+    saved = llm_client.chat
+    llm_client.chat = _no_llm
+    async def _no_gather(*a, **k):
+        raise AssertionError("a capped sweep gathered")
+    saved_gather = wc._gather
+    try:
+        wc._gather = _no_gather
+        swept = await run_once(aid, "welcome_chatter_for_info", payload=dict(_CLOSING))
+        assert swept["status"] == "ok" and "llm_capped" in swept, swept
+        wc._gather = saved_gather
+        res = await run_once(aid, "welcome_chatter_for_info",
+                             payload={**_CLOSING, "only_fan_ids": [7701, 7702, 7703]})
+    finally:
+        llm_client.chat, wc._gather = saved, saved_gather
+    assert res["status"] == "ok" and res["cap_hit"] is True, res
+    assert res["closing_ppvs_sent"] == 1 and res["newly_skiplisted"] == 2, res
+    _assert_one_closing_ppv(fake, 7701)
+    await _assert_closed(aid, 7701, "too_long")
+    async with get_session() as s:
+        assert (await s.get(SkipList, (aid, 7703))).reason == "spent"
+        assert await s.get(SkipList, (aid, 7702)) is None
+
 _harness.run()

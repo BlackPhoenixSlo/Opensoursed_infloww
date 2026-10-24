@@ -55,7 +55,7 @@ _OWNERS = {
     "STORYBOARD_BUILD_CONCURRENCY": 2,
     "HEALTH_ALL_CONCURRENCY": 4,
     "AUTOMATION_MAX_CONCURRENT_RUNS": 4,
-    "RELAY_EXECUTOR_THREADS": 64,
+    "RELAY_EXECUTOR_THREADS": 192,
     "ACCOUNT_LANE_BACKGROUND": 2,
 }
 
@@ -266,6 +266,65 @@ def case_record_live_covers_a_clamped_knob():
         )
 
 
+def case_a_knob_read_at_use_is_live_from_the_save():
+    """A ceiling read where it is used (resolve_live: the release floor, the
+    DM rate) applies at its next use, so a save is
+    live at once, before that use; a knob read once at import stays pending."""
+    with tempfile.TemporaryDirectory() as d:
+        lc = _fresh(Path(d) / "lc.json")
+        assert lc.resolve_live("AUTOMATION_RELEASE_SLOT_MIN_HOLD_S", 3) == 3
+        lc.set_many({"AUTOMATION_RELEASE_SLOT_MIN_HOLD_S": 6, "IMG_FETCH_CONCURRENCY": 12})
+        rows = {r["name"]: r for r in lc.describe()}
+        row = rows["AUTOMATION_RELEASE_SLOT_MIN_HOLD_S"]
+        assert (row["live"], row["value"], row["pending"]) == (6, 6, False), row
+        assert not row["switch"], row
+        assert rows["IMG_FETCH_CONCURRENCY"]["pending"] is True, rows["IMG_FETCH_CONCURRENCY"]
+        assert lc.resolve_live("AUTOMATION_RELEASE_SLOT_MIN_HOLD_S", 3) == 6
+
+
+def case_a_switch_holds_zero_and_one_and_nothing_else():
+    """A switch (resolve_switch, ADR 0025): 0 is legal and survives a reload
+    (the ceilings' floor of 1 does not apply), 2 is refused, an env var may say
+    off/on, and the panel row says it is a switch. A ceiling hand-written as 0
+    in the file still reads as 1."""
+    knob = "AUTOMATION_RELEASE_SLOT_ON_HOLD"
+    with tempfile.TemporaryDirectory() as d:
+        f = Path(d) / "lc.json"
+        os.environ.pop(knob, None)
+        lc = _fresh(f)
+        assert lc.resolve_switch(knob, True) is True
+        assert lc.set_many({knob: 0})[knob] == 0
+        for bad in (2, -1, "maybe"):
+            try:
+                lc.set_many({knob: bad})
+            except ValueError as e:
+                assert "switch" in str(e), e
+            else:
+                raise AssertionError(f"{bad!r} was accepted for a switch")
+        assert lc.set_many({"STORYBOARD_BUILD_CONCURRENCY": 0})["STORYBOARD_BUILD_CONCURRENCY"] == 1
+        raw = json.loads(f.read_text())
+        raw["HEALTH_ALL_CONCURRENCY"] = 0                 # hand-edited
+        f.write_text(json.dumps(raw))
+        lc = _fresh(f)                                    # a restart
+        assert lc.resolve_switch(knob, True) is False, "a stored 0 must survive the reload"
+        assert lc.resolve("HEALTH_ALL_CONCURRENCY", 4) == 1
+        row = next(r for r in lc.describe() if r["name"] == knob)
+        assert row["switch"] and row["default"] == 1 and row["value"] == row["live"] == 0, row
+        assert not row["pending"], row
+        assert not next(r for r in lc.describe() if r["name"] == "HEALTH_ALL_CONCURRENCY")["switch"]
+        for word, want in (("on", True), ("1", True), ("false", False), ("OFF", False)):
+            os.environ[knob] = word
+            try:
+                assert lc.resolve_switch(knob, False) is want, word
+            finally:
+                del os.environ[knob]
+        os.environ[knob] = "sometimes"                    # unparsable: falls through to stored (0)
+        try:
+            assert lc.resolve_switch(knob, True) is False
+        finally:
+            del os.environ[knob]
+
+
 _harness.run(
     case_precedence_env_beats_stored_beats_default,
     case_none_deletes_the_override,
@@ -277,4 +336,6 @@ _harness.run(
     case_the_registry_is_derived_not_declared,
     case_live_and_pending_track_the_running_process,
     case_record_live_covers_a_clamped_knob,
+    case_a_knob_read_at_use_is_live_from_the_save,
+    case_a_switch_holds_zero_and_one_and_nothing_else,
 )

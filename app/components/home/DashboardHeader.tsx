@@ -121,10 +121,11 @@ export const TILE_ICON: Record<Channel, { Icon: LucideIcon; rgb: string }> = {
  *  never a crash. */
 const rowsOf = (d: RevenueResp | undefined): RevenueRow[] => (Array.isArray(d?.rows) ? d.rows : []);
 
-/** A header figure as the bundle's `getHomePageMoneyFormat` prints it (index.9f50f370.js @11227188): two decimals
- *  and a thousands separator at every size, "$12,848.00", where the house `fmtCents` drops the cents from $1,000. */
+/** A header figure in whole dollars with a thousands separator, "$1,005,875": the house choice for the earnings
+ *  overview, deliberately unlike the bundle's `getHomePageMoneyFormat` (index.9f50f370.js @11227188), which prints
+ *  two decimals at every size. Rounds to the nearest dollar; a negative keeps its leading minus. */
 const money = (c: number): string =>
-  `${c < 0 ? "-" : ""}$${(Math.abs(c) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  `${c < 0 ? "-" : ""}$${(Math.abs(c) / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
 
 /** A row's money in the chosen basis: OnlyFans's `net_cents` in Net, `total_cents` in Gross. */
 const cents = (r: RevenueRow, basis: Basis) => (basis === "Net" ? r.net_cents ?? 0 : r.total_cents);

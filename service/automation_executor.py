@@ -49,13 +49,15 @@ from contextvars import ContextVar
 from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable, NamedTuple
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import and_, case, delete, func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.engine import get_session
 from db.models import (
+    Account,
     AccountAiConfig,
+    AccountHealth,
     AutomationRule,
     AutomationRun,
     Chat,
@@ -83,7 +85,10 @@ import events
 import account_page  # free-vs-paid page (prime the cache off the recovery probe)
 from jsonsafe import dump_capped
 
+import dm_rate
 import lane_config
+import run_slot
+from write_gate import WriteGate
 
 log = logging.getLogger("of-relay.automation")
 
@@ -93,8 +98,14 @@ _TICK_INTERVAL_S = 30          # supervisor cadence (sleep-at-end like tx-ingest
 # (115,879 runs/7d, mean 4.9s), so it saturates near 30 accounts — it is the
 # ceiling that binds FIRST as the fleet grows, ahead of the executor and every
 # admission lane. Settable from the Concurrency panel for that reason.
+# Since 2026-10-24 a run hands its slot back during typing holds
+# (run_slot.py), and the soak timing model puts 50 models at a ~1.3 s
+# p95 slot wait on these 4 (ADR 0025).
 # Applies at restart: the semaphore below is built once when the supervisor starts.
 _MAX_CONCURRENT_RUNS = lane_config.resolve("AUTOMATION_MAX_CONCURRENT_RUNS", 4)
+# …and with neither the env nor the panel setting it, the supervisor sizes the
+# pool from the active Creators every pass (run_slot.auto_runs, ADR 0025):
+# adding or deactivating one re-sizes it on the next pass, live.
 # Separate lane for long account-wide BULK sweeps (scrape_chats etc.). Proven
 # live: the W7 startup seed fired 4 scrape_chats at once, they filled all the run
 # slots for ~2 min, and a real-time welcome_chatter_for_info reply was starved ~40s. Bulk kinds
@@ -103,6 +114,21 @@ _MAX_CONCURRENT_RUNS = lane_config.resolve("AUTOMATION_MAX_CONCURRENT_RUNS", 4)
 # _bulk_sem. Independent → at most RUNS+BULK concurrent (fine: per-account OF
 # pacing + different accounts/sessions).
 _MAX_CONCURRENT_BULK = lane_config.resolve("AUTOMATION_MAX_CONCURRENT_BULK", 2)
+# Run slots only an OPERATOR's run may take (a job of an operator kind started
+# from the app: a premade mass, a scheduled send, an unsend, a priority mass;
+# its scheduled_jobs row carries `created_by_employee_id`, `_OPERATOR_KINDS`). Operator runs also go ahead of every
+# queued automation run for the shared slots (run_slot.SlotPool), so the
+# operator never waits behind automation; automation never uses these.
+# Applies at restart, like the two above.
+_OPERATOR_RESERVED_RUNS = lane_config.resolve("AUTOMATION_OPERATOR_RESERVED_RUNS", 2)
+# The kinds whose run is a person's own content, sent when they said: only
+# these take the operator tier (the slot queue, the write gate, the DM rate
+# limiter's pass) when an operator enqueued them. Who clicked does not make a
+# run an operator's: Run now on autoreply (or any automation kind) is the
+# automation's own work and queues, spaces and rate-limits as automation.
+_OPERATOR_KINDS: frozenset[str] = frozenset({
+    "scheduled_send", "mass_premade", "unsend_messages", "priority_mass",
+})
 _BULK_KINDS: frozenset[str] = frozenset({
     "scrape_chats", "process_old_fans",
     "smart_list_sync",
@@ -210,9 +236,15 @@ def poke_rule(account_id: Any, kind: str) -> None:
 # spawned as a tracked background task bounded by a SHARED semaphore + an
 # in-flight (account,kind) guard, and the loop keeps ticking/waking. A slow run
 # on one account can no longer freeze a real-time welcome_chatter_for_info reply on another.
-_run_sem: asyncio.Semaphore | None = None
-_bulk_sem: asyncio.Semaphore | None = None
+_run_sem: run_slot.SlotPool | None = None
+_bulk_sem: run_slot.SlotPool | None = None
 _inflight_pairs: set[tuple[str, str]] = set()
+# When each account last WON a run slot (loop time). Dispatch within a priority
+# rank goes least-recently-served first, so with 20 creators sharing the slots
+# the one that ran a moment ago queues behind the one that has been waiting —
+# instead of account-id order, which put the same high-id creators last on
+# every busy tick.
+_last_served: dict[str, float] = {}
 _inflight_tasks: set = set()
 
 
@@ -555,28 +587,28 @@ async def of_write_with_retry(fn, *, tries: int = 2, pause_s: float = 11.0):
 
 
 # Proactive per-account spacing so consecutive OF writes never crowd the 10s
-# window in the first place. We reserve a monotonically-advancing "next slot"
-# per account; each writer sleeps (async!) until its slot. The lock is held
-# only for the few microseconds of slot arithmetic — NOT during the wait or the
-# write — so the event loop and worker threads stay free for everything else
-# (other accounts, other automations, the relay's own traffic). Per-account
-# because OF throttles per-account; different girls send concurrently.
+# window in the first place: each write on an account waits at its gate
+# (write_gate.WriteGate) until its turn, at least the gap after the previous
+# write started, and the operator's writes are served before automation's
+# (ADR 0025). The wait is an async wait — the event loop and worker threads
+# stay free for everything else (other accounts, other automations, the
+# relay's own traffic). Per-account because OF throttles per-account;
+# different girls send concurrently.
 _OF_WRITE_GAP_S = 11.0
-_next_write_at: dict[str, float] = {}
-_write_gate_locks: dict[str, asyncio.Lock] = {}
+_write_gates: dict[str, WriteGate] = {}
 
 
-def _write_gate_lock(account_id: str) -> asyncio.Lock:
-    lock = _write_gate_locks.get(account_id)
-    if lock is None:
-        lock = asyncio.Lock()
-        _write_gate_locks[account_id] = lock
-    return lock
+def _write_gate(account_id: str) -> WriteGate:
+    gate = _write_gates.get(account_id)
+    if gate is None:
+        gate = _write_gates[account_id] = WriteGate()
+    return gate
 
 
 async def of_write_paced(account_id, fn, *, min_gap_s: float = _OF_WRITE_GAP_S,
                          tries: int = 2, pause_s: float = 11.0,
-                         send_purpose: str | None = None):
+                         send_purpose: str | None = None, operator: bool | None = None,
+                         dm: bool = False):
     """SPACE this OF write ≥ `min_gap_s` after the previous one for this account
     (proactive — so we rarely trip the limit at all), then run it through the
     reactive async retry as a backstop.
@@ -591,20 +623,33 @@ async def of_write_paced(account_id, fn, *, min_gap_s: float = _OF_WRITE_GAP_S,
     through scheduled_send) stands the run's outbound word guard aside: the
     composer only warns on a sensitive word, it never refuses.
 
-    The spacing wait is `asyncio.sleep`: it yields the event loop, so during the
-    wait the worker threads and the loop remain available for other work. If the
-    account has been idle longer than the gap, there's no wait at all."""
+    `operator`: a write a person started in the app (the chat delete, a vault
+    import) goes ahead of automation's waiting writes; None = the current
+    run's tier (an operator's run, ADR 0025), else automation.
+
+    `dm`: the write is a DM (POST chats/{id}/messages): an automation one first
+    waits for a place in the account's DM window (dm_rate, OF_DM_PER_MIN); an
+    operator's only counts. A plain wait like the spacing, the slot kept.
+
+    The spacing wait yields the event loop, so during the wait the worker
+    threads and the loop remain available for other work. If the account has
+    been idle longer than the gap, there's no wait at all."""
     import audience_include as _audiences
     _audiences.audit_send_purpose(send_purpose, where="of_write_paced")
     aid = str(account_id)
-    loop = asyncio.get_running_loop()
-    async with _write_gate_lock(aid):
-        slot = max(loop.time(), _next_write_at.get(aid, 0.0))
-        _next_write_at[aid] = slot + min_gap_s  # reserve this slot for ourselves
-    wait = slot - loop.time()
+    if operator is None:
+        operator = run_slot.operator_run()
+    # Deliberately NOT run_slot.released(): send_mass_message spaces its write
+    # under broadcast_lock, and a run that gave its slot back while holding a
+    # lock can deadlock against runs holding slots waiting for it. The DM
+    # rate wait (before the gate, so the gate's spacing counts from the send)
+    # is a plain wait for the same reason.
+    if dm:
+        await dm_rate.turn(aid, operator=operator)
+    wait = await _write_gate(aid).turn(min_gap_s, operator=operator)
     if wait > 0.001:
-        log.info("of_write_paced account=%s spacing %.1fs (loop/threads stay free)", aid, wait)
-        await asyncio.sleep(wait)
+        log.info("of_write_paced account=%s spaced %.1fs%s (loop/threads stay free)",
+                 aid, wait, " operator" if operator else "")
     if send_purpose != "manual":
         return await of_write_with_retry(fn, tries=tries, pause_s=pause_s)
     guard_token = OUTBOUND_TEXT_GUARD.set(None)
@@ -675,6 +720,7 @@ async def _claim_due_job(account_id: str, kind: str) -> _ClaimedJob | None:
     canonicalizes at entry) would never claim it and the row would re-dispatch
     an UNBOUND default-payload run every tick."""
     now = datetime.utcnow()
+    auto_emp = await _automation_employee()
     async with get_session() as s:
         row = (
             await s.execute(
@@ -685,7 +731,9 @@ async def _claim_due_job(account_id: str, kind: str) -> _ClaimedJob | None:
                     ScheduledJob.status == "pending",
                     ScheduledJob.run_at <= now,
                 )
-                .order_by(_FOLLOW_UP_JOB, ScheduledJob.run_at)
+                # An operator's job (started from the app) before automation's:
+                # the supervisor took this run's slot in the operator tier.
+                .order_by(_FOLLOW_UP_JOB, ~_by_operator(auto_emp), ScheduledJob.run_at)
                 .limit(1)
             )
         ).scalar_one_or_none()
@@ -874,17 +922,39 @@ async def _park_failed_job(s, job_id: int, err: str) -> None:
         job.status = "error"
 
 
-async def _due_job_pairs() -> list[tuple[str, str]]:
+async def _automation_employee() -> int:
+    """The system Automation employee's id (cached), or -1 without one. Jobs
+    automation enqueues for itself (auto_posts' delete/resend) carry it."""
+    from employees import get_automation_employee_id  # local: avoid load cycle
+    try:
+        return await get_automation_employee_id()
+    except LookupError:
+        return -1
+
+
+def _by_operator(auto_emp: int):
+    """SQL: an operator started this job. The app stamps the acting employee
+    (owner or chatter) as `created_by_employee_id` on what it enqueues; a job
+    automation enqueued has none, or the Automation employee."""
+    col = ScheduledJob.created_by_employee_id
+    return and_(col.is_not(None), col != auto_emp)
+
+
+async def _due_job_pairs() -> list[tuple[str, str, bool]]:
     """Distinct (account_id, kind) over all pending, due jobs — the supervisor
-    spawns one bounded run per pair per tick. A deactivated Creator's jobs stay
+    spawns one bounded run per pair per tick — and whether an operator started
+    one of them (`_by_operator`) of an operator kind (`_OPERATOR_KINDS`),
+    which puts the run in the operator tier. A deactivated Creator's jobs stay
     pending, unspawned; activating it cancels the ones that fell due meanwhile
     (`cancel_jobs_missed_while_off`) and runs the rest."""
     now = datetime.utcnow()
     off = await account_health.deactivated_ids()
+    auto_emp = await _automation_employee()
     async with get_session() as s:
         rows = (
             await s.execute(
-                select(ScheduledJob.account_id, ScheduledJob.kind)
+                select(ScheduledJob.account_id, ScheduledJob.kind,
+                       func.max(case((_by_operator(auto_emp), 1), else_=0)))
                 .where(
                     ScheduledJob.status == "pending",
                     ScheduledJob.run_at <= now,
@@ -892,7 +962,8 @@ async def _due_job_pairs() -> list[tuple[str, str]]:
                 .group_by(ScheduledJob.account_id, ScheduledJob.kind)
             )
         ).all()
-    return [(r[0], r[1]) for r in rows if r[0] not in off]
+    return [(r[0], r[1], bool(r[2]) and canonical_kind(r[1]) in _OPERATOR_KINDS)
+            for r in rows if r[0] not in off]
 
 
 def _due_clock_slot(
@@ -1944,6 +2015,13 @@ async def run_once(
     except Exception:
         log.warning("deactivated_check_failed account=%s", account_id, exc_info=True)
 
+    # Again, with no await before the acquire: the checks above awaited, and
+    # two raw kinds with one canonical_kind (a legacy alias and its live name
+    # are two `_inflight_pairs` entries) could both have passed the first
+    # check. The loser must return here, not queue on the lock: queued, it
+    # would pin a run slot while the winner may need a slot back to finish.
+    if lock.locked():
+        return {"status": "skipped", "reason": "in_flight"}
     async with lock:
         rule_id: int | None = None
         if payload is None and job_id is None:
@@ -2073,6 +2151,32 @@ async def _reconcile_orphans() -> None:
                  jobs.rowcount, runs.rowcount)
 
 
+async def _active_models() -> int:
+    """Creators on the relay that are not deactivated."""
+    off = select(AccountHealth.account_id).where(AccountHealth.deactivated_at.is_not(None))
+    async with get_session() as s:
+        return int((await s.execute(
+            select(func.count()).select_from(Account).where(Account.id.not_in(off))
+        )).scalar_one())
+
+
+async def _size_run_slots(pool: run_slot.SlotPool) -> None:
+    """Size the run slots from the active Creators (run_slot.auto_runs) unless
+    the env or the panel sets AUTOMATION_MAX_CONCURRENT_RUNS. The panel shows
+    the auto size as the knob's default and live value, so nothing reads as a
+    pending restart."""
+    knob = "AUTOMATION_MAX_CONCURRENT_RUNS"
+    if lane_config.overridden(knob):
+        return
+    models = await _active_models()
+    n = run_slot.auto_runs(models)
+    if n != pool.n:
+        log.info("automation_run_slots_resized from=%d to=%d active_models=%d", pool.n, n, models)
+        pool.resize(n)
+    lane_config.resolve(knob, n)
+    lane_config.record_live(knob, n)
+
+
 async def _drain_due_jobs_once() -> None:
     """One supervisor pass: materialize due rules → jobs, sweep expired leases,
     then spawn ONE bounded `run_once` per due (account, kind) pair. Bounded by
@@ -2100,21 +2204,32 @@ async def _drain_due_jobs_once() -> None:
 
     # Priority dispatch (W3): higher-priority kinds are spawned first so on the
     # rare same-fan overlap they win the lease race (a new sub gets welcome, not
-    # followup). Ties broken by account_id for determinism.
-    pairs.sort(key=lambda p: (kind_priority(p[1]), p[0]))
+    # followup). Operator-started work first, then the kind priority. Within a
+    # rank, the account served longest ago goes first (see `_last_served`);
+    # account_id only breaks an exact tie, for determinism.
+    pairs.sort(key=lambda p: (not p[2], kind_priority(p[1]), _last_served.get(p[0], 0.0), p[0]))
 
     global _run_sem, _bulk_sem
     if _run_sem is None:
-        _run_sem = asyncio.Semaphore(_MAX_CONCURRENT_RUNS)
+        _run_sem = run_slot.SlotPool(_MAX_CONCURRENT_RUNS, reserve=_OPERATOR_RESERVED_RUNS)
     if _bulk_sem is None:
-        _bulk_sem = asyncio.Semaphore(_MAX_CONCURRENT_BULK)
+        _bulk_sem = run_slot.SlotPool(_MAX_CONCURRENT_BULK)
+    try:
+        await _size_run_slots(_run_sem)
+    except Exception:
+        log.warning("automation_run_slots_size_failed", exc_info=True)
 
-    async def _one(aid: str, kind: str) -> None:
+    async def _one(aid: str, kind: str, operator: bool) -> None:
         # Long bulk sweeps run in their own lane so they can't starve real-time
         # senders of a slot (see _BULK_KINDS).
         sem = _bulk_sem if kind in _BULK_KINDS else _run_sem
         try:
-            async with sem:
+            # run_slot.hold == `async with sem`, except the run gives the slot
+            # back during its typing holds (_common.hold_with_typing) and takes
+            # it back ahead of fresh runs (run_slot.SlotPool). An operator's
+            # run takes the operator tier: the reserve, else ahead of everyone.
+            async with run_slot.hold(sem, operator=operator):
+                _last_served[aid] = asyncio.get_running_loop().time()
                 await run_once(aid, kind)
         except asyncio.CancelledError:
             raise
@@ -2130,11 +2245,11 @@ async def _drain_due_jobs_once() -> None:
     # immediately and keeps ticking/waking, so a slow run can't stall real-time
     # dispatch. The in-flight guard skips a pair already running (no stacking);
     # the shared semaphore bounds total concurrency across overlapping drains.
-    for a, k in pairs:
+    for a, k, op in pairs:
         if (a, k) in _inflight_pairs:
             continue
         _inflight_pairs.add((a, k))
-        t = asyncio.create_task(_one(a, k))
+        t = asyncio.create_task(_one(a, k, op))
         _inflight_tasks.add(t)
         t.add_done_callback(_inflight_tasks.discard)
 

@@ -13,13 +13,39 @@
  * click into one, and the live OF data replaces it once it arrives.
  */
 
-import { useQuery } from "@tanstack/react-query";
+import { replaceEqualDeep, useQuery } from "@tanstack/react-query";
 
 import { relay, type OFChatItem } from "@/lib/relay";
+import { chatRowKey } from "./useChatList";
 
 interface RecentChatsResp {
   list: OFChatItem[];
   source: string;
+}
+
+/** The seed's structural sharing, by row as `shareChatPages` does for the
+ *  chats query: each row is shared with the previous row of the same
+ *  (accountId, fanId), not the one at the same index. A live message moves its
+ *  row to the top (useInboxRealtime), shifting every row above its old place
+ *  down one; React Query's index-wise sharing would hand each of those a new
+ *  object and the memoized FanRow would re-render the whole list on every
+ *  message (measured: 76% of row renders under a DM flood). Exported for
+ *  tests. */
+export function shareSeedList(prev: unknown, next: unknown): unknown {
+  const p = prev as RecentChatsResp | undefined;
+  const n = next as RecentChatsResp | undefined;
+  if (!Array.isArray(p?.list) || !Array.isArray(n?.list)) return replaceEqualDeep(prev, next);
+  if (p === n) return p;
+  const old = new Map<string, OFChatItem>();
+  for (const c of p.list) old.set(chatRowKey(c), c);
+  let same = p.list.length === n.list.length && p.source === n.source;
+  const list = n.list.map((c, i) => {
+    const was = old.get(chatRowKey(c));
+    const row = was ? replaceEqualDeep(was, c) : c;
+    if (same && p.list[i] !== row) same = false;
+    return row;
+  });
+  return same ? p : { ...n, list };
 }
 
 export function useRecentChatsLocal(opts: {
@@ -44,6 +70,7 @@ export function useRecentChatsLocal(opts: {
     gcTime: 30 * 60 * 1000,
     refetchOnWindowFocus: false,
     refetchOnMount: false,
+    structuralSharing: shareSeedList,
   });
   return {
     rows: q.data?.list ?? [],

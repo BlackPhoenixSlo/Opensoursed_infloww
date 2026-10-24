@@ -16,8 +16,16 @@
  * not — so the rail is fresh on first page load rather than only after the
  * user expands it. Those rows are merged with the localStorage notif-history
  * mirror (which carries SSE arrivals that OF hasn't listed yet). Uses the SAME
- * ["notif-list", aid, type] query keys as the bell, so the cache is shared and
- * the toaster's invalidation on SSE arrival refreshes this list too.
+ * ["notif-list", aid, type] query keys as the bell, so the cache is shared.
+ *
+ * OF CALL BUDGET (20 Creators = 40 lists): SSE keeps the lists live — the
+ * toaster seeds each tip/sale straight into them (`seedMoneyList`) — so OF's
+ * feed is only re-read to reconcile: on mount or tab return once a list is
+ * LIST_STALE_MS old, every LIST_SAFETY_POLL_MS while the tab is visible, and
+ * on `resync` (useAccountStateEvents). No SSE arrival (DM, like, tip) refetches
+ * a list. A hidden tab (or an idle one, useIdleMode) pays nothing: it skips
+ * the safety poll and defers its SSE-driven re-renders and chat-detail
+ * refreshes to one catch-up on return.
  *
  * COLD START: a page refresh wipes the react-query cache, and each model's
  * OF fan-out lands at its own pace — so every successful fetch is mirrored
@@ -58,7 +66,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
-import { useQueries, useQueryClient } from "@tanstack/react-query";
+import { focusManager, useQueries, useQueryClient } from "@tanstack/react-query";
 
 import { chatTabName, openChatTab } from "@/lib/chatPopout";
 import { useActiveAccounts } from "@/hooks/useAccounts";
@@ -127,6 +135,12 @@ const DETAIL_ROWS_LOOKAHEAD = 3;
 const DETAIL_ROWS_MAX = 12;
 /** Floor between two forced re-fetches of the same fan's chat detail. */
 const DETAIL_REFRESH_MIN_GAP_MS = 10_000;
+/** A money list older than this is re-read from OF on mount / tab return.
+ *  Long, because SSE seeds every sale into it in between (see the header). */
+const LIST_STALE_MS = 5 * 60_000;
+/** Safety re-read of every list while the tab is visible — catches a row the
+ *  SSE path missed. react-query skips the tick in a hidden or idle tab. */
+const LIST_SAFETY_POLL_MS = 10 * 60_000;
 /** Pointer slop before a press on the header counts as a drag and not a click. */
 const DRAG_THRESHOLD_PX = 4;
 
@@ -328,6 +342,14 @@ export function MoneyRailRestoreButton() {
   );
 }
 
+/** Whether this tab is visible (and not idle) — react-query's own focus
+ *  signal, so it agrees with when the lists' polls run. */
+function useTabVisible(): boolean {
+  const [visible, setVisible] = useState(() => focusManager.isFocused());
+  useEffect(() => focusManager.subscribe(setVisible), []);
+  return visible;
+}
+
 /**
  * The rail is mounted once in the ROOT layout, so it is on every route, but
  * `settings.surfaces` decides where it actually appears. That decision lives
@@ -519,9 +541,16 @@ function MoneyRailPanel({
 
   // Re-render whenever the SSE toaster mirrors a new arrival into the
   // localStorage history (same-tab custom event + cross-tab storage event).
+  // That fires per DM in EVERY tab, so a hidden tab only notes it and
+  // catches up once on return (with the chats-cache tick below).
+  const visible = useTabVisible();
+  const missedWhileHiddenRef = useRef(false);
   const [historyTick, bumpHistory] = useState(0);
   useEffect(() => {
-    const bump = () => bumpHistory((n) => n + 1);
+    const bump = () => {
+      if (focusManager.isFocused()) bumpHistory((n) => n + 1);
+      else missedWhileHiddenRef.current = true;
+    };
     const onStorage = (e: StorageEvent) => {
       if (e.key === "chatterly:notif-history:v1") bump();
       // Another tab saw the rows — this tab's "new" badge clears too.
@@ -550,8 +579,11 @@ function MoneyRailPanel({
       queryKey: ["notif-list", aid, type] as const,
       queryFn: async () => parseList(await relay.get(notifPath(type), { accountId: aid })),
       enabled: mounted,
-      staleTime: 30_000,
-      refetchOnWindowFocus: false,
+      // See OF CALL BUDGET in the header: SSE keeps these live; OF is
+      // re-read on return to a hidden tab only past LIST_STALE_MS.
+      staleTime: LIST_STALE_MS,
+      refetchOnWindowFocus: true,
+      refetchInterval: LIST_SAFETY_POLL_MS,
       // Cold start: show this account's rows from the last session at once
       // (dimmed) while the real fetch runs, instead of blanking the rail.
       placeholderData: () => snapshot[snapshotKeyOf(aid, type)]?.items,
@@ -696,9 +728,18 @@ function MoneyRailPanel({
   const [chatsCacheTick, setChatsCacheTick] = useState(0);
   useEffect(() => qc.getQueryCache().subscribe((e) => {
     if (e.query.queryKey?.[0] === "chats" && e.type === "updated") {
+      if (!focusManager.isFocused()) { missedWhileHiddenRef.current = true; return; }
       queueMicrotask(() => setChatsCacheTick((t) => t + 1));
     }
   }), [qc]);
+
+  // Back on screen: one catch-up for everything a hidden tab skipped.
+  useEffect(() => {
+    if (!visible || !missedWhileHiddenRef.current) return;
+    missedWhileHiddenRef.current = false;
+    bumpHistory((n) => n + 1);
+    setChatsCacheTick((t) => t + 1);
+  }, [visible]);
 
   const cachedChats = useMemo(() => {
     type Page = { rows: OFChatItem[] };
@@ -755,6 +796,9 @@ function MoneyRailPanel({
   // unguarded invalidate-on-stale would spin.
   const refreshedAtRef = useRef<Map<string, number>>(new Map());
   useEffect(() => {
+    // A hidden tab spends no OF calls on read receipts nobody can see; this
+    // re-runs on return (`visible` is a dep).
+    if (!visible) return;
     const now = Date.now();
     // Iterate the TARGETS, not the string keys. The id is never reconstructed
     // from text here: `detailTargets` already holds the exact `{aid, fanId}`
@@ -779,7 +823,7 @@ function MoneyRailPanel({
       // message and the dot never clears.
       void qc.invalidateQueries({ queryKey: ["money-rail-attrib", aid, fanId] });
     }
-  }, [replyStates, detailTargets, qc]);
+  }, [replyStates, detailTargets, qc, visible]);
 
   // The newest GROUP_SLOT_CAP distinct payers, in the rail's own order
   // (most recent money first) — what the 👥 button seeds the group tab with.

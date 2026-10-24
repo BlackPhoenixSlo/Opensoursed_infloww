@@ -20,13 +20,14 @@
  * tab acts on add/focus.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useQueries, useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQueryClient, type QueryClient } from "@tanstack/react-query";
 
 import { FanList, type FanListSelection } from "@/components/chat/FanList";
 import { GroupPane } from "@/components/group/GroupPane";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
+import { useIsDesktop } from "@/hooks/useIsDesktop";
 import { useInboxRealtime } from "@/hooks/useInboxRealtime";
 import { cachedOFUserQuery } from "@/hooks/useOFUser";
 import { cn } from "@/lib/utils";
@@ -131,6 +132,28 @@ function resolveTabId(): string {
   } catch {
     return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   }
+}
+
+/** How many of `slots` have a cached chats row whose last message is the
+ *  Fan's (the first cached copy of the row counts, as before). */
+function countUnresponded(qc: QueryClient, slots: Slot[]): number {
+  const want = new Map(slots.map((s) => [`${s.accountId}:${s.fanId}`, s]));
+  const found = new Map<string, OFChatItem>();
+  const entries = qc.getQueriesData<{ pages: { rows: OFChatItem[] }[] }>({ queryKey: ["chats"] });
+  for (const [, data] of entries) {
+    if (!data?.pages) continue;
+    for (const p of data.pages) for (const c of p.rows) {
+      const k = `${c.__accountId ?? ""}:${c.withUser.id}`;
+      if (want.has(k) && !found.has(k)) found.set(k, c);
+    }
+  }
+  let n = 0;
+  for (const [k, s] of want) {
+    const lm = found.get(k)?.lastMessage;
+    if (!lm) continue;
+    if (lm.fromUser?.id != null && !sameUserId(lm.fromUser.id, s.accountId)) n++;
+  }
+  return n;
 }
 
 export default function GroupChatPage() {
@@ -349,42 +372,32 @@ export default function GroupChatPage() {
 
   // Unresponded count among loaded panes: derived from whatever chats
   // data is already in the React Query cache (no extra fetches). SSE
-  // keeps lastMessage current; the cache subscription re-runs this
-  // derivation whenever any ["chats", ...] entry changes.
+  // keeps lastMessage current; the cache subscription re-counts whenever
+  // any ["chats", ...] entry changes, and the page re-renders only when the
+  // count does: a render per live message re-rendered the Fan List and
+  // every pane with it.
   const qc = useQueryClient();
-  const [chatsCacheTick, setChatsCacheTick] = useState(0);
+  const [unrespondedCount, setUnrespondedCount] = useState(0);
   useEffect(() => {
+    let live = true;
+    let queued = false;
+    const recount = () => setUnrespondedCount(countUnresponded(qc, slots));
+    recount();
     // Only react to actual data updates. observerAdded/Removed events
-    // fire on every render of subscribers (e.g. FanList mounted below)
-    // and would otherwise cause an infinite render loop.
+    // fire on every render of subscribers (e.g. FanList mounted below).
+    // One recount per microtask: a batch frame's writes count once.
     const unsub = qc.getQueryCache().subscribe((e) => {
-      if (e?.type !== "updated") return;
+      if (e?.type !== "updated" || queued) return;
       const k = e?.query?.queryKey as readonly unknown[] | undefined;
-      if (k && k[0] === "chats") setChatsCacheTick((t) => t + 1);
+      if (!k || k[0] !== "chats") return;
+      queued = true;
+      queueMicrotask(() => {
+        queued = false;
+        if (live) recount();
+      });
     });
-    return unsub;
-  }, [qc]);
-  const unrespondedCount = useMemo(() => {
-    const byKey = new Map<string, OFChatItem>();
-    const entries = qc.getQueriesData<{ pages: { rows: OFChatItem[] }[] }>({ queryKey: ["chats"] });
-    for (const [, data] of entries) {
-      if (!data?.pages) continue;
-      for (const p of data.pages) for (const c of p.rows) {
-        const k = `${c.__accountId ?? ""}:${c.withUser.id}`;
-        if (!byKey.has(k)) byKey.set(k, c);
-      }
-    }
-    let n = 0;
-    for (const s of slots) {
-      const c = byKey.get(`${s.accountId}:${s.fanId}`);
-      const lm = c?.lastMessage;
-      if (!lm) continue;
-      if (lm.fromUser?.id != null && !sameUserId(lm.fromUser.id, s.accountId)) n++;
-    }
-    return n;
-    // chatsCacheTick is a render trigger so cache patches re-evaluate.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [slots, qc, chatsCacheTick]);
+    return () => { live = false; unsub(); };
+  }, [qc, slots]);
 
   const groupTabTitle = unrespondedCount > 0
     ? `(${unrespondedCount}) Group chat · Inflowwww`
@@ -392,6 +405,10 @@ export default function GroupChatPage() {
   useDocumentTitle(groupTabTitle);
 
   const full = slots.length >= GROUP_SLOT_CAP;
+  // One layout mounted, not both with CSS hiding the other: a hidden Fan List
+  // and a hidden copy of the active pane still render on every live message
+  // (twice the rows, measured 614 vs 307 under a DM flood).
+  const desktop = useIsDesktop();
   // Responsive grid (md+): panes shrink as count grows. Tailwind picks
   // the narrowest column that still fits ~280px content. At 8 panes on
   // a 1440 monitor that lands at ~250px each — tight but legible. Mobile
@@ -449,7 +466,7 @@ export default function GroupChatPage() {
        *  panes have room. Tap the bar to slide it open/closed.
        *  `shrink-0` keeps the summary visible even when the panes
        *  wrapper below claims remaining space via `flex-1`. */}
-      <details className="lg:hidden shrink-0 border-b border-border bg-panel group">
+      {!desktop && <details className="lg:hidden shrink-0 border-b border-border bg-panel group">
         <summary className="px-3 py-2 text-xs font-semibold cursor-pointer flex items-center justify-between gap-2 list-none [&::-webkit-details-marker]:hidden">
           <span className="flex items-center gap-1.5">
             <span className="text-fg-dim group-open:rotate-90 transition-transform inline-block">›</span>
@@ -486,9 +503,9 @@ export default function GroupChatPage() {
             />
           </div>
         </div>
-      </details>
+      </details>}
 
-      <div className="hidden lg:flex flex-col min-h-0 border-r border-border bg-panel">
+      {desktop && <div className="hidden lg:flex flex-col min-h-0 border-r border-border bg-panel">
         <div className="px-3 py-2 border-b border-border flex items-center justify-between gap-2">
           <div className="text-xs font-semibold flex items-center gap-1.5">
             <span>Group chat</span>
@@ -521,7 +538,7 @@ export default function GroupChatPage() {
             setTabTitle={false}
           />
         </div>
-      </div>
+      </div>}
 
       {/* `flex-1 min-h-0` claims the remaining vertical space on mobile
        *  (the outer is `flex flex-col` below md). On md+ the outer is a
@@ -569,7 +586,7 @@ export default function GroupChatPage() {
               {/* Mobile: only the active slot is mounted. Switching tabs
                *  remounts via React key=, which also tears down the
                *  inactive pane's useChatMessages + SSE merge. */}
-              <div className="lg:hidden h-full">
+              {!desktop && <div className="lg:hidden h-full">
                 {slots[activeSlotIdx] && (
                   <GroupPane
                     key={`m:${slots[activeSlotIdx].accountId}:${slots[activeSlotIdx].fanId}`}
@@ -578,9 +595,9 @@ export default function GroupChatPage() {
                     onClose={() => removeSlot(slots[activeSlotIdx].accountId, slots[activeSlotIdx].fanId)}
                   />
                 )}
-              </div>
+              </div>}
               {/* Desktop: all panes in a responsive grid. */}
-              <div className={`hidden lg:grid ${gridCols} gap-2 p-2 h-full overflow-auto`}>
+              {desktop && <div className={`hidden lg:grid ${gridCols} gap-2 p-2 h-full overflow-auto`}>
                 {slots.map((s) => (
                   <GroupPane
                     key={`${s.accountId}:${s.fanId}`}
@@ -589,7 +606,7 @@ export default function GroupChatPage() {
                     onClose={() => removeSlot(s.accountId, s.fanId)}
                   />
                 ))}
-              </div>
+              </div>}
             </>
           )}
         </div>

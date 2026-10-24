@@ -109,6 +109,8 @@ from sqlalchemy import or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax  # _make_client / _parse_iso / _to_cents / lease seams
+import dm_rate
+import run_slot
 import llm_client                  # call .chat at runtime so tests can patch it
 from attribution import write_outbound_attribution
 from automation_registry import register
@@ -133,6 +135,7 @@ from db.models import (
     MassMessageFunnel, MassRun, Message,
 )
 from llm_client import LLMCapExceeded
+from automations.rhythm import INLINE_MAX_S
 
 log = logging.getLogger("of-relay.automation.reply_mass_funnel")
 
@@ -679,12 +682,19 @@ async def _send_step(
         # Subsequent bubbles get a human pause first, then EVERY bubble holds for
         # the time it'd take to TYPE it — both waits show the live "...is typing"
         # bubble to the fan when the indicator is enabled.
-        if i > 0 and _STEP_GAP_S:
-            await hold_with_typing(account_id, fan_id, _jittered_gap(),
+        try:
+            if i > 0 and _STEP_GAP_S:
+                await hold_with_typing(account_id, fan_id, _jittered_gap(),
+                                       typing_indicator=typing_indicator)
+            await hold_with_typing(account_id, fan_id,
+                                   typing_delay_seconds(text, typing_wpm),
                                    typing_indicator=typing_indicator)
-        await hold_with_typing(account_id, fan_id,
-                               typing_delay_seconds(text, typing_wpm),
-                               typing_indicator=typing_indicator)
+            # The account's DM rate (OF_DM_PER_MIN): a full window waits like
+            # a typing hold, the slot handed back (dm_rate).
+            await dm_rate.turn(account_id, release_budget_s=INLINE_MAX_S)
+        except run_slot.SlotLost as e:
+            e.sent = sent       # the run lost its slot: the caller records what landed
+            raise
 
         result = await asyncio.to_thread(client.send_message, fan_id, text, **kwargs)
         msg_id = result.get("id") if isinstance(result, dict) else None
@@ -1031,6 +1041,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     log.warning("reply_mass_funnel BLOCKED send account=%s fan=%s step=%s "
                                 "reasons=%s", account_id, fan_id, c, problems)
                     continue
+                lost = None
                 try:
                     n = await _send_step(client, account_id, fan_id, mass_run_id,
                                          step, texts, is_ppv,
@@ -1038,6 +1049,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                                          typing_wpm=typing_wpm,
                                          typing_indicator=typing_indicator,
                                          strip_emoji_on=strip_emoji_on)
+                except run_slot.SlotLost as e:
+                    # The run lost its slot: not this fan's failure, stop the run.
+                    # Part of the step landed → it counts as sent (advance, cooldown)
+                    # first, so the next run does not send it again.
+                    if not e.sent:
+                        raise
+                    lost, n = e, e.sent
                 except Exception as e:
                     errors += 1
                     # Permanent (deleted/blocked) → quarantine fleet-wide AND end
@@ -1078,6 +1096,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 await _save_state(cs, now)
                 advanced += 1
                 sent_ok = True
+                if lost is not None:
+                    raise lost
             finally:
                 # W3 (paced-funnel variant): on a confirmed step send set the
                 # SHORT cooldown then RELEASE the lease, so the next step (due in

@@ -35,6 +35,7 @@ import accounts as account_registry
 import live_rev
 import proxy_health
 import proxies as proxy_registry
+from of_origin import OF_API_ORIGIN
 from of_signer import sign
 
 # Dedicated logger so proxy/upstream errors are filterable from the rest
@@ -149,10 +150,12 @@ def _err_kind(e: BaseException) -> str:
 IMPERSONATE = "chrome"
 
 APP_TOKEN = "33d57ade8c02dbc5a333db99ff9ae26a"   # OF web app constant
-API_BASE = "https://onlyfans.com/api2/v2"
+# OF_API_ORIGIN: the ADR 0024 test seam (of_origin.py); "" = OnlyFans.
+OF_WEB_ORIGIN = OF_API_ORIGIN or "https://onlyfans.com"
+API_BASE = f"{OF_WEB_ORIGIN}/api2/v2"
 # OF web's chat gallery type tabs: the last segment of /chats/{chat_id}/media/<kind>.
 CHAT_MEDIA_KINDS = ("photos", "videos", "audios")
-HASH_BASE = "https://cdn2.onlyfans.com/hash"
+HASH_BASE = f"{OF_API_ORIGIN}/hash" if OF_API_ORIGIN else "https://cdn2.onlyfans.com/hash"
 DEFAULT_TIMEOUT_S = 30
 
 # Media upload (see upload_media). 5 MiB is S3's minimum for a non-final part
@@ -613,7 +616,7 @@ class OFClient:
     # ── Core signed HTTP ────────────────────────────────────────
 
     def _build_url(self, path_or_url: str, params: dict | None) -> str:
-        url = path_or_url if path_or_url.startswith("http") else f"https://onlyfans.com{path_or_url}"
+        url = path_or_url if path_or_url.startswith("http") else f"{OF_WEB_ORIGIN}{path_or_url}"
         if params:
             # Bake params into the URL so the signed path matches what's sent.
             from urllib.parse import urlencode, urlparse, urlunparse, parse_qsl
@@ -1918,6 +1921,11 @@ class OFClient:
             body.get("userTags") or [], body.get("rfTag") or [],
             body.get("giphyId"),
         )
+        # Every DM's one way out: count it in the account's DM window
+        # (dm_rate, ADR 0025): the peak, an automation DM sent without its
+        # turn, the operator's sends that automation leaves room for.
+        import dm_rate
+        dm_rate.record(getattr(self, "account_id", None))
         return self._post_dropping_auto_cotag(
             f"{API_BASE}/chats/{chat_id}/messages", body, retry_plan)
 

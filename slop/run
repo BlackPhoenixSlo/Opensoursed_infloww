@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# slop/run <scenario|all> [--scale=small|medium|huge] [--users=N] [--seed=N] [--break] [--no-ui] [--set k=v]
+# Throwaway loopback stack per scenario; evidence in slop/evidence/<stamp>-<scenario>/ (latest -> newest).
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+exec "$ROOT/venv/bin/python" -u "$ROOT/slop/lib/cli.py" "$@"

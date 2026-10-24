@@ -97,7 +97,7 @@ async def _supervisor_pass(kind: str) -> None:
     """What one supervisor tick does for (AID, kind): materialize enabled rules,
     then dispatch run_once for every (account, kind) with a due pending job."""
     await ax._materialize_due_rules()
-    for aid, k in await ax._due_job_pairs():
+    for aid, k, _op in await ax._due_job_pairs():
         if aid == AID and k == kind:
             await ax.run_once(aid, k)
 

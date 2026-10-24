@@ -18,11 +18,11 @@ import { useEffect, useState } from "react";
 import { focusManager, useQueryClient } from "@tanstack/react-query";
 
 import { eventBus } from "@/lib/events";
+import { onUserInput } from "@/lib/idle";
 
 /** Infloww's: "after 10 min with no input" (docs/infloww-screens.md §1.3). */
 export const IDLE_AFTER_MS = 10 * 60_000;
 export const IDLE_CHECK_MS = 15_000;
-const INPUT = ["pointerdown", "pointermove", "keydown", "wheel", "touchstart"] as const;
 
 export function useIdleMode(): boolean {
   const qc = useQueryClient();
@@ -50,10 +50,10 @@ export function useIdleMode(): boolean {
       focusManager.setFocused(false);
       setIdle(true);
     }, IDLE_CHECK_MS);
-    for (const t of INPUT) window.addEventListener(t, onInput, { capture: true, passive: true });
+    const unlisten = onUserInput(onInput);
     return () => {
       clearInterval(timer);
-      for (const t of INPUT) window.removeEventListener(t, onInput, { capture: true });
+      unlisten();
       if (paused) resume();
     };
   }, [qc]);

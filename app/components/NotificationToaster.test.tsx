@@ -141,7 +141,7 @@ function renderToaster(Comp: () => ReactElement) {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0, staleTime: 0 } },
   });
-  return render(<QueryClientProvider client={qc}><Comp /></QueryClientProvider>);
+  return { ...render(<QueryClientProvider client={qc}><Comp /></QueryClientProvider>), qc };
 }
 
 /** The toast card div carries the message text + the ring class. */
@@ -382,16 +382,12 @@ describe("NotificationToaster — tip/purchase toast href carries ?refresh=media
   });
 });
 
-// Every lane mirrors history unconditionally but they do NOT agree on when to
-// refetch the notif-list, and the difference is deliberate:
-//
-//   • `toasts` refetches for anything it takes in, muted or not — OF's feed is
-//     the canonical row for those, so the rail should pull it either way.
-//   • the DM and purchase lanes refetch only when they ping.
-//
-// Pinned here because it is invisible: a refactor that routes all three lanes
-// through one helper will happily "tidy" the toasts lane into gating on the
-// ping, and nothing else in this suite notices.
+// No lane refetches OF's notif-list, muted or not. Each arrival used to, which
+// cost the Money rail 2 OF calls per Creator per DM — at 20 Creators the bulk
+// of its OF traffic. Now a money arrival (tip toast, PPV unlock) is SEEDED into
+// the rail's cached list from its own payload, and everything else reaches the
+// bell through the history mirror. Pinned here because it is invisible: a
+// stray invalidate brings the per-message OF fan-out straight back.
 //
 // ⚠️ NEVER PIN A DATE IN A PURCHASE FIXTURE.
 // `appendNotifHistory` prunes rows older than HISTORY_TTL_MS (7 days), so a
@@ -409,19 +405,24 @@ const RECENT_OF_TS = new Date(Date.now() - 60_000).toISOString()
 /** What that timestamp must look like once stored (normalised to UTC "Z"). */
 const RECENT_OF_TS_UTC = new Date(Date.parse(RECENT_OF_TS)).toISOString();
 
-describe("NotificationToaster — muted arrivals still refresh the notif-list", () => {
+describe("NotificationToaster — arrivals seed the money lists, never refetch them", () => {
   function spyInvalidate() {
     return vi.spyOn(QueryClient.prototype, "invalidateQueries")
       .mockImplementation(() => Promise.resolve());
   }
+  const refetchedNotifList = (spy: ReturnType<typeof spyInvalidate>) => spy.mock.calls.some(
+    ([arg]) => JSON.stringify((arg as { queryKey?: unknown })?.queryKey ?? null).startsWith('["notif-list"'),
+  );
+  const OLD_ROW = { id: 1, type: "tip", text: "older", createdAt: "2026-01-01T00:00:00.000Z" };
 
-  it("toasts lane: master OFF → no toast, but the list is still refetched", async () => {
+  it("toasts lane: muted tip → no toast, recorded, seeded into the cached tip list, no refetch", async () => {
     mockAccountId = "700";
     mockSettings = { ...DEFAULT_NOTIF_SETTINGS, enabled: false };
     const spy = spyInvalidate();
     try {
       const Comp = await loadComponent();
-      const { container } = renderToaster(Comp);
+      const { container, qc } = renderToaster(Comp);
+      qc.setQueryData(["notif-list", "700", "tip"], [OLD_ROW]);
 
       fire("toasts", {
         __account_id: "700",
@@ -433,22 +434,23 @@ describe("NotificationToaster — muted arrivals still refresh the notif-list", 
 
       expect(container.querySelector("div.bg-panel")).toBeNull();  // silenced
       expect(readNotifHistory()["700"]?.length).toBe(1);           // but recorded
-      expect(spy.mock.calls.some(
-        ([arg]) => JSON.stringify((arg as { queryKey?: unknown })?.queryKey)
-          === JSON.stringify(["notif-list", "700"]),
-      )).toBe(true);
+      const list = qc.getQueryData<{ id: unknown; user?: { id?: unknown } }[]>(["notif-list", "700", "tip"]);
+      expect(list?.map((r) => String(r.id))).toEqual(["7001", "1"]);
+      expect(list?.[0]?.user?.id).toBe(771);
+      expect(refetchedNotifList(spy)).toBe(false);
     } finally {
       spy.mockRestore();
     }
   });
 
-  it("purchase lane: master OFF → history only, no refetch", async () => {
+  it("purchase lane: muted PPV unlock → recorded, seeded into the cached purchases list, no refetch", async () => {
     mockAccountId = "701";
     mockSettings = { ...DEFAULT_NOTIF_SETTINGS, enabled: false };
     const spy = spyInvalidate();
     try {
       const Comp = await loadComponent();
-      renderToaster(Comp);
+      const { qc } = renderToaster(Comp);
+      qc.setQueryData(["notif-list", "701", "purchases"], [OLD_ROW]);
 
       fire("purchase_notified", {
         __account_id: "701",
@@ -459,10 +461,36 @@ describe("NotificationToaster — muted arrivals still refresh the notif-list", 
       });
 
       expect(readNotifHistory()["701"]?.length).toBe(1);
-      expect(spy.mock.calls.some(
-        ([arg]) => JSON.stringify((arg as { queryKey?: unknown })?.queryKey)
-          === JSON.stringify(["notif-list", "701"]),
-      )).toBe(false);
+      const list = qc.getQueryData<{ id: unknown; text?: string; createdAt?: string }[]>(
+        ["notif-list", "701", "purchases"]);
+      expect(list?.[0]).toMatchObject({ id: "7002", text: "Unlocked your PPV — $5.00", createdAt: RECENT_OF_TS_UTC });
+      expect(list).toHaveLength(2);
+      expect(refetchedNotifList(spy)).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("a list never fetched stays unfetched; a pinged DM refetches nothing", async () => {
+    mockAccountId = "702";
+    const spy = spyInvalidate();
+    try {
+      const Comp = await loadComponent();
+      const { qc } = renderToaster(Comp);
+
+      fire("toasts", {
+        __account_id: "702",
+        toasts: [{ id: 7003, type: "tip", text: "tipped you $5", data: { relatedUser: { id: 773 } } }],
+      });
+      fire("api2_chat_message", {
+        __account_id: "702",
+        api2_chat_message: { id: 7004, text: "hi", fromUser: { id: 773, name: "Dm" } },
+      });
+
+      // Seeding a list nobody fetched would pass a 1-row list off as OF's.
+      expect(qc.getQueryData(["notif-list", "702", "tip"])).toBeUndefined();
+      expect(readNotifHistory()["702"]?.length).toBe(2);
+      expect(refetchedNotifList(spy)).toBe(false);
     } finally {
       spy.mockRestore();
     }

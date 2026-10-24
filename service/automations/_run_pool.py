@@ -3,10 +3,10 @@ service/automations/_run_pool.py — run one coroutine per item, several at once
 under a wall-time ADMISSION budget.
 
 Built for `send_welcome`'s paced bursts (plans/welcome-pacing §A3): a paced
-burst is ~85-99s of mostly sleeping, and a run holds one of the executor's four
-GLOBAL slots for its WALL time, so serialising the bursts would price a 25-fan
-backlog at about an hour of pinned slot. Nothing in here is welcome-specific —
-the item, the worker and the per-item start jitter are the caller's.
+burst is ~85-99s of mostly sleeping, so serialising the bursts would price a
+25-fan backlog at about an hour of wall time. Nothing in here is
+welcome-specific — the item, the worker and the per-item start jitter are the
+caller's.
 
 THE CONTRACT:
   • at most `concurrency` workers in flight; each waits `jitter_for(item)`
@@ -24,6 +24,12 @@ THE CONTRACT:
     spawned worker down with it AND waits for them to unwind before re-raising
     — each worker's `finally` (the one that hands a fan lease back) runs on a
     later loop turn that a shutdown may never take otherwise.
+  • the workers share the run's slot (run_slot.lend / borrowed, ADR 0025): it
+    is held while any worker works and handed back while every worker sits in
+    a typing hold, so ~90 s of paced bursts no longer pin a slot. A worker's
+    start jitter is outside its borrow. Past the run's take-back budget the
+    workers raise `run_slot.SlotLost` at their next hold (collected in
+    `errors`), and the pool itself raises it after the gather.
 """
 from __future__ import annotations
 
@@ -33,6 +39,10 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TypeVar
+
+import run_slot
+
+from .rhythm import INLINE_MAX_S
 
 log = logging.getLogger("of-relay.automation.run_pool")
 
@@ -72,10 +82,20 @@ async def run_paced(
         ends."""
         try:
             await _sleep(jitter_for(item))
-            await worker(item)
+            async with run_slot.borrowed(budget_s=INLINE_MAX_S):
+                await worker(item)
         finally:
             sem.release()
 
+    async with run_slot.lend(budget_s=INLINE_MAX_S):
+        await _admit_and_gather(items, sem, tasks, result, _holding_the_slot,
+                                wall_budget_s=wall_budget_s, started_at=started_at, clock=clock)
+    return result
+
+
+async def _admit_and_gather(items, sem, tasks, result, spawn_one, *,
+                            wall_budget_s, started_at, clock) -> None:
+    """run_paced's admission loop and gather, inside the run's lent slot."""
     try:
         for i, item in enumerate(items):
             # ADMISSION CONTROL, in wall time. The first `concurrency` items
@@ -88,7 +108,7 @@ async def run_paced(
                 sem.release()
                 result.deferred = len(items) - i
                 break
-            tasks.append(asyncio.create_task(_holding_the_slot(item)))
+            tasks.append(asyncio.create_task(spawn_one(item)))
     except asyncio.CancelledError:
         # Cancelled while parked on sem.acquire(). The tasks already spawned
         # are detached and would otherwise run to completion AFTER this
@@ -120,4 +140,3 @@ async def run_paced(
                 raise res
             if isinstance(res, BaseException):
                 result.errors.append(res)
-    return result

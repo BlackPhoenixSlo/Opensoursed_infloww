@@ -21,22 +21,14 @@
 
 import { useEffect, useState } from "react";
 
+import { onIdle } from "@/lib/idle";
+
 export function useDeferredMount(ms = 600): boolean {
   const [ready, setReady] = useState(false);
   useEffect(() => {
     if (ready) return;
-    // Use requestIdleCallback when available so we yield to any
-    // already-in-flight work; fall back to setTimeout on Safari.
-    const win = window as Window & {
-      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
-      cancelIdleCallback?: (id: number) => void;
-    };
-    if (win.requestIdleCallback) {
-      const id = win.requestIdleCallback(() => setReady(true), { timeout: ms });
-      return () => win.cancelIdleCallback?.(id);
-    }
-    const t = window.setTimeout(() => setReady(true), ms);
-    return () => window.clearTimeout(t);
+    // Idle, so we yield to any already-in-flight work; after `ms` at the latest.
+    return onIdle(() => setReady(true), ms);
   }, [ms, ready]);
   return ready;
 }

@@ -592,7 +592,8 @@ async def _get_cap_cents(account_id: str | None) -> int:
     return int(cap) if cap is not None else _DEFAULT_CAP_CENTS
 
 
-async def cap_state(account_id: str | None, provider: str) -> dict[str, Any]:
+async def cap_state(account_id: str | None, provider: str,
+                    model: str | None = None) -> dict[str, Any]:
     """Today's spend against the per-(account, provider) daily cap. Read-only.
 
     The cap is ENFORCED in `_reserve`, per call, which is the only place it can
@@ -608,6 +609,15 @@ async def cap_state(account_id: str | None, provider: str) -> dict[str, Any]:
     while it stays True — a gate reading it would keep refusing against a budget
     that is no longer spent. It is still reported, as `flagged`, because "we hit
     the cap today" is worth showing even after the cap is raised.
+
+    With `model`, `capped` means "no call on it fits": spent >= cap alone is
+    nearly never True, because a reservation counts a full output, the last one
+    that fit settles to its real, smaller cost, and the spend stays just under
+    the cap while every call is refused. So it is also capped with less left
+    than the smallest reservation (no input, `_ASSUMED_OUTPUT_TOKENS` out), or
+    with a reservation already refused today (`flagged`) and less than twice
+    that left, which covers the prompt's input. A cap raised since leaves
+    plenty left, so it is not judged spent.
     """
     day = datetime.utcnow().strftime("%Y-%m-%d")
     cap_mc = int(await _get_cap_cents(account_id) * _MILLICENTS_PER_CENT)
@@ -623,14 +633,18 @@ async def cap_state(account_id: str | None, provider: str) -> dict[str, Any]:
             )
         )).first()
     spent_mc = int(row[0] or 0) if row else 0
+    flagged = bool(row[1]) if row else False
+    left = max(0, cap_mc - spent_mc)
+    floor = _cost_millicents(model, 0, _ASSUMED_OUTPUT_TOKENS) if model else 0
     return {
         "day": day,
         "provider": provider,
         "cap_millicents": cap_mc,
         "spent_millicents": spent_mc,
-        "remaining_millicents": max(0, cap_mc - spent_mc),
-        "capped": spent_mc >= cap_mc,
-        "flagged": bool(row[1]) if row else False,
+        "remaining_millicents": left,
+        "capped": (spent_mc >= cap_mc or left < floor
+                   or (flagged and left < 2 * floor)),
+        "flagged": flagged,
     }
 
 

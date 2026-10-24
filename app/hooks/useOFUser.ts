@@ -34,7 +34,8 @@
  * fields so a flaky OF call doesn't blank the panel.
  */
 
-import { useQuery, type QueryClient } from "@tanstack/react-query";
+import { useSyncExternalStore } from "react";
+import { useQuery, useQueryClient, type Query, type QueryClient } from "@tanstack/react-query";
 
 import { relay, type OFUserMini } from "@/lib/relay";
 import { type FanId } from "@/lib/fanId";
@@ -224,6 +225,85 @@ export function ofUserNameQuery<T = OFUserName | null>(accountId: string, fanId:
  *  development (ticket 95: those console errors failed `scripts/ui-shots.sh`). */
 export function cachedOFUserQuery<T = OFUserName | null>(accountId: string, fanId: FanId) {
   return { ...ofUserNameQuery<T>(accountId, fanId), enabled: false, staleTime: Infinity };
+}
+
+/** Every cached name key (`ofUserNameKey`) as `"<accountId>:<fanId>"` → its
+ *  data. One QueryCache listener per client stands in for one observer per
+ *  Fan List row: a list of 500 rows no longer re-hashes 500 query keys each
+ *  render. The snapshot is rebuilt only after a name key is added, written or
+ *  removed, copying the map and replacing just those entries, so an unchanged
+ *  Fan keeps the same object and a memoized row skips its render. Observe
+ *  only: it fetches nothing, and it holds no observer, so a name key lives by
+ *  the client's gcTime (7 days, providers.tsx), not by being on screen. */
+export function useOFUserNameMap(): ReadonlyMap<string, OFUserName> {
+  const store = nameMapStore(useQueryClient());
+  return useSyncExternalStore(store.subscribe, store.get, store.get);
+}
+
+interface NameMapStore {
+  subscribe: (cb: () => void) => () => void;
+  get: () => ReadonlyMap<string, OFUserName>;
+}
+const nameMapStores = new WeakMap<QueryClient, NameMapStore>();
+
+const isNameKey = (k: readonly unknown[]) => k.length === 3 && k[0] === "of-user";
+const nameMapKey = (k: readonly unknown[]) => `${String(k[1])}:${String(k[2])}`;
+
+function nameMapStore(qc: QueryClient): NameMapStore {
+  const existing = nameMapStores.get(qc);
+  if (existing) return existing;
+  const cache = qc.getQueryCache();
+  const listeners = new Set<() => void>();
+  let snapshot: Map<string, OFUserName> | null = null;
+  // Name keys touched since the snapshot was taken; applied on the next read.
+  const changed = new Map<string, Query>();
+  let notifyQueued = false;
+  // Lives as long as the client (the app's one), so no change is ever missed
+  // between a render and its subscribe.
+  cache.subscribe((e) => {
+    if (!isNameKey(e.query.queryKey)) return;
+    const relevant =
+      e.type === "added" || e.type === "removed" ||
+      (e.type === "updated" && (e.action.type === "success" || e.action.type === "setState"));
+    if (!relevant) return;
+    if (snapshot) changed.set(nameMapKey(e.query.queryKey), e.query);
+    // Once per microtask, not per key: a cache event can fire while another
+    // component renders (a `useQueries` adding name keys), where a listener's
+    // setState is a React error, and a page of names lands as one update.
+    if (notifyQueued) return;
+    notifyQueued = true;
+    queueMicrotask(() => {
+      notifyQueued = false;
+      listeners.forEach((l) => l());
+    });
+  });
+  const store: NameMapStore = {
+    subscribe(cb) {
+      listeners.add(cb);
+      return () => { listeners.delete(cb); };
+    },
+    get() {
+      if (!snapshot) {
+        snapshot = new Map();
+        for (const q of cache.findAll({ queryKey: ["of-user"] })) {
+          const data = q.state.data as OFUserName | null | undefined;
+          if (isNameKey(q.queryKey) && data) snapshot.set(nameMapKey(q.queryKey), data);
+        }
+      } else if (changed.size) {
+        const next = new Map(snapshot);
+        for (const [key, q] of changed) {
+          const data = q.state.data as OFUserName | null | undefined;
+          if (data && cache.get(q.queryHash) === q) next.set(key, data);
+          else next.delete(key);
+        }
+        changed.clear();
+        snapshot = next;
+      }
+      return snapshot;
+    },
+  };
+  nameMapStores.set(qc, store);
+  return store;
 }
 
 /** The Fan's name key as the cache holds it: the Thread's header name and the

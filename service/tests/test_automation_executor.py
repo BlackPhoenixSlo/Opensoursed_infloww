@@ -38,6 +38,7 @@ import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback fo
 
 _harness.bootstrap()
 
+import asyncio  # noqa: E402
 import json  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
 
@@ -502,6 +503,204 @@ async def case_supervisor_dispatches_high_priority_first():
     assert dispatched[:3] == ["send_welcome", "welcome_chatter_for_info", "send_followup"], dispatched
 
 
+async def case_supervisor_dispatches_least_recently_served_account_first():
+    """Within one priority rank, the account that won a run slot longest ago is
+    dispatched first — not account-id order, which put the same high-id
+    creators last on every busy tick at 20 accounts."""
+    a_low, z_high = "acc_lrs_a", "acc_lrs_z"
+    for aid in (a_low, z_high):
+        await _seed_account(aid)
+        await enqueue_job(aid, "send_followup", payload={})
+    # `a` was served just now, `z` never: `z` goes first despite sorting after.
+    ax._last_served[a_low] = asyncio.get_running_loop().time()
+    ax._last_served.pop(z_high, None)
+
+    dispatched: list[str] = []
+    orig = ax.run_once
+
+    async def _record(account_id, kind, **kw):
+        if account_id in (a_low, z_high):
+            dispatched.append(account_id)
+        return {"status": "ok"}
+
+    ax.run_once = _record  # type: ignore[attr-defined]
+    try:
+        await ax._drain_due_jobs_once()
+        await ax._join_inflight_runs()
+    finally:
+        ax.run_once = orig  # type: ignore[attr-defined]
+
+    assert dispatched == [z_high, a_low], dispatched
+    assert ax._last_served[z_high] <= ax._last_served[a_low], (
+        "winning a slot must stamp the account as served")
+
+
+async def _employees() -> tuple[int, int]:
+    """(an operator's employee id, the system Automation employee's id)."""
+    from db.models import Employee
+    from employees import get_automation_employee_id
+    async with get_session() as s:
+        op = Employee(display_name="op_tier")
+        s.add(op)
+        await s.flush()
+        op_id = op.id
+    try:
+        auto_id = await get_automation_employee_id()
+    except LookupError:
+        async with get_session() as s:
+            auto = Employee(display_name="Automation", is_active=False)
+            s.add(auto)
+            await s.flush()
+            auto_id = auto.id
+    return op_id, auto_id
+
+
+async def case_an_operators_job_dispatches_first_in_the_operator_tier():
+    """ADR 0025 fix 2: a job the app stamped with the acting employee (Run now,
+    a premade mass, a scheduled send, an unsend) is an operator's. Its run is
+    spawned before every automation run, whatever the kind priority, and takes
+    its slot in the operator tier. A job automation stamped with the Automation
+    employee (auto_posts' delete) is still automation."""
+    op_id, auto_id = await _employees()
+    a_op, a_auto, a_sys = "acc_tier_op", "acc_tier_auto", "acc_tier_sys"
+    for a in (a_op, a_auto, a_sys):
+        await _seed_account(a)
+    await enqueue_job(a_auto, "send_welcome", payload={})                 # top kind priority
+    await enqueue_job(a_sys, "unsend_messages", payload={}, created_by_employee_id=auto_id)
+    await enqueue_job(a_op, "unsend_messages", payload={}, created_by_employee_id=op_id)
+
+    pairs = {(a, k): op for a, k, op in await ax._due_job_pairs()}
+    assert pairs[(a_op, "unsend_messages")] is True, pairs
+    assert pairs[(a_auto, "send_welcome")] is False, pairs
+    assert pairs[(a_sys, "unsend_messages")] is False, ("the Automation employee is not an operator", pairs)
+
+    seen: list[tuple[str, bool]] = []
+    orig = ax.run_once
+
+    async def _record(account_id, kind, **kw):
+        if account_id.startswith("acc_tier_"):
+            seen.append((account_id, ax.run_slot.current().operator))
+        return {"status": "ok"}
+
+    ax.run_once = _record  # type: ignore[attr-defined]
+    try:
+        await ax._drain_due_jobs_once()
+        await ax._join_inflight_runs()
+    finally:
+        ax.run_once = orig  # type: ignore[attr-defined]
+    assert seen[0] == (a_op, True), seen
+    assert dict(seen) == {a_op: True, a_auto: False, a_sys: False}, seen
+    async with get_session() as s:   # the fake never claimed them: no later drain runs them
+        await s.execute(ScheduledJob.__table__.update()
+                        .where(ScheduledJob.account_id.in_([a_op, a_auto, a_sys]))
+                        .values(status="done"))
+
+
+async def case_run_now_on_an_automation_kind_is_rate_limited_as_automation():
+    """Review fix 4: the tier is the run's KIND, not who clicked. An operator's
+    Run now on autoreply (stamped with his employee, like every
+    session-enqueued one-shot) is automation's work: its pair is not the
+    operator tier, and its run's DMs queue for the account's DM rate (limit 1:
+    the second waits) while an operator kind's (an unsend he started) pass."""
+    import dm_rate
+    import os
+    op_id, _auto_id = await _employees()
+    a_ar, a_uns = "acc_tier_runnow", "acc_tier_runnow_uns"
+    for a in (a_ar, a_uns):
+        await _seed_account(a)
+    await enqueue_job(a_ar, "autoreply", payload={}, created_by_employee_id=op_id)
+    await enqueue_job(a_uns, "unsend_messages", payload={}, created_by_employee_id=op_id)
+    pairs = {(a, k): op for a, k, op in await ax._due_job_pairs()}
+    assert pairs[(a_ar, "autoreply")] is False, ("Run now made autoreply an operator run", pairs)
+    assert pairs[(a_uns, "unsend_messages")] is True, pairs
+
+    saved_env, saved_w, saved_s = os.environ.get(dm_rate.KNOB), dm_rate.WINDOW_S, dm_rate.SLACK_S
+    os.environ[dm_rate.KNOB] = "1"
+    dm_rate.WINDOW_S, dm_rate.SLACK_S = 0.2, 0.0
+    dm_rate._reset()
+    waited: dict[str, list[float]] = {}
+    orig = ax.run_once
+
+    async def _run(account_id, kind, **kw):        # two DMs of the run, each a turn then the send
+        if account_id in (a_ar, a_uns):
+            for _ in range(2):
+                waited.setdefault(account_id, []).append(await dm_rate.turn(account_id))
+                dm_rate.record(account_id)
+        return {"status": "ok"}
+    ax.run_once = _run  # type: ignore[attr-defined]
+    try:
+        await ax._drain_due_jobs_once()
+        await ax._join_inflight_runs()
+    finally:
+        ax.run_once = orig  # type: ignore[attr-defined]
+        dm_rate.WINDOW_S, dm_rate.SLACK_S = saved_w, saved_s
+        dm_rate._reset()
+        if saved_env is None:
+            os.environ.pop(dm_rate.KNOB, None)
+        else:
+            os.environ[dm_rate.KNOB] = saved_env
+        async with get_session() as s:
+            await s.execute(ScheduledJob.__table__.update()
+                            .where(ScheduledJob.account_id.in_([a_ar, a_uns])).values(status="done"))
+    assert waited[a_ar][0] == 0.0 and waited[a_ar][1] > 0, ("Run now's DMs bypassed the limiter", waited)
+    assert waited[a_uns] == [0.0, 0.0], ("an operator kind's DMs waited", waited)
+
+
+async def case_the_claim_takes_the_operators_job_first():
+    """Two due jobs of one (account, kind): the run claims the operator's even
+    though automation's has waited longer — the slot was taken for it."""
+    op_id, auto_id = await _employees()
+    aid = "acc_tier_claim"
+    await _seed_account(aid)
+    old = datetime.utcnow() - timedelta(minutes=5)
+    j_auto = await enqueue_job(aid, "unsend_messages", payload={}, run_at=old,
+                               created_by_employee_id=auto_id)
+    j_bare = await enqueue_job(aid, "unsend_messages", payload={}, run_at=old)
+    j_op = await enqueue_job(aid, "unsend_messages", payload={}, created_by_employee_id=op_id)
+    order = [(await ax._claim_due_job(aid, "unsend_messages")).id for _ in range(3)]
+    assert order[0] == j_op, (order, j_op)
+    assert set(order[1:]) == {j_auto, j_bare}, order
+
+
+async def case_the_run_slots_size_from_the_active_creators():
+    """ADR 0025 fix 4: with no override the pool follows run_slot.auto_runs of
+    the active Creators, live: 30 more Creators grow it, deactivating them
+    shrinks it back; the panel's row shows the size as default and live, not
+    a pending restart. The env (or a stored panel value) pins it."""
+    import os
+    import account_health
+    import lane_config
+    import run_slot
+    knob = "AUTOMATION_MAX_CONCURRENT_RUNS"
+    assert not lane_config.overridden(knob)
+    pool = run_slot.SlotPool(4)
+    await ax._size_run_slots(pool)
+    base = await ax._active_models()
+    assert pool.n == run_slot.auto_runs(base), (pool.n, base)
+    extra = [f"acc_size_{i}" for i in range(max(0, 51 - base))]
+    for a in extra:
+        await _seed_account(a)
+    await ax._size_run_slots(pool)
+    assert pool.n == run_slot.auto_runs(base + len(extra)) == 7, (pool.n, base, len(extra))
+    row = next(r for r in lane_config.describe() if r["name"] == knob)
+    assert row["live"] == row["value"] == row["default"] == 7 and not row["pending"], row
+    for a in extra[:20]:
+        await account_health.deactivate(a)
+    await ax._size_run_slots(pool)
+    assert pool.n == run_slot.auto_runs(base + len(extra) - 20), (pool.n, base)
+    os.environ[knob] = "9"
+    try:
+        for a in extra[20:]:
+            await account_health.deactivate(a)
+        n_before = pool.n
+        await ax._size_run_slots(pool)
+        assert pool.n == n_before, ("an env-pinned pool was resized", pool.n)
+    finally:
+        del os.environ[knob]
+    await ax._size_run_slots(pool)
+    assert pool.n == run_slot.auto_runs(base), (pool.n, base)
+
+
 # ── Client pool: one client per account, evictable ───────────────────
 #
 # Tested against client_pool directly, not through ax._make_client — the seam
@@ -956,6 +1155,11 @@ _harness.run(
     case_fan_cooldown_set_check_expire,
     case_kind_priority_ordering,
     case_supervisor_dispatches_high_priority_first,
+    case_supervisor_dispatches_least_recently_served_account_first,
+    case_an_operators_job_dispatches_first_in_the_operator_tier,
+    case_the_claim_takes_the_operators_job_first,
+    case_run_now_on_an_automation_kind_is_rate_limited_as_automation,
+    case_the_run_slots_size_from_the_active_creators,
     case_client_pool_reuses_and_evicts,
     case_unknown_kind_errors,
     case_unknown_kind_consumes_ghost_job,

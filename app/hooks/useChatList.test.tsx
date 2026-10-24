@@ -70,7 +70,7 @@ vi.mock("@/hooks/useServerScheduledSends", () => ({
   scheduledSendsKey: (a: string, f: number) => ["scheduled-sends", a, f],
 }));
 
-import { useChatList } from "@/hooks/useChatList";
+import { shareChatPages, useChatList } from "@/hooks/useChatList";
 import { useInboxRealtime } from "@/hooks/useInboxRealtime";
 import { relay, type OFChatItem } from "@/lib/relay";
 const relayGet = relay.get as unknown as Mock;
@@ -89,18 +89,13 @@ function row(id: number, createdAt: string): OFChatItem {
 /** Per-test page server, keyed by (accountId, offset). Reassigned mid-test to
  *  simulate the inbox moving underneath a poll. */
 let serve: (accountId: string, offset: number) => { list: OFChatItem[]; hasMore: boolean };
-/** Thread reads (the unread prefetch). Default: an empty thread. */
-let serveMessages: (path: string) => unknown;
 
 interface ChatCall { offset: number; filter: string | null; accountId?: string; refresh?: boolean }
 
-/** A thread read: `/chats/{fanId}/messages` — the unread prefetch's call. */
-const isMessagesPath = (path: unknown) => /^\/api\/of\/v2\/chats\/[^/?]+\/messages/.test(String(path));
-
-/** Only the /chats list calls — enrichment and thread prefetch are noise here. */
+/** Only the /chats list calls — enrichment is noise here. */
 function chatCalls(): ChatCall[] {
   return relayGet.mock.calls
-    .filter((c) => String(c[0]).startsWith("/api/of/v2/chats") && !isMessagesPath(c[0]))
+    .filter((c) => String(c[0]).startsWith("/api/of/v2/chats"))
     .map((c) => {
       const qs = new URLSearchParams(String(c[0]).split("?")[1] ?? "");
       return {
@@ -158,7 +153,6 @@ beforeEach(() => {
   mockScope = { kind: "model", accountId: "acct-a" };
   mockAccounts = [{ id: "acct-a" }];
   serve = () => ({ list: [], hasMore: false });
-  serveMessages = async () => ({ list: [], hasMore: false });
   relayGet.mockReset();
   relayGet.mockImplementation(async (path: string, ctx?: { accountId?: string }) => {
     // Enrichment pass 1 (local SQLite). Answering for every requested id keeps
@@ -175,7 +169,6 @@ beforeEach(() => {
       }
       return { fans };
     }
-    if (isMessagesPath(path)) return serveMessages(path);
     if (path.startsWith("/api/of/v2/chats")) {
       const qs = new URLSearchParams(path.split("?")[1] ?? "");
       return serve(ctx?.accountId ?? "", Number(qs.get("offset") ?? 0));
@@ -427,21 +420,21 @@ describe("useChatList periodic refresh", () => {
   });
 });
 
-describe("useChatList head poll x useInboxRealtime", () => {
-  /** Fire an OF preview event at the handlers useInboxRealtime registered. */
-  function fireInbound(fanId: number, text: string, createdAt: string) {
-    act(() => {
-      sseHandlers.get("api2_chat_message")?.forEach((h) => h({
-        __account_id: "acct-a",
-        api2_chat_message: {
-          id: fanId * 1000, text,
-          fromUser: { id: fanId, name: `fan-${fanId}` },
-          createdAt,
-        },
-      }));
-    });
-  }
+/** Fire an OF preview event at the handlers useInboxRealtime registered. */
+function fireInbound(fanId: number, text: string, createdAt: string) {
+  act(() => {
+    sseHandlers.get("api2_chat_message")?.forEach((h) => h({
+      __account_id: "acct-a",
+      api2_chat_message: {
+        id: fanId * 1000, text,
+        fromUser: { id: fanId, name: `fan-${fanId}` },
+        createdAt,
+      },
+    }));
+  });
+}
 
+describe("useChatList head poll x useInboxRealtime", () => {
   it("SSE still lifts a DEEP row to the head, and the poll leaves that intact", async () => {
     const h = await renderThreePages();
     renderHook(() => useInboxRealtime(), { wrapper });
@@ -509,80 +502,123 @@ describe("useChatList OF params: order, OF's own filters, enabled (the OF mirror
   });
 });
 
-describe("useChatList unread prefetch", () => {
-  /** An unread chat; a lower fan id is a newer chat, so list order is id order. */
-  function unread(id: number, lastId = id * 100): OFChatItem {
-    const createdAt = `2026-08-25T${String(20 - id).padStart(2, "0")}:00:00Z`;
-    return { ...row(id, createdAt), lastMessage: { id: lastId, createdAt }, unreadMessagesCount: 1 } as OFChatItem;
-  }
-  function messageCalls() {
-    return relayGet.mock.calls.filter((c) => isMessagesPath(c[0])).map((c) => ({
-      fanId: Number(String(c[0]).split("/")[5]),
-      priority: (c[1] as { priority?: string } | undefined)?.priority,
-    }));
+describe("useChatList fetchedLive: rows read from OF in this page load", () => {
+  /** An unread chat. */
+  const unread = (id: number) => ({ ...row(id, `2026-08-25T${String(20 - id).padStart(2, "0")}:00:00Z`), unreadMessagesCount: 1 }) as OFChatItem;
+  /** A list restored from disk: its rows as an earlier page load cached them. */
+  function restore(pages: OFChatItem[][], updatedAt = Date.now()) {
+    const rows = pages.map((list) => ({ rows: list.map((c) => ({ ...c, __accountId: "acct-a", hasUnread: true })), hasMore: true }));
+    rows[rows.length - 1].hasMore = false;
+    client.setQueryData(MODEL_KEY, { pages: rows, pageParams: pages.map((_, i) => i * 25) }, { updatedAt });
   }
 
-  it("warms the top 3 unread chats one at a time on the background lane", async () => {
-    const release: (() => void)[] = [];
-    serveMessages = () => new Promise((r) => release.push(() => r({ list: [], hasMore: false })));
-    serve = () => ({ list: [unread(1), row(2, "2026-08-25T18:00:00Z"), unread(3), unread(4), unread(5)], hasMore: false });
+  it("is true once the mount fetch lands", async () => {
+    serve = () => ({ list: [unread(1)], hasMore: false });
     const h = renderHook(() => useChatList(), { wrapper });
-    await until("rows", () => h.result.current.data.length === 5);
-
-    // Serial: each read waits for the one before it — never a burst of three.
-    for (const n of [1, 2, 3]) {
-      await until(`read ${n}`, () => messageCalls().length === n);
-      await settle();
-      expect(messageCalls()).toHaveLength(n);
-      release.shift()!();
-    }
-    await settle();
-    // Fan 2 is read, fan 5 is fourth: neither is warmed.
-    expect(messageCalls()).toEqual([1, 3, 4].map((fanId) => ({ fanId, priority: "background" })));
-    expect(client.getQueryData(["messages", "acct-a", 1])).toEqual([]);
+    expect(h.result.current.fetchedLive).toBe(false);
+    await until("fetched", () => h.result.current.fetchedLive);
   });
 
-  it("does not re-fire on a poll that returns the same chats, only on a new message", async () => {
-    serve = () => ({ list: [unread(1), unread(2)], hasMore: false });
-    const h = renderHook(() => useChatList(), { wrapper });
-    await until("rows", () => h.result.current.data.length === 2);
-    await until("warmed", () => messageCalls().length === 2);
-
-    // Past the thread's staleTime, so only the once-per-message rule holds it back.
-    await settle(POLL_MS);
-    await settle(POLL_MS);
-    expect(messageCalls()).toHaveLength(2);
-
-    relayGet.mockClear();
-    serve = () => ({ list: [unread(2, 999), unread(1)], hasMore: false });
-    await settle(POLL_MS);
-    await until("new message re-warms", () => messageCalls().length === 1);
-    await settle();
-    expect(messageCalls().map((c) => c.fanId)).toEqual([2]);
-  });
-
-  it("skips a chat whose cached thread already holds its last message", async () => {
-    client.setQueryData(["messages", "acct-a", 1], [{ id: 100, text: "cached" }]);
-    serve = () => ({ list: [unread(1), unread(2)], hasMore: false });
-    const h = renderHook(() => useChatList(), { wrapper });
-    await until("rows", () => h.result.current.data.length === 2);
-    await until("warmed", () => messageCalls().length === 1);
-    await settle();
-    expect(messageCalls().map((c) => c.fanId)).toEqual([2]);
-  });
-
-  it("warms nothing from a list restored from disk, only once a fetch this mount lands", async () => {
-    // A fresh restored list: no fetch on mount, so its unread rows may be stale.
-    const restored = [unread(1), unread(2)].map((c) => ({ ...c, __accountId: "acct-a", hasUnread: true }));
-    client.setQueryData(MODEL_KEY, { pages: [{ rows: restored, hasMore: false }], pageParams: [0] });
+  it("is false for a list restored from disk until a read of OF (the head poll) lands", async () => {
+    // Fresh enough that the mount does not fetch.
+    restore([[unread(1), unread(2)]]);
     serve = () => ({ list: [unread(1), unread(2)], hasMore: false });
     const h = renderHook(() => useChatList(), { wrapper });
     await until("rows", () => h.result.current.data.length === 2);
     await settle(1_000);
     expect(chatCalls()).toEqual([]);
-    expect(messageCalls()).toEqual([]);
+    expect(h.result.current.fetchedLive).toBe(false);
 
     await settle(POLL_MS);
-    await until("warmed after the poll", () => messageCalls().length === 2);
+    await until("live after the poll", () => h.result.current.fetchedLive);
+  });
+
+  it("a live event before the mount fetch lands does not make a restored list live", async () => {
+    // Old enough that the mount fetches; that fetch hangs.
+    restore([[unread(1), unread(2)]], Date.now() - 60_000);
+    let land!: () => void;
+    serve = () => new Promise((r) => { land = () => r({ list: [unread(1), unread(2)], hasMore: false }); }) as unknown as ReturnType<typeof serve>;
+    const h = renderHook(() => useChatList(), { wrapper });
+    renderHook(() => useInboxRealtime(), { wrapper });
+    await until("mount fetch asked", () => chatCalls().length === 1);
+
+    fireInbound(9, "new", "2026-08-25T21:00:00Z");
+    await until("fan 9 on top", () => h.result.current.data[0]?.withUser.id === 9);
+    expect(h.result.current.fetchedLive).toBe(false);
+
+    await act(async () => { land(); });
+    await until("live once the fetch lands", () => h.result.current.fetchedLive);
+  });
+
+  it("a live event keeps a fetched list live", async () => {
+    serve = () => ({ list: [unread(1)], hasMore: false });
+    const h = renderHook(() => useChatList(), { wrapper });
+    renderHook(() => useInboxRealtime(), { wrapper });
+    await until("fetched", () => h.result.current.fetchedLive);
+    fireInbound(9, "new", "2026-08-25T21:00:00Z");
+    await until("fan 9 on top", () => h.result.current.data[0]?.withUser.id === 9);
+    expect(h.result.current.fetchedLive).toBe(true);
+  });
+
+  it("stays true across a remount in the same page load (navigating between list pages)", async () => {
+    serve = () => ({ list: [unread(1)], hasMore: false });
+    const first = renderHook(() => useChatList(), { wrapper });
+    await until("fetched", () => first.result.current.fetchedLive);
+    first.unmount();
+    relayGet.mockClear();
+
+    // Still fresh: the remount reads the cache and fetches nothing.
+    const second = renderHook(() => useChatList(), { wrapper });
+    expect(second.result.current.fetchedLive).toBe(true);
+    await settle(1_000);
+    expect(chatCalls()).toEqual([]);
+  });
+
+  it("stays false when the refetch over a restored list fails past page 0", async () => {
+    // Two restored pages, old enough to refetch; page 0 reads, page 1 fails.
+    restore([[unread(1)], [unread(2)]], Date.now() - 60_000);
+    serve = (_aid, offset) => {
+      if (offset > 0) throw new Error("page 1 down");
+      return { list: [unread(1)], hasMore: true };
+    };
+    const h = renderHook(() => useChatList(), { wrapper });
+    await until("refetch failed", () => h.result.current.isError);
+    expect(chatCalls().map((c) => c.offset)).toEqual([0, 25]);
+    expect(h.result.current.fetchedLive).toBe(false);
+  });
+
+  it("is false while another view's rows stand in for this one", async () => {
+    serve = () => ({ list: [unread(1)], hasMore: false });
+    const h = renderHook(({ filter }) => useChatList({ filter }), {
+      wrapper, initialProps: { filter: null as "unread" | null },
+    });
+    await until("fetched", () => h.result.current.fetchedLive);
+
+    serve = () => new Promise(() => {}) as unknown as ReturnType<typeof serve>;
+    h.rerender({ filter: "unread" });
+    await settle();
+    expect(h.result.current.isPlaceholderData).toBe(true);
+    expect(h.result.current.fetchedLive).toBe(false);
+  });
+});
+
+describe("shareChatPages: rows shared by (account, fan), not by index", () => {
+  const row = (fanId: number, text = "hi") => ({
+    __accountId: "1", withUser: { id: fanId }, lastMessage: { id: fanId, text },
+  }) as OFChatItem;
+  const data = (rows: OFChatItem[]) => ({ pages: [{ rows, hasMore: false }], pageParams: [0] });
+
+  it("a row moved to the top keeps every other row's object", () => {
+    const [a, b, c] = [row(1), row(2), row(3)];
+    const out = shareChatPages(data([a, b, c]), data([row(3, "new"), row(1), row(2)])) as ReturnType<typeof data>;
+    expect(out.pages[0].rows[1]).toBe(a);
+    expect(out.pages[0].rows[2]).toBe(b);
+    expect(out.pages[0].rows[0]).not.toBe(c);
+    expect(out.pages[0].rows[0].lastMessage?.text).toBe("new");
+  });
+
+  it("data equal to what is cached is the cached data", () => {
+    const prev = data([row(1), row(2)]);
+    expect(shareChatPages(prev, data([row(1), row(2)]))).toBe(prev);
   });
 });

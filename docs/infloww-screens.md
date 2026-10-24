@@ -100,7 +100,7 @@ The clone's current sidebar (`dashboard.html`) also includes "AI Selling", "Onbo
 - Sidebar `#000`. Canvas and cards `#262626`, border `#333`.
 - Thread and composer `#151515`. Side panels `#232323`. Selected row `#353535`.
 - Accent `#4166f6`: "Online Fans", "UNLOCK PPV", "Send", the Total-earnings figure. Green `#67d1ae`: "Notifications" button, online dots. Expired avatar red `#f0483e`.
-- Font: Inter. Radii: cards 12, buttons 8-10, pills full.
+- Font: Suisse Int'l, Regular 400 and Medium 500 only (`@font-face` in app.asar 5.7.20, files from fe-static-assets.infloww.com/font/); heavier weights are browser-synthesized. Our stand-in is Instrument Sans (app/app/layout.tsx). Radii: cards 12, buttons 8-10, pills full.
 
 ---
 

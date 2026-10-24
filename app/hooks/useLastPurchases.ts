@@ -82,7 +82,8 @@ export interface FanActivity {
   lastPpvPurchase: Map<string, string>;
 }
 
-export function useFanActivity(accountIds: string[]): FanActivity {
+/** `loaded`: every account's feed has landed; a refetch keeps it. */
+export function useFanActivity(accountIds: string[]): FanActivity & { loaded: boolean } {
   const queries = useQueries({
     queries: accountIds.map((aid) => ({
       queryKey: ["last-purchases", aid] as const,
@@ -109,10 +110,11 @@ export function useFanActivity(accountIds: string[]): FanActivity {
   // would force the maps to rebuild every render. Key the memo off the
   // per-query `dataUpdatedAt` so we only recompute when real data lands.
   const updatedKey = queries.map((q) => q.dataUpdatedAt).join("|");
+  const loaded = queries.every((q) => !q.isPending);
   return useMemo(
-    () => fanActivityFrom(accountIds.map((aid, i) => [aid, queries[i]?.data] as const)),
+    () => ({ ...fanActivityFrom(accountIds.map((aid, i) => [aid, queries[i]?.data] as const)), loaded }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [updatedKey, accountIds],
+    [updatedKey, accountIds, loaded],
   );
 }
 

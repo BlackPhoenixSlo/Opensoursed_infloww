@@ -158,3 +158,37 @@ describe("useInboxRealtime cross-model injection guard", () => {
     expect(all.pages[0].rows[0].lastMessage?.text).toBe("back again");
   });
 });
+
+describe("useInboxRealtime writes only the chat lists a message changes", () => {
+  const fanWrote = (id: number, fanId = FAN_AB) => fire({
+    __account_id: MODEL_A,
+    api2_chat_message: { id, text: "hi", fromUser: { id: fanId, name: `fan${fanId}` }, createdAt: "2026-06-21T18:00:00.000Z" },
+  });
+
+  it("a list without the fan, and a page without the fan, keep their references", () => {
+    const deeper = { rows: [chatRow(333, MODEL_A)], hasMore: false };
+    client.setQueryData(KEY_A, { pages: [{ rows: [chatRow(FAN_AB, MODEL_A)], hasMore: true }, deeper], pageParams: [0, 25] });
+    client.setQueryData(KEY_B, infinite([chatRow(FAN_B, MODEL_B)]));
+    const bBefore = client.getQueryData(KEY_B);
+    renderHook(() => useInboxRealtime(), { wrapper });
+
+    fanWrote(9200);
+
+    expect(client.getQueryData(KEY_B)).toBe(bBefore);
+    const a = client.getQueryData<Infinite>(KEY_A)!;
+    expect(a.pages[0].rows[0].lastMessage?.id).toBe(9200);
+    expect(a.pages[1]).toBe(deeper);
+  });
+
+  it("the same message delivered twice writes once and counts its unread once", () => {
+    client.setQueryData(KEY_A, infinite([chatRow(FAN_B, MODEL_A), chatRow(FAN_AB, MODEL_A)]));
+    renderHook(() => useInboxRealtime(), { wrapper });
+
+    fanWrote(9300);
+    const once = client.getQueryData<Infinite>(KEY_A)!;
+    fanWrote(9300);
+
+    expect(client.getQueryData(KEY_A)).toBe(once);
+    expect(once.pages[0].rows[0].unreadMessagesCount).toBe(1);
+  });
+});

@@ -765,6 +765,7 @@ _CHATTER_BLOCKED_ADMIN_PREFIXES: tuple[str, ...] = (
     # Growth > Sensitive words: managing the list is owner-only; the bare GET
     # /admin/sensitive-words (no trailing slash) stays open, every composer reads it.
     "/admin/sensitive-words/",
+    "/admin/roster",       # forced subscriber-roster crawl (ADR 0024 trigger seam) — owner-only
 )
 
 

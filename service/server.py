@@ -67,6 +67,7 @@ from events import (  # noqa: E402
     owner_audience,
     publish_chat_responded,
     sessions_audience,
+    sse_stats as _sse_stats,
     sse_stream,
     start_persist_worker as _start_persist_worker,
     stop_persist_worker as _stop_persist_worker,
@@ -732,7 +733,7 @@ async def admin_secrets_set(request: Request) -> dict[str, Any]:
 # and a stall for every request in flight whenever the disk was slow. The
 # file is still reopened per burst, so deleting or rotating it just works. A
 # full queue (the disk gone for a long while) drops lines, never blocks.
-_API_LOG_PATH = "/tmp/of-api.log"
+_API_LOG_PATH = os.environ.get("OF_API_LOG_PATH") or "/tmp/of-api.log"
 _API_LOG_QUEUE_MAX = 10_000
 import queue as _queue_mod
 import time as _time_mod
@@ -1205,16 +1206,6 @@ async def _pump_supervisor() -> None:
         await asyncio.sleep(15)
 
 
-# The asyncio default executor's size. Every `asyncio.to_thread` in this
-# codebase shares this one pool — all `_proxy` OF calls, the automation
-# executor's roundtrips, media pulls — so it is the budget the per-account
-# lane spends from: `accounts x _ACCOUNT_LANE_TOTAL <= this, minus headroom`.
-# Settable from the Concurrency panel because it was the one ceiling that
-# bounded every other ceiling and could only be changed by editing source.
-# A `ThreadPoolExecutor` cannot be resized, so this is read once, here.
-_EXECUTOR_THREADS = lane_config.resolve("RELAY_EXECUTOR_THREADS", 64)
-
-
 # Background tasks the relay owns for its own lifetime. CPython keeps only a
 # WEAK reference to a task returned by create_task, so a fire-and-forget task
 # can be garbage-collected mid-flight — for a vault import that means the run
@@ -1291,14 +1282,14 @@ async def _start_event_pumps() -> None:
     # threads on the 2-CPU VPS. A couple of long automation sweeps pinned
     # all 6 and every user-initiated send queued invisibly until the Next
     # proxy gave up (2026-07-04 "socket hang up" / HTTP 500 incident). The
-    # threads only block on network I/O, so 64 is cheap headroom.
+    # threads only block on network I/O; see `_EXECUTOR_THREADS` for the size.
     try:
         from concurrent.futures import ThreadPoolExecutor
         _main_loop.set_default_executor(
             ThreadPoolExecutor(max_workers=_EXECUTOR_THREADS,
                                thread_name_prefix="to-thread")
         )
-        log.info("asyncio default executor bumped to 64 threads")
+        log.info("asyncio default executor bumped to %d threads", _EXECUTOR_THREADS)
     except Exception:
         log.exception("could not resize asyncio default executor — default is min(32, cpus+4)")
 
@@ -1755,16 +1746,19 @@ def post_bootstrap_hooks(account_id: str):
 # (p50 0.88s, against 0.61s for three accounts at 15).
 #
 # The real ceiling is THREADS. Every OF call is sync and runs via
-# `asyncio.to_thread`, so the fleet shares the 64-thread executor set at startup
-# — with `/img`, vault stills and storyboard builds. The budget is therefore:
+# `asyncio.to_thread`, so the fleet shares the one executor set at startup
+# (`_EXECUTOR_THREADS`) — with automation runs, vault stills and storyboard
+# builds. The budget is therefore:
 #
-#     accounts x _ACCOUNT_LANE_TOTAL  <=  ~64, minus headroom for everything else
+#     accounts x _ACCOUNT_LANE_TOTAL  <=  _EXECUTOR_THREADS - headroom
 #
-# At 7 accounts the default 5 spends 35 of 64 (55%), which leaves room. Raising
-# it to 8 would spend 56 of 64 and leave eight threads for the entire rest of
-# the process — that is the fd/thread starvation class of failure, not an OF
-# one. Raise this only alongside the executor, and only with evidence that the
-# cap is costing anything at all (`admin_priority_lane_stats()`'s `blocked_rate`). It has been 0.0% across every measurement so far.
+# At 7 accounts the default 5 spent 35 of the old 64 (55%). At 20 accounts it
+# would have wanted 100 of 64 — every lane saturated at once queues inside the
+# pool, starving the automation lane and /health behind it (the 2026-07-04
+# thread-starvation shape). So the executor below is now DERIVED from this
+# number, not the other way round. Raise this only with evidence that the cap
+# is costing anything at all (`admin_priority_lane_stats()`'s `blocked_rate`).
+# It has been 0.0% across every measurement so far.
 _ACCOUNT_LANE_TOTAL = lane_config.resolve("ACCOUNT_LANE_TOTAL", 5)
 # Still clamped below total: the sub-cap exists to RESERVE slots for user
 # work, so a saved value of background >= total would silently delete the
@@ -1777,6 +1771,51 @@ _ACCOUNT_LANE_BACKGROUND = max(1, min(
 # and this is the only knob where that is true. Told to the store explicitly, or
 # the panel would report a pending change that no restart will ever deliver.
 lane_config.record_live("ACCOUNT_LANE_BACKGROUND", _ACCOUNT_LANE_BACKGROUND)
+
+# The asyncio default executor's size. Every `asyncio.to_thread` in this
+# codebase shares this one pool — all `_proxy` OF calls, the automation
+# executor's roundtrips, media pulls — so it is the budget the per-account
+# lane spends from. Settable from the Concurrency panel (env > panel > this
+# default). A `ThreadPoolExecutor` cannot be resized, so it is read once, here.
+#
+# THE DEFAULT IS DERIVED, sized 2026-10 for 20 accounts on a 4 vCPU box:
+#
+#     accounts x _ACCOUNT_LANE_TOTAL  +  _EXECUTOR_HEADROOM
+#     20       x 5                    +  92                  =  192
+#
+# The headroom is what draws on the pool OUTSIDE `_proxy`'s lanes: automation
+# runs call the OF client directly (run slots — run_slot.auto_runs, 4 at 20
+# creators, plus 2 operator-reserved — x up to 6 paced welcome workers + 2
+# bulk = under ~50), transaction ingest is one poll per account (20),
+# and the admission lanes that dispatch to threads (vault media 6, stills,
+# storyboard 2, health 4, referrals 4 = ~20) — rounded up. `accounts` is the
+# larger of the fleet this box is sized for and the account directories on
+# disk at boot, so a relay that grows past 20 grows its pool at the next
+# restart instead of silently re-running the 7-on-64 maths with 30.
+#
+# What it costs: threads only block on network I/O; an idle one is a parked
+# OS thread. Descriptors are the scarce thing on 2026-08-08's evidence, and
+# 192 threads x a few sockets each sits far under the container's 65536
+# `nofile` (docker-compose.yml) — the 08-08 exhaustion was uncapped /img
+# misses at the 1024 default, fixed by `admission.IMG_FETCH` and that ulimit.
+_FLEET_ACCOUNTS = 20
+_EXECUTOR_HEADROOM = 92
+
+
+def _accounts_on_disk() -> int:
+    """Account directories present at boot. A plain directory count — not
+    `list_accounts()`, which materialises meta as a side effect — and never
+    raises: a sizing hint must not stop the relay from importing."""
+    try:
+        return sum(1 for p in account_registry.ACCOUNTS_DIR.iterdir() if p.is_dir())
+    except Exception:
+        return 0
+
+
+_EXECUTOR_THREADS = lane_config.resolve(
+    "RELAY_EXECUTOR_THREADS",
+    max(_FLEET_ACCOUNTS, _accounts_on_disk()) * _ACCOUNT_LANE_TOTAL + _EXECUTOR_HEADROOM,
+)
 _account_lanes_lock = threading.Lock()
 _account_lanes: dict[str, tuple[threading.BoundedSemaphore, threading.BoundedSemaphore]] = {}
 #
@@ -6645,9 +6684,10 @@ async def _paced_of_write(aid: str, call):
     pacer and translated like any `_proxy` call. Not every OF write is paced:
     the pacer's gap is for what a fan sees (messages, posts), so a write a fan
     never sees (mark read/unread, hide, list membership) goes out unpaced by
-    default. This is for the one still spaced: the chat delete."""
+    default. This is for the one still spaced: the chat delete — an
+    operator's, so it goes ahead of automation's waiting writes (ADR 0025)."""
     from automation_executor import of_write_paced
-    return await of_write_paced(aid, lambda: _proxy(call), send_purpose="not_fan_dm")
+    return await of_write_paced(aid, lambda: _proxy(call), send_purpose="not_fan_dm", operator=True)
 
 @app.post("/api/of/v2/chats/{chat_id}/mark-as-read")
 async def of_mark_chat_read(chat_id: int):
@@ -8941,15 +8981,17 @@ async def of_vault_upload_batch(
         `of_client` stays the only place that knows what a carrier post is.
 
         OnlyFans throttles EVERY write per account, so an import that paced only
-        its own posts would still eat the slot an automation's fan message
-        reserved — the import failing is recoverable, a missed send is not. The
+        its own posts would still crowd an automation's fan message into OF's
+        limit. Through the pacer it is spaced like every write, and it goes
+        ahead of automation's waiting writes (the operator's tier, ADR 0025):
+        those wait one more gap, none is dropped. The
         pacer lives on the event loop; we are on a worker thread, so hop across
         and block this thread (not the loop) until it is our turn. The ceiling
         is far above any real wait: the pacer spaces writes 11 s apart and the
         write itself carries its own network timeouts, so minutes here means
         something is stuck.
         """
-        return _hop(of_write_paced(aid, thunk, send_purpose="not_fan_dm"),
+        return _hop(of_write_paced(aid, thunk, send_purpose="not_fan_dm", operator=True),
                     _VAULT_WRITE_GATE_TIMEOUT_S)
 
     def _fan_send_gate(thunk):
@@ -8963,7 +9005,7 @@ async def of_vault_upload_batch(
             # Free by construction (`materialize_via_message` sends price 0),
             # so the guard passes today; it runs so that stays the guard's call.
             await _reject_if_resale(aid, fan["id"], SendMessageBody(text=""))
-            result = await of_write_paced(aid, thunk, send_purpose="manual")
+            result = await of_write_paced(aid, thunk, send_purpose="manual", operator=True)
             await _record_fan_send(aid, fan["id"], result,
                                    employee_id=employee_id, price=0)
             return result
@@ -10269,6 +10311,8 @@ def event_stats() -> dict[str, Any]:
         "pumps": pumps,
         "pumps_running": sum(1 for p in pumps.values() if p["running"]),
         "supervisor_running": (_supervisor_task is not None and not _supervisor_task.done()),
+        # Each open SSE stream's mode (immediate / batch), rate and queue depth.
+        "sse": _sse_stats(),
     }
 
 
@@ -11163,6 +11207,27 @@ async def admin_ingest_tx_run(
     asyncio.create_task(_trigger(), name=f"tx-ingest-trigger-{account_id}")
 
     return {"accepted": True, "mode": mode, "queued_at": queued_at.isoformat()}
+
+
+@app.post("/admin/roster/{account_id}/crawl")
+async def admin_roster_crawl(account_id: str) -> dict[str, Any]:
+    """One subscriber-roster crawl NOW, past its 25-minute TTL
+    (`lifecycle_messages._CRAWL_TTL_S`): the on-demand trigger for
+    `subscriber_snapshot`, as /admin/ingest/transactions/{id}/run is for the
+    ledger. Same code path as the lifecycle sweep and smart_list_sync, under
+    the same per-account lock; answers that run's stats ({roster: crawled |
+    truncated | empty, listed, returned}). A seam in ADR 0024."""
+    from db.engine import get_session
+    from db.models import Account
+    from sqlalchemy import select
+    assert_account_owned(account_id)
+    async with get_session() as s:
+        if (await s.execute(select(Account.id).where(Account.id == account_id))).first() is None:
+            raise HTTPException(status_code=404, detail="account not found")
+    import automation_executor as ax
+    from automations.lifecycle_messages import refresh_roster
+    client = await asyncio.to_thread(ax._make_client, account_id)
+    return await refresh_roster(account_id, client, now=datetime.utcnow(), force=True)
 
 
 class _TxPauseBody(BaseModel):

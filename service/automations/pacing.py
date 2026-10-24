@@ -215,7 +215,7 @@ def bubble_pace(typing_s: float, text: str, rng: Random,
     # ⚠️ The DRIFT cap is not the TOTAL cap, and conflating them is a live bug this
     # test caught: `typing_s` reaches _MAX_TYPING_DELAY_S (60s) on a long bubble, so
     # 60 + garnish + a 90s drift is 157s — past rhythm.INLINE_MAX_S, where the hold
-    # outlives the 900s fan lease and burns one of the executor's 4 GLOBAL run slots.
+    # outlives the 900s fan lease (a hold no longer pins a run slot — service/run_slot.py).
     # Bound what is LEFT after the terms already drawn, so the ceiling holds no
     # matter how long the bubble or how generous the knob.
     cap = min(cap, max(0.0, _TOTAL_CEIL_S - (typing_s + enter + emoji)))

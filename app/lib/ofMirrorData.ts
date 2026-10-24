@@ -43,6 +43,7 @@ import { avatarOf, initials } from "@/lib/ofMirrorAvatar";
 import { chatsQuery, chatsRequest, chatsView } from "@/lib/ofMirrorChats";
 import { fanIdFromParam } from "@/lib/fanId";
 import { useChatList } from "@/hooks/useChatList";
+import { UNREAD_PREFETCH_TIERS, useUnreadMessagesPrefetch } from "@/hooks/useUnreadMessagesPrefetch";
 import { useChatMessages } from "@/hooks/useChatMessages";
 import { useChatPinned } from "@/hooks/useChatPinned";
 import { useFanChatMedia } from "@/hooks/useFanChatMedia";
@@ -1631,6 +1632,8 @@ export function useOfData(frameRef: RefObject<HTMLIFrameElement | null>, src: st
   const view = chatsView(params);
   const listQuery = chatsQuery(view);
   const chatList = useChatList({ ...chatsRequest(view), limit: CHATS_PAGE, enabled: isChats && !!accountId });
+  // The top unread threads, first tier only: activity inside the frame never reaches this window.
+  useUnreadMessagesPrefetch(chatList.data, chatList.fetchedLive, UNREAD_PREFETCH_TIERS.slice(0, 1));
   const loadMoreChats = useRef(chatList.loadMore);
   loadMoreChats.current = chatList.loadMore;
   // Each page's partners (each /chats row carries only its partner's id).

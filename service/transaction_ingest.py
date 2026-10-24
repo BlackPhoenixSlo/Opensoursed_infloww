@@ -1523,6 +1523,15 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
 # WS pump (event_transcoder); a purchase is seen off the feed below.
 _FAST_TICK_INTERVAL_S = 30
 _FAST_PAGE_LIMIT = 10
+# Accounts polled at once, and the gap between their starts. One account's
+# tick is ~0.7 s of OF round-trip, so walking 20 one by one took ~14 s of the
+# 30 s period and told the last account about a payment ~14 s late. Five at a
+# time, starts STAGGER_S apart so a fleet never hits OF in the same second:
+# 20 accounts finish in ~4.5 s. Each account still makes one call per tick,
+# inside its own OF lane (purchase_notifications._of_lane), so this adds at
+# most five threads to the shared executor.
+_FAST_POLL_CONCURRENCY = 5
+_FAST_POLL_STAGGER_S = 0.2
 
 
 async def run_fast_tick(account_id: str) -> dict:
@@ -1557,9 +1566,10 @@ async def run_fast_tick(account_id: str) -> dict:
 async def start_fast_poll() -> None:
     """30s freshness loop — see run_fast_tick. Same online-gate and pause
     respect as the main supervisor (idle dashboards ⇒ no proxy burn; an account
-    the supervisor backed off after 3 fails stays skipped). Sequential per
-    cycle — SQLite WAL serializes writes and we want bounded concurrent OF
-    load. Sleep AT END so the gap is _FAST_TICK_INTERVAL_S regardless of cycle
+    the supervisor backed off after 3 fails stays skipped). Accounts run
+    _FAST_POLL_CONCURRENCY at a time, starts _FAST_POLL_STAGGER_S apart —
+    bounded OF load without the last account waiting out the whole fleet.
+    Sleep AT END so the gap is _FAST_TICK_INTERVAL_S regardless of cycle
     duration."""
     log.info("ingest_tx_fast_poll_started tick=%ds limit=%d",
              _FAST_TICK_INTERVAL_S, _FAST_PAGE_LIMIT)
@@ -1575,26 +1585,31 @@ async def start_fast_poll() -> None:
                 if m.get("has_session") and m["id"] not in off
             ]
             wanted = await _fast_poll_account_ids()
-            account_ids = [aid for aid in account_ids if aid in wanted]
-            for aid in account_ids:
-                if await _is_paused(aid):
-                    continue
-                try:
-                    await run_fast_tick(aid)
-                except Exception as e:
-                    # RECORD it, don't just whisper. This was `log.debug` and
-                    # nothing else, which was harmless while run_fast_tick
-                    # swallowed its own fetch errors into an error dict — the
-                    # only way here was a bug, not a dead session. The Fansly
-                    # lane raises on a feed failure by design (its silence is
-                    # unrecoverable lost sales), so an unrecorded catch here
-                    # meant a dead Fansly session failed 120 times an hour,
-                    # never incremented consecutive_failures, never paused,
-                    # and never showed on the admin dashboard.
-                    log.warning(
-                        "ingest_tx_fast_cycle_account_failed account=%s",
-                        aid, exc_info=True)
-                    await _record_failure(aid, e)
+            account_ids = [aid for aid in account_ids
+                           if aid in wanted and not await _is_paused(aid)]
+            sem = asyncio.Semaphore(_FAST_POLL_CONCURRENCY)
+
+            async def _fast(i: int, aid: str) -> None:
+                await asyncio.sleep(i * _FAST_POLL_STAGGER_S)
+                async with sem:
+                    try:
+                        await run_fast_tick(aid)
+                    except Exception as e:
+                        # RECORD it, don't just whisper. This was `log.debug` and
+                        # nothing else, which was harmless while run_fast_tick
+                        # swallowed its own fetch errors into an error dict — the
+                        # only way here was a bug, not a dead session. The Fansly
+                        # lane raises on a feed failure by design (its silence is
+                        # unrecoverable lost sales), so an unrecorded catch here
+                        # meant a dead Fansly session failed 120 times an hour,
+                        # never incremented consecutive_failures, never paused,
+                        # and never showed on the admin dashboard.
+                        log.warning(
+                            "ingest_tx_fast_cycle_account_failed account=%s",
+                            aid, exc_info=True)
+                        await _record_failure(aid, e)
+
+            await asyncio.gather(*(_fast(i, a) for i, a in enumerate(account_ids)))
             elapsed = time.monotonic() - cycle_started
             await asyncio.sleep(max(_MIN_CYCLE_GAP_S, _FAST_TICK_INTERVAL_S - elapsed))
         except asyncio.CancelledError:

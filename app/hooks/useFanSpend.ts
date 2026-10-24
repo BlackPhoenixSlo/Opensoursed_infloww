@@ -122,42 +122,42 @@ function selectSpendFor(accountId: string) {
 
 function combineSpend(
   results: Array<{ data?: Map<string, FanSpend>; isFetching: boolean; isPending: boolean }>,
-): { spend: Map<string, FanSpend>; settled: boolean } {
+): { spend: Map<string, FanSpend>; settled: boolean; loaded: boolean } {
   const spend = new Map<string, FanSpend>();
   for (const r of results) {
     if (!r.data) continue;
     for (const [k, v] of r.data) spend.set(k, v);
   }
-  return { spend, settled: results.every((r) => !r.isFetching && !r.isPending) };
+  return {
+    spend,
+    settled: results.every((r) => !r.isFetching && !r.isPending),
+    loaded: results.every((r) => !r.isPending),
+  };
 }
 
 /** Spend for `rows`' fans, keyed `aid:fid`, fresh for `staleTime`; `persist`
  *  keeps it in the persisted cache (providers.tsx reads `meta.persist`).
  *    • `settled` — every account's spend query has finished fetching.
+ *    • `loaded` — every account's spend for these fans has landed; a refetch
+ *      keeps it, a re-key (new fans) clears it until the new key lands.
  *    • `refetch` — refetch exactly these queries, optionally only
- *      `accountIds`'. Stable while the fan set is.
- *  A re-key keeps showing the same account's previous data until the new key
- *  lands. */
+ *      `accountIds`'. Stable while the fan set is. */
 export function useFanSpendBatch(
   rows: OFChatItem[],
   { staleTime, persist }: { staleTime: number; persist: boolean },
 ): {
   spend: Map<string, FanSpend>;
   settled: boolean;
+  loaded: boolean;
   refetch: (accountIds?: ReadonlySet<string>) => Promise<unknown>;
 } {
   const qc = useQueryClient();
   const groups = useSpendGroups(rows);
-  const { spend, settled } = useQueries({
+  const { spend, settled, loaded } = useQueries({
     queries: groups.map((g) => ({
       ...spendBatchQuery(g),
       staleTime,
       meta: { persist },
-      // Previous data only from the SAME account.
-      placeholderData: (
-        prev: SpendBatchResp | undefined,
-        prevQuery: { queryKey: readonly unknown[] } | undefined,
-      ) => (prevQuery?.queryKey[1] === g.accountId ? prev : undefined),
       select: selectSpendFor(g.accountId),
     })),
     combine: combineSpend,
@@ -170,12 +170,12 @@ export function useFanSpendBatch(
     ),
     [qc, groups],
   );
-  return { spend, settled, refetch };
+  return { spend, settled, loaded, refetch };
 }
 
 /** The Fan List chips' spend: 24h fresh (the DB is kept fresh by the WS pump
  *  + transcoder, so no re-fetch on tab focus or interval) and persisted, so
- *  the chip survives a reload. */
-export function useFanSpend(rows: OFChatItem[]): Map<string, FanSpend> {
-  return useFanSpendBatch(rows, { staleTime: DAY_MS, persist: true }).spend;
+ *  the chip survives a reload. `loaded` as useFanSpendBatch's. */
+export function useFanSpend(rows: OFChatItem[]): { spend: Map<string, FanSpend>; loaded: boolean } {
+  return useFanSpendBatch(rows, { staleTime: DAY_MS, persist: true });
 }

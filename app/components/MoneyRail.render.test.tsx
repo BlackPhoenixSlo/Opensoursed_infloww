@@ -14,6 +14,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, screen, waitFor } from "@testing-library/react";
+import { focusManager } from "@tanstack/react-query";
 
 // vi.mock factories are hoisted above the imports below, so everything they
 // close over has to be hoisted with them or it is still in its TDZ when the
@@ -243,5 +244,35 @@ describe("MoneyRailRestoreButton", () => {
     });
 
     expect(await screen.findByText(LABEL)).toBeInTheDocument();
+  });
+});
+
+describe("MoneyRail OF call budget", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    focusManager.setFocused(undefined);
+  });
+
+  /** Hide the tab, then bring it back — react-query's own focus signal. */
+  async function hideAndReturn(): Promise<void> {
+    await act(async () => { focusManager.setFocused(false); });
+    await act(async () => { focusManager.setFocused(true); });
+    await flush();
+  }
+
+  it("a tab return re-reads OF's lists only once they are stale, then once", async () => {
+    renderWithProviders(<MoneyRail />);
+    await flush();
+    expect(callsTo(OF_NOTIFICATIONS)).toHaveLength(FANOUT);
+
+    // Fresh lists (SSE keeps them live): a quick tab switch costs nothing.
+    await hideAndReturn();
+    expect(callsTo(OF_NOTIFICATIONS)).toHaveLength(FANOUT);
+
+    // Long enough away that they went stale: exactly one re-read each.
+    const later = Date.now() + 5 * 60_000 + 1;
+    vi.spyOn(Date, "now").mockReturnValue(later);
+    await hideAndReturn();
+    await waitFor(() => expect(callsTo(OF_NOTIFICATIONS)).toHaveLength(2 * FANOUT));
   });
 });

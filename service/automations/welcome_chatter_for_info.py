@@ -85,6 +85,8 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax  # _make_client / _parse_iso / fan-lease seams
+import dm_rate
+import run_slot
 import llm_client                  # call .chat at runtime so tests can patch it
 from . import _daylog  # what SHE did today — the creator-side twin of recent_events
 from . import _language
@@ -132,6 +134,7 @@ from ._persona import (
     merge_persona_claims, parse_persona_claims, persona_register_age,
 )
 from ._outbound import ConsistencyCtx, finalize_draft
+from .rhythm import INLINE_MAX_S
 from . import cat_stickers  # reaction-gif pack
 from . import gen_info  # profile_is_stale() — the refresh-if-stale hook below
 import smart_message_extras as extras  # media + price readers (the closing PPV)
@@ -154,6 +157,7 @@ _MAX_TURNS = 30                  # hard per-fan reply cap → graduate the fan.
 _INFO_COMPLETE_RATIO = 0.75      # ≥ 3 of 4 bio groups filled → enough signal
 _DEFAULT_LIMIT = 200             # candidate sweep ceiling
 _DEFAULT_MAX_REPLIES = 25        # per-run send cap (logged when it bites)
+_FAN_SELECT_CHUNK = 500         # fan ids per Fan read (SQLite caps bound variables per query)
 _REPLY_TEMPERATURE = 0.85        # warm/varied, matches the legacy persona call
 _HISTORY_TAIL = 20               # last N messages handed to the REPLY model. The
                                  # durable info already rides in the facts block, so
@@ -1505,6 +1509,9 @@ async def _send_closing_ppv(client, account_id: str, fan_id: int,
             return "owned"
         if dry_run:
             return "dry_run"
+        # The account's DM rate (OF_DM_PER_MIN): a plain wait, the slot kept
+        # (this never raises, so no SlotLost here).
+        await dm_rate.turn(account_id)
         result = await asyncio.to_thread(
             lambda: client.send_message(fan_id, ppv.text,
                                         media_files=list(ppv.media_ids),
@@ -1737,6 +1744,18 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     provider = llm_client.MODELS[model].provider  # no key → skip the run, as autoreply does
     if not await llm_client.llm_key_available(account_id, provider, _PURPOSE):
         return {"no_llm_key": provider, "candidates": 0, "replies_sent": 0}
+    # Today's cap too spent for one more call on `model` → every LLM call
+    # would be refused. A fan-scoped run (W7 queues one per inbound message)
+    # still does its non-LLM work — the gates' skip-lists (spent / too_long)
+    # and the closing-PPV cuts — and makes no LLM call: no day log, and only
+    # the cut candidates reach the send loop. A capped SWEEP stops here: its
+    # gather reads the whole account's messages, seconds of event loop on a
+    # big page, for fans whose own W7 runs do the same work (ADR 0025, free3).
+    llm_capped = (await llm_client.cap_state(account_id, provider, model))["capped"]
+    if llm_capped and not only_fan_ids:
+        log.info("welcome_chatter_for_info llm cap reached account=%s provider=%s "
+                 "— skipping the sweep", account_id, provider)
+        return {"llm_capped": provider, "candidates": 0, "replies_sent": 0}
     typing_wpm = await load_typing_wpm(account_id)  # per-bubble "typing" pacing
     typing_indicator = await load_typing_indicator(account_id)  # live "...is typing"
     style_on = (await load_style_flags(account_id))[_PURPOSE]  # human-style opt-in
@@ -1766,8 +1785,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # concurrent run ADOPTS the row already written rather than writing a second,
     # different day for the same creator. Flag default OFF ⇒ the empty `Day` ⇒
     # every renderer returns "" ⇒ byte-identical prompt.
-    day = await _daylog.load_day(account_id, model=model, purpose=_PURPOSE,
-                                 clock_tz=clock_tz)
+    day = _daylog.NO_DAY if llm_capped else await _daylog.load_day(
+        account_id, model=model, purpose=_PURPOSE, clock_tz=clock_tz)
     banned_words, banned_mode = await load_banned_words(account_id)  # compliance word filter
     blacklist, skip_list = await _load_stop_lists(account_id)
     # The runaway cutoff and the closing PPV (None = off: this lane's last
@@ -1801,12 +1820,18 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # of_client only — no DOM. Built via the executor seam tests override.
     client = await asyncio.to_thread(ax._make_client, account_id)
 
-    # Fan rows carry spend / paused / the bio facts the gates + prompt read.
+    # Fan rows carry spend / paused / the bio facts the gates + prompt read —
+    # the gathered fans' rows only, not the account's whole Fan table (a W7
+    # run is one fan; ADR 0025, free3). Chunked under SQLite's variable limit.
+    fans: dict[int, Fan] = {}
+    ids = list(by_fan)
     async with get_session() as s:
-        fan_rows = (await s.execute(
-            select(Fan).where(Fan.account_id == str(account_id))
-        )).scalars().all()
-    fans: dict[int, Fan] = {int(f.fan_id): f for f in fan_rows}
+        for i in range(0, len(ids), _FAN_SELECT_CHUNK):
+            for f in (await s.execute(
+                select(Fan).where(Fan.account_id == str(account_id),
+                                  Fan.fan_id.in_(ids[i:i + _FAN_SELECT_CHUNK]))
+            )).scalars():
+                fans[int(f.fan_id)] = f
 
     now = datetime.utcnow()
     candidates: list[_Candidate] = []
@@ -1900,6 +1925,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # Deterministic order; most-recent-talkers first via inbound volume.
     candidates.sort(key=lambda x: (-x.fan_msg_n, x.fan_id))
     candidates = candidates[:limit]
+    if llm_capped:  # only the closing-PPV cuts send without an LLM call
+        candidates = [c for c in candidates if c.closing_cut]
 
     # One batch query for the final candidate set's rich profiles. Two consumers with
     # different switches: fact-grounding feeds the bio into the prompt (default ON,
@@ -1917,7 +1944,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     skipped_cooldown = 0
     skipped_banned = 0      # compliance word filter tripped in "block" mode
     errors = 0
-    cap_hit = False
+    cap_hit = llm_capped
     key_error = None  # a rejected key stops the run: one call, not one per fan
 
     async def _close_with_ppv(fan_id: int) -> bool:
@@ -2152,12 +2179,23 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
             send_failed = False
             first_no_id = False
+            lost = None     # run_slot.SlotLost after part of the reply landed
             for idx, part in enumerate(parts):
                 # Hold each bubble for the time it'd take to TYPE it (~typing_wpm),
                 # showing the live "...is typing" bubble during the wait if enabled.
-                await hold_with_typing(account_id, fan_id,
-                                       typing_delay_seconds(part, typing_wpm),
-                                       typing_indicator=typing_indicator)
+                try:
+                    await hold_with_typing(account_id, fan_id,
+                                           typing_delay_seconds(part, typing_wpm),
+                                           typing_indicator=typing_indicator)
+                    # The account's DM rate (OF_DM_PER_MIN), waited like the hold.
+                    await dm_rate.turn(account_id, release_budget_s=INLINE_MAX_S)
+                except run_slot.SlotLost as e:
+                    # The run lost its slot: send no more. A bubble landed → the
+                    # reply is recorded below as sent, then the run stops.
+                    if not sent_ok:
+                        raise
+                    lost = e
+                    break
                 try:
                     result = await asyncio.to_thread(client.send_message, fan_id, part)
                 except Exception as e:
@@ -2204,7 +2242,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # (parts empty). Empty text + top-level giphyId is the verified
             # GIF-only wire shape; failure is non-fatal when text already landed.
             sticker_sent = False
-            if sticker_tag is not None and not send_failed and not first_no_id:
+            if sticker_tag is not None and not send_failed and not first_no_id and lost is None:
                 gid = cat_stickers.pick_gif(
                     sticker_tag,
                     random.Random(f"gif:{account_id}:{fan_id}:{c.last_body}"),
@@ -2212,9 +2250,16 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     voice=voice_blocks.voice)
                 if gid is not None:
                     srng = random.Random(f"sdelay:{fan_id}:{gid}")
-                    await hold_with_typing(account_id, fan_id,
-                                           2.0 + 4.0 * srng.random(),
-                                           typing_indicator=typing_indicator)
+                    try:
+                        await hold_with_typing(account_id, fan_id,
+                                               2.0 + 4.0 * srng.random(),
+                                               typing_indicator=typing_indicator)
+                        await dm_rate.turn(account_id, release_budget_s=INLINE_MAX_S)
+                    except run_slot.SlotLost as e:
+                        if not sent_ok:
+                            raise   # a sticker-only reply: nothing landed
+                        lost, gid = e, None
+                if gid is not None:
                     try:
                         result = await asyncio.to_thread(
                             lambda g=gid: client.send_message(fan_id, "",
@@ -2271,6 +2316,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # Keep stored info current: refresh the profile when the gate says stale.
             await _maybe_refresh_profile(account_id, fan_id, c.fan_msg_n, now)
             sent += 1
+            if lost is not None:
+                raise lost  # recorded (and rested, finally): now stop the run
             # We just replied → clear the unread badge. A mark-read failure must
             # never break the (already-persisted) send.
             try:

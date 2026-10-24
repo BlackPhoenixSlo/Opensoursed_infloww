@@ -262,6 +262,75 @@ function withRefreshFlag(href: string, typeKey: NotifTypeKey | null): string {
   return `${href}${href.includes("?") ? "&" : "?"}refresh=media`;
 }
 
+/** One arrival, as every SSE lane hands it to `deliverNotification`. */
+interface Arrival {
+  id: string;
+  accountId: string;
+  typeKey: NotifTypeKey | null;
+  /** OF's own type string, kept verbatim for the history row. */
+  rawType: string;
+  user: NotificationUser;
+  /** Rendered, for the toast. */
+  text: string;
+  /** Stored, for the history row — OF's lanes keep the raw HTML so the
+   *  dropdown can re-render it. Defaults to `text`. */
+  historyText?: string;
+  replacePairs?: Record<string, string>;
+  createdMs: number;
+  href: string | null;
+}
+
+/** Rows the seeded money list keeps — the rail never shows more (MAX_ROWS). */
+const MONEY_LIST_CAP = 50;
+
+/** The ["notif-list", aid, type] key a money arrival lands in, or null for a
+ *  non-money one. The same key the Money rail and the bell read. */
+function moneyListKey(aid: string, typeKey: NotifTypeKey | null) {
+  return typeKey === "tip" || typeKey === "purchases" ? ["notif-list", aid, typeKey] as const : null;
+}
+
+/**
+ * A money arrival goes straight into the rail's cached OF list — no OF
+ * round-trip. The SSE payload IS the row OF's feed will list (same id; the
+ * rail and bell dedupe on it), so re-reading /notifications on every arrival
+ * only paid 2 OF calls per model per event for nothing. Once the real feed
+ * is next read (mount, tab return, the slow safety poll, `resync`) its row
+ * replaces this one.
+ *
+ * Seeded into the cache rather than left to the history mirror alone: the
+ * mirror holds 100 rows per Creator across ALL types, so on a busy Creator
+ * DMs push a sale out of it within the hour. A list that was never fetched
+ * is left alone — its first fetch brings the row, the mirror shows it meanwhile.
+ */
+function seedMoneyList(qc: QueryClient, n: Arrival): void {
+  const key = moneyListKey(n.accountId, n.typeKey);
+  const prev = key && qc.getQueryData<NotificationItem[]>(key);
+  if (!key || !prev || prev.some((r) => String(r.id) === n.id)) return;
+  const row: NotificationItem = {
+    id: n.id,
+    type: n.rawType,
+    text: n.historyText ?? n.text,
+    createdAt: new Date(n.createdMs).toISOString(),
+    user: n.user,
+    replacePairs: n.replacePairs,
+  };
+  qc.setQueryData(key, [row, ...prev].slice(0, MONEY_LIST_CAP));
+}
+
+/** The seeded row's late-resolved fan id (OF's toasts can name a fan only by
+ *  @username) — the cached row outranks the history row it would patch. */
+function patchMoneyListUser(
+  qc: QueryClient, aid: string, typeKey: NotifTypeKey | null, id: string, patch: Partial<NotificationUser>,
+): void {
+  const key = moneyListKey(aid, typeKey);
+  const prev = key && qc.getQueryData<NotificationItem[]>(key);
+  const i = prev ? prev.findIndex((r) => String(r.id) === id) : -1;
+  if (!key || !prev || i < 0) return;
+  const next = prev.slice();
+  next[i] = { ...next[i], user: { ...next[i].user, ...patch } };
+  qc.setQueryData(key, next);
+}
+
 /** One arrival, delivered. Every SSE lane below — OF's `toasts` feed, inbound
  *  DMs, PPV unlocks — differs only in how it parses its envelope; from here on
  *  the policy is identical, so it lives here once instead of three times.
@@ -270,29 +339,8 @@ function withRefreshFlag(href: string, typeKey: NotifTypeKey | null): string {
  *  GATED. A muted arrival (master off, or its type toggled off) still reaches
  *  the bell dropdown and the money rail — muting popups must not make those go
  *  deaf — but produces no badge bump, no popup and no OS notification.
- *
- *  Returns whether it pinged, so a caller that batches (the `toasts` loop) can
- *  tell whether anything in the batch was user-visible.
  */
-function deliverNotification(
-  settings: NotifSettings,
-  n: {
-    id: string;
-    accountId: string;
-    typeKey: NotifTypeKey | null;
-    /** OF's own type string, kept verbatim for the history row. */
-    rawType: string;
-    user: NotificationUser;
-    /** Rendered, for the toast. */
-    text: string;
-    /** Stored, for the history row — OF's lanes keep the raw HTML so the
-     *  dropdown can re-render it. Defaults to `text`. */
-    historyText?: string;
-    replacePairs?: Record<string, string>;
-    createdMs: number;
-    href: string | null;
-  },
-): boolean {
+function deliverNotification(settings: NotifSettings, n: Arrival): void {
   appendNotifHistory({
     id: n.id,
     accountId: n.accountId,
@@ -309,7 +357,7 @@ function deliverNotification(
     createdAt: new Date(n.createdMs).toISOString(),
   });
 
-  if (!settings.enabled || (n.typeKey && !settings.toast[n.typeKey])) return false;
+  if (!settings.enabled || (n.typeKey && !settings.toast[n.typeKey])) return;
 
   dispatchNotifArrived();
   pushToast({
@@ -337,7 +385,6 @@ function deliverNotification(
       href: n.href,
     });
   }
-  return true;
 }
 
 function NotificationDeltaPoller() {
@@ -376,7 +423,6 @@ function NotificationDeltaPoller() {
       const arr = (env as { toasts?: unknown }).toasts;
       if (!Array.isArray(arr)) return;
 
-      let handledAny = false;
       for (const raw of arr) {
         if (!raw || typeof raw !== "object") continue;
         const t = raw as Record<string, unknown>;
@@ -454,7 +500,7 @@ function NotificationDeltaPoller() {
         const baseHref = hrefFor({ user } as NotificationItem, aid);
         // History always, pings gated — the money rail and the feed dropdown
         // must still list a muted arrival (incl. likes).
-        deliverNotification(settingsFor(aid), {
+        const arrival: Arrival = {
           id,
           accountId: aid,
           typeKey,
@@ -465,11 +511,12 @@ function NotificationDeltaPoller() {
           replacePairs: repl ?? (t.replacePairs as Record<string, string> | undefined),
           createdMs,
           href: baseHref ? withRefreshFlag(baseHref, typeKey) : null,
-        });
-        // Deliberately NOT gated on whether it pinged: this lane refetches the
-        // notif-list for anything it took in, muted or not, so a silenced
-        // arrival still refreshes the rail from OF's own feed.
-        handledAny = true;
+        };
+        deliverNotification(settingsFor(aid), arrival);
+        // No notif-list refetch, muted or not: a tip/purchase is seeded into
+        // the rail's list from this payload; anything else reaches the bell
+        // through the history mirror it already merges.
+        seedMoneyList(qc, arrival);
 
         // Resolve username → id in the background whether or not it pinged;
         // the history entry gets patched either way. Only OF's own toasts
@@ -484,12 +531,9 @@ function NotificationDeltaPoller() {
             );
             patchToastHref(aid, id, canonical);
             patchNotifHistoryUser(aid, id, { id: resolvedId });
+            patchMoneyListUser(qc, aid, typeKey, id, { id: resolvedId });
           }).catch(() => { /* ignore */ });
         }
-      }
-
-      if (handledAny) {
-        qc.invalidateQueries({ queryKey: ["notif-list", aid], exact: false });
       }
     });
     return off;
@@ -543,8 +587,11 @@ function NotificationDeltaPoller() {
       // so the bell dropdown still lists DMs with toasts off — OF's
       // /notifications feed lists them inconsistently, so this is their only
       // reliable route into the dropdown.
+      // No notif-list refetch: the rail lists only money, and the bell merges
+      // the history mirror — re-reading OF's feed per DM was 2 OF calls per
+      // model per message, the bulk of the rail's OF traffic.
       const s = settingsFor(aid);
-      const pinged = deliverNotification(s, {
+      deliverNotification(s, {
         id,
         accountId: aid,
         typeKey: "message",
@@ -555,7 +602,6 @@ function NotificationDeltaPoller() {
         createdMs,
         href: `/messages-pro/${encodeURIComponent(aid)}/${fanId}`,
       });
-      if (pinged) qc.invalidateQueries({ queryKey: ["notif-list", aid], exact: false });
       // The new-message sound has its own switch (not the toast's); the master
       // toggle (and the account's platform switch) mutes it like every other
       // ping. One window plays it.
@@ -627,7 +673,7 @@ function NotificationDeltaPoller() {
         ? Date.parse(toUtcIso(p.created_at)) || Date.now()
         : Date.now();
 
-      const pinged = deliverNotification(settingsFor(aid), {
+      const arrival: Arrival = {
         id,
         accountId: aid,
         typeKey: "purchases",
@@ -638,8 +684,11 @@ function NotificationDeltaPoller() {
         // Same one-shot refresh flag the money toasts and rail rows carry —
         // the fan just moved money, so the popout's caches are stale.
         href: withRefreshFlag(`/messages-pro/${encodeURIComponent(aid)}/${fanId}`, "purchases"),
-      });
-      if (pinged) qc.invalidateQueries({ queryKey: ["notif-list", aid], exact: false });
+      };
+      deliverNotification(settingsFor(aid), arrival);
+      // The relay read this off OF's purchases feed — the list already has it,
+      // so seed the row instead of re-reading it.
+      seedMoneyList(qc, arrival);
     });
     return off;
   }, [qc, settingsFor, ready, targetIds]);

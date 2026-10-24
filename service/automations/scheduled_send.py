@@ -103,6 +103,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             auto_tag=(purpose != "manual"),
         ),
         send_purpose=purpose,
+        dm=True,     # the composer's deferral is an operator's run: it never waits (dm_rate)
     )
 
     msg_id = result.get("id") if isinstance(result, dict) else None

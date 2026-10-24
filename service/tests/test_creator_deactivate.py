@@ -489,7 +489,7 @@ async def case_executor_skips() -> None:
         for aid in (OFF, ON):
             s.add(ScheduledJob(account_id=aid, kind="t_deact_noop", payload_json="{}",
                                status="pending", run_at=now - timedelta(seconds=5)))
-    pairs = await ax._due_job_pairs()
+    pairs = [(a, k) for a, k, _op in await ax._due_job_pairs()]
     assert (ON, "t_deact_noop") in pairs and (OFF, "t_deact_noop") not in pairs, pairs
 
     before = CALLS["noop"]

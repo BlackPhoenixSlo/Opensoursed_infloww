@@ -182,7 +182,17 @@ async def case_run_now_enqueues_job():
     ))
     rid = created["id"]
 
-    res = await run_now(rid)
+    # An unauthed caller (script) naming an employee: the job is that
+    # operator's, so the supervisor runs it in the operator tier (ADR 0025).
+    from starlette.requests import Request
+    from db.models import Employee
+    async with get_session() as s:
+        emp = Employee(display_name="op_run_now")
+        s.add(emp)
+        await s.flush()
+        emp_id = emp.id
+    req = Request({"type": "http", "headers": [(b"x-employee-id", str(emp_id).encode())]})
+    res = await run_now(rid, req)
     assert res["enqueued_job_id"] and res["kind"] == "gen_info", res
 
     async with get_session() as s:
@@ -194,6 +204,7 @@ async def case_run_now_enqueues_job():
         job = jobs[0]
         assert job.status == "pending", job.status
         assert job.rule_id == rid, "job linked back to its rule"
+        assert job.created_by_employee_id == emp_id, ("run-now is the operator's", job.created_by_employee_id)
         import json
         assert json.loads(job.payload_json) == {"limit": 50}, job.payload_json
 

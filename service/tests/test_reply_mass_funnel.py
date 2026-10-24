@@ -977,8 +977,37 @@ async def case_aged_broadcast_still_walks_pending_fan():
     assert await _state(mr, 8302) is None, "discovery stays closed past the window"
 
 
+async def case_slot_lost_mid_step_records_the_step_and_never_resends_it():
+    """The run loses its slot after m1a landed (run_slot.SlotLost at m1b's
+    hold): m1b is not sent, but the step counts as sent (advanced, rested) and
+    the next run, with no new reply, sends nothing again."""
+    aid = "acc_slot_lost"
+    await _seed_account(aid)
+    fid = await _seed_funnel("slot_lost", _TWO_STEP)
+    mr = await _seed_mass_run(aid, fid)
+    await _broadcast(aid, mr, 66001)
+    await _seed_msg(aid, 66001, 7951, "in", T_REPLY1, body="haha a lot")
+    fake = _use_fake()
+    with _harness.slot_lost_at_hold(a11, 2):
+        res = await run_once(aid, "reply_mass_funnel", payload={})
+    assert res["status"] == "error", res
+    assert [_strip(m["text"]) for m in fake.sent] == ["m1a"], fake.sent
+    st = await _state(mr, 66001)
+    assert st.current_step == 1 and st.status == "pending", st
+    async with get_session() as s:
+        assert await s.get(FanLease, (aid, 66001)) is None
+        assert (await s.get(Fan, (aid, 66001))).automation_paused_until is not None
+        await s.execute(update(Fan).where(Fan.account_id == aid).values(automation_paused_until=None))
+        await s.commit()
+    await _force_due(aid, mr, 66001)
+    res = await run_once(aid, "reply_mass_funnel", payload={})
+    assert res["status"] == "ok", res
+    assert [_strip(m["text"]) for m in fake.sent] == ["m1a"], fake.sent
+
+
 _harness.run(
     case_discover_and_advance,
+    case_slot_lost_mid_step_records_the_step_and_never_resends_it,
     case_cooldown_skips_funnel,
     case_resume_after_restart,
     case_no_new_reply_reschedules,

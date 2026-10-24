@@ -13,12 +13,13 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { chatRowKey, useChatList, listPaintKey } from "@/hooks/useChatList";
+import { useUnreadMessagesPrefetch } from "@/hooks/useUnreadMessagesPrefetch";
 import { prefetchChatMessages } from "@/hooks/useChatMessages";
 import { fetchAllVaultLists } from "@/hooks/useVaultMedia";
-import { cachedOFUserQuery, ofUserNameKey, type OFUserName } from "@/hooks/useOFUser";
+import { ofUserNameKey, useOFUserNameMap, type OFUserName } from "@/hooks/useOFUser";
 import { useRecentChatsLocal } from "@/hooks/useRecentChatsLocal";
 import { perfPaintOnce } from "@/lib/perfLog";
 import { useAccountLabel, usePlatformAccounts } from "@/hooks/useAccounts";
@@ -45,11 +46,12 @@ import { cn } from "@/lib/utils";
 import { describeLoadError, relay, type OFChatItem } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
 import { type FanId, lastMessageFromFan, sameUserId } from "@/lib/fanId";
+import { isUnreadChat } from "@/lib/chatUnread";
 import { FanListBulkBar } from "./FanListBulkBar";
 import { FanListFilters, focusModeAvailable, type ActiveChip } from "./FanListFilters";
 import { FanListHeader } from "./FanListHeader";
-import { FanListEmpty, FanListSkeleton, FocusModeBanner, LoadMoreConversations } from "./FanListStates";
-import { FanRow, fanNameOf, isUnreadChat } from "./FanRow";
+import { FanListEmpty, FanListSkeleton, FocusModeBanner, LoadMoreConversations, ShowMoreRows } from "./FanListStates";
+import { FanRow, fanNameOf } from "./FanRow";
 import { FolderPicker } from "./FolderPicker";
 import { SplitInbox } from "./SplitInbox";
 import { isFanOnline } from "./isFanOnline";
@@ -66,6 +68,12 @@ const OWE_REPLY_SCAN_CAP = 100;   // and never scan more than this many chats de
 // Hard cap on background pagination. Search bypasses (otherwise typo'd
 // queries dead-end after 200 rows). "Load more" click extends by another step.
 const SCROLL_CAP_STEP = 200;
+// Rows rendered at most, per "Show more" step. Live messages insert rows for
+// Fans not yet in the list (useInboxRealtime), so under a DM flood the list
+// grows without bound (measured 209 -> 583 rows in 4 minutes on All Models);
+// the rest stay in the data (chip counts, Select all, Focus mode) and wait
+// behind a "Show N more" row at the end.
+export const ROW_RENDER_STEP = 200;
 
 if (typeof window !== "undefined" && !(window as unknown as { __chatlistBuildLogged?: boolean }).__chatlistBuildLogged) {
   console.info("[ChatList] build chats-scroll-cap-v6 (rt-row-bubble) loaded");
@@ -115,6 +123,7 @@ export function FanList({
   const [compactMedia, setCompactMedia] = useCompactMedia();
   const [sortMode, setSortMode] = useChatSortMode();
   const [capRows, setCapRows] = useState(SCROLL_CAP_STEP);
+  const [renderCap, setRenderCap] = useState(ROW_RENDER_STEP);
   const [focusSettings, setFocusSettings] = useFocusModeSettings();
   // Select mode (`FanListBulkBar`): the picked rows' keys, or null outside it.
   const [picks, setPicks] = useState<ReadonlySet<string> | null>(null);
@@ -192,13 +201,23 @@ export function FanList({
   }, []);
   // Ref for the selected row only. React calls it whenever that row mounts;
   // scrolledSelectionRef keeps it to one scroll per selection.
+  // Stable (it reads the selection through a ref), so a memoized row is not
+  // re-rendered for a selection that is not its own.
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
   const revealSelectedRow = useCallback((el: HTMLButtonElement | null) => {
-    if (!el || !selected) return;
-    const key = `${selected.accountId}:${selected.fanId}`;
+    const sel = selectedRef.current;
+    if (!el || !sel) return;
+    const key = `${sel.accountId}:${sel.fanId}`;
     if (scrolledSelectionRef.current === key) return;
     scrolledSelectionRef.current = key;
     el.scrollIntoView({ block: "nearest" });
-  }, [selected]);
+  }, []);
+  // The parent's onSelect, made stable for the memoized rows (callers pass
+  // inline arrows).
+  const onSelectRef = useRef(onSelect);
+  onSelectRef.current = onSelect;
+  const selectRow = useCallback((sel: FanListSelection) => onSelectRef.current(sel), []);
   // Unmount cleanup: a pending prefetch timer would otherwise fire after
   // the component is gone (cheap but pointless network).
   useEffect(() => () => {
@@ -418,7 +437,9 @@ export function FanList({
   // (5.5s) because it issues the heaviest OF call (/users/list view=x);
   // activity uses the earlier flag (2.5s) — payouts is cheap and cached
   // forever after first session.
-  const spendMap = useFanSpend(spendReady ? rows : []);
+  const { spend: spendMap, loaded } = useFanSpend(spendReady ? rows : []);
+  // Spend has landed, not just the empty input the deferral passes.
+  const spendLoaded = spendReady && loaded;
   // One transactions feed per active account in scope. Memoized to avoid
   // re-triggering useQueries when row order changes but account set doesn't.
   const purchaseAccountIds = useMemo(() => {
@@ -428,6 +449,7 @@ export function FanList({
     return Array.from(set).sort();
   }, [rows, foldersReady]);
   const activity = useFanActivity(purchaseAccountIds);
+  const activityLoaded = foldersReady && activity.loaded;
   const lastPurchaseMap = activity.lastPurchase;
   const recentSpendMap = activity.recentSpend;
 
@@ -454,15 +476,13 @@ export function FanList({
       arr.sort((a, b) => spendForRow(b) - spendForRow(a));
       return arr;
     }
-    const isUnread = (c: OFChatItem) =>
-      c.hasUnread || (c.unreadMessagesCount ?? 0) > 0;
     if (sortMode === "spend-unread") {
       // Three-tier bucket, then spend desc within each:
       //   2 = unread (blue badge)
       //   1 = read but fan sent last (yellow dot — owe reply)
       //   0 = idle (we sent last, or no messages yet)
       const tierOf = (c: OFChatItem): number => {
-        if (isUnread(c)) return 2;
+        if (isUnreadChat(c)) return 2;
         if (isUnresponded(c)) return 1;
         return 0;
       };
@@ -482,7 +502,7 @@ export function FanList({
     // bucket, ties between unread rows fall through to raw spend.
     const LOW_SCORE_CENTS = 300;
     const halfLifeFor = (c: OFChatItem): number => {
-      if (isUnread(c)) return HALF_LIFE_UNREAD;
+      if (isUnreadChat(c)) return HALF_LIFE_UNREAD;
       if (isUnresponded(c)) return HALF_LIFE_UNRESPONDED;
       return HALF_LIFE_IDLE;
     };
@@ -494,8 +514,8 @@ export function FanList({
       const aScore = hybridScore(aSpend, aLast, halfLifeFor(a));
       const bScore = hybridScore(bSpend, bLast, halfLifeFor(b));
       if (aScore < LOW_SCORE_CENTS && bScore < LOW_SCORE_CENTS) {
-        const ua = isUnread(a) ? 1 : 0;
-        const ub = isUnread(b) ? 1 : 0;
+        const ua = isUnreadChat(a) ? 1 : 0;
+        const ub = isUnreadChat(b) ? 1 : 0;
         if (ua !== ub) return ub - ua;
         // Both unread (or both read) at low value: raw spend desc.
         if (aSpend !== bSpend) return bSpend - aSpend;
@@ -518,34 +538,17 @@ export function FanList({
     settings: focusSettings,
   });
 
-  // Per-fan profile cache observer. `enrichWithUsers` writes each fan's
-  // {name, username, avatar, customNickname} to ["of-user", aid, fid];
-  // here we subscribe to those entries without triggering fetches. The
-  // chats cache only carries the slim ids/lastMessage shape — names come
-  // from this side cache, so refetches / SSE patches on the chats cache
-  // can't make the row revert to "fan {id}". Stable keys per fan. It covers
-  // every loaded Fan, not only the chip's or group's rows, because the Split
-  // Inbox dialog names Fans outside them; observe-only, so it sends nothing.
-  const profileQueries = useQueries({
-    queries: allRows.map((r) => cachedOFUserQuery(r.__accountId ?? "", r.withUser.id)),
-  });
-  const profileVersion = profileQueries.map((q) => q.dataUpdatedAt).join("|");
-  // Row-identity signature: profileQueries[i] is index-aligned with allRows[i],
-  // so if rows reorder or swap a slot for a fan with the same dataUpdatedAt
-  // the memo would otherwise miss the change and serve the old map.
-  const rowSig = allRows.map((r) => `${r.__accountId ?? ""}:${r.withUser.id}`).join("|");
-  const profileMap = useMemo(() => {
-    // The name key holds the presence a full read leaves there (`lastSeen`,
-    // `useOFUser.ts` NAME_FIELDS) for the online rule.
-    const m = new Map<string, OFUserName>();
-    profileQueries.forEach((q, i) => {
-      const r = allRows[i];
-      if (!r || !q.data) return;
-      m.set(`${r.__accountId ?? ""}:${r.withUser.id}`, q.data);
-    });
-    return m;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profileVersion, rowSig]);
+  // Per-fan profile cache, keyed "<accountId>:<fanId>". `enrichWithUsers`
+  // writes each fan's {name, username, avatar, customNickname} to
+  // ["of-user", aid, fid]; one cache listener reads them all, without
+  // triggering fetches. The chats cache only carries the slim ids/lastMessage
+  // shape — names come from this side cache, so refetches / SSE patches on the
+  // chats cache can't make the row revert to "fan {id}". It covers every Fan
+  // (the Split Inbox dialog names Fans outside the chip's or group's rows).
+  // The name key holds the presence a full read leaves there (`lastSeen`,
+  // `useOFUser.ts` NAME_FIELDS) for the online rule. An unchanged Fan keeps
+  // the same object, so only the rows whose name key changed re-render.
+  const profileMap = useOFUserNameMap();
   // Every loaded Fan, for the Split Inbox dialog's reassign list, named as their rows are.
   const splitFans = useMemo(() => (q.data ?? []).map((c) => ({
     id: c.withUser.id, name: fanNameOf(c, profileMap.get(`${c.__accountId ?? ""}:${c.withUser.id}`)),
@@ -557,9 +560,22 @@ export function FanList({
     if (!onlineOnly) return focus.rows;
     return focus.rows.filter((c) => isFanOnline(c, profileMap.get(`${c.__accountId ?? ""}:${c.withUser.id}`), onlineIds));
   }, [onlineOnly, focus.rows, profileMap, onlineIds]);
+  // Warm the top unread threads in the order on screen (sort mode, Focus mode,
+  // Online Fans). A spend sort re-orders as spend and activity land: warm the
+  // order once both have landed, not each step on the way (a refetch does not
+  // hold it again; new Fans' spend does). Online Fans may still re-cut the top
+  // as `lastSeen` fills in, or as `onlineIds` (model scope) arrive after the
+  // toggle; nothing says when either is done, so it is accepted.
+  const sortLoaded = sortMode === "recent" || (spendLoaded && activityLoaded);
+  useUnreadMessagesPrefetch(shownRows, q.fetchedLive && sortLoaded);
   // Online Fans has narrowed a loaded list to nothing: one line says so, in
   // place of the rows and of "End of inbox.".
   const noneOnline = onlineOnly && rows.length > 0 && shownRows.length === 0;
+  // The rows drawn: the first `renderCap` (ROW_RENDER_STEP).
+  const renderedRows = shownRows.length > renderCap ? shownRows.slice(0, renderCap) : shownRows;
+  const hiddenRows = shownRows.length - renderedRows.length;
+  const hiddenRowsRef = useRef(hiddenRows);
+  hiddenRowsRef.current = hiddenRows;
   // The picks still on screen: a pick that left the list is not acted on.
   const pickedRows = useMemo(
     () => (picks ? shownRows.filter((c) => picks.has(chatRowKey(c))) : []),
@@ -689,6 +705,7 @@ export function FanList({
   // folder, scope, or search). A fresh list should get a fresh 200-row budget.
   useEffect(() => {
     setCapRows(SCROLL_CAP_STEP);
+    setRenderCap(ROW_RENDER_STEP);
   }, [active, query, scope.kind, scope.kind === "model" ? scope.accountId : null]);
 
   // Pre-warm the SW image cache for the top rows so the OF signed-URL
@@ -771,6 +788,8 @@ export function FanList({
         if (!entries.some((e) => e.isIntersecting)) return;
         if (!qRef.current.hasMore || qRef.current.isFetchingMore) return;
         if (capped) return;
+        // Loaded rows still wait behind "Show N more": no page past them.
+        if (hiddenRowsRef.current > 0) return;
         // Owe-reply and a group have their own bounded walk and intentionally
         // pre-scan without waiting for user scroll. Search also bypasses the
         // gate — typing a name implies "keep scanning for matches." Default
@@ -822,8 +841,21 @@ export function FanList({
     return () => cancelAnimationFrame(id);
   }, [rows.length, q.hasMore, q.isFetchingMore, q.isSuccess, isFromSeed, capped, fillExhausted, loadMore]);
 
-  // The rows' time column is measured from this render.
-  const now = Date.now();
+  // The rows' time column is measured from this render, to the minute: the
+  // column and the badges read no finer, and a clock that moved every render
+  // would re-render every memoized row on every render.
+  const now = Math.floor(Date.now() / 60_000) * 60_000;
+  // All Models: one {color, name} per Creator, the same object every render.
+  const accountChips = useMemo(() => {
+    const m = new Map<string, { color: string; name: string }>();
+    for (const [id, acc] of accountById) m.set(id, { color: acc.color || "#666", name: acc.nickname || id });
+    return m;
+  }, [accountById]);
+  const togglePick = useCallback((c: OFChatItem) => setPicks((prev) => {
+    const next = new Set(prev);
+    if (!next.delete(chatRowKey(c))) next.add(chatRowKey(c));
+    return next;
+  }), []);
 
   // "Load more conversations" ends the list while more chats exist and
   // nothing is loading. At the cap a click extends the cap by a step;
@@ -929,9 +961,8 @@ export function FanList({
          *  and skeletons would just flash in front of them. */}
         {!q.isError && rows.length === 0 && !q.isFetched && !isFromSeed && <FanListSkeleton />}
         {focus.newCount > 0 && <FocusModeBanner count={focus.newCount} onClick={focus.catchUp} />}
-        {shownRows.map((c) => {
+        {renderedRows.map((c) => {
           const accountId = c.__accountId ?? (scope.kind === "model" ? scope.accountId : "");
-          const acc = accountById.get(accountId);
           const key = `${accountId}:${c.withUser.id}`;
           const spend = spendMap.get(key);
           return (
@@ -951,28 +982,26 @@ export function FanList({
               selected={selected?.accountId === accountId && selected?.fanId === c.withUser.id}
               oweDot={showOweDots && lastMessageFromFan(c, accountId)}
               account={scope.kind === "all"
-                ? { color: acc?.color || "#666", name: acc?.nickname || accountId }
+                ? accountChips.get(accountId) ?? { color: "#666", name: accountId }
                 : null}
               now={now}
-              onSelect={onSelect}
+              onSelect={selectRow}
               schedulePrefetch={scheduleRowPrefetch}
               cancelPrefetch={cancelRowPrefetch}
               prefetchNow={prefetchRowNow}
               selectedRowRef={revealSelectedRow}
               picked={picks?.has(chatRowKey(c))}
-              onTogglePick={picks ? () => setPicks((prev) => {
-                const next = new Set(prev);
-                if (!next.delete(chatRowKey(c))) next.add(chatRowKey(c));
-                return next;
-              }) : undefined}
+              onTogglePick={picks ? togglePick : undefined}
             />
           );
         })}
         <div
           ref={sentinelRef}
-          className={cn(!loadMoreClick && cn(MP.ours.FanList.sentinel, "flex items-center justify-center text-fg-dim text-center"))}
+          className={cn(!loadMoreClick && hiddenRows === 0 && cn(MP.ours.FanList.sentinel, "flex items-center justify-center text-fg-dim text-center"))}
         >
-          {loadMoreClick
+          {hiddenRows > 0
+            ? <ShowMoreRows count={hiddenRows} onClick={() => setRenderCap((n) => n + ROW_RENDER_STEP)} />
+            : loadMoreClick
             ? <LoadMoreConversations loaded={allRows.length} onClick={loadMoreClick} />
             : oweReplyActive
             ? (q.isFetchingMore

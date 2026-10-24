@@ -126,5 +126,9 @@ export function fmtTimeOnly(iso: string | null): string {
 
 /** "7:02 pm": Infloww's and OF's clock time (numeric hour, lower-case am/pm). */
 export function clockTime(d: Date): string {
-  return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }).toLowerCase();
+  return CLOCK.format(d).toLowerCase();
 }
+// One formatter for every call: `toLocaleTimeString` with options builds a new
+// Intl.DateTimeFormat each time, the top self-time frame of a Fan List render
+// under a DM flood (measured). Same output.
+const CLOCK = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" });

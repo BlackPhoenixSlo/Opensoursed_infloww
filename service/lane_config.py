@@ -56,6 +56,19 @@ settings you cannot change, so this writes alongside the SQLite DB instead:
 that is a real docker volume and the one directory in the container that
 actually survives. `LANE_CONFIG_PATH` overrides if that ever stops being true.
 
+SWITCHES. A few knobs are on/off, not ceilings: `resolve_switch()` registers
+one. It is the same store, precedence and panel row, but its legal values are
+0 and 1 (an env var may also say on/off/true/false), and the floor of 1 does
+not apply to it. A switch is read where it is used, every time, so a value
+saved from the panel applies at once (it records itself live, so it never
+reads as pending a restart). First one: `AUTOMATION_RELEASE_SLOT_ON_HOLD`
+(run_slot, ADR 0025).
+
+READ AT USE. A ceiling its owner reads where it is used, every time (not once
+at import), registers through `resolve_live()`: a value saved from the panel
+applies at its next use, so the panel reports it live from the save, never
+pending a restart (ADR 0025: the release floor, the per-account DM rate).
+
 A LEAF, like `admission`. It imports nothing from the relay, because the lanes
 it feeds are constructed at MODULE IMPORT — long before the event loop exists
 or `db_init()` has run. That is also why every read here is sync: there is no
@@ -109,6 +122,8 @@ _stored_cache: dict[str, int] | None = None
 # nothing else declares one.
 _defaults: dict[str, int] = {}   # env var -> the default its owner passed
 _live: dict[str, int] = {}       # env var -> what this process is enforcing
+_switches: set[str] = set()      # env vars registered by resolve_switch (0/1)
+_read_at_use: set[str] = set()   # env vars registered by resolve_live (read every use)
 
 
 def _clamp(value: Any) -> int:
@@ -121,6 +136,21 @@ def _clamp(value: Any) -> int:
     set, and a silent clamp would be a cap wearing a text box's clothes.
     """
     return max(1, int(value))
+
+
+_SWITCH_WORDS = {"0": 0, "1": 1, "off": 0, "on": 1, "false": 0, "true": 1, "no": 0, "yes": 1}
+
+
+def _legal(name: str, value: Any) -> int:
+    """`_clamp` for a ceiling; 0 or 1 for a switch (anything else is refused)."""
+    if name not in _switches:
+        return _clamp(value)
+    if isinstance(value, bool):
+        return int(value)
+    v = _SWITCH_WORDS.get(str(value).strip().lower())
+    if v is None:
+        raise ValueError(f"{name} is a switch: 0 (off) or 1 (on), got {value!r}")
+    return v
 
 
 def _load() -> dict[str, int]:
@@ -141,7 +171,10 @@ def _load() -> dict[str, int]:
     out: dict[str, int] = {}
     for key, value in raw.items():
         try:
-            out[key] = _clamp(value)
+            # The raw integer: `_current` applies the knob's rule (`_legal`),
+            # which needs to know whether the key is a switch, and switches
+            # register after the first load.
+            out[key] = int(value)
         except (TypeError, ValueError):
             log.warning("lane_config: %s=%r is not an int — ignoring", key, value)
     return out
@@ -174,7 +207,7 @@ def _from_env(env_var: str) -> int | None:
     if raw is None or not str(raw).strip():
         return None
     try:
-        return _clamp(raw)
+        return _legal(env_var, raw)
     except (TypeError, ValueError):
         log.warning("%s=%r is not an int — falling through to stored/default",
                     env_var, raw)
@@ -189,8 +222,18 @@ def _current(env_var: str, default: int) -> tuple[int, str]:
         return from_env, "env"
     from_store = stored().get(env_var)
     if from_store is not None:
-        return _clamp(from_store), "stored"
-    return _clamp(default), "default"
+        try:
+            return _legal(env_var, from_store), "stored"
+        except ValueError:
+            log.warning("lane_config: stored %s=%r is not legal — using the default", env_var, from_store)
+    return _legal(env_var, default), "default"
+
+
+def overridden(env_var: str) -> bool:
+    """Is this knob set by the env or a stored panel value, rather than left
+    to its code default? A ceiling the code sizes itself (the run slots,
+    ADR 0025) sizes only while nobody has set it."""
+    return _from_env(env_var) is not None or env_var in stored()
 
 
 def resolve(env_var: str, default: int) -> int:
@@ -202,8 +245,27 @@ def resolve(env_var: str, default: int) -> int:
     re-reading, a test) recompute freely without disturbing that.
     """
     value, _ = _current(env_var, default)
-    _defaults[env_var] = _clamp(default)
+    _defaults[env_var] = _legal(env_var, default)
     _live.setdefault(env_var, value)
+    return value
+
+
+def resolve_switch(env_var: str, default: bool) -> bool:
+    """An on/off knob (see SWITCHES): read it now, as the process will act on
+    it now. Registers it with the panel and records it live."""
+    _switches.add(env_var)
+    value, _ = _current(env_var, int(default))
+    _defaults[env_var] = int(bool(default))
+    _live[env_var] = value
+    return bool(value)
+
+
+def resolve_live(env_var: str, default: int) -> int:
+    """A ceiling read where it is used, every time (see READ AT USE): resolve
+    it now and register it, so the panel reports what is saved as what runs."""
+    value = resolve(env_var, default)
+    _read_at_use.add(env_var)
+    _live[env_var] = value
     return value
 
 
@@ -216,7 +278,7 @@ def record_live(env_var: str, value: int) -> None:
     always the number resolved. Without this the panel would report a pending
     change that will never happen, which is the specific lie it exists to avoid.
     """
-    _live[env_var] = _clamp(value)
+    _live[env_var] = _legal(env_var, value)
 
 
 def knob_names() -> frozenset[str]:
@@ -249,8 +311,10 @@ def set_many(values: dict[str, Any]) -> dict[str, int]:
             clean[name] = None
             continue
         try:
-            clean[name] = _clamp(value)
-        except (TypeError, ValueError):
+            clean[name] = _legal(name, value)
+        except (TypeError, ValueError) as e:
+            if name in _switches:
+                raise ValueError(str(e))
             raise ValueError(f"{name} must be an integer, got {value!r}")
 
     global _stored_cache
@@ -367,7 +431,9 @@ def describe() -> list[dict[str, Any]]:
     for env_var in sorted(_defaults):
         default = _defaults[env_var]
         value, src = _current(env_var, default)
-        live = _live.get(env_var)
+        # A switch, or a ceiling read at use, is read where it is used, every
+        # time: what is saved is what the next read acts on, never pending a restart.
+        live = value if env_var in _switches or env_var in _read_at_use else _live.get(env_var)
         rows.append({
             "name": env_var,
             "value": value,
@@ -377,6 +443,7 @@ def describe() -> list[dict[str, Any]]:
             "env_locked": src == "env",
             "live": live,
             "pending": live is not None and live != value,
+            "switch": env_var in _switches,
         })
     return rows
 

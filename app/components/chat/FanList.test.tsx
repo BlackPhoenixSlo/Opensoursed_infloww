@@ -19,8 +19,9 @@ import { relay, type AccountMeta, type OFChatItem } from "@/lib/relay";
 import { renderWithProviders } from "@/test-utils";
 import { useChatMessages } from "@/hooks/useChatMessages";
 import { useInboxRealtime } from "@/hooks/useInboxRealtime";
+import { PREFETCH_IDLE_TIMEOUT_MS, PREFETCH_QUIET_MS } from "@/hooks/useUnreadMessagesPrefetch";
 import { emitEvent, observerStub, relayGet, relayPost, resetComposerHarness, routeRelay, tooltipOf } from "./composerTestHarness";
-import { FanList, type FanListSelection } from "./FanList";
+import { FanList, ROW_RENDER_STEP, type FanListSelection } from "./FanList";
 
 vi.mock("@/lib/relay", async (orig) =>
   (await import("./composerTestHarness")).mockRelayModule(await orig()));
@@ -28,6 +29,21 @@ vi.mock("@/lib/perfLog");
 // The realtime bus: a case emits an event the way the SSE stream delivers it.
 vi.mock("@/lib/events", async () => (await import("./composerTestHarness")).mockEventsModule());
 vi.mock("@/hooks/useDeferredMount", () => ({ useDeferredMount: () => true }));
+// Each FanRow render reads its chat's draft once: counting the reads by Fan
+// counts the row renders, for the case that a live message re-renders only
+// its own row.
+const rowRenders = vi.hoisted(() => new Map<string, number>());
+vi.mock("@/lib/chatDrafts", async (orig) => {
+  const real = await orig<typeof import("@/lib/chatDrafts")>();
+  return {
+    ...real,
+    useChatDraftText: (...args: Parameters<typeof real.useChatDraftText>) => {
+      const fan = String(args[1]);
+      rowRenders.set(fan, (rowRenders.get(fan) ?? 0) + 1);
+      return real.useChatDraftText(...args);
+    },
+  };
+});
 vi.mock("@/contexts/ScopeContext", () => ({
   useScope: () => ({
     scope: scopeKind === "all" ? { kind: "all" } : { kind: "model", accountId: scopeCreator },
@@ -142,7 +158,13 @@ function serveTransactions(rows: Array<{ fan: (typeof FANS)[number]; description
 }
 
 function renderFanList(props: Partial<Parameters<typeof FanList>[0]> = {}) {
-  return renderWithProviders(<FanList selected={null} onSelect={vi.fn()} {...props} />);
+  // The client's own gcTime, not the kit's 0: the rows read the Fans' name
+  // keys through one cache listener (`useOFUserNameMap`), not an observer per
+  // row, so a name key lives by gcTime alone, as in the app (7 days).
+  return renderWithProviders(
+    <FanList selected={null} onSelect={vi.fn()} {...props} />,
+    new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+  );
 }
 
 /** The realtime hook as the app shell mounts it, beside the Fan List. */
@@ -247,7 +269,7 @@ const PRE_RESTYLE_URLS = [
   "/api/of/v2/users/list?ids=200000001&ids=200000002&ids=200000003&view=m",
   "/api/of/v2/users/me",
 ];
-/** The thread warm useChatList gives the top unread chats (Fans One and Two). */
+/** The thread warm the Fan List gives the top unread chats (Fans One and Two). */
 const UNREAD_WARM_URLS = [
   "/api/of/v2/chats/200000001/messages?limit=30&order=desc",
   "/api/of/v2/chats/200000002/messages?limit=30&order=desc",
@@ -277,6 +299,27 @@ afterEach(() => {
 });
 
 describe("FanList", () => {
+  it("renders at most ROW_RENDER_STEP rows, with a footer that shows the rest a step at a time", async () => {
+    const many = Array.from({ length: ROW_RENDER_STEP + 50 }, (_, i) => {
+      const fan = { id: 300000000 + i, name: `Crowd Fan ${i}`, username: `crowdfan${i}`, avatar: null };
+      return {
+        withUser: fan,
+        lastMessage: { id: 900000000 + i, text: `hi ${i}`, fromUser: fan, createdAt: ago(10 + i) },
+        hasUnread: false,
+        unreadMessagesCount: 0,
+      } as OFChatItem;
+    });
+    serveChats(many);
+    renderFanList();
+
+    const more = await screen.findByRole("button", { name: "Show 50 more" });
+    const rows = () => document.querySelectorAll("[data-chat-row]").length;
+    expect(rows()).toBe(ROW_RENDER_STEP);
+    await userEvent.setup().click(more);
+    expect(rows()).toBe(ROW_RENDER_STEP + 50);
+    expect(screen.queryByRole("button", { name: /^Show \d+ more$/ })).toBeNull();
+  });
+
   it("marks the selected Fan's row aria-current, and no other row", async () => {
     serveChats(CHATS);
     const selected: FanListSelection = { accountId: ACCOUNT_ID, fanId: FANS[1].id, chat: CHATS[1] };
@@ -912,6 +955,104 @@ describe("FanList", () => {
     await vi.waitFor(() => expect(requested().filter((path) => path.includes(fanIds[2]) && !path.includes(fanIds[0])).length).toBeGreaterThan(0));
   });
 
+  /** `n` unread Fans named `${name} 1..n`, ids from `firstId`, newest first,
+   *  served as the chat list (`restrictFirst`: the first is a Fan we restricted). */
+  function serveUnreadFans(name: string, firstId: number, n: number, { restrictFirst = false } = {}) {
+    const fans = Array.from({ length: n }, (_, i) => ({
+      id: firstId + i, name: `${name} ${i + 1}`, username: `${name.replace(/ /g, "").toLowerCase()}${i + 1}`,
+    }));
+    serveChats(fans.map((f, i) => ({
+      withUser: { ...f, avatar: null, isRestricted: restrictFirst && i === 0 },
+      lastMessage: { id: 600_000_000 + f.id, text: `Hello from ${f.name}`, fromUser: f, createdAt: ago(10 + i) },
+      hasUnread: true,
+      unreadMessagesCount: 1,
+    } as OFChatItem)));
+    return fans;
+  }
+  /** A Fan's spend-batch entry. */
+  const spend = (cents: number) => ({ spend_cents: cents, last_purchase_at: null, subscription_status: "active", expired_at: null });
+  /** The Fans whose threads have been read, in order. */
+  const warmed = () => relayGet.mock.calls.map(([path]) => /\/chats\/(\d+)\/messages/.exec(path)?.[1]).filter(Boolean);
+
+  it("warms the top unread threads in the order the sort shows, skipping a Fan we restricted", async () => {
+    // Nine unread Fans, newest first; the first is restricted. Sorted by spend,
+    // the oldest leads, past the reach of the warm in the server's order.
+    localStorage.setItem("chatterly:chat-sort-mode", "spend");
+    const fans = serveUnreadFans("Sorted Fan", 200000101, 9, { restrictFirst: true });
+    routeRelay(`/admin/fans/${ACCOUNT_ID}/spend-batch`, () => ({ spend: { [fans[8].id]: spend(9_900) } }));
+    renderFanList();
+    await rowOf("Sorted Fan 9");
+
+    await vi.waitFor(() => expect(warmed()).toContain(String(fans[8].id)));
+    expect(warmed()).not.toContain(String(fans[0].id));
+  });
+
+  it("a spend sort warms nothing until spend has landed, then only the order it settles on", async () => {
+    // Five unread Fans, newest first; spend puts the two oldest on top.
+    localStorage.setItem("chatterly:chat-sort-mode", "spend");
+    const fans = serveUnreadFans("Spender", 200000201, 5);
+    let answer: (body: unknown) => void = () => {};
+    const held = new Promise((resolve) => { answer = resolve; });
+    routeRelay(`/admin/fans/${ACCOUNT_ID}/spend-batch`, () => held);
+    renderFanList();
+    await rowOf("Spender 5");
+    // Fan activity has been asked for; only spend is held.
+    await vi.waitFor(() => expect(relayGet.mock.calls.some(([path]) => path.includes("/payouts/transactions"))).toBe(true));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(warmed()).toEqual([]);
+
+    answer({ spend: { [fans[4].id]: spend(9_900), [fans[3].id]: spend(5_000) } });
+    await vi.waitFor(() => expect(warmed()).toHaveLength(3));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(warmed()).toEqual([fans[4], fans[3], fans[0]].map((f) => String(f.id)));
+  });
+
+  it("a spend re-key does not abort an idle tier's warm in flight, and an activity refetch does not hold the next", async () => {
+    // The quiet window and the idle callback (jsdom has none: its timeout) on
+    // a fake clock that also runs with real time, so finds work.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    // Five unread Fans; spend puts the two oldest on top, so the idle tier is Spenders 2 and 3.
+    localStorage.setItem("chatterly:chat-sort-mode", "spend");
+    const fans = serveUnreadFans("Spender", 200000301, 5);
+    // The first spend read answers; a re-keyed one is held until answered.
+    const spendBody = { spend: { [fans[4].id]: spend(9_900), [fans[3].id]: spend(5_000) } };
+    let spendReads = 0;
+    let answerSpend = (_body: unknown) => {};
+    routeRelay(`/admin/fans/${ACCOUNT_ID}/spend-batch`, () => (spendReads++ === 0
+      ? spendBody
+      : new Promise((r) => { answerSpend = r; })));
+    // Fan activity: the first read answers, a refetch is held.
+    let activityReads = 0;
+    routeRelay("/api/of/v2/payouts/transactions", () => (activityReads++ === 0
+      ? { list: [], hasMore: false }
+      : new Promise(() => {})));
+    // The idle tier's first read (Spender 2's) is held until it lands.
+    let land = (_body: unknown) => {};
+    routeRelay(`/chats/${fans[1].id}/messages`, () => new Promise((r) => { land = r; }));
+    const { queryClient } = renderWithProviders(withRealtime());
+    await rowOf("Spender 5");
+    await vi.waitFor(() => expect(warmed()).toHaveLength(3));
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(PREFETCH_QUIET_MS + PREFETCH_IDLE_TIMEOUT_MS + 100); });
+    await vi.waitFor(() => expect(warmed()).toContain(String(fans[1].id)));
+    const warm = relayGet.mock.calls.find(([path]) => path.includes(`/chats/${fans[1].id}/messages`))?.[2] as AbortSignal;
+
+    // A new Fan writes: the rows grow, so spend re-keys and reads again.
+    fanWrites(FAN_FOUR, 800000040, "Hello from Fixture Fan Four", new Date().toISOString());
+    await vi.waitFor(() => expect(spendReads).toBe(2));
+    await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+    expect(warm.aborted).toBe(false);
+    await act(async () => { answerSpend(spendBody); });
+
+    // A purchase elsewhere refetches Fan activity; Spender 2's read lands
+    // while that refetch is still out, and the tier goes on to Spender 3.
+    void queryClient.invalidateQueries({ queryKey: ["last-purchases"] });
+    await vi.waitFor(() => expect(activityReads).toBe(2));
+    await act(async () => { land({ list: [], hasMore: false }); });
+    await vi.waitFor(() => expect(warmed()).toContain(String(fans[2].id)));
+    expect(warm.aborted).toBe(false);
+  });
+
   it("pressing a row warms its thread over what is cached, on the background lane: a paged history stays", async () => {
     serveChats(CHATS);
     const fan = FANS[2];
@@ -1490,5 +1631,89 @@ describe("FanList", () => {
     const focus = screen.getByRole("checkbox", { name: "Focus mode" });
     expect(focus).toBeDisabled();
     expect(focus).toHaveAccessibleDescription("Only in All · Newest first");
+  });
+
+  it("a live message re-renders its own row only, not every row in the list", async () => {
+    serveChats(CHATS);
+    renderWithProviders(withRealtime(), new QueryClient({ defaultOptions: { queries: { retry: false } } }));
+    await rowOf("Fixture Fan Three");
+    // Let the list settle (names, spend, activity), then count from zero.
+    await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+    rowRenders.clear();
+
+    fanWrites(FANS[2], 800000020, "Only my row moves", new Date().toISOString());
+
+    expect(within(await rowOf("Fixture Fan Three")).getByText("Only my row moves")).toBeInTheDocument();
+    expect(rowRenders.get(String(FANS[2].id))).toBeGreaterThan(0);
+    expect(rowRenders.get(String(FANS[0].id)) ?? 0).toBe(0);
+    expect(rowRenders.get(String(FANS[1].id)) ?? 0).toBe(0);
+  });
+
+  /* The Fan List shows the relay's local seed (`useRecentChatsLocal`) while OF's
+   * chat list read is in flight; a read that is slow, or never answers (a slop
+   * stack holds every OF read), left the seed rows frozen through a burst of
+   * live messages until a reload. */
+  describe("live messages while OF's chat list is still loading (the local seed on screen)", () => {
+    const seedRow = (c: OFChatItem, accountId = ACCOUNT_ID) => ({ ...c, __accountId: accountId });
+    function serveSeedOnly(list: OFChatItem[]) {
+      routeRelay("/api/of/v2/chats?", () => new Promise(() => {}));
+      routeRelay("/admin/chats/recent", () => ({ list, source: "local-db" }));
+    }
+    /** The named Fan's row: preview, place and unread count after each
+     *  message (React Query notifies its observers on a later tick). */
+    const expectRow = (name: string, preview: string, unread: number) => vi.waitFor(() => {
+      const row = screen.getByRole("button", { name: new RegExp(name) });
+      expect(within(row).getByText(preview)).toBeInTheDocument();
+      expect(within(row).getByRole("img", { name: `Unread (${unread})` })).toBeInTheDocument();
+      expect(rowOrder()[0]).toBe(name);
+    });
+
+    it("All Models: a burst from one Fan and from several Fans moves each row to the top, with its text and unread", async () => {
+      scopeKind = "all";
+      ACCOUNTS = [CREATOR_ACCOUNT, OTHER_ACCOUNT];
+      serveSeedOnly(CHATS.map((c) => seedRow(c)));
+      renderWithProviders(withRealtime(), new QueryClient({ defaultOptions: { queries: { retry: false } } }));
+      await rowOf("Fixture Fan Three");
+      expect(rowOrder()).toEqual(["Fixture Fan One", "Fixture Fan Two", "Fixture Fan Three"]);
+
+      const unread = new Map(CHATS.map((c) => [c.withUser.id, c.unreadMessagesCount ?? 0]));
+      const t0 = Date.now();
+      for (let i = 0; i < 30; i++) {
+        const fan = FANS[[2, 2, 2, 1, 0][i % 5]];
+        fanWrites(fan, 800000500 + i, `burst ${i}`, new Date(t0 + i).toISOString());
+        unread.set(fan.id, (unread.get(fan.id) ?? 0) + 1);
+        await expectRow(fan.name, `burst ${i}`, unread.get(fan.id)!);
+      }
+      // The same message again (a replayed frame) changes nothing.
+      fanWrites(FANS[0], 800000529, "burst 29", new Date(t0 + 29).toISOString());
+      await expectRow(FANS[0].name, "burst 29", unread.get(FANS[0].id)!);
+
+      // A Fan the seed does not hold, of the other Creator: a new row on top.
+      act(() => emitEvent("api2_chat_message", {
+        __account_id: OTHER_ACCOUNT.id,
+        api2_chat_message: { id: 800000600, text: "first hello", fromUser: { id: FAN_FIVE.id, name: FAN_FIVE.name }, createdAt: new Date(t0 + 40).toISOString() },
+      }));
+      await expectRow(FAN_FIVE.name, "first hello", 1);
+      expect(rowOrder()).toEqual(["Fixture Fan Five", "Fixture Fan One", "Fixture Fan Two", "Fixture Fan Three"]);
+    });
+
+    it("one Creator: its Fans' messages move its rows; another Creator's Fan stays out", async () => {
+      ACCOUNTS = [CREATOR_ACCOUNT, OTHER_ACCOUNT];
+      serveSeedOnly(CHATS.map((c) => seedRow(c)));
+      renderWithProviders(withRealtime(), new QueryClient({ defaultOptions: { queries: { retry: false } } }));
+      await rowOf("Fixture Fan Three");
+
+      fanWrites(FANS[2], 800000700, "still here", new Date().toISOString());
+      await expectRow(FANS[2].name, "still here", 1);
+      act(() => emitEvent("api2_chat_message", {
+        __account_id: OTHER_ACCOUNT.id,
+        api2_chat_message: { id: 800000701, text: "wrong inbox", fromUser: { id: FAN_FIVE.id, name: FAN_FIVE.name }, createdAt: new Date().toISOString() },
+      }));
+      // Settle on a later message of this Creator's, then look for the other's.
+      fanWrites(FANS[1], 800000702, "and me", new Date(Date.now() + 1).toISOString());
+      await expectRow(FANS[1].name, "and me", 2);
+      expect(screen.queryByText("wrong inbox")).not.toBeInTheDocument();
+      expect(rowOrder()).toEqual(["Fixture Fan Two", "Fixture Fan Three", "Fixture Fan One"]);
+    });
   });
 });

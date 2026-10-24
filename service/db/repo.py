@@ -67,59 +67,46 @@ async def ensure_user_account_link(user_id: str, account_id: str) -> None:
 
 # ── Event inbox ──────────────────────────────────────────────────────
 
-async def insert_event(
-    *,
-    account_id: str | None,
-    source: str,
-    event_type: str,
-    payload: dict[str, Any],
-    provider_event_id: str | None = None,
-) -> int | None:
-    """Persist one raw event. Idempotent on (source, provider_event_id)
-    when that pair is set — re-deliveries return the existing row's id
-    instead of creating a duplicate.
+async def insert_events(rows: list[dict[str, Any]]) -> None:
+    """Persist raw events in ONE transaction, in list order. Each row carries
+    `account_id`, `source`, `event_type`, `payload` and `provider_event_id`.
 
-    Returns the row's id, or None if the write failed (always logged).
+    Idempotent on (source, provider_event_id) when that pair is set: a
+    re-delivery is skipped. The conflict target names the partial index's
+    WHERE, without which SQLite refuses the statement outright ("ON CONFLICT
+    clause does not match any PRIMARY KEY or UNIQUE constraint") — every row
+    that carried a provider id used to fail that way.
 
-    Fire-and-forget intended: callers do NOT await the result on the WS
-    pump's hot path; they await on `asyncio.create_task(insert_event(...))`
-    so a slow SQL write can never stall event broadcast.
+    RAISES on failure, so the caller can tell a bad batch from a good one and
+    retry its rows one at a time (events._persist_batch).
     """
-    try:
-        async with get_session() as s:
-            # Ensure parent accounts row exists when account_id is set.
-            # An account can be set up on disk (sessions/accounts/<id>/) +
-            # bound to a proxy in proxies.json without ever being inserted
-            # into the accounts table — startup events for such an account
-            # would FK-violate. Idempotent ON CONFLICT no-op; same pattern
-            # used by the wall_media writer at server.py:4392.
-            if account_id:
-                await s.execute(
-                    sqlite_insert(Account)
-                    .values(id=account_id, is_active_default=False)
-                    .on_conflict_do_nothing(index_elements=["id"])
-                )
-            # SQLite path uses ON CONFLICT for the partial unique index.
-            # We don't have a "RETURNING id" until SQLAlchemy 2.x core
-            # supports it on SQLite reliably; we accept a follow-up SELECT
-            # on the conflict path because dedup is rare.
-            stmt = sqlite_insert(EventInbox).values(
-                account_id=account_id,
-                source=source,
-                provider_event_id=provider_event_id,
-                event_type=event_type,
-                payload_json=dump_capped(payload),
+    if not rows:
+        return
+    values = [{
+        "account_id": r["account_id"],
+        "source": r["source"],
+        "provider_event_id": r["provider_event_id"],
+        "event_type": r["event_type"],
+        "payload_json": dump_capped(r["payload"]),
+    } for r in rows]
+    account_ids = sorted({r["account_id"] for r in rows if r["account_id"]})
+    async with get_session() as s:
+        # Ensure each parent accounts row exists. An account can be set up on
+        # disk (sessions/accounts/<id>/) + bound to a proxy in proxies.json
+        # without ever being inserted into the accounts table — its events
+        # would FK-violate. Idempotent ON CONFLICT no-op.
+        if account_ids:
+            await s.execute(
+                sqlite_insert(Account).on_conflict_do_nothing(index_elements=["id"]),
+                [{"id": a, "is_active_default": False} for a in account_ids],
             )
-            if provider_event_id:
-                # Skip insert when a duplicate hits the partial unique idx.
-                stmt = stmt.on_conflict_do_nothing(
-                    index_elements=["source", "provider_event_id"],
-                )
-            result = await s.execute(stmt)
-            return result.lastrowid
-    except Exception:
-        log.exception("insert_event failed (source=%s type=%s)", source, event_type)
-        return None
+        await s.execute(
+            sqlite_insert(EventInbox).on_conflict_do_nothing(
+                index_elements=["source", "provider_event_id"],
+                index_where=EventInbox.provider_event_id.isnot(None),
+            ),
+            values,
+        )
 
 
 async def mark_event_processed(

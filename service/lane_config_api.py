@@ -341,6 +341,7 @@ _PAGE = r"""<!doctype html>
            font-size: 11px; margin-left: 6px; }
   .b-env { background: #3d1f24; color: #ff9daa; }
   .b-pending { background: #163a2b; color: #6fe0ae; }
+  .b-switch { background: #1d2a3d; color: #9dc4ff; }
   input[type=number] { width: 76px; background: #0b0e12; color: #dde3ea;
         border: 1px solid #2c3540; border-radius: 6px; padding: 5px 8px; }
   input:disabled { opacity: .4; }
@@ -415,8 +416,9 @@ itself&hellip;</p>
 
 <h2>Suggested settings &mdash; Hostinger</h2>
 <p class="note">The <b>default</b> column is each ceiling's built-in value,
-which is what the 2 vCPU Hostinger box was sized against &mdash; it is read from
-the running process, not restated here, so it cannot drift from the table above.
+which is sized for 20 accounts on a 4 vCPU box (the executor's default grows
+with the accounts on disk) &mdash; it is read from the running process, not
+restated here, so it cannot drift from the table above.
 <b>4 core</b> is <code>SCALING.md</code>'s target for up to 50 accounts: an
 <b>untested hypothesis</b>, sized against measurements that were read off a
 different machine. Neither column is a recommendation for whatever box you are
@@ -449,13 +451,12 @@ const TARGET_4CORE = {
   HEALTH_ALL_CONCURRENCY:       [16, "must exceed how many accounts can be slow AT ONCE, not how fast a healthy probe is"],
   VAULT_MEDIA_CONCURRENCY:      [10, "async-parked and cheap; scales mildly with accounts"],
   STORYBOARD_BUILD_CONCURRENCY: [3,  "the one CPU-bound lane (ffmpeg) - leave a core to schedule everything else"],
-  RELAY_EXECUTOR_THREADS:       [192, "every OF call is sync and shares this one pool"],
 };
 // Not knobs — the container's own ceilings, shown alongside so the two columns
 // describe a whole machine rather than half of one.
 const SUGGEST_CONTAINER = [
-  ["cpus",      "1.2", "3.0", "a limit above the host's core count is not a raise"],
-  ["mem_limit", "2g",  "4g",  "exceeding this is an OOM-kill, not a slowdown - a backstop, not a reservation"],
+  ["cpus",      "3.0", "3.0", "a limit above the host's core count is not a raise"],
+  ["mem_limit", "3g",  "4g",  "exceeding this is an OOM-kill, not a slowdown - a backstop, not a reservation"],
 ];
 
 let last = null;
@@ -498,14 +499,16 @@ async function load(keepErr) {
   const rows = j.knobs.map(k => {
     const badges =
       (k.env_locked ? '<span class="badge b-env" title="an environment variable pins this — the panel cannot change it">env-pinned</span>' : "") +
-      (k.pending ? '<span class="badge b-pending">on restart</span>' : "");
+      (k.pending ? '<span class="badge b-pending">on restart</span>' : "") +
+      (k.switch ? '<span class="badge b-switch" title="a switch: 1 = on, 0 = off; applies at once">on/off</span>' : "");
     const nid = "in-" + k.name;
     return `<tr>
       <td class="name">${esc(k.name)}${badges}</td>
       <td>${k.live ?? '<span class="muted">–</span>'}</td>
       <td>${esc(k.value)}</td>
       <td class="muted">${esc(k.default)}</td>
-      <td><input type="number" min="1" id="${nid}" value="${esc(k.value)}"
+      <td><input type="number" min="${k.switch ? 0 : 1}" ${k.switch ? 'max="1" data-switch="1"' : ""}
+           id="${nid}" value="${esc(k.value)}"
            data-server="${esc(k.value)}" ${k.env_locked ? "disabled" : ""}></td>
       <td><button onclick="save('${esc(k.name)}')" ${k.env_locked ? "disabled" : ""}>Save</button>
           ${k.stored !== null && !k.env_locked
@@ -753,8 +756,11 @@ async function post(values) {
 function save(name) {
   // Number(), not parseInt(): a number input legally holds "1e2" and "12.5",
   // and parseInt would silently save 1 and 12 instead of erroring.
-  const v = Number(document.getElementById("in-" + name).value);
-  if (!Number.isInteger(v) || v < 1) { showErr(name + " must be an integer >= 1"); return; }
+  const el = document.getElementById("in-" + name);
+  const v = Number(el.value);
+  if (el.dataset.switch) {
+    if (v !== 0 && v !== 1) { showErr(name + " is a switch: 0 (off) or 1 (on)"); return; }
+  } else if (!Number.isInteger(v) || v < 1) { showErr(name + " must be an integer >= 1"); return; }
   post({ [name]: v });
 }
 function reset(name) { post({ [name]: null }); }

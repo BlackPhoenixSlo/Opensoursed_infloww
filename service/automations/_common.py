@@ -26,6 +26,8 @@ from datetime import datetime, timedelta
 from typing import NamedTuple
 
 import llm_client
+import dm_rate
+import run_slot
 from automation_registry import LEGACY_KINDS
 from tip_ledger import TIP_LEDGER_PREFIX
 from db.engine import get_session
@@ -38,6 +40,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 # storage does not belong in here. apply_typo_throttle below is a consumer like
 # any other; this is NOT a re-export, so importers go to the leaf directly.
 from . import _voice
+from .rhythm import INLINE_MAX_S
 from .fan_state import fan_state, put_fan_state
 
 log = logging.getLogger("of-relay.automation.common")
@@ -233,6 +236,10 @@ async def send_dropping_bad_media(
     _audiences.audit_send_purpose(send_purpose, where="send_dropping_bad_media")
 
     async def _post(media: list):
+        # The account's DM rate (OF_DM_PER_MIN, dm_rate): a plain wait, the
+        # slot kept; a caller that already took this DM's turn (where it
+        # handles SlotLost) passes at once.
+        await dm_rate.turn(getattr(client, "account_id", None))
         return await asyncio.to_thread(
             lambda: client.send_message(fan_id, text, media_files=media,
                                         **_price_kw(media, price_cents))
@@ -1737,11 +1744,14 @@ async def hold_with_typing(account_id: str, fan_id: int, seconds: float,
     """Wait `seconds` before sending a bubble, and decide what the fan sees while
     we do.
 
-    ⚠️ INVARIANT: the total time slept is ALWAYS `seconds`. The three optional
-    arguments only redistribute WHEN the typing frame is emitted inside that same
-    total — they never lengthen or shorten the hold. Every guard in the tree reads
-    one number and must keep reading the same one: `rhythm.INLINE_MAX_S`, the 900s
-    fan lease and the deferral boundary.
+    ⚠️ INVARIANT: the time slept is ALWAYS `seconds`; the call can take longer
+    by the wait to get the run's slot back after it (below). Those waits are
+    bounded per RUN (all of them together within `rhythm.INLINE_MAX_S`), so a
+    reply's holds plus its waits stay inside the 900 s fan lease. The three
+    optional arguments only redistribute WHEN the typing frame is emitted inside
+    the slept total — they never lengthen or shorten it. Every guard in the tree
+    reads one number and must keep reading the same one: `rhythm.INLINE_MAX_S`,
+    the 900s fan lease and the deferral boundary.
 
     Left at their defaults this function is byte-identical to what it always did —
     one sleep, or one continuously-emitting loop — so all 16 existing call sites
@@ -1758,10 +1768,30 @@ async def hold_with_typing(account_id: str, fan_id: int, seconds: float,
                     mid-sentence. Real people type, stop, and type again; a solid
                     unbroken bar on every bubble of every reply does not.
 
-    See `automations/pacing.py` for who computes these numbers and why."""
+    See `automations/pacing.py` for who computes these numbers and why.
+
+    The run's concurrency slot is handed back for a hold of 3 s or more
+    (run_slot.released; the knob AUTOMATION_RELEASE_SLOT_MIN_HOLD_S is the floor
+    and the kill switch): the hold is a pure wait, and the fan lease + the run's
+    in-flight guard stay held, so only another (account, kind) can use the slot
+    meanwhile. Taking it back comes before any fresh run; once the run's
+    take-back waits would pass `rhythm.INLINE_MAX_S` in all, this raises
+    `run_slot.SlotLost` AFTER the sleep and before anything is sent. The caller
+    sends nothing more of the reply, records the bubbles that already landed
+    (its "sent" path), then re-raises. Never call it under a lock another run
+    may wait for (run_slot.py)."""
     total = float(seconds or 0.0)
-    if total <= 0:
-        return
+    # Even a zero hold goes through released(): a run that lost its slot must
+    # raise SlotLost here instead of sending its next bubble.
+    async with run_slot.released(total, budget_s=INLINE_MAX_S):
+        if total <= 0:
+            return
+        await _hold_phases(account_id, fan_id, total, typing_indicator=typing_indicator,
+                           quiet_s=quiet_s, think_at_s=think_at_s, think_for_s=think_for_s)
+
+
+async def _hold_phases(account_id: str, fan_id: int, total: float, *, typing_indicator: bool,
+                       quiet_s: float, think_at_s: float, think_for_s: float) -> None:
     quiet = min(max(0.0, float(quiet_s or 0.0)), total)
     typing = total - quiet
     if not typing_indicator:

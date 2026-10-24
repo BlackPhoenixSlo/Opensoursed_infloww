@@ -74,10 +74,11 @@ plans/welcome-pacing): with the knob on, each bubble's hold comes from
 `pacing.welcome_burst_pace` instead of the flat typing time — a QUIET lead-in
 with the indicator dark (she has not started typing yet), then the typing phase
 — so the four bubbles land over a couple of minutes rather than inside one. A
-paced burst is mostly sleeping and a run holds one of the executor's 4 global
-slots for its WALL time, so the per-fan bodies then run CONCURRENTLY under a
-semaphore with a wall-time admission budget; a fan not admitted has no
-`welcome_sent` claim and the next tick re-serves him.
+paced burst is mostly sleeping, so the per-fan bodies then run CONCURRENTLY
+under a semaphore with a wall-time admission budget; a fan not admitted has no
+`welcome_sent` claim and the next tick re-serves him. While every body is
+inside a hold, the run hands the executor's global slot back to other accounts
+(`service/run_slot.py`).
 
 ⚠️ ABSENT MEANS ON (operator decision, 2026-09-06 — see `_on_unless_off`). This
 knob shipped absent-means-off behind the add-on fence and was then flipped, so an
@@ -167,6 +168,8 @@ from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax  # _make_client / _parse_iso / fan-lease seams
+import dm_rate
+import run_slot
 import smart_message_extras as extras
 from attribution import write_outbound_attribution
 from audiences import contact_guard_excludes, resolve_window_hours
@@ -181,6 +184,7 @@ from ._common import (bool_knob, hold_with_typing,
 from .lifecycle_messages import (MAX_VARIANTS, follow_ups_of, pick, run_follow_up,
                                  schedule_follow_ups)
 from ._run_pool import run_paced
+from .rhythm import INLINE_MAX_S
 from .pacing import ROLE_GIF as _ROLE_GIF, ROLE_OPENER as _ROLE_OPENER, welcome_burst_pace  # the burst's own sampler (§A1)
 # The follow-notification cooldown ledger AND the follow itself, both shared with
 # auto_follow so the two follow subsystems cannot double-notify one fan and
@@ -228,10 +232,10 @@ _GIF_HOLD_S = 3.0
 # (…and OFF unless the rule says `true` under CHATTERLY_TEST_MODE. One seam for
 # both readings: `_on_unless_off`, which carries the whole argument.)
 #
-# How many fans' bursts run AT ONCE. A paced burst is ~85-99s of mostly sleeping
-# and a run holds one of the executor's 4 GLOBAL slots (`_MAX_CONCURRENT_RUNS`)
-# for its WALL duration, so the binding quantity is wall pin, not the sum of the
-# holds. 6 drains a 25-fan surge in about two runs instead of an hour.
+# How many fans' bursts run AT ONCE. A paced burst is ~85-99s of mostly sleeping,
+# so the binding quantity is wall time, not the sum of the holds. 6 drains a
+# 25-fan surge in about two runs instead of an hour. (The executor's GLOBAL slot
+# is only held while some burst is between holds — `service/run_slot.py`.)
 _PACE_CONCURRENCY = 6
 # ADMISSION budget, in wall seconds. Checked before a fan STARTS, never during a
 # burst: an over-budget run stops admitting and the in-flight fans finish, so the
@@ -640,6 +644,7 @@ class _Burst(NamedTuple):
     last_landed: _Landed | None             # the last of them, as OF stamped it
     aborted: tuple[datetime, int] | None    # his reply, when one cut it short
     marked: bool                            # `welcome_sent` already claimed
+    lost: "run_slot.SlotLost | None" = None  # the run lost its slot after `landed` bubbles
 
 
 async def _reply_anchor(ctx: _RunCtx, fan_id: int
@@ -739,6 +744,7 @@ async def _send_burst(ctx: _RunCtx, sub: dict, plan: list[_Bubble],
     marked = False
     last_landed: _Landed | None = None
     aborted: tuple[datetime, int] | None = None
+    lost: run_slot.SlotLost | None = None
     for idx, (part, gid, role) in enumerate(plan):
         # Bubble 0 is never interruptible — it IS the welcome, and there is
         # nothing yet for him to have replied to.
@@ -762,29 +768,51 @@ async def _send_burst(ctx: _RunCtx, sub: dict, plan: list[_Bubble],
             rng=Random(f"welcome_pace:{ctx.account_id}:{fan_id}:{idx}"),
             open_quiet=ctx.pace_open_quiet,
             gap_quiet=ctx.pace_gap_quiet) if ctx.paced else None
-        t0 = time.monotonic()
+        t0, w0 = time.monotonic(), run_slot.waited_s()
         # ── THE HOLD, and CHECKPOINTS 2 (§C2.2, the quiet/typing boundary) and
         # 3 (§C2.3, after the GIF's beat): `_hold_segments` is the one place
         # that decides which parts of a bubble the fan may interrupt.
-        for seg in _hold_segments(pace=pace, typing_s=typing_s,
-                                  is_gif=bool(gid), typing_on=ctx.typing_on,
-                                  interruptible=checking):
-            await hold_with_typing(
-                ctx.account_id, fan_id, seg.seconds,
-                typing_indicator=seg.indicator, quiet_s=seg.quiet_s,
-                think_at_s=seg.think_at_s, think_for_s=seg.think_for_s)
-            if seg.check_after:
-                aborted = await welcome_turn.fan_replied_since(
-                    ctx.account_id, fan_id, anchor)
-                if aborted is not None:
-                    break
+        try:
+            for seg in _hold_segments(pace=pace, typing_s=typing_s,
+                                      is_gif=bool(gid), typing_on=ctx.typing_on,
+                                      interruptible=checking):
+                await hold_with_typing(
+                    ctx.account_id, fan_id, seg.seconds,
+                    typing_indicator=seg.indicator, quiet_s=seg.quiet_s,
+                    think_at_s=seg.think_at_s, think_for_s=seg.think_for_s)
+                if seg.check_after:
+                    aborted = await welcome_turn.fan_replied_since(
+                        ctx.account_id, fan_id, anchor)
+                    if aborted is not None:
+                        break
+            if aborted is None:
+                # The account's DM rate (OF_DM_PER_MIN), waited like the hold;
+                # the send below (send_dropping_bad_media's own turn) uses it.
+                # ── CHECKPOINT 4 (§C2): a wait for a place is a quiet stretch
+                # he can answer in (up to a minute, the slot lent): asked again.
+                waited = await dm_rate.turn(ctx.account_id, release_budget_s=INLINE_MAX_S)
+                if waited > 0 and checking:
+                    aborted = await welcome_turn.fan_replied_since(ctx.account_id, fan_id, anchor)
+                    if aborted is not None:
+                        dm_rate.release(ctx.account_id)     # the bubble is dropped: its place goes back
+        except run_slot.SlotLost as e:
+            # The run lost its slot (a serial run's hold, or a paced child's on
+            # the run's lent slot, run_slot.borrowed): send no more. The
+            # greeting landed → the caller claims him first.
+            if landed == 0:
+                raise
+            lost = e
+            break
         if aborted is not None:
             break
         if pace is not None:
             # INSTRUMENTATION ONLY (§A5): elapsed = requested + the un-metered
             # emit overhead (`_emit_typing_for` does not subtract the awaited
             # emit from its budget). See `_HOLD_OVERRUN_WARN_S`.
-            over = (time.monotonic() - t0) - pace.total_s
+            # The wait to take the run slot back (a hold may release it,
+            # run_slot; a paced child's own share of the run's lent slot) is
+            # queueing, not emit overhead: left out.
+            over = (time.monotonic() - t0) - (run_slot.waited_s() - w0) - pace.total_s
             if over > ctx.tally.hold_overrun_max_s:
                 ctx.tally.hold_overrun_max_s = over
             if over > _HOLD_OVERRUN_WARN_S:
@@ -873,7 +901,7 @@ async def _send_burst(ctx: _RunCtx, sub: dict, plan: list[_Bubble],
             await extras.schedule_unsend(
                 ctx.account_id, fan_id, int(msg_id),
                 minutes=ctx.unsend_minutes, price_cents=price_cents)
-    return _Burst(landed, last_landed, aborted, marked)
+    return _Burst(landed, last_landed, aborted, marked, lost)
 
 
 async def _follow_back_one(ctx: _RunCtx, fan_id: int) -> None:
@@ -1011,6 +1039,8 @@ async def _welcome_one(ctx: _RunCtx, sub: dict) -> None:
             await _mark_welcomed(ctx.account_id, fan_id, sub.get("username"))
         ctx.tally.sent += 1
         sent_ok = True
+        if burst.lost is not None:
+            raise burst.lost    # claimed and rested (finally); the run stops here
         if ctx.follow_back:
             await _follow_back_one(ctx, fan_id)
         if ctx.follow_ups and burst.aborted is None:

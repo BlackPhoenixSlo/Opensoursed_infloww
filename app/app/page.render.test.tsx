@@ -68,7 +68,7 @@ const BY_KIND_NET = {
     { day: null, kind: "unknown", total_cents: 500, count: 1, net_cents: 400, net_missing_count: 0 },
   ],
 };
-const TOTAL_NET = "$14.00";
+const TOTAL_NET = "$14";
 
 let fetchMock: ReturnType<typeof vi.fn>;
 /** Each answer to `GET /admin/stats/revenue?group_by=kind`, in turn, told whether the read asked for Net; the last
@@ -146,11 +146,11 @@ const lastWindow = () => {
 /** A period tab: a radio of the `IfSegmented` strip; `aria-checked` marks the active one. */
 const tab = (name: string) => screen.getByRole("radio", { name });
 const totalTile = () => document.querySelector<HTMLElement>('[data-control="total"]')!;
-/** Total earnings' figure as read ("$17.50"; the sign is its own 25px span), or null while none shows. */
+/** Total earnings' figure as read ("$18"; the sign is its own 25px span), or null while none shows. */
 const figure = () => totalTile().querySelector("[data-figure]")?.textContent ?? null;
 const shows = (text: string) => waitFor(() => expect(figure()).toBe(text));
 const tile = (key: string) => document.querySelector<HTMLElement>(`[data-control="${key}"]`)!;
-/** A channel tile's figure as read ("$30.00"), or null while none shows. */
+/** A channel tile's figure as read ("$30"), or null while none shows. */
 const channelFigure = (key: string) => tile(key).querySelector("[data-figure]")?.textContent ?? null;
 /** The wired channel tiles, in catalogue order. */
 const CHANNELS = ["subscriptions", "tips", "posts", "messages", "streams"] as const;
@@ -231,8 +231,8 @@ describe("the Dashboard opens on the KPI header (ticket 24)", () => {
     });
     await mountHome();
     expect(DASHBOARD_HEADER.filter((c) => !c.wired)).toEqual([]);
-    await shows("$17.50");
-    expect(channelFigure("referrals")).toBe("$3.50");
+    await shows("$18");
+    expect(channelFigure("referrals")).toBe("$4");
     expect(tile("referrals")).not.toHaveAttribute("title");
     const read = fetchMock.mock.calls.map(([url]) => new URL(String(url), "http://localhost"))
       .find((u) => u.pathname === "/admin/stats/referrals")!;
@@ -347,7 +347,7 @@ describe("the Dashboard opens on the KPI header (ticket 24)", () => {
     expect(within(totalTile()).getByRole("status", { name: "Loading Total earnings" })).toHaveTextContent(/^$/);
     expect(figure()).toBeNull();
     answer();
-    await shows("$10.00");
+    await shows("$10");
   });
 
   it("a failed read swaps the tiles for the error state with Retry, and Retry reads again", async () => {
@@ -394,12 +394,12 @@ const ALL_KINDS_NET = {
 };
 /** Hand sums of ALL_KINDS by the spec's channel mapping. */
 const ALL_GROSS = {
-  total: "$71.50",
-  channels: { subscriptions: "$30.00", tips: "$15.00", posts: "$4.00", messages: "$10.00", streams: "$7.50" },
+  total: "$72",
+  channels: { subscriptions: "$30", tips: "$15", posts: "$4", messages: "$10", streams: "$8" },
 };
 const ALL_NET = {
-  total: "$56.00",
-  channels: { subscriptions: "$24.00", tips: "$12.00", posts: "$3.20", messages: "$8.00", streams: "$4.80" },
+  total: "$56",
+  channels: { subscriptions: "$24", tips: "$12", posts: "$3", messages: "$8", streams: "$5" },
 };
 
 describe("the channel tiles and the Net / Gross switch (ticket 25)", () => {
@@ -425,30 +425,30 @@ describe("the channel tiles and the Net / Gross switch (ticket 25)", () => {
       ] },
     )];
     await mountHome();
-    await shows("$9.60");
+    await shows("$10");
     expect(channelFigures()).toEqual(
-      { subscriptions: "$0.00", tips: "$0.00", posts: "$0.00", messages: "$5.60", streams: "$0.00" },
+      { subscriptions: "$0", tips: "$0", posts: "$0", messages: "$6", streams: "$0" },
     );
     pickBasis("Gross");
-    await shows("$12.00");
+    await shows("$12");
     expect(channelFigures()).toEqual(
-      { subscriptions: "$0.00", tips: "$0.00", posts: "$0.00", messages: "$7.00", streams: "$0.00" },
+      { subscriptions: "$0", tips: "$0", posts: "$0", messages: "$7", streams: "$0" },
     );
     // Nothing on the card says the tiles add up to Total earnings.
     const card = totalTile().closest("section")!;
     expect(card.textContent).not.toMatch(/\b(sum|add up|of total|breakdown)\b/i);
   });
 
-  it("Referrals is the same in both modes, and a Creator OnlyFans could not answer for is $0.00, titled why", async () => {
+  it("Referrals is the same in both modes, and a Creator OnlyFans could not answer for is $0, titled why", async () => {
     revenue = [byBasis(ALL_KINDS, ALL_KINDS_NET)];
     referrals = async () => jsonRes({ rows: [{ account_id: "a1", total_cents: 500, by_day: [] }], unavailable: ["a2"] });
     await mountHome();
-    await shows("$61.00");
+    await shows("$61");
     for (const mode of ["Net", "Gross"] as const) {
       pickBasis(mode);
-      await shows(mode === "Net" ? "$61.00" : "$76.50");
+      await shows(mode === "Net" ? "$61" : "$77");
       expect(tile("referrals")).toHaveAttribute("title", REFERRALS_UNAVAILABLE);
-      expect(tile("referrals").textContent).toBe("$5.00Referrals");
+      expect(tile("referrals").textContent).toBe("$5Referrals");
     }
   });
 
@@ -490,7 +490,7 @@ describe("the channel tiles and the Net / Gross switch (ticket 25)", () => {
       ],
     })];
     await mountHome();
-    await shows("$3.00");
+    await shows("$3");
     expect(netNote()?.textContent).toBe("3 sales in this period have no net figure from OnlyFans yet, so Net leaves them out.");
     cleanup();
     revenue = [byBasis(BY_KIND, BY_KIND_NET)];
@@ -524,12 +524,12 @@ describe("the channel tiles and the Net / Gross switch (ticket 25)", () => {
     expect(revenueReads()).toHaveLength(2);
   });
 
-  it("a window with no sales shows $0.00 in every channel tile and no disclosure", async () => {
+  it("a window with no sales shows $0 in every channel tile and no disclosure", async () => {
     revenue = [byBasis({ rows: [] }, { rows: [] })];
     await mountHome();
-    await shows("$0.00");
+    await shows("$0");
     expect(channelFigures()).toEqual(
-      { subscriptions: "$0.00", tips: "$0.00", posts: "$0.00", messages: "$0.00", streams: "$0.00" },
+      { subscriptions: "$0", tips: "$0", posts: "$0", messages: "$0", streams: "$0" },
     );
     expect(netNote()).toBeNull();
   });
@@ -544,19 +544,19 @@ describe("the channel tiles and the Net / Gross switch (ticket 25)", () => {
     revenue = [byBasis(big, big)];
     await mountHome();
     pickBasis("Gross");
-    await shows("$11,050.50");
-    expect(channelFigure("tips")).toBe("$1,250.00");
-    expect(channelFigure("messages")).toBe("$9,800.50");
+    await shows("$11,051");
+    expect(channelFigure("tips")).toBe("$1,250");
+    expect(channelFigure("messages")).toBe("$9,801");
   });
 
   // Ticket 28: the Route walk's mock answers an unlisted read with `[]`; an answer without a `rows` array must read
   // as a window with no sales, never crash the header (or send the crash report).
-  it.each([["[]", []], ["{}", {}]])("an answer of %s with no rows array shows $0.00, not a crash", async (_name, body) => {
+  it.each([["[]", []], ["{}", {}]])("an answer of %s with no rows array shows $0, not a crash", async (_name, body) => {
     revenue = [byBasis(body, body)];
     await mountHome();
-    await shows("$0.00");
+    await shows("$0");
     expect(channelFigures()).toEqual(
-      { subscriptions: "$0.00", tips: "$0.00", posts: "$0.00", messages: "$0.00", streams: "$0.00" },
+      { subscriptions: "$0", tips: "$0", posts: "$0", messages: "$0", streams: "$0" },
     );
     expect(netNote()).toBeNull();
   });
@@ -761,7 +761,7 @@ describe("Employee sales reads the per-employee figures for the selected window 
       "?from=2026-10-01T10%3A00%3A00.000Z&to=2026-11-01T09%3A59%3A59.999Z");
     // The switch does not drive Employee sales: the bundle's read takes no basis.
     pickBasis("Gross");
-    await shows("$17.50");
+    await shows("$18");
     expect(perEmployeeReads()).toHaveLength(2);
   });
 

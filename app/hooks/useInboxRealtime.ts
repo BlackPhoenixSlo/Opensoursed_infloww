@@ -390,6 +390,59 @@ export function useInboxRealtime({ roster = true }: InboxRealtimeOptions = {}) {
       // timestamp; do NOT reorder/bump the chat-list row — that would surface a
       // stale preview, inflate unread, and corrupt the prior we read next event.
       if (isStale) return;
+      const isFanRow = (c: OFChatItem) =>
+        (c.__accountId ?? "") === accountId && sameUserId(c.withUser.id, fanId);
+      /** The fan's row as this message leaves it: `existing` (or a new row)
+       *  with the message as its preview, unread raised for an inbound one. */
+      const bumpRow = (existing: OFChatItem | null): OFChatItem => {
+        const base: OFChatItem = existing ?? ({
+          __accountId: accountId,
+          // Outbound to a fan not yet in the list: fromUser is US, so we don't
+          // know the fan's name — leave it blank; the 90s head-page poll fills
+          // it in (we prepend to page 0, which is the page that poll re-reads).
+          withUser: {
+            id: fanId,
+            name: isOutbound ? "" : (fromUser.name ?? fromUser.username ?? ""),
+          },
+        } as OFChatItem);
+        return {
+          ...base,
+          // We sent it → don't raise the unread badge; only inbound bumps it.
+          hasUnread: isOutbound ? (base.hasUnread ?? false) : true,
+          unreadMessagesCount: isOutbound
+            ? (base.unreadMessagesCount ?? 0)
+            : (base.unreadMessagesCount ?? 0) + 1,
+          lastMessage: {
+            id: candidate.id as number,
+            text: candidate.text,
+            createdAt: candidate.createdAt,
+            mediaCount: candidate.mediaCount ?? 0,
+            fromUser: candidate.fromUser,
+          },
+        };
+      };
+
+      // The Fan List's local seed (`useRecentChatsLocal`, key
+      // ["chats-local-seed", limit, accountId|null]) is what it shows while
+      // OF's chat list read is in flight — a slow read, or one that never
+      // answers. The same move-to-top keeps those rows live; without it they
+      // stayed as loaded until a reload. Its own scope: one Creator's seed
+      // takes only that Creator's messages; an older message than the row's
+      // own (a replay) or the row's own last one changes nothing.
+      qc.getQueryCache().findAll({ queryKey: ["chats-local-seed"] }).forEach((q) => {
+        const data = q.state.data as { list?: OFChatItem[] } | undefined;
+        if (!data?.list) return;
+        const seedAccount = q.queryKey[2];
+        if (seedAccount != null && String(seedAccount) !== accountId) return;
+        const existing = data.list.find(isFanRow) ?? null;
+        const last = existing?.lastMessage;
+        if (last?.id != null && String(last.id) === String(candidate.id)) return;
+        if (last?.createdAt && Date.parse(toUtcIso(last.createdAt)) > evtMs) return;
+        qc.setQueryData(q.queryKey, {
+          ...data, list: [bumpRow(existing), ...data.list.filter((c) => !isFanRow(c))],
+        });
+      });
+
       qc.getQueryCache().findAll({ queryKey: ["chats"] }).forEach((q) => {
         const data = q.state.data as Infinite | undefined;
         if (!data?.pages?.length) return;
@@ -414,16 +467,19 @@ export function useInboxRealtime({ roster = true }: InboxRealtimeOptions = {}) {
             ? accountKey === accountId
             : accountKey.split(",").includes(accountId);
 
+        // Find the fan's row(s) without copying anything: most caches don't
+        // hold this fan, and those must keep their exact data reference so
+        // React Query notifies no subscriber (a 500-row All Models list would
+        // otherwise re-render on every message for every other list).
         let existing: OFChatItem | null = null;
-        const stripped: Page[] = data.pages.map((p) => ({
-          ...p,
-          rows: p.rows.filter((c) => {
-            if ((c.__accountId ?? "") !== accountId) return true;
-            if (!sameUserId(c.withUser.id, fanId)) return true;
+        const pagesWithRow = new Set<number>();
+        for (let i = 0; i < data.pages.length; i++) {
+          for (const c of data.pages[i].rows) {
+            if (!isFanRow(c)) continue;
             existing = c;
-            return false;
-          }),
-        }));
+            pagesWithRow.add(i);
+          }
+        }
 
         // Only SYNTHESIZE a brand-new row into a cache that can validly hold it.
         // Skip when the fan isn't already present AND either:
@@ -434,33 +490,18 @@ export function useInboxRealtime({ roster = true }: InboxRealtimeOptions = {}) {
         // Bumping an EXISTING row is always fine: it's already correctly scoped,
         // so this guard only gates the new-row path.
         if (!existing && (!isUnfiltered || !accountInScope)) return;
+        // This very message is already the row's last one (a duplicate
+        // delivery, or a list read that already had it): nothing changes, so
+        // write nothing — re-applying would also count its unread twice.
+        const lastId = existing?.lastMessage?.id;
+        if (lastId != null && String(lastId) === String(candidate.id)) return;
 
-        const base: OFChatItem = existing ?? ({
-          __accountId: accountId,
-          // Outbound to a fan not yet in the list: fromUser is US, so we don't
-          // know the fan's name — leave it blank; the 90s head-page poll fills
-          // it in (we prepend to page 0, which is the page that poll re-reads).
-          withUser: {
-            id: fanId,
-            name: isOutbound ? "" : (fromUser.name ?? fromUser.username ?? ""),
-          },
-        } as OFChatItem);
-        const updatedRow: OFChatItem = {
-          ...base,
-          // We sent it → don't raise the unread badge; only inbound bumps it.
-          hasUnread: isOutbound ? (base.hasUnread ?? false) : true,
-          unreadMessagesCount: isOutbound
-            ? (base.unreadMessagesCount ?? 0)
-            : (base.unreadMessagesCount ?? 0) + 1,
-          lastMessage: {
-            id: candidate.id as number,
-            text: candidate.text,
-            createdAt: candidate.createdAt,
-            mediaCount: candidate.mediaCount ?? 0,
-            fromUser: candidate.fromUser,
-          },
-        };
+        const updatedRow = bumpRow(existing);
 
+        // Strip the old copies from the pages that held one; every other page
+        // keeps its reference (structural sharing then skips it outright).
+        const stripped: Page[] = data.pages.map((p, i) =>
+          pagesWithRow.has(i) ? { ...p, rows: p.rows.filter((c) => !isFanRow(c)) } : p);
         const [first, ...rest] = stripped;
         const newPages: Page[] = [
           { ...first, rows: [updatedRow, ...first.rows] },

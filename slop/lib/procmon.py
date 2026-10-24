@@ -1,0 +1,187 @@
+"""Relay CPU and memory, sampled from outside the process, per load stage.
+
+Every second `ps` reports the relay process group's cumulative CPU time and RSS
+(the relay is its own process group: stack.py starts it with start_new_session).
+CPU% over an interval = delta CPU seconds / delta wall seconds * 100, so 100% is
+one core busy; it can pass 100% when executor threads work outside the GIL. Each
+interval is tagged with `rec.stage` at its start, the same tag the HTTP recorder
+uses, so the per-stage table lines up with the per-stage p95s. Nothing runs inside
+the relay for this.
+
+With `--profile`, the relay wrapper (lib/relay.py, never service/) also runs a
+stack sampler; this monitor tells it the current stage on every change and
+fetches the per-stage profiles before the stack goes down.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import time
+from pathlib import Path
+
+INTERVAL_S = 1.0
+
+
+def _cpu_seconds(s: str) -> float:
+    """ps TIME: [[dd-]hh:]mm:ss.cc."""
+    days, _, rest = s.rpartition("-")
+    total = 0.0
+    for part in rest.split(":"):
+        total = total * 60 + float(part)
+    return total + (int(days) * 86400 if days else 0)
+
+
+def pct(xs: list[float], q: float = 0.95) -> float | None:
+    xs = sorted(xs)
+    return round(xs[min(len(xs) - 1, int(len(xs) * q))], 1) if xs else None
+
+
+class ProcMon:
+    def __init__(self, pgid: int, rec, relay_http, *, profile: bool = False):
+        self.pgid, self.rec, self.http, self.profile = pgid, rec, relay_http, profile
+        self.samples: list[dict] = []  # {t, stage, cpu_s, rss_mb, loop_s, loop_t}
+        self.intervals: list[dict] = []  # {stage, wall_s, cpu_s, cpu_pct, loop_pct, rss_mb}
+        self._stop = asyncio.Event()
+        self._task: asyncio.Task | None = None
+        self.profile_stage: str | None = None
+        self.profile_errors: list[str] = []
+
+    async def _ps(self) -> tuple[float, float] | None:
+        p = await asyncio.create_subprocess_exec("ps", "-A", "-o", "pgid=,time=,rss=",
+                                                 stdout=asyncio.subprocess.PIPE)
+        out, _ = await p.communicate()
+        cpu = rss = 0.0
+        hit = False
+        for line in out.decode().splitlines():
+            parts = line.split()
+            if len(parts) == 3 and parts[0] == str(self.pgid):
+                cpu += _cpu_seconds(parts[1])
+                rss += int(parts[2]) / 1024
+                hit = True
+        return (cpu, rss) if hit else None
+
+    async def _loop(self) -> None:
+        while not self._stop.is_set():
+            stage = self.rec.stage
+            got, loop = await asyncio.gather(self._ps(), self._loop_cpu())
+            if got is not None:
+                s = {"t": time.time(), "stage": stage, "cpu_s": got[0], "rss_mb": round(got[1], 1),
+                     "loop_s": loop and loop["thread_s"], "loop_t": loop and loop["mono_s"]}
+                if self.samples:
+                    prev = self.samples[-1]
+                    wall = s["t"] - prev["t"]
+                    if wall > 0:
+                        d = s["cpu_s"] - prev["cpu_s"]
+                        lw = (s["loop_t"] - prev["loop_t"]) if s["loop_t"] and prev["loop_t"] else 0
+                        lp = round((s["loop_s"] - prev["loop_s"]) / lw * 100, 1) if lw > 0 else None
+                        self.intervals.append({"stage": prev["stage"], "wall_s": round(wall, 3), "cpu_s": round(d, 3),
+                                               "cpu_pct": round(d / wall * 100, 1), "loop_pct": lp,
+                                               "rss_mb": s["rss_mb"]})
+                self.samples.append(s)
+            if self.profile and stage != self.profile_stage:
+                await self._tell_profiler(stage)
+            try:
+                await asyncio.wait_for(self._stop.wait(), INTERVAL_S)
+            except asyncio.TimeoutError:
+                pass
+
+    async def _loop_cpu(self) -> dict | None:
+        try:
+            return (await self.http.get("/__slop/loop-cpu")).json()
+        except Exception:  # noqa: BLE001 — a missed sample is just a longer next interval
+            return None
+
+    async def _tell_profiler(self, stage: str | None) -> None:
+        try:
+            await self.http.post("/__slop/profile", json={"stage": stage})
+            self.profile_stage = stage
+        except Exception as e:  # noqa: BLE001 — a profiler hiccup must not end the run
+            self.profile_errors.append(f"{type(e).__name__}: {e}")
+
+    def start(self) -> None:
+        self._task = asyncio.create_task(self._loop())
+
+    async def stop(self) -> None:
+        self._stop.set()
+        if self._task:
+            await self._task
+
+    def summary(self) -> dict:
+        """Per stage (and `run`, every interval): CPU mean / p95 / max %, cores, RSS max / end."""
+        groups: dict[str, list[dict]] = {}
+        for iv in self.intervals:
+            groups.setdefault(iv["stage"] or "-", []).append(iv)
+        groups["run"] = self.intervals
+        out = {}
+        for name, ivs in groups.items():
+            if not ivs:
+                continue
+            wall = sum(i["wall_s"] for i in ivs)
+            cpu = sum(i["cpu_s"] for i in ivs)
+            mean = round(cpu / wall * 100, 1) if wall else None
+            lps = [i["loop_pct"] for i in ivs if i.get("loop_pct") is not None]
+            loop_mean = round(sum(lps) / len(lps), 1) if lps else None
+            out[name] = {"intervals": len(ivs), "wall_s": round(wall, 1), "cpu_s": round(cpu, 1),
+                         "loop_mean_pct": loop_mean, "loop_p95_pct": pct(lps),
+                         "cpu_mean_pct": mean, "cpu_p95_pct": pct([i["cpu_pct"] for i in ivs]),
+                         "cpu_max_pct": max(i["cpu_pct"] for i in ivs),
+                         "cores_mean": round(mean / 100, 2) if mean is not None else None,
+                         "rss_max_mb": max(i["rss_mb"] for i in ivs), "rss_end_mb": ivs[-1]["rss_mb"]}
+        return out
+
+    def stages(self) -> list[str]:
+        seen: list[str] = []
+        for iv in self.intervals:
+            if iv["stage"] and iv["stage"] not in seen:
+                seen.append(iv["stage"])
+        return seen
+
+    def table(self) -> list[str]:
+        s = self.summary()
+        rows = [f"  {n:<10} {v['wall_s']:>7} {v['cpu_mean_pct']:>8} {v['cpu_p95_pct']:>7} {v['cpu_max_pct']:>7} "
+                f"{v['cores_mean']:>6} {v['loop_mean_pct'] if v['loop_mean_pct'] is not None else '-':>8} "
+                f"{v['loop_p95_pct'] if v['loop_p95_pct'] is not None else '-':>7} {v['rss_max_mb']:>8} {v['rss_end_mb']:>8}"
+                for n, v in s.items()]
+        return ["relay CPU/RSS (measured every 1 s; 100% = one core; '-' = outside any stage). cpu = whole process",
+                "(ps), loop = the event-loop thread alone (time.thread_time via /__slop/loop-cpu), the 1-core ceiling:",
+                "  stage       wall_s  cpu%mean cpu%p95 cpu%max  cores loop%mean loop%p95  rssMax   rssEnd", *rows]
+
+    async def write(self, out: Path) -> None:
+        (out / "resources.json").write_text(json.dumps(
+            {"interval_s": INTERVAL_S, "summary": self.summary(), "intervals": self.intervals}, indent=1))
+
+    async def fetch_profile(self, out: Path) -> dict | None:
+        """The relay's per-stage stack profiles -> profile.json + profile-<stage>.txt."""
+        if not self.profile:
+            return None
+        try:
+            r = await self.http.get("/__slop/profile")
+            prof = r.json()
+        except Exception as e:  # noqa: BLE001
+            self.profile_errors.append(f"fetch: {type(e).__name__}: {e}")
+            return None
+        (out / "profile.json").write_text(json.dumps(prof, indent=1))
+        for stage, p in prof.get("stages", {}).items():
+            (out / f"profile-{stage}.txt").write_text("\n".join(render(stage, p, 40, prof.get("hz"))) + "\n")
+            for part in ("loop", "threads"):
+                (out / f"profile-{stage}-{part}.collapsed").write_text("\n".join(
+                    f"{k} {round(v)}" for k, v in sorted(p[part]["stacks"].items(), key=lambda kv: -kv[1])) + "\n")
+        return prof
+
+
+def render(stage: str, p: dict, n: int, hz: int) -> list[str]:
+    """Sample weights are wall ms (each look weighs the time since the previous one)."""
+    wall = p["wall_ms"] or 1
+    out = [f"stage {stage}: {wall / 1000:.1f}s sampled (~{hz} Hz target per sampler; idle = leaf blocked in "
+           "select/wait/queue get; lib/relay.py _Sampler)"]
+    for part, what in (("loop", "event-loop thread (SIGALRM sampler; ~ its CPU)"),
+                       ("threads", "other threads (stack sampler; wall time in C incl. SQLite lock waits)")):
+        q = p[part]
+        busy = q["busy"] or 1
+        out += ["", f"== {what}: busy {q['busy'] / 1000:.1f} thread-s = {q['busy'] / wall * 100:.0f}% of wall; by thread: "
+                + ", ".join(f"{t} {c / 1000:.1f}s" for t, c in sorted(q["threads"].items(), key=lambda kv: -kv[1])[:6])]
+        for title, key in ((f"top {n} self (leaf function / SQL; % of this part's busy)", "self"),
+                           (f"top {n} self lines", "lines"), (f"top {n} cumulative", "cum")):
+            out += [f"{title}:"] + [f"  {c / busy * 100:5.1f}%  {c / 1000:7.1f}s  {f}"
+                                    for f, c in sorted(q[key].items(), key=lambda kv: -kv[1])[:n]]
+    return out

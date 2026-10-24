@@ -54,6 +54,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
+import os
 import time
 from collections import deque
 from datetime import datetime, timedelta
@@ -61,7 +63,7 @@ from typing import AsyncIterator, Awaitable, Callable
 
 from fastapi import Request
 
-from db.repo import insert_event
+from db.repo import insert_events
 
 log = logging.getLogger("of-relay.events")
 
@@ -82,12 +84,63 @@ _QUEUE_MAX = 256
 _HEARTBEAT_S = 20
 
 
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name) or default)
+    except ValueError:
+        log.warning("%s=%r is not a number; using %s", name, os.environ.get(name), default)
+        return default
+
+
+# ── Load-adaptive batching (relay → browser) ─────────────────────────
+#
+# A quiet tab gets every event as its own frame, at once, as always. A tab
+# whose own stream runs hotter than SSE_BATCH_MIN_RATE events/s (a decaying
+# average over ~1 s, per subscriber) gets them grouped: the first event opens a
+# window, everything the tab is sent until it closes rides in ONE `event:
+# batch` frame (data: [{id, type, data}, ...], oldest first; the frame's `id:`
+# is its last member's, so Last-Event-ID resumes after the whole batch), and
+# the browser applies it in one render pass. The window is
+# SSE_BATCH_WINDOW_MS, or SSE_BATCH_MAX_WINDOW_MS once the rate passes 10x the
+# threshold, so no event waits longer than one window; the stream drops back
+# to single frames as soon as the average falls under the threshold again.
+# Inside a batch only frames a newer one fully supersedes are dropped (see
+# _COALESCE); DMs, money, unread and state events never are. The subscriber
+# queue holds batches, not events, so `_QUEUE_MAX` bounds how many windows a
+# stalled tab may fall behind before it is sent `resync`.
+# SSE_BATCH_WINDOW_MS=0 turns batching off; SSE_BATCH_MIN_RATE=0 forces it on.
+SSE_BATCH_MIN_RATE = _env_float("SSE_BATCH_MIN_RATE", 5.0)
+SSE_BATCH_WINDOW_MS = _env_float("SSE_BATCH_WINDOW_MS", 100.0)
+SSE_BATCH_MAX_WINDOW_MS = _env_float("SSE_BATCH_MAX_WINDOW_MS", 250.0)
+# Most events one batch frame carries; a fuller window closes early.
+_BATCH_MAX = 200
+# Time constant of the per-subscriber rate average, seconds.
+_RATE_TAU_S = 1.0
+# Per type, the body field that names what a frame is about: within one batch
+# only the newest frame per (type, account, that field) is kept. `chat_typing`
+# is a "still typing" ping and `chat_queue_update` a mass message's progress,
+# so the newest says everything the older ones did.
+_COALESCE = {"chat_typing": "fan_id", "chat_queue_update": "id"}
+
+
+class _Batch(list):
+    """Frames bound for one `event: batch` frame, oldest first. It sits in the
+    subscriber's queue while still open; `deadline` (monotonic) is when it
+    closes, 0 when it must go out as soon as the stream reaches it."""
+    __slots__ = ("deadline",)
+
+
 class _Sub:
     """One SSE subscriber: its queue, scope, and what its session may see.
     `accounts` None is unclamped (the anonymous escape hatch, tests);
     `agencies` are the owner user ids whose Agency-wide events it gets.
-    `lost` is set when the queue overflowed, so the stream sends `resync`."""
-    __slots__ = ("q", "scope", "accounts", "agencies", "lost")
+    `lost` is set when the queue overflowed, so the stream sends `resync`.
+    `batching` is set for sse_stream's subscribers (a bare `subscribe()`
+    queue always gets single frames); `rate`/`rate_at` are its decaying
+    events/s, `open` the batch still taking events, `batches`/`coalesced`
+    counters for /admin/events/stats."""
+    __slots__ = ("q", "scope", "accounts", "agencies", "lost", "batching",
+                 "rate", "rate_at", "open", "batches", "coalesced")
 
     def __init__(self, scope: str, accounts: frozenset[str] | None,
                  agencies: frozenset[str]):
@@ -96,6 +149,12 @@ class _Sub:
         self.accounts = accounts
         self.agencies = agencies
         self.lost = False
+        self.batching = False
+        self.rate = 0.0
+        self.rate_at = time.monotonic()
+        self.open: _Batch | None = None
+        self.batches = 0
+        self.coalesced = 0
 
 
 # Subscriber registry, by queue. Only touched on the event loop's thread and
@@ -124,8 +183,9 @@ _evicted: dict[str, int] = {}
 
 class _Frame(dict):
     """An event as fanned out: the event dict itself (what the browser gets
-    as `data:`) plus its SSE id, so queue consumers still read a dict."""
-    __slots__ = ("eid",)
+    as `data:`) plus its SSE id, so queue consumers still read a dict.
+    `json` caches its encoding: one encode however many tabs it goes to."""
+    __slots__ = ("eid", "json")
 
 
 # ── Persist worker (bounded backpressure) ────────────────────────────
@@ -136,11 +196,20 @@ class _Frame(dict):
 # the actual failure mode at high WS ingest rates — not the DB itself, but
 # unbounded create_task piling up.
 #
-# Solution: one bounded queue, one consumer task that drains serially.
+# Solution: one bounded queue, one consumer task that drains it in order,
+# one event_inbox commit per batch of whatever is queued.
 # Producers (handle_event) push and never block; on overflow we drop the
 # oldest item so freshness wins over completeness. SSE fan-out stays inline
 # below so realtime UI is unaffected — only DB writes get queued.
 _PERSIST_QUEUE_MAX = 2000
+# Most event_inbox rows one commit may carry. The worker drains whatever is
+# already queued, up to this, so an idle relay still writes each event at once
+# and a busy one (20 feeds) amortizes one commit over everything that arrived
+# while the previous one was writing.
+_PERSIST_BATCH_MAX = 200
+# OF frames worth delivering live but not worth a row: `typing` repeats every
+# ~2-3 s per typing fan and nothing reads it back from event_inbox.
+_UNPERSISTED_TYPES = frozenset({"typing"})
 _persist_queue: asyncio.Queue | None = None
 _persist_worker_task: asyncio.Task | None = None
 _persist_drops = 0
@@ -378,8 +447,9 @@ async def handle_event(event: dict) -> None:
     if is_feed_noise(event, account_id):
         return
     if event_type == "typing":
-        # Forwarded as `chat_typing`, then down the normal path: the persist
-        # worker's transcode still touches the Fan row from the frame
+        # Forwarded as `chat_typing`, then down the normal path minus the
+        # event_inbox row (_UNPERSISTED_TYPES): the persist worker's transcode
+        # still touches the Fan row from the frame
         # (event_transcoder._touch_fan_from_event), and the raw `typing` frame
         # itself is not an SSE type, so broadcast() below drops it.
         await _forward_typing(account_id, event.get("typing"))
@@ -415,11 +485,12 @@ async def handle_event(event: dict) -> None:
     else:
         # Pre-startup path: keep the old behavior so no event is lost.
         from event_transcoder import transcode as _transcode  # local import to avoid cycles
-        asyncio.create_task(_persist_event_safe(
-            account_id=account_id,
-            event_type=event_type or "unknown",
-            payload=persistable,
-        ))
+        if event_type not in _UNPERSISTED_TYPES:
+            asyncio.create_task(_persist_event_safe(
+                account_id=account_id,
+                event_type=event_type or "unknown",
+                payload=persistable,
+            ))
         asyncio.create_task(_transcode(event))
 
     # Fan out to subscribers — scope "all" + scope-by-account.
@@ -502,20 +573,69 @@ def _fanout(event: dict) -> int:
         if not _wants(sub, frame):
             continue
         delivered += 1
-        try:
-            sub.q.put_nowait(frame)
-        except asyncio.QueueFull:
-            # Drop oldest, push new — slow tab loses history, not freshness;
-            # `lost` makes its stream send `resync` so it refetches.
-            sub.lost = True
-            with _suppress_queue_empty(sub.q):
-                sub.q.get_nowait()
-            try:
-                sub.q.put_nowait(frame)
-            except Exception:
-                # Truly dead — let the SSE generator notice on its next get().
-                pass
+        _deliver(sub, frame)
     return delivered
+
+
+def _note_rate(sub: _Sub, now: float, n: int) -> float:
+    """`sub`'s events/s, decayed to `now`, after `n` more events."""
+    sub.rate = sub.rate * math.exp((sub.rate_at - now) / _RATE_TAU_S) + n / _RATE_TAU_S
+    sub.rate_at = now
+    return sub.rate
+
+
+def _window_s(rate: float) -> float:
+    """How long a batch opened at `rate` stays open; 0: send at once."""
+    if SSE_BATCH_WINDOW_MS <= 0 or rate <= SSE_BATCH_MIN_RATE:
+        return 0.0
+    if rate > 10 * SSE_BATCH_MIN_RATE:
+        return max(SSE_BATCH_WINDOW_MS, SSE_BATCH_MAX_WINDOW_MS) / 1000
+    return SSE_BATCH_WINDOW_MS / 1000
+
+
+def _deliver(sub: _Sub, frame: _Frame) -> None:
+    """Hand `frame` to `sub`: into its open batch, as a new batch when its
+    rate calls for one, else on its own (see "Load-adaptive batching")."""
+    if not sub.batching:
+        _put(sub, frame)
+        return
+    now = time.monotonic()
+    rate = _note_rate(sub, now, 1)
+    ends = _first_real_key(frame) in _ENDS_STREAM
+    b = sub.open
+    if b is not None and len(b) < _BATCH_MAX and now < b.deadline:
+        b.append(frame)
+        if ends:
+            # Nothing may follow it into this session's stream: close it now.
+            b.deadline = 0.0
+            sub.open = None
+        return
+    sub.open = None
+    window = _window_s(rate)
+    if window <= 0 or ends:
+        _put(sub, frame)
+        return
+    b = _Batch((frame,))
+    b.deadline = now + window
+    sub.open = b
+    _put(sub, b)
+
+
+def _put(sub: _Sub, item: _Frame | _Batch) -> None:
+    try:
+        sub.q.put_nowait(item)
+    except asyncio.QueueFull:
+        # Drop oldest, push new — slow tab loses history, not freshness;
+        # `lost` makes its stream send `resync` so it refetches.
+        sub.lost = True
+        with _suppress_queue_empty(sub.q):
+            if sub.q.get_nowait() is sub.open:
+                sub.open = None
+        try:
+            sub.q.put_nowait(item)
+        except Exception:
+            # Truly dead — let the SSE generator notice on its next get().
+            pass
 
 
 def publish(event: dict) -> None:
@@ -658,60 +778,92 @@ async def publish_chat_responded(
         log.exception("publish_chat_responded failed (account=%s fan=%s)", account_id, fan_id)
 
 
+def _inbox_row(account_id: str | None, event_type: str | None, payload: dict) -> dict:
+    """One `insert_events` row for an OF frame."""
+    event_type = event_type or "unknown"
+    # OF events sometimes carry an `id` field at top level — use it as the
+    # dedup key when present so re-deliveries (reconnect replays) don't
+    # double-write.
+    provider_id = None
+    if isinstance(payload, dict):
+        for k in ("id", "messageId", "eventId"):
+            v = payload.get(k)
+            if v is not None:
+                provider_id = f"{event_type}:{v}"
+                break
+    return {"account_id": account_id, "source": "of_ws", "event_type": event_type,
+            "payload": payload, "provider_event_id": provider_id}
+
+
+async def _persist_batch(rows: list[dict]) -> None:
+    """Write `rows` to event_inbox in one transaction; if that fails, row by
+    row, so one bad payload costs only its own row. Never raises."""
+    if not rows:
+        return
+    try:
+        await insert_events(rows)
+        return
+    except Exception:
+        if len(rows) == 1:
+            log.exception("persist event failed (type=%s)", rows[0]["event_type"])
+            return
+        log.warning("persist batch of %d failed; retrying row by row", len(rows),
+                    exc_info=True)
+    for row in rows:
+        try:
+            await insert_events([row])
+        except Exception:
+            log.exception("persist event failed (type=%s)", row["event_type"])
+
+
 async def _persist_event_safe(
     *, account_id: str | None, event_type: str, payload: dict,
 ) -> None:
-    """Wraps insert_event so a bad payload can't take down the broadcaster."""
-    try:
-        # OF events sometimes carry an `id` field at top level — use it as
-        # the dedup key when present so re-deliveries (reconnect replays)
-        # don't double-write.
-        provider_id = None
-        if isinstance(payload, dict):
-            for k in ("id", "messageId", "eventId"):
-                v = payload.get(k)
-                if v is not None:
-                    provider_id = f"{event_type}:{v}"
-                    break
-        await insert_event(
-            account_id=account_id,
-            source="of_ws",
-            event_type=event_type,
-            payload=payload,
-            provider_event_id=provider_id,
-        )
-    except Exception:
-        log.exception("persist_event_safe failed (type=%s)", event_type)
+    """One frame's event_inbox write (the pre-startup path). Never raises."""
+    await _persist_batch([_inbox_row(account_id, event_type, payload)])
+
+
+def _drain_batch(first: tuple) -> list[tuple]:
+    """`first` plus whatever is already queued, up to _PERSIST_BATCH_MAX, in
+    queue order. Never waits: an idle relay writes each event at once."""
+    batch = [first]
+    while len(batch) < _PERSIST_BATCH_MAX:
+        try:
+            batch.append(_persist_queue.get_nowait())
+        except asyncio.QueueEmpty:
+            break
+    return batch
 
 
 async def _persist_worker_loop() -> None:
-    """Singleton consumer that drains `_persist_queue` serially.
+    """Singleton consumer that drains `_persist_queue`.
 
-    Runs `insert_event` then `transcode` for each item, sequentially. This
-    matches SQLite's single-writer reality — fanning out via create_task
-    just makes them fight over `busy_timeout`. The serial loop also gives
-    us a free hot path for adding write batching later (group N items into
-    one commit) without changing the producer side.
+    Takes everything already queued (up to _PERSIST_BATCH_MAX), writes its
+    event_inbox rows in ONE commit, then runs `transcode` per event in queue
+    order. One consumer, FIFO, so each account's events keep their order —
+    and the inbox row of every event in a batch is written before any of them
+    is transcoded, as it was when each event went insert-then-transcode.
+    SQLite is single-writer: fanning out via create_task just makes the
+    writes fight over `busy_timeout`.
     """
     assert _persist_queue is not None
     from event_transcoder import transcode as _transcode  # local import to avoid cycles
     while True:
         try:
-            account_id, event_type, persistable, event = await _persist_queue.get()
+            first = await _persist_queue.get()
         except asyncio.CancelledError:
             return
-        try:
-            await _persist_event_safe(
-                account_id=account_id,
-                event_type=event_type or "unknown",
-                payload=persistable,
-            )
-        except Exception:
-            log.exception("persist worker: _persist_event_safe failed")
-        try:
-            await _transcode(event)
-        except Exception:
-            log.exception("persist worker: transcode failed")
+        batch = _drain_batch(first)
+        await _persist_batch([
+            _inbox_row(account_id, event_type, persistable)
+            for account_id, event_type, persistable, _event in batch
+            if event_type not in _UNPERSISTED_TYPES
+        ])
+        for _account_id, _event_type, _persistable, event in batch:
+            try:
+                await _transcode(event)
+            except Exception:
+                log.exception("persist worker: transcode failed")
 
 
 def start_persist_worker() -> None:
@@ -771,15 +923,93 @@ class _suppress_queue_empty:
 
 # ── SSE generator (FastAPI StreamingResponse body) ──────────────────
 
-def _sse_frame(frame: dict) -> bytes:
-    event_type = _first_real_key(frame) or "event"
+def _frame_json(frame: dict, event_type: str) -> str:
+    """`frame`'s JSON, encoded once per _Frame however many tabs get it."""
+    data = getattr(frame, "json", None)
+    if data is not None:
+        return data
     try:
         data = json.dumps(frame, default=str)
     except Exception:
         data = json.dumps({"error": "serialize_failed", "type": event_type})
+    if isinstance(frame, _Frame):
+        frame.json = data
+    return data
+
+
+def _sse_frame(frame: dict) -> bytes:
+    event_type = _first_real_key(frame) or "event"
+    data = _frame_json(frame, event_type)
     eid = getattr(frame, "eid", None)
     head = f"id: {eid}\n" if eid else ""
     return f"{head}event: {event_type}\ndata: {data}\n\n".encode("utf-8")
+
+
+def _coalesce_key(frame: dict) -> tuple | None:
+    event_type = _first_real_key(frame)
+    field = _COALESCE.get(event_type)  # type: ignore[arg-type]
+    body = frame.get(event_type) if field else None
+    if not isinstance(body, dict) or body.get(field) is None:
+        return None
+    return event_type, frame.get("__account_id"), body[field]
+
+
+def _coalesce(frames: list) -> list:
+    """`frames` minus every one a newer frame in it supersedes (_COALESCE),
+    order kept. The last frame is always kept, so the batch id is unchanged."""
+    seen: set = set()
+    kept = []
+    for f in reversed(frames):
+        key = _coalesce_key(f)
+        if key is not None:
+            if key in seen:
+                continue
+            seen.add(key)
+        kept.append(f)
+    kept.reverse()
+    return kept
+
+
+def _sse_out(frames: list) -> bytes:
+    """One frame as itself; several as one `event: batch` frame whose data is
+    `[{id, type, data}, ...]` and whose id is the last member's."""
+    if len(frames) == 1:
+        return _sse_frame(frames[0])
+    members = []
+    for f in frames:
+        # Both are plain tokens: the type is on the SSE_TYPES allow-list and
+        # the id is `<hex epoch>.<seq>` — no JSON escaping needed.
+        event_type = _first_real_key(f) or "event"
+        members.append(f'{{"id":"{f.eid}","type":"{event_type}",'
+                       f'"data":{_frame_json(f, event_type)}}}')
+    last = getattr(frames[-1], "eid", None)
+    head = f"id: {last}\n" if last else ""
+    return f"{head}event: batch\ndata: [{','.join(members)}]\n\n".encode("utf-8")
+
+
+def sse_stats() -> dict:
+    """Per open stream: its mode right now, decayed rate, window, queue depth
+    and counters — for /admin/events/stats. No scopes or account ids."""
+    now = time.monotonic()
+    streams = []
+    for sub in list(_subs.values()):
+        rate = sub.rate * math.exp((sub.rate_at - now) / _RATE_TAU_S)
+        window = _window_s(rate) if sub.batching else 0.0
+        streams.append({
+            "mode": "batch" if window else "immediate" if sub.batching else "queue",
+            "rate": round(rate, 2),
+            "window_ms": round(window * 1000),
+            "queued": sub.q.qsize(),
+            "batches": sub.batches,
+            "coalesced": sub.coalesced,
+        })
+    return {
+        "knobs": {"SSE_BATCH_MIN_RATE": SSE_BATCH_MIN_RATE,
+                  "SSE_BATCH_WINDOW_MS": SSE_BATCH_WINDOW_MS,
+                  "SSE_BATCH_MAX_WINDOW_MS": SSE_BATCH_MAX_WINDOW_MS},
+        "batching": sum(1 for st in streams if st["mode"] == "batch"),
+        "streams": streams,
+    }
 
 
 # Tells the tab it may have missed events the rings cannot replay: refetch.
@@ -797,7 +1027,9 @@ async def sse_stream(
         longer reach back that far; then an id-only frame naming the head
         at connect, so a drop before the next event resumes from there.
       • Heartbeat comments every _HEARTBEAT_S seconds.
-      • JSON-encoded events with `event:` line set to the OF event type.
+      • JSON-encoded events with `event:` line set to the OF event type, or
+        grouped into `event: batch` frames while the stream runs hot (see
+        "Load-adaptive batching").
       • `resync` when this subscriber's queue overflowed.
       • Ending after an `assignment_changed` it was sent: its Creators may
         have changed, and the browser's reconnect reads them afresh. The
@@ -815,6 +1047,7 @@ async def sse_stream(
     # Register and read the rings in one synchronous step: every event up to
     # `head` is in the rings, every later one lands in the queue.
     sub = _register(scope, accounts, agencies)
+    sub.batching = True
     head = f"{_EPOCH}.{_seq}"
     missed, gap = _replay_since(sub, last_event_id)
     q = sub.q
@@ -822,8 +1055,11 @@ async def sse_stream(
         yield b": connected\n\n"
         if gap:
             yield _RESYNC
-        for frame in missed:
-            yield _sse_frame(frame)
+        # A replay is a burst by definition: batched whenever batching is on,
+        # so a tab waking from idle applies it in one pass, not hundreds.
+        step = _BATCH_MAX if SSE_BATCH_WINDOW_MS > 0 else 1
+        for i in range(0, len(missed), step):
+            yield _sse_out(_coalesce(missed[i:i + step]))
         yield f"id: {head}\n\n".encode("utf-8")
         last_beat = time.monotonic()
         while True:
@@ -849,9 +1085,21 @@ async def sse_stream(
                     last_beat = time.monotonic()
                 continue
 
-            yield _sse_frame(event)
+            if isinstance(event, _Batch):
+                # Still open: let it collect until its window closes.
+                delay = event.deadline - time.monotonic()
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                if sub.open is event:
+                    sub.open = None
+                frames = _coalesce(event)
+                sub.coalesced += len(event) - len(frames)
+                sub.batches += 1
+            else:
+                frames = [event]
+            yield _sse_out(frames)
             last_beat = time.monotonic()
-            if _first_real_key(event) in _ENDS_STREAM:
+            if _first_real_key(frames[-1]) in _ENDS_STREAM:
                 return
     finally:
         await unsubscribe(scope, q)

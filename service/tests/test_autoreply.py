@@ -1018,9 +1018,29 @@ def case_config_api_audience_and_delay():
         raise AssertionError("a non-number cap must be refused")
 
 
+async def case_slot_lost_after_a_bubble_still_records_the_nudge():
+    """The run loses its slot (run_slot.SlotLost) at bubble 2's hold: bubble 2
+    is not sent, but the nudge that landed is recorded (nudges_sent), so the
+    cap holds and the next run does not nudge him again."""
+    aid = "ar_slot_lost"
+    await _seed_account(aid)
+    await _seed_fan(aid, 3501)
+    fake = _use_fake(); _patch_llm("hey u, been thinking about you.\nwhat r u up to tonight 😏")
+    with _harness.slot_lost_at_hold(_autoreply, 2) as calls:
+        res = await run_once(aid, "autoreply", payload={})
+    assert calls[0] == 2, calls                    # a two-bubble reply, stopped at bubble 2
+    assert res["status"] == "error", res
+    assert len(fake.sent) == 1, fake.sent
+    st = await _state(aid, 3501)
+    assert st is not None and st.nudges_sent == 1, st
+    res = await run_once(aid, "autoreply", payload={})
+    assert res["sent"] == 0 and len(fake.sent) == 1, (res, fake.sent)
+
+
 _harness.run(
     case_disabled_no_send,
     case_eligible_one_nudge,
+    case_slot_lost_after_a_bubble_still_records_the_nudge,
     case_nudge_cap,
     case_new_message_covered_again,
     case_reply_gap_holds_fast_remessage,

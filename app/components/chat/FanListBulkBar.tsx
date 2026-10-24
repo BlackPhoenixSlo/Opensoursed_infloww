@@ -24,11 +24,11 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { useActionAllowed } from "@/components/shell/useGrantedPages";
 import { useAllChatFolders } from "@/hooks/useChatFolders";
+import { isUnreadChat } from "@/lib/chatUnread";
 import { relay, type OFChatItem } from "@/lib/relay";
 import { MP } from "@/lib/messagesPro";
 import { cn } from "@/lib/utils";
 import { MENU, MENU_ITEM, MENU_ROW, MenuStatusLine, useMenuStatus } from "./MenuParts";
-import { isUnreadChat } from "./FanRow";
 import { useFanListMenu } from "./useFanListMenu";
 
 const O = MP.ours.FanListBulkBar;

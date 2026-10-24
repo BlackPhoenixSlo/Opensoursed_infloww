@@ -17,10 +17,11 @@
  * (Phase B.2); the Refresh button is the full re-walk.
  */
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import {
   hashKey,
   keepPreviousData,
+  replaceEqualDeep,
   useInfiniteQuery,
   useQueryClient,
   type InfiniteData,
@@ -30,11 +31,10 @@ import {
 
 import { useScope } from "@/contexts/ScopeContext";
 import { eventBus } from "@/lib/events";
-import { relay, type OFChatItem, type OFChatsResp, type OFMessage, type OFUserMini } from "@/lib/relay";
+import { relay, type OFChatItem, type OFChatsResp, type OFUserMini } from "@/lib/relay";
 import { compareFanIds, fanIdFromParam, type FanId } from "@/lib/fanId";
 import { perfDelivered, perfError, perfLog, perfOpId, perfPaintPending } from "@/lib/perfLog";
 import { usePlatformAccounts } from "./useAccounts";
-import { prefetchChatMessages } from "./useChatMessages";
 import { avatarThumb, mergeOFUserName } from "./useOFUser";
 
 /** A chat row's identity in the list, (accountId, fanId): the flatten step
@@ -44,6 +44,42 @@ export function chatRowKey(c: OFChatItem): string {
 }
 
 const PAGE_SIZE = 25;
+
+/** The chats query's structural sharing: each row is shared with the previous
+ *  row of the same (accountId, fanId), not the one at the same index. A live
+ *  message moves its row to the top (useInboxRealtime), shifting every row
+ *  above its old place down one; React Query's index-wise sharing would hand
+ *  each of those a new object, and the memoized FanRow would re-render all of
+ *  them. Here an unchanged row keeps its object wherever it moved, and a page
+ *  (or the whole data) whose rows are all unchanged keeps its own. Exported
+ *  for tests. */
+export function shareChatPages(prev: unknown, next: unknown): unknown {
+  const p = prev as InfiniteData<ChatsPage> | undefined;
+  const n = next as InfiniteData<ChatsPage> | undefined;
+  if (!p?.pages || !n?.pages) return replaceEqualDeep(prev, next);
+  if (p === n) return p;
+  const old = new Map<string, OFChatItem>();
+  for (const pg of p.pages) for (const c of pg.rows) old.set(chatRowKey(c), c);
+  let allSame = p.pages.length === n.pages.length;
+  const pages = n.pages.map((pg, i) => {
+    const was = p.pages[i];
+    if (pg === was) return was;
+    let same = !!was && was.hasMore === pg.hasMore && was.session === pg.session &&
+      was.rows.length === pg.rows.length;
+    const rows = pg.rows.map((c, j) => {
+      const prevRow = old.get(chatRowKey(c));
+      const row = prevRow ? replaceEqualDeep(prevRow, c) : c;
+      if (same && was.rows[j] !== row) same = false;
+      return row;
+    });
+    if (same) return was;
+    allSame = false;
+    return { ...pg, rows };
+  });
+  const pageParams = replaceEqualDeep(p.pageParams, n.pageParams);
+  if (allSame && pageParams === p.pageParams) return p;
+  return { ...n, pages, pageParams };
+}
 /** Background poll cadence: foreground with no live SSE, and the safety poll
  *  while the tab is hidden or SSE (useInboxRealtime) patches the list. */
 const POLL_MS = 90_000;
@@ -251,9 +287,15 @@ export function compareChats(a: OFChatItem, b: OFChatItem): number {
   return compareFanIds(b.withUser?.id, a.withUser?.id);
 }
 
+/** This page load. A page read from OF carries it; one restored from disk
+ *  (this tab's earlier load, or another tab's) carries another or none. */
+const SESSION = Math.random().toString(36).slice(2);
+
 interface ChatsPage {
   rows: OFChatItem[];
   hasMore: boolean;
+  /** The page load that read it from OF (`SESSION`); persisted along with it. */
+  session?: string;
 }
 
 /** Paint-attribution key for one list view. Exported so ChatList and
@@ -337,7 +379,7 @@ async function fetchPage(
       // the row component observes that cache and picks up names + nicknames
       // as soon as /users/list lands. Don't await — that would slow cold paint.
       void enrichWithUsers(raw, scope.accountId, qc).catch(() => {});
-      return { rows: raw.sort(sort), hasMore: !!resp.hasMore };
+      return { rows: raw.sort(sort), hasMore: !!resp.hasMore, session: SESSION };
     } catch (err) {
       perfError(opId, "chat.list", { message: (err as Error)?.message });
       throw err;
@@ -372,7 +414,7 @@ async function fetchPage(
   perfDelivered(opId, "chat.list", {
     count: merged.length, hasMore: anyMore, accountCount: accounts.length, failed,
   });
-  return { rows: merged.sort(sort), hasMore: anyMore };
+  return { rows: merged.sort(sort), hasMore: anyMore, session: SESSION };
 }
 
 /**
@@ -523,54 +565,6 @@ function useHeadPagePoll(args: {
   }, [enabled, keyHash, qc]);
 }
 
-/** How many unread chats, from the top of the list, get their thread warmed. */
-const UNREAD_PREFETCH_TOP = 3;
-
-/**
- * useUnreadMessagesPrefetch — warm the first message page of the top 3 unread
- * chats once the list has loaded, so the chats a chatter opens next paint from
- * cache instead of a cold ~600ms OF fetch.
- *
- * Bounded on purpose, because every warm is a real OF call:
- *   • BACKGROUND lane (`prefetchChatMessages`); opening a chat mid-warm cancels
- *     the warm and refetches on the user lane (see useChatMessages).
- *   • One at a time — a single promise chain, never a burst of three.
- *   • Once per (chat, last message): a poll that returns the same rows fires
- *     nothing; a chat re-qualifies only when a NEW message lands in it, which
- *     is exactly when its cached thread went stale.
- *   • Skipped when the cached thread already holds the row's last message.
- *   • Only after a fetch this mount: a list rehydrated from disk may show chats
- *     long since read.
- */
-function useUnreadMessagesPrefetch(rows: OFChatItem[], ready: boolean) {
-  const qc = useQueryClient();
-  const tried = useRef(new Set<string>());
-  const chain = useRef<Promise<void>>(Promise.resolve());
-
-  const top: { aid: string; fid: FanId; lastId: number | undefined; key: string }[] = [];
-  for (const c of rows) {
-    if (top.length === UNREAD_PREFETCH_TOP) break;
-    const aid = c.__accountId;
-    if (!c.hasUnread || !aid || c.withUser?.id == null) continue;
-    const lastId = c.lastMessage?.id;
-    top.push({ aid, fid: c.withUser.id, lastId, key: `${aid}:${c.withUser.id}:${lastId ?? ""}` });
-  }
-  const latest = useRef(top);
-  latest.current = top;
-  const signature = top.map((t) => t.key).join(",");
-
-  useEffect(() => {
-    if (!ready) return;
-    for (const { aid, fid, lastId, key } of latest.current) {
-      if (tried.current.has(key)) continue;
-      tried.current.add(key);
-      const cached = qc.getQueryData<OFMessage[]>(["messages", aid, fid]);
-      if (cached?.length && (lastId == null || cached.some((m) => String(m.id) === String(lastId)))) continue;
-      chain.current = chain.current.then(() => prefetchChatMessages(qc, aid, fid));
-    }
-  }, [ready, signature, qc]);
-}
-
 export function useChatList(params: ChatListParams = {}) {
   const { scope } = useScope();
   // "all" scope fans out across every session-bearing account.
@@ -630,6 +624,7 @@ export function useChatList(params: ChatListParams = {}) {
     // only); read its comment before reinstating anything here.
     refetchOnWindowFocus: false,
     placeholderData: keepPreviousData,
+    structuralSharing: shareChatPages,
   });
 
   // Deliberately NOT memoised: `useHeadPagePoll` re-reads its args every render,
@@ -646,19 +641,28 @@ export function useChatList(params: ChatListParams = {}) {
   useHeadPagePoll({ enabled, queryKey, fetchHead });
 
   // Flatten + de-dupe by (accountId, fanId). The realtime SSE handler also
-  // moves rows around, so duplication can creep in across pages.
-  const rows: OFChatItem[] = [];
-  const seen = new Set<string>();
-  for (const p of q.data?.pages ?? []) {
-    for (const c of p.rows) {
-      const key = chatRowKey(c);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      rows.push(c);
+  // moves rows around, so duplication can creep in across pages. Memoized on
+  // the pages, so a render with no new data hands FanList the same array and
+  // its derived lists (chips, sort, Focus mode) are not rebuilt.
+  const rows = useMemo(() => {
+    const out: OFChatItem[] = [];
+    const seen = new Set<string>();
+    for (const p of q.data?.pages ?? []) {
+      for (const c of p.rows) {
+        const key = chatRowKey(c);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(c);
+      }
     }
-  }
+    return out;
+  }, [q.data]);
 
-  useUnreadMessagesPrefetch(rows, enabled && q.isFetchedAfterMount);
+  // Page 0's stamp, not `isFetchedAfterMount`: a live event's setQueryData
+  // flips that too, so one landing before the mount fetch would vouch for a
+  // disk-restored list. A live patch keeps the page it patches (and its stamp);
+  // a failed refetch leaves the old pages.
+  const fetchedLive = enabled && !q.isPlaceholderData && q.data?.pages[0]?.session === SESSION;
 
   // Imperative "force-fresh" hook for the Refresh-inbox button. Sets the
   // bypass flag for the WHOLE refetch (every loaded page forwards ?refresh=1
@@ -683,5 +687,7 @@ export function useChatList(params: ChatListParams = {}) {
     loadMore: () => q.fetchNextPage(),
     isFetchingMore: q.isFetchingNextPage,
     refresh,
+    /** The rows were read from OF in this page load, not only restored from disk. */
+    fetchedLive,
   };
 }

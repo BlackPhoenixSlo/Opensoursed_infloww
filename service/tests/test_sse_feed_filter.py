@@ -8,8 +8,9 @@
   • broadcast() only pushes the types a browser listens for (SSE_TYPES);
     anything else is persisted but not serialized to every tab.
   • An inbound OF `typing` frame becomes ONE `chat_typing {fan_id}` SSE event
-    per fan per 3 s, and still goes down the persist/transcode path (which
-    touches the Fan row) like every other frame; the raw frame is not pushed.
+    per fan per 3 s, and still reaches the persist worker's transcode (which
+    touches the Fan row) but gets no event_inbox row (test_persist_batch); the
+    raw frame is not pushed.
 
 Run:  ./venv/bin/python service/tests/test_sse_feed_filter.py
 """
@@ -104,7 +105,7 @@ async def case_typing_forwarded_and_throttled():
         for _ in range(4):
             await events.handle_event({"__account_id": AID, "typing": {"id": 501}})
         await events.handle_event({"__account_id": AID, "typing": {"id": 502}})
-        assert len(_drain(persisted)) == 5, "typing still reaches the persist/transcode worker"
+        assert len(_drain(persisted)) == 5, "typing still reaches the persist worker (for transcode)"
         got = _drain(sub)
         assert [e["chat_typing"]["fan_id"] for e in got] == [501, 502], got
         assert all(e["__account_id"] == AID for e in got)

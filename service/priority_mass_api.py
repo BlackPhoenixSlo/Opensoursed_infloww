@@ -208,7 +208,8 @@ async def create_run(request: Request) -> dict[str, Any]:
         await s.flush()
         run_id = int(row.id)
         # The first leg commits with the run: no run is ever left without one.
-        await ax.enqueue_job(aid, pm.KIND, payload={"run_id": run_id}, session=s)
+        await ax.enqueue_job(aid, pm.KIND, payload={"run_id": run_id}, session=s,
+                             created_by_employee_id=employee_id)
     log.info("priority_mass_created run=%s account=%s lists=%s price_cents=%s media=%d",
              run_id, aid, v["audience"]["user_lists"], v["price_cents"], len(v["media"]))
     return (await _public([await _get_run(run_id)]))[0]

@@ -8,7 +8,7 @@ team (chatters and employees), settings, and auto post / auto story.
 Rebuilding the full Infloww UI on top of this base is in progress; see
 [VISION.md](VISION.md).
 
-![Inflowwww](docs/screenshots/placeholder.png)
+![Inflowwww dashboard on desktop and phone](web/public/img/dashboard-combo.webp)
 
 ## Quick start
 

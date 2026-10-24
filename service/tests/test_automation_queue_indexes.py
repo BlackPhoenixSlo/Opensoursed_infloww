@@ -169,9 +169,10 @@ def case_every_hot_query_uses_its_index() -> None:
         ),
         (
             "_due_job_pairs",
-            "select account_id,kind from scheduled_jobs where status='pending' "
-            "and run_at<=? group by account_id,kind",
-            ("2026-09-01",),
+            "select account_id,kind,max(case when created_by_employee_id is not null "
+            "and created_by_employee_id != ? then 1 else 0 end) from scheduled_jobs "
+            "where status='pending' and run_at<=? group by account_id,kind",
+            (1, "2026-09-01"),
             "ix_jobs_status_run",
         ),
         (

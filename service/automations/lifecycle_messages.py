@@ -263,18 +263,22 @@ async def renew_off_fan_ids(account_id, fan_ids, now: datetime) -> set[int]:
 _roster_locks: dict[str, asyncio.Lock] = {}
 
 
-async def refresh_roster(account_id: str, client, *, now: datetime) -> dict:
+async def refresh_roster(account_id: str, client, *, now: datetime,
+                         force: bool = False) -> dict:
     """Crawl the active roster into `subscriber_snapshot` unless a complete crawl
-    is younger than `_CRAWL_TTL_S`. Returns what happened, for the run stats.
-    One crawl per account at a time: the lifecycle sweep and smart_list_sync
-    both call this, and two interleaved crawls would stamp different seen_at."""
+    is younger than `_CRAWL_TTL_S` (`force` skips that check: the admin run-now
+    route, `POST /admin/roster/{account_id}/crawl`). Returns what happened, for
+    the run stats. One crawl per account at a time: the lifecycle sweep and
+    smart_list_sync both call this, and two interleaved crawls would stamp
+    different seen_at."""
     async with _roster_locks.setdefault(str(account_id), asyncio.Lock()):
-        return await _refresh_roster(account_id, client, now=now)
+        return await _refresh_roster(account_id, client, now=now, force=force)
 
 
-async def _refresh_roster(account_id: str, client, *, now: datetime) -> dict:
+async def _refresh_roster(account_id: str, client, *, now: datetime,
+                          force: bool = False) -> dict:
     last = await _last_crawl(account_id)
-    if last is not None and (now - last).total_seconds() < _CRAWL_TTL_S:
+    if not force and last is not None and (now - last).total_seconds() < _CRAWL_TTL_S:
         return {"roster": "fresh"}
     rows, truncated = await asyncio.to_thread(_crawl_blocking, client)
     listed: dict[int, dict] = {}
@@ -599,7 +603,7 @@ async def run_follow_up(account_id: str, kind: str, job: dict, *,
         try:
             result = await ax.of_write_paced(
                 account_id, lambda: client.send_message(fid, text, media_files=[]),
-                send_purpose=_SEND_PURPOSE)
+                send_purpose=_SEND_PURPOSE, dm=True)
         except Exception as exc:  # noqa: BLE001
             if ax.is_rate_limited(exc):
                 await _release(account_id, kind, fid, key)
@@ -786,7 +790,7 @@ async def sweep(kind: str, account_id: str, payload: dict) -> dict:
                     account_id,
                     lambda f=int(fid), t=text, m=fan_media, p=fan_price: send_dropping_bad_media_sync(
                         client, f, t, m, price_cents=p, log=log),
-                    send_purpose=_SEND_PURPOSE)
+                    send_purpose=_SEND_PURPOSE, dm=True)
             except Exception as exc:  # noqa: BLE001
                 if kind == EXPIRED and is_unreachable_fan_error(exc):
                     # Lapsed, not gone: no quarantine (D12).

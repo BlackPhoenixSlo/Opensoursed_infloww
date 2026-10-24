@@ -444,7 +444,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     account_id,
                     lambda f=int(fid), t=text, m=fan_media, p=fan_price: send_dropping_bad_media_sync(
                         client, f, t, m, price_cents=p, log=log),
-                    send_purpose=_SEND_PURPOSE)
+                    send_purpose=_SEND_PURPOSE, dm=True)
             except Exception as exc:  # noqa: BLE001
                 if await skip_unreachable_fan(account_id, fid, exc, log=log):
                     unreachable += 1     # skip-listed; the claim stays

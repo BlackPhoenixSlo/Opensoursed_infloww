@@ -1,0 +1,4 @@
+# Per-run output: screenshots, metrics, logs. Never committed.
+evidence/*
+!evidence/.gitkeep
+__pycache__/

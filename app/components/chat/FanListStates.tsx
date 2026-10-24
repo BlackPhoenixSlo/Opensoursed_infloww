@@ -59,6 +59,21 @@ export function LoadMoreConversations({ loaded, onClick }: { loaded: number; onC
   );
 }
 
+/** The end of a Fan List drawn up to its render cap: "Show N more" draws the
+ *  next step of rows already loaded (FanList's ROW_RENDER_STEP). */
+export function ShowMoreRows({ count, onClick }: { count: number; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      data-show-more-rows
+      onClick={onClick}
+      className={cn(G.loadMore, "w-full text-center border-[color:var(--inf-rule,color-mix(in_oklab,var(--color-border)_40%,transparent))] text-[var(--inf-accent-text,var(--color-accent))] hover:bg-bg-elev-1")}
+    >
+      Show {count} more
+    </button>
+  );
+}
+
 /** Focus mode's banner at the top of the frozen rows: "{N} new messages"
  *  (spec, Focus mode). A click catches up: a refresh, then the live order.
  *  ASSUMPTION: its colours are the kit note's accent tint in our tokens

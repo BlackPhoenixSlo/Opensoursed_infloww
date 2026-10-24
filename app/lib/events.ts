@@ -11,10 +11,29 @@
  * gives up (non-200, e.g. a relay restart behind the proxy) we reopen
  * ourselves with backoff and pass that id as `?last_event_id=`.
  *
+ * Batches: while a stream runs hot the relay groups its events into one
+ * `event: batch` frame (`[{id, type, data}, ...]`, oldest first, the frame's
+ * id = its last member's; service/events.py "Load-adaptive batching"). Each
+ * member is dispatched exactly as if it had come as its own frame, all inside
+ * one React Query notify batch, so a 50-event frame is one render pass.
+ *
+ * Adaptive apply: the tab measures its own arrival rate (events per second
+ * over the last second, batch members counted). At or under
+ * HOT_EVENTS_PER_S every event is applied the moment it lands; above it,
+ * events (single or batch) queue and apply together on the next animation
+ * frame, in arrival order, inside one notify batch. A flood then costs at
+ * most one list update per painted frame, and a DM waits at most a frame
+ * (the relay already batches a hot stream into 100-250 ms frames, so a
+ * longer window here only adds latency: a fixed 250 ms one was ~260 ms of
+ * every DM's time to screen). Where frames do not run (a hidden tab) the
+ * queue flushes after APPLY_WINDOW_MS instead.
+ *
  * Concurrency: a single EventSource per scope; multiple components
  * subscribe to the same one via `on(eventType, fn)`. Clean up by calling
  * the returned unsubscriber on unmount.
  */
+
+import { notifyManager } from "@tanstack/react-query";
 
 import { resolveShareToken } from "./shareToken";
 
@@ -40,6 +59,18 @@ const STALE_CHECK_MS = 5_000;
 // Our own reopen after the browser gives up: 5 s, doubling to 60 s.
 const RETRY_MIN_MS = 5_000;
 const RETRY_MAX_MS = 60_000;
+// Adaptive apply (see the header). Knobs: NEXT_PUBLIC_SSE_HOT_EVPS,
+// NEXT_PUBLIC_SSE_APPLY_WINDOW_MS. A quiet inbox (≤ 2 ev/s) stays instant;
+// a hot one applies on the next frame, or after 250 ms where frames do not
+// run (hidden tab), well inside the 2 s SSE-lag budget.
+export const HOT_EVENTS_PER_S = envNum(process.env.NEXT_PUBLIC_SSE_HOT_EVPS, 2);
+export const APPLY_WINDOW_MS = envNum(process.env.NEXT_PUBLIC_SSE_APPLY_WINDOW_MS, 250);
+const RATE_SPAN_MS = 1_000;
+
+function envNum(v: string | undefined, fallback: number): number {
+  const n = Number(v);
+  return v != null && v !== "" && Number.isFinite(n) && n >= 0 ? n : fallback;
+}
 
 /** refetchInterval for a query that SSE keeps fresh: a slow safety poll
  *  while the stream is live, the old fast poll while it is not. */
@@ -73,6 +104,12 @@ class EventBus {
   private retryMs = RETRY_MIN_MS;
   // Idle mode (`pause`): no socket, and scope changes wait for `resume`.
   private paused = false;
+  // Adaptive apply: [arrivedAt, count] over the last RATE_SPAN_MS, and the
+  // events waiting for the current window.
+  private arrivals: [number, number][] = [];
+  private pending: [string, EventEnvelope][] = [];
+  private applyTimer: ReturnType<typeof setTimeout> | null = null;
+  private applyFrame: number | null = null;
 
   /** True iff the SSE socket is OPEN *and* an event has arrived within
    *  STALE_MS. A half-dead pipe (socket open, upstream stalled) reads false. */
@@ -144,6 +181,8 @@ class EventBus {
   private reconnect(resume = false) {
     if (this.retryTimer) clearTimeout(this.retryTimer);
     this.retryTimer = null;
+    // Events already received apply before anything from the next stream.
+    this.flushPending();
     if (this.es) {
       this.es.close();
       this.es = null;
@@ -204,6 +243,12 @@ class EventBus {
       this.bumpLastEventAt();
     });
 
+    es.addEventListener("batch", (msg) => {
+      this.noteId(msg as MessageEvent);
+      this.bumpLastEventAt();
+      this.dispatchBatch((msg as MessageEvent).data);
+    });
+
     // Re-register every known type-listener against the new EventSource.
     for (const type of this.byType.keys()) {
       if (type === "*" || type === "__error") continue;
@@ -230,6 +275,73 @@ class EventBus {
     } catch {
       parsed = { __raw: raw } as EventEnvelope;
     }
+    // Connection signals are not data: never held back.
+    if (type === "__error") this.emit(type, parsed);
+    else this.admit([[type, parsed]]);
+  }
+
+  /** Apply now while the stream is quiet; above HOT_EVENTS_PER_S (or while
+   *  a flush is pending, so order holds) queue for the next frame's flush. */
+  private admit(events: [string, EventEnvelope][]) {
+    if (!events.length) return;
+    const now = Date.now();
+    this.arrivals.push([now, events.length]);
+    while (this.arrivals.length && now - this.arrivals[0][0] >= RATE_SPAN_MS) this.arrivals.shift();
+    let rate = 0;
+    for (const [, n] of this.arrivals) rate += n;
+    if (!this.applyTimer && rate <= HOT_EVENTS_PER_S) {
+      this.applyAll(events);
+      return;
+    }
+    for (const e of events) this.pending.push(e);
+    if (this.applyTimer) return;
+    this.applyTimer = setTimeout(() => this.flushPending(), APPLY_WINDOW_MS);
+    if (typeof requestAnimationFrame === "function") {
+      this.applyFrame = requestAnimationFrame(() => this.flushPending());
+    }
+  }
+
+  private flushPending() {
+    if (this.applyTimer) clearTimeout(this.applyTimer);
+    if (this.applyFrame != null) cancelAnimationFrame(this.applyFrame);
+    this.applyTimer = null;
+    this.applyFrame = null;
+    const q = this.pending;
+    this.pending = [];
+    this.applyAll(q);
+  }
+
+  /** One notify batch, so the cache writes they make render once. */
+  private applyAll(events: [string, EventEnvelope][]) {
+    if (!events.length) return;
+    if (events.length === 1) {
+      this.emit(events[0][0], events[0][1]);
+      return;
+    }
+    notifyManager.batch(() => {
+      for (const [t, e] of events) this.emit(t, e);
+    });
+  }
+
+  /** A `batch` frame: each member as if it had come on its own. Only types
+   *  someone listens for, as a single frame only reaches a named listener. */
+  private dispatchBatch(raw: string) {
+    let members: { type?: unknown; data?: unknown }[];
+    try {
+      members = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    if (!Array.isArray(members)) return;
+    const events: [string, EventEnvelope][] = [];
+    for (const m of members) {
+      if (typeof m?.type !== "string" || !this.byType.has(m.type)) continue;
+      events.push([m.type, (m.data ?? {}) as EventEnvelope]);
+    }
+    this.admit(events);
+  }
+
+  private emit(type: string, parsed: EventEnvelope) {
     const exact = this.byType.get(type);
     const wild = this.byType.get("*");
     if (exact) for (const fn of exact) safe(fn, parsed, type);

@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Inter } from "next/font/google";
+import localFont from "next/font/local";
 
 import Providers from "@/components/providers";
 import AuthGate from "@/components/auth/AuthGate";
@@ -13,11 +13,14 @@ import { AssistantProvider, AssistantWidget } from "@/components/assistant/Assis
 
 import "./globals.css";
 
-const inter = Inter({
-  subsets: ["latin"],
-  weight: ["300", "400", "500", "600", "700"],
+/** Instrument Sans (OFL, app/app/fonts/): the closest free match to Infloww's licensed Suisse Int'l, whose app
+ *  ships only Regular 400 and Medium 500 (fe-static-assets.infloww.com/font/SuisseIntl-*-WebS.woff2, declared in
+ *  its app.asar). Self-hosted so builds and the demo-shots capture need no Google Fonts. */
+const ui = localFont({
+  src: "./fonts/InstrumentSans-Variable.ttf",
+  weight: "400 700",
   display: "swap",
-  variable: "--font-inter",
+  variable: "--font-ui",
 });
 
 export const metadata: Metadata = {
@@ -143,10 +146,10 @@ export const dynamic = "force-dynamic";
 export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
-  // The font variable lets us reference --font-inter from Tailwind's
+  // The font variable lets us reference --font-ui from Tailwind's
   // `font-sans` token (configured in globals.css @theme).
   return (
-    <html lang="en" className={inter.variable} suppressHydrationWarning>
+    <html lang="en" className={ui.variable} suppressHydrationWarning>
       <body className="min-h-dvh bg-bg text-fg antialiased" suppressHydrationWarning>
         {/* This inline script runs synchronously before React hydrates, so
          *  the persisted theme is on <html data-theme=…> by the first paint.

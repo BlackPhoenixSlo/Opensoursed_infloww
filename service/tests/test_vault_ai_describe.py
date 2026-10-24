@@ -827,8 +827,52 @@ async def case_cap_state_reads_the_money_not_the_sticky_flag() -> None:
     assert other["spent_millicents"] == 0, other
 
 
+async def case_capped_means_no_call_on_the_model_fits() -> None:
+    """With a model, `capped` is "no call on it fits", not spent >= cap: the
+    last reservation that fit settles under the cap and the spend stays just
+    below it while every call is refused. Less left than one reservation
+    (no input, a full output) is capped; a refusal today with under two left
+    is capped; a cap raised since is not. The vision routes read this one
+    predicate, so a hopeless describe fetches nothing."""
+    model = "qwen3-vl-30b"
+    floor = llm_client._cost_millicents(model, 0, llm_client._ASSUMED_OUTPUT_TOKENS)
+    assert 0 < floor < 10_000, floor
+
+    async def _state(left: int, flagged: bool = False) -> dict:
+        aid = _fresh_account()
+        await _seed_account(aid, cap_cents=100)  # 10,000 mc
+        await _spend_today(aid, 10_000 - left, flagged=flagged)
+        return await llm_client.cap_state(aid, "deepinfra", model)
+
+    assert (await _state(floor - 1))["capped"] is True                      # no room at all
+    assert (await _state(floor + 1))["capped"] is False                     # still fits
+    assert (await _state(2 * floor - 1, flagged=True))["capped"] is True    # refused, too little left
+    assert (await _state(min(5 * floor, 10_000), flagged=True))["capped"] is False  # cap raised since
+    no_model = await llm_client.cap_state(_fresh_account(), "deepinfra")
+    assert no_model["capped"] is False, no_model
+
+    aid = _fresh_account()
+    await _seed_account(aid, cap_cents=100)
+    await _seed_items(aid, [94])
+    await _spend_today(aid, 10_000 - (floor - 1))   # spent < cap, yet nothing fits
+    collected: list[int] = []
+    orig = vault_frames.collect
+
+    async def _spy(_aid, item, _raw, want=1):
+        collected.append(int(item.media_id))
+        return vault_frames.Collected(["data:image/jpeg;base64,AAAA"], "ok")
+
+    vault_frames.collect = _spy
+    try:
+        out = await vault_ai_api.describe_one({"account_id": aid, "media_id": 94})
+    finally:
+        vault_frames.collect = orig
+    assert out["status"] == "capped" and collected == [], (out, collected)
+
+
 _harness.run(
     case_describe_all_refuses_to_start_over_the_cap,
+    case_capped_means_no_call_on_the_model_fits,
     case_one_item_describe_over_the_cap_fetches_nothing,
     case_cap_state_reads_the_money_not_the_sticky_flag,
     case_redescribe_keeps_flags_and_operator_fixes,

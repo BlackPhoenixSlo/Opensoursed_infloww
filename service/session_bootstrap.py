@@ -39,7 +39,10 @@ sys.path.insert(0, str(HERE))
 import accounts as account_registry  # noqa: E402
 from of_signer import derive_rules_from_chunk, verify_rules  # noqa: E402
 
-CHUNK_URL_TPL = "https://static2.onlyfans.com/static/prod/f/{rev}/2313.js"
+from of_origin import OF_API_ORIGIN  # noqa: E402  (ADR 0024 test seam; "" = real CDN)
+
+CHUNK_URL_TPL = (f"{OF_API_ORIGIN}/static/prod/f/{{rev}}/2313.js" if OF_API_ORIGIN
+                 else "https://static2.onlyfans.com/static/prod/f/{rev}/2313.js")
 
 
 # ─── C: paste-curl ───────────────────────────────────────────────────────

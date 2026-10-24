@@ -2277,6 +2277,53 @@ async def case_image_reply_does_not_steal_the_turn_wcfi():
     assert fake2.sent == [], fake2.sent
 
 
+
+# ── free3 (ADR 0025): Fan rows are read per gathered fan ──
+
+async def case_fan_rows_are_read_per_gathered_fan_in_chunks():
+    """The Fan read covers the gathered fans only, chunked: with a chunk of 1
+    the paused fan is still seen (skipped) and the other still answered."""
+    aid = "acc_fan_chunks"
+    await _seed_account(aid)
+    for fid in (8811, 8812):
+        await _seed_fan(aid, fid)
+        await _add_msgs(aid, fid, [("in", "hi there")])
+    async with get_session() as s:
+        (await s.get(Fan, (aid, 8811))).automation_paused_until = datetime.utcnow() + timedelta(hours=1)
+    fake = _use_fake()
+    _patch_llm()
+    saved = a05._FAN_SELECT_CHUNK
+    a05._FAN_SELECT_CHUNK = 1
+    try:
+        res = await run_once(aid, "welcome_chatter_for_info", payload={})
+    finally:
+        a05._FAN_SELECT_CHUNK = saved
+    assert res["replies_sent"] == 1 and res["skipped_listed"] == 1, res
+    assert {c for c, _ in fake.sent} == {8812}, fake.sent
+
+
+async def case_slot_lost_after_a_bubble_still_records_the_reply():
+    """The run loses its slot (run_slot.SlotLost) at bubble 2's hold: bubble 2
+    is not sent, but the reply that landed is recorded (the send stamp, the
+    rest, the lease back), so it is not answered or asked again as if unsent."""
+    aid = "acc_slot_lost"
+    await _seed_account(aid)
+    await _seed_fan(aid, 8901)
+    await _add_msgs(aid, 8901, [("in", "hey")])
+    fake = _use_fake()
+    _patch_llm("heyy what are you up to tonight?\ni just got home 😏")
+    with _harness.slot_lost_at_hold(a05, 2) as calls:
+        res = await run_once(aid, "welcome_chatter_for_info", payload={})
+    assert calls[0] == 2, calls                    # a two-bubble reply, stopped at bubble 2
+    assert res["status"] == "error", res
+    assert len(fake.sent) == 1, fake.sent
+    async with get_session() as s:
+        f = await s.get(Fan, (aid, 8901))
+        assert f.last_message_sent_at is not None, "the landed reply was not stamped"
+        assert f.automation_paused_until is not None, "no rest after the landed reply"
+        assert await s.get(FanLease, (aid, 8901)) is None
+
+
 _harness.run(
     case_turn_handoff_answers_the_fan_our_welcome_talked_over,
     case_turn_handoff_reads_HIS_line_not_our_welcome_bubble,
@@ -2349,4 +2396,6 @@ _harness.run(
     case_sticker_only_reply_welcome_chatter_for_info,
     case_skip_roll_strips_stray_marker_welcome_chatter_for_info,
     case_image_reply_does_not_steal_the_turn_wcfi,
+    case_slot_lost_after_a_bubble_still_records_the_reply,
+    case_fan_rows_are_read_per_gathered_fan_in_chunks,
 )

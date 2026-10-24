@@ -80,7 +80,7 @@ class Fake:
         self.post_now, self.post_raises = post_now, post_raises
         self.body = b"x" * 1000
         ax._make_client = self._client  # type: ignore[attr-defined]
-        ax._next_write_at.clear()
+        ax._write_gates.clear()
 
     def _client(self, account_id):
         fake = self

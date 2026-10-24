@@ -82,6 +82,16 @@ def _mid(frame: dict) -> int:
     return json.loads(frame["data"])["api2_chat_message"]["id"]
 
 
+def _replayed(frame: dict) -> list[int]:
+    """The message ids a replay frame carries: replays go out as one `batch`
+    frame (events.sse_stream), whose id is its last member's."""
+    if frame.get("event") != "batch":
+        return [_mid(frame)]
+    members = json.loads(frame["data"])
+    assert frame["id"] == members[-1]["id"], frame
+    return [m["data"]["api2_chat_message"]["id"] for m in members]
+
+
 def _drain(q: asyncio.Queue) -> list:
     out = []
     while not q.empty():
@@ -115,10 +125,10 @@ async def case_replay_after_reconnect():
         await events.broadcast(ev)
 
     gen = _stream(f1["id"])
-    got = await _frames(gen, 4)
+    got = await _frames(gen, 3)
     assert got[0] == {}
-    assert [_mid(f) for f in got[1:3]] == [2, 4], got
-    assert got[3] == {"id": got[2]["id"]}, "the head marker names the last event replayed"
+    assert _replayed(got[1]) == [2, 4], got
+    assert got[2] == {"id": got[1]["id"]}, "the head marker names the last event replayed"
     # Live again, nothing replayed twice.
     await events.broadcast(_msg(A, 5))
     (f5,) = await _frames(gen, 1)
@@ -143,15 +153,16 @@ async def case_ring_overflow_resyncs():
             await events.broadcast(_msg(A, mid))
 
         gen = _stream(head["id"])
-        got = await _frames(gen, 6)
+        got = await _frames(gen, 4)
         assert got[1] == {"event": "resync", "data": "{}"}, got[1]
-        assert [_mid(f) for f in got[2:5]] == [12, 13, 14], "what the ring still holds is replayed"
+        assert _replayed(got[2]) == [12, 13, 14], "what the ring still holds is replayed"
         await gen.aclose()
 
         # From inside what the ring still reaches: replay, no resync.
-        gen = _stream(got[2]["id"])
-        inside = await _frames(gen, 4)
-        assert [_mid(f) for f in inside[1:3]] == [13, 14] and set(inside[3]) == {"id"}, inside
+        twelve = json.loads(got[2]["data"])[0]["id"]
+        gen = _stream(twelve)
+        inside = await _frames(gen, 3)
+        assert _replayed(inside[1]) == [13, 14] and set(inside[2]) == {"id"}, inside
         await gen.aclose()
 
         # A's overflow is not the concern of a tab that only sees B.

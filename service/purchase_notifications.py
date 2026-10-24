@@ -61,8 +61,10 @@ notification once.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
+import sys
 from datetime import datetime, timezone
 from typing import Any, NamedTuple
 
@@ -481,6 +483,27 @@ def _fetch_feed(client: Any, limit: int, offset: int) -> list:
     return items if isinstance(items, list) else []
 
 
+def _of_lane(account_id: str):
+    """The serving relay's per-account OF lane at background priority
+    (server._priority_lane_background), so this feed read counts against
+    ACCOUNT_LANE_TOTAL like every other server-side OF call. Looked up, never
+    imported: uvicorn loads the module as `service.server`, and a bare
+    `import server` would run a second copy with lanes of its own (see
+    remote_login.live_server). No server loaded (a script): no lane."""
+    for name in ("service.server", "server"):
+        lane = getattr(sys.modules.get(name), "_priority_lane_background", None)
+        if lane is not None:
+            return lane(str(account_id))
+    return contextlib.nullcontext()
+
+
+def _fetch_feed_in_lane(account_id: str, client: Any, limit: int, offset: int) -> list:
+    """`_fetch_feed` inside the account's OF lane. Blocking — the lane is a
+    thread semaphore, so this too runs via asyncio.to_thread."""
+    with _of_lane(account_id):
+        return _fetch_feed(client, limit, offset)
+
+
 async def poll_purchases(account_id: str, client: Any, *, limit: int = 10) -> dict[str, int]:
     """Fetch the newest purchase notifications; flip is_paid for chat buys and
     stamp media ownership for chat AND wall-post buys.
@@ -489,7 +512,7 @@ async def poll_purchases(account_id: str, client: Any, *, limit: int = 10) -> di
     must not take down transaction ingest. Returns counts for the caller's log.
     """
     try:
-        items = await asyncio.to_thread(_fetch_feed, client, limit, 0)
+        items = await asyncio.to_thread(_fetch_feed_in_lane, account_id, client, limit, 0)
         # BOTH callers announce — the 30s fast tick AND the post-ownership sweep
         # (transaction_ingest); noise stays bounded by the _ANNOUNCED_NOTIFS dedupe
         # + the 2h freshness gate. The silent path is backfill_purchases below.
@@ -520,7 +543,7 @@ async def backfill_purchases(
     for page in range(int(max_pages)):
         try:
             items = await asyncio.to_thread(
-                _fetch_feed, client, page_size, page * int(page_size))
+                _fetch_feed_in_lane, account_id, client, page_size, page * int(page_size))
         except Exception:  # noqa: BLE001
             log.warning("purchase_notif_backfill_fetch_failed account=%s page=%d",
                         account_id, page, exc_info=True)

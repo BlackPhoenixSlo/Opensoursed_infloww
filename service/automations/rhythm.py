@@ -15,7 +15,7 @@ from datetime import datetime, time
 log = logging.getLogger("of-relay.automation.rhythm")
 
 # The ceiling on any INLINE hold. Longer than this and the hold outlives the 900s
-# fan lease and burns one of the executor's 4 GLOBAL run slots.
+# fan lease (a hold no longer pins a run slot — service/run_slot.py).
 INLINE_MAX_S = 120
 
 # The HOUSE NIGHT, on the creator's own clock. Operator ruling 2026-08-04: a

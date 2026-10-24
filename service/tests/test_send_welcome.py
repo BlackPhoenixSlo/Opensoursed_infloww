@@ -1714,6 +1714,64 @@ async def case_stop_on_reply_quiet_phase_drops_the_bubble():
     assert await _jobs(aid) == [], "the turn is HIS — no job"
 
 
+async def case_stop_on_reply_a_reply_during_the_dm_rate_wait_drops_the_bubble():
+    """§C2 through the account's DM rate: limit 1 in a 0.3 s window, so bubble
+    1's turn (dm_rate.turn) waits for a place after every checkpoint before it
+    has passed. He answers while it waits: that bubble is never sent."""
+    import dm_rate
+    import run_slot
+    aid = "acc_w_sor_dmrate"
+    fid = 48011
+    await _seed_account(aid)
+    await _seed_brain(aid)
+    fake = _use_fake([_sub(fid, name="Sofie")], vault=True)
+    saved_env, saved_w, saved_s = os.environ.get(dm_rate.KNOB), dm_rate.WINDOW_S, dm_rate.SLACK_S
+    real_turn = dm_rate.turn
+    waits: list[float] = []
+    places: list[list] = []                       # bubble 1's reserved place
+    left: list = []
+    real_send = fake.send_message
+
+    def _send(*a, **kw):                           # OFClient.send_message counts every DM
+        dm_rate.record(aid)
+        return real_send(*a, **kw)
+    fake.send_message = _send  # type: ignore[method-assign]
+
+    async def _turn(account_id, **kw):
+        if len(fake.sent) == 1 and not waits:      # the greeting is out; bubble 1's turn
+            await _inject_inbound(aid, fid, "omg hey!! 😍", mid=770011,
+                                  at=_OF_SEND_STAMP + timedelta(seconds=40))
+        w = await real_turn(account_id, **kw)
+        if len(fake.sent) == 1:
+            waits.append(w)
+            places.append(dm_rate._TICKET.get().place)
+        return w
+    os.environ[dm_rate.KNOB] = "1"
+    dm_rate.WINDOW_S, dm_rate.SLACK_S = 0.3, 0.0
+    dm_rate._reset()
+    dm_rate.turn = _turn  # type: ignore[assignment]
+    try:
+        async with recording_holds(), run_slot.hold(run_slot.SlotPool(1)):   # an automation run
+            res = await run_once(aid, "send_welcome",
+                                 payload={"with_image": False, "stop_on_reply": True,
+                                          "question": "what's yours?"})
+        left[:] = list(dm_rate._windows[aid].sent)
+    finally:
+        dm_rate.turn = real_turn  # type: ignore[assignment]
+        dm_rate.WINDOW_S, dm_rate.SLACK_S = saved_w, saved_s
+        dm_rate._reset()
+        if saved_env is None:
+            os.environ.pop(dm_rate.KNOB, None)
+        else:
+            os.environ[dm_rate.KNOB] = saved_env
+    assert waits and waits[0] > 0, ("bubble 1's turn did not wait for a place", waits)
+    assert res["welcomes_sent"] == 1 and res["aborted_on_reply"] == 1, res
+    assert len(fake.sent) == 1, ("a bubble went out after his reply", fake.sent)
+    assert await _jobs(aid) == [], "the turn is HIS: no job"
+    assert places and not any(p is places[0] for p in left), (
+        "the dropped bubble's DM place stayed in the window", left)
+
+
 async def case_stop_on_reply_typing_phase_finishes_then_hands_the_turn_back():
     """D1(b): he answers while she is TYPING → she finishes that bubble, and the
     turn is handed back explicitly.
@@ -3577,7 +3635,31 @@ async def case_after_of_welcome_sends_our_own_when_ofs_is_off_empty_or_unreadabl
         assert fake.sent == [(fid, "hey Ida", [])], fake.sent
 
 
+async def case_slot_lost_mid_burst_still_claims_the_fan():
+    """A serial run (human_pace and stop_on_reply off: the claim is made after
+    the burst) loses its slot (run_slot.SlotLost) at bubble 2's hold: bubble 2
+    is not sent, but the greeting landed, so he is claimed and rested, and the
+    next tick does not greet him a second time."""
+    aid = "acc_w_slot_lost"
+    await _seed_account(aid)
+    await _seed_brain(aid)
+    fake = _use_fake([_sub(47401, name="Sofie")], vault=True)
+    payload = {"with_image": False, "human_pace": False, "stop_on_reply": False}
+    with _harness.slot_lost_at_hold(send_welcome, 2) as calls:
+        res = await run_once(aid, "send_welcome", payload=payload)
+    assert calls[0] == 2, calls                    # a two-bubble burst, stopped at bubble 2
+    assert res["status"] == "error", res
+    assert len(fake.sent) == 1, fake.sent
+    async with get_session() as s:
+        ws = (await s.execute(select(WelcomeSent).where(WelcomeSent.account_id == aid))).scalars().all()
+        assert [w.fan_id for w in ws] == [47401], "the greeted fan was not claimed"
+        assert (await s.get(Fan, (aid, 47401))).automation_paused_until is not None
+    res = await run_once(aid, "send_welcome", payload=payload)
+    assert len(fake.sent) == 1, fake.sent
+
+
 _harness.run(
+    case_slot_lost_mid_burst_still_claims_the_fan,
     case_follow_back_all_new_subs_by_default,
     case_follow_back_gate_defaults_ON_and_skips_a_priced_sub,
     case_follow_back_gate_off_follows_blind_with_no_read,
@@ -3637,6 +3719,7 @@ _harness.run(
     case_human_pace_runs_fans_concurrently,
     case_human_pace_wall_budget_defers_and_the_next_run_reserves,
     case_stop_on_reply_quiet_phase_drops_the_bubble,
+    case_stop_on_reply_a_reply_during_the_dm_rate_wait_drops_the_bubble,
     case_stop_on_reply_typing_phase_finishes_then_hands_the_turn_back,
     case_stop_on_reply_the_LAST_bubble_hands_the_turn_back_too,
     case_stop_on_reply_a_finished_burst_he_never_answered_hands_off_nothing,

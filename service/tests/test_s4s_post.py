@@ -74,7 +74,7 @@ class Fakes:
         # through the `db` fixture while the run's post call is in flight.
         self._during_post = during_post
         ax._make_client = self._client  # type: ignore[attr-defined]
-        ax._next_write_at.clear()  # no 11s spacing left over from an earlier case's post
+        ax._write_gates.clear()  # no 11s spacing left over from an earlier case's post
 
     def _client(self, account_id):
         fakes = self

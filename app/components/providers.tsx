@@ -23,7 +23,7 @@
  * init — Next 16's React 19 strict mode would otherwise re-create it
  * on every render and lose all in-flight cache.
  *
- * **Persistence**: we wire `persistQueryClient` once on mount, which
+ * **Persistence**: we wire `persistQueryClientLazily` once on mount, which
  * mirrors selected query keys to IndexedDB so popout windows + repeat
  * tab-opens hydrate from disk. We pair it with `IsRestoringProvider` so
  * useQuery hooks DON'T fire network requests during the first render —
@@ -39,7 +39,6 @@ import {
   IsRestoringProvider,
 } from "@tanstack/react-query";
 import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
-import { persistQueryClient } from "@tanstack/react-query-persist-client";
 import { useEffect, useState } from "react";
 
 import { UserProvider } from "@/contexts/UserContext";
@@ -50,7 +49,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { installGlobalErrorHandlers } from "@/lib/errorReporter";
 import { perfBoot } from "@/lib/perfLog";
 import { registerImageSW } from "@/lib/registerImageSW";
-import { createIdbPersister, LEGACY_LOCALSTORAGE_KEY } from "@/lib/rqPersister";
+import { createIdbPersister, LEGACY_LOCALSTORAGE_KEY, persistQueryClientLazily } from "@/lib/rqPersister";
 
 // Bump when the persisted cache shape changes (added/removed fields on
 // OFChatItem, etc.) so old persisted snapshots get nuked on read instead
@@ -73,6 +72,15 @@ const PERSIST_MAX_AGE = 30 * 24 * 60 * 60 * 1000;
 // data update so heavily-used queries stay warm forever and forgotten
 // ones age out.
 const PER_QUERY_MAX_IDLE_MS = 7 * 24 * 60 * 60 * 1000;
+// A save at most this long after the cache changes. Opening a pop-out or a
+// new tab, hiding or leaving this one saves at once (rqPersister FLUSH_EVENTS),
+// so the wait only bounds what a crash loses.
+const PERSIST_THROTTLE_MS = 4_000;
+// Message threads are most of the snapshot (a thread's rows carry their media,
+// ~100KB a thread), and every thread opened or prefetched in the persist window
+// would otherwise ride along. Keep the most recently used ones: the open chat,
+// the pop-out's, the ones just switched between.
+const PERSIST_MAX_THREADS = 30;
 
 // Keys we want shared across tabs. Anything not on this list stays
 // in-memory only.
@@ -182,28 +190,37 @@ export default function Providers({ children }: { children: React.ReactNode }) {
     // localStorage write (rail settings, dock spots, notif history, exclude
     // lists). Not migrated — the cache rebuilds itself.
     try { window.localStorage.removeItem(LEGACY_LOCALSTORAGE_KEY); } catch { /* ignore */ }
-    // 250ms is short enough that hitting "↗ pop out" right after a fetch
-    // lands still flushes the new data before the new tab reads it. 1000ms
-    // (the previous value) was long enough to miss freshly-loaded queries.
-    const persister = createIdbPersister(250);
-    const [unsubscribe, restorePromise] = persistQueryClient({
+    const usedAt = (q: { queryHash: string; state: { dataUpdatedAt: number } }) =>
+      lastUsed.get(q.queryHash) ?? q.state.dataUpdatedAt;
+    const [unsubscribe, restorePromise] = persistQueryClientLazily({
       queryClient,
-      persister,
+      persister: createIdbPersister(),
       maxAge: PERSIST_MAX_AGE,
       buster: CACHE_BUSTER,
-      dehydrateOptions: {
-        shouldDehydrateQuery: (q) => {
-          // Only persist successful queries on the allowlist. Errored
-          // ones aren't worth carrying over — they'll just re-trigger.
-          if (q.state.status !== "success") return false;
-          if (!shouldPersistKey(q.queryKey)) return false;
-          // A caller can keep one query of a persisted prefix in memory only.
-          if (q.meta?.persist === false) return false;
-          // Per-query sliding window: drop from the snapshot if it
-          // hasn't been touched in PER_QUERY_MAX_IDLE_MS.
-          const used = lastUsed.get(q.queryHash) ?? q.state.dataUpdatedAt;
-          return Date.now() - used < PER_QUERY_MAX_IDLE_MS;
-        },
+      throttleMs: PERSIST_THROTTLE_MS,
+      // Built per save, so the thread ranking is the cache's at that moment.
+      dehydrateOptions: () => {
+        const keptThreads = new Set(
+          queryCache.findAll({ queryKey: ["messages"], predicate: (q) => q.state.status === "success" })
+            .sort((a, b) => usedAt(b) - usedAt(a))
+            .slice(0, PERSIST_MAX_THREADS)
+            .map((q) => q.queryHash),
+        );
+        const now = Date.now();
+        return {
+          shouldDehydrateQuery: (q) => {
+            // Only persist successful queries on the allowlist. Errored
+            // ones aren't worth carrying over — they'll just re-trigger.
+            if (q.state.status !== "success") return false;
+            if (!shouldPersistKey(q.queryKey)) return false;
+            // A caller can keep one query of a persisted prefix in memory only.
+            if (q.meta?.persist === false) return false;
+            if (q.queryKey[0] === "messages" && !keptThreads.has(q.queryHash)) return false;
+            // Per-query sliding window: drop from the snapshot if it
+            // hasn't been touched in PER_QUERY_MAX_IDLE_MS.
+            return now - usedAt(q) < PER_QUERY_MAX_IDLE_MS;
+          },
+        };
       },
     });
     // Both arms: a failed restore (no IndexedDB, corrupt snapshot) just boots

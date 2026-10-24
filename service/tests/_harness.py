@@ -26,6 +26,7 @@ Exit 0 = all cases passed.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import sys
 import tempfile
@@ -118,6 +119,26 @@ def make_client():
         except Exception:  # noqa: BLE001
             pass
     return TestClient(server.app)
+
+
+@contextlib.contextmanager
+def slot_lost_at_hold(module, n: int):
+    """Inside the block, `module.hold_with_typing`'s n-th call (1-based) raises
+    `run_slot.SlotLost` after its wait, as a spent take-back budget does, and
+    so does every call after it (a lost run never gets its slot back)."""
+    import run_slot
+    real, calls = module.hold_with_typing, [0]
+
+    async def _hold(*a, **k):
+        calls[0] += 1
+        if calls[0] >= n:
+            raise run_slot.SlotLost("test: take-back budget spent")
+        return await real(*a, **k)
+    module.hold_with_typing = _hold
+    try:
+        yield calls
+    finally:
+        module.hold_with_typing = real
 
 
 def xfail(reason: str, strict: bool = True):

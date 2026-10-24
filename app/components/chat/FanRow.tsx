@@ -6,8 +6,16 @@
  * FanList keeps data, selection, pagination and prefetch; the row only
  * draws them and reports hover, focus, press and click back. A right-click
  * offers the Fan's Deep link as a Pop-out window (`OpenInNewWindowMenu`).
+ *
+ * Built for a list of 500+ rows (All Models, five Creators): the row is
+ * memoized, so FanList passes it stable callbacks and primitive or
+ * reference-stable props, and a live message re-renders only its own row; and
+ * an off-screen row skips layout and paint (`content-visibility: auto`, sized
+ * by the row's fixed height) while staying in the DOM, so scroll-to-selected,
+ * Tab focus, find-in-page and the bulk bar's picks see every row.
  */
 
+import { memo } from "react";
 import { BadgeCheck, Ban, BellOff, Check, Hand, X } from "lucide-react";
 import type { OFChatItem, OFUserMini } from "@/lib/relay";
 import type { FanSpend } from "@/hooks/useFanSpend";
@@ -15,6 +23,7 @@ import { cn, decodeHtmlEntities, fmtRelTime, interpretSubStatus } from "@/lib/ut
 import { clockTime, fmtSpend } from "@/lib/format";
 import { proxyImage } from "@/lib/mediaUrl";
 import { type FanId, sameUserId } from "@/lib/fanId";
+import { isUnreadChat } from "@/lib/chatUnread";
 import { MP } from "@/lib/messagesPro";
 import { fanDeepLinkHref } from "@/lib/nav";
 import { useChatDraftText } from "@/lib/chatDrafts";
@@ -25,9 +34,6 @@ import { OpenInNewWindowMenu } from "./OpenInNewWindowMenu";
 
 const G = MP.fanList;
 const O = MP.ours.FanRow;
-
-/** The row shows an unread mark: OF's flag, or a nonzero unread count. */
-export const isUnreadChat = (c: OFChatItem) => !!c.hasUnread || (c.unreadMessagesCount ?? 0) > 0;
 
 /** The Fan's name as the row shows it. Priority: team-set nickname (from our
  *  SQLite, stitched onto /users/list by the relay) → OF display name → OF
@@ -49,7 +55,7 @@ export function fanNameOf(c: OFChatItem, profile: OFUserMini | undefined): strin
   );
 }
 
-export function FanRow({
+export const FanRow = memo(function FanRow({
   chat: c, accountId, profile, totalSpendCents, subscriptionStatus, expiredAt, lastPurchase, lastPpvPurchase,
   subscribedAt,
   selected: isSelected, oweDot, account, now,
@@ -89,9 +95,9 @@ export function FanRow({
   selectedRowRef: (el: HTMLButtonElement | null) => void;
   /** Bulk select (`FanListBulkBar`): this row is picked. */
   picked?: boolean;
-  /** Set only in select mode: a click toggles the pick instead of opening
-   *  the chat. */
-  onTogglePick?: () => void;
+  /** Set only in select mode: a click toggles the pick (of this row's chat)
+   *  instead of opening the chat. */
+  onTogglePick?: (chat: OFChatItem) => void;
 }) {
   const fanName = fanNameOf(c, profile);
   const avatarUrl = proxyImage(c.withUser.avatar || profile?.avatar || null, accountId);
@@ -126,7 +132,7 @@ export function FanRow({
         title={rowTooltip(totalSpendCents, lastPurchase, subscriptionStatus, expiredAt, now)}
         onClick={() => {
           if (onTogglePick) {
-            onTogglePick();
+            onTogglePick(c);
             return;
           }
           // No optimistic mark-as-read patch here — ChatSurface owns
@@ -147,6 +153,9 @@ export function FanRow({
         className={cn(
           G.row,
           "group relative flex w-full text-left items-start hover:bg-bg-elev-1 transition-colors",
+          // Off screen: no layout or paint. 96px is G.row's fixed h-24, so
+          // the scrollbar never jumps as rows come into view.
+          "[content-visibility:auto] [contain-intrinsic-size:auto_96px]",
           "after:bg-[color:var(--inf-rule,color-mix(in_oklab,var(--color-border)_40%,transparent))]",
           isSelected && "bg-[var(--inf-row-selected,var(--color-bg-elev-1))]",
         )}
@@ -317,7 +326,7 @@ export function FanRow({
       </button>
     </OpenInNewWindowMenu>
   );
-}
+});
 
 /** The row's Edge marker in its left padding, centred on the avatar
  *  (Compare FL8):
@@ -449,6 +458,9 @@ function fmtTime(iso: string | undefined | null, nowMs: number): string {
     return clockTime(d);
   }
   const diffDays = (now.getTime() - d.getTime()) / 86_400_000;
-  if (diffDays < 7) return d.toLocaleDateString([], { weekday: "short" });
-  return d.toLocaleDateString([], { month: "short", day: "numeric" });
+  if (diffDays < 7) return WEEKDAY.format(d);
+  return MONTH_DAY.format(d);
 }
+// Built once (`toLocaleDateString` with options builds a formatter per call); same output.
+const WEEKDAY = new Intl.DateTimeFormat([], { weekday: "short" });
+const MONTH_DAY = new Intl.DateTimeFormat([], { month: "short", day: "numeric" });

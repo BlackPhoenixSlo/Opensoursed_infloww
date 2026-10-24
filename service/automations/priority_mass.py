@@ -105,9 +105,13 @@ async def ensure_leg(account_id: str, run_id: int, *, delay_s: float = 0,
             ScheduledJob.payload_json == leg_payload(run_id)).limit(1))).first()
         if queued is not None:
             return False
+        # An operator started the run: every leg is the operator's (the
+        # supervisor's operator tier, ADR 0025).
+        run = await s.get(PriorityMassRun, int(run_id))
         await ax.enqueue_job(
             str(account_id), KIND, payload={"run_id": int(run_id)},
-            run_at=datetime.utcnow() + timedelta(seconds=delay_s), session=s)
+            run_at=datetime.utcnow() + timedelta(seconds=delay_s), session=s,
+            created_by_employee_id=run.created_by_employee_id if run is not None else None)
     return True
 
 
@@ -329,7 +333,7 @@ async def _leg(run: PriorityMassRun) -> dict:
                     lambda f=int(fid), t=text: client.send_message(
                         f, t, price=price, locked_text=bool(run.locked_text and price),
                         media_files=media, previews=previews or None),
-                    send_purpose=_SEND_PURPOSE, tries=1)
+                    send_purpose=_SEND_PURPOSE, tries=1, dm=True)
             except Exception as exc:  # noqa: BLE001
                 if await skip_unreachable_fan(aid, fid, exc, log=log):
                     await _set_recipient(rid, fid, SKIPPED, reason="unreachable")

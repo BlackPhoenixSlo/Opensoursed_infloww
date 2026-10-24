@@ -59,6 +59,8 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax
+import dm_rate
+import run_slot
 import llm_client
 from ._persona import compose_persona
 from . import _language
@@ -93,6 +95,7 @@ from ._wordfilter import (  # compliance word filter
 )
 from ._clock import clock_block, clock_line, load_clock_tz
 from automations._outbound import finalize_draft
+from automations.rhythm import INLINE_MAX_S
 from .welcome_chatter_for_info import (_history_text, _is_info_complete, _strip_html,
                          split_for_bubbles, _dedupe_lead_reaction)
 
@@ -866,10 +869,21 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 skipped_raced += 1
                 continue
 
+            lost = None
             for idx, part in enumerate(parts):
-                await hold_with_typing(account_id, fid,
-                                       typing_delay_seconds(part, typing_wpm),
-                                       typing_indicator=typing_indicator)  # "typing"
+                try:
+                    await hold_with_typing(account_id, fid,
+                                           typing_delay_seconds(part, typing_wpm),
+                                           typing_indicator=typing_indicator)  # "typing"
+                    # The account's DM rate (OF_DM_PER_MIN), waited like the hold.
+                    await dm_rate.turn(account_id, release_budget_s=INLINE_MAX_S)
+                except run_slot.SlotLost as e:
+                    # The run lost its slot: send no more. A bubble landed → it
+                    # counts as this nudge (state below), then stop the run.
+                    if not sent_ok:
+                        raise
+                    lost = e
+                    break
                 try:
                     result = await asyncio.to_thread(client.send_message, fid, part)
                 except Exception as e:
@@ -895,6 +909,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 await _save_state(account_id, fid, spell_inbound_at=spell_anchor,
                                   nudges_sent=nudges + 1, last_nudge_at=datetime.utcnow())
                 sent += 1
+            if lost is not None:
+                raise lost
         finally:
             if not sent_ok:
                 await ax.release_fan_lease(account_id, fid)

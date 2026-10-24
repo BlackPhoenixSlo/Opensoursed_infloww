@@ -198,3 +198,4 @@ infloww.com/
 
 # parody blog posts may contain "chat" in the slug; the *CHAT*.md rule above is case-insensitive on macOS
 !web/src/blog/*.md
+soak-runs/

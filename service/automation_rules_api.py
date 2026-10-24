@@ -1090,11 +1090,13 @@ async def delete_rule(rule_id: int) -> dict[str, Any]:
 
 
 @router.post("/admin/automation-rules/{rule_id}/run-now")
-async def run_now(rule_id: int) -> dict[str, Any]:
+async def run_now(rule_id: int, request: Request) -> dict[str, Any]:
     """Enqueue one immediate job for this rule, bypassing the cadence. The
     supervisor is woken right after enqueue so it drains and runs the job
     immediately (~5ms) instead of waiting up to a 30s poll tick. No-op-safe if
-    a job is already pending for this (account, kind) — the executor dedups."""
+    a job is already pending for this (account, kind) — the executor dedups.
+    The job carries the acting employee: an operator's job, which the
+    supervisor runs in the operator tier (never behind automation)."""
     from automation_executor import enqueue_job, wake_supervisor  # local: avoid load cycle
 
     async with get_session() as s:
@@ -1104,11 +1106,25 @@ async def run_now(rule_id: int) -> dict[str, Any]:
         account_id, kind = rule.account_id, canonical_kind(rule.kind)
         payload = _payload_of(rule)
 
-    job_id = await enqueue_job(account_id, kind, payload=payload, rule_id=rule_id)
+    job_id = await enqueue_job(account_id, kind, payload=payload, rule_id=rule_id,
+                               created_by_employee_id=await _acting_employee(request, account_id))
     wake_supervisor()  # drain NOW (W7 pattern) — don't wait for the 30s poll tick
     log.info("automation_rule_run_now id=%s job=%s account=%s kind=%s",
              rule_id, job_id, account_id, kind)
     return {"enqueued_job_id": job_id, "account_id": account_id, "kind": kind}
+
+
+async def _acting_employee(request: Request, account_id: str) -> int | None:
+    """The employee acting in the app (owner or chatter session, or the picked
+    `X-Employee-Id`), as the composer stamps a send. A job carrying it is an
+    operator's: the supervisor runs it ahead of automation. None outside a
+    session (a script without one): the job queues as automation."""
+    from employees import resolve_outbound_employee_id  # local: avoid load cycle
+    try:
+        return await resolve_outbound_employee_id(request, account_id)
+    except Exception:
+        log.warning("acting_employee_resolve_failed account=%s", account_id, exc_info=True)
+        return None
 
 
 class EnqueueBody(BaseModel):
@@ -1134,13 +1150,8 @@ async def enqueue_one_shot(
         raise HTTPException(422, f"unknown automation kind {body.kind!r}")
     await require_opt_in_kind(kind, body.account_id)
     payload = _validate_payload_for_kind(kind, body.payload)
-    # Attribute the job to the acting employee when the picker piped a header.
-    employee_id: int | None = None
-    try:
-        raw = request.headers.get("x-employee-id")
-        employee_id = int(raw) if raw else None
-    except (TypeError, ValueError):
-        employee_id = None
+    # Attribute the job to the acting employee: the operator tier (ADR 0025).
+    employee_id = await _acting_employee(request, body.account_id)
 
     from automation_executor import enqueue_job, wake_supervisor  # local: avoid load cycle
     job_id = await enqueue_job(

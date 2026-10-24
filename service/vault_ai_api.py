@@ -1336,7 +1336,8 @@ async def _stamp_flags_failure(account_id: str, media_id: int, status: str,
 _VISION_PROVIDER = "deepinfra"
 
 
-async def _vision_budget(account_id: str) -> dict[str, Any]:
+async def _vision_budget(account_id: str,
+                         model: str = "qwen3-vl-30b") -> dict[str, Any]:
     """Today's vision budget, plus the ONE sentence that explains a refusal.
 
     The sentence lives here and only here. It is product copy — it names a
@@ -1347,7 +1348,8 @@ async def _vision_budget(account_id: str) -> dict[str, Any]:
     button, and the plan the buttons are drawn from — reads `blocked_reason`,
     which is empty exactly when nothing is blocking.
     """
-    state = await llm_client.cap_state(account_id, _VISION_PROVIDER)
+    # `capped` is "no call on `model` fits" (llm_client.cap_state).
+    state = await llm_client.cap_state(account_id, _VISION_PROVIDER, model)
     reason = ""
     # No vision key: nothing can be described at all, so it outranks the cap.
     # The sentence is the same one the 424 carries (`key_error_payload`).
@@ -1436,7 +1438,7 @@ async def _flags_one(account_id: str, media_id: int,
                 # Same sentence describe's refusals carry — both sweeps spend
                 # the same budget, and an operator reading two different
                 # explanations of one cap has to work out they are one thing.
-                budget = await _vision_budget(account_id)
+                budget = await _vision_budget(account_id, model)
                 return {"media_id": media_id, "ok": False, "status": "capped",
                         "detail": budget["blocked_reason"] or str(e)}
             break  # keep what we already read rather than losing the whole clip
@@ -2490,7 +2492,7 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
             # `detail` is what an operator reads, both here and in the sweep's
             # first_error, so it carries the same sentence the pre-flight
             # refusal does rather than the exception's own developer text.
-            budget = await _vision_budget(account_id)
+            budget = await _vision_budget(account_id, attempt_model)
             return {"media_id": media_id, "ok": False, "status": "capped",
                     "detail": budget["blocked_reason"] or str(e)}
         except llm_client.LLMKeyError:
@@ -2645,7 +2647,7 @@ async def describe_one(payload: dict = Body(...)) -> dict[str, Any]:
     # in-flight refusal returns, so a caller has one case to handle.
     model = str(payload.get("model") or "qwen3-vl-30b")
     _assert_vision_model(model)  # this route validated NOTHING before
-    budget = await _vision_budget(account_id)
+    budget = await _vision_budget(account_id, model)
     if budget["key_missing"]:
         raise _vision_key_missing()
     if budget["capped"]:
@@ -2853,7 +2855,7 @@ async def describe_all(payload: dict = Body(...)) -> dict[str, Any]:
     # and the natural response to that is to press it again.
     model = str(payload.get("model") or "qwen3-vl-30b")
     _assert_vision_model(model)  # a bad request is a 400 whatever the key/budget
-    budget = await _vision_budget(account_id)
+    budget = await _vision_budget(account_id, model)
     if budget["key_missing"]:
         raise _vision_key_missing()
     if budget["capped"]:
