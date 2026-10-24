@@ -400,7 +400,7 @@ def case_w2h_helpers():
     # plain-letter names.
     c = gen_info._Candidate(800000482)
     assert gen_info._guard_name("800000482/,/Obsessed Fan", c) == "Obsessed Fan"
-    assert gen_info._guard_name("u1000002/Vancouver", gen_info._Candidate(9745967)) == "Vancouver"
+    assert gen_info._guard_name("u1000002/Vancouver", gen_info._Candidate(1000002)) == "Vancouver"
     assert gen_info._guard_name("R342/Vancouver,Canada/8in BWC", c) == "Vancouver,Canada/8in BWC"
     assert gen_info._guard_name("FanB10/,/BIG TIME WASTER", c) == "BIG TIME WASTER"
     real = gen_info._Candidate(5)
