@@ -42,7 +42,7 @@ const { pathToFileURL } = require("url");
 const { Store } = require("./lib/store");
 const { parseUnread, applyBadge } = require("./lib/badge");
 const { describeSigning, summarize } = require("./lib/signing");
-const { originOf, isAppOrigin } = require("./lib/origin");
+const { originOf, isAppOrigin, serverOrigin } = require("./lib/origin");
 const { registerNotifyIpc } = require("./lib/notify");
 const { safeStorageCodec, getSecret, setSecret, deleteSecret } = require("./lib/secret");
 const { readAdvanced, advancedPatch, applyBeforeReady, applyAfterReady } = require("./lib/advanced");
@@ -172,7 +172,7 @@ function normalizeBase(rawUrl) {
   try {
     const u = new URL(String(rawUrl).trim());
     if (u.protocol !== "http:" && u.protocol !== "https:") return null;
-    return u.origin;
+    return serverOrigin(u.origin); // a saved/typed landing URL → the app (lib/origin.js)
   } catch {
     return null;
   }

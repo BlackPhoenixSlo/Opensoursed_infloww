@@ -1,7 +1,7 @@
 {
   "name": "openinflowwww-desktop",
   "productName": "Inflowwww",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": true,
   "description": "Desktop shell for Inflowwww",
   "author": "Inflowwww contributors",
