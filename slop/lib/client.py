@@ -22,9 +22,12 @@ class Recorder:
         # Optional phase tag (e.g. a load stage): calls are also kept per tag.
         self.stage: str | None = None
         self.by_stage: dict[str, dict[str, list[tuple[int, float]]]] = defaultdict(lambda: defaultdict(list))
+        # Every call as (end epoch s, route, status, ms), for checks over a time window.
+        self.timeline: list[tuple[float, str, int, float]] = []
 
     def add(self, route: str, status: int, ms: float) -> None:
         self.calls[route].append((status, ms))
+        self.timeline.append((time.time(), route, status, ms))
         if self.stage is not None:
             self.by_stage[self.stage][route].append((status, ms))
 
@@ -41,13 +44,24 @@ class Recorder:
         return sum(1 for v in self.calls.values() for s, _ in v if pred(s))
 
 
+# An idle keep-alive connection is reused only below this age. httpx's default (5 s)
+# equals uvicorn's timeout_keep_alive (5 s, the Dockerfile's too), so a request can be
+# written into a connection the relay is about to time out: after any relay stall the
+# relay resets it (httpx ReadError(BrokenResourceError)): a failure httpx never retries,
+# while Chromium resends a request whose reused socket fails before any response. Kept
+# below 5 s minus the longest stall a scenario injects (2 s), no reset was seen
+# (.scratch/fleet-sharding/03-write-storm.md).
+KEEPALIVE_EXPIRY_S = 2.0
+
+
 class Http:
     """One signed-in session (cookie jar) against the relay."""
 
     def __init__(self, base: str, rec: Recorder, *, limits: int = 100):
         self.rec = rec
         self.c = httpx.AsyncClient(base_url=base, timeout=30,
-                                   limits=httpx.Limits(max_connections=limits, max_keepalive_connections=limits))
+                                   limits=httpx.Limits(max_connections=limits, max_keepalive_connections=limits,
+                                                       keepalive_expiry=KEEPALIVE_EXPIRY_S))
 
     async def request(self, method: str, path: str, **kw) -> httpx.Response:
         t0 = time.perf_counter()

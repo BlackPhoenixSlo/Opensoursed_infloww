@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 from pathlib import Path
 
@@ -31,6 +32,11 @@ def _cpu_seconds(s: str) -> float:
     return total + (int(days) * 86400 if days else 0)
 
 
+def _max(xs) -> float | None:
+    xs = [x for x in xs if x is not None]
+    return max(xs) if xs else None
+
+
 def pct(xs: list[float], q: float = 0.95) -> float | None:
     xs = sorted(xs)
     return round(xs[min(len(xs) - 1, int(len(xs) * q))], 1) if xs else None
@@ -40,11 +46,13 @@ class ProcMon:
     def __init__(self, pgid: int, rec, relay_http, *, profile: bool = False):
         self.pgid, self.rec, self.http, self.profile = pgid, rec, relay_http, profile
         self.samples: list[dict] = []  # {t, stage, cpu_s, rss_mb, loop_s, loop_t}
+        self._tl_i = 0  # rec.timeline read so far
         self.intervals: list[dict] = []  # {stage, wall_s, cpu_s, cpu_pct, loop_pct, rss_mb}
         self._stop = asyncio.Event()
         self._task: asyncio.Task | None = None
         self.profile_stage: str | None = None
         self.profile_errors: list[str] = []
+        self.nested_at: dict = {}  # top stacks of nested DB checkouts (lib/relay.py _db_probe)
 
     async def _ps(self) -> tuple[float, float] | None:
         p = await asyncio.create_subprocess_exec("ps", "-A", "-o", "pgid=,time=,rss=",
@@ -63,10 +71,11 @@ class ProcMon:
     async def _loop(self) -> None:
         while not self._stop.is_set():
             stage = self.rec.stage
-            got, loop = await asyncio.gather(self._ps(), self._loop_cpu())
+            got, loop, threads = await asyncio.gather(self._ps(), self._loop_cpu(), self._threads())
             if got is not None:
                 s = {"t": time.time(), "stage": stage, "cpu_s": got[0], "rss_mb": round(got[1], 1),
-                     "loop_s": loop and loop["thread_s"], "loop_t": loop and loop["mono_s"]}
+                     "loop_s": loop and loop["thread_s"], "loop_t": loop and loop["mono_s"],
+                     "db": (loop or {}).get("db"), "threads": threads, "load1": round(os.getloadavg()[0], 2)}
                 if self.samples:
                     prev = self.samples[-1]
                     wall = s["t"] - prev["t"]
@@ -74,9 +83,17 @@ class ProcMon:
                         d = s["cpu_s"] - prev["cpu_s"]
                         lw = (s["loop_t"] - prev["loop_t"]) if s["loop_t"] and prev["loop_t"] else 0
                         lp = round((s["loop_s"] - prev["loop_s"]) / lw * 100, 1) if lw > 0 else None
-                        self.intervals.append({"stage": prev["stage"], "wall_s": round(wall, 3), "cpu_s": round(d, 3),
+                        db, pdb = s["db"] or {}, prev["db"] or {}
+                        self.intervals.append({"stage": prev["stage"], "t0": round(prev["t"], 3),
+                                               "wall_s": round(wall, 3), "cpu_s": round(d, 3),
                                                "cpu_pct": round(d / wall * 100, 1), "loop_pct": lp,
-                                               "rss_mb": s["rss_mb"]})
+                                               "rss_mb": s["rss_mb"], "threads": s["threads"],
+                                               "db_peak": db.get("out_peak"),
+                                               "db_new": db["opened"] - pdb["opened"] if db and pdb else None,
+                                               "db_nested": db["nested"] - pdb["nested"] if db and pdb else None,
+                                               "host_load1": s["load1"], **self._requests_until(s["t"])})
+                        if db.get("nested_at"):
+                            self.nested_at = db["nested_at"]
                 self.samples.append(s)
             if self.profile and stage != self.profile_stage:
                 await self._tell_profiler(stage)
@@ -84,6 +101,20 @@ class ProcMon:
                 await asyncio.wait_for(self._stop.wait(), INTERVAL_S)
             except asyncio.TimeoutError:
                 pass
+
+    def _requests_until(self, t: float) -> dict:
+        """Actor calls that ended since the last sample (~`t`): how many, and the slowest (ms)."""
+        tl = getattr(self.rec, "timeline", None) or []
+        ms = [c[3] for c in tl[self._tl_i:] if not c[1].startswith("GET /__slop")]
+        self._tl_i = len(tl)
+        return {"req_n": len(ms), "req_max_ms": round(max(ms), 1) if ms else None}
+
+    async def _threads(self) -> int | None:
+        """Threads in the relay process now (each pooled SQLite connection is one aiosqlite thread)."""
+        p = await asyncio.create_subprocess_exec("ps", "-M", "-p", str(self.pgid), stdout=asyncio.subprocess.PIPE)
+        out, _ = await p.communicate()
+        n = len(out.decode().splitlines()) - 1
+        return n if n > 0 else None
 
     async def _loop_cpu(self) -> dict | None:
         try:
@@ -126,7 +157,12 @@ class ProcMon:
                          "cpu_mean_pct": mean, "cpu_p95_pct": pct([i["cpu_pct"] for i in ivs]),
                          "cpu_max_pct": max(i["cpu_pct"] for i in ivs),
                          "cores_mean": round(mean / 100, 2) if mean is not None else None,
-                         "rss_max_mb": max(i["rss_mb"] for i in ivs), "rss_end_mb": ivs[-1]["rss_mb"]}
+                         "rss_max_mb": max(i["rss_mb"] for i in ivs), "rss_end_mb": ivs[-1]["rss_mb"],
+                         "threads_max": _max(i.get("threads") for i in ivs),
+                         "db_conns_peak": _max(i.get("db_peak") for i in ivs),
+                         "db_opened": sum(i.get("db_new") or 0 for i in ivs),
+                         "db_nested": sum(i.get("db_nested") or 0 for i in ivs),
+                         "host_load_max": _max(i.get("host_load1") for i in ivs)}
         return out
 
     def stages(self) -> list[str]:
@@ -141,14 +177,21 @@ class ProcMon:
         rows = [f"  {n:<10} {v['wall_s']:>7} {v['cpu_mean_pct']:>8} {v['cpu_p95_pct']:>7} {v['cpu_max_pct']:>7} "
                 f"{v['cores_mean']:>6} {v['loop_mean_pct'] if v['loop_mean_pct'] is not None else '-':>8} "
                 f"{v['loop_p95_pct'] if v['loop_p95_pct'] is not None else '-':>7} {v['rss_max_mb']:>8} {v['rss_end_mb']:>8}"
+                f" {_dash(v['threads_max']):>7} {_dash(v['db_conns_peak']):>7} {v['db_opened']:>7} {v['db_nested']:>7}"
+                f" {_dash(v['host_load_max']):>7}"
                 for n, v in s.items()]
         return ["relay CPU/RSS (measured every 1 s; 100% = one core; '-' = outside any stage). cpu = whole process",
                 "(ps), loop = the event-loop thread alone (time.thread_time via /__slop/loop-cpu), the 1-core ceiling:",
-                "  stage       wall_s  cpu%mean cpu%p95 cpu%max  cores loop%mean loop%p95  rssMax   rssEnd", *rows]
+                "threads = relay threads (max); dbPeak = SQLAlchemy connections checked out at once (max);",
+                "dbOpen = SQLite connections opened; nested = checkouts by a task already holding one (lib/relay.py);",
+                "hostLd = the machine's 1-min load average (max; other processes compete for the cores):",
+                "  stage       wall_s  cpu%mean cpu%p95 cpu%max  cores loop%mean loop%p95  rssMax   rssEnd"
+                " threads  dbPeak  dbOpen  nested  hostLd", *rows]
 
     async def write(self, out: Path) -> None:
         (out / "resources.json").write_text(json.dumps(
-            {"interval_s": INTERVAL_S, "summary": self.summary(), "intervals": self.intervals}, indent=1))
+            {"interval_s": INTERVAL_S, "summary": self.summary(), "intervals": self.intervals,
+             "db_nested_at": self.nested_at}, indent=1))
 
     async def fetch_profile(self, out: Path) -> dict | None:
         """The relay's per-stage stack profiles -> profile.json + profile-<stage>.txt."""
@@ -167,6 +210,10 @@ class ProcMon:
                 (out / f"profile-{stage}-{part}.collapsed").write_text("\n".join(
                     f"{k} {round(v)}" for k, v in sorted(p[part]["stacks"].items(), key=lambda kv: -kv[1])) + "\n")
         return prof
+
+
+def _dash(v) -> object:
+    return "-" if v is None else v
 
 
 def render(stage: str, p: dict, n: int, hz: int) -> list[str]:

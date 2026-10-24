@@ -102,6 +102,7 @@ async def _advance_chat_preview(
     message_id: int,
     body: str,
     created_at: datetime,
+    conn=None,
 ) -> None:
     """Advance the inbox `chats` preview for an OUTBOUND send.
 
@@ -121,10 +122,12 @@ async def _advance_chat_preview(
     forward-only `WHERE` protects this: if a fan message arrived AFTER this send,
     `last_message_at > created_at` fails the guard and the inbound unread is kept.
 
-    Runs in its OWN session and swallows every error: the `chats` FK to
-    `accounts` (or any other hiccup) must never roll back the already-written
-    `messages` row or block the live SSE emit. Best-effort, like the rest of
-    this module.
+    Runs in its OWN session — or, given `conn`, inside the caller's
+    transaction (the send's own, see write_outbound_attribution), where a
+    failed statement undoes only itself — and swallows every error: the
+    `chats` FK to `accounts` (or any other hiccup) must never roll back the
+    already-written `messages` row or block the live SSE emit. Best-effort,
+    like the rest of this module.
     """
     preview = _preview_text(body)
     stmt = (
@@ -155,8 +158,11 @@ async def _advance_chat_preview(
         )
     )
     try:
-        async with get_session() as s:
-            await s.execute(stmt)
+        if conn is not None:
+            await conn.execute(stmt)
+        else:
+            async with get_session() as s:
+                await s.execute(stmt)
     except Exception:
         log.debug(
             "chat preview advance skipped (account=%s fan=%s msg=%s)",
@@ -435,8 +441,35 @@ async def write_outbound_attribution(
     # automation-fired broadcast (Automation sentinel) correctly yields no tag.
     mass_tag = await mass_sender_tag(sent_by_employee_id) if mass_run_id is not None else ""
 
+    # W7 HARD YIELD — manual chatter always wins. A HUMAN sending a 1:1 chat
+    # message rests the fan so no automation (any tier) fires on a fan a
+    # human is handling. Reuses W3's per-fan cooldown. Scope is deliberate:
+    #   • mass_run_id is None  → only genuine 1:1 sends; a manual BROADCAST
+    #     attributes the triggering human per-recipient with mass_run_id SET,
+    #     and we must NOT cooldown the whole audience (they should reply).
+    #   • sent_by_employee_id != Automation sentinel → excludes automation
+    #     sends (they resolve to the sentinel above and set their OWN
+    #     cooldown post-send); NULL (degraded chatter resolution) excluded.
+    # Resolved BEFORE the write (reads only), so the row, the preview and the
+    # rest are ONE short write transaction. A lookup hiccup only skips the
+    # yield. Late imports avoid the attribution↔executor cycle.
+    yield_s = 0
+    if mass_run_id is None and sent_by_employee_id is not None:
+        try:
+            from employees import get_automation_employee_id
+            if sent_by_employee_id != await get_automation_employee_id():
+                # Stand-down duration is per-account (Instant reply settings,
+                # webhook_config_json.manual_yield_minutes); default 1 min. 0
+                # disables the manual yield for that account.
+                yield_s = await _manual_yield_seconds(str(account_id))
+        except Exception:
+            log.debug("w7 hard-yield cooldown skipped", exc_info=True)
+
     try:
-        async with get_session() as s:
+        # Ours, not OF's (who sent it is nowhere on OF): its own immediate
+        # transaction, not the OF-cache writer's batch.
+        from db import of_writer
+        async with of_writer.immediate() as conn:
             stmt = sqlite_insert(Message).values(
                 account_id=str(account_id),
                 fan_id=int(fan_id),
@@ -459,17 +492,26 @@ async def write_outbound_attribution(
             ).on_conflict_do_nothing(
                 index_elements=["account_id", "fan_id", "message_id"],
             )
-            res = await s.execute(stmt)
-        # Advance the inbox preview — only on a real insert, so a duplicate
-        # re-run can't re-bump the chat. Keeps the local `/admin/chats/recent`
-        # seed in step with the just-sent text instead of lagging on the fan's
-        # last inbound message. Own session/try-except (never breaks the write).
-        if (res.rowcount or 0) > 0:
-            await _advance_chat_preview(
-                account_id=str(account_id), fan_id=int(fan_id),
-                message_id=int(message_id), body=body, created_at=created_at,
-            )
-        else:
+            res = await conn.execute(stmt)
+            if (res.rowcount or 0) > 0:
+                # Advance the inbox preview — only on a real insert, so a
+                # duplicate re-run can't re-bump the chat. Keeps the local
+                # `/admin/chats/recent` seed in step with the just-sent text
+                # instead of lagging on the fan's last inbound message. Its own
+                # try/except (never breaks the write).
+                await _advance_chat_preview(
+                    account_id=str(account_id), fan_id=int(fan_id),
+                    message_id=int(message_id), body=body, created_at=created_at,
+                    conn=conn,
+                )
+                if yield_s > 0:
+                    try:
+                        from automation_executor import start_fan_cooldown
+                        await start_fan_cooldown(str(account_id), int(fan_id),
+                                                 cooldown_s=yield_s, conn=conn)
+                    except Exception:
+                        log.debug("w7 hard-yield cooldown skipped", exc_info=True)
+        if (res.rowcount or 0) == 0:
             # Somebody inserted this row first — tag it anyway. See the docstring
             # on _backfill_attribution: losing the tag does not just skew stats,
             # it MUTES the engine on that fan.
@@ -495,32 +537,6 @@ async def write_outbound_attribution(
                 price_cents=int(price_cents),
             )
 
-        # W7 HARD YIELD — manual chatter always wins. A HUMAN sending a 1:1 chat
-        # message rests the fan so no automation (any tier) fires on a fan a
-        # human is handling. Reuses W3's per-fan cooldown. Scope is deliberate:
-        #   • mass_run_id is None  → only genuine 1:1 sends; a manual BROADCAST
-        #     attributes the triggering human per-recipient with mass_run_id SET,
-        #     and we must NOT cooldown the whole audience (they should reply).
-        #   • sent_by_employee_id != Automation sentinel → excludes automation
-        #     sends (they resolve to the sentinel above and set their OWN
-        #     cooldown post-send); NULL (degraded chatter resolution) excluded.
-        # Own try/except so a sentinel-lookup hiccup never breaks the (already
-        # committed) send. Late imports avoid the attribution↔executor cycle.
-        if (res.rowcount or 0) > 0 and mass_run_id is None and sent_by_employee_id is not None:
-            try:
-                from employees import get_automation_employee_id
-                auto_id = await get_automation_employee_id()
-                if sent_by_employee_id != auto_id:
-                    # Stand-down duration is per-account (Instant reply settings,
-                    # webhook_config_json.manual_yield_minutes); default 1 min. 0
-                    # disables the manual yield for that account.
-                    secs = await _manual_yield_seconds(str(account_id))
-                    if secs > 0:
-                        from automation_executor import start_fan_cooldown
-                        await start_fan_cooldown(
-                            str(account_id), int(fan_id), cooldown_s=secs)
-            except Exception:
-                log.debug("w7 hard-yield cooldown skipped", exc_info=True)
     except Exception:
         log.exception(
             "attribution write failed (account=%s fan=%s msg=%s)",

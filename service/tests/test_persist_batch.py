@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """The event_inbox writer batches commits (20-feed scale).
 
-  • Everything already queued is written in ONE insert_events call, then each
-    event is transcoded in queue order — one account's frames keep their order.
+  • Everything already queued is written in ONE insert_events call, alongside each
+    event's transcode, in queue order — one account's frames keep their order.
   • A batch the DB refuses is retried row by row, so one bad payload costs its
     own row, not the batch.
   • `typing` frames are transcoded (Fan touch) but never written to event_inbox.
@@ -42,8 +42,16 @@ async def _run_worker(items, *, insert=None):
     async def _transcode(ev):
         transcoded.append(ev)
 
+    persisted: list[int] = []
+    real_persist = events._persist_batch
+
+    async def _persist(rows):
+        await real_persist(rows)
+        persisted.append(len(rows))
+
     orig_t = event_transcoder.transcode
     events.insert_events, event_transcoder.transcode = _insert, _transcode
+    events._persist_batch = _persist
     events._persist_queue = asyncio.Queue()
     try:
         for ev in items:
@@ -53,7 +61,9 @@ async def _run_worker(items, *, insert=None):
         task = asyncio.create_task(events._persist_worker_loop())
         for _ in range(100):
             await asyncio.sleep(0.01)
-            if len(transcoded) >= len(items):
+            # The transcodes run alongside the batch's inbox write (both go to
+            # the OF-cache writer), so done = both finished.
+            if len(transcoded) >= len(items) and persisted:
                 break
         task.cancel()
         try:
@@ -62,6 +72,7 @@ async def _run_worker(items, *, insert=None):
             pass
     finally:
         events.insert_events, event_transcoder.transcode = real_insert, orig_t
+        events._persist_batch = real_persist
         events._persist_queue = None
     return calls, transcoded
 

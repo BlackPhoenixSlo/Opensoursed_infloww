@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import json
+import os
 import time
 from urllib.parse import urlsplit
 
@@ -62,6 +64,34 @@ HEAP_BUDGET_MB = 400           # per tab
 # (ps, lib/procmon.py), 100% = one core. 80 leaves 20% headroom below one core;
 # summary.txt also shows the event-loop thread's own share.
 CPU_BUDGET_PCT = 80
+# Write-storm check (.scratch/fleet-sharding/03-write-storm.md). A 2 s whole-process
+# stall (SIGSTOP of the relay's process group: a CPU-starved VPS, a long GC pause, a
+# slow disk) in the second stage piles up every in-flight chatter request at once.
+# Before the bounded DB pool, that pile-up opened one SQLite connection (one thread
+# plus a schema parse) per request and turned into a self-sustaining storm: 3-9 cores
+# and multi-second p95 for 10-60 s (measured). The relay must be back to normal soon after.
+# Write transactions per action (write_telemetry writer labels). A reply is its
+# outbound row + chat preview + yield cooldown in ONE transaction, plus the audit
+# row; a mark-read is its audit row only (the unread clear rides the OF-cache
+# writer's batch). Before the writer: 3 and 2 (run ...-0d27 / ...-c205). The 0.05
+# is for one-off writes a first request makes (one per Agency at small: 235 txns for
+# 230 reads), not for a per-call one.
+REPLY_TXNS_MAX = 2.05
+READ_TXNS_MAX = 1.05
+CHECK_OF_WRITER = ("OF-cache writer: every op committed, and no DM / event_inbox write transaction "
+                   "outside its batches")
+CHECK_READ_TXNS = f"mark-read: <= {READ_TXNS_MAX:g} write transaction per call (its audit row)"
+CHECK_REPLY_TXNS = f"reply: <= {REPLY_TXNS_MAX:g} write transactions per reply (row + preview + cooldown, audit)"
+STALL_S = 2.0                  # --stall-s=0 turns the stall off; off by default below 60 s stages
+STALL_AT_FRAC = 0.25           # into the second stage
+RECOVER_WINDOW_S = 30          # from SIGCONT
+STORM_CPU_MAX_PCT = 300        # relay process CPU, every second of the window (healthy max ~130; storm 400-1100)
+STORM_REQ_P95_MS = 750         # actor requests SENT after SIGCONT and ended in the window
+# Production write-path telemetry (service/db/write_telemetry.py): one JSON line per
+# interval in relay.log (docker logs in production). Its counts must equal what was injected,
+# its lines must come on time, and its drop counters must read 0.
+TELEMETRY_S = float(os.environ.get("CHATTERLY_WRITE_TELEMETRY_S", "60") or 0)
+TELEMETRY_SLACK_S = 5          # a line's span may be off its interval by this (loop lag, the 2 s stall)
 MARKER_ID_BASE = 9_690_000_000_000
 TABS = ("inbox", "popout-a", "popout-b", "group")
 
@@ -113,6 +143,9 @@ async def run(ctx) -> None:
     rates = [int(x) for x in str(ctx.param("dms_per_min", "50,100,200")).split(",")]
     stage_s = ctx.param("stage_s", STAGE_S[ctx.scale])
     normal_dpm = ctx.param("normal_dpm", 5.0)
+    # Off below 60 s stages (small): there a 2 s freeze alone holds >5% of a stage's requests.
+    stall_s = ctx.param("stall_s", STALL_S if stage_s >= 60 else 0.0)
+    stall: dict = {}
     creators, fans = w.data["creators"], w.data["fans"]
     agencies = w.data["agencies"]
     big = [c["id"] for c in creators if c["big"]]
@@ -152,6 +185,7 @@ async def run(ctx) -> None:
     tab_takes: dict[str, dict[str, dict]] = {}
     final_rx: dict[str, dict] = {}
     ui_read: set[tuple] = set()
+    ui_read_calls = [0]   # the tabs' own mark-read POSTs (2xx), for the txns-per-call check
     ui_reloads: list[str] = []
 
     cm = ui.owner_tabs(ctx, len(TABS)) if ctx.app else None
@@ -206,7 +240,12 @@ async def run(ctx) -> None:
             st = {"name": f"s{i + 1}-{rate}pm", "rate": rate, "t0": time.time() * 1000}
             ctx.rec.stage = paced.stage = st["name"]
             paced.rates.update({aid: float(rate) for aid in big})
-            await asyncio.sleep(stage_s / 2)
+            if i == 1 and stall_s > 0:
+                await asyncio.sleep(stage_s * STALL_AT_FRAC)
+                stall = await stall_relay(ctx, stall_s)
+                await asyncio.sleep(max(0.0, stage_s * (0.5 - STALL_AT_FRAC) - stall_s))
+            else:
+                await asyncio.sleep(stage_s / 2)
             for f in marker_fans:  # one marker DM per big Creator, watched where its thread is open
                 text = f"slop marker {st['name']} {f['account_id'][-4:]}"
                 watchers = [n for n in ("inbox", "popout-a", "popout-b", "group")
@@ -264,6 +303,7 @@ async def run(ctx) -> None:
                     parts = urlsplit(u).path.split("/")
                     if s_ < 300 and parts[-1] == "mark-read" and len(parts) >= 5:
                         ui_read.add((parts[-3], int(parts[-2])))
+                        ui_read_calls[0] += 1
             relay_5xx = [u for p in pages for s, u in p.slop["statuses"] if s >= 500 and "/api/of/" not in u]
             ctx.check("no 5xx in the browser sessions", not relay_5xx, count=len(relay_5xx), sample=relay_5xx[:5])
             ctx.metric("ui", {"held_of_reads": len(pages[0].slop["held_of_reads"]),
@@ -285,6 +325,188 @@ async def run(ctx) -> None:
     ctx.metric("markers", markers)
     await assess(ctx, w, paced, chatters, listeners, markers, stages, tab_takes, final_rx, quiet,
                  seeded_unread, owner_of, ui_models, big, lag_samples, ui_read, tab)
+    assess_stall(ctx, stall)
+    await assess_telemetry(ctx, paced.sent + [m for m in markers if m["status"] < 300], quiet,
+                           chatters.actions, ui_read_calls[0])
+
+
+def telemetry_lines(path) -> list[dict]:
+    """The relay's write_telemetry JSON lines, in order (relay.log = what docker logs holds)."""
+    out = []
+    for line in path.read_text(errors="replace").splitlines():
+        i = line.find(" write_telemetry {")
+        if i >= 0:
+            out.append(json.loads(line[i + len(" write_telemetry "):]))
+    return out
+
+
+async def assess_telemetry(ctx, dms: list[dict], quiet: dict, actions: dict, ui_reads: int) -> None:
+    """The production telemetry line, read back from relay.log after a forced flush:
+    on time, counts equal to what was injected (frames: every hook frame; DMs per
+    Creator), every drop counter 0, and the write transactions per action: the
+    OF-cache rows (DMs, read state) commit through the OF-cache writer's batches
+    and a reply is one transaction of its own plus its audit row. Plus a summary
+    table of what it measured."""
+    cadence = f"write_telemetry lines: one every {TELEMETRY_S:g}s (+-{TELEMETRY_SLACK_S}s) through the run"
+    counts = "write_telemetry lines: frames and DMs per account == injected"
+    drops = "write_telemetry lines: every drop counter 0 (queue_full, persist_error, transcode_exception)"
+    if TELEMETRY_S <= 0:
+        for name in (cadence, counts, drops, CHECK_OF_WRITER, CHECK_READ_TXNS, CHECK_REPLY_TXNS):
+            ctx.skip(name, "CHATTERLY_WRITE_TELEMETRY_S=0 (telemetry off, e.g. the overhead A/B)")
+        return
+    flushed = (await ctx.owner.post("/__slop/telemetry-flush", json={})).json().get("line")
+    await asyncio.sleep(0.5)  # the log line reaches relay.log (stderr, line-buffered)
+    lines = telemetry_lines(ctx.out / "relay.log")
+    ivl = [x for x in lines if x["reason"] == "interval"]
+    span = sum(x["s"] for x in lines)
+    off = [x["s"] for x in ivl if abs(x["s"] - TELEMETRY_S) > TELEMETRY_SLACK_S]
+    late_flush = bool(lines) and lines[-1]["reason"] == "flush" and lines[-1]["s"] > TELEMETRY_S + TELEMETRY_SLACK_S
+    detail = {"lines": len(lines), "interval_lines": len(ivl), "span_s": round(span, 1),
+              "expected_interval_lines": int(span // TELEMETRY_S), "off_spans_s": off[:5]}
+    if flushed is None or not lines or lines[-1]["reason"] != "flush":
+        ctx.check(cadence, False, **detail, error="no flush line in relay.log")
+    elif span < TELEMETRY_S:
+        ctx.skip(cadence, f"run shorter than one interval ({span:.0f}s)")
+    else:
+        ctx.check(cadence, not off and not late_flush and len(ivl) >= int(span // TELEMETRY_S), **detail)
+
+    got_f = sum(x["in"]["frames"] for x in lines)
+    got_d: dict[str, int] = {}
+    for x in lines:
+        for aid, a in x["in"]["acct"].items():
+            got_d[aid] = got_d.get(aid, 0) + a["d"]
+    want_d: dict[str, int] = {}
+    for d in dms:
+        want_d[d["account_id"]] = want_d.get(d["account_id"], 0) + 1
+    bad = {aid: (got_d.get(aid, 0), n) for aid, n in want_d.items() if got_d.get(aid, 0) != n}
+    bad |= {aid: (n, 0) for aid, n in got_d.items() if aid not in want_d and n}
+    ctx.check(counts, got_f == quiet.get("received") and not bad,
+              frames=got_f, received=quiet.get("received"), dms=sum(got_d.values()), injected_dms=len(dms),
+              wrong_accounts=dict(list(bad.items())[:5]))
+
+    total: dict[str, int] = {}
+    for x in lines:
+        for k, v in x["drops"].items():
+            total[k] = total.get(k, 0) + v
+    cum = lines[-1]["drops_cum"] if lines else {}
+    ctx.check(drops, bool(lines) and not any(total.values()) and not any(cum.values())
+              and quiet.get("persist_drops") == 0,
+              per_reason=total, drops_cum=cum, persist_drops=quiet.get("persist_drops"))
+
+    # Write transactions per action, by the line's writer labels.
+    txns = {}
+    for x in lines:
+        for wn, w in x["w"].items():
+            txns[wn] = txns.get(wn, 0) + w["n"]
+    ow = {k: sum(x.get("ow", {}).get(k) or 0 for x in lines) for k in ("batches", "ops", "merged", "failed")}
+    outside = {wn: n for wn, n in txns.items() if wn in ("persist", "transcode")}
+    ctx.check(CHECK_OF_WRITER, bool(ow["batches"]) and not any(outside.values()) and not ow["failed"],
+              writer=ow, outside=outside, frames=quiet.get("received"),
+              txns_per_frame=round(ow["batches"] / max(1, quiet.get("received") or 0), 3))
+    reads = actions.get("read", 0) + ui_reads
+    read_txns = txns.get("http:POST /admin/messages/{}/{}/mark-read", 0)
+    ctx.check(CHECK_READ_TXNS, reads > 0 and read_txns <= READ_TXNS_MAX * reads,
+              txns=read_txns, calls=reads, per_call=round(read_txns / max(1, reads), 3), max=READ_TXNS_MAX)
+    replies = actions.get("reply", 0)
+    reply_txns = txns.get("http:POST /api/of/v2/chats/{}/messages", 0)
+    ctx.check(CHECK_REPLY_TXNS, replies > 0 and reply_txns <= REPLY_TXNS_MAX * replies,
+              txns=reply_txns, replies=replies, per_reply=round(reply_txns / max(1, replies), 3),
+              max=REPLY_TXNS_MAX)
+
+    # What the line measured (for sizing the write path), over the whole run.
+    writers: dict[str, dict] = {}
+    for x in lines:
+        for wn, w in x["w"].items():
+            a = writers.setdefault(wn, {"n": 0, "wait_p95": 0.0, "hold_p95": 0.0, "max": 0.0, "hold_s": 0.0,
+                                        "locked": 0})
+            a["n"] += w["n"]
+            a["locked"] += w["locked"]
+            a["hold_s"] += w["hold_sum_ms"] / 1000
+            for k, t in (("wait_p95", w["wait"]), ("hold_p95", w["hold"])):
+                if t:
+                    a[k] = max(a[k], t[1])
+                    a["max"] = max(a["max"], t[2])
+    top = sorted(writers.items(), key=lambda kv: -kv[1]["hold_s"])[:12]
+    peak = lambda key: max((x[key[0]][key[1]] or 0 for x in lines), default=0)  # noqa: E731
+    acct_peaks = {}
+    for x in lines:
+        for aid, a in x["in"]["acct"].items():
+            p_ = acct_peaks.setdefault(aid, [0, 0])
+            p_[0], p_[1] = max(p_[0], a["d1"]), max(p_[1], a["d10"])
+    summary = {"lines": len(lines), "lock_max": max((x["lock"] or 0 for x in lines), default=0),
+               "lock_mean": round(sum(x["lock"] or 0 for x in lines) / max(1, len(lines)), 4),
+               "txns_total": sum(txns.values()),
+               "q_max": peak(("q", "max")), "q_age_ms_max": peak(("q", "age_ms")),
+               "batch_max": peak(("q", "batch_max")), "pool_out_max": peak(("pool", "out_max")),
+               "pool_open_max": peak(("pool", "open_max")),
+               "sse_lag_p95_max": max(((x["sse"]["lag"] or [0, 0])[1] for x in lines), default=0),
+               "dm_peaks_1s_10s": dict(sorted(acct_peaks.items(), key=lambda kv: -kv[1][1])[:5]),
+               "writers": dict(top),
+               "of_writer": {**ow, "batch_max": peak(("ow", "batch_max")), "q_max": peak(("ow", "q_max")),
+                             "flush_p95_ms_max": max(((x.get("ow", {}).get("flush_ms") or [0, 0])[1]
+                                                      for x in lines), default=0),
+                             "age_p95_ms_max": max(((x.get("ow", {}).get("age_ms") or [0, 0])[1]
+                                                    for x in lines), default=0)}}
+    ctx.metric("write_telemetry", summary)
+    ctx.note("", f"write_telemetry (measured by the product's own line; {len(lines)} lines, relay.log): "
+                 f"lock busy max {summary['lock_max']:.0%} (mean {summary['lock_mean']:.1%}) of an interval, "
+                 f"{summary['txns_total']} write txns, persist queue max {summary['q_max']} "
+                 f"(oldest {summary['q_age_ms_max']:.0f}ms), batch max {summary['batch_max']}, pool out/open max "
+                 f"{summary['pool_out_max']}/{summary['pool_open_max']}, SSE lag p95 max {summary['sse_lag_p95_max']}ms",
+             "  writer                                   txns  wait-p95  hold-p95     max   hold-s  locked",
+             *(f"  {wn[:40]:<40} {a['n']:>5} {a['wait_p95']:>9} {a['hold_p95']:>9} {a['max']:>7} "
+               f"{a['hold_s']:>8.1f} {a['locked']:>7}" for wn, a in top),
+             "  (ms; per line p95, max over lines; hold-s = lock held, summed)",
+             "  OF-cache writer: {batches} txns for {ops} ops ({merged} coalesced, {failed} failed), batch max "
+             "{batch_max}, queue max {q_max}, flush p95 max {flush_p95_ms_max}ms, op age p95 max "
+             "{age_p95_ms_max}ms; per reply {pr:.2f}, per mark-read {pm:.2f} txns".format(
+                 **summary["of_writer"],
+                 pr=reply_txns / max(1, replies), pm=read_txns / max(1, reads)),
+             "  DM peaks per account (most in 1 s / 10 s): " + ", ".join(
+                 f"{aid[-6:]}={p_[0]}/{p_[1]}" for aid, p_ in summary["dm_peaks_1s_10s"].items()))
+
+
+async def stall_relay(ctx, seconds: float) -> dict:
+    """Freeze the whole relay process group for `seconds` (SIGSTOP / SIGCONT). The load
+    keeps coming: every chatter request and fan frame sent meanwhile waits on the socket."""
+    import os
+    import signal
+    t0 = time.time()
+    os.killpg(ctx.stack.relay_pid, signal.SIGSTOP)
+    try:
+        await asyncio.sleep(seconds)
+    finally:
+        os.killpg(ctx.stack.relay_pid, signal.SIGCONT)
+    return {"t0": t0, "t1": time.time(), "seconds": seconds}
+
+
+def assess_stall(ctx, stall: dict) -> None:
+    """The 30 s after SIGCONT: every second of relay CPU, and the p95 of the actor
+    requests sent after the relay resumed (the ones frozen in the stall are its own
+    cost, not the recovery's), must stay within normal bounds: no storm."""
+    name = (f"relay absorbs a {STALL_S:g}s stall: CPU <= {STORM_CPU_MAX_PCT}% every second and p95 <= "
+            f"{STORM_REQ_P95_MS}ms for requests sent in the {RECOVER_WINDOW_S}s after (no SQLite connection storm)")
+    if not stall:
+        ctx.skip(name, "no stall (--stall-s=0, stages under 60 s, or fewer than 2 stages)")
+        return
+    lo, hi = stall["t1"], stall["t1"] + RECOVER_WINDOW_S
+    mon = getattr(ctx, "mon", None)
+    ivs = [iv for iv in (mon.intervals if mon else []) if lo - 0.5 <= iv.get("t0", 0) < hi]
+    cpu = [iv["cpu_pct"] for iv in ivs]
+    req = [ms for t, route, _st, ms in ctx.rec.timeline
+           if t - ms / 1000 >= lo and t < hi and not route.startswith("GET /__slop")]
+    detail = {"cpu_max_pct": max(cpu) if cpu else None, "cpu_p95_pct": pct(cpu), "cpu_samples": len(cpu),
+              "req_p95_ms": pct(req), "requests": len(req), "stall_s": stall["seconds"],
+              "threads_max": max((iv.get("threads") or 0 for iv in ivs), default=None),
+              "db_conns_peak": max((iv.get("db_peak") or 0 for iv in ivs), default=None),
+              "db_opened": sum(iv.get("db_new") or 0 for iv in ivs),
+              "rss_max_mb": max((iv["rss_mb"] for iv in ivs), default=None)}
+    ctx.metric("stall", {**stall, **detail})
+    if len(cpu) < RECOVER_WINDOW_S // 2 or not req:
+        ctx.check(name, None, **detail)
+        return
+    ctx.check(name, detail["cpu_max_pct"] <= STORM_CPU_MAX_PCT and detail["req_p95_ms"] <= STORM_REQ_P95_MS,
+              budget=True, **detail)
 
 
 async def assess(ctx, w, paced, chatters, listeners, markers, stages, tab_takes, final_rx, quiet,

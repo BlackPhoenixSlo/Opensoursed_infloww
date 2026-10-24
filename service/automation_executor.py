@@ -53,6 +53,7 @@ from sqlalchemy import and_, case, delete, func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from db import write_telemetry
 from db.engine import get_session
 from db.models import (
     Account,
@@ -447,33 +448,38 @@ async def _sweep_expired_leases() -> int:
 # ownership lands.
 
 async def start_fan_cooldown(
-    account_id: str, fan_id: int, *, cooldown_s: int = _FAN_COOLDOWN_S
+    account_id: str, fan_id: int, *, cooldown_s: int = _FAN_COOLDOWN_S, conn=None,
 ) -> datetime:
     """Rest a fan after a confirmed send: set automation_paused_until = now+cooldown.
 
     UPSERT, not UPDATE — many senders source candidates from the messages table,
     so an eligible fan may have no `fans` row yet; a bare UPDATE would match 0
     rows and silently fail to pause, re-opening the double-message. Returns the
-    paused-until instant.
+    paused-until instant. `conn`: write inside the caller's transaction (the
+    send's own, attribution.write_outbound_attribution) instead of a new one.
     """
     now = datetime.utcnow()
     until = now + timedelta(seconds=cooldown_s)
-    async with get_session() as s:
-        await s.execute(
-            sqlite_insert(Fan)
-            .values(
-                account_id=str(account_id),
-                fan_id=int(fan_id),
-                automation_paused_until=until,
-                updated_at=now,
-            )
-            .on_conflict_do_update(
-                index_elements=["account_id", "fan_id"],
-                # updated_at = now (the row WAS touched now); NOT `until` — a
-                # future updated_at leaks into User data's "last updated".
-                set_={"automation_paused_until": until, "updated_at": now},
-            )
+    stmt = (
+        sqlite_insert(Fan)
+        .values(
+            account_id=str(account_id),
+            fan_id=int(fan_id),
+            automation_paused_until=until,
+            updated_at=now,
         )
+        .on_conflict_do_update(
+            index_elements=["account_id", "fan_id"],
+            # updated_at = now (the row WAS touched now); NOT `until` — a
+            # future updated_at leaks into User data's "last updated".
+            set_={"automation_paused_until": until, "updated_at": now},
+        )
+    )
+    if conn is not None:
+        await conn.execute(stmt)
+        return until
+    async with get_session() as s:
+        await s.execute(stmt)
     return until
 
 
@@ -667,6 +673,7 @@ class _ClaimedJob(NamedTuple):
     rule_id: int | None = None
 
 
+@write_telemetry.labelled("automation_enqueue")
 async def enqueue_job(
     account_id: str,
     kind: str,
@@ -779,18 +786,22 @@ async def _rule_is_live(s, rule_id: int) -> bool:
     return rule is not None and bool(rule.is_enabled)
 
 
-async def enabled_rule_id(account_id: str, kind: str) -> int | None:
+async def enabled_rule_id(account_id: str, kind: str, *, session=None) -> int | None:
     """Id of the account's ENABLED rule of `kind` (any legacy alias; lowest id),
     or None. THE one "is this automation switched on?" read for kinds whose
-    rule is their on/off (webhook W7 gating, nudge fires, welcome_turn)."""
-    async with get_session() as s:
-        return (await s.execute(
-            select(AutomationRule.id).where(
-                AutomationRule.account_id == str(account_id),
-                AutomationRule.kind.in_(kind_family(kind)),
-                AutomationRule.is_enabled.is_(True),
-            ).order_by(AutomationRule.id).limit(1)
-        )).scalar_one_or_none()
+    rule is their on/off (webhook W7 gating, nudge fires, welcome_turn).
+    `session`: read through the caller's (webhook_dispatch reads a DM's
+    questions through one)."""
+    if session is None:
+        async with get_session() as s:
+            return await enabled_rule_id(account_id, kind, session=s)
+    return (await session.execute(
+        select(AutomationRule.id).where(
+            AutomationRule.account_id == str(account_id),
+            AutomationRule.kind.in_(kind_family(kind)),
+            AutomationRule.is_enabled.is_(True),
+        ).order_by(AutomationRule.id).limit(1)
+    )).scalar_one_or_none()
 
 
 # Payload marker on a rule's FOLLOW-ON jobs (a drip / resend an automation

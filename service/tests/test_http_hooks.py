@@ -240,6 +240,7 @@ def case_the_relay_registers_every_hook_in_one_layer_in_the_documented_order():
         "role_enforcement_middleware",
         "_deactivated_write_guard",
         "audit_middleware",
+        "label_request_writes",          # db/write_telemetry: innermost, labels the request's writes
     ], names
     layers = server.app.user_middleware
     assert [m.cls.__name__ for m in layers] == ["BaseHTTPMiddleware", "GZipMiddleware"], layers

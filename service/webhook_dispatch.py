@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import asyncio
+import contextlib
 import json
 import os
 import random
@@ -38,6 +39,7 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import select
 
+from db import write_telemetry
 from db.engine import get_session
 from db.models import (
     AccountAiConfig, Fan, FunnelState, MassRun, ScheduledJob,
@@ -86,13 +88,25 @@ def _global_kill_switch() -> bool:
     )
 
 
-async def _load_config(account_id: str) -> dict | None:
+@contextlib.asynccontextmanager
+async def _reader(s):
+    """`s` when the caller already holds a read session (on_inbound_message
+    reads everything through one), else a fresh one. Reads only: SQLite opens
+    no snapshot for a bare SELECT here, so every read is still fresh."""
+    if s is not None:
+        yield s
+    else:
+        async with get_session() as fresh:
+            yield fresh
+
+
+async def _load_config(account_id: str, *, s=None) -> dict | None:
     """Per-account gate + knobs: account_ai_config.webhook_config_json.
 
     Shape: {"enabled": bool, "delay_seconds": number, "jitter_seconds": number}.
     Returns the parsed dict when ENABLED, else None (absent/NULL/disabled/bad
     JSON → OFF, the safe default)."""
-    async with get_session() as s:
+    async with _reader(s) as s:
         cfg = await s.get(AccountAiConfig, str(account_id))
     if cfg is None or not cfg.webhook_config_json:
         return None
@@ -142,11 +156,11 @@ async def _wake_after(delay_s: float) -> None:
         pass
 
 
-async def _fan_mid_funnel(account_id: str, fan_id: int) -> bool:
+async def _fan_mid_funnel(account_id: str, fan_id: int, *, s=None) -> bool:
     """True iff this fan has a pending funnel_state row under one of this
     account's mass runs — i.e. reply_mass_funnel owns the fan through a
     multi-step flow and welcome_chatter_for_info must not interleave it (Wave-3 overlap)."""
-    async with get_session() as s:
+    async with _reader(s) as s:
         row = (
             await s.execute(
                 select(FunnelState.fan_id)
@@ -167,20 +181,20 @@ async def _classify_kind(account_id: str, fan_id: int) -> str | None:
     return (await _classify(account_id, fan_id))[0]
 
 
-async def _rule_gate(account_id: str, fan_id: int, kind: str) -> tuple[str | None, int | None]:
+async def _rule_gate(account_id: str, fan_id: int, kind: str, *, s=None) -> tuple[str | None, int | None]:
     """W7 may only wake `kind` (welcome_chatter_for_info / reply_mass_funnel —
     no config switch of their own, the rule IS their on/off) while the account
     has an ENABLED rule of it. Returns (kind, rule_id), or (None, None) + a skip
     log when that switch reads OFF. The job W7 queues carries the id in its
     payload (`_rule_id`) so the executor drops it if the rule goes OFF first."""
-    rule_id = await ax.enabled_rule_id(account_id, kind)
+    rule_id = await ax.enabled_rule_id(account_id, kind, session=s)
     if rule_id is None:
         log.info("w7_skip_rule_off account=%s fan=%s kind=%s", account_id, fan_id, kind)
         return None, None
     return kind, rule_id
 
 
-async def _classify(account_id: str, fan_id: int) -> tuple[str | None, int | None]:
+async def _classify(account_id: str, fan_id: int, *, s=None) -> tuple[str | None, int | None]:
     """Pick the automation that OWNS this fan's current stage — or None when no
     automation should reply (a human owns the chat). Routing to the wrong sweep
     is pure waste: welcome_chatter_for_info skips ANY skip-listed fan, so waking it for a fan
@@ -198,12 +212,12 @@ async def _classify(account_id: str, fan_id: int) -> tuple[str | None, int | Non
     Returns (kind, rule_id): rule_id is the enabled rule a rule-gated kind was
     found under (see `_rule_gate`), else None.
     """
-    if await _fan_mid_funnel(account_id, fan_id):
+    if await _fan_mid_funnel(account_id, fan_id, s=s):
         # Funnels only advance while an enabled walker rule exists (catalog);
         # with it OFF the operator has stopped funnels — don't walk this one.
-        return await _rule_gate(account_id, fan_id, "reply_mass_funnel")
+        return await _rule_gate(account_id, fan_id, "reply_mass_funnel", s=s)
 
-    async with get_session() as s:
+    async with _reader(s) as s:
         skip = (
             await s.execute(
                 select(SkipList.reason).where(
@@ -219,14 +233,14 @@ async def _classify(account_id: str, fan_id: int) -> tuple[str | None, int | Non
     # Not skip-listed → still in the welcome_chatter_for_info stage. Its switch
     # is its rule (ScriptsTab / Automations): Reply Instant ON must not wake it
     # while that switch reads OFF.
-    return await _rule_gate(account_id, fan_id, "welcome_chatter_for_info")
+    return await _rule_gate(account_id, fan_id, "welcome_chatter_for_info", s=s)
 
 
-async def _fan_paused_until(account_id: str, fan_id: int) -> datetime | None:
+async def _fan_paused_until(account_id: str, fan_id: int, *, s=None) -> datetime | None:
     """The fan's automation_paused_until (their per-fan cooldown end), or None.
     Read fresh — a sender that paused this fan earlier in the same tick must be
     visible so we defer to the real end, not a stale snapshot."""
-    async with get_session() as s:
+    async with _reader(s) as s:
         until = (
             await s.execute(
                 select(Fan.automation_paused_until).where(
@@ -239,7 +253,7 @@ async def _fan_paused_until(account_id: str, fan_id: int) -> datetime | None:
 
 
 async def _imminent_pending_job(
-    account_id: str, kind: str, fan_id: int, within_s: float
+    account_id: str, kind: str, fan_id: int, within_s: float, *, s=None
 ) -> tuple[datetime, dict] | None:
     """The pending (account, kind) job already targeting THIS fan and due within
     `within_s` seconds — `(run_at, payload)` — or None if there is none.
@@ -251,7 +265,7 @@ async def _imminent_pending_job(
     Returns the LATEST-due match. Callers only want the boolean and take
     `_has_imminent_pending_job` below."""
     soon = datetime.utcnow() + timedelta(seconds=within_s)
-    async with get_session() as s:
+    async with _reader(s) as s:
         rows = (
             await s.execute(
                 select(ScheduledJob.run_at, ScheduledJob.payload_json).where(
@@ -285,16 +299,16 @@ async def _imminent_pending_job(
 
 
 async def _has_imminent_pending_job(
-    account_id: str, kind: str, fan_id: int, within_s: float
+    account_id: str, kind: str, fan_id: int, within_s: float, *, s=None
 ) -> bool:
     """Is a job already queued for this fan? → skip a second enqueue.
 
     The predicate form of `_imminent_pending_job`, for the callers that only ask
     the yes/no question."""
-    return await _imminent_pending_job(account_id, kind, fan_id, within_s) is not None
+    return await _imminent_pending_job(account_id, kind, fan_id, within_s, s=s) is not None
 
 
-async def _blasted_recently(account_id: str) -> bool:
+async def _blasted_recently(account_id: str, *, s=None) -> bool:
     """Did this account broadcast in the last `_BLAST_SCRAPE_WINDOW`?
 
     Two sources, and each covers the other's blind spot: `mass_runs.sent_at` (our
@@ -305,7 +319,7 @@ async def _blasted_recently(account_id: str) -> bool:
     from event_transcoder import blasted_within
     if blasted_within(account_id, seconds=_BLAST_SCRAPE_WINDOW.total_seconds()):
         return True
-    async with get_session() as s:
+    async with _reader(s) as s:
         hit = (await s.execute(
             select(MassRun.id).where(
                 MassRun.account_id == str(account_id),
@@ -316,7 +330,7 @@ async def _blasted_recently(account_id: str) -> bool:
     return hit is not None
 
 
-async def _scrape_after_blast(account_id: str, fan_id: int) -> None:
+async def _scrape_after_blast(account_id: str, fan_id: int, *, blasted: bool | None = None) -> None:
     """First inbound from a fan after a blast → one bounded `scrape_chats` job for
     HIM, now. Never raises: this is an inbox repair, and the chat dispatch it sits
     in front of must not care whether it worked.
@@ -333,7 +347,7 @@ async def _scrape_after_blast(account_id: str, fan_id: int) -> None:
     `_fetch_recent_end` stops at 100 and the cursor then jumps to the newest id.
     The blast, sent under an hour ago, is always inside that newest 100."""
     try:
-        if not await _blasted_recently(account_id):
+        if not (blasted if blasted is not None else await _blasted_recently(account_id)):
             return
         # ⚠️ NO AWAIT BETWEEN THE CHECK AND THE SET. That is what makes two
         # concurrent inbound handlers produce one job instead of two.
@@ -358,53 +372,68 @@ async def _scrape_after_blast(account_id: str, fan_id: int) -> None:
                     account_id, fan_id, exc_info=True)
 
 
+@write_telemetry.labelled("webhook_dispatch")
 async def on_inbound_message(account_id: str, fan_id: int, message_id: int) -> None:
     """React to one inbound fan DM: enqueue + wake the owning sweep so the bot
     replies in seconds instead of at the next tick. Never raises."""
     try:
         if _global_kill_switch():
             return
+        # Every read below goes through ONE session (one pool checkout per DM,
+        # not one per question); the writes (enqueue_job) keep their own.
+        async with get_session() as s:
+            try:
+                blasted = await _blasted_recently(account_id, s=s)
+            except Exception:   # an inbox repair: must not cost the dispatch
+                log.warning("blast_reply_scrape_failed account=%s fan=%s",
+                            account_id, fan_id, exc_info=True)
+                blasted = False
+            cfg = await _load_config(account_id, s=s)
+            kind = rule_id = paused_until = None
+            if cfg is not None:
+                kind, rule_id = await _classify(account_id, fan_id, s=s)
+            if kind is not None:
+                # Read fresh, right here — a sender that paused this fan earlier
+                # in the same tick must be visible (see _fan_paused_until).
+                paused_until = await _fan_paused_until(account_id, fan_id, s=s)
+                delay = _response_delay(cfg)
+                now = datetime.utcnow()
+                deferred = paused_until is not None and paused_until > now
+                run_at = (paused_until if deferred else now) + timedelta(seconds=delay)
+                wait_s = max(0.0, (run_at - now).total_seconds())
+                # Dedup over the FULL wait (cooldown remainder + delay) so a second
+                # message during the rest doesn't queue its own deferred job.
+                dup = await _has_imminent_pending_job(
+                    account_id, kind, fan_id, wait_s + _DEDUP_WINDOW_S, s=s)
+
         # ── The blast this man may be answering (plans/blast-splice C.1) ──
         # FIRST, and above every return below: the copy belongs in the inbox
         # whether or not an automation would reply to him. Own try/except inside.
-        await _scrape_after_blast(account_id, fan_id)
-        cfg = await _load_config(account_id)
+        await _scrape_after_blast(account_id, fan_id, blasted=blasted)
         if cfg is None:
             return
-        kind, rule_id = await _classify(account_id, fan_id)
         if kind is None:
             # Terminal stage (skip-listed, or a stage whose rule is off): no automation
             # should reply — a human owns this fan. Don't wake a sweep for nothing.
             log.debug("w7_skip_terminal account=%s fan=%s", account_id, fan_id)
             return
 
-        delay = _response_delay(cfg)
-        now = datetime.utcnow()
-
         # A fan a human is handling, or one the bot just replied to, is on a
         # per-fan cooldown (W3's shared cross-tick guard, 45-90s for chat). Rather
         # than DROP this reply to the slow periodic sweep — fans usually reply
         # within ~30s, INSIDE the cooldown, so they'd always wait out the next
-        # sweep — we DEFER the reply to the moment the cooldown ends. The chat
-        # engines re-check the cooldown at run time, so if a human keeps the
-        # fan paused the deferred job simply skips: deferring is safe either way.
-        # A cooldown beyond _MAX_DEFER_S (the 30-min welcome/followup rest) is too
-        # long to park a chat reply — let the periodic sweep catch that rare case.
-        paused_until = await _fan_paused_until(account_id, fan_id)
-        deferred = paused_until is not None and paused_until > now
-        if deferred:
-            if (paused_until - now).total_seconds() > _MAX_DEFER_S:
-                log.debug("w7_skip_cooldown_far account=%s fan=%s until=%s",
-                          account_id, fan_id, paused_until)
-                return
-            run_at = paused_until + timedelta(seconds=delay)
-        else:
-            run_at = now + timedelta(seconds=delay)
-        wait_s = max(0.0, (run_at - now).total_seconds())
+        # sweep — we DEFER the reply to the moment the cooldown ends (run_at
+        # above). The chat engines re-check the cooldown at run time, so if a
+        # human keeps the fan paused the deferred job simply skips: deferring is
+        # safe either way. A cooldown beyond _MAX_DEFER_S (the 30-min
+        # welcome/followup rest) is too long to park a chat reply — let the
+        # periodic sweep catch that rare case.
+        if deferred and (paused_until - now).total_seconds() > _MAX_DEFER_S:
+            log.debug("w7_skip_cooldown_far account=%s fan=%s until=%s",
+                      account_id, fan_id, paused_until)
+            return
 
-        # Dedup over the FULL wait (cooldown remainder + delay) so a second
-        # message during the rest doesn't queue its own deferred job.
-        if await _has_imminent_pending_job(account_id, kind, fan_id, wait_s + _DEDUP_WINDOW_S):
+        if dup:
             log.debug("w7_skip_dedup account=%s kind=%s fan=%s", account_id, kind, fan_id)
             ax.wake_supervisor()  # still wake so the already-pending job drains
             return
@@ -436,6 +465,7 @@ async def on_inbound_message(account_id: str, fan_id: int, message_id: int) -> N
         )
 
 
+@write_telemetry.labelled("webhook_dispatch")
 async def on_inbound_tip(account_id: str, fan_id: int, message_id: int,
                          tip_cents: int) -> None:
     """A fan just tipped → mark a customs order owed (when customs_watch is on).
@@ -477,6 +507,7 @@ async def on_inbound_tip(account_id: str, fan_id: int, message_id: int,
                     account_id, fan_id, exc_info=True)
 
 
+@write_telemetry.labelled("webhook_dispatch")
 async def on_inbound_image(account_id: str, fan_id: int, message_id: int,
                            has_media: bool = True) -> None:
     """A fan sent media (a non-tip photo/clip DM, or a Giphy gif) → hand the words

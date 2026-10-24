@@ -79,6 +79,9 @@ async def insert_events(rows: list[dict[str, Any]]) -> None:
 
     RAISES on failure, so the caller can tell a bad batch from a good one and
     retry its rows one at a time (events._persist_batch).
+
+    Goes through the OF-cache writer (db/of_writer): event_inbox is raw OF
+    frames, so it shares the transaction of the transcodes queued with it.
     """
     if not rows:
         return
@@ -90,7 +93,13 @@ async def insert_events(rows: list[dict[str, Any]]) -> None:
         "payload_json": dump_capped(r["payload"]),
     } for r in rows]
     account_ids = sorted({r["account_id"] for r in rows if r["account_id"]})
-    async with get_session() as s:
+    from db import of_writer
+    await of_writer.write(_insert_events_on, (account_ids, values))
+
+
+async def _insert_events_on(s, items: list) -> list:
+    """of_writer op: each item is one `insert_events` call's (accounts, rows)."""
+    for account_ids, values in items:
         # Ensure each parent accounts row exists. An account can be set up on
         # disk (sessions/accounts/<id>/) + bound to a proxy in proxies.json
         # without ever being inserted into the accounts table — its events
@@ -107,6 +116,7 @@ async def insert_events(rows: list[dict[str, Any]]) -> None:
             ),
             values,
         )
+    return [None] * len(items)
 
 
 async def mark_event_processed(

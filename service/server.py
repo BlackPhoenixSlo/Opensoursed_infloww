@@ -267,6 +267,10 @@ app.add_middleware(
 # it, as each hook's own layer was.
 _http_hooks = HookChain()
 app.add_middleware(BaseHTTPMiddleware, dispatch=_http_hooks.dispatch)
+# Added first, so innermost: labels the request's SQLite writes for
+# db/write_telemetry (outer hooks' writes after call_next see the label too).
+from db import write_telemetry as _write_telemetry  # noqa: E402
+_http_hooks.add(_write_telemetry.label_request_writes)
 
 import llm_client as _llm_client  # noqa: E402  (the key-error handler below)
 

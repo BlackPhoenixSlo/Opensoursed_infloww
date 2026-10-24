@@ -10,6 +10,8 @@ redirected secrets and sessions, CHATTERLY_TEST_MODE) plus loopback-only hooks.
        successes only); persist drops; queue depth.
   GET  /__slop/loop-cpu     time.thread_time() of the event-loop thread (lib/procmon.py
        polls it each second: the loop's own CPU, the one-core ceiling).
+  POST /__slop/telemetry-flush  emit service/db/write_telemetry's JSON line now
+       (reason "flush"; its shutdown line, early), so the counts are in relay.log.
 
 The other half of that same wire: a chatter's reply goes OUT to OnlyFans through
 `OFClient.send_message`. The seeded Creators' stub sessions cannot build an
@@ -17,8 +19,19 @@ OFClient (and must not: curl_cffi would bypass the socket guard), so
 `server._load_client` is wrapped: where the real build fails, it returns
 `_OfflineOF`, whose `send_message` answers what OF answers (the new message: id,
 text, createdAt) and whose every other attribute re-raises the build's own error.
-No OF read is faked. Everything around the send (attribution row, unread clear,
-`chat_responded`, cache busts) is the product's own code.
+Everything around the send (attribution row, unread clear, `chat_responded`,
+cache busts) is the product's own code.
+
+One OF read is faked, and only when a scenario writes OF's side of the record:
+`get_messages` (GET /api2/v2/chats/{fan}/messages, the chat scrape's read) pages
+`$DEMO_SHOTS_TMP/of-truth.jsonl` (one line per message OnlyFans holds:
+{account_id, fan_id, message}), newest first, as OF does. The executor's
+client seam (`automation_executor._make_client`, used by the scrape and the
+chat's rescrape-now route) falls back to `_OfflineOF` the same way. Without the
+file, `get_messages` re-raises the build error like any other read.
+
+The hooks are not product requests: no `actions` audit row is written for them
+(the real pump hands a frame to _broadcast_event with no HTTP request around it).
 
 With SLOP_PROFILE=1 (`slop/run --profile`) a stack sampler thread runs in this
 process (`_Sampler`): ~200 times a second it reads every thread's Python stack
@@ -60,6 +73,7 @@ class _OfflineOF:
 
     def __init__(self, account_id: str, err: Exception):
         self.account_id, self._err = account_id, err
+        self.user_id = str(account_id)
 
     def send_message(self, chat_id, text, **_kw) -> dict:
         from datetime import datetime, timezone
@@ -67,6 +81,21 @@ class _OfflineOF:
         return {"id": OF_SEND_ID_BASE + _stats["of_sends"], "text": text, "price": 0, "isFree": True,
                 "mediaCount": 0, "media": [], "fromUser": {"id": int(self.account_id)},
                 "createdAt": datetime.now(timezone.utc).isoformat(timespec="milliseconds")}
+
+    def get_messages(self, chat_id, *, limit=10, order="desc", before_id=None, **_kw) -> dict:
+        truth = Path(os.environ.get("DEMO_SHOTS_TMP", "")) / "of-truth.jsonl"
+        if not truth.is_file():
+            raise self._err
+        import json
+        rows = []
+        for line in truth.read_text().splitlines():
+            r = json.loads(line)
+            if str(r["account_id"]) == self.account_id and int(r["fan_id"]) == int(chat_id):
+                rows.append(r["message"])
+        rows.sort(key=lambda m: int(m["id"]), reverse=order == "desc")
+        if before_id is not None:
+            rows = [m for m in rows if (int(m["id"]) < int(before_id)) == (order == "desc")]
+        return {"list": rows[:limit], "hasMore": len(rows) > limit}
 
     def __getattr__(self, name):
         raise self._err
@@ -269,6 +298,84 @@ class _Sampler:
                 for n, b in self.stages.items()}}
 
 
+def _db_probe():
+    """Counters on the product's SQLAlchemy pool, from SQLAlchemy's own pool events
+    (read-only listeners, no product code changed): connections opened / closed so
+    far, checked out now and the peak since the last poll, and `nested`: checkouts
+    by an asyncio task that already held a connection (with a bounded pool, the
+    pattern that can wait on itself). Returns a function that snapshots them."""
+    import asyncio
+    import traceback
+
+    from sqlalchemy import event
+
+    import db.engine  # noqa: F401 — the package re-exports `engine` (the AsyncEngine) over the module name
+    dbe = sys.modules["db.engine"]
+
+    c = {"opened": 0, "closed": 0, "out": 0, "out_peak": 0, "checkouts": 0, "nested": 0}
+    held: dict[int, object] = {}  # id(pool record) -> the task that checked it out
+    per_task: Counter = Counter()
+    nested_at: Counter = Counter()  # where nested checkouts come from (top frames in service/)
+
+    def task():
+        try:
+            return asyncio.current_task()
+        except RuntimeError:
+            return None
+
+    def stack():
+        # The checkout runs in SQLAlchemy's greenlet; the coroutine frames (the
+        # service/ code that opened the session) are on its parent greenlet.
+        frames = traceback.extract_stack(limit=60)
+        parent = getattr(sys.modules.get("greenlet") and sys.modules["greenlet"].getcurrent(), "parent", None)
+        if parent is not None and parent.gr_frame is not None:
+            frames = traceback.extract_stack(parent.gr_frame, limit=60) + frames
+        return frames
+
+    def on_connect(*_a):
+        c["opened"] += 1
+
+    def on_close(*_a):
+        c["closed"] += 1
+
+    def on_checkout(_dbapi, rec, _proxy):
+        t = task()
+        c["checkouts"] += 1
+        c["out"] += 1
+        c["out_peak"] = max(c["out_peak"], c["out"])
+        if t is not None:
+            if per_task[t]:
+                c["nested"] += 1
+                if len(nested_at) < 200:
+                    frames = [f for f in stack() if "/service/" in f.filename]
+                    nested_at[" <- ".join(f"{Path(f.filename).name}:{f.lineno}:{f.name}"
+                                          for f in reversed(frames[-4:]))] += 1
+            per_task[t] += 1
+        held[id(rec)] = t
+
+    def on_checkin(_dbapi, rec):
+        c["out"] -= 1
+        t = held.pop(id(rec), None)
+        if t is not None:
+            per_task[t] -= 1
+            if per_task[t] <= 0:
+                del per_task[t]
+
+    sync = dbe.engine.sync_engine
+    event.listen(sync, "connect", on_connect)
+    event.listen(sync.pool, "close", on_close)
+    event.listen(sync.pool, "close_detached", on_close)
+    event.listen(sync.pool, "checkout", on_checkout)
+    event.listen(sync.pool, "checkin", on_checkin)
+
+    def snap() -> dict:
+        out = {**c, "nested_at": dict(nested_at.most_common(5))}
+        c["out_peak"] = c["out"]
+        return out
+
+    return snap
+
+
 def _wire(app) -> None:
     from fastapi import HTTPException, Request
 
@@ -278,6 +385,11 @@ def _wire(app) -> None:
     import server
 
     faults.apply(os.environ.get("SLOP_FAULT") or None)
+    # The hooks are not product requests: the real pump hands a frame to
+    # _broadcast_event with no HTTP request around it, so no `actions` audit row
+    # (one write transaction per injected frame) either.
+    import employees
+    employees._AUDIT_SKIP_PREFIXES = (*employees._AUDIT_SKIP_PREFIXES, "/__slop/")
     inner = event_transcoder.transcode
 
     async def counted(event):
@@ -304,6 +416,16 @@ def _wire(app) -> None:
             return _OfflineOF(str(account_id), e)
 
     server._load_client = load_client
+    import automation_executor
+    real_make = automation_executor._make_client
+
+    def make_client(account_id):
+        try:
+            return real_make(account_id)
+        except Exception as e:  # noqa: BLE001 — re-raised on first use, unchanged
+            return _OfflineOF(str(account_id), e)
+
+    automation_executor._make_client = make_client
     app.on_event("startup")(events.start_persist_worker)
 
     def _loopback(request: Request) -> None:
@@ -327,6 +449,14 @@ def _wire(app) -> None:
                 "queue_depth": q.qsize() if q is not None else None,
                 "fault": os.environ.get("SLOP_FAULT") or None}
 
+    async def telemetry_flush(request: Request) -> dict:
+        """Emit the product's write_telemetry line now (reason "flush"), as its
+        shutdown does, so a scenario can read every count from relay.log before
+        the stack stops. The line itself is the product's own code."""
+        _loopback(request)
+        from db import write_telemetry
+        return {"line": write_telemetry.emit("flush")}
+
     sampler = None
     if os.environ.get("SLOP_PROFILE") == "1":
         sampler = _Sampler()
@@ -345,16 +475,20 @@ def _wire(app) -> None:
             raise HTTPException(status_code=404, detail="profiler off (slop/run --profile)")
         return sampler.dump()
 
+    db = _db_probe()
+
     async def loop_cpu(request: Request) -> dict:
-        """CPU seconds of the thread this handler runs on: the event loop's."""
+        """CPU seconds of the thread this handler runs on: the event loop's, plus the
+        DB pool counters (`_db_probe`), polled together once a second by lib/procmon.py."""
         _loopback(request)
-        return {"thread_s": time.thread_time(), "mono_s": time.monotonic()}
+        return {"thread_s": time.thread_time(), "mono_s": time.monotonic(), "db": db()}
 
     app.add_api_route("/__slop/loop-cpu", loop_cpu, methods=["GET"])
     app.add_api_route("/__slop/profile", profile_stage, methods=["POST"])
     app.add_api_route("/__slop/profile", profile_dump, methods=["GET"])
     app.add_api_route("/__slop/of-ws-frame", of_ws_frame, methods=["POST"])
     app.add_api_route("/__slop/stats", stats, methods=["GET"])
+    app.add_api_route("/__slop/telemetry-flush", telemetry_flush, methods=["POST"])
 
 
 def _run(app, *a, **k):

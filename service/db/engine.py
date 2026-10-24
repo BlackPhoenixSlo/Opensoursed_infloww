@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.pool import AsyncAdaptedQueuePool
+from sqlalchemy.util import queue as sqla_queue
 
 HERE = Path(__file__).resolve().parent
 # Load service/.env (gitignored). Falls back to env-vars already in process.
@@ -45,17 +46,63 @@ _is_sqlite = DATABASE_URL.startswith("sqlite")
 
 # A file SQLite keeps its connections in a pool. aiosqlite's own default for a
 # file is NullPool: every session opens a connection (a thread plus the PRAGMAs
-# below) and closes it, ~3-6x the cost of a pooled session. Overflow is
-# unlimited, as NullPool's was, so a burst never waits on the pool (and the
-# pool never awaits its queue, so pool_timeout is never consulted); only
-# `pool_size` connections stay open between sessions. Memory bound: each kept
-# connection's page cache grows to cache_size (64 MiB), so at most 5 x 64 MiB =
-# 320 MiB is held while idle; overflow connections close on return, and the
-# mmap is the OS page cache, shared. The in-memory DB keeps aiosqlite's
-# StaticPool. CHATTERLY_DB_NULLPOOL=1 (set by tests/_harness.py, which runs a
-# fresh event loop per case) keeps NullPool, so a connection never outlives
-# the loop that opened it there.
-_POOL_ARGS = {"poolclass": AsyncAdaptedQueuePool, "pool_size": 5, "max_overflow": -1}
+# below) and closes it, ~3-6x the cost of a pooled session.
+#
+# The pool is BOUNDED (_SpillQueuePool): at most POOL_SIZE connections serve
+# sessions; a session that finds none free waits for one, first come first
+# served. Unbounded overflow (what this was until 2026-10-24) turned any pile-up
+# of requests — a 1-2 s stall of the process, then every request in flight at
+# once — into one new connection per session: a new aiosqlite thread, the whole
+# schema (270 objects) parsed again under SQLite's global malloc mutex, 200+
+# threads fighting for the GIL and SQLite's write lock in busy_timeout sleeps.
+# Measured in slop (`2026-10-24-big-model-dm-flood`): 200+ connections and 3-11
+# cores for seconds, p95 1-6 s, sometimes self-sustaining for a minute
+# (.scratch/fleet-sharding/03-write-storm.md). SQLite runs one writer at a time
+# anyway, so more connections never wrote faster; they only queued in C.
+#
+# Nothing is dropped or refused: a wait that lasts SPILL_AFTER_S opens an extra
+# connection instead of failing (closed on return), so a task that nests a
+# second session while holding one, or any wait-on-itself pattern, costs at
+# most that delay, never a deadlock or a TimeoutError. Memory bound: each kept
+# connection's page cache grows to cache_size (64 MiB) at most; the mmap is the
+# OS page cache, shared. The in-memory DB keeps aiosqlite's StaticPool.
+# CHATTERLY_DB_NULLPOOL=1 (set by tests/_harness.py, which runs a fresh event
+# loop per case) keeps NullPool, so a connection never outlives the loop that
+# opened it there.
+POOL_SIZE = int(os.environ.get("CHATTERLY_DB_POOL_SIZE", "8"))
+SPILL_AFTER_S = float(os.environ.get("CHATTERLY_DB_SPILL_AFTER_S", "2.0"))
+
+
+class _SpillQueuePool(AsyncAdaptedQueuePool):
+    """`pool_size` connections, handed out first come first served; a checkout
+    still waiting after `timeout` seconds opens a spill connection (overflow,
+    closed on return) instead of raising. Requires max_overflow=-1, so
+    `_inc_overflow` / `_dec_overflow` only count."""
+
+    def _do_get(self):
+        if self._overflow >= 0:  # all pool_size connections exist: wait for a free one
+            try:
+                return self._pool.get(True, self._timeout)
+            except sqla_queue.Empty:
+                pass
+            self.spills += 1
+        else:  # still opening the first pool_size: an idle one, else a new one
+            try:
+                return self._pool.get(False)
+            except sqla_queue.Empty:
+                pass
+        self._inc_overflow()
+        try:
+            return self._create_connection()
+        except BaseException:
+            self._dec_overflow()
+            raise
+
+    spills = 0  # checkouts that waited SPILL_AFTER_S and opened an extra connection
+
+
+_POOL_ARGS = {"poolclass": _SpillQueuePool, "pool_size": POOL_SIZE, "max_overflow": -1,
+              "pool_timeout": SPILL_AFTER_S}
 _pooled = (
     _is_sqlite
     and ":memory:" not in DATABASE_URL
@@ -100,6 +147,10 @@ def _make_engine(url: str, pooled: bool) -> AsyncEngine:
 
 
 engine: AsyncEngine = _make_engine(DATABASE_URL, _pooled)
+# Write-path telemetry (one JSON log line a minute; read-only listeners, see
+# write_telemetry.py). CHATTERLY_WRITE_TELEMETRY_S=0 leaves the engine bare.
+from . import write_telemetry as _write_telemetry  # noqa: E402
+_write_telemetry.instrument(engine)
 
 async_session_factory = async_sessionmaker(
     engine,

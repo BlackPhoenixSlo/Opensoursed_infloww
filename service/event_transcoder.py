@@ -36,9 +36,10 @@ from collections import deque
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, insert, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+from db import of_writer, write_telemetry
 from db.engine import get_session
 from db.models import Chat, Fan, Message, Transaction, is_paid_ratchet
 from of_shapes import giphy_dm_id   # shared OF payload-shape reader
@@ -165,6 +166,7 @@ async def transcode(event: dict) -> None:
             _log_unknown(event_type, payload)
     except Exception:
         log.exception("transcode failed (account=%s type=%s)", account_id, event_type)
+        write_telemetry.drop("transcode_exception")
 
 
 def _record_queue_frame(account_id: Any, event_type: str, payload: Any) -> None:
@@ -303,21 +305,42 @@ async def _touch_fan_from_event(account_id: Any, payload: Any) -> None:
 
     # UPDATE-only (no insert) — we don't want a stray toast to mint a Fan
     # row for someone the model has never actually messaged.
-    updates: dict[str, Any] = {"updated_at": datetime.utcnow()}
+    fields: dict[str, Any] = {}
     if avatar:
-        updates["avatar_url"] = avatar
+        fields["avatar_url"] = avatar
     if name:
-        updates["of_display_name"] = name
+        fields["of_display_name"] = name
     if uname:
-        updates["of_username"] = uname
+        fields["of_username"] = uname
 
+    # A typing / online frame repeats the same blob every few seconds: read
+    # first (no write lock) and write only what changed — not even updated_at
+    # moves when nothing did.
     async with get_session() as s:
-        existing = await s.get(Fan, (str(account_id), int(fan_id)))
-        if existing is None:
-            return
-        for k, v in updates.items():
-            setattr(existing, k, v)
-        await s.commit()
+        row = (await s.execute(
+            select(*(getattr(Fan, k) for k in fields))
+            .where(Fan.account_id == str(account_id), Fan.fan_id == int(fan_id))
+        )).first()
+    if row is None or all(v == cur for v, cur in zip(fields.values(), row)):
+        return
+    aid = str(account_id)
+    await of_writer.write(_touch_fans, (aid, int(fan_id), fields), key=("touch", aid, int(fan_id)))
+
+
+async def _touch_fans(conn, items: list) -> list:
+    """of_writer op: the touches of one fan, folded into one UPDATE that only
+    matches when a field still differs."""
+    aid, fan_id, _ = items[0]
+    fields: dict[str, Any] = {}
+    for _a, _f, f in items:
+        fields.update(f)
+    await conn.execute(
+        update(Fan)
+        .where(Fan.account_id == aid, Fan.fan_id == fan_id,
+               or_(*(getattr(Fan, k).is_distinct_from(v) for k, v in fields.items())))
+        .values(**fields, updated_at=datetime.utcnow())
+    )
+    return [None] * len(items)
 
 
 # ── api2_chat_message ─────────────────────────────────────────────
@@ -417,131 +440,15 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
     # one rogue media-array from blowing up disk usage.
     raw = dump_capped(m)
 
-    async with get_session() as s:
-        # ── messages upsert ─────────────────────────────────────
-        # Idempotent via the composite PK. on_conflict_do_update lets us
-        # refresh fields that OF may have flipped (is_paid after unlock,
-        # is_unsent after deletion).
-        msg_stmt = sqlite_insert(Message).values(
-            account_id=str(account_id),
-            fan_id=int(fan_id),
-            message_id=int(message_id),
-            direction=direction,
-            sender_name=sender_name,
-            body=body,
-            media_ids=json.dumps(media_ids),
-            media_count=int(m.get("mediaCount") or 0),
-            price_cents=price_cents,
-            is_paid=is_paid,
-            is_tip=is_tip,
-            purchased_at=_parse_iso(m.get("openedAt")) if is_paid else None,
-            is_unsent=False,
-            raw_json=raw,
-            created_at=created_at,
-        ).on_conflict_do_update(
-            index_elements=["account_id", "fan_id", "message_id"],
-            set_={
-                "body": body,
-                # Same ratchet as the scrape upsert (automation_executor): a WS
-                # frame arriving after a purchase aged off the feed reports the
-                # message unpaid again, and an unconditional write here would
-                # undo a sale the other writer had already recorded.
-                "is_paid": is_paid_ratchet(is_paid),
-                "is_tip": is_tip,
-                "media_count": int(m.get("mediaCount") or 0),
-                "raw_json": raw,
-            },
-        )
-        await s.execute(msg_stmt)
-
-        # ── fans upsert ─────────────────────────────────────────
-        # New fan: insert with the fields OF gave us. Existing fan: bump
-        # last_message_received_at and refresh display info, leaving
-        # AI-extracted facts (his_age, hobbies, ...) untouched.
-        fan_stmt = sqlite_insert(Fan).values(
-            account_id=str(account_id),
-            fan_id=int(fan_id),
-            of_username=from_user.get("username"),
-            of_display_name=from_user.get("name"),
-            avatar_url=from_user.get("avatar"),
-            last_message_received_at=created_at,
-            # Distinguish "real fan of our creator" vs "creator we follow."
-            # `subscribedOn=True` would mean this person is subscribed to us
-            # (= a real fan). `subscribedBy=True` means our account is
-            # subscribed to them (we're the fan, they're a creator).
-            source=(
-                "fan" if from_user.get("subscribedOn") else
-                "creator_we_follow" if from_user.get("subscribedBy") else
-                "unknown"
-            ),
-        )
-        # ON CONFLICT: never CLOBBER a populated name/avatar with the blanks OF sends
-        # on a plain message. OF chat-message payloads carry only `fromUser:{id}` (no
-        # username/name/avatar), so unconditionally writing `.get(...)` here used to
-        # null out names captured earlier by a toast/online event — the root cause of
-        # ~80% of fans showing no name. Only refresh these when OF actually gives them.
-        on_conflict = {
-            "last_message_received_at": created_at,
-            "updated_at": datetime.utcnow(),
-        }
-        if from_user.get("username"):
-            on_conflict["of_username"] = from_user["username"]
-        if from_user.get("name"):
-            on_conflict["of_display_name"] = from_user["name"]
-        if from_user.get("avatar"):
-            on_conflict["avatar_url"] = from_user["avatar"]
-        # Self-heal a weak/unknown source if THIS payload carries OF's
-        # subscribedOn/subscribedBy (rare on a plain DM, present on toast/online
-        # frames) — upgrade-only, never downgrades a known 'fan'/'creator_we_follow'.
-        on_conflict.update(source_self_heal_set(
-            from_user.get("subscribedOn"), from_user.get("subscribedBy")))
-        fan_stmt = fan_stmt.on_conflict_do_update(
-            index_elements=["account_id", "fan_id"],
-            set_=on_conflict,
-        )
-        await s.execute(fan_stmt)
-
-        # ── chats upsert ────────────────────────────────────────
-        # The "preview" we show in the inbox is the first ~120 chars of body,
-        # HTML-stripped just enough that it doesn't read raw <p> tags.
-        preview = _strip_html(body)[:120]
-        chat_stmt = sqlite_insert(Chat).values(
-            account_id=str(account_id),
-            fan_id=int(fan_id),
-            last_message_id=int(message_id),
-            last_message_at=created_at,
-            last_message_preview=preview,
-            unread_count=1 if direction == "in" else 0,
-        ).on_conflict_do_update(
-            index_elements=["account_id", "fan_id"],
-            set_={
-                "last_message_id": int(message_id),
-                "last_message_at": created_at,
-                "last_message_preview": preview,
-                # Increment unread only for inbound; don't reset to 1.
-                "unread_count": (
-                    Chat.unread_count + 1 if direction == "in" else Chat.unread_count
-                ),
-            },
-        )
-        await s.execute(chat_stmt)
-
-        # ── transaction (tip path) ───────────────────────────────
-        # A tip rides on a chat_message with isTip=true; its $ value is in
-        # `tipAmount` (dollars), captured above as tip_cents — `price` is 0 here.
-        # OF also sends a 'tipReceived' / 'paidMessage' event for PPV
-        # unlocks (different shape) — we'll wire those when we see one
-        # in the unknown-event log.
-        if is_tip and tip_cents > 0 and direction == "in":
-            await _record_inbound_payment(
-                s,
-                account_id=str(account_id),
-                fan_id=int(fan_id),
-                message_id=int(message_id),
-                kind="tip",
-                amount_cents=tip_cents,
-                occurred_at=created_at,
-            )
+    await of_writer.write(_write_dms, {
+        "account_id": str(account_id), "fan_id": int(fan_id), "message_id": int(message_id),
+        "direction": direction, "sender_name": sender_name, "body": body,
+        "media_ids": json.dumps(media_ids), "media_count": int(m.get("mediaCount") or 0),
+        "price_cents": price_cents, "paid": is_paid, "is_tip": is_tip,
+        "purchased_at": _parse_iso(m.get("openedAt")) if is_paid else None,
+        "raw_json": raw, "created_at": created_at, "from_user": from_user,
+        "tip_cents": tip_cents if is_tip and tip_cents > 0 else 0,
+    }, key=(str(account_id), int(fan_id)))
 
     log.info(
         "chat_message persisted: account=%s fan=%s msg=%s direction=%s price=%s tip=%s",
@@ -549,8 +456,8 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
         tip_cents if is_tip else 0,
     )
 
-    # Cache invalidation — must run AFTER the `async with get_session()`
-    # block has exited (auto-commit on success) so a concurrent reader
+    # Cache invalidation — must run AFTER the write above has committed
+    # (of_writer.write returns once its batch has) so a concurrent reader
     # that re-fetches doesn't cache the pre-commit upstream state.
     aid_s = str(account_id)
     relay_cache.patch("list_chats", aid_s, _inbox_patcher(int(fan_id), m))
@@ -620,6 +527,128 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
             )
         except Exception:
             log.debug("image dispatch hook failed", exc_info=True)
+
+
+async def _write_dms(conn, items: list) -> list:
+    """of_writer op: the inbound DMs of ONE chat queued together, in arrival
+    order — each `messages` row, then one `fans` and one `chats` upsert for all
+    of them, then the tip ledger rows.
+
+    The chat's unread goes up by the DMs that were NEW rows only: a re-delivered
+    frame (WS replay after a reconnect) is already counted, and adding it again
+    is how a badge used to read higher than the thread."""
+    first, last = items[0], items[-1]
+    aid, fan_id = first["account_id"], first["fan_id"]
+    pk = ["account_id", "fan_id", "message_id"]
+    n_new = 0
+    for d in items:
+        row = dict(account_id=aid, fan_id=fan_id, message_id=d["message_id"],
+                   direction=d["direction"], sender_name=d["sender_name"], body=d["body"],
+                   media_ids=d["media_ids"], media_count=d["media_count"],
+                   price_cents=d["price_cents"], is_paid=d["paid"], is_tip=d["is_tip"],
+                   purchased_at=d["purchased_at"], is_unsent=False, raw_json=d["raw_json"],
+                   created_at=d["created_at"])
+        res = await conn.execute(sqlite_insert(Message).values(**row).on_conflict_do_nothing(index_elements=pk))
+        if res.rowcount:
+            n_new += 1
+            continue
+        # Already stored: refresh what OF may have flipped (is_paid after an
+        # unlock, the body after an edit).
+        await conn.execute(sqlite_insert(Message).values(**row).on_conflict_do_update(
+            index_elements=pk,
+            set_={
+                "body": d["body"],
+                # Same ratchet as the scrape upsert (automation_executor): a WS
+                # frame arriving after a purchase aged off the feed reports the
+                # message unpaid again, and an unconditional write here would
+                # undo a sale the other writer had already recorded.
+                "is_paid": is_paid_ratchet(d["paid"]),
+                "is_tip": d["is_tip"],
+                "media_count": d["media_count"],
+                "raw_json": d["raw_json"],
+            },
+        ))
+
+    # ── fans upsert ─────────────────────────────────────────
+    # New fan: insert with the fields OF gave us. Existing fan: bump
+    # last_message_received_at and refresh display info, leaving AI-extracted
+    # facts (his_age, hobbies, ...) untouched. The newest non-blank value of
+    # each field across the frames wins.
+    user: dict = {}
+    for d in items:
+        for k, v in d["from_user"].items():
+            if v is not None and v != "":
+                user[k] = v
+    created_at = last["created_at"]
+    fan_stmt = sqlite_insert(Fan).values(
+        account_id=aid,
+        fan_id=fan_id,
+        of_username=user.get("username"),
+        of_display_name=user.get("name"),
+        avatar_url=user.get("avatar"),
+        last_message_received_at=created_at,
+        # Distinguish "real fan of our creator" vs "creator we follow."
+        # `subscribedOn=True` would mean this person is subscribed to us
+        # (= a real fan). `subscribedBy=True` means our account is
+        # subscribed to them (we're the fan, they're a creator).
+        source=(
+            "fan" if user.get("subscribedOn") else
+            "creator_we_follow" if user.get("subscribedBy") else
+            "unknown"
+        ),
+    )
+    # ON CONFLICT: never CLOBBER a populated name/avatar with the blanks OF sends
+    # on a plain message. OF chat-message payloads carry only `fromUser:{id}` (no
+    # username/name/avatar), so unconditionally writing `.get(...)` here used to
+    # null out names captured earlier by a toast/online event — the root cause of
+    # ~80% of fans showing no name. Only refresh these when OF actually gives them.
+    on_conflict = {
+        "last_message_received_at": created_at,
+        "updated_at": datetime.utcnow(),
+    }
+    if user.get("username"):
+        on_conflict["of_username"] = user["username"]
+    if user.get("name"):
+        on_conflict["of_display_name"] = user["name"]
+    if user.get("avatar"):
+        on_conflict["avatar_url"] = user["avatar"]
+    # Self-heal a weak/unknown source if a payload carries OF's
+    # subscribedOn/subscribedBy (rare on a plain DM, present on toast/online
+    # frames) — upgrade-only, never downgrades a known 'fan'/'creator_we_follow'.
+    on_conflict.update(source_self_heal_set(user.get("subscribedOn"), user.get("subscribedBy")))
+    await conn.execute(fan_stmt.on_conflict_do_update(
+        index_elements=["account_id", "fan_id"], set_=on_conflict))
+
+    # ── chats upsert ────────────────────────────────────────
+    # The "preview" we show in the inbox is the first ~120 chars of body,
+    # HTML-stripped just enough that it doesn't read raw <p> tags.
+    preview = _strip_html(last["body"])[:120]
+    await conn.execute(sqlite_insert(Chat).values(
+        account_id=aid,
+        fan_id=fan_id,
+        last_message_id=last["message_id"],
+        last_message_at=created_at,
+        last_message_preview=preview,
+        unread_count=n_new,
+    ).on_conflict_do_update(
+        index_elements=["account_id", "fan_id"],
+        set_={
+            "last_message_id": last["message_id"],
+            "last_message_at": created_at,
+            "last_message_preview": preview,
+            "unread_count": Chat.unread_count + n_new,
+        },
+    ))
+
+    # ── transaction (tip path) ───────────────────────────────
+    # A tip rides on a chat_message with isTip=true; its $ value is in
+    # `tipAmount` (dollars), captured as tip_cents — `price` is 0 here.
+    for d in items:
+        if d["tip_cents"]:
+            await _record_inbound_payment(
+                conn, account_id=aid, fan_id=fan_id, message_id=d["message_id"],
+                kind="tip", amount_cents=d["tip_cents"], occurred_at=d["created_at"])
+    return [None] * len(items)
 
 
 def _inbox_patcher(fan_id: int, m: dict):
@@ -695,16 +724,10 @@ async def _transcode_ppv_unlock(
             event_type, tuple(sorted(payload.keys())),
         )
         return
-    async with get_session() as s:
-        await _record_inbound_payment(
-            s,
-            account_id=str(account_id),
-            fan_id=int(fan_id),
-            message_id=int(message_id),
-            kind="ppv",
-            amount_cents=amount_cents,
-            occurred_at=occurred,
-        )
+    await of_writer.write(_write_payments, dict(
+        account_id=str(account_id), fan_id=int(fan_id), message_id=int(message_id),
+        kind="ppv", amount_cents=amount_cents, occurred_at=occurred,
+    ))
 
     # Post-commit cache invalidation. See `_transcode_chat_message` for the
     # ordering rationale.
@@ -733,7 +756,7 @@ async def _record_inbound_payment(
     """Insert a Transaction + bump fans.lifetime_spend_cents — idempotent
     on (account_id, fan_id, message_id, kind). No unique index exists yet
     (would need a migration), so we SELECT-then-INSERT inside the caller's
-    session. Safe because the WS pump processes events serially per
+    transaction (`s`: a session or the OF-cache writer's connection). Safe because the WS pump processes events serially per
     account. No `raw_json` (see `Transaction.raw_json`): a tip's frame stays on
     its `messages` row, but a PPV unlock's payload survives only in the
     `_log_unknown` shape log and the 2-day `event_inbox`."""
@@ -748,7 +771,7 @@ async def _record_inbound_payment(
     if existing.scalar() is not None:
         return  # already recorded — don't double-count
 
-    s.add(Transaction(
+    await s.execute(insert(Transaction).values(
         account_id=account_id,
         fan_id=fan_id,
         kind=kind,
@@ -760,15 +783,24 @@ async def _record_inbound_payment(
 
     # Bump the denormalized rollup so the FanDrawer's lifetime-spend
     # stat is one indexed read instead of a SUM(amount_cents) every open.
-    fan = await s.get(Fan, (account_id, fan_id))
-    if fan is not None:
-        fan.lifetime_spend_cents = (fan.lifetime_spend_cents or 0) + amount_cents
-        fan.updated_at = datetime.utcnow()
+    await s.execute(
+        update(Fan)
+        .where(Fan.account_id == account_id, Fan.fan_id == fan_id)
+        .values(lifetime_spend_cents=func.coalesce(Fan.lifetime_spend_cents, 0) + amount_cents,
+                updated_at=datetime.utcnow())
+    )
 
     log.info(
         "transaction persisted: account=%s fan=%s kind=%s amount=%s",
         account_id, fan_id, kind, amount_cents,
     )
+
+
+async def _write_payments(conn, items: list) -> list:
+    """of_writer op: PPV-unlock ledger rows."""
+    for p in items:
+        await _record_inbound_payment(conn, **p)
+    return [None] * len(items)
 
 
 def _strip_html(s: str) -> str:

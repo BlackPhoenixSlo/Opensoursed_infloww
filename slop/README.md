@@ -42,10 +42,10 @@ run's `summary.txt` and written to its `break.json`.
 |---|---|
 | `run` | The single entrypoint (bash, then `lib/cli.py`). |
 | `lib/stack.py` | A throwaway stack for each scenario: the relay on a temp SQLite DB, plus `next dev` if the scenario has UI. Uses free loopback ports and restores `app/tsconfig.json` and `next-env.d.ts` on exit. |
-| `lib/relay.py` | Runs `scripts/demo-shots/relay_guarded.py` (network guards, redirected secrets and sessions, `CHATTERLY_TEST_MODE`), starts the production persist worker, adds loopback-only `/__slop/*` hooks (below) and answers OnlyFans' side of `OFClient.send_message`. Applies `SLOP_FAULT`. |
+| `lib/relay.py` | Runs `scripts/demo-shots/relay_guarded.py` (network guards, redirected secrets and sessions, `CHATTERLY_TEST_MODE`), starts the production persist worker, adds loopback-only `/__slop/*` hooks (below) and answers OnlyFans' side of `OFClient.send_message` (and `get_messages` from `of-truth.jsonl`). Applies `SLOP_FAULT`. |
 | `lib/faults.py` | Break-it-once faults: each patches a real product function inside the throwaway relay and lists the check names it `targets`. |
 | `lib/procmon.py` | Relay CPU and RSS every 1 s, each interval tagged with `rec.stage`: the whole process from `ps` (its process group; passes 100% when executor threads run SQLite outside the GIL) and the event-loop thread alone from `GET /__slop/loop-cpu` (`time.thread_time()`; the one-core ceiling). Writes `resources.json`, a per-stage table in `summary.txt` (process CPU mean / p95 / max %, 100% = one core; cores; loop CPU mean / p95; RSS max / end) and, when the scenario sets `CPU_BUDGET_PCT`, the budget check `relay process CPU mean <= N% of one core in every stage`. With `--profile`, tells the relay's sampler the stage and saves `profile-<stage>.txt` (loop thread and other threads: top self functions or SQL statements, self lines, cumulative), `profile-<stage>-{loop,threads}.collapsed` (flamegraph input) and `profile.json`; `summary.txt` gets the top 10 of the peak-CPU stage. |
-| `lib/client.py` | Timed HTTP client. Every actor call is recorded (route, status, latency), so the stock invariants need no extra code. Set `ctx.rec.stage` to also keep calls per load stage (`ctx.rec.summary(stage)`). |
+| `lib/client.py` | Timed HTTP client. Every actor call is recorded (route, status, latency), so the stock invariants need no extra code. Set `ctx.rec.stage` to also keep calls per load stage (`ctx.rec.summary(stage)`); `ctx.rec.timeline` keeps every call with its end time. Idle keep-alive connections are reused only under 2 s (`KEEPALIVE_EXPIRY_S`): httpx's 5 s default equals uvicorn's and gets requests reset after a relay stall. |
 | `lib/report.py` | Invariants, metrics and the evidence writer. `ctx.check(..., budget=True)` labels a latency budget (a miss is still FAIL); `ctx.check(name, None)` or `ctx.skip(name, reason)` records SKIP (no samples, `--no-ui`), shown and never a pass. `ctx.note(...)` adds lines (e.g. a per-stage table) to `summary.txt`. |
 | `lib/cli.py` | Discovers scenarios, handles the knobs, adds the stock invariants, and runs the break-it-once logic. |
 | `seed/` | One seeder per entity: `agency` (real `POST /auth/register`, `n` Agencies), `creators` (optional owner per Creator), `fans` (one size, or a size per Creator), `threads`. Sizes come from `seed.SCALES`. |
@@ -88,10 +88,18 @@ account, which a slop stack never has); `next dev` when `/login` does.
   `event_inbox` persist worker, the transcoder (`messages`, `fans`,
   `chats.unread_count`) and the SSE fan-out.
 - **Outbound sends are patched.** `OFClient.send_message` answers like OF (below).
+- **One OF read is faked, on request.** When a scenario writes OnlyFans' side of the
+  record to `$DEMO_SHOTS_TMP/of-truth.jsonl` (`ctx.stack.tmp`), the chat scrape's
+  `get_messages` pages it (below); `automation_executor._make_client` falls back to the
+  same offline client. No file: the read fails as before.
 - **`/api/of/*` is held in the browser.** OF-live reads never answer (below).
 
 `GET /__slop/loop-cpu` answers `time.thread_time()` from the event-loop thread (polled
-once a second). `--profile` adds `/__slop/profile` and two samplers inside the relay
+once a second) plus the DB pool counters (`db`: connections opened/closed, checked out
+now and peak since the last poll, checkouts, and `nested` = a checkout by a task that
+already holds one, with its service/ frames); procmon adds them, the relay's thread
+count and the host's 1-min load as `threads dbPeak dbOpen nested hostLd` columns (per second in
+`resources.json`, with `req_n` / `req_max_ms` of the actor calls that ended in that second). `--profile` adds `/__slop/profile` and two samplers inside the relay
 process (`lib/relay.py` `_Sampler`; not py-spy, which needs root on macOS): a SIGALRM
 itimer that samples the loop thread where it stands, and a thread that reads the other
 threads' stacks (aiosqlite workers labelled with their SQL; wall time, lock waits
@@ -102,7 +110,9 @@ frame, so compare CPU numbers only between runs with the same `--profile` settin
 `GET /__slop/stats`: `received` (hook frames), `processed` (`transcode()` returned;
 `manager.quiesce` waits on it), `transcoded` (a canonical writer returned and none
 raised: successes only, so a dropped or failed frame shows as `processed - transcoded`),
-`persist_drops`, `queue_depth`. All `/__slop/*` hooks exist only in `lib/relay.py`, never in
+`persist_drops`, `queue_depth`. `POST /__slop/telemetry-flush`: the product's
+`service/db/write_telemetry.py` JSON line now (reason `flush`, as on shutdown), so a scenario reads
+every count back from `relay.log`. All `/__slop/*` hooks exist only in `lib/relay.py`, never in
 `service/`.
 
 In the browser, `/api/of/*` (OF-live reads) is held pending. Screens therefore show
@@ -112,8 +122,17 @@ off-host request is aborted and counted.
 The same holds outbound: a chatter's reply (`POST /api/of/v2/chats/{fan}/messages`)
 reaches OnlyFans through `OFClient.send_message`, which `lib/relay.py` answers with
 the new message (id, text, createdAt), as OF would. Every other OF call still fails
-as before, so no OF read is faked. The attribution row, unread clear and
-`chat_responded` after it are product code.
+as before, except `get_messages` when the scenario wrote `of-truth.jsonl` (lines
+`{account_id, fan_id, message}`; paged newest first with `before_id`, `hasMore`, as OF
+does). That is the read behind the chat scrape and `POST
+/admin/messages/{aid}/{fan}/rescrape-now`. The attribution row, unread clear and
+`chat_responded` after it are product code. The `/__slop/*` hooks write no `actions`
+audit row (the real pump has no HTTP request around a frame).
+
+`ctx.stack.crash_relay()` SIGKILLs the relay's process group (no shutdown hook runs,
+as in an OOM kill) and returns the epoch time; `ctx.stack.start_relay()` (blocking:
+`asyncio.to_thread`) starts it again on the same DB, port and env, appending to
+`relay.log`. Open `Http` pools die with it: `ctx.owner.share()` afresh after.
 
 Upgrade path: when a fake OnlyFans that speaks the WS protocol
 exists, `actors/fan_dm.py` sends through it instead, and the real pump consumes the
@@ -192,5 +211,28 @@ reads or writes `service/chatterly.db`, real sessions, prod or any remote. The
   in `summary.txt`, plus relay process CPU mean <= `CPU_BUDGET_PCT` (80% of one core) per stage.
   A crashed tab is recorded (stage), never a crashed run. Fault:
   `sse-fanout-reorders-within-thread`; `--fault=access-log-writer-spin-waits` proves the CPU check.
-  Known flake: 6/10 medium runs hit a SQLite write storm (~19 concurrent writers, `pool_size=5
-  max_overflow=-1` in `service/db/engine.py`; 3-9 cores for 10-40 s, p95 1-6 s). Open, not capped by design.
+  When stages are >= 60 s (medium), stage 2 SIGSTOPs the relay for 2 s (a starved VPS) and
+  checks the 30 s after SIGCONT: CPU <= 300% every second and p95 <= 750 ms, i.e. no SQLite
+  connection storm. That storm (6/10 medium runs before; 3-11 cores, p95 1-6 s) was the
+  unbounded pool overflow opening one connection per waiting session; `service/db/engine.py`
+  now holds `pool_size` connections FIFO and spills one only after a 2 s wait. Fault
+  `db-pool-unbounded-overflow` puts the old pool back (`--break --fault=db-pool-unbounded-overflow`).
+  Production write telemetry (`service/db/write_telemetry.py`, one JSON line a minute in the relay
+  log): after a forced flush the scenario reads every line back from `relay.log` and checks they came
+  every 60 s (+-5), that frames and per-Creator DMs sum to what was injected, and that every drop
+  counter is 0; `summary.txt` gets its per-writer table (txns, wait/hold p95, lock-held seconds).
+  `CHATTERLY_WRITE_TELEMETRY_S=0 slop/run big-model ...` turns it off (checks SKIP) for an overhead A/B.
+  Fault `write-telemetry-misses-1-in-50-dms` (`--break --fault=write-telemetry-misses-1-in-50-dms`).
+  OF-cache writer (`service/db/of_writer.py`, group commit for OF-sourced rows): every op
+  committed and no persist / transcode transaction outside its batches; mark-read <= 1.05 and
+  reply <= 2.05 write transactions per call (`READ_TXNS_MAX`, `REPLY_TXNS_MAX`); `summary.txt`
+  gets batches, coalesced ops, flush / op-age p95. Fault `of-writer-per-op-txns`.
+- `2026-10-24-dm-flood-relay-crash`: a fan DM flood (`fan_dm.serial`, `--rate` frames/s per
+  Creator, default 5) during which the relay is SIGKILLed, stays down 2 s while fans keep
+  writing, and restarts on the same DB. Then every DM sent goes into `of-truth.jsonl` and
+  `rescrape-now` runs per thread. Checks: loss is bounded (every DM the relay took more than
+  `LOSS_WINDOW_MS` = 1 s before the kill is in its thread), rescrape-now ok, after it every DM
+  is in its thread, none twice; metric `crash_loss` measures what was lost and how close to the
+  kill. Bypass: the fan pump has its own Recorder, so frames sent into the outage (transport
+  errors) are counted in metric `pump`, not the stock no-5xx check. Fault
+  `of-writer-holds-batches-3s` (a writer that waits instead of flushing as soon as work exists).

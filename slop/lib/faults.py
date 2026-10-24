@@ -96,6 +96,69 @@ def _access_log_writer_spin_waits() -> None:
     server._api_log_write = spinning  # the writer thread looks it up per line
 
 
+def _db_pool_unbounded_overflow() -> None:
+    """The relay's DB pool as it was before 03-write-storm: 5 kept connections and
+    unbounded overflow, so a checkout that finds none free opens a new SQLite
+    connection (a thread, a schema parse) instead of waiting for one. Every write
+    still lands; under a pile-up (the scenario's 2 s stall) the relay opens 200+
+    connections and burns 4-11 cores for seconds. Only the stall check can see it
+    reliably (the natural storm comes and goes)."""
+    import sys
+
+    from sqlalchemy.pool import AsyncAdaptedQueuePool
+
+    import db.engine  # noqa: F401 — the package re-exports `engine` over the module name
+    pool = sys.modules["db.engine"].engine.sync_engine.pool
+    if "_queue" in pool._pool.__dict__ or pool.checkedout() or pool.checkedin():
+        raise SystemExit("slop: db-pool-unbounded-overflow must be applied before the first DB session")
+    pool.__class__ = AsyncAdaptedQueuePool  # QueuePool._do_get: max_overflow=-1 never waits
+    pool._pool.maxsize, pool._overflow = 5, -5
+    pool._pool.__dict__.pop("_queue", None)  # memoized at maxsize 8 by checkedout() above
+
+
+def _write_telemetry_misses_1_in_50_dms() -> None:
+    """The write-path telemetry line under-reports: every 50th inbound DM frame
+    is not counted (an ingest counter on the wrong branch). The DM itself is
+    persisted, transcoded and fanned out as ever, so only the check that sums
+    the telemetry lines against what was injected can see it."""
+    from db import write_telemetry
+    real = write_telemetry.frame
+    n = itertools.count(1)
+
+    def undercount(account_id, event_type, event):
+        if event_type == "api2_chat_message" and next(n) % 50 == 0:
+            return None
+        return real(account_id, event_type, event)
+
+    write_telemetry.frame = undercount  # events.handle_event looks it up per frame
+
+
+def _of_writer_per_op_txns() -> None:
+    """The OF-cache writer never starts (db/of_writer.py as if batching were off):
+    every DM's event_inbox row, its transcode and every mark-read is written through
+    in a transaction of its own, as before the writer. Nothing is lost and every
+    row is right, so only the write-transaction checks can see it."""
+    from db import of_writer
+    of_writer.start = lambda: None
+
+
+def _of_writer_holds_batches_3s() -> None:
+    """The OF-cache writer waits 3 s before committing each batch (bug class: a
+    timer / fill-the-batch writer instead of flushing as soon as work exists).
+    Every row still lands, so only a crash shows it: the loss window grows from
+    the in-flight batch to seconds of DMs."""
+    import asyncio
+
+    from db import of_writer
+    real = of_writer._flush
+
+    async def held(batch):
+        await asyncio.sleep(3)
+        return await real(batch)
+
+    of_writer._flush = held
+
+
 @dataclass(frozen=True)
 class Fault:
     apply: Callable[[], None]
@@ -114,6 +177,25 @@ FAULTS: dict[str, Fault] = {
     # slop/run big-model --break --fault=access-log-writer-spin-waits
     "access-log-writer-spin-waits": Fault(_access_log_writer_spin_waits, (
         "relay process CPU mean <= 80% of one core in every stage",
+    )),
+    # slop/run big-model --break --fault=db-pool-unbounded-overflow (medium: the stall
+    # runs only with stages >= 60 s).
+    "db-pool-unbounded-overflow": Fault(_db_pool_unbounded_overflow, (
+        "relay absorbs a 2s stall: CPU <= 300% every second and p95 <= 750ms for requests sent in the "
+        "30s after (no SQLite connection storm)",
+    )),
+    # slop/run big-model --break --fault=write-telemetry-misses-1-in-50-dms
+    "write-telemetry-misses-1-in-50-dms": Fault(_write_telemetry_misses_1_in_50_dms, (
+        "write_telemetry lines: frames and DMs per account == injected",
+    )),
+    # slop/run big-model-dm-flood --break --fault=of-writer-per-op-txns
+    "of-writer-per-op-txns": Fault(_of_writer_per_op_txns, (
+        "OF-cache writer: every op committed, and no DM / event_inbox write transaction outside its batches",
+        "mark-read: <= 1.05 write transaction per call (its audit row)",
+    )),
+    # slop/run relay-crash --break (the scenario's FAULT)
+    "of-writer-holds-batches-3s": Fault(_of_writer_holds_batches_3s, (
+        "crash loses only DMs the relay took < 1000ms before the kill",
     )),
 }
 

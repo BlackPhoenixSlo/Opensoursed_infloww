@@ -63,6 +63,7 @@ from typing import AsyncIterator, Awaitable, Callable
 
 from fastapi import Request
 
+from db import of_writer, write_telemetry
 from db.repo import insert_events
 
 log = logging.getLogger("of-relay.events")
@@ -184,8 +185,9 @@ _evicted: dict[str, int] = {}
 class _Frame(dict):
     """An event as fanned out: the event dict itself (what the browser gets
     as `data:`) plus its SSE id, so queue consumers still read a dict.
-    `json` caches its encoding: one encode however many tabs it goes to."""
-    __slots__ = ("eid", "json")
+    `json` caches its encoding: one encode however many tabs it goes to.
+    `t`: monotonic time of the fan-out (write_telemetry's SSE lag)."""
+    __slots__ = ("eid", "json", "t")
 
 
 # ── Persist worker (bounded backpressure) ────────────────────────────
@@ -207,12 +209,15 @@ _PERSIST_QUEUE_MAX = 2000
 # and a busy one (20 feeds) amortizes one commit over everything that arrived
 # while the previous one was writing.
 _PERSIST_BATCH_MAX = 200
+# How long shutdown waits for the queue to be written before it gives up on it.
+_STOP_DRAIN_S = 5.0
 # OF frames worth delivering live but not worth a row: `typing` repeats every
 # ~2-3 s per typing fan and nothing reads it back from event_inbox.
 _UNPERSISTED_TYPES = frozenset({"typing"})
 _persist_queue: asyncio.Queue | None = None
 _persist_worker_task: asyncio.Task | None = None
 _persist_drops = 0
+_persist_inflight = 0   # events the worker has taken and not finished transcoding
 
 
 # ── What reaches a browser ───────────────────────────────────────────
@@ -443,6 +448,7 @@ async def handle_event(event: dict) -> None:
     # Pick the first non-sentinel key as the event_type (OF puts the type
     # at the top level — e.g. `{"newMessage": {...}}`).
     event_type = _first_real_key(event)
+    write_telemetry.frame(account_id, event_type, event)
 
     if is_feed_noise(event, account_id):
         return
@@ -470,8 +476,10 @@ async def handle_event(event: dict) -> None:
             _persist_queue.put_nowait(item)
         except asyncio.QueueFull:
             _persist_drops += 1
+            write_telemetry.drop("queue_full")
             with _suppress_queue_empty(_persist_queue):
                 _persist_queue.get_nowait()
+                write_telemetry.dequeued()
             try:
                 _persist_queue.put_nowait(item)
             except Exception:
@@ -482,6 +490,7 @@ async def handle_event(event: dict) -> None:
                     "(SQLite writer can't keep up; check disk / batch size)",
                     _persist_drops,
                 )
+        write_telemetry.enqueued(_persist_queue.qsize())
     else:
         # Pre-startup path: keep the old behavior so no event is lost.
         from event_transcoder import transcode as _transcode  # local import to avoid cycles
@@ -560,6 +569,7 @@ def _fanout(event: dict) -> int:
     _seq += 1
     frame = _Frame(event)
     frame.eid = f"{_EPOCH}.{_seq}"
+    frame.t = time.monotonic()
     key = "" if event.get("__agency") is not None else str(event.get("__account_id") or "")
     ring = _rings.get(key)
     if ring is None:
@@ -806,6 +816,7 @@ async def _persist_batch(rows: list[dict]) -> None:
     except Exception:
         if len(rows) == 1:
             log.exception("persist event failed (type=%s)", rows[0]["event_type"])
+            write_telemetry.drop("persist_error")
             return
         log.warning("persist batch of %d failed; retrying row by row", len(rows),
                     exc_info=True)
@@ -814,6 +825,7 @@ async def _persist_batch(rows: list[dict]) -> None:
             await insert_events([row])
         except Exception:
             log.exception("persist event failed (type=%s)", row["event_type"])
+            write_telemetry.drop("persist_error")
 
 
 async def _persist_event_safe(
@@ -832,20 +844,23 @@ def _drain_batch(first: tuple) -> list[tuple]:
             batch.append(_persist_queue.get_nowait())
         except asyncio.QueueEmpty:
             break
+    write_telemetry.dequeued(len(batch))
+    write_telemetry.batch(len(batch))
     return batch
 
 
 async def _persist_worker_loop() -> None:
     """Singleton consumer that drains `_persist_queue`.
 
-    Takes everything already queued (up to _PERSIST_BATCH_MAX), writes its
-    event_inbox rows in ONE commit, then runs `transcode` per event in queue
-    order. One consumer, FIFO, so each account's events keep their order —
-    and the inbox row of every event in a batch is written before any of them
-    is transcoded, as it was when each event went insert-then-transcode.
-    SQLite is single-writer: fanning out via create_task just makes the
-    writes fight over `busy_timeout`.
+    Takes everything already queued (up to _PERSIST_BATCH_MAX) and hands its
+    event_inbox rows, then each event's `transcode`, to the OF-cache writer
+    together (db/of_writer): the transcodes run concurrently, but each queues
+    its write before its first await, so the writer gets them in queue order,
+    inbox rows first, and commits them in one transaction. One consumer, FIFO,
+    so each account's events keep their order. SQLite is single-writer: the
+    writes go through the one writer instead of fighting over `busy_timeout`.
     """
+    global _persist_inflight
     assert _persist_queue is not None
     from event_transcoder import transcode as _transcode  # local import to avoid cycles
     while True:
@@ -854,16 +869,23 @@ async def _persist_worker_loop() -> None:
         except asyncio.CancelledError:
             return
         batch = _drain_batch(first)
-        await _persist_batch([
-            _inbox_row(account_id, event_type, persistable)
-            for account_id, event_type, persistable, _event in batch
-            if event_type not in _UNPERSISTED_TYPES
-        ])
-        for _account_id, _event_type, _persistable, event in batch:
+        # Taken off the queue, not yet transcoded: what a shutdown cancel loses.
+        _persist_inflight = len(batch)
+        rows = [_inbox_row(account_id, event_type, persistable)
+                for account_id, event_type, persistable, _event in batch
+                if event_type not in _UNPERSISTED_TYPES]
+
+        async def _one(event) -> None:
+            global _persist_inflight
             try:
                 await _transcode(event)
             except Exception:
                 log.exception("persist worker: transcode failed")
+                write_telemetry.drop("transcode_exception")
+            _persist_inflight -= 1
+
+        with write_telemetry.writer("persist"):
+            await asyncio.gather(_persist_batch(rows), *(_one(ev) for *_x, ev in batch))
 
 
 def start_persist_worker() -> None:
@@ -883,22 +905,34 @@ def start_persist_worker() -> None:
         _persist_worker_loop(), name="event-persist-worker",
     )
     log.info("persist worker started (queue maxsize=%d)", _PERSIST_QUEUE_MAX)
+    of_writer.start()
+    write_telemetry.start()
 
 
 async def stop_persist_worker() -> None:
-    """Cancel the worker. Pending items in the queue are lost — call from
-    shutdown only. A graceful drain would await `_persist_queue.join()`
-    first, but in our shutdown flow we accept the loss because the OF
-    pumps are already cancelled and there's no live producer."""
+    """Drain, then cancel the worker — call from shutdown only, after the OF
+    pumps are cancelled (no live producer). Best-effort: what is queued gets
+    up to _STOP_DRAIN_S to be written (the OF-cache writer then flushes what
+    it holds); whatever is left after that is lost and counted."""
     global _persist_worker_task
     if _persist_worker_task is None:
         return
+    deadline = time.monotonic() + _STOP_DRAIN_S
+    while ((_persist_queue is not None and _persist_queue.qsize()) or _persist_inflight) \
+            and not _persist_worker_task.done() and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
+    # Counted before the cancel: the queued events and the worker's batch in hand
+    # (its event_inbox rows may be written; their transcodes are not).
+    write_telemetry.drop("shutdown_queued", _persist_queue.qsize() if _persist_queue is not None else 0)
+    write_telemetry.drop("shutdown_inflight", _persist_inflight)
     _persist_worker_task.cancel()
     try:
         await _persist_worker_task
     except (asyncio.CancelledError, Exception):
         pass
     _persist_worker_task = None
+    await of_writer.stop()
+    await write_telemetry.stop()
 
 
 def _first_real_key(event: dict | object) -> str | None:
@@ -1099,6 +1133,10 @@ async def sse_stream(
                 frames = [event]
             yield _sse_out(frames)
             last_beat = time.monotonic()
+            if write_telemetry.ENABLED:
+                for f in frames:
+                    if "api2_chat_message" in f:
+                        write_telemetry.sse_sent((last_beat - getattr(f, "t", last_beat)) * 1000)
             if _first_real_key(frames[-1]) in _ENDS_STREAM:
                 return
     finally:

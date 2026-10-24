@@ -63,20 +63,22 @@ class Stack:
             DEMO_SHOTS_ROOT=str(ROOT), DEMO_SHOTS_TMP=str(self.tmp), DEMO_SHOTS_RELAY_PORT=str(self._relay_port),
             SLOP_FAULT=self.fault or "", SLOP_PROFILE="1" if self.profile else "",
         )
-        self._spawn([str(PY), str(Path(__file__).with_name("relay.py"))], env, "relay.log", cwd=ROOT)
+        self._relay_env = env
+        self._relay = self._spawn([str(PY), str(Path(__file__).with_name("relay.py"))], env, "relay.log", cwd=ROOT)
+        app = None
         if self.ui:
             dead = f"http://127.0.0.1:{self._dead}"
             nenv = dict(os.environ, RELAY_URL=self.relay, NEXT_DIST_DIR=".next/slop", NEXT_TELEMETRY_DISABLED="1",
                         HTTP_PROXY=dead, HTTPS_PROXY=dead, http_proxy=dead, https_proxy=dead,
                         NO_PROXY="127.0.0.1,localhost", no_proxy="127.0.0.1,localhost",
                         NODE_OPTIONS=f"--require {DEMO / 'fetch-guard.cjs'}", DEMO_SHOTS_TMP=str(self.tmp))
-            self._spawn(["node", "node_modules/next/dist/bin/next", "dev", "--webpack", "-H", "127.0.0.1",
-                         "-p", str(self._app_port)], nenv, "next.log", cwd=ROOT / "app")
+            app = self._spawn(["node", "node_modules/next/dist/bin/next", "dev", "--webpack", "-H", "127.0.0.1",
+                               "-p", str(self._app_port)], nenv, "next.log", cwd=ROOT / "app")
         try:
             # /livez, not /health: /health is 503 until an OF account is loaded, which a slop stack never has.
-            self._wait("relay", f"{self.relay}/livez", 60, 0)
-            if self.ui:
-                self._wait("next dev", f"{self.app}/login", 300, 1)
+            self._wait("relay", f"{self.relay}/livez", 60, self._relay)
+            if app is not None:
+                self._wait("next dev", f"{self.app}/login", 300, app)
         except BaseException:
             self.__exit__(None, None, None)
             raise
@@ -85,18 +87,34 @@ class Stack:
     @property
     def relay_pid(self) -> int:
         """Also the relay's process group id (start_new_session)."""
-        return self.procs[0].pid
+        return self._relay.pid
 
-    def _spawn(self, cmd, env, log, cwd):
-        fh = open(self.logdir / log, "w")
-        self.procs.append(subprocess.Popen(cmd, env=env, cwd=cwd, stdout=fh, stderr=subprocess.STDOUT,
-                                           start_new_session=True))
+    def crash_relay(self) -> float:
+        """SIGKILL the relay's process group (no shutdown hook runs: what it held in
+        memory is gone, as in an OOM kill or a host reboot). Returns the epoch time."""
+        t = time.time()
+        os.killpg(self._relay.pid, signal.SIGKILL)
+        self._relay.wait(timeout=10)
+        self.procs.remove(self._relay)
+        return t
 
-    def _wait(self, name: str, url: str, timeout: int, idx: int) -> None:
+    def start_relay(self, timeout: int = 60) -> None:
+        """Start the relay again on the same DB, port and env; its log appends to relay.log."""
+        self._relay = self._spawn([str(PY), str(Path(__file__).with_name("relay.py"))], self._relay_env,
+                                  "relay.log", cwd=ROOT, mode="a")
+        self._wait("relay", f"{self.relay}/livez", timeout, self._relay)
+
+    def _spawn(self, cmd, env, log, cwd, mode: str = "w") -> subprocess.Popen:
+        fh = open(self.logdir / log, mode)
+        p = subprocess.Popen(cmd, env=env, cwd=cwd, stdout=fh, stderr=subprocess.STDOUT, start_new_session=True)
+        self.procs.append(p)
+        return p
+
+    def _wait(self, name: str, url: str, timeout: int, proc: subprocess.Popen) -> None:
         """Ready = an HTTP answer below 500 (a 5xx while booting is not ready)."""
         t0, last = time.time(), "no answer"
         while time.time() - t0 < timeout:
-            if self.procs[idx].poll() is not None:
+            if proc.poll() is not None:
                 raise SystemExit(f"slop: {name} exited during startup; see {self.logdir}")
             try:
                 r = httpx.get(url, timeout=60)
@@ -112,7 +130,7 @@ class Stack:
         for p in self.procs:
             try:
                 os.killpg(p.pid, signal.SIGTERM)
-            except ProcessLookupError:
+            except (ProcessLookupError, PermissionError):  # macOS: EPERM for a group of zombies
                 pass
         deadline = time.time() + 10
         for p in self.procs:
@@ -121,7 +139,7 @@ class Stack:
             except subprocess.TimeoutExpired:
                 try:
                     os.killpg(p.pid, signal.SIGKILL)
-                except ProcessLookupError:
+                except (ProcessLookupError, PermissionError):
                     pass
         for f in RESTORE:
             orig = self.tmp / f"{f}.orig"

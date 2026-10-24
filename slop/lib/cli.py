@@ -149,6 +149,7 @@ async def run_one(name: str, path: Path, args, params, *, fault: str | None = No
             ctx = Ctx(name, stack, report, rec, args, params)
             hook = Http(stack.relay, Recorder())  # /__slop/loop-cpu and /profile: not actor calls
             mon = ProcMon(stack.relay_pid, rec, hook, profile=args.profile)
+            ctx.mon = mon  # a scenario may read mon.intervals (per-second relay CPU) for a windowed check
             mon.start()
             try:
                 await mod.run(ctx)

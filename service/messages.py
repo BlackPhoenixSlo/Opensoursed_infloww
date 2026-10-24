@@ -1319,27 +1319,36 @@ async def mark_chat_read(account_id: str, fan_id: int) -> dict[str, Any]:
     unread returns `cleared=false`, letting the UI skip a needless roster
     refetch."""
     assert_account_owned(account_id)
-    async with get_session() as s:
-        stmt = (
+    # Read state mirrors OF's, so it goes through the OF-cache writer — in
+    # order with the DMs of this chat queued before it, and in their commit.
+    from db import of_writer  # noqa: PLC0415
+    cleared = await of_writer.write(_clear_unread, (account_id, int(fan_id)),
+                                    key=(account_id, int(fan_id)))
+    # cleared=False → no chats row yet (WS hasn't transcoded one) OR it was
+    # already read. Not an error — 200 with cleared=false.
+    if cleared:
+        # Reading a chat moves it off the roster's blue (unread) count. That
+        # badge is served from a 5-min OF cache that ONLY the WS pump busts
+        # (on messages) — a read isn't a message, so without this the poll
+        # would keep serving the pre-read count for up to the full TTL. Bust
+        # it so the next roster poll re-reads OF and the badge drop sticks.
+        import relay_cache  # noqa: PLC0415 — defer; avoids an import cycle at module load
+        relay_cache.invalidate("roster_count", account_id)
+    return {"account_id": account_id, "fan_id": fan_id, "cleared": cleared}
+
+
+async def _clear_unread(conn, items: list) -> list:
+    """of_writer op: zero one chat's unread. The WHERE guards on
+    `unread_count > 0`, so each read reports whether it ACTUALLY changed."""
+    out = []
+    for account_id, fan_id in items:
+        res = await conn.execute(
             update(Chat)
-            .where(Chat.account_id == account_id, Chat.fan_id == fan_id,
-                   Chat.unread_count > 0)
+            .where(Chat.account_id == account_id, Chat.fan_id == fan_id, Chat.unread_count > 0)
             .values(unread_count=0)
         )
-        result = await s.execute(stmt)
-        await s.commit()
-        cleared = (result.rowcount or 0) > 0
-        # rowcount=0 → no chats row yet (WS hasn't transcoded one) OR it was
-        # already read. Not an error — 200 with cleared=false.
-        if cleared:
-            # Reading a chat moves it off the roster's blue (unread) count. That
-            # badge is served from a 5-min OF cache that ONLY the WS pump busts
-            # (on messages) — a read isn't a message, so without this the poll
-            # would keep serving the pre-read count for up to the full TTL. Bust
-            # it so the next roster poll re-reads OF and the badge drop sticks.
-            import relay_cache  # noqa: PLC0415 — defer; avoids an import cycle at module load
-            relay_cache.invalidate("roster_count", account_id)
-        return {"account_id": account_id, "fan_id": fan_id, "cleared": cleared}
+        out.append((res.rowcount or 0) > 0)
+    return out
 
 
 @router.post("/admin/messages/{account_id}/{fan_id}/rescrape-now")
