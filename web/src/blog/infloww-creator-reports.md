@@ -6,11 +6,15 @@ tags: ["product", "analytics", "creator-reports"]
 parodyOf: "infloww-creator-reports"
 parodyTitle: "How Infloww's creator reports help you track revenue performance"
 parodyDate: "Feb 18, 2025"
+image: "creator-reports-combo.webp"
+imageAlt: "Creator reports on desktop and phone: revenue and KPIs per creator for a demo agency"
 ---
 
 If you manage more than two creators, you have probably kept a spreadsheet of who earned what. **Analytics > Creator reports** (`/analytics/creator-reports`) replaces most of it, and the numbers live in a database on your own server.
 
 ## 1. The whole roster on one screen
+
+{% shot "creator-reports-table.webp", "Creator reports with fans, new subs, LTV, ARPU and revenue for every creator on a 20-creator roster", "Twenty creators on one screen. Demo data." %}
 
 Creator reports shows one tile per model for the date range you pick. It defaults to the last 30 days. Each tile has:
 
@@ -23,6 +27,8 @@ Creator reports shows one tile per model for the date range you pick. It default
 A line under the title says when the data was last read. **Refresh** fetches it again. If an account's data could not be read, the page says so with a banner instead of showing a quiet zero.
 
 ## 2. Where every dollar comes from
+
+{% shot "sales-records.webp", "Sales records listing each sale with amount, fan, creator, chatter and type", "Sales records: every sale behind the revenue split, by type. Demo data." %}
 
 Under each tile, revenue is split into chips: **PPV** (message unlocks), **Post** (feed post sales), **Tip**, **Sub**, **Rebill** and **Other**. Pending amounts are marked separately from cleared ones, so you do not plan around money that has not landed.
 

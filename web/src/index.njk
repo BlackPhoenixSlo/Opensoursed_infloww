@@ -42,38 +42,20 @@ ogDescription: "Free, self-hosted, no per-creator fee. Your data stays on your s
   <p class="mx-auto mt-1 max-w-4xl text-sm text-pretty text-muted">
     Today it belongs on a private network or a VPN. Fansly is <a class="underline hover:text-ink" href="#built">partly built</a>. {% include "tos.njk" %}
   </p>
-  {#- Below sm only the phone shot shows (the <source>); from sm up the desktop shot, with the phone set low on its
-      right edge so it clears the desktop top bar. The overlay phone is lazy: hidden below sm, so phones skip it. -#}
+  {#- One composed shot (desktop with the phone over its bottom-right) at every width; the hero is the LCP image. -#}
   <figure class="mt-12">
-    <div class="relative mx-auto max-w-5xl sm:pr-16 sm:pb-10">
-      <picture>
-        <source
-          media="(max-width: 639px)"
-          srcset="{{ '/img/phone-dashboard.webp' | url }} 390w, {{ '/img/phone-dashboard-780.webp' | url }} 780w"
-          sizes="15rem"
-          width="390" height="844"
-        />
-        <img
-          class="shot w-full max-sm:mx-auto max-sm:w-60 max-sm:rounded-[1.75rem]"
-          src="{{ '/img/app-dashboard.webp' | url }}"
-          srcset="{{ '/img/app-dashboard-640.webp' | url }} 640w, {{ '/img/app-dashboard.webp' | url }} 1280w"
-          sizes="(min-width: 1088px) 960px, calc(100vw - 6.5rem)"
-          width="1280" height="800"
-          alt="Inflowwww dashboard on desktop and phone, fresh install"
-          fetchpriority="high" decoding="async"
-        />
-      </picture>
+    <div class="mx-auto max-w-5xl">
       <img
-        class="shot absolute right-0 bottom-0 w-[24%] rounded-[1.75rem] ring-[5px] ring-ink max-sm:hidden"
-        src="{{ '/img/phone-dashboard.webp' | url }}"
-        srcset="{{ '/img/phone-dashboard.webp' | url }} 390w, {{ '/img/phone-dashboard-780.webp' | url }} 780w"
-        sizes="(min-width: 1088px) 246px, 24vw"
-        width="390" height="844"
-        alt=""
-        loading="lazy" decoding="async"
+        class="shot h-auto w-full"
+        src="{{ '/img/dashboard-combo.webp' | url }}"
+        srcset="{{ '/img/dashboard-combo-720.webp' | url }} 720w, {{ '/img/dashboard-combo.webp' | url }} 1440w"
+        sizes="(min-width: 1088px) 1024px, 100vw"
+        width="1440" height="900"
+        alt="Inflowwww dashboard on desktop and phone for a busy demo agency: $1,005,875 earned this month across 20 creators, 9 employees clocked in"
+        fetchpriority="high" decoding="async"
       />
     </div>
-    <figcaption class="mt-4 text-sm text-muted">Fresh install, no creator connected yet.</figcaption>
+    <figcaption class="mt-4 text-sm text-muted">A demo agency with synthetic data: 20 creators, about $1M earned this month.</figcaption>
   </figure>
 </section>
 
@@ -104,7 +86,7 @@ ogDescription: "Free, self-hosted, no per-creator fee. Your data stays on your s
 </section>
 
 {#- Feature blocks zigzag on desktop (image right, left, right); on a phone each shows text first, image last.
-    The $0 dashboard shows in the hero and Analytics only; Messages Pro uses the list view (decision 8: no thread shot). -#}
+    Every shot is a demo-agency combo (desktop with the phone over its bottom-right). -#}
 {#- Feature block 1: messaging. Theirs is "Grow your revenue faster"; we make no revenue claim. -#}
 <section aria-labelledby="grow-title" class="wrap grid items-center gap-12 py-20 sm:py-28 lg:grid-cols-[1.15fr_1fr]">
   <div>
@@ -121,12 +103,12 @@ ogDescription: "Free, self-hosted, no per-creator fee. Your data stays on your s
     <a class="btn-primary mt-8" href="#deploy">Deploy it yourself</a>
   </div>
   <img
-    class="shot mx-auto h-auto w-56 sm:w-64"
-    src="{{ '/img/phone-messages-pro-list.webp' | url }}"
-    srcset="{{ '/img/phone-messages-pro-list.webp' | url }} 390w, {{ '/img/phone-messages-pro-list-780.webp' | url }} 780w"
-    sizes="(min-width: 640px) 256px, 224px"
-    width="390" height="844"
-    alt="Messages Pro chat list on a phone, fresh install: no creator connected, so no chats yet"
+    class="shot h-auto w-full"
+    src="{{ '/img/messages-pro-combo.webp' | url }}"
+    srcset="{{ '/img/messages-pro-combo-720.webp' | url }} 720w, {{ '/img/messages-pro-combo.webp' | url }} 1440w"
+    sizes="(min-width: 1024px) 540px, 100vw"
+    width="1440" height="900"
+    alt="Messages Pro on desktop and phone: a fan thread with a photo, a paid $45 PPV and a $50 tip, beside a full chat list with spend"
     loading="lazy" decoding="async"
   />
 </section>
@@ -150,14 +132,14 @@ ogDescription: "Free, self-hosted, no per-creator fee. Your data stays on your s
     <figure class="lg:order-first">
       <img
         class="shot w-full"
-        src="{{ '/img/app-dashboard.webp' | url }}"
-        srcset="{{ '/img/app-dashboard-640.webp' | url }} 640w, {{ '/img/app-dashboard.webp' | url }} 1280w"
+        src="{{ '/img/creator-reports-combo.webp' | url }}"
+        srcset="{{ '/img/creator-reports-combo-720.webp' | url }} 720w, {{ '/img/creator-reports-combo.webp' | url }} 1440w"
         sizes="(min-width: 1024px) 540px, 100vw"
-        width="1280" height="800"
-        alt="Inflowwww dashboard with the creator earnings overview, every figure at $0.00"
+        width="1440" height="900"
+        alt="Creator reports on desktop and phone: a creator's weekly earnings by subscriptions, posts, messages and tips, with a daily earnings chart"
         loading="lazy" decoding="async"
       />
-      <figcaption class="mt-3 text-sm text-muted">Same fresh install. Still no creator connected.</figcaption>
+      <figcaption class="mt-3 text-sm text-muted">The same demo agency (synthetic data, 20 creators): one creator's week in Creator reports.</figcaption>
     </figure>
   </div>
 </section>
@@ -182,12 +164,12 @@ ogDescription: "Free, self-hosted, no per-creator fee. Your data stays on your s
     <a class="btn-primary mt-8" href="#deploy">Deploy it yourself</a>
   </div>
   <img
-    class="shot w-full"
-    src="{{ '/img/app-auto-post.webp' | url }}"
-    srcset="{{ '/img/app-auto-post-640.webp' | url }} 640w, {{ '/img/app-auto-post.webp' | url }} 1280w"
+    class="shot h-auto w-full"
+    src="{{ '/img/auto-post-combo.webp' | url }}"
+    srcset="{{ '/img/auto-post-combo-720.webp' | url }} 720w, {{ '/img/auto-post-combo.webp' | url }} 1440w"
     sizes="(min-width: 1024px) 540px, 100vw"
-    width="1280" height="800"
-    alt="Auto Post screen with a New auto post button, no creator with a live session yet"
+    width="1440" height="900"
+    alt="Auto Post on desktop and phone: five scheduled posts with their next run, one paused"
     loading="lazy" decoding="async"
   />
 </section>

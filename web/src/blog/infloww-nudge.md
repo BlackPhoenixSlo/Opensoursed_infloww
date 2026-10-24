@@ -6,6 +6,8 @@ tags: ["product", "smart-messages", "fan-engagement"]
 parodyOf: "infloww-nudge"
 parodyTitle: "Infloww’s Nudge: automated messages when fans come online"
 parodyDate: "Dec 20, 2024"
+image: "messages-pro-combo.webp"
+imageAlt: "Messages Pro on desktop and phone: a fan chat list and an open thread with an image and a PPV"
 ---
 
 An automatic message the moment a fan comes online sounds like free conversations. Inflowwww does not ship that feature. This post says where the old code is, why it is off, and how to catch online fans well without it.
@@ -17,6 +19,8 @@ The codebase has older automation screens, nudges among them, from the project i
 The product's scope is the dashboard screens plus two automations, Auto Post and Auto Story. The automated-trigger half of **Growth > Smart Messages** (messages that fire on fan actions) is not built. So we do not recommend the flag, we do not document the old screens, and this post will not tell you how to tune them.
 
 ## Catch fans while they are online, by hand
+
+{% shot "messages-pro.webp", "Messages Pro with a fan chat list and an open conversation", "Messages Pro, where a chatter answers online fans by hand. Demo data." %}
 
 You can do most of what a nudge does with a person and two screens.
 

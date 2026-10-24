@@ -6,11 +6,15 @@ tags: ["product", "message-dashboard", "quality-control"]
 parodyOf: "news-message-dashboard"
 parodyTitle: "Infloww’s Message Dashboard: quality control for every team message"
 parodyDate: "Jun 20, 2024"
+image: "message-dashboard-combo.webp"
+imageAlt: "Message dashboard on desktop and phone: message volume, response times and a chart"
 ---
 
 Reviewing a team's messages used to mean opening inbox after inbox. **Analytics > Message dashboard** (`/analytics/message-dashboard`) puts them in one log, so a manager can review a week of chatting in half an hour.
 
 ## What is on the dashboard
+
+{% shot "message-dashboard.webp", "Message dashboard with message volume and response-time cards and a chart", "The Message dashboard for a full team. Demo data." %}
 
 The dashboard has seven tabs:
 

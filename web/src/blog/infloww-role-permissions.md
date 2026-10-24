@@ -6,11 +6,15 @@ tags: ["product", "team-access", "permissions"]
 parodyOf: "infloww-role-permissions"
 parodyTitle: "What permissions should you set for Infloww assistants?"
 parodyDate: "Jul 20, 2024"
+image: "roles-combo.webp"
+imageAlt: "Roles and permissions on desktop and phone: a matrix of roles and what each can open"
 ---
 
 Chatters need the inbox and the tools that help them reply. They rarely need to manage creators or rebuild the vault. Inflowwww keeps this simple: there are two kinds of session, owner and chatter, plus per-chatter limits.
 
 ## The two sessions
+
+{% shot "roles.webp", "Roles and permissions matrix", "The roles and permissions screen. Demo data." %}
 
 Login is a share token for the dashboard plus per-user logins for the owner and each chatter (`/chatter-login`). The [Help center]({{ '/help/#first-login' | url }}) walks through the first login.
 

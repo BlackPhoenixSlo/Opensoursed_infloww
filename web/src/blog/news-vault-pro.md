@@ -6,11 +6,15 @@ tags: ["product", "vault-pro", "release-notes"]
 parodyOf: "news-vault-pro"
 parodyTitle: "Vault Pro: The key to saving hours on content management"
 parodyDate: "Jun 17, 2024"
+image: "vault-pro-combo.webp"
+imageAlt: "Vault Pro on desktop and phone: a grid of media thumbnails sorted into folders"
 ---
 
 Vault Pro is Inflowwww's content manager, at **Growth > Vault Pro** (`/growth/vault-pro`). It replaces the old `/vault` page, which now redirects there. The owner manages it; chatters attach its media from the chat composer. These are the notes on what it does and how to get the most from it.
 
 ## What's in it
+
+{% shot "vault-pro.webp", "Vault Pro with a grid of media thumbnails and a folder list", "Vault Pro with folders and media. Demo data." %}
 
 - **Browse** a model's whole vault, filtered by folder or media type, sorted newest or oldest.
 - **Search** across the vault.

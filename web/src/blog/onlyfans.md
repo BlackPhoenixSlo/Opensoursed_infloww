@@ -6,6 +6,8 @@ tags: ["product", "onlyfans-basics", "explainer"]
 parodyOf: "onlyfans"
 parodyTitle: "OnlyFans Growth Tips & Management Guides | Infloww Blog"
 parodyDate: ""
+image: "dashboard-combo.webp"
+imageAlt: "Inflowwww dashboard on desktop and phone, with a demo agency's earnings for the month"
 ---
 
 OnlyFans is a subscription platform where creators sell access to their content directly to fans. This page explains how it works for creators, fans and agencies, without the sales pitch, and then where Inflowwww fits.
@@ -47,6 +49,8 @@ As a page grows, some creators work with agencies. An agency might handle:
 A good agency relationship has a written agreement, a clear revenue split, and the creator keeping control of their own account and content. Creators should know who is talking to their fans in their name, and agencies should be honest with creators about it. Both should read and follow OnlyFans' own terms on account access and on who may operate a page.
 
 ## Where Inflowwww fits
+
+{% shot "dashboard.webp", "Inflowwww dashboard with the month's earnings by source", "Inflowwww's dashboard, read from the creators' OnlyFans accounts. Demo data." %}
 
 Inflowwww is a free, open-source, self-hosted workspace for running OnlyFans pages as a team: a shared inbox, reports, vault management, scripts and team access. It runs on a server you control.
 

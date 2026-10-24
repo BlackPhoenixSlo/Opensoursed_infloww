@@ -46,6 +46,8 @@ The 12 steps:
 11. **First-week schedule.** Posts and stories are planned in My Automations > Auto Post (`/growth/auto-post`) and Auto Story (`/growth/auto-story`), or posted by hand.
 12. **Day-7 review.** The manager and the creator spend 20 minutes on what felt right and what did not, and the boundaries list is updated.
 
+{% shot "employees-combo.webp", "Manage employees in Inflowwww on desktop and phone: an agency roster with roles and assigned creators", "Step 8 happens here: Employees > Manage employees, shown with synthetic demo data." %}
+
 ## Strategy
 
 The rule is simple: the checklist is the source of truth, not the manager's memory. If a step turns out to be wrong, the team fixes the list, not just the one creator. Steps 3, 4 and 12 are the ones that matter most, and they are the ones that never needed software.

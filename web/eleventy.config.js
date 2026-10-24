@@ -27,6 +27,25 @@ function sortPosts(posts) {
 }
 const TAG_PAGE_SIZE = 20;
 
+// One screenshot figure from public/img (sizes in public/img/README.md); the file name picks the srcset:
+// `<screen>-combo.webp` 1440x900 with `-combo-720`, `<screen>-phone.webp` 390x844 with `-phone-780` for 2x,
+// any other `<screen>.webp` 1280x800 with `-640`. Posts call it as {% shot "vault-pro.webp", "alt", "caption" %}.
+// The output is one line, so Markdown passes it through as a single HTML block.
+const escapeHtml = (text = "") =>
+  String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+function shotFigure(file, alt, caption = "", figureClass = "") {
+  const src = `/img/${file}`;
+  const base = src.replace(/\.webp$/, "");
+  const img = file.endsWith("-phone.webp")
+    ? `<img class="shot mx-auto h-auto w-full max-w-56 rounded-[1.75rem]" src="${src}" srcset="${src} 1x, ${base}-780.webp 2x" width="390" height="844"`
+    : file.endsWith("-combo.webp")
+      ? `<img class="shot h-auto w-full" src="${src}" srcset="${base}-720.webp 720w, ${src} 1440w" sizes="(min-width: 768px) 720px, 100vw" width="1440" height="900"`
+      : `<img class="shot h-auto w-full" src="${src}" srcset="${base}-640.webp 640w, ${src} 1280w" sizes="(min-width: 768px) 720px, 100vw" width="1280" height="800"`;
+  const figcaption = caption ? `<figcaption class="mt-3 text-center text-sm text-muted">${escapeHtml(caption)}</figcaption>` : "";
+  const cls = figureClass ? ` class="${escapeHtml(figureClass)}"` : "";
+  return `<figure${cls}>${img} alt="${escapeHtml(alt)}" loading="lazy" decoding="async">${figcaption}</figure>`;
+}
+
 // The index's featured post: the beginners' guide, a general read for a newcomer; else the first
 // post outside the Product bucket, so the blog never opens on our own docs; else the first post.
 function pickFeatured(sorted) {
@@ -118,6 +137,7 @@ export default function (eleventyConfig) {
     const sameSeries = candidates.filter((item) => topic && topicOf(item) === topic);
     return [...sameSeries, ...candidates.filter((item) => !sameSeries.includes(item))].slice(0, count);
   });
+  eleventyConfig.addShortcode("shot", shotFigure);
   eleventyConfig.addFilter("isoDate", (date) => date.toISOString().slice(0, 10));
   eleventyConfig.addFilter("rssDate", (date) => date.toUTCString());
   eleventyConfig.addFilter("readableDate", (date) =>

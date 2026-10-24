@@ -6,6 +6,8 @@ tags: ["product", "message-dashboard", "benchmarks"]
 parodyOf: "infloww-messaging-benchmarks"
 parodyTitle: "“Is this good?”: messaging benchmarks"
 parodyDate: "Jul 18, 2025"
+image: "messages-pro-combo.webp"
+imageAlt: "Messages Pro on desktop and phone: a fan chat list and an open thread with an image and a PPV"
 ---
 
 "Are these numbers any good?" is the question every agency asks. Infloww answers it from its own platform: its post (infloww.com, stamped Jul 18, 2025) says "We analyzed the top 20 chatting teams on Infloww", 48,442 messages in all. We do not publish an answer, because we have nothing to pool: we host no one's install, and each copy of Inflowwww keeps its data on its owner's server. What we can give you is a method to build your own benchmark in an afternoon.
@@ -21,6 +23,8 @@ Pick three numbers and stick to them:
 3. **Revenue per message**: what a message is worth.
 
 ## Step 1: export the messages
+
+{% shot "message-dashboard.webp", "Message dashboard with message volume and response-time cards and a chart", "The Message dashboard, where the export starts. Demo data." %}
 
 1. Open **Analytics > Message dashboard** (`/analytics/message-dashboard`) and choose the **All** tab.
 2. Set the date range to the last four weeks and pick one model.

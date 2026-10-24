@@ -32,6 +32,10 @@ ogType: article
     <span class="whitespace-nowrap"><span aria-hidden="true" class="mr-2">·</span><time datetime="{{ page.date | isoDate }}">{{ page.date | readableDate }}</time></span>
     <span class="whitespace-nowrap"><span aria-hidden="true" class="mr-2">·</span>{{ content | readingTime }}</span>
   </p>
+  {#- The hero shot: front matter `image` (a file in public/img, e.g. dashboard-combo.webp) with `imageAlt`, else the
+      bucket's default from _data/postHero.json. -#}
+  {%- set hero = postHero[bucket.tag] if (bucket and postHero[bucket.tag]) else postHero.default %}
+  {% shot image or hero.image, imageAlt if image else hero.alt, "", "mt-8" %}
   {%- if parodyOf %}
   {#- Posts with `straight: true` in front matter give sincere advice (safety, money, rules),
       so they get a plain "Straight advice" label instead of the Parody badge. -#}

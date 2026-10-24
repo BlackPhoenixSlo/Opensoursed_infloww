@@ -6,11 +6,15 @@ tags: ["product", "scripts", "chatting"]
 parodyOf: "infloww-scripts"
 parodyTitle: "4 ways Scripts makes chatting easier"
 parodyDate: "Dec 15, 2025"
+image: "scripts-combo.webp"
+imageAlt: "Scripts on desktop and phone: a library of saved replies"
 ---
 
 Most of what a chat team types, it has typed before. **Growth > Scripts** (`/growth/scripts`) turns the good versions into saved replies, so the team spends its time on the parts of a conversation that are actually new.
 
 ## What Scripts holds
+
+{% shot "scripts.webp", "Scripts library with more than ten saved replies", "A script library a team has built up. Demo data." %}
 
 The Scripts screen manages two things:
 
@@ -35,6 +39,8 @@ Start with eight templates per creator and grow from there:
 Give each one a title your team can scan: "new-sub-hello", "quiet-7d", "set-june-intro". Clear titles matter more than clever text.
 
 ## 2. Use them while chatting
+
+{% shot "messages-pro.webp", "Messages Pro with an open fan conversation and the composer", "Messages Pro, where scripts are sent from the composer. Demo data." %}
 
 In Messages Pro, open the template picker from the composer, choose a template, and it goes into the message box with its media. The same picker is in the mass message composer and the post composer.
 

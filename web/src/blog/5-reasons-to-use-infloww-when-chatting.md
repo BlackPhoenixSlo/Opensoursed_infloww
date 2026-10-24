@@ -6,11 +6,15 @@ tags: ["product", "messages-pro", "chatting"]
 parodyOf: "5-reasons-to-use-infloww-when-chatting"
 parodyTitle: "5 reasons to use Infloww when chatting with fans"
 parodyDate: "Dec 20, 2024"
+image: "messages-pro-combo.webp"
+imageAlt: "Messages Pro on desktop and phone: a fan chat list and an open thread with an image and a PPV"
 ---
 
 Chatting is where most of an account's time goes, and it gets messy the moment two people work the same inbox. Here are five things Inflowwww does about that today, each with the screen it lives on.
 
 ## 1. One chat list for the whole team
+
+{% shot "messages-pro.webp", "Messages Pro with a long fan chat list showing unread chats and spend, and an open thread", "One chat list for every creator, with unread chats and fan spend in each row. Demo data." %}
 
 Messages Pro (`/messages-pro`) is the inbox: a chat list on the left, the thread in the middle, fan insights on the right. On a phone it shows one pane at a time, so a chatter away from a desk can still answer.
 
@@ -33,6 +37,8 @@ What makes this work in practice:
 - Re-check folders once a week. A vault that nobody prunes becomes a search problem again.
 
 ## 3. Reuse the replies that already work
+
+{% shot "scripts.webp", "Scripts library with saved replies, each with its media and price", "The Scripts library the composer reads from. Demo data." %}
 
 **Growth > Scripts** holds saved replies. Each one has an optional title (it shows in the picker), the text, and optional vault media and price. The same screen manages the account's welcome message.
 

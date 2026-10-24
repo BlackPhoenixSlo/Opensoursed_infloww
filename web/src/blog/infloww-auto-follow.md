@@ -7,11 +7,15 @@ straight: true
 parodyOf: "infloww-auto-follow"
 parodyTitle: "Boost subscriber retention with Infloww's Auto-Follow feature"
 parodyDate: "Feb 20, 2025"
+image: "auto-follow-combo.webp"
+imageAlt: "Auto-follow on desktop and phone: follow campaigns with their counts"
 ---
 
 Winning back a fan who let their subscription lapse is cheaper than finding a new one, but nobody has time to follow back expired fans by hand. **Growth > Auto-follow** (`/growth/auto-follow`) does the repetitive part.
 
 ## What it does
+
+{% shot "auto-follow.webp", "Auto-follow campaigns with how many fans each one followed", "Auto-follow campaigns and their counts. Demo data." %}
 
 Auto-follow sends OnlyFans notifications, not messages. Every action it takes shows up for the fan as a follow or a like, never as a DM. That makes it a gentle nudge rather than an ask.
 

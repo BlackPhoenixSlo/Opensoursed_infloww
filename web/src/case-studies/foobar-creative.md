@@ -43,6 +43,8 @@ Criteria 2, 3 and 4 are floors. A 0 on any of them goes to the manager the same 
 
 The rubric scores conversations, not people. Revenue is deliberately not a criterion. Per-employee numbers already live in Analytics > Employee reports (`/analytics/employee-reports`), and mixing sales into a quality score teaches chatters that pushing harder is how you pass review.
 
+{% shot "employee-reports-combo.webp", "Employee reports in Inflowwww on desktop and phone: chatter sales over the last 30 days and a sales ranking", "Analytics > Employee reports, shown with synthetic demo data." %}
+
 Each chatter gets one coaching point per week: their lowest-scoring criterion, with one real thread as the example and one thing to try. One point is enough to act on. Five points is a list nobody reads.
 
 ## Operations

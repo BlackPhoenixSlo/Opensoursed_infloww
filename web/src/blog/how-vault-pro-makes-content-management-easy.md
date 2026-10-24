@@ -6,11 +6,15 @@ tags: ["product", "vault-pro", "content-management"]
 parodyOf: "how-vault-pro-makes-content-management-easy"
 parodyTitle: "How Infloww Vault Pro makes OnlyFans content management easy"
 parodyDate: "Dec 19, 2024"
+image: "vault-pro-combo.webp"
+imageAlt: "Vault Pro on desktop and phone: a grid of media thumbnails sorted into folders"
 ---
 
 A vault only helps if the person chatting can find the right file in seconds. Vault Pro (**Growth > Vault Pro**) is the owner's screen for getting content in, labelling it and keeping it tidy, so the chat side stays fast.
 
 ## 1. Get content in, in one go
+
+{% shot "vault-pro.webp", "Vault Pro with a grid of media thumbnails and a folder list", "Vault Pro with a creator's media sorted into folders. Demo data." %}
 
 Open **Vault Pro** and check the model name in the header. It names whose vault you are about to upload into, so look before you drop anything.
 
@@ -62,6 +66,8 @@ Re-uploaded copies pile up. **Duplicate media** finds them at a match strictness
 Run it monthly, and always after a big import.
 
 ## 5. Find and send from the chat
+
+{% shot "messages-pro.webp", "Messages Pro with an open fan conversation that includes an image message and a PPV", "Vault media sent from the chat composer. Demo data." %}
 
 In Messages Pro, chatters attach vault media from the composer, limited to the folders the owner grants them. Search is where your labels pay off: the tag, description and caption you wrote are what they will search for.
 

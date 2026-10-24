@@ -1,0 +1,12 @@
+{
+  "getting-started": { "image": "dashboard-combo.webp", "alt": "Inflowwww dashboard on desktop and phone, with a demo agency's earnings for the month" },
+  "money": { "image": "creator-reports-combo.webp", "alt": "Creator reports on desktop and phone: revenue and KPIs per creator for a demo agency" },
+  "chatting": { "image": "messages-pro-combo.webp", "alt": "Messages Pro on desktop and phone: a fan chat list and an open thread with an image and a PPV" },
+  "content-ideas": { "image": "vault-pro-combo.webp", "alt": "Vault Pro on desktop and phone: a grid of media thumbnails sorted into folders" },
+  "promotion": { "image": "tracking-links-combo.webp", "alt": "Tracking links on desktop and phone, with clicks, subscribers and revenue per link" },
+  "platforms": { "image": "creators-combo.webp", "alt": "The creator roster on desktop and phone, with each creator's status and earnings" },
+  "agency": { "image": "creator-reports-combo.webp", "alt": "Creator reports on desktop and phone: revenue and KPIs per creator for a demo agency" },
+  "creator-life": { "image": "dashboard-combo.webp", "alt": "Inflowwww dashboard on desktop and phone, with a demo agency's earnings for the month" },
+  "product": { "image": "dashboard-combo.webp", "alt": "Inflowwww dashboard on desktop and phone, with a demo agency's earnings for the month" },
+  "default": { "image": "dashboard-combo.webp", "alt": "Inflowwww dashboard on desktop and phone, with a demo agency's earnings for the month" }
+}

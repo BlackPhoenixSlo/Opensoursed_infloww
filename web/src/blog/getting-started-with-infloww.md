@@ -6,6 +6,8 @@ tags: ["product", "setup", "self-hosting"]
 parodyOf: "getting-started-with-infloww"
 parodyTitle: "How to set up Infloww in 5 steps"
 parodyDate: "Feb 20, 2025"
+image: "dashboard-combo.webp"
+imageAlt: "Inflowwww dashboard on desktop and phone, with a demo agency's earnings for the month"
 ---
 
 Inflowwww is set up in five steps, in this order: run the eight Quick start commands on the server, open the dashboard from your laptop, register the owner, capture a creator's session, invite the chatters. This is the README's Quick start and the [Help center's]({{ '/help/' | url }}) first login, with notes on what each step is for.
@@ -45,6 +47,8 @@ The last command starts three containers: `openinflowwww-relay` on 127.0.0.1:878
 
 ## 2. Open the dashboard from your laptop
 
+{% shot "dashboard.webp", "Inflowwww dashboard with the month's earnings by source, shifts and clocked-in employees", "The dashboard once creators are connected and selling. Demo data." %}
+
 A server usually has no browser, and the app listens on 127.0.0.1 only. From your own computer, forward the port with `ssh -L 3001:127.0.0.1:3001 user@server`, then open `http://127.0.0.1:3001/?t=<SHARE_TOKEN>` in your browser. `grep SHARE_TOKEN .env` on the server prints the token; it is remembered after the first visit.
 
 To give your chatters a normal web address later, someone technical sets up a domain behind a reverse proxy, or runs `docker compose --profile tunnel up -d` for a Cloudflare quick tunnel whose address changes on every restart; the tunnel is for trying it only. Both make the dashboard public, so read the [security notes]({{ '/help/#security' | url }}) first. If a page will not load after setup, [check OnlyFans and your stack in this order]({{ '/blog/onlyfans-down/' | url }}).
@@ -54,6 +58,8 @@ To give your chatters a normal web address later, someone technical sets up a do
 The first screen is Sign in / Register at `/login`. Register the owner account there first, before anyone else reaches the server. Ignore the installer link on the login screen; it points at an older setup.
 
 ## 4. Add your first creator
+
+{% shot "creators.webp", "Creator roster with avatars, status and earnings for each creator", "The creator roster after a few months of adding creators. Demo data." %}
 
 Inflowwww works from a captured OnlyFans web session, not a stored password. The creator needs Chrome on a computer, not a phone. They install the extension from the repository's `loginExtensionMulti/` folder (open `chrome://extensions`, turn on Developer mode, click Load unpacked and pick the folder you send them), log in on onlyfans.com, open Messages, click Copy curl, and send you the copied text over a channel they would trust with their password. No password is shared. The copied text is a live login to their account, so treat it like one.
 

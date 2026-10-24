@@ -47,7 +47,7 @@ The note is for continuity, not for monitoring. Managers read the notes once a d
 
 Shifts overlap by ten minutes. The outgoing chatter writes the note in the first five; the incoming chatter reads it and asks questions in the last five. Then the incoming chatter opens Messages Pro and starts with the fans named in lines 1 to 3. The fan insights rail beside each thread covers the rest.
 
-The rota itself lives in a spreadsheet. Inflowwww has an Employees > Shift schedule page (`/employees/shifts`), and it is a NotBuiltYet stub: the page is real, the feature is not. The handover note never depended on it.
+The rota itself started in a spreadsheet and now lives on the Employees > Shift schedule page (`/employees/shifts`), a week view per chatter. The handover note never depended on it.
 
 ## Results
 

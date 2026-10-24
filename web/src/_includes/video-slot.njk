@@ -1,0 +1,28 @@
+{#- One video from _data/videos.json:
+      {% set key = "drive-import" %}{% set title = "Importing a Drive folder" %}{% include "video-slot.njk" %}
+    `title` names the iframe and the caption; without one, the entry's own title is used.
+    An empty youtubeId shows the entry's poster, dimmed, under a "Video coming soon" pill: no embed, no request.
+    A set one is a youtube-nocookie embed, 16:9, lazy. The output has no blank line, so in a Markdown post it stays
+    one HTML block. -#}
+{%- set v = videos[key] -%}
+{%- if v -%}
+{%- set slotTitle = title or v.title -%}
+{%- if v.youtubeId -%}
+<figure>
+  <div class="relative aspect-video overflow-hidden rounded-2xl bg-ink">
+    <iframe class="absolute inset-0 size-full" src="https://www.youtube-nocookie.com/embed/{{ v.youtubeId }}" title="{{ slotTitle }}" loading="lazy" allow="accelerometer; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
+  </div>
+  <figcaption class="mt-3 text-center text-sm text-muted">{{ slotTitle }}</figcaption>
+</figure>
+{%- else -%}
+<figure>
+  <div class="relative overflow-hidden rounded-2xl border border-ink/10 bg-cream">
+    <img class="h-auto w-full opacity-35 grayscale" src="/img/{{ v.poster }}" srcset="/img/{{ v.poster | replace('.webp', '-720.webp') }} 720w, /img/{{ v.poster }} 1440w" sizes="(min-width: 768px) 720px, 100vw" width="1440" height="900" alt="" loading="lazy" decoding="async">
+    <span class="absolute inset-0 grid place-items-center p-4">
+      <span class="rounded-full bg-ink px-4 py-2 text-sm font-medium text-white shadow-lg">Video coming soon</span>
+    </span>
+  </div>
+  <figcaption class="mt-3 text-center text-sm text-muted">{{ slotTitle }}</figcaption>
+</figure>
+{%- endif -%}
+{%- endif -%}

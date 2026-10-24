@@ -6,11 +6,15 @@ tags: ["product", "team-access", "account-sharing"]
 parodyOf: "infloww-passwordless-account-sharing"
 parodyTitle: "Passwordless account sharing: secure team access in Infloww"
 parodyDate: "Feb 20, 2025"
+image: "login-combo.webp"
+imageAlt: "Inflowwww login page on desktop and phone"
 ---
 
 Sending a creator's password to every new chatter is the habit most agencies want to break. In Inflowwww the password is entered once, by whoever captures the session, and the team works through the app instead.
 
 ## How it works
+
+{% shot "login-phone.webp", "Inflowwww login form on a phone", "Chatters sign in to Inflowwww, not to OnlyFans. Demo data." %}
 
 Inflowwww does not store an OnlyFans password. It holds a captured web session:
 
@@ -23,6 +27,8 @@ Chatters then log in to Inflowwww, not to OnlyFans. Login is a share token for t
 Ideally the creator does the capture on their own device, so the password never leaves their hands at all.
 
 ## Invite a chatter
+
+{% shot "employees.webp", "Employee roster with names and roles", "The employee roster, one login per person. Demo data." %}
 
 1. Open **Employees > Manage employees** (owner only).
 2. Add the person to the roster with a display name.

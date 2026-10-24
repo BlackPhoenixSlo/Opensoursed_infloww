@@ -6,11 +6,15 @@ tags: ["product", "openinflowwww", "overview"]
 parodyOf: "infloww"
 parodyTitle: "Product Updates & Feature Guides | Infloww Blog"
 parodyDate: ""
+image: "dashboard-combo.webp"
+imageAlt: "Inflowwww dashboard on desktop and phone, with a demo agency's earnings for the month"
 ---
 
 Inflowwww is a free, open-source, self-hosted alternative to Infloww for OnlyFans agencies. You run it on your own server, your team uses it in a browser, and it costs $0 per creator. This page explains what that means in practice.
 
 ## What it does
+
+{% shot "dashboard.webp", "Inflowwww dashboard with the month's earnings by source, shifts and clocked-in employees", "The dashboard of a busy agency. Demo data." %}
 
 Inflowwww gives an agency one workspace for many creator accounts. Today that covers:
 
@@ -25,6 +29,8 @@ Fansly: a Fansly client lives in the repo; the Docker image does not ship it yet
 
 ## How it works
 
+{% set key = "dashboard-tour" %}{% set title = "A tour of the Inflowwww dashboard" %}{% include "video-slot.njk" %}
+
 Two parts, both started by Docker Compose:
 
 1. **The relay**, a Python (FastAPI) service. It holds each creator's captured web session, signs and replays OnlyFans API calls, and keeps its data in a SQLite file.
@@ -35,6 +41,8 @@ A third container, autoheal, restarts services that fail their healthcheck. Sess
 Said plainly: Inflowwww is an independent reverse-engineering of OnlyFans' public web API, and the project is not affiliated with or endorsed by OnlyFans.
 
 ## Where it runs
+
+{% shot "messages-pro-phone.webp", "Messages Pro chat list on a phone", "The same app on a phone, no store install. Demo data." %}
 
 - **Web**: the main app.
 - **Phone**: the same web app, which is responsive. There is no native phone app.

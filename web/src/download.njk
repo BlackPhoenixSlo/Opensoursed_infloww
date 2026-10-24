@@ -32,13 +32,7 @@ description: "The download is a URL: Inflowwww runs in a browser from your serve
   Open your server's URL (not 127.0.0.1) on your phone. The layout is responsive: the sidebar becomes a drawer and
   Messages Pro shows one pane at a time. There is no native app in the App Store or on Google Play.
 </p>
-<img
-  src="{{ '/img/phone-messages-pro-list.webp' | url }}"
-  srcset="{{ '/img/phone-messages-pro-list.webp' | url }} 1x, {{ '/img/phone-messages-pro-list-780.webp' | url }} 2x"
-  width="390" height="844"
-  class="shot mx-auto h-auto w-full max-w-56"
-  alt="Messages Pro chat list on a phone"
-  loading="lazy" decoding="async">
+{% shot "messages-pro-thread-phone.webp", "A fan chat in Messages Pro on a phone: a photo, a paid PPV and a tip, from a demo agency" %}
 
 <h2>Desktop: build the Electron shell</h2>
 <p>
@@ -58,14 +52,7 @@ npm run dist:win   # Windows .exe installer (builds on macOS too)</code></pre>
   right-click &gt; Open the first time, and it says to sign and notarize the build before handing it to a
   non-technical team. On Windows, SmartScreen asks you to confirm (More info &gt; Run anyway). Details are in <a href="{{ site.repo }}/blob/main/desktop/README.md">desktop/README.md</a>.
 </p>
-<img
-  src="{{ '/img/desktop-shell.webp' | url }}"
-  srcset="{{ '/img/desktop-shell-640.webp' | url }} 640w, {{ '/img/desktop-shell.webp' | url }} 1280w"
-  sizes="(min-width: 768px) 720px, 100vw"
-  width="1280" height="800"
-  class="shot h-auto w-full"
-  alt="Inflowwww desktop app showing the Messages Pro inbox"
-  loading="lazy" decoding="async">
+{% shot "messages-pro.webp", "Inflowwww desktop window showing the Messages Pro inbox of a demo agency, with a paid PPV and a tip in the open thread" %}
 
 <h2>Where are the binaries?</h2>
 <p>

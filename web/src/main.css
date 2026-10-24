@@ -1,5 +1,7 @@
 @import "tailwindcss" source(none);
 @source "./**/*.{njk,md,html,js}";
+/* The `shot` shortcode's figure classes (post heroes and inline screenshots). */
+@source "../eleventy.config.js";
 
 /* Light, monochrome, Framer-ish: black on white with cream bands, black pills, one dark closing band.
    One accent (green) for "true / free", yellow for the parody badges.

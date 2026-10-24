@@ -6,6 +6,8 @@ tags: ["product", "comparison", "agency-operations"]
 parodyOf: "feature-comparison-infloww-onlyfans"
 parodyTitle: "OnlyFans vs Infloww: Complete feature comparison for agencies"
 parodyDate: "Dec 19, 2024"
+image: "dashboard-combo.webp"
+imageAlt: "Inflowwww dashboard on desktop and phone, with a demo agency's earnings for the month"
 ---
 
 Inflowwww does not replace OnlyFans. It sits on top of a creator's account, using a captured web session, and gives a team a shared workspace for it. This comparison lists what we add, screen by screen, and what we have not built.
@@ -13,6 +15,8 @@ Inflowwww does not replace OnlyFans. It sits on top of a creator's account, usin
 One thing first, said plainly: Inflowwww works by replaying OnlyFans' own web API calls.
 
 ## Messaging
+
+{% shot "messages-pro.webp", "Messages Pro with a fan chat list and an open thread with an image and a PPV", "Messages Pro: every creator's chats in one list. Demo data." %}
 
 OnlyFans gives a creator an inbox, media sending and scheduled messages. That works well for one person at one desk.
 
@@ -43,6 +47,8 @@ On OnlyFans alone, sharing an account usually means sharing a password. In Inflo
 There are no custom roles beyond owner and chatter.
 
 ## Analytics
+
+{% shot "creator-reports-table.webp", "Creator reports with fans, LTV, ARPU and revenue by source for each creator", "Creator reports, one entry per creator. Demo data." %}
 
 OnlyFans has its own statistics pages per creator. Inflowwww adds:
 

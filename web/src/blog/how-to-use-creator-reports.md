@@ -6,11 +6,15 @@ tags: ["product", "analytics", "creator-reports"]
 parodyOf: "how-to-use-creator-reports"
 parodyTitle: "How agencies use Infloww Creator Reports to measure profitability"
 parodyDate: "Sep 30, 2026"
+image: "creator-reports-combo.webp"
+imageAlt: "Creator reports on desktop and phone: revenue and KPIs per creator for a demo agency"
 ---
 
 Total revenue tells you what a creator earned. It does not tell you whether the team's hours paid for themselves. **Analytics > Creator reports** (`/analytics/creator-reports`) gives you the inputs; this post shows how to turn them into profitability numbers.
 
 ## What the report shows
+
+{% shot "creator-reports-table.webp", "Creator reports with fans, new subs, LTV, ARPU, messages, PPVs sold and revenue for each of 20 creators", "Creator reports for the last 30 days, one entry per creator. Demo data." %}
 
 Pick a date range (it defaults to the last 30 days). Each model gets a tile with:
 
@@ -44,6 +48,8 @@ There is no hourly earnings view, and **Employees > Shift schedule** is NotBuilt
 If a creator earns $200 an hour of coverage and the team costs $40 an hour, the return is 5x. Close to 1x means the hours need a look before the headcount does. The software line in this calculation is $0, which keeps the arithmetic short.
 
 ## Messages against earnings
+
+{% shot "sales-records.webp", "Sales records listing each sale with amount, fan, creator, chatter and type", "Sales records: the sales behind the report, one row each. Demo data." %}
 
 Compare the **Messages** tile with revenue for each creator:
 

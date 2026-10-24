@@ -6,6 +6,8 @@ tags: ["product", "vault-pro", "workflow"]
 parodyOf: "vault-pro-bulk"
 parodyTitle: "Vault Pro: Save time with bulk actions"
 parodyDate: "Dec 20, 2024"
+image: "vault-pro-combo.webp"
+imageAlt: "Vault Pro on desktop and phone: a grid of media thumbnails sorted into folders"
 ---
 
 Putting files into an OnlyFans vault one at a time is slow, and doing it for several creators is a part-time job. Vault Pro (**Growth > Vault Pro**, the owner's screen) handles the batch work. This is a step-by-step workflow for a typical shoot of 50 to 200 files.
@@ -22,6 +24,8 @@ Ten minutes of preparation saves an hour of fixing.
 For Google Drive, make each folder viewable by link. Vault Pro takes public folder links.
 
 ## Step 1: import everything at once
+
+{% shot "vault-pro.webp", "Vault Pro with a grid of media thumbnails and a folder list", "A vault after a few bulk imports. Demo data." %}
 
 1. Open **Growth > Vault Pro** and check the model name in the header. It is the vault you are about to fill.
 2. In the import card, drop the files, or paste the Drive folder links, one per line.

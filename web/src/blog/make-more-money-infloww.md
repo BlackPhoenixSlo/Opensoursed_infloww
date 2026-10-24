@@ -6,11 +6,15 @@ tags: ["product", "fan-engagement", "revenue"]
 parodyOf: "make-more-money-infloww"
 parodyTitle: "5 ways Infloww automates fan interactions (and grows revenue)"
 parodyDate: "Dec 19, 2024"
+image: "dashboard-combo.webp"
+imageAlt: "Inflowwww dashboard on desktop and phone, with a demo agency's earnings for the month"
 ---
 
 No tool earns money on its own; the team and the content do. What software can do is put the right fan, the right file and the right words in front of a chatter at the right time. Here are five workflows that do that in Inflowwww, and one cost line it removes outright.
 
 ## 1. Start more conversations
+
+{% shot "messages-pro.webp", "Messages Pro with a fan chat list and an open thread with an image and a PPV", "Messages Pro with chats across every creator. Demo data." %}
 
 Inflowwww does not message fans automatically when they come online. Conversations start with a person:
 
@@ -43,6 +47,8 @@ Automatic expiry messages are not built; the trigger half of Smart Messages is n
 Then watch **Rebill** and **New subs** in Creator reports for that creator.
 
 ## 4. Sell PPV with context
+
+{% shot "fan-reports.webp", "Fan reports listing the top spenders", "Fan reports: who spends, before you price a PPV. Demo data." %}
 
 Before offering anything, a chatter should glance at two things:
 

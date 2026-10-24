@@ -6,11 +6,15 @@ tags: ["product", "analytics", "employee-reports"]
 parodyOf: "infloww-employee-reports"
 parodyTitle: "How to easily monitor employee performance with Infloww"
 parodyDate: "Feb 20, 2025"
+image: "employee-reports-combo.webp"
+imageAlt: "Employee reports on desktop and phone: sales, messages sent and hours per chatter"
 ---
 
 A chat team is easy to judge badly: by gut feel, by who is loudest, or by one good night. **Analytics > Employee reports** (`/analytics/employee-reports`) gives you numbers per person, and this post covers how to use them fairly.
 
 ## 1. Sales per person
+
+{% shot "employee-reports.webp", "Employee reports with sales, messages sent and hours for each chatter", "Sales, messages and hours per chatter. Demo data." %}
 
 Pick a date range (default: last 30 days). The table lists each employee with:
 
@@ -45,6 +49,8 @@ Do this weekly, before you look at rankings. Unattributed sales are the most com
 The coverage table shows, per account, how outbound messages split into **Human**, **Automation** and **Unattributed**, and a **Coverage** figure for how much is accounted for. If coverage is low on an account, the per-employee numbers for it are incomplete. Fix that before you draw conclusions.
 
 ## 5. Response times and shifts
+
+{% shot "shifts.webp", "Shift schedule for the week with every chatter's shifts filled in", "A full week of shifts. Demo data." %}
 
 Response time is not a column in Employee reports. You can measure it from the **Message dashboard** export; the [post on messaging benchmarks]({{ '/blog/infloww-messaging-benchmarks/' | url }}) walks through it.
 

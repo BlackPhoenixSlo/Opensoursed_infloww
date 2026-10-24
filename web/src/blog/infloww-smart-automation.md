@@ -6,6 +6,8 @@ tags: ["product", "automation", "auto-post"]
 parodyOf: "infloww-smart-automation"
 parodyTitle: "How Infloww’s smart automation levels up your OF (without alienating fans)"
 parodyDate: "Dec 20, 2024"
+image: "smart-messages-combo.webp"
+imageAlt: "Smart messages on desktop and phone: a list of automation rules"
 ---
 
 Automation is best at the jobs that are the same every time and never need a reply: posting to the feed and keeping stories fresh. Those are the two automations Inflowwww ships, under **My Automations**, and the project's scope stops there on purpose.
@@ -19,6 +21,8 @@ Everything that messages fans on a trigger (when they come online, when a subscr
 **Growth > Auto-follow** sits outside My Automations. It only follows and likes, never messages.
 
 ## Auto Post: a feed that fills itself
+
+{% shot "auto-post.webp", "Auto Post with scheduled posts across several creators", "Auto Post with posts scheduled across creators. Demo data." %}
 
 **My Automations > Auto Post** (`/growth/auto-post`) takes a list of ready posts and publishes them one at a time:
 
