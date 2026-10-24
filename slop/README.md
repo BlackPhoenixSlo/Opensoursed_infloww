@@ -192,3 +192,5 @@ reads or writes `service/chatterly.db`, real sessions, prod or any remote. The
   in `summary.txt`, plus relay process CPU mean <= `CPU_BUDGET_PCT` (80% of one core) per stage.
   A crashed tab is recorded (stage), never a crashed run. Fault:
   `sse-fanout-reorders-within-thread`; `--fault=access-log-writer-spin-waits` proves the CPU check.
+  Known flake: 6/10 medium runs hit a SQLite write storm (~19 concurrent writers, `pool_size=5
+  max_overflow=-1` in `service/db/engine.py`; 3-9 cores for 10-40 s, p95 1-6 s). Open, not capped by design.
