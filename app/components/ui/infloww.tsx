@@ -654,18 +654,24 @@ function CreatorAvatar({ account }: { account: AccountMeta }) {
   );
 }
 
+/** The `IfCreatorSelect` value of its "All creators" option (no account id is empty). */
+const ALL_CREATORS = "";
+
 /** The legacy header's creator picker: 160x32 on `--tc-select-creator-b` #1E1E1E, a 20px avatar with the online dot,
- *  the name, a chevron. Pair it with `useCreatorParam` so the page body reads the same pick. */
-export function IfCreatorSelect({ accounts, value, onChange, searchable, disabled, className }: {
+ *  the name, a chevron. Pair it with `useCreatorParam` so the page body reads the same pick. `onAll` adds "All
+ *  creators" first, picked while `value` is null. */
+export function IfCreatorSelect({ accounts, value, onChange, onAll, searchable, disabled, className }: {
   accounts: AccountMeta[];
   value: string | null | undefined;
   onChange: (accountId: string) => void;
+  onAll?: () => void;
   searchable?: boolean;
   disabled?: boolean;
   className?: string;
 }) {
   const byId = new Map(accounts.map((a) => [a.id, a]));
-  const options: IfOption[] = accounts.map((a) => ({
+  const all: IfOption[] = onAll ? [{ value: ALL_CREATORS, text: "All creators", label: "All creators" }] : [];
+  const options: IfOption[] = [...all, ...accounts.map((a) => ({
     value: a.id,
     text: creatorName(a),
     label: (
@@ -674,12 +680,12 @@ export function IfCreatorSelect({ accounts, value, onChange, searchable, disable
         <span className="truncate">{creatorName(a)}</span>
       </>
     ),
-  }));
+  }))];
   return (
     <Listbox
-      value={value}
+      value={onAll ? value ?? ALL_CREATORS : value}
       options={options}
-      onChange={onChange}
+      onChange={(v) => (onAll && v === ALL_CREATORS ? onAll() : onChange(v))}
       searchable={searchable}
       disabled={disabled}
       ariaLabel="Creator"
@@ -688,6 +694,7 @@ export function IfCreatorSelect({ accounts, value, onChange, searchable, disable
       triggerClassName="h-8 rounded-md bg-[#1e1e1e] px-2 text-[14px] text-fg [html[data-theme=light]_&]:bg-bg-elev-1"
       menuClassName="border border-border bg-panel"
       renderValue={(o) => {
+        if (o?.value === ALL_CREATORS && onAll) return "All creators";
         const a = o && byId.get(o.value);
         return a ? (
           <span className="flex min-w-0 items-center gap-2">

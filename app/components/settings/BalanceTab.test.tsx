@@ -71,10 +71,10 @@ describe("BalanceTab", () => {
     renderWithProviders(<BalanceTab />);
     expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent(/^Your Balance$/);
     await waitFor(() => expect(cards()).toEqual([
-      ["Total earnings", "$120.00"],
-      ["Available to withdraw", "$80.00"],
-      ["Pending earnings", "$25.00"],
-      ["Withdrawn", "$15.00"],
+      ["Total earnings", "$120"],
+      ["Available to withdraw", "$80"],
+      ["Pending earnings", "$25"],
+      ["Withdrawn", "$15"],
     ]));
     expect(calls().sort((a, b) => a.url.localeCompare(b.url))).toEqual([
       { method: "GET", url: BALANCE, account: "acc1" },
@@ -90,15 +90,15 @@ describe("BalanceTab", () => {
 
   it("switching the scope to a second account shows that account's values, never the first's", async () => {
     const { rerender } = renderWithProviders(<BalanceTab />);
-    await waitFor(() => expect(cards()[0]).toEqual(["Total earnings", "$120.00"]));
+    await waitFor(() => expect(cards()[0]).toEqual(["Total earnings", "$120"]));
     scope.accountId = "acc2";
     rerender(<BalanceTab />);
-    expect(screen.queryByText("$120.00")).not.toBeInTheDocument();
+    expect(screen.queryByText("$120")).not.toBeInTheDocument();
     await waitFor(() => expect(cards()).toEqual([
-      ["Total earnings", "$7.50"],
-      ["Available to withdraw", "$3.00"],
-      ["Pending earnings", "$4.50"],
-      ["Withdrawn", "$0.00"],
+      ["Total earnings", "$8"],
+      ["Available to withdraw", "$3"],
+      ["Pending earnings", "$5"],
+      ["Withdrawn", "$0"],
     ]));
     expect(payoutRows()).toEqual([["No payouts"]]);
     expect(calls().filter((c) => c.account === "acc2").map((c) => c.url).sort()).toEqual([BALANCE, PAYOUTS]);
@@ -107,10 +107,10 @@ describe("BalanceTab", () => {
   it("shows \"—\", never 0, on a card whose key is missing or not a number", async () => {
     replies.acc1[BALANCE] = () => jsonRes({ referralEarnings: 120, availableEarnings: 80, withdrawnEarnings: "15.00" });
     renderWithProviders(<BalanceTab />);
-    await waitFor(() => expect(cards()[0]).toEqual(["Total earnings", "$120.00"]));
+    await waitFor(() => expect(cards()[0]).toEqual(["Total earnings", "$120"]));
     expect(cards()).toEqual([
-      ["Total earnings", "$120.00"],
-      ["Available to withdraw", "$80.00"],
+      ["Total earnings", "$120"],
+      ["Available to withdraw", "$80"],
       ["Pending earnings", "—"],
       ["Withdrawn", "—"],
     ]);
@@ -120,7 +120,7 @@ describe("BalanceTab", () => {
     renderWithProviders(<BalanceTab />);
     expect(within(screen.getByRole("table")).getAllByRole("columnheader").map((h) => h.textContent))
       .toEqual(["Date", "Amount", "Status"]);
-    await waitFor(() => expect(payoutRows()).toEqual([["Jan 15, 2026", "$15.00", "done"]]));
+    await waitFor(() => expect(payoutRows()).toEqual([["Jan 15, 2026", "$15", "done"]]));
     expect(screen.getByRole("heading", { name: "Transaction history" })).toBeInTheDocument();
     // Infloww's history colours: a done payout is "complete" #666.
     expect(screen.getByRole("cell", { name: "done" })).toHaveClass("text-[#666666]");
@@ -159,13 +159,13 @@ describe("BalanceTab", () => {
       { id: "acc2", nickname: "Account 2", has_session: true },
     ];
     renderWithProviders(<BalanceTab />);
-    await waitFor(() => expect(cards()[0]).toEqual(["Total earnings", "$120.00"]));
+    await waitFor(() => expect(cards()[0]).toEqual(["Total earnings", "$120"]));
     const picker = screen.getByRole("combobox", { name: "Creator" });
     expect(picker).toHaveTextContent("isa");
     fireEvent.click(picker);
     fireEvent.click(await screen.findByRole("option", { name: /Account 2/ }));
-    await waitFor(() => expect(cards()[0]).toEqual(["Total earnings", "$7.50"]));
-    expect(screen.queryByText("$120.00")).not.toBeInTheDocument();
+    await waitFor(() => expect(cards()[0]).toEqual(["Total earnings", "$8"]));
+    expect(screen.queryByText("$120")).not.toBeInTheDocument();
   });
 
   it("with no Creator at all says \"Select a creator to see its balance\" and never calls fetch", async () => {

@@ -576,7 +576,7 @@ describe("Fan insights Spending behavior", () => {
       .toEqual(["Fan", "Spending behavior", "Unsold PPVs sent"]);
     const rows = rowsOf(within(pane).getByRole("region", { name: "Spending behavior" }));
     expect(rows.map(([k]) => k)).toEqual(["Total spend", "Last spend", "PPV", "Tip", "Highest spend"]);
-    expect(rows[0]).toEqual(["Total spend", "$123.45"]);
+    expect(rows[0]).toEqual(["Total spend", "$123"]);
     expect(rows[2][1]).toMatch(/^\$40 Total/);
     expect(rows[3][1]).toMatch(/^\$12 Total/);
     // A 1px rule splits Total spend from Last spend (page-parity 07 FI1).
@@ -671,10 +671,10 @@ describe("Fan insights Purchases over time", () => {
       const chart = within(block).getByRole("img", { name: "Purchases over time" });
 
       expect(bucketsOf(chart)).toEqual([
-        "$15.00", "$0.00", "$0.00", "$0.00", "$0.00", "$25.00",
-        "$0.00", "$0.00", "$0.00", "$0.00", "$0.00", "$10.00",
+        "$15", "$0", "$0", "$0", "$0", "$25",
+        "$0", "$0", "$0", "$0", "$0", "$10",
       ]);
-      expect(within(block).getByText("peak $25.00")).toBeTruthy();
+      expect(within(block).getByText("peak $25")).toBeTruthy();
       expect(within(block).getByText("now")).toBeTruthy();
       cleanup();
       qc.clear();
@@ -723,9 +723,9 @@ describe("Fan insights Sales tab", () => {
       .toEqual(["Date", "Gross", "Net", "Sent by"]);
     const [, seeded, bare] = within(table).getAllByRole("row");
     expect(within(seeded).getAllByRole("cell").map((c) => c.textContent))
-      .toEqual(["Mar 4", "$12.50", "$10.00", "Fixture Chatter"]);
+      .toEqual(["Mar 4", "$12.50", "$10", "Fixture Chatter"]);
     expect(within(bare).getAllByRole("cell").map((c) => c.textContent))
-      .toEqual(["Mar 1", "$5.00", "—", "—"]);
+      .toEqual(["Mar 1", "$5", "—", "—"]);
   });
 
   it("with insights loaded, Buy rate shows the share of recent PPVs bought, with Highest and Lowest price", async () => {
@@ -739,7 +739,7 @@ describe("Fan insights Sales tab", () => {
     await user.click(screen.getByRole("tab", { name: "Sales" }));
     const block = screen.getByRole("region", { name: "Sales" });
 
-    expect(rowsOf(block)).toEqual([["Buy rate", "33%"], ["Highest price", "$34.00"], ["Lowest price", "$5.00"]]);
+    expect(rowsOf(block)).toEqual([["Buy rate", "33%"], ["Highest price", "$34"], ["Lowest price", "$5"]]);
     expect(within(block).getByTitle("10 of the last 30 PPVs bought")).toBeTruthy();
   });
 

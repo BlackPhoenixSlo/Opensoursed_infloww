@@ -12,6 +12,7 @@ import type { FanVaultHistoryResp } from "@/hooks/useFanVaultHistory";
 import { renderWithProviders } from "@/test-utils";
 import { observerStub, relayGet, relayPost, resetComposerHarness, routeRelay } from "./composerTestHarness";
 import { VaultPicker } from "./VaultPicker";
+import { NOT_WIRED } from "./NotWired";
 
 vi.mock("@/lib/relay", async (orig) =>
   (await import("./composerTestHarness")).mockRelayModule(await orig()));
@@ -186,9 +187,9 @@ describe("VaultPicker cards with a Fan in scope", () => {
     renderPicker(42);
     await waitFor(() => expect(card(7001)).toBeInTheDocument());
     const purchased = card(7001);
-    expect(purchased).toHaveTextContent("$15.00");
-    expect(purchased).not.toHaveTextContent("$25.00");
-    expect(purchased.title).toContain("$25.00");
+    expect(purchased).toHaveTextContent(/\$15(?![.\d])/);
+    expect(purchased).not.toHaveTextContent("$25");
+    expect(purchased.title).toContain("$25");
   });
 
   it("keeps a greyed card selectable: confirming passes both picks in pick order", async () => {
@@ -230,7 +231,7 @@ describe("VaultPicker cards with a Fan in scope", () => {
     const history = within(detailsPanel()).getByRole("region", { name: "Price history" });
     expect(within(history).getAllByRole("term").map((t) => t.textContent)).toEqual(HISTORY_LABELS);
     expect(detailsValue("Unsent (free or paid)")).toHaveTextContent(/^—$/);
-    expect(detailsValue("Purchased")).toHaveTextContent("$25.00");
+    expect(detailsValue("Purchased")).toHaveTextContent(/ · \$25$/);
   });
 
   it("opens \"Media details\" at the price history from the price pill", async () => {
@@ -247,7 +248,7 @@ describe("VaultPicker cards with a Fan in scope", () => {
     expect(scrollIntoView).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Close media details" }));
 
-    await user.click(within(card(7001)).getByRole("button", { name: "$15.00" }));
+    await user.click(within(card(7001)).getByRole("button", { name: "$15" }));
     const history = within(detailsPanel()).getByRole("region", { name: "Price history" });
     expect(scrollIntoView).toHaveBeenCalledTimes(1);
     expect(scrollIntoView.mock.contexts[0]).toBe(history);
@@ -304,7 +305,7 @@ describe("VaultPicker cards with a Fan in scope", () => {
     ]);
     for (const u of unsends) {
       expect(u).toHaveAttribute("aria-disabled", "true");
-      expect(u).toHaveAttribute("title", "not wired");
+      expect(u).toHaveAttribute("title", `not wired: ${NOT_WIRED.vaultUnsend}`);
     }
     await user.click(unsends[0]);
     expect(screen.getByText("No items selected")).toBeInTheDocument();

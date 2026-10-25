@@ -11,6 +11,8 @@
  * cost-based figures say nothing), or a divisor of 0.
  */
 
+import { fmtCents, fmtPrice } from "@/lib/format";
+
 export const DASH = "—";
 
 /** Infloww's tooltips on the free trial link columns (the tracking link ones are TrackingLinksTab's `TIPS`). */
@@ -23,10 +25,11 @@ export const TRIAL_TIPS = {
   roi: "Return of investment: Profit divided by Promo cost, multiplied by 100.",
 };
 
-/** Cents as Infloww prints money: "$1,234.56", a loss as "-$12.00". */
+/** A total (earnings, profit) as the house `fmtCents` prints it, whole dollars with commas as on the dashboard
+ *  ("$1,235", where Infloww prints "$1,234.56"), a loss as "-$12"; a loss under a dollar is "$0", never "-$0".
+ *  A per-click / per-subscriber figure and a promo cost keep their cents (`fmtPrice`), as Infloww's do. */
 export function money(cents: number): string {
-  const s = (Math.abs(cents) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  return `${cents < 0 ? "-" : ""}$${s}`;
+  return fmtCents(cents);
 }
 
 const hasCost = (cost: number | null | undefined): cost is number => cost != null && cost > 0;
@@ -44,7 +47,7 @@ export const profit = (earnings: number | null | undefined, cost: number | null 
 
 /** CPC (per click) or CPS (per subscriber): Promo cost / n. */
 export function costPer(cost: number | null | undefined, n: number | null | undefined): string {
-  return !hasCost(cost) || !n ? DASH : money(cost / n);
+  return !hasCost(cost) || !n ? DASH : fmtPrice(cost / n);
 }
 
 /** ROI: Profit / Promo cost × 100, "12.50%". */
@@ -95,7 +98,7 @@ export function linkAverages(links: CostedLink[]): { cpc: string; cps: string; r
 
 /** AEPS: Earnings / subscribers. */
 export function aeps(earnings: number | null | undefined, subs: number | null | undefined): string {
-  return earnings == null || !subs ? DASH : money(earnings / subs);
+  return earnings == null || !subs ? DASH : fmtPrice(earnings / subs);
 }
 
 /** A share of fans ("25.00%"): Spend/Claim's fans who spent over the claims. */

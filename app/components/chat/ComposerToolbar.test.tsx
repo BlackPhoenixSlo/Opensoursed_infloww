@@ -67,6 +67,7 @@ import {
 } from "./composerTestHarness";
 import { readTranslateMode, useTranslateMode } from "@/hooks/useTranslateMode";
 import { MP } from "@/lib/messagesPro";
+import { NOT_WIRED } from "./NotWired";
 
 beforeEach(() => resetComposerHarness());
 afterEach(() => {
@@ -235,14 +236,17 @@ describe("Composer toolbar: Upload, @ and Aa", () => {
     expect(screen.queryByTitle(/Mention this fan/)).not.toBeInTheDocument();
   });
 
-  it('"Aa" is disabled with the title "not wired"', async () => {
+  it('"Aa" is Not wired: aria-disabled, titled with its excuse, and a click shows it and changes nothing', async () => {
+    const user = userEvent.setup();
     await renderComposer();
 
     const aa = screen.getByRole("button", { name: "Aa" });
-    expect(aa).toBeDisabled();
-    expect(aa).toHaveAttribute("title", "not wired");
+    expect(aa).toHaveAttribute("aria-disabled", "true");
+    expect(aa).toHaveAttribute("title", `not wired: ${NOT_WIRED.aa}`);
     // Drawn at full strength in Infloww's glyph grey, not faded (page-parity 07 CP12).
-    expect(aa).toHaveClass("text-[var(--inf-composer-glyph,var(--color-fg-dim))]", "disabled:opacity-100");
+    expect(aa).toHaveClass("text-[var(--inf-composer-glyph,var(--color-fg-dim))]");
+    await user.click(aa);
+    expect(screen.getByRole("status")).toHaveTextContent(NOT_WIRED.aa);
   });
 
   it("the AI pill is Infloww's teal-grey with a bot glyph, the Scripts pill its grey, and emoji a line smiley (page-parity 07 CP9, CP10)", async () => {
@@ -377,7 +381,7 @@ describe("Composer toolbar: GIF and tags", () => {
     expect(onSend).toHaveBeenCalledWith({ text: "hi" });
   });
 
-  it('"More" › "Add a tag" › "Release form" is disabled with "not wired"', async () => {
+  it('"More" › "Add a tag" › "Release form" is disabled, titled "not wired: <excuse>"', async () => {
     const user = userEvent.setup();
     await renderComposer();
 
@@ -389,7 +393,7 @@ describe("Composer toolbar: GIF and tags", () => {
     const addTag = within(popover.getByRole("group", { name: "Add a tag" }));
     const releaseForm = addTag.getByRole("button", { name: "Release form" });
     expect(releaseForm).toBeDisabled();
-    expect(releaseForm).toHaveAttribute("title", "not wired");
+    expect(releaseForm).toHaveAttribute("title", `not wired: ${NOT_WIRED.releaseForm}`);
   });
 });
 

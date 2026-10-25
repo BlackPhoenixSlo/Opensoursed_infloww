@@ -88,7 +88,7 @@ describe("MessageDashboardTable", () => {
     renderRows([{ ...BASE, reply_seconds: null, price_cents: 1500, is_paid: true, purchased_at: null }]);
     const c = cells(0);
     expect(c[4]).toBe("--");
-    expect(c[5]).toBe("$15.00");
+    expect(c[5]).toBe("$15");
     expect(screen.getByRole("img", { name: "Paid" })).toBeInTheDocument();
     expect(replyTime(0)).toBe("--");
     expect(replyTime(3725)).toBe("62m 5s");

@@ -108,7 +108,7 @@ const LEARN = (
 );
 
 export default function AutoStoriesTab() {
-  const { accountId, picker, loading } = useAutomationCreator();
+  const { accountId, creators, loading } = useAutomationCreator();
 
   const rulesQ = useAutomationRules(accountId);
   const rule = useMemo(
@@ -219,13 +219,13 @@ export default function AutoStoriesTab() {
   );
 
   if (!accountId) {
-    return <PageFrame title={TITLE} extra={picker} actions={LEARN}>{!loading && <NoCreator />}</PageFrame>;
+    return <PageFrame title={TITLE} creators={creators} actions={LEARN}>{!loading && <NoCreator />}</PageFrame>;
   }
 
   const last = rule?.last_run;
 
   return (
-    <PageFrame title={TITLE} extra={picker} actions={actions}>
+    <PageFrame title={TITLE} creators={creators} actions={actions}>
       <div className="max-w-[720px] space-y-8">
         <FormBlock title="Source">
           <div>

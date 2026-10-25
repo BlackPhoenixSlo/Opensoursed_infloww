@@ -50,6 +50,7 @@ import { playAlertOnce } from "@/lib/alertSounds";
 import { useClock, useMyShifts } from "@/lib/shifts";
 import type { NotificationUser } from "@/lib/moneyRailStorage";
 import { mergeOFUserName, ofUserNameKey } from "@/hooks/useOFUser";
+import { fmtPrice } from "@/lib/format";
 import {
   appendNotifHistory,
   dispatchNotifArrived,
@@ -665,7 +666,7 @@ function NotificationDeltaPoller() {
 
       const cents = Number(p.amount_cents);
       const text = Number.isFinite(cents) && cents > 0
-        ? `Unlocked your PPV — $${(cents / 100).toFixed(2)}`
+        ? `Unlocked your PPV — ${fmtPrice(cents)}`
         : "Unlocked your PPV";
       // OF stamps these with an explicit offset ("…+00:00"); toUtcIso passes
       // a zoned timestamp through untouched.

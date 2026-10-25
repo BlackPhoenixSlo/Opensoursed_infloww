@@ -21,7 +21,7 @@ import Link from "next/link";
 
 import { Badge } from "@/components/ui/primitives";
 import FanAvatar from "@/components/messages/FanAvatar";
-import { fmtCents, stripHtml } from "@/lib/messageFormat";
+import { fmtPrice, stripHtml } from "@/lib/messageFormat";
 import { fmtRelTime } from "@/lib/utils";
 
 import type { TipsListRow } from "@/hooks/useTipsList";
@@ -67,7 +67,7 @@ export default function TipRow({ row }: Props) {
           </Badge>
           <div className="ml-auto flex items-center gap-2 shrink-0">
             <span className="text-sm font-semibold text-fg">
-              {fmtCents(row.amount_cents)}
+              {fmtPrice(row.amount_cents)}
             </span>
             <span className="text-xs text-fg-dim">
               {fmtRelTime(row.occurred_at)}

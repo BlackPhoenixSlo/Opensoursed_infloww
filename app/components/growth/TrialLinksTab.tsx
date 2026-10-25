@@ -44,6 +44,7 @@ import LinksListFrame, {
 import OfferClaimers from "@/components/growth/OfferClaimers";
 import { DASH, TRIAL_TIPS, aeps, money, profit, roi, share, updatedAgo } from "@/components/growth/linkMetrics";
 import { claimsText } from "@/components/growth/offerFormat";
+import { fmtPrice } from "@/lib/format";
 import { EXPIRATIONS, TRIAL_DEFAULTS, TRIAL_DURATIONS, TRIAL_LIMITS, trialBody, type TrialForm } from "@/lib/ofMirrorOffers";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { ofErrorMessage } from "@/lib/ofMirrorWrites";
@@ -57,7 +58,7 @@ export function trialFigures(l: TrialLink | null, net: boolean): Array<{ title: 
   const cost = l?.promo_cost_cents ?? null;
   return [
     { title: "Spend/Claim", tip: TRIAL_TIPS.spendClaim, value: share(m?.fans_who_spent, m?.fans_counted) },
-    { title: "Promo cost", tip: TRIAL_TIPS.promoCost, value: cost ? money(cost) : DASH },
+    { title: "Promo cost", tip: TRIAL_TIPS.promoCost, value: cost ? fmtPrice(cost) : DASH },
     { title: "Earnings", tip: TRIAL_TIPS.earnings, value: earnings == null ? DASH : money(earnings) },
     { title: "Fans who spent", value: m?.fans_who_spent == null ? DASH : String(m.fans_who_spent) },
     { title: "Profit", tip: TRIAL_TIPS.profit, value: profit(earnings, cost) },

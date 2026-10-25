@@ -42,12 +42,32 @@ window through yesterday is stored, else absent ("-"), never a partial sum.
 `new_subs` is read there only for the New subscriber conversion (OF's new
 subscribers over its visitors, both OF's own); the New subscribers column
 stays ours (stats.per_model `new_subs_count`).
+
+Earnings (`of_earnings_daily`): OnlyFans' own figure for a Creator's earnings,
+the one its Statistics › Statements page shows (the OF Manager's Statistics
+reads the same `/earnings/chart` live). The ledger (`transactions`) only holds
+what we ingested since the Creator was connected, and can miss sales; OF is the
+truth (owner, 2026-10-24: the DB is a best-effort cache of OF). So:
+
+  earnings   GET /earnings/chart  filter[<c>_count, <c>_amount] for c in
+             EARNINGS: per category a daily `chartAmount` (net, after OF's
+             fee) and `chartCount`, plus the period's `total` (net) and `gross`
+
+Each day's snapshot re-reads the last `_DAYS` days (OF revises a day for a
+chargeback), and each tick fills the newest missing days back to
+`_EARNINGS_HISTORY_DAYS` in `_EARNINGS_CHUNK_DAYS`-day reads, at most
+`_EARNINGS_CHUNKS_PER_TICK` a tick. A read that answers in another shape (not
+one point per consecutive day, e.g. weekly buckets) stores nothing and is
+asked again the next tick. Gross per day is derived (`_earnings`): OF sends
+gross only as the period's total. `earnings_window` is the read stats.py
+substitutes for the ledger's days.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import time
+from collections import OrderedDict, deque
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -60,7 +80,7 @@ import client_pool
 import tx_rollup
 from cadence import boot_grace
 from db.engine import get_session
-from db.models import OfStatsDaily, SubscriberSnapshot
+from db.models import Account, OfEarningsDaily, OfStatsDaily, SubscriberSnapshot
 
 log = logging.getLogger("of-relay.of_stats_daily")
 
@@ -71,6 +91,36 @@ _RETRY_AFTER_S = 6 * 3600 # between two fetches for a day not yet stored
 _MAX_ATTEMPTS = 3         # fetches per Creator per day, at most
 _BOOT_GRACE_S = 300.0
 SERIES = ("visitors", "new_subs", "renewals")
+
+# Earnings history kept per Creator: the reports' longest window (stats.MAX_WINDOW_DAYS).
+_EARNINGS_HISTORY_DAYS = 400
+_EARNINGS_CHUNK_DAYS = 30      # one /earnings/chart read; OF's "Last 30 days" charts daily
+_EARNINGS_CHUNKS_PER_TICK = 4  # 120 days of history an hour per Creator
+# OF's Statements categories (its sidebar's, without the total) and the ledger
+# kind each counts as, so every report's channel mapping reads them unchanged.
+EARNINGS = ("subscribes", "tips", "messages", "post", "stream")
+EARNINGS_KIND = {"subscribes": "subscription", "tips": "tip", "messages": "ppv_message",
+                 "post": "ppv_post", "stream": "ppv_stream"}
+_OF_FEE = 0.2  # OF keeps 20% of gross: gross = net / 0.8 when a reply has no gross
+# earnings_window's answers, until the next write: every report read asks for
+# the same few windows, and only this job writes the table (one relay process).
+_WINDOW_CACHE_MAX = 256
+_window_cache: OrderedDict[tuple, tuple[dict[tuple[str, str], list[dict[str, Any]]], int]] = OrderedDict()
+_earnings_version = 0
+_earnings_writes: deque[tuple[int, str, date, date]] = deque(maxlen=1024)  # (version, account, first, last day)
+_window_reads: dict[tuple, tuple[int, asyncio.Future]] = {}  # a window being read: later askers share it
+
+
+def _hits(key: tuple, account_id: str, first: date, last: date) -> bool:
+    """Whether a write of `account_id`'s days [first, last] changes window `key`."""
+    return (key[0] is None or account_id in key[0]) and key[1] <= last and key[2] >= first
+
+
+def _unchanged_since(key: tuple, version: int) -> bool:
+    """No write since `version` changed window `key` (False when the log no longer reaches back)."""
+    if version < _earnings_version - len(_earnings_writes):
+        return False
+    return not any(v > version and _hits(key, a, f, l) for v, a, f, l in _earnings_writes)
 
 
 def _points(series: Any, first: date, last: date) -> dict[str, int] | None:
@@ -135,14 +185,163 @@ async def _upsert(account_id: str, cols: dict[str, dict[str, int]], now: datetim
     return len(days)
 
 
-async def snapshot(account_id: str, client, *, now: datetime | None = None,
-                   pause_s: float = _CALL_PAUSE_S) -> int:
-    """Fetch the last `_DAYS` complete UTC days for one Creator and store them.
-    Returns the days written."""
+def _amounts(series: Any) -> dict[date, float] | None:
+    """`[{date, count}]` as {UTC day: amount}, or None when it is not one point
+    per consecutive day with a number. An amount may be negative (a day of
+    chargebacks)."""
+    if not isinstance(series, list):
+        return None
+    out: dict[date, float] = {}
+    for p in series:
+        try:
+            day = datetime.fromisoformat(str(p["date"]).replace("Z", "+00:00")).date()
+            n = p["count"]
+        except (KeyError, TypeError, ValueError):
+            return None
+        if isinstance(n, bool) or not isinstance(n, (int, float)):
+            return None
+        out[day] = float(n)
+    days = list(out)
+    if len(days) != len(series) or any((b - a).days != 1 for a, b in zip(days, days[1:])):
+        return None
+    return out
+
+
+def _earnings(reply: Any, first: date, last: date) -> dict[str, dict[str, tuple[int, int, int]]] | None:
+    """OF's `/earnings/chart` reply as {day: {category: (net, gross, sales)}} in
+    cents for every day in [first, last], or None when it is not that chart.
+    A category the reply leaves out, or a day it has no point for, is zero (OF
+    names only the categories with earnings, StatementsStatistics). A day's
+    gross is its net at the category's gross/net over the reply (OF sends gross
+    only as the period total), or net / 0.8 when that total is zero. An empty
+    reply is a period with no earnings at all (UNVERIFIED: read as OF naming
+    no category; a Creator's months before its first sale answer so)."""
+    if not isinstance(reply, dict) or (reply and not any(isinstance(reply.get(c), dict) for c in EARNINGS)):
+        return None
+    per: dict[str, tuple[dict[date, float], dict[date, float], float]] = {}
+    for c in EARNINGS:
+        block = reply.get(c)
+        if block is None:
+            continue
+        if not isinstance(block, dict):
+            return None
+        amount = _amounts(block.get("chartAmount"))
+        count = _amounts(block["chartCount"]) if "chartCount" in block else {}
+        if amount is None or count is None:
+            return None
+        try:
+            net_total, gross_total = float(block.get("total") or 0), float(block.get("gross") or 0)
+        except (TypeError, ValueError):
+            return None
+        ratio = gross_total / net_total if net_total > 0 and gross_total > 0 else 1 / (1 - _OF_FEE)
+        per[c] = (amount, count, ratio)
+    out: dict[str, dict[str, tuple[int, int, int]]] = {}
+    day = first
+    while day <= last:
+        row = out[day.isoformat()] = {}
+        for c in EARNINGS:
+            amount, count, ratio = per.get(c, ({}, {}, 1.0))
+            net = round(amount.get(day, 0.0) * 100)
+            row[c] = (net, round(net * ratio), int(count.get(day, 0)))
+        day += timedelta(days=1)
+    return out
+
+
+def fetch_earnings_blocking(client, first: date, last: date) -> dict[str, dict[str, tuple[int, int, int]]] | None:
+    """OF's own earnings over [first, last] UTC days (`_earnings`), None when it
+    answered in another shape. Blocking: run in a thread. Raises what the client
+    raises."""
+    # The same read as Statistics › Statements' sidebar (ofMirrorStatsSources `earningsSide`).
+    reply = client.earnings_chart(start=f"{first.isoformat()} 00:00:00", end=f"{last.isoformat()} 23:59:59",
+                                  filter=[f"{c}_{m}" for c in EARNINGS for m in ("count", "amount")])
+    got = _earnings(reply, first, last)
+    if got is None:
+        log.warning("of_stats_daily: earnings %s..%s answered in an unexpected shape; not stored", first, last)
+    return got
+
+
+async def _upsert_earnings(account_id: str, days: dict[str, dict[str, tuple[int, int, int]]], now: datetime) -> int:
+    """Write each day's categories (`_earnings`). Returns the days written."""
+    if not days:
+        return 0
+    rows = [{"account_id": account_id, "day": d, "category": c, "net_cents": net, "gross_cents": gross,
+             "sales": sales, "fetched_at": now}
+            for d, cats in days.items() for c, (net, gross, sales) in cats.items()]
+    async with get_session() as s:
+        stmt = sqlite_insert(OfEarningsDaily)
+        for i in range(0, len(rows), 500):
+            await s.execute(stmt.on_conflict_do_update(
+                index_elements=["account_id", "day", "category"],
+                set_={c: stmt.excluded[c] for c in ("net_cents", "gross_cents", "sales", "fetched_at")}),
+                rows[i:i + 500])
+        await s.commit()
+    global _earnings_version
+    _earnings_version += 1
+    first, last = date.fromisoformat(min(days)), date.fromisoformat(max(days))
+    _earnings_writes.append((_earnings_version, account_id, first, last))
+    for key in [k for k in _window_cache if _hits(k, account_id, first, last)]:
+        del _window_cache[key]  # only the windows these days fall in
+    return len(days)
+
+
+async def _earnings_days(account_id: str, lo: date, hi: date) -> set[str]:
+    async with get_session() as s:
+        return set((await s.execute(
+            select(OfEarningsDaily.day).distinct().where(
+                OfEarningsDaily.account_id == account_id,
+                OfEarningsDaily.day >= lo.isoformat(), OfEarningsDaily.day <= hi.isoformat()))).scalars())
+
+
+async def backfill_earnings(account_id: str, client, *, now: datetime | None = None,
+                            pause_s: float = _CALL_PAUSE_S, chunks: int = _EARNINGS_CHUNKS_PER_TICK) -> int:
+    """Fill the newest days of the last `_EARNINGS_HISTORY_DAYS` complete UTC
+    days with no stored earnings, one `_EARNINGS_CHUNK_DAYS`-day read at a time,
+    at most `chunks` reads. Stops at a reply in another shape (asked again the
+    next tick). Returns the days written."""
     now = now or datetime.utcnow()
     last = now.date() - timedelta(days=1)
-    cols = await asyncio.to_thread(fetch_blocking, client, last - timedelta(days=_DAYS - 1), last, pause_s=pause_s)
-    return await _upsert(account_id, cols, now) if cols else 0
+    lo = last - timedelta(days=_EARNINGS_HISTORY_DAYS - 1)
+    stored = await _earnings_days(account_id, lo, last)
+    written = 0
+    for i in range(chunks):
+        hi = last
+        while hi >= lo and hi.isoformat() in stored:
+            hi -= timedelta(days=1)
+        if hi < lo:
+            break
+        first = max(lo, hi - timedelta(days=_EARNINGS_CHUNK_DAYS - 1))
+        if i:
+            await asyncio.sleep(pause_s)
+        got = await asyncio.to_thread(fetch_earnings_blocking, client, first, hi)
+        if got is None:
+            break
+        written += await _upsert_earnings(account_id, got, now)
+        stored |= set(got)
+    return written
+
+
+async def earnings_due(account_id: str, *, now: datetime | None = None) -> bool:
+    """Whether a day of the kept history has no stored earnings."""
+    now = now or datetime.utcnow()
+    last = now.date() - timedelta(days=1)
+    lo = last - timedelta(days=_EARNINGS_HISTORY_DAYS - 1)
+    return len(await _earnings_days(account_id, lo, last)) < _EARNINGS_HISTORY_DAYS
+
+
+async def snapshot(account_id: str, client, *, now: datetime | None = None,
+                   pause_s: float = _CALL_PAUSE_S) -> int:
+    """Fetch the last `_DAYS` complete UTC days for one Creator and store them,
+    the earnings too (OF revises a recent day for a chargeback). Returns the
+    days of Statistics figures written."""
+    now = now or datetime.utcnow()
+    last = now.date() - timedelta(days=1)
+    first = last - timedelta(days=_DAYS - 1)
+    cols = await asyncio.to_thread(fetch_blocking, client, first, last, pause_s=pause_s)
+    n = await _upsert(account_id, cols, now) if cols else 0
+    await asyncio.sleep(pause_s)
+    if (earned := await asyncio.to_thread(fetch_earnings_blocking, client, first, last)) is not None:
+        await _upsert_earnings(account_id, earned, now)
+    return n
 
 
 async def sample_roster(account_id: str, *, now: datetime | None = None) -> bool:
@@ -200,12 +399,18 @@ async def tick(*, now: datetime | None = None, pause_s: float = _CALL_PAUSE_S) -
             continue
         try:
             await sample_roster(aid, now=now)
-            if (await account_health.is_session_dead(aid) or await account_health.is_deactivated(aid)
-                    or not await _claim(aid, now)):
+            if await account_health.is_session_dead(aid) or await account_health.is_deactivated(aid):
                 continue
-            client = await asyncio.to_thread(client_pool.get, aid)
-            done[aid] = await snapshot(aid, client, now=now, pause_s=pause_s)
-            await asyncio.sleep(pause_s)
+            client = None
+            if await _claim(aid, now):
+                client = await asyncio.to_thread(client_pool.get, aid)
+                done[aid] = await snapshot(aid, client, now=now, pause_s=pause_s)
+                await asyncio.sleep(pause_s)
+            if await earnings_due(aid, now=now):
+                client = client or await asyncio.to_thread(client_pool.get, aid)
+                if n := await backfill_earnings(aid, client, now=now, pause_s=pause_s):
+                    log.info("of_stats_daily: earnings history account=%s days=%d", aid, n)
+                await asyncio.sleep(pause_s)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -282,3 +487,91 @@ async def window_figures(account_ids: list[str] | None, start: datetime, end: da
             if r.active_fans:
                 row["of_renew_on_pct"] = round(100 * r.renew_on / r.active_fans, 2)
     return out
+
+
+async def earnings_window(account_ids: list[str] | None, start: datetime | None, end: datetime | None, *,
+                          now: datetime | None = None) -> tuple[dict[tuple[str, str], list[dict[str, Any]]], int]:
+    """OnlyFans' own earnings over a report window, for stats.py to read in
+    place of the ledger's days. Returns:
+
+      cells  {(account_id, 'YYYY-MM-DD'): one cell per category}, for each
+             Creator's stored days among the window's UTC days through
+             yesterday (`window_days`), each cell shaped as stats._day_sums'
+             (`day`, `account_id`, `kind` = EARNINGS_KIND, tx_rollup.MEASURES;
+             OF's net has no missing figure, its fee is gross - net, VAT 0)
+      gaps   the (Creator, day) pairs of those days with no stored earnings
+             that fall before the Creator was added (`accounts.created_at`):
+             days our ledger is known not to hold, so a comparison against
+             the window reads them as unknown, not as $0.00
+
+    Kept per (Creators, days) until the job writes one of its days, and read
+    once for all who ask while it is read: the answer is shared, so a caller
+    must not change it.
+    """
+    now = now or datetime.utcnow()
+    yesterday = now.date() - timedelta(days=1)
+    # An open edge: the kept history's first day, or yesterday.
+    lo = window_days(start, start)[0] if start else yesterday - timedelta(days=_EARNINGS_HISTORY_DAYS - 1)
+    hi = min(window_days(end, end)[1], yesterday) if end else yesterday
+    if lo > hi:
+        return {}, 0
+    key = (None if account_ids is None else tuple(sorted(account_ids)), lo, hi)
+    if (hit := _window_cache.get(key)) is not None:
+        _window_cache.move_to_end(key)
+        return hit
+    # Join a read of this window under way unless a write changed the window since it began.
+    version, pending = _window_reads.get(key, (None, None))
+    if pending is None or not _unchanged_since(key, version):
+        version, pending = _earnings_version, asyncio.ensure_future(_read_window(account_ids, lo, hi))
+        _window_reads[key] = (version, pending)
+        pending.add_done_callback(lambda f, k=key: _read_done(k, f))
+    cells, gaps = await asyncio.shield(pending)
+    if _unchanged_since(key, version):
+        _window_cache[key] = (cells, gaps)
+        while len(_window_cache) > _WINDOW_CACHE_MAX:
+            _window_cache.popitem(last=False)
+    return cells, gaps
+
+
+def _read_done(key: tuple, f: asyncio.Future) -> None:
+    if _window_reads.get(key, (0, None))[1] is f:
+        del _window_reads[key]
+    if not f.cancelled():
+        f.exception()  # raised to every asker; retrieved here too, for the one whose request went away
+
+
+async def _read_window(account_ids: list[str] | None, lo: date, hi: date,
+                       ) -> tuple[dict[tuple[str, str], list[dict[str, Any]]], int]:
+    """`earnings_window`'s read of the stored days [lo, hi]."""
+    E = OfEarningsDaily
+    async with get_session() as s:
+        q = select(E.account_id, E.day, E.category, E.net_cents, E.gross_cents, E.sales).where(
+            E.day >= lo.isoformat(), E.day <= hi.isoformat())
+        a = select(Account.id, Account.created_at)
+        if account_ids is not None:
+            q = q.where(E.account_id.in_(account_ids))
+            a = a.where(Account.id.in_(account_ids))
+        rows = (await s.execute(q)).all()
+        added = (await s.execute(a)).all()
+    cells: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for r in rows:
+        kind = EARNINGS_KIND.get(r.category)
+        if kind is None:
+            continue
+        # The day is OF's even when it charted nothing: an empty list still replaces the ledger's day.
+        day_cells = cells.setdefault((r.account_id, r.day), [])
+        if not (r.net_cents or r.gross_cents or r.sales):
+            continue
+        day_cells.append({
+            "day": r.day, "account_id": r.account_id, "kind": kind,
+            "gross_cents": r.gross_cents, "net_cents": r.net_cents, "net_missing": 0,
+            "net_or_80_cents": r.net_cents, "sales": r.sales,
+            "fee_cents": r.gross_cents - r.net_cents, "vat_cents": 0})
+    gaps = 0
+    for aid, created in added:
+        until = min(hi, (created.date() if created else lo) - timedelta(days=1))
+        if until < lo:
+            continue
+        stored = {d for (a_, d) in cells if a_ == aid}
+        gaps += (until - lo).days + 1 - sum(1 for d in stored if d <= until.isoformat())
+    return cells, gaps

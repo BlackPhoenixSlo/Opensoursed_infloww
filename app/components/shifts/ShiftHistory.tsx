@@ -36,10 +36,10 @@ export const historyHeads = (group: TimesheetGroup) => [
   "Scheduled Shifts", "Shifts Worked", "Scheduled hours", "Worked hours", "Recorded earnings",
 ];
 
-/** One row as the table prints it (the dot aside). */
-export const historyCells = (r: TimesheetRow) => [
+/** One row as the table prints it (the dot aside); the Export passes `fmtPrice` so the CSV keeps the cents. */
+export const historyCells = (r: TimesheetRow, money: (cents: number) => string = fmtCents) => [
   r.display_name, r.scheduled_shifts, r.shifts_worked, fmtHours(r.scheduled_minutes), fmtHours(r.worked_minutes),
-  fmtCents(r.recorded_earnings_cents),
+  money(r.recorded_earnings_cents),
 ];
 
 export default function ShiftHistory({ sheet, group }: {

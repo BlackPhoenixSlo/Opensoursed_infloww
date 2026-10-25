@@ -15,9 +15,10 @@ import { useMemo, useState } from "react";
 import { Card, Input } from "@/components/ui/primitives";
 import { usePerFanData, type FanDataRow } from "@/hooks/useStats";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
+import { fmtCents } from "@/lib/format";
 
 function fmtSpend(n: number): string {
-  return n > 0 ? `$${n.toFixed(2)}` : "—";
+  return n > 0 ? fmtCents(Math.round(n * 100)) : "—";
 }
 function fmtDate(iso: string): string {
   if (!iso) return "—";

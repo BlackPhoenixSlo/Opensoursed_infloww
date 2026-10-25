@@ -463,7 +463,7 @@ describe("NotificationToaster — arrivals seed the money lists, never refetch t
       expect(readNotifHistory()["701"]?.length).toBe(1);
       const list = qc.getQueryData<{ id: unknown; text?: string; createdAt?: string }[]>(
         ["notif-list", "701", "purchases"]);
-      expect(list?.[0]).toMatchObject({ id: "7002", text: "Unlocked your PPV — $5.00", createdAt: RECENT_OF_TS_UTC });
+      expect(list?.[0]).toMatchObject({ id: "7002", text: "Unlocked your PPV — $5", createdAt: RECENT_OF_TS_UTC });
       expect(list).toHaveLength(2);
       expect(refetchedNotifList(spy)).toBe(false);
     } finally {

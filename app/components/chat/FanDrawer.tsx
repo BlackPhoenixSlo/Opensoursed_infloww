@@ -38,6 +38,7 @@ import { useFanPpvHistory, type PpvHistoryItem, type PpvHistoryResp } from "@/ho
 import { useFanChatMedia, type FanChatMediaItem } from "@/hooks/useFanChatMedia";
 import { useFanInsights } from "@/hooks/useFanInsights";
 import { fmtCents } from "@/lib/messageFormat";
+import { fmtPrice } from "@/lib/format";
 import { stripOFHtml } from "@/lib/ofHtml";
 import { relay, SALARY_FREQUENCIES, type FanRecord, type OFChatItem, type VaultMedia } from "@/lib/relay";
 import { vaultFilesFromChat } from "@/lib/vaultFiles";
@@ -442,7 +443,7 @@ export function FanDrawer({
             <dl className={cn(MP.insights.spendTop, "grid grid-cols-2")}>
               <div>
                 <dt className={cn(MP.insights.spendLabel, "text-fg-dim")}>Total spend</dt>
-                <dd className={MP.insights.spendBig}>{fmtUsd(spendCents)}</dd>
+                <dd className={MP.insights.spendBig}>{spendCents ? fmtCents(spendCents) : "$0"}</dd>
               </div>
               <div className={cn(MP.insights.spendSplit, "border-border")}>
                 <dt className={cn(MP.insights.spendLabel, "text-fg-dim")}>Last spend</dt>
@@ -501,7 +502,7 @@ export function FanDrawer({
         />
         <InsightsRow
           term="Cost"
-          value={typeof sub?.price === "number" ? `$${sub.price.toFixed(2)}` : "—"}
+          value={typeof sub?.price === "number" ? fmtPrice(Math.round(sub.price * 100)) : "—"}
         />
         <InsightsRow term="Duration" value={sub?.duration || "—"} />
         <InsightsRow term="Auto-renewal" value={autoRenewal(subStatus)} />
@@ -926,8 +927,8 @@ export function FanDrawer({
                     ) : "—"
                   }
                 />
-                <InsightsRow term="Highest price" value={insights?.ppv_recent?.highest_cents != null ? fmtCents(insights.ppv_recent.highest_cents) : "—"} />
-                <InsightsRow term="Lowest price" value={insights?.ppv_recent?.lowest_cents != null ? fmtCents(insights.ppv_recent.lowest_cents) : "—"} />
+                <InsightsRow term="Highest price" value={insights?.ppv_recent?.highest_cents != null ? fmtPrice(insights.ppv_recent.highest_cents) : "—"} />
+                <InsightsRow term="Lowest price" value={insights?.ppv_recent?.lowest_cents != null ? fmtPrice(insights.ppv_recent.lowest_cents) : "—"} />
               </InsightsBlock>
             </>
           )}
@@ -1278,11 +1279,6 @@ function autoRenewal(status: SubStatusDisplay): string {
   return "—";
 }
 
-function fmtUsd(cents: number | null | undefined): string {
-  if (!cents) return "$0";
-  return `$${(cents / 100).toFixed(2)}`;
-}
-
 /** PPV Avg or Highest spend: the relay's average or maximum over the loaded
  *  purchase-history page (`service/fans.py:1006-1011`). A full page may hide
  *  older purchases, so it reads "—" then, and with no items (B11 option (b)).
@@ -1294,7 +1290,7 @@ function pageFigure(
 ): string {
   const items = q.data?.items ?? [];
   if (!q.data || q.isPlaceholderData || items.length === 0 || items.length === salesLimit) return "—";
-  return fmtCents(q.data.summary[key]);
+  return fmtPrice(q.data.summary[key]);
 }
 
 /** Whole-dollar formatter for ledger summaries. OF returns
@@ -1304,8 +1300,8 @@ function pageFigure(
  *  long-tenure / hidden accounts even when activity exists — better to
  *  show our DB total than a misleading $0. */
 function fmtSummDollars(ofDollars: number | null | undefined, dbCents: number | null | undefined): string {
-  if (typeof ofDollars === "number" && ofDollars > 0) return `$${ofDollars.toFixed(0)}`;
-  if (typeof dbCents === "number" && dbCents > 0) return `$${(dbCents / 100).toFixed(0)}`;
+  if (typeof ofDollars === "number" && ofDollars > 0) return `$${Math.round(ofDollars).toLocaleString("en-US")}`;
+  if (typeof dbCents === "number" && dbCents > 0) return `$${Math.round(dbCents / 100).toLocaleString("en-US")}`;
   return "—";
 }
 
@@ -1335,8 +1331,8 @@ function SalesTable({ items }: { items: PpvHistoryItem[] }) {
               <td className={td}>
                 {t == null ? "—" : new Date(t).toLocaleDateString([], { month: "short", day: "numeric" })}
               </td>
-              <td className={cn(td, "text-right")}>{fmtCents(i.price_cents)}</td>
-              <td className={cn(td, "text-right text-fg-dim")}>{i.net_cents == null ? "—" : fmtCents(i.net_cents)}</td>
+              <td className={cn(td, "text-right")}>{fmtPrice(i.price_cents)}</td>
+              <td className={cn(td, "text-right text-fg-dim")}>{i.net_cents == null ? "—" : fmtPrice(i.net_cents)}</td>
               <td className={td}>{i.employee_name ?? "—"}</td>
             </tr>
           );
@@ -1653,7 +1649,7 @@ function UnsoldPpvRow({
     <div className="rounded-md bg-[var(--inf-card,var(--color-bg-elev-1))] border border-[var(--inf-card-border,var(--color-border))] overflow-hidden">
       <div className="flex items-center gap-2 px-2 py-1.5">
         <span className={cn(MP.ours.FanDrawer.pricePill, "inline-flex items-center bg-warn text-white")}>
-          <span className="opacity-90">$</span>{(priceCents / 100).toFixed(2)}
+          <span className="opacity-90">$</span>{fmtPrice(priceCents).slice(1)}
         </span>
         <span className={cn(MP.ours.FanDrawer.rowDate, "text-fg-dim flex-1 min-w-0 truncate")}>
           {fmtFullDateTime(item.createdAt)}
@@ -1761,7 +1757,7 @@ function PpvSaleRow({
         className="w-full flex items-center gap-2 px-2 py-1.5 text-left hover:bg-bg-elev-2/40"
       >
         <span className={cn(MP.ours.FanDrawer.pricePill, "inline-flex items-center bg-ok text-white")}>
-          <span className="opacity-90">$</span>{(row.priceCents / 100).toFixed(2)}
+          <span className="opacity-90">$</span>{fmtPrice(row.priceCents).slice(1)}
         </span>
         <span className={cn(MP.ours.FanDrawer.rowDate, "text-fg-dim flex-1 min-w-0 truncate")}>
           {fmtFullDateTime(row.purchasedAt)}
@@ -2124,9 +2120,9 @@ function fmtFullDateTime(iso: string | null): string {
 
 function formatAccounting(row: PpvSaleRowData): string | null {
   const parts: string[] = [];
-  if (row.netCents != null) parts.push(`net ${fmtUsd(row.netCents)}`);
-  if (row.feeCents != null) parts.push(`fee ${fmtUsd(row.feeCents)}`);
-  if (row.vatCents != null && row.vatCents !== 0) parts.push(`VAT ${fmtUsd(row.vatCents)}`);
+  if (row.netCents != null) parts.push(`net ${fmtPrice(row.netCents)}`);
+  if (row.feeCents != null) parts.push(`fee ${fmtPrice(row.feeCents)}`);
+  if (row.vatCents != null && row.vatCents !== 0) parts.push(`VAT ${fmtPrice(row.vatCents)}`);
   return parts.length ? parts.join(" · ") : null;
 }
 

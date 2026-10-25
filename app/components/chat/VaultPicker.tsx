@@ -32,7 +32,7 @@ import { useBlurMode, blurImageClass } from "@/hooks/useBlurMode";
 import { type VaultAiFields, type VaultList, type VaultMedia } from "@/lib/relay";
 import { proxyImage, proxyScrubFrame } from "@/lib/mediaUrl";
 import { type FanId } from "@/lib/fanId";
-import { fmtDuration } from "@/lib/format";
+import { fmtCents, fmtDuration, fmtPrice } from "@/lib/format";
 import { perfLog, perfOpId, perfPainted } from "@/lib/perfLog";
 import { useInflowwPalette } from "./InflowwPalette";
 import { cardAction, VaultMediaDetails } from "./VaultMediaDetails";
@@ -43,6 +43,7 @@ import {
 } from "./vaultPickerSheet";
 import { HOVER_DELAY_MS, KEYBOARD_HINT, PhotoHoverPanel, useGridSelection, usePhotoHover } from "./vaultPickerSelection";
 import { STATS_SORTS, isStatsSort, seenByFan, sortByStats, statsLabel, type StatsSort } from "./vaultPickerStats";
+import { notWiredTitle } from "./NotWired";
 
 // Hover-preview slideshow tuning. 12 evenly-spaced frames @ 600ms each
 // cycles a full video clip in 7.2 seconds — comfortable scrub speed and
@@ -1692,7 +1693,7 @@ export function VaultPicker(props: VaultPickerProps) {
                           {...cardAction(() => {})}
                           aria-label="Unsend"
                           aria-disabled="true"
-                          title="not wired"
+                          title={notWiredTitle("vaultUnsend")}
                           className={VAULT_CARD_UNSEND}
                         >
                           ↶
@@ -1719,7 +1720,7 @@ export function VaultPicker(props: VaultPickerProps) {
                         : status === "free"
                         ? "FREE"
                         : wallCents > 0
-                        ? `WALL $${(wallCents / 100).toFixed(2)}`
+                        ? `WALL ${fmtPrice(wallCents)}`
                         : "WALL";
                     // With a Fan in scope the pill opens "Media details" at
                     // the price history.
@@ -2009,12 +2010,12 @@ function describeTile(m: VaultMedia, entry: FanVaultEntry, onWall: boolean): str
   const wallNote = onWall ? " · also on wall" : "";
   if (entry.was_purchased) {
     const paid = entry.total_paid_cents > 0
-      ? ` ($${(entry.total_paid_cents / 100).toFixed(2)})`
+      ? ` (${fmtCents(entry.total_paid_cents)})`
       : "";
     return `${base} · UNLOCKED (fan paid)${paid}${wallNote}`;
   }
   const kind = entry.last_price_cents > 0
-    ? `locked · sent at $${(entry.last_price_cents / 100).toFixed(2)}`
+    ? `locked · sent at ${fmtPrice(entry.last_price_cents)}`
     : "sent free";
   return `${base} · ${kind} (${entry.send_count}×)${wallNote}`;
 }
@@ -2024,5 +2025,5 @@ function describeTile(m: VaultMedia, entry: FanVaultEntry, onWall: boolean): str
  *  tooltip. Free + wall-only return null. */
 function tilePriceLabel(entry: FanVaultEntry | undefined): string | null {
   if (!entry || entry.last_price_cents <= 0) return null;
-  return `$${(entry.last_price_cents / 100).toFixed(2)}`;
+  return `${fmtPrice(entry.last_price_cents)}`;
 }

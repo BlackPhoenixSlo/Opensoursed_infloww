@@ -100,7 +100,7 @@ describe("FanslyManagerPage", () => {
 
   it("Earning statistics sums our recorded purchases for the Fansly creator", async () => {
     renderWithProviders(<FanslyManagerPage link={findNavLink("/fansly-manager/earning-statistics")!} />);
-    expect(await screen.findByTestId("fansly-earnings-total")).toHaveTextContent("$25.00");
+    expect(await screen.findByTestId("fansly-earnings-total")).toHaveTextContent(/^\$25$/);
     expect(screen.getAllByText("Purchases recorded by us").length).toBeGreaterThan(0);
     const url = String(fetchMock.mock.calls.find(([u]) => String(u).startsWith("/admin/stats/revenue?"))![0]);
     const qs = new URLSearchParams(url.split("?")[1]);

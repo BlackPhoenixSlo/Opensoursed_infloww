@@ -16,6 +16,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { useScope } from "@/contexts/ScopeContext";
 import { useActiveAccounts } from "@/hooks/useAccounts";
+import { fmtCents, fmtPrice } from "@/lib/format";
 import { relay } from "@/lib/relay";
 import type { Payout } from "@/lib/ofMirrorFeeds";
 import { LoadError, SettingsPanel, SettingsTable, TABLE_CELL, TABLE_ROW } from "@/components/settings/SettingsPanel";
@@ -43,11 +44,14 @@ const STATE_COLOUR: Record<string, string> = {
   done: "text-[#666666]",
 };
 
-/** A dollar amount as USD with two decimals; anything that is not a finite number is "—". */
+/** A dollar balance in whole dollars, as on the dashboard; anything that is not a finite number is "—". */
 function usd(v: unknown): string {
-  return typeof v === "number" && Number.isFinite(v)
-    ? v.toLocaleString("en-US", { style: "currency", currency: "USD" })
-    : "—";
+  return typeof v === "number" && Number.isFinite(v) ? fmtCents(Math.round(v * 100)) : "—";
+}
+
+/** One payout: its real cents, never rounded ("$123.45", "$100"). */
+function payoutUsd(v: unknown): string {
+  return typeof v === "number" && Number.isFinite(v) ? fmtPrice(Math.round(v * 100)) : "—";
 }
 
 function day(iso: string | undefined): string {
@@ -116,7 +120,7 @@ export default function BalanceTab() {
             rows.map((p, i) => (
               <tr key={i} className={TABLE_ROW}>
                 <td className={TABLE_CELL}>{day(p.createdAt)}</td>
-                <td className={TABLE_CELL}>{usd(p.amount)}</td>
+                <td className={TABLE_CELL}>{payoutUsd(p.amount)}</td>
                 <td className={cn(TABLE_CELL, p.state && STATE_COLOUR[p.state])}>{p.state ?? "—"}</td>
               </tr>
             ))

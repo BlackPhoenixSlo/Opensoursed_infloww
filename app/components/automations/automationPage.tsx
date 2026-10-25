@@ -2,27 +2,25 @@
 
 /**
  * The pieces the My Automations pages (Auto Post, Auto Mass, Auto Story, Auto-reply, Auto Funnel, Get to know fans)
- * share on Infloww's look (page-parity ticket 16): one header creator select bound to `?creator=`, the no-creator
+ * share on Infloww's look (page-parity ticket 16): one creator column bound to `?creator=`, the no-creator
  * empty state, the S4S-settings form block and its 56px switch row, and the 416px delete confirm.
  */
 
 import type { ReactNode } from "react";
 
-import { EmptyState, IfButton, IfCreatorSelect, IfModal, IfSwitch, useCreatorParam } from "@/components/ui/infloww";
+import type { CreatorPick } from "@/components/shell/CreatorRail";
+import { EmptyState, IfButton, IfModal, IfSwitch, useCreatorParam } from "@/components/ui/infloww";
 import { useAccounts, useActiveAccounts } from "@/hooks/useAccounts";
 import { cn } from "@/lib/utils";
 
-/** The page's creator and its header picker (`extra`); `loading` while the account list is still in flight, so the
- *  no-creator state does not flash on load. Below `sm` the picker shrinks to the avatar. */
+/** The page's creator and its pick for the creator column (`PageFrame`'s `creators`); `loading` while the account
+ *  list is still in flight, so the no-creator state does not flash on load. */
 export function useAutomationCreator() {
   const accounts = useActiveAccounts();
   const loading = useAccounts().isLoading;
   const [accountId, setAccountId] = useCreatorParam(accounts);
-  const picker = (
-    <IfCreatorSelect accounts={accounts} value={accountId} onChange={setAccountId}
-      disabled={accounts.length === 0} className="w-14 sm:w-[160px]" />
-  );
-  return { accountId, picker, loading };
+  const creators: CreatorPick = { accounts, value: accountId, onChange: setAccountId };
+  return { accountId, creators, loading };
 }
 
 /** No Creator has a live session: ticket 04's creator art in the list body's 400px. */

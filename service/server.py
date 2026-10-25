@@ -139,6 +139,7 @@ from s4s_requests_api import router as _s4s_requests_router, expire_callers_requ
 from s4s_schedule_api import router as _s4s_schedule_router  # noqa: E402
 from s4s_media import router as _s4s_media_router  # noqa: E402
 from account_security_api import router as _account_security_router  # noqa: E402
+import fleet_api  # noqa: E402  # cross-shard login lookup, fleet installs only
 from remote_login_api import router as _remote_login_router  # noqa: E402 — served Browserbase login
 from auth import (  # noqa: E402
     router as _auth_router,
@@ -371,6 +372,8 @@ app.include_router(_account_security_router)
 app.include_router(_remote_login_router)
 app.include_router(_auth_admin_router)
 app.include_router(_auth_impersonate_router)
+if fleet_api.enabled():  # /auth/fleet/whois only with a FLEET_SECRET, else 404 (fleet_api.py)
+    app.include_router(fleet_api.router)
 # Chatter principal — separate from User. /chatter/* is the chatter-facing
 # auth surface; /admin/chatters/* is the owner-side link/unlink/invite UI.
 # Order doesn't matter for routers; placed next to the auth pair so the

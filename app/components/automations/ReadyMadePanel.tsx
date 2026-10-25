@@ -20,7 +20,7 @@
  *
  * The panel is the page (`only`, My Automations > Auto Post / Auto Mass):
  * Infloww's legacy list page (page-parity ticket 16, copied from Smart Messages
- * › Automated Messages): a PageFrame header with the creator select, the
+ * › Automated Messages): a PageFrame with the creator column, a header with the
  * blurb as Learn's popover and the primary "New …", then an IF_TABLE of the
  * saved rules with previous runs in an expandable row.
  */
@@ -131,7 +131,7 @@ function StatusBadge({ status }: { status: string }) {
  *  (/growth/auto-mass) the mass_premade list. It renders the page (its
  *  PageFrame and header) itself. */
 export default function ReadyMadePanel({ only }: { only: RuleKind }) {
-  // The header's creator select, in `?creator=`.
+  // The creator column's pick, in `?creator=`.
   const creator = useAutomationCreator();
   const accountId = creator.accountId;
 
@@ -197,7 +197,7 @@ export default function ReadyMadePanel({ only }: { only: RuleKind }) {
   return (
     <PageFrame
       title={copy.title}
-      extra={creator.picker}
+      creators={creator.creators}
       actions={(
         <>
           <IfLearn tip={copy.blurb}><span className="max-sm:sr-only">Learn</span></IfLearn>

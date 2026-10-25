@@ -573,17 +573,17 @@ describe("StatsReport Creator reports Overview", () => {
     const tile = (name: string) => within(section("Earnings summary")).getByRole("group", { name });
     // analytics-creator-reports#55, #58 to #60: the value, then the change unsigned to two decimals with its arrow;
     // "0.00%" when flat, "-" with nothing before.
-    await waitFor(() => expect(figures(tile("Total earnings"))).toEqual(["$290.00", "31.82%"]));
+    await waitFor(() => expect(figures(tile("Total earnings"))).toEqual(["$290", "31.82%"]));
     expect(within(tile("Total earnings")).getByRole("img", { name: "rising" })).toBeInTheDocument();
-    expect(figures(tile("Subscriptions"))).toEqual(["$150.00", "50.00%"]);
-    expect(figures(tile("Messages"))).toEqual(["$80.00", "20.00%"]);
+    expect(figures(tile("Subscriptions"))).toEqual(["$150", "50.00%"]);
+    expect(figures(tile("Messages"))).toEqual(["$80", "20.00%"]);
     expect(within(tile("Messages")).getByRole("img", { name: "falling" })).toBeInTheDocument();
-    expect(figures(tile("Posts"))).toEqual(["$20.00", "0.00%"]);
+    expect(figures(tile("Posts"))).toEqual(["$20", "0.00%"]);
     expect(within(tile("Posts")).queryByRole("img")).toBeNull();
-    expect(figures(tile("Tips"))).toEqual(["$30.00", "-"]);
-    expect(figures(tile("Streams"))).toEqual(["$10.00", "-"]);
+    expect(figures(tile("Tips"))).toEqual(["$30", "-"]);
+    expect(figures(tile("Streams"))).toEqual(["$10", "-"]);
     // Referrals is OnlyFans' own read (`/admin/stats/referrals`), none here.
-    expect(figures(tile("Referrals"))[0]).toBe("$0.00");
+    expect(figures(tile("Referrals"))[0]).toBe("$0");
   });
 
   it("buckets the rows by Hour, Day, Week and Month under the capture's limits", async () => {
@@ -613,27 +613,27 @@ describe("StatsReport Creator reports Overview", () => {
     await waitFor(() => expect(revenue().some((r) => r.group_by === "hour" && r.by_kind === "true"
       && r.from === "2026-10-13T00:00:00.000Z" && r.to === "2026-10-14T23:59:59.999Z")).toBe(true));
     await waitFor(() => expect(bars("Earnings trends")).toHaveLength(48));
-    expect(bars("Earnings trends").slice(0, 2)).toEqual(["Oct 13 12 AM: $0.00", "Oct 13 1 AM: $0.00"]);
-    expect(bars("Earnings trends")[9]).toBe("Oct 13 9 AM: $15.00");
-    expect(bars("Earnings trends")[39]).toBe("Oct 14 3 PM: $25.00");
+    expect(bars("Earnings trends").slice(0, 2)).toEqual(["Oct 13 12 AM: $0", "Oct 13 1 AM: $0"]);
+    expect(bars("Earnings trends")[9]).toBe("Oct 13 9 AM: $15");
+    expect(bars("Earnings trends")[39]).toBe("Oct 14 3 PM: $25");
 
     // Thu 1 Oct to Wed 14 Oct, 14 days: Day or Week (analytics-creator-reports#29).
     pickRange("2026-10-01", "2026-10-14");
     await waitFor(() => expect(bars("Earnings trends")).toHaveLength(14));
-    expect(bars("Earnings trends").slice(0, 3)).toEqual(["Oct 1: $10.00", "Oct 2: $20.00", "Oct 3: $0.00"]);
-    expect(bars("Earnings trends")[13]).toBe("Oct 14: $5.00");
+    expect(bars("Earnings trends").slice(0, 3)).toEqual(["Oct 1: $10", "Oct 2: $20", "Oct 3: $0"]);
+    expect(bars("Earnings trends")[13]).toBe("Oct 14: $5");
     expect(tab("Month")).toBeDisabled();
     expect(tab("Month")).toHaveAttribute("title", "Date range must be more than 62 days for this option"); // #28
     fireEvent.click(tab("Week"));
     // Weeks run seven days from the range's first day.
-    expect(bars("Earnings trends")).toEqual(["Oct 1: $30.00", "Oct 8: $45.00"]);
+    expect(bars("Earnings trends")).toEqual(["Oct 1: $30", "Oct 8: $45"]);
 
     // Sat 1 Aug to Wed 14 Oct, 75 days: Week or Month; Day moves off.
     pickRange("2026-08-01", "2026-10-14");
     await waitFor(() => expect(tab("Day")).toBeDisabled());
     expect(tab("Day")).toHaveAttribute("title", "Date range must be 31 days or less for this option"); // #28
     fireEvent.click(tab("Month"));
-    expect(bars("Earnings trends")).toEqual(["Aug 26: $70.00", "Sep 26: $0.00", "Oct 26: $75.00"]);
+    expect(bars("Earnings trends")).toEqual(["Aug 26: $70", "Sep 26: $0", "Oct 26: $75"]);
 
     // Sun 4 Oct to Wed 14 Oct, 11 days: Day only, and the chosen Month moves to Day.
     pickRange("2026-10-04", "2026-10-14");
@@ -665,8 +665,8 @@ describe("StatsReport Creator reports Overview", () => {
     // analytics-creator-reports#75, #85: the donut's legend, share and amount of the kind read's channels.
     const legend = within(section("Earnings breakdown")).getByRole("list", { name: "Earnings breakdown legend" });
     await waitFor(() => expect(within(legend).getAllByRole("listitem").map((r) => r.textContent)).toEqual([
-      "Subscription51.72%$150.00", "Tips10.34%$30.00", "Posts6.90%$20.00", "Messages27.59%$80.00",
-      "Referrals0.00%$0.00", "Streams3.45%$10.00",
+      "Subscription51.72%$150", "Tips10.34%$30", "Posts6.90%$20", "Messages27.59%$80",
+      "Referrals0.00%$0", "Streams3.45%$10",
     ]));
   });
 
@@ -678,9 +678,9 @@ describe("StatsReport Creator reports Overview", () => {
     const ledger = await screen.findByRole("region", { name: "Earnings ledger" });
     expect(ledger).toHaveAttribute("title", "Inflowwww extra");
     const row = (name: string) => within(ledger).getByRole("group", { name });
-    await waitFor(() => expect(row("Gross earnings")).toHaveTextContent("$290.00"));
+    await waitFor(() => expect(row("Gross earnings")).toHaveTextContent("$290"));
     // Refunds sums the per-model read's reversals, none here; no read carries chargebacks.
-    expect(row("Refunds")).toHaveTextContent("$0.00");
+    expect(row("Refunds")).toHaveTextContent("$0");
     for (const name of ["Chargeback ratio"]) {
       const v = within(row(name)).getByRole("button", { name });
       expect(v).toBeDisabled();
@@ -702,16 +702,16 @@ describe("StatsReport Creator reports Overview", () => {
     // As the bundle prints them: the tiles' zeros with no growth, and blank charts with no wording.
     const summary = await screen.findByRole("region", { name: "Earnings summary" });
     await waitFor(() => expect(figures(within(summary).getByRole("group", { name: "Total earnings" })))
-      .toEqual(["$0.00", "-"]));
+      .toEqual(["$0", "-"]));
     for (const name of ["Subscriptions", "Posts", "Messages", "Tips", "Streams"]) {
-      expect(figures(within(summary).getByRole("group", { name }))).toEqual(["$0.00", "-"]);
+      expect(figures(within(summary).getByRole("group", { name }))).toEqual(["$0", "-"]);
     }
     expect(screen.queryByText("No creators in this selection")).toBeNull();
     // analytics-creator-reports#84: the donut's empty ring.
     expect(within(section("Earnings breakdown")).getByRole("img", { name: "No earnings" })).toBeInTheDocument();
     // No other section invents a zero.
     for (const name of ["Earnings trends", "Earnings by channel", "Earnings breakdown", "Creator statistics", "Earnings ledger"]) {
-      expect(section(name)).not.toHaveTextContent("$0.00");
+      expect(section(name)).not.toHaveTextContent("$0");
     }
   });
 
@@ -811,10 +811,10 @@ describe("StatsReport Creator reports Creator statistics", () => {
       ["Refunded", "Amount of refunds during the selected time frame"],
     ]) expect(within(card(name)).getByTitle(tip)).toBeInTheDocument();
     await waitFor(() => expect(card("Creators")).toHaveTextContent("2"));
-    expect(card("Message earnings")).toHaveTextContent("$60.00");
-    expect(card("Total earnings")).toHaveTextContent("$250.00");
+    expect(card("Message earnings")).toHaveTextContent("$60");
+    expect(card("Total earnings")).toHaveTextContent("$250");
     // Refunded sums the per-model read's reversals (`refunded_cents`), none here.
-    expect(card("Refunded")).toHaveTextContent("$0.00");
+    expect(card("Refunded")).toHaveTextContent("$0");
     // Ours: Hide $0 creators and Export CSV sit on Creator performance, as the Clone puts them.
     expect(screen.queryByRole("checkbox", { name: "Hide $0 creators" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Export CSV" })).toBeNull();
@@ -856,9 +856,9 @@ describe("StatsReport Creator reports Creator statistics", () => {
     // Contribution % the Creator's share of the Agency's $250, New subscriber LTV messages and tips over new
     // subscribers ($90 / 4); Reply time the average wait (185 s), with none "-".
     await waitFor(() => expect(tableRows(table)).toEqual([
-      ["Creator A", "$150.00", "$30.00", "$60.00", "60.00%", "$250.00", "100.00%", "-", "-", "-", "4", "-", "$22.50",
+      ["Creator A", "$150", "$30", "$60", "60.00%", "$250", "100.00%", "-", "-", "-", "4", "-", "$22.50",
         "-", "50", "-", "-", "-", "3m 05s", "40", "120", "30"],
-      ["Creator B", "$0.00", "$0.00", "$0.00", "-", "$0.00", "0.00%", "-", "-", "-", "0", "-", "-",
+      ["Creator B", "$0", "$0", "$0", "-", "$0", "0.00%", "-", "-", "-", "0", "-", "-",
         "-", "-", "-", "-", "-", "-", "0", "0", "0"],
     ]));
     // The columns with no relay field carry the house Not wired marker; the rest have none.
@@ -886,7 +886,7 @@ describe("StatsReport Creator reports Creator statistics", () => {
     const headers = () => within(table).getAllByRole("columnheader").map((h) => h.textContent);
     expect(headers().slice(5, 9)).toEqual(["Total earnings", "Avg hourly earnings", "Refunds", "Contribution %"]);
     // Avg hourly earnings: Total earnings over the window's hours, $250 / 168.
-    await waitFor(() => expect(tableRows(table)[0].slice(5, 9)).toEqual(["$250.00", "$1.49", "$12.00", "100.00%"]));
+    await waitFor(() => expect(tableRows(table)[0].slice(5, 9)).toEqual(["$250", "$1.49", "$12", "100.00%"]));
   });
 
   it("Export writes the columns on screen", async () => {
@@ -1036,16 +1036,16 @@ describe("StatsReport Creator reports Creator performance", () => {
     expect(within(channels).getAllByRole("button").map((b) => b.textContent))
       .toEqual(["All", "Subscriptions", "Tips", "Posts", "Messages", "Referrals", "Streams"]);
     expect(within(channels).getByRole("button", { name: "All" })).toHaveAttribute("aria-pressed", "true");
-    await waitFor(() => expect(bars()).toEqual(["Oct 1: $40.00", "Oct 2: $0.00", "Oct 3: $0.00"]));
+    await waitFor(() => expect(bars()).toEqual(["Oct 1: $40", "Oct 2: $0", "Oct 3: $0"]));
     fireEvent.click(within(channels).getByRole("button", { name: "Tips" }));
-    expect(bars()).toEqual(["Oct 1: $20.00", "Oct 2: $0.00", "Oct 3: $0.00"]);
+    expect(bars()).toEqual(["Oct 1: $20", "Oct 2: $0", "Oct 3: $0"]);
     // Referrals is OnlyFans' own read for the picked Creator.
     expect(within(channels).getByRole("button", { name: "Referrals" })).toBeEnabled();
 
     // analytics-creator-reports#27: Shown by week rolls the days into weeks from the range's first day.
     pickRange("2026-10-01", "2026-10-14");
     fireEvent.change(screen.getByRole("combobox", { name: "Shown by" }), { target: { value: "week" } });
-    await waitFor(() => expect(bars()).toEqual(["Oct 1: $20.00", "Oct 8: $0.00"]));
+    await waitFor(() => expect(bars()).toEqual(["Oct 1: $20", "Oct 8: $0"]));
 
     // Picking Creator C reads its revenue.
     fireEvent.click(within(list).getByRole("button", { name: "Creator C" }));
@@ -1061,13 +1061,13 @@ describe("StatsReport Creator reports Creator performance", () => {
     // analytics-creator-reports#164 to #167: the donut's legend and the growth column.
     const legend = within(section("Earnings breakdown")).getByRole("list", { name: "Earnings breakdown legend" });
     await waitFor(() => expect(within(legend).getAllByRole("listitem").map((r) => r.textContent)).toEqual([
-      "Subscription$150.0060.00%", "Tips$30.0012.00%", "Posts$10.004.00%", "Messages$60.0024.00%",
-      "Referrals$0.000.00%", "Streams$0.000.00%",
+      "Subscription$15060.00%", "Tips$3012.00%", "Posts$104.00%", "Messages$6024.00%",
+      "Referrals$00.00%", "Streams$00.00%",
     ]));
     const growth = within(section("Earnings breakdown")).getByRole("list", { name: "Earnings growth" });
     // #166: each row's count, then its change.
     expect(within(growth).getAllByRole("listitem").map((r) => r.textContent)).toEqual([
-      "$150.0050.00%Subscription", "$30.00-Tips", "$10.00-Posts", "$60.000.00%Messages", "$0.00-Referrals", "$0.00-Streams",
+      "$15050.00%Subscription", "$30-Tips", "$10-Posts", "$600.00%Messages", "$0-Referrals", "$0-Streams",
     ]);
   });
 
@@ -1174,30 +1174,30 @@ describe("StatsReport Creator reports Show net earnings", () => {
   it("on at load, sends include_net=true on the day and kind reads and shows OF's own net; off, gross", async () => {
     renderWithProviders(<StatsReport view="creator" />);
     // analytics-creator-reports#33: on by default, so every read asks for the net from the first.
-    await waitFor(() => expect(value(tile("Total earnings"))).toBe("$232.00"));
+    await waitFor(() => expect(value(tile("Total earnings"))).toBe("$232"));
     expect(netSwitch()).toHaveAttribute("aria-checked", "true");
     expect(revenue().every((r) => r.include_net === "true")).toBe(true);
     // The day read keeps `by_kind=true` for Earnings by channel; the kind read serves the tiles and the donut.
     expect(revenue().map((r) => `${r.group_by} ${r.by_kind ?? ""}`)).toEqual(expect.arrayContaining(["day true", "kind "]));
-    expect(value(tile("Subscriptions"))).toBe("$120.00");
-    expect(value(tile("Messages"))).toBe("$64.00");
-    expect(value(tile("Posts"))).toBe("$16.00");
-    expect(value(tile("Tips"))).toBe("$24.00");
-    expect(value(tile("Streams"))).toBe("$8.00");
+    expect(value(tile("Subscriptions"))).toBe("$120");
+    expect(value(tile("Messages"))).toBe("$64");
+    expect(value(tile("Posts"))).toBe("$16");
+    expect(value(tile("Tips"))).toBe("$24");
+    expect(value(tile("Streams"))).toBe("$8");
     expect(within(section("Earnings trends")).getAllByRole("img").map((b) => b.getAttribute("aria-label")))
-      .toContain("Oct 10: $232.00");
+      .toContain("Oct 10: $232");
     const legend = within(section("Earnings breakdown")).getByRole("list", { name: "Earnings breakdown legend" });
-    expect(within(legend).getAllByRole("listitem")[0]).toHaveTextContent("Subscription51.72%$120.00");
+    expect(within(legend).getAllByRole("listitem")[0]).toHaveTextContent("Subscription51.72%$120");
 
     // Creator statistics: Total is the per-model read's net total; the per-kind money columns have no net read.
     await waitFor(() => expect(tableRows(table())[0].slice(0, 7))
-      .toEqual(["Creator A", "-", "-", "-", "60.00%", "$200.00", "100.00%"]));
+      .toEqual(["Creator A", "-", "-", "-", "60.00%", "$200", "100.00%"]));
     for (const name of ["Total subscription earnings", "Tips", "Message", "New subscriber LTV"]) {
       const cell = within(table()).getByRole("button", { name: `Creator A ${name}` });
       expect(cell).toBeDisabled();
       expect(cell).toHaveAttribute("title", "not wired");
     }
-    expect(within(section("Creator statistics")).getByRole("group", { name: "Total earnings" })).toHaveTextContent("$200.00");
+    expect(within(section("Creator statistics")).getByRole("group", { name: "Total earnings" })).toHaveTextContent("$200");
     const message = within(within(section("Creator statistics")).getByRole("group", { name: "Message earnings" }))
       .getByRole("button", { name: "Message earnings" });
     expect(message).toBeDisabled();
@@ -1214,11 +1214,11 @@ describe("StatsReport Creator reports Show net earnings", () => {
 
     fireEvent.click(netSwitch());
     expect(netSwitch()).toHaveAttribute("aria-checked", "false");
-    await waitFor(() => expect(value(tile("Total earnings"))).toBe("$290.00"));
-    expect(value(tile("Subscriptions"))).toBe("$150.00");
+    await waitFor(() => expect(value(tile("Total earnings"))).toBe("$290"));
+    expect(value(tile("Subscriptions"))).toBe("$150");
     expect(tableRows(table())[0].slice(0, 7))
-      .toEqual(["Creator A", "$150.00", "$30.00", "$60.00", "60.00%", "$250.00", "100.00%"]);
-    expect(tableRows(table())[0].slice(-3)).toEqual(["$5.00", "$10.00", "$3.00"]);
+      .toEqual(["Creator A", "$150", "$30", "$60", "60.00%", "$250", "100.00%"]);
+    expect(tableRows(table())[0].slice(-3)).toEqual(["$5", "$10", "$3"]);
     expect(screen.queryByText(MISSING)).toBeNull();
   });
 
@@ -1229,11 +1229,11 @@ describe("StatsReport Creator reports Show net earnings", () => {
 
     const ledger = section("Earnings ledger");
     const row = (name: string) => within(ledger).getByRole("group", { name });
-    await waitFor(() => expect(row("Net earnings")).toHaveTextContent("$232.00"));
-    expect(row("Gross earnings")).toHaveTextContent("$290.00");
+    await waitFor(() => expect(row("Net earnings")).toHaveTextContent("$232"));
+    expect(row("Gross earnings")).toHaveTextContent("$290");
     expect(within(ledger).getByText("OnlyFans' net is gross less its fee; VAT is not deducted.")).toBeInTheDocument();
 
-    await waitFor(() => expect(tableRows(table())[0][5]).toBe("$200.00"));
+    await waitFor(() => expect(tableRows(table())[0][5]).toBe("$200"));
     // The Export pop-up starts at the page's Net, with the Custom metrics pick: the money with no net read is empty.
     await exportFrom(section("Creator statistics"));
     expect(await csv.blob!.text()).toBe(`${CSV_HEADER}\nCreator A,,,,60,200,100,,,,4,,,,50,,,,3m 05s,40,120,30`);
@@ -1242,7 +1242,7 @@ describe("StatsReport Creator reports Show net earnings", () => {
   it("exports all data fields with a net read, and each Creator's net by day from one read per Creator", async () => {
     const csv = captureCsv();
     renderWithProviders(<StatsReport view="creator" />);
-    await waitFor(() => expect(tableRows(table())[0][5]).toBe("$200.00"));
+    await waitFor(() => expect(tableRows(table())[0][5]).toBe("$200"));
     const before = revenue().length;
     await exportFrom(section("Creator statistics"), ["All data fields", "Display by day"]);
     const lines = (await csv.blob!.text()).split("\n");

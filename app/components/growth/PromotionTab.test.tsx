@@ -292,7 +292,7 @@ describe("PromotionTab Revenue", () => {
     mount(<PromotionTab accountId="a1" />);
     await screen.findByText("Live week");
     const [a, b] = [...document.querySelectorAll<HTMLElement>("[data-revenue]")];
-    expect(a.textContent).toBe("$72.00from 1 fanSpend/Claim 50.00%AEPS $36.00");
+    expect(a.textContent).toBe("$72from 1 fanSpend/Claim 50.00%AEPS $36");
     expect(b.textContent).toBe("—Spend/Claim —AEPS —");
     expect(document.querySelector("[data-metrics-updated]")?.textContent).toMatch(/Revenue updated 5 min ago/);
   });

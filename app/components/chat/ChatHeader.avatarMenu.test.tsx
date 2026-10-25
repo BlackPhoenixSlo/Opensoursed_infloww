@@ -155,7 +155,7 @@ describe("ChatHeader", () => {
         expect(rows[i].compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       });
       await waitFor(() => expect(row(menu, "Subscription status")).toHaveTextContent("Subscription statusSet to Expire"));
-      expect(row(menu, "Earnings")).toHaveTextContent("Earnings$42.50");
+      expect(row(menu, "Earnings")).toHaveTextContent(/^Earnings\$43$/);
 
       // Escape closes it, and so does a pointer-down outside it.
       await user.keyboard("{Escape}");
@@ -223,7 +223,7 @@ describe("ChatHeader", () => {
         expect(within(menu).getByRole("button", { name: "Clear" })).toBeDisabled();
         await user.selectOptions(percent, "20");
         await user.selectOptions(period, "3");
-        expect(within(menu).getByText("$8.00 per month for 3 months")).toBeInTheDocument();
+        expect(within(menu).getByText("$8 per month for 3 months")).toBeInTheDocument();
         await user.click(within(menu).getByRole("button", { name: "Apply" }));
         await waitFor(() => expect(relayPut).toHaveBeenCalledWith(DISCOUNT, { discount: 20, period: 3 }, { accountId: ACCOUNT_ID }));
         expect(await within(menu).findByText(/Discount applied/)).toBeInTheDocument();

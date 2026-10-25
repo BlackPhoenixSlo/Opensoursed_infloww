@@ -788,8 +788,8 @@ describe("ShiftSchedule", () => {
     fireEvent.click(exportButton);
     expect(downloadCsv).toHaveBeenCalledWith("shift-history-2026-10-12.csv", [
       ["Employee", "Scheduled Shifts", "Shifts Worked", "Scheduled hours", "Worked hours", "Recorded earnings"],
-      ["Avery", 3, 2, "20h 00m", "4h 30m", "$170.00"],
-      ["Blake", 1, 1, "4h 00m", "1h 05m", "$2.50"],
+      ["Avery", 3, 2, "20h 00m", "4h 30m", "$170"],
+      ["Blake", 1, 1, "4h 00m", "1h 05m", "$2.50"], // the CSV keeps the cents (fmtPrice); the table shows "$3"
     ]);
 
     fireEvent.click(screen.getByRole("tab", { name: "Shift schedule" }));
@@ -842,13 +842,13 @@ describe("ShiftSchedule", () => {
     );
     const avery = within(history).getByRole("row", { name: /Avery/ });
     expect(within(avery).getAllByRole("cell").map((c) => c.textContent)).toEqual([
-      "Avery", "3", "2", "20h 00m", "4h 30m", "$170.00",
+      "Avery", "3", "2", "20h 00m", "4h 30m", "$170",
     ]);
     expect(within(avery).queryByLabelText("Clocked in now")).toBeNull();
     const blake = within(history).getByRole("row", { name: /Blake/ });
     expect(within(blake).getByLabelText("Clocked in now")).toBeInTheDocument();
     expect(within(blake).getAllByRole("cell").slice(3).map((c) => c.textContent)).toEqual([
-      "4h 00m", "1h 05m", "$2.50",
+      "4h 00m", "1h 05m", "$3",
     ]);
   });
 
@@ -890,10 +890,10 @@ describe("ShiftSchedule", () => {
     ]);
     const [avery, blake] = table.getAllByRole("row").slice(1);
     expect(within(avery).getAllByRole("cell").slice(0, 7).map((c) => c.textContent)).toEqual([
-      "Avery", "creator_one", "Oct 13, 2026 9:00:00 AM", "Oct 13, 2026 11:05:00 AM", "2h 05m", "2", "$15.00",
+      "Avery", "creator_one", "Oct 13, 2026 9:00:00 AM", "Oct 13, 2026 11:05:00 AM", "2h 05m", "2", "$15",
     ]);
     expect(within(blake).getAllByRole("cell").slice(0, 7).map((c) => c.textContent)).toEqual([
-      "Blake", "All creators", "Oct 14, 2026 11:00:00 AM", "Clocked in", "-", "0", "$0.00",
+      "Blake", "All creators", "Oct 14, 2026 11:00:00 AM", "Clocked in", "-", "0", "$0",
     ]);
     expect(within(blake).getByRole("button", { name: "Reassign sales" })).toBeDisabled();
 
@@ -901,8 +901,8 @@ describe("ShiftSchedule", () => {
     expect(downloadCsv).toHaveBeenCalledWith("shift-records-2026-10-12.csv", [
       ["Employee", "Creator", "Clock in (America/New_York)", "Clock out (America/New_York)", "Worked hours", "Sales",
         "Recorded earnings"],
-      ["Avery", "creator_one", "Oct 13, 2026 9:00:00 AM", "Oct 13, 2026 11:05:00 AM", "2h 05m", 2, "$15.00"],
-      ["Blake", "All creators", "Oct 14, 2026 11:00:00 AM", "Clocked in", "-", 0, "$0.00"],
+      ["Avery", "creator_one", "Oct 13, 2026 9:00:00 AM", "Oct 13, 2026 11:05:00 AM", "2h 05m", 2, "$15"],
+      ["Blake", "All creators", "Oct 14, 2026 11:00:00 AM", "Clocked in", "-", 0, "$0"],
     ]);
 
     fireEvent.click(within(avery).getByRole("button", { name: "Reassign sales" }));

@@ -23,7 +23,8 @@
  *     per-kind money column and card, Pending revenue, LTV, ARPU) shows the Not wired marker while it is on, and the
  *     export leaves it empty; the sales with no net figure yet are counted under the filter bar
  *   • the Overview (ticket 21, #42 to #86): Earnings summary from the revenue-by-kind read, each tile's growth
- *     against the window of equal length just before; Earnings trends and Earnings by channel from the daily read
+ *     against the window of equal length just before ("-" when that window holds days the relay has no figure for,
+ *     `history_missing_days`: before a Creator was added and not read from OnlyFans yet); Earnings trends and Earnings by channel from the daily read
  *     (split by kind), bucketed by Hour, Day, Week or Month under the capture's limits; Earnings
  *     breakdown from the kind read; Referrals from OnlyFans' own read (`useReferralRevenue`), taken as one more kind
  *   • Creator statistics (ticket 22, #87 to #153): the four stat cards and the capture's columns from the per-model
@@ -55,7 +56,7 @@ import { ChargebacksChart, EarningsHeatmap } from "@/components/home/CreatorPerf
 import { OnlyfansLine } from "@/components/shell/inflowwIcons";
 import { useActionAllowed } from "@/components/shell/useGrantedPages";
 import {
-  type Gran, BlankChart, ChartAxes, ChartMessage, LineChart, fmtUsd, granAllowed, granShown, niceMax, plotFrame,
+  type Gran, BlankChart, ChartAxes, ChartMessage, LineChart, fmtDollars, fmtUsd, granAllowed, granShown, niceMax, plotFrame,
   useChartWidth,
 } from "@/components/stats/chart";
 import ExportMenu, { type ExportChoice } from "@/components/stats/ExportMenu";
@@ -67,7 +68,7 @@ import { usePerModel, type PerModelRow } from "@/hooks/useStats";
 import { useTabParam } from "@/hooks/useTabParam";
 import { useAppliedSettings } from "@/lib/appliedSettings";
 import { dateBounds, presetRange, priorRange, todayISO, toLocalIso } from "@/lib/dateRange";
-import { fmtReplyTime, growthOf, type Growth } from "@/lib/format";
+import { fmtPrice, fmtReplyTime, growthOf, type Growth } from "@/lib/format";
 import { EXTRA_LABEL, EXTRAS_OVERFLOW_LABEL } from "@/lib/openinflowwwwExtras";
 import { relay, type RelayContext } from "@/lib/relay";
 import { type Cell, type Section, exportSections, mapLimit, usd } from "@/lib/reportExport";
@@ -89,7 +90,12 @@ interface RevRow extends RevKindRow {
   /** `group_by=hour_of_week`'s slot: ISO weekday (1 = Monday) and hour in the report zone. */
   weekday?: number; hour?: number;
 }
-interface RevResp { rows: RevRow[] }
+/** `history_missing_days`: Creator-days before a Creator was added with no OnlyFans figure (service/stats.py revenue),
+ *  so the window's sum is not its earnings and a growth against it is "-". */
+interface RevResp { rows: RevRow[]; history_missing_days?: number }
+/** Whether a window's reads answered and each one's history is whole: else a growth against it is "-". */
+const wholeHistory = (qs: readonly { isSuccess: boolean; data?: RevResp }[]) =>
+  qs.length > 0 && qs.every((q) => q.isSuccess && !(q.data?.history_missing_days ?? 0));
 /** A revenue row's money: gross, or with "Show net earnings" on OnlyFans' own net. Never a ratio of gross. */
 type Money = (r: RevKindRow) => number;
 const grossOf: Money = (r) => r.total_cents;
@@ -166,6 +172,8 @@ interface StatCol {
   show: boolean;
   /** The header carries the "UTC+00:00" chip (#98). */
   utc?: boolean;
+  /** A "usd" average (per hour, per spender, LTV, ARPU): it keeps its cents, as Infloww prints it. */
+  avg?: true;
   /** Ours, not the capture's: a column the old table had, kept behind Custom metrics (ADR-0003). */
   extra?: boolean;
   /** `dur`: seconds, shown as "3m 05s". */
@@ -194,7 +202,7 @@ const STAT_COLS: readonly StatCol[] = [
   { key: "streams", title: "Streams", width: 140, show: false },
   { key: "posts", title: "Posts", width: 120, show: false, fmt: "usd", v: (m) => m.revenue_by_kind?.post ?? 0 },
   { key: "totalEarnings", title: "Total earnings", width: 240, show: true, fmt: "usd", v: (m) => m.total_revenue_cents, netV: (m) => m.total_net_revenue_cents },
-  { key: "avgHourlyEarnings", title: "Avg hourly earnings", width: 220, show: false, fmt: "usd", v: (m, c) => (c.hours > 0 ? m.total_revenue_cents / c.hours : null),
+  { key: "avgHourlyEarnings", title: "Avg hourly earnings", width: 220, show: false, fmt: "usd", avg: true, v: (m, c) => (c.hours > 0 ? m.total_revenue_cents / c.hours : null),
     netV: (m, c) => (c.hours > 0 ? m.total_net_revenue_cents / c.hours : null) },
   // The window's chargebacks and refunds, dated by their sale (the bundle dates a refund by its credit date).
   { key: "refunds", title: "Refunds", width: 132, show: false, fmt: "usd", v: (m) => m.refunded_cents ?? 0,
@@ -210,13 +218,13 @@ const STAT_COLS: readonly StatCol[] = [
   { key: "userProfileVisitors", title: "User profile visitors", width: 285, show: false, utc: true },
   { key: "newSubscribers", title: "New subscribers", width: 270, show: true, utc: true, fmt: "int", v: (m) => m.new_subs_count },
   { key: "subscriberRenewals", title: "Subscriber renewals", width: 300, show: true, utc: true, fmt: "int", v: (m) => m.of_renewals },
-  { key: "newSubscribersLtv", title: "New subscriber LTV", width: 300, show: true, fmt: "usd", v: (m) => (m.new_subs_count > 0 ? engagedOf(m) / m.new_subs_count : null) },
+  { key: "newSubscribersLtv", title: "New subscriber LTV", width: 300, show: true, fmt: "usd", avg: true, v: (m) => (m.new_subs_count > 0 ? engagedOf(m) / m.new_subs_count : null) },
   { key: "newSubscriberConversion", title: "New subscriber conversion", width: 340, show: true, utc: true, fmt: "pct", v: (m) => m.of_new_sub_conversion_pct },
   { key: "activeFans", title: "Active fans", width: 230, show: true, utc: true, fmt: "int", v: (m) => m.active_subs_count },
   { key: "changeInExpiredFanCount", title: "Change in expired fan count", width: 345, show: false, utc: true },
   { key: "numberOfSpender", title: "Number of spenders", width: 260, show: true, fmt: "int", v: (m) => m.spenders_count },
-  { key: "avgSpendPerSpender", title: "Avg spend per spender", width: 263, show: true, fmt: "usd", v: (m) => m.avg_spend_per_spender_cents },
-  { key: "avgSpendPerTransaction", title: "Avg spend per transaction", width: 280, show: false, fmt: "usd", v: (m) => m.avg_spend_per_transaction_cents },
+  { key: "avgSpendPerSpender", title: "Avg spend per spender", width: 263, show: true, fmt: "usd", avg: true, v: (m) => m.avg_spend_per_spender_cents },
+  { key: "avgSpendPerTransaction", title: "Avg spend per transaction", width: 280, show: false, fmt: "usd", avg: true, v: (m) => m.avg_spend_per_transaction_cents },
   { key: "totalNumberOfFans", title: "Total number of fans", width: 300, show: false, utc: true },
   { key: "avgEarningsPerFan", title: "Avg earnings per fan", width: 225, show: true },
   { key: "avgSubscriptionLength", title: "Avg subscription length", width: 315, show: false, utc: true },
@@ -228,8 +236,8 @@ const STAT_COLS: readonly StatCol[] = [
   // Ours: the old table's columns the capture lacks.
   { key: "pending", title: "Pending revenue", width: 200, show: false, extra: true, fmt: "usd", v: (m) => m.pending_revenue_cents ?? 0 },
   { key: "ppvConversions", title: "PPV conversions", width: 200, show: false, extra: true, fmt: "int", v: (m) => m.ppv_conversions },
-  { key: "ltv", title: "LTV", width: 140, show: false, extra: true, fmt: "usd", v: (m) => m.ltv_cents },
-  { key: "arpu", title: "ARPU", width: 140, show: false, extra: true, fmt: "usd", v: (m) => m.arpu_cents },
+  { key: "ltv", title: "LTV", width: 140, show: false, extra: true, fmt: "usd", avg: true, v: (m) => m.ltv_cents },
+  { key: "arpu", title: "ARPU", width: 140, show: false, extra: true, fmt: "usd", avg: true, v: (m) => m.arpu_cents },
 ];
 const DEFAULT_COLS = (): Set<string> => new Set(STAT_COLS.filter((c) => c.show).map((c) => c.key));
 /** The column's read in the current basis; none when it has no relay field, or no net read while net is on. */
@@ -241,7 +249,8 @@ function readOf(col: StatCol, ctx: ColCtx): StatCol["v"] {
 function cellText(col: StatCol, m: PerModelRow, ctx: ColCtx): string {
   const n = readOf(col, ctx)?.(m, ctx) ?? null;
   if (n === null) return "-";
-  if (col.fmt === "usd") return fmtUsd(n);
+  // A total in whole dollars, as on the dashboard; an average keeps its cents, as Infloww prints it.
+  if (col.fmt === "usd") return col.avg ? fmtPrice(n) : fmtDollars(n);
   if (col.fmt === "pct") return `${n.toFixed(2)}%`;
   if (col.fmt === "dur") return fmtReplyTime(n);
   return n.toLocaleString("en-US");
@@ -661,7 +670,7 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
     return { "Platform fee": sum((r) => r.fee_cents ?? 0), "VAT collected": sum((r) => r.vat_cents ?? 0), "Net earnings": totalCents };
   }, [revByKindQueries, totalCents]);
   const prior = useMemo(() => {
-    if (!revPriorQueries.length || !revPriorQueries.every((q) => q.isSuccess)) return null;
+    if (!wholeHistory(revPriorQueries)) return null;
     const b = sumKinds([...revPriorQueries, { data: refPriorRev.kind }], money);
     return { ...b, total: Object.values(b).reduce((a, c) => a + c, 0) };
   }, [revPriorQueries, refPriorRev, money]);
@@ -779,7 +788,7 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
     [perfKindQueries, perfRefRev, money],
   );
   const perfPrior = useMemo(
-    () => (perfPriorQueries.length && perfPriorQueries.every((q) => q.isSuccess)
+    () => (wholeHistory(perfPriorQueries)
       ? sumKinds([...perfPriorQueries, { data: perfRefPriorRev.kind }], money) : null),
     [perfPriorQueries, perfRefPriorRev, money],
   );
@@ -814,7 +823,6 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
       style={{
         ...(frame === "card" ? { background: "var(--color-panel)", borderColor: "var(--color-border)" } : {}),
         color: "var(--color-fg)",
-        fontFamily: "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
       }}
     >
       {/* #4: the page header, 16px all round, the title block left and the controls right. */}
@@ -1109,7 +1117,7 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
                             {c.label}
                           </span>
                           <span className="text-lg font-bold leading-[22px] px-2" style={{ color: "var(--color-fg)" }}>
-                            {!c.wired ? <NotWired label={`${c.label} amount`} /> : perfReady ? fmtUsd(perfBuckets[c.key]) : "-"}
+                            {!c.wired ? <NotWired label={`${c.label} amount`} /> : perfReady ? fmtDollars(perfBuckets[c.key]) : "-"}
                           </span>
                           <span className="text-sm font-semibold leading-5 px-2" style={{ color: "var(--color-fg-dim)" }}>
                             {!c.wired ? <NotWired label={`${c.label} share`} />
@@ -1134,7 +1142,7 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
                               {!c.wired ? <NotWired label={`${c.label} growth`} /> : (
                                 <>
                                   <span className="text-base font-semibold leading-5 mr-1 tabular-nums" style={{ color: "var(--color-fg)" }}>
-                                    {perfReady ? fmtUsd(perfBuckets[c.key]) : "-"}
+                                    {perfReady ? fmtDollars(perfBuckets[c.key]) : "-"}
                                   </span>
                                   <span
                                     className="inline-flex items-center text-xs font-bold leading-4"
@@ -1210,8 +1218,8 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
                     label={t.label}
                     Icon={t.Icon}
                     total={t.key === "total"}
-                    // With no Creator the reads' zeros, "$0.00", as the bundle prints them.
-                    value={wired ? (isWait(view) ? "-" : fmtUsd(cents)) : null}
+                    // With no Creator the reads' zeros, "$0".
+                    value={wired ? (isWait(view) ? "-" : fmtDollars(cents)) : null}
                     growth={wired && ready ? growthOf(cents, prior?.[t.key]) : { text: "-", dir: null }}
                   />
                 );
@@ -1293,7 +1301,7 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
                           : ready ? `${(wiredSum > 0 ? (100 * buckets[c.key]) / wiredSum : 0).toFixed(2)}%` : "-"}
                       </span>
                       <span className="text-right" style={{ color: "var(--color-fg)" }}>
-                        {!c.wired ? <NotWired label={`${c.label} amount`} /> : ready ? fmtUsd(buckets[c.key]) : "-"}
+                        {!c.wired ? <NotWired label={`${c.label} amount`} /> : ready ? fmtDollars(buckets[c.key]) : "-"}
                       </span>
                     </li>
                   ))}
@@ -1334,11 +1342,11 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
             <StatCard label="Creators" tip={STAT_TIPS.creators}
               value={statsView === "ready" ? visibleCreators.length.toLocaleString("en-US") : "-"} />
             <StatCard label="Message earnings" tip={STAT_TIPS.message}
-              value={net ? null : statsView === "ready" ? fmtUsd(messageEarnings) : "-"} />
+              value={net ? null : statsView === "ready" ? fmtDollars(messageEarnings) : "-"} />
             <StatCard label="Total earnings" tip={STAT_TIPS.total}
-              value={statsView === "ready" ? fmtUsd(totalEarningsAcrossCreators) : "-"} />
+              value={statsView === "ready" ? fmtDollars(totalEarningsAcrossCreators) : "-"} />
             <StatCard label="Refunded" tip={STAT_TIPS.refunded}
-              value={statsView === "ready" ? fmtUsd(refundedAcrossCreators) : "-"} />
+              value={statsView === "ready" ? fmtDollars(refundedAcrossCreators) : "-"} />
           </ul>
 
           {/* #105 to #107: Custom metrics, right-aligned, 8px above the table. */}
@@ -1367,10 +1375,10 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
               >
                 <span style={{ color: "var(--color-fg-dim)" }}>{name}</span>
                 <span style={{ color: "var(--color-fg)" }}>
-                  {name === "Gross earnings" ? (ready ? fmtUsd(grossCents) : "-")
-                    : name === "Refunds" ? (statsView === "ready" ? fmtUsd(refundedGross) : "-")
+                  {name === "Gross earnings" ? (ready ? fmtDollars(grossCents) : "-")
+                    : name === "Refunds" ? (statsView === "ready" ? fmtDollars(refundedGross) : "-")
                     : !(name in netLedger) ? <NotWired label={name} />
-                    : net ? (ready ? fmtUsd(netLedger[name] ?? 0) : "-")
+                    : net ? (ready ? fmtDollars(netLedger[name] ?? 0) : "-")
                     // Off, no net read is made: a dash, not the Not wired marker, since the row has a read.
                     : (
                       <button type="button" disabled title="Turn on Show net earnings" aria-label={name} className="cursor-not-allowed opacity-50">

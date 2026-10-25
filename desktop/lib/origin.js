@@ -29,8 +29,10 @@ function isAppOrigin(raw, appOrigin) {
 // Builds before 2026-10-21 defaulted the Server URL to http://inflowwww.com, so
 // installs that kept it have the landing site saved and load its 404 (/inbox)
 // or its home page (/). The landing site (apex or www, either scheme) is never
-// a server, so it always means the app.
-const LANDING_HOSTS = new Set(["inflowwww.com", "www.inflowwww.com"]);
+// a server, so it always means the app. The app itself only serves https (http
+// 308s there, which the shell blocks as an off-origin redirect), so a typed
+// http://app.inflowwww.com also means the https app.
+const LANDING_HOSTS = new Set(["inflowwww.com", "www.inflowwww.com", "app.inflowwww.com"]);
 const HOSTED_APP = "https://app.inflowwww.com";
 
 /** The server origin to use for a parsed origin: the landing site → the hosted app. */

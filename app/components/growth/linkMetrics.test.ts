@@ -6,16 +6,17 @@ import {
 } from "./linkMetrics";
 
 describe("linkMetrics", () => {
-  it("prints money as Infloww: thousands commas, a loss with its sign", () => {
-    expect(money(123450)).toBe("$1,234.50");
-    expect(money(0)).toBe("$0.00");
-    expect(money(-1200)).toBe("-$12.00");
+  it("prints money as the house fmtCents: whole dollars with commas at every size, a loss with its sign", () => {
+    expect(money(123450)).toBe("$1,235");
+    expect(money(98760)).toBe("$988");
+    expect(money(0)).toBe("$0");
+    expect(money(-1200)).toBe("-$12");
   });
 
   it("Profit = Earnings − Promo cost, — without a cost or an earnings figure", () => {
     expect(profitCents(98760, 25000)).toBe(73760);
-    expect(profit(98760, 25000)).toBe("$737.60");
-    expect(profit(1000, 2500)).toBe("-$15.00");
+    expect(profit(98760, 25000)).toBe("$738");
+    expect(profit(1000, 2500)).toBe("-$15");
     expect(profit(98760, null)).toBe("—");
     expect(profit(98760, 0)).toBe("—");
     expect(profit(null, 25000)).toBe("—");
@@ -23,7 +24,7 @@ describe("linkMetrics", () => {
 
   it("CPC and CPS = Promo cost / clicks or subscribers, — without a cost or with nothing to divide by", () => {
     expect(costPer(25000, 200)).toBe("$1.25");
-    expect(costPer(25000, 25)).toBe("$10.00");
+    expect(costPer(25000, 25)).toBe("$10");
     expect(costPer(25000, 0)).toBe("—");
     expect(costPer(null, 200)).toBe("—");
     expect(costPer(0, 200)).toBe("—");
@@ -75,7 +76,7 @@ describe("linkMetrics", () => {
     const two = { promo_cost_cents: 5000, clicks: 0, subscribers: 0, earnings_cents: 0 };
     const free = { promo_cost_cents: null, clicks: 1000, subscribers: 500, earnings_cents: 100000 };
     // $300.00 over 200 clicks and 25 subs; ($987.60 − $300.00) / $300.00; the uncosted link counts nowhere.
-    expect(linkAverages([one, two, free])).toEqual({ cpc: "$1.50", cps: "$12.00", roi: "229.20%", roiPartial: false });
+    expect(linkAverages([one, two, free])).toEqual({ cpc: "$1.50", cps: "$12", roi: "229.20%", roiPartial: false });
     expect(linkAverages([free])).toEqual({ cpc: "—", cps: "—", roi: "—", roiPartial: false });
     expect(linkAverages([])).toEqual({ cpc: "—", cps: "—", roi: "—", roiPartial: false });
     // Costed, but no clicks or subs: "—" on those, ROI still reads.
@@ -85,7 +86,7 @@ describe("linkMetrics", () => {
   it("takes Avg ROI over the costed links with an earnings figure, marked partial when one has none", () => {
     const one = { promo_cost_cents: 25000, clicks: 200, subscribers: 25, earnings_cents: 98760 };
     const unknown = { promo_cost_cents: 5000, clicks: 100, subscribers: 5, earnings_cents: null };
-    expect(linkAverages([one, unknown])).toEqual({ cpc: "$1.00", cps: "$10.00", roi: "295.04%", roiPartial: true });
+    expect(linkAverages([one, unknown])).toEqual({ cpc: "$1", cps: "$10", roi: "295.04%", roiPartial: true });
     expect(linkAverages([unknown]).roi).toBe("—");
     expect(linkAverages([unknown]).roiPartial).toBe(false);
     expect(linkAverages([{ ...one, earnings_partial: true }]).roiPartial).toBe(true);

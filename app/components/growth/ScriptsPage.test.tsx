@@ -127,24 +127,35 @@ function pick(name: string, option: string) {
   fireEvent.click(screen.getByRole("combobox", { name }));
   fireEvent.click(within(screen.getByRole("listbox", { name })).getByRole("option", { name: new RegExp(`${option}$`) }));
 }
-const pickCreator = (name: string) => pick("Creator", name);
+/** The creator column left of the page (`CreatorRail`, Smart lists'), and its row for a Creator. */
+const column = () => screen.getByTestId("of-creator-column");
+const creatorRow = (name: string) => within(column()).getByRole("button", { name: new RegExp(name) });
+const pickCreator = (name: string) => fireEvent.click(creatorRow(name));
 
 /* ── the capture's structure, in order ──────────────────────────────────── */
 
 describe("Scripts follows the capture's order", () => {
-  it("shows the header: title, creator selector, Learn, Share, More", async () => {
+  it("shows the header: title, Learn, Share, More; the creator selector is the column left of the page", async () => {
     await mount();
     const header = [
       { id: "growth-scripts#3", label: "Scripts", el: screen.getByRole("heading", { level: 1, name: "Scripts" }) },
-      { id: "growth-scripts#6", label: "creator selector", el: screen.getByRole("combobox", { name: "Creator" }) },
       { id: "growth-scripts#8", label: "Learn", el: screen.getByRole("button", { name: "Learn" }) },
       { id: "growth-scripts#11", label: "Share", el: screen.getByRole("button", { name: "Share" }) },
       { id: "growth-scripts#12", label: "More menu", el: screen.getByRole("button", { name: "More" }) },
     ];
     for (const h of header) expectInCapture(h.id, h.label);
     expectInOrder(header.map((h) => h.el));
-    // The creator select (ticket 09) shows the open Creator; Learn carries the book icon, in T1 ink.
-    expect(screen.getByRole("combobox", { name: "Creator" })).toHaveTextContent("Creator A");
+    // The capture's creator selector (#6) is the creator column now: not in the header, under it, left of the
+    // toolbar and list, showing the open Creator.
+    expectInCapture("growth-scripts#6", "creator selector");
+    const banner = screen.getByRole("banner");
+    expect(within(banner).queryByRole("combobox", { name: "Creator" })).toBeNull();
+    expect(within(banner).queryByTestId("of-creator-column")).toBeNull();
+    expectInOrder([banner, column()]);
+    expect(column().nextElementSibling!.contains(screen.getByRole("tab", { name: "Sequence" }))).toBe(true);
+    expect(creatorRow("Creator A")).toHaveAttribute("aria-current", "true");
+    expect(creatorRow("Creator B")).not.toHaveAttribute("aria-current");
+    // Learn carries the book icon, in T1 ink.
     const learn = screen.getByRole("button", { name: "Learn" });
     expect(learn.querySelector("svg")).toHaveClass("lucide-book-open");
     expect(learn).toHaveClass("text-fg");
@@ -263,7 +274,7 @@ describe("Scripts follows the capture's order", () => {
       within(row).getByText("Unlock"),
       within(row).getByLabelText("Tags"),
       within(row).getByText("Unlock this one"),
-      within(row).getByText("$ 12.50"),
+      within(row).getByText("$12.50"),
       within(row).getByLabelText("Stats"),
       within(row).getByRole("button", { name: "Edit" }),
       within(row).getByRole("button", { name: "Share script" }),
@@ -302,9 +313,9 @@ describe("the saved replies are the scripts", () => {
     // Media: one tile per attached item (a placeholder with its type, since the fixture has no thumbnail).
     expect(within(first).getByText("photo")).toBeInTheDocument();
     expect(within(first).getByLabelText("Tagged Creators: 2")).toBeInTheDocument();
-    expect(within(first).queryByText(/^\$ /)).toBeNull();
+    expect(within(first).queryByText(/^\$\d/)).toBeNull();
     expect(within(second).getByText("Unlock this one")).toBeInTheDocument();
-    expect(within(second).getByText("$ 12.50")).toBeInTheDocument();
+    expect(within(second).getByText("$12.50")).toBeInTheDocument();
     expect(get.mock.calls.map(([p]) => p)).toContain(LIST_A);
   });
 
@@ -694,7 +705,8 @@ describe("Inflowwww extras", () => {
   it("drops the Templates card's heading, Refresh and local-only note", async () => {
     await mount();
     expect(screen.queryByRole("heading", { name: "Templates" })).toBeNull();
-    expect(screen.queryByRole("button", { name: /Refresh/ })).toBeNull();
+    // The creator column's own "Refresh creators" aside, nothing on the page refreshes.
+    expect(screen.queryAllByRole("button", { name: /Refresh/ }).filter((b) => !column().contains(b))).toEqual([]);
     expect(screen.queryByText(/OF won.t see them/)).toBeNull();
   });
 });

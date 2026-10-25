@@ -374,7 +374,7 @@ function PasswordForm({ employee, onDone }: { employee: Employee; onDone: () => 
     <form onSubmit={(e) => { e.preventDefault(); saveM.mutate(); }} className="space-y-3">
       <p className="text-sm text-fg-dim">
         Set a new password for <span className="text-fg">{employee.display_name}</span>
-        {employee.username ? <> (<span className="font-mono">@{employee.username}</span>)</> : null}.
+        {employee.username ? <> (<span>@{employee.username}</span>)</> : null}.
       </p>
       <div>
         <label htmlFor="new-password" className={LABEL}>New password</label>

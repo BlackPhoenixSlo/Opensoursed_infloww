@@ -266,7 +266,7 @@ export function ChatActionsMenu({
           </>
         )}
         {/* Not wired: the relay has no report route. */}
-        <NotWiredMenuRow>
+        <NotWiredMenuRow why="report">
           <span className={cn(MP.ours.ChatActionsMenu.rowIcon, "text-center")}>🚩</span>
           <span>Report</span>
         </NotWiredMenuRow>

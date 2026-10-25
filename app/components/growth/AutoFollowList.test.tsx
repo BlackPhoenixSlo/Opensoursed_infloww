@@ -134,7 +134,7 @@ describe("AutoFollowList", () => {
     for (const h of ["Fans name", "Total spend", "Expiry date", "Follow date", "Actions"]) {
       expect(screen.getByRole("columnheader", { name: new RegExp(h) })).toBeTruthy();
     }
-    expect(screen.getByText("$123.45")).toBeTruthy();
+    expect(screen.getByText("$123")).toBeTruthy();
     expect(screen.getByRole("link", { name: "Chat with Rob" }).getAttribute("href"))
       .toBe("/messages-pro/a1/777");
     const first = String(relayGet.mock.calls.find((c) => String(c[0]).startsWith("/admin/auto-follow/records"))![0]);

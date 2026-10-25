@@ -18,7 +18,7 @@ import { Paperclip } from "lucide-react";
 
 import { Badge } from "@/components/ui/primitives";
 import FanAvatar from "@/components/messages/FanAvatar";
-import { fmtCents, stripHtml } from "@/lib/messageFormat";
+import { fmtPrice, stripHtml } from "@/lib/messageFormat";
 import { fmtRelTime } from "@/lib/utils";
 
 import type { PaidMessageRow } from "@/hooks/usePaidMessages";
@@ -75,7 +75,7 @@ export default function MessageRow({ row }: Props) {
               </span>
             )}
             <span className="ml-auto text-sm font-semibold text-fg">
-              {fmtCents(row.price_cents)}
+              {fmtPrice(row.price_cents)}
             </span>
             <span className="text-xs text-fg-dim">
               sent {fmtRelTime(row.sent_at)}

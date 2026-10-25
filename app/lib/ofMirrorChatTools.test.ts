@@ -263,7 +263,7 @@ describe("the chat's ⋮ menu (messages/chat/state-header-menu): OF's items for 
     pct.dispatchEvent(new Event("change"));
     period.value = "3";
     period.dispatchEvent(new Event("change"));
-    expect(text(modal(d).querySelector(".g-input__help"))).toBe("$8.00 per month for 3 months");
+    expect(text(modal(d).querySelector(".g-input__help"))).toBe("$8 per month for 3 months");
     button(d, "Apply").click();
     await flush();
     expect(c.writes!.discount).toHaveBeenCalledWith(20, 3);

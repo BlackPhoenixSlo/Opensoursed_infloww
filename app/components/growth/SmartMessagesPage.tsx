@@ -9,11 +9,11 @@
  * Page-parity ticket 08 puts it on Infloww's legacy primitives
  * (`@/components/ui/infloww`): full bleed, the 48px header, `IfTabs`.
  *
- * - The header row (`InflowwPageHeader`): the page title, the creator select
- *   24px beside it (#4), and at the row's right the bundle's right box (#18).
- *   On Automated Messages the select picks the Creator every read and write of
- *   that tab uses; on Mass Messages it is Not wired, as the panels there list
- *   every active Creator and take no Creator. The right box holds "Learn" (Not
+ * - The header row (`InflowwPageHeader`): the page title, and at the row's
+ *   right the bundle's right box (#18). On Automated Messages the creator
+ *   column (`CreatorRail`, as Smart lists') sits left of the tab's body and
+ *   picks the Creator every read and write of that tab uses; Mass Messages has
+ *   none, as the panels there list every active Creator and take no Creator. The right box holds "Learn" (Not
  *   wired: the bundle opens Infloww's own blog) and "New Message", which opens the one
  *   "Create message" pop-up (`CreateMessagePopUp`), whose Automated messages
  *   section holds the Triggers' cards (`AutomatedMessageCards`): "Nudge" and
@@ -32,10 +32,10 @@
 import { useState, type ReactNode } from "react";
 import { Plus } from "lucide-react";
 
-import { IfButton, IfCreatorSelect, IfLearn, IfSelect, IfTabs, InflowwPageHeader } from "@/components/ui/infloww";
+import { CreatorRail } from "@/components/shell/CreatorRail";
+import { IfButton, IfLearn, IfTabs, InflowwPageHeader } from "@/components/ui/infloww";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useTabParam } from "@/hooks/useTabParam";
-import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { SMART_MESSAGES_TABS, type SmartMessagesTab as TabKey } from "@/lib/pageTabs";
 
 import AutomatedMessagesTab, { AutomatedEditor, AutomatedMessageCards, type WiredTrigger } from "./AutomatedMessagesTab";
@@ -49,9 +49,6 @@ const LOOKUP: Record<string, TabKey> = {
   scheduled: "mass",
 };
 
-/** The header's creator select: 160px, the avatar alone below `sm` (ticket 00's phone rule). */
-const CHIP = "w-14 sm:w-[160px]";
-
 export default function SmartMessagesPage({
   automatedMessageCards,
 }: {
@@ -60,17 +57,21 @@ export default function SmartMessagesPage({
   automatedMessageCards?: ReactNode;
 }) {
   const accounts = useActiveAccounts();
-  // The select's pick, else the first active Creator.
+  // The column's pick, else the first active Creator.
   const [picked, setPicked] = useState<string | null>(null);
   const accountId = picked ?? accounts[0]?.id ?? null;
 
   const bodies: Record<TabKey, ReactNode> = {
-    automated: <AutomatedMessagesTab accountId={accountId} />,
+    automated: (
+      <CreatorRail creators={{ accounts, value: accountId, onChange: setPicked }} top="96px">
+        <AutomatedMessagesTab accountId={accountId} />
+      </CreatorRail>
+    ),
     mass: <MassMessagesSection />,
   };
   const [tab, setTab] = useState<TabKey>("automated");
   const [creating, setCreating] = useState(false);
-  // The pop-up's wired cards open their row's editor, on the select's Creator.
+  // The pop-up's wired cards open their row's editor, on the column's Creator.
   const [opened, setOpened] = useState<WiredTrigger | null>(null);
 
   useTabParam("tab", (v): v is string => Object.hasOwn(LOOKUP, v), (v) => setTab(LOOKUP[v]));
@@ -79,23 +80,6 @@ export default function SmartMessagesPage({
     <div className="flex min-h-full min-w-0 flex-col">
       <InflowwPageHeader
         title={SM.title.label}
-        // The creator select (#4), 24px after the title: the picked Creator on
-        // Automated Messages; on Mass Messages "All creators", ours, Not wired.
-        extra={tab === "automated" ? (
-          accounts.length === 0 ? (
-            // "No creators" is the house's empty select, not the bundle's.
-            <span title={EXTRA_LABEL} className="inline-flex">
-              <IfCreatorSelect accounts={[]} value={null} onChange={() => {}} disabled className={CHIP} />
-            </span>
-          ) : (
-            <IfCreatorSelect accounts={accounts} value={accountId} onChange={setPicked} className={CHIP} />
-          )
-        ) : (
-          <span title="not wired" className="inline-flex">
-            <IfSelect aria-label="Creator" disabled value="all" onChange={() => {}}
-              options={[{ value: "all", label: "All creators" }]} className="w-[120px] sm:w-[160px]" />
-          </span>
-        )}
         actions={(
           <>
             {/* Learn (#11, #12-#14): the book and 14px M1 text, Not wired. */}
@@ -116,7 +100,7 @@ export default function SmartMessagesPage({
         onChange={setTab}
       />
       <div key={tab} role="tabpanel" id={`sm-panel-${tab}`} aria-labelledby={`sm-tab-${tab}`}
-        className="min-w-0">
+        className="flex min-w-0 flex-1 flex-col">
         {bodies[tab]}
       </div>
 

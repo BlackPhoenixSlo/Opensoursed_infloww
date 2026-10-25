@@ -91,8 +91,8 @@ describe("ClockedHoursCard", () => {
 
     const body = within(table).getAllByRole("row").slice(1);
     expect(body.map((r) => within(r).getAllByRole("cell").map((c) => c.textContent))).toEqual([
-      ["Alpha One", "4", "3", "7h 30min", "$123.45"],
-      ["Beta, Night", "2", "1", "1h 1min", "$0.00"],
+      ["Alpha One", "4", "3", "7h 30min", "$123"],
+      ["Beta, Night", "2", "1", "1h 1min", "$0"],
     ]);
     expect(within(table).getByText("Recorded earnings")).toHaveAttribute(
       "title",

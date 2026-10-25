@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { anchorFor, clampToViewport, lastOutboundOf, replyStateOf } from "./MoneyRail";
+import { amountFrom, anchorFor, clampToViewport, lastOutboundOf, replyStateOf } from "./MoneyRail";
 import type { OFChatItem } from "@/lib/relay";
 import type { AttributionResponse } from "@/hooks/useChatAttribution";
 
@@ -245,3 +245,12 @@ describe("clampToViewport", () => {
   });
 });
 
+
+describe("amountFrom: the Buys & tips amount chip in the house price format", () => {
+  it("drops OF's .00, keeps real cents, adds commas", () => {
+    expect(amountFrom("Noah R. sent you a $40.00 tip!")).toBe("$40");
+    expect(amountFrom("Jim has purchased your message for $25.22!")).toBe("$25.22");
+    expect(amountFrom("Ann tipped $1,250.00")).toBe("$1,250");
+    expect(amountFrom("no money here")).toBeNull();
+  });
+});

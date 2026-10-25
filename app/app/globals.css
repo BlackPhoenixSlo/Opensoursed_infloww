@@ -192,9 +192,10 @@ html[data-theme="light"] {
 }
 
 /* The public site's dark sign-in look (web/src/main.css .auth-*: near-black
- * page, white text, orange accent, system font stack) for the signed-out
- * /login page (components/auth/Landing.tsx), which the site's /signup/ and
- * /login/ hand off to. Scoped to that page's wrapper; the app shell keeps its
+ * page, white text, orange accent) for the signed-out /login page
+ * (components/auth/Landing.tsx), which the site's /signup/ and /login/ hand
+ * off to. It keeps the app font, as Infloww's own sign-in wears its app face
+ * (Suisse Int'l), not the site's system stack. Scoped to that page's wrapper; the app shell keeps its
  * theme. The :has() rule paints html/body while it is mounted, so overscroll
  * never shows the app background behind it. */
 [data-look="site"] {
@@ -203,8 +204,6 @@ html[data-theme="light"] {
   --color-fg-dim: rgba(255, 255, 255, 0.6);
   --color-accent: #f88056;  /* Infloww's --element-action-primary-emphasis-00 */
   color-scheme: dark;
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
-               Helvetica, Arial, sans-serif;
 }
 html:has([data-look="site"]),
 html:has([data-look="site"]) body {

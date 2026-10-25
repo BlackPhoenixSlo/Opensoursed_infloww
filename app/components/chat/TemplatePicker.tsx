@@ -29,6 +29,7 @@ import { cn } from "@/lib/utils";
 import type { OFMessageTemplate, SavedReply, VaultMedia } from "@/lib/relay";
 import { useInflowwPalette } from "./InflowwPalette";
 import { PILL, PILL_ICON, PILL_LABEL } from "./ComposerToolbar";
+import { fmtPrice } from "@/lib/format";
 
 /** Unified shape so Composer doesn't care where the row came from. */
 export interface PickedTemplate {
@@ -396,7 +397,7 @@ export function TemplatePicker({
                     </span>
                   )}
                   {t.price > 0 && (
-                    <span className="text-[10px] text-warn">🔒 ${t.price.toFixed(2)}</span>
+                    <span className="text-[10px] text-warn">🔒 {fmtPrice(Math.round(t.price * 100))}</span>
                   )}
                   {t.previews.length > 0 && (
                     <span className="text-[10px] text-fg-dim" title="Free previews on apply">

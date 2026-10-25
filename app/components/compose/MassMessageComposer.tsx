@@ -41,6 +41,7 @@ import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { AccountPicker } from "./AccountPicker";
 import { MediaTray } from "./MediaTray";
 import { ScheduleField } from "./ScheduleField";
+import { fmtPrice } from "@/lib/format";
 
 interface FanOutResult {
   accountId: string;
@@ -844,7 +845,7 @@ export function MassMessageComposer({
                   className="flex-1 bg-bg border border-border rounded-md px-2 py-1.5 text-base md:text-xs focus:outline-none focus:border-accent"
                 />
                 <span className={isPPV ? "text-warn text-[11px]" : "text-fg-dim text-[11px]"}>
-                  {isPPV ? `🔒 PPV $${effectivePrice.toFixed(2)}` : "free"}
+                  {isPPV ? `🔒 PPV ${fmtPrice(Math.round(effectivePrice * 100))}` : "free"}
                 </span>
               </div>
               {isPPV && (

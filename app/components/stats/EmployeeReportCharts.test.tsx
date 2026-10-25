@@ -86,12 +86,12 @@ describe("EmployeeReportCharts", () => {
     await waitFor(() => expect(within(ranking).getAllByRole("listitem")).toHaveLength(3));
     const names = () => within(ranking).getAllByRole("listitem").map((li) => li.textContent);
     expect(names()[0]).toContain("Beta Two");
-    expect(names()[0]).toContain("$900.00");
+    expect(names()[0]).toMatch(/\$900$/);
     fireEvent.click(within(ranking).getByText(/Descending/));
     await waitFor(() => expect(names()[0]).toContain("Gamma Three"));
     const sales = screen.getByRole("region", { name: "Employee sales" });
     await waitFor(() => expect(within(sales).getAllByTestId("chart-hover")).toHaveLength(2));
-    expect(within(sales).getAllByTestId("chart-hover")[0].textContent).toBe("Sep 15\nEmployee sales: $12.00");
+    expect(within(sales).getAllByTestId("chart-hover")[0].textContent).toBe("Sep 15\nEmployee sales: $12");
     const [call] = seriesCalls();
     expect([call.searchParams.get("bucket"), call.searchParams.get("from"), call.searchParams.get("to")])
       .toEqual(["day", FROM, TO]);
@@ -102,7 +102,7 @@ describe("EmployeeReportCharts", () => {
     renderWithProviders(<Tab tab="performance" />);
     const sales = await screen.findByRole("region", { name: "Sales" });
     await waitFor(() => expect(within(sales).getAllByTestId("chart-hover")[0].textContent)
-      .toBe("Sep 15\nEmployee sales: $10.00"));
+      .toBe("Sep 15\nEmployee sales: $10"));
     const stats = screen.getByRole("region", { name: "Message statistics" });
     expect(within(stats).getAllByTestId("chart-hover")[0].textContent)
       .toBe("Sep 15\nDirect messages sent: 3\nDirect PPVs sent: 1\nPPVs unlocked: 1\nFans chatted: 2");
@@ -125,7 +125,7 @@ describe("EmployeeReportCharts", () => {
     // The top seller is picked: Beta Two, shown as the tag and in the select; it has no points of its own.
     expect(screen.getAllByText("Beta Two").length).toBeGreaterThan(0);
     const sales = screen.getByRole("region", { name: "Sales" });
-    expect(within(sales).getAllByTestId("chart-hover")[0].textContent).toBe("Sep 15\nEmployee sales: $0.00");
+    expect(within(sales).getAllByTestId("chart-hover")[0].textContent).toBe("Sep 15\nEmployee sales: $0");
     cleanup();
     const onRetry = vi.fn();
     renderWithProviders(<EmployeeOverviewCharts data={null} error bucket="day" rows={[]} onRetry={onRetry} />);

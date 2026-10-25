@@ -73,7 +73,9 @@ export default function TopBar({
   return (
     // flow-root: the banner's bottom margin stays inside the black block.
     <div className="sticky top-0 z-30 bg-chrome flow-root">
-      <header className="h-[52px] flex items-center gap-2 sm:gap-4 px-3">
+      {/* In the macOS desktop app (<html data-shell="mac">, app/layout.tsx) the window's traffic lights sit
+       *  over the top-left, so the sidebar toggle starts right of them. */}
+      <header className="h-[52px] flex items-center gap-2 sm:gap-4 px-3 in-data-[shell=mac]:pl-[84px]">
         <SidebarToggle
           onToggleSidebar={onToggleSidebar}
           sidebarExpanded={sidebarExpanded}

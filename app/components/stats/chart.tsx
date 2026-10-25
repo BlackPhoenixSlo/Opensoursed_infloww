@@ -11,6 +11,7 @@
  */
 
 import { type ReactNode, useEffect, useRef, useState } from "react";
+import { fmtCents } from "@/lib/format";
 
 /** A "Shown by" granularity. */
 export type Gran = "hour" | "day" | "week" | "month";
@@ -68,18 +69,22 @@ export function useChartWidth() {
   return [ref, width || 900] as const;
 }
 
-/** The plot box: room for the 14px y labels on the left and the x ticks and labels below. */
+/** The plot box: room for the 14px y labels on the left (up to "$800,000", 8px off the plot; 56 clipped the "$" of
+ *  "$80,000") and the x ticks and labels below. */
 export function plotFrame(W: number, H: number) {
-  return { L: 56, R: W - 8, T: 8, B: H - 30 };
+  return { L: 72, R: W - 8, T: 8, B: H - 30 };
 }
 
-/** Cents as "$1,234.56", a point's and a tooltip's money. */
+/** Cents as the house `fmtCents` prints money, whole dollars with commas as on the dashboard ("$1,235", "$8"), a
+ *  loss as "-$12": a report figure's, a point's and a tooltip's money. */
 export function fmtUsd(cents: number): string {
-  return (cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD" });
+  return fmtCents(cents);
 }
 
-/** Cents as whole dollars, the axes' default. */
-export const axisDollars = (cents: number) => `$${Math.round(cents / 100).toLocaleString("en-US")}`;
+/** Cents as whole dollars, "$930" / "$1,235": a report's earnings total (as the dashboard's earnings overview prints
+ *  them) and the axes' default. */
+export const fmtDollars = (cents: number) => fmtCents(cents); // a loss "-$12", never "$-12" or "$-0"
+export const axisDollars = fmtDollars;
 
 /** #79, #80: horizontal 1px grid lines and 14px tick text, x tick lines 4px long with the labels 8px under them, no
  *  axis lines (our border and dim tokens, ADR-0001 colours). `fmt` writes a y tick (whole dollars of cents by

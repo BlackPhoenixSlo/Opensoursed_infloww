@@ -143,6 +143,10 @@ function openOptions(combobox: HTMLElement): HTMLElement[] {
   return within(list).getAllByRole("option");
 }
 
+/** The creator column left of the page (`CreatorRail`, Smart lists'), and its row for a Creator. */
+const column = () => screen.getByTestId("of-creator-column");
+const creatorRow = (name: string) => within(column()).getByRole("button", { name: new RegExp(name) });
+
 /** The rail: the element holding the sort label and the "All media" row. */
 function rail(): HTMLElement {
   return screen.getAllByText("All media").map((el) => el.closest("aside")).find(Boolean) as HTMLElement;
@@ -153,12 +157,19 @@ describe("Vault Pro header and rail, in the capture's order", () => {
     await mount();
     const header = [
       { id: "growth-vault-pro#3", label: "Vault Pro", el: screen.getByRole("heading", { level: 1, name: "Vault Pro" }) },
-      { id: "growth-vault-pro#6", label: "creator selector", el: screen.getByRole("combobox", { name: "Creator" }) },
       { id: "growth-vault-pro#7", label: "Learn", el: screen.getByRole("link", { name: "Learn" }) },
       { id: "growth-vault-pro#10", label: "Add media", el: screen.getByRole("button", { name: "Add media" }) },
     ];
     for (const h of header) expectInCapture(h.id, h.label);
     for (let i = 1; i < header.length; i++) expectBefore(header[i - 1].el, header[i].el);
+    // The capture's creator selector (#6) is the creator column now: not in the header, under it, left of the
+    // folder rail and grid.
+    expectInCapture("growth-vault-pro#6", "creator selector");
+    const bar = screen.getByRole("heading", { level: 1, name: "Vault Pro" }).closest("header") as HTMLElement;
+    expect(within(bar).queryByRole("combobox", { name: "Creator" })).toBeNull();
+    expect(within(bar).queryByTestId("of-creator-column")).toBeNull();
+    expectBefore(bar, column());
+    expect(column().nextElementSibling!.contains(rail())).toBe(true);
   });
 
   it("lays the header out as a bar with a bottom rule, with the rail and grid flush beneath it (#15, #16)", async () => {
@@ -396,8 +407,15 @@ describe("the Extras overflow", () => {
 });
 
 describe("the Creator selector", () => {
-  it("is a select showing the picked Creator, with the house chips gone (#6)", async () => {
+  it("is the creator column showing the picked Creator, with the house chips gone (#6)", async () => {
     await mount();
+    const rows = within(column()).getAllByTestId("of-creator-row");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toBe(creatorRow("Creator A"));
+    expect(rows[0]).toHaveAttribute("aria-current", "true");
+    expect(rows[1]).toBe(creatorRow("Creator B"));
+    expect(rows[1]).not.toHaveAttribute("aria-current");
+    // Below md the column hides and the same pick shows as a select.
     const select = screen.getByRole("combobox", { name: "Creator" });
     expect(select).toHaveTextContent(/Creator A$/);
     const options = openOptions(select);
@@ -418,8 +436,9 @@ describe("the Creator selector", () => {
     const cardBefore = screen.getByText(/Import to/).closest("section");
     relayGet.mockClear();
 
-    fireEvent.click(openOptions(screen.getByRole("combobox", { name: "Creator" }))[1]);
+    fireEvent.click(creatorRow("Creator B"));
     await waitFor(() => expect(within(rail()).getByText("Folder one")).toBeTruthy());
+    expect(creatorRow("Creator B")).toHaveAttribute("aria-current", "true");
 
     expect(rail()).not.toBe(gridBefore);
     expect(within(rail()).queryByPlaceholderText("Search")).toBeNull();
@@ -441,7 +460,8 @@ describe("the Creator selector", () => {
     roster = [{ ...A, has_session: false }, B];
     await act(async () => { await queryClient.invalidateQueries({ queryKey: ["accounts"] }); });
     expect(await screen.findByText(/session has dropped/)).toBeTruthy();
-    // Said, not acted on: the page stays on A, and the select still shows A.
+    // Said, not acted on: the page stays on A, and the column and the select still show A.
+    expect(creatorRow("Creator A")).toHaveAttribute("aria-current", "true");
     expect(screen.getByRole("combobox", { name: "Creator" })).toHaveTextContent(/Creator A$/);
     expect(within(rail()).getByText("Folder one")).toBeTruthy();
     await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
@@ -468,10 +488,9 @@ describe("the Creator selector", () => {
     for (const l of ["Recent", "All", "Photo", "Refresh", "Grid view", "Select"]) {
       expect(screen.getByRole("button", { name: l })).toBeDisabled();
     }
-    // The Creator select is always shown: off, reading "No creators".
-    const creator = screen.getByRole("combobox", { name: "Creator" });
-    expect(creator).toBeDisabled();
-    expect(creator).toHaveTextContent("No creators");
+    // The creator column is always shown, here with no Creator to pick; no creator select shows.
+    expect(within(column()).queryAllByTestId("of-creator-row")).toEqual([]);
+    expect(screen.queryByRole("combobox", { name: "Creator" })).toBeNull();
     expect(extrasButton()).toBeDisabled();
     expect(screen.getByRole("button", { name: "Add media" })).toBeDisabled();
     for (const m of [relayPost, relayPut, relayPatch, relayDelete]) expect(m).not.toHaveBeenCalled();

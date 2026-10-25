@@ -74,6 +74,7 @@ import { DelayedWelcomeEditor } from "./DelayedWelcomeEditor";
 import LifecycleMessageEditor, { PAID_ONLY_KINDS } from "./LifecycleMessageEditor";
 import PurchaseFollowupEditor from "./PurchaseFollowupEditor";
 import { SM, SM_AUTOMATED_COLUMNS, SM_TRIGGERS } from "./smartMessagesControls";
+import { fmtPrice } from "@/lib/format";
 
 const NUDGE = SM_TRIGGERS[0];
 const WELCOME = SM_TRIGGERS[1];
@@ -140,7 +141,7 @@ function extrasCells(payload: Record<string, unknown>, timeZone: string | null):
   const price = (x.price_cents ?? 0) / 100;
   return {
     "Attachment(s)": n ? `${n} media` : "--",
-    Price: price ? `$${price.toFixed(2)}` : "--",
+    Price: price ? fmtPrice(Math.round(price * 100)) : "--",
     "Start date": shortDate(x.starts_at ?? null, timeZone) ?? "--",
     "End date": shortDate(x.ends_at ?? null, timeZone) ?? "--",
   };

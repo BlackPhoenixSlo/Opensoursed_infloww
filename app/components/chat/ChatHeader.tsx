@@ -98,6 +98,7 @@ import { ChatGallery } from "./ChatGallery";
 import { ICON_BUTTON } from "./MenuParts";
 import { OpenInNewTabButton } from "./FanTabs";
 import { isFanOnline, newestSeen, type Seen } from "./isFanOnline";
+import { NotWiredButton, type NotWiredKey } from "./NotWired";
 import { useMenuDismiss } from "./useMenuDismiss";
 
 /** The right group's icon buttons' colours (refresh, Fan insights, the
@@ -295,7 +296,7 @@ export function ChatHeader({
           )}
         >
           <Divider />
-          <NotWiredIcon label="Priority" icon={Star} />
+          <NotWiredIcon label="Priority" icon={Star} why="priority" />
           <Divider />
           <button
             type="button"
@@ -325,7 +326,7 @@ export function ChatHeader({
             <FileText aria-hidden className={MP.chatHeader.lineIcon} />
           </button>
           <Divider />
-          <NotWiredIcon label="Pinned chat" icon={Pin} />
+          <NotWiredIcon label="Pinned chat" icon={Pin} why="pin" />
           <Divider />
           <button
             type="button"
@@ -403,19 +404,13 @@ function useChatMute(accountId: string, fanId: FanId, chat: OFChatItem) {
   return { muted, pending: call.isPending, toggle };
 }
 
-/** A Not wired icon (spec, Not wired rendering): `aria-disabled`, titled
- *  "not wired", no click handler and no state, because no relay route sets
- *  Priority or pins a chat (spec F3). */
-function NotWiredIcon({ label, icon: Icon }: { label: string; icon: LucideIcon }) {
+/** A Not wired icon (spec, Not wired rendering; `NotWired`): `aria-disabled`,
+ *  no state, because no relay route sets Priority or pins a chat (spec F3); a
+ *  click shows its excuse under it. */
+function NotWiredIcon({ label, icon: Icon, why }: { label: string; icon: LucideIcon; why: NotWiredKey }) {
   return (
-    <button
-      type="button"
-      aria-label={label}
-      aria-disabled="true"
-      title="not wired"
-      className={cn(LINE_ICON, "flex-none text-fg-dim cursor-not-allowed")}
-    >
+    <NotWiredButton why={why} label={label} className={cn(LINE_ICON, "text-fg-dim")}>
       <Icon aria-hidden className={MP.chatHeader.lineIcon} />
-    </button>
+    </NotWiredButton>
   );
 }

@@ -29,8 +29,7 @@ export const metadata: Metadata = {
     template: "%s · Inflowwww",
   },
   description: "OnlyFans agency dashboard — unified inbox + automations.",
-  // Prevent the desktop OS app store from grabbing the title bar.
-  icons: { icon: "/favicon.ico" },
+  // The favicon is app/icon.svg (the OIF mark, SiteLook's IfMark), linked by Next's file convention.
 };
 
 // Without `width=device-width` mobile browsers render the page at the
@@ -67,6 +66,16 @@ const THEME_BOOT_SCRIPT = `
 try {
   var t = localStorage.getItem('chatterly:theme');
   if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
+} catch (_e) {}
+`;
+
+// The macOS desktop app (desktop/main.js, `titleBarStyle: "hiddenInset"`) draws its traffic lights over
+// the page's top-left corner. Its preload sets `window.fasttShell` before any page script, so this marks
+// <html data-shell="mac"> before the first paint and the top bar (TopBar) clears them; the web never has it.
+const SHELL_BOOT_SCRIPT = `
+try {
+  var s = window.fasttShell;
+  if (s && s.isDesktop === true && s.platform === 'darwin') document.documentElement.setAttribute('data-shell', 'mac');
 } catch (_e) {}
 `;
 
@@ -157,6 +166,7 @@ export default function RootLayout({
          *  <head> rendering is opinionated and inline scripts there can
          *  end up unreachable in dev mode. */}
         <script dangerouslySetInnerHTML={{ __html: THEME_BOOT_SCRIPT }} />
+        <script dangerouslySetInnerHTML={{ __html: SHELL_BOOT_SCRIPT }} />
         <script dangerouslySetInnerHTML={{ __html: VVH_BOOT_SCRIPT }} />
         <script dangerouslySetInnerHTML={{ __html: PINCH_BLOCK_BOOT_SCRIPT }} />
         <script dangerouslySetInnerHTML={{ __html: CHUNK_ERROR_BOOT_SCRIPT }} />

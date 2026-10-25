@@ -171,11 +171,11 @@ describe("SalesRecords", () => {
     ]);
     const [, first, second] = within(table).getAllByRole("row");
     expect(cells(first)).toEqual([
-      "", "May 4, 2026 10:00am", "Alpha One", "fixture_creator_one", "Fixture Fan Eleven", "$10.00", "$10.00", "$8.00",
+      "", "May 4, 2026 10:00am", "Alpha One", "fixture_creator_one", "Fixture Fan Eleven", "$10", "$10", "$8",
       "PPV message", "Message sender", "Auto", "Complete", "Reassign",
     ]);
     expect(cells(second)).toEqual([
-      "", "May 3, 2026 11:05pm", "Unassigned", "fixture_creator_two", "Fan #14", "$3.00", "$3.00", "—",
+      "", "May 3, 2026 11:05pm", "Unassigned", "fixture_creator_two", "Fan #14", "$3", "$3", "—",
       "Tip", "Unassigned", "Auto", "Pending", "Reassign",
     ]);
   });

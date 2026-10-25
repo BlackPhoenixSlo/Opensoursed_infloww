@@ -30,7 +30,7 @@ export function MessageStatsRows() {
       >
         Mass message statistics
       </a>
-      <NotWiredMenuRow>Online fans message statistics</NotWiredMenuRow>
+      <NotWiredMenuRow why="onlineStats">Online fans message statistics</NotWiredMenuRow>
     </>
   );
 }

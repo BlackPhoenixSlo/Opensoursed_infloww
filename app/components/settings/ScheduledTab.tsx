@@ -17,6 +17,7 @@ import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useCancelScheduled, useScheduledMessages } from "@/hooks/useScheduledMessages";
 import type { OFScheduledMessage } from "@/lib/relay";
 import { cn } from "@/lib/utils";
+import { fmtPrice } from "@/lib/format";
 
 export default function ScheduledTab() {
   const accounts = useActiveAccounts();
@@ -132,7 +133,7 @@ function ScheduledRow({
           )}
           {m.price && m.price > 0 && (
             <span className="text-warn inline-flex items-center gap-1">
-              <Lock size={12} aria-hidden /> ${m.price.toFixed(2)}
+              <Lock size={12} aria-hidden /> {fmtPrice(Math.round(m.price * 100))}
             </span>
           )}
         </div>

@@ -27,6 +27,7 @@ import { relay, toChoice, type TaggedCreatorChoice, type TaggedFriendUsersResp }
 import { proxyImage } from "@/lib/mediaUrl";
 import { useInflowwPalette } from "./InflowwPalette";
 import { POP_HEAD, POP_PRIMARY, POP_ROW, TOOLBAR_ICON } from "./ComposerToolbar";
+import { notWiredTitle } from "./NotWired";
 
 const PAGE = 20;
 const DEBOUNCE_MS = 250;
@@ -284,7 +285,7 @@ export function TagCreatorsPicker({
                   <button
                     type="button"
                     disabled
-                    title="not wired"
+                    title={notWiredTitle("releaseForm")}
                     className={cn(POP_ROW, "w-full text-[13px] disabled:opacity-40 disabled:cursor-not-allowed")}
                   >
                     Release form

@@ -2015,6 +2015,32 @@ class OfStatsDaily(Base):
     attempted_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
+class OfEarningsDaily(Base):
+    """One row per Creator per UTC day per OnlyFans earnings category, as
+    OnlyFans' own Statistics › Statements charts it (`/earnings/chart`,
+    of_stats_daily.py). OnlyFans is the truth for a Creator's earnings: the
+    revenue and per-model reports read these days in place of the ledger's
+    (stats.py), which only holds what we ingested. Only complete days are
+    stored; a missing row is a day we have no reading for, never a zero.
+
+      category     OF's key: subscribes | tips | messages | post | stream
+      net_cents    OF's chartAmount for the day (OF charts net, after its fee)
+      gross_cents  that net times the category's gross/net over the same
+                   reply (OF sends gross only as the period total)
+      sales        OF's chartCount for the day
+    """
+    __tablename__ = "of_earnings_daily"
+
+    account_id: Mapped[str] = mapped_column(
+        String, ForeignKey("accounts.id", ondelete="CASCADE"), primary_key=True)
+    day: Mapped[str] = mapped_column(String, primary_key=True)  # 'YYYY-MM-DD' UTC
+    category: Mapped[str] = mapped_column(String, primary_key=True)
+    net_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    gross_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    sales: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"), default=0)
+    fetched_at: Mapped[datetime] = _ts_now()
+
+
 class LifecycleMessageClaim(Base):
     """At most one message per (kind, fan, event) for the Smart Messages
     lifecycle senders — Nearing expiry, Expired, Resubscribe, Birthday. The

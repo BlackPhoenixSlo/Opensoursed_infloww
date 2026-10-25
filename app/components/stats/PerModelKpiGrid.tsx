@@ -21,7 +21,7 @@
 
 import { Badge, Card } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
-import { fmtCents, fmtDateShort, fmtInt } from "@/lib/format";
+import { fmtCents, fmtDateShort, fmtInt, fmtPrice } from "@/lib/format";
 import { proxyImage } from "@/lib/mediaUrl";
 import { useAccounts } from "@/hooks/useAccounts";
 import {
@@ -233,7 +233,7 @@ function ModelCard({ m, activeUnavail, from, to }: { m: PerModelRow; activeUnava
                   ? "Loading OF profile to determine paid/free…"
                   : p && typeof p.subscribePrice === "number"
                   ? (paid
-                      ? `OF subscription price = $${p.subscribePrice.toFixed(2)} (paid page)`
+                      ? `OF subscription price = ${fmtPrice(Math.round(p.subscribePrice * 100))} (paid page)`
                       : "OF profile reports subscription price = $0 (free page)")
                   : (paid
                       ? "Account has subscription revenue in window (paid)"
@@ -243,7 +243,7 @@ function ModelCard({ m, activeUnavail, from, to }: { m: PerModelRow; activeUnava
               {paid == null ? "…" : paid ? "paid" : "free"}
             </Badge>
           </div>
-          <div className="text-[10px] text-muted font-mono truncate">
+          <div className="text-[10px] text-muted tabular-nums truncate">
             {handle ? <>{handle} · </> : null}{m.account_id}
           </div>
         </div>
@@ -306,7 +306,7 @@ function ModelCard({ m, activeUnavail, from, to }: { m: PerModelRow; activeUnava
         )}
         <Kpi
           label="LTV"
-          value={fmtCents(ltvCents)}
+          value={fmtPrice(ltvCents)}
           muted={ltvCents == null}
           title={
             paid === true
@@ -316,7 +316,7 @@ function ModelCard({ m, activeUnavail, from, to }: { m: PerModelRow; activeUnava
         />
         <Kpi
           label="ARPU"
-          value={fmtCents(arpuCents)}
+          value={fmtPrice(arpuCents)}
           muted={arpuCents == null}
           title="Revenue in the selected window ÷ total fans (average revenue per current fan)."
         />

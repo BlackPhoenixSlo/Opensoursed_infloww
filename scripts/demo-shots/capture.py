@@ -176,11 +176,19 @@ def settle(page, screen: dict, kind: str) -> list[str]:
             && s.display !== 'none' && r.right > 0 && r.left < vp.width; }).length""", vp)
     if skeletons:
         problems.append(f"{skeletons} loading skeleton(s) visible")
-    for bad in screen.get("forbid", ["$0.00", "No creators"]):
-        n = page.evaluate("""([t, vp]) => { let n = 0; const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-            while (w.nextNode()) { const el = w.currentNode.parentElement; if (!el || !w.currentNode.data.includes(t)) continue;
-              const r = el.getBoundingClientRect(); if (r.width && r.height && r.bottom > 0 && r.top < vp.height
-                && getComputedStyle(el).visibility !== 'hidden') n++; } return n; }""", [bad, vp])
+    for bad in screen.get("forbid", ["$0.00", "No creators", "Loading…"]):
+        # Polled for up to 30 s: a read still in flight (a chart's "Loading…") clears by itself; data that is
+        # really missing ("$0.00", "No creators") stays and fails the shot.
+        for waited in range(0, 30_001, 500):
+            n = page.evaluate("""([t, vp]) => { let n = 0; const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+                while (w.nextNode()) { const el = w.currentNode.parentElement; if (!el || !w.currentNode.data.includes(t)) continue;
+                  const r = el.getBoundingClientRect(); if (r.width && r.height && r.bottom > 0 && r.top < vp.height
+                    && getComputedStyle(el).visibility !== 'hidden') n++; } return n; }""", [bad, vp])
+            if not n:
+                if waited:
+                    page.wait_for_timeout(800)  # let the chart that just got its data draw
+                break
+            page.wait_for_timeout(500)
         if n:
             problems.append(f"{n} visible {bad!r}")
     want = screen.get(f"{kind}_min_bubbles", screen.get("min_bubbles"))
@@ -194,6 +202,9 @@ def settle(page, screen: dict, kind: str) -> list[str]:
         if n < want:
             problems.append(f"{n} bubbles in view, want {want}")
     problems += font_problems(page)
+    money = page.evaluate(MONEY_JS, bool(screen.get("prices")))
+    if money:
+        problems.append(f"money off the house format: {money}")
     return problems
 
 
@@ -215,7 +226,43 @@ FONT_JS = """async () => {
             && unq(getComputedStyle(e).fontFamily.split(",")[0]) === fam;
     });
     if (probe) probe.setAttribute("data-font-probe", "1");
-    return {fam, faces, body, probe: !!probe, ok: !!fam && faces.includes(fam) && unq(body.split(",")[0]) === fam};
+    // Visible text set in another family: an inline font-family left over from an older face (Creator reports kept
+    // "Inter, -apple-system" after the app moved to Instrument Sans, so it painted the system face), or /login
+    // (`data-look="site"`) on the site's system stack. Monospace is on purpose (Infloww's "Suisse Int'l Mono" figures).
+    const off = !fam ? [] : [...document.body.querySelectorAll("*")].filter(e => {
+        const r = e.getBoundingClientRect();
+        if (!(r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < innerHeight)) return false;
+        if (![...e.childNodes].some(n => n.nodeType === 3 && /[A-Za-z0-9]/.test(n.textContent))) return false;
+        const first = unq(getComputedStyle(e).fontFamily.split(",")[0]);
+        return first !== fam && !/mono/i.test(first);
+    }).slice(0, 3).map(e => `${unq(getComputedStyle(e).fontFamily.split(",")[0])}: ${(e.textContent || "").trim().slice(0, 30)}`);
+    return {fam, faces, body, probe: !!probe, off, ok: !!fam && faces.includes(fam) && unq(body.split(",")[0]) === fam};
+}"""
+
+# A visible money figure printed off the house formats (lib/format.ts): "$" then a space ("$ 10.00", the bundle's script
+# price), four or more digits with no comma ("$11134.68", "$1338"), or $1,000+ with cents ("$28,507.24"). Aggregates
+# are whole dollars with commas from $1,000 (the dashboard's "$1,005,875"); a unit price under $1,000 keeps its
+# cents ("$9.99"). A fan's or OnlyFans' own text under $1,000 ("I sent you a $50.00 tip") passes.
+# The house money format, as on the dashboard: whole dollars with en-US commas ("$1,005,875", "$86"),
+# or "$11.1k" on the fan-list badge. Cents only on a real non-round unit price or average ("$19.99", an LTV
+# "$86.42"), and only on screens flagged `prices` in screens.py; never "$N.00", "$ 10" or "$11134". Chat bubbles
+# ([data-msg-id]) are what the fan or creator typed ("I sent you a $50.00 tip") and are skipped.
+MONEY_JS = r"""(prices) => {
+    const tok = /\$(\s*)([\d,]+)(?:\.(\d+))?([kKmM])?/g;
+    const out = [];
+    const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let n; (n = w.nextNode()) && out.length < 5;) {
+        const el = n.parentElement;
+        if (!el || !n.textContent.includes("$") || el.closest("[data-msg-id]")) continue;
+        const r = el.getBoundingClientRect();
+        if (!(r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < innerHeight)) continue;
+        for (const [t, space, int, dec, unit] of n.textContent.matchAll(tok)) {
+            const bad = space || (!int.includes(",") && int.length >= 4)
+                || (dec !== undefined && !unit && (dec === "00" || !prices || dec.length !== 2));
+            if (bad) { out.push(t.trim()); break; }
+        }
+    }
+    return out;
 }"""
 
 
@@ -228,6 +275,8 @@ def font_problems(page) -> list[str]:
     f = page.evaluate(FONT_JS)
     if not f["ok"]:
         return [f"font: --font-ui family {f['fam']!r}, loaded faces {f['faces']}, body font-family {f['body'][:100]!r}"]
+    if f["off"]:
+        return [f"font: text not in the app font: {f['off']}"]
     if not f["probe"]:
         return []
     cdp = page.context.new_cdp_session(page)

@@ -25,7 +25,7 @@ import asyncio
 import bisect
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -289,6 +289,66 @@ def _week_slot(slot: str) -> dict[str, int]:
     return {"weekday": int(weekday), "hour": int(hour)}
 
 
+def _with_of_days(ledger: list[dict[str, Any]], of_cells: dict[tuple[str, str], list[dict[str, Any]]],
+                  dims: tuple[str, ...]) -> list[dict[str, Any]]:
+    """Per-(account, local day, kind) ledger cells with every (Creator, day)
+    OnlyFans' own earnings are stored for read from OF in place of the ledger
+    (of_stats_daily.earnings_window: OF is the truth for a Creator's earnings,
+    the ledger only holds what we ingested), summed over `dims`. A ledger cell
+    with no `account_id` is from a span no OF day covers (`_of_spans`): kept."""
+    out: dict[tuple, dict[str, Any]] = {}
+    kept = (c for c in ledger if (c.get("account_id"), c["day"]) not in of_cells)
+    for c in (*kept, *(c for v in of_cells.values() for c in v)):
+        key = tuple(c[d] for d in dims)
+        acc = out.setdefault(key, {**dict(zip(dims, key)), **{m: 0 for m in tx_rollup.MEASURES}})
+        for m in tx_rollup.MEASURES:
+            acc[m] += int(c[m] or 0)
+    return list(out.values())
+
+
+def _of_spans(of_cells: dict[tuple[str, str], list[dict[str, Any]]], account_ids: list[str] | None,
+              start: datetime | None, end: datetime | None, zone: ZoneInfo | None,
+              ) -> list[tuple[list[str], list[tuple[datetime, datetime]], list[tuple[datetime, datetime]]]] | None:
+    """The Creators in scope grouped by the window's local days OnlyFans' own
+    figure is stored for (`of_cells`), each group with the spans of [start,
+    end] those days cover and the rest: the ledger is read for the rest only
+    (today, and any day OF's history has not reached), not for the days OF's
+    figure replaces. None for an open window or an unscoped read (the whole
+    window's ledger, `_with_of_days` drops the replaced days)."""
+    if start is None or end is None or account_ids is None:
+        return None
+    lo, hi = of_stats_daily.window_days(start, end)
+    tz, tick = zone or timezone.utc, timedelta(microseconds=1)
+
+    def midnight(d) -> datetime:
+        return datetime.combine(d, time(), tzinfo=tz).astimezone(timezone.utc).replace(tzinfo=None)
+
+    days = [lo + timedelta(days=i) for i in range((hi - lo).days + 1)]
+    groups: dict[tuple, list[str]] = {}
+    for a in account_ids:
+        groups.setdefault(tuple(d for d in days if (a, d.isoformat()) in of_cells), []).append(a)
+    out = []
+    for covered_days, ids in groups.items():
+        covered: list[tuple[datetime, datetime]] = []
+        rest: list[tuple[datetime, datetime]] = []
+        cur = start
+        for d in covered_days:
+            a0, a1 = max(midnight(d), start), min(midnight(d + timedelta(days=1)), end + tick)
+            if a0 >= a1:
+                continue
+            if a0 > cur:
+                rest.append((cur, a0 - tick))
+            if covered and covered[-1][1] + tick == a0:
+                covered[-1] = (covered[-1][0], a1 - tick)
+            else:
+                covered.append((a0, a1 - tick))
+            cur = a1
+        if cur <= end:
+            rest.append((cur, end))
+        out.append((ids, covered, rest))
+    return out
+
+
 @router.get("/admin/stats/revenue")
 async def revenue(
     account_id: str | None = Query(None),
@@ -345,6 +405,15 @@ async def revenue(
     chart. A reversal is dated by its sale (`occurred_at`; the ledger keeps no
     reversal time), where Infloww dates a refund by its credit date.
 
+    OnlyFans is the truth for a Creator's earnings: grouped by `day` or `kind`
+    (earnings, not reversals), each complete (Creator, UTC day) whose own OF
+    Statistics figure is stored (`of_earnings_daily`, of_stats_daily.py) reads
+    that figure in place of the ledger's sales of the day: OF's net, a derived
+    gross, fee = gross - net, no VAT. Today, and any day not read from OF yet,
+    stay the ledger's. The response then adds `history_missing_days`: the
+    (Creator, day) pairs before the Creator was added with neither, which a
+    growth against the window must read as unknown.
+
     `group_by=hour_of_week` folds the window into the report zone's weekday
     and hour (Creator reports' Earnings heatmap): rows `{weekday, hour,
     total_cents, count}` (ISO weekday, 1 = Monday; hour 0-23), only the slots
@@ -364,10 +433,35 @@ async def revenue(
     statuses = REVERSED_STATUSES if status == "reversed" else TRACKED_STATUSES
     scope = {"account_ids": account_ids, "start": start, "end": end, "where": {"status": statuses}}
 
+    # Earnings by day or kind read OnlyFans' own figure for every complete
+    # (Creator, day) it is stored for (`_with_of_days`); hours, the heatmap and
+    # reversals stay the ledger's (OF charts no hour, no reversal).
+    of_cells: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    gaps = None
+    if status == "tracked" and group_by in ("day", "kind"):
+        of_cells, gaps = await of_stats_daily.earnings_window(account_ids, start, end)
+
     async with get_session() as s:
         # One read, day x kind; the day rows and the nested by_kind rows are
         # both sums of it, so the children always sum to their parent day.
-        if by_time:
+        if of_cells:
+            groups = _of_spans(of_cells, account_ids, start, end, zone)
+            if groups is None:
+                ledger = await _day_sums(s, ("account_id", "kind"), zone, **scope)
+            else:
+                # The rest spans hold no day OF's figure replaces, so they are read
+                # as the ledger-only path reads its window: days only when asked.
+                ledger = []
+                for ids, _covered, rest in groups:
+                    for a, b in rest:
+                        span = {**scope, "account_ids": ids, "start": a, "end": b}
+                        ledger += (await _day_sums(s, ("kind",), zone, **span) if by_time else
+                                   [{"day": None, **r._asdict()}
+                                    for r in await tx_rollup.window_sums(s, ("kind",), **span)])
+            cells = _with_of_days(ledger, of_cells, ("day", "kind") if by_time else ("kind",))
+            if not by_time:
+                cells = [{**c, "day": None} for c in cells]
+        elif by_time:
             unit = "%Y-%m-%dT%H:00" if group_by == "hour" else "%Y-%m-%d"
             cells = await _day_sums(s, ("kind",), zone, fmt=unit, **scope)
         elif group_by == "hour_of_week":
@@ -424,7 +518,12 @@ async def revenue(
         for row in out:
             row["by_kind"] = children.get(row["day"], [])
 
-    return {"rows": out}
+    resp: dict[str, Any] = {"rows": out}
+    if gaps is not None:
+        # (Creator, day) pairs before a Creator was added with no OF earnings
+        # stored: unknown, not $0.00, so a growth against this window is "-".
+        resp["history_missing_days"] = gaps
+    return resp
 
 
 # ── 2. Grok daily cost ──────────────────────────────────────────────
@@ -1863,7 +1962,7 @@ async def per_model(
             log.warning("per-model pending_q failed; reporting 0 pending", exc_info=True)
             return []
 
-    r_sums, r_new, r_act, r_act_tx, r_msg, r_reply, r_pending, r_spend, r_of = await asyncio.gather(
+    r_sums, r_new, r_act, r_act_tx, r_msg, r_reply, r_pending, r_spend, r_of, (of_cells, _) = await asyncio.gather(
         _sums(),
         _run(new_subs_q),
         _run(active_subs_q),
@@ -1873,6 +1972,7 @@ async def per_model(
         _run_pending(pending_q),
         _run(spenders_q),
         of_stats_daily.window_figures(account_ids, start, end),
+        of_stats_daily.earnings_window(account_ids, start, end),
     )
 
     # Account labels — single query, separate from the heavy aggregates.
@@ -1983,6 +2083,31 @@ async def per_model(
         if r.status in REVERSED_STATUSES:
             row["refunded_cents"] += amount
             row["refunded_net_cents"] += int(r.net_cents or 0)
+
+    # A Creator's earnings on each complete day OnlyFans' own figure is stored
+    # for are OF's (`_with_of_days`, as /admin/stats/revenue reads them): the
+    # ledger's tracked sales of those days out, OF's in. Pending, refunds and
+    # PPV conversions stay the ledger's (OF charts none of them).
+    if of_cells:
+        tracked = {"status": TRACKED_STATUSES}
+        groups = _of_spans(of_cells, account_ids, start, end, zone)
+        async with get_session() as ss:
+            if groups is None:
+                ledger = await _day_sums(ss, ("account_id", "kind"), zone, account_ids=sorted({a for a, _ in of_cells}),
+                                         start=start, end=end, where=tracked)
+                replaced = [c for c in ledger if (c["account_id"], c["day"]) in of_cells]
+            else:
+                # The ledger's sales over the spans OF's days cover, whole days from the daily rollup.
+                replaced = [r._asdict() for ids, covered, _rest in groups for a, b in covered
+                            for r in await tx_rollup.window_sums(ss, ("account_id", "kind"), account_ids=ids,
+                                                                 start=a, end=b, where=tracked)]
+        for sign, cells in ((-1, replaced), (1, [c for v in of_cells.values() for c in v])):
+            for c in cells:
+                row = _ensure(c["account_id"])
+                row["revenue_by_kind"][_kind_bucket(c["kind"])] += sign * int(c["gross_cents"] or 0)
+                row["total_revenue_cents"] += sign * int(c["gross_cents"] or 0)
+                row["total_net_revenue_cents"] += sign * int(c["net_cents"] or 0)
+                row["net_missing_count"] += sign * int(c["net_missing"] or 0)
 
     for r in r_new:
         row = _ensure(r.account_id)

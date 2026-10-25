@@ -15,6 +15,7 @@ import { useState, type ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
 import { MP } from "@/lib/messagesPro";
+import { NOT_WIRED, notWiredTitle, useNotWiredNote, type NotWiredKey } from "./NotWired";
 
 /** A `.pop` menu's box (`MP.menu.panel`, mh:361-363): it scrolls past its
  *  72vh, with the Clone's drop shadow, in our colours. Each menu adds its
@@ -41,18 +42,27 @@ export const MENU_ITEM = cn(MENU_ROW, "text-fg hover:bg-bg-elev-1");
  *  icon centred. Each adds its colours. */
 export const ICON_BUTTON = cn(MP.chatHeader.iconButton, "grid place-items-center");
 
-/** A Not wired menu row (spec, "Not wired rendering"): `aria-disabled`, the
- *  title "not wired" and no click handler, so the tooltip still shows. */
-export function NotWiredMenuRow({ children }: { children: ReactNode }) {
+/** A Not wired menu row (spec, "Not wired rendering"; `NotWired`):
+ *  `aria-disabled`, titled with its excuse, and a click calls nothing but
+ *  shows that excuse under the row, so the menu says why rather than sit
+ *  there. */
+export function NotWiredMenuRow({ why, children }: { why: NotWiredKey; children: ReactNode }) {
+  const note = useNotWiredNote();
   return (
-    <button
-      type="button"
-      aria-disabled="true"
-      title="not wired"
-      className={cn(MENU_ROW, "text-fg-dim cursor-not-allowed")}
-    >
-      {children}
-    </button>
+    <>
+      <button
+        type="button"
+        aria-disabled="true"
+        title={notWiredTitle(why)}
+        onClick={note.onClick}
+        className={cn(MENU_ROW, "text-fg-dim cursor-help")}
+      >
+        {children}
+      </button>
+      {note.open && (
+        <div role="status" className="px-3 pb-2 text-xs leading-snug text-fg-dim">{NOT_WIRED[why]}</div>
+      )}
+    </>
   );
 }
 

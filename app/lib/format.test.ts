@@ -10,7 +10,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { fmtAgo, fmtDuration, parseUtc } from "./format";
+import { fmtAgo, fmtCents, fmtDuration, fmtPrice, parseUtc } from "./format";
 
 describe("fmtDuration", () => {
   it("renders m:ss", () => {
@@ -68,5 +68,32 @@ describe("parseUtc", () => {
     expect(parseUtc("2026-10-19")?.toISOString()).toBe("2026-10-19T00:00:00.000Z");
     expect(parseUtc("nope")).toBeNull();
     expect(parseUtc(null)).toBeNull();
+  });
+});
+
+describe("money: fmtCents (aggregates) and fmtPrice (unit prices)", () => {
+  it("fmtCents is whole dollars with commas at every size, like the dashboard", () => {
+    expect(fmtCents(28126)).toBe("$281");
+    expect(fmtCents(8629)).toBe("$86");
+    expect(fmtCents(13500)).toBe("$135");
+    expect(fmtCents(1113468)).toBe("$11,135");
+    expect(fmtCents(100587500)).toBe("$1,005,875");
+    expect(fmtCents(0)).toBe("$0");
+    expect(fmtCents(-28126)).toBe("-$281");
+  });
+  it("fmtPrice keeps real cents, drops .00, never rounds", () => {
+    expect(fmtPrice(1999)).toBe("$19.99");
+    expect(fmtPrice(4000)).toBe("$40");
+    expect(fmtPrice(125022)).toBe("$1,250.22");
+  });
+  it("fmtPrice keeps an average's cents (rounded to the cent) and reads a missing one as —", () => {
+    expect(fmtPrice(8642.4)).toBe("$86.42");
+    expect(fmtPrice(25000 / 168)).toBe("$1.49");
+    expect(fmtPrice(-1240)).toBe("-$12.40");
+    expect(fmtPrice(100.5)).toBe("$1.01");
+    expect(fmtPrice(-100.5)).toBe("-$1.01");
+    expect(fmtPrice(null)).toBe("—");
+    expect(fmtPrice(undefined)).toBe("—");
+    expect(fmtPrice(Number.NaN)).toBe("—");
   });
 });

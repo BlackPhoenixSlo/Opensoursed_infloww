@@ -7,16 +7,17 @@
 
 import { SITE_URL } from "@/lib/site";
 
-/** Our "IF" square, redrawn (not Infloww's asset): their white IF mark, plus an orange dot. */
+/** Our "OIF" square, redrawn (not Infloww's asset): their white IF mark with an O in front, plus an orange dot. */
 export function IfMark({ className = "size-10" }: { className?: string }) {
   return (
     <svg className={`${className} shrink-0`} viewBox="0 0 40 40" aria-hidden="true" focusable="false">
       <rect width="40" height="40" rx="9" fill="#fff" />
-      <rect x="9" y="10" width="5" height="20" fill="#0c0c0c" />
-      <rect x="17" y="10" width="5" height="20" fill="#0c0c0c" />
-      <rect x="17" y="10" width="14" height="5" fill="#0c0c0c" />
-      <rect x="17" y="18" width="10" height="4.5" fill="#0c0c0c" />
-      <circle cx="30" cy="28" r="2.5" fill="#f88056" />
+      <rect x="6" y="12" width="7" height="16" rx="3.5" fill="none" stroke="#0c0c0c" strokeWidth={4} />
+      <rect x="18" y="10" width="4" height="20" fill="#0c0c0c" />
+      <rect x="25" y="10" width="4" height="20" fill="#0c0c0c" />
+      <rect x="25" y="10" width="11" height="4" fill="#0c0c0c" />
+      <rect x="25" y="18" width="8" height="4" fill="#0c0c0c" />
+      <circle cx="33" cy="28" r="2.5" fill="#f88056" />
     </svg>
   );
 }

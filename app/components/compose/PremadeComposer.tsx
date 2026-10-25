@@ -32,6 +32,7 @@ import { useAllModelsInclude } from "@/hooks/useAllModelsInclude";
 import { useVaultLists } from "@/hooks/useVaultMedia";
 
 import { AccountPicker } from "./AccountPicker";
+import { fmtPrice } from "@/lib/format";
 
 type Kind = "auto_posts" | "mass_premade";
 
@@ -768,7 +769,7 @@ export function PremadeForm({
                 />
                 {Number(r.price) > 0 ? (
                   <span className="text-warn text-[11px]">
-                    🔒 PPV ${Number(r.price).toFixed(2)} · needs an image
+                    🔒 PPV {fmtPrice(Math.round(Number(r.price) * 100))} · needs an image
                   </span>
                 ) : (
                   <span className="text-fg-dim text-[11px]">{posts ? "free post" : "free message"}</span>

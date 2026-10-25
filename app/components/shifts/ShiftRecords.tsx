@@ -46,11 +46,11 @@ export const recordHeads = (tz: string) => [
   "Employee", "Creator", `Clock in (${tz})`, `Clock out (${tz})`, "Worked hours", "Sales", "Recorded earnings",
 ];
 
-/** One record as the table prints it. */
-export const recordCells = (r: ShiftRecord, tz: string, names: RecordNames) => [
+/** One record as the table prints it; the Export passes `fmtPrice` so the CSV keeps the cents. */
+export const recordCells = (r: ShiftRecord, tz: string, names: RecordNames, money: (cents: number) => string = fmtCents) => [
   names.employee(r.employee_id), names.creator(r.account_id), clockStamp(r.in_utc, tz),
   r.out_utc ? clockStamp(r.out_utc, tz) : "Clocked in", r.minutes == null ? "-" : fmtHours(r.minutes), r.sales,
-  fmtCents(r.sales_cents),
+  money(r.sales_cents),
 ];
 
 export default function ShiftRecords({ records, tz, names, employees }: {

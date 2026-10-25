@@ -6,13 +6,26 @@
  * inline copies in PerModelKpiGrid / PerEmployeeTable.
  */
 
-/** Cents → "$1.23" / "$1,234". `null` / `undefined` / `NaN` → "—". */
+/** Cents → an aggregate (a total, spend, earnings, a chart axis / tooltip / peak): whole dollars with en-US commas
+ *  at every size, "$0", "$86", "$1,234", as the dashboard prints them; a loss keeps its leading minus, "-$12".
+ *  A unit price or an average (they keep their cents, as Infloww prints them) is `fmtPrice`.
+ *  `null` / `undefined` / `NaN` → "—". */
 export function fmtCents(c: number | null | undefined): string {
   if (c == null || Number.isNaN(c)) return "—";
-  const d = c / 100;
-  return d >= 1000
-    ? `$${d.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
-    : `$${d.toFixed(2)}`;
+  const d = Math.round(Math.abs(c) / 100);
+  return `${c < 0 && d > 0 ? "-" : ""}$${d.toLocaleString("en-US")}`;
+}
+
+/** Cents → a unit price (a PPV, a sale line, a script, a subscription, a promo cost) or an average / a rate (avg
+ *  spend, LTV, ARPU, per hour, CPC, CPS): its cents, rounded to the cent, with commas, and no ".00" on a whole
+ *  amount: "$9.99", "$10", "$1,234.56", as Infloww keeps cents on these (its `getMoneyFormat` / `formatMoney`,
+ *  index.9f50f370.js @11226956, @13925782). A loss keeps its leading minus. `null` / `undefined` / `NaN` → "—". */
+export function fmtPrice(cents: number | null | undefined): string {
+  if (cents == null || Number.isNaN(cents)) return "—";
+  const c = Math.sign(cents) * Math.round(Math.abs(cents)); // a half cent rounds away from zero either side
+  const digits = c % 100 === 0 ? 0 : 2;
+  const s = (Math.abs(c) / 100).toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  return `${c < 0 ? "-" : ""}$${s}`;
 }
 
 /** Same as fmtCents but renders 0 as "—" — matches the PerEmployeeTable
@@ -23,11 +36,11 @@ export function fmtCentsBlankZero(c: number | null | undefined): string {
 }
 
 /** Cents → a Fan's Total spend at a glance (docs/spec/phase-02-fan-list-pane.md,
- *  Rows): whole dollars, "$45" / "$9999", and above $9,999 shortened to "k"
- *  with at most one decimal, "$10k" / "$12.5k". */
+ *  Rows): whole dollars with commas, "$45" / "$9,999", and above $9,999 shortened
+ *  to "k" with at most one decimal, "$10k" / "$12.5k". */
 export function fmtSpend(cents: number): string {
   const dollars = Math.round(cents / 100);
-  return dollars > 9_999 ? `$${Math.round(dollars / 100) / 10}k` : `$${dollars}`;
+  return dollars > 9_999 ? `$${Math.round(dollars / 100) / 10}k` : `$${dollars.toLocaleString("en-US")}`;
 }
 
 export function fmtInt(n: number | null | undefined): string {

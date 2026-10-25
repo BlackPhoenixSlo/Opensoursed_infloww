@@ -31,6 +31,7 @@ import { sanitizePriceInput } from "@/components/chat/Composer";
 import { AccountPicker } from "./AccountPicker";
 import { MediaTray } from "./MediaTray";
 import { ScheduleField } from "./ScheduleField";
+import { fmtPrice } from "@/lib/format";
 
 interface FanOutResult {
   accountId: string;
@@ -383,7 +384,7 @@ export function PostComposer({
               className="flex-1 bg-bg border border-border rounded-md px-2 py-1.5 text-base md:text-xs focus:outline-none focus:border-accent disabled:opacity-40"
             />
             <span className={isPPV ? "text-warn text-[11px]" : "text-fg-dim text-[11px]"}>
-              {isPPV ? `🔒 PPV $${priceNum.toFixed(2)}` : "free"}
+              {isPPV ? `🔒 PPV ${fmtPrice(Math.round(priceNum * 100))}` : "free"}
             </span>
           </div>
           {isPaidPage && (

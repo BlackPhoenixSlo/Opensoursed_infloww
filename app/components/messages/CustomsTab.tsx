@@ -33,6 +33,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 
 import { relay } from "@/lib/relay";
+import { fmtCents, fmtPrice } from "@/lib/format";
 
 /** An account taking custom-sized tips with no watcher on it. */
 interface UntrackedRow {
@@ -116,7 +117,7 @@ interface ContextMsg {
 
 function money(cents: number | null | undefined): string {
   if (cents == null) return "—";
-  return `$${(cents / 100).toFixed(2)}`;
+  return fmtCents(cents);
 }
 
 /** How long he has been waiting. The number that should make someone move. */
@@ -740,7 +741,7 @@ function Section({
                               )}
                               {m.price_cents > 0 && (
                                 <span className="ml-1 opacity-60">
-                                  [{money(m.price_cents)} locked]
+                                  [{m.price_cents == null ? "—" : fmtPrice(m.price_cents)} locked]
                                 </span>
                               )}
                             </span>
@@ -858,7 +859,7 @@ export default function CustomsTab() {
                 <span className="font-medium">{u.account_name}</span> —{" "}
                 {u.qualifying_tips}{" "}
                 {u.qualifying_tips === 1 ? "tip" : "tips"}, biggest{" "}
-                {money(u.biggest_cents)}
+                {u.biggest_cents == null ? "—" : fmtPrice(u.biggest_cents)}
               </li>
             ))}
           </ul>

@@ -732,7 +732,7 @@ describe("Employee sales reads the per-employee figures for the selected window 
   const ranking = () => Array.from(card().querySelectorAll<HTMLElement>("[data-employee]"),
     (r) => `${r.querySelector("[data-name]")?.textContent} ${r.querySelector("[data-figure]")?.textContent}`);
   const ranked = (want: string[]) => waitFor(() => expect(ranking()).toEqual(want));
-  const WANT = ["Fixture Chatter One $42.00", "Unattributed $12.50", "Fixture Chatter Two $0.00"];
+  const WANT = ["Fixture Chatter One $42", "Unattributed $13", "Fixture Chatter Two $0"];
 
   it("ranks every Employee, Unattributed included, as the Relay credits them, in the capture's 350px card", async () => {
     await mountHome();
@@ -742,7 +742,7 @@ describe("Employee sales reads the per-employee figures for the selected window 
     expect(card().querySelector("[data-chart]")).toHaveClass("h-[350px]");
     // Each row's tooltip is the capture's first point line (#84), labelled as part of the ranking: no "Growth:" or
     // "From …:" lines.
-    expect(card().querySelector("[data-employee]")).toHaveAttribute("title", "Inflowwww extra · Earnings: $42.00");
+    expect(card().querySelector("[data-employee]")).toHaveAttribute("title", "Inflowwww extra · Earnings: $42");
     // The ranking stands in for the capture's daily line, so it is labelled as ours.
     expect(card().querySelector("[data-chart]")).toHaveAttribute("title", "Inflowwww extra");
   });
@@ -782,7 +782,7 @@ describe("Employee sales reads the per-employee figures for the selected window 
     expect(within(card()).getByRole("status")).toHaveTextContent(/^$/);
     expect(ranking()).toEqual([]);
     answer();
-    await ranked(["Unattributed $12.50"]);
+    await ranked(["Unattributed $13"]);
   });
 
   it("shows the capture's retry box on an error, and Retry reads again", async () => {

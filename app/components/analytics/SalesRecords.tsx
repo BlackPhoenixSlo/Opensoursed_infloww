@@ -86,7 +86,7 @@ import { useRoster } from "@/hooks/useRoster";
 import { reassignChoices, attributeTo, type ReassignEmployee } from "@/components/analytics/ReassignOptions";
 import { MAX_BATCH, useAttributeTip, useBatchAttribute } from "@/hooks/useStats";
 import { groupsInTreeOrder, useEmployeeGroups } from "@/lib/employeeGroups";
-import { fmtCents } from "@/lib/format";
+import { fmtPrice } from "@/lib/format";
 import { relay } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 
@@ -366,9 +366,9 @@ export default function SalesRecords() {
                   </td>
                   <td className={CELL}>{creatorName(r.account_id)}</td>
                   <td className={CELL}>{r.fan_label ?? (r.fan_id != null ? `Fan #${r.fan_id}` : "—")}</td>
-                  <td className={cn(CELL, "tabular-nums")}>{fmtCents(r.earnings_cents)}</td>
-                  <td className={cn(CELL, "tabular-nums")}>{fmtCents(r.gross_cents)}</td>
-                  <td className={cn(CELL, "tabular-nums")}>{fmtCents(r.net_cents)}</td>
+                  <td className={cn(CELL, "tabular-nums")}>{fmtPrice(r.earnings_cents)}</td>
+                  <td className={cn(CELL, "tabular-nums")}>{fmtPrice(r.gross_cents)}</td>
+                  <td className={cn(CELL, "tabular-nums")}>{r.net_cents == null ? "—" : fmtPrice(r.net_cents)}</td>
                   <td className={CELL}>{typeLabel(r.kind)}</td>
                   <td className={CELL}>{RULE_LABELS[r.rule] ?? r.rule}</td>
                   <td className={CELL}>{r.assigned_by}</td>

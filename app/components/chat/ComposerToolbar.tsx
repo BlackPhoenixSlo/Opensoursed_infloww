@@ -14,7 +14,7 @@
  *   (children: whatever sits between rows 2 and 3 — the reply strip, the PPV row)
  *   row 3, "Composer toolbar": Upload (the computer's file chooser), GIF,
  *     Vault, Schedule, @ Tag other Creators (the `tag` slot; it replaced
- *     "Mention this fan", TODO.md A5), "Aa" (Not wired), Translate (its
+ *     "Mention this fan", TODO.md A5), "Aa" (Not wired: a click says why), Translate (its
  *     popover, below), then a round Send at the right end
  *
  * It holds no send state. The Composer keeps every piece of draft state and
@@ -34,6 +34,7 @@ import { MP } from "@/lib/messagesPro";
 import { UPLOAD_ACCEPT } from "@/hooks/useComposerUploads";
 import { cn } from "@/lib/utils";
 import { MENU_PANEL } from "./MenuParts";
+import { NotWiredButton } from "./NotWired";
 import { useEffectiveTranslateMode } from "@/hooks/useTranslateMode";
 
 /** A button-row pill (Infloww's flat pill, `MP.composer.pill`, CP5,
@@ -201,15 +202,14 @@ export function ComposerToolbar({
         </button>
         {tag}
         {/* Not wired: OnlyFans strips markup from DM text (spec, ASSUMPTION).
-         *  Drawn as Infloww's, in its neighbours' grey and at full opacity. */}
-        <button
-          type="button"
-          disabled
-          title="not wired"
-          className={cn(TOOLBAR_ICON, MP.composer.aa, "text-[var(--inf-composer-glyph,var(--color-fg-dim))] disabled:opacity-100")}
+         *  Drawn as Infloww's, in its neighbours' grey; a click says so. */}
+        <NotWiredButton
+          why="aa"
+          notePlace="bottom-full left-0 mb-1"
+          className={cn(TOOLBAR_ICON, MP.composer.aa, "text-[var(--inf-composer-glyph,var(--color-fg-dim))]")}
         >
           Aa
-        </button>
+        </NotWiredButton>
         <TranslatePopover accountId={accountId} onToggleOutbound={onToggleOutbound} />
         {/* Send bottom-aligned: 16px above the Composer's bottom, as the capture (C8). */}
         <div className="ml-auto self-end flex items-center gap-2">

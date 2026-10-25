@@ -27,6 +27,7 @@ import { MP } from "@/lib/messagesPro";
 import { cn } from "@/lib/utils";
 
 import { CHAT_EXTRA_ROW, ExtraMenuRow } from "./ExtraMenuRow";
+import { fmtPrice } from "@/lib/format";
 
 export function ScheduledForChat({
   accountId, fanId,
@@ -84,7 +85,7 @@ export function ScheduledForChat({
                         <span className="text-fg-dim">📎 {m.mediaCount}</span>
                       )}
                       {m.price && m.price > 0 && (
-                        <span className="text-warn">🔒 ${m.price.toFixed(2)}</span>
+                        <span className="text-warn">🔒 {fmtPrice(Math.round(m.price * 100))}</span>
                       )}
                     </div>
                   </div>

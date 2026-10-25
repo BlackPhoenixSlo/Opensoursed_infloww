@@ -30,7 +30,7 @@ import { useEmployee } from "@/contexts/EmployeeContext";
 import { useUser } from "@/contexts/UserContext";
 import { useAccounts } from "@/hooks/useAccounts";
 import { cn } from "@/lib/utils";
-import { fmtCents, fmtDateTime } from "@/lib/format";
+import { fmtCents, fmtDateTime, fmtPrice } from "@/lib/format";
 import {
   useAttributeTip,
   useSalesNeedingAttribution,
@@ -188,7 +188,7 @@ function SaleRow({ row }: { row: SaleNeedingAttribution }) {
           the same three children in the same order. */}
       <div className="flex items-center gap-2 md:contents">
         <span className="text-sm font-semibold tabular-nums text-fg w-auto md:w-20">
-          {fmtCents(row.amount_cents)}
+          {fmtPrice(row.amount_cents)}
         </span>
         <span className="text-[10px] uppercase tracking-wide text-fg-dim w-auto md:w-8">
           {kindLabel(row.kind)}

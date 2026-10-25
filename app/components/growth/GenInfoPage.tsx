@@ -15,11 +15,11 @@
  * Restored from the short-lived Fan info page (b60d9839), pointed at gen_info.
  */
 
-import type { ReactNode } from "react";
 
 import { AiKeyNotice } from "@/components/AiKeyNotice";
 import { FormBlock, NoCreator, useAutomationCreator } from "@/components/automations/automationPage";
 import { OnboardRecentCard } from "@/components/automations/OnboardRecentCard";
+import type { CreatorPick } from "@/components/shell/CreatorRail";
 import { PageFrame } from "@/components/shell/PageFrame";
 import { IfSwitch } from "@/components/ui/infloww";
 import { useAutomationRules, useSwitchKind } from "@/hooks/useAutomations";
@@ -28,15 +28,15 @@ const TITLE = "Gen-Info";
 const KIND = "gen_info";
 
 export default function GenInfoPage() {
-  const { accountId, picker, loading } = useAutomationCreator();
+  const { accountId, creators, loading } = useAutomationCreator();
   if (!accountId) {
-    return <PageFrame title={TITLE} extra={picker}>{!loading && <NoCreator />}</PageFrame>;
+    return <PageFrame title={TITLE} creators={creators}>{!loading && <NoCreator />}</PageFrame>;
   }
   // Keyed, so a switch in flight can never land on the next creator.
-  return <GenInfo key={accountId} accountId={accountId} picker={picker} />;
+  return <GenInfo key={accountId} accountId={accountId} creators={creators} />;
 }
 
-function GenInfo({ accountId, picker }: { accountId: string; picker: ReactNode }) {
+function GenInfo({ accountId, creators }: { accountId: string; creators: CreatorPick }) {
   const rulesQ = useAutomationRules(accountId);
   const switchKind = useSwitchKind(accountId);
   // "On" = a running gen_info row, the one the server wakes. No rows read yet
@@ -47,7 +47,7 @@ function GenInfo({ accountId, picker }: { accountId: string; picker: ReactNode }
   const generated = rule?.last_run?.stats?.generated;
 
   return (
-    <PageFrame title={TITLE} extra={picker}>
+    <PageFrame title={TITLE} creators={creators}>
       <div className="max-w-[720px] space-y-8">
         <AiKeyNotice accountId={accountId} kinds={[KIND]} />
 

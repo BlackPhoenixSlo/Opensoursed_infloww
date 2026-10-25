@@ -3,10 +3,11 @@
 /**
  * Growth > Vault Pro, laid out from its Layout capture (`docs/infloww-layouts/growth-vault-pro.md`, ticket 36).
  *
- * The header is the bundle's: Infloww's 48px page header holding "Vault Pro", the Creator select, "Learn" and "Add
- * media" (#3 to #11), plus our one Extras overflow button left of Add media, which opens our own tools (collect,
- * describe, harvest, duplicates, the pack picker, AI folders, disputes and the flags review) in a right drawer.
- * Below it, flush and filling the page (#15, #16), the existing Vault manage panel holds the folder rail and the
+ * The header is the bundle's: Infloww's 48px page header holding "Vault Pro", "Learn" and "Add media" (#3 to #11),
+ * plus our one Extras overflow button left of Add media, which opens our own tools (collect, describe, harvest,
+ * duplicates, the pack picker, AI folders, disputes and the flags review) in a right drawer. The Creator is picked on
+ * the creator column left of the page (`CreatorRail`, as Smart lists'), in place of the bundle's header select (#6).
+ * Beside it, flush and filling the page (#15, #16), the existing Vault manage panel holds the folder rail and the
  * grid; with no Creator, a static frame of the same rail and toolbar, disabled, around an empty state. "Add media"
  * reveals the existing import card where the bundle puts its upload card: over the whole page (#78), with a back
  * arrow (#79). The card's contents are Phase 5's and are not touched here.
@@ -18,7 +19,8 @@
 import { useState } from "react";
 import { ArrowLeft, ListFilter, Loader2, MoreHorizontal, Plus, Search } from "lucide-react";
 
-import { EmptyState, IfButton, IfCreatorSelect, IfLearn, InflowwPageHeader } from "@/components/ui/infloww";
+import { CreatorRail } from "@/components/shell/CreatorRail";
+import { EmptyState, IfButton, IfLearn, InflowwPageHeader } from "@/components/ui/infloww";
 import { VaultAccountProvider, useVaultAccount } from "@/components/vault/VaultAccount";
 import { RAIL_CLASS, RAIL_HEAD_CLASS, RAIL_ICON_BOX, RAIL_ROW_INNER, railRowClass } from "@/components/vault/VaultFolderRail";
 import VaultImportCard from "@/components/vault/VaultImportCard";
@@ -63,24 +65,15 @@ const UPLOAD_TOUR: VaultTourStep[] = [
   },
 ];
 
-/** The capture's header bar (#3 to #11): title, Creator select, then Learn, our Extras overflow and Add media at the
- *  right; a rule beneath. On a phone the right-hand group wraps under the title. */
+/** The capture's header bar (#3 to #11): title, then Learn, our Extras overflow and Add media at the right; a rule
+ *  beneath. On a phone the right-hand group wraps under the title. */
 function VaultHeader({ onAddMedia, onExtras }: { onAddMedia: () => void; onExtras?: () => void }) {
-  const { accountId, account, accounts, sessionLost, setAccountId } = useVaultAccount();
-  // A model whose session dropped leaves `accounts` but stays selected (`sessionLost`); the select still shows her.
-  const options = account && !accounts.some((a) => a.id === account.id) ? [account, ...accounts] : accounts;
+  const { accountId, account, sessionLost } = useVaultAccount();
   return (
     <div className="shrink-0">
       <InflowwPageHeader
         title="Vault Pro"
         className="max-md:h-auto max-md:min-h-12 max-md:flex-wrap max-md:gap-y-2 max-md:px-3 max-md:py-1.5"
-        extra={
-          // #6: the bundle's `CreatorSelect$4` (176x32) over the page's one account source (`useVaultAccount`).
-          // Always shown; with no Creator to pick it is off and reads "No creators". The fieldset disables it.
-          <fieldset disabled={options.length === 0} className="m-0 min-w-0 border-0 p-0">
-            <IfCreatorSelect accounts={options} value={accountId} onChange={setAccountId} className="w-[176px]" />
-          </fieldset>
-        }
         actions={
           <div className="flex items-center gap-6">
             {/* #7 to #9: the book icon and 14px M1 text, to Infloww's help article. */}
@@ -125,7 +118,7 @@ function VaultHeader({ onAddMedia, onExtras }: { onAddMedia: () => void; onExtra
         <p className="border-b border-border px-3 py-2 text-xs text-warn sm:px-6" title={EXTRA_LABEL}>
           {account?.nickname || account?.id || "This model"}&apos;s OnlyFans
           session has dropped — nothing on this page can load until it is
-          re-captured. Pick another model above to keep working.
+          re-captured. Pick another model on the left to keep working.
         </p>
       )}
     </div>
@@ -190,7 +183,9 @@ function VaultEmptyFrame() {
 
 /** The page body, inside the provider so it can key its children on the model. */
 function VaultProBody() {
-  const { accountId, ready } = useVaultAccount();
+  const { accountId, account, accounts, ready, setAccountId } = useVaultAccount();
+  // A model whose session dropped leaves `accounts` but stays selected (`sessionLost`); the column still shows her.
+  const options = account && !accounts.some((a) => a.id === account.id) ? [account, ...accounts] : accounts;
   const [adding, setAdding] = useState(false);
   const [extrasOpen, setExtrasOpen] = useState(false);
   // The bundle's order: the Add media tour once the page has a Creator to add to, the upload guide the first time
@@ -229,44 +224,46 @@ function VaultProBody() {
           next time a piece of state is added — a reset effect can.
           The cost is that `type` and `sort` go back to their defaults on a
           switch; they are preferences, and worth it. */}
-      {accountId === null ? (
-        ready ? (
-          <VaultEmptyFrame />
+      <CreatorRail creators={{ accounts: options, value: accountId, onChange: setAccountId }} className="flex min-h-0 flex-col">
+        {accountId === null ? (
+          ready ? (
+            <VaultEmptyFrame />
+          ) : (
+            // #13: the bundle's `Spin` while the page loads.
+            <div role="status" aria-label="Loading" className="flex justify-center py-10 text-fg-dim">
+              <Loader2 size={24} className="animate-spin" aria-hidden />
+            </div>
+          )
         ) : (
-          // #13: the bundle's `Spin` while the page loads.
-          <div role="status" aria-label="Loading" className="flex justify-center py-10 text-fg-dim">
-            <Loader2 size={24} className="animate-spin" aria-hidden />
-          </div>
-        )
-      ) : (
-        <div key={accountId} className="flex-1 min-h-0 flex flex-col">
-          <VaultManagePanel extrasOpen={extrasOpen} onCloseExtras={() => setExtrasOpen(false)} />
+          <div key={accountId} className="flex-1 min-h-0 flex flex-col">
+            <VaultManagePanel extrasOpen={extrasOpen} onCloseExtras={() => setExtrasOpen(false)} />
 
-          {/* #78 to #80: the upload card over the whole page, a 20px back arrow, a 24px body that scrolls. The
-              card stays mounted while hidden, so files staged in it survive closing it; it is remounted with the
-              rest when the model changes. So Back never asks first, as the bundle's does with files picked (#79):
-              nothing is lost, and the title says so. */}
-          <div
-            hidden={!adding}
-            className="absolute inset-0 z-[1000] flex flex-col bg-bg"
-          >
-            <div className="shrink-0 px-6 pt-6">
-              <button
-                type="button"
-                aria-label="Back"
-                title={`${EXTRA_LABEL}\nThe picked files are kept, so Back does not ask first.`}
-                onClick={() => setAdding(false)}
-                className="flex items-center text-fg-dim hover:text-fg"
-              >
-                <ArrowLeft size={20} aria-hidden />
-              </button>
-            </div>
-            <div className="flex-1 min-h-0 overflow-y-auto p-6">
-              <VaultImportCard />
+            {/* #78 to #80: the upload card over the whole page, a 20px back arrow, a 24px body that scrolls. The
+                card stays mounted while hidden, so files staged in it survive closing it; it is remounted with the
+                rest when the model changes. So Back never asks first, as the bundle's does with files picked (#79):
+                nothing is lost, and the title says so. */}
+            <div
+              hidden={!adding}
+              className="absolute inset-0 z-[1000] flex flex-col bg-bg"
+            >
+              <div className="shrink-0 px-6 pt-6">
+                <button
+                  type="button"
+                  aria-label="Back"
+                  title={`${EXTRA_LABEL}\nThe picked files are kept, so Back does not ask first.`}
+                  onClick={() => setAdding(false)}
+                  className="flex items-center text-fg-dim hover:text-fg"
+                >
+                  <ArrowLeft size={20} aria-hidden />
+                </button>
+              </div>
+              <div className="flex-1 min-h-0 overflow-y-auto p-6">
+                <VaultImportCard />
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
+      </CreatorRail>
     </div>
   );
 }

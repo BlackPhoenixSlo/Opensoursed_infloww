@@ -33,6 +33,7 @@ import {
 import { type AccountMeta } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 import { onPopoutClick } from "@/lib/nav";
+import { fmtCents } from "@/lib/format";
 
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July",
   "August", "September", "October", "November", "December"];
@@ -60,7 +61,7 @@ function formatDate(iso: string | null): string {
   return Number.isNaN(d.getTime()) ? "-" : `${MONTHS[d.getMonth()]} ${pad(d.getDate())}, ${d.getFullYear()}`;
 }
 
-const usd = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+const usd = fmtCents; // a total: whole dollars
 
 type OnFilter = "all" | "on" | "off";
 

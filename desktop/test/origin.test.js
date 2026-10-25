@@ -36,6 +36,7 @@ test("serverOrigin sends the landing site (apex or www, either scheme) to the ho
   assert.strictEqual(serverOrigin("https://www.inflowwww.com"), HOSTED);
   assert.strictEqual(serverOrigin("http://INFLOWWWW.COM"), HOSTED);
   assert.strictEqual(serverOrigin(HOSTED), HOSTED);
+  assert.strictEqual(serverOrigin("http://app.inflowwww.com"), HOSTED); // app is https-only
   // every other server is kept as given, self-hosted ones included
   assert.strictEqual(serverOrigin("https://crm.example.com"), "https://crm.example.com");
   assert.strictEqual(serverOrigin("http://localhost:3011"), "http://localhost:3011");

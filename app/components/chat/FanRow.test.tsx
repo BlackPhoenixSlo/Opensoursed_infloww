@@ -16,6 +16,7 @@ import type { OFChatItem } from "@/lib/relay";
 import { renderWithProviders } from "@/test-utils";
 import { expectDomOrder } from "./composerTestHarness";
 import { FanRow } from "./FanRow";
+import { NOT_WIRED } from "./NotWired";
 
 const ACCOUNT_ID = "100000001";
 const FAN = { id: 200000001, name: "Fixture Fan One", username: "fixturefanone" };
@@ -439,16 +440,17 @@ describe("FanRow", () => {
     expect(verified()).not.toBeInTheDocument();
   });
 
-  it("ends line one in a muted ✕ named \"Not wired\" that says \"not wired\" and neither selects the row nor warms the Fan", async () => {
+  it("ends line one in a muted ✕ named \"Not wired\" whose click shows its excuse and neither selects the row nor warms the Fan", async () => {
     const cb = renderRow({ subscriptionStatus: "Set to Expire", expiredAt: before(-5 * 24 * HOUR) });
     const x = within(row()).getByRole("img", { name: "Not wired" });
-    expect(x).toHaveAttribute("title", "not wired");
+    expect(x).toHaveAttribute("title", `not wired: ${NOT_WIRED.rowClose}`);
     expect(x).toHaveClass("text-fg-dim");
     // After the handle and the badges.
     expectDomOrder([within(row()).getByText("@fixturefanone"), within(row()).getByText("Off", { exact: true }), x]);
 
     fireEvent.pointerDown(x);
     await userEvent.click(x);
+    expect(within(row()).getByRole("status")).toHaveTextContent(NOT_WIRED.rowClose);
     expect(cb.onSelect).not.toHaveBeenCalled();
     expect(cb.prefetchNow).not.toHaveBeenCalled();
   });
@@ -484,8 +486,8 @@ describe("FanRow", () => {
 
   it("reads a Total spend above $9,999 in \"k\" and a smaller one in whole dollars", () => {
     const cases: Array<[number, string]> = [
-      [999_900, "$9999"],
-      [999_949, "$9999"],
+      [999_900, "$9,999"],
+      [999_949, "$9,999"],
       [999_950, "$10k"],
       [1_000_000, "$10k"],
       [1_248_000, "$12.5k"],

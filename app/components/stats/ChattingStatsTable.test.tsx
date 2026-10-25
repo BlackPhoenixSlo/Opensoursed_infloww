@@ -71,7 +71,7 @@ describe("ChattingStatsTable", () => {
     const rows = within(table).getAllByRole("row").slice(1);
     expect(rows.map((r) => within(r).getAllByRole("cell")[0].textContent)).toEqual(["Alpha One", "Beta Two"]);
     const alpha = rows[0].textContent ?? "";
-    for (const text of ["Creator Eleven", "$900.00", "$450.00", "$75.00", "10.00%", "25.00%", "3m 05s", "8h", "50.00"]) {
+    for (const text of ["Creator Eleven", "$900", "$450", "$75", "10.00%", "25.00%", "3m 05s", "8h", "50.00"]) {
       expect(alpha).toContain(text);
     }
     expect(rows[1].textContent).toContain("2 creators");
@@ -116,8 +116,8 @@ describe("ChattingStatsTable", () => {
     expect(within(cells()[2]).getByRole("img", { name: "rising" })).toBeTruthy();
     expect(cells()[3].textContent).toBe("$1,200↓20.00%");
     expect(within(cells()[3]).getByRole("img", { name: "falling" })).toBeTruthy();
-    expect(cells()[4].textContent).toBe("$300.00-");
-    expect(cells()[5].textContent).toBe("$900.000.00%");
+    expect(cells()[4].textContent).toBe("$300-");
+    expect(cells()[5].textContent).toBe("$9000.00%");
     // Fans chatted 80 against 40 rises in the good colour; Response time 3m 05s against 6m 10s falls, and with a
     // lower wait the better, the fall takes the good colour.
     const cell = (label: string) => {
@@ -226,7 +226,7 @@ describe("ChattingStatsTable", () => {
     const onChatterOnly = vi.fn();
     renderWithProviders(<ChattingStatsTable from={FROM} to={TO} onChatterOnly={onChatterOnly} />);
     expect(await screen.findByText("No chatting in this window.")).toBeInTheDocument();
-    expect(within(screen.getByRole("group", { name: "Total sales" })).getByText("$0.00")).toBeInTheDocument();
+    expect(within(screen.getByRole("group", { name: "Total sales" })).getByText("$0")).toBeInTheDocument();
     expect(within(screen.getByRole("group", { name: "Unlock rate" })).getByText("-")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("checkbox", { name: "Show employees with chatter role only" }));
     expect(onChatterOnly).toHaveBeenCalledWith(true);

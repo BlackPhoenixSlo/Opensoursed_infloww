@@ -370,7 +370,7 @@ export default function EmployeesTab() {
               <div className={cn("truncate", !e.is_active && "line-through")} title={e.display_name}>
                 {e.display_name}{own && <span className="ml-1.5 text-[12px] text-muted">(you)</span>}
               </div>
-              {e.username && <div className="truncate text-[12px] text-muted font-mono">@{e.username}</div>}
+              {e.username && <div className="truncate text-[12px] text-muted">@{e.username}</div>}
             </div>
           </div>
         </td>

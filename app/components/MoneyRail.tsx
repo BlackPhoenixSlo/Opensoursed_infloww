@@ -71,6 +71,7 @@ import { focusManager, useQueries, useQueryClient } from "@tanstack/react-query"
 import { chatTabName, openChatTab } from "@/lib/chatPopout";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useRailSettings } from "@/hooks/useRailSettings";
+import { fmtPrice } from "@/lib/format";
 import { relay, type OFChatItem } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
 import { compareFanIds, type FanId, sameUserId } from "@/lib/fanId";
@@ -1010,10 +1011,14 @@ function MoneyRailPanel({
   );
 }
 
-/** "Jim has purchased your message for $25.22!" → "$25.22". */
-function amountFrom(text: string): string | null {
+/** The amount in OF's notification text, in the house price format (real cents, no ".00"):
+ *  "Jim has purchased your message for $25.22!" → "$25.22", "…sent you a $40.00 tip" → "$40".
+ *  Only this rail's amount chip is reformatted; the notification text itself is shown as OF wrote it. */
+export function amountFrom(text: string): string | null {
   const m = text.match(/\$\s?([\d,]+(?:\.\d{1,2})?)/);
-  return m ? `$${m[1]}` : null;
+  if (!m) return null;
+  const dollars = Number(m[1].replace(/,/g, ""));
+  return Number.isFinite(dollars) ? fmtPrice(Math.round(dollars * 100)) : `$${m[1]}`;
 }
 
 /** What was paid for — tips by typeKey, purchases split post/message/stream

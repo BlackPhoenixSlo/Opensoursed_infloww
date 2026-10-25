@@ -1,13 +1,13 @@
 /**
- * A PPV's status line ("$X.XX · paid" / "$X.XX · not paid", spec gap row L6).
+ * A PPV's status line ("$45 · paid" / "$9.99 · not paid", spec gap row L6; the price as `fmtPrice` prints it).
  * Split out of `MessageList` (ticket 99). Prices are dollars (`OFMessage.price`).
  */
-import { fmtCents } from "@/lib/format";
+import { fmtPrice } from "@/lib/format";
 import { MP } from "@/lib/messagesPro";
 import { cn } from "@/lib/utils";
 
 function dollars(price: number): string {
-  return fmtCents(Math.round(price * 100));
+  return fmtPrice(Math.round(price * 100));
 }
 
 /** The last line inside the PPV card, after its title and media, as the old

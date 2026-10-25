@@ -27,7 +27,7 @@ import ExportMenu from "@/components/stats/ExportMenu";
 import { employeeExport } from "@/components/stats/employeeExport";
 import { EmptyState, IF_TABLE } from "@/components/ui/infloww";
 import { type ChattingStatsRow, useChattingStats } from "@/hooks/useStats";
-import { fmtCents, fmtInt, fmtReplyTime, growthOf } from "@/lib/format";
+import { fmtCents, fmtInt, fmtPrice, fmtReplyTime, growthOf } from "@/lib/format";
 import { calcMinutes } from "@/lib/shifts";
 import { cn } from "@/lib/utils";
 
@@ -83,7 +83,7 @@ const COLUMNS: {
     tip: "Fans who spent money divided by fans chatted, × 100", fmt: (r) => pct(r.fan_cvr) },
   { key: "avg_spend_per_fan_cents", label: "Avg earnings per fan who spent money",
     tip: "Average spent by each fan who spent money, through direct messages and tips",
-    fmt: (r) => fmtCents(r.avg_spend_per_fan_cents) },
+    fmt: (r) => fmtPrice(r.avg_spend_per_fan_cents) },
   { key: "character_count", label: "Character count",
     tip: "Total number of characters in messages sent by employee. Does not include mass messages or automated messages",
     fmt: (r) => fmtInt(r.character_count) },
@@ -94,7 +94,7 @@ const COLUMNS: {
     fmt: (r) => (r.clocked_minutes == null ? "—" : calcMinutes(r.clocked_minutes)) },
   { key: "sales_per_clocked_hour_cents", label: "Sales per clocked hour",
     tip: "Average sales for every hour worked, based on clocked time. Includes sales through direct messages and tips",
-    fmt: (r) => fmtCents(r.sales_per_clocked_hour_cents) },
+    fmt: (r) => fmtPrice(r.sales_per_clocked_hour_cents) },
   { key: "messages_per_clocked_hour", label: "Messages sent per clocked hour",
     tip: "Average number of direct messages sent for every hour worked, based on clocked time",
     fmt: (r) => rate(r.messages_per_clocked_hour) },

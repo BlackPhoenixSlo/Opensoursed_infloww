@@ -262,7 +262,8 @@ export type S4SMark = { optedIn: boolean; pending: number };
 
 /** The 192px creator column; exported for Profile promotion and Smart lists, which list creators the same way. OF
  *  Manager's picks the scope (ScopeContext); with `onChange` the column is controlled instead (`value` is the picked
- *  creator, no "All creators" pick) and carries its own palette, for pages outside the OF Manager chrome. `className`
+ *  creator; `all` adds the "All creators" pick, else that menu only closes) and carries its own palette, for pages
+ *  outside the OF Manager chrome (`CreatorRail` lays it out beside a page's content). `className`
  *  sizes it. `variant="s4s"` is Share for Share's rail (`pageScene:"s4s"`): 300px, no "All creators" row, 30px
  *  avatars with the S4S tag and the request count from `marks` in place of the online dot and the OF count.
  *  Every copy filters 300ms after typing stops, ↑/↓ walk its rows and Enter picks one; a logged-out row says so and
@@ -273,6 +274,8 @@ export function CreatorColumn(props: {
   onPicked?: () => void;
   value?: string | null;
   onChange?: (accountId: string) => void;
+  /** A controlled column's "All creators" pick; `on` while it is the pick. */
+  all?: { on: boolean; pick: () => void };
   className?: string;
   variant?: "s4s";
   marks?: Record<string, S4SMark>;
@@ -303,7 +306,7 @@ function ColumnBody({ accounts, value, onChange, all, groups, ofManager = false,
   accounts: AccountMeta[];
   value?: string | null;
   onChange: (accountId: string) => void;
-  /** OF Manager's "All creators" pick; without it the menu only closes. */
+  /** The "All creators" pick (OF Manager's, or a controlled column's); without it the menu only closes. */
   all?: { on: boolean; pick: () => void };
   /** OF Manager's creator groups (the Tags) under All creators; `value` "" is none picked. */
   groups?: { tags: string[]; value: string; pick: (tag: string) => void };
@@ -393,7 +396,7 @@ function ColumnBody({ accounts, value, onChange, all, groups, ofManager = false,
       data-collapsed={collapsed || undefined}
       onKeyDown={onKeyDown}
     >
-      {!all && <style>{PALETTE}</style>}
+      {!ofManager && <style>{PALETTE}</style>}
       {collapsed ? (
         <div className="flex justify-center pt-4">
           <button

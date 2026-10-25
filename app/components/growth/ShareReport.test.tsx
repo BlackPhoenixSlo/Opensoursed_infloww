@@ -30,7 +30,7 @@ describe("ShareReport", () => {
     expect(f).toHaveBeenCalledWith("/share/7.s3cret/data", expect.objectContaining({ credentials: "omit" }));
     const row = screen.getByText("Reddit trial").closest("tr")!;
     expect([...row.querySelectorAll("td")].map((td) => td.textContent)).toEqual(
-      ["Reddit trial", "—", "2", "40", "$8.00", "1", "50.00%"]);
+      ["Reddit trial", "—", "2", "40", "$8", "1", "50.00%"]);
   });
 
   it("says when the link expired, and when it is unknown", async () => {

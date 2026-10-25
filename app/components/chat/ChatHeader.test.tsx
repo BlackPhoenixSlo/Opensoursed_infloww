@@ -58,6 +58,7 @@ import { applyTypingEvent } from "@/lib/fanTyping";
 import { makeTestQueryClient, renderWithProviders } from "@/test-utils";
 import { MP } from "@/lib/messagesPro";
 import { ChatHeader } from "./ChatHeader";
+import { NOT_WIRED } from "./NotWired";
 
 const ACCOUNT_ID = "100000001";
 const FAN_ID = 200000001;
@@ -210,9 +211,10 @@ describe("ChatHeader", () => {
       expect(mass).toHaveAttribute("rel", "noopener noreferrer");
       const online = menu.getByRole("button", { name: "Online fans message statistics" });
       expect(online).toHaveAttribute("aria-disabled", "true");
-      expect(online).toHaveAttribute("title", "not wired");
+      expect(online).toHaveAttribute("title", `not wired: ${NOT_WIRED.onlineStats}`);
       const gets = relayGet.mock.calls.length;
       await user.click(online);
+      expect(menu.getByRole("status")).toHaveTextContent(NOT_WIRED.onlineStats);
       expect(relayGet).toHaveBeenCalledTimes(gets);
       expect(relayPost).not.toHaveBeenCalled();
       expect(relayDelete).not.toHaveBeenCalled();
@@ -521,10 +523,10 @@ describe("ChatHeader", () => {
       await user.click(screen.getByRole("button", { name: "Gallery" }));
       const sheet = screen.getByRole("dialog", { name: "Chat gallery" });
       await waitFor(() => expect(within(sheet).getAllByRole("listitem")).toHaveLength(3));
-      expect(within(sheet).getAllByText("$15.00")).toHaveLength(2);
+      expect(within(sheet).getAllByText("$15")).toHaveLength(2);
       // The free item's tile carries no tag.
       expect(within(sheet).getAllByRole("listitem")[2]).toHaveTextContent(/^$/);
-      expect(within(sheet).queryByText("$0.00")).not.toBeInTheDocument();
+      expect(within(sheet).queryByText("$0")).not.toBeInTheDocument();
 
       const media = relayGet.mock.calls.map((c) => String(c[0])).filter((p) => p.includes("/media?"));
       expect(media).toHaveLength(1);
@@ -650,15 +652,16 @@ describe("ChatHeader", () => {
       expect(within(sheet).queryByText(/upstream 502/)).not.toBeInTheDocument();
     });
 
-    it('star and pin are Not wired: aria-disabled, titled "not wired", and a click calls no relay route', async () => {
+    it('star and pin are Not wired: aria-disabled, titled "not wired: <excuse>", a click shows the excuse and calls no relay route', async () => {
       const user = userEvent.setup();
       renderHeader();
-      for (const name of ["Priority", "Pinned chat"]) {
+      for (const [name, why] of [["Priority", NOT_WIRED.priority], ["Pinned chat", NOT_WIRED.pin]] as const) {
         const button = screen.getByRole("button", { name });
         expect(button).toHaveAttribute("aria-disabled", "true");
-        expect(button).toHaveAttribute("title", "not wired");
+        expect(button).toHaveAttribute("title", `not wired: ${why}`);
         const gets = relayGet.mock.calls.length;
         await user.click(button);
+        expect(screen.getByText(why)).toHaveAttribute("role", "status");
         expect(relayGet).toHaveBeenCalledTimes(gets);
       }
       expect(relayPost).not.toHaveBeenCalled();
@@ -824,9 +827,10 @@ describe("ChatHeader", () => {
 
       const report = within(menu).getAllByRole("button")[2];
       expect(report).toHaveAttribute("aria-disabled", "true");
-      expect(report).toHaveAttribute("title", "not wired");
+      expect(report).toHaveAttribute("title", `not wired: ${NOT_WIRED.report}`);
       const gets = relayGet.mock.calls.length;
       await user.click(report);
+      expect(within(menu).getByRole("status")).toHaveTextContent(NOT_WIRED.report);
       expect(relayGet).toHaveBeenCalledTimes(gets);
       expect(relayPost).not.toHaveBeenCalled();
       expect(relayDelete).not.toHaveBeenCalled();

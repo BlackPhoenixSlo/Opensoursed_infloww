@@ -48,8 +48,14 @@ vi.mock("@/lib/relay", async (importOriginal) => {
 });
 
 // An owner session: /admin/accounts is the account source.
-vi.mock("@/contexts/UserContext", () => ({ useUser: () => ({ user: { user_id: 1 } }) }));
-vi.mock("@/contexts/ChatterContext", () => ({ useChatter: () => ({ chatter: null }) }));
+vi.mock("@/contexts/UserContext", () => ({
+  useUser: () => ({ user: { user_id: 1 } }),
+  useOptionalUser: () => ({ user: { user_id: 1 } }),
+}));
+vi.mock("@/contexts/ChatterContext", () => ({
+  useChatter: () => ({ chatter: null }),
+  useOptionalChatter: () => ({ chatter: null }),
+}));
 // No global creator: the Priority mass composer's "Post as" would seed the first Creator unless handed the chip's.
 vi.mock("@/contexts/ScopeContext", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/contexts/ScopeContext")>()),
@@ -302,6 +308,12 @@ const panel = () => screen.getByRole("tabpanel", { name: TAB_AUTOMATED });
 const rows = () => within(panel()).getAllByRole("row").slice(1);
 const before = (a: Element, b: Element) =>
   !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+/** The Automated tab's creator column (`CreatorRail`, Smart lists'), and its row for a Creator. */
+const column = () => screen.getByTestId("of-creator-column");
+const creatorRow = (nickname: string) =>
+  within(column()).getByRole("button", { name: new RegExp(nickname) });
+/** Picks a Creator on the creator column. */
+const pickCreator = (nickname: string) => act(async () => { fireEvent.click(creatorRow(nickname)); });
 
 /** The filter bar's controls, in the capture's order (#24 to #37), found by
  *  the capture's labels. */
@@ -532,14 +544,15 @@ describe("Automated Messages tab (ticket 41)", () => {
       nudge: { [A.id]: true, [B.id]: false },
       lines: { [A.id]: "Line of Model A", [B.id]: "Line of Model B" },
     });
-    const chip = screen.getByRole("combobox", { name: "Creator" });
-    expect(chip).not.toBeDisabled();
-    expect(chip.textContent).toContain(A.nickname);
+    // The first Creator is the pick until another is clicked on the creator column.
+    expect(creatorRow(A.nickname)).toHaveAttribute("aria-current", "true");
+    expect(creatorRow(B.nickname)).not.toHaveAttribute("aria-current");
     expect(within(rows()[0]).getAllByRole("cell")[0].textContent).toBe("Line of Model A");
 
     const reads = relayGet.mock.calls.length;
-    await choose(chip, /Model B/);
-    expect(chip.textContent).toContain(B.nickname);
+    await pickCreator(B.nickname);
+    expect(creatorRow(B.nickname)).toHaveAttribute("aria-current", "true");
+    expect(creatorRow(A.nickname)).not.toHaveAttribute("aria-current");
     await waitFor(() => expect(within(rows()[0]).getAllByRole("cell")[0].textContent).toBe("Line of Model B"));
     const nudgeReads = relayGet.mock.calls.slice(reads).map(([p]) => String(p))
       .filter((p) => p.startsWith("/admin/nudge-config"));
@@ -653,7 +666,7 @@ describe("the Create message pop-up's Automated messages section (ticket 42)", (
 
   it('"Nudge", then Next, closes the pop-up and opens the existing nudge editor on the chip\'s Creator', async () => {
     await mount(undefined, { nudge: { [A.id]: true, [B.id]: true }, lines: { [B.id]: "Line of Model B" } });
-    await choose(screen.getByRole("combobox", { name: "Creator" }), /Model B/);
+    await pickCreator(B.nickname);
     await waitFor(() => expect(client.isFetching()).toBe(0));
     await openPopUp();
     expect(nextButton()).toBeDisabled();
@@ -683,7 +696,7 @@ describe("the Create message pop-up's Automated messages section (ticket 42)", (
 
   it('"Priority mass message", then Next, opens its composer posting as the chip\'s Creator', async () => {
     await mount();
-    await choose(screen.getByRole("combobox", { name: "Creator" }), /Model B/);
+    await pickCreator(B.nickname);
     await openPopUp();
     const priority = within(popUp()).getByRole("button", { name: new RegExp(`^${valueOf(107).split(" / ")[0]}`) });
     await act(async () => { fireEvent.click(priority); });
@@ -844,7 +857,7 @@ describe("the Delayed welcome row (ticket 43, bound to send_welcome by the 2026-
 
   it('"Subscriber welcome", then Next, opens the editor on the chip\'s Creator, where a rule is created off, with the Brain\'s defaults', async () => {
     await mount(undefined, { welcomeRules: { [A.id]: { on: true } } });
-    await choose(screen.getByRole("combobox", { name: "Creator" }), /Model B/);
+    await pickCreator(B.nickname);
     await waitFor(() => expect(client.isFetching()).toBe(0));
     // Model B has no rule, so no row.
     expect(welcomeRow()).toBeUndefined();
@@ -918,7 +931,7 @@ describe("the Purchased row and editor (ticket 44)", () => {
 
   it('"Purchases", then Next, opens the editor on the chip\'s Creator, off by default; Save writes its config', async () => {
     await mount();
-    await choose(screen.getByRole("combobox", { name: "Creator" }), /Model B/);
+    await pickCreator(B.nickname);
     await waitFor(() => expect(client.isFetching()).toBe(0));
     await openPopUp();
     const card = cardNamed(PURCHASE_CARD.title);
@@ -1179,23 +1192,28 @@ describe("the lifecycle Triggers, the Actions cell and Date created", () => {
 // ── Ticket 54: the header row, the filter bar and the table against the bundle shots ──
 
 describe("the header row and the Automated filter bar and table read like the bundle (ticket 54)", () => {
-  it("the header row holds the title, the Creator chip beside it, then Learn and New Message, all above the tab strip", async () => {
+  it("the header row holds the title, then Learn and New Message, all above the tab strip; the creator column sits under it, left of the Automated tab", async () => {
     await mount();
     const title = screen.getByRole("heading", { level: 1 });
-    const chip = screen.getByRole("combobox", { name: "Creator" });
     const learn = screen.getByRole("button", { name: labelOf(11) });
     const create = screen.getByRole("button", { name: labelOf(15) });
-    // One row: title, chip, Learn, New Message, in that order (#3, #4, #11, #15, #18).
+    // One row: title, Learn, New Message, in that order (#3, #11, #15, #18).
     const header = screen.getByRole("banner");
     expect(header.contains(title)).toBe(true);
     expect(title.textContent).toBe(SM.title.label);
-    for (const el of [chip, learn, create]) expect(header.contains(el)).toBe(true);
-    expect(before(title, chip) && before(chip, learn) && before(learn, create)).toBe(true);
-    // The chip sits right beside the title's box: nothing between them.
-    expect(title.parentElement!.nextElementSibling!.contains(chip)).toBe(true);
-    // The tab strip follows the header row and holds only the two tabs.
+    for (const el of [learn, create]) expect(header.contains(el)).toBe(true);
+    expect(before(title, learn) && before(learn, create)).toBe(true);
+    // The header holds no creator select: the Creator is picked on the creator column.
+    expect(within(header).queryByRole("combobox", { name: "Creator" })).toBeNull();
+    expect(within(header).queryByTestId("of-creator-column")).toBeNull();
+    // The tab strip follows the header row, full width, and holds only the two tabs.
     expect(before(create, parentTabs())).toBe(true);
     expect(header.contains(parentTabs())).toBe(false);
+    expect(parentTabs().contains(column())).toBe(false);
+    // The column sits under the tab strip, in the Automated tab, left of its body (the list).
+    expect(before(parentTabs(), column())).toBe(true);
+    expect(panel().contains(column())).toBe(true);
+    expect(column().nextElementSibling!.contains(rows()[0])).toBe(true);
   });
 
   it("Learn carries the book icon and stays disabled; New Message carries the plus; the picked tab is M1", async () => {
@@ -1287,17 +1305,19 @@ describe("the header row and the Automated filter bar and table read like the bu
     expect(within(panel()).getByText(NO_DATA)).not.toHaveAttribute("title");
   });
 
-  it('with no Creator the chip reads "No creators", disabled and labelled Inflowwww extra', async () => {
+  it("with no Creator the creator column lists none and no creator select shows", async () => {
     // No Creator, so no rules read: the mount waits on the Creators read alone.
     window.history.replaceState(null, "", "/growth/smart-messages");
     stubReads({ noCreators: true });
     client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
     render(<QueryClientProvider client={client}><SmartMessagesPage /></QueryClientProvider>);
-    const chip = screen.getByRole("combobox", { name: "Creator" });
-    await waitFor(() => expect(chip.textContent).toBe("No creators"));
-    expect(chip).toBeDisabled();
-    expect(chip.textContent).toBe("No creators");
-    expect(chip.closest("[title]")).toHaveAttribute("title", EXTRA_LABEL);
+    await waitFor(() => {
+      expect(relayGet.mock.calls.some(([p]) => String(p).startsWith("/admin/accounts"))).toBe(true);
+      expect(client.isFetching()).toBe(0);
+    });
+    expect(within(column()).queryAllByTestId("of-creator-row")).toEqual([]);
+    // The narrow-screen fallback select shows only once there are Creators to pick.
+    expect(screen.queryByRole("combobox", { name: "Creator" })).toBeNull();
   });
 });
 
@@ -1390,7 +1410,7 @@ describe("the Smart Message settings on the Trigger editors and the list", () =>
     });
     const purchased = purchasedRow()!;
     expect(cellOf(purchased, "Attachment(s)").textContent).toBe("2 media");
-    expect(cellOf(purchased, "Price").textContent).toBe("$15.00");
+    expect(cellOf(purchased, "Price").textContent).toBe("$15");
     expect(cellOf(purchased, "Start date").textContent).toBe("Jan 1, 2099");
     expect(cellOf(purchased, "End date").textContent).toBe("--");
     expect(cellOf(purchased, "Status").textContent).toBe("Scheduled");

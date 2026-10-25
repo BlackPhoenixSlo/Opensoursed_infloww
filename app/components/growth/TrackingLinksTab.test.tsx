@@ -1033,12 +1033,12 @@ describe("earnings: claimers x the ledger", () => {
     ]);
     expect(relayGet).toHaveBeenCalledWith(`/admin/of-tracking-links/earnings?account_id=${A.id}`);
     expect(screen.getByRole("switch", { name: "Show net earnings" }).getAttribute("aria-checked")).toBe("true");
-    expect(cell("Link one", "Earnings").textContent).toBe("$987.60");
+    expect(cell("Link one", "Earnings").textContent).toBe("$988");
     expect(cell("Link one", "Fans who spent").textContent).toBe("5");
     expect(cell("Link one", "Spending CVR").textContent).toBe("20.00%");
     expect(cell("Link one", "EPC").textContent).toBe("$4.94");
     expect(cell("Link one", "AEPS").textContent).toBe("$39.50");
-    expect(cell("Link two", "Earnings").textContent).toBe("$0.00");
+    expect(cell("Link two", "Earnings").textContent).toBe("$0");
     expect(cell("Link two", "EPC").textContent).toBe("—");
     expect(cell("Link two", "AEPS").textContent).toBe("—");
   });
@@ -1055,7 +1055,7 @@ describe("earnings: claimers x the ledger", () => {
   it("switches every money cell to gross with Show net earnings off, and the Dashboard follows the same switch", async () => {
     await mountWithEarnings();
     fireEvent.click(screen.getByRole("switch", { name: "Show net earnings" }));
-    expect(cell("Link one", "Earnings").textContent).toBe("$1,234.50");
+    expect(cell("Link one", "Earnings").textContent).toBe("$1,235");
     expect(cell("Link one", "EPC").textContent).toBe("$6.17");
     expect(cell("Link one", "AEPS").textContent).toBe("$49.38");
     // One state across the tabs, as the bundle's `getSharedValues`.
@@ -1064,9 +1064,9 @@ describe("earnings: claimers x the ledger", () => {
     const sw = within(panel).getByRole("switch", { name: "Show net earnings" });
     expect(sw.getAttribute("aria-checked")).toBe("false");
     const total = () => (within(panel).getByText("Total earnings").closest("[data-kpi]") as HTMLElement).lastElementChild?.textContent;
-    expect(total()).toBe("$1,234.50");
+    expect(total()).toBe("$1,235");
     fireEvent.click(sw);
-    expect(total()).toBe("$987.60");
+    expect(total()).toBe("$988");
   });
 
   it("shows — for a link OnlyFans failed on, and the rest of the row still fills", async () => {
@@ -1091,11 +1091,11 @@ describe("earnings: claimers x the ledger", () => {
     (earnings.links[0] as Record<string, unknown>).net_missing_count = 2;
     await mountWithEarnings();
     const c = cell("Link one", "Earnings");
-    expect(c.textContent).toBe("$987.60 *");
+    expect(c.textContent).toBe("$988 *");
     expect(c.getAttribute("title")).toMatch(/^Partial/);
     // Gross has every cent: no marker.
     fireEvent.click(screen.getByRole("switch", { name: "Show net earnings" }));
-    expect(cell("Link one", "Earnings").textContent).toBe("$1,234.50");
+    expect(cell("Link one", "Earnings").textContent).toBe("$1,235");
     expect(cell("Link one", "Earnings").getAttribute("title")).toBeNull();
   });
 
@@ -1124,7 +1124,7 @@ describe("earnings: claimers x the ledger", () => {
     const panel = screen.getByRole("tabpanel", { name: "Dashboard" });
     const value = () => (within(panel).getByText("Total earnings").closest("[data-kpi]") as HTMLElement).lastElementChild as HTMLElement;
     // Net: $987.60 + $0.00 + $80.00 = $1,067.60, partial because Link failed has no figure.
-    await waitFor(() => expect(value().textContent).toBe("$1,067.60 *"));
+    await waitFor(() => expect(value().textContent).toBe("$1,068 *"));
     expect(value().getAttribute("title")).toMatch(/^Partial/);
     // Clicks stay over the live links: 200 + 0 + 1.
     expect((within(panel).getByText("Total clicks").closest("[data-kpi]") as HTMLElement).lastElementChild?.textContent).toBe("201");
@@ -1160,15 +1160,15 @@ describe("earnings: claimers x the ledger", () => {
     const row = (label: string) =>
       within(within(t).getByText(label).closest("tr") as HTMLElement).getAllByRole("cell").map((c) => c.textContent);
     // Net by default: Alice's $40.00 gross is $32.00 net.
-    expect(row("Alice").slice(1)).toEqual(["$32.00", "$8.00", "$0.00", "$20.00", "$0.00", "$4.00"]);
-    expect(row("Total:").slice(1)).toEqual(["$36.00", "$8.00", "$2.40", "$20.00", "$1.60", "$4.00"]);
+    expect(row("Alice").slice(1)).toEqual(["$32", "$8", "$0", "$20", "$0", "$4"]);
+    expect(row("Total:").slice(1)).toEqual(["$36", "$8", "$2", "$20", "$2", "$4"]);
     expect(within(t).getByText(/also came through another link/)).toBeTruthy();
     // The honest window: the later of the link's creation and the ledger's first row, in the report time zone.
     expect(within(details).getByText(/Spend from our ledger since .*2026/)).toBeTruthy();
     // The search narrows the rows and the Total: row with them.
     fireEvent.change(within(details).getByPlaceholderText("Search fan name"), { target: { value: "bob" } });
     expect(within(t).queryByText("Alice")).toBeNull();
-    expect(row("Total:")[1]).toBe("$4.00");
+    expect(row("Total:")[1]).toBe("$4");
     // Back to the list.
     fireEvent.click(within(details).getByRole("button", { name: /Tracking links/ }));
     expect(screen.getByRole("table", { name: "Links list" })).toBeTruthy();
@@ -1219,21 +1219,21 @@ describe("Edit: Promo cost, Source and Tag, and the columns they fill", () => {
     expect(headers()).not.toContain("List");
     const one = (t: string) => cell("Link one", t).textContent;
     expect([one("Promo cost"), one("Profit"), one("CPC"), one("CPS"), one("ROI"), one("Source"), one("Tag")])
-      .toEqual(["$250.00", "$737.60", "$1.25", "$10.00", "295.04%", "Reddit", "spring, ads"]);
+      .toEqual(["$250", "$738", "$1.25", "$10", "295.04%", "Reddit", "spring, ads"]);
     for (const t of ["Promo cost", "Profit", "CPC", "CPS", "ROI", "Source", "Tag"]) {
       expect(cell("Link two", t).textContent, t).toBe("—");
     }
     // Gross earnings move Profit and ROI with the switch.
     fireEvent.click(screen.getByRole("switch", { name: "Show net earnings" }));
-    expect(one("Profit")).toBe("$984.50");
+    expect(one("Profit")).toBe("$985");
     expect(one("ROI")).toBe("393.80%");
   });
 
-  it("prints a loss with its sign: a $1,000.00 cost over $987.60 net is Profit -$12.40, ROI -1.24%", async () => {
+  it("prints a loss with its sign: a $1,000 cost over $988 net is Profit -$12, ROI -1.24%", async () => {
     ofResult.links[0] = { ...(ofResult.links[0] as object), promo_cost_cents: 100000 };
     await mount();
     await waitFor(() => expect(headers()).toContain("ROI"));
-    expect(cell("Link one", "Profit").textContent).toBe("-$12.40");
+    expect(cell("Link one", "Profit").textContent).toBe("-$12");
     expect(cell("Link one", "ROI").textContent).toBe("-1.24%");
   });
 
@@ -1335,7 +1335,7 @@ describe("Edit: Promo cost, Source and Tag, and the columns they fill", () => {
       (within(panel).getByText(t).closest("[data-kpi]") as HTMLElement).lastElementChild?.textContent;
     await waitFor(() => expect(value("Avg ROI")).toBe("229.20%"));
     expect(value("Avg CPC")).toBe("$1.50");
-    expect(value("Avg CPS")).toBe("$12.00");
+    expect(value("Avg CPS")).toBe("$12");
     fireEvent.click(within(panel).getByRole("switch", { name: "Show net earnings" }));
     expect(value("Avg ROI")).toBe("311.50%");
     // A Source filter that leaves only uncosted links: "—".

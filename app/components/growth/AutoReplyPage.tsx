@@ -27,13 +27,14 @@
  * only the boxes touched here and an untouched default stays a default.
  */
 
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 import Link from "next/link";
 
 import { IfButton, IfInput, IfLearn, IfSwitch } from "@/components/ui/infloww";
 import { AiKeyNotice } from "@/components/AiKeyNotice";
 import { ListColumn, useFanLists } from "@/components/audience/fanLists";
 import { FormBlock, NoCreator, SwitchRow, useAutomationCreator } from "@/components/automations/automationPage";
+import type { CreatorPick } from "@/components/shell/CreatorRail";
 import { PageFrame } from "@/components/shell/PageFrame";
 import {
   useAutoreplyConfig,
@@ -84,21 +85,21 @@ const clamp = (raw: string, lo: number, hi: number) =>
   Math.max(lo, Math.min(Number(raw) || lo, hi));
 
 export default function AutoReplyPage() {
-  const { accountId, picker, loading } = useAutomationCreator();
+  const { accountId, creators, loading } = useAutomationCreator();
   if (!accountId) {
-    return <PageFrame title={TITLE} extra={picker} actions={LEARN}>{!loading && <NoCreator />}</PageFrame>;
+    return <PageFrame title={TITLE} creators={creators} actions={LEARN}>{!loading && <NoCreator />}</PageFrame>;
   }
   // Keyed, so switching creator re-seeds the form from that creator's blob.
-  return <AutoReplyForm key={accountId} accountId={accountId} picker={picker} />;
+  return <AutoReplyForm key={accountId} accountId={accountId} creators={creators} />;
 }
 
 /** The load gate: the fields only mount once the stored blob is in hand, so
  *  a failed read can never be saved over the account's real settings. */
-function AutoReplyForm({ accountId, picker }: { accountId: string; picker: ReactNode }) {
+function AutoReplyForm({ accountId, creators }: { accountId: string; creators: CreatorPick }) {
   const cfgQ = useAutoreplyConfig(accountId);
   if (cfgQ.isLoading || !cfgQ.data) {
     return (
-      <PageFrame title={TITLE} extra={picker} actions={LEARN}>
+      <PageFrame title={TITLE} creators={creators} actions={LEARN}>
         {cfgQ.isLoading ? <p className="text-[14px] text-muted">Loading…</p> : (
           <p className="text-[14px] text-err">
             {(cfgQ.error as Error)?.message || "Could not load the Auto-reply settings."}
@@ -110,7 +111,7 @@ function AutoReplyForm({ accountId, picker }: { accountId: string; picker: React
   return (
     <AutoReplyFields
       accountId={accountId}
-      picker={picker}
+      creators={creators}
       stored={cfgQ.data.config ?? {}}
       defaults={cfgQ.data.defaults ?? {}}
       visionKey={cfgQ.data.vision_key}
@@ -119,10 +120,10 @@ function AutoReplyForm({ accountId, picker }: { accountId: string; picker: React
 }
 
 function AutoReplyFields({
-  accountId, picker, stored, defaults, visionKey,
+  accountId, creators, stored, defaults, visionKey,
 }: {
   accountId: string;
-  picker: ReactNode;
+  creators: CreatorPick;
   stored: AutoreplyConfig;
   defaults: AutoreplyConfig;
   visionKey?: AutoreplyKeyState;
@@ -199,7 +200,7 @@ function AutoReplyFields({
   return (
     <PageFrame
       title={TITLE}
-      extra={picker}
+      creators={creators}
       actions={<>{LEARN}<IfSwitch label={<span className="max-sm:sr-only">Auto-reply</span>} aria-label="Auto-reply"
         checked={enabled} onChange={edit(setEnabled)} /></>}
     >

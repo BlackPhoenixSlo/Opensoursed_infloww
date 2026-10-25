@@ -32,7 +32,7 @@ import { useAccounts } from "@/hooks/useAccounts";
 import { useLoadMoreSentinel } from "@/hooks/useLoadMoreSentinel";
 import type { PaidMessageRow } from "@/hooks/usePaidMessages";
 import { parseUtc } from "@/lib/format";
-import { fmtCents, stripHtml } from "@/lib/messageFormat";
+import { fmtPrice, stripHtml } from "@/lib/messageFormat";
 import { onPopoutClick } from "@/lib/nav";
 import { cn } from "@/lib/utils";
 
@@ -130,7 +130,7 @@ export default function MessageDashboardTable({
             ) : DASH}
           </td>
           <td className={IF_TABLE.td}>{replyTime(r.reply_seconds)}</td>
-          <td className={IF_TABLE.td}>{priced ? fmtCents(r.price_cents) : DASH}</td>
+          <td className={IF_TABLE.td}>{priced ? fmtPrice(r.price_cents) : DASH}</td>
           <td className={IF_TABLE.td}><Purchased row={r} /></td>
           <td className={IF_TABLE.td}>{r.automation_kind ? "AI chatbot" : "Employee"}</td>
           <td className={IF_TABLE.td}>

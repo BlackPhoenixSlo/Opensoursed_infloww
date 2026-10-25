@@ -37,6 +37,7 @@ import { useRoster } from "@/hooks/useRoster";
 import { useTabParam } from "@/hooks/useTabParam";
 import { useAgencyTimeZone, useWeekStart } from "@/lib/appliedSettings";
 import { downloadCsv } from "@/lib/csv";
+import { fmtPrice } from "@/lib/format";
 import { groupsInTreeOrder, useEmployeeGroups } from "@/lib/employeeGroups";
 import { pushNotice } from "@/lib/notices";
 import {
@@ -212,8 +213,8 @@ function WeekCalendar({ tz }: { tz: string }) {
   ) : exportAllowed && (
     <IfButton disabled={(byShift ? recordRows : historyRows).length === 0}
       onClick={() => downloadCsv(`shift-${byShift ? "records" : "history"}-${days[0].date}.csv`, byShift
-        ? [recordHeads(tz), ...recordRows.map((r) => recordCells(r, tz, recordNames))]
-        : [historyHeads(group), ...historyRows.map(historyCells)])}>
+        ? [recordHeads(tz), ...recordRows.map((r) => recordCells(r, tz, recordNames, fmtPrice))]
+        : [historyHeads(group), ...historyRows.map((r) => historyCells(r, fmtPrice))])}>
       Export
     </IfButton>
   );

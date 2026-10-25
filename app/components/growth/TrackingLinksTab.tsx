@@ -91,6 +91,7 @@ import {
 import { useActionAllowed } from "@/components/shell/useGrantedPages";
 import { useUser } from "@/contexts/UserContext";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
+import { fmtPrice } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 /** The internal link is same-origin (Next rewrites /t/* to the relay). */
@@ -189,7 +190,7 @@ const count = (n: number) => n.toLocaleString("en-US");
 
 /** `cents / n` as money: null when the link has no earnings figure, "—" when `n` is zero. */
 function per(cents: number | null | undefined, n: number | null | undefined): string | null {
-  return cents == null ? null : n ? money(cents / n) : "—";
+  return cents == null ? null : n ? fmtPrice(cents / n) : "—";
 }
 
 /** The marker on a net figure that leaves out transactions OnlyFans has no net for yet. */
@@ -231,7 +232,7 @@ const METRIC_COLS: Col[] = [
   { title: "Subscription CVR", width: 112, tip: TIPS.cvr, core: true, cell: cvr },
   {
     title: "Promo cost", width: 139, tip: TIPS.promoCost,
-    cell: (l) => (l.promo_cost_cents ? money(l.promo_cost_cents) : null),
+    cell: (l) => (l.promo_cost_cents ? fmtPrice(l.promo_cost_cents) : null),
     csv: (l) => (l.promo_cost_cents ? (l.promo_cost_cents / 100).toFixed(2) : ""),
   },
   {

@@ -15,7 +15,7 @@ import { useEffect, useId, useRef, type KeyboardEvent } from "react";
 
 import VaultPreviewMedia from "@/components/vault/VaultPreviewMedia";
 import { type FanVaultEntry } from "@/hooks/useFanVaultHistory";
-import { fmtCents, fmtDateTime, fmtDuration } from "@/lib/format";
+import { fmtCents, fmtDateTime, fmtDuration, fmtPrice } from "@/lib/format";
 import { type VaultMedia } from "@/lib/relay";
 
 /** Props for a control inside a card `<button>` (a nested `<button>` is not
@@ -82,10 +82,10 @@ export function VaultMediaDetails({
       ? "—"
       : entry === null
       ? "0"
-      : `${entry.send_count}× · ${fmtDateTime(entry.last_sent_at)} · ${entry.last_price_cents > 0 ? fmtCents(entry.last_price_cents) : "Free"}`],
+      : `${entry.send_count}× · ${fmtDateTime(entry.last_sent_at)} · ${entry.last_price_cents > 0 ? fmtPrice(entry.last_price_cents) : "Free"}`],
     // fan-history returns no message id, so nothing can be unsent.
     ["Unsent (free or paid)", "—"],
-    ["Posted in feed", onWall ? `Yes · ${wallCents > 0 ? fmtCents(wallCents) : "Free"}` : "No"],
+    ["Posted in feed", onWall ? `Yes · ${wallCents > 0 ? fmtPrice(wallCents) : "Free"}` : "No"],
   ];
 
   return (

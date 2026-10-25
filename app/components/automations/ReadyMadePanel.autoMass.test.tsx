@@ -54,11 +54,16 @@ describe("Auto Mass (ReadyMadePanel only=mass_premade)", () => {
     renderWithProviders(<ReadyMadePanel only="mass_premade" />);
     const bar = screen.getByRole("banner");
     expect(within(bar).getByRole("heading", { level: 1, name: "Auto Mass" })).toBeTruthy();
-    expect(within(bar).getByRole("combobox", { name: "Creator" })).toHaveTextContent("Creator A");
+    // The creator is picked on the creator column left of the page, not in the header; it shows Creator A.
+    expect(within(bar).queryByRole("combobox", { name: "Creator" })).toBeNull();
+    const column = screen.getByTestId("of-creator-column");
+    expect(bar.compareDocumentPosition(column) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(column).getByRole("button", { name: /Creator A/ })).toHaveAttribute("aria-current", "true");
     fireEvent.click(within(bar).getByRole("button", { name: "Learn" }));
     expect(screen.getByRole("note")).toHaveTextContent(/same OF mass message path as Smart Messages/);
 
     expect(await screen.findByText("Evening tease")).toBeTruthy();
+    expect(column.nextElementSibling!.contains(screen.getByText("Evening tease"))).toBe(true);
     expect(screen.queryByText("Feed")).toBeNull();
     expect(screen.queryByRole("button", { name: /Mass Premade/ })).toBeNull();
     expect(screen.queryByRole("heading", { level: 2 })).toBeNull();

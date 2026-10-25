@@ -22,6 +22,7 @@ import type { ReactNode } from "react";
 import { EXECUTOR_MAX_MINUTES } from "@/hooks/useSendMessage";
 import { MP } from "@/lib/messagesPro";
 import { cn } from "@/lib/utils";
+import { fmtPrice } from "@/lib/format";
 
 /** A field's box (`MP.ppvRow.input`, PV4) in our colours: the price field's
  *  box around its `$` and input, and through `FIELD` every bare field.
@@ -76,7 +77,7 @@ export function PpvRow({
           disabled={disabled}
           placeholder="0.00"
           aria-label="PPV price"
-          title={paid > 0 ? `Fan pays $${paid.toFixed(2)} to read` : "Price 0 sends for free; set a price > 0 to send as paid"}
+          title={paid > 0 ? `Fan pays ${fmtPrice(Math.round(paid * 100))} to read` : "Price 0 sends for free; set a price > 0 to send as paid"}
           className="min-w-0 flex-1 focus:outline-none placeholder:text-muted"
         />
       </label>

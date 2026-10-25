@@ -6,7 +6,7 @@
  *
  * Ticket 60: the page lies flush (#41) while the Dashboard's embed keeps its card; it opens with "Show net earnings"
  * on (#33) and on its own range, the last 7 days through today, with the bundle's presets and bounds (#21 to #24);
- * with no Creator the tiles print "$0.00", and the loading and error texts are labelled; the statistics header stays
+ * with no Creator the tiles print "$0", and the loading and error texts are labelled; the statistics header stays
  * in view (#108); Creator performance has its own bar and donut geometry (#161, #164, #167), its growth rows the count
  * (#166); and the letter tracking is applied (#53, #165). The clock is pinned to Fri 16 Oct 2026 12:00Z, the report
  * time zone UTC. jsdom does no layout, so the geometry is read off the SVG and the styles.
@@ -169,14 +169,14 @@ describe("CompetitorReports defaults (#21 to #24, #33)", () => {
 });
 
 describe("CompetitorReports states (#58)", () => {
-  it("prints $0.00 tiles with no Creator, and no Clone wording", async () => {
+  it("prints $0 tiles with no Creator, and no Clone wording", async () => {
     get.mockImplementation(async (path: string) =>
       path.startsWith("/admin/settings/applied") ? APPLIED : { rows: [], per_model: [] });
     renderCard();
     // The tile comes before the Creator statistics card of the same name.
     const [total] = await screen.findAllByRole("group", { name: "Total earnings" });
-    await waitFor(() => expect(total).toHaveTextContent("$0.00"));
-    expect(screen.getByRole("group", { name: "Subscriptions" })).toHaveTextContent("$0.00");
+    await waitFor(() => expect(total).toHaveTextContent("$0"));
+    expect(screen.getByRole("group", { name: "Subscriptions" })).toHaveTextContent("$0");
     expect(screen.queryByText("No creators in this selection")).toBeNull();
   });
 
@@ -259,7 +259,7 @@ describe("CompetitorReports Creator performance (#161, #164, #166, #167)", () =>
     const growth = await screen.findByRole("list", { name: "Earnings growth" });
     const subs = await within(growth).findByText("Subscription");
     // Net is on: the count is the channel's net.
-    await waitFor(() => expect(subs.closest("li")).toHaveTextContent(/^\$120\.00/));
+    await waitFor(() => expect(subs.closest("li")).toHaveTextContent(/^\$120(?!\.)/));
   });
 });
 
@@ -268,7 +268,7 @@ describe("CompetitorReports tracking (#53)", () => {
     relayWith([CREATOR]);
     renderCard();
     const [total] = await screen.findAllByRole("group", { name: "Total earnings" });
-    await waitFor(() => expect(total).toHaveTextContent("$200.00"));
+    await waitFor(() => expect(total).toHaveTextContent("$200"));
     const [title, value, growth] = [...total.children] as HTMLElement[];
     expect(title.className).toContain("tracking-[0.034px]");
     expect(value.className).toContain("tracking-[0.128px]");
@@ -283,6 +283,33 @@ describe("CompetitorReports tracking (#53)", () => {
   });
 });
 
+describe("CompetitorReports growth against a window with unknown days", () => {
+  it("shows - when the window before holds days the relay has no figure for, else the change", async () => {
+    relayWith([CREATOR]);
+    const base = get.getMockImplementation()!;
+    const half = KIND_ROWS.map((r) => ({ ...r, total_cents: r.total_cents / 2, net_cents: r.net_cents / 2 }));
+    let missing = 3;
+    // The window before Oct 10-16 is Oct 3-9: half the earnings, and (first) 3 Creator-days with no figure.
+    get.mockImplementation(async (path: string) => {
+      const q = new URLSearchParams(path.split("?")[1] ?? "");
+      if (path.startsWith("/admin/stats/revenue") && q.get("group_by") === "kind" && q.get("from")?.startsWith("2026-10-03"))
+        return { rows: half, history_missing_days: missing };
+      return base(path);
+    });
+    const growthOfTotal = async () => {
+      const [total] = await screen.findAllByRole("group", { name: "Total earnings" });
+      await waitFor(() => expect(total).toHaveTextContent("$200"));
+      return total.children[2] as HTMLElement;
+    };
+    renderCard();
+    await waitFor(async () => expect(await growthOfTotal()).toHaveTextContent(/^-$/));
+    cleanup();
+    missing = 0;
+    renderCard();
+    await waitFor(async () => expect(await growthOfTotal()).toHaveTextContent("100.00%"));
+  });
+});
+
 describe("CompetitorReports referrals (#50, #75)", () => {
   it("adds OnlyFans' referrals as a channel, into Total, and names the Creators it could not read", async () => {
     relayWith([CREATOR]);
@@ -294,8 +321,8 @@ describe("CompetitorReports referrals (#50, #75)", () => {
     const summary = await screen.findByRole("heading", { name: "Earnings summary" });
     const card = summary.closest("section")!;
     // Net is on: $200.00 of sales and $10.00 of referrals, the same in net.
-    await waitFor(() => expect(within(card).getByRole("group", { name: "Total earnings" })).toHaveTextContent("$210.00"));
-    expect(within(card).getByRole("group", { name: "Referrals" })).toHaveTextContent("$10.00");
+    await waitFor(() => expect(within(card).getByRole("group", { name: "Total earnings" })).toHaveTextContent("$210"));
+    expect(within(card).getByRole("group", { name: "Referrals" })).toHaveTextContent("$10");
     expect(screen.getByText(/Referrals from OnlyFans are unavailable for 1 creator/)).toHaveAttribute("title", "Inflowwww extra");
     const read = get.mock.calls.map(([p]) => String(p)).find((p) => p.startsWith("/admin/stats/referrals"))!;
     expect(Object.fromEntries(new URLSearchParams(read.split("?")[1]))).toEqual({ from: "2026-10-10", to: "2026-10-16" });
@@ -307,9 +334,9 @@ describe("CompetitorReports reversals (#101, #122, #170)", () => {
     relayWith([{ ...CREATOR, refunded_cents: 5000, refunded_net_cents: 4000 }]);
     renderCard();
     const cards = await screen.findByRole("list", { name: "Creator statistics cards" });
-    await waitFor(() => expect(within(cards).getByRole("group", { name: "Refunded" })).toHaveTextContent("$40.00"));
+    await waitFor(() => expect(within(cards).getByRole("group", { name: "Refunded" })).toHaveTextContent("$40"));
     // The ledger's Refunds row is gross, beside Gross earnings.
-    await waitFor(() => expect(screen.getByRole("group", { name: "Refunds" })).toHaveTextContent("$50.00"));
+    await waitFor(() => expect(screen.getByRole("group", { name: "Refunds" })).toHaveTextContent("$50"));
   });
 
   it("charts the picked Creator's reversed days under Chargebacks", async () => {
@@ -327,9 +354,9 @@ describe("CompetitorReports reversals (#101, #122, #170)", () => {
     fireEvent.click(await screen.findByRole("tab", { name: "Creator performance" }));
     const chart = await screen.findByRole("img", { name: "Earnings heatmap chart" });
     // Net is on: the slot holds its net.
-    const hot = await within(chart).findByRole("img", { name: "Mon 9 PM: $200.00" });
+    const hot = await within(chart).findByRole("img", { name: "Mon 9 PM: $200" });
     expect(hot.getAttribute("fill")).toBe("rgb(52,103,255)");
-    expect(within(chart).getByRole("img", { name: "Sun 12 AM: $0.00" }).getAttribute("fill")).toBe("rgb(239,244,255)");
+    expect(within(chart).getByRole("img", { name: "Sun 12 AM: $0" }).getAttribute("fill")).toBe("rgb(239,244,255)");
     expect(within(chart).getAllByRole("img")).toHaveLength(7 * 24);
   });
 });
@@ -384,8 +411,8 @@ describe("CompetitorReports page-parity 26 (#7, #148, #172)", () => {
     const summary = await screen.findByRole("heading", { name: "Earnings summary" });
     const card = summary.closest("section")!;
     // Net is on: $120.00 cleared plus the pending tip's $24.00.
-    await waitFor(() => expect(within(card).getByRole("group", { name: "Total earnings" })).toHaveTextContent("$144.00"));
-    expect(within(card).getByRole("group", { name: "Tips" })).toHaveTextContent("$24.00");
+    await waitFor(() => expect(within(card).getByRole("group", { name: "Total earnings" })).toHaveTextContent("$144"));
+    expect(within(card).getByRole("group", { name: "Tips" })).toHaveTextContent("$24");
     expect(revenueReads().filter((q) => q.has("status")).every((q) => q.get("status") === "reversed")).toBe(true);
   });
 });

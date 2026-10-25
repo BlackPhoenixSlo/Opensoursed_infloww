@@ -674,10 +674,10 @@ describe("ManageEmployees", () => {
     const cells = () => staff().map((r) =>
       [...within(rowOf(r[0]!)).getAllByRole("cell")[6].querySelectorAll("div")].map((d) => d.textContent));
     await waitFor(() => expect(cells()).toEqual([
-      ["$123.45", "3/4 shifts"],
-      ["$0.00", "0/0 shifts"],
-      ["$0.00", "0/2 shifts"],
-      ["$0.00", "0/0 shifts"],
+      ["$123", "3/4 shifts"],
+      ["$0", "0/0 shifts"],
+      ["$0", "0/2 shifts"],
+      ["$0", "0/0 shifts"],
     ]));
 
     const sheets = calls().filter((c) => c.url.startsWith("/admin/shifts/timesheet?"));

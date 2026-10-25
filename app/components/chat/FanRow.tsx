@@ -31,6 +31,7 @@ import { useFanTyping } from "@/lib/fanTyping";
 import type { FanListSelection } from "./FanList";
 import { ROW_BADGE_LABEL, type RowBadge, rowBadges } from "./fanRowBadges";
 import { OpenInNewWindowMenu } from "./OpenInNewWindowMenu";
+import { NOT_WIRED, NotWiredNote, notWiredTitle, useNotWiredNote } from "./NotWired";
 
 const G = MP.fanList;
 const O = MP.ours.FanRow;
@@ -280,20 +281,11 @@ export const FanRow = memo(function FanRow({
                 {account.name}
               </span>
             )}
-            {/* Infloww's ✕ (Compare FL3), inert: no source names its action,
-             *  so a click or press neither selects the row nor warms the Fan.
-             *  Below lg it follows the Creator chip; from lg up it takes the
-             *  free space itself. */}
-            <span
-              role="img"
-              aria-label="Not wired"
-              title="not wired"
-              onClick={(e) => e.stopPropagation()}
-              onPointerDown={(e) => e.stopPropagation()}
-              className={cn(G.notWired, "shrink-0 text-fg-dim", account ? "lg:ml-auto" : "ml-auto")}
-            >
-              ×
-            </span>
+            {/* Infloww's ✕ (Compare FL3): no source names its action, so a
+             *  click or press neither selects the row nor warms the Fan; it
+             *  only says so (`RowCloseNotWired`). Below lg it follows the
+             *  Creator chip; from lg up it takes the free space itself. */}
+            <RowCloseNotWired className={account ? "lg:ml-auto" : "ml-auto"} />
           </div>
           <div className={cn(G.bottom, "flex items-center")}>
             <span className={cn(G.preview, "flex-1 min-w-0 truncate", unread ? cn(G.previewUnread, "text-fg") : "text-fg-dim")}>
@@ -464,3 +456,24 @@ function fmtTime(iso: string | undefined | null, nowMs: number): string {
 // Built once (`toLocaleDateString` with options builds a formatter per call); same output.
 const WEEKDAY = new Intl.DateTimeFormat([], { weekday: "short" });
 const MONTH_DAY = new Intl.DateTimeFormat([], { month: "short", day: "numeric" });
+
+/** The row's ✕ (Compare FL3), a `span` because the row is a button. A click
+ *  shows its excuse in a note to its left and never reaches the row. */
+function RowCloseNotWired({ className }: { className: string }) {
+  const note = useNotWiredNote();
+  return (
+    <span className={cn("relative shrink-0", className)}>
+      <span
+        role="img"
+        aria-label="Not wired"
+        title={notWiredTitle("rowClose")}
+        onClick={note.onClick}
+        onPointerDown={(e) => e.stopPropagation()}
+        className={cn(G.notWired, "cursor-help text-fg-dim hover:text-fg")}
+      >
+        ×
+      </span>
+      <NotWiredNote open={note.open} className="right-full top-0 mr-1">{NOT_WIRED.rowClose}</NotWiredNote>
+    </span>
+  );
+}

@@ -4,12 +4,12 @@
  * Growth > Scripts, laid out from its Layout capture (`docs/infloww-layouts/growth-scripts.md`, tickets 35 and 56):
  * the bundle's script manager over our saved replies.
  *
- * - The header (#3 to #17): "Scripts", the creator selector, "Learn" (Not wired: the help article is off-host) and
+ * - The header (#3 to #17): "Scripts", "Learn" (Not wired: the help article is off-host) and
  *   "Share" (the selected scripts, or all of them, to other Creators), and the More menu behind the bundle shot's
  *   filled accent plus: Add script, Add sequence > Create new, Add tag, Import > From Excel / From other creators;
- *   Use template and Import from tag are Not wired. Import and Share are `ScriptsImportDialogs`. The creator picker
- *   is `IfCreatorSelect` (ticket 09), without the bundle's per-Creator script count in its menu (`showScriptCount`):
- *   the store has no count read, so it is left out (YAGNI).
+ *   Use template and Import from tag are Not wired. Import and Share are `ScriptsImportDialogs`. The Creator is
+ *   picked on the creator column left of the page (`CreatorRail`, as Smart lists') in place of the bundle's header
+ *   select (#6), without its per-Creator script count (`showScriptCount`): the store has no count read (YAGNI).
  * - The toolbar (#18 to #33): the "Tag" and "Sequence" tabs (Tag first, as the bundle opens, #23), the search, and
  *   "Manage scripts", which swaps the tabs for a back arrow and its title and sorts by Recent or Name (#31 to #33).
  * - Tag and Sequence (#53 to #64): a 248px sidebar beside the selected entry's scripts. Tag lists "All scripts",
@@ -40,9 +40,11 @@ import {
 import { useSavedReplyEditor, useScopedAccount } from "@/components/settings/TemplatesTab";
 import { CopyScriptsDialog, ExcelImportDialog } from "@/components/growth/ScriptsImportDialogs";
 import { useOutsideClose } from "@/components/ui/Menu";
-import { EmptyState, IfButton, IfCreatorSelect, IfModal, IfSelect, InflowwPageHeader } from "@/components/ui/infloww";
+import { CreatorRail } from "@/components/shell/CreatorRail";
+import { EmptyState, IfButton, IfModal, IfSelect, InflowwPageHeader } from "@/components/ui/infloww";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useDeleteSavedReply, useRelabelSavedReplies } from "@/hooks/useSavedReplies";
+import { fmtPrice } from "@/lib/format";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import type { SavedReply } from "@/lib/relay";
 import { cn } from "@/lib/utils";
@@ -508,8 +510,8 @@ function ScriptRow({
         </div>
         {media.length > 0 && <MediaStrip media={media} accountId={accountId} />}
         <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-fg-dim">
-          {/* #44: "$ " and the price, when the media is priced. */}
-          {r.price > 0 && <span className="text-warn">$ {r.price.toFixed(2)}</span>}
+          {/* #44: the price, when the media is priced (`fmtPrice`, not the bundle's "$ 10.00"). */}
+          {r.price > 0 && <span className="text-warn">{fmtPrice(Math.round(r.price * 100))}</span>}
           {/* #45: sent, purchases and sales; the store keeps no statistics. */}
           <span aria-label="Stats" title={NOT_WIRED}>—</span>
           {tagged > 0 && (
@@ -602,6 +604,15 @@ export default function ScriptsPage() {
   const [pendingTags, setPendingTags] = useState<string[]>([]);
 
   const clearSelection = () => setSelected(new Set());
+  // Another Creator: nothing of this one's (draft, selection, new tags, open tag or sequence) carries over.
+  const pickCreator = (id: string) => {
+    setAccountId(id);
+    setDraft(null);
+    clearSelection();
+    setPendingTags([]);
+    setTagSel(ALL);
+    setSeqSel(null);
+  };
 
   // ── derived: tags and sequences ──
   const tagCounts = useMemo(() => {
@@ -948,22 +959,6 @@ export default function ScriptsPage() {
       <InflowwPageHeader
         title="Scripts"
         className="h-auto min-h-12 flex-wrap gap-y-2 px-3 py-2 sm:h-12 sm:flex-nowrap sm:px-6 sm:py-0"
-        extra={
-          // #6: the bundle's selector (176px) also shows each Creator's script count; the store has none (YAGNI).
-          <IfCreatorSelect
-            accounts={accounts}
-            value={accountId}
-            className="w-[176px]"
-            onChange={(id) => {
-              setAccountId(id);
-              setDraft(null);
-              clearSelection();
-              setPendingTags([]);
-              setTagSel(ALL);
-              setSeqSel(null);
-            }}
-          />
-        }
         actions={
           <div className="flex items-center gap-4 h-6">
             <button type="button" disabled title={NOT_WIRED} className={HEADER_BOX}>
@@ -990,7 +985,7 @@ export default function ScriptsPage() {
         }
       />
 
-      <div className="flex flex-1 flex-col">
+      <CreatorRail creators={{ accounts, value: accountId, onChange: pickCreator }} className="flex flex-col">
         {/* #18: 56px tall, 0 24px padding, a 1px bottom border; on a phone 12px, wrapping the right box under the tabs. */}
         <div className="min-h-14 px-3 sm:px-6 py-2 sm:py-0 flex flex-wrap items-center gap-y-2 border-b border-border">
           {view === "manage" ? (
@@ -1086,7 +1081,7 @@ export default function ScriptsPage() {
             {list}
           </div>
         )}
-      </div>
+      </CreatorRail>
 
       {draft?.kind === "reply" && (
         <ScriptEditModal

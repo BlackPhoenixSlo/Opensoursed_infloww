@@ -111,11 +111,12 @@ describe("MessageList video tiles", () => {
   });
 
   it("our PPV video keeps its price badge beside the duration", () => {
-    const { getByText } = renderWithProviders(
+    const { getByText, getByTitle } = renderWithProviders(
       <MessageList {...baseProps} ownerUserId={555}
                    messages={[msg({ id: 2, fromUser: { id: 555 }, price: 35, media: [video()] })]} />,
     );
-    expect(getByText("$35")).toBeTruthy();
+    // The tile's badge (the card's "$35 · not paid" line also prints "$35").
+    expect(getByTitle("PPV-locked — fan hasn't unlocked this tile").textContent).toBe("$35");
     expect(getByText("1:05")).toBeTruthy();
   });
 });

@@ -6,6 +6,7 @@
  */
 
 import { relay } from "@/lib/relay";
+import { fmtPrice } from "@/lib/format";
 
 /** The OF user fields these read (`/users/{id}` and `/users/list` both carry them). */
 export interface DiscountFan {
@@ -42,7 +43,7 @@ export const DISCOUNT_PERIODS = Array.from({ length: 12 }, (_, i) => i + 1);
 export const months = (n: number) => `${n} ${n === 1 ? "month" : "months"}`;
 /** The dialog's help line: "$7.50 per month for 3 months". */
 export const discountSummary = (price: number, percent: number, period: number) =>
-  `$${(price * (1 - percent / 100)).toFixed(2)} per month for ${months(period)}`;
+  `${fmtPrice(Math.round(price * (1 - percent / 100) * 100))} per month for ${months(period)}`;
 
 /** The write: `discount` 0 (period 1) clears it, as OF's Clear does. */
 export const putFanDiscount = (accountId: string, fan: string | number, discount: number, period: number) =>

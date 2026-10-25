@@ -86,13 +86,13 @@ describe("OfferClaimers", () => {
     mount("trial");
     await waitFor(() => expect(rows()).toHaveLength(4));
     expect(screen.getByRole("radio", { name: "Since claim" }).getAttribute("aria-checked")).toBe("true");
-    expect(cells(0)).toEqual(["Synth Fan 70000001 @synth70000001", "Sep. 02, 2026", "$53.75", "$0.00", "$38.40", "$15.35", "$0.00", "$0.00"]);
+    expect(cells(0)).toEqual(["Synth Fan 70000001 @synth70000001", "Sep. 02, 2026", "$54", "$0", "$38", "$15", "$0", "$0"]);
     // No display name: the id.
     expect(cells(1)[0]).toBe("#70000002 @synth70000002");
     // No claim date from OnlyFans: first seen, and "—" rather than $0.
     expect(cells(3).slice(1)).toEqual(["Sep. 03, 2026 (first seen)", "—", "—", "—", "—", "—", "—"]);
-    expect(sum()).toEqual(["Total", "$73.75", "$0.00", "$38.40", "$15.35", "$0.00", "$20.00"]);
-    expect(metrics()).toBe("Earnings $73.75 · Fans who spent 2 · Spend/Claim 66.67%");
+    expect(sum()).toEqual(["Total", "$74", "$0", "$38", "$15", "$0", "$20"]);
+    expect(metrics()).toBe("Earnings $74 · Fans who spent 2 · Spend/Claim 66.67%");
     expect(document.querySelector("[data-caveat]")?.textContent).toMatch(/since each fan claimed, which starts Aug\. 20, 2026; refunds and chargebacks/);
     expect(document.querySelector("[data-caveat]")?.textContent).toMatch(/re-subscribed/);
   });
@@ -102,12 +102,12 @@ describe("OfferClaimers", () => {
     await waitFor(() => expect(rows()).toHaveLength(4));
     fireEvent.click(screen.getByRole("radio", { name: "Lifetime" }));
     expect(screen.getByRole("radio", { name: "Lifetime" }).getAttribute("aria-checked")).toBe("true");
-    expect(cells(0).slice(2)).toEqual(["$99.00", "$0.00", "$60.00", "$39.00", "$0.00", "$0.00"]);
+    expect(cells(0).slice(2)).toEqual(["$99", "$0", "$60", "$39", "$0", "$0"]);
     expect(cells(3).slice(2).every((c) => c === "—")).toBe(true);
-    expect(sum()).toEqual(["Total", "$119.00", "$0.00", "$60.00", "$39.00", "$0.00", "$20.00"]);
+    expect(sum()).toEqual(["Total", "$119", "$0", "$60", "$39", "$0", "$20"]);
     expect(document.querySelector("[data-caveat]")?.textContent).toMatch(/lifetime totals \(net\).*as read Oct\. 18, 2026/);
     // The link's figures stay the since-claim ones (they are the list's).
-    expect(metrics()).toBe("Earnings $73.75 · Fans who spent 2 · Spend/Claim 66.67%");
+    expect(metrics()).toBe("Earnings $74 · Fans who spent 2 · Spend/Claim 66.67%");
   });
 
   it("adds an Other column only when some since-claim spend is outside the five kinds", async () => {
@@ -123,7 +123,7 @@ describe("OfferClaimers", () => {
     mount("promo", 501, { campaignId: 7, count: 4 });
     await waitFor(() => expect(rows()).toHaveLength(4));
     expect(get).toHaveBeenCalledWith("/admin/link-metrics/fans?account_id=a1&kind=promo&of_id=501&campaign_id=7&count=4");
-    expect(metrics()).toBe("Revenue $73.75 from 2 fans");
+    expect(metrics()).toBe("Revenue $74 from 2 fans");
   });
 
   it("says so while a refresh holds OnlyFans and nothing is cached yet", async () => {

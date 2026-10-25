@@ -42,8 +42,14 @@ const session = vi.hoisted(() => ({
   user: { user_id: 1 } as { user_id: number } | null,
   chatter: null as { id: number } | null,
 }));
-vi.mock("@/contexts/UserContext", () => ({ useUser: () => ({ user: session.user }) }));
-vi.mock("@/contexts/ChatterContext", () => ({ useChatter: () => ({ chatter: session.chatter }) }));
+vi.mock("@/contexts/UserContext", () => ({
+  useUser: () => ({ user: session.user }),
+  useOptionalUser: () => ({ user: session.user }),
+}));
+vi.mock("@/contexts/ChatterContext", () => ({
+  useChatter: () => ({ chatter: session.chatter }),
+  useOptionalChatter: () => ({ chatter: session.chatter }),
+}));
 
 // The lazy composer stands in as its mode, so a click shows which one opened,
 // and whether the page asked it to label its extras. With `composer.real` set,
@@ -321,12 +327,10 @@ describe("Smart Messages frame and Mass Messages tab (ticket 30)", () => {
     await mountFrame();
     const title = screen.getByRole("heading", { level: 1 });
     expect(title.textContent).toBe("Smart Messages List");
-    // The creator chip, right of the title: Not wired.
-    const chip = screen.getByRole("combobox", { name: "Creator" });
-    expect(before(title, chip)).toBe(true);
-    expect(chip).toBeDisabled();
-    expect(chip.textContent).toBe("All creators");
-    expect(chip.closest("[title]")).toHaveAttribute("title", "not wired");
+    // Mass Messages takes no Creator (its panels list every active Creator): no creator select in the header,
+    // and no creator column (that is the Automated Messages tab's).
+    expect(screen.queryByRole("combobox", { name: "Creator" })).toBeNull();
+    expect(screen.queryByTestId("of-creator-column")).toBeNull();
 
     expect(tabNames(parentTabs())).toEqual(["Automated Messages", "Mass Messages"]);
     expect(tabNames(childTabs())).toEqual(["Priority mass messages", "OF mass messages"]);
@@ -519,7 +523,7 @@ describe("the OF child's sent list is the capture's table (ticket 55)", () => {
     expect(c["Viewed"].textContent).toBe("512");
     // Purchased / Earnings: the relay's local attribution (roadmap 5.8).
     expect(c["Purchased"].textContent).toBe("3");
-    expect(c["Earnings"].textContent).toBe("$45.00");
+    expect(c["Earnings"].textContent).toBe("$45");
     for (const h of ["Withdrawn by", "Withdrawn date & time"]) notWired(c[h]);
     expect(c["Creator" + EXTRA_LABEL].textContent).toBe("Model A");
     expect(within(c["Actions"]).getByRole("button", { name: "Actions" })).toBeEnabled();
@@ -812,7 +816,8 @@ describe("the Mass Messages tab in a chatter-only session", () => {
     // Its Creators came from the chatter's own list, never the owner registry.
     expect(fetchMock).toHaveBeenCalledWith("/chatter/me/accounts", expect.anything());
     const paths = calledPaths();
-    expect(paths.filter((p) => p.startsWith("/admin/accounts"))).toEqual([]);
+    // The roster badge counts are the principal's own (a chatter's union of linked Creators), not the registry.
+    expect(paths.filter((p) => p.startsWith("/admin/accounts") && p !== "/admin/accounts/roster-counts")).toEqual([]);
     expect(writesMade().filter((w) => w !== CACHE_WARM)).toEqual([]);
   });
 });

@@ -29,6 +29,7 @@ import { VaultPicker } from "@/components/chat/VaultPicker";
 import { Button } from "@/components/ui/primitives";
 import { relay, type VaultMedia } from "@/lib/relay";
 import { SENSITIVE_BLOCK_MESSAGE, useSensitiveHits } from "@/lib/sensitiveWords";
+import { fmtPrice } from "@/lib/format";
 
 const ROUTE = "/admin/priority-mass/runs";
 const MAX_RECIPIENTS = 5000;
@@ -281,7 +282,7 @@ export function PriorityMassRuns() {
                 <div className="truncate text-fg-dim">
                   {r.text || "(media only)"}
                   {r.media_count > 0 && ` · ${r.media_count} media`}
-                  {r.price > 0 && ` · $${r.price.toFixed(2)}`}
+                  {r.price > 0 && ` · ${fmtPrice(Math.round(r.price * 100))}`}
                 </div>
                 <div className="text-xs">
                   {r.status === "resolving"

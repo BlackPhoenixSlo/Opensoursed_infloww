@@ -21,7 +21,7 @@ import { ArrowDownLeft, ArrowUpRight, Clock, Eye, Megaphone, Paperclip, Shopping
 import { Badge } from "@/components/ui/primitives";
 import FanAvatar from "@/components/messages/FanAvatar";
 import { fmtDuration } from "@/lib/format";
-import { fmtCents, stripHtml } from "@/lib/messageFormat";
+import { fmtCents, fmtPrice, stripHtml } from "@/lib/messageFormat";
 import { cn, fmtRelTime } from "@/lib/utils";
 
 import type { PaidMessageRow } from "@/hooks/usePaidMessages";
@@ -102,7 +102,7 @@ export default function MessageRowGeneric({ row }: Props) {
             <div className="ml-auto shrink-0 flex flex-col items-end md:flex-row md:items-center md:gap-2">
               {isPriced && (
                 <span className="text-sm font-semibold text-fg">
-                  {fmtCents(row.price_cents)}
+                  {fmtPrice(row.price_cents)}
                 </span>
               )}
               <span className="text-xs text-fg-dim">
@@ -210,7 +210,7 @@ function MassSummaryRow({ row }: Props) {
           <div className="ml-auto shrink-0 flex flex-col items-end md:flex-row md:items-center md:gap-2">
             {isPriced && (
               <span className="text-sm font-semibold text-fg">
-                {fmtCents(row.price_cents)}
+                {fmtPrice(row.price_cents)}
               </span>
             )}
             <span className="text-xs text-fg-dim">

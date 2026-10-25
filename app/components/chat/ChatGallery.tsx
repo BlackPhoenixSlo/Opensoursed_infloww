@@ -26,7 +26,7 @@ import { useEffect } from "react";
 import { createPortal } from "react-dom";
 
 import { cn } from "@/lib/utils";
-import { fmtCents } from "@/lib/format";
+import { fmtPrice } from "@/lib/format";
 import { proxyImage } from "@/lib/mediaUrl";
 import { describeLoadError } from "@/lib/relay";
 import { MP } from "@/lib/messagesPro";
@@ -156,7 +156,7 @@ export function ChatGallery({ accountId, fanId, onClose }: {
                   />
                   {t.price > 0 && (
                     <span className={cn(S.tileTag, "absolute bg-black/70 text-white")}>
-                      {fmtCents(Math.round(t.price * 100))}
+                      {fmtPrice(Math.round(t.price * 100))}
                     </span>
                   )}
                 </li>

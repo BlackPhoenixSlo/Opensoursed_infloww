@@ -142,13 +142,13 @@ describe("MessageList PPV price line in the card", () => {
   /** The bubble's column: the bubble box and its siblings (time row). */
   const column = (container: HTMLElement, id: number) => bubbleBox(container, id).parentElement!;
 
-  it("an unpaid PPV we sent shows no unlock bar, and one '$35.00 · not paid' line inside its card", () => {
+  it("an unpaid PPV we sent shows no unlock bar, and one '$35 · not paid' line inside its card", () => {
     const { container, queryByRole } = renderWithProviders(
       <MessageList {...baseProps} messages={[sent({ isOpened: false, isPaid: false })]} ownerUserId={555} />,
     );
     expect(container.textContent).not.toMatch(/unlock for/i);
     expect(queryByRole("button", { name: /unlock/i })).toBeNull();
-    expect(bubbleBox(container, 31).textContent).toContain("$35.00 · not paid");
+    expect(bubbleBox(container, 31).textContent).toContain("$35 · not paid");
     expect(column(container, 31).textContent!.split("· not paid").length - 1).toBe(1);
   });
 

@@ -202,7 +202,7 @@ describe("TrialLinksTab figures, filters, Edit, Details and Delete", () => {
     const spendHead = screen.getByRole("columnheader", { name: "Spend/Claim" });
     expect(spendHead.querySelector("[title]")!.getAttribute("title")).toBe(
       "Percentage of fans who claimed a free trial that purchased subscriptions, spent on content, or gave tips");
-    expect(FIGS.map((t) => metric("Reddit 7-day", t))).toEqual(["50.00%", "$50.00", "$120.00", "2", "$70.00", "$30.00", "140.00%"]);
+    expect(FIGS.map((t) => metric("Reddit 7-day", t))).toEqual(["50.00%", "$50", "$120", "2", "$70", "$30", "140.00%"]);
     expect(FIGS.map((t) => metric("Fresh link", t))).toEqual(Array(7).fill("—"));
     // Infloww's free trial table has no CPC or CPS; Source and Tag draw once a link has them.
     expect(screen.queryByRole("columnheader", { name: "CPC" })).toBeNull();
@@ -210,7 +210,7 @@ describe("TrialLinksTab figures, filters, Edit, Details and Delete", () => {
     expect(metric("Reddit 7-day", "Tag")).toBe("spring");
     expect(document.querySelector("[data-metrics-updated]")?.textContent).toBe("Not read yet · refreshing…");
     fireEvent.click(screen.getByRole("switch", { name: "Show net earnings" }));
-    expect(metric("Reddit 7-day", "Earnings")).toBe("$150.00");
+    expect(metric("Reddit 7-day", "Earnings")).toBe("$150");
     expect(metric("Reddit 7-day", "ROI")).toBe("200.00%");
   });
 

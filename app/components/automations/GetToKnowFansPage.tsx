@@ -17,12 +17,13 @@
  * PUT merges, so it sends only the boxes touched here.
  */
 
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 
 import { AiKeyNotice } from "@/components/AiKeyNotice";
 import { VaultPicker } from "@/components/chat/VaultPicker";
 import { MediaTray } from "@/components/compose/MediaTray";
 import { FormBlock, NoCreator, SwitchRow, useAutomationCreator } from "@/components/automations/automationPage";
+import type { CreatorPick } from "@/components/shell/CreatorRail";
 import { PageFrame } from "@/components/shell/PageFrame";
 import { IfButton, IfInput, IfSwitch, IfTextArea } from "@/components/ui/infloww";
 import { useAccountConfig, useSaveAccountConfig, type AccountConfigResp } from "@/hooks/useAccountConfig";
@@ -57,15 +58,15 @@ const toCents = (dollars: number) => Math.round(dollars * 100);
 const toDollars = (cents: number) => Math.round(cents) / 100;
 
 export default function GetToKnowFansPage() {
-  const { accountId, picker, loading } = useAutomationCreator();
+  const { accountId, creators, loading } = useAutomationCreator();
   if (!accountId) {
-    return <PageFrame title={TITLE} extra={picker}>{!loading && <NoCreator />}</PageFrame>;
+    return <PageFrame title={TITLE} creators={creators}>{!loading && <NoCreator />}</PageFrame>;
   }
   // Keyed, so switching creator re-seeds the settings and the Model info box.
-  return <GetToKnowFans key={accountId} accountId={accountId} picker={picker} />;
+  return <GetToKnowFans key={accountId} accountId={accountId} creators={creators} />;
 }
 
-function GetToKnowFans({ accountId, picker }: { accountId: string; picker: ReactNode }) {
+function GetToKnowFans({ accountId, creators }: { accountId: string; creators: CreatorPick }) {
   const kindsQ = useAutomationKinds();
   const rulesQ = useAutomationRules(accountId);
   const switchM = useSwitchKind(accountId);
@@ -79,7 +80,7 @@ function GetToKnowFans({ accountId, picker }: { accountId: string; picker: React
   return (
     <PageFrame
       title={TITLE}
-      extra={picker}
+      creators={creators}
       actions={
         <IfSwitch label={<span className="max-sm:sr-only">{TITLE}</span>} aria-label={TITLE}
           checked={on} disabled={!rulesQ.isSuccess} loading={switchM.isPending}

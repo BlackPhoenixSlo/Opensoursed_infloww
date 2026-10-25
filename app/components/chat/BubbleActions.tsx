@@ -23,6 +23,7 @@ import { cn } from "@/lib/utils";
 import { MP } from "@/lib/messagesPro";
 import { MENU, MENU_ITEM, MENU_ROW } from "./MenuParts";
 import { useMenuDismiss } from "./useMenuDismiss";
+import { fmtPrice } from "@/lib/format";
 
 /** An action's box, its glyph centred, in Infloww's glyph grey with the
  *  hover grey (#d9d9d9, the palette's `--color-fg`). */
@@ -220,7 +221,7 @@ export function BubbleActions({
                       ["Sent by", details.sentBy ?? "—"],
                       ["Seen", details.receipt === "seen" ? "Seen" : details.receipt ? "Not yet" : "—"],
                       ["Price", msg.price && msg.price > 0
-                        ? `$${msg.price.toFixed(2)} · ${details.unlocked ? "unlocked" : "not unlocked"}`
+                        ? `${fmtPrice(Math.round(msg.price * 100))} · ${details.unlocked ? "unlocked" : "not unlocked"}`
                         : "Free"],
                     ] as const).map(([label, value]) => (
                       <div key={label} className={cn(MP.ours.BubbleActions.detailsRow, "flex justify-between")}>

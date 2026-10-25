@@ -1,8 +1,8 @@
 /**
  * The newest desktop shell build, as /download offers it. On a release bump all three together: desktop/package.json
- * "version", app/public/download.html (a static page outside the bundle, so its "v0.2.3" is not importable) and this.
+ * "version", app/public/download.html (a static page outside the bundle, so its "v0.2.5" is not importable) and this.
  */
-export const LATEST_DESKTOP_VERSION = "0.2.3";
+export const LATEST_DESKTOP_VERSION = "0.2.5";
 
 /** True when `version` ("0.2.0", "v0.2.0", "0.2.0-beta.1") is a lower major.minor.patch than `latest`. An
  *  unreadable version (the shell's "unknown", a missing one) is never older: no banner on a guess. */

@@ -155,7 +155,7 @@ export default function ChatterLogin() {
                   This invite link is no longer valid.
                 </p>
                 <p className="mt-2 text-base text-white/70">
-                  It was used or it expired. Ask <span className="font-mono text-white">@{invite.username}</span> for a
+                  It was used or it expired. Ask <span className="text-white">@{invite.username}</span> for a
                   fresh link; nobody here can extend it, including us.
                 </p>
               </div>
@@ -169,7 +169,7 @@ export default function ChatterLogin() {
                 </span>
                 <div className="min-w-0 text-base">
                   <p className="text-lg">
-                    Invited by <span className="font-mono font-medium">@{invite.username}</span>
+                    Invited by <span className="font-medium">@{invite.username}</span>
                   </p>
                   <p className="mt-1 text-white/70">
                     Role: <span className="rounded-md bg-white/10 px-2 py-0.5 text-sm font-medium text-white">Employee</span>
@@ -197,7 +197,7 @@ export default function ChatterLogin() {
            *  sign them out of their owner account on this browser. */}
           {isRegister && user && (
             <p className="mt-6 rounded-2xl bg-white/[0.06] p-5 text-base text-white/70">
-              You&apos;re currently signed in as <span className="font-mono text-white">@{user.username}</span>.
+              You&apos;re currently signed in as <span className="text-white">@{user.username}</span>.
               Creating an employee account will sign you out and switch this
               browser to the new employee session.
             </p>
@@ -360,7 +360,7 @@ export default function ChatterLogin() {
               <dt className="text-fg-dim">Breaks</dt>
               <dd>See Terms of Service</dd>
               <dt className="text-fg-dim">Commission</dt>
-              <dd>{owner ? <>Ask <span className="font-mono">@{owner}</span></> : "Ask your owner"}</dd>
+              <dd>{owner ? <>Ask <span>@{owner}</span></> : "Ask your owner"}</dd>
             </dl>
             <p className="mt-5 border-t border-white/10 pt-4 text-sm text-fg-dim">
               Not a real schedule. Real shifts live in Employees, under Shifts.
