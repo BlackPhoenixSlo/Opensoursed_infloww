@@ -243,7 +243,26 @@ def case_a_successful_load_clears_a_stale_error():
     )
 
 
+def case_the_cpu_picks_follow_the_host():
+    """The cpus picks are quarters of the host's cores, three quarters marked
+    suggested: what docker-compose.yml ships for both profiles (6.0 of 8, 3.0
+    of 4), so the panel suggests for the box it runs on. Docker refuses a value
+    above the host's count, which is why a fixed 1/2/3 row cannot serve both."""
+    if not _NODE:
+        print("[skip] node not available")
+        return
+    for host, picks, suggested in ((8, ["2", "4"], "6 (suggested)"),
+                                   (4, ["1", "2"], "3 (suggested)"),
+                                   (None, ["1", "2"], "3 (suggested)")):
+        body = _payload()
+        body["container"]["host_cpus"] = host
+        html = _run({"config": [{"body": body}]})["els"]["climits"]["html"]
+        labels = re.findall(r'onclick="pickCpu\(([\d.]+)\)">([^<]+?)\s*<', html)
+        assert [lab for _, lab in labels] == picks + [suggested, "no limit"], (host, labels)
+
+
 _harness.run(
+    case_the_cpu_picks_follow_the_host,
     case_a_failed_first_load_does_not_diagnose_the_relay,
     case_a_refused_restart_keeps_its_reason_on_screen,
     case_a_restart_that_never_returns_keeps_its_warning,

@@ -52,10 +52,10 @@ import _harness  # noqa: E402
 # way the real one is.
 _OWNERS = {
     "IMG_FETCH_CONCURRENCY": 8,
-    "STORYBOARD_BUILD_CONCURRENCY": 2,
-    "HEALTH_ALL_CONCURRENCY": 4,
+    "STORYBOARD_BUILD_CONCURRENCY": 3,
+    "HEALTH_ALL_CONCURRENCY": 24,
     "AUTOMATION_MAX_CONCURRENT_RUNS": 4,
-    "RELAY_EXECUTOR_THREADS": 192,
+    "RELAY_EXECUTOR_THREADS": 378,
     "ACCOUNT_LANE_BACKGROUND": 2,
 }
 
@@ -107,9 +107,9 @@ def case_none_deletes_the_override():
     with tempfile.TemporaryDirectory() as d:
         lc = _fresh(Path(d) / "lc.json")
         lc.set_many({"HEALTH_ALL_CONCURRENCY": 16})
-        assert lc.resolve("HEALTH_ALL_CONCURRENCY", 4) == 16
+        assert lc.resolve("HEALTH_ALL_CONCURRENCY", 24) == 16
         lc.set_many({"HEALTH_ALL_CONCURRENCY": None})
-        assert lc.resolve("HEALTH_ALL_CONCURRENCY", 4) == 4, "null => back to default"
+        assert lc.resolve("HEALTH_ALL_CONCURRENCY", 24) == 24, "null => back to default"
         assert "HEALTH_ALL_CONCURRENCY" not in lc.stored(), "and gone from the file"
 
 
@@ -307,7 +307,7 @@ def case_a_switch_holds_zero_and_one_and_nothing_else():
         f.write_text(json.dumps(raw))
         lc = _fresh(f)                                    # a restart
         assert lc.resolve_switch(knob, True) is False, "a stored 0 must survive the reload"
-        assert lc.resolve("HEALTH_ALL_CONCURRENCY", 4) == 1
+        assert lc.resolve("HEALTH_ALL_CONCURRENCY", 24) == 1
         row = next(r for r in lc.describe() if r["name"] == knob)
         assert row["switch"] and row["default"] == 1 and row["value"] == row["live"] == 0, row
         assert not row["pending"], row

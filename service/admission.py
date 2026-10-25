@@ -242,15 +242,21 @@ IMG_FETCH = Lane("img_fetch", "IMG_FETCH_CONCURRENCY", 8, 15.0)
 #
 # `server._storyboard_locks` is not a substitute: it stops the SAME video being
 # built twice and says nothing about N different ones. Alone among these lanes
-# the scarce resource is CPU rather than descriptors, and the box has 2 cores —
-# so this is deliberately the tightest number here. Serving an already-built
-# frame never touches it.
+# the scarce resource is CPU rather than descriptors, and every ffmpeg runs
+# inside the relay's own cgroup, so the Python process it serves shares that
+# ceiling with them — this is deliberately the tightest number here. 3 fits
+# both box profiles in docker-compose.yml: on a 4 vCPU box (relay `cpus: 3.0`)
+# it was already the Concurrency panel's (unmeasured) suggestion, and on the
+# 8 vCPU / 50-account box (`cpus: 6.0`) three builds still leave the event loop
+# ~3 cores (inferred, not measured). It does not grow with accounts: a build is
+# a hover or a describe, not a Creator.
+# Serving an already-built frame never touches it.
 #
 # A rejection here must be mapped to something RETRYABLE by the caller. It says
 # the lane was full; it says nothing about the clip. `vault_frames._WARM_REASON`
 # maps it to `fetch_failed` for exactly that reason — treating it as terminal is
 # what once gave 1,777 merely-unsigned items a 7-day cooldown.
-STORYBOARD_BUILD = Lane("storyboard_build", "STORYBOARD_BUILD_CONCURRENCY", 2, 20.0)
+STORYBOARD_BUILD = Lane("storyboard_build", "STORYBOARD_BUILD_CONCURRENCY", 3, 20.0)
 
 
 # ── The loop lanes ──────────────────────────────────────────────────
@@ -267,24 +273,41 @@ STORYBOARD_BUILD = Lane("storyboard_build", "STORYBOARD_BUILD_CONCURRENCY", 2, 2
 # automation lane sharing that executor (the 2026-07-04 "socket hang up") and
 # holds 200 inbound sockets and their DB connections open while they wait.
 # Gating on the ASYNC side, before the dispatch, makes a queued request cost a
-# parked coroutine instead. Same default as VAULT_STILL_CONCURRENCY, separate
-# budget: a vault pane storm must not spend the stills allowance or vice versa.
-VAULT_MEDIA_READ = LoopLane("vault_media_read", "VAULT_MEDIA_CONCURRENCY", 6)
+# parked coroutine instead. Its own budget, separate from VAULT_STILL_CONCURRENCY:
+# a vault pane storm must not spend the stills allowance or vice versa. 10, not
+# the stills' 6: a queued request is a parked coroutine, and at 50 Creators the
+# panes open at once are one per chatter working a vault. 10 was the
+# Concurrency panel's "4 core / up to 50 accounts" suggestion, which the panel
+# itself called an untested hypothesis; it is still a guess, now the default.
+VAULT_MEDIA_READ = LoopLane("vault_media_read", "VAULT_MEDIA_CONCURRENCY", 10)
 
 # `/health?all_accounts=1` — the /setup table's per-account OF probe. It calls
 # `_load_client()` + `c.me()` DIRECTLY rather than through `_proxy`, so no
 # priority lane stands between a fan-out and the shared proxy/executor/descriptor
 # ceilings, and a per-account cap would be the wrong shape anyway: this spends
-# one call on each of N accounts rather than N on one. Sized well below the vault
-# lanes because it is an admin table nobody is watching — it must never be the
-# reason a chat read waits.
-HEALTH_PROBE = LoopLane("health_probe", "HEALTH_ALL_CONCURRENCY", 4)
+# one call on each of N accounts rather than N on one.
+#
+# SIZED FOR THE SLOW ACCOUNTS, not the fast ones. A healthy probe takes ~0.6 s,
+# but a probe behind a dead proxy holds its slot until the client gives up
+# (`OFClient.timeout_s`, 30 s), past the route's 20 s budget — and one proxy
+# carries 5-10 accounts. At 4, the first four stuck probes took every slot and
+# every healthy Creator queued behind them into a `timeout` row: the table
+# reported the whole agency down for one proxy. 24 holds two dead proxies'
+# worth (20 stuck) with 4 slots still walking the healthy rest, and at 50
+# Creators with one dead proxy the other 40 finish in ~2 s. It is a ceiling, not
+# a pool: a relay with 5 accounts never uses more than 5.
+HEALTH_PROBE = LoopLane("health_probe", "HEALTH_ALL_CONCURRENCY", 24)
 
 # `/admin/stats/referrals` — the Dashboard's Referrals tile and Creator reports'
 # Referrals channel: one OF `referrals_chart` read per Creator, the same
 # one-call-on-each-of-N shape as HEALTH_PROBE, so the same kind of ceiling. Its
 # own budget so a /setup probe storm cannot hold the Dashboard's tile back.
-REFERRALS_READ = LoopLane("referrals_read", "REFERRALS_CONCURRENCY", 4)
+# 16: the route answers within `_REFERRALS_BUDGET_S` (10 s). At 50 Creators and
+# ~1 s a read (a guess: no referrals read is measured; a /health probe is 0.6 s),
+# 4 slots get through ~40 in the budget and a cold tile lists the rest
+# `unavailable` every 5 minutes; 16 finishes them in ~4 s and still in time with
+# one dead proxy (10 stuck slots, 6 walking the other 40 in ~7 s).
+REFERRALS_READ = LoopLane("referrals_read", "REFERRALS_CONCURRENCY", 16)
 
 
 # Every lane, so diagnostics can be DERIVED rather than restated. `admin_streams`

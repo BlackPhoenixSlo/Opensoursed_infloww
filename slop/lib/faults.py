@@ -159,6 +159,16 @@ def _of_writer_holds_batches_3s() -> None:
     of_writer._flush = held
 
 
+def _otp_code_never_consumed() -> None:
+    """The served Browserbase login never reads its pending 2FA code: POST
+    /admin/login/remote/{id}/otp still answers 200 and fills the job's slot,
+    but the job's thread never types it into OnlyFans (bug class: a request
+    thread and a worker thread that never meet)."""
+    import remote_login
+
+    remote_login.RemoteLoginJob.take_otp = lambda self: None
+
+
 @dataclass(frozen=True)
 class Fault:
     apply: Callable[[], None]
@@ -196,6 +206,14 @@ FAULTS: dict[str, Fault] = {
     # slop/run relay-crash --break (the scenario's FAULT)
     "of-writer-holds-batches-3s": Fault(_of_writer_holds_batches_3s, (
         "crash loses only DMs the relay took < 1000ms before the kill",
+    )),
+    # slop/run browserbase-otp --break (the scenario's FAULT)
+    "otp-code-never-consumed": Fault(_otp_code_never_consumed, (
+        "API: a wrong 2FA code comes back as rejected and the job stays on the 2FA prompt",
+        "API: the right 2FA code signs in; the session is saved and linked to the owner",
+        "OnlyFans' 2FA field received exactly the codes submitted, in order",
+        "card: a wrong code shows the rejection and the field takes another code",
+        "card: the right code links the account (job done, user_accounts row)",
     )),
 }
 

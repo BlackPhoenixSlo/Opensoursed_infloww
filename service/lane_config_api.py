@@ -414,50 +414,12 @@ itself&hellip;</p>
 <h2>History</h2>
 <table><tbody id="hist"><tr><td class="muted">no changes yet</td></tr></tbody></table>
 
-<h2>Suggested settings &mdash; Hostinger</h2>
-<p class="note">The <b>default</b> column is each ceiling's built-in value,
-which is sized for 20 accounts on a 4 vCPU box (the executor's default grows
-with the accounts on disk) &mdash; it is read from the running process, not
-restated here, so it cannot drift from the table above.
-<b>4 core</b> is <code>SCALING.md</code>'s target for up to 50 accounts: an
-<b>untested hypothesis</b>, sized against measurements that were read off a
-different machine. Neither column is a recommendation for whatever box you are
-looking at &mdash; check <i>running now</i> above first. Click a number to save
-it.</p>
-<table>
-  <thead><tr><th>knob</th><th>default</th><th>4 core</th><th>why</th></tr></thead>
-  <tbody id="suggest"></tbody>
-</table>
 <p class="foot" id="foot"></p>
 <script>
 const API = "/lanes-panel/config";
 const RESTART_API = "/lanes-panel/restart";
 const esc = s => String(s).replace(/[&<>"']/g,
   c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-
-// ONLY THE DELTAS from each knob's code default, and that is deliberate.
-//
-// The baseline is already in the payload — `describe()` ships `default` for
-// every knob and the table at the top renders it — so restating it here would
-// be exactly the declared-table failure `lane_config`'s docstring exists to
-// forbid: "changing one makes the panel report the other". The first draft of
-// this table restated seven defaults verbatim and got the eighth wrong,
-// rendering 4 in one section and 8 in another, on the same page.
-//
-// It is also why the rows are driven by `j.knobs` rather than by this object: a
-// knob nothing here mentions still gets a row, so the three that were missing
-// from the hand-written version cannot go missing again.
-const TARGET_4CORE = {
-  HEALTH_ALL_CONCURRENCY:       [16, "must exceed how many accounts can be slow AT ONCE, not how fast a healthy probe is"],
-  VAULT_MEDIA_CONCURRENCY:      [10, "async-parked and cheap; scales mildly with accounts"],
-  STORYBOARD_BUILD_CONCURRENCY: [3,  "the one CPU-bound lane (ffmpeg) - leave a core to schedule everything else"],
-};
-// Not knobs — the container's own ceilings, shown alongside so the two columns
-// describe a whole machine rather than half of one.
-const SUGGEST_CONTAINER = [
-  ["cpus",      "3.0", "3.0", "a limit above the host's core count is not a raise"],
-  ["mem_limit", "3g",  "4g",  "exceeding this is an OOM-kill, not a slowdown - a backstop, not a reservation"],
-];
 
 let last = null;
 let cpuPick = null;
@@ -538,7 +500,6 @@ async function load(keepErr) {
   last = j;
   renderContainer();
   renderRestart();
-  renderSuggest();
   document.getElementById("foot").textContent =
     "store: " + j.path + "   ·   restarts: " + ((j.restart || {}).path || "?");
 }
@@ -559,17 +520,24 @@ function renderContainer() {
     : (c.mem_bytes === null ? '<span class="muted">no limit</span>'
        : (Math.round(c.mem_bytes / 1073741824 * 10) / 10) + " GiB");
   const host = c.host_cpus;
-  const pick = (n, label) => {
-    // A pick above the host's core count cannot be a raise; say so on the
-    // button rather than letting someone paste it and wonder.
-    const tooBig = host && n > host;
-    return `<button class="tiny ${cpuPick === n ? "on" : ""}"
-      ${tooBig ? `title="this box has only ${esc(host)} cores"` : ""}
-      onclick="pickCpu(${n})">${label}${tooBig ? " ⚠" : ""}</button>`;
-  };
+  // The picks are quarters of THIS host's cores, in half-core steps (4 cores:
+  // 1, 2, 3; 8 cores: 2, 4, 6), so the panel suggests for the machine it runs
+  // on rather than from a table per box. Three quarters is what
+  // docker-compose.yml ships for both of its profiles (3.0 of 4, 6.0 of 8),
+  // and is marked so — for ONE relay per host; a box running several fleet
+  // shards splits its cores between them. Unknown host: the 4-core picks.
+  const cores = host || 4;
+  const step = q => Math.max(0.5, Math.floor(cores * q * 2) / 2);
+  const suggested = step(0.75);
+  const picks = [...new Set([step(0.25), step(0.5), suggested])];
+  // Every pick sits under the host's count by construction, so none needs the
+  // "this box has only N cores" warning the fixed 1/2/3 row once carried.
+  const pick = (n, label) => `<button class="tiny ${cpuPick === n ? "on" : ""}"
+      onclick="pickCpu(${n})">${label}</button>`;
   document.getElementById("climits").innerHTML = `
     <tr><td class="name">cpus</td><td>${cpuNow}</td>
-        <td><span class="pick">${pick(1, "1")}${pick(2, "2")}${pick(3, "3")}${pick(0, "no limit")}</span></td></tr>
+        <td><span class="pick">${picks.map(n => pick(n, n === suggested
+          ? n + " (suggested)" : String(n))).join("")}${pick(0, "no limit")}</span></td></tr>
     <tr><td class="name">memory</td><td>${memNow}</td>
         <td class="why">not offered here on purpose &mdash; a memory ceiling
         OOM-kills where a CPU one only throttles</td></tr>
@@ -595,38 +563,6 @@ function copyCmd() {
     .catch(() => showErr("could not copy — select the line and copy it by hand"));
 }
 
-// ── Suggested settings ──────────────────────────────────────────────
-// Driven by j.knobs, not by TARGET_4CORE — see the comment on that object.
-function renderSuggest() {
-  const knobs = (last && last.knobs) || [];
-  const rows = knobs.map(k => {
-    const t = TARGET_4CORE[k.name];
-    const target = t
-      ? `<button class="tiny" onclick="saveValue('${esc(k.name)}', ${t[0]})"
-           title="save ${t[0]} to ${esc(k.name)}">${t[0]}</button>`
-      : '<span class="muted">leave at default</span>';
-    return `<tr><td class="name">${esc(k.name)}</td>
-      <td class="muted">${esc(k.default)}</td><td>${target}</td>
-      <td class="why">${esc(t ? t[1] : "")}</td></tr>`;
-  });
-  // A target naming a knob this process does not resolve is stale. Show it —
-  // silently dropping it is how a renamed knob leaves a suggestion that quietly
-  // stops existing instead of one that visibly needs fixing.
-  const known = new Set(knobs.map(k => k.name));
-  const stale = Object.keys(TARGET_4CORE).filter(n => !known.has(n)).map(n =>
-    `<tr><td class="name">${esc(n)}</td><td colspan="3" class="why">
-     stale suggestion &mdash; no ceiling in this process resolves that name</td></tr>`);
-  const container = SUGGEST_CONTAINER.map(([name, two, four, why]) =>
-    `<tr><td class="name">${esc(name)}</td>
-     <td class="muted">${esc(two)}</td><td class="muted">${esc(four)}</td>
-     <td class="why">${esc(why)} &mdash; <b>not a knob</b>: set on the
-     container, so both cells are written down here rather than read from the
-     process like the rows above</td></tr>`);
-  document.getElementById("suggest").innerHTML =
-    rows.concat(stale, container).join("") ||
-    '<tr><td class="muted">no ceilings resolved yet</td></tr>';
-}
-function saveValue(name, value) { post({ [name]: value }); }
 
 // ── Restart ─────────────────────────────────────────────────────────
 function renderRestart() {

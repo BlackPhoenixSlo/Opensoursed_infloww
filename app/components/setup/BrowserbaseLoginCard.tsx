@@ -5,8 +5,11 @@
  *
  * The operator types the creator's OnlyFans email + password. POST /admin/login/remote/start (backend "browserbase")
  * opens a Browserbase Chromium on Browserbase's own network (its managed proxies) and fills in OnlyFans' login form.
- * When OnlyFans shows a Cloudflare / captcha / 2FA check, the operator solves it in Browserbase's live view (embedded
- * below while the job runs, and one tap away full screen); nothing solves it automatically. No extension is needed, so
+ * When OnlyFans shows a Cloudflare / captcha check, the operator solves it in Browserbase's live view (embedded below
+ * while the job runs, and one tap away full screen); nothing solves it automatically. When OnlyFans asks for the 2FA
+ * code, the card shows a code field: POST /admin/login/remote/{id}/otp hands it to the job, which types it into
+ * OnlyFans' own field; a code OnlyFans does not take (within the relay's wait) comes back as rejected and the field asks again. The live
+ * view stays up as the fallback (the code can be typed there too). No extension is needed, so
  * this is how a creator is linked from a phone. The proxy is the Add creator flow's Proxy selection (`proxy`, the
  * Inflowwww proxy by default): the card has no proxy picker of its own. On success the relay saves the session through
  * the paste-curl pipeline and binds that proxy to the account for all later traffic, so this card only reports and
@@ -45,10 +48,16 @@ const STATE_TEXT: Record<string, string> = {
   starting: "Starting the remote browser (about 10 to 20 seconds)…",
   typing: "Entering the email and password on OnlyFans…",
   challenge: "OnlyFans is showing a verification check. Solve it in the live view.",
-  otp: "OnlyFans is asking for the 2FA code. Type it in the live view.",
+  otp: "OnlyFans is asking for the 2FA code. Enter it below (or in the live view).",
   capturing: "Signed in. Saving the session…",
 };
 const jobPath = (id: string) => `/admin/login/remote/${encodeURIComponent(id)}`;
+/** The relay's messages while the job is on OnlyFans' 2FA prompt (remote_login.OTP_CHECKING / OTP_REJECTED /
+ * OTP_NOT_TYPED; the last two matched by prefix). */
+const OTP_CHECKING = "checking the 2FA code";
+const OTP_REJECTED = "OnlyFans didn't accept that code";
+const OTP_NOT_TYPED = "couldn't type the 2FA code";
+const OTP_CODE = /^\d{6,8}$/;
 
 /** What a finished job left the account on. */
 function attachedText(s: RemoteLoginStatus) {
@@ -71,6 +80,8 @@ export default function BrowserbaseLoginCard({ onLinked, initialNickname = "", p
   const [jobId, setJobId] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [howOpen, setHowOpen] = useState(false);
+  const [otp, setOtp] = useState("");
+  const [otpErr, setOtpErr] = useState<string | null>(null);
   const linkedRef = useRef<string | null>(null);
   const liveRef = useRef<HTMLDivElement | null>(null);
 
@@ -84,6 +95,8 @@ export default function BrowserbaseLoginCard({ onLinked, initialNickname = "", p
     onSuccess: (job) => {
       setErr(null);
       setPassword("");
+      setOtp("");
+      setOtpErr(null);
       setJobId(job.id);
     },
     onError: (e) => setErr(`Couldn't start the login: ${e.message}`),
@@ -111,6 +124,26 @@ export default function BrowserbaseLoginCard({ onLinked, initialNickname = "", p
     if (liveUrl) liveRef.current?.scrollIntoView?.({ behavior: "smooth", block: "nearest" });
   }, [liveUrl]);
 
+  const otpM = useMutation<RemoteLoginStatus, RelayError, string>({
+    mutationFn: (code) => relay.post<RemoteLoginStatus>(`${jobPath(jobId!)}/otp`, { code }),
+    onSuccess: (job, sent) => {
+      setOtpErr(null);
+      setOtp((cur) => (cur === sent ? "" : cur));
+      qc.setQueryData(["remote-login", job.id], job);
+    },
+    onError: (e) => setOtpErr(`Couldn't send the code: ${e.message}`),
+  });
+  const onOtp = status?.state === "otp";
+  const [wasOnOtp, setWasOnOtp] = useState(onOtp);
+  if (wasOnOtp !== onOtp) { // left (or reached) the 2FA prompt: no stale digits or error
+    setWasOnOtp(onOtp);
+    setOtp("");
+    setOtpErr(null);
+  }
+  const otpChecking = onOtp && status.message === OTP_CHECKING;
+  const otpRejected = onOtp && status.message.startsWith(OTP_REJECTED);
+  const otpNotTyped = onOtp && status.message.startsWith(OTP_NOT_TYPED);
+
   const cancel = () => { if (jobId) relay.post(`${jobPath(jobId)}/cancel`).catch(() => {}); };
 
   const canStart = email.trim() !== "" && password !== "" && !startM.isPending && !running;
@@ -133,7 +166,7 @@ export default function BrowserbaseLoginCard({ onLinked, initialNickname = "", p
             </button>
             <p className={cn("text-sm text-fg-dim leading-relaxed", !howOpen && "max-md:hidden")}>
               The login runs in a remote browser on Browserbase&apos;s network, so no extension is needed and it works on a
-              phone. If OnlyFans shows a verification check or asks for a 2FA code, you solve it yourself in the live view.
+              phone. If OnlyFans shows a verification check, you solve it yourself in the live view; a 2FA code you enter here.
             </p>
           </>
         )}
@@ -175,6 +208,37 @@ export default function BrowserbaseLoginCard({ onLinked, initialNickname = "", p
             <p role="status" className="text-fg">{STATE_TEXT[status.state] ?? status.message}</p>
             <Button type="button" variant="secondary" size="sm" onClick={cancel} className="shrink-0">Stop login</Button>
           </div>
+          {status.state === "otp" && (
+            <form
+              className="space-y-2"
+              onSubmit={(e) => { e.preventDefault(); if (OTP_CODE.test(otp) && !otpM.isPending) otpM.mutate(otp); }}
+            >
+              <label htmlFor="bb-otp" className="block text-xs text-fg-dim">2FA code</label>
+              <div className="flex gap-2">
+                <Input
+                  id="bb-otp" type="text" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]*"
+                  minLength={6} maxLength={8} autoFocus value={otp} placeholder="123456" className="max-w-40"
+                  disabled={otpM.isPending}
+                  onChange={(e) => setOtp(e.target.value.replace(/\D/g, "").slice(0, 8))}
+                />
+                <Button type="submit" disabled={!OTP_CODE.test(otp) || otpM.isPending || otpChecking}>
+                  {otpM.isPending ? "Sending…" : "Submit code"}
+                </Button>
+              </div>
+              {otpChecking && <p className="text-xs text-fg-dim">Checking the code with OnlyFans…</p>}
+              {otpRejected && (
+                <div role="alert" className="text-err text-sm">
+                  OnlyFans didn&apos;t accept that code (or hasn&apos;t answered yet). Check it and try again.
+                </div>
+              )}
+              {otpNotTyped && (
+                <div role="alert" className="text-err text-sm">
+                  The code couldn&apos;t be typed into OnlyFans. Try again, or type it in the live view.
+                </div>
+              )}
+              {otpErr && <div role="alert" className="text-err text-sm whitespace-pre-wrap">{otpErr}</div>}
+            </form>
+          )}
           {liveUrl ? (
             <div ref={liveRef} className="space-y-2">
               {/* Touch inside an iframe is awkward on a phone: the full-screen page is one tap away. */}

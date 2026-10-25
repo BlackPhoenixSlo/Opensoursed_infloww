@@ -119,6 +119,15 @@ import of_client as _of_client  # noqa: E402
 _of_client.SESSIONS_DIR = _accounts.SESSIONS_DIR
 import session_bootstrap as _session_bootstrap  # noqa: E402
 _session_bootstrap.SESSIONS_DIR = _accounts.SESSIONS_DIR
+# The SQL mirror every session registration runs (db.repo.sync_from_disk) reads the
+# account dirs and proxies.json through db/import_legacy.py's own paths: the temp dir
+# too, or a captured session never gets its `accounts` row (the owner link then fails
+# its foreign key) and the real service/sessions and proxies.json would be imported.
+import db.import_legacy as _import_legacy  # noqa: E402
+_import_legacy.SESSIONS_DIR = _accounts.SESSIONS_DIR
+_import_legacy.ACCOUNTS_DIR = _accounts.ACCOUNTS_DIR
+_import_legacy.ACTIVE_FILE = _accounts.ACTIVE_FILE
+_import_legacy.PROXIES_FILE = TMP / "proxies.json"
 
 import _run_ui_safe  # noqa: E402,F401  (sets CHATTERLY_TEST_MODE, neuters loops)
 import uvicorn  # noqa: E402

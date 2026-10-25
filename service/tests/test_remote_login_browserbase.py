@@ -65,6 +65,40 @@ No browser and NO network: `_bb_request` / `urlopen` / the page are faked.
       400 missing password (never a 422 echoing it), 400 unknown backend, 501 local, 404 unknown proxy, 503 env missing,
       404 unknown job, 403 another principal's job; /admin/login is audit-
       skipped and chatter-blocked.
+  case_otp_code_signs_in:
+      start over HTTP → login form typed → OnlyFans' 2FA prompt puts the job
+      in "otp" → POST /otp with the code → the job's own thread types it into
+      the 2FA field and presses Enter → auth_id → capture → done. The code is
+      in no status, response or log line.
+  case_otp_wrong_code_retries:
+      a code OnlyFans does not take leaves the job in "otp" with OTP_REJECTED
+      after OTP_VERIFY_S; while it is checked, another code is 409; a second
+      code is typed over it and signs in.
+  case_otp_prompt_back_within_verify_window:
+      the 2FA prompt goes away and comes back before OTP_VERIFY_S: the job is
+      back in "otp" asking for the code (not stuck in "typing").
+  case_enter_otp_one_attempt_cancel_and_form_scope:
+      _enter_otp: one fill with short timeouts (a swallowed fill is "couldn't
+      type", no retyping); a cancel between fill and submit is seen before the
+      submit; the fallback submit is the 2FA field's own form's button, never
+      the page's first submit button (the login form's).
+  case_otp_only_a_visible_field:
+      a stale hidden 2FA input is no prompt (_detect_otp False) and never the
+      field the code is typed into: every _OTP_FIELD selector is `:visible`.
+  case_otp_code_spaces_and_dashes:
+      "123 456" / "123-456" / " 1234-5678 " are accepted as their digits;
+      anything else with them (letters, dots, too few digits) is 400, never
+      echoed.
+  case_otp_scrubbed_from_job_error:
+      an exception whose message carries the submitted code (Playwright echoes
+      filled values) reaches the job error and the log as ***.
+  case_api_otp_gates:
+      POST /otp: 404 unknown job, 403 another principal's job, 409 a job not on
+      the 2FA prompt, 400 a code that is not 6-8 digits or a body that is not
+      {"code": "<string>"} (never echoed, nor on malformed JSON); a good code
+      lands in the job's slot, the status says it is being checked, a second
+      code is 409 until the job asks again; leaving the prompt or failing
+      empties the slot.
 
 Run: ./venv/bin/python service/tests/test_remote_login_browserbase.py  (exit 0 = pass)
 """
@@ -74,6 +108,7 @@ import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback fo
 
 import io  # noqa: E402
 import json  # noqa: E402
+import logging  # noqa: E402
 import os  # noqa: E402
 import tempfile  # noqa: E402
 import time  # noqa: E402
@@ -254,12 +289,15 @@ class _FakePlaywright:
 
 def _with_fakes(urlopen, fn):
     """Run fn() with urlopen and playwright.sync_api faked (no network, no browser)."""
+    import importlib.machinery
     import sys
     import types
     fake_mod = types.ModuleType("playwright.sync_api")
     fake_mod.sync_playwright = _FakePlaywright
     saved = {k: sys.modules.get(k) for k in ("playwright", "playwright.sync_api")}
     sys.modules["playwright"] = types.ModuleType("playwright")
+    # a spec, so the start route's find_spec("playwright") sees it installed
+    sys.modules["playwright"].__spec__ = importlib.machinery.ModuleSpec("playwright", None)
     sys.modules["playwright.sync_api"] = fake_mod
     orig = rl.urllib.request.urlopen
     rl.urllib.request.urlopen = urlopen
@@ -695,6 +733,357 @@ def case_api_gates():
     assert any("/admin/login/remote/start".startswith(p) for p in employees._AUDIT_SKIP_PREFIXES)
     assert any("/admin/login/remote/start".startswith(p) for p in chatters._CHATTER_BLOCKED_ADMIN_PREFIXES)
     assert auth.get_request_user() is None
+
+
+# ── 2FA: the code typed in by the job's own thread ──────────────────────────
+
+GOOD_OTP = "246810"
+
+
+class _OtpField(_Field):
+    """OnlyFans' 2FA field: Enter with the right code signs the page in."""
+
+    def __init__(self, page):
+        super().__init__(page.log, "otp")
+        self.page = page
+
+    def is_visible(self):
+        return self.page.on_prompt()
+
+    def press(self, key, timeout=None):
+        super().press(key, timeout)
+        self.page.otp_tries.append(self.value)
+        if key == "Enter" and self.value == GOOD_OTP:
+            self.page.signed_in = True
+
+
+class _OtpPage(_FormPage):
+    """OnlyFans' login form; once LOG IN is clicked, its 2FA prompt
+    (input[name="code"]) until the right code is entered; then the chats
+    page's signed request."""
+
+    def __init__(self):
+        super().__init__()
+        self.signed_in = False
+        self.otp_tries = []
+        self.fields[rl._OTP_FIELD] = _OtpField(self)
+
+    hide_prompt = False
+
+    def on_prompt(self):
+        return ("click", "submit") in self.log and not self.signed_in and not self.hide_prompt
+
+    def cookies(self, _urls=None):
+        return [{"name": "auth_id", "value": "777", "domain": ".onlyfans.com", "path": "/"}] if self.signed_in else []
+
+    def evaluate(self, script, *_a):
+        if "__relayCapture" in script:
+            return _Page().evaluate(script)
+        return "UA/2" if "userAgent" in script else False
+
+    def wait_for_timeout(self, _ms):
+        time.sleep(0.01)
+
+
+class _LogTap(logging.Handler):
+    def __init__(self):
+        super().__init__(logging.DEBUG)
+        self.lines = []
+
+    def emit(self, record):
+        self.lines.append(record.getMessage())
+
+
+def _otp_login(steps):
+    """Start a served login over HTTP on an _OtpPage (fake Browserbase,
+    fake persist), run `steps(job_id, page)` once the job asks for the code,
+    and wait for the job to end. Returns (job, page, log lines, statuses)."""
+    _set_env()
+    _NAV_ERRORS.clear()
+    calls, urlopen = _fake_browserbase()
+    page, order, statuses = _OtpPage(), [], []
+    restore = _persist_fakes(order)
+    orig_init = _FakeBrowserCtx.__init__
+
+    def _ctx_init(self, cdp_url):
+        self.pages = [page]
+        self.cookies = page.cookies
+
+    tap = _LogTap()
+    logging.getLogger().addHandler(tap)
+    _FakeBrowserCtx.__init__ = _ctx_init
+
+    def _run():
+        r = client.post("/admin/login/remote/start", json={
+            "email": "otp@x.com", "password": OF_PW, "backend": "browserbase", "proxy": "none"})
+        assert r.status_code == 200, r.text
+        job = rl.get_job(r.json()["id"])
+        try:
+            _until(lambda: job.state == rl.STATE_OTP)
+            statuses.append(client.get(f"/admin/login/remote/{job.id}").json())
+            steps(job.id, page, statuses)
+            _until(job.is_terminal)
+        finally:  # a failed case must not leave its job running for the next one
+            if not job.is_terminal():
+                rl.cancel(job)
+                _until(job.is_terminal)
+        statuses.append(job.public())
+        return job
+
+    try:
+        job = _with_fakes(urlopen, _run)
+    finally:
+        _FakeBrowserCtx.__init__ = orig_init
+        logging.getLogger().removeHandler(tap)
+        restore()
+    return job, page, tap.lines, statuses
+
+
+def _until(cond, timeout=10.0):
+    deadline = time.monotonic() + timeout
+    while not cond():
+        assert time.monotonic() < deadline, "timed out"
+        time.sleep(0.02)
+
+
+def case_otp_code_signs_in():
+    def _steps(jid, page, statuses):
+        assert statuses[-1]["state"] == rl.STATE_OTP and statuses[-1]["message"] == rl.OTP_ASK, statuses[-1]
+        r = client.post(f"/admin/login/remote/{jid}/otp", json={"code": f" {GOOD_OTP[:3]} {GOOD_OTP[3:]} "})
+        assert r.status_code == 200, r.text
+        statuses.append(r.json())
+
+    job, page, lines, statuses = _otp_login(_steps)
+    assert job.state == rl.STATE_DONE, (job.state, job.error)
+    assert job.account_id == "777"
+    otp = [e for e in page.log if e[1] == "otp"]
+    assert otp == [("fill", "otp"), ("press", "otp", "Enter")], page.log
+    assert page.otp_tries == [GOOD_OTP]
+    blob = json.dumps(statuses) + "\n".join(lines)
+    assert GOOD_OTP not in blob and OF_PW not in blob, "the code / password leaked into a status or log line"
+    assert job._otp_code is None
+
+
+def case_otp_wrong_code_retries():
+    orig = rl.OTP_VERIFY_S
+    rl.OTP_VERIFY_S = 0.3
+
+    def _steps(jid, page, statuses):
+        job = rl.get_job(jid)
+        r = client.post(f"/admin/login/remote/{jid}/otp", json={"code": "000000"})
+        assert r.status_code == 200 and r.json()["message"] == rl.OTP_CHECKING, r.text
+        r = client.post(f"/admin/login/remote/{jid}/otp", json={"code": "111111"})
+        assert r.status_code == 409 and "already being checked" in r.text and "111111" not in r.text, r.text
+        _until(lambda: job.message == rl.OTP_REJECTED)
+        statuses.append(client.get(f"/admin/login/remote/{jid}").json())
+        assert statuses[-1]["state"] == rl.STATE_OTP, statuses[-1]
+        assert not page.signed_in
+        r = client.post(f"/admin/login/remote/{jid}/otp", json={"code": GOOD_OTP})
+        assert r.status_code == 200, r.text
+
+    try:
+        job, page, lines, statuses = _otp_login(_steps)
+    finally:
+        rl.OTP_VERIFY_S = orig
+    assert job.state == rl.STATE_DONE, (job.state, job.error)
+    assert page.otp_tries == ["000000", GOOD_OTP], page.otp_tries
+    assert any(s["message"] == rl.OTP_REJECTED and s["state"] == rl.STATE_OTP for s in statuses), statuses
+    blob = json.dumps(statuses) + "\n".join(lines)
+    assert "000000" not in blob and GOOD_OTP not in blob
+
+
+def case_otp_prompt_back_within_verify_window():
+    seen = []
+
+    def _steps(jid, page, statuses):
+        job = rl.get_job(jid)
+        assert client.post(f"/admin/login/remote/{jid}/otp", json={"code": "000000"}).status_code == 200
+        _until(lambda: page.otp_tries == ["000000"])
+        page.hide_prompt = True  # OnlyFans navigates away from the prompt...
+        _until(lambda: job.state == rl.STATE_TYPING)
+        seen.append(job.public())
+        page.hide_prompt = False  # ...and shows it again, well inside OTP_VERIFY_S (15 s)
+        _until(lambda: job.state == rl.STATE_OTP, timeout=3)
+        seen.append(job.public())
+        assert client.post(f"/admin/login/remote/{jid}/otp", json={"code": GOOD_OTP}).status_code == 200
+
+    job, page, lines, statuses = _otp_login(_steps)
+    assert seen[0]["state"] == rl.STATE_TYPING, seen
+    assert seen[1]["state"] == rl.STATE_OTP and seen[1]["message"] == rl.OTP_ASK, seen
+    assert job.state == rl.STATE_DONE and page.otp_tries == ["000000", GOOD_OTP], (job.state, page.otp_tries)
+
+
+class _OtpFormField(_Field):
+    """A 2FA field for _enter_otp alone: records timeouts; `press_fails`
+    makes Enter raise; `on_fill` runs after a fill; `locator()` reaches the
+    field's own form's submit button."""
+
+    def __init__(self, log, *, swallow=0, press_fails=False, on_fill=None):
+        super().__init__(log, "otp", swallow=swallow)
+        self.press_fails, self.on_fill, self.timeouts = press_fails, on_fill, []
+
+    def fill(self, value, timeout=None):
+        self.timeouts.append(timeout)
+        super().fill(value, timeout)
+        if self.on_fill:
+            self.on_fill()
+
+    def input_value(self, timeout=None):
+        self.timeouts.append(timeout)
+        return self.value
+
+    def press(self, key, timeout=None):
+        self.timeouts.append(timeout)
+        super().press(key, timeout)
+        if self.press_fails:
+            raise Exception("Timeout exceeded")
+
+    def locator(self, sel):
+        self.log.append(("locator", sel))
+        return self if sel.startswith("xpath=") else _Field(self.log, "otp-form-submit")
+
+
+def case_enter_otp_one_attempt_cancel_and_form_scope():
+    def page_with(field):
+        page = _FormPage()
+        field.log = page.log
+        page.fields[rl._OTP_FIELD] = field
+        return page
+
+    job = _job(state=rl.STATE_OTP, expires_at=time.time() + 600)  # past _check's CAPTURE_RESERVE_S
+    # one fill attempt, short timeouts: a swallowed fill is not retyped
+    field = _OtpFormField([], swallow=1)
+    page = page_with(field)
+    assert rl._enter_otp(job, page, GOOD_OTP) is False
+    assert page.log == [("fill", "otp")], page.log
+    assert set(field.timeouts) == {rl.OTP_STEP_TIMEOUT_MS}, field.timeouts
+    # Enter fails: the fallback is the 2FA form's own submit, not the page's first one
+    field = _OtpFormField([], press_fails=True)
+    page = page_with(field)
+    assert rl._enter_otp(job, page, GOOD_OTP) is True
+    assert page.log == [("fill", "otp"), ("press", "otp", "Enter"),
+                        ("locator", "xpath=ancestor::form"), ("locator", rl._SUBMIT_BUTTON),
+                        ("click", "otp-form-submit")], page.log
+    assert ("click", "submit") not in page.log
+    # a cancel that lands while the code is typed: no submit
+    field = _OtpFormField([], on_fill=job._cancel.set)
+    page = page_with(field)
+    assert isinstance(_raises(rl._Cancelled, rl._enter_otp, job, page, GOOD_OTP), rl._Cancelled)
+    assert page.log == [("fill", "otp")], page.log
+
+
+def case_otp_only_a_visible_field():
+    page = _FormPage()
+    page.fields[rl._OTP_FIELD] = _Field(page.log, "otp", visible=False)  # stale, hidden
+    page.query_selector = lambda sel: page.fields[rl._OTP_FIELD]  # present in the DOM all the same
+    assert rl._detect_otp(page) is False, "a hidden code input is no 2FA prompt"
+    page.fields[rl._OTP_FIELD].visible = True
+    assert rl._detect_otp(page) is True
+    del page.fields[rl._OTP_FIELD]  # locator() raising: no prompt, no crash
+    assert rl._detect_otp(page) is False
+    # the fill target is the same visible-only selector, so .first skips a hidden input
+    parts = rl._OTP_FIELD.split(", ")
+    assert len(parts) == len(rl._OTP_SELECTORS) and all(p.endswith(":visible") for p in parts), rl._OTP_FIELD
+
+
+def case_otp_code_spaces_and_dashes():
+    for typed, code in (("123 456", "123456"), ("123-456", "123456"), (" 1234-5678 ", "12345678"),
+                        ("12\t34 56", "123456")):
+        job = _job(state=rl.STATE_OTP)
+        job.submit_otp(typed)
+        assert job.take_otp() == code, typed
+    mine = _job(principal=None, state=rl.STATE_OTP)
+    rl._jobs[mine.id] = mine
+    try:
+        r = client.post(f"/admin/login/remote/{mine.id}/otp", json={"code": "246-810"})
+        assert r.status_code == 200 and mine.take_otp() == GOOD_OTP, r.text
+        for bad in ("123.456", "12a-456", "12-34-5", "123_456", "--"):
+            fresh = _job(principal=None, state=rl.STATE_OTP)
+            rl._jobs[fresh.id] = fresh
+            r = client.post(f"/admin/login/remote/{fresh.id}/otp", json={"code": bad})
+            assert r.status_code == 400 and bad not in r.text and fresh._otp_code is None, (bad, r.text)
+    finally:
+        rl._jobs.clear()
+
+
+def case_otp_scrubbed_from_job_error():
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _backend(_job):
+        yield None, None
+
+    def _body(_page, _ctx):
+        raise RuntimeError(f'Locator.fill: Timeout 2000ms exceeded: fill("{GOOD_OTP}")')
+
+    job = _job(state=rl.STATE_OTP)
+    job.submit_otp(GOOD_OTP)
+    assert job.take_otp() == GOOD_OTP
+    tap = _LogTap()
+    logging.getLogger().addHandler(tap)
+    orig = rl._browserbase_backend
+    rl._browserbase_backend = _backend
+    try:
+        rl._serve(job, secrets=(OF_PW,), body=_body)
+    finally:
+        rl._browserbase_backend = orig
+        logging.getLogger().removeHandler(tap)
+    assert job.state == rl.STATE_ERROR and "***" in job.error, job.error
+    blob = json.dumps(job.public()) + "\n".join(tap.lines)
+    assert GOOD_OTP not in blob, "the code reached the job error or a log line"
+
+
+def case_api_otp_gates():
+    otp = lambda jid, code: client.post(f"/admin/login/remote/{jid}/otp", json={"code": code})
+    assert otp("nope", GOOD_OTP).status_code == 404
+    theirs = _job(principal="someone-else", state=rl.STATE_OTP)
+    typing = _job(principal=None, state=rl.STATE_TYPING)
+    mine = _job(principal=None, state=rl.STATE_OTP)
+    for j in (theirs, typing, mine):
+        rl._jobs[j.id] = j
+    try:
+        r = otp(theirs.id, GOOD_OTP)
+        assert r.status_code == 403 and theirs._otp_code is None, r.text
+        r = otp(typing.id, GOOD_OTP)
+        assert r.status_code == 409 and typing._otp_code is None, r.text
+        for bad in ("", "12345", "123456789", "12a456"):
+            r = otp(mine.id, bad)
+            assert r.status_code == 400, (bad, r.text)
+            assert not bad or bad not in r.text
+        assert client.post(f"/admin/login/remote/{mine.id}/otp", json={}).status_code == 400
+        # a body that is not {"code": "<string>"}: 400, never a pydantic 422 echoing it
+        for body in ({"code": 123456}, 123456, "123456", ["123456"], {"code": ["123456"]}):
+            r = client.post(f"/admin/login/remote/{mine.id}/otp", json=body)
+            assert r.status_code == 400 and "123456" not in r.text, (body, r.status_code, r.text)
+        r = client.post(f"/admin/login/remote/{mine.id}/otp", content=b'{"code": 123456',
+                        headers={"content-type": "application/json"})
+        assert r.status_code in (400, 422) and "123456" not in r.text, (r.status_code, r.text)
+        assert mine._otp_code is None
+        r = otp(mine.id, GOOD_OTP)
+        assert r.status_code == 200 and r.json()["state"] == rl.STATE_OTP, r.text
+        assert r.json()["message"] == rl.OTP_CHECKING, r.text
+        assert GOOD_OTP not in r.text and GOOD_OTP not in client.get(f"/admin/login/remote/{mine.id}").text
+        assert GOOD_OTP not in repr(mine)
+        r = otp(mine.id, "135791")  # one code at a time
+        assert r.status_code == 409 and "already being checked" in r.text and "135791" not in r.text, r.text
+        assert mine.take_otp() == GOOD_OTP and mine.take_otp() is None
+        assert otp(mine.id, "135791").status_code == 409, "still being checked after the worker took it"
+        mine.otp_retry(rl.OTP_REJECTED)  # the job asks again
+        assert otp(mine.id, "135791").status_code == 200
+        mine.set_state(rl.STATE_TYPING)  # leaving the prompt empties the slot
+        assert mine._otp_code is None and not mine._otp_busy
+        mine.set_state(rl.STATE_OTP, rl.OTP_ASK)
+        assert otp(mine.id, GOOD_OTP).status_code == 200
+        mine.fail("boom")  # so does failing
+        assert mine._otp_code is None and not mine._otp_busy
+        assert otp(mine.id, GOOD_OTP).status_code == 409, "a failed job takes no code"
+        mine = _job(principal=None, state=rl.STATE_OTP)
+        rl._jobs[mine.id] = mine
+        mine.set_state(rl.STATE_DONE)
+        assert otp(mine.id, GOOD_OTP).status_code == 409, "a finished job takes no code"
+    finally:
+        rl._jobs.clear()
+    assert any("/admin/login/remote/x/otp".startswith(p) for p in employees._AUDIT_SKIP_PREFIXES)
 
 
 _harness.run()

@@ -6,10 +6,14 @@
  *   - no proxy picker of its own: the start sends the flow's Proxy selection (the Inflowwww proxy, or a custom label);
  *   - a success names the attached proxy and hands the account on at once (onLinked), like Paste cURL;
  *   - while the job runs the form is replaced by plain-language progress, the live view, a full-screen link and Stop login;
- *   - a refused start reads "Couldn't start the login: …".
+ *   - a refused start reads "Couldn't start the login: …";
+ *   - on OnlyFans' 2FA prompt ("otp") a numeric code field (autofocused, 6-8 digits) and Submit code appear above the
+ *     live view; Submit POSTs {code} to /admin/login/remote/{id}/otp; a code OnlyFans rejected, one the relay couldn't
+ *     type, or a refused POST, shows an error and the field takes another code; the field is locked while the code is
+ *     in flight; leaving the prompt (or a new job) clears the typed code and the error.
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -130,6 +134,90 @@ describe("BrowserbaseLoginCard", () => {
     expect(screen.queryByText(/The login runs in a remote browser/)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Stop login" }));
     expect(relayPost).toHaveBeenLastCalledWith("/admin/login/remote/job1/cancel");
+  });
+
+  it("asks for the 2FA code on the card, keeps the live view, and posts the code to the job's otp route", async () => {
+    current = job({ state: "otp", message: "OnlyFans asks for the 2FA code", live_view_url: "https://www.browserbase.com/devtools-fullscreen/x" });
+    start();
+    expect(await screen.findByText("OnlyFans is asking for the 2FA code. Enter it below (or in the live view).")).toBeInTheDocument();
+    const field = screen.getByLabelText("2FA code");
+    expect(field).toHaveFocus();
+    expect(field).toHaveAttribute("inputmode", "numeric");
+    expect(field).toHaveAttribute("maxlength", "8");
+    expect(screen.getByTitle("Browserbase live view")).toHaveAttribute("src", current.live_view_url);
+    const submit = screen.getByRole("button", { name: "Submit code" });
+    fireEvent.change(field, { target: { value: "12 3a" } });
+    expect(field).toHaveValue("123");
+    expect(submit).toBeDisabled();
+    fireEvent.change(field, { target: { value: "123456" } });
+    relayPost.mockImplementation(() => Promise.resolve(job({ state: "otp", message: "checking the 2FA code" })));
+    fireEvent.click(submit);
+    await waitFor(() => expect(relayPost).toHaveBeenLastCalledWith("/admin/login/remote/job1/otp", { code: "123456" }));
+    expect(await screen.findByText("Checking the code with OnlyFans…")).toBeInTheDocument();
+    expect(screen.getByLabelText("2FA code")).toHaveValue("");
+  });
+
+  it("shows a rejected code and a refused POST as errors, and takes another code", async () => {
+    current = job({ state: "otp", message: "OnlyFans didn't accept that code (or hasn't answered yet) — try again", live_view_url: "https://www.browserbase.com/devtools-fullscreen/x" });
+    start();
+    expect(await screen.findByRole("alert")).toHaveTextContent("OnlyFans didn't accept that code (or hasn't answered yet). Check it and try again.");
+    const field = screen.getByLabelText("2FA code");
+    fireEvent.change(field, { target: { value: "654321" } });
+    relayPost.mockImplementation(() => Promise.reject(new RelayError(409, {}, "the login is not waiting for a 2FA code (state: typing)")));
+    fireEvent.click(screen.getByRole("button", { name: "Submit code" }));
+    await waitFor(() => expect(relayPost).toHaveBeenLastCalledWith("/admin/login/remote/job1/otp", { code: "654321" }));
+    expect(await screen.findByText("Couldn't send the code: the login is not waiting for a 2FA code (state: typing)")).toBeInTheDocument();
+    expect(screen.getByLabelText("2FA code")).toHaveValue("654321");
+    expect(screen.getByRole("button", { name: "Submit code" })).toBeEnabled();
+  });
+
+  it("locks the field while the code is in flight", async () => {
+    current = job({ state: "otp", message: "OnlyFans asks for the 2FA code", live_view_url: "https://www.browserbase.com/devtools-fullscreen/x" });
+    start();
+    const field = await screen.findByLabelText("2FA code");
+    fireEvent.change(field, { target: { value: "123456" } });
+    let answer: (j: RemoteLoginStatus) => void = () => {};
+    relayPost.mockImplementation(() => new Promise<RemoteLoginStatus>((ok) => { answer = ok; }));
+    fireEvent.click(screen.getByRole("button", { name: "Submit code" }));
+    expect(await screen.findByRole("button", { name: "Sending…" })).toBeDisabled();
+    expect(field).toBeDisabled();
+    fireEvent.submit(field.closest("form")!);
+    expect(relayPost.mock.calls.filter(([p]) => p === "/admin/login/remote/job1/otp")).toHaveLength(1);
+    await act(async () => answer(job({ state: "otp", message: "checking the 2FA code" })));
+    await waitFor(() => expect(screen.getByLabelText("2FA code")).toBeEnabled());
+    expect(screen.getByLabelText("2FA code")).toHaveValue("");
+  });
+
+  it("says when the relay couldn't type the code", async () => {
+    current = job({ state: "otp", message: "couldn't type the 2FA code — try again or type it in the live view", live_view_url: "https://www.browserbase.com/devtools-fullscreen/x" });
+    start();
+    expect(await screen.findByRole("alert")).toHaveTextContent("The code couldn't be typed into OnlyFans. Try again, or type it in the live view.");
+    expect(screen.getByLabelText("2FA code")).toBeEnabled();
+  });
+
+  it("clears the typed code and its error when the job leaves the 2FA prompt", async () => {
+    current = job({ state: "otp", message: "OnlyFans asks for the 2FA code", live_view_url: "https://www.browserbase.com/devtools-fullscreen/x" });
+    start();
+    const field = await screen.findByLabelText("2FA code");
+    fireEvent.change(field, { target: { value: "654321" } });
+    relayPost.mockImplementation(() => Promise.reject(new RelayError(409, {}, "a code is already being checked")));
+    fireEvent.click(screen.getByRole("button", { name: "Submit code" }));
+    expect(await screen.findByText("Couldn't send the code: a code is already being checked")).toBeInTheDocument();
+    expect(screen.getByLabelText("2FA code")).toHaveValue("654321");
+    current = job({ state: "typing", live_view_url: "https://www.browserbase.com/devtools-fullscreen/x" });
+    await act(async () => { client.setQueryData(["remote-login", "job1"], current); });
+    await waitFor(() => expect(screen.queryByLabelText("2FA code")).toBeNull());
+    current = job({ state: "otp", message: "OnlyFans asks for the 2FA code", live_view_url: "https://www.browserbase.com/devtools-fullscreen/x" });
+    await act(async () => { client.setQueryData(["remote-login", "job1"], current); });
+    expect(await screen.findByLabelText("2FA code")).toHaveValue("");
+    expect(screen.queryByText(/Couldn't send the code/)).toBeNull();
+  });
+
+  it("shows no code field outside the 2FA prompt", async () => {
+    current = job({ state: "challenge", live_view_url: "https://www.browserbase.com/devtools-fullscreen/x" });
+    start();
+    await screen.findByText("OnlyFans is showing a verification check. Solve it in the live view.");
+    expect(screen.queryByLabelText("2FA code")).toBeNull();
   });
 
   it("says a refused start couldn't start", async () => {

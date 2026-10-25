@@ -1785,28 +1785,33 @@ lane_config.record_live("ACCOUNT_LANE_BACKGROUND", _ACCOUNT_LANE_BACKGROUND)
 # lane spends from. Settable from the Concurrency panel (env > panel > this
 # default). A `ThreadPoolExecutor` cannot be resized, so it is read once, here.
 #
-# THE DEFAULT IS DERIVED, sized 2026-10 for 20 accounts on a 4 vCPU box:
+# THE DEFAULT IS DERIVED, sized 2026-10-25 for one agency of 50 accounts on
+# one relay (the 8 vCPU box; it was 20 accounts on 4 vCPU, 20 x 5 + 92 = 192):
 #
 #     accounts x _ACCOUNT_LANE_TOTAL  +  _EXECUTOR_HEADROOM
-#     20       x 5                    +  92                  =  192
+#     50       x 5                    +  128                 =  378
 #
-# The headroom is what draws on the pool OUTSIDE `_proxy`'s lanes: automation
-# runs call the OF client directly (run slots — run_slot.auto_runs, 4 at 20
-# creators, plus 2 operator-reserved — x up to 6 paced welcome workers + 2
-# bulk = under ~50), transaction ingest is one poll per account (20),
-# and the admission lanes that dispatch to threads (vault media 6, stills,
-# storyboard 2, health 4, referrals 4 = ~20) — rounded up. `accounts` is the
-# larger of the fleet this box is sized for and the account directories on
-# disk at boot, so a relay that grows past 20 grows its pool at the next
-# restart instead of silently re-running the 7-on-64 maths with 30.
+# The headroom is what draws on the pool OUTSIDE `_proxy`'s lanes, counted at
+# 50 Creators: automation runs call the OF client directly (run slots —
+# run_slot.auto_runs(50) = 6, plus 2 operator-reserved — x up to 6 paced
+# welcome workers, + 2 bulk = 50); transaction ingest's own fan-outs (the
+# fast poll 5, backfill 4, the supervisor 1 = 10; counted again on purpose,
+# though the fast poll's call also sits in its account's lane); and the
+# admission lanes that dispatch to threads (vault media 10, stills 6,
+# storyboard 3, health 24, referrals 16 = 59) — 119, rounded up. `accounts` is the larger of the fleet this box is sized
+# for and the account directories on disk at boot, so a relay that grows past
+# 50 grows its pool at the next restart instead of silently re-running the
+# 7-on-64 maths with 80.
 #
-# What it costs: threads only block on network I/O; an idle one is a parked
-# OS thread. Descriptors are the scarce thing on 2026-08-08's evidence, and
-# 192 threads x a few sockets each sits far under the container's 65536
-# `nofile` (docker-compose.yml) — the 08-08 exhaustion was uncapped /img
-# misses at the 1024 default, fixed by `admission.IMG_FETCH` and that ulimit.
-_FLEET_ACCOUNTS = 20
-_EXECUTOR_HEADROOM = 92
+# What it costs: threads only block on network I/O, and `ThreadPoolExecutor`
+# starts one only when work arrives with none idle, so a 5-account relay never
+# reaches this number — it is a ceiling, like the lanes. Descriptors are the
+# scarce thing on 2026-08-08's evidence, and 378 threads x a few sockets each
+# sits far under the container's 65536 `nofile` (docker-compose.yml) — the
+# 08-08 exhaustion was uncapped /img misses at the 1024 default, fixed by
+# `admission.IMG_FETCH` and that ulimit.
+_FLEET_ACCOUNTS = 50
+_EXECUTOR_HEADROOM = 128
 
 
 def _accounts_on_disk() -> int:

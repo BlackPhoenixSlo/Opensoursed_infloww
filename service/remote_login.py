@@ -9,8 +9,11 @@ for this repo:
     drives it over CDP (Playwright `connect_over_cdp`, so no Chromium on this
     host), types the creator's email + password into OnlyFans' real form, and
     hands the operator Browserbase's own LIVE VIEW (an interactive page of the
-    remote browser). When OnlyFans shows Cloudflare / a captcha / a 2FA prompt,
-    a HUMAN solves it there. Browserbase's captcha solver is forced off.
+    remote browser). When OnlyFans shows Cloudflare / a captcha, a HUMAN solves
+    it there. Browserbase's captcha solver is forced off. A 2FA prompt can be
+    answered either in the live view or by POSTing the code
+    (`RemoteLoginJob.submit_otp`); the job's own thread types it into
+    OnlyFans' code field, since only that thread drives the page.
   * Capture reuses the paste-curl pipeline. Before OnlyFans loads, the login
     extension's own interceptor (loginExtensionMulti/interceptor.js) is added
     as an init script, so the remote page publishes exactly what the extension
@@ -34,6 +37,9 @@ can't be created, or an OnlyFans page that won't load, fails loudly.
 SECRETS. BROWSERBASE_API_KEY / BROWSERBASE_PROJECT_ID come from the env only.
 The OnlyFans password lives as a local of the worker thread, is never stored
 on the job, and `scrub()` strips it from every job message, error and log line.
+A submitted 2FA code waits in the job's private slot until the worker takes it
+(then only the worker's local holds it); it is never logged and never in the
+status.
 
 BACKENDS. `backend` keeps the source's selector, default "local". This repo
 removed the local headless-Chromium capture (cleanup 9a: capture_session_proxy,
@@ -46,6 +52,7 @@ import contextvars
 import json
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -133,6 +140,18 @@ _OTP_SELECTORS = (
     'input[name="code"]', 'input[autocomplete="one-time-code"]',
     'input[name="otp"]',
 )
+# The visible one: a stale hidden code input left in the DOM is neither a
+# prompt nor where the code is typed.
+_OTP_FIELD = ", ".join(f"{s}:visible" for s in _OTP_SELECTORS)
+OTP_CODE_RE = re.compile(r"\d{6,8}")
+# After a submitted code: still on the 2FA prompt this long (no auth_id), the
+# operator is asked again. A timer, not an OnlyFans answer, hence the wording.
+OTP_VERIFY_S = 15
+OTP_STEP_TIMEOUT_MS = 2_000  # one fill / read / press on the 2FA field: short, so cancel is seen
+OTP_ASK = "OnlyFans asks for the 2FA code — enter it here or in the live view"
+OTP_CHECKING = "checking the 2FA code"
+OTP_REJECTED = "OnlyFans didn't accept that code (or hasn't answered yet) — try again"
+OTP_NOT_TYPED = "couldn't type the 2FA code — try again or type it in the live view"
 
 # Stores the interceptor's postMessage payloads on window.__relayCapture,
 # merging rules the way the extension's bridge.js does (static_param arrives on
@@ -202,6 +221,13 @@ class RemoteLoginJob:
     finished_at: float | None = None
     _cancel: threading.Event = field(default_factory=threading.Event)
     _lock: threading.Lock = field(default_factory=threading.Lock)
+    # A 2FA code the operator submitted, until the worker takes it. Request
+    # threads only write it (submit_otp); only the worker touches the page.
+    # _otp_busy: a code is pending or being checked (cleared when the job asks
+    # again or leaves the prompt); _otp_last: the last code, for scrub().
+    _otp_code: str | None = field(default=None, repr=False)
+    _otp_busy: bool = field(default=False, repr=False)
+    _otp_last: str | None = field(default=None, repr=False)
 
     def set_state(self, state: str, message: str = "") -> None:
         with self._lock:
@@ -210,6 +236,8 @@ class RemoteLoginJob:
             self.state = state
             if message:
                 self.message = message
+            if state != STATE_OTP:
+                self._otp_code, self._otp_busy = None, False
             if state in _TERMINAL:
                 self.finished_at = time.time()
 
@@ -219,9 +247,44 @@ class RemoteLoginJob:
             self.error = message
             self.message = message
             self.finished_at = time.time()
+            self._otp_code, self._otp_busy = None, False
 
     def is_terminal(self) -> bool:
         return self.state in _TERMINAL
+
+    def submit_otp(self, code: str) -> None:
+        """Queue a 2FA code for the worker to type; the status says it is being
+        checked. Spaces and dashes ("123 456", "123-456") are dropped first.
+        ValueError: not 6-8 digits; RemoteLoginConflict: the job is not on the
+        2FA prompt, or a code is already pending or being checked."""
+        code = re.sub(r"[\s-]", "", code or "")
+        if not OTP_CODE_RE.fullmatch(code):
+            raise ValueError("the 2FA code is 6 to 8 digits")
+        with self._lock:
+            if self.state != STATE_OTP:
+                raise RemoteLoginConflict(f"the login is not waiting for a 2FA code (state: {self.state})")
+            if self._otp_busy:
+                raise RemoteLoginConflict("a code is already being checked")
+            self._otp_code, self._otp_last, self._otp_busy = code, code, True
+            self.message = OTP_CHECKING
+
+    def otp_retry(self, message: str) -> None:
+        """Still on the 2FA prompt: ask for a code again (worker thread)."""
+        with self._lock:
+            if self.state in _TERMINAL:
+                return
+            self.state, self.message = STATE_OTP, message
+            self._otp_code, self._otp_busy = None, False
+
+    def last_otp(self) -> str | None:
+        with self._lock:
+            return self._otp_last
+
+    def take_otp(self) -> str | None:
+        """The pending 2FA code, emptying the slot (worker thread only)."""
+        with self._lock:
+            code, self._otp_code = self._otp_code, None
+            return code
 
     def public(self) -> dict[str, Any]:
         """Status safe to return to the job's own principal: no password, no
@@ -335,7 +398,7 @@ def _serve(job: RemoteLoginJob, *, secrets: tuple[str | None, ...],
     except _Cancelled:
         job.set_state(STATE_CANCELLED, "cancelled")
     except Exception as e:  # noqa: BLE001
-        msg = scrub(f"{type(e).__name__}: {e}", *secrets)
+        msg = scrub(f"{type(e).__name__}: {e}", *secrets, job.last_otp())
         log.warning("remote login %s failed: %s", job.id, msg)
         job.fail(msg)
     finally:
@@ -484,17 +547,6 @@ def _goto(page, url: str, wait_until: str = "domcontentloaded") -> None:
         log.info("navigation to %s did not settle: %s", url, type(e).__name__)
 
 
-def _find_first(page, selectors):
-    for sel in selectors:
-        try:
-            el = page.query_selector(sel)
-            if el:
-                return el
-        except Exception:  # noqa: BLE001
-            continue
-    return None
-
-
 class LoginFormError(RuntimeError):
     """OnlyFans' login form could not be filled. The message never carries
     the typed values."""
@@ -589,7 +641,11 @@ def _detect_challenge(page) -> bool:
 
 
 def _detect_otp(page) -> bool:
-    return _find_first(page, _OTP_SELECTORS) is not None
+    """A VISIBLE 2FA code field is on screen (a stale hidden input is no prompt)."""
+    try:
+        return bool(page.locator(_OTP_FIELD).first.is_visible())
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _auth_id(context) -> str | None:
@@ -617,20 +673,63 @@ def _wait(page, seconds: float) -> None:
         time.sleep(seconds)
 
 
+def _enter_otp(job: RemoteLoginJob, page, code: str) -> bool:
+    """Type `code` into OnlyFans' 2FA field (one attempt, short timeouts, so a
+    cancel is seen within seconds) and press Enter in it, else click the submit
+    button of the field's own form (never the page's first one: that could be
+    the login form). False when the field would not take the code."""
+    field = page.locator(_OTP_FIELD).first
+    try:
+        field.fill(code, timeout=OTP_STEP_TIMEOUT_MS)
+        if field.input_value(timeout=OTP_STEP_TIMEOUT_MS) != code:
+            return False
+    except Exception as e:  # noqa: BLE001 — Playwright's message echoes the value
+        log.info("filling OnlyFans' 2FA field failed: %s", type(e).__name__)
+        return False
+    _check(job, CAPTURE_RESERVE_S)
+    try:
+        field.press("Enter", timeout=OTP_STEP_TIMEOUT_MS)
+    except Exception as e:  # noqa: BLE001
+        log.info("pressing Enter in OnlyFans' 2FA field failed: %s", type(e).__name__)
+        try:
+            field.locator("xpath=ancestor::form").locator(_SUBMIT_BUTTON).first.click(timeout=OTP_STEP_TIMEOUT_MS)
+        except Exception as e2:  # noqa: BLE001
+            log.info("clicking OnlyFans' 2FA submit failed: %s", type(e2).__name__)
+    return True
+
+
 def _drive_until_logged_in(job: RemoteLoginJob, page, context) -> str:
     """Poll for auth_id, surfacing challenge / 2FA to the human in the live
-    view. Never touches a challenge itself."""
+    view. Never touches a challenge itself. On the 2FA prompt, a code the
+    operator submitted (job.submit_otp) is typed in; when OnlyFans still shows
+    the prompt OTP_VERIFY_S later, the job asks for the code again."""
+    otp_sent_at: float | None = None
     while True:
         _check(job, CAPTURE_RESERVE_S)
         uid = _auth_id(context)
         if uid:
             return uid
         if _detect_challenge(page):
+            otp_sent_at = None
             job.set_state(STATE_CHALLENGE, "human verification required — solve it in the live view")
         elif _detect_otp(page):
-            job.set_state(STATE_OTP, "enter the 2FA code in the live view")
-        elif job.state != STATE_TYPING:
-            job.set_state(STATE_TYPING, "waiting for OnlyFans")
+            code = job.take_otp()
+            if code is not None:
+                if _enter_otp(job, page, code):
+                    otp_sent_at = time.time()
+                else:
+                    otp_sent_at = None
+                    job.otp_retry(OTP_NOT_TYPED)
+            elif job.state != STATE_OTP:  # the prompt is (back) on screen
+                otp_sent_at = None
+                job.set_state(STATE_OTP, OTP_ASK)
+            elif otp_sent_at is not None and time.time() - otp_sent_at >= OTP_VERIFY_S:
+                otp_sent_at = None
+                job.otp_retry(OTP_REJECTED)
+        else:
+            otp_sent_at = None
+            if job.state != STATE_TYPING:
+                job.set_state(STATE_TYPING, "waiting for OnlyFans")
         _wait(page, POLL_S)
 
 

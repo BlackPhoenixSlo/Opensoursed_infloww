@@ -3,17 +3,23 @@
 
   POST /admin/login/remote/start          begin a login job → the job's status
   GET  /admin/login/remote/{id}           poll status (no secrets)
+  POST /admin/login/remote/{id}/otp       {"code"}: the 2FA code, while the job is in "otp"
   POST /admin/login/remote/{id}/cancel    cancel the job
 
 The human solves any challenge in the Browserbase live view whose URL the
-status carries while the job runs.
+status carries while the job runs. A 2FA code can be typed there too, or sent
+to /otp: the job's thread types it into OnlyFans; a code OnlyFans does not take
+leaves the job in "otp", asking again (remote_login.OTP_REJECTED). One code at a
+time: while one is pending or being checked, another is 409.
 
 SECURITY
   * /admin/login is in employees._AUDIT_SKIP_PREFIXES: the start body carries
     the OnlyFans password and must never reach the audit log.
   * /admin/login is owner-only (chatters._CHATTER_BLOCKED_ADMIN_PREFIXES), like
     /admin/session.
-  * Only the principal that started a job may read or cancel it (403).
+  * Only the principal that started a job may read, answer or cancel it (403).
+  * The 2FA code is never echoed: not in the status, not in an error, not in a
+    log line (the /otp body is audit-skipped with the rest of /admin/login).
   * The proxy is the Add creator flow's Proxy selection: "infloww" (the
     Inflowwww proxy), "none" or "custom" + proxy_label. Our proxy is never sent
     to Browserbase; it is bound after the login (remote_login.bind_proxy). With
@@ -124,3 +130,19 @@ def remote_login_status(job_id: str) -> dict[str, Any]:
 def remote_login_cancel(job_id: str) -> dict[str, Any]:
     remote_login.cancel(_require_job(job_id))
     return {"ok": True}
+
+
+@router.post("/admin/login/remote/{job_id}/otp")
+def remote_login_otp(job_id: str, body: Any = Body(None)) -> dict[str, Any]:
+    # Any, checked by hand: a pydantic 422 would echo the body (the code) back.
+    job = _require_job(job_id)
+    code = body.get("code") if isinstance(body, dict) else None
+    if not isinstance(code, str):
+        raise HTTPException(status_code=400, detail='the body is {"code": "<6 to 8 digits>"}')
+    try:
+        job.submit_otp(code)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except remote_login.RemoteLoginConflict as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return job.public()

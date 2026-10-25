@@ -12,6 +12,13 @@ redirected secrets and sessions, CHATTERLY_TEST_MODE) plus loopback-only hooks.
        polls it each second: the loop's own CPU, the one-core ceiling).
   POST /__slop/telemetry-flush  emit service/db/write_telemetry's JSON line now
        (reason "flush"; its shutdown line, early), so the counts are in relay.log.
+  POST /__slop/browserbase  {api, chunk_url_tpl}  points the served Browserbase
+       login (remote_login.py) at lib/browserbase.py's loopback world: the
+       Browserbase API base (`remote_login.BROWSERBASE_API`), fake API keys in
+       the env, and OnlyFans' signing-chunk URL (`session_bootstrap.CHUNK_URL_TPL`).
+       It also refuses every non-loopback curl_cffi request (recorded in the
+       off-host log): the login builds a REAL OFClient for the new account, and
+       curl_cffi goes past the socket guard.
 
 The other half of that same wire: a chatter's reply goes OUT to OnlyFans through
 `OFClient.send_message`. The seeded Creators' stub sessions cannot build an
@@ -47,6 +54,7 @@ worker; IDLE_LEAVES / IDLE_LINE) counts as idle and is left out of the shares.
 
 import contextvars
 import inspect
+import json
 import linecache
 import os
 import re
@@ -54,6 +62,7 @@ import runpy
 import sys
 import threading
 import time
+import urllib.parse
 from collections import Counter
 from pathlib import Path
 
@@ -456,6 +465,35 @@ def _wire(app) -> None:
         _loopback(request)
         from db import write_telemetry
         return {"line": write_telemetry.emit("flush")}
+
+    async def browserbase(request: Request) -> dict:
+        _loopback(request)
+        body = await request.json()
+        import remote_login
+        import session_bootstrap
+        from curl_cffi import requests as cffi
+        remote_login.BROWSERBASE_API = body["api"]
+        os.environ["BROWSERBASE_API_KEY"] = "slop-browserbase-key"
+        os.environ["BROWSERBASE_PROJECT_ID"] = "slop-project"
+        session_bootstrap.CHUNK_URL_TPL = body["chunk_url_tpl"]
+        if not getattr(cffi.Session.request, "__slop_guard__", False):
+            real_request = cffi.Session.request
+
+            def guarded(self, method, url, *a, **k):
+                host = urllib.parse.urlsplit(str(url)).hostname
+                if host not in ("127.0.0.1", "localhost", "::1"):
+                    off = Path(os.environ["DEMO_SHOTS_TMP"]) / "server-offhost.jsonl"
+                    with open(off, "a") as f:
+                        f.write(json.dumps({"process": "relay", "via": "curl_cffi", "target": str(url),
+                                            "refused": True}) + "\n")
+                    raise ConnectionRefusedError(f"slop: off-host curl_cffi refused: {url}")
+                return real_request(self, method, url, *a, **k)
+
+            guarded.__slop_guard__ = True
+            cffi.Session.request = guarded
+        return {"ok": True}
+
+    app.add_api_route("/__slop/browserbase", browserbase, methods=["POST"])
 
     sampler = None
     if os.environ.get("SLOP_PROFILE") == "1":

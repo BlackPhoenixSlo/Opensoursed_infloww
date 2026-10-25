@@ -325,6 +325,52 @@ async def case_the_uis_retry_joins_the_inflight_probe() -> None:
     assert _rows(sub)["acct0"] == _rows(first)["acct0"], (sub, first)
 
 
+async def case_one_dead_proxy_does_not_time_out_the_healthy_creators() -> None:
+    """50 Creators, 10 of them behind one dead proxy: the other 40 still answer.
+
+    The default ceiling is sized for this (admission.HEALTH_PROBE): a probe
+    behind a dead proxy keeps its slot past the budget until the client gives
+    up, and one proxy carries 5-10 accounts. Times are production's scaled by
+    1/20 — healthy 0.6 s -> 0.03, stuck to `OFClient.timeout_s` 30 s -> 1.5,
+    the route's 20 s budget -> 1.0 — on an executor the relay's own size, so
+    the threads are not what binds. Then the same fleet at the old 4: the stuck
+    probes take every slot and healthy Creators come back `timeout`, which is
+    the bug this default fixes.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    one = {f"acct{i}" for i in range(0, 50, 5)}            # spread, as a proxy's accounts are
+    two = one | {f"acct{i}" for i in range(1, 50, 5)}      # a second dead proxy: 20 stuck
+    dead: set[str] = set()
+
+    def probe(aid: str) -> dict[str, Any]:
+        time.sleep(1.5 if aid in dead else 0.03)
+        return {"ok": True, "name": aid}
+
+    pool = ThreadPoolExecutor(max_workers=server._EXECUTOR_THREADS)
+    asyncio.get_running_loop().set_default_executor(pool)
+    old = server._probe_account_blocking
+    server._probe_account_blocking = probe
+    try:
+        timed_out = {}
+        for label, stuck, cap in (("one", one, None), ("two", two, None), ("one at 4", one, 4)):
+            dead = stuck
+            with _fleet(_accts(50), concurrency=cap, budget_s=1.0):
+                admission.HEALTH_PROBE._sems.clear()    # this loop's semaphore takes the cap under test
+                rows = _rows(await server._health_all_accounts())
+                admission.HEALTH_PROBE._sems.clear()
+            timed_out[label] = {a for a, r in rows.items() if r.get("timed_out")}
+            await asyncio.sleep(1.6)                     # let the stuck probes finish and free their slots
+    finally:
+        server._probe_account_blocking = old
+        pool.shutdown(wait=True)
+    for label, stuck in (("one", one), ("two", two)):
+        assert timed_out[label] == stuck, (
+            f"{label} dead prox(ies) at the default cap {admission.HEALTH_PROBE.cap}: only theirs may time "
+            f"out; healthy ones did too: {sorted(timed_out[label] - stuck)[:5]}")
+    assert timed_out["one at 4"] - one, "at 4 slots the dead proxy should have starved healthy Creators"
+    assert admission.HEALTH_PROBE.cap >= 22, admission.HEALTH_PROBE.cap
+
+
 def case_the_clamp_never_mutates_the_coalesced_snapshot() -> None:
     """Every waiter on the fan-out gets a deep copy today, but the clamp itself
     must not lean on that: it builds new rows and leaves the snapshot whole."""
