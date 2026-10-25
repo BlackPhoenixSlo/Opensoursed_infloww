@@ -46,21 +46,31 @@ stays ours (stats.per_model `new_subs_count`).
 Earnings (`of_earnings_daily`): OnlyFans' own figure for a Creator's earnings,
 the one its Statistics › Statements page shows (the OF Manager's Statistics
 reads the same `/earnings/chart` live). The ledger (`transactions`) only holds
-what we ingested since the Creator was connected, and can miss sales; OF is the
-truth (owner, 2026-10-24: the DB is a best-effort cache of OF). So:
+what we ingested since the Creator was connected, and can miss sales; OF fills
+those in (owner, 2026-10-24: the DB is a best-effort cache of OF), and the
+reports read the larger of the two per Creator, UTC day and category (stats.py
+`_of_top_ups`): OF never takes away a sale the ledger holds. So:
 
   earnings   GET /earnings/chart  filter[<c>_count, <c>_amount] for c in
-             EARNINGS: per category a daily `chartAmount` (net, after OF's
-             fee) and `chartCount`, plus the period's `total` (net) and `gross`
+             EARNINGS and TOTAL: every asked category answered, zero or not,
+             `messages` under the key `chat_messages` (REPLY_KEY), each a daily
+             `chartAmount` (net, after OF's fee; pending sales in, chargebacks
+             out) and `chartCount`, plus the period's `total` (net) and `gross`.
+             Days are UTC days, points stamped 00:00+00:00; the hours in
+             startDate / endDate change nothing (measured 2026-10-25).
 
 Each day's snapshot re-reads the last `_DAYS` days (OF revises a day for a
 chargeback), and each tick fills the newest missing days back to
 `_EARNINGS_HISTORY_DAYS` in `_EARNINGS_CHUNK_DAYS`-day reads, at most
 `_EARNINGS_CHUNKS_PER_TICK` a tick. A read that answers in another shape (not
 one point per consecutive day, e.g. weekly buckets) stores nothing and is
-asked again the next tick. Gross per day is derived (`_earnings`): OF sends
-gross only as the period's total. `earnings_window` is the read stats.py
-substitutes for the ledger's days.
+asked again the next tick, as is one whose categories do not add up to OF's
+own total (a category under a key we do not read). A day is stored with OF's
+TOTAL row; a day without one (stored before 2026-10-25, its PPV messages read
+as $0) counts as not stored: read again and overwritten, and the reports read
+the ledger's for it meanwhile. Gross per day is derived (`_earnings`): OF sends
+gross only as the period's total. `earnings_window` is the read stats.py takes
+OF's days from.
 """
 from __future__ import annotations
 
@@ -101,6 +111,12 @@ _EARNINGS_CHUNKS_PER_TICK = 4  # 120 days of history an hour per Creator
 EARNINGS = ("subscribes", "tips", "messages", "post", "stream")
 EARNINGS_KIND = {"subscribes": "subscription", "tips": "tip", "messages": "ppv_message",
                  "post": "ppv_post", "stream": "ppv_stream"}
+# The key OF answers a category under when it differs from the filter's name
+# (measured on two live accounts 2026-10-25: filter[messages_*] -> "chat_messages").
+REPLY_KEY = {"messages": "chat_messages"}
+# OF's own total of every category, stored as its own row: the day's check, and
+# the mark that a day was read by a parser that reads every category (`_earnings_days`).
+TOTAL = "total"
 _OF_FEE = 0.2  # OF keeps 20% of gross: gross = net / 0.8 when a reply has no gross
 # earnings_window's answers, until the next write: every report read asks for
 # the same few windows, and only this job writes the table (one relay process).
@@ -187,20 +203,24 @@ async def _upsert(account_id: str, cols: dict[str, dict[str, int]], now: datetim
 
 def _amounts(series: Any) -> dict[date, float] | None:
     """`[{date, count}]` as {UTC day: amount}, or None when it is not one point
-    per consecutive day with a number. An amount may be negative (a day of
-    chargebacks)."""
+    per consecutive UTC day with a number. An amount may be negative (a day of
+    chargebacks). A point must be stamped at a UTC midnight (OF's are, e.g.
+    `2026-10-21T00:00:00+00:00`, measured 2026-10-25): a day cut at another
+    zone's midnight would not line up with the ledger's UTC days."""
     if not isinstance(series, list):
         return None
     out: dict[date, float] = {}
     for p in series:
         try:
-            day = datetime.fromisoformat(str(p["date"]).replace("Z", "+00:00")).date()
+            at = datetime.fromisoformat(str(p["date"]).replace("Z", "+00:00"))
             n = p["count"]
         except (KeyError, TypeError, ValueError):
             return None
         if isinstance(n, bool) or not isinstance(n, (int, float)):
             return None
-        out[day] = float(n)
+        if at.utcoffset() not in (None, timedelta(0)) or at.time() != datetime.min.time():
+            return None
+        out[at.date()] = float(n)
     days = list(out)
     if len(days) != len(series) or any((b - a).days != 1 for a, b in zip(days, days[1:])):
         return None
@@ -209,18 +229,20 @@ def _amounts(series: Any) -> dict[date, float] | None:
 
 def _earnings(reply: Any, first: date, last: date) -> dict[str, dict[str, tuple[int, int, int]]] | None:
     """OF's `/earnings/chart` reply as {day: {category: (net, gross, sales)}} in
-    cents for every day in [first, last], or None when it is not that chart.
-    A category the reply leaves out, or a day it has no point for, is zero (OF
-    names only the categories with earnings, StatementsStatistics). A day's
-    gross is its net at the category's gross/net over the reply (OF sends gross
-    only as the period total), or net / 0.8 when that total is zero. An empty
-    reply is a period with no earnings at all (UNVERIFIED: read as OF naming
-    no category; a Creator's months before its first sale answer so)."""
-    if not isinstance(reply, dict) or (reply and not any(isinstance(reply.get(c), dict) for c in EARNINGS)):
+    cents for every day in [first, last], plus `TOTAL`, or None when it is not
+    that chart or does not add up. Each category is read under OF's reply key
+    (`REPLY_KEY`: messages answer as `chat_messages`). A day it has no point
+    for is zero. A day's gross is its net at the category's gross/net over the
+    reply (OF sends gross only as the period total), or net / 0.8 when that
+    total is zero. The check: OF's own `total` series must be there and each
+    day's categories must sum to it (within a cent each); a reply that names
+    money under a key we do not read, or no total, is not stored (the bug of
+    2026-10-25: every PPV message read as $0 for want of `chat_messages`)."""
+    if not isinstance(reply, dict) or not isinstance(reply.get(TOTAL), dict):
         return None
     per: dict[str, tuple[dict[date, float], dict[date, float], float]] = {}
-    for c in EARNINGS:
-        block = reply.get(c)
+    for c in (*EARNINGS, TOTAL):
+        block = reply.get(REPLY_KEY.get(c, c))
         if block is None:
             continue
         if not isinstance(block, dict):
@@ -243,6 +265,10 @@ def _earnings(reply: Any, first: date, last: date) -> dict[str, dict[str, tuple[
             amount, count, ratio = per.get(c, ({}, {}, 1.0))
             net = round(amount.get(day, 0.0) * 100)
             row[c] = (net, round(net * ratio), int(count.get(day, 0)))
+        total = round(per[TOTAL][0].get(day, 0.0) * 100)
+        if abs(total - sum(net for net, _g, _n in row.values())) > len(EARNINGS):
+            return None
+        row[TOTAL] = (total, sum(g for _n, g, _s in row.values()), int(per[TOTAL][1].get(day, 0)))
         day += timedelta(days=1)
     return out
 
@@ -251,12 +277,14 @@ def fetch_earnings_blocking(client, first: date, last: date) -> dict[str, dict[s
     """OF's own earnings over [first, last] UTC days (`_earnings`), None when it
     answered in another shape. Blocking: run in a thread. Raises what the client
     raises."""
-    # The same read as Statistics › Statements' sidebar (ofMirrorStatsSources `earningsSide`).
+    # The same read as Statistics › Statements' sidebar (ofMirrorStatsSources `earningsSide`), with its total.
     reply = client.earnings_chart(start=f"{first.isoformat()} 00:00:00", end=f"{last.isoformat()} 23:59:59",
-                                  filter=[f"{c}_{m}" for c in EARNINGS for m in ("count", "amount")])
+                                  filter=[f"{c}_{m}" for c in (*EARNINGS, TOTAL) for m in ("count", "amount")])
     got = _earnings(reply, first, last)
     if got is None:
-        log.warning("of_stats_daily: earnings %s..%s answered in an unexpected shape; not stored", first, last)
+        log.warning("of_stats_daily: earnings %s..%s answered in an unexpected shape or not adding up to its "
+                    "total (keys %s); not stored", first, last,
+                    sorted(reply)[:12] if isinstance(reply, dict) else type(reply).__name__)
     return got
 
 
@@ -285,10 +313,13 @@ async def _upsert_earnings(account_id: str, days: dict[str, dict[str, tuple[int,
 
 
 async def _earnings_days(account_id: str, lo: date, hi: date) -> set[str]:
+    """The days stored by a read of every category: those with OF's `TOTAL`. A
+    day without it was written before 2026-10-25 with its PPV messages read as
+    $0: asked again, its rows overwritten, and read as not stored meanwhile."""
     async with get_session() as s:
         return set((await s.execute(
-            select(OfEarningsDaily.day).distinct().where(
-                OfEarningsDaily.account_id == account_id,
+            select(OfEarningsDaily.day).where(
+                OfEarningsDaily.account_id == account_id, OfEarningsDaily.category == TOTAL,
                 OfEarningsDaily.day >= lo.isoformat(), OfEarningsDaily.day <= hi.isoformat()))).scalars())
 
 
@@ -553,17 +584,14 @@ async def _read_window(account_ids: list[str] | None, lo: date, hi: date,
             a = a.where(Account.id.in_(account_ids))
         rows = (await s.execute(q)).all()
         added = (await s.execute(a)).all()
-    cells: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    read = {(r.account_id, r.day) for r in rows if r.category == TOTAL}  # `_earnings_days`
+    cells: dict[tuple[str, str], list[dict[str, Any]]] = {k: [] for k in read}
     for r in rows:
         kind = EARNINGS_KIND.get(r.category)
-        if kind is None:
+        if kind is None or (r.account_id, r.day) not in read or not (r.net_cents or r.gross_cents or r.sales):
             continue
-        # The day is OF's even when it charted nothing: an empty list still replaces the ledger's day.
-        day_cells = cells.setdefault((r.account_id, r.day), [])
-        if not (r.net_cents or r.gross_cents or r.sales):
-            continue
-        day_cells.append({
-            "day": r.day, "account_id": r.account_id, "kind": kind,
+        cells[(r.account_id, r.day)].append({
+            "day": r.day, "account_id": r.account_id, "kind": kind, "category": r.category,
             "gross_cents": r.gross_cents, "net_cents": r.net_cents, "net_missing": 0,
             "net_or_80_cents": r.net_cents, "sales": r.sales,
             "fee_cents": r.gross_cents - r.net_cents, "vat_cents": 0})

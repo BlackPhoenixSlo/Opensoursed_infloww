@@ -1,5 +1,157 @@
 {
- "_note": "Synthetic, PII-free OF Statistics responses keyed by OF path (a `?format=` / `?filter=` suffix when one path answers per format or block). Shapes are the ones the relay's live GETs returned on 2026-10-17 (scrubbed: only key names kept) or, where marked in the tests, OF's own client (app.js module 977600 and the statistics-* chunks); every name, username, text and amount is invented. URLs only on example.invalid.",
+ "_note": "Synthetic, PII-free OF Statistics responses keyed by OF path (a `?format=` / `?filter=` suffix when one path answers per format or block). Shapes are the ones the relay's live GETs returned on 2026-10-17 (scrubbed: only key names kept) or, where marked in the tests, OF's own client (app.js module 977600 and the statistics-* chunks); every name, username, text and amount is invented. URLs only on example.invalid. `/earnings/chart?filter=statements`: the reply to Statements' sidebar filters (filter[<c>_count|amount] for subscribes, tips, messages, post, stream and total) in the shape two live Creators answered on 2026-10-25: messages come back as `chat_messages`, every category is named even with no earnings, points are stamped at UTC midnight, `total` is the categories' sum.",
+ "/earnings/chart?filter=statements": {
+  "subscribes": {
+   "delta": 0,
+   "chartCount": [
+    {
+     "date": "2026-10-01T00:00:00+00:00",
+     "count": 0
+    },
+    {
+     "date": "2026-10-02T00:00:00+00:00",
+     "count": 1
+    }
+   ],
+   "chartAmount": [
+    {
+     "date": "2026-10-01T00:00:00+00:00",
+     "count": 0
+    },
+    {
+     "date": "2026-10-02T00:00:00+00:00",
+     "count": 4
+    }
+   ],
+   "total": 4,
+   "gross": 5
+  },
+  "tips": {
+   "delta": 0,
+   "chartCount": [
+    {
+     "date": "2026-10-01T00:00:00+00:00",
+     "count": 0
+    },
+    {
+     "date": "2026-10-02T00:00:00+00:00",
+     "count": 2
+    }
+   ],
+   "chartAmount": [
+    {
+     "date": "2026-10-01T00:00:00+00:00",
+     "count": 0
+    },
+    {
+     "date": "2026-10-02T00:00:00+00:00",
+     "count": 8
+    }
+   ],
+   "total": 8,
+   "gross": 10
+  },
+  "chat_messages": {
+   "delta": 0,
+   "chartCount": [
+    {
+     "date": "2026-10-01T00:00:00+00:00",
+     "count": 1
+    },
+    {
+     "date": "2026-10-02T00:00:00+00:00",
+     "count": 0
+    }
+   ],
+   "chartAmount": [
+    {
+     "date": "2026-10-01T00:00:00+00:00",
+     "count": 11.2
+    },
+    {
+     "date": "2026-10-02T00:00:00+00:00",
+     "count": 0
+    }
+   ],
+   "total": 11.2,
+   "gross": 14
+  },
+  "post": {
+   "delta": 0,
+   "chartCount": [
+    {
+     "date": "2026-10-01T00:00:00+00:00",
+     "count": 0
+    },
+    {
+     "date": "2026-10-02T00:00:00+00:00",
+     "count": 0
+    }
+   ],
+   "chartAmount": [
+    {
+     "date": "2026-10-01T00:00:00+00:00",
+     "count": 0
+    },
+    {
+     "date": "2026-10-02T00:00:00+00:00",
+     "count": 0
+    }
+   ],
+   "total": 0,
+   "gross": 0
+  },
+  "stream": {
+   "delta": 0,
+   "chartCount": [
+    {
+     "date": "2026-10-01T00:00:00+00:00",
+     "count": 0
+    },
+    {
+     "date": "2026-10-02T00:00:00+00:00",
+     "count": 0
+    }
+   ],
+   "chartAmount": [
+    {
+     "date": "2026-10-01T00:00:00+00:00",
+     "count": 0
+    },
+    {
+     "date": "2026-10-02T00:00:00+00:00",
+     "count": 0
+    }
+   ],
+   "total": 0,
+   "gross": 0
+  },
+  "total": {
+   "delta": 0,
+   "chartCount": [
+    {
+     "date": "2026-10-01T00:00:00+00:00",
+     "count": 1
+    },
+    {
+     "date": "2026-10-02T00:00:00+00:00",
+     "count": 3
+    }
+   ],
+   "chartAmount": [
+    {
+     "date": "2026-10-01T00:00:00+00:00",
+     "count": 11.2
+    },
+    {
+     "date": "2026-10-02T00:00:00+00:00",
+     "count": 12
+    }
+   ],
+   "total": 23.2,
+   "gross": 29
+  }
+ },
  "/earnings/chart": {
   "tips": {
    "chartCount": [

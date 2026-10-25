@@ -25,7 +25,7 @@ import asyncio
 import bisect
 import json
 import logging
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -289,64 +289,73 @@ def _week_slot(slot: str) -> dict[str, int]:
     return {"weekday": int(weekday), "hour": int(hour)}
 
 
-def _with_of_days(ledger: list[dict[str, Any]], of_cells: dict[tuple[str, str], list[dict[str, Any]]],
-                  dims: tuple[str, ...]) -> list[dict[str, Any]]:
-    """Per-(account, local day, kind) ledger cells with every (Creator, day)
-    OnlyFans' own earnings are stored for read from OF in place of the ledger
-    (of_stats_daily.earnings_window: OF is the truth for a Creator's earnings,
-    the ledger only holds what we ingested), summed over `dims`. A ledger cell
-    with no `account_id` is from a span no OF day covers (`_of_spans`): kept."""
+# The OnlyFans Statements category (of_stats_daily.EARNINGS) each ledger kind's
+# sales count in; a kind OF's chart has no category we read for (stream tips:
+# OF's `tips_stream`; custom) is in none. Measured 2026-10-25 against two live
+# Creators: ppv_message = OF's messages to the cent per UTC day; tips and
+# subscriptions with rebills matched 144 of 150 (Creator, day) cells.
+_OF_CATEGORY = {"subscription": "subscribes", "rebill": "subscribes", "ppv_message": "messages", "ppv": "messages",
+                "tip": "tips", "tip_post": "tips", "tip_message": "tips", "ppv_post": "post", "ppv_stream": "stream"}
+
+
+def _of_top_up_rows(params: tx_rollup.Binds, of_cells: dict[tuple[str, str], list[dict[str, Any]]]) -> str:
+    """SQL: per (account_id, UTC day, category) OnlyFans' stored figure for a
+    day of `of_cells` (one read with OF's total: of_stats_daily._earnings_days)
+    with the ledger's tracked sales of the same UTC day and category (`tx_daily`,
+    whole UTC days as OF's), as columns o_* and l_*."""
+    accounts, days = sorted({a for a, _d in of_cells}), sorted({d for _a, d in of_cells})
+    cat = " ".join(f"WHEN {params.bind(k)} THEN {params.bind(c)}" for k, c in _OF_CATEGORY.items())
+    lo, hi = params.bind(days[0]), params.bind(days[-1])
+    return (
+        "SELECT o.account_id AS account_id, o.day AS day, o.category AS category, o.net_cents AS o_net, "
+        "o.gross_cents AS o_gross, o.sales AS o_sales, COALESCE(l.net, 0) AS l_net, "
+        "COALESCE(l.gross, 0) AS l_gross, COALESCE(l.sales, 0) AS l_sales "
+        "FROM of_earnings_daily o JOIN of_earnings_daily t ON t.account_id = o.account_id AND t.day = o.day "
+        f"AND t.category = {params.bind(of_stats_daily.TOTAL)} "
+        f"LEFT JOIN (SELECT account_id, day, CASE kind {cat} END AS category, SUM(gross_cents) AS gross, "
+        "SUM(net_or_80_cents) AS net, SUM(sales) AS sales FROM tx_daily "
+        f"WHERE {params.in_('account_id', accounts)} AND day >= {lo} AND day <= {hi} "
+        f"AND {params.in_('status', TRACKED_STATUSES)} GROUP BY account_id, day, category) l "
+        "ON l.account_id = o.account_id AND l.day = o.day AND l.category = o.category "
+        f"WHERE {params.in_('o.account_id', accounts)} AND o.day >= {lo} AND o.day <= {hi} "
+        f"AND {params.in_('o.category', of_stats_daily.EARNINGS)}")
+
+
+async def _of_top_ups(s, of_cells: dict[tuple[str, str], list[dict[str, Any]]],
+                      dims: tuple[str, ...]) -> list[dict[str, Any]]:
+    """What OnlyFans' own figure adds to the ledger, summed per `dims` (of
+    "account_id", "day" = the UTC day) and kind: per (Creator, UTC day,
+    category) of `of_cells` (of_stats_daily.earnings_window), max(OF, ledger),
+    as the part over the ledger's tracked sales of the same UTC day (both cut
+    days at UTC midnight: OF stamps its points 00:00+00:00), only where OF's
+    net is the larger: the days before a Creator was connected, and sales the
+    ledger missed. OF never takes away a sale the ledger holds (2026-10-25:
+    OF's PPV messages were read as $0 and erased a real $14), so the reports
+    read ledger + these. Cells shaped as `_day_sums`' (MEASURES), summed in
+    SQL: a request turns a few rows, not one per Creator, day and category."""
+    if not of_cells:
+        return []
+    params = tx_rollup.Binds()
+    rows = _of_top_up_rows(params, of_cells)
+    keys = ", ".join((*dims, "category"))
+    sql = (f"SELECT {keys}, SUM(MAX(0, o_gross - l_gross)) AS gross_cents, SUM(o_net - l_net) AS net_cents, "
+           "SUM(MAX(0, o_sales - l_sales)) AS sales, SUM(MAX(0, MAX(0, o_gross - l_gross) - (o_net - l_net))) AS fee_cents "
+           f"FROM ({rows}) WHERE o_net > l_net GROUP BY {keys}")
+    return [{**{d: getattr(r, d) for d in dims}, "kind": of_stats_daily.EARNINGS_KIND[r.category],
+             "gross_cents": r.gross_cents, "net_cents": r.net_cents, "net_missing": 0, "net_or_80_cents": r.net_cents,
+             "sales": r.sales, "fee_cents": r.fee_cents, "vat_cents": 0}
+            for r in (await s.execute(text(sql), params)).all()]
+
+
+def _plus(cells: list[dict[str, Any]], more: list[dict[str, Any]], dims: tuple[str, ...]) -> list[dict[str, Any]]:
+    """`cells` and `more` summed per `dims`."""
     out: dict[tuple, dict[str, Any]] = {}
-    kept = (c for c in ledger if (c.get("account_id"), c["day"]) not in of_cells)
-    for c in (*kept, *(c for v in of_cells.values() for c in v)):
+    for c in (*cells, *more):
         key = tuple(c[d] for d in dims)
         acc = out.setdefault(key, {**dict(zip(dims, key)), **{m: 0 for m in tx_rollup.MEASURES}})
         for m in tx_rollup.MEASURES:
             acc[m] += int(c[m] or 0)
     return list(out.values())
-
-
-def _of_spans(of_cells: dict[tuple[str, str], list[dict[str, Any]]], account_ids: list[str] | None,
-              start: datetime | None, end: datetime | None, zone: ZoneInfo | None,
-              ) -> list[tuple[list[str], list[tuple[datetime, datetime]], list[tuple[datetime, datetime]]]] | None:
-    """The Creators in scope grouped by the window's local days OnlyFans' own
-    figure is stored for (`of_cells`), each group with the spans of [start,
-    end] those days cover and the rest: the ledger is read for the rest only
-    (today, and any day OF's history has not reached), not for the days OF's
-    figure replaces. None for an open window or an unscoped read (the whole
-    window's ledger, `_with_of_days` drops the replaced days)."""
-    if start is None or end is None or account_ids is None:
-        return None
-    lo, hi = of_stats_daily.window_days(start, end)
-    tz, tick = zone or timezone.utc, timedelta(microseconds=1)
-
-    def midnight(d) -> datetime:
-        return datetime.combine(d, time(), tzinfo=tz).astimezone(timezone.utc).replace(tzinfo=None)
-
-    days = [lo + timedelta(days=i) for i in range((hi - lo).days + 1)]
-    groups: dict[tuple, list[str]] = {}
-    for a in account_ids:
-        groups.setdefault(tuple(d for d in days if (a, d.isoformat()) in of_cells), []).append(a)
-    out = []
-    for covered_days, ids in groups.items():
-        covered: list[tuple[datetime, datetime]] = []
-        rest: list[tuple[datetime, datetime]] = []
-        cur = start
-        for d in covered_days:
-            a0, a1 = max(midnight(d), start), min(midnight(d + timedelta(days=1)), end + tick)
-            if a0 >= a1:
-                continue
-            if a0 > cur:
-                rest.append((cur, a0 - tick))
-            if covered and covered[-1][1] + tick == a0:
-                covered[-1] = (covered[-1][0], a1 - tick)
-            else:
-                covered.append((a0, a1 - tick))
-            cur = a1
-        if cur <= end:
-            rest.append((cur, end))
-        out.append((ids, covered, rest))
-    return out
 
 
 @router.get("/admin/stats/revenue")
@@ -405,12 +414,13 @@ async def revenue(
     chart. A reversal is dated by its sale (`occurred_at`; the ledger keeps no
     reversal time), where Infloww dates a refund by its credit date.
 
-    OnlyFans is the truth for a Creator's earnings: grouped by `day` or `kind`
+    OnlyFans fills in what the ledger missed: grouped by `day` or `kind`
     (earnings, not reversals), each complete (Creator, UTC day) whose own OF
     Statistics figure is stored (`of_earnings_daily`, of_stats_daily.py) reads
-    that figure in place of the ledger's sales of the day: OF's net, a derived
-    gross, fee = gross - net, no VAT. Today, and any day not read from OF yet,
-    stay the ledger's. The response then adds `history_missing_days`: the
+    the larger of OF's and the ledger's per category (`_of_top_ups`: OF's net
+    over the ledger's is added, a derived gross, fee = gross - net, no VAT; a
+    sale the ledger holds is never taken away). Today, and any day not read
+    from OF yet, stay the ledger's. The response then adds `history_missing_days`: the
     (Creator, day) pairs before the Creator was added with neither, which a
     growth against the window must read as unknown.
 
@@ -433,9 +443,9 @@ async def revenue(
     statuses = REVERSED_STATUSES if status == "reversed" else TRACKED_STATUSES
     scope = {"account_ids": account_ids, "start": start, "end": end, "where": {"status": statuses}}
 
-    # Earnings by day or kind read OnlyFans' own figure for every complete
-    # (Creator, day) it is stored for (`_with_of_days`); hours, the heatmap and
-    # reversals stay the ledger's (OF charts no hour, no reversal).
+    # Earnings by day or kind add OnlyFans' own figure where it is over the
+    # ledger's (`_of_top_ups`: max per Creator, UTC day and category); hours,
+    # the heatmap and reversals stay the ledger's (OF charts no hour, no reversal).
     of_cells: dict[tuple[str, str], list[dict[str, Any]]] = {}
     gaps = None
     if status == "tracked" and group_by in ("day", "kind"):
@@ -444,24 +454,7 @@ async def revenue(
     async with get_session() as s:
         # One read, day x kind; the day rows and the nested by_kind rows are
         # both sums of it, so the children always sum to their parent day.
-        if of_cells:
-            groups = _of_spans(of_cells, account_ids, start, end, zone)
-            if groups is None:
-                ledger = await _day_sums(s, ("account_id", "kind"), zone, **scope)
-            else:
-                # The rest spans hold no day OF's figure replaces, so they are read
-                # as the ledger-only path reads its window: days only when asked.
-                ledger = []
-                for ids, _covered, rest in groups:
-                    for a, b in rest:
-                        span = {**scope, "account_ids": ids, "start": a, "end": b}
-                        ledger += (await _day_sums(s, ("kind",), zone, **span) if by_time else
-                                   [{"day": None, **r._asdict()}
-                                    for r in await tx_rollup.window_sums(s, ("kind",), **span)])
-            cells = _with_of_days(ledger, of_cells, ("day", "kind") if by_time else ("kind",))
-            if not by_time:
-                cells = [{**c, "day": None} for c in cells]
-        elif by_time:
+        if by_time:
             unit = "%Y-%m-%dT%H:00" if group_by == "hour" else "%Y-%m-%d"
             cells = await _day_sums(s, ("kind",), zone, fmt=unit, **scope)
         elif group_by == "hour_of_week":
@@ -470,6 +463,10 @@ async def revenue(
         else:
             cells = [{"day": None, **r._asdict()}
                      for r in await tx_rollup.window_sums(s, ("kind",), **scope)]
+        # OF's UTC day lands on the report day of the same date (`window_days`).
+        top = await _of_top_ups(s, of_cells, ("day",) if by_time else ())
+    if top:
+        cells = _plus(cells, top if by_time else [{**c, "day": None} for c in top], ("day", "kind"))
 
     def _sum(group: list[dict[str, Any]], **keys: Any) -> SimpleNamespace:
         return SimpleNamespace(**keys, total_cents=sum(c["gross_cents"] for c in group),
@@ -2084,30 +2081,17 @@ async def per_model(
             row["refunded_cents"] += amount
             row["refunded_net_cents"] += int(r.net_cents or 0)
 
-    # A Creator's earnings on each complete day OnlyFans' own figure is stored
-    # for are OF's (`_with_of_days`, as /admin/stats/revenue reads them): the
-    # ledger's tracked sales of those days out, OF's in. Pending, refunds and
-    # PPV conversions stay the ledger's (OF charts none of them).
+    # OnlyFans' own figure where it is over the ledger's (`_of_top_ups`, as
+    # /admin/stats/revenue reads it). Pending, refunds and PPV conversions stay
+    # the ledger's (OF charts none of them).
     if of_cells:
-        tracked = {"status": TRACKED_STATUSES}
-        groups = _of_spans(of_cells, account_ids, start, end, zone)
         async with get_session() as ss:
-            if groups is None:
-                ledger = await _day_sums(ss, ("account_id", "kind"), zone, account_ids=sorted({a for a, _ in of_cells}),
-                                         start=start, end=end, where=tracked)
-                replaced = [c for c in ledger if (c["account_id"], c["day"]) in of_cells]
-            else:
-                # The ledger's sales over the spans OF's days cover, whole days from the daily rollup.
-                replaced = [r._asdict() for ids, covered, _rest in groups for a, b in covered
-                            for r in await tx_rollup.window_sums(ss, ("account_id", "kind"), account_ids=ids,
-                                                                 start=a, end=b, where=tracked)]
-        for sign, cells in ((-1, replaced), (1, [c for v in of_cells.values() for c in v])):
-            for c in cells:
-                row = _ensure(c["account_id"])
-                row["revenue_by_kind"][_kind_bucket(c["kind"])] += sign * int(c["gross_cents"] or 0)
-                row["total_revenue_cents"] += sign * int(c["gross_cents"] or 0)
-                row["total_net_revenue_cents"] += sign * int(c["net_cents"] or 0)
-                row["net_missing_count"] += sign * int(c["net_missing"] or 0)
+            top = await _of_top_ups(ss, of_cells, ("account_id",))
+        for c in top:
+            row = _ensure(c["account_id"])
+            row["revenue_by_kind"][_kind_bucket(c["kind"])] += c["gross_cents"]
+            row["total_revenue_cents"] += c["gross_cents"]
+            row["total_net_revenue_cents"] += c["net_cents"]
 
     for r in r_new:
         row = _ensure(r.account_id)

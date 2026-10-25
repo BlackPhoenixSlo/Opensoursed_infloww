@@ -2018,12 +2018,14 @@ class OfStatsDaily(Base):
 class OfEarningsDaily(Base):
     """One row per Creator per UTC day per OnlyFans earnings category, as
     OnlyFans' own Statistics › Statements charts it (`/earnings/chart`,
-    of_stats_daily.py). OnlyFans is the truth for a Creator's earnings: the
-    revenue and per-model reports read these days in place of the ledger's
-    (stats.py), which only holds what we ingested. Only complete days are
-    stored; a missing row is a day we have no reading for, never a zero.
+    of_stats_daily.py). The revenue and per-model reports read, per Creator,
+    UTC day and category, the larger of these and the ledger's (stats.py
+    `_of_top_ups`), which only holds what we ingested. Only complete days are
+    stored, every category of a day in one read with OF's `total`; a day with
+    no `total` row is one we have no reading for, never a zero.
 
-      category     OF's key: subscribes | tips | messages | post | stream
+      category     subscribes | tips | messages (OF's reply key `chat_messages`)
+                   | post | stream, and `total`: OF's sum of them, the day's check
       net_cents    OF's chartAmount for the day (OF charts net, after its fee)
       gross_cents  that net times the category's gross/net over the same
                    reply (OF sends gross only as the period total)
