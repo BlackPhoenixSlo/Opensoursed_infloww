@@ -81,7 +81,6 @@ function renderHeader(over: Partial<Props> = {}, client?: QueryClient) {
     onEditName: vi.fn(),
     insightsOpen: false,
     onToggleInsights: vi.fn(),
-    extras: { focusMode: false, onToggleFocus: vi.fn() },
     ...over,
   };
   renderWithProviders(<ChatHeader {...props} />, client);
@@ -148,6 +147,8 @@ describe("ChatHeader", () => {
       expect(trigger).toHaveAttribute("aria-expanded", "false");
       let menu = await openAvatarMenu(user);
       expect(trigger).toHaveAttribute("aria-expanded", "true");
+      // A menu (`role="menu"`): a page-level Esc handler leaves the Esc that closes it alone.
+      expect(menu).toHaveAttribute("role", "menu");
       expect(props.onToggleInsights).not.toHaveBeenCalled();
       const labels = ["Subscription status", "Earnings", "Special offers ▸", "Add to lists ▸"];
       const rows = labels.map((label) => within(menu).getByText(label));

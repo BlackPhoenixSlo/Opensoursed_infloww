@@ -48,11 +48,6 @@ export const OURS = {
      *  bar, Window header, Fan tabs, Fan List header, buttons), so 16rem off
      *  `--vvh` keeps its bottom above the viewport's on a short screen. */
     notifPanel: "inset-x-4 top-12.5 max-h-[min(30rem,calc(var(--vvh)-16rem))]",
-    /** The "Notif" (Buys & tips) switch (Compare FL11, ours: Infloww has
-     *  none) at the Fan List header's right end: its label over the 26×14
-     *  track (`windowHeader.switch`), at least the house 36px tap target on
-     *  a phone, the header icons' 7px radius. */
-    panelSwitch: "min-w-9 min-h-9 md:min-w-0 md:min-h-0 px-0.5 rounded-[7px]",
   },
   FanListHeader: {
     /** The "+" New menu's place: from the trigger's right edge, 4px below
@@ -60,9 +55,12 @@ export const OURS = {
     menuPlace: "right-0 mt-1 z-30",
   },
   FanListFilters: {
-    /** The gear menu's place: from the trigger's right edge, 4px below
-     *  it (ours, as `CreatorTabs.pickerPlace`). */
-    menuPlace: "right-0 mt-1 z-30",
+    /** The gear menu's place: from the gear's left edge, 4px below it, as
+     *  the "All inboxes" menu. Below md it opens against the filter row
+     *  instead, at the row's 11px inset and 4px under its 36px line: a
+     *  Creator's scope puts the 150px selector ahead of the gear, where a
+     *  238px menu fits a 390px phone from neither of the gear's edges. */
+    gearMenuPlace: "left-0 max-md:left-2.75 max-md:top-9 mt-1 z-30",
     /** The "All inboxes" menu's place: from the selector's left edge, as
      *  the Clone's `popover()` places every `.pop` (mj:109-117), 4px below
      *  it, so it stays inside the pane. */
@@ -93,8 +91,7 @@ export const OURS = {
     chip: "leading-[1.4]",
     /** The count in a chip's corner badge on one 10px line. */
     chipBadge: "leading-none",
-    /** A menu row's sub-line under its name: a sort order's explanation,
-     *  Focus mode's hint. */
+    /** A menu row's sub-line under its name: a sort order's explanation. */
     menuSubLine: "text-[10px] leading-tight",
   },
   FanRow: {

@@ -12,15 +12,20 @@
  * (`CreatorTabs`) follow it. Our Inflowwww mark sits before All Models
  * as the way back to the Dashboard (`goToDashboard`): this window has no
  * sidebar, and in the desktop app no address bar.
+ * The right-hand group ends with SFW, the far right; before it the "Notif"
+ * switch (`RailSwitch`).
  */
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import type { MouseEvent } from "react";
 
 import { IfMark } from "@/components/auth/SiteLook";
 import { SwitchTrack } from "@/components/ui/SwitchTrack";
 import { useSfw } from "@/hooks/useBlurMode";
+import { useRailSettings } from "@/hooks/useRailSettings";
 import { MP } from "@/lib/messagesPro";
+import { railVisibleOn, surfaceOf, withRailOn } from "@/lib/moneyRailStorage";
 import { cn } from "@/lib/utils";
 import { CreatorTabs } from "./CreatorTabs";
 import { AllModelsTab } from "./MessagesProExtras";
@@ -42,6 +47,39 @@ export function goToDashboard(e: MouseEvent<HTMLAnchorElement>): void {
   }
 }
 
+/** The "Notif" switch (Compare FL11, ours; TODO.md B1): shows or hides the
+ *  Buys & tips rail (`MoneyRail`, the money notifications) on this page's
+ *  surface, the same choice as the rail's ⚙ "Show on" ticks, kept in the
+ *  rail's settings (`useRailSettings`). Disabled until those are read. It sits
+ *  outside the rail so it can bring the rail back. Labelled above its track
+ *  as SFW is; desktop only, as the rail is in Messages Pro. */
+export function RailSwitch() {
+  const surface = surfaceOf(usePathname());
+  const { settings, commit } = useRailSettings();
+  const railOn = settings === null || railVisibleOn(settings, surface);
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={railOn}
+      aria-label="Buys & tips"
+      data-testid="mp-notif-switch"
+      disabled={settings === null}
+      onClick={() => { if (settings) commit(withRailOn(settings, surface, !railOn)); }}
+      title={railOn
+        ? "Buys & tips notifications panel shown: click to hide it on this page"
+        : "Buys & tips notifications panel hidden: click to show it on this page"}
+      className={cn(
+        G.sfw,
+        "flex flex-col items-center text-fg-dim hover:text-fg disabled:opacity-50 disabled:cursor-not-allowed",
+      )}
+    >
+      <span className={G.sfwLabel}>Notif</span>
+      <SwitchTrack on={railOn} />
+    </button>
+  );
+}
+
 export function WindowHeader() {
   const [sfw, toggleSfw] = useSfw();
   return (
@@ -52,11 +90,13 @@ export function WindowHeader() {
       <AllModelsTab />
       <CreatorTabs />
       <div className={cn(G.right, "ml-auto self-center flex items-center")}>
+        <RailSwitch />
         {/* SFW = blur media everywhere; the same store as the app top bar's. */}
         <button
           type="button"
           role="switch"
           aria-checked={sfw}
+          data-testid="mp-sfw-switch"
           onClick={toggleSfw}
           className={cn(G.sfw, "flex flex-col items-center text-fg-dim hover:text-fg")}
           title={sfw ? "SFW on: media blurred" : "SFW off"}

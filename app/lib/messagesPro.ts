@@ -280,9 +280,6 @@ export const MP = {
     /** FL48: `.load-more` padding 14px 16px, 13px/600, border-top 1px
      *  (mh:155-156). */
     loadMore: "px-4 py-3.5 text-[13px] font-semibold border-t",
-    /** FL49: `.fx-note` gap 10px, border 1px, radius 10px, padding 11px 14px,
-     *  13px, line-height 1.5 (`kit:191-192`). */
-    focusBanner: "gap-2.5 px-3.5 py-2.75 rounded-[10px] text-[13px] leading-normal border",
     /** FL50: `.fx-select` height 38px, border 1px, radius 9px, 13.5px, padding
      *  0 12px (`kit:106-107`), and padding-right 32px for its chevron
      *  (`kit:108-110`). */

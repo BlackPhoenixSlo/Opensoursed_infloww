@@ -180,7 +180,7 @@ Sub-items (BS labels; descriptions from H262112):
 **Left pane header** [CL]: creator name, a "New" button (menu items mass message / message online fans / post; "broadcast" is ours), inbox selector "All inboxes" + gear, "✎ Lists", and a row of the creator's OF chat-folder chips. Empty state "No conversations found". The sort label "Needs reply" and its options are [CL ?, probably ours].
 
 **Inbox tabs, filters and sort:**
-- "All" with sort "Newest first"; "Focus mode" works only in All + Newest first. It shows a "new messages banner" with a count, and clicking it refreshes C[H262067].
+- "All" with sort "Newest first"; "Focus mode" works only in All + Newest first. It shows a "new messages banner" with a count, and clicking it refreshes C[H262067]. Ours has none: the Fan List's Focus mode was removed 2026-10-26.
 - Messages Pro chips: "All" / "Unread" / "Pinned" / "Priority" [CL]; "Unread tips" [CL ?]; "↩ Owe reply" is ours.
 - **Correction:** "Priority" / "Unread" / "Unread with Tips" / custom tags (e.g. "With Tips") / "Oldest/Newest first" are C[H262112] for **OF Manager > Messages Basic**, not Messages Pro. Do not merge the two lists.
 - The Split Inbox group filter is a dropdown in the inbox header (G). The clone's "All inboxes" selector is the likely spot [CL, G].

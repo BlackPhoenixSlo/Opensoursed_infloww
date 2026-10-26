@@ -38,7 +38,7 @@ import { usePlatformAccounts } from "./useAccounts";
 import { avatarThumb, mergeOFUserName } from "./useOFUser";
 
 /** A chat row's identity in the list, (accountId, fanId): the flatten step
- *  below de-dupes by it, and the Fan List's Focus mode tracks rows by it. */
+ *  below de-dupes by it, and the Fan List keys its picks by it. */
 export function chatRowKey(c: OFChatItem): string {
   return `${c.__accountId ?? ""}:${c.withUser.id}`;
 }
@@ -301,8 +301,7 @@ interface ChatsPage {
 /** Paint-attribution key for one list view. Exported so ChatList and
  *  fetchPage can't drift on the format. Deliberately coarser than the query
  *  key: `limit` and the unified-scope account set don't change which rail
- *  the user is looking at, and a re-key mid-fetch would strand the op.
- *  FanList also keys Focus mode's snapshot by it, so another rail freezes afresh. */
+ *  the user is looking at, and a re-key mid-fetch would strand the op. */
 export function listPaintKey(
   scope: ReturnType<typeof useScope>["scope"],
   filter: ChatListParams["filter"],
@@ -643,7 +642,7 @@ export function useChatList(params: ChatListParams = {}) {
   // Flatten + de-dupe by (accountId, fanId). The realtime SSE handler also
   // moves rows around, so duplication can creep in across pages. Memoized on
   // the pages, so a render with no new data hands FanList the same array and
-  // its derived lists (chips, sort, Focus mode) are not rebuilt.
+  // its derived lists (chips, sort) are not rebuilt.
   const rows = useMemo(() => {
     const out: OFChatItem[] = [];
     const seen = new Set<string>();

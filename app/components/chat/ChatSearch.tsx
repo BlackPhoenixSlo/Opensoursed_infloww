@@ -63,8 +63,12 @@ export function ChatSearch(props: ChatSearchProps) {
 
   useEffect(() => {
     inputRef.current?.focus();
+    // The Esc is spent here (`preventDefault`): a page that acts on an Esc
+    // nothing took (e.g. to leave a mode) leaves it alone.
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      onClose();
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

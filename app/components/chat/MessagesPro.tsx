@@ -20,7 +20,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useIsRestoring, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { FanList, type FanListSelection } from "@/components/chat/FanList";
-import { FanListButtons, RailSwitch } from "@/components/chat/FanListButtons";
+import { FanListButtons } from "@/components/chat/FanListButtons";
 import { ChatSurface } from "@/components/chat/ChatSurface";
 import { FanTabsRow } from "@/components/chat/FanTabsRow";
 import { InflowwPalette } from "@/components/chat/InflowwPalette";
@@ -454,7 +454,6 @@ export function MessagesPro({ deepLink }: { deepLink?: MessagesProDeepLink } = {
             onSelect={handleSelect}
             onlineOnly={onlineOnly}
             onlineIds={onlineIds}
-            headerEnd={<RailSwitch />}
             actions={(
               <FanListButtons
                 onlineOnly={onlineOnly}

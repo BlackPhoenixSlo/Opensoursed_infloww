@@ -24,6 +24,8 @@ export function useQueueKeys({ accountId, fanId, held, onAdvance, onHoldChange }
   useEffect(() => { holdRef.current = onHoldChange; });
   useEffect(() => { holdRef.current?.(held); }, [held]);
   useEffect(() => () => holdRef.current?.(false), []);
+  const heldRef = useRef(held);
+  useEffect(() => { heldRef.current = held; }, [held]);
   // The Fan this composer is on now; null once unmounted.
   const fanKey = `${accountId}:${fanId}`;
   const onFanRef = useRef<string | null>(fanKey);
@@ -51,12 +53,15 @@ export function useQueueKeys({ accountId, fanId, held, onAdvance, onHoldChange }
    *  passes over this Fan; a failure brings him back); a scheduled one once
    *  enqueued (a refused one stays, restored), and only while this composer
    *  is still mounted on the Fan it was sent from (the chatter may have
-   *  moved). `sending` is what `onSend` returned: no promise means nothing
-   *  to wait for. */
+   *  moved) and holds nothing new (media or a price added while it was
+   *  enqueued). `sending` is what `onSend` returned: no promise means
+   *  nothing to wait for. */
   function advanceAfter(sending: void | PromiseLike<unknown>, scheduled: boolean) {
     if (!scheduled || !sending) return onAdvance?.(1);
     const from = onFanRef.current;
-    sending.then(() => { if (from !== null && onFanRef.current === from) onAdvance?.(1); }, () => {});
+    sending.then(() => {
+      if (from !== null && onFanRef.current === from && !heldRef.current) onAdvance?.(1);
+    }, () => {});
   }
 
   return { isAdvanceKey, arrowKey, advanceAfter };

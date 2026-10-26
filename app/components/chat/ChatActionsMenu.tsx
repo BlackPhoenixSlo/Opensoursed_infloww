@@ -77,13 +77,10 @@ interface Props {
   muted: boolean;
   mutePending: boolean;
   onToggleMute: () => Promise<void>;
-  /** 👁 focus, for the Extras overflow's focus row. */
-  focusMode: boolean;
-  onToggleFocus: () => void;
 }
 
 export function ChatActionsMenu({
-  accountId, fanId, chat, onClosed, muted, mutePending, onToggleMute, focusMode, onToggleFocus,
+  accountId, fanId, chat, onClosed, muted, mutePending, onToggleMute,
 }: Props) {
   const qc = useQueryClient();
   const canDelete = useActionAllowed("delete-chat");
@@ -237,7 +234,7 @@ export function ChatActionsMenu({
       ref={ref}
       className={cn(MP.ours.ChatActionsMenu.place, "absolute top-full")}
     >
-      <div className={cn(MENU_BOX, MP.ours.ChatActionsMenu.box)}>
+      <div role="menu" aria-label="More actions" className={cn(MENU_BOX, MP.ours.ChatActionsMenu.box)}>
         {/* Always offered (was gated on OF's canRestrict, which the thin
             creator rows often omit — the one chat type this action is FOR).
             OF itself rejects the rare user it truly can't restrict. */}
@@ -343,8 +340,6 @@ export function ChatActionsMenu({
           id={extrasId}
           accountId={accountId}
           fanId={fanId}
-          focusMode={focusMode}
-          onToggleFocus={onToggleFocus}
         />
       )}
     </div>

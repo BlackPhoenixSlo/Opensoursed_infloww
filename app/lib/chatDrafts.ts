@@ -10,7 +10,7 @@
  * (which empties the composer) clears it.
  */
 
-import { useEffect, useState, useSyncExternalStore, type Dispatch, type SetStateAction } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore, type Dispatch, type SetStateAction } from "react";
 
 import type { FanId } from "@/lib/fanId";
 import { subscribeToStorage } from "@/lib/storageSync";
@@ -45,13 +45,19 @@ function writeChatDraft(accountId: string, fanId: FanId, text: string): void {
 /** The composer's text state, restored from and saved to the chat's draft.
  *  Without a chat (a mass composer) it is plain state. The Composer remounts
  *  per chat (MessagesPro keys ChatSurface by Creator and Fan), so the draft
- *  is read once, at mount. */
+ *  is read once, at mount. A plain value is saved as it is set: a send that
+ *  empties the draft can unmount the composer in the same render (a queue
+ *  key that sends and moves on), before an effect would run. */
 export function useChatDraft(accountId: string | null, fanId: FanId | null): [string, Dispatch<SetStateAction<string>>] {
   const [text, setText] = useState(() => readChatDraft(accountId, fanId));
   useEffect(() => {
     if (accountId && fanId != null) writeChatDraft(accountId, fanId, text);
   }, [accountId, fanId, text]);
-  return [text, setText];
+  const set = useCallback((next: SetStateAction<string>) => {
+    if (typeof next === "string" && accountId && fanId != null) writeChatDraft(accountId, fanId, next);
+    setText(next);
+  }, [accountId, fanId]);
+  return [text, set];
 }
 
 /** The chat's stored draft text ("" for none), live across the window. */

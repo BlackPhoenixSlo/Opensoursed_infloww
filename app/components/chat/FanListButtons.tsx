@@ -10,22 +10,13 @@
  * "Notifications" is the notification bell's Messages Pro variant: the
  * scoped Creator's OnlyFans notification count and the bell's panel, whose
  * rows about a Fan go to `onOpenFan` (the page opens a Fan tab).
- * `RailSwitch` is the "Notif" switch (Compare FL11, ours; TODO.md B1), which
- * Messages Pro puts at the Fan List header's right end, after its icons: it
- * shows or hides the Buys & tips rail (`MoneyRail`, the money notifications)
- * on this page's surface, the same choice as the rail's ⚙ "Show on" ticks,
- * kept in the rail's settings (`useRailSettings`). It is disabled until those
- * are read. It sits outside the rail so it can bring the rail back.
+ * The "Notif" switch is the Window header's (`WindowHeader` `RailSwitch`).
  */
 
 import { Users } from "lucide-react";
-import { usePathname } from "next/navigation";
 
 import { NotificationBell, type OpenNotificationFan } from "@/components/NotificationBell";
-import { SwitchTrack } from "@/components/ui/SwitchTrack";
-import { useRailSettings } from "@/hooks/useRailSettings";
 import { MP } from "@/lib/messagesPro";
-import { railVisibleOn, surfaceOf, withRailOn } from "@/lib/moneyRailStorage";
 import { cn } from "@/lib/utils";
 
 const G = MP.fanList;
@@ -59,33 +50,5 @@ export function FanListButtons({ onlineOnly, onToggleOnline, onOpenFan, onlineLi
       </button>
       <NotificationBell variant="messages-pro" onOpenFan={onOpenFan} classNames={BELL} />
     </div>
-  );
-}
-
-/** The "Notif" switch: the Buys & tips rail on this page, labelled above its
- *  track as the Window header's SFW is. */
-export function RailSwitch() {
-  const surface = surfaceOf(usePathname());
-  const { settings, commit } = useRailSettings();
-  const railOn = settings === null || railVisibleOn(settings, surface);
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={railOn}
-      aria-label="Buys & tips"
-      disabled={settings === null}
-      onClick={() => { if (settings) commit(withRailOn(settings, surface, !railOn)); }}
-      title={railOn
-        ? "Buys & tips notifications panel shown: click to hide it on this page"
-        : "Buys & tips notifications panel hidden: click to show it on this page"}
-      className={cn(
-        MP.ours.FanListButtons.panelSwitch, MP.windowHeader.sfw,
-        "shrink-0 flex flex-col items-center justify-center text-fg-dim hover:text-fg disabled:opacity-50 disabled:cursor-not-allowed",
-      )}
-    >
-      <span className={MP.windowHeader.sfwLabel}>Notif</span>
-      <SwitchTrack on={railOn} />
-    </button>
   );
 }

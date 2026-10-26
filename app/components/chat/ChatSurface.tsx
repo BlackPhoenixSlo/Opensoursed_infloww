@@ -188,28 +188,6 @@ export function ChatSurface({
   const anchorRef = useRef<string | null>(null);
   const anchorPagesRef = useRef(0);
   const [pinnedOpen, setPinnedOpen] = useState(false);
-  // 👁 "Focus" — a phone reading mode. Collapses the AI status strip and the
-  // search/translate header controls so the thread gets the full screen on a
-  // 360px phone. Persisted globally (a personal reading preference, not
-  // per-fan) and only ever toggleable below lg, where the header crowds the
-  // conversation — desktop never sees the button so focusMode stays false
-  // there and the extra chips render as before.
-  const [focusMode, setFocusMode] = useState(false);
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    setFocusMode(window.localStorage.getItem("chatFocusMode") === "1");
-  }, []);
-  const toggleFocus = useCallback(() => {
-    setFocusMode((v) => {
-      const next = !v;
-      try {
-        window.localStorage.setItem("chatFocusMode", next ? "1" : "0");
-      } catch {
-        /* private-mode / quota — the toggle still works for this session */
-      }
-      return next;
-    });
-  }, []);
   // Imperative handle on Composer — lets FanDrawer's "Send to chat"
   // buttons (on unsold PPVs) preload the composer with that PPV's
   // text + media + price, identical to picking a saved template.
@@ -794,7 +772,6 @@ export function ChatSurface({
         onOpenNotes={() => { setDrawerOpen(true); setFocusNotesRequest((n) => n + 1); }}
         onEditName={() => { setDrawerOpen(true); setFocusNicknameRequest((n) => n + 1); }}
         insightsOpen={drawerOpen} onToggleInsights={() => setDrawerOpen((v) => !v)}
-        extras={{ focusMode, onToggleFocus: toggleFocus }}
       />
 
       {searchOpen && (

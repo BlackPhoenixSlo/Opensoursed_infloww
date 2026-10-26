@@ -358,9 +358,6 @@ const OLD_IDENTITIES: ReadonlyArray<readonly [ExtraName, string, "tooltip"?]> = 
   ["Persona claims", "Correct what this fan was told — this is what the prompt reads"],
   ["Mass exclude", "Add to MASSdmEXCLUDE"],
   ["Mark as unread", "Mark as unread"],
-  ["Phone focus", "👁 focus"],
-  ["Phone focus", "Focus mode — hide the AI status strip and header tools to give the conversation the full screen", "tooltip"],
-  ["Phone focus", "Focus mode ON — AI status & header tools hidden for more thread space. Tap to turn off.", "tooltip"],
   ["Unsold PPVs", "Unsold PPVs sent"],
   ["Extra sort orders", "Amount spent"],
   ["Extra sort orders", "Spend + unread on top"],
@@ -507,9 +504,9 @@ describe("the extras audit", { timeout: 20_000 }, () => {
     });
     const expected = EXTRAS.flatMap((e) => e.hosts.map((h) => `${e.name} @ ${h}`));
     expect(found.sort()).toEqual(expected.sort());
-    // Every one of the thirteen catalogued extras is reached.
+    // Every one of the twelve catalogued extras is reached.
     expect([...names].sort()).toEqual([...NAMES].sort());
-    expect(NAMES.size).toBe(13);
+    expect(NAMES.size).toBe(12);
   });
 
   it("5: every labelled element but a trigger reads \"Inflowwww extra — <a catalogued name>\" on its first line, and each extra its old tooltip, where the old-identity table gives one, on its second", async () => {

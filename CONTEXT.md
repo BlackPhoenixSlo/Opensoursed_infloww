@@ -55,7 +55,7 @@ The multi-Creator chat workspace: the Window header and the Fan tabs strip above
 _Avoid_: inbox, chat page
 
 **Window header**:
-Messages Pro's own top row, holding Home, All Models and the Creator tabs (`app/components/chat/WindowHeader.tsx:3-19`). Online Fans and Notifications are Fan List buttons, not Window header buttons. The look-and-feel plan's "Creator tabs row" is this row, and its "language, pop-out already live there" is stale: those are unowned Compare rows, never built.
+Messages Pro's own top row, holding Home, All Models and the Creator tabs, and at its right end the "Notif" (Buys & tips rail) switch, then SFW last (`app/components/chat/WindowHeader.tsx`). Online Fans and Notifications are Fan List buttons, not Window header buttons. The look-and-feel plan's "Creator tabs row" is this row, and its "language, pop-out already live there" is stale: those are unowned Compare rows, never built.
 _Avoid_: top bar (that is the app shell's), top strip, window chrome, Creator tabs row
 
 **Top bar**:
@@ -96,7 +96,6 @@ _Avoid_: pinned chat
 A named list of Fans that a Creator keeps on OnlyFans.
 _Avoid_: fan list (collides with Fan List), smart list (Infloww's Growth feature)
 
-- **Focus mode** (not the Chat header's "Focus mode" row, which is the Phone focus extra): `app/components/chat/useFocusMode.ts`
 - **Fan List filter**: `app/components/chat/FanListFilters.tsx`
 - **Chat folder** (an OF list pinned as a filter chip): `app/components/chat/FanListFilters.tsx`
 - **Row badge**: `app/components/chat/fanRowBadges.ts`

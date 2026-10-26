@@ -121,7 +121,8 @@ Decisions:
 
 Acceptance:
 - `FanRow.test.tsx` badge matrix; `FanListFilters.test.tsx` chips and sort; `SplitInbox.test.tsx`
-  group count 1–9 and reassign; focus-mode banner test.
+  group count 1–9 and reassign (the Focus mode banner test went with the Fan List's
+  Focus mode, 2026-10-26).
 - `scripts/ui-shots.sh` exits 0; `messages-pro-desktop.png` left pane and
   `messages-pro-phone-list.png` show header, chips, badges and spend pill; visual loop done.
 

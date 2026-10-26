@@ -48,16 +48,14 @@ import { proxyImage } from "@/lib/mediaUrl";
 import { type FanId, lastMessageFromFan, sameUserId } from "@/lib/fanId";
 import { isUnreadChat } from "@/lib/chatUnread";
 import { FanListBulkBar } from "./FanListBulkBar";
-import { FanListFilters, focusModeAvailable, type ActiveChip } from "./FanListFilters";
+import { FanListFilters, type ActiveChip } from "./FanListFilters";
 import { FanListHeader } from "./FanListHeader";
-import { FanListEmpty, FanListSkeleton, FocusModeBanner, LoadMoreConversations, ShowMoreRows } from "./FanListStates";
+import { FanListEmpty, FanListSkeleton, LoadMoreConversations, ShowMoreRows } from "./FanListStates";
 import { FanRow, fanNameOf } from "./FanRow";
 import { FolderPicker } from "./FolderPicker";
 import { SplitInbox } from "./SplitInbox";
 import { isFanOnline } from "./isFanOnline";
 import { totalSpendOf } from "./totalSpend";
-import { useFocusMode } from "./useFocusMode";
-import { useFocusModeSettings } from "./useFocusModeSettings";
 import { useInboxGroup } from "./useInboxGroup";
 import { BRAND_NAME } from "@/lib/brand";
 
@@ -72,7 +70,7 @@ const SCROLL_CAP_STEP = 200;
 // Rows rendered at most, per "Show more" step. Live messages insert rows for
 // Fans not yet in the list (useInboxRealtime), so under a DM flood the list
 // grows without bound (measured 209 -> 583 rows in 4 minutes on All Models);
-// the rest stay in the data (chip counts, Select all, Focus mode) and wait
+// the rest stay in the data (chip counts, Select all) and wait
 // behind a "Show N more" row at the end.
 export const ROW_RENDER_STEP = 200;
 
@@ -88,7 +86,7 @@ export interface FanListSelection {
 }
 
 export function FanList({
-  selected, onSelect, setTabTitle = true, headerEnd, actions, onlineOnly = false, onlineIds,
+  selected, onSelect, setTabTitle = true, actions, onlineOnly = false, onlineIds,
 }: {
   selected: FanListSelection | null;
   onSelect: (sel: FanListSelection) => void;
@@ -96,9 +94,6 @@ export function FanList({
    *  based on the All-set attention count. Pages that want a different
    *  tab-title format (e.g. /group) opt out and set their own. */
   setTabTitle?: boolean;
-  /** Rendered at the Fan List header's right end: Messages Pro's "Notif"
-   *  switch. */
-  headerEnd?: ReactNode;
   /** Rendered between the Fan List header and its filters: Messages Pro's
    *  Fan List buttons. */
   actions?: ReactNode;
@@ -125,7 +120,6 @@ export function FanList({
   const [sortMode, setSortMode] = useChatSortMode();
   const [capRows, setCapRows] = useState(SCROLL_CAP_STEP);
   const [renderCap, setRenderCap] = useState(ROW_RENDER_STEP);
-  const [focusSettings, setFocusSettings] = useFocusModeSettings();
   // Select mode (`FanListBulkBar`): the picked rows' keys, or null outside it.
   const [picks, setPicks] = useState<ReadonlySet<string> | null>(null);
 
@@ -370,7 +364,7 @@ export function FanList({
     return inbox.inGroup ? seed.filter(inbox.inGroup) : seed;
   }, [isFromSeed, rows, oweReplyActive, seedQ.rows, isUnresponded, inbox.inGroup]);
 
-  // The rail on screen. Paint attribution and Focus mode's snapshot are keyed by it.
+  // The rail on screen. Paint attribution is keyed by it.
   const listKey = listPaintKey(scope, serverFilter, serverListId, query || null);
 
   // `painted` — the first commit with clickable rows in the rail, seed or
@@ -527,18 +521,6 @@ export function FanList({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [displayRows, sortMode, sortKey, spendForRow, isUnresponded]);
 
-  // Focus mode freezes the rows shown, never the chats cache (spec, Focus mode).
-  const focus = useFocusMode({
-    liveRows: sortedDisplayRows,
-    // A group change takes a new snapshot, as a Creator change does.
-    listKey: inbox.group == null ? listKey : `${listKey}|inbox ${inbox.group}`,
-    settled: q.isSuccess && !q.isPlaceholderData && !isFromSeed && !groupFilling,
-    available: focusModeAvailable(active, sortMode, !!query),
-    fromFan: isUnresponded,
-    refresh: refreshInbox,
-    settings: focusSettings,
-  });
-
   // Per-fan profile cache, keyed "<accountId>:<fanId>". `enrichWithUsers`
   // writes each fan's {name, username, avatar, customNickname} to
   // ["of-user", aid, fid]; one cache listener reads them all, without
@@ -555,14 +537,14 @@ export function FanList({
     id: c.withUser.id, name: fanNameOf(c, profileMap.get(`${c.__accountId ?? ""}:${c.withUser.id}`)),
   })), [q.data, profileMap]);
 
-  // The rows on screen: Focus mode's, narrowed to online Fans while
+  // The rows on screen: the sorted rows, narrowed to online Fans while
   // `onlineOnly` is on.
   const shownRows = useMemo(() => {
-    if (!onlineOnly) return focus.rows;
-    return focus.rows.filter((c) => isFanOnline(c, profileMap.get(`${c.__accountId ?? ""}:${c.withUser.id}`), onlineIds));
-  }, [onlineOnly, focus.rows, profileMap, onlineIds]);
-  // Warm the top unread threads in the order on screen (sort mode, Focus mode,
-  // Online Fans). A spend sort re-orders as spend and activity land: warm the
+    if (!onlineOnly) return sortedDisplayRows;
+    return sortedDisplayRows.filter((c) => isFanOnline(c, profileMap.get(`${c.__accountId ?? ""}:${c.withUser.id}`), onlineIds));
+  }, [onlineOnly, sortedDisplayRows, profileMap, onlineIds]);
+  // Warm the top unread threads in the order on screen (sort mode, Online
+  // Fans). A spend sort re-orders as spend and activity land: warm the
   // order once both have landed, not each step on the way (a refetch does not
   // hold it again; new Fans' spend does). Online Fans may still re-cut the top
   // as `lastSeen` fills in, or as `onlineIds` (model scope) arrive after the
@@ -624,7 +606,7 @@ export function FanList({
     // call carries `?refresh=1` and bypasses the Stage C
     // backend `list_chats` cache. Without this, a recently-
     // cached inbox would survive the button press.
-    return q.refresh();
+    q.refresh();
   }
 
   /** Mark `rows` read on OF, one at a time. Unpaced: a read flip reaches no
@@ -881,7 +863,6 @@ export function FanList({
           query={query}
           onQueryChange={setQuery}
           galleryFan={selected}
-          end={headerEnd}
         />
         {actions}
         <FanListFilters
@@ -901,11 +882,6 @@ export function FanList({
           onBlurModeChange={setBlurMode}
           compactMedia={compactMedia}
           onCompactMediaChange={setCompactMedia}
-          focusMode={focus.focusMode}
-          searching={!!query}
-          onFocusModeChange={focus.setFocusMode}
-          focusSettings={focusSettings}
-          onFocusSettingsChange={setFocusSettings}
           onSelectChats={() => setPicks(new Set())}
           sortMode={sortMode}
           onSortModeChange={setSortMode}
@@ -961,7 +937,6 @@ export function FanList({
          *  populated, `displayRows` already paints clickable placeholders
          *  and skeletons would just flash in front of them. */}
         {!q.isError && rows.length === 0 && !q.isFetched && !isFromSeed && <FanListSkeleton />}
-        {focus.newCount > 0 && <FocusModeBanner count={focus.newCount} onClick={focus.catchUp} />}
         {renderedRows.map((c) => {
           const accountId = c.__accountId ?? (scope.kind === "model" ? scope.accountId : "");
           const key = `${accountId}:${c.withUser.id}`;

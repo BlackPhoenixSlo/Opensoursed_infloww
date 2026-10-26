@@ -9,11 +9,10 @@
  * Gallery). The search icon opens the search input row under it, and "+" the
  * New menu. FanList owns the query and passes it in with its callback
  * (docs/spec/phase-02-fan-list-pane.md, Interfaces and Header). The refresh
- * icon and the gear live in FanListFilters' filter row. `end` follows "+"
- * (Messages Pro's "Notif" switch).
+ * icon and the gear live in FanListFilters' filter row.
  */
 
-import { useId, useRef, useState, type ComponentProps, type ReactNode } from "react";
+import { useId, useRef, useState, type ComponentProps } from "react";
 import { Image as ImageIcon, Plus, Search } from "lucide-react";
 import { LazyMassMessageComposer } from "@/components/compose/LazyMassMessageComposer";
 import type { FanId } from "@/lib/fanId";
@@ -84,7 +83,7 @@ function NewMenu({ onCompose }: { onCompose: (mode: ComposerMode) => void }) {
 }
 
 export function FanListHeader({
-  title, creatorId, query, onQueryChange, galleryFan, end,
+  title, creatorId, query, onQueryChange, galleryFan,
 }: {
   title: string;
   /** The Creator in scope, or null in All Models. */
@@ -93,8 +92,6 @@ export function FanListHeader({
   onQueryChange: (next: string) => void;
   /** The open Fan, whose Chat gallery the gallery icon opens; null disables it. */
   galleryFan: { accountId: string; fanId: FanId } | null;
-  /** After "+", at the header's right end. */
-  end?: ReactNode;
 }) {
   // The Fan the sheet was opened for, so it never shows another Fan's media.
   const [galleryFor, setGalleryFor] = useState<typeof galleryFan>(null);
@@ -135,7 +132,6 @@ export function FanListHeader({
           <Search className={G.iconButtonIcon} />
         </button>
         <NewMenu onCompose={setComposer} />
-        {end}
       </div>
       {searchOpen && (
         <div id={searchRowId} className="px-4 pb-3">

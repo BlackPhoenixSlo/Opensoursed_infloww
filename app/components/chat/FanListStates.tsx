@@ -3,9 +3,9 @@
 /**
  * FanListStates — what the Fan List shows in place of, before or after its
  * rows: the empty line, the cold-load skeleton and "Load more
- * conversations", in the Clone's text and geometry, and Focus mode's banner
- * in the kit's note geometry (docs/spec/phase-02-fan-list-pane.md, States and
- * Focus mode; Gap rows 26-29). FanList decides when each shows.
+ * conversations", in the Clone's text and geometry
+ * (docs/spec/phase-02-fan-list-pane.md, States; Gap rows 26-28). FanList
+ * decides when each shows.
  */
 
 import { MP } from "@/lib/messagesPro";
@@ -71,25 +71,5 @@ export function ShowMoreRows({ count, onClick }: { count: number; onClick: () =>
     >
       Show {count} more
     </button>
-  );
-}
-
-/** Focus mode's banner at the top of the frozen rows: "{N} new messages"
- *  (spec, Focus mode). A click catches up: a refresh, then the live order.
- *  ASSUMPTION: its colours are the kit note's accent tint in our tokens
- *  (`border-accent/30 bg-accent/10 text-fg hover:bg-accent/15`), which the
- *  spec's colour mapping does not list. Rung 3 (ADR-0001 tokens); overturned
- *  by Phase 6's token pass. */
-export function FocusModeBanner({ count, onClick }: { count: number; onClick: () => void }) {
-  return (
-    <div className="px-4 py-2">
-      <button
-        type="button"
-        onClick={onClick}
-        className={cn(G.focusBanner, "w-full flex items-start text-left border-accent/30 bg-accent/10 text-fg hover:bg-accent/15")}
-      >
-        {count} new messages
-      </button>
-    </div>
   );
 }

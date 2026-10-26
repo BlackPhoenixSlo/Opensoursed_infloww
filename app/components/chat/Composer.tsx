@@ -35,6 +35,7 @@ import { type VaultMedia } from "@/lib/relay";
 import { revokePreviews } from "@/lib/blobPreviews";
 import { proxyImage } from "@/lib/mediaUrl";
 import { type FanId } from "@/lib/fanId";
+import { isImeComposing } from "@/lib/ime";
 import { useChatDraft } from "@/lib/chatDrafts";
 import { useFanVaultHistory } from "@/hooks/useFanVaultHistory";
 import { scriptPickWarning } from "@/lib/messageScripts";
@@ -465,6 +466,8 @@ export function Composer({
   }, []);
 
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    // An IME's Enter picks its candidate: no key here sends or moves on.
+    if (isImeComposing(e)) return;
     // The open "/" list picks its first match on this Enter (TemplatePicker),
     // so "/keyword" is never sent from here, translated or not.
     if (e.key === "Enter" && !e.shiftKey && slashQuery !== null) {

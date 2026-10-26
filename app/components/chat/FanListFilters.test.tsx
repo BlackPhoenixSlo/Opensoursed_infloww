@@ -13,14 +13,12 @@ import userEvent from "@testing-library/user-event";
 
 import { renderWithProviders } from "@/test-utils";
 import { FanListFilters } from "./FanListFilters";
-import { FOCUS_MODE_DEFAULTS } from "./useFocusModeSettings";
 
 function renderFilters(props: Partial<Parameters<typeof FanListFilters>[0]> = {}) {
   const callbacks = {
     onActiveChange: vi.fn(), onOpenFolderPicker: vi.fn(), onRefresh: vi.fn(), onMarkAllRead: vi.fn(),
     onKeepDrawerOpenChange: vi.fn(), onBlurModeChange: vi.fn(), onCompactMediaChange: vi.fn(), onSortModeChange: vi.fn(),
-    onFocusModeChange: vi.fn(), onOpenSplitInbox: vi.fn(), onGroupChange: vi.fn(),
-    onFocusSettingsChange: vi.fn(), onSelectChats: vi.fn(),
+    onOpenSplitInbox: vi.fn(), onGroupChange: vi.fn(), onSelectChats: vi.fn(),
   };
   renderWithProviders(
     <FanListFilters
@@ -39,9 +37,6 @@ function renderFilters(props: Partial<Parameters<typeof FanListFilters>[0]> = {}
       keepDrawerOpen
       blurMode="off"
       compactMedia
-      focusMode={false}
-      focusSettings={FOCUS_MODE_DEFAULTS}
-      searching={false}
       sortMode="recent"
       tipsEnabled={false}
       {...callbacks}
@@ -139,7 +134,7 @@ describe("FanListFilters", () => {
     ]);
   });
 
-  it("the gear is icon-only and its menu lists Mark all as read, Select chats, Keep fan info panel open, both blur options, Compact media previews and Focus mode, and no sort choice", async () => {
+  it("the gear is icon-only and its menu lists Mark all as read, Select chats, Keep fan info panel open, both blur options, Compact media previews, and no Focus mode and no sort choice", async () => {
     const user = userEvent.setup();
     renderFilters();
     const gear = screen.getByRole("button", { name: "Inbox settings" });
@@ -149,21 +144,12 @@ describe("FanListFilters", () => {
     const menu = screen.getByRole("region", { name: "Inbox settings" });
     expect(within(menu).getAllByRole("button").map((b) => b.textContent)).toEqual(["✓Mark all as read", "☑Select chats"]);
     expect(within(menu).getAllByRole("checkbox").map((b) => b.closest("label")?.textContent)).toEqual([
-      "Keep fan info panel open", "Blur images till hover", "Blur images constant", "Compact media previews", "Focus mode",
+      "Keep fan info panel open", "Blur images till hover", "Blur images constant", "Compact media previews",
     ]);
+    // The Fan List's old Focus mode (Pause incoming messages, Hide muted) is gone.
+    expect(within(menu).queryByText(/Focus|Pause incoming|Hide chats with muted|Only in All/)).not.toBeInTheDocument();
     expect(within(menu).queryAllByRole("radio")).toEqual([]);
     expect(within(menu).queryByText(/Sort by|Newest first|Amount spent|Spend \+/)).not.toBeInTheDocument();
-  });
-
-  it("the Focus mode checkbox is enabled only on All with Newest first, and reports its choice there", async () => {
-    const user = userEvent.setup();
-    const { onFocusModeChange } = renderFilters();
-    await user.click(screen.getByRole("button", { name: "Inbox settings" }));
-    const focus = screen.getByRole("checkbox", { name: "Focus mode" });
-    expect(focus).toBeEnabled();
-    expect(focus).not.toHaveAccessibleDescription();
-    await user.click(focus);
-    expect(onFocusModeChange).toHaveBeenCalledWith(true);
   });
 
   it("\"Select chats\" closes the gear and enters select mode", async () => {
@@ -173,51 +159,6 @@ describe("FanListFilters", () => {
     await user.click(screen.getByRole("button", { name: /Select chats/ }));
     expect(onSelectChats).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("region", { name: "Inbox settings" })).not.toBeInTheDocument();
-  });
-
-  it("with Focus mode on, its two settings show under it and report each change; off or unavailable, they are not offered", async () => {
-    const user = userEvent.setup();
-    const { onFocusSettingsChange } = renderFilters({ focusMode: true });
-    await user.click(screen.getByRole("button", { name: "Inbox settings" }));
-    const group = screen.getByRole("group", { name: "Focus mode settings" });
-    expect(within(group).getAllByRole("checkbox").map((b) => [b.closest("label")?.textContent, (b as HTMLInputElement).checked]))
-      .toEqual([
-        ["Pause incoming messages", true],
-        ["Hide chats with muted notifications", false],
-      ]);
-    await user.click(within(group).getByRole("checkbox", { name: "Hide chats with muted notifications" }));
-    expect(onFocusSettingsChange).toHaveBeenCalledWith({ pause: true, hideMuted: true });
-    cleanup();
-
-    for (const props of [{ focusMode: false }, { focusMode: true, searching: true }]) {
-      renderFilters(props);
-      await user.click(screen.getByRole("button", { name: "Inbox settings" }));
-      expect(screen.queryByRole("group", { name: "Focus mode settings" })).not.toBeInTheDocument();
-      cleanup();
-    }
-  });
-
-  it("the Focus mode checkbox is disabled outside All with Newest first, and reads \"Only in All · Newest first\"", async () => {
-    const user = userEvent.setup();
-    const outside = [
-      { active: { kind: "builtin", key: "unread" } },
-      { active: { kind: "builtin", key: "owe-reply" } },
-      { active: { kind: "folder", listId: "700000001" } },
-      { sortMode: "spend" },
-      { searching: true },
-    ] as const;
-    for (const props of outside) {
-      const { onFocusModeChange } = renderFilters({ ...props, focusMode: true });
-      await user.click(screen.getByRole("button", { name: "Inbox settings" }));
-      const focus = screen.getByRole("checkbox", { name: "Focus mode" });
-      expect(focus).toBeDisabled();
-      expect(focus).toBeChecked();
-      expect(focus).toHaveAccessibleDescription("Only in All · Newest first");
-      expect(screen.getByText("Only in All · Newest first")).toBeVisible();
-      await user.click(focus);
-      expect(onFocusModeChange).not.toHaveBeenCalled();
-      cleanup();
-    }
   });
 
   it("the sort control is an icon button the gear's size, named \"Sort: Newest first\" and at rest by default; its menu lists ✓ Newest first, then Sort by and the three extra orders, each an Inflowwww extra; choosing one reports it and closes the menu", async () => {

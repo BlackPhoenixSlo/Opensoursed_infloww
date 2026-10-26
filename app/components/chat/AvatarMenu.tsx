@@ -63,6 +63,8 @@ export function FanAvatarMenu({ id, accountId, fanId }: { id: string; accountId:
   return (
     <div
       id={id}
+      role="menu"
+      aria-label="Avatar menu"
       className={cn(MENU, MP.ours.FanAvatarMenu.place)}
     >
       {submenu === "lists" ? (

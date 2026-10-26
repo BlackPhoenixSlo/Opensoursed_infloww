@@ -25,6 +25,7 @@ import { MessageCircle } from "lucide-react";
 
 import { useSavedReplies } from "@/hooks/useSavedReplies";
 import { useTemplates } from "@/hooks/useTemplates";
+import { isImeComposing } from "@/lib/ime";
 import { cn } from "@/lib/utils";
 import type { OFMessageTemplate, SavedReply, VaultMedia } from "@/lib/relay";
 import { useInflowwPalette } from "./InflowwPalette";
@@ -264,7 +265,7 @@ export function TemplatePicker({
   // house rule, `ChatGallery.tsx:93-95`): stopped at `document`, it never
   // reaches the `window` Escape of Find or the overlay Fan insights.
   const onSlashKey = useEffectEvent((e: KeyboardEvent) => {
-    if (e.isComposing || e.target !== anchorRef.current) return;
+    if (isImeComposing(e) || e.target !== anchorRef.current) return;
     if (e.key === "Escape") {
       e.stopPropagation();
       close();
@@ -328,7 +329,7 @@ export function TemplatePicker({
                     close();
                   }
                 }
-                if (e.key === "Enter" && items.length > 0) {
+                if (e.key === "Enter" && items.length > 0 && !isImeComposing(e)) {
                   e.preventDefault();
                   pick(items[0]);
                 }

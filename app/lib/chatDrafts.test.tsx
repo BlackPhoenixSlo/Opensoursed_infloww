@@ -4,8 +4,9 @@
  *
  * Fixture identifiers are invented (this repo mirrors to a public one).
  */
+import { useState } from "react";
 import { afterEach, describe, expect, it } from "vitest";
-import { act, renderHook } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen } from "@testing-library/react";
 
 import { chatDraftKey, useChatDraft, useChatDraftText } from "./chatDrafts";
 
@@ -41,5 +42,21 @@ describe("chatDrafts", () => {
     expect(row.result.current).toBe("typing…");
     act(() => composer.result.current[1](""));
     expect(row.result.current).toBe("");
+  });
+
+  it("clears the draft when the send that empties it also unmounts the composer (it moves on to the next chat)", () => {
+    sessionStorage.setItem(chatDraftKey(A, 200000001), "sent reply");
+    function Composer({ onSent }: { onSent: () => void }) {
+      const [text, setText] = useChatDraft(A, 200000001);
+      return <button onClick={() => { setText(""); onSent(); }}>{text}</button>;
+    }
+    function Queue() {
+      const [on, setOn] = useState(true);
+      return on ? <Composer onSent={() => setOn(false)} /> : null;
+    }
+    render(<Queue />);
+    fireEvent.click(screen.getByText("sent reply"));
+    expect(screen.queryByText("sent reply")).toBeNull();
+    expect(sessionStorage.getItem(chatDraftKey(A, 200000001))).toBeNull();
   });
 });

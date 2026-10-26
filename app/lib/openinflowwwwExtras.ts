@@ -37,7 +37,7 @@ export type Extra = {
   hosts: readonly Host[];
 };
 
-/** The thirteen extras: the twenty-one of the spec's three Gap tables, less
+/** The twelve extras: the twenty-one of the spec's three Gap tables, less
  *  the Composer's three: since TODO.md A2 (2026-10-16) free previews, the
  *  "at" presets and the quick emojis are plain Composer controls (the PPV
  *  row, ⏱ and row 1), and the Composer has no Extras overflow. Less two more:
@@ -49,7 +49,8 @@ export type Extra = {
  *  since page-parity 07. Less three: the automation extras (Persona button,
  *  Broadcast, Automation restrict) went with the Legacy flag. The Generated
  *  profile note and Persona claims stay: they show in Fan insights by default
- *  since 2026-10-21 (ADR-0003's amendment). */
+ *  since 2026-10-21 (ADR-0003's amendment). Less one: Phone focus, the Chat
+ *  header's phone reading mode, removed 2026-10-26. */
 export const EXTRAS = [
   { name: "Scheduled chip", hosts: ["Chat header overflow"] },
   // A chip after All, its count always in amber (2026-10-26).
@@ -63,7 +64,6 @@ export const EXTRAS = [
   { name: "Persona claims", hosts: ["Fan insights"] },
   { name: "Mass exclude", hosts: ["Chat header overflow", "Fan insights"] },
   { name: "Mark as unread", hosts: ["Chat header overflow"] },
-  { name: "Phone focus", hosts: ["Chat header overflow"] },
   { name: "Fan identity", hosts: ["Fan insights"] },
   { name: "Unsold PPVs", hosts: ["Fan insights"] },
   {

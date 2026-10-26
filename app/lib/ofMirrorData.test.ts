@@ -1520,7 +1520,8 @@ describe("statements/earnings: the Creator's earning transactions (OF's captured
   it("one row per transaction, in order, before the loading row: OF's money, dates in the Agency's zone, descriptions as text, a deleted fan greyed", () => {
     const doc = load(EARNINGS);
     const outside = outsideRows(doc);
-    applyData(doc, EARNINGS, { transactions: TXNS, zone: TZ });
+    // At the fixtures' "now" (summer time), so the zone note does not follow today's date.
+    atFixtureNow(() => applyData(doc, EARNINGS, { transactions: TXNS, zone: TZ }));
     expect(txnRows(doc)).toEqual(WANT_TXNS);
     const rows = txns(doc);
     expect(rows.every((r) => r.hasAttribute("data-oi-data"))).toBe(true);

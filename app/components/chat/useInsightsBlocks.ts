@@ -4,7 +4,7 @@
  * useInsightsBlocks — the order of Fan insights' Insights blocks and which
  * of them are removed, persisted for this browser. The grip drags a block to
  * a new place, its × removes it and the head's "+" adds a removed one back
- * at its old place. The `useFocusModeSettings` storage pattern, so the pinned
+ * at its old place. The `useBlurMode` storage pattern, so the pinned
  * pane and its slide-over twin share one layout.
  *
  * A stored layout keeps only the ids it knows; a block it lacks (one added

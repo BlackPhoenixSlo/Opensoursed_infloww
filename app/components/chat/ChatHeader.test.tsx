@@ -57,7 +57,7 @@ import type { OFChatItem } from "@/lib/relay";
 import { applyTypingEvent } from "@/lib/fanTyping";
 import { makeTestQueryClient, renderWithProviders } from "@/test-utils";
 import { MP } from "@/lib/messagesPro";
-import { ChatHeader } from "./ChatHeader";
+import { CHAT_MUTE, ChatHeader } from "./ChatHeader";
 import { NOT_WIRED } from "./NotWired";
 
 const ACCOUNT_ID = "100000001";
@@ -89,7 +89,6 @@ function renderHeader(over: Partial<Props> = {}, client?: QueryClient) {
     onEditName: vi.fn(),
     insightsOpen: false,
     onToggleInsights: vi.fn(),
-    extras: { focusMode: false, onToggleFocus: vi.fn() },
     ...over,
   };
   const utils = renderWithProviders(<ChatHeader {...props} />, client);
@@ -232,11 +231,16 @@ describe("ChatHeader", () => {
       const kebabOpen = () => screen.queryByRole("button", { name: /Hide chats$/ }) !== null;
 
       const kebab = await openKebab(user);
+      // Both are menus (`role="menu"`): a page-level Esc handler leaves the
+      // Esc that closes one alone.
+      expect(kebab).toHaveAttribute("role", "menu");
+      expect(kebab).toHaveAccessibleName("More actions");
       expect(extrasRow()).toHaveTextContent("Inflowwww extras ▸");
       expect(submenu()).toBeNull();
       await user.click(extrasRow());
       expect(extrasRow()).toHaveAttribute("aria-expanded", "true");
       expect(submenu()).toBeInTheDocument();
+      expect(submenu()).toHaveAttribute("role", "menu");
       expect(kebab).not.toContainElement(submenu());
       await user.click(extrasRow());
       expect(extrasRow()).toHaveAttribute("aria-expanded", "false");
@@ -258,21 +262,6 @@ describe("ChatHeader", () => {
       expect(submenu()).toBeNull();
       expect(kebabOpen()).toBe(false);
     });
-
-    it("in focus mode on a phone the kebab stays visible, and the overflow's focus row turns focus off", async () => {
-      const user = userEvent.setup();
-      const onToggleFocus = vi.fn();
-      renderHeader({ extras: { focusMode: true, onToggleFocus } });
-      // Focus mode hides the icon row below lg (`hidden lg:flex`), never the kebab.
-      expect(screen.getByRole("button", { name: "Find" }).parentElement).toHaveClass("hidden", "lg:flex");
-      for (let el: HTMLElement | null = screen.getByRole("button", { name: "More actions" }); el && el.tagName !== "HEADER"; el = el.parentElement) {
-        expect(el.className).not.toMatch(/(^|\s)hidden(\s|$)/);
-      }
-      const focus = within(await openExtras(user)).getByRole("button", { name: "Focus mode ON" });
-      expect(focus).toHaveAttribute("aria-pressed", "true");
-      await user.click(focus);
-      expect(onToggleFocus).toHaveBeenCalledTimes(1);
-    });
   });
 
   describe("Extras overflow (ticket 92)", () => {
@@ -290,7 +279,7 @@ describe("ChatHeader", () => {
       client.setQueryData(["chats", "fixture"], { pages: [{ rows: [ROW], hasMore: false }], pageParams: [null] });
       return client;
     };
-    const EXTRA_ROWS = ["Scheduled 2", "Group chat", "Mark as unread", "Add to MASSdmEXCLUDE", "Focus mode"];
+    const EXTRA_ROWS = ["Scheduled 2", "Group chat", "Mark as unread", "Add to MASSdmEXCLUDE"];
 
     it('the Kebab row is titled "Inflowwww extras"; the overflow\'s rows carry "Inflowwww extra" and hold no Persona, translate or "Restrict from automations" row', async () => {
       const user = userEvent.setup();
@@ -307,15 +296,13 @@ describe("ChatHeader", () => {
         "Inflowwww extra — Group chat\nAdd to group chat tab",
         "Inflowwww extra — Mark as unread",
         "Inflowwww extra — Mass exclude",
-        "Inflowwww extra — Phone focus\nFocus mode — hide the AI status strip and header tools to give the conversation the full screen",
       ]);
-      // Focus is the phone reading mode: below lg only.
-      expect(menu.getByRole("button", { name: "Focus mode" })).toHaveClass("lg:hidden");
+      expect(menu.queryByRole("button", { name: /Focus mode/ })).toBeNull();
       expect(menu.queryByText(/translate|🌐/i)).toBeNull();
       expect(menu.queryByText(/automations|Auto-restricted|Persona/)).toBeNull();
     });
 
-    it('with nothing seeded, the five rows show at once: "Scheduled …" while the queue loads, then "Scheduled 0", disabled, and no row moves', async () => {
+    it('with nothing seeded, the four rows show at once: "Scheduled …" while the queue loads, then "Scheduled 0", disabled, and no row moves', async () => {
       // The queue answers only when the case says so, so the loading row can be read.
       let answer: (v: { list: [] }) => void = () => {};
       const queue = new Promise<{ list: [] }>((resolve) => { answer = resolve; });
@@ -330,7 +317,7 @@ describe("ChatHeader", () => {
       const order = (first: string) => [first, ...EXTRA_ROWS.slice(1)];
       const expectRows = (names: string[]) => {
         const rows = menu.getAllByRole("button");
-        expect(rows).toHaveLength(5);
+        expect(rows).toHaveLength(4);
         names.forEach((name, i) => expect(rows[i]).toBe(menu.getByRole("button", { name })));
         return rows;
       };
@@ -355,7 +342,7 @@ describe("ChatHeader", () => {
       expect(failed).toBeDisabled();
       expect(failed).toHaveAttribute("title", "Inflowwww extra — Scheduled chip\nupstream 502: fixture queue down");
       expect(within(submenu()!).queryByRole("button", { name: "Scheduled 0" })).toBeNull();
-      expect(within(submenu()!).getAllByRole("button")).toHaveLength(5);
+      expect(within(submenu()!).getAllByRole("button")).toHaveLength(4);
     });
 
     it("the header row has no 🌐 translate, Scheduled chip or 👥 group, the Kebab menu no longer lists Mark as unread or the MASS toggle, and Mark as unread in the overflow makes its existing call and cache refresh", async () => {
@@ -666,6 +653,18 @@ describe("ChatHeader", () => {
       }
       expect(relayPost).not.toHaveBeenCalled();
       expect(relayDelete).not.toHaveBeenCalled();
+    });
+
+    it("a mute that succeeds is a mutation keyed [CHAT_MUTE, account, fan] in the query client's cache", async () => {
+      const user = userEvent.setup();
+      const client = makeTestQueryClient();
+      const succeeded: unknown[] = [];
+      client.getMutationCache().subscribe((ev) => {
+        if (ev.type === "updated" && ev.action.type === "success") succeeded.push(ev.mutation.options.mutationKey);
+      });
+      renderHeader({}, client);
+      await user.click(screen.getByRole("button", { name: "Mute notifications" }));
+      await waitFor(() => expect(succeeded).toEqual([[CHAT_MUTE, ACCOUNT_ID, String(FAN_ID)]]));
     });
 
     it("mute: the icon and the Kebab row share one state; a click on either POSTs, the next DELETEs, and both flip", async () => {

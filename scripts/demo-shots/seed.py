@@ -128,15 +128,15 @@ def _bulk(con, d: Dataset, emp: dict[int, int], user_id: str) -> None:
         rows.append((s["account_id"], f["id"], f["username"], f["name"], f["avatar"], 0, "[]", 0, 0, "[]", "[]",
                      "[]", "{}", spend.get(k, 0), 0, 0, ts(last_in[k]) if k in last_in else None,
                      ts(last_out[k]) if k in last_out else None, ts(now - timedelta(minutes=(f["id"] % 3000))),
-                     ts(s["subscribed_at"]), ts(s["subscribed_at"]), spend.get(k, 0), ts(s["expires_at"]),
+                     ts(s["subscribed_at"]), ts(s["expires_at"]),
                      s["status"], 0, "idle", 0, 0, "demo-shots", ts(s["subscribed_at"]), ts(now)))
     con.executemany(
         "INSERT INTO fans(account_id, fan_id, of_username, of_display_name, avatar_url, is_name_real, recent_events, "
         "likes_boobs, likes_ass, family_names, pets, communication_style, custom_fields, lifetime_spend_cents, is_bot, "
         "turn_counter, last_message_received_at, last_message_sent_at, last_online_at, subscribed_at, "
-        "of_subscribed_at, of_total_spent_cents, subscription_expires_at, subscription_status, is_followed, "
+        "subscription_expires_at, subscription_status, is_followed, "
         "deep_convo_state, deep_convo_skip_level, deep_convo_skip_remaining, source, created_at, updated_at, tags) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'[]')", rows)
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'[]')", rows)
     # NOT NULL text columns the insert above leaves to their defaults are filled here if the schema has no default.
 
     # Messages first: a sale's credit trigger reads the message that earned it.

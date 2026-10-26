@@ -28,7 +28,7 @@ def seed(w: World, creators: list[dict], per_creator: int | dict[str, int] | Non
             fans.append(f)
             rows.append((c["id"], fid, f["username"], name, None, 0, "[]", 0, 0, "[]", "[]", "[]", "{}",
                          f["spend_cents"], 0, 0, None, None, ts(w.now - timedelta(minutes=rng.randint(1, 5000))),
-                         ts(sub_at), ts(sub_at), f["spend_cents"], ts(w.now + timedelta(days=30)), "active", 0,
+                         ts(sub_at), ts(w.now + timedelta(days=30)), "active", 0,
                          "idle", 0, 0, "slop", ts(sub_at), ts(w.now)))
         by_creator[c["id"]] = fans
     con = w.sql()
@@ -37,9 +37,9 @@ def seed(w: World, creators: list[dict], per_creator: int | dict[str, int] | Non
             "INSERT INTO fans(account_id, fan_id, of_username, of_display_name, avatar_url, is_name_real, recent_events, "
             "likes_boobs, likes_ass, family_names, pets, communication_style, custom_fields, lifetime_spend_cents, is_bot, "
             "turn_counter, last_message_received_at, last_message_sent_at, last_online_at, subscribed_at, "
-            "of_subscribed_at, of_total_spent_cents, subscription_expires_at, subscription_status, is_followed, "
+            "subscription_expires_at, subscription_status, is_followed, "
             "deep_convo_state, deep_convo_skip_level, deep_convo_skip_remaining, source, created_at, updated_at, tags) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'[]')", rows)
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'[]')", rows)
     con.close()
     w.data["fans"] = by_creator
     return by_creator

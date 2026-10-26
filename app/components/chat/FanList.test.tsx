@@ -207,12 +207,6 @@ const openSettings = (user: ReturnType<typeof userEvent.setup>) =>
 /** The Fan rows, top to bottom, each as its Fan's name. */
 const rowOrder = () => screen.getAllByRole("button", { name: /Fixture Fan (One|Two|Three|Four|Five)/ })
   .map((row) => /Fixture Fan (One|Two|Three|Four|Five)/.exec(row.textContent ?? "")?.[0]);
-/** Turn Focus mode on from the gear, and close the gear. */
-async function turnOnFocusMode(user: ReturnType<typeof userEvent.setup>) {
-  await openSettings(user);
-  await user.click(screen.getByRole("checkbox", { name: "Focus mode" }));
-  await user.keyboard("{Escape}");
-}
 /** Every Creator's Split Inbox, as the relay stores it: `group_count`
  *  groups, with these Fans moved by hand. */
 function serveSplit(group_count: number, assignments: Record<string, number>) {
@@ -1118,193 +1112,36 @@ describe("FanList", () => {
     expect(screen.queryByRole("list", { name: "Loading conversations" })).not.toBeInTheDocument();
   });
 
-  it("with Focus mode on, a Fan's new message leaves the rows where they are and shows \"1 new messages\"; clicking it refreshes past the relay cache and reorders the rows", async () => {
+  it("the gear offers no Focus mode, and the rows follow the live order cut by Online Fans: a Fan's new message moves its row at once, with no \"new messages\" banner", async () => {
     const user = userEvent.setup();
-    // Fan Three's message as the relay lists it once it has landed.
-    const sent = new Date().toISOString();
-    const threeWrote = {
-      ...CHATS[2],
-      lastMessage: { id: 800000010, text: "Are you there?", fromUser: FANS[2], createdAt: sent },
-      hasUnread: true,
-      unreadMessagesCount: 1,
-    } as OFChatItem;
-    let served = CHATS;
-    serveChats(() => served);
-    const { queryClient } = renderWithProviders(withRealtime());
+    serveChats(CHATS);
+    // Online Fans on, with Fans One and Three online: Fan Two is cut.
+    const online = new Set([String(FANS[0].id), String(FANS[2].id)]);
+    renderWithProviders(
+      <>
+        <InboxRealtime />
+        <FanList selected={null} onSelect={vi.fn()} onlineOnly onlineIds={online} />
+      </>,
+    );
     await rowOf("Fixture Fan Three");
-    await turnOnFocusMode(user);
-    relayGet.mockClear();
+    expect(rowOrder()).toEqual(["Fixture Fan One", "Fixture Fan Three"]);
 
-    // Fan Three writes: the SSE stream delivers OF's chat message event.
-    fanWrites(FANS[2], 800000010, "Are you there?", sent);
-
-    // The row's contents update in place; the order and the cache do not wait.
-    expect(await screen.findByRole("button", { name: "1 new messages" })).toBeInTheDocument();
-    expect(within(await rowOf("Fixture Fan Three")).getByText("Are you there?")).toBeInTheDocument();
-    expect(rowOrder()).toEqual(["Fixture Fan One", "Fixture Fan Two", "Fixture Fan Three"]);
-    const cached = queryClient.getQueryData<{ pages: { rows: OFChatItem[] }[] }>(["chats", "model", ACCOUNT_ID, null, null, null, 25]);
-    expect(cached?.pages[0].rows.map((c) => c.withUser.id)).toEqual([FANS[2].id, FANS[0].id, FANS[1].id]);
-    expect(chatRequests()).toEqual([]);
-
-    served = [threeWrote, CHATS[0], CHATS[1]];
-    await user.click(screen.getByRole("button", { name: "1 new messages" }));
-
-    await vi.waitFor(() => expect(rowOrder()).toEqual(["Fixture Fan Three", "Fixture Fan One", "Fixture Fan Two"]));
-    expect(chatRequests()).toEqual([["/api/of/v2/chats?limit=25&offset=0&order=recent", { refresh: true }]]);
-    expect(screen.queryByRole("button", { name: /new messages/ })).not.toBeInTheDocument();
-  });
-
-  it("with Focus mode on, typing a search shows the matching rows, and clearing it freezes again at the live order", async () => {
-    const user = userEvent.setup();
-    let served = CHATS;
-    serveChatsSearchable(() => served);
-    renderWithProviders(withRealtime());
-    await rowOf("Fixture Fan Three");
-    await turnOnFocusMode(user);
-
-    // A search suspends the freeze: the rows narrow to the match, and the
-    // checkbox stays on but disabled, with the hint.
-    await user.click(within(header()).getByRole("button", { name: "Search" }));
-    await user.type(screen.getByPlaceholderText("Search…"), "Two");
-    await vi.waitFor(() => expect(rowOrder()).toEqual(["Fixture Fan Two"]));
+    // The gear has no Focus mode row, nor its settings (Pause incoming
+    // messages, Hide muted chats) or its hint.
     await openSettings(user);
-    const focus = screen.getByRole("checkbox", { name: "Focus mode" });
-    expect(focus).toBeDisabled();
-    expect(focus).toBeChecked();
-    expect(focus).toHaveAccessibleDescription("Only in All · Newest first");
-    await openSettings(user);
+    const menu = screen.getByRole("region", { name: "Inbox settings" });
+    expect(within(menu).getAllByRole("checkbox").map((b) => b.closest("label")?.textContent)).toEqual([
+      "Keep fan info panel open", "Blur images till hover", "Blur images constant", "Compact media previews",
+    ]);
+    expect(within(menu).queryByText(/Focus|Pause incoming|Hide chats with muted|Only in All/)).not.toBeInTheDocument();
+    await user.keyboard("{Escape}");
 
-    // While searching, Fan Three writes: the relay now lists Three first.
-    const sent = new Date().toISOString();
-    served = [
-      { ...CHATS[2], lastMessage: { id: 800000010, text: "Are you there?", fromUser: FANS[2], createdAt: sent } } as OFChatItem,
-      CHATS[0], CHATS[1],
-    ];
-
-    // Clearing the search freezes again at the live order, with nothing new.
-    await user.click(within(header()).getByRole("button", { name: "Search" }));
-    await vi.waitFor(() => expect(rowOrder()).toEqual(["Fixture Fan Three", "Fixture Fan One", "Fixture Fan Two"]));
-    expect(screen.queryByRole("button", { name: /new messages/ })).not.toBeInTheDocument();
-
-    // Frozen: Fan One's new message counts, and the rows stay put.
-    fanWrites(FANS[0], 800000011, "Hi again", new Date(Date.parse(sent) + 1000).toISOString());
-    expect(await screen.findByRole("button", { name: "1 new messages" })).toBeInTheDocument();
-    expect(rowOrder()).toEqual(["Fixture Fan Three", "Fixture Fan One", "Fixture Fan Two"]);
-  });
-
-  it("Focus mode turned on before the chats answer freezes nothing until they land: the rows appear, with no new messages", async () => {
-    const user = userEvent.setup();
-    let answer: (body: unknown) => void = () => {};
-    const held = new Promise((resolve) => { answer = resolve; });
-    routeRelay("/api/of/v2/chats?", () => held);
-    renderFanList();
-    await screen.findByRole("list", { name: "Loading conversations" });
-
-    await turnOnFocusMode(user);
-    answer({ list: CHATS, hasMore: false });
-
-    await vi.waitFor(() => expect(rowOrder()).toEqual(["Fixture Fan One", "Fixture Fan Two", "Fixture Fan Three"]));
-    expect(screen.queryByRole("button", { name: /new messages/ })).not.toBeInTheDocument();
-  });
-
-  it("with Focus mode on, a chat that first appears through the 90s head poll is counted, and the rows stay where they are", async () => {
-    // The head poll is a 90s timer (useChatList's useHeadPagePoll), driven on
-    // a fake clock that also runs with real time, so user events and finds work.
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    let served = CHATS;
-    serveChats(() => served);
-    const { queryClient } = renderWithProviders(withRealtime());
-    await rowOf("Fixture Fan Three");
-    await turnOnFocusMode(user);
-    relayGet.mockClear();
-
-    // Fan Four, not among the frozen rows, writes with no realtime event: the
-    // relay lists Four first, and the head poll is how the list learns of it.
-    const fourWrote = {
-      withUser: { ...FAN_FOUR, avatar: null },
-      lastMessage: { id: 800000020, text: "Hello from Fixture Fan Four", fromUser: FAN_FOUR, createdAt: new Date().toISOString() },
-      hasUnread: true,
-      unreadMessagesCount: 1,
-    } as OFChatItem;
-    served = [fourWrote, ...CHATS];
-    await act(async () => { await vi.advanceTimersByTimeAsync(90_000); });
-
-    expect(await screen.findByRole("button", { name: "1 new messages" })).toBeInTheDocument();
-    expect(rowOrder()).toEqual(["Fixture Fan One", "Fixture Fan Two", "Fixture Fan Three"]);
-    // One head read through the relay cache, spliced into the shared cache.
-    expect(chatRequests()).toEqual([["/api/of/v2/chats?limit=25&offset=0&order=recent", { refresh: false }]]);
-    const cached = queryClient.getQueryData<{ pages: { rows: OFChatItem[] }[] }>(["chats", "model", ACCOUNT_ID, null, null, null, 25]);
-    expect(cached?.pages[0].rows.map((c) => c.withUser.id)).toEqual([FAN_FOUR.id, FANS[0].id, FANS[1].id, FANS[2].id]);
-  });
-
-  it("with Focus mode on, a replayed event and a further message from a chat already counted leave \"1 new messages\"; changing the Creator clears the banner and freezes the new Creator's rows", async () => {
-    const user = userEvent.setup();
-    ACCOUNTS = [CREATOR_ACCOUNT, OTHER_ACCOUNT];
-    const otherChats = [FAN_FIVE, FAN_FOUR].map((f, i) => ({
-      withUser: { ...f, avatar: null },
-      lastMessage: { id: 800000030 + i, text: `Hello from ${f.name}`, fromUser: f, createdAt: ago(10 + i) },
-      hasUnread: true,
-      unreadMessagesCount: 1,
-    }) as OFChatItem);
-    serveChats(() => (scopeCreator === ACCOUNT_ID ? CHATS : otherChats));
-    // The app's cache lifetime, not the suite's zero: a Creator seen moments
-    // ago answers from the cache, with no placeholder rows.
-    const { rerender } = renderWithProviders(withRealtime(), new QueryClient({ defaultOptions: { queries: { retry: false } } }));
-    await rowOf("Fixture Fan Three");
-    await turnOnFocusMode(user);
-
-    const sent = Date.now();
-    fanWrites(FANS[2], 800000010, "Are you there?", new Date(sent).toISOString());
-    expect(await screen.findByRole("button", { name: "1 new messages" })).toBeInTheDocument();
-    // The same event again, then Fan Three's next message: one chat, still one.
-    fanWrites(FANS[2], 800000010, "Are you there?", new Date(sent).toISOString());
-    fanWrites(FANS[2], 800000011, "Hello?", new Date(sent + 1000).toISOString());
-    expect(within(await rowOf("Fixture Fan Three")).getByText("Hello?")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "1 new messages" })).toBeInTheDocument();
-    expect(rowOrder()).toEqual(["Fixture Fan One", "Fixture Fan Two", "Fixture Fan Three"]);
-
-    // Another Creator: their rows, in their order, and no banner.
-    scopeCreator = OTHER_ACCOUNT.id;
-    rerender(withRealtime());
-    await vi.waitFor(() => expect(rowOrder()).toEqual(["Fixture Fan Five", "Fixture Fan Four"]));
-    expect(screen.queryByRole("button", { name: /new messages/ })).not.toBeInTheDocument();
-
-    // Back to the first Creator, answered from the cache: frozen afresh at
-    // the live order, with nothing new.
-    relayGet.mockClear();
-    scopeCreator = ACCOUNT_ID;
-    rerender(withRealtime());
-    await vi.waitFor(() => expect(rowOrder()).toEqual(["Fixture Fan Three", "Fixture Fan One", "Fixture Fan Two"]));
-    expect(screen.queryByRole("button", { name: /new messages/ })).not.toBeInTheDocument();
-    expect(chatRequests()).toEqual([]);
-
-    // The new snapshot holds: Fan One writes, the banner counts it, the rows stay.
-    fanWrites(FANS[0], 800000012, "Hi again", new Date(sent + 2000).toISOString());
-    expect(await screen.findByRole("button", { name: "1 new messages" })).toBeInTheDocument();
-    expect(rowOrder()).toEqual(["Fixture Fan Three", "Fixture Fan One", "Fixture Fan Two"]);
-  });
-
-  it("with Focus mode on, a failed banner refresh keeps the frozen rows and the banner, and shows the load error", async () => {
-    const user = userEvent.setup();
-    let failing = false;
-    routeRelay("/api/of/v2/chats?", () => (failing ? Promise.reject(new Error("upstream 401")) : { list: CHATS, hasMore: false }));
-    renderWithProviders(withRealtime());
-    await rowOf("Fixture Fan Three");
-    await turnOnFocusMode(user);
+    // Nothing is frozen: Fan Three writes and its row moves to the top, still
+    // cut to the online Fans, and no banner counts it.
     fanWrites(FANS[2], 800000010, "Are you there?", new Date().toISOString());
-    expect(await screen.findByRole("button", { name: "1 new messages" })).toBeInTheDocument();
-
-    failing = true;
-    relayGet.mockClear();
-    await user.click(screen.getByRole("button", { name: "1 new messages" }));
-
-    expect(await screen.findByText("This account's OnlyFans session expired.")).toBeInTheDocument();
-    // Let the banner's click finish with the failed refresh before looking.
-    await act(async () => {});
-    expect(chatRequests()).toEqual([["/api/of/v2/chats?limit=25&offset=0&order=recent", { refresh: true }]]);
-    expect(rowOrder()).toEqual(["Fixture Fan One", "Fixture Fan Two", "Fixture Fan Three"]);
-    expect(screen.getByRole("button", { name: "1 new messages" })).toBeInTheDocument();
+    await vi.waitFor(() => expect(rowOrder()).toEqual(["Fixture Fan Three", "Fixture Fan One"]));
+    expect(within(await rowOf("Fixture Fan Three")).getByText("Are you there?")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /new messages/ })).not.toBeInTheDocument();
   });
 
   describe("choosing a group in \"All inboxes\"", () => {
@@ -1364,7 +1201,9 @@ describe("FanList", () => {
       });
       const user = userEvent.setup();
       renderFanList();
-      await screen.findByRole("button", { name: /Paged Fan 24\b/ });
+      // The row's own name, not a match on the button's whole name: Paged Fan 2's
+      // reads "…Paged Fan 2" then its time, so at 4:xx it reads "…Paged Fan 24:xx".
+      await screen.findByText("Paged Fan 24");
       // From here the list is laid out as in a browser and never overflows,
       // so the autofill burst runs too (jsdom has no layout of its own).
       const layout = [
@@ -1450,32 +1289,6 @@ describe("FanList", () => {
     await user.click(screen.getByRole("button", { name: "Unread 2" }));
     await vi.waitFor(() => expect(rowOrder()).toEqual(["Fixture Fan Two"]));
     expect(screen.getByRole("button", { name: "Unread 2" })).toBeInTheDocument();
-  });
-
-  it("with Focus mode on and the banner showing, choosing a group clears the banner and freezes that group's rows afresh, once the group has loaded", async () => {
-    const user = userEvent.setup();
-    // Fans Two and Three are in Inbox 2 on page one; Fan Four is in Inbox 2 on page two.
-    serveSplit(2, { [FANS[0].id]: 1, [FANS[1].id]: 2, [FANS[2].id]: 2, [FAN_FOUR.id]: 2 });
-    routeRelay("/api/of/v2/chats?", (path) => (new URLSearchParams(path.split("?")[1]).get("offset") === "0"
-      ? { list: CHATS, hasMore: true }
-      : { list: [answered(FAN_FOUR, 90)], hasMore: false }));
-    renderWithProviders(withRealtime());
-    await rowOf("Fixture Fan Three");
-    await turnOnFocusMode(user);
-    const sent = Date.now();
-    fanWrites(FANS[2], 800000010, "Are you there?", new Date(sent).toISOString());
-    expect(await screen.findByRole("button", { name: "1 new messages" })).toBeInTheDocument();
-    expect(rowOrder()).toEqual(["Fixture Fan One", "Fixture Fan Two", "Fixture Fan Three"]);
-
-    await chooseInbox(user, "Inbox 2");
-
-    // Inbox 2 at the live order, page two's Fan Four included, with nothing new.
-    await vi.waitFor(() => expect(rowOrder()).toEqual(["Fixture Fan Three", "Fixture Fan Two", "Fixture Fan Four"]));
-    expect(screen.queryByRole("button", { name: /new messages/ })).not.toBeInTheDocument();
-    // The new snapshot holds: Fan Two writes, the banner counts it, the rows stay.
-    fanWrites(FANS[1], 800000011, "Hi again", new Date(sent + 1000).toISOString());
-    expect(await screen.findByRole("button", { name: "1 new messages" })).toBeInTheDocument();
-    expect(rowOrder()).toEqual(["Fixture Fan Three", "Fixture Fan Two", "Fixture Fan Four"]);
   });
 
   it("in a chatter-only session the group entries are offered and filter the rows, with no \"Split Inbox settings\"; changing the Creator returns the selector to \"All inboxes\"", async () => {
@@ -1620,19 +1433,6 @@ describe("FanList", () => {
 
     expect(within(filterRow()).getByRole("button", { name: "All inboxes" })).toBeInTheDocument();
     expect(shownFans()).toEqual(["Fixture Fan One", "Fixture Fan Two", "Fixture Fan Three"]);
-  });
-
-  it("Focus mode is disabled under Unread, and reads \"Only in All · Newest first\"", async () => {
-    const user = userEvent.setup();
-    serveChats(CHATS);
-    renderFanList();
-    await rowOf("Fixture Fan Three");
-
-    await user.click(screen.getByRole("button", { name: "Unread 2" }));
-    await openSettings(user);
-    const focus = screen.getByRole("checkbox", { name: "Focus mode" });
-    expect(focus).toBeDisabled();
-    expect(focus).toHaveAccessibleDescription("Only in All · Newest first");
   });
 
   it("a live message re-renders its own row only, not every row in the list", async () => {

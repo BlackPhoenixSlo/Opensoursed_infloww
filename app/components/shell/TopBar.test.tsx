@@ -35,7 +35,10 @@ const appliedCalls = () => fetchMock.mock.calls.filter(([url]) => String(url) ==
 beforeEach(() => {
   localStorage.clear();
   storedTz = null;
-  // The browser sits at UTC+02:00.
+  // The browser sits at UTC+02:00: a summer day, so the offset does not
+  // follow today's date across a DST change.
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-07-15T12:00:00Z"));
   vi.spyOn(Date.prototype, "getTimezoneOffset").mockReturnValue(-120);
   fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
@@ -56,6 +59,7 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  vi.useRealTimers();
   localStorage.clear();
 });
 

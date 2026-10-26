@@ -888,7 +888,7 @@ describe("the Messages Pro page", () => {
 
   /* ── The Buys & tips switch (TODO.md B1) ─────────────────────────────── */
 
-  /** The "Notif" switch that ends the Fan List header. */
+  /** The "Notif" switch, in the Window header before SFW. */
   const railSwitch = () => screen.getByRole("switch", { name: "Buys & tips" });
   /** The Buys & tips rail's header toggle: present while the rail is. */
   const railShown = () => screen.queryByRole("button", { name: /Buys & tips/ }) !== null;
@@ -900,14 +900,16 @@ describe("the Messages Pro page", () => {
     return renderWithProviders(<>{pageTree("/messages-pro")}<MoneyRail /></>);
   };
 
-  it("a \"Notif\" (Buys & tips) switch ends the Fan List header, after \"+\", on with the rail shown; off hides the rail on this page, on brings it back, and Notifications still opens its panel", async () => {
+  it("a \"Notif\" (Buys & tips) switch sits in the Window header just before SFW (the far right), on with the rail shown; off hides the rail on this page, on brings it back, and Notifications still opens its panel", async () => {
     window.localStorage.setItem("chatterly:scope", `model:${ACCOUNT_ID}`);
     renderWithRail();
     await vi.waitFor(() => expect(railSwitch()).toBeEnabled());
 
-    const header = within(screen.getByRole("group", { name: "Fan List header" }));
+    const header = within(screen.getByRole("region", { name: "Window header" }));
     expect(header.getByRole("switch", { name: "Buys & tips" })).toHaveTextContent("Notif");
-    expectDomOrder([header.getByRole("button", { name: "New" }), railSwitch(), onlineFans()]);
+    const switches = header.getAllByRole("switch");
+    expect(switches.slice(-2)).toEqual([railSwitch(), header.getByRole("switch", { name: "SFW" })]);
+    expect(within(screen.getByRole("group", { name: "Fan List header" })).queryByRole("switch")).toBeNull();
     expect(railSwitch()).toHaveAttribute("aria-checked", "true");
     expect(tooltipOf(railSwitch())).toBe("Buys & tips notifications panel shown: click to hide it on this page");
     await vi.waitFor(() => expect(railShown()).toBe(true));
@@ -946,6 +948,24 @@ describe("the Messages Pro page", () => {
     act(() => { window.dispatchEvent(new StorageEvent("storage", { key: RAIL_SETTINGS_KEY })); });
     expect(railSwitch()).toHaveAttribute("aria-checked", "true");
     await vi.waitFor(() => expect(railShown()).toBe(true));
+  });
+
+  it("at phone width there is no Notif switch: Messages Pro draws the rail from lg up only, so the switch did nothing there; a rail hidden here still comes back from Notifications", async () => {
+    window.localStorage.setItem("chatterly:scope", `model:${ACCOUNT_ID}`);
+    // Hidden on this page (the "inbox" surface), as the desktop switch leaves it.
+    window.localStorage.setItem(RAIL_SETTINGS_KEY, JSON.stringify({ smallRows: 1, bigRows: 6, accounts: null, surfaces: ["popup", "group"] }));
+    stubViewport(390);
+    renderWithRail();
+    expect(await screen.findByText("Fixture Fan Three")).toBeInTheDocument();
+    expect(screen.queryByRole("switch", { name: "Buys & tips" })).toBeNull();
+    expect(railShown()).toBe(false);
+
+    await userEvent.click(notifications());
+    await userEvent.click(await screen.findByRole("button", { name: /rail is hidden here/ }));
+    expect(storedSurfaces()).toEqual(["inbox", "popup", "group"]);
+    // Back on this page, and still drawn from lg up only.
+    await vi.waitFor(() => expect(railShown()).toBe(true));
+    expect(screen.getByRole("button", { name: /Buys & tips/ }).closest(".fixed")).toHaveClass("hidden", "lg:flex");
   });
 
   /* ── A notification opens a Fan tab (ticket 81) ──────────────────────── */

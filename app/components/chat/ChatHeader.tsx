@@ -35,8 +35,8 @@
  * group, with its own menu in the shared Chat header menu Geometry.
  *
  * Ticket 92: the "+" Extras overflow (`ChatHeaderExtras`) follows "Find" and
- * holds our extras: Scheduled, Group chat, Mark as unread, the MASS toggles
- * and focus. The 🌐 translate toggle and its batch hints are gone: the
+ * holds our extras: Scheduled, Group chat, Mark as unread and the MASS
+ * toggles. The 🌐 translate toggle and its batch hints are gone: the
  * Composer toolbar's Translator drives the same translate mode (spec F12).
  *
  * Ticket 93: the automation surfaces show only with the Legacy flag on. The
@@ -56,8 +56,7 @@
  * Ticket 140 (docs/spec/messages-pro-look-and-feel/phase-03-chat-header.md):
  * no Inflowwww extra renders inline. 📈's rows and the "+" Extras overflow
  * (as the Kebab menu's "Inflowwww extras ▸" submenu, with the flag-on
- * Persona row) are reached through the Kebab menu (`ChatActionsMenu`), which
- * focus mode never hides.
+ * Persona row) are reached through the Kebab menu (`ChatActionsMenu`).
  *
  * Ticket 141: the Region is Infloww's two lines, a grid (`MP.chatHeader.bar`).
  * Line 1 (`data-chat-header-line="1"`): the phone back control, the Fan's name
@@ -143,17 +142,13 @@ export interface ChatHeaderProps {
   /** Fan insights, at every width, through its toggle. */
   insightsOpen: boolean;
   onToggleInsights: () => void;
-  /** 👁 focus, the phone reading mode, in the Extras overflow (the Kebab
-   *  menu's "Inflowwww extras ▸"). */
-  extras: { focusMode: boolean; onToggleFocus: () => void };
 }
 
 export function ChatHeader({
   accountId, fanId, chat, name, username, onBack,
   findOpen, onToggleFind, refreshing, onRefresh, onOpenNotes, onEditName,
-  insightsOpen, onToggleInsights, extras,
+  insightsOpen, onToggleInsights,
 }: ChatHeaderProps) {
-  const { focusMode, onToggleFocus } = extras;
   const accountLabel = useAccountLabel(accountId);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [avatarOpen, setAvatarOpen] = useState(false);
@@ -245,8 +240,7 @@ export function ChatHeader({
           </div>
           {/* The right group (spec H9 to H11, H15): "Open in new tab" and
               refresh (both from md up), the Fan insights toggle at every
-              width, and the kebab last, outside line 2 so focus mode never
-              hides the way to turn focus off (ticket 140). From md up it is
+              width, and the kebab last, outside line 2 (ticket 140). From md up it is
               centred on the Region; below md it ends line 1 and line 2 runs
               under it. */}
           <div className={cn(MP.chatHeader.right, "col-start-4 row-start-1 md:row-end-3 justify-self-end flex flex-none items-center")}>
@@ -285,14 +279,12 @@ export function ChatHeader({
         </div>
         {/* Line 2 (spec H6, H7), after the presence line: star, mute, notes,
             pin, then "Gallery" and "Find", a divider before each; below md it
-            runs under the right group too. Focus mode hides it below lg, as
-            it hid "🔍 search". */}
+            runs under the right group too. */}
         <div
           data-chat-header-line="2"
           className={cn(
             MP.chatHeader.tools,
             "col-start-3 col-end-5 md:col-end-4 row-start-2 relative flex items-center whitespace-nowrap",
-            focusMode && "hidden lg:flex",
           )}
         >
           <Divider />
@@ -363,8 +355,6 @@ export function ChatHeader({
             muted={mute.muted}
             mutePending={mute.pending}
             onToggleMute={mute.toggle}
-            focusMode={focusMode}
-            onToggleFocus={onToggleFocus}
           />
         )}
         {galleryOpen && (
@@ -385,6 +375,10 @@ function presenceOf(chat: OFChatItem, profile: Seen | undefined) {
   return { online: false, text: ago ? `Last seen ${ago}` : "Offline" };
 }
 
+/** The mute / unmute call's mutation key: `[CHAT_MUTE, accountId, fanId]`, so
+ *  a view can follow a mute that succeeded (the react-query mutation cache). */
+export const CHAT_MUTE = "chat-mute";
+
 /** This chat's one mute state and call (spec, Implementation Decisions, Mute),
  *  shared by the mute icon and the Kebab menu's mute row. It starts from the
  *  conversation's `isMutedNotifications`, follows it when the row changes, and
@@ -394,6 +388,7 @@ function useChatMute(accountId: string, fanId: FanId, chat: OFChatItem) {
   const [muted, setMuted] = useState(!!chat.isMutedNotifications);
   useEffect(() => { setMuted(!!chat.isMutedNotifications); }, [chat.isMutedNotifications]);
   const call = useMutation({
+    mutationKey: [CHAT_MUTE, accountId, String(fanId)],
     mutationFn: (next: boolean) =>
       next
         ? relay.post(`/api/of/v2/chats/${fanId}/mute`, undefined, { accountId })

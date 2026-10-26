@@ -129,7 +129,6 @@ const EXPECTED = {
     skeletonBarShort: "w-[52%]", // FL46
     skeletonBarLong: "w-[78%]", // FL47
     loadMore: "px-4 py-3.5 text-[13px] font-semibold border-t", // FL48
-    focusBanner: "gap-2.5 px-3.5 py-2.75 rounded-[10px] text-[13px] leading-normal border", // FL49
     splitSelect: "h-9.5 pl-3 pr-8 rounded-[9px] text-[13.5px] border", // FL50
   },
   chatHeader: {

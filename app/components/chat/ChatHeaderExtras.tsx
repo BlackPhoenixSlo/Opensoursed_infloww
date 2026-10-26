@@ -5,7 +5,7 @@
  * docs/spec/phase-03-chat-header-message-list.md, H12, H13, F10, F11;
  * ticket 92). It holds the Inflowwww extras that used to crowd the header
  * row or the Kebab menu: the Scheduled row (`ScheduledForChat`), Group chat,
- * Mark as unread, the two MASS toggles and, below lg only, focus. Each row
+ * Mark as unread and the two MASS toggles. Each row
  * carries its extra's tooltip from the catalogue (`extraTitle`, the old
  * tooltip, if any, on the second line) and does what it did before, with the
  * same call and cache refresh.
@@ -39,12 +39,9 @@ interface Props {
   id: string;
   accountId: string;
   fanId: FanId;
-  /** 👁 focus, the phone reading mode (its state lives in the Thread). */
-  focusMode: boolean;
-  onToggleFocus: () => void;
 }
 
-export function ChatHeaderExtras({ id, accountId, fanId, focusMode, onToggleFocus }: Props) {
+export function ChatHeaderExtras({ id, accountId, fanId }: Props) {
   const qc = useQueryClient();
   const { status, flash } = useMenuStatus();
 
@@ -79,7 +76,7 @@ export function ChatHeaderExtras({ id, accountId, fanId, focusMode, onToggleFocu
   const dmExclude = useMassExclude(accountId, fanId);
 
   return (
-    <div id={id} className={cn(MENU_BOX, MP.ours.ChatHeaderExtras.box)}>
+    <div id={id} role="menu" aria-label="Inflowwww extras" className={cn(MENU_BOX, MP.ours.ChatHeaderExtras.box)}>
       <ScheduledForChat accountId={accountId} fanId={fanId} />
       <GroupChatRow accountId={accountId} fanId={fanId} />
       <ExtraMenuRow name="Mark as unread" className={CHAT_EXTRA_ROW} disabled={markUnread.isPending} onClick={() => markUnread.mutate()}>
@@ -100,20 +97,6 @@ export function ChatHeaderExtras({ id, accountId, fanId, focusMode, onToggleFocu
         }
       >
         {dmExclude.isOn ? "Remove from MASSdmEXCLUDE" : "Add to MASSdmEXCLUDE"}
-      </ExtraMenuRow>
-      {/* 👁 Focus — phone-only (lg:hidden). Strips the header down to the
-          fan + composer so the thread fills a small screen. Persisted. Its
-          old "👁 focus" tooltip is the second line. */}
-      <ExtraMenuRow
-        name="Phone focus"
-        detail={focusMode
-          ? "Focus mode ON — AI status & header tools hidden for more thread space. Tap to turn off."
-          : "Focus mode — hide the AI status strip and header tools to give the conversation the full screen"}
-        onClick={onToggleFocus}
-        pressed={focusMode}
-        className={cn(CHAT_EXTRA_ROW, "lg:hidden")}
-      >
-        Focus mode{focusMode ? " ON" : ""}
       </ExtraMenuRow>
       <MenuStatusLine status={status} />
     </div>

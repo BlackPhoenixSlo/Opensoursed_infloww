@@ -10,7 +10,6 @@
  * (docs/spec/phase-02-fan-list-pane.md, Interfaces).
  */
 
-import { useId } from "react";
 import { ChevronDown, ListFilter, Mail, Pencil, RotateCw, Settings } from "lucide-react";
 import type { BlurMode } from "@/hooks/useBlurMode";
 import type { ChatFolder } from "@/hooks/useChatFolders";
@@ -19,9 +18,7 @@ import { MP } from "@/lib/messagesPro";
 import { extraTitle } from "@/lib/openinflowwwwExtras";
 import { cn } from "@/lib/utils";
 import { ExtraMenuRow } from "./ExtraMenuRow";
-import { FocusModeSettings } from "./FocusModeSettings";
 import { MENU, MENU_ITEM } from "./MenuParts";
-import type { FocusModeSettings as FocusModeSettingsValue } from "./useFocusModeSettings";
 import { useFanListMenu } from "./useFanListMenu";
 
 const G = MP.fanList;
@@ -30,8 +27,7 @@ const O = MP.ours.FanListFilters;
 /** A settings checkbox row. */
 const SETTINGS_ROW = cn(MENU_ITEM, "cursor-pointer select-none");
 
-/** A menu row's sub-line under its name: a sort order's explanation, Focus
- *  mode's hint. */
+/** A menu row's sub-line under its name: a sort order's explanation. */
 const MENU_SUB_LINE = cn(O.menuSubLine, "text-fg-dim");
 
 /** A chip scroller: the chips sideways, with no scrollbar instead of
@@ -95,20 +91,6 @@ export type ActiveChip =
   | { kind: "builtin"; key: BuiltinFilter }
   | { kind: "folder"; listId: string };
 
-/** Focus mode works only on the All chip, so with no Chat folder and no Owe
- *  reply, and with "Newest first" (spec, Focus mode), and not while a search
- *  narrows the rows. The Split Inbox group does not matter.
- *  ASSUMPTION: an active search suspends Focus mode, as leaving All does, so
- *  typing narrows the rows and clearing the search freezes again at the live
- *  order. Rung 5 (the spec names only All and Newest first); overturned if
- *  the human wants search to filter the frozen rows instead. */
-export function focusModeAvailable(active: ActiveChip, sortMode: ChatSortMode, searching: boolean): boolean {
-  return active.kind === "builtin" && active.key === "all" && sortMode === NEWEST_FIRST && !searching;
-}
-
-/** Why Focus mode is unavailable, under its disabled checkbox (story 48). */
-const FOCUS_MODE_HINT = "Only in All · Newest first";
-
 /** The gear's list settings and their callbacks. */
 type GearSettings = {
   markingAll: boolean;
@@ -121,14 +103,6 @@ type GearSettings = {
   onBlurModeChange: (next: BlurMode) => void;
   compactMedia: boolean;
   onCompactMediaChange: (next: boolean) => void;
-  /** Focus mode is on; it freezes the list only while available. */
-  focusMode: boolean;
-  /** A search query narrows the rows, which suspends Focus mode. */
-  searching: boolean;
-  onFocusModeChange: (next: boolean) => void;
-  /** Focus mode's settings, shown under it while it is on. */
-  focusSettings: FocusModeSettingsValue;
-  onFocusSettingsChange: (next: FocusModeSettingsValue) => void;
   /** Enter the Fan List's select mode (`FanListBulkBar`). */
   onSelectChats: () => void;
 };
@@ -174,7 +148,8 @@ export function FanListFilters({
   return (
     <>
       {/* The filter row (Gap row 7): selector, gear, sort, pencil (with an
-       *  OF list), spacer, sort line. It anchors the sort's menu. */}
+       *  OF list), spacer, sort line. It anchors the sort's
+       *  menu, and the gear's below md. */}
       <div role="group" aria-label="Inbox, settings and sort" className={cn(G.filters, "relative flex flex-wrap items-center")}>
         {showInboxSelector && (
           <InboxSelector
@@ -184,7 +159,7 @@ export function FanListFilters({
             onOpenSettings={onOpenSplitInbox}
           />
         )}
-        <GearMenu {...gear} focusAvailable={focusModeAvailable(active, sortMode, gear.searching)} />
+        <GearMenu {...gear} />
         <SortControl sortMode={sortMode} onSortModeChange={onSortModeChange} />
         {/* "✎ Lists" (Gap row 16, mj:3067) as an icon: only while the
          *  Creator has an OF list. */}
@@ -322,13 +297,12 @@ function InboxSelector({
 function GearMenu({
   markingAll, hasUnread, onMarkAllRead,
   keepDrawerOpen, onKeepDrawerOpenChange, blurMode, onBlurModeChange,
-  compactMedia, onCompactMediaChange, focusMode, onFocusModeChange, focusAvailable,
-  focusSettings, onFocusSettingsChange, onSelectChats,
-}: GearSettings & { focusAvailable: boolean }) {
+  compactMedia, onCompactMediaChange, onSelectChats,
+}: GearSettings) {
   const { open, setOpen, ref, triggerProps, menuProps } = useFanListMenu<HTMLDivElement>();
-  const focusId = useId();
   return (
-    <div ref={ref} className="relative">
+    // Below md the menu is placed against the filter row (`gearMenuPlace`).
+    <div ref={ref} className="md:relative">
       <button
         type="button"
         {...triggerProps}
@@ -339,7 +313,7 @@ function GearMenu({
         <Settings className={G.gearIcon} />
       </button>
       {open && (
-        <section {...menuProps} aria-label="Inbox settings" className={cn(MENU, O.menuPlace)}>
+        <section {...menuProps} aria-label="Inbox settings" className={cn(MENU, O.gearMenuPlace)}>
           <button
             type="button"
             onClick={() => { setOpen(false); onMarkAllRead(); }}
@@ -396,30 +370,6 @@ function GearMenu({
             />
             <span>Compact media previews</span>
           </label>
-          <MenuDivider />
-          <label className={cn(SETTINGS_ROW, !focusAvailable && "cursor-default")}>
-            <input
-              type="checkbox"
-              checked={focusMode}
-              disabled={!focusAvailable}
-              // Named by its name alone; the hint is its description.
-              aria-labelledby={`${focusId}-name`}
-              aria-describedby={focusAvailable ? undefined : `${focusId}-hint`}
-              onChange={(e) => onFocusModeChange(e.target.checked)}
-              className="shrink-0"
-            />
-            {/* The hint sits under the name, as a sort order's sub-line
-             *  does in the "+" overflow. */}
-            <span className="flex flex-col">
-              <span id={`${focusId}-name`}>Focus mode</span>
-              {!focusAvailable && (
-                <span id={`${focusId}-hint`} className={MENU_SUB_LINE}>{FOCUS_MODE_HINT}</span>
-              )}
-            </span>
-          </label>
-          {focusMode && focusAvailable && (
-            <FocusModeSettings settings={focusSettings} onChange={onFocusSettingsChange} />
-          )}
         </section>
       )}
     </div>
