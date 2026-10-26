@@ -6,29 +6,38 @@ agent checking on the box:
   GET /admin/system/automations   per account: every automation kind's rule
                                   state (is_enabled, rule ids, duplicates), its
                                   config-json `enabled` flag(s), and a mismatch
-                                  flag when the two disagree; plus the env kill
-                                  switches that override them process-wide.
+                                  flag when the two disagree.
   GET /admin/system/runs          recent automation_runs across ALL accounts
                                   (with error_text), plus failed ("error") /
                                   pending scheduled_jobs with last_error.
+  GET /admin/system/switches      every runtime switch (runtime_switches): env
+                                  value, override, effective value, source,
+                                  and `loaded` (the override table was read).
+  PUT /admin/system/switches/{n}  {"value": bool | int | null, "admin_password"}:
+                                  set the override (null clears it). Applies at
+                                  the consumer's next read, no restart. The audit
+                                  middleware files the `actions` row (password
+                                  redacted).
 
 MASTER ONLY, by construction: the gate is a ROUTER dependency (the
 tenant_keys_api pattern), so a route added here cannot forget it. A non-master
 owner gets 403, nobody signed in gets 401 (`auth.require_master`). Chatter
 sessions are refused earlier still by `chatters._CHATTER_BLOCKED_ADMIN_PREFIXES`.
+The one write here also carries the founder password (`_assert_admin_password`),
+the policy `auth.require_master` writes down for master writes.
 Master's `account_ids` is every account (auth._master_account_ids), so the
 account-isolation middleware lets an `account_id` filter through.
 """
 from __future__ import annotations
 
 import json
-import os
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy import select
 
-from auth import require_master
+import runtime_switches
+from auth import _assert_admin_password, get_request_user, require_master
 from automation_registry import canonical_kind
 from db.engine import get_session
 from db.models import Account, AccountAiConfig, AutomationRule, AutomationRun, ScheduledJob
@@ -44,20 +53,6 @@ _CONFIG_GATED: tuple[tuple[str, str, str, tuple[tuple[str, ...], ...], bool], ..
     ("nudge_online", "Nudge online", "nudge_config_json", (("enabled",),), True),
     ("autoreply", "Autoreply", "autoreply_config_json", (("enabled",),), False),
 )
-# (env var, what it turns off, predicate matching the consumer's own read)
-_KILL_SWITCHES: tuple[tuple[str, str, Any], ...] = (
-    ("STYLE_FORCE_OFF", "Human texting style flags, every account", lambda v: bool(v)),  # _common
-)
-
-
-def _kill_switches() -> list[dict[str, Any]]:
-    out = []
-    for name, effect, pred in _KILL_SWITCHES:
-        raw = os.environ.get(name, "")
-        out.append({"env": name, "value": raw or None, "active": bool(pred(raw)), "effect": effect})
-    return out
-
-
 def _parse(raw: str | None) -> dict | None:
     if not raw:
         return None
@@ -139,8 +134,29 @@ async def system_automations() -> dict[str, Any]:
         mismatches += sum(1 for r in rows if r["mismatch"])
         out_accounts.append({"account_id": aid, "nickname": accounts.get(aid), "automations": rows})
 
-    return {"accounts": out_accounts, "kill_switches": _kill_switches(),
-            "mismatch_count": mismatches}
+    return {"accounts": out_accounts, "mismatch_count": mismatches}
+
+
+@router.get("/switches")
+async def system_switches() -> dict[str, Any]:
+    """Every runtime switch: env value, override, effective value and its source."""
+    return {"switches": runtime_switches.describe_all(), "loaded": runtime_switches.loaded()}
+
+
+@router.put("/switches/{name}")
+async def set_system_switch(name: str, body: dict = Body(...)) -> dict[str, Any]:
+    """Set (`value`) or clear (`value: null`) one switch's override."""
+    _assert_admin_password(str(body.get("admin_password") or ""))
+    if name not in runtime_switches.BY_NAME:
+        raise HTTPException(status_code=404, detail=f"no runtime switch {name}")
+    if "value" not in body:
+        raise HTTPException(status_code=422, detail='send {"value": ...}; null clears the override')
+    user = get_request_user()
+    try:
+        row = await runtime_switches.set_override(name, body["value"], by=user.username if user else None)
+    except (ValueError, OverflowError) as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    return {"switch": row}
 
 
 def _iso(dt) -> str | None:

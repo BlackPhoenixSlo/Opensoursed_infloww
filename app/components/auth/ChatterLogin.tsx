@@ -34,6 +34,7 @@ import { useInDesktopApp } from "@/hooks/useInDesktopApp";
 import { TwoFactorRequired, type TwoFactorChallenge } from "@/lib/twoFactor";
 import TwoFactorStep from "@/components/auth/TwoFactorStep";
 import { Bang, EyeIcon, EyeOffIcon, HINT, INPUT, Logo, Notice, PINK, WRAP } from "@/components/auth/SiteLook";
+import { BRAND_NAME } from "@/lib/brand";
 
 interface InvitePreview {
   username: string;        // owner who issued the invite
@@ -341,7 +342,7 @@ export default function ChatterLogin() {
             Chat smarter. Sleep occasionally.
           </h2>
           <p className="mt-6 max-w-xl text-xl text-pretty text-white/90">
-            Your owner already connected the creators. You bring the charm; Inflowwww brings the inbox, the vault and
+            Your owner already connected the creators. You bring the charm; {BRAND_NAME} brings the inbox, the vault and
             the scheduled messages, in one tab instead of eleven.
           </p>
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { BRAND_NAME } from "@/lib/brand";
 
 /** Set document.title and keep it set. Next's layout reapplies its static
  *  metadata title on re-renders/HMR, so a plain `document.title = X` loses.
@@ -13,6 +14,6 @@ export function useDocumentTitle(title: string, enabled = true): void {
       if (document.title !== title) document.title = title;
     });
     obs.observe(document.head, { childList: true, subtree: true, characterData: true });
-    return () => { obs.disconnect(); document.title = "Inflowwww"; };
+    return () => { obs.disconnect(); document.title = BRAND_NAME; };
   }, [title, enabled]);
 }

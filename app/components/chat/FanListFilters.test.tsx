@@ -62,7 +62,7 @@ describe("FanListFilters", () => {
     expect(within(filterRow()).getAllByRole("button")).toEqual([
       screen.getByRole("button", { name: "All inboxes" }),
       screen.getByRole("button", { name: "Inbox settings" }),
-      screen.getByRole("button", { name: "Newest first" }),
+      screen.getByRole("button", { name: "Sort: Newest first" }),
       screen.getByRole("button", { name: "Refresh inbox" }),
     ]);
     expect(filterRow().compareDocumentPosition(screen.getByRole("group", { name: "Fan List filters" })))
@@ -134,7 +134,7 @@ describe("FanListFilters", () => {
     expect(screen.queryByRole("button", { name: /All inboxes/ })).not.toBeInTheDocument();
     expect(within(filterRow()).getAllByRole("button")).toEqual([
       screen.getByRole("button", { name: "Inbox settings" }),
-      screen.getByRole("button", { name: "Newest first" }),
+      screen.getByRole("button", { name: "Sort: Newest first" }),
       screen.getByRole("button", { name: "Refresh inbox" }),
     ]);
   });
@@ -220,61 +220,82 @@ describe("FanListFilters", () => {
     }
   });
 
-  it("the sort control reads \"Newest first\" by default, and its menu lists no extra order", async () => {
+  it("the sort control is an icon button the gear's size, named \"Sort: Newest first\" and at rest by default; its menu lists ✓ Newest first, then Sort by and the three extra orders, each an Inflowwww extra; choosing one reports it and closes the menu", async () => {
     const user = userEvent.setup();
     const cb = renderFilters();
-    const sort = within(filterRow()).getByRole("button", { name: "Newest first" });
+    const sort = within(filterRow()).getByRole("button", { name: "Sort: Newest first" });
+    expect(sort).toHaveAttribute("title", "Sort: Newest first");
+    expect(sort).toHaveTextContent(/^$/);
+    expect(sort).toHaveAttribute("aria-pressed", "false");
     expect(sort).toHaveAttribute("aria-expanded", "false");
+    const gear = screen.getByRole("button", { name: "Inbox settings" });
+    for (const cls of gear.className.split(" ").filter((c) => /^(w-|h-|min-|md:min-|rounded|border$)/.test(c))) {
+      expect(sort).toHaveClass(cls);
+    }
 
     await user.click(sort);
     expect(sort).toHaveAttribute("aria-expanded", "true");
     const menu = screen.getByRole("region", { name: "Sort" });
-    expect(within(menu).getAllByRole("button").map((b) => b.textContent)).toEqual(["Newest first"]);
-
-    await user.click(within(menu).getByRole("button", { name: "Newest first" }));
-    expect(cb.onSortModeChange).toHaveBeenCalledTimes(1);
-    expect(cb.onSortModeChange).toHaveBeenLastCalledWith("recent");
-    expect(screen.queryByRole("region", { name: "Sort" })).not.toBeInTheDocument();
-  });
-
-  it("the \"+\" overflow lists the three extra orders after ↩ Owe reply, each an Inflowwww extra; choosing one reports it and the sort control shows its name", async () => {
-    const user = userEvent.setup();
-    const cb = renderFilters({ oweReplyCount: 3 });
-
-    await user.click(screen.getByRole("button", { name: "Inflowwww extras" }));
-    const overflow = screen.getByRole("region", { name: "Inflowwww extras" });
-    const entries = within(overflow).getAllByRole("button");
+    const entries = within(menu).getAllByRole("button");
     expect(entries.map((b) => b.textContent)).toEqual([
-      "↩ Owe reply 3",
+      "✓Newest first",
       "Amount spent",
       "Spend + unread on top unread → owe reply → idle",
       "Spend + recency spend × time-decay",
     ]);
+    expect(entries.map((b) => b.getAttribute("aria-pressed"))).toEqual(["true", "false", "false", "false"]);
+    expect(within(menu).getByText("Sort by")).toBeInTheDocument();
     expect(entries.map((b) => b.getAttribute("title"))).toEqual([
-      "Inflowwww extra — Owe reply\nChats where the fan sent the last message and we haven't replied",
+      null,
       "Inflowwww extra — Extra sort orders",
       "Inflowwww extra — Extra sort orders\nUnread → owe-reply → idle, spend desc within each tier",
       "Inflowwww extra — Extra sort orders\nSpend × decay. Half-life: idle 1h, owe-reply 2h, unread 3h. Below $3 effective, unread wins.",
     ]);
 
-    await user.click(within(overflow).getByRole("button", { name: /^Spend \+ recency/ }));
+    await user.click(within(menu).getByRole("button", { name: /^Spend \+ recency/ }));
     expect(cb.onSortModeChange).toHaveBeenCalledTimes(1);
     expect(cb.onSortModeChange).toHaveBeenLastCalledWith("hybrid");
     expect(cb.onActiveChange).not.toHaveBeenCalled();
-    expect(screen.queryByRole("region", { name: "Inflowwww extras" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Sort" })).not.toBeInTheDocument();
 
+    await user.click(sort);
+    await user.click(within(screen.getByRole("region", { name: "Sort" })).getByRole("button", { name: "Newest first" }));
+    expect(cb.onSortModeChange).toHaveBeenLastCalledWith("recent");
+  });
+
+  it("while an extra order is in force the sort control is active and named by it, and its menu's ✓ moves to that order", async () => {
+    const user = userEvent.setup();
     // Stateless: the parent stores the reported order and passes it back.
-    cleanup();
-    renderFilters({ sortMode: "hybrid" });
-    expect(within(filterRow()).getAllByRole("button").map((b) => b.textContent)).toEqual([
-      "All inboxes", "", "Spend + recency", "",
-    ]);
-    cleanup();
-    renderFilters({ sortMode: "spend" });
-    expect(within(filterRow()).getByRole("button", { name: "Amount spent" })).toBeInTheDocument();
-    cleanup();
-    renderFilters({ sortMode: "spend-unread" });
-    expect(within(filterRow()).getByRole("button", { name: "Spend + unread on top" })).toBeInTheDocument();
+    for (const [mode, label] of [["spend", "Amount spent"], ["spend-unread", "Spend + unread on top"], ["hybrid", "Spend + recency"]] as const) {
+      renderFilters({ sortMode: mode });
+      const sort = within(filterRow()).getByRole("button", { name: `Sort: ${label}` });
+      expect(sort).toHaveAttribute("title", `Sort: ${label}`);
+      expect(sort).toHaveAttribute("aria-pressed", "true");
+      expect(sort).toHaveClass("bg-accent", "text-white");
+
+      await user.click(sort);
+      const entries = within(screen.getByRole("region", { name: "Sort" })).getAllByRole("button");
+      const marked = entries.filter((b) => b.textContent?.startsWith("✓"));
+      expect(marked.map((b) => b.getAttribute("aria-pressed"))).toEqual(["true"]);
+      expect(marked[0]).toHaveTextContent(new RegExp(`^✓${label.replace(/[+]/g, "\\+")}`));
+      cleanup();
+    }
+  });
+
+  it("closes the sort menu on Escape and on a pointer-down outside it, not on one inside it", async () => {
+    const user = userEvent.setup();
+    renderFilters();
+    const menu = () => screen.queryByRole("region", { name: "Sort" });
+
+    await user.click(screen.getByRole("button", { name: "Sort: Newest first" }));
+    fireEvent.pointerDown(menu()!);
+    expect(menu()).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(menu()).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Sort: Newest first" }));
+    fireEvent.pointerDown(screen.getByRole("button", { name: "All" }));
+    expect(menu()).not.toBeInTheDocument();
   });
 
   it("the refresh icon reports a refresh, and is disabled while the list is fetching", async () => {
@@ -296,12 +317,14 @@ describe("FanListFilters", () => {
     expect(cb.onActiveChange).toHaveBeenLastCalledWith({ kind: "builtin", key: "pinned" });
   });
 
-  it("renders the chips in Infloww's order, All, Pinned, Unread, With Tips, then the folders and \"✎ Lists\" in the same scroller, then Priority tagged as an extra, then the \"+\" Extras overflow, with no emoji", () => {
+  it("renders the chips All, Owe reply tagged as an extra, then Infloww's Pinned, Unread, With Tips, then the folders in the same scroller, then Priority tagged as an extra, with no \"+\" Extras overflow and no emoji", () => {
     renderFilters({ pinnedFolders: [{ id: 700000001, name: "Fixture Folder" }], hasLists: true });
 
     const chipRow = screen.getByRole("group", { name: "Fan List filters" });
     const chips = within(chipRow).getAllByRole("button").map((b) => b.textContent);
-    expect(chips).toEqual(["All", "Pinned", "Unread", "With Tips", "Folder Fixture Folder", "✎ Lists", "Priority", "+"]);
+    expect(chips).toEqual(["All", "Owe reply", "Pinned", "Unread", "With Tips", "Folder Fixture Folder", "Priority"]);
+    expect(screen.queryByRole("button", { name: "Inflowwww extras" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /✎ Lists/ })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Priority" })).toHaveAttribute("title", "Inflowwww extra — Priority chip");
     expect(screen.getByRole("button", { name: "With Tips" })).not.toHaveAttribute("title");
     expect(screen.queryByRole("group", { name: "Chat folders" })).not.toBeInTheDocument();
@@ -325,7 +348,7 @@ describe("FanListFilters", () => {
     cleanup();
     const cb = renderFilters({ tipsEnabled: true });
     const chips = within(screen.getByRole("group", { name: "Fan List filters" })).getAllByRole("button").map((b) => b.textContent);
-    expect(chips.slice(3, 5)).toEqual(["With Tips", "Unread with tips"]);
+    expect(chips.slice(4, 6)).toEqual(["With Tips", "Unread with tips"]);
     await userEvent.click(screen.getByRole("button", { name: "Unread with tips" }));
     expect(cb.onActiveChange).toHaveBeenLastCalledWith({ kind: "builtin", key: "unread_tips" });
 
@@ -354,54 +377,31 @@ describe("FanListFilters", () => {
     expect(screen.getByRole("button", { name: "Priority 7" })).toBeInTheDocument();
   });
 
-  it("the \"+\" overflow holds ↩ Owe reply with its count and the Inflowwww extra tooltip, and choosing it reports Owe reply", async () => {
+  it("the Owe reply chip follows All with its count always in the amber badge and the Inflowwww extra tooltip, and reports Owe reply", async () => {
     const cb = renderFilters({ oweReplyCount: 3 });
-    const plus = screen.getByRole("button", { name: "Inflowwww extras" });
-    expect(plus).toHaveAttribute("title", "Inflowwww extras");
-    expect(plus).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByRole("button", { name: /Owe reply/ })).not.toBeInTheDocument();
-
-    await userEvent.click(plus);
-    expect(plus).toHaveAttribute("aria-expanded", "true");
-    const overflow = screen.getByRole("region", { name: "Inflowwww extras" });
-    const oweReply = within(overflow).getByRole("button", { name: "↩ Owe reply 3" });
+    const chipRow = screen.getByRole("group", { name: "Fan List filters" });
+    const oweReply = within(chipRow).getByRole("button", { name: "Owe reply 3" });
+    expect(within(chipRow).getAllByRole("button").indexOf(oweReply)).toBe(1);
     expect(oweReply).toHaveAttribute("title",
       "Inflowwww extra — Owe reply\nChats where the fan sent the last message and we haven't replied");
-    expect(within(oweReply).getByText("3")).toHaveClass("text-warn");
+    expect(oweReply).toHaveAttribute("aria-pressed", "false");
+    expect(within(oweReply).getByText("3")).toHaveClass("bg-warn");
 
     await userEvent.click(oweReply);
     expect(cb.onActiveChange).toHaveBeenCalledTimes(1);
     expect(cb.onActiveChange).toHaveBeenLastCalledWith({ kind: "builtin", key: "owe-reply" });
-    expect(screen.queryByRole("region", { name: "Inflowwww extras" })).not.toBeInTheDocument();
   });
 
-  it("closes the \"+\" overflow on Escape and on a pointer-down outside it, not on one inside it", async () => {
-    const user = userEvent.setup();
-    renderFilters();
-    const overflow = () => screen.queryByRole("region", { name: "Inflowwww extras" });
-
-    await user.click(screen.getByRole("button", { name: "Inflowwww extras" }));
-    fireEvent.pointerDown(overflow()!);
-    expect(overflow()).toBeInTheDocument();
-    await user.keyboard("{Escape}");
-    expect(overflow()).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Inflowwww extras" }));
-    fireEvent.pointerDown(screen.getByRole("button", { name: "All" }));
-    expect(overflow()).not.toBeInTheDocument();
-  });
-
-  it("marks the \"+\" chip active with the owe-reply count only while Owe reply is the active filter", () => {
-    renderFilters({ active: { kind: "builtin", key: "owe-reply" }, oweReplyCount: 3 });
-    const plus = screen.getByRole("button", { name: "Inflowwww extras" });
-    expect(plus).toHaveAttribute("aria-pressed", "true");
-    expect(within(plus).getByText("3")).toHaveClass("bg-warn");
+  it("marks the Owe reply chip active while Owe reply is the active filter, its amber count unchanged", () => {
+    renderFilters({ active: { kind: "builtin", key: "owe-reply" }, oweReplyCount: 3, activeCount: 9 });
+    const oweReply = screen.getByRole("button", { name: "Owe reply 3" });
+    expect(oweReply).toHaveAttribute("aria-pressed", "true");
+    expect(within(oweReply).getByText("3")).toHaveClass("bg-warn");
     expect(screen.getByRole("button", { name: "All" })).toHaveAttribute("aria-pressed", "false");
 
     cleanup();
-    renderFilters({ active: { kind: "builtin", key: "all" }, oweReplyCount: 3 });
-    expect(screen.getByRole("button", { name: "Inflowwww extras" })).toHaveAttribute("aria-pressed", "false");
-    expect(screen.getByRole("button", { name: "All" })).toHaveAttribute("aria-pressed", "true");
+    renderFilters({ oweReplyCount: 0 });
+    expect(screen.getByRole("button", { name: "Owe reply" })).toHaveAttribute("aria-pressed", "false");
   });
 
   it("reports the folder of the folder chip that was clicked", async () => {
@@ -412,17 +412,17 @@ describe("FanListFilters", () => {
     expect(cb.onActiveChange).toHaveBeenLastCalledWith({ kind: "folder", listId: "700000001" });
   });
 
-  it("renders the pinned folders as plain chips showing only the name (Infloww's list chip), followed by \"✎ Lists\", which opens the folder picker", async () => {
+  it("renders the pinned folders as plain chips showing only the name (Infloww's list chip), and the filter row's pencil opens the folder picker", async () => {
     const cb = renderFilters({
       pinnedFolders: [{ id: 700000001, name: "Fixture Folder" }, { id: 700000002, name: "Second Fixture Folder" }],
       hasLists: true,
     });
     const chipRow = screen.getByRole("group", { name: "Fan List filters" });
 
-    expect(within(chipRow).getAllByRole("button").slice(4, 7)).toEqual([
+    expect(within(chipRow).getAllByRole("button").slice(5, 8)).toEqual([
       screen.getByRole("button", { name: "Folder Fixture Folder" }),
       screen.getByRole("button", { name: "Folder Second Fixture Folder" }),
-      screen.getByRole("button", { name: "✎ Lists" }),
+      screen.getByRole("button", { name: "Priority" }),
     ]);
     for (const name of ["Fixture Folder", "Second Fixture Folder"]) {
       const chip = within(chipRow).getByRole("button", { name: `Folder ${name}` });
@@ -431,23 +431,30 @@ describe("FanListFilters", () => {
     }
     expect(chipRow).not.toHaveTextContent("📂");
 
-    await userEvent.click(within(chipRow).getByRole("button", { name: "✎ Lists" }));
+    await userEvent.click(within(filterRow()).getByRole("button", { name: "Pin lists as chips" }));
     expect(cb.onOpenFolderPicker).toHaveBeenCalledTimes(1);
     expect(cb.onActiveChange).not.toHaveBeenCalled();
   });
 
-  it("offers \"✎ Lists\" only when the Creator has a list", () => {
+  it("offers the pencil, an icon button the gear's size after the sort control, only when the Creator has a list", () => {
     const chipTexts = () => within(screen.getByRole("group", { name: "Fan List filters" })).getAllByRole("button").map((b) => b.textContent);
     renderFilters({ hasLists: true });
-    expect(chipTexts()).toEqual(["All", "Pinned", "Unread", "With Tips", "✎ Lists", "Priority", "+"]);
+    const pencil = within(filterRow()).getByRole("button", { name: "Pin lists as chips" });
+    expect(pencil).toHaveAttribute("title", "Pin lists as chips");
+    expect(pencil).toHaveTextContent(/^$/);
+    expect(pencil).toHaveClass("border", "border-border");
+    expect(within(filterRow()).getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual([
+      "All inboxes", "Inbox settings", "Sort: Newest first", "Pin lists as chips", "Refresh inbox",
+    ]);
+    expect(chipTexts()).toEqual(["All", "Owe reply", "Pinned", "Unread", "With Tips", "Priority"]);
 
     cleanup();
     renderFilters({ hasLists: false });
-    expect(screen.queryByRole("button", { name: /Lists|✎/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Pin lists|Lists|✎/ })).not.toBeInTheDocument();
 
     cleanup();
     renderFilters({ hasLists: false, pinnedFolders: [{ id: 700000001, name: "Fixture Folder" }] });
-    expect(chipTexts()).toEqual(["All", "Pinned", "Unread", "With Tips", "Folder Fixture Folder", "Priority", "+"]);
+    expect(chipTexts()).toEqual(["All", "Owe reply", "Pinned", "Unread", "With Tips", "Folder Fixture Folder", "Priority"]);
   });
 
   it("re-clicking the active folder chip clears it back to All", async () => {

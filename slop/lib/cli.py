@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import importlib
 import importlib.util
 import json
@@ -38,8 +39,10 @@ def load(path: Path):
 class Ctx:
     """What a scenario gets: the stack, the owner session, the knobs, check/metric."""
 
-    def __init__(self, name, stack, report, rec, args, params):
+    def __init__(self, name, stack, report, rec, args, params, *, fault=None):
         self.name, self.stack, self.report, self.rec = name, stack, report, rec
+        self.fault = fault  # the injected lib/faults.py name (a fault's `browser` script runs in actors/ui pages)
+        self.of_wire = None  # lib/of_wire.FakeOF when the scenario sets OF_WIRE
         self.scale, self.users, self.seed = args.scale, args.users, args.seed
         self.relay, self.app, self.out = stack.relay, stack.app, report.out
         self.params = params
@@ -61,11 +64,11 @@ class Ctx:
         return w
 
 
-def _stock_checks(report: Report, rec: Recorder, out: Path) -> None:
+def _stock_checks(report: Report, rec: Recorder, out: Path, mod=None) -> None:
     """Invariants every scenario gets for free."""
     report.check("no 5xx or transport error on any actor call", rec.count(lambda s: s >= 500) == 0,
                  count=rec.count(lambda s: s >= 500))
-    unexpected, offline = _tracebacks(out / "relay.log")
+    unexpected, offline = _tracebacks(out / "relay.log", tuple(getattr(mod, "EXPECTED_TRACEBACKS", ())))
     report.metric("relay_tracebacks", {"unexpected": unexpected, "offline_expected": offline})
     report.check("relay logged no unexpected Traceback", unexpected == 0, count=unexpected,
                  offline_expected=offline)
@@ -77,7 +80,11 @@ def _stock_checks(report: Report, rec: Recorder, out: Path) -> None:
 OFFLINE_MARKERS = ("OF read failed",)
 
 
-def _tracebacks(log: Path) -> tuple[int, int]:
+def _tracebacks(log: Path, expected: tuple[tuple[str, str], ...] = ()) -> tuple[int, int]:
+    """(unexpected, expected) Tracebacks. Expected: the line before names an
+    OFFLINE_MARKERS cause, or matches a scenario's EXPECTED_TRACEBACKS pair
+    (marker in the line before, text in the traceback's last line: the error a
+    scenario's fake makes OnlyFans answer)."""
     if not log.exists():
         return 0, 0
     lines = log.read_text(errors="replace").splitlines()
@@ -85,7 +92,13 @@ def _tracebacks(log: Path) -> tuple[int, int]:
     for i, line in enumerate(lines):
         if line.startswith("Traceback"):
             prev = lines[i - 1] if i else ""
-            if any(m in prev for m in OFFLINE_MARKERS):
+            j = i + 1
+            while j < len(lines) and (lines[j].startswith((" ", "\t")) or not lines[j].strip()
+                                      or lines[j].startswith(("During handling", "The above exception"))
+                                      or lines[j].startswith("Traceback")):
+                j += 1
+            last = "\n".join(lines[j:j + 2])  # the exception line (an OFAPIError's body is on the next)
+            if any(m in prev for m in OFFLINE_MARKERS) or any(m in prev and t in last for m, t in expected):
                 offline += 1
             else:
                 unexpected += 1
@@ -144,9 +157,16 @@ async def run_one(name: str, path: Path, args, params, *, fault: str | None = No
     print(f"slop: {name} scale={args.scale} users={args.users} seed={args.seed} ui={ui} fault={fault} -> {out}")
     t0 = time.time()
     try:
-        with Stack(ui=ui, fault=fault, logdir=out, profile=args.profile) as stack:
+        stack = Stack(ui=ui, fault=fault, logdir=out, profile=args.profile)
+        of_wire, wire = None, contextlib.ExitStack()  # entered once, here: the relay needs its origin to start
+        if getattr(mod, "OF_WIRE", False):  # OnlyFans' API on loopback (lib/of_wire.py), the relay's OF_API_ORIGIN
+            from slop.lib.of_wire import FakeOF
+            of_wire = wire.enter_context(FakeOF())
+            stack.relay_env["OF_API_ORIGIN"] = of_wire.origin
+        with wire, stack:  # the fake OF outlives the relay it serves
             print(f"slop: stack up in {time.time() - t0:.0f}s (relay {stack.relay}{', app ' + stack.app if ui else ''})")
-            ctx = Ctx(name, stack, report, rec, args, params)
+            ctx = Ctx(name, stack, report, rec, args, params, fault=fault)
+            ctx.of_wire = of_wire
             hook = Http(stack.relay, Recorder())  # /__slop/loop-cpu and /profile: not actor calls
             mon = ProcMon(stack.relay_pid, rec, hook, profile=args.profile)
             ctx.mon = mon  # a scenario may read mon.intervals (per-second relay CPU) for a windowed check
@@ -164,7 +184,7 @@ async def run_one(name: str, path: Path, args, params, *, fault: str | None = No
     except (SystemExit, Exception) as e:  # the stack did not come up (or died tearing down)
         report.infra = f"stack: {e}"
         report.check("stack started", False, error=str(e))
-    _stock_checks(report, rec, out)
+    _stock_checks(report, rec, out, mod)
     report.metric("seconds", round(time.time() - t0, 1))
     report.write(rec.summary(), rec.errors)
     print((out / "summary.txt").read_text())

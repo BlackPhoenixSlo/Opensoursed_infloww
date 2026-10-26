@@ -1,15 +1,20 @@
 """service/account_health.py — per-account OF session health.
 
 When OF rejects an account's stored session with "Wrong user." (the creator
-got logged out / the login was re-linked elsewhere), EVERY authenticated call
-for that account fails until a human re-captures the session. Letting the
+got logged out / the login was re-linked elsewhere) or with code 101 otpState
+(the login now needs a 2FA code), EVERY authenticated call for that account
+fails until a human re-captures the session (for a 2FA code: Browserbase login,
+which takes the code). Letting the
 automations keep firing against a dead session burns run slots, OF-proxy
 round-trips and LLM spend for zero delivery — so the account is paused
 wholesale instead:
 
   • `mark_session_dead()` flags the account. Called from the executor's
-    run_once failure path (an automation hit the signature) and from
-    server._persist_unhandled_errors (a UI-originated OF call hit it).
+    run_once failure path (an automation hit the signature), from server.py's
+    `_proxy`, the Creators strip's roster-counts and `_persist_unhandled_errors`
+    (a UI-originated OF call hit it)
+    and from the WS pump (its /users/me before a reconnect hit it; the pump
+    then parks until the flag clears).
   • `automation_executor.run_once` SKIPS every run for a flagged account —
     pending jobs stay parked and resume untouched once the flag clears.
   • The executor re-probes each flagged account with a fresh-from-disk
@@ -28,11 +33,14 @@ import it without a circular import (same reasoning as automation_registry.py).
 """
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from sqlalchemy import select, update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from db.engine import get_session
 from db.models import AccountHealth
@@ -44,9 +52,20 @@ def is_session_dead_error(exc: BaseException) -> str | None:
     """Classify `exc`: a short reason string when it definitely means "this
     account has no working session", else None.
 
-    Deliberately STRICT — only two signatures flag an account:
+    Deliberately STRICT — only three signatures flag an account:
       • OF's unlink rejection: HTTP 400 +
         `{"error":{"code":301,"message":"Wrong user."}}` → "wrong_user"
+      • OF's 2FA demand: HTTP 400 + `{"error":{"code":101,"message":…,
+        "payload":{"otpState":{…},"strong":…}}}` on an authenticated call
+        → "otp_required". OF's web bundle (the fccdn app.js, 2026-10-16) answers
+        that code by re-initialising auth for the whole session
+        (`101===d … commit("init/setInitAuth",!0)`) and opening its 2FA modal;
+        it does not retry the request, so nothing but a sign-in with the code
+        revives the session. Not 105: the same bundle answers `400===i&&105===d`
+        by retrying THAT one request with a code (a per-request step-up).
+        docs/direct-login/DIRECT_LOGIN_SPEC.md §4.5 lists both 105 and 101 as
+        "2FA required", but for the LOGIN response, where either means "send
+        the code"; this classifier sees the session's later calls.
       • `OFClient.from_account`'s FileNotFoundError ("has no captured
         session") — the session dir is missing entirely, e.g. the account
         was deleted or never captured on this host → "no_session"
@@ -56,9 +75,39 @@ def is_session_dead_error(exc: BaseException) -> str | None:
 
     if isinstance(exc, OFAPIError) and "Wrong user" in str(exc):
         return "wrong_user"
+    if isinstance(exc, OFAPIError) and _wants_otp(exc):
+        return "otp_required"
     if isinstance(exc, FileNotFoundError) and "no captured session" in str(exc):
         return "no_session"
     return None
+
+
+def _wants_otp(exc: BaseException) -> bool:
+    """True when OF answered 400 with code 101 and `payload.otpState`. Read
+    from the raw response when the error carries one, else from the message
+    (OFAPIError's "<status> for <url>\n<body[:500]>", or "<status> <body>")."""
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None) if response is not None else None
+    if status is None:
+        head = str(exc).split(" ", 1)[0]
+        status = int(head) if head.isdigit() else None
+    if status != 400:
+        return False
+    body = None
+    try:
+        body = exc.response.json() if getattr(exc, "response", None) is not None else None
+    except Exception:  # not JSON (HTML, empty): fall back to the message
+        body = None
+    if body is None:
+        message = str(exc)
+        start = message.find("{")
+        try:
+            body, _ = json.JSONDecoder().raw_decode(message, start) if start >= 0 else (None, 0)
+        except ValueError:
+            return False
+    err = body.get("error") if isinstance(body, dict) else None
+    payload = err.get("payload") if isinstance(err, dict) else None
+    return isinstance(payload, dict) and err.get("code") == 101 and "otpState" in payload
 
 
 async def is_session_dead(account_id: str) -> bool:
@@ -74,24 +123,32 @@ async def is_session_dead(account_id: str) -> bool:
 async def mark_session_dead(account_id: str, reason: str) -> bool:
     """Flag the account's session as dead. Returns True only when this call
     NEWLY flagged it (was healthy before) so callers can log the transition
-    once instead of on every subsequent failure."""
+    once instead of on every subsequent failure.
+
+    The healthy -> dead transition is claimed atomically: callers that hit OF's
+    rejection at the same moment (automation kinds, an HTTP route, the WS pump)
+    would otherwise all read "healthy" and each notify the owner. The first
+    statement is a write, so the transaction holds SQLite's write lock before it
+    reads; the conditional UPDATE then matches for exactly one caller.
+
+    The claim and the owner's notification run shielded from the caller's
+    cancellation (a WS pump rerouted by a proxy switch, a request whose client
+    left): every later caller's claim matches nothing, so a winner cancelled
+    between its commit and the notification would leave the episode untold."""
+    return await asyncio.shield(_claim_session_dead(account_id, reason))
+
+
+async def _claim_session_dead(account_id: str, reason: str) -> bool:
     now = datetime.utcnow()
     async with get_session() as s:
-        row = (await s.execute(
-            select(AccountHealth).where(AccountHealth.account_id == account_id)
-        )).scalar_one_or_none()
-        newly = row is None or row.session_dead_at is None
-        if row is None:
-            s.add(AccountHealth(
-                account_id=account_id,
-                session_dead_at=now,
-                session_dead_reason=reason,
-            ))
-        else:
-            if newly:
-                row.session_dead_at = now
-                row.last_probe_at = None
-            row.session_dead_reason = reason
+        await s.execute(sqlite_insert(AccountHealth).values(account_id=account_id)
+                        .on_conflict_do_nothing(index_elements=["account_id"]))
+        # While dead, the first reason stays: it is the one the owner was told.
+        newly = (await s.execute(
+            update(AccountHealth)
+            .where(AccountHealth.account_id == account_id, AccountHealth.session_dead_at.is_(None))
+            .values(session_dead_at=now, session_dead_reason=reason, last_probe_at=None)
+        )).rowcount == 1
         if newly:
             _announce(s, "session_dead", account_id, dead=True, reason=reason)
     if newly:
@@ -220,7 +277,7 @@ class DeadSession:
     whole surface exists to prevent."""
 
     at: str | None = None       # ISO-Z instant it was flagged
-    reason: str | None = None   # "wrong_user" | "no_session"
+    reason: str | None = None   # "wrong_user" | "otp_required" | "no_session"
 
 
 # Null object for "this account is fine" (same idiom as _daylog.NO_DAY), so a

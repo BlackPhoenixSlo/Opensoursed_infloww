@@ -38,6 +38,7 @@ import { openDatepicker, tabDate, type Day } from "@/lib/ofMirrorDatepicker";
 // Only functions and lazily read constants from ofMirrorOffers (it imports this module): SUBMITS' keys are literals, as
 // a constant of a module still evaluating would be undefined here.
 import { AFTER_NEW_POST_PROMOTION, AFTER_NEW_POST_TRIAL, collectBundle, collectPromotion, collectTrial } from "@/lib/ofMirrorOffers";
+import { BRAND_NAME } from "@/lib/brand";
 
 export type ProfilePatch = Partial<Record<"name" | "about" | "location" | "website" | "wishlist", string>>;
 
@@ -153,12 +154,12 @@ export const QUEUE = "/of-manager/queue";
 
 /** OF's header "Save" on the profile page (disabled until a field changes). */
 const SAVE = ".g-btn__wrapper button[type='submit']";
-export const READ_ONLY = "Read-only in Inflowwww for now";
+export const READ_ONLY = `Read-only in ${BRAND_NAME} for now`;
 /** The Bank pages' line under the title (the mirror shows OF's banking placeholders and reads none of it). */
-export const BANK_NOTE = "Bank details stay on onlyfans.com (Inflowwww does not read them).";
+export const BANK_NOTE = `Bank details stay on onlyfans.com (${BRAND_NAME} does not read them).`;
 export const BANK_URL = "https://onlyfans.com/my/banking";
 /** The tooltip of a control quietly disabled because Inflowwww has no source for it (the generator's NOT_YET_TITLE). */
-export const NOT_YET = "Not available in Inflowwww yet";
+export const NOT_YET = `Not available in ${BRAND_NAME} yet`;
 export const SELECT_MODEL = "Select a model to save changes";
 /** OF's settings success toast (`message.changes_saved_toast`, OF's texts_en.json). */
 export const SAVED_TOAST = "Changes were saved";

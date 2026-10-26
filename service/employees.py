@@ -53,9 +53,11 @@ router = APIRouter()
 # Per-friend chatter quota. Counts ACTIVE rows only — soft-deleted
 # employees stay around so audit history reads cleanly (see DELETE handler
 # below), and recycling slots after firing someone is normal. 0 / unset
-# disables the cap. Founder bypasses by raising this in the env or by
-# leaving it unset on their own deploy.
-MAX_EMPLOYEES_PER_USER = int(os.environ.get("MAX_EMPLOYEES_PER_USER", "20") or "0")
+# disables the cap. The founder raises it from Settings → System (or the env
+# MAX_EMPLOYEES_PER_USER); read through runtime_switches at every use.
+def _max_employees() -> int:
+    import runtime_switches
+    return int(runtime_switches.value("MAX_EMPLOYEES_PER_USER"))
 
 
 def _employee_limit(active_count: int, message: str) -> HTTPException:
@@ -63,7 +65,7 @@ def _employee_limit(active_count: int, message: str) -> HTTPException:
     return HTTPException(status_code=409, detail={
         "code": "employee_limit",
         "message": message,
-        "limit": MAX_EMPLOYEES_PER_USER,
+        "limit": _max_employees(),
         "active": active_count,
     })
 
@@ -286,18 +288,19 @@ async def create_employee(body: _EmployeeCreateBody = Body(...)) -> dict[str, An
         # Quota gate — applies only to authed friends. Unauthed callers
         # (legacy curl flows / Automation tooling) are exempt because they
         # can't be one bad actor in a multi-tenant deploy.
-        if user is not None and MAX_EMPLOYEES_PER_USER > 0:
+        cap = _max_employees()
+        if user is not None and cap > 0:
             active_count = (await s.execute(
                 select(func.count(Employee.id)).where(
                     Employee.user_id == user.id,
                     Employee.is_active == True,  # noqa: E712
                 )
             )).scalar_one()
-            if active_count >= MAX_EMPLOYEES_PER_USER:
+            if active_count >= cap:
                 raise _employee_limit(active_count, (
-                    f"employee cap reached ({active_count}/{MAX_EMPLOYEES_PER_USER}). "
+                    f"employee cap reached ({active_count}/{cap}). "
                     f"Disable an existing chatter or ask the founder to raise "
-                    f"MAX_EMPLOYEES_PER_USER on the relay."
+                    f"the employee seats in Settings → System."
                 ))
         # Cycle colors when caller didn't pick one. We use the count of
         # the SIGNED-IN USER's existing employees (or all if unauthed),
@@ -337,11 +340,12 @@ async def update_employee(
         # Re-enabling a disabled chatter is functionally the same as
         # creating one — enforce the same quota so a user can't dodge it
         # by toggling is_active.
+        cap = _max_employees()
         if (
             body.is_active is True
             and e.is_active is False
             and e.user_id
-            and MAX_EMPLOYEES_PER_USER > 0
+            and cap > 0
         ):
             active_count = (await s.execute(
                 select(func.count(Employee.id)).where(
@@ -349,10 +353,10 @@ async def update_employee(
                     Employee.is_active == True,  # noqa: E712
                 )
             )).scalar_one()
-            if active_count >= MAX_EMPLOYEES_PER_USER:
+            if active_count >= cap:
                 raise _employee_limit(active_count, (
                     f"cannot re-enable: employee cap reached "
-                    f"({active_count}/{MAX_EMPLOYEES_PER_USER})."
+                    f"({active_count}/{cap})."
                 ))
         if body.display_name is not None:
             e.display_name = body.display_name.strip()

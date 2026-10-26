@@ -30,8 +30,9 @@ import {
 } from "@/lib/s4s";
 import type { VaultMedia } from "@/lib/relay";
 import { cn } from "@/lib/utils";
+import { BRAND_NAME } from "@/lib/brand";
 
-export const OPT_IN_LINE = "Off by default. Only agencies on this Inflowwww deployment can see a Creator you opt in.";
+export const OPT_IN_LINE = `Off by default. Only agencies on this ${BRAND_NAME} deployment can see a Creator you opt in.`;
 const LIMIT_OPTIONS: IfOption[] = S4S_DAILY_LIMITS.map((n) => ({
   value: String(n), label: `${n} Share for Share${n === 1 ? "" : "s"}`,
 }));

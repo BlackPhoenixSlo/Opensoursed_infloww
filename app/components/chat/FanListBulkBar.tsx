@@ -156,7 +156,7 @@ function AddToLists({ accountId, disabled, onPick }: {
   onPick: (listId: string, name: string) => void;
 }) {
   const { open, setOpen, ref, triggerProps, menuProps } = useFanListMenu<HTMLDivElement>();
-  // The Fan List's own "✎ Lists" read, so the menu opens from the cache.
+  // The Fan List's own OF lists read (its pencil's), so the menu opens from the cache.
   const foldersQ = useAllChatFolders(accountId);
   const lists = (foldersQ.data ?? []).filter((f) => f.canAddUsers);
   return (

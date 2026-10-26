@@ -16,6 +16,7 @@ import { HbModal } from "@/components/ui/infloww";
 import { relay, type Employee, type ProxyMeta } from "@/lib/relay";
 import { GENDERS, avatarDataUrl, type CreatorDetails, type CreatorProfile, type useCreatorProfiles } from "@/lib/creatorProfiles";
 import { cn } from "@/lib/utils";
+import { BRAND_NAME } from "@/lib/brand";
 
 /** The en locale's strings, by key. */
 export const T = {
@@ -35,7 +36,7 @@ export const T = {
   onePerPlatform: (platform: string) => //                        creators0408
     `Each creator can only link one account from each platform. This creator already has an account from ${platform} linked.`,
   proxySelection: "Proxy selection", //                           creators0240
-  proxyRequired: "Using a proxy is required to manage the creator’s account on Inflowwww and allow employees to chat with fans, without revealing the creator’s login information. All your data is safe with us.", // creators0301
+  proxyRequired: `Using a proxy is required to manage the creator’s account on ${BRAND_NAME} and allow employees to chat with fans, without revealing the creator’s login information. All your data is safe with us.`, // creators0301
   customProxy: "Custom proxy", //                                 router_config_0017
   useOwnProxy: "Use your own proxy", //                           creators0298
   newProxy: "New proxy", //                                       creators0196
@@ -43,7 +44,7 @@ export const T = {
   proxyError: "Error message", //                                 creators0121
   connectOnlyFans: "Connect OnlyFans", //                         creators0057
   linkPlatformAccount: (platform: string) => `Link ${platform} account`, // creators0169
-  linked: "Creator account is linked to Inflowwww", //            creators0075
+  linked: `Creator account is linked to ${BRAND_NAME}`, //            creators0075
   accountDetails: "Account details", //                           creators0021
   nickname: "Nickname", //                                        creators0201
   tagOptional: "Tag (Optional)", //                               creators0276
@@ -74,7 +75,7 @@ export const T = {
   faceIdTitle: "Face ID Verification", //                         ModalTitleMaps (index.9f50f370.js @12438097)
   selectRoleTitle: "Select your role", //                         ModalTitleMaps
   altMethodTitle: "Linking OnlyFans account (Alternative method)", // ModalTitleMaps
-  stillUnable: "Still unable to perform verification and link OnlyFans account to Inflowwww?", // @12434760
+  stillUnable: `Still unable to perform verification and link OnlyFans account to ${BRAND_NAME}?`, // @12434760
   learnMore: "Learn More", //                                     creators0164
   copy: "Copy", //                                                creators0068
   copied: "Copy successfully", //                                 creators0069
@@ -85,8 +86,8 @@ export const T = {
     nickname ? `Delete ${creator} / ${nickname}` : `Delete ${creator}`,
   deleteMessage: (creator: string, nickname?: string) => //      delete_creator_step1_message / delete_child_step1_message
     nickname
-      ? `All data under ${nickname} will be permanently deleted from Inflowwww. This action cannot be undone.`
-      : `All platform accounts and related data under ${creator} will be permanently deleted from Inflowwww. This action cannot be undone.`,
+      ? `All data under ${nickname} will be permanently deleted from ${BRAND_NAME}. This action cannot be undone.`
+      : `All platform accounts and related data under ${creator} will be permanently deleted from ${BRAND_NAME}. This action cannot be undone.`,
   surveyTitle: "Why are you deleting the creator's account?", //  delete_creator_step2_title
   optional: "Optional", //                                        optional_text
   surveyReasons: [ //                                             delete_survey_reason_1..4, _other
@@ -480,7 +481,7 @@ export function useProxyList(fresh = false) {
   });
 }
 
-export const INFLOWWWW_PROXY = "Inflowwww proxy";
+export const INFLOWWWW_PROXY = `${BRAND_NAME} proxy`;
 export const NO_PROXY = "No proxy (server IP)";
 
 /** An account's current choice, from the proxy list. */
@@ -533,8 +534,8 @@ export function SelectProxyUI({ value, onChange }: { value: ProxyChoice; onChang
         {radio(
           "infloww", INFLOWWWW_PROXY,
           poolEmpty && !proxiesQ.isLoading
-            ? "No Inflowwww proxies are set up on this server."
-            : "The least-used of Inflowwww's proxies, picked for this account and kept.",
+            ? `No ${BRAND_NAME} proxies are set up on this server.`
+            : `The least-used of ${BRAND_NAME}'s proxies, picked for this account and kept.`,
           poolEmpty && value.type !== "infloww",
         )}
         {radio("none", NO_PROXY, "The relay connects from its own server IP; no proxy is used.")}

@@ -30,7 +30,7 @@ import asyncio
 import json
 import logging
 import time
-from typing import AsyncIterator
+from typing import AsyncIterator, Callable
 
 import websockets
 
@@ -48,11 +48,25 @@ RECONNECT_MIN_S = 1
 RECONNECT_MAX_S = 30
 
 
+class SessionDead(Exception):
+    """OF rejected the session itself (the caller's `session_dead` named a
+    reason): no reconnect can succeed until a human signs in again."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
 class OFWebSocket:
     """Long-lived WS connection that yields parsed events."""
 
-    def __init__(self, client: OFClient):
+    def __init__(self, client: OFClient,
+                 session_dead: Callable[[BaseException], str | None] | None = None):
         self.client = client
+        # Classifies a (re)connect failure: a reason ends events() with
+        # SessionDead instead of reconnecting forever (server.py's pump passes
+        # account_health.is_session_dead_error).
+        self._session_dead = session_dead
         self._ws_url: str | None = None
         self._token: str | None = None
         self._stop = asyncio.Event()
@@ -96,6 +110,7 @@ class OFWebSocket:
         """Async generator: yields each event dict as it arrives. Reconnects
         automatically on disconnect with exponential backoff. Caller can stop
         by calling `.stop()` (which causes the loop to exit on next iteration).
+        A failure `session_dead` classifies raises SessionDead instead.
 
         The WebSocket is tunneled through the same per-account proxy as the
         REST traffic (when one is assigned). Without this, REST would egress
@@ -144,6 +159,7 @@ class OFWebSocket:
                     # Background pinger for NAT keepalive
                     pinger = asyncio.create_task(_pinger(ws, self._stop))
                     stop_waiter = asyncio.create_task(self._stop.wait())
+                    recv_task = None
                     try:
                         # Race ws.recv() vs stop event so .stop() exits promptly
                         while not self._stop.is_set():
@@ -173,11 +189,20 @@ class OFWebSocket:
                         pinger.cancel()
                         if not stop_waiter.done():
                             stop_waiter.cancel()
+                        # A cancelled pump (a restart) leaves its read pending; the
+                        # socket's close would end it unretrieved (a logged traceback).
+                        if recv_task is not None and not recv_task.done():
+                            recv_task.cancel()
                 # Clean disconnect — reset backoff
                 backoff = RECONNECT_MIN_S
             except asyncio.CancelledError:
                 raise
             except Exception as e:
+                reason = self._session_dead(e) if self._session_dead else None
+                if reason:
+                    log.warning("ws session dead account=%s reason=%s — not reconnecting",
+                                self._account_id(), reason)
+                    raise SessionDead(reason) from e
                 # up=- : failed before the socket opened (proxy CONNECT, TLS, /users/me).
                 log.warning("ws error account=%s proxy=%s type=%s up=%s err=%s — reconnecting in %ds",
                             self._account_id(), self._proxy_desc(), type(e).__name__,

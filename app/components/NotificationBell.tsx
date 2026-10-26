@@ -39,10 +39,11 @@
  * (docs/spec/phase-06-geometry-pass.md, Interfaces, Shared modules).
  *
  * In that variant a row about a known Fan (one with a Fan id) hands the Fan
- * to `onOpenFan` instead of opening a browser tab: the page adds or reuses
- * the Fan's Fan tab and opens its Thread. When the Fan tabs are full the
- * Thread still opens and the panel says "Fan tab limit reached (100)" until
- * the button is next pressed. The top bar's rows open browser tabs.
+ * to `onOpenFan`: the page adds or reuses the Fan's Fan tab and opens its
+ * Thread. When the Fan tabs are full the Thread still opens and the panel
+ * says "Fan tab limit reached (100)" until the button is next pressed. The
+ * top bar's rows and the /notifications page's open the Fan the same way in
+ * the Messages Pro window (lib/notificationLink).
  *
  * Also only in that variant, a message notification about a known Fan has a
  * "Reply" field (story 39). Opening it mounts that Fan's message hook and
@@ -75,6 +76,7 @@ import { FAN_TABS_FULL_LABEL, type FanTab } from "@/components/chat/useFanTabs";
 import type { FanId } from "@/lib/fanId";
 import type { NotificationUser } from "@/lib/moneyRailStorage";
 import { ALERT_SOUNDS, isAlertSoundId, playAlertSound } from "@/lib/alertSounds";
+import { notificationHref, onNotificationClick } from "@/lib/notificationLink";
 import { hasShellNotify, osNotify } from "@/lib/osNotify";
 import {
   ALERT_KINDS,
@@ -90,6 +92,7 @@ import {
   type NotifTypeKey,
   type SoundPref,
 } from "@/lib/notifSettings";
+import { BRAND_NAME } from "@/lib/brand";
 
 /** The bell's tabs, shared with the full Notifications page
  *  (`components/NotificationsPage.tsx`), which reads the same request. */
@@ -543,7 +546,9 @@ export function NotificationBell(props: NotificationBellProps = {}) {
             </div>
           )}
           {onAgency ? (
-            <div className="flex-1 overflow-y-auto">{agency?.panel}</div>
+            // A row that links into the app (e.g. a 2FA row's Browserbase login) closes the panel.
+            <div className="flex-1 overflow-y-auto"
+              onClick={(e) => { if ((e.target as Element).closest("a[href]")) setOpen(false); }}>{agency?.panel}</div>
           ) : targetAccountIds.length === 0 ? (
             <NoSessionsNote />
           ) : (
@@ -662,12 +667,12 @@ export function NotificationBell(props: NotificationBellProps = {}) {
                           setOsTestMsg("Sending to the desktop app…");
                           const ok = await osNotify({
                             id: `chatterly-test:${Date.now()}`,
-                            title: "Inflowwww test",
+                            title: `${BRAND_NAME} test`,
                             body: "If you see this in your OS tray, it works.",
                           });
                           setOsTestMsg(ok
                             ? "✓ Handed to the OS — check your notifications."
-                            : "✗ The desktop app could not show it. Check the OS notification settings for Inflowwww.");
+                            : `✗ The desktop app could not show it. Check the OS notification settings for ${BRAND_NAME}.`);
                           return;
                         }
                         if (typeof Notification === "undefined") {
@@ -692,7 +697,7 @@ export function NotificationBell(props: NotificationBellProps = {}) {
                           return;
                         }
                         try {
-                          const n = new Notification("Inflowwww test", {
+                          const n = new Notification(`${BRAND_NAME} test`, {
                             body: "If you see this in your OS tray, it works.",
                             tag: "chatterly-test",
                           });
@@ -820,11 +825,7 @@ export function Row({
   const user = n.user || n.fromUser || {};
   const avatar = proxyImage(user.avatar ?? null, accountId);
   const text = renderText(n.text || n.description || "", n.replacePairs);
-  const href = user.id
-    ? `/messages-pro/${encodeURIComponent(accountId)}/${user.id}`
-    : user.username
-      ? `/messages-pro/${encodeURIComponent(accountId)}/u/${encodeURIComponent(user.username)}`
-      : null;
+  const href = notificationHref(accountId, user);
   const page = size === "page";
   const body = (
     <>
@@ -890,10 +891,11 @@ export function Row({
   ) : href ? (
     <a
       href={href}
-      target="_blank"
-      rel="noreferrer"
       className={cls}
-      onClick={() => dispatchNotifCleared()}
+      onClick={(e) => {
+        dispatchNotifCleared();
+        onNotificationClick(e, href);
+      }}
     >
       {body}
     </a>

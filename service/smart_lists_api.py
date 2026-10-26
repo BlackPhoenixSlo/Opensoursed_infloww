@@ -61,7 +61,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from datetime import datetime, timedelta
 from typing import Any, Iterable
 
@@ -85,7 +84,10 @@ router = APIRouter()
 SYNC_KIND = "smart_list_sync"
 # Infloww: "A maximum of N smart lists can be active". Each active list costs
 # OF writes on the account's shared pacing slot, so the cap is per creator.
-MAX_ACTIVE = int(os.environ.get("SMART_LIST_MAX_ACTIVE", "10"))
+# SMART_LIST_MAX_ACTIVE (default 10): Settings → System's override, else env; read at use.
+def _max_active() -> int:
+    import runtime_switches
+    return int(runtime_switches.value("SMART_LIST_MAX_ACTIVE"))
 
 # ── DSL definition ────────────────────────────────────────────────────
 
@@ -666,7 +668,7 @@ async def list_smart_lists(account_id: str = Query(...)) -> dict[str, Any]:
             select(SmartList).where(SmartList.account_id == account_id, _LIVE)
             .order_by(SmartList.name)
         )).scalars().all()
-    return {"lists": [_serialize(r) for r in rows], "max_active": MAX_ACTIVE}
+    return {"lists": [_serialize(r) for r in rows], "max_active": _max_active()}
 
 
 class _CreateBody(BaseModel):
@@ -768,19 +770,20 @@ async def activate_smart_list(list_id: int) -> dict[str, Any]:
         if not row.is_active:
             # The quota is checked inside the UPDATE itself, so two activations
             # racing for the last slot cannot both win.
+            cap = _max_active()
             active = (select(func.count()).select_from(SmartList)
                       .where(SmartList.account_id == row.account_id,
                              SmartList.is_active.is_(True))
                       .scalar_subquery())
             res = await s.execute(
                 update(SmartList)
-                .where(SmartList.id == list_id, _NOT_SYNCING, active < MAX_ACTIVE)
+                .where(SmartList.id == list_id, _NOT_SYNCING, active < cap)
                 .values(is_active=True, sync_error=None))
             if res.rowcount != 1:
                 await s.refresh(row)
                 if row.sync_state == "syncing":
                     raise HTTPException(409, _LOCKED)
-                raise HTTPException(409, f"a maximum of {MAX_ACTIVE} smart lists can be active")
+                raise HTTPException(409, f"a maximum of {cap} smart lists can be active")
             await s.refresh(row)
         await ensure_kind_rule(s, row.account_id, SYNC_KIND, enable=True)
         await _queue_sync(s, row.account_id)

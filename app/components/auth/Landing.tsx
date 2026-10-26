@@ -34,6 +34,7 @@ import TwoFactorStep from "@/components/auth/TwoFactorStep";
 import {
   Badges, Bang, EyeIcon, EyeOffIcon, HINT, INPUT, INPUT_LOGIN, Logo, Notice, PINK, PINK_TEXT, UNDERLINE, WRAP,
 } from "@/components/auth/SiteLook";
+import { BRAND_NAME } from "@/lib/brand";
 
 type Mode = "login" | "register";
 
@@ -256,7 +257,7 @@ export default function Landing() {
 
       {!isRegister && (
         <p className="mt-4 text-sm text-pretty text-white/[0.62]">
-          By using Inflowwww, you agree to our{" "}
+          By using {BRAND_NAME}, you agree to our{" "}
           <a className={LINK} href={`${SITE_URL}/legal/privacy/`}>
             Privacy Policy
           </a>{" "}
@@ -313,7 +314,7 @@ export default function Landing() {
               needed, because there is no card form. Get started in just two fields.
             </p>
             <p className="mt-4 max-w-xl text-base text-pretty text-fg-dim">
-              One Inflowwww app serves many agencies. Each owner signs up with their own username, employees get their
+              One {BRAND_NAME} app serves many agencies. Each owner signs up with their own username, employees get their
               own logins through their owner&apos;s invite, and each agency account sees only its own creators and their
               chats (the one exception is in the{" "}
               <a className={UNDERLINE} href={`${SITE_URL}/legal/privacy/`}>Privacy Policy</a>).
@@ -333,14 +334,14 @@ export default function Landing() {
         <section aria-labelledby="landing-title" className="max-md:contents md:flex md:flex-col">
           <div>
             <Logo mark="size-8" />
-            <h1 id="landing-title" className="mt-6 text-[28px] leading-tight font-normal tracking-tight">Welcome to Inflowwww</h1>
+            <h1 id="landing-title" className="mt-6 text-[28px] leading-tight font-normal tracking-tight">Welcome to {BRAND_NAME}</h1>
           </div>
           {/* On a phone the news and version go below the form (max-md:contents lets order-last reach the grid). */}
           <div className="max-md:order-last md:mt-auto md:pt-16">
             <p className="text-base text-pretty">
               To stay up-to-date on our latest releases and other updates, check out{" "}
               <a className={LINK} href={`${SITE_URL}/changelog/`}>
-                Inflowwww News
+                {BRAND_NAME} News
               </a>
               , which is a git log.
             </p>

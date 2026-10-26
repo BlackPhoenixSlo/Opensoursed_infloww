@@ -26,6 +26,7 @@ import { relay, RelayError } from "@/lib/relay";
 import { Button, Card, Input } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
 import { proxyText, useProxyList, type ProxyChoice } from "@/components/setup/creatorFlow";
+import { BRAND_NAME } from "@/lib/brand";
 
 export interface RemoteLoginStatus {
   id: string;
@@ -64,7 +65,7 @@ const otpInput = (raw: string) => raw.replace(/[\s-]/g, "");
 
 /** What a finished job left the account on. */
 function attachedText(s: RemoteLoginStatus) {
-  if (s.proxy === "infloww") return "The Inflowwww proxy is attached for all later traffic.";
+  if (s.proxy === "infloww") return `The ${BRAND_NAME} proxy is attached for all later traffic.`;
   if (s.proxy === "custom") return `Proxy ${s.proxy_label} is attached for all later traffic.`;
   return "No proxy was attached.";
 }

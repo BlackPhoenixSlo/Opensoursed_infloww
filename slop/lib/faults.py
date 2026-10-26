@@ -199,10 +199,122 @@ def _challenge_counts_hidden_frames() -> None:
     remote_login._detect_challenge = detect_any_frame
 
 
+def _runtime_switch_env_bypass() -> None:
+    """W7's kill switch reads the env var directly, as before Settings > System
+    could set it: the override saved from the UI never reaches the consumer."""
+    import os
+
+    import webhook_dispatch
+
+    def env_only() -> bool:
+        return os.environ.get("W7_WEBHOOK_DISPATCH_DISABLED", "").strip().lower() in ("1", "true", "yes", "on")
+
+    webhook_dispatch._global_kill_switch = env_only
+
+
+# The app's notification clicks before notificationLink.ts: a left click on a
+# link opens a browser tab of its own (the toast's named `infloww-rea-<path>`
+# target, the bell rows' _blank) instead of the Fan tab in Messages Pro, and the
+# OS notification opened a window that is not Messages Pro's. Capture phase on
+# the window runs before React's root listener, so the app's handler never sees
+# the click; window.open never finds the Messages Pro window, so the OS
+# notification's link opens another.
+_NOTIF_CLICK_OPENS_BROWSER_TAB = """window.addEventListener("click", (e) => {  // a popup keeps its window, not its about:blank document
+  const a = e.target instanceof Element && e.target.closest('a[href^="/messages-pro/"]');
+  if (!a || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+  if (!a.matches('a.animate-toast-in, a[href*="fanTab="]')) return;
+  a.target = "infloww-rea-" + new URL(a.href).pathname;
+  e.stopPropagation();
+}, true);
+(() => { const open = window.open;
+  window.open = function (url, name, features) {
+    if (name !== "messages-pro") return open.call(this, url, name, features);
+    if (!url) return null;  // the open Messages Pro window is never found...
+    // ...a link opens a new one, named so that no later open (from any page) finds it again
+    return open.call(this, url, "slop-not-messages-pro-" + Math.random().toString(36).slice(2), features); }; })();"""
+# ...and the desktop app before desktop/lib/window-open.js: a Messages Pro link
+# opened as a tab, and the native notification's click, never reach the open
+# Messages Pro window (a new window; the main window loads the link). Run by the
+# Electron wrapper (actors/notif_click) before desktop/main.js loads.
+_NOTIF_CLICK_DESKTOP_IGNORES_MESSAGES_PRO = """const Module = require("module");
+const load = Module._load;
+Module._load = function (request, ...rest) {
+  const m = load.call(this, request, ...rest);
+  return /(^|[\\\\/])window-open(\\.js)?$/.test(request) ? { ...m, openInMessagesProWindow: () => false } : m;
+};"""
+
+
+
+def _otp_state_not_session_dead() -> None:
+    """The classifier's code-101 branch reverted (as before fix/otp-state-session-health):
+    OF's 2FA demand is not a dead session, so nothing flags, notifies or pauses the account."""
+    import account_health
+    account_health._wants_otp = lambda exc: False
+
+
+def _session_dead_claim_not_atomic() -> None:
+    """The healthy -> dead flip as it was before fix/otp-state-session-health: read the
+    row, then write it, so callers that meet OF's rejection at the same moment each read
+    "healthy" and each notify (bug class: check-then-act across an await)."""
+    from datetime import datetime
+
+    from sqlalchemy import select
+
+    import account_health
+    from account_health import AccountHealth, _announce, get_session
+
+    async def mark_session_dead(account_id: str, reason: str) -> bool:
+        now = datetime.utcnow()
+        async with get_session() as s:
+            row = (await s.execute(select(AccountHealth).where(AccountHealth.account_id == account_id)
+                                   )).scalar_one_or_none()
+            newly = row is None or row.session_dead_at is None
+            if row is None:
+                s.add(AccountHealth(account_id=account_id, session_dead_at=now, session_dead_reason=reason))
+            elif newly:
+                row.session_dead_at, row.session_dead_reason, row.last_probe_at = now, reason, None
+            if newly:
+                _announce(s, "session_dead", account_id, dead=True, reason=reason)
+        if newly:
+            from notifications_api import notify_session_dead
+            await notify_session_dead(account_id, reason, now)
+        return newly
+
+    account_health.mark_session_dead = mark_session_dead
+
+
+# The Fan List as before ADR-0003's 2026-10-26 amendment, in the two ways its
+# scenario must see: Owe reply laid out last in the chip row, where the "+"
+# overflow sat, and a sort button that never looks active (not pressed, not
+# blue) whatever order is in force. Layout and attributes only, so React's tree
+# and the console are untouched.
+_FAN_LIST_OWE_REPLY_LAST_SORT_NEVER_ACTIVE = """(() => {
+  const css = '[role=group][aria-label="Fan List filters"] button[title*=" extra \u2014 Owe reply"]'
+    + ' { order: 99; }';
+  const calm = () => document.querySelectorAll('button[aria-label^="Sort: "]').forEach((b) => {
+    if (b.getAttribute("aria-pressed") === "true") b.setAttribute("aria-pressed", "false");
+    if (b.classList.contains("bg-accent")) {
+      b.classList.remove("bg-accent", "text-white", "border-accent");
+      b.classList.add("text-fg-dim");
+    }
+  });
+  const start = () => {
+    const s = document.createElement("style");
+    s.textContent = css;
+    document.head.appendChild(s);
+    calm();
+    new MutationObserver(calm).observe(document.documentElement,
+      { subtree: true, childList: true, attributes: true, attributeFilter: ["class", "aria-pressed"] });
+  };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start); else start();
+})();"""
+
 @dataclass(frozen=True)
 class Fault:
-    apply: Callable[[], None]
+    apply: Callable[[], None] | None  # inside the relay (lib/relay.py); None for a harness-side fault
     targets: tuple[str, ...]  # check names that must go PASS -> FAIL under this fault
+    browser: str | None = None  # init script in every page actors/ui opens: a bug in the app's browser code
+    desktop: str | None = None  # JS the Electron wrapper (actors/notif_click) runs before desktop/main.js
 
 
 FAULTS: dict[str, Fault] = {
@@ -210,6 +322,16 @@ FAULTS: dict[str, Fault] = {
         "every DM is in its thread (/admin/messages)",
         "unreadMessagesCount == seeded + sent for every burst fan",
     )),
+    # slop/run inbox-unread --break --fault=notif-click-opens-browser-tab: every
+    # notification click check, browser and desktop (actors/notif_click).
+    "notif-click-opens-browser-tab": Fault(None, tuple(
+        f"{env} {e} click opens the Fan as a Fan tab in the one Messages Pro window"
+        for env, entries in (
+            ("browser", ("main-window toast", "Messages Pro toast", "top bar bell row", "/notifications row",
+                         "OS notification")),
+            ("desktop", ("main-window toast", "Messages Pro toast", "top bar bell row", "native notification")))
+        for e in entries
+    ), browser=_NOTIF_CLICK_OPENS_BROWSER_TAB, desktop=_NOTIF_CLICK_DESKTOP_IGNORES_MESSAGES_PRO),
     "sse-fanout-reorders-within-thread": Fault(_sse_fanout_reorders_within_thread, (
         "per-thread order preserved on every /events stream",
     )),
@@ -237,6 +359,30 @@ FAULTS: dict[str, Fault] = {
     "of-writer-holds-batches-3s": Fault(_of_writer_holds_batches_3s, (
         "crash loses only DMs the relay took < 1000ms before the kill",
     )),
+    # slop/run session-health-otp --break (the scenario's FAULT)
+    "otp-state-not-session-dead": Fault(_otp_state_not_session_dead, (
+        "account_health flags exactly the 2FA Creators, reason otp_required",
+        "one session_dead notification per owner per 2FA Creator, opening Browserbase login; "
+        "no other owner notified",
+        "each affected owner's /events carried the notification and the pause; no other owner's did",
+        "a Creator with no automations is flagged by its owner's inbox read alone (via=proxy): "
+        "otp_required, one notification",
+        "the WS pump met the 2FA demand once and parked: per 2FA Creator at most 2 /users/me over "
+        ">= 20 s (the pump's reconnect, the probe's), no reconnect, the pump exited and "
+        "supervisor passes left it parked",
+        "after detection a 2FA Creator runs nothing: no run row, no OF call but the probe's /users/me "
+        "(101: still paused), its sends stay pending",
+        "/admin/accounts shows each owner its 2FA Creators paused (session_dead_reason otp_required)",
+        "UI: the bell's Agency tab lists the 2FA notification as a link to Browserbase login",
+        "UI: the row closes the bell and opens Creators with Browserbase login focused; the row is read (API)",
+        "UI: the Creator's row shows the 'automations paused' badge naming Browserbase login",
+    )),
+    # slop/run session-health-otp --break --fault=session-dead-claim-not-atomic
+    "session-dead-claim-not-atomic": Fault(_session_dead_claim_not_atomic, (
+        "one session_dead notification per owner per 2FA Creator, opening Browserbase login; "
+        "no other owner notified",
+        "each affected owner's /events carried the notification and the pause; no other owner's did",
+    )),
     # slop/run browserbase-otp --break (the scenario's FAULT)
     "otp-code-never-consumed": Fault(_otp_code_never_consumed, (
         "API: a wrong 2FA code comes back as rejected and the job stays on the 2FA prompt",
@@ -256,6 +402,15 @@ FAULTS: dict[str, Fault] = {
         "API: a hidden captcha frame on OnlyFans' pages is never reported as a verification check "
         "(no status says challenge)",
     )),
+    # slop/run runtime-switches --break (the scenario's FAULT)
+    "runtime-switch-env-bypass": Fault(_runtime_switch_env_bypass, (
+        "W7 switch on from Settings > System: no dispatch job for any DM sent while it is on",
+    )),
+    # slop/run 2026-10-26-fan-list-chips --break (the scenario's FAULT)
+    "fan-list-owe-reply-last-sort-never-active": Fault(None, (
+        "chips on screen: All, Owe reply, Pinned, Unread, With Tips, the pinned lists, Priority",
+        "an extra sort turns the sort button active (blue), named by it, with its ✓, and puts unread rows first",
+    ), browser=_FAN_LIST_OWE_REPLY_LAST_SORT_NEVER_ACTIVE),
 }
 
 
@@ -264,4 +419,5 @@ def apply(name: str | None) -> None:
         return
     if name not in FAULTS:
         raise SystemExit(f"slop: unknown fault {name!r}; known: {', '.join(FAULTS)}")
-    FAULTS[name].apply()
+    if FAULTS[name].apply is not None:
+        FAULTS[name].apply()

@@ -4,23 +4,29 @@
  * Settings → System: the deployment master's ops back-office (users.is_admin only).
  *
  *   - the server's house keys and other agencies' keys (the founder cards from /creators, mounted as-is);
+ *   - the runtime switches: every env kill switch / cap of the relay with its env value, the override
+ *     set here and the effective value (GET /admin/system/switches); a toggle or number sets the
+ *     override (PUT /admin/system/switches/{env}, with the founder admin password), "Clear override"
+ *     goes back to env / default. It applies at the relay's next read, no restart. A toggle or number
+ *     that lands back on the env / default value CLEARS the override rather than storing it (a stored
+ *     one would outrank a later env change); an override that disagrees with a set env var is badged;
  *   - every account × automation: rule on/off vs config on/off, a disagreement highlighted
- *     (GET /admin/system/automations), plus the env kill switches;
+ *     (GET /admin/system/automations);
  *   - the recent run log and failed / pending jobs across all accounts (GET /admin/system/runs).
  *
- * Read-only for automations: no toggles here. Hidden from the Tab list for everyone else (nav.ts
+ * Read-only for automations: no toggles there. Hidden from the Tab list for everyone else (nav.ts
  * `masterOnly`), and a direct URL by anyone else is a 404, never this Panel. The relay gates both routes
  * with require_master regardless; this hiding is UI hygiene, not the gate.
  */
 
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { notFound } from "next/navigation";
 import { useState } from "react";
 
 import KeysCard from "@/components/setup/KeysCard";
 import ManagedAgencyKeysCard from "@/components/setup/ManagedAgencyKeysCard";
 import {
-  FieldSelect, LoadError, Section, SettingsPanel, SettingsTable, TABLE_CELL, TABLE_ROW,
+  FieldSelect, LoadError, Section, SettingsPanel, SettingsTable, Switch, TABLE_CELL, TABLE_ROW,
 } from "@/components/settings/SettingsPanel";
 import { useUser } from "@/contexts/UserContext";
 import { relay } from "@/lib/relay";
@@ -43,8 +49,29 @@ interface AutomationState {
 }
 interface SystemAutomations {
   accounts: { account_id: string; nickname: string | null; automations: AutomationState[] }[];
-  kill_switches: { env: string; value: string | null; active: boolean; effect: string }[];
   mismatch_count: number;
+}
+type SwitchValue = boolean | number;
+interface RuntimeSwitch {
+  env: string;
+  label: string;
+  effect: string;
+  kind: "bool" | "number";
+  default: SwitchValue;
+  minimum: number | null;
+  maximum: number | null;
+  env_raw: string | null;
+  env_value: SwitchValue | null;
+  override: SwitchValue | null;
+  override_at: string | null;
+  override_by: string | null;
+  source: "override" | "env" | "default";
+  /** What "Clear override" goes back to (env value, else default). */
+  fallback: SwitchValue;
+  /** The override differs from a SET env var, so it outranks any env change until cleared. */
+  overrides_env: boolean;
+  effective: SwitchValue;
+  active: boolean;
 }
 interface SystemRuns {
   runs: {
@@ -112,6 +139,162 @@ function Cell({ a }: { a: AutomationState | undefined }) {
   );
 }
 
+const shown = (v: SwitchValue) => (typeof v === "boolean" ? (v ? "on" : "off") : String(v));
+
+function sourceText(k: RuntimeSwitch): string {
+  if (k.source === "override") return `override${k.override_by ? ` by ${k.override_by}` : ""}`;
+  if (k.source === "env") return `env ${k.env_raw === "" ? '""' : k.env_raw}`;
+  return "default";
+}
+
+/** One switch: a toggle (bool) or a number box with Set (number), and Clear override. */
+function SwitchRow({ k, busy, save }: { k: RuntimeSwitch; busy: boolean; save: (v: SwitchValue | null) => void }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const num = draft ?? String(k.effective);
+  const n = Number(num);
+  const legal =
+    num.trim() !== "" &&
+    Number.isInteger(n) &&
+    (k.minimum === null || n >= k.minimum) &&
+    (k.maximum === null || n <= k.maximum);
+  // Back on the env / default value: clear, never store an override equal to it.
+  const set = (v: SwitchValue) => save(v === k.fallback ? null : v);
+  return (
+    <tr className={TABLE_ROW} data-testid={`switch-${k.env}`}>
+      <td className={TABLE_CELL}>
+        <div className="text-[var(--if-fg)]">{k.label}</div>
+        <div className={cn("font-mono text-[length:var(--if-fs-sm)]", DIM)}>{k.env}</div>
+      </td>
+      <td className={cn(TABLE_CELL, "whitespace-normal max-w-[26rem] text-[length:var(--if-fs-sm)]")}>{k.effect}</td>
+      <td className={cn(TABLE_CELL, k.source === "override" ? ON : DIM)} data-testid="switch-source"
+          title={k.override_at ? `set ${when(k.override_at)}` : undefined}>
+        {sourceText(k)}
+        {k.overrides_env && (
+          <span className={cn(BAD, "ml-1")} title={`beats the env ${k.env}=${k.env_raw}; clear it to let the env apply`}>
+            (beats env {k.env_raw})
+          </span>
+        )}
+      </td>
+      <td className={cn(TABLE_CELL, k.active ? BAD : DIM)} data-testid="switch-effective">
+        {shown(k.effective)}
+        {k.active && " (ACTIVE)"}
+      </td>
+      <td className={TABLE_CELL}>
+        {k.kind === "bool" ? (
+          <Switch checked={k.effective === true} label={k.env} onChange={busy ? undefined : (next) => set(next)} />
+        ) : (
+          <span className="inline-flex items-center gap-2">
+            <input
+              type="number"
+              aria-label={k.env}
+              min={k.minimum ?? undefined}
+              max={k.maximum ?? undefined}
+              value={num}
+              onChange={(e) => setDraft(e.target.value)}
+              className="w-20 h-8 px-2 rounded-[var(--if-input-radius)] border border-[var(--if-line)] bg-[var(--if-bg)] text-[length:var(--if-fs)] text-[var(--if-fg)] outline-none focus:border-[var(--if-accent)]"
+            />
+            <button
+              type="button"
+              className={BTN}
+              disabled={busy || !legal || n === k.effective}
+              onClick={() => {
+                set(n);
+                setDraft(null);
+              }}
+            >
+              Set
+            </button>
+          </span>
+        )}
+      </td>
+      <td className={TABLE_CELL}>
+        <button
+          type="button"
+          className={BTN}
+          disabled={busy || k.source !== "override"}
+          onClick={() => {
+            save(null);
+            setDraft(null);
+          }}
+        >
+          Clear override
+        </button>
+      </td>
+    </tr>
+  );
+}
+
+interface SystemSwitches {
+  switches: RuntimeSwitch[];
+  /** The relay read its override table; false = it runs on env / defaults and is retrying. */
+  loaded: boolean;
+}
+
+function RuntimeSwitchesSection() {
+  const qc = useQueryClient();
+  const [adminPassword, setAdminPassword] = useState("");
+  const q = useQuery({
+    queryKey: ["system-switches"],
+    queryFn: () => relay.get<SystemSwitches>("/admin/system/switches"),
+    staleTime: 15_000,
+    retry: false,
+  });
+  const m = useMutation({
+    mutationFn: async ({ env, value }: { env: string; value: SwitchValue | null }) => {
+      if (!adminPassword) throw new Error("Admin password required.");
+      return relay.put<{ switch: RuntimeSwitch }>(`/admin/system/switches/${encodeURIComponent(env)}`, {
+        value,
+        admin_password: adminPassword,
+      });
+    },
+    onSuccess: ({ switch: row }) =>
+      qc.setQueryData<SystemSwitches>(["system-switches"], (old) =>
+        old ? { ...old, switches: old.switches.map((k) => (k.env === row.env ? row : k)) } : old,
+      ),
+  });
+  return (
+    <Section title="Runtime switches">
+      <p className={cn("mb-3 text-[length:var(--if-fs-sm)]", DIM)}>
+        An override set here beats the env var and applies at once, no restart. Clear it to go back to env or the
+        default.
+      </p>
+      <LoadError error={q.error} />
+      {q.data && !q.data.loaded && (
+        <p role="alert" className="mb-3 text-[length:var(--if-fs)] text-[var(--if-danger)]">
+          The relay could not read its saved overrides: every switch runs on env / defaults until it does (it
+          retries in the background). The Source column may be wrong until then.
+        </p>
+      )}
+      <label className="mb-3 flex items-center gap-2 text-[length:var(--if-fs-sm)]">
+        <span className={DIM}>Admin password (needed to change a switch)</span>
+        <input
+          type="password"
+          autoComplete="off"
+          aria-label="Admin password"
+          value={adminPassword}
+          onChange={(e) => setAdminPassword(e.target.value)}
+          className="w-48 h-8 px-2 rounded-[var(--if-input-radius)] border border-[var(--if-line)] bg-[var(--if-bg)] text-[length:var(--if-fs)] text-[var(--if-fg)] outline-none focus:border-[var(--if-accent)]"
+        />
+      </label>
+      {m.error && (
+        <p role="alert" className="mb-3 text-[length:var(--if-fs)] text-[var(--if-danger)]">
+          Save failed: {m.error.message}
+        </p>
+      )}
+      <SettingsTable columns={["Switch", "Effect", "Source", "Effective", "Set", ""]} small aria-label="Runtime switches">
+        {(q.data?.switches ?? []).map((k) => (
+          <SwitchRow
+            key={k.env}
+            k={k}
+            busy={m.isPending && m.variables?.env === k.env}
+            save={(value) => m.mutate({ env: k.env, value })}
+          />
+        ))}
+      </SettingsTable>
+    </Section>
+  );
+}
+
 function AutomationsSection() {
   const q = useQuery({
     queryKey: ["system-automations"],
@@ -127,19 +310,6 @@ function AutomationsSection() {
 
   return (
     <>
-      <Section title="Kill switches (env)">
-        <LoadError error={q.error} />
-        <SettingsTable columns={["Env", "Value", "State", "Turns off"]} small>
-          {(q.data?.kill_switches ?? []).map((k) => (
-            <tr key={k.env} className={TABLE_ROW}>
-              <td className={cn(TABLE_CELL, "font-mono")}>{k.env}</td>
-              <td className={TABLE_CELL}>{k.value ?? <span className={DIM}>unset</span>}</td>
-              <td className={cn(TABLE_CELL, k.active ? BAD : DIM)}>{k.active ? "ACTIVE" : "inactive"}</td>
-              <td className={TABLE_CELL}>{k.effect}</td>
-            </tr>
-          ))}
-        </SettingsTable>
-      </Section>
       <Section title="Automations on / off">
         <div className="mb-3 flex items-center gap-3 text-[length:var(--if-fs-sm)]">
           <span className={q.data?.mismatch_count ? BAD : DIM}>
@@ -258,6 +428,7 @@ export default function SystemTab() {
           <ManagedAgencyKeysCard />
         </div>
       </Section>
+      <RuntimeSwitchesSection />
       <AutomationsSection />
       <RunsSection />
     </SettingsPanel>

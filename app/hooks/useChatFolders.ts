@@ -4,7 +4,7 @@
  * useChatFolders — fetch the model account's pinnable fan-lists so the
  * inbox can render them as folder chips (a folder icon, then the list
  * name). Mirrors the legacy /ui/ behaviour: only the lists already
- * pinned to chat appear as chips; the "✎ Lists" chip opens the full list
+ * pinned to chat appear as chips; the pencil ("Pin lists as chips") opens the full list
  * (pinned + unpinned) and lets the user toggle.
  *
  * Only fires in single-account scope. Unified mode has no single "my

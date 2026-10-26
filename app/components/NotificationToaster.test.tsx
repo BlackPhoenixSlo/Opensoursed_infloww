@@ -339,12 +339,35 @@ describe("NotificationToaster — tip/purchase toast href carries ?refresh=media
 
     const a = findChatAnchor(container, 555);
     expect(a).not.toBeNull();
-    expect(a!.getAttribute("href")).toBe("/messages-pro/300/555?refresh=media");
-    // One named tab per fan (lib/chatPopout): _blank would stack a new
-    // stale-snapshot tab per click, and rel=noreferrer would downgrade the
-    // named target back to _blank.
-    expect(a!.getAttribute("target")).toBe("infloww-rea-/messages-pro/300/555");
-    expect(a!.getAttribute("rel")).toBeNull();
+    expect(a!.getAttribute("href")).toBe("/messages-pro/300/555?refresh=media&fanTab=Tipper");
+    // No target: a click opens the Fan as a Fan tab in Messages Pro
+    // (lib/notificationLink), never a browser tab of its own.
+    expect(a!.getAttribute("target")).toBeNull();
+  });
+
+  it("a click opens the Fan tab: in place inside Messages Pro, else in the Messages Pro window", async () => {
+    mockAccountId = "303";
+    const Comp = await loadComponent();
+    const { container } = renderToaster(Comp);
+    const link = await import("@/lib/notificationLink");
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    try {
+      fireOfToast("303", { id: 9004, type: "subscribed", text: "subscribed", data: { relatedUser: { id: 558, name: "Ann" } } });
+      const inPage = vi.fn();
+      const unregister = link.setFanTabOpener(inPage);
+      fireEvent.click(findChatAnchor(container, 558)!);
+      expect(inPage).toHaveBeenCalledWith({ accountId: "303", fanId: 558, name: "Ann" }, { refresh: false });
+      expect(open).not.toHaveBeenCalled();
+      expect(container.querySelector('a[href*="/558"]')).toBeNull(); // dismissed
+
+      unregister();
+      fireOfToast("303", { id: 9005, type: "subscribed", text: "subscribed", data: { relatedUser: { id: 559, name: "Bo" } } });
+      fireEvent.click(findChatAnchor(container, 559)!);
+      expect(inPage).toHaveBeenCalledTimes(1);
+      expect(open).toHaveBeenCalledWith("", "messages-pro", expect.any(String));
+    } finally {
+      open.mockRestore();
+    }
   });
 
   it("purchase toast (paided_message) → href ends with ?refresh=media", async () => {
@@ -361,7 +384,7 @@ describe("NotificationToaster — tip/purchase toast href carries ?refresh=media
 
     const a = findChatAnchor(container, 556);
     expect(a).not.toBeNull();
-    expect(a!.getAttribute("href")).toBe("/messages-pro/301/556?refresh=media");
+    expect(a!.getAttribute("href")).toBe("/messages-pro/301/556?refresh=media&fanTab=Buyer");
   });
 
   it("subscribed toast → plain href, no refresh flag", async () => {
@@ -378,7 +401,7 @@ describe("NotificationToaster — tip/purchase toast href carries ?refresh=media
 
     const a = findChatAnchor(container, 557);
     expect(a).not.toBeNull();
-    expect(a!.getAttribute("href")).toBe("/messages-pro/302/557");
+    expect(a!.getAttribute("href")).toBe("/messages-pro/302/557?fanTab=Newsub");
   });
 });
 
@@ -593,7 +616,7 @@ describe("NotificationToaster — purchase_notified PPV unlock", () => {
 
     expect(findToastByText(container, "Unlocked your PPV — $8.20")).not.toBeNull();
     const a = container.querySelector<HTMLAnchorElement>('a[href*="4242"]');
-    expect(a!.getAttribute("href")).toBe("/messages-pro/400/4242?refresh=media");
+    expect(a!.getAttribute("href")).toBe("/messages-pro/400/4242?refresh=media&fanTab=Daniel");
   });
 
   // THE contract: same id as the feed row ⇒ the rail/bell merge collapses the

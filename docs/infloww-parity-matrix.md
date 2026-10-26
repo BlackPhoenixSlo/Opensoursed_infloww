@@ -332,7 +332,7 @@ Inflowwww-only features, graded `intentionally improved`, and the labels that ma
 | Persona button | Messages Pro, behind the Legacy flag | "Inflowwww extra" (ADR-0003) |
 | Broadcast | Fan List "New" menu, last item, behind the Legacy flag | "Inflowwww extra" (ADR-0003) |
 | Scheduled chip | Chat header Extras overflow | "Inflowwww extra" (ADR-0003) |
-| Owe reply | Extras overflow | "Inflowwww extra" (ADR-0003) |
+| Owe reply | Fan List chip row, after All (since 2026-10-26; no Fan List Extras overflow) | "Inflowwww extra" (ADR-0003) |
 | Free previews | Extras overflow | "Inflowwww extra" (ADR-0003) |
 | Group chat | Window header Extras overflow (header with the flag on) | "Inflowwww extra" (ADR-0003) |
 | All Models | Window header Extras overflow (header with the flag on) | "Inflowwww extra" (ADR-0003) |

@@ -60,7 +60,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from datetime import datetime
 from typing import Any
 
@@ -93,16 +92,15 @@ OF_IDENTITY_TIMEOUT_S = 8.0
 MAX_DISCOVERY = 200
 
 
-LIVE_POSTING_OFF = ("0", "false", "no", "off")
-
-
 def live_posting() -> bool:
     """The Deployment's `S4S_LIVE_POSTING` flag, default ON: posting stops only
     when it is set to 0/false/no/off (unset or empty reads as on). Read on
     every call, never captured at import (precedent: `ALLOW_ANONYMOUS_ADMIN`).
     A sealed relay (CHATTERLY_TEST_MODE) runs no executor, so it posts
     nothing whatever this reads."""
-    return os.environ.get("S4S_LIVE_POSTING", "1").strip().lower() not in LIVE_POSTING_OFF
+    import runtime_switches   # the Settings → System override, else the env rule above
+    # (the off-words live in runtime_switches._FALSE)
+    return runtime_switches.on("S4S_LIVE_POSTING")
 
 
 # ── Profiles ─────────────────────────────────────────────────────────

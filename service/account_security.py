@@ -48,9 +48,10 @@ import events
 import login_throttle
 from db.engine import get_session
 from db.models import Chatter, ChatterUser, User
+from brand import BRAND_NAME
 from session_stamps import now_ms, sign
 
-ISSUER = "Inflowwww"
+ISSUER = BRAND_NAME
 TICKET_TTL_SECONDS = 5 * 60
 ENROL_TTL_SECONDS = 10 * 60
 RECOVERY_CODE_COUNT = 10

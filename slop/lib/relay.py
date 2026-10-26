@@ -22,6 +22,23 @@ redirected secrets and sessions, CHATTERLY_TEST_MODE) plus loopback-only hooks.
        It also refuses every non-loopback curl_cffi request (recorded in the
        off-host log): the login builds a REAL OFClient for the new account, and
        curl_cffi goes past the socket guard.
+  POST /__slop/automation-tick  one `automation_executor._drain_due_jobs_once()`
+       pass, answered when every task it spawned (and the dead-session probe)
+       has finished: {spawned, ms}. Bypass, declared: the supervisor's 30 s
+       cadence (the caller says when); the claim, run slots, `run_once` and
+       the per-account write spacing are the product's.
+With `OF_API_ORIGIN` set (a scenario's `OF_WIRE`: lib/of_wire.py, the product's
+ADR 0024 seam) the executor's clients are REAL `OFClient`s talking to that
+loopback OnlyFans (where the Creator has a session; `_OfflineOF` where it has
+the stub), and curl_cffi refuses every non-loopback host (`_guard_curl_cffi`).
+The WS pumps run too, against the fake's socket: `server._start_account_pump`
+(no-op'd by _run_ui_safe) is pointed at the product's `_do_start_account_pump`
+on the relay loop, so a re-capture's `_restart_account_pump` and a supervisor
+pass start real pumps.
+  POST /__slop/pump-supervise  one `server._reconcile_pumps()` pass (the pump
+       supervisor's body), then {pumps: {account: running|exited|cancelled}}.
+       Bypass, declared: the supervisor's 15 s cadence (the caller says when).
+  GET  /__slop/pumps           the same states, no pass.
 
 The other half of that same wire: a chatter's reply goes OUT to OnlyFans through
 `OFClient.send_message`. The seeded Creators' stub sessions cannot build an
@@ -388,6 +405,28 @@ def _db_probe():
     return snap
 
 
+def _guard_curl_cffi() -> None:
+    """curl_cffi goes past relay_guarded's socket guard: refuse every non-loopback
+    host it is asked for (recorded in the off-host log). Idempotent."""
+    from curl_cffi import requests as cffi
+    if getattr(cffi.Session.request, "__slop_guard__", False):
+        return
+    real_request = cffi.Session.request
+
+    def guarded(self, method, url, *a, **k):
+        host = urllib.parse.urlsplit(str(url)).hostname
+        if host not in ("127.0.0.1", "localhost", "::1"):
+            off = Path(os.environ["DEMO_SHOTS_TMP"]) / "server-offhost.jsonl"
+            with open(off, "a") as f:
+                f.write(json.dumps({"process": "relay", "via": "curl_cffi", "target": str(url),
+                                    "refused": True}) + "\n")
+            raise ConnectionRefusedError(f"slop: off-host curl_cffi refused: {url}")
+        return real_request(self, method, url, *a, **k)
+
+    guarded.__slop_guard__ = True
+    cffi.Session.request = guarded
+
+
 def _wire(app) -> None:
     from fastapi import HTTPException, Request
 
@@ -444,6 +483,32 @@ def _wire(app) -> None:
         if (request.client.host if request.client else "") not in ("127.0.0.1", "::1"):
             raise HTTPException(status_code=403, detail="slop hooks are loopback-only")
 
+    if os.environ.get("OF_API_ORIGIN"):
+        # OnlyFans is lib/of_wire.py on loopback (a scenario's OF_WIRE): the clients
+        # are the product's (a real OFClient where the Creator has a session), and
+        # curl_cffi stays on loopback.
+        _guard_curl_cffi()
+        _wire_pumps(app, _loopback, server)
+
+    async def automation_tick(request: Request) -> dict:
+        """One supervisor pass (`_drain_due_jobs_once`: due (account, kind) pairs, a
+        detached `run_once` each under the run-slot pool, the dead-session probe),
+        then wait for the runs and the probe it spawned. Bypass, declared: the 30 s
+        cadence (the caller says when); the pass itself is the executor's."""
+        import asyncio
+        _loopback(request)
+        ax = automation_executor
+        t = time.perf_counter()
+        await ax._drain_due_jobs_once()
+        spawned = len(ax._inflight_tasks)
+        while ax._inflight_tasks:
+            await asyncio.gather(*list(ax._inflight_tasks), return_exceptions=True)
+        if ax._session_probe_task is not None:
+            await asyncio.gather(ax._session_probe_task, return_exceptions=True)
+        return {"spawned": spawned, "ms": round((time.perf_counter() - t) * 1000, 1)}
+
+    app.add_api_route("/__slop/automation-tick", automation_tick, methods=["POST"])
+
     async def of_ws_frame(request: Request) -> dict:
         _loopback(request)
         body = await request.json()
@@ -474,7 +539,6 @@ def _wire(app) -> None:
         body = await request.json()
         import remote_login
         import session_bootstrap
-        from curl_cffi import requests as cffi
         remote_login.BROWSERBASE_API = body["api"]
         default_window = getattr(remote_login, "__slop_job_window_s__", remote_login.JOB_WINDOW_S)
         remote_login.__slop_job_window_s__ = default_window
@@ -482,21 +546,7 @@ def _wire(app) -> None:
         os.environ["BROWSERBASE_API_KEY"] = "slop-browserbase-key"
         os.environ["BROWSERBASE_PROJECT_ID"] = "slop-project"
         session_bootstrap.CHUNK_URL_TPL = body["chunk_url_tpl"]
-        if not getattr(cffi.Session.request, "__slop_guard__", False):
-            real_request = cffi.Session.request
-
-            def guarded(self, method, url, *a, **k):
-                host = urllib.parse.urlsplit(str(url)).hostname
-                if host not in ("127.0.0.1", "localhost", "::1"):
-                    off = Path(os.environ["DEMO_SHOTS_TMP"]) / "server-offhost.jsonl"
-                    with open(off, "a") as f:
-                        f.write(json.dumps({"process": "relay", "via": "curl_cffi", "target": str(url),
-                                            "refused": True}) + "\n")
-                    raise ConnectionRefusedError(f"slop: off-host curl_cffi refused: {url}")
-                return real_request(self, method, url, *a, **k)
-
-            guarded.__slop_guard__ = True
-            cffi.Session.request = guarded
+        _guard_curl_cffi()
         return {"ok": True}
 
     app.add_api_route("/__slop/browserbase", browserbase, methods=["POST"])
@@ -533,6 +583,38 @@ def _wire(app) -> None:
     app.add_api_route("/__slop/of-ws-frame", of_ws_frame, methods=["POST"])
     app.add_api_route("/__slop/stats", stats, methods=["GET"])
     app.add_api_route("/__slop/telemetry-flush", telemetry_flush, methods=["POST"])
+
+
+def _wire_pumps(app, _loopback, server) -> None:
+    """OF's chat WebSocket is lib/of_wire.py's too: the pumps run (see the docstring)."""
+    import asyncio
+
+    from fastapi import Request
+
+    def start_pump(account_id) -> None:
+        # _run_ui_safe no-ops this (the real OF socket); here it is the product's own
+        # trampoline target, on the relay's loop.
+        if server._main_loop is not None:
+            server._main_loop.call_soon_threadsafe(server._do_start_account_pump, account_id)
+
+    server._start_account_pump = start_pump
+
+    def states() -> dict:
+        return {aid: "running" if not t.done() else "cancelled" if t.cancelled() else "exited"
+                for aid, t in server._account_pumps.items()}
+
+    async def pump_supervise(request: Request) -> dict:
+        _loopback(request)
+        await server._reconcile_pumps()
+        await asyncio.sleep(0)  # the starts it scheduled on this loop
+        return {"pumps": states()}
+
+    async def pumps(request: Request) -> dict:
+        _loopback(request)
+        return {"pumps": states()}
+
+    app.add_api_route("/__slop/pump-supervise", pump_supervise, methods=["POST"])
+    app.add_api_route("/__slop/pumps", pumps, methods=["GET"])
 
 
 def _run(app, *a, **k):

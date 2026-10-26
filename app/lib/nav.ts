@@ -78,6 +78,7 @@ import {
 import type { FeatureFlag, FeatureFlags } from "@/lib/appliedSettings";
 import type { FanId } from "@/lib/fanId";
 import type { Platform } from "@/lib/platform";
+import { BRAND_NAME } from "@/lib/brand";
 
 export interface NavLink {
   label: string;
@@ -336,7 +337,7 @@ export const SETTINGS_TABS: NavLink[] = [
   { label: "AI keys", href: "/settings/ai-keys", icon: KeyRound, chatterHidden: true },
   // The `actions` log with readable names and a date filter (roadmap W6 6.16); its route is owner-only.
   { label: "Audit log", href: "/settings/audit", icon: History, chatterHidden: true },
-  { label: "About Inflowwww", href: "/settings/about", icon: Info },
+  { label: `About ${BRAND_NAME}`, href: "/settings/about", icon: Info },
   // The master's ops back-office: house keys, automation on/off, run log. Never
   // drawn for an owner, employee or chatter; the Panel 404s them too.
   { label: "System", href: "/settings/system", icon: ServerCog, masterOnly: true },

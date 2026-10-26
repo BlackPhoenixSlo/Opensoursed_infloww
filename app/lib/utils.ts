@@ -53,13 +53,17 @@ export function fmtRelTime(iso: string | null | undefined): string {
 
 /** A dead OF session PAUSES every automation for that account until it is
  *  re-captured (service/account_health.py). Map the relay's raw reason onto the
- *  repair the operator actually has to perform — the two reasons need different
- *  ones, and a paused account is otherwise indistinguishable from an idle one.
+ *  repair the operator actually has to perform — each reason needs a different
+ *  one, and a paused account is otherwise indistinguishable from an idle one.
  *  Shared so the Setup table and the model picker never drift on the wording. */
 export function describeDeadSession(reason: string | null | undefined): string {
   if (reason === "wrong_user") {
     return "OnlyFans rejected this login — the creator logged in elsewhere or " +
       "unlinked it. Automations stay paused until it is re-linked in Manage creators.";
+  }
+  if (reason === "otp_required") {
+    return "OnlyFans wants a 2FA code for this login. Automations stay paused until it " +
+      "is signed in again with Browserbase login in Manage creators, which takes the code.";
   }
   if (reason === "no_session") {
     return "No captured session for this account on this host. Automations stay " +

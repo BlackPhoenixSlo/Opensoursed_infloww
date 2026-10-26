@@ -99,6 +99,7 @@ import assistant_state
 import llm_client
 from auth import assert_account_owned, get_request_user, require_user
 from automations._common import resolve_model  # the one model resolver
+from brand import BRAND_NAME
 from chatters import get_request_chatter
 from llm_client import (LLMCapExceeded, LLMConfigError, LLMHTTPError, LLMKeyError,
                         key_error_payload)
@@ -382,7 +383,8 @@ def _build_system_prompt() -> str:
     drift = _drift_addendum(documented)
     if drift:
         parts.append(drift)
-    return "\n\n---\n\n".join(parts)
+    # The manual and few-shots name the product Inflowwww; a renamed deployment's assistant says its own name.
+    return "\n\n---\n\n".join(parts).replace("Inflowwww", BRAND_NAME)
 
 
 _SYSTEM_PROMPT: str | None = None

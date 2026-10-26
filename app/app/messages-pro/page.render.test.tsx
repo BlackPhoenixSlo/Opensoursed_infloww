@@ -83,6 +83,7 @@ import {
   expectDomOrder, observerStub, relayGet, relayPost, resetComposerHarness, routeRelay, tooltipOf,
 } from "@/components/chat/composerTestHarness";
 import { SETTINGS_KEY as RAIL_SETTINGS_KEY } from "@/lib/moneyRailStorage";
+import { openNotification } from "@/lib/notificationLink";
 import type { OFMessage } from "@/lib/relay";
 import MessagesProPage from "./page";
 import DeepLinkPage from "./[accountId]/[fanId]/page";
@@ -988,6 +989,45 @@ describe("the Messages Pro page", () => {
     ]);
   });
 
+  it("a notification's link (?fanTab) opening the window adds the Fan's tab once and drops the parameter; a plain Deep link adds none", async () => {
+    window.localStorage.setItem("chatterly:scope", `model:${ACCOUNT_ID}`);
+    const first = renderPage(`/messages-pro/${ACCOUNT_ID}/200000002?fanTab=Fixture+Fan+Two`);
+    await vi.waitFor(() => expect(fanTabNames()).toEqual(["Fixture Fan Two"]));
+    expect(threadText()).toBe(`Creator ${ACCOUNT_ID}, Fan 200000002`);
+    expect(fanTabsStrip().getByRole("tab", { name: "Fixture Fan Two" })).toHaveAttribute("aria-selected", "true");
+    expect(window.location.search).toBe("");
+    expect(JSON.parse(window.localStorage.getItem(FAN_TABS_KEY)!)).toEqual([
+      { accountId: ACCOUNT_ID, fanId: "200000002", name: "Fixture Fan Two" },
+    ]);
+    first.unmount();
+
+    renderPage(`/messages-pro/${ACCOUNT_ID}/200000001`);
+    await vi.waitFor(() => expect(threadText()).toBe(`Creator ${ACCOUNT_ID}, Fan 200000001`));
+    expect(fanTabNames()).toEqual(["Fixture Fan Two"]);
+  });
+
+  it("a notification clicked in this window (a toast) adds the Fan's tab in place, with no new window", async () => {
+    window.localStorage.setItem("chatterly:scope", `model:${ACCOUNT_ID}`);
+    const windowOpen = vi.fn();
+    vi.stubGlobal("open", windowOpen);
+    const { queryClient } = renderPage("/messages-pro");
+    await vi.waitFor(() => expect(listedFans()).toContain("Fixture Fan Two"));
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+
+    act(() => openNotification(`/messages-pro/${ACCOUNT_ID}/200000002?fanTab=Fixture+Fan+Two`));
+    expect(threadText()).toBe(`Creator ${ACCOUNT_ID}, Fan 200000002`);
+    expect(fanTabNames()).toEqual(["Fixture Fan Two"]);
+    expect(windowOpen).not.toHaveBeenCalled();
+    expect(window.location.pathname).toBe("/messages-pro");
+    expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ["messages", ACCOUNT_ID, 200000002] });
+
+    // A money toast (a tip, a purchase) refreshes the Fan's Thread in place too.
+    act(() => openNotification(`/messages-pro/${ACCOUNT_ID}/200000002?refresh=media&fanTab=Fixture+Fan+Two`));
+    expect(fanTabNames()).toEqual(["Fixture Fan Two"]);
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["messages", ACCOUNT_ID, 200000002] });
+    expect(windowOpen).not.toHaveBeenCalled();
+  });
+
   it("at 100 Fan tabs a notification row still opens the Fan's Thread, adds no tab, and the panel says \"Fan tab limit reached (100)\"", async () => {
     window.localStorage.setItem("chatterly:scope", `model:${ACCOUNT_ID}`);
     const seed = JSON.stringify(Array.from({ length: 100 }, (_, i) =>
@@ -1013,6 +1053,28 @@ describe("the Messages Pro page", () => {
     const notice = screen.getByText("Fan tab limit reached (100)");
     expect(notice).toHaveAttribute("role", "status");
     expect(notice.parentElement).toContainElement(screen.getByText("sent you a tip"));
+  });
+
+  it("at 100 Fan tabs a toast or another window's notification still opens the Thread, adds no tab, and says \"Fan tab limit reached (100)\"", async () => {
+    window.localStorage.setItem("chatterly:scope", `model:${ACCOUNT_ID}`);
+    const seed = JSON.stringify(Array.from({ length: 100 }, (_, i) =>
+      ({ accountId: ACCOUNT_ID, fanId: String(700000000 + i), name: `Fixture Seeded Fan ${i}` })));
+    window.localStorage.setItem(FAN_TABS_KEY, seed);
+    const first = renderPage(`/messages-pro/${ACCOUNT_ID}/200000001?fanTab=Fixture+Fan+One`);
+    // Arriving from another window with ?fanTab.
+    expect(await screen.findByText("Fan tab limit reached (100)")).toHaveAttribute("role", "status");
+    expect(window.localStorage.getItem(FAN_TABS_KEY)).toBe(seed);
+    first.unmount();
+
+    renderPage("/messages-pro");
+    await vi.waitFor(() => expect(listedFans()).toContain("Fixture Fan Two"));
+    expect(screen.queryByText("Fan tab limit reached (100)")).toBeNull();
+    // A toast here (another window's click lands the same way, through its handle).
+    act(() => openNotification(`/messages-pro/${ACCOUNT_ID}/200000002?fanTab=Fixture+Fan+Two`));
+    expect(threadText()).toBe(`Creator ${ACCOUNT_ID}, Fan 200000002`);
+    expect(fanTabNames()).not.toContain("Fixture Fan Two");
+    expect(window.localStorage.getItem(FAN_TABS_KEY)).toBe(seed);
+    expect(screen.getByText("Fan tab limit reached (100)")).toHaveAttribute("role", "status");
   });
 
   /* ── A message notification's quick reply (ticket 83) ────────────────── */

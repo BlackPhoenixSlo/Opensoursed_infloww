@@ -59,16 +59,15 @@
  * tapping the header toggles it. Rows deep-link to the fan's chat with
  * the one-shot ?refresh=media flag (same as money toasts) since the fan
  * just moved money and the popout's persisted caches are stale by seconds.
- * Each fan gets ONE named popout tab (lib/chatPopout) — re-clicking a row
- * re-navigates + focuses that tab with a fresh load instead of stacking
- * another _blank tab that paints the stale localStorage snapshot.
+ * A row opens like any notification (lib/notificationLink): the fan in a Fan
+ * tab of Messages Pro, in place there, else in the Messages Pro window.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { focusManager, useQueries, useQueryClient } from "@tanstack/react-query";
 
-import { chatTabName, openChatTab } from "@/lib/chatPopout";
+import { notificationHref, onNotificationClick } from "@/lib/notificationLink";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useRailSettings } from "@/hooks/useRailSettings";
 import { fmtPrice } from "@/lib/format";
@@ -1049,12 +1048,7 @@ function Row({
   const amount = amountFrom(text);
   const kind = kindFrom(typeKey, text);
   const name = user.name || user.username || "?";
-  const base = user.id
-    ? `/messages-pro/${encodeURIComponent(accountId)}/${user.id}`
-    : user.username
-      ? `/messages-pro/${encodeURIComponent(accountId)}/u/${encodeURIComponent(user.username)}`
-      : null;
-  const href = base ? `${base}${base.includes("?") ? "&" : "?"}refresh=media` : null;
+  const href = notificationHref(accountId, user, { refresh: true });
   const body = (
     <>
       <div className="w-7 h-7 rounded-full bg-bg-elev-1 overflow-hidden shrink-0 grid place-items-center relative">
@@ -1097,10 +1091,9 @@ function Row({
     return (
       <a
         href={href}
-        target={chatTabName(href)}
         className={cls}
         title={text}
-        onClick={(e) => openChatTab(e, href)}
+        onClick={(e) => onNotificationClick(e, href)}
       >
         {body}
       </a>

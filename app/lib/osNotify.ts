@@ -11,9 +11,13 @@
  *
  * `id` dedupes: the desktop shell shows one notification per id even when
  * several windows (popouts) fire it, and the web path uses it as the `tag`.
- * `href` is a same-origin path; the desktop app opens it on click.
+ * `href` is a same-origin path (a notification's link, lib/notificationLink);
+ * a click opens it: the desktop app's main process does, and in a browser the
+ * click focuses this window and calls `openNotification`.
  * `window.fasttShell` is typed in hooks/useInDesktopApp.ts.
  */
+
+import { openNotification } from "@/lib/notificationLink";
 
 export interface OsNotifyPayload {
   id: string;
@@ -41,7 +45,15 @@ export async function osNotify(n: OsNotifyPayload): Promise<boolean> {
   }
   if (typeof Notification === "undefined" || Notification.permission !== "granted") return false;
   try {
-    new Notification(n.title, { body: n.body, tag: n.id });
+    const shown = new Notification(n.title, { body: n.body, tag: n.id });
+    const href = n.href;
+    if (href) {
+      shown.onclick = () => {
+        window.focus();
+        openNotification(href);
+        shown.close();
+      };
+    }
     return true;
   } catch (err) {
     console.warn("[osNotify] OS Notification threw:", err);

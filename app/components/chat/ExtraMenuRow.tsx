@@ -2,7 +2,7 @@
  * ExtraMenuRow — one row of an Extras overflow menu (ADR-0003): a Fan List
  * menu row carrying its extra's tooltip from the catalogue (`extraTitle`):
  * "Inflowwww extra — <name>", then `detail` on a second line. Shared by
- * the Fan List's "+" overflow, the Window header's and the Chat header's
+ * the Fan List's sort menu, the Window header's and the Chat header's
  * (`ChatHeaderExtras`, which passes its own Geometry through `className`).
  */
 

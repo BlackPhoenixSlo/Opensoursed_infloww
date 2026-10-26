@@ -5,10 +5,16 @@
  * app/globals.css make `bg`, `fg`, `fg-dim` and `accent` the site's colours.
  */
 
+import { BRAND_LOGO, BRAND_NAME } from "@/lib/brand";
 import { SITE_URL } from "@/lib/site";
 
-/** Our "OIF" square, redrawn (not Infloww's asset): their white IF mark with an O in front, plus an orange dot. */
+/** Our "OIF" square, redrawn (not Infloww's asset): their white IF mark with an O in front, plus an orange dot.
+ *  A deployment with its own logo (lib/brand.ts BRAND_LOGO) shows that instead. */
 export function IfMark({ className = "size-10" }: { className?: string }) {
+  if (BRAND_LOGO) {
+    // eslint-disable-next-line @next/next/no-img-element -- a static 512px PNG from public/, no optimizer needed
+    return <img className={`${className} shrink-0 rounded-full`} src={`${BRAND_LOGO}-512.png`} alt="" aria-hidden="true" />;
+  }
   return (
     <svg className={`${className} shrink-0`} viewBox="0 0 40 40" aria-hidden="true" focusable="false">
       <rect width="40" height="40" rx="9" fill="#fff" />
@@ -27,12 +33,16 @@ export function Logo({ mark = "size-10" }: { mark?: string }) {
   return (
     <a
       href={SITE_URL}
-      aria-label="Inflowwww home"
+      aria-label={`${BRAND_NAME} home`}
       className="inline-flex min-h-11 items-center gap-3 focus-visible:outline-2 focus-visible:outline-accent"
     >
       <IfMark className={mark} />
       <span className="text-[1.65rem] leading-none font-extrabold tracking-tight uppercase">
-        Infloww<span className="text-white/70">w</span><span className="text-white/55">w</span>
+        {BRAND_NAME === "Inflowwww" ? (
+          <>Infloww<span className="text-white/70">w</span><span className="text-white/55">w</span></>
+        ) : (
+          BRAND_NAME
+        )}
       </span>
     </a>
   );

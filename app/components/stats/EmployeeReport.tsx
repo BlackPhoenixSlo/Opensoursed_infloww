@@ -53,6 +53,7 @@ import { useChattingStats, useIngestHealth } from "@/hooks/useStats";
 import { fmtTimeOnly } from "@/lib/format";
 import { deniedPage } from "@/lib/nav";
 import { cn } from "@/lib/utils";
+import { BRAND_NAME } from "@/lib/brand";
 
 export type EmployeeTab = "overview" | "sales" | "performance";
 
@@ -183,9 +184,9 @@ function Extras({ from, to, chatterOnly }: {
     .sort()
     .pop() ?? null;
   return (
-    <section aria-label="Inflowwww extras" className="space-y-5">
+    <section aria-label={`${BRAND_NAME} extras`} className="space-y-5">
       <header className="flex flex-wrap items-center gap-3 border-t border-border pt-6 text-[14px]">
-        <h2 className="text-[16px] font-medium text-fg">Inflowwww extras</h2>
+        <h2 className="text-[16px] font-medium text-fg">{BRAND_NAME} extras</h2>
         <ExtraTag />
         <span className="flex items-center gap-3 md:ml-auto whitespace-nowrap">
           {lastIngest && <span className="text-fg-dim">Data through {fmtTimeOnly(lastIngest)}</span>}

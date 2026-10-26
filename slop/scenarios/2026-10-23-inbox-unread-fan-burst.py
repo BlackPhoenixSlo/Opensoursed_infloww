@@ -8,16 +8,21 @@ loses nothing under load and the inbox's unread counts add up.
 Invariants: every DM accepted; zero persist-queue drops; every DM reaches the SSE
 stream; every DM is in its thread (/admin/messages); each fan's unreadMessagesCount
 (/admin/chats/recent) == seeded unread + DMs sent; the burst fans head their
-Creator's inbox; UI: Messages Pro shows the burst. Budgets: end-to-end p95 (frame
-handed to the relay -> on the manager's /events stream) and the inbox read p95s.
-Break-it-once: transcoder-drops-1-in-10 (its targets are in lib/faults.py).
+Creator's inbox; UI: Messages Pro shows the burst, and a click on a notification of a
+fan's DM (toast in the main window and in Messages Pro, top bar bell row, /notifications
+row, OS notification; in the browser and in the desktop app) opens that Fan as a Fan tab
+in the one Messages Pro window (actors/notif_click; `--set desktop=0` skips Electron).
+Budgets: end-to-end p95 (frame handed to the relay -> on the manager's /events stream)
+and the inbox read p95s. Break-it-once: transcoder-drops-1-in-10, and
+`--fault=notif-click-opens-browser-tab` (targets in lib/faults.py).
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 
-from slop.actors import fan_dm, manager, ui
+from slop.actors import fan_dm, manager, notif_click, ui
 
 PROFILE = "agency_inbox"
 UI = True
@@ -116,7 +121,7 @@ async def run(ctx) -> None:
             ctx.skip(f"p95 {route} < {budget}ms", "no samples")
 
     if not ctx.app:
-        for n in UI_CHECKS:
+        for n in (*UI_CHECKS, *notif_click.BROWSER_CHECKS, *notif_click.DESKTOP_CHECKS):
             ctx.skip(n, "--no-ui")
     else:
         async with ui.owner_browser(ctx) as page:
@@ -135,6 +140,16 @@ async def run(ctx) -> None:
                               "offhost_aborted": len(page.slop["offhost_aborted"]), "5xx": relay_5xx[:10]})
             ctx.check(UI_CHECKS[0], seen and rows > 0, rows=rows, url=page.url)
             ctx.check(UI_CHECKS[1], not relay_5xx, count=len(relay_5xx))
+
+        # Notification clicks: fans of the first Creator, quiet after the burst.
+        c0 = creators[0]["id"]
+        clicks = await notif_click.browser(ctx, c0, fans[c0])
+        if ctx.param("desktop", 1):
+            clicks += await notif_click.desktop(ctx, c0, fans[c0])
+        else:
+            for n in notif_click.DESKTOP_CHECKS:
+                ctx.skip(n, "--set desktop=0")
+        (ctx.out / "notif-click.json").write_text(json.dumps(clicks, indent=2, default=str))
 
 
 UI_CHECKS = ("Messages Pro Fan List shows the burst", "no 5xx in the browser session")

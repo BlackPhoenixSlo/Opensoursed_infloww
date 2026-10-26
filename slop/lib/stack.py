@@ -44,6 +44,7 @@ class Stack:
         self._relay_port, self._app_port, self._dead = relay_port, app_port, dead
         self.db = self.tmp / "relay.db"
         self.sessions = self.tmp / "sessions"
+        self.relay_env: dict[str, str] = {}  # extra relay env set before __enter__ (cli: OF_WIRE's OF_API_ORIGIN)
 
     def __enter__(self) -> "Stack":
         if not PY.exists():
@@ -66,6 +67,7 @@ class Stack:
             # shutdown hook runs (lib/relay.py passes it to uvicorn.run).
             UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN="5",
         )
+        env.update(self.relay_env)
         self._relay_env = env
         self._relay = self._spawn([str(PY), str(Path(__file__).with_name("relay.py"))], env, "relay.log", cwd=ROOT)
         app = None

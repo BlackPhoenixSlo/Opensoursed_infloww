@@ -16,6 +16,7 @@ _harness.bootstrap()
 
 import asyncio  # noqa: E402
 import ipaddress  # noqa: E402
+import os  # noqa: E402
 import uuid  # noqa: E402
 from datetime import datetime  # noqa: E402
 
@@ -539,8 +540,8 @@ def case_a_deactivated_login_is_told_why_only_after_the_right_password():
 # ── 6.13: the employee limit ──────────────────────────────────────────
 
 def case_the_employee_limit_is_a_typed_refusal():
-    real = employees.MAX_EMPLOYEES_PER_USER
-    employees.MAX_EMPLOYEES_PER_USER = 1
+    real = os.environ.get("MAX_EMPLOYEES_PER_USER")
+    os.environ["MAX_EMPLOYEES_PER_USER"] = "1"   # read at use (runtime_switches)
     try:
         r = OWNER_A.post("/admin/employees", json={"display_name": "One Too Many"})
         assert r.status_code == 409, r.text
@@ -548,7 +549,10 @@ def case_the_employee_limit_is_a_typed_refusal():
         assert detail["code"] == "employee_limit" and detail["limit"] == 1 and detail["active"] >= 1, detail
         assert "cap reached" in detail["message"]
     finally:
-        employees.MAX_EMPLOYEES_PER_USER = real
+        if real is None:
+            os.environ.pop("MAX_EMPLOYEES_PER_USER", None)
+        else:
+            os.environ["MAX_EMPLOYEES_PER_USER"] = real
 
 
 _harness.run()

@@ -44,6 +44,7 @@ const { parseUnread, applyBadge } = require("./lib/badge");
 const { describeSigning, summarize } = require("./lib/signing");
 const { originOf, isAppOrigin, serverOrigin } = require("./lib/origin");
 const { registerNotifyIpc } = require("./lib/notify");
+const { MESSAGES_PRO_WINDOW, openInMessagesProWindow, sameOriginOpen } = require("./lib/window-open");
 const { safeStorageCodec, getSecret, setSecret, deleteSecret } = require("./lib/secret");
 const { readAdvanced, advancedPatch, applyBeforeReady, applyAfterReady } = require("./lib/advanced");
 const { createLogFile, mirrorConsole } = require("./lib/logfile");
@@ -146,6 +147,14 @@ function openRoute(route) {
   if (!loadStarted) return; // startup gap: the startup loadApp() takes it
   if (mainWindow && !mainWindow.isDestroyed()) focusWindow(mainWindow);
   loadApp();
+}
+
+// The Messages Pro window while it is open (lib/window-open.js). A route of its
+// own (a notification's link, a Messages Pro link opened as a tab) opens there,
+// focused, leaving the main window where it is. False: none open, or not one.
+let messagesProWindow = null;
+function openInMessagesPro(route) {
+  return openInMessagesProWindow(messagesProWindow, route, originOf(currentConfig().base), focusWindow);
 }
 
 let mainWindow = null;
@@ -327,9 +336,11 @@ function hardenContents(contents) {
   contents.on("will-redirect", guardNavigation);
 
   // window.open / target=_blank: same-origin → in-app child window on the shared
-  // partition (keeps group-view popouts + BroadcastChannel working); anything
-  // else → OS browser, never a new in-app window.
-  contents.setWindowOpenHandler(({ url }) => {
+  // partition (keeps group-view popouts + BroadcastChannel working), or the open
+  // Messages Pro window for a Messages Pro link opened as a tab
+  // (lib/window-open.js); anything else → OS browser, never a new in-app window.
+  contents.setWindowOpenHandler((details) => {
+    const { url } = details;
     const appOrigin = originOf(currentConfig().base);
     let u;
     try {
@@ -338,9 +349,12 @@ function hardenContents(contents) {
       return { action: "deny" };
     }
     if (appOrigin && u.origin === appOrigin) {
+      const { messagesPro, ...size } = sameOriginOpen(details, !!messagesProWindow && !messagesProWindow.isDestroyed());
+      if (messagesPro && openInMessagesPro(url)) return { action: "deny" };
       return {
         action: "allow",
         overrideBrowserWindowOptions: {
+          ...size,
           backgroundColor: "#0b0b0f",
           webPreferences: {
             preload: path.join(__dirname, "preload.js"),
@@ -356,6 +370,13 @@ function hardenContents(contents) {
     }
     if (EXTERNAL_SCHEMES.has(u.protocol)) shell.openExternal(url);
     return { action: "deny" };
+  });
+  contents.on("did-create-window", (win, { frameName }) => {
+    if (frameName !== MESSAGES_PRO_WINDOW) return;
+    messagesProWindow = win;
+    win.on("closed", () => {
+      if (messagesProWindow === win) messagesProWindow = null;
+    });
   });
 
   contents.on("will-attach-webview", (event) => event.preventDefault());
@@ -848,7 +869,9 @@ const notifier = registerNotifyIpc({
   ipcMain,
   Notification: TOASTS ? TOASTS.ToastNotification : Notification,
   getAppOrigin: () => originOf(currentConfig().base),
-  onClick: (appPath) => (appPath ? openRoute(appPath) : showMain()),
+  // A notification's link opens in the Messages Pro window when one is open;
+  // else the main window loads it and hands it to a new one (AppShell).
+  onClick: (appPath) => (appPath ? openInMessagesPro(appPath) || openRoute(appPath) : showMain()),
 });
 
 // ── Relay requests from the main process ────────────────────────────────────

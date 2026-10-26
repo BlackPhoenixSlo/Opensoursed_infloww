@@ -33,6 +33,7 @@ import { relay, type BootstrapResponse, type ProxyMeta, RelayError } from "@/lib
 import { Badge, Button, Card, Input, Textarea } from "@/components/ui/primitives";
 import { EXTENSION_ID } from "@/components/setup/useExtensionProbe";
 import { useInDesktopApp } from "@/hooks/useInDesktopApp";
+import { BRAND_NAME } from "@/lib/brand";
 
 const EXTENSION_URL = `https://chromewebstore.google.com/detail/chatterly-login-capture/${EXTENSION_ID}`;
 
@@ -257,7 +258,7 @@ export default function PasteCurlCard({ extInstalled, onLinked, initialNickname 
         {!inApp && (
           <a
             href="/download"
-            title="Get the Inflowwww desktop app for Mac and Windows"
+            title={`Get the ${BRAND_NAME} desktop app for Mac and Windows`}
             className="ml-2 inline-flex items-center gap-2 px-4 py-[9px] rounded-lg border border-border text-fg hover:bg-bg-elev-1 font-medium text-sm"
           >
             <Download aria-hidden className="w-[18px] h-[18px]" />

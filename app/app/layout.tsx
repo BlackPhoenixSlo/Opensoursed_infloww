@@ -11,6 +11,8 @@ import { ApiKeyToaster } from "@/components/ApiKeyToaster";
 import { MoneyRail } from "@/components/MoneyRail";
 import { AssistantProvider, AssistantWidget } from "@/components/assistant/AssistantWidget";
 
+import { BRAND_ICONS, BRAND_NAME } from "@/lib/brand";
+
 import "./globals.css";
 
 /** Instrument Sans (OFL, app/app/fonts/): the closest free match to Infloww's licensed Suisse Int'l, whose app
@@ -25,11 +27,12 @@ const ui = localFont({
 
 export const metadata: Metadata = {
   title: {
-    default: "Inflowwww",
-    template: "%s · Inflowwww",
+    default: BRAND_NAME,
+    template: `%s · ${BRAND_NAME}`,
   },
   description: "OnlyFans agency dashboard — unified inbox + automations.",
-  // The favicon is app/icon.svg (the OIF mark, SiteLook's IfMark), linked by Next's file convention.
+  // The favicon: public/icon.svg (the OIF mark, SiteLook's IfMark), or a deployment's logo (lib/brand.ts).
+  icons: BRAND_ICONS,
 };
 
 // Without `width=device-width` mobile browsers render the page at the

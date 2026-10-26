@@ -2693,6 +2693,20 @@ class UserSetting(Base):
     updated_at: Mapped[datetime] = _ts_now()
 
 
+class RuntimeSwitch(Base):
+    """A runtime override of one relay switch (service/runtime_switches.py), set from
+    Settings → System. One row per switch `name` (the env var's name); no row = env /
+    default decides. `value_json` is a JSON bool or integer. `updated_by` is the
+    master's username. Read once at boot and after each write into an in-process
+    cache, never on the hot path. Migration 0098_runtime_switches."""
+    __tablename__ = "runtime_switches"
+
+    name: Mapped[str] = mapped_column(String, primary_key=True)
+    value_json: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_by: Mapped[str | None] = mapped_column(String)
+    updated_at: Mapped[datetime] = _ts_now()
+
+
 # The Settings tabs kept as `SettingsVersion` rows instead of a `user_settings`
 # blob (roadmap W6 6.4), and the `effective_from` of a blob moved from there.
 VERSIONED_SETTINGS_TABS: tuple[str, ...] = ("sales", "time-tracking")

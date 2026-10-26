@@ -22,6 +22,7 @@ _harness.bootstrap()
 
 import asyncio  # noqa: E402
 import os  # noqa: E402
+from contextlib import asynccontextmanager  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
 
 from sqlalchemy import delete, select  # noqa: E402
@@ -260,6 +261,185 @@ def case_a_dead_session_files_once_per_episode_for_its_owner_only():
     for _ in range(2):
         asyncio.run(notifications_api.notify_session_dead(acc, "wrong_user", at))
     assert len(_rows(A, "session_dead")) == 3
+
+
+def case_an_otp_episode_points_the_owner_at_browserbase_login():
+    _clear()
+    acc = IDS["creator_a"]
+    assert asyncio.run(account_health.mark_session_dead(acc, "otp_required"))
+    assert not asyncio.run(account_health.mark_session_dead(acc, "otp_required"))
+    rows = _rows(A, "session_dead")
+    assert [r.text for r in rows] == [
+        # The link opens Browserbase login for any account: the text names whose to sign in to.
+        "creator_a needs a 2FA code on OnlyFans: sign in to creator_a's OnlyFans account again "
+        "with Browserbase login to resume"], \
+        [r.text for r in rows]
+    body = OWNER_A.get("/admin/agency-notifications").json()
+    got = [n for n in body["notifications"] if n["kind"] == "session_dead"]
+    assert [n["data"] for n in got] == [{"reason": "otp_required", "href": "/creators?relink=browserbase"}], got
+    assert _rows(B) == []
+    asyncio.run(account_health.clear_session_dead(acc))
+
+
+def case_a_ui_read_that_hits_otp_state_flags_the_creator_and_notifies():
+    # A Creator with no automations: the only caller that meets OF's 2FA demand
+    # is a UI read (the inbox, a chat), which `_proxy` answers with a 502.
+    import json
+    import threading
+    from of_client import OFAPIError
+
+    _clear()
+    acc = IDS["creator_a"]
+    asyncio.run(account_health.clear_session_dead(acc))
+    body = ('{"error":{"code":101,"message":"Confirm it is you","payload":{"otpState":'
+            '{"appOtp":true},"strong":false}}}')
+
+    class _Resp:
+        status_code, text = 400, body
+
+        def json(self):
+            return json.loads(body)
+
+    class _Client:
+        def me(self):
+            raise OFAPIError(f"400 for https://onlyfans.com/api2/v2/users/me\n{body}", response=_Resp())
+
+    loop = asyncio.new_event_loop()  # the relay's main loop (startup sets it; tests run none)
+    threading.Thread(target=loop.run_forever, daemon=True).start()
+    saved = server._load_client, server._main_loop, server.account_registry.get_account
+    real_get = server.account_registry.get_account
+    server._load_client, server._main_loop = (lambda aid: _Client()), loop
+    # The Creator's session dir (the registry) is not seeded here; the DB rows are.
+    server.account_registry.get_account = lambda aid: {"id": aid} if aid == acc else real_get(aid)
+    try:
+        r = OWNER_A.get("/api/of/v2/users/me", headers={"X-Account-Id": acc})
+        assert r.status_code == 502, r.text
+        stamp = None
+        for _ in range(50):
+            stamp = asyncio.run_coroutine_threadsafe(account_health.dead_session_map(), loop).result(5).get(acc)
+            if stamp is not None:
+                break
+            asyncio.run(asyncio.sleep(0.05))
+        assert stamp is not None and stamp.reason == "otp_required", stamp
+        asyncio.run_coroutine_threadsafe(asyncio.sleep(0.2), loop).result(5)  # the notify after the flag
+        rows = _rows(A, "session_dead")
+        assert [r.account_id for r in rows] == [acc], [(r.account_id, r.text) for r in rows]
+        assert rows[0].text.startswith("creator_a needs a 2FA code"), rows[0].text
+    finally:
+        server._load_client, server._main_loop, server.account_registry.get_account = saved
+        loop.call_soon_threadsafe(loop.stop)
+        asyncio.run(account_health.clear_session_dead(acc))
+
+
+def case_the_roster_strip_that_hits_otp_state_flags_the_creator_and_notifies():
+    # The Creators strip's badges (`/admin/accounts/roster-counts`: OF's chat list per
+    # model, on every page) are the OF read an owner makes even for a Creator nobody chats on.
+    import json
+    from of_client import OFAPIError
+
+    _clear()
+    acc = IDS["creator_a"]
+    asyncio.run(account_health.clear_session_dead(acc))
+    body = ('{"error":{"code":101,"message":"Confirm it is you","payload":{"otpState":'
+            '{"appOtp":true},"strong":false}}}')
+
+    class _Resp:
+        status_code, text = 400, body
+
+        def json(self):
+            return json.loads(body)
+
+    async def _counts(aid, *, bypass=False):
+        if aid == acc:
+            raise OFAPIError(f"400 for https://onlyfans.com/api2/v2/chats\n{body}", response=_Resp())
+        return {"unread": 0, "owe_reply": 0}
+
+    saved = server._compute_roster_count_of
+    server._compute_roster_count_of = _counts
+    try:
+        r = OWNER_A.get(f"/admin/accounts/roster-counts?bust={acc}")
+        assert r.status_code == 200, r.text
+        stamp = asyncio.run(account_health.dead_session_map()).get(acc)
+        assert stamp is not None and stamp.reason == "otp_required", stamp
+        rows = _rows(A, "session_dead")
+        assert [r.account_id for r in rows] == [acc], [(r.account_id, r.text) for r in rows]
+    finally:
+        server._compute_roster_count_of = saved
+        asyncio.run(account_health.clear_session_dead(acc))
+
+
+def case_simultaneous_failures_after_a_recovery_file_one_notification():
+    # The row exists and is cleared (an earlier episode recovered); then many
+    # callers (automation kinds, an HTTP route, the WS pump) hit OF's 101 at once.
+    _clear()
+    acc = IDS["creator_a"]
+    assert asyncio.run(account_health.mark_session_dead(acc, "wrong_user"))
+    assert asyncio.run(account_health.clear_session_dead(acc))
+    before = len(_rows(A, "session_dead"))
+    # Every statement of the transition takes 50 ms (a busy relay's gap between
+    # a read and the write after it), so the callers overlap every time.
+    real = account_health.get_session
+
+    @asynccontextmanager
+    async def _slow_session():
+        async with real() as s:
+            execute = s.execute
+
+            async def _slow(*a, **k):
+                out = await execute(*a, **k)
+                await asyncio.sleep(0.05)
+                return out
+            s.execute = _slow
+            yield s
+
+    async def _all():
+        return await asyncio.gather(*(account_health.mark_session_dead(acc, "otp_required") for _ in range(24)))
+    account_health.get_session = _slow_session
+    try:
+        won = asyncio.run(_all())
+    finally:
+        account_health.get_session = real
+    assert sum(won) == 1, f"{sum(won)} callers each claimed the healthy -> dead transition"
+    rows = _rows(A, "session_dead")[before:]
+    assert len(rows) == 1, [r.text for r in rows]
+    stamp = asyncio.run(account_health.dead_session_map())[acc]
+    assert stamp.reason == "otp_required", stamp
+    asyncio.run(account_health.clear_session_dead(acc))
+
+
+def case_a_caller_cancelled_after_its_claim_still_notifies_the_owner():
+    # The caller that won the transition can be cancelled before the owner is
+    # told: a WS pump rerouted by a proxy switch, a roster-counts request whose
+    # tab closed. Every later caller's claim matches nothing, so a notification
+    # lost there is lost for the whole episode.
+    _clear()
+    acc = IDS["creator_a"]
+    real = notifications_api.notify_session_dead
+    entered = asyncio.Event
+
+    async def _run():
+        started = entered()
+
+        async def _slow_notify(*a, **k):
+            started.set()
+            await asyncio.sleep(0.1)
+            return await real(*a, **k)
+        notifications_api.notify_session_dead = _slow_notify
+        task = asyncio.create_task(account_health.mark_session_dead(acc, "otp_required"))
+        await started.wait()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await asyncio.sleep(0.4)
+    try:
+        asyncio.run(_run())
+    finally:
+        notifications_api.notify_session_dead = real
+    try:
+        assert asyncio.run(account_health.dead_session_map()).get(acc) is not None
+        rows = _rows(A, "session_dead")
+        assert [r.account_id for r in rows] == [acc], "the claim was made but the owner was never told"
+    finally:
+        asyncio.run(account_health.clear_session_dead(acc))
 
 
 # ── The clock-in sweep ─────────────────────────────────────────────────────

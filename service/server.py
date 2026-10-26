@@ -50,6 +50,7 @@ import account_health  # noqa: E402  # dead-session pause (see service/account_h
 import account_page  # noqa: E402  # free-vs-paid page (see service/account_page.py)
 import ownership  # noqa: E402  # owned-media semantics (see service/ownership.py)
 import proxies as proxy_registry  # noqa: E402
+from brand import BRAND_NAME  # noqa: E402
 import proxy_health  # noqa: E402  # proxy up/down + trace probe (2.14)
 import live_rev  # noqa: E402
 import sign_rules  # noqa: E402  # one sign-rule refresh for every account (2.17)
@@ -1038,7 +1039,7 @@ async def _ws_pump_for_account(account_id: str) -> None:
     and Fansly sockets carry their own reconnect-with-backoff loop, so this
     task is only torn down when the account is removed or the server is
     shutting down."""
-    from of_ws import OFWebSocket, register_pump, unregister_pump
+    from of_ws import OFWebSocket, SessionDead, register_pump, unregister_pump
     # A deactivated Creator gets no socket, whichever path spawned this
     # (`_restart_account_pump` after a re-capture, the startup spawn, or a
     # supervisor pass that read the roster just before the deactivate). A
@@ -1063,7 +1064,7 @@ async def _ws_pump_for_account(account_id: str) -> None:
                 from fansly_ws import FanslyWebSocket
                 ws = FanslyWebSocket(client)
             else:
-                ws = OFWebSocket(client)
+                ws = OFWebSocket(client, session_dead=account_health.is_session_dead_error)
             # Publish this live pump so the automation layer can push outbound
             # frames (e.g. the typing indicator) on the same socket. Both
             # platforms share this registry, so `of_ws.emit_typing` finds a
@@ -1085,6 +1086,18 @@ async def _ws_pump_for_account(account_id: str) -> None:
                     await _broadcast_event(event)
             finally:
                 unregister_pump(account_id, ws)
+        except SessionDead as e:
+            # OF rejected the session (e.g. it wants a 2FA code): pause the
+            # account like any other caller that hit it, and stop. The
+            # supervisor starts no pump while it is flagged; a re-login
+            # (post_bootstrap_hooks) or the recovery probe clears the flag and
+            # the next start loads the fresh session.
+            _invalidate_client(account_id)
+            if await account_health.mark_session_dead(account_id, e.reason):
+                log.warning("account_session_dead account=%s via=ws-pump reason=%s — automations "
+                            "paused until the session recovers", account_id, e.reason)
+            log.info("ws-pump[%s]: parked, the session is dead (%s)", account_id, e.reason)
+            return
         except HTTPException as e:
             log.warning("ws-pump[%s]: %s — retry in 30s", account_id, e.detail)
             await asyncio.sleep(30)
@@ -1185,32 +1198,40 @@ proxy_registry.on_switch(_on_proxy_switched)
 
 async def _pump_supervisor() -> None:
     """Reconcile the set of running pumps against the set of accounts every
-    15s. Picks up newly-bootstrapped accounts without needing an explicit
-    'start pump' call from the bootstrap endpoint, and reaps pumps for
-    deleted and deactivated accounts. Also restarts any pump that crashed
-    unexpectedly."""
+    15s (`_reconcile_pumps`)."""
     while True:
         try:
-            off = await account_health.deactivated_ids()
-            current_ids = {a["id"] for a in account_registry.list_accounts()
-                           if a.get("has_session") and a["id"] not in off}
-            # Start missing
-            for aid in current_ids:
-                _start_account_pump(aid)
-            # Stop pumps whose account vanished or was deactivated
-            for aid in list(_account_pumps.keys()):
-                if aid not in current_ids:
-                    _stop_account_pump(aid)
-                    continue
-                task = _account_pumps[aid]
-                if task.done() and not task.cancelled():
-                    log.warning("ws-pump[%s] task exited — restarting", aid)
-                    _restart_account_pump(aid)
+            await _reconcile_pumps()
         except asyncio.CancelledError:
             raise
         except Exception:
             log.exception("supervisor pass failed")
         await asyncio.sleep(15)
+
+
+async def _reconcile_pumps() -> None:
+    """One supervisor pass. Picks up newly-bootstrapped accounts without needing
+    an explicit 'start pump' call from the bootstrap endpoint, and reaps pumps
+    for deleted and deactivated accounts. Also restarts any pump that crashed
+    unexpectedly. A session-dead account is parked: no pump is started or
+    restarted for it (its pump exits on the dead session, see
+    _ws_pump_for_account) until the flag clears."""
+    off = await account_health.deactivated_ids()
+    current_ids = {a["id"] for a in account_registry.list_accounts()
+                   if a.get("has_session") and a["id"] not in off}
+    parked = set(await account_health.dead_session_map())
+    # Start missing
+    for aid in current_ids - parked:
+        _start_account_pump(aid)
+    # Stop pumps whose account vanished or was deactivated
+    for aid in list(_account_pumps.keys()):
+        if aid not in current_ids:
+            _stop_account_pump(aid)
+            continue
+        task = _account_pumps[aid]
+        if task.done() and not task.cancelled() and aid not in parked:
+            log.warning("ws-pump[%s] task exited — restarting", aid)
+            _restart_account_pump(aid)
 
 
 # Background tasks the relay owns for its own lifetime. CPython keeps only a
@@ -1335,6 +1356,15 @@ async def _start_event_pumps() -> None:
         log.info("db ready (DATABASE_URL=%s)", _redact(os.environ.get("DATABASE_URL", "(default)")))
     except Exception:
         log.exception("db_init failed — relay will run but SSE/inbox writes will error")
+
+    # Settings → System's runtime switch overrides (runtime_switches), into the
+    # in-process cache every consumer reads; none loaded = env / defaults.
+    import runtime_switches
+    try:
+        await runtime_switches.load()
+    except Exception:
+        log.exception("runtime switch overrides not loaded: env / defaults apply; retrying in the background")
+        _spawn_bg(runtime_switches.load_until_loaded(), "runtime-switches-load")
 
     # OFClient's deactivated-Creator write gate (account_health.refuses_writes),
     # filled once; deactivate/activate keep it after. The vault sweep spawned
@@ -1685,17 +1715,36 @@ def _kick_clear_session_dead(account_id: str) -> None:
         except Exception:
             log.exception("failed to clear session-dead flag")
 
+    _on_main_loop(_clear, f"session-recover-{account_id}")
+
+
+def _kick_mark_session_dead(account_id: str, reason: str, via: str) -> None:
+    """Fire-and-forget account_health.mark_session_dead from a sync caller (a
+    `_proxy` read in the threadpool): OF rejected the session, so automations
+    pause and the owner is told once, as for an automation that hit it."""
+    async def _mark() -> None:
+        try:
+            if await account_health.mark_session_dead(account_id, reason):
+                log.warning("account_session_dead account=%s via=%s reason=%s — automations "
+                            "paused until the session recovers", account_id, via, reason)
+        except Exception:
+            log.exception("failed to mark session-dead account")
+
+    _on_main_loop(_mark, f"session-dead-{account_id}")
+
+
+def _on_main_loop(make_coro, name: str) -> None:
+    """Run `make_coro()` as a task on the relay's loop, from the loop itself or
+    from a threadpool thread (sync handlers); dropped before startup."""
     import asyncio as _aio
     try:
         loop = _aio.get_running_loop()
     except RuntimeError:
         if _main_loop is None:
             return
-        _main_loop.call_soon_threadsafe(
-            lambda: _aio.create_task(_clear(), name=f"session-recover-{account_id}")
-        )
+        _main_loop.call_soon_threadsafe(lambda: _aio.create_task(make_coro(), name=name))
         return
-    loop.create_task(_clear(), name=f"session-recover-{account_id}")
+    loop.create_task(make_coro(), name=name)
 
 
 def _sync_and_link_after_bootstrap(account_id: str) -> None:
@@ -2179,7 +2228,7 @@ def _priority_lane(account_id: str | None, priority: str | None = None):
             except ValueError: pass
 
 
-POOL_PROXY_ERROR = "Inflowwww proxy unreachable"
+POOL_PROXY_ERROR = f"{BRAND_NAME} proxy unreachable"
 
 
 def _pool_safe_error(aid: str | None, text: str, label: str | None = None) -> str:
@@ -2224,6 +2273,13 @@ def _proxy(call):
         status = r.status_code if r is not None else 500
         body = r.text[:2000] if r is not None else str(e)
         log.warning("upstream error: %s %s", status, body[:200])
+        # OF rejected the session itself (logged out, wants a 2FA code): pause the
+        # account and tell its owner, as an automation hitting it does. The read
+        # still answers 502; the error middleware never sees an OFAPIError here.
+        dead_reason = account_health.is_session_dead_error(e)
+        if dead_reason and aid:
+            _invalidate_client(aid)
+            _kick_mark_session_dead(aid, dead_reason, via="proxy")
         # 502 = bad gateway: we tried, OF didn't like it.
         raise HTTPException(
             status_code=502,
@@ -2976,6 +3032,29 @@ def admin_streams() -> dict:
 # useErrorReporter; the server's exception middleware writes 500s
 # here too. GET returns recent rows for the badge + admin viewer.
 
+_APP_ERROR_CONTEXT_MAX = 16384
+
+
+def _app_error_context_json(text: str) -> str:
+    """The stored context, always valid JSON: one too long to keep whole is kept
+    as its first characters under `truncated` (a raw slice of the JSON text
+    would not parse, and GET /admin/errors would 500 on it)."""
+    if len(text) <= _APP_ERROR_CONTEXT_MAX:
+        return text
+    return json.dumps({"truncated": text[:_APP_ERROR_CONTEXT_MAX - 64]})
+
+
+def _app_error_context(raw: str | None) -> Any:
+    """A row's context for GET /admin/errors; a row stored before
+    _app_error_context_json (a cut-off JSON text) comes back as that text."""
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return {"unparsed": raw}
+
+
 class _AppErrorBody(BaseModel):
     source: str = "browser"             # "browser" | "server" (clients should send "browser")
     kind: str = "error"                 # short category — "unhandledrejection", "react-render", …
@@ -3009,7 +3088,7 @@ async def admin_errors_create(body: _AppErrorBody = Body(...)) -> dict[str, Any]
                 account_id=body.account_id[:64] if body.account_id else None,
                 employee_id=body.employee_id,
                 user_agent=body.user_agent[:512] if body.user_agent else None,
-                context_json=scrub(json.dumps(body.context))[:16384] if body.context else None,
+                context_json=_app_error_context_json(scrub(json.dumps(body.context))) if body.context else None,
             )
             s.add(row)
             await s.commit()
@@ -3075,7 +3154,7 @@ async def admin_errors_list(
                     "account_id": r.account_id,
                     "employee_id": r.employee_id,
                     "user_agent": r.user_agent,
-                    "context": json.loads(r.context_json) if r.context_json else None,
+                    "context": _app_error_context(r.context_json),
                 }
                 for r in rows
             ],
@@ -9817,8 +9896,20 @@ async def admin_accounts_roster_counts(
                 fetcher=_fetch,
             )
             return aid, value
-        except Exception:  # noqa: BLE001 — one bad model must not blank the strip
+        except Exception as e:  # noqa: BLE001 — one bad model must not blank the strip
             log.warning("roster-counts: OF read failed for %s", aid, exc_info=True)
+            # OF rejected the session itself: pause the Creator and tell its owner,
+            # as `_proxy` does. This strip is the read an owner makes even for a
+            # Creator nobody chats on.
+            dead_reason = account_health.is_session_dead_error(e)
+            if dead_reason:
+                _invalidate_client(aid)
+                try:
+                    if await account_health.mark_session_dead(aid, dead_reason):
+                        log.warning("account_session_dead account=%s via=roster-counts reason=%s — "
+                                    "automations paused until the session recovers", aid, dead_reason)
+                except Exception:  # noqa: BLE001 — the strip still answers
+                    log.exception("failed to mark session-dead account")
             return aid, {"unread": 0, "owe_reply": 0}
 
     # Targeted force-refresh: drop + recompute JUST this model and return only it.
@@ -10107,9 +10198,9 @@ def admin_proxies_upsert(body: _ProxyBody = Body(...)) -> dict[str, Any]:
     user = _get_request_user()
     existing = proxy_registry.get_by_label(payload.get("label", ""))
     if proxy_registry.is_pool(existing):
-        raise HTTPException(status_code=403, detail="Inflowwww proxy is read-only")
+        raise HTTPException(status_code=403, detail=f"{BRAND_NAME} proxy is read-only")
     if existing is None and proxy_registry.is_reserved_label(payload.get("label", "")):
-        raise HTTPException(status_code=400, detail="label is reserved for the Inflowwww proxy pool")
+        raise HTTPException(status_code=400, detail=f"label is reserved for the {BRAND_NAME} proxy pool")
     if user is not None:
         if existing is not None:
             eu = existing.get("user_id")

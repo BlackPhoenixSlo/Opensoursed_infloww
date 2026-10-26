@@ -37,6 +37,18 @@ resumes it (service/account_health.py + the run_once gate).
   case_dead_session_map_carries_reason:
       the /admin/accounts stamp exposes both the instant and the reason, so the
       UI can name the repair instead of just "something is wrong".
+  case_otp_state_counts_only_on_a_400:
+      the otpState body on a status other than 400 does not classify.
+  case_the_first_reason_stays_while_dead:
+      a second failure with another reason keeps the reason the owner was told.
+  case_classifier_flags_otp_state:
+      OF's HTTP 400 code 101 with `error.payload.otpState` (the login now needs
+      a 2FA code) classifies as "otp_required", from OFClient's message and
+      from the throughput scripts' one-line form; code 105 (OF's per-request
+      step-up, retried after the code) and a 101 without otpState do NOT.
+  case_otp_run_marks_account_and_pauses:
+      an automation raising that 101 writes an error run, flags the account
+      with reason "otp_required", and the next run of another kind skips.
 
 Run: ./venv/bin/python service/tests/test_session_health.py  (exit 0 = pass)
 """
@@ -46,6 +58,7 @@ import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback fo
 
 _harness.bootstrap()
 
+import json  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
 
 from sqlalchemy import select, update  # noqa: E402
@@ -61,6 +74,17 @@ WRONG_USER_ERR = (
     "400 for https://onlyfans.com/api2/v2/users/me\n"
     '{"error":{"code":301,"message":"Wrong user."}}'
 )
+
+# OF's answer once the login needs a 2FA code: HTTP 400, error code 101 and the
+# OTP state under `error.payload` (OF web's own interceptor reads
+# `error.payload.otpState` and `error.payload.strong` on a 101 and opens its 2FA
+# modal titled `error.message`; the message text here is invented).
+OTP_BODY = (
+    '{"error":{"code":101,"message":"Confirm it is you","payload":{"otpState":'
+    '{"email":false,"phoneOtp":false,"appOtp":true,"faceOtp":false,"forceFaceOtp":false,'
+    '"phoneLast4":"","phoneCode":{},"faceCode":{},"emailCode":{}},"strong":false}}}'
+)
+OTP_ERR = f"400 for https://onlyfans.com/api2/v2/users/me\n{OTP_BODY}"
 
 CALLS = {"noop": 0}
 
@@ -83,6 +107,11 @@ async def _t_fail_no_session(account_id: str, payload: dict, *, run_id: int) -> 
         f"Account {account_id!r} has no captured session. "
         f"Run the bootstrap (paste-curl) for this account first."
     )
+
+
+@register("t_fail_otp")
+async def _t_fail_otp(account_id: str, payload: dict, *, run_id: int) -> dict:
+    raise OFAPIError(OTP_ERR)
 
 
 @register("t_noop")
@@ -273,8 +302,76 @@ async def case_dead_session_map_carries_reason() -> None:
         "the healthy-account fallback must stamp nothing"
 
 
+def case_classifier_flags_otp_state() -> None:
+    assert account_health.is_session_dead_error(OFAPIError(OTP_ERR)) == "otp_required"
+    # scripts/throughput builds the error as `OFAPIError(f"{status} {body}")`.
+    assert account_health.is_session_dead_error(OFAPIError(f"400 {OTP_BODY}")) == "otp_required"
+    # OF's per-request step-up (code 105, otpState at the top of `error`) is
+    # answered by retrying THAT request with the code: not a dead session.
+    step_up = '{"error":{"code":105,"message":"Confirm","otpState":{"appOtp":true}}}'
+    assert account_health.is_session_dead_error(
+        OFAPIError(f"400 for https://onlyfans.com/api2/v2/users/me\n{step_up}")) is None
+    # A 101 without the OTP state is not the 2FA signature: stay strict.
+    assert account_health.is_session_dead_error(
+        OFAPIError('400 for https://onlyfans.com/api2/v2/users/me\n{"error":{"code":101,"message":"x"}}')) is None
+    # "otpState" in some other error's text is not it either.
+    assert account_health.is_session_dead_error(
+        OFAPIError('400 for https://onlyfans.com/api2/v2/x\n{"error":{"code":100,"message":"otpState"}}')) is None
+    assert account_health.is_session_dead_error(ValueError(OTP_ERR)) is None
+
+    # OFAPIError's message keeps 500 chars of the body; the response it carries has it all.
+    class _Resp:
+        status_code = 400
+
+        def json(self):
+            return json.loads(OTP_BODY)
+    cut = OFAPIError(f"400 for https://onlyfans.com/api2/v2/users/me\n{OTP_BODY[:60]}", response=_Resp())
+    assert account_health.is_session_dead_error(cut) == "otp_required"
+
+
+def case_otp_state_counts_only_on_a_400() -> None:
+    # OF answers its 2FA demand with HTTP 400. The same body on any other status
+    # (a proxy's 403 page echoing it, a 200 relayed by a test double) is not it.
+    class _Resp:
+        def __init__(self, status: int):
+            self.status_code = status
+
+        def json(self):
+            return json.loads(OTP_BODY)
+    for status in (200, 403, 500):
+        e = OFAPIError(f"{status} for https://onlyfans.com/api2/v2/users/me\n{OTP_BODY}", response=_Resp(status))
+        assert account_health.is_session_dead_error(e) is None, status
+        assert account_health.is_session_dead_error(OFAPIError(f"{status} {OTP_BODY}")) is None, status
+
+
+async def case_the_first_reason_stays_while_dead() -> None:
+    # The owner was told why (the notification, the badge); a later caller's
+    # different failure on the same dead session must not rewrite it.
+    aid = "acct_reason"
+    assert await account_health.mark_session_dead(aid, "otp_required")
+    assert not await account_health.mark_session_dead(aid, "wrong_user")
+    assert (await account_health.dead_session_map())[aid].reason == "otp_required"
+
+
+async def case_otp_run_marks_account_and_pauses() -> None:
+    aid = "acct_otp"
+    out = await ax.run_once(aid, "t_fail_otp", payload={})
+    assert out["status"] == "error", f"expected error run, got {out}"
+    assert await account_health.is_session_dead(aid), "an otpState 101 must pause the account"
+    m = await account_health.dead_session_map()
+    assert m[aid].reason == "otp_required", m.get(aid)
+    before = CALLS["noop"]
+    out = await ax.run_once(aid, "t_noop", payload={})
+    assert out == {"status": "skipped", "reason": "session_unlinked"}, f"got {out}"
+    assert CALLS["noop"] == before and await _runs_for(aid, "t_noop") == []
+
+
 _harness.run(
     case_classifier_only_matches_dead_signatures,
+    case_classifier_flags_otp_state,
+    case_otp_state_counts_only_on_a_400,
+    case_the_first_reason_stays_while_dead,
+    case_otp_run_marks_account_and_pauses,
     case_wrong_user_run_marks_account,
     case_flagged_account_skips_every_kind,
     case_other_account_unaffected,

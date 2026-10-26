@@ -45,6 +45,26 @@ describe("osNotify in a browser", () => {
     expect(shown).toEqual([["Ann", { body: "hi", tag: "m1" }]]);
   });
 
+  it("a click focuses the app and opens the Fan like any notification click", async () => {
+    const made: { onclick: (() => void) | null; close: () => void }[] = [];
+    vi.stubGlobal("Notification", Object.assign(
+      function Notification(this: (typeof made)[number]) { this.onclick = null; this.close = vi.fn(); made.push(this); },
+      { permission: "granted" },
+    ));
+    const focus = vi.spyOn(window, "focus").mockImplementation(() => {});
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    try {
+      await osNotify({ ...N, href: "/messages-pro/a/1?fanTab=Ann" });
+      made[0].onclick!();
+      expect(focus).toHaveBeenCalled();
+      expect(open).toHaveBeenCalledWith("", "messages-pro", expect.any(String));
+      expect(made[0].close).toHaveBeenCalled();
+    } finally {
+      focus.mockRestore();
+      open.mockRestore();
+    }
+  });
+
   it("does nothing, and never asks, without permission", async () => {
     const requestPermission = vi.fn();
     const web = vi.fn();

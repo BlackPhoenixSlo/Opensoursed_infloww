@@ -40,6 +40,7 @@ import { floatLabel } from "@/lib/ofMirrorSettings";
 import { GREY, message, note, NOTE_STYLE, SELECT_MODEL } from "@/lib/ofMirrorWrites";
 import { mirrorQuery, toggleTile, VAULT_LISTS } from "@/lib/ofMirrorData";
 import { isoDay, openDatepicker, parseDay, type Day } from "@/lib/ofMirrorDatepicker";
+import { BRAND_NAME } from "@/lib/brand";
 
 export const VAULT = "/of-manager/vault";
 const VIEW_KEYS = ["list", "type", "field", "sort", "date", "q", "slist"] as const;
@@ -652,7 +653,7 @@ function bindActions(doc: Document, ctx: VaultContext, handlers: VaultHandlers):
     handlers.tags(id).then(
       (tags) => {
         if (editor !== mine) return;
-        if (tags === null) return note(doc, bar, "Not in Inflowwww's vault copy yet: collect the vault in Vault Pro first", true);
+        if (tags === null) return note(doc, bar, `Not in ${BRAND_NAME}'s vault copy yet: collect the vault in Vault Pro first`, true);
         input.value = tags.join(", ");
         input.disabled = save.disabled = false;
         input.focus();

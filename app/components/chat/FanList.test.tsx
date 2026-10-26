@@ -426,36 +426,39 @@ describe("FanList", () => {
     await user.click(box("Compact media previews"));
     expect(checked()).toEqual([false, false, true, false]);
 
-    // The sort moved out of the gear: the extra orders sit in "+", Newest
-    // first in the sort control, which shows the order in force.
+    // The sort moved out of the gear: every order sits in the sort control
+    // after it, which is named by the order in force and active off Newest
+    // first.
     await user.keyboard("{Escape}");
-    const sortControl = () => within(filterRow()).getAllByRole("button")[2];
-    expect(sortControl()).toHaveAccessibleName("Newest first");
-    await user.click(screen.getByRole("button", { name: "Inflowwww extras" }));
-    await user.click(screen.getByRole("button", { name: "Amount spent" }));
-    expect(sortControl()).toHaveAccessibleName("Amount spent");
+    const sortControl = () => within(filterRow()).getByRole("button", { name: /^Sort: / });
+    expect(sortControl()).toHaveAccessibleName("Sort: Newest first");
+    expect(sortControl()).toHaveAttribute("aria-pressed", "false");
+    await user.click(sortControl());
+    await user.click(within(screen.getByRole("region", { name: "Sort" })).getByRole("button", { name: "Amount spent" }));
+    expect(sortControl()).toHaveAccessibleName("Sort: Amount spent");
+    expect(sortControl()).toHaveAttribute("aria-pressed", "true");
     await user.click(sortControl());
     await user.click(within(screen.getByRole("region", { name: "Sort" })).getByRole("button", { name: "Newest first" }));
-    expect(sortControl()).toHaveAccessibleName("Newest first");
+    expect(sortControl()).toHaveAccessibleName("Sort: Newest first");
   });
 
   it("keeps \"Spend + unread on top\" across a remount, and reads \"Newest first\" with nothing stored", async () => {
     const user = userEvent.setup();
-    const sortControl = () => within(filterRow()).getAllByRole("button")[2];
+    const sortControl = () => within(filterRow()).getByRole("button", { name: /^Sort: / });
     serveChats(CHATS);
     renderFanList();
     await rowOf("Fixture Fan Three");
-    expect(sortControl()).toHaveAccessibleName("Newest first");
+    expect(sortControl()).toHaveAccessibleName("Sort: Newest first");
 
-    await user.click(screen.getByRole("button", { name: "Inflowwww extras" }));
+    await user.click(sortControl());
     await user.click(screen.getByRole("button", { name: /^Spend \+ unread on top/ }));
-    expect(sortControl()).toHaveAccessibleName("Spend + unread on top");
+    expect(sortControl()).toHaveAccessibleName("Sort: Spend + unread on top");
 
     cleanup();
     serveChats(CHATS);
     renderFanList();
     await rowOf("Fixture Fan Three");
-    expect(sortControl()).toHaveAccessibleName("Spend + unread on top");
+    expect(sortControl()).toHaveAccessibleName("Sort: Spend + unread on top");
   });
 
   it("marks every unread chat of the Creator read in one OF write once confirmed, and nothing when cancelled", async () => {
@@ -528,7 +531,7 @@ describe("FanList", () => {
     ]));
   });
 
-  it("a chip asks the relay for its filter, and ✎ Lists opens the folder picker until Done", async () => {
+  it("a chip asks the relay for its filter, and the filter row's pencil opens the folder picker until Done", async () => {
     const user = userEvent.setup();
     serveFolders([{ id: 700000001, name: "Fixture Folder", pinned: false }]);
     serveChats(CHATS);
@@ -541,27 +544,27 @@ describe("FanList", () => {
       ["/api/of/v2/chats?limit=25&offset=0&order=recent&filter=unread", { refresh: false }],
     ]));
 
-    await user.click(await screen.findByRole("button", { name: "✎ Lists" }));
+    await user.click(await within(filterRow()).findByRole("button", { name: "Pin lists as chips" }));
     expect(screen.getByText("Pin folders to chat sidebar")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Done" }));
     expect(screen.queryByText("Pin folders to chat sidebar")).not.toBeInTheDocument();
   });
 
-  it("↩ Owe reply is not among the chips and is reachable from \"+\", which then shows its count", async () => {
+  it("Owe reply is the chip after All, its count shown before and while it is on, and there is no \"+\"", async () => {
     const user = userEvent.setup();
     serveChats(CHATS);
     renderFanList();
     await rowOf("Fixture Fan Three");
-    expect(screen.queryByRole("button", { name: /Owe reply/ })).not.toBeInTheDocument();
+    const chips = within(screen.getByRole("group", { name: "Fan List filters" })).getAllByRole("button");
+    expect(chips.slice(0, 2).map((b) => b.textContent)).toEqual(["All", "Owe reply 2"]);
+    expect(screen.queryByRole("button", { name: "Inflowwww extras" })).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Inflowwww extras" }));
-    await user.click(screen.getByRole("button", { name: "↩ Owe reply 2" }));
+    await user.click(screen.getByRole("button", { name: "Owe reply 2" }));
 
     await vi.waitFor(() => expect(screen.queryByRole("button", { name: /Fixture Fan Three/ })).not.toBeInTheDocument());
     expect(await rowOf("Fixture Fan One")).toBeInTheDocument();
     expect(await rowOf("Fixture Fan Two")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Inflowwww extras" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: "Inflowwww extras" })).toHaveTextContent("+ 2");
+    expect(screen.getByRole("button", { name: "Owe reply 2" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByText("2 owed · scanned all 3")).toBeInTheDocument();
   });
 
@@ -576,8 +579,7 @@ describe("FanList", () => {
     await rowOf("Fixture Fan Three");
     expect(oweDots()).toHaveLength(0);
 
-    await user.click(screen.getByRole("button", { name: "Inflowwww extras" }));
-    await user.click(screen.getByRole("button", { name: "↩ Owe reply 2" }));
+    await user.click(screen.getByRole("button", { name: "Owe reply 2" }));
     await vi.waitFor(() => expect(screen.queryByRole("button", { name: /Fixture Fan Three/ })).not.toBeInTheDocument());
     expect(oweDots()).toHaveLength(1);
     within(await rowOf("Fixture Fan Two")).getByRole("img", { name: "Read · awaiting your reply" });
@@ -617,7 +619,7 @@ describe("FanList", () => {
     expect(await screen.findByRole("button", { name: "Folder Fixture Folder 2" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "All" })).toHaveAttribute("aria-pressed", "false");
 
-    await user.click(screen.getByRole("button", { name: "✎ Lists" }));
+    await user.click(screen.getByRole("button", { name: "Pin lists as chips" }));
     await user.click(screen.getByRole("checkbox", { name: /^Fixture Folder/ }));
     await vi.waitFor(() => expect(screen.queryByRole("button", { name: /^Folder Fixture Folder/ })).not.toBeInTheDocument());
     expect(lists[0].pinned).toBe(false);
@@ -625,14 +627,14 @@ describe("FanList", () => {
     await vi.waitFor(() => expect(screen.getByRole("button", { name: "All" })).toHaveAttribute("aria-pressed", "true"));
   });
 
-  it("shows no folder chip and no \"✎ Lists\" in All Models", async () => {
+  it("shows no folder chip and no pencil in All Models", async () => {
     scopeKind = "all";
     serveFolders([{ id: 700000001, name: "Fixture Folder", pinned: true }]);
     serveChats(CHATS);
     renderFanList();
     await rowOf("Fixture Fan Three");
 
-    expect(screen.queryByRole("button", { name: /Fixture Folder|Lists/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Fixture Folder|Lists|Pin lists/ })).not.toBeInTheDocument();
     expect(relayGet.mock.calls.filter(([path]) => path.startsWith("/api/of/v2/chats/folders"))).toEqual([]);
   });
 

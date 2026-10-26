@@ -29,10 +29,17 @@ def chat_messages(obj) -> list[dict]:
 class SseListener:
     """Collects every api2_chat_message frame the session's /events stream delivers,
     in arrival order, with its arrival time (epoch ms) and every event name's count
-    (`resync` = the relay's per-subscriber queue overflowed)."""
+    (`resync` = the relay's per-subscriber queue overflowed). `ended`: why the stream
+    stopped before stop(), if it did.
 
-    def __init__(self, http, scope: str = "all"):
+    `states=("agency_notifications", ...)`: every event of those types (alone or in a
+    batch) is kept in `state_events` as (type, its fields, its `__account_id`), in order."""
+
+    def __init__(self, http, scope: str = "all", *, states: tuple[str, ...] = ()):
         self.http, self.scope = http, scope
+        self.states = tuple(states)
+        self.state_events: list[tuple[str, dict, str | None]] = []
+        self.ended: str | None = None
         self.message_ids: list[int] = []
         self.received_at: dict[int, float] = {}
         self.events: Counter = Counter()
@@ -41,6 +48,18 @@ class SseListener:
         self._task: asyncio.Task | None = None
 
     async def _run(self) -> None:
+        try:
+            await self._stream()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 — a stream that died is a finding (`ended`), not a crash
+            self.ended = f"{type(e).__name__}: {e}"[:200]
+        else:
+            self.ended = "stream closed by the relay"
+        finally:
+            self.connected.set()  # never leave start() waiting on a stream that is gone
+
+    async def _stream(self) -> None:
         async with self.http.c.stream("GET", f"/events?scope={self.scope}", timeout=None) as r:
             self.http.rec.add("GET /events (status)", r.status_code, 0.0)
             self.connected.set()
@@ -54,9 +73,12 @@ class SseListener:
                 elif line.startswith("data:") and event not in (None, "ping"):
                     now = time.time() * 1000
                     try:
-                        msgs = chat_messages(json.loads(line[5:]))
+                        obj = json.loads(line[5:])
                     except ValueError:
                         continue
+                    msgs = chat_messages(obj)
+                    if self.states:
+                        self._keep_states(obj)
                     for m in msgs:
                         self.frames += 1
                         try:
@@ -65,6 +87,20 @@ class SseListener:
                             continue
                         self.message_ids.append(mid)
                         self.received_at.setdefault(mid, now)
+
+    def _keep_states(self, obj) -> None:
+        if isinstance(obj, dict):
+            hit = next((t for t in self.states if isinstance(obj.get(t), dict)), None)
+            if hit is not None:
+                acct = obj.get("__account_id")
+                self.state_events.append((hit, obj[hit], str(acct) if acct is not None else None))
+                return
+            for v in obj.values():
+                if isinstance(v, (dict, list)):
+                    self._keep_states(v)
+        elif isinstance(obj, list):
+            for v in obj:
+                self._keep_states(v)
 
     async def start(self) -> None:
         self._task = asyncio.create_task(self._run())

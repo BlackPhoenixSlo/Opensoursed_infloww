@@ -43,6 +43,7 @@ from datetime import datetime, timedelta  # noqa: E402
 from db.engine import get_session  # noqa: E402
 import _agency_fixtures as fx  # noqa: E402
 import json  # noqa: E402
+import os  # noqa: E402
 
 from sqlalchemy import select  # noqa: E402
 
@@ -374,8 +375,8 @@ def case_activate_quota_and_queue():
     a = _client.post("/admin/smart-lists", json={"account_id": aid, "name": "A"}).json()
     b = _client.post("/admin/smart-lists", json={"account_id": aid, "name": "B"}).json()
     assert a["is_active"] is False and a["sync_state"] is None, a
-    real = smart_lists_api.MAX_ACTIVE
-    smart_lists_api.MAX_ACTIVE = 1
+    real = os.environ.get("SMART_LIST_MAX_ACTIVE")
+    os.environ["SMART_LIST_MAX_ACTIVE"] = "1"   # read at use (runtime_switches)
     try:
         r = _client.post(f"/admin/smart-lists/{a['id']}/activate")
         assert r.status_code == 200 and r.json()["is_active"] is True, r.text
@@ -384,7 +385,10 @@ def case_activate_quota_and_queue():
         over = _client.post(f"/admin/smart-lists/{b['id']}/activate")
         assert over.status_code == 409 and "maximum of 1" in over.text, over.text
     finally:
-        smart_lists_api.MAX_ACTIVE = real
+        if real is None:
+            os.environ.pop("SMART_LIST_MAX_ACTIVE", None)
+        else:
+            os.environ["SMART_LIST_MAX_ACTIVE"] = real
     assert asyncio.run(_jobs(aid)) == [{}], "one coalesced sync job"
 
     async def rules():
@@ -395,7 +399,7 @@ def case_activate_quota_and_queue():
     rs = asyncio.run(rules())
     assert len(rs) == 1 and rs[0].is_enabled, rs
     lst = _client.get(f"/admin/smart-lists?account_id={aid}").json()
-    assert lst["max_active"] == real, lst
+    assert lst["max_active"] == (int(real) if real else 10), lst  # env, else the default
     off = _client.post(f"/admin/smart-lists/{a['id']}/deactivate")
     assert off.status_code == 200 and off.json()["is_active"] is False, off.text
 

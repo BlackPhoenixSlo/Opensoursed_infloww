@@ -69,6 +69,7 @@ import { useActiveAccounts } from "@/hooks/useAccounts";
 import { RelayError, relay, type AccountMeta } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 import { AnswerText } from "./AnswerText";
+import { BRAND_NAME } from "@/lib/brand";
 
 /** Open/closed survives a reload; the conversation does not. */
 const OPEN_KEY = "chatterly:assistant_open";
@@ -352,7 +353,7 @@ export function AssistantPanel({
         <div className={cn("px-10", column)}>
           <div className="flex h-8 items-center gap-5">
             <IfMark className="size-7" />
-            <span className="text-[18px] font-bold">INFLOWWWW</span>
+            <span className="text-[18px] font-bold">{BRAND_NAME.toUpperCase()}</span>
             {onClose && (
               <button
                 type="button"

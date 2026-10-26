@@ -161,7 +161,7 @@ A Messages Pro control listed in `app/lib/openinflowwwwExtras.ts`, which gives i
 _Avoid_: addon, custom feature, legacy feature
 
 **Extras overflow**:
-The menu, named "Inflowwww extras", in which a Region holds its extras that are not automations. The Chat header's opens from the Kebab menu; the Window header has none.
+The menu, named "Inflowwww extras", in which a Region holds its extras that are not automations. The Chat header's opens from the Kebab menu; the Window header has none, and since 2026-10-26 neither has the Fan List (ADR-0003).
 _Avoid_: "+" menu (the Creator tabs strip's "+" adds a Creator), More, Kebab menu
 
 - **All Models**, **Group chat** (Threads side by side, not a multi-Fan conversation), **Owe reply** (client-side; OnlyFans has no such filter), **Persona button**, **Scheduled chip**: `app/lib/openinflowwwwExtras.ts`

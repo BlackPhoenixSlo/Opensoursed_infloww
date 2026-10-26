@@ -18,6 +18,15 @@ vi.mock("@/lib/relay", async (importOriginal) => ({
 }));
 let me: { is_admin?: boolean } | null;
 vi.mock("@/contexts/UserContext", () => ({ useUser: () => ({ user: me, loading: false }) }));
+// vitest.setup.ts's mock, except the search params are the address bar's, as Next keeps them (history.replaceState too).
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn(), back: vi.fn(), forward: vi.fn(), prefetch: vi.fn() }),
+  usePathname: () => "/",
+  useSearchParams: () => new URLSearchParams(window.location.search),
+  useParams: () => ({}),
+  redirect: vi.fn(),
+  notFound: vi.fn(),
+}));
 
 import Page from "@/app/creators/page";
 import { relay, RelayError } from "@/lib/relay";
@@ -1266,6 +1275,33 @@ describe("/creators — the row's ⋮ menu", () => {
     expect(within(dialog()).getByRole("region", { name: "Paste cURL" })).toHaveFocus();
     close();
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("opens straight at Browserbase login from a ?relink=browserbase link (a 2FA notification), once", async () => {
+    fleet();
+    window.history.replaceState(null, "", "/creators?relink=browserbase");
+    try {
+      renderWithProviders(<Page />);
+      const d = await screen.findByRole("dialog", { name: "Link creator account" });
+      await waitFor(() => expect(within(d).getByRole("region", { name: "Browserbase login" })).toHaveFocus());
+      // The link is spent: a reload or Back does not reopen the modal.
+      expect(window.location.search).toBe("");
+    } finally {
+      window.history.replaceState(null, "", "/");
+    }
+  });
+
+  it("ignores any other ?relink= value, a sign-in section included (only a 2FA notification links here)", async () => {
+    fleet();
+    window.history.replaceState(null, "", "/creators?relink=paste");
+    try {
+      renderWithProviders(<Page />);
+      await waitFor(() => expect(connCell("Charlie")).toHaveTextContent("Disconnected"));
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(window.location.search).toBe("");
+    } finally {
+      window.history.replaceState(null, "", "/");
+    }
   });
 
   it("a re-link's linked step shows the proxy the relay has the account on, not No proxy", async () => {

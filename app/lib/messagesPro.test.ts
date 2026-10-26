@@ -100,7 +100,6 @@ const EXPECTED = {
     chips: "gap-2.5 px-2.75 pb-3", // FL17
     chip: "px-3 py-1.5 min-h-[36px] md:h-6.5 md:py-0 md:min-h-0 rounded-2xl text-[14px]", // FL18
     chipBadge: "-top-2 -right-1.5 min-w-4 h-4 px-0.75 rounded-full text-[11px] font-medium", // FL19
-    folderChip: "gap-1.5 px-3.25 py-1.5 rounded-2xl text-[12.5px] font-medium border", // FL21
     row: "h-24 gap-2.5 px-4.75 pt-4 after:absolute after:bottom-0 after:left-15 after:right-2.25 after:h-px", // FL23
     avatar: "size-10 rounded-full text-[13px] font-bold", // FL24
     avatarIcon: "size-5.5", // FL25

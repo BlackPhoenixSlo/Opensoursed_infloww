@@ -200,9 +200,6 @@ export const MP = {
      *  16px circle, 11px / 500 (2026-10-18 capture; the Clone's `.cbadge`,
      *  mh:145). */
     chipBadge: "-top-2 -right-1.5 min-w-4 h-4 px-0.75 rounded-full text-[11px] font-medium",
-    /** FL21: `.fchip` gap 6px, padding 6px 13px, 12.5px/500, radius 16px,
-     *  border 1px (mh:148-149). */
-    folderChip: "gap-1.5 px-3.25 py-1.5 rounded-2xl text-[12.5px] font-medium border",
     /** FL23 (Compare FL7, ticket 137). A row, from the 2026-10-12 capture
      *  (CSS px), which outranks the Clone's 75px `.conv` (mh:159): a 96px
      *  pitch with its 1px divider, the avatar 16px under the divider and 19px

@@ -60,6 +60,7 @@
 import { createHash } from "node:crypto";
 
 import { SITE_URL } from "@/lib/site";
+import { BRAND_NAME } from "@/lib/brand";
 
 const RELAY_URL = process.env.RELAY_URL || "http://127.0.0.1:8787";
 
@@ -219,7 +220,7 @@ function handoff(target: string, fields: Record<string, string>): Response {
 export async function POST(req: Request): Promise<Response> {
   const origin = req.headers.get("origin");
   if (origin !== SITE.origin && !(FRONT && origin === FRONT)) {
-    return new Response("Forbidden: this form only accepts posts from the Inflowwww site.", {
+    return new Response(`Forbidden: this form only accepts posts from the ${BRAND_NAME} site.`, {
       status: 403,
       headers: { "Cache-Control": "no-store" },
     });

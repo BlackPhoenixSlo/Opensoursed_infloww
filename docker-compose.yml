@@ -84,6 +84,10 @@ services:
       # Turn it on per-boot with
       #   SHARE_TOKEN=$(openssl rand -hex 24) docker compose up -d
       SHARE_TOKEN: "${SHARE_TOKEN:-}"
+      # The product's name where the relay says it (service/brand.py: the 2FA
+      # issuer, the help assistant, proxy messages); empty = Inflowwww. The app
+      # takes the same BRAND_NAME as a build arg (below).
+      BRAND_NAME: "${BRAND_NAME:-}"
       # Where the video scrub storyboard cache lives. Bind-mounted below
       # so it persists across container restarts — without this every
       # `docker compose down` wipes hours of accumulated extracts and
@@ -245,6 +249,11 @@ services:
         # The public site (web/) the app links back to; empty = lib/site.ts's
         # default. Rebuild the app after changing SITE_URL.
         NEXT_PUBLIC_SITE_URL: "${SITE_URL:-}"
+        # The product's name and logo (app/lib/brand.ts: BRAND_LOGO is a path
+        # prefix under app/public); empty = Inflowwww and the OIF square.
+        # Rebuild the app after changing them.
+        NEXT_PUBLIC_BRAND_NAME: "${BRAND_NAME:-}"
+        NEXT_PUBLIC_BRAND_LOGO: "${BRAND_LOGO:-}"
     image: openinflowwww-app:latest
     container_name: openinflowwww-app
     restart: unless-stopped

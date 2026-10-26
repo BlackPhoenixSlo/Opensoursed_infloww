@@ -1025,10 +1025,16 @@ def detect_bot_accusation(text: str | None) -> bool:
 # cap byte-for-byte". An explicit stored False still wins on every key.
 _STYLE_DEFAULT_ON: dict[str, bool] = {"autoreply": True}
 
-# Env panic switch: setting STYLE_FORCE_OFF (to anything truthy) forces EVERY realism
-# flag False across every account and automation, regardless of stored config — a kill
-# switch for the whole realism stack if the default-on rollout misbehaves in prod.
+# Panic switch: STYLE_FORCE_OFF (env, to anything non-empty, or its Settings → System
+# override) forces EVERY realism flag False across every account and automation,
+# regardless of stored config — a kill switch for the whole realism stack if the
+# default-on rollout misbehaves in prod. Read through runtime_switches, every call.
 _STYLE_FORCE_OFF_ENV = "STYLE_FORCE_OFF"
+
+
+def _style_force_off() -> bool:
+    import runtime_switches
+    return runtime_switches.on(_STYLE_FORCE_OFF_ENV)
 
 
 def _style_default(automation: str) -> bool:
@@ -1093,7 +1099,7 @@ async def load_style_flags(account_id: str) -> dict[str, bool]:
     explicit stored True/False wins; an ABSENT key → _STYLE_DEFAULT_ON. Absent row /
     NULL json / parse error → the same absent-key defaults. STYLE_FORCE_OFF forces
     every flag False regardless."""
-    if os.environ.get(_STYLE_FORCE_OFF_ENV):
+    if _style_force_off():
         return {k: False for k in STYLE_AUTOMATIONS}
     stored = await _load_style_json(account_id)
     # the humanizer flag is stored under the bare automation name (the typos_/
@@ -1107,7 +1113,7 @@ async def load_painful_texting_flag(account_id: str) -> bool:
     'painful_texting' key of account_ai_config.style_config_json. DEFAULT ON
     (absent/NULL/parse-error → True) so it stays live where it's already shipping;
     set the key to false to A/B it off per account. STYLE_FORCE_OFF forces it off."""
-    if os.environ.get(_STYLE_FORCE_OFF_ENV):
+    if _style_force_off():
         return False
     val = (await _load_style_json(account_id)).get(PAINFUL_TEXTING_KEY)
     return True if val is None else bool(val)
@@ -1132,7 +1138,7 @@ async def load_cat_stickers_flag(account_id: str) -> bool:
     account_ai_config.style_config_json. DEFAULT ON (absent/NULL/parse-error →
     True); an explicit stored False opts the account out. STYLE_FORCE_OFF kills
     it with the rest of the realism stack."""
-    if os.environ.get(_STYLE_FORCE_OFF_ENV):
+    if _style_force_off():
         return False
     val = (await _load_style_json(account_id)).get(CAT_STICKERS_KEY)
     return True if val is None else bool(val)
@@ -1160,7 +1166,7 @@ async def load_typo_flags(account_id: str) -> dict[str, bool]:
     keys). TRI-STATE default (see policy note above load_style_flags): an explicit
     'typos_<automation>' True/False wins; an ABSENT key → _STYLE_DEFAULT_ON.
     STYLE_FORCE_OFF forces every flag False."""
-    if os.environ.get(_STYLE_FORCE_OFF_ENV):
+    if _style_force_off():
         return {k: False for k in STYLE_AUTOMATIONS}
     stored = await _load_style_json(account_id)
     return {k: _resolve_style_flag(stored, k, typo_flag_key(k)) for k in STYLE_AUTOMATIONS}
@@ -1329,7 +1335,7 @@ async def load_spacing_flags(account_id: str) -> dict[str, bool]:
     Read INDEPENDENTLY of the non-native flag, but the caller applies it only when
     the non-native layer is on — the spacing is part of that register, so it can be
     narrowed, never widened past its parent."""
-    if os.environ.get(_STYLE_FORCE_OFF_ENV):
+    if _style_force_off():
         return {k: False for k in STYLE_AUTOMATIONS}
     async with get_session() as s:
         cfg = await s.get(AccountAiConfig, str(account_id))
@@ -1360,7 +1366,7 @@ async def load_consistency_flags(account_id: str) -> dict[str, bool]:
     second LLM call on the replies it fires for: it is opted into per account,
     never assumed. Ship it off, enable on the accounts with real payers, measure.
     STYLE_FORCE_OFF still forces False."""
-    if os.environ.get(_STYLE_FORCE_OFF_ENV):
+    if _style_force_off():
         return {k: False for k in CONSISTENCY_AUTOMATIONS}
     async with get_session() as s:
         cfg = await s.get(AccountAiConfig, str(account_id))
@@ -1374,7 +1380,7 @@ async def load_nonnative_flags(account_id: str) -> dict[str, bool]:
     non-native layer (the 'nonnative_<automation>' keys). TRI-STATE default (see
     policy note above load_style_flags): an explicit 'nonnative_<automation>'
     True/False wins; an ABSENT key → _STYLE_DEFAULT_ON. STYLE_FORCE_OFF forces every flag False."""
-    if os.environ.get(_STYLE_FORCE_OFF_ENV):
+    if _style_force_off():
         return {k: False for k in STYLE_AUTOMATIONS}
     stored = await _load_style_json(account_id)
     return {k: _resolve_style_flag(stored, k, nonnative_flag_key(k)) for k in STYLE_AUTOMATIONS}

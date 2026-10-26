@@ -12,6 +12,7 @@ import { ArrowRight, X } from "lucide-react";
 import { IfMark } from "@/components/auth/SiteLook";
 import { PlatformLogo } from "@/components/shell/PlatformSwitcher";
 import { findNavLink } from "@/lib/nav";
+import { BRAND_NAME } from "@/lib/brand";
 
 /** Infloww's `._content_kvaan_1`: centred column, gap 16, Home-B1 (`bg`). The
  *  ink is T0 (`nav-fg-active`: #fff dark, #000 light). */
@@ -23,9 +24,9 @@ function MultiWelcome({ title }: { title: string }) {
         <PlatformLogo platform="fansly" className="size-8" />
         <X className="size-6" />
         <IfMark className="size-8" />
-        <span className="text-[22px] leading-none font-extrabold tracking-tight">INFLOWWWW</span>
+        <span className="text-[22px] leading-none font-extrabold tracking-tight">{BRAND_NAME.toUpperCase()}</span>
       </div>
-      <p className="text-base font-medium">Grow your revenue on Fansly with Inflowwww</p>
+      <p className="text-base font-medium">Grow your revenue on Fansly with {BRAND_NAME}</p>
       <button
         type="button"
         disabled

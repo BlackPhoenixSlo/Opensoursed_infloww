@@ -2,20 +2,21 @@
 
 /**
  * FanListFilters — the Fan List's filter row (the "All inboxes" selector,
- * the gear with the list settings, and the sort line's sort control and
- * refresh icon) and chip row (the OF lists among the chips). Stateless: the parent
+ * the gear with the list settings, the sort control, the pencil that pins
+ * OF lists, and the sort line's refresh icon) and chip row (the OF lists
+ * among the chips). Stateless: the parent
  * (FanList) owns the active filter, counts, folders, sort and gear settings
  * and passes them in with their callbacks
  * (docs/spec/phase-02-fan-list-pane.md, Interfaces).
  */
 
 import { useId } from "react";
-import { ChevronDown, ListFilter, Mail, RotateCw, Settings } from "lucide-react";
+import { ChevronDown, ListFilter, Mail, Pencil, RotateCw, Settings } from "lucide-react";
 import type { BlurMode } from "@/hooks/useBlurMode";
 import type { ChatFolder } from "@/hooks/useChatFolders";
 import type { ChatSortMode } from "@/hooks/useChatSortMode";
 import { MP } from "@/lib/messagesPro";
-import { EXTRAS_OVERFLOW_LABEL, extraTitle } from "@/lib/openinflowwwwExtras";
+import { extraTitle } from "@/lib/openinflowwwwExtras";
 import { cn } from "@/lib/utils";
 import { ExtraMenuRow } from "./ExtraMenuRow";
 import { FocusModeSettings } from "./FocusModeSettings";
@@ -37,16 +38,27 @@ const MENU_SUB_LINE = cn(O.menuSubLine, "text-fg-dim");
  *  wrapping (mh:141-142). The chip row's and the folder row's. */
 const CHIP_SCROLLER = cn(O.chipScroller, "flex min-w-0 items-center overflow-x-auto no-scrollbar");
 
+/** A filter row icon button after the gear, the gear's bordered square;
+ *  each adds its colours. */
+const ICON_BUTTON = cn(G.gear, O.gear, "grid place-items-center border-border");
+/** An icon button at rest, as the gear. */
+const ICON_IDLE = "text-fg-dim hover:text-fg hover:bg-bg-elev-1";
+/** An icon button whose setting is off its default (the sort, off Newest
+ *  first), as an active chip looks. */
+const ICON_ACTIVE = "bg-accent text-white border-accent";
+
+/** The pencil's name: it opens the folder picker. */
+const PIN_LISTS = "Pin lists as chips";
+
 /** A Fan List menu divider, `.pop .pdiv` (mh:371). The New menu's too. */
 export function MenuDivider() {
   return <div role="separator" className={cn(MP.menu.divider, "bg-border")} />;
 }
 
-/** The Fan List's sort orders. "Newest first" is Infloww's and the sort
- *  control offers it; the others are Inflowwww's and the "+" Extras
- *  overflow offers them (spec, Filters). `sub` explains an order under its
- *  name; `old` is the old gear option's tooltip, its extra tooltip's second
- *  line. */
+/** The Fan List's sort orders. "Newest first" is Infloww's; the others are
+ *  Inflowwww's, under it in the same sort control (spec, Filters). `sub`
+ *  explains an order under its name; `old` is the old gear option's
+ *  tooltip, its extra tooltip's second line. */
 const SORT_ORDERS: Record<ChatSortMode, { label: string; sub?: string; old?: string }> = {
   recent: { label: "Newest first" },
   spend: { label: "Amount spent" },
@@ -59,9 +71,9 @@ const SORT_ORDERS: Record<ChatSortMode, { label: string; sub?: string; old?: str
     old: "Spend × decay. Half-life: idle 1h, owe-reply 2h, unread 3h. Below $3 effective, unread wins.",
   },
 };
-/** Infloww's order, the only one the sort control offers. */
+/** Infloww's order, the sort control's first. */
 const NEWEST_FIRST: ChatSortMode = "recent";
-/** Inflowwww's orders, in the "+" overflow, in this order. */
+/** Inflowwww's orders, under Newest first in the sort control, in this order. */
 const EXTRA_SORT_ORDERS = (["spend", "spend-unread", "hybrid"] as const)
   .map((key) => ({ key, ...SORT_ORDERS[key] }));
 
@@ -72,7 +84,7 @@ type SortChoice = {
 };
 
 /** Built-in OF chat filters — most are server-side filters supported
- *  by /chats. `owe-reply` is chosen from the Extras overflow and is CLIENT-SIDE only: there's no OF filter for
+ *  by /chats. `owe-reply` is its own chip and is CLIENT-SIDE only: there's no OF filter for
  *  "fan sent last and we haven't replied," so FanList fetches ALL and
  *  filters locally.
  */
@@ -135,7 +147,7 @@ export function FanListFilters({
   activeCount: number;
   oweReplyCount: number;
   pinnedFolders: ChatFolder[];
-  /** The Creator has an OF list, so "✎ Lists" shows (Gap row 16, mj:3067).
+  /** The Creator has an OF list, so the pencil shows (Gap row 16, mj:3067).
    *  Lists are per Creator, so All Models has none. */
   hasLists: boolean;
   onOpenFolderPicker: () => void;
@@ -161,8 +173,9 @@ export function FanListFilters({
 } & SortChoice & GearSettings) {
   return (
     <>
-      {/* The filter row (Gap row 7): selector, gear, spacer, sort line. */}
-      <div role="group" aria-label="Inbox, settings and sort" className={cn(G.filters, "flex flex-wrap items-center")}>
+      {/* The filter row (Gap row 7): selector, gear, sort, pencil (with an
+       *  OF list), spacer, sort line. It anchors the sort's menu. */}
+      <div role="group" aria-label="Inbox, settings and sort" className={cn(G.filters, "relative flex flex-wrap items-center")}>
         {showInboxSelector && (
           <InboxSelector
             groupCount={groupCount}
@@ -172,10 +185,23 @@ export function FanListFilters({
           />
         )}
         <GearMenu {...gear} focusAvailable={focusModeAvailable(active, sortMode, gear.searching)} />
+        <SortControl sortMode={sortMode} onSortModeChange={onSortModeChange} />
+        {/* "✎ Lists" (Gap row 16, mj:3067) as an icon: only while the
+         *  Creator has an OF list. */}
+        {hasLists && (
+          <button
+            type="button"
+            onClick={onOpenFolderPicker}
+            className={cn(ICON_BUTTON, ICON_IDLE)}
+            title={PIN_LISTS}
+            aria-label={PIN_LISTS}
+          >
+            <Pencil className={G.gearIcon} />
+          </button>
+        )}
         <div className="flex-1" />
-        {/* The sort line (Gap row 10): the sort control, then refresh. */}
+        {/* The sort line (Gap row 10): refresh. */}
         <div className={cn(G.sort, "flex items-center text-fg-dim")}>
-          <SortControl sortMode={sortMode} onSortModeChange={onSortModeChange} />
           <button
             type="button"
             onClick={onRefresh}
@@ -188,16 +214,20 @@ export function FanListFilters({
           </button>
         </div>
       </div>
-      {/* The chip row, Infloww's order in one sideways scroller (2026-10-18
-       *  capture): All, Pinned, Unread, With Tips (then OF's "Unread with
-       *  tips" while the Creator has tips on), then the Creator's pinned
-       *  OF lists as plain chips and "✎ Lists" (Gap rows 15-16,
-       *  mj:3056-3067), then Priority, an Inflowwww extra; the "+" Extras
-       *  overflow is pinned after the scroller. All carries no badge: the
-       *  attention count lives in the tab title. */}
+      {/* The chip row in one sideways scroller: All, then Owe reply (an
+       *  Inflowwww extra, its count always in amber), then Infloww's order
+       *  (2026-10-18 capture): Pinned, Unread, With Tips (then OF's "Unread
+       *  with tips" while the Creator has tips on), then the Creator's pinned
+       *  OF lists as plain chips (Gap row 15), then Priority, an Inflowwww
+       *  extra. All carries no badge: the attention count lives in the tab
+       *  title. */}
       <div role="group" aria-label="Fan List filters" className={cn(G.chips, O.rowPull, "flex items-center")}>
         <div className={CHIP_SCROLLER}>
           <BuiltinChip filter="all" active={active} onActiveChange={onActiveChange}>All</BuiltinChip>
+          <BuiltinChip
+            filter="owe-reply" active={active} onActiveChange={onActiveChange} count={oweReplyCount} amber
+            title={extraTitle("Owe reply", "Chats where the fan sent the last message and we haven't replied")}
+          >Owe reply</BuiltinChip>
           <BuiltinChip filter="pinned" active={active} onActiveChange={onActiveChange} activeCount={activeCount}>Pinned</BuiltinChip>
           <BuiltinChip filter="unread" active={active} onActiveChange={onActiveChange} count={unreadCount}>Unread</BuiltinChip>
           <BuiltinChip filter="who_tipped" active={active} onActiveChange={onActiveChange} activeCount={activeCount}>With Tips</BuiltinChip>
@@ -221,22 +251,11 @@ export function FanListFilters({
               </FilterChip>
             );
           })}
-          {hasLists && (
-            <FilterChip folder onClick={onOpenFolderPicker} title="Pick folders to pin as chips">
-              ✎ Lists
-            </FilterChip>
-          )}
           <BuiltinChip
             filter="priority" active={active} onActiveChange={onActiveChange} activeCount={activeCount}
             title={extraTitle("Priority chip")}
           >Priority</BuiltinChip>
         </div>
-        <ExtrasOverflow
-          oweReplyActive={active.kind === "builtin" && active.key === "owe-reply"}
-          oweReplyCount={oweReplyCount}
-          onOweReply={() => onActiveChange({ kind: "builtin", key: "owe-reply" })}
-          onSortModeChange={onSortModeChange}
-        />
       </div>
     </>
   );
@@ -407,73 +426,42 @@ function GearMenu({
   );
 }
 
-/** The sort control (Gap row 10): the order in force, then the sort icon.
- *  Its menu offers only Infloww's "Newest first"; the extra orders are in
- *  the "+" Extras overflow (spec, Filters). */
+/** The sort control (Gap row 10): an icon button after the gear, named by
+ *  the order in force, and active while that order is not Infloww's
+ *  "Newest first". Its menu offers Newest first, then Inflowwww's extra
+ *  orders under "Sort by", the order in force marked ✓ (spec, Filters). */
 function SortControl({ sortMode, onSortModeChange }: SortChoice) {
   const { open, setOpen, ref, triggerProps, menuProps } = useFanListMenu<HTMLDivElement>();
-  const label = SORT_ORDERS[sortMode].label;
+  const label = `Sort: ${SORT_ORDERS[sortMode].label}`;
+  const extra = sortMode !== NEWEST_FIRST;
+  const choose = (next: ChatSortMode) => { setOpen(false); onSortModeChange(next); };
+  const mark = (key: ChatSortMode) => (
+    <span aria-hidden className="w-4 shrink-0 text-center">{sortMode === key ? "✓" : ""}</span>
+  );
   return (
-    <div ref={ref} className="relative">
+    // Not positioned: the menu is placed against the filter row.
+    <div ref={ref}>
       <button
         type="button"
         {...triggerProps}
-        className={cn(G.sort, O.sortButton, "flex items-center whitespace-nowrap hover:text-fg")}
+        aria-pressed={extra}
+        className={cn(ICON_BUTTON, extra ? ICON_ACTIVE : ICON_IDLE)}
+        title={label}
+        aria-label={label}
       >
-        <span className="text-fg">{label}</span>
-        <ListFilter className={G.sortIcon} />
+        <ListFilter className={G.gearIcon} />
       </button>
       {open && (
-        <section {...menuProps} aria-label="Sort" className={cn(MENU, O.menuPlace)}>
+        <section {...menuProps} aria-label="Sort" className={cn(MENU, O.sortMenuPlace)}>
           <button
             type="button"
-            onClick={() => { setOpen(false); onSortModeChange(NEWEST_FIRST); }}
+            onClick={() => choose(NEWEST_FIRST)}
+            aria-pressed={sortMode === NEWEST_FIRST}
             className={MENU_ITEM}
           >
-            {SORT_ORDERS[NEWEST_FIRST].label}
+            {mark(NEWEST_FIRST)}
+            <span>{SORT_ORDERS[NEWEST_FIRST].label}</span>
           </button>
-        </section>
-      )}
-    </div>
-  );
-}
-
-/** The "+" that ends the chip row and the Fan List's Extras overflow
- *  (ADR-0003; spec, Filters). "↩ Owe reply" and the extra sort orders are
- *  Inflowwww's, so they are chosen here rather than among Infloww's chips
- *  or in the sort control. While Owe reply is the active filter the "+"
- *  looks active and carries its count in the amber corner badge (Gap row
- *  14). */
-function ExtrasOverflow({
-  oweReplyActive, oweReplyCount, onOweReply, onSortModeChange,
-}: {
-  oweReplyActive: boolean;
-  oweReplyCount: number;
-  onOweReply: () => void;
-  onSortModeChange: SortChoice["onSortModeChange"];
-}) {
-  const { open, setOpen, ref, triggerProps, menuProps } = useFanListMenu<HTMLDivElement>();
-  return (
-    <div ref={ref} className={cn(O.extrasAnchor, "relative shrink-0")}>
-      <FilterChip
-        {...triggerProps}
-        active={oweReplyActive}
-        aria-label={EXTRAS_OVERFLOW_LABEL}
-        title={EXTRAS_OVERFLOW_LABEL}
-        count={oweReplyActive ? oweReplyCount : null}
-        amber
-      >+</FilterChip>
-      {open && (
-        <section {...menuProps} aria-label={EXTRAS_OVERFLOW_LABEL} className={cn(MENU, O.menuPlace)}>
-          <ExtraMenuRow
-            name="Owe reply"
-            detail="Chats where the fan sent the last message and we haven't replied"
-            onClick={() => { setOpen(false); onOweReply(); }}
-          >
-            <span>↩ Owe reply</span>
-            {" "}
-            <span className="ml-auto text-warn tabular-nums">{oweReplyCount}</span>
-          </ExtraMenuRow>
           <MenuDivider />
           <div className={cn(MP.menu.head, "uppercase text-fg-dim")}>Sort by</div>
           {EXTRA_SORT_ORDERS.map((opt) => (
@@ -481,8 +469,10 @@ function ExtrasOverflow({
               key={opt.key}
               name="Extra sort orders"
               detail={opt.old}
-              onClick={() => { setOpen(false); onSortModeChange(opt.key); }}
+              pressed={sortMode === opt.key}
+              onClick={() => choose(opt.key)}
             >
+              {mark(opt.key)}
               {/* The sub-line explains the order; the space reads it apart
                *  from the name and adds no width in the flex column. */}
               <span className="flex flex-col">
@@ -498,10 +488,11 @@ function ExtrasOverflow({
   );
 }
 
-/** A built-in OF filter's chip. `count` is shown always (Unread's);
- *  `activeCount` only while the chip is the active filter. */
+/** A built-in filter's chip. `count` is shown always (Unread's, Owe
+ *  reply's in `amber`); `activeCount` only while the chip is the active
+ *  filter. */
 function BuiltinChip({
-  filter, active, onActiveChange, count, activeCount, title, children,
+  filter, active, onActiveChange, count, activeCount, title, amber, children,
 }: {
   filter: BuiltinFilter;
   active: ActiveChip;
@@ -509,6 +500,7 @@ function BuiltinChip({
   count?: number;
   activeCount?: number;
   title?: string;
+  amber?: boolean;
   children: React.ReactNode;
 }) {
   const isActive = active.kind === "builtin" && active.key === filter;
@@ -518,29 +510,21 @@ function BuiltinChip({
       onClick={() => onActiveChange({ kind: "builtin", key: filter })}
       count={count ?? (isActive ? activeCount : null)}
       title={title}
+      amber={amber}
     >{children}</FilterChip>
   );
 }
 
 function FilterChip({
-  active, onClick, children, title, count, amber, folder,
-  "aria-label": ariaLabel, "aria-expanded": ariaExpanded, "aria-controls": ariaControls,
+  active, onClick, children, title, count, amber,
 }: {
-  /** Absent on a chip that only opens something ("✎ Lists"). */
-  active?: boolean;
+  active: boolean;
   onClick: () => void;
   children: React.ReactNode;
   title?: string;
   count?: number | null;
   /** The Clone's `.cbadge.amber` (mh:146): the owe-reply count. */
   amber?: boolean;
-  /** A folder row chip, `.fchip` (mh:148, Gap rows 15-16). */
-  folder?: boolean;
-  /** The chip's accessible name, where its text is not it (the "+"). */
-  "aria-label"?: string;
-  /** The chip opens a menu: `useFanListMenu`'s `triggerProps`. */
-  "aria-expanded"?: boolean;
-  "aria-controls"?: string;
 }) {
   const showCount = count != null && count > 0;
   return (
@@ -548,12 +532,9 @@ function FilterChip({
       type="button"
       onClick={onClick}
       title={title}
-      aria-label={ariaLabel}
       aria-pressed={active}
-      aria-expanded={ariaExpanded}
-      aria-controls={ariaControls}
       className={cn(
-        folder ? cn(G.folderChip, O.folderChip, "border-transparent") : cn(G.chip, O.chip),
+        G.chip, O.chip,
         "relative shrink-0 inline-flex items-center whitespace-nowrap transition-colors",
         active ? "bg-accent text-white" : "bg-[var(--inf-chip,var(--color-bg-elev-2))] text-fg hover:bg-[var(--inf-chip-hover,var(--color-border-light))]",
       )}

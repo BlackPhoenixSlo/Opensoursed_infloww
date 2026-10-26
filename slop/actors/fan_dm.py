@@ -172,7 +172,8 @@ class Paced:
         await asyncio.gather(*list(self._tasks), return_exceptions=True)
 
 
-async def serial(http, targets: list[dict], per_fan: int, *, rate: float = 0, text: str = "slop dm") -> list[dict]:
+async def serial(http, targets: list[dict], per_fan: int, *, rate: float = 0, text: str = "slop dm",
+                 ids=None) -> list[dict]:
     """The pump's shape: per Creator ONE frame in flight at a time (the OF WebSocket
     pump awaits `_broadcast_event` per frame, service/server.py), Creators in
     parallel. A Creator's frames go round-robin over its fans (DM 1 of each, then
@@ -182,8 +183,9 @@ async def serial(http, targets: list[dict], per_fan: int, *, rate: float = 0, te
     start + i/rate. A frame that falls behind goes the moment the previous one
     returns (the pump's backlog). Returns one record per frame sent: account_id,
     fan_id, message_id, status, and epoch-ms `due` (== `t0` closed-loop), `t0`
-    (handed to the relay) and `t1` (the relay returned)."""
-    ids = itertools.count(INJECT_ID_BASE)
+    (handed to the relay) and `t1` (the relay returned). `ids`: a shared
+    itertools.count when several calls must not reuse message ids."""
+    ids = ids if ids is not None else itertools.count(INJECT_ID_BASE)
     by_acct: dict[str, list[dict]] = {}
     for f in targets:
         by_acct.setdefault(f["account_id"], []).append(f)

@@ -66,6 +66,27 @@ describe("AgencyNotifications in the top bar's one bell", () => {
     expect(post).toHaveBeenCalledTimes(2);
   });
 
+  it("makes a row with a link (a 2FA relink) open it, and reads the row", async () => {
+    const otp = { id: 9, kind: "session_dead", text: "Kim needs a 2FA code on OnlyFans: sign in to Kim's OnlyFans account again with Browserbase login to resume",
+      account_id: "acct-k", employee_id: null, data: { reason: "otp_required", href: "/creators?relink=browserbase" },
+      created_at: "2026-10-25T10:00:00Z", read: false };
+    get.mockImplementation((path: string) => path.startsWith("/admin/agency-notifications")
+      ? Promise.resolve({ unread: 2, notifications: [otp, ...LIST.notifications] }) : route(path));
+    post.mockResolvedValue({ unread: 0 });
+    renderWithProviders(<HeaderBell />);
+    expect(await screen.findByTestId("bell-count")).toHaveTextContent("2");
+    await openBell();
+    const link = await screen.findByRole("link", { name: /needs a 2FA code/ });
+    expect(link).toHaveAttribute("href", "/creators?relink=browserbase");
+    // A row without a link stays a plain row.
+    expect(screen.getByRole("button", { name: /Ana was deactivated/ })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Ana was deactivated/ })).toBeNull();
+    fireEvent.click(link);
+    await waitFor(() => expect(post).toHaveBeenCalledWith("/admin/agency-notifications/9/read"));
+    // Following it closes the bell (the page it opens is in front).
+    expect(screen.queryByRole("link", { name: /needs a 2FA code/ })).toBeNull();
+  });
+
   it("keeps the OnlyFans feed on its own tab, with its \"See all\"", async () => {
     get.mockImplementation(route);
     renderWithProviders(<HeaderBell />);

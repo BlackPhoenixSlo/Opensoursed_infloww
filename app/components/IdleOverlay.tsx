@@ -7,6 +7,7 @@
  */
 
 import { useIdleMode } from "@/hooks/useIdleMode";
+import { BRAND_NAME } from "@/lib/brand";
 
 export function IdleOverlay() {
   const idle = useIdleMode();
@@ -16,11 +17,11 @@ export function IdleOverlay() {
       className="fixed inset-0 z-[80] grid place-items-center bg-black/60 p-4">
       <div className="bg-panel border border-border rounded-lg shadow-xl p-6 max-w-sm text-center">
         <h2 id="idle-title" className="text-sm font-semibold text-fg">
-          Inflowwww has gone idle due to inactivity
+          {BRAND_NAME} has gone idle due to inactivity
         </h2>
         <p className="mt-1 text-xs text-fg-dim">Live updates are paused until you return.</p>
         <button type="button" className="mt-4 h-9 px-4 rounded-md bg-accent text-white text-xs font-semibold">
-          Return to Inflowwww
+          Return to {BRAND_NAME}
         </button>
       </div>
     </div>

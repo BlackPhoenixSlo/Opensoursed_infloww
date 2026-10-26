@@ -286,8 +286,8 @@ async function settle({ host, overflow }: Visit) {
  * calling `visit` with each open (once it has loaded), then closes it. First
  * the page as loaded (no host open), then Fan insights on its Insights and
  * Notes tabs, then each "Inflowwww extras" trigger in turn, the Fan List's
- * New menu and the Kebab, then the Chat header Extras overflow through the
- * Kebab's last row, "Inflowwww extras ▸" (ticket 140).
+ * New menu and sort menu and the Kebab, then the Chat header Extras overflow
+ * through the Kebab's last row, "Inflowwww extras ▸" (ticket 140).
  */
 async function reach(user: UserEvent, show: (v: Visit) => void | Promise<void>) {
   const visit = async (v: Visit) => { await settle(v); await show(v); };
@@ -316,6 +316,13 @@ async function reach(user: UserEvent, show: (v: Visit) => void | Promise<void>) 
   await user.click(newButton);
   await visit({ host: "New menu", overflow: null });
   await user.click(newButton);
+
+  // The extra sort orders, in plain view since the Fan List lost its "+"
+  // (ADR-0003 amended 2026-10-26).
+  const sort = screen.getByRole("button", { name: /^Sort: / });
+  await user.click(sort);
+  await visit({ host: "Sort menu", overflow: null });
+  await user.click(sort);
 
   const kebab = screen.getByRole("button", { name: "More actions" });
   await user.click(kebab);
@@ -398,8 +405,8 @@ const extrasIn = (root: ParentNode) =>
 
 /** The extras one visit shows, each with its host. With no host open, every
  *  extra on the page, at its Region; on Fan insights' tabs, those in its
- *  pinned pane; then those an Extras overflow, the New menu or the Kebab
- *  reveals. */
+ *  pinned pane; then those an Extras overflow, the New menu, the sort menu
+ *  or the Kebab reveals. */
 function extrasOf({ host, overflow }: Visit): Array<[HTMLElement, string]> {
   const at = (root: ParentNode, as: string) => extrasIn(root).map((el) => [el, as] as [HTMLElement, string]);
   if (host === "no host open") return extrasIn(document).map((el) => [el, regionOf(el)]);
@@ -407,6 +414,7 @@ function extrasOf({ host, overflow }: Visit): Array<[HTMLElement, string]> {
   const region = /^the (.+) Extras overflow$/.exec(host)?.[1];
   if (overflow && region) return at(overflow, `${region} overflow`);
   if (host === "New menu") return at(screen.getByRole("region", { name: "New" }), "New menu");
+  if (host === "Sort menu") return at(screen.getByRole("region", { name: "Sort" }), "Fan List sort menu");
   if (host === "Kebab") return at(kebabMenu(), "Kebab");
   return [];
 }
@@ -415,27 +423,32 @@ function extrasOf({ host, overflow }: Visit): Array<[HTMLElement, string]> {
 
 // The reach routine opens every host in turn: about 2s alone, over the 5s default under the full suite's parallel load.
 describe("the extras audit", { timeout: 20_000 }, () => {
-  it("1: no host open: only the \"Inflowwww extras\" triggers, the Window header's All Models (TODO.md B2) and the Fan List's Priority chip (page-parity 07) have a tooltip starting with \"Inflowwww extra\"", async () => {
+  it("1: no host open: no \"Inflowwww extras\" trigger shows, and only the Window header's All Models (TODO.md B2) and the Fan List's Priority chip (page-parity 07) and Owe reply chip (ADR-0003 amended 2026-10-26) have a tooltip starting with \"Inflowwww extra\"", async () => {
     await renderMessagesPro();
-    const plus = triggers();
-    expect(plus.length).toBeGreaterThan(0);
-    for (const t of plus) expect(t).toHaveAttribute("title", EXTRAS_OVERFLOW_LABEL);
+    // The Fan List's "+" was the last trigger in plain view; the Chat
+    // header's is the Kebab's last row (ticket 140).
+    expect(triggers()).toEqual([]);
     const allModels = screen.getByRole("button", { name: "All Models" });
     expect(allModels).toHaveAttribute("title", `${EXTRA_LABEL} — All Models\nAll models`);
     expect(regionOf(allModels)).toBe("Window header");
-    const priority = within(document.querySelector<HTMLElement>('[data-mp-pane="fan-list"]')!).getByRole("button", { name: "Priority" });
+    const fanList = within(document.querySelector<HTMLElement>('[data-mp-pane="fan-list"]')!);
+    const priority = fanList.getByRole("button", { name: "Priority" });
     expect(priority).toHaveAttribute("title", `${EXTRA_LABEL} — Priority chip`);
     expect(regionOf(priority)).toBe("Fan List");
-    expect(labelled().filter((el) => !plus.includes(el) && el !== allModels && el !== priority).map(where)).toEqual([]);
+    const oweReply = fanList.getByRole("button", { name: /^Owe reply\b/ });
+    expect(oweReply).toHaveAttribute("title", `${EXTRA_LABEL} — Owe reply\nChats where the fan sent the last message and we haven't replied`);
+    expect(regionOf(oweReply)).toBe("Fan List");
+    expect(labelled().filter((el) => ![allModels, priority, oweReply].includes(el)).map(where)).toEqual([]);
   });
 
-  it("4: no pre-parity identity shows outside an opened Extras overflow, through the whole reach routine, but for Fan insights' extras in Fan insights (its Insights blocks, ADR-0003 amended 2026-10-21)", async () => {
+  it("4: no pre-parity identity shows outside an opened Extras overflow, through the whole reach routine, but for Fan insights' extras in Fan insights (its Insights blocks, ADR-0003 amended 2026-10-21) and the extra sort orders in the Fan List's sort menu (ADR-0003 amended 2026-10-26)", async () => {
     const user = userEvent.setup();
     await renderMessagesPro();
     const leaks: string[] = [];
+    const hostsOf = (name: ExtraName) => EXTRAS.find((e) => e.name === name)!.hosts as readonly string[];
     const inFanInsights = (name: ExtraName, el: HTMLElement) =>
-      (EXTRAS.find((e) => e.name === name)!.hosts as readonly string[]).includes("Fan insights") &&
-      regionOf(el) === "Fan insights";
+      (hostsOf(name).includes("Fan insights") && regionOf(el) === "Fan insights") ||
+      (hostsOf(name).includes("Fan List sort menu") && !!el.closest('[aria-label="Sort"]'));
     await reach(user, ({ host, overflow }) => {
       for (const [name, identity] of OLD_IDENTITIES) {
         for (const el of carriers(identity)) {
@@ -457,11 +470,11 @@ describe("the extras audit", { timeout: 20_000 }, () => {
       if (labelledLeaves(overflow).length === 0) empty.push(host);
     });
     // The routine reached a trigger in each Region that has an extra to show:
-    // the Fan List and, last, through the Kebab, the Chat header. The
-    // Composer has none since TODO.md A2, Fan insights none since its extras
-    // became Insights blocks (2026-10-21).
+    // through the Kebab, the Chat header. The Composer has none since TODO.md
+    // A2, Fan insights none since its extras became Insights blocks
+    // (2026-10-21), the Fan List none since its extras are in plain view
+    // (2026-10-26).
     expect([...new Set(opened)]).toEqual([
-      "the Fan List Extras overflow",
       "the Chat header Extras overflow",
     ]);
     expect(empty).toEqual([]);

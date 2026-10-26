@@ -50,7 +50,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from typing import Any, Iterable
 
@@ -96,8 +95,10 @@ _engine = None
 # ── Config ──────────────────────────────────────────────────────────
 
 def enabled() -> bool:
-    return (os.environ.get("OF_COTAG_ENABLED") or "1").strip().lower() not in (
-        "0", "false", "no", "off", "")
+    """OF_COTAG_ENABLED: the Settings → System override, else env (unset or empty is
+    on; 0/false/no/off is off)."""
+    import runtime_switches
+    return runtime_switches.on("OF_COTAG_ENABLED")
 
 
 def _account_cfg(account_id: str) -> tuple[bool, str | None]:

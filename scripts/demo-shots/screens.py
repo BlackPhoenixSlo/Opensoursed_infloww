@@ -92,7 +92,7 @@ SCREENS: list[dict] = [
      "act": gross_then(scroll_to(KPIS)), "wait": ["Per-model KPIs", "20 models"], "prices": True},
     {"slug": "messages-pro", "desktop_path": thread, "desktop_viewport": WIDE, "phone_path": "/messages-pro",
      "desktop_pre_wait": THREAD, "desktop_act": unpin,
-     "desktop_wait": THREAD + ["placeholder=quickly search scripts"], "phone_wait": ["Newest first", "@"], "forbid": NO_JUMP,
+     "desktop_wait": THREAD + ["placeholder=quickly search scripts"], "phone_wait": ["Owe reply", "@"], "forbid": NO_JUMP,
      "prices": True, "desktop_min_bubbles": 9, "key": LAST_BUBBLE, "pause": 1500},
     {"slug": "messages-pro-thread", "path": thread, "desktop_viewport": WIDE, "pre_wait": THREAD, "desktop_act": insights,
      "phone_act": unpin, "wait": THREAD, "desktop_wait": THREAD + ["placeholder=quickly search scripts", "Total spend"],

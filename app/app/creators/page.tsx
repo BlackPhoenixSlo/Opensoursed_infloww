@@ -11,6 +11,7 @@
  *     and FanslyPasteSessionCard. Desk-only sign-in.
  *   • the extension probe, once on mount (useExtensionProbe); the modal reads
  *     its answer and never probes.
+ *   • `?relink=browserbase` (a 2FA notification's link) opens the modal at Browserbase login, once (RelinkParam).
  *   • AccountsTable  — the filter bar (CreatorFilterBar), the creator table and
  *                      its footer at the page's foot, filtering and paging on
  *                      the client. A row's recovery actions open the same modal
@@ -30,13 +31,14 @@
  *   (ProxiesTable lives on Creators > Custom proxy, /creators/proxy.)
  */
 
-import { useState, type ComponentProps } from "react";
+import { Suspense, useCallback, useEffect, useState, type ComponentProps } from "react";
+import { useSearchParams } from "next/navigation";
 
 import DriftBanner from "@/components/setup/DriftBanner";
 import MirrorFreshnessBanner from "@/components/setup/MirrorFreshnessBanner";
 import AccountsTable from "@/components/setup/AccountsTable";
 import AddCreatorModal, {
-  AddCreatorButton, DESKTOP_ONLY_LINE,
+  AddCreatorButton, DESKTOP_ONLY_LINE, type SectionKey,
 } from "@/components/setup/AddCreatorModal";
 import { useExtensionProbe } from "@/components/setup/useExtensionProbe";
 import { InflowwPageHeader } from "@/components/ui/infloww";
@@ -51,6 +53,7 @@ export default function SetupPage() {
   const extInstalled = useExtensionProbe();
   // null: closed; `at` set: opened from a row, at that section; `draft` / `linkAnother`: at the platform step.
   const [adding, setAdding] = useState<Pick<ComponentProps<typeof AddCreatorModal>, "at" | "draft" | "linkAnother"> | null>(null);
+  const openAt = useCallback((at: SectionKey) => setAdding({ at }), []);
   return (
     // Full width, as HBLayout is: the old 1152px cap would stop the header rule and the table short (creators-manage#4,
     // #27). From 768px up the page is the window's height below the top bar, so the table's footer keeps the page's
@@ -60,6 +63,10 @@ export default function SetupPage() {
       {/* 48px header, 0 24px, a bottom rule; the title 16px weight 600, "Add creator" at the right (creators-manage#4,
           #7, #9). */}
       <InflowwPageHeader title="Manage creators" actions={<AddCreatorButton onClick={() => setAdding({})} />} />
+      {/* useSearchParams suspends while the page prerenders: its own boundary, so nothing else waits. */}
+      <Suspense fallback={null}>
+        <RelinkParam open={openAt} />
+      </Suspense>
       {adding && (
         <AddCreatorModal
           extInstalled={extInstalled}
@@ -97,4 +104,19 @@ export default function SetupPage() {
       </AccountsTable>
     </div>
   );
+}
+
+/** `?relink=browserbase` (a 2FA notification's link) opens the modal at Browserbase login, also when the link is
+ *  clicked with this page already open (the param changes, the page stays mounted). The param is dropped at once,
+ *  so a reload or Back does not reopen the modal; any other value is dropped and ignored. */
+function RelinkParam({ open }: { open: (at: SectionKey) => void }) {
+  const at = useSearchParams().get("relink");
+  useEffect(() => {
+    if (at === null) return;
+    const url = new URL(window.location.href);
+    url.searchParams.delete("relink");
+    window.history.replaceState(window.history.state, "", url.pathname + url.search + url.hash);
+    if (at === "browserbase") open(at);
+  }, [at, open]);
+  return null;
 }

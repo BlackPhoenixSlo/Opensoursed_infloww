@@ -41,6 +41,7 @@ from pydantic import BaseModel, Field
 import auth
 import proxies as proxy_registry
 import remote_login
+from brand import BRAND_NAME
 
 router = APIRouter()
 
@@ -92,7 +93,7 @@ def _resolve_proxy(choice: str, label: str) -> tuple[str, str]:
             raise HTTPException(status_code=400, detail="a custom proxy needs proxy_label")
         return choice, remote_login.live_server()._assert_proxy_assignable(label)["label"]
     if choice == remote_login.PROXY_INFLOWWW and not has_pool:
-        raise HTTPException(status_code=409, detail="no Inflowwww proxies are set up on this relay")
+        raise HTTPException(status_code=409, detail=f"no {BRAND_NAME} proxies are set up on this relay")
     return choice, ""
 
 

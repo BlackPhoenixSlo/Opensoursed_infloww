@@ -38,13 +38,13 @@ import { useAccessChangeNotices } from "@/hooks/useAccessChangeNotices";
 import { accountPlatform } from "@/lib/platform";
 import { useDeferredMount } from "@/hooks/useDeferredMount";
 import { useNotificationSettings } from "@/hooks/useNotificationSettings";
-import { chatTabName, openChatTab } from "@/lib/chatPopout";
 import { eventBus, type EventEnvelope } from "@/lib/events";
 import { resolveChatTarget, toUtcIso, type ChatTarget } from "@/hooks/useInboxRealtime";
 import { relay } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
 import { isValidFanId, type FanId } from "@/lib/fanId";
 import { onNotice } from "@/lib/notices";
+import { notificationHref, onNotificationClick } from "@/lib/notificationLink";
 import { hasShellNotify, osNotify } from "@/lib/osNotify";
 import { playAlertOnce } from "@/lib/alertSounds";
 import { useClock, useMyShifts } from "@/lib/shifts";
@@ -61,6 +61,7 @@ import {
   type NotifSettings,
   type NotifTypeKey,
 } from "@/lib/notifSettings";
+import { BRAND_NAME } from "@/lib/brand";
 
 // One entry per accountId. Lives outside the component so HMR /
 // StrictMode double-mounts don't lose seen-id state. Each set is
@@ -243,24 +244,14 @@ function renderText(raw: string, replacePairs?: Record<string, string>): string 
   return s.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 }
 
-function hrefFor(n: NotificationItem, accountId: string): string | null {
-  const u = n.user || n.fromUser || {};
-  if (u.id) return `/messages-pro/${encodeURIComponent(accountId)}/${u.id}`;
-  if (u.username) {
-    return `/messages-pro/${encodeURIComponent(accountId)}/u/${encodeURIComponent(u.username)}`;
-  }
-  return null;
-}
-
 /** Tip / purchase toasts deep-link with a one-shot `?refresh=media` flag.
  *  The fan just moved money, so the popout's rehydrated persisted caches
  *  (PPV ledger, last-purchases, gallery, profile) are stale by seconds —
  *  the popout chat page reads the flag on mount and refetches the thread
  *  plus the FanDrawer's manual-↻ set. Other types link plain: no reason
  *  to burn the refetches on a like or a comment. */
-function withRefreshFlag(href: string, typeKey: NotifTypeKey | null): string {
-  if (typeKey !== "tip" && typeKey !== "purchases") return href;
-  return `${href}${href.includes("?") ? "&" : "?"}refresh=media`;
+function isMoney(typeKey: NotifTypeKey | null): boolean {
+  return typeKey === "tip" || typeKey === "purchases";
 }
 
 /** One arrival, as every SSE lane hands it to `deliverNotification`. */
@@ -381,7 +372,7 @@ function deliverNotification(settings: NotifSettings, n: Arrival): void {
   if (settings.osPing && !focused) {
     void osNotify({
       id: `${n.accountId}:${n.id}`,
-      title: n.user.name || n.user.username || "Inflowwww",
+      title: n.user.name || n.user.username || BRAND_NAME,
       body: n.text || n.rawType || "New activity",
       href: n.href,
     });
@@ -498,7 +489,6 @@ function NotificationDeltaPoller() {
           ? Date.parse(t.createdAt) || Date.now()
           : Date.now();
 
-        const baseHref = hrefFor({ user } as NotificationItem, aid);
         // History always, pings gated — the money rail and the feed dropdown
         // must still list a muted arrival (incl. likes).
         const arrival: Arrival = {
@@ -511,7 +501,7 @@ function NotificationDeltaPoller() {
           historyText: rawText,
           replacePairs: repl ?? (t.replacePairs as Record<string, string> | undefined),
           createdMs,
-          href: baseHref ? withRefreshFlag(baseHref, typeKey) : null,
+          href: notificationHref(aid, user, { refresh: isMoney(typeKey) }),
         };
         deliverNotification(settingsFor(aid), arrival);
         // No notif-list refetch, muted or not: a tip/purchase is seeded into
@@ -526,11 +516,7 @@ function NotificationDeltaPoller() {
           const uname = user.username;
           resolveUsernameId(aid, uname, qc).then((resolvedId) => {
             if (resolvedId == null) return;
-            const canonical = withRefreshFlag(
-              `/messages-pro/${encodeURIComponent(aid)}/${resolvedId}`,
-              typeKey,
-            );
-            patchToastHref(aid, id, canonical);
+            patchToastHref(aid, id, notificationHref(aid, { ...user, id: resolvedId }, { refresh: isMoney(typeKey) })!);
             patchNotifHistoryUser(aid, id, { id: resolvedId });
             patchMoneyListUser(qc, aid, typeKey, id, { id: resolvedId });
           }).catch(() => { /* ignore */ });
@@ -601,7 +587,7 @@ function NotificationDeltaPoller() {
         text,
         historyText: rawText || text,
         createdMs,
-        href: `/messages-pro/${encodeURIComponent(aid)}/${fanId}`,
+        href: notificationHref(aid, { ...user, id: fanId }),
       });
       // The new-message sound has its own switch (not the toast's); the master
       // toggle (and the account's platform switch) mutes it like every other
@@ -684,7 +670,7 @@ function NotificationDeltaPoller() {
         createdMs,
         // Same one-shot refresh flag the money toasts and rail rows carry —
         // the fan just moved money, so the popout's caches are stale.
-        href: withRefreshFlag(`/messages-pro/${encodeURIComponent(aid)}/${fanId}`, "purchases"),
+        href: notificationHref(aid, user, { refresh: true }),
       };
       deliverNotification(settingsFor(aid), arrival);
       // The relay read this off OF's purchases feed — the list already has it,
@@ -770,10 +756,9 @@ function ToastCard({ t }: { t: Toast }) {
     return (
       <a
         href={href}
-        target={chatTabName(href)}
         className="block animate-toast-in"
         onClick={(e) => {
-          openChatTab(e, href);
+          onNotificationClick(e, href);
           dispatchNotifCleared();
           dismissToast(t.accountId, t.id);
         }}

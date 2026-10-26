@@ -11,6 +11,7 @@ import { useState } from "react";
 
 import { Card, NotWired, SettingsPanel, SettingsTable, TABLE_ROW } from "@/components/settings/SettingsPanel";
 import { EmptyState, IfTabs } from "@/components/ui/infloww";
+import { BRAND_NAME } from "@/lib/brand";
 
 const SUBTABS = ["Infloww subscription", "AI Copilot"] as const;
 type Subtab = (typeof SUBTABS)[number];
@@ -33,7 +34,7 @@ export default function BillingTab() {
         {active === SUBTABS[0] && (
           <>
             <div className="mt-6">
-              <Card title="Inflowwww — self-hosted, free">
+              <Card title={`${BRAND_NAME} — self-hosted, free`}>
                 <div className="flex flex-wrap gap-3">
                   <NotWired label="Pricing plans" />
                   <NotWired label="Update card" />

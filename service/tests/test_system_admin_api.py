@@ -8,6 +8,10 @@ status + run log.
     `enabled` flag, flags a disagreement as a mismatch, and flags duplicate rules;
   * /admin/system/runs lists runs across accounts (with error_text) and the
     failed / pending scheduled_jobs, and honours its filters.
+  * /admin/system/switches lists every runtime switch; PUT sets / clears an
+    override (founder password required, audited with it redacted) that each
+    consumer reads at once; bad values 422; a failed boot load is reported
+    (`loaded: false`) and retried.
 
 Run: ./venv/bin/python service/tests/test_system_admin_api.py   (exit 0 = pass)
 """
@@ -76,7 +80,7 @@ MASTER = fx.login_owner("agency_master")
 OWNER = fx.login_owner("agency_a_owner")
 CHATTER = fx.login_chatter("chatter_a")
 ANON = _harness.make_client()
-ROUTES = ("/admin/system/automations", "/admin/system/runs")
+ROUTES = ("/admin/system/automations", "/admin/system/runs", "/admin/system/switches")
 
 
 def _row(body: dict, aid: str, kind: str) -> dict:
@@ -130,14 +134,194 @@ def case_status_reflects_rule_and_config_flags():
     assert body["mismatch_count"] >= 2, body["mismatch_count"]
 
 
-def case_kill_switch_reported():
+PW = os.environ["ADMIN_PASSWORD"]   # the harness sets the founder password
+
+
+def _put(name: str, value, *, client=None, pw: str | None = PW):
+    body = {"value": value} if pw is None else {"value": value, "admin_password": pw}
+    return (client or MASTER).put(f"/admin/system/switches/{name}", json=body)
+
+
+def _switch(name: str) -> dict:
+    body = MASTER.get("/admin/system/switches").json()
+    return next(k for k in body["switches"] if k["env"] == name)
+
+
+def case_switches_list_every_registered_switch():
+    import runtime_switches
+    body = MASTER.get("/admin/system/switches").json()
+    assert [k["env"] for k in body["switches"]] == [s.env for s in runtime_switches.SWITCHES], body
+    assert isinstance(body["loaded"], bool), body   # the harness runs no startup: covered below
+    sw = _switch("W7_WEBHOOK_DISPATCH_DISABLED")
+    assert sw["source"] == "default" and sw["effective"] is False and sw["active"] is False, sw
+    assert sw["kind"] == "bool" and sw["override"] is None and sw["fallback"] is False, sw
+
+
+def case_env_kill_switch_reported():
     os.environ["STYLE_FORCE_OFF"] = "1"
     try:
-        body = MASTER.get("/admin/system/automations").json()
+        sw = _switch("STYLE_FORCE_OFF")
     finally:
         os.environ.pop("STYLE_FORCE_OFF", None)
-    sw = next(k for k in body["kill_switches"] if k["env"] == "STYLE_FORCE_OFF")
-    assert sw["active"] is True and sw["value"] == "1", sw
+    assert sw["active"] is True and sw["env_raw"] == "1" and sw["source"] == "env", sw
+    assert sw["fallback"] is True and sw["overrides_env"] is False, sw
+
+
+def case_override_beats_env_and_clears_back_to_it():
+    import webhook_dispatch
+    from automations import _common
+    os.environ["W7_WEBHOOK_DISPATCH_DISABLED"] = "1"
+    try:
+        assert webhook_dispatch._global_kill_switch() is True, "env alone turns it on"
+        r = _put("W7_WEBHOOK_DISPATCH_DISABLED", False)
+        assert r.status_code == 200, r.text
+        sw = r.json()["switch"]
+        assert sw["source"] == "override" and sw["effective"] is False and sw["env_value"] is True, sw
+        assert sw["override_by"] == "agency_master", sw
+        assert sw["overrides_env"] is True, "an override against a set env var is flagged"
+        assert webhook_dispatch._global_kill_switch() is False, "the override wins over env, no restart"
+        r = _put("W7_WEBHOOK_DISPATCH_DISABLED", None)
+        assert r.status_code == 200 and r.json()["switch"]["source"] == "env", r.text
+        assert webhook_dispatch._global_kill_switch() is True, "cleared: env again"
+    finally:
+        os.environ.pop("W7_WEBHOOK_DISPATCH_DISABLED", None)
+        _put("W7_WEBHOOK_DISPATCH_DISABLED", None)
+    assert webhook_dispatch._global_kill_switch() is False
+    # The style loaders read the same registry.
+    assert _put("STYLE_FORCE_OFF", True).status_code == 200
+    try:
+        assert _common._style_force_off() is True
+    finally:
+        _put("STYLE_FORCE_OFF", None)
+    assert _common._style_force_off() is False
+
+
+def case_number_switch_override_reaches_its_consumer():
+    import employees
+    import smart_lists_api
+    try:
+        r = _put("SMART_LIST_MAX_ACTIVE", 3)
+        assert r.status_code == 200 and r.json()["switch"]["effective"] == 3, r.text
+        assert smart_lists_api._max_active() == 3
+        r = _put("MAX_EMPLOYEES_PER_USER", 0)
+        assert r.status_code == 200 and employees._max_employees() == 0, r.text
+    finally:
+        for name in ("SMART_LIST_MAX_ACTIVE", "MAX_EMPLOYEES_PER_USER"):
+            assert _put(name, None).status_code == 200
+    assert smart_lists_api._max_active() == 10 and employees._max_employees() == 20
+
+
+def case_s4s_live_posting_override_reaches_its_consumer():
+    import s4s_api
+    assert s4s_api.live_posting() is True, "default on"
+    try:
+        assert _put("S4S_LIVE_POSTING", False).status_code == 200
+        assert s4s_api.live_posting() is False, "the Settings override stops posting, no restart"
+        os.environ["S4S_LIVE_POSTING"] = "off"
+        assert _put("S4S_LIVE_POSTING", True).status_code == 200
+        assert s4s_api.live_posting() is True, "the override beats an env off"
+    finally:
+        os.environ.pop("S4S_LIVE_POSTING", None)
+        _put("S4S_LIVE_POSTING", None)
+    assert s4s_api.live_posting() is True
+
+
+def case_bad_writes_are_refused():
+    assert _put("NOPE", True).status_code == 404
+    for name, v in (("W7_WEBHOOK_DISPATCH_DISABLED", 1), ("W7_WEBHOOK_DISPATCH_DISABLED", "on"),
+                    ("SMART_LIST_MAX_ACTIVE", 0), ("SMART_LIST_MAX_ACTIVE", True),
+                    ("SMART_LIST_MAX_ACTIVE", 2.5), ("SMART_LIST_MAX_ACTIVE", 51),
+                    ("SMART_LIST_MAX_ACTIVE", 10 ** 30), ("MAX_EMPLOYEES_PER_USER", 501)):
+        r = _put(name, v)
+        assert r.status_code == 422, (name, v, r.status_code, r.text)
+    # Non-finite numbers: JSON has no literal, Python's json writes one, the relay must 422, not 500.
+    for raw in (b'{"value": Infinity, "admin_password": "%s"}', b'{"value": NaN, "admin_password": "%s"}'):
+        r = MASTER.put("/admin/system/switches/SMART_LIST_MAX_ACTIVE", content=raw % PW.encode(),
+                       headers={"content-type": "application/json"})
+        assert r.status_code in (400, 422), (raw, r.status_code, r.text)
+    r = MASTER.put("/admin/system/switches/SMART_LIST_MAX_ACTIVE", json={"admin_password": PW})
+    assert r.status_code == 422, r.text
+    assert _switch("SMART_LIST_MAX_ACTIVE")["source"] == "default"
+
+
+def case_a_write_needs_the_admin_password():
+    assert _put("W7_WEBHOOK_DISPATCH_DISABLED", True, pw=None).status_code == 403
+    assert _put("W7_WEBHOOK_DISPATCH_DISABLED", True, pw="wrong").status_code == 403
+    assert _switch("W7_WEBHOOK_DISPATCH_DISABLED")["override"] is None
+
+
+def case_non_master_cannot_write_a_switch():
+    for client, code in ((OWNER, 403), (CHATTER, 403), (ANON, 401)):
+        assert _put("W7_WEBHOOK_DISPATCH_DISABLED", True, client=client).status_code == code, client
+    assert OWNER.get("/admin/system/switches").status_code == 403
+    assert _switch("W7_WEBHOOK_DISPATCH_DISABLED")["override"] is None
+
+
+def case_a_bad_env_value_falls_back_and_warns_once():
+    import logging
+
+    import runtime_switches
+    seen: list[str] = []
+
+    class _H(logging.Handler):
+        def emit(self, rec):
+            seen.append(rec.getMessage())
+    h = _H()
+    runtime_switches.log.addHandler(h)
+    os.environ["SMART_LIST_MAX_ACTIVE"] = "lots"
+    try:
+        assert [runtime_switches.value("SMART_LIST_MAX_ACTIVE") for _ in range(5)] == [10] * 5
+    finally:
+        os.environ.pop("SMART_LIST_MAX_ACTIVE", None)
+        runtime_switches.log.removeHandler(h)
+    assert len([m for m in seen if "'lots' is not legal" in m]) == 1, seen
+
+
+def case_a_failed_boot_load_is_reported_and_retried():
+    import runtime_switches
+    real = runtime_switches._read_rows
+
+    async def broken():
+        raise RuntimeError("db locked")
+    runtime_switches._read_rows = broken
+    runtime_switches._loaded = False
+    try:
+        try:
+            asyncio.run(runtime_switches.load())
+            raise AssertionError("load() must raise when the table cannot be read")
+        except RuntimeError:
+            pass
+        assert MASTER.get("/admin/system/switches").json()["loaded"] is False
+    finally:
+        runtime_switches._read_rows = real
+    asyncio.run(runtime_switches.load_until_loaded(interval_s=0))
+    assert MASTER.get("/admin/system/switches").json()["loaded"] is True
+
+
+def case_a_switch_write_is_audited_and_survives_a_reload():
+    from sqlalchemy import select as _select
+
+    import runtime_switches
+    from db.models import Action, RuntimeSwitch
+    path = "/admin/system/switches/OF_COTAG_ENABLED"
+    assert _put("OF_COTAG_ENABLED", False).status_code == 200
+
+    async def rows():
+        async with get_session() as s:
+            acts = (await s.execute(_select(Action).where(Action.action == f"PUT {path}"))).scalars().all()
+            sw = await s.get(RuntimeSwitch, "OF_COTAG_ENABLED")
+            return [a.payload_json or "" for a in acts], (sw.value_json, sw.updated_by) if sw else None
+    payloads, row = asyncio.run(rows())
+    assert len(payloads) == 1 and row == ("false", "agency_master"), (payloads, row)
+    assert PW not in payloads[0] and '"***"' in payloads[0], "the audit row redacts the password"
+    runtime_switches._overrides = {}            # a restart: the cache is empty until load()
+    asyncio.run(runtime_switches.load())
+    import media_cotag
+    try:
+        assert media_cotag.enabled() is False, "the stored override is back after a reload"
+    finally:
+        assert _put("OF_COTAG_ENABLED", None).status_code == 200
+    assert media_cotag.enabled() is True
 
 
 def case_runs_span_accounts_with_errors_and_jobs():

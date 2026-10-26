@@ -15,9 +15,10 @@ import { stillUrl } from "@/lib/ofMedia";
 import { bubbleClass, chatMedia, chatMediaTemplate, clock, fillSlot, htmlLines, objectOf } from "@/lib/ofMirrorData";
 import type { SettingsData } from "@/lib/ofMirrorSettings";
 import { ELSEWHERE } from "@/lib/ofMirrorTooltip";
+import { BRAND_NAME } from "@/lib/brand";
 
 /** The house tooltip of a control Inflowwww never writes (ofMirrorWrites' NOT_YET; repeated: that module imports ofMirrorSettings, which imports this one). */
-const NOT_YET = "Not available in Inflowwww yet";
+const NOT_YET = `Not available in ${BRAND_NAME} yet`;
 
 /** OF's masked phone (settings-advanced.js): the last four digits behind six stars. */
 const maskPhone = (last4: string) => `******${last4}`;

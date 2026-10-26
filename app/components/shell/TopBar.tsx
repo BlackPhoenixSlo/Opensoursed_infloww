@@ -44,6 +44,7 @@ import { HEADER_TILE, HEADER_TILE_ICON } from "@/components/shell/headerTile";
 import { useAgencyTimeZone } from "@/lib/appliedSettings";
 import { zoneOffsetNow } from "@/lib/creatorClock";
 import { cn } from "@/lib/utils";
+import { BRAND_NAME } from "@/lib/brand";
 
 /** "UTC+02:00" for an offset in minutes east of UTC. */
 function utcOffsetLabel(mins: number): string {
@@ -84,7 +85,7 @@ export default function TopBar({
         />
         {/* Below sm the wordmark gives way to the right-hand controls (360px). */}
         <Link href="/" className="hidden sm:inline font-semibold text-fg tracking-tight shrink-0">
-          Inflowwww
+          {BRAND_NAME}
         </Link>
         <FreeTrialBadge />
 

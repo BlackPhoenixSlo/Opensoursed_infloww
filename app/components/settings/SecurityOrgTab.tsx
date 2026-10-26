@@ -21,6 +21,7 @@ import {
 } from "@/components/settings/SettingsPanel";
 import { IfModal } from "@/components/ui/infloww";
 import { cn } from "@/lib/utils";
+import { BRAND_NAME } from "@/lib/brand";
 
 const COLUMNS = ["Name", "2FA status", "Last login", "Operations"];
 const OPERATION = "text-[var(--if-accent)] cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed";
@@ -149,7 +150,7 @@ export default function SecurityOrgTab() {
           }
         >
           <p>
-            {resetting.display_name} will be logged out of Inflowwww and will have to set up their two-factor
+            {resetting.display_name} will be logged out of {BRAND_NAME} and will have to set up their two-factor
             authentication again.
           </p>
           {resetM.error && <p role="alert" className="mt-3 text-[var(--if-danger)]">{resetM.error.message}</p>}

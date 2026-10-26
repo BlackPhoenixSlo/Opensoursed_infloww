@@ -168,6 +168,25 @@ describe("AccountsTable — a paused account says it is paused", () => {
     expect(screen.getByText(/^unlinked /)).toBeInTheDocument();
   });
 
+  it("names Browserbase login as the repair when OnlyFans wants a 2FA code", async () => {
+    relayGet.mockImplementation((path: string) => {
+      if (path === "/admin/accounts") {
+        return Promise.resolve({
+          accounts: [{ id: "acct-otp", has_session: true, session_dead_at: "2026-10-25T09:00:00Z", session_dead_reason: "otp_required" }],
+          active_account_id: "acct-otp",
+        });
+      }
+      if (path.startsWith("/health")) return Promise.resolve({ ok: true, accounts: [] });
+      return Promise.resolve({});
+    });
+
+    render(<AccountsTable />, { wrapper });
+
+    const badge = await screen.findByText("automations paused");
+    expect(badge.closest("[title]")).toHaveAttribute("title", expect.stringMatching(/2FA code.*Browserbase login/));
+    expect(screen.queryByText("otp_required")).not.toBeInTheDocument();
+  });
+
   it("leaves a fleet with no dead sessions completely unbadged", async () => {
     relayGet.mockImplementation((path: string) => {
       if (path === "/admin/accounts") {

@@ -28,14 +28,13 @@ list. `harvest_male.py` → contact sheets → `finalize_male.py` is its pipelin
 from __future__ import annotations
 
 import logging
-import os
 import re
 from datetime import datetime, timedelta
 from typing import NamedTuple
 
 from ._common import (
     CAT_STICKER_GAP_MIN_KEY, CAT_STICKER_SKIP_PCT_KEY, CAT_STICKER_SOLO_PCT_KEY,
-    CAT_STICKERS_KEY, _STYLE_FORCE_OFF_ENV, _load_style_json,
+    CAT_STICKERS_KEY, _load_style_json, _style_force_off,
 )
 
 log = logging.getLogger("of-relay.automation.cat_stickers")
@@ -69,7 +68,7 @@ async def load_cat_sticker_config(account_id: str) -> StickerConfig:
     Rate knobs: the cat_sticker_*_pct/_gap_min keys; absent/NULL/parse-error/
     non-numeric → the house defaults (wide open: skip 0, solo 5%, gap 0)."""
     stored = await _load_style_json(account_id)
-    if os.environ.get(_STYLE_FORCE_OFF_ENV):
+    if _style_force_off():
         enabled = False
     else:
         val = stored.get(CAT_STICKERS_KEY)

@@ -24,7 +24,7 @@ import { FanListButtons, RailSwitch } from "@/components/chat/FanListButtons";
 import { ChatSurface } from "@/components/chat/ChatSurface";
 import { FanTabsRow } from "@/components/chat/FanTabsRow";
 import { InflowwPalette } from "@/components/chat/InflowwPalette";
-import { fanTabKey, useFanTabs, useFanTabsCloseRule, type FanTab } from "@/components/chat/useFanTabs";
+import { FAN_TABS_FULL_LABEL, fanTabKey, useFanTabs, useFanTabsCloseRule, type FanTab } from "@/components/chat/useFanTabs";
 import { ThreadEmptyState } from "@/components/chat/ThreadEmptyState";
 import { WindowHeader } from "@/components/chat/WindowHeader";
 import { useCreatorTabs } from "@/components/chat/useCreatorTabs";
@@ -40,9 +40,13 @@ import { useHotkeys } from "@/hooks/useHotkeys";
 import { useIsDesktop } from "@/hooks/useIsDesktop";
 import { useScope } from "@/contexts/ScopeContext";
 import { MP } from "@/lib/messagesPro";
+import { FAN_TAB_PARAM, setFanTabOpener } from "@/lib/notificationLink";
 import { cn } from "@/lib/utils";
 import { relay, type OFChatItem, type OFUserMini } from "@/lib/relay";
 import { sameUserId, type FanId } from "@/lib/fanId";
+
+/** How long "Fan tab limit reached (100)" shows after a notification outside the panel. */
+const TABS_FULL_NOTICE_MS = 8_000;
 
 /** The Creator and Fan a Deep link (`/messages-pro/<accountId>/<fanId>`) names. */
 export interface MessagesProDeepLink {
@@ -134,6 +138,47 @@ export function MessagesPro({ deepLink }: { deepLink?: MessagesProDeepLink } = {
     handleActivateTab(tab);
     return result;
   }, [fanTabsEmployeeKey, openFanTab, handleActivateTab]);
+  // A money notification's `?refresh=media` (the Fan just paid): read again
+  // what the header's manual ↻ reads (ChatSurface.handleRefresh), plus the
+  // full profile (the money block), which never refetches on mount (useOFUser).
+  const refreshMoney = useCallback(({ accountId, fanId }: { accountId: string; fanId: FanId }) => {
+    void qc.invalidateQueries({ queryKey: ["messages", accountId, fanId] });
+    void qc.invalidateQueries({ queryKey: ["fan-chat-media", accountId, fanId], exact: false });
+    void qc.invalidateQueries({ queryKey: ["fan-ppv-history", accountId, fanId], exact: false });
+    void qc.invalidateQueries({ queryKey: ["last-purchases", accountId] });
+    void qc.invalidateQueries({ queryKey: ofUserFullKey(accountId, fanId), exact: true });
+    void qc.prefetchQuery({ ...ofUserQuery(accountId, fanId), staleTime: 0 });
+    void qc.invalidateQueries({ queryKey: ["fan", accountId, fanId] });
+  }, [qc]);
+  // Outside the panel (a toast, Buys & tips, another window) the cap is told
+  // under the Fan tabs strip, for a few seconds (story 49).
+  const [tabsFull, setTabsFull] = useState(false);
+  useEffect(() => {
+    if (!tabsFull) return;
+    const t = setTimeout(() => setTabsFull(false), TABS_FULL_NOTICE_MS);
+    return () => clearTimeout(t);
+  }, [tabsFull]);
+  // Every other notification (toast, Buys & tips, one clicked in another
+  // window or the desktop app) opens its Fan the same way
+  // (lib/notificationLink). Until the Employee resolves no tab could be
+  // stored, so those links load this window instead, and the arrival below
+  // adds the tab.
+  useEffect(() => fanTabsEmployeeKey === null ? undefined : setFanTabOpener((tab, { refresh }) => {
+    if (handleOpenNotificationFan(tab) === "full") setTabsFull(true);
+    if (refresh) refreshMoney(tab);
+  }), [fanTabsEmployeeKey, handleOpenNotificationFan, refreshMoney]);
+  // One from another window arrives as this Deep link with `?fanTab=<name>`:
+  // its Thread is the link's, so add the Fan's tab once the Employee
+  // resolves, then drop the param so a reload adds nothing.
+  const fanTabParamReadRef = useRef(false);
+  useEffect(() => {
+    if (!deepLink || fanTabsEmployeeKey === null || fanTabParamReadRef.current) return;
+    fanTabParamReadRef.current = true;
+    const name = new URL(window.location.href).searchParams.get(FAN_TAB_PARAM);
+    if (name === null) return;
+    if (openFanTab({ ...deepLink, name }) === "full") setTabsFull(true);
+    stripSearchParam(FAN_TAB_PARAM);
+  }, [deepLink, fanTabsEmployeeKey, openFanTab]);
 
   // Empty the Thread: the Thread's Back, and ✕ on the last Fan tab.
   const clearSelection = useCallback(() => {
@@ -179,10 +224,8 @@ export function MessagesPro({ deepLink }: { deepLink?: MessagesProDeepLink } = {
   // localStorage-rehydrated caches are stale by seconds. Invalidate the
   // THREAD too, not just the Fan insights set — the persisted ["messages"]
   // snapshot is what paints first, and a money event changes it (PPV flips
-  // locked→purchased, ledger tip rows land) — mirroring the header's manual
-  // ↻ (ChatSurface.handleRefresh). Queries mounted now refetch at once; Fan
-  // insights' refetch when the pane opens, except the full profile (the money
-  // block), which never refetches on mount (useOFUser): it is read here, once.
+  // locked→purchased, ledger tip rows land) — `refreshMoney`. Queries mounted
+  // now refetch at once; Fan insights' refetch when the pane opens.
   // Then strip the param so a plain reload doesn't re-fire. Must wait out the
   // persister's restore —
   // invalidating mid-restore would let the rehydrated snapshot land on top of
@@ -194,16 +237,9 @@ export function MessagesPro({ deepLink }: { deepLink?: MessagesProDeepLink } = {
     if (!deepLink) return;
     if (new URL(window.location.href).searchParams.get("refresh") !== "media") return;
     refreshFiredRef.current = true;
-    const { accountId, fanId } = deepLink;
-    void qc.invalidateQueries({ queryKey: ["messages", accountId, fanId] });
-    void qc.invalidateQueries({ queryKey: ["fan-chat-media", accountId, fanId], exact: false });
-    void qc.invalidateQueries({ queryKey: ["fan-ppv-history", accountId, fanId], exact: false });
-    void qc.invalidateQueries({ queryKey: ["last-purchases", accountId] });
-    void qc.invalidateQueries({ queryKey: ofUserFullKey(accountId, fanId), exact: true });
-    void qc.prefetchQuery({ ...ofUserQuery(accountId, fanId), staleTime: 0 });
-    void qc.invalidateQueries({ queryKey: ["fan", accountId, fanId] });
+    refreshMoney(deepLink);
     stripSearchParam("refresh");
-  }, [isRestoring, qc, deepLink]);
+  }, [isRestoring, refreshMoney, deepLink]);
 
   // A Deep link scopes this window (the Fan List and the realtime event scope)
   // to its Creator without saving it, so the Employee's other windows keep
@@ -400,6 +436,9 @@ export function MessagesPro({ deepLink }: { deepLink?: MessagesProDeepLink } = {
     <InflowwPalette className={cn(MP.panes.root, "h-chat flex flex-col overflow-hidden")}>
       {desktop && <WindowHeader />}
       {desktop && <FanTabsRow openFan={selected} onActivate={handleActivateTab} onClosed={handleClosedTab} onHome={clearSelection} />}
+      {tabsFull && (
+        <div role="status" className="shrink-0 px-3 py-1 border-b border-border text-xs text-warn">{FAN_TABS_FULL_LABEL}</div>
+      )}
       {!desktop && !selected && (
         <div className="shrink-0 px-2 py-1.5 border-b border-[var(--inf-rule,var(--color-border))]">
           <ScopeSelect accounts={accounts} pickAll={pickAll} />

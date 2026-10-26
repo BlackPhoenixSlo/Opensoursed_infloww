@@ -541,6 +541,25 @@ def case_scrub_pool_secrets():
     boom.get("/api/test-pool-boom")
     listed = OWNER_A.get("/admin/errors", params={"limit": 50}).text
     assert "test-pool-boom" in listed and "/x/" in listed, listed[:500]
+    # A browser error whose context is over the stored cap (a long component stack)
+    # stays listable: the stored context is valid JSON, and a row cut off before
+    # that (raw slice of the JSON text) is served as text, never a 500.
+    big = OWNER_A.post("/admin/errors", json={"message": "big-context", "context": {"stack": "y" * 40000}})
+    assert big.status_code == 200 and big.json()["ok"], big.text
+    import asyncio
+    from db.engine import get_session
+    from db.models import AppError as _AE
+    async def _legacy_row():
+        async with get_session() as s:
+            s.add(_AE(source="browser", kind="error", message="legacy-cut-context",
+                      context_json=json.dumps({"stack": "z" * 100})[:40]))
+    asyncio.run(_legacy_row())
+    got = OWNER_A.get("/admin/errors", params={"limit": 50})
+    assert got.status_code == 200, got.text[:500]
+    rows = {r["message"]: r for r in got.json()["list"]}
+    assert set(rows["big-context"]["context"]) == {"truncated"}, rows["big-context"]["context"].keys()
+    assert rows["legacy-cut-context"]["context"] == {"unparsed": json.dumps({"stack": "z" * 100})[:40]}
+
     for secret in ("pool-1.invalid", PW):
         assert secret not in listed, f"{secret!r} served by /admin/errors"
 

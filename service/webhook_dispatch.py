@@ -82,10 +82,11 @@ _BLAST_SCRAPE_CLAIM_MAX = 4096
 
 
 def _global_kill_switch() -> bool:
-    """True when W7 dispatch is disabled process-wide via env."""
-    return os.environ.get("W7_WEBHOOK_DISPATCH_DISABLED", "").strip().lower() in (
-        "1", "true", "yes", "on",
-    )
+    """True when W7 dispatch is disabled process-wide: the Settings → System
+    override, else env W7_WEBHOOK_DISPATCH_DISABLED (1/true/yes/on). A cached
+    read (runtime_switches), cheap on every inbound DM."""
+    import runtime_switches
+    return runtime_switches.on("W7_WEBHOOK_DISPATCH_DISABLED")
 
 
 @contextlib.asynccontextmanager

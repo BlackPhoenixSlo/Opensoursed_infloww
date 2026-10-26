@@ -60,13 +60,18 @@ export const OURS = {
     menuPlace: "right-0 mt-1 z-30",
   },
   FanListFilters: {
-    /** The gear and the sort-line menus' place: from the trigger's right
-     *  edge, 4px below it (ours, as `CreatorTabs.pickerPlace`). */
+    /** The gear menu's place: from the trigger's right edge, 4px below
+     *  it (ours, as `CreatorTabs.pickerPlace`). */
     menuPlace: "right-0 mt-1 z-30",
     /** The "All inboxes" menu's place: from the selector's left edge, as
      *  the Clone's `popover()` places every `.pop` (mj:109-117), 4px below
      *  it, so it stays inside the pane. */
     menuPlaceStart: "left-0 mt-1 z-30",
+    /** The sort menu's place: under the sort button, from the filter row's
+     *  content edge (its 11px padding), 4px below, so it stays inside the
+     *  pane wherever the button sits (after the selector, a 238px menu fits
+     *  a 320px pane from neither of the button's edges). */
+    sortMenuPlace: "left-2.75 mt-1 z-30",
     /** The gear's box: a 1px border (Infloww's own screenshot, ranked above
      *  the Clone's bare icon, mh:134), and below md the house 36px tap
      *  target. */
@@ -83,15 +88,9 @@ export const OURS = {
      *  room above them so a corner badge's 5px overhang is not clipped by
      *  `overflow-x:auto`. */
     chipScroller: "gap-2.5 pt-2",
-    /** The "+" Extras overflow's anchor, outside the scroller so its menu
-     *  is not clipped: the same 8px badge room. */
-    extrasAnchor: "pt-2",
     /** Every chip at the Clone's 1.4 line height (mh:37), held on the chip
      *  so it does not depend on the Messages Pro root (Group chat). */
     chip: "leading-[1.4]",
-    /** A folder chip: the same 1.4, and below md the house 36px tap target
-     *  the chips keep (FL18). */
-    folderChip: "leading-[1.4] min-h-9 md:min-h-0",
     /** The count in a chip's corner badge on one 10px line. */
     chipBadge: "leading-none",
     /** A menu row's sub-line under its name: a sort order's explanation,

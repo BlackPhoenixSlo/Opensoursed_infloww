@@ -59,6 +59,7 @@ import { totalSpendOf } from "./totalSpend";
 import { useFocusMode } from "./useFocusMode";
 import { useFocusModeSettings } from "./useFocusModeSettings";
 import { useInboxGroup } from "./useInboxGroup";
+import { BRAND_NAME } from "@/lib/brand";
 
 /** Owe reply auto-paginates until OWE_REPLY_TARGET rows are filled or
  *  OWE_REPLY_SCAN_CAP rows have been scanned (whichever comes first). */
@@ -243,7 +244,7 @@ export function FanList({
   // The Split Inbox group chosen in "All inboxes"; session state per Creator.
   const inbox = useInboxGroup(singleAcctId);
   const pinnedFolders = useChatFolders(foldersReady ? singleAcctId : null).data ?? [];
-  // "✎ Lists" shows once the Creator has any OF list (mj:3067); same fetch.
+  // The pencil ("Pin lists as chips") shows once the Creator has any OF list (mj:3067); same fetch.
   const hasLists = !!useAllChatFolders(foldersReady ? singleAcctId : null).data?.length;
   // "Unread with tips" is OF's per-Creator filter, offered only while the
   // Creator has tips on (as OF's own chats list gates it, ofMirrorChats.ts).
@@ -427,8 +428,8 @@ export function FanList({
   }, [allChipBase, isUnresponded, notRestricted]);
 
   const inboxTabTitle = allCount > 0
-    ? `(${allCount}) Inbox · Inflowwww`
-    : "Inbox · Inflowwww";
+    ? `(${allCount}) Inbox · ${BRAND_NAME}`
+    : `Inbox · ${BRAND_NAME}`;
   useDocumentTitle(inboxTabTitle, setTabTitle);
 
   // Deferred: pass empty inputs until the staggered ready flags flip,

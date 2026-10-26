@@ -72,12 +72,13 @@ test("show: builds a silent notification and click opens the validated path", ()
   const { FakeNotification, made } = fakeElectron();
   const clicks = [];
   const n = createNotifier({ Notification: FakeNotification, onClick: (p) => clicks.push(p), now: () => 1000 });
-  assert.strictEqual(n.show({ id: "m1", title: "Ann", body: "hi", href: "/messages-pro/a/1" }, APP), true);
+  assert.strictEqual(n.show({ id: "m1", title: "Ann", body: "hi", href: "/messages-pro/a/1?fanTab=Ann" }, APP), true);
   assert.strictEqual(made.length, 1);
   assert.deepStrictEqual(made[0].opts, { title: "Ann", body: "hi", silent: true });
   assert.ok(made[0].shown);
   made[0].handlers.click();
-  assert.deepStrictEqual(clicks, ["/messages-pro/a/1"]);
+  // The query is kept: `fanTab` makes Messages Pro open the Fan as a Fan tab.
+  assert.deepStrictEqual(clicks, ["/messages-pro/a/1?fanTab=Ann"]);
 });
 
 test("show: a foreign href still notifies but click opens no path", () => {

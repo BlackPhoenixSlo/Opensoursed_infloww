@@ -40,12 +40,13 @@ import {
   useS4SDiscover,
   type S4SDiscoveryItem, type S4SProfile,
 } from "@/lib/s4s";
+import { BRAND_NAME } from "@/lib/brand";
 
 export const EMPTY_LINE =
   "No other creator is listed yet. A creator appears here once it takes part in Share for Share, is allowed on "
   + "Discover Creators, and has a Primary post.";
 /** The Bounded S4S labelled improvement (ADR-0011): said under the search, never Infloww's community directory. */
-export const DEPLOYMENT_LINE = "Your agency's other creators and other agencies' creators on this Inflowwww deployment appear here.";
+export const DEPLOYMENT_LINE = `Your agency's other creators and other agencies' creators on this ${BRAND_NAME} deployment appear here.`;
 const LOAD_ERROR = "The creator list failed to load due to network connection, please try again later.";
 
 /** Two lines: Infloww's 16 / 600 title over its 12 / 600 T3 sentence. */

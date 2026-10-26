@@ -7,22 +7,26 @@
  * named `EXTRAS_OVERFLOW_LABEL` (the Chat header's, the Kebab menu's
  * "Inflowwww extras ▸" row, ticket 140), but for the Window header, which
  * has no overflow since TODO.md B2 (2026-10-16): there All Models sits
- * inline; and for Fan insights, whose extras are Insights blocks of their
- * own since 2026-10-21 (ADR-0003's amendment). The
+ * inline; for Fan insights, whose extras are Insights blocks of their
+ * own since 2026-10-21 (ADR-0003's amendment); and for the Fan List, which
+ * has no overflow since 2026-10-26: Owe reply is a chip and the extra sort
+ * orders sit in its sort menu (ADR-0003's amendment). The
  * extras audit (`app/messages-pro/extras.test.tsx`) checks the rendered tree
  * against it.
  */
 
+import { BRAND_NAME } from "@/lib/brand";
+
 /** The word every extra's tooltip starts with. */
-export const EXTRA_LABEL = "Inflowwww extra";
+export const EXTRA_LABEL = `${BRAND_NAME} extra`;
 
 /** The accessible name and tooltip of every Extras overflow trigger. */
-export const EXTRAS_OVERFLOW_LABEL = "Inflowwww extras";
+export const EXTRAS_OVERFLOW_LABEL = `${BRAND_NAME} extras`;
 
 /** Where an extra renders. */
 export type Host =
   | "Window header"
-  | "Fan List" | "Fan List overflow"
+  | "Fan List" | "Fan List sort menu"
   | "Chat header overflow"
   | "Fan insights";
 
@@ -48,7 +52,8 @@ export type Extra = {
  *  since 2026-10-21 (ADR-0003's amendment). */
 export const EXTRAS = [
   { name: "Scheduled chip", hosts: ["Chat header overflow"] },
-  { name: "Owe reply", hosts: ["Fan List overflow"] },
+  // A chip after All, its count always in amber (2026-10-26).
+  { name: "Owe reply", hosts: ["Fan List"] },
   // OF's Priority filter, which Infloww's chip row lacks: inline, after the
   // Creator's lists (page-parity 07).
   { name: "Priority chip", hosts: ["Fan List"] },
@@ -63,7 +68,7 @@ export const EXTRAS = [
   { name: "Unsold PPVs", hosts: ["Fan insights"] },
   {
     name: "Extra sort orders",
-    hosts: ["Fan List overflow", "Fan List overflow", "Fan List overflow"],
+    hosts: ["Fan List sort menu", "Fan List sort menu", "Fan List sort menu"],
   },
 ] as const satisfies readonly Extra[];
 

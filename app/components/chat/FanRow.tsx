@@ -327,8 +327,8 @@ export const FanRow = memo(function FanRow({
  *    • Nothing    → we sent last; ball's in their court
  *
  *  `oweDot` is FanList's `lastMessageFromFan`, which owns the compare so this
- *  dot and the "↩ Owe reply" filter can't drift. FanList passes it only while
- *  the Legacy flag is on or Owe reply is the active filter (spec, Rows;
+ *  dot and the Owe reply chip's filter can't drift. FanList passes it only
+ *  while Owe reply is the active filter (spec, Rows;
  *  ADR-0003). It is string-normalized: `fromUser.id` is numeric on OF but a
  *  string snowflake on Fansly, and the old `!== Number(accountId)` was true
  *  for EVERY Fansly row — the dot stuck on threads we had already answered. */

@@ -296,9 +296,19 @@ async def notify_session_dead(account_id: str, reason: str, since: datetime) -> 
                 UserAccount.account_id == account_id))).scalars().all()
             acc = await s.get(Account, account_id)
         name = (acc.nickname if acc is not None else None) or account_id
-        why = "has no captured session" if reason == "no_session" else "was logged out of OnlyFans"
-        notice = Notice("session_dead", f"{name} {why}: relink the creator to resume", account_id=account_id,
-                        data={"reason": reason}, dedupe=f"session_dead:{account_id}:{since.isoformat()}")
+        data: dict[str, Any] = {"reason": reason}
+        if reason == "otp_required":
+            # Browserbase login is the sign-in that takes the 2FA code: the row opens it (/creators?relink=).
+            # The link is not tied to this Creator (Browserbase login signs in whichever account the
+            # owner enters), so the text names whose account to sign in to.
+            text = (f"{name} needs a 2FA code on OnlyFans: sign in to {name}'s OnlyFans account again "
+                    f"with Browserbase login to resume")
+            data["href"] = "/creators?relink=browserbase"
+        else:
+            why = "has no captured session" if reason == "no_session" else "was logged out of OnlyFans"
+            text = f"{name} {why}: relink the creator to resume"
+        notice = Notice("session_dead", text, account_id=account_id,
+                        data=data, dedupe=f"session_dead:{account_id}:{since.isoformat()}")
         for owner in owners:
             await notify(owner, [notice])
     except Exception:

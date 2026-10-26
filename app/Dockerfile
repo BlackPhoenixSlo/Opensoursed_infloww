@@ -29,7 +29,19 @@ ENV RELAY_URL=$RELAY_URL
 # The public site the app links back to (lib/site.ts). Empty = its default.
 ARG NEXT_PUBLIC_SITE_URL=
 ENV NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL
+# The product's name and logo (lib/brand.ts). Empty = Inflowwww and the OIF square.
+ARG NEXT_PUBLIC_BRAND_NAME=
+ENV NEXT_PUBLIC_BRAND_NAME=$NEXT_PUBLIC_BRAND_NAME
+ARG NEXT_PUBLIC_BRAND_LOGO=
+ENV NEXT_PUBLIC_BRAND_LOGO=$NEXT_PUBLIC_BRAND_LOGO
 COPY . .
+# A renamed deployment: the OF mirror's static pages (public/of-mirror, generated
+# once for every deployment) name Inflowwww in their disabled controls' titles;
+# rename them in the image, so every page, row copy and borrowed row says it.
+RUN if [ -n "$NEXT_PUBLIC_BRAND_NAME" ]; then \
+      grep -rlZ --include='*.html' Inflowwww public/of-mirror | xargs -0 -r node -e \
+        'const fs = require("fs"); for (const f of process.argv.slice(1)) fs.writeFileSync(f, fs.readFileSync(f, "utf8").replaceAll("Inflowwww", process.env.NEXT_PUBLIC_BRAND_NAME))'; \
+    fi
 RUN pnpm build
 
 FROM node:20-bookworm-slim AS runner

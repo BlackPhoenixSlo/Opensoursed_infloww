@@ -14,9 +14,11 @@
  * query on it) with a slow safety poll; the bell adds it to its badge. A row
  * click marks it read; "Mark all read" reads the rest. The gear's switches
  * save the `notifications` key of the preferences blob — a kind switched off
- * is no longer filed.
+ * is no longer filed. A row whose `data.href` names a page (a 2FA relink:
+ * /creators?relink=browserbase) is a link to it; the click reads it too.
  */
 
+import Link from "next/link";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Settings2 } from "lucide-react";
@@ -114,24 +116,36 @@ export function AgencyFeed() {
         <div className="px-3 py-6 text-center text-fg-dim">No agency notifications yet.</div>
       )}
       <ul>
-        {rows.map((n) => (
-          <li key={n.id}>
-            <button
-              type="button"
-              onClick={() => { if (!n.read) read.mutate(n.id); }}
-              className={cn(
-                "w-full text-left px-3 py-2 border-b border-border/40 last:border-0 hover:bg-bg-elev-2",
-                !n.read && "bg-accent/5",
-              )}
-            >
+        {rows.map((n) => {
+          const onClick = () => { if (!n.read) read.mutate(n.id); };
+          const cls = cn(
+            "block w-full text-left px-3 py-2 border-b border-border/40 last:border-0 hover:bg-bg-elev-2",
+            !n.read && "bg-accent/5",
+          );
+          const body = (
+            <>
               <div className={cn("text-sm", n.read ? "text-fg-dim" : "text-fg font-medium")}>{n.text}</div>
               <div className="text-[11px] text-fg-dim mt-0.5">{when(n.created_at)}</div>
-            </button>
-          </li>
-        ))}
+            </>
+          );
+          const href = hrefOf(n);
+          return (
+            <li key={n.id}>
+              {href
+                ? <Link href={href} onClick={onClick} className={cls}>{body}</Link>
+                : <button type="button" onClick={onClick} className={cls}>{body}</button>}
+            </li>
+          );
+        })}
       </ul>
     </div>
   );
+}
+
+/** The in-app page a notification points at (`data.href`, a path), else null. */
+function hrefOf(n: AgencyNotification): string | null {
+  const href = (n.data as { href?: unknown } | null)?.href;
+  return typeof href === "string" && href.startsWith("/") && !href.startsWith("//") ? href : null;
 }
 
 /** Per-kind switches over `preferences.notifications` (absent = on). */

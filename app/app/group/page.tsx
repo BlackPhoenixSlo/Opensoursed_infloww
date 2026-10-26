@@ -49,6 +49,7 @@ import {
   type GroupChannelMessage,
   type GroupSlot,
 } from "@/lib/groupChannel";
+import { BRAND_NAME } from "@/lib/brand";
 
 const STORAGE_KEY = "chatterly:group-slots";
 const TAB_ID_KEY = "chatterly:group-tab-id";
@@ -400,8 +401,8 @@ export default function GroupChatPage() {
   }, [qc, slots]);
 
   const groupTabTitle = unrespondedCount > 0
-    ? `(${unrespondedCount}) Group chat · Inflowwww`
-    : "Group chat · Inflowwww";
+    ? `(${unrespondedCount}) Group chat · ${BRAND_NAME}`
+    : `Group chat · ${BRAND_NAME}`;
   useDocumentTitle(groupTabTitle);
 
   const full = slots.length >= GROUP_SLOT_CAP;

@@ -28,6 +28,7 @@ import { IfBody, IfSelect, InflowwPageHeader, type IfOption } from "@/components
 import { ExtraTag } from "@/components/ui/primitives";
 import { useAccounts, useActiveAccounts } from "@/hooks/useAccounts";
 import { useReportRange } from "@/hooks/useReportRange";
+import { BRAND_NAME } from "@/lib/brand";
 
 export default function FanReport() {
   const { preset, from, to, fromIso, toIso, reportTz, ready, handleRange } = useReportRange("UTC");
@@ -75,8 +76,8 @@ export default function FanReport() {
             <div className="flex flex-wrap items-center gap-3">{range}</div>
           )}
           {accountId && (
-            <section aria-label="Inflowwww extras" className="space-y-3 pt-2">
-              <h2 className="flex items-center gap-2 text-[16px] font-medium text-fg">Inflowwww extras <ExtraTag /></h2>
+            <section aria-label={`${BRAND_NAME} extras`} className="space-y-3 pt-2">
+              <h2 className="flex items-center gap-2 text-[16px] font-medium text-fg">{BRAND_NAME} extras <ExtraTag /></h2>
               <UserDataTab accountId={accountId} />
             </section>
           )}

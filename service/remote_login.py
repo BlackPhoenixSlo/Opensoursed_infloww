@@ -65,6 +65,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from brand import BRAND_NAME
+
 log = logging.getLogger("of-relay.remote-login")
 
 HERE = Path(__file__).resolve().parent
@@ -855,7 +857,7 @@ def bind_proxy(job: RemoteLoginJob, account_id: str) -> None:
 
 def proxy_text(job: RemoteLoginJob) -> str:
     if job.proxy == PROXY_INFLOWWW:
-        return "the Inflowwww proxy"
+        return f"the {BRAND_NAME} proxy"
     if job.proxy == PROXY_CUSTOM:
         return f"proxy {job.proxy_label}"
     return "no proxy (server IP)"

@@ -13,6 +13,7 @@ import re
 # write (`clock.in`, ...) has no method.
 _ACTION_LABELS: tuple[tuple[str, str, str], ...] = (
     ("PUT", "/admin/settings/roles", "Changed role settings"),
+    ("PUT", "/admin/system/switches/{x}", "Changed a runtime switch"),
     ("PUT", "/admin/settings/{tab}", "Saved settings"),
     ("POST", "/admin/employees", "Added an employee"),
     ("POST", "/admin/employees/login", "Added an employee with a login"),

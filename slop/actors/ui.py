@@ -18,6 +18,8 @@ from urllib.parse import urlsplit
 
 from playwright.async_api import async_playwright
 
+from slop.lib.faults import FAULTS
+
 # Light theme; hide Next's dev overlay so screenshots show only the app.
 INIT_JS = """try { localStorage.setItem('chatterly:theme', 'light'); } catch (e) {}
 document.addEventListener('DOMContentLoaded', () => { const s = document.createElement('style');
@@ -96,12 +98,16 @@ PROBE_JS = r"""(() => {
 })();"""
 
 
-async def _owner_page(browser, ctx, viewport, held, aborted, init_scripts=()):
-    bctx = await browser.new_context(viewport={"width": viewport[0], "height": viewport[1]})
+async def _owner_page(browser, ctx, viewport, held, aborted, init_scripts=(), *, scale=1):
+    """A tab signed in as the owner on ctx.app. `scale`: the device scale factor
+    (2 for a zoomed crop). A fault with a `browser` script runs it in every page."""
+    bctx = await browser.new_context(viewport={"width": viewport[0], "height": viewport[1]},
+                                     device_scale_factor=scale)
     host = urlsplit(ctx.app).hostname
     await bctx.add_cookies([{"name": c.name, "value": c.value, "domain": host, "path": "/"}
                             for c in ctx.owner.c.cookies.jar])
-    for js in (INIT_JS, *init_scripts):
+    fault = FAULTS.get(ctx.fault or "")
+    for js in (INIT_JS, *init_scripts, *((fault.browser,) if fault and fault.browser else ())):
         await bctx.add_init_script(js)
 
     async def route(r):
@@ -124,11 +130,11 @@ async def _owner_page(browser, ctx, viewport, held, aborted, init_scripts=()):
 
 
 @asynccontextmanager
-async def owner_browser(ctx, viewport=(1600, 1000)):
+async def owner_browser(ctx, viewport=(1600, 1000), scale=1):
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(args=LAUNCH_ARGS)
         try:
-            yield await _owner_page(browser, ctx, viewport, [], [])
+            yield await _owner_page(browser, ctx, viewport, [], [], scale=scale)
         finally:
             await browser.close()
 

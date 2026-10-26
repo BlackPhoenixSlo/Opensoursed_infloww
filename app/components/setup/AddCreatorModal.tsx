@@ -50,6 +50,7 @@ import { pickAvatarUrl, useAccountAvatar } from "@/hooks/useAccountAvatar";
 import { useCreatorProfiles, type CreatorDetails, type DraftCreator } from "@/lib/creatorProfiles";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { cn } from "@/lib/utils";
+import { BRAND_NAME } from "@/lib/brand";
 
 /** The page's one line for phones (spec, Mobile). */
 export const DESKTOP_ONLY_LINE = "Paste cURL (the browser extension) and keys are desktop-only. On a phone, link a creator with Browserbase login.";
@@ -365,10 +366,10 @@ function SelectRole({ onAdmin, onCreator, onCancel }: { onAdmin: () => void; onC
 /** "Linking OnlyFans account (Alternative method)", Infloww's four steps with our pages named. */
 function AlternativeMethod() {
   const steps = [
-    "Add the creator to your organization on Inflowwww as a user, restricting their permissions to add creators only. Note that the creator can view the information of other creators linked to your organization’s Inflowwww account when you do this.",
-    "Have the creator activate their employee account via email, and log in to Inflowwww.",
+    `Add the creator to your organization on ${BRAND_NAME} as a user, restricting their permissions to add creators only. Note that the creator can view the information of other creators linked to your organization’s ${BRAND_NAME} account when you do this.`,
+    `Have the creator activate their employee account via email, and log in to ${BRAND_NAME}.`,
     "Direct the creator to “Manage creators” and to click on “Link creator account” to complete the steps and verification of their OnlyFans account on their computer.",
-    "Once the creator’s OnlyFans account is linked to Inflowwww, delete the creator’s Inflowwww user account.",
+    `Once the creator’s OnlyFans account is linked to ${BRAND_NAME}, delete the creator’s ${BRAND_NAME} user account.`,
   ];
   return (
     <div className="space-y-4">

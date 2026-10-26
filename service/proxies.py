@@ -41,6 +41,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from brand import BRAND_NAME
+
 HERE = Path(__file__).resolve().parent
 REGISTRY_PATH = HERE / "proxies.json"
 
@@ -216,7 +218,7 @@ def upsert(entry: dict[str, Any]) -> dict[str, Any]:
                 save(data)
                 return merged
         if is_reserved_label(label):     # a NEW label only; existing ones are edited above
-            raise ValueError(f"label {label!r} is reserved for the Inflowwww proxy pool")
+            raise ValueError(f"label {label!r} is reserved for the {BRAND_NAME} proxy pool")
         data["proxies"].append(entry)
         save(data)
         return entry
@@ -311,7 +313,7 @@ def upsert_from_line(line: str, default_scheme: str = "http",
     entry = parse_proxy_line(line, default_scheme)
     existing = get_by_label(entry["label"])
     if existing is not None and is_pool(existing):
-        raise PermissionError("Inflowwww proxy is read-only")
+        raise PermissionError(f"{BRAND_NAME} proxy is read-only")
     if owner is not None:
         if existing is not None and existing.get("user_id") is None:
             raise PermissionError("shared default proxy is read-only")
@@ -686,7 +688,7 @@ def assign_pool(account_id: str, rng: random.Random | None = None) -> tuple[dict
         return current, True
     pool = pool_entries()
     if not pool:
-        raise LookupError("no Inflowwww proxies are set up on this relay")
+        raise LookupError(f"no {BRAND_NAME} proxies are set up on this relay")
     aid = str(account_id)
     used: dict[str, int] = {}
     for p in list_proxies():

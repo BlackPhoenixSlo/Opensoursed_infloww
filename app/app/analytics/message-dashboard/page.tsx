@@ -52,6 +52,7 @@ import TopTippersCard from "@/components/messages/TopTippersCard";
 import { useReportRange } from "@/hooks/useReportRange";
 import { MESSAGE_DASHBOARD_TABS as TABS, type MessageDashboardTab as Tab } from "@/lib/pageTabs";
 import { cn } from "@/lib/utils";
+import { BRAND_NAME } from "@/lib/brand";
 
 const TAB_KEYS = new Set<string>(TABS.map((t) => t.key));
 const DEFAULT_TAB: Tab = "direct";
@@ -176,7 +177,7 @@ function MessagesPageInner() {
             <>
               <span aria-hidden className="h-4 w-px bg-border" />
               <ExtraTag />
-              <IfTabs aria-label="Inflowwww extras" tabs={EXTRA_TABS} value={tab} onChange={setTab}
+              <IfTabs aria-label={`${BRAND_NAME} extras`} tabs={EXTRA_TABS} value={tab} onChange={setTab}
                 className="h-full border-b-0 px-0" />
             </>
           }

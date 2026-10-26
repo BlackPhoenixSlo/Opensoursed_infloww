@@ -34,6 +34,27 @@ describe("NotificationBell (top bar)", () => {
     expect(await screen.findByText("No notifications.")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "See all" })).toHaveAttribute("href", "/notifications");
   });
+
+  it("a row opens the Fan as a Fan tab in the Messages Pro window, not a browser tab", async () => {
+    relayGet.mockResolvedValue({ list: [] });
+    appendNotifHistory({
+      id: "m9", accountId: "acc-1", type: "message", typeKey: "message",
+      user: { id: 9, name: "Ann Lee" }, text: "hi there", createdAt: new Date().toISOString(),
+    });
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    try {
+      renderWithProviders(<NotificationBell />);
+      await userEvent.click(screen.getByRole("button", { name: "Notifications" }));
+      const row = (await screen.findByText("hi there")).closest("a")!;
+      expect(row).toHaveAttribute("href", "/messages-pro/acc-1/9?fanTab=Ann+Lee");
+      expect(row).not.toHaveAttribute("target");
+
+      await userEvent.click(row);
+      expect(open).toHaveBeenCalledWith("", "messages-pro", expect.any(String));
+    } finally {
+      open.mockRestore();
+    }
+  });
 });
 
 describe("NotificationBell (Messages Pro)", () => {
@@ -71,5 +92,19 @@ describe("NotificationBell (has responded)", () => {
     expect(screen.getByText(/has responded/)).toBeInTheDocument();
     // Fan 8 is still unanswered: one Reply left.
     expect(screen.getAllByRole("button", { name: "Reply" })).toHaveLength(1);
+  });
+});
+
+describe("NotificationBell (Agency pane)", () => {
+  it("closes when an Agency row's in-app link is followed", async () => {
+    relayGet.mockResolvedValue({ list: [] });
+    renderWithProviders(
+      <NotificationBell agency={{ unread: 1, panel: <a href="/creators?relink=browserbase" onClick={(e) => e.preventDefault()}>Zoe needs a 2FA code</a> }} />,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Notifications" }));
+    await userEvent.click(await screen.findByRole("link", { name: "Zoe needs a 2FA code" }));
+
+    expect(screen.queryByRole("link", { name: "Zoe needs a 2FA code" })).toBeNull();
   });
 });
