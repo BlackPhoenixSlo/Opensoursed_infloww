@@ -58,6 +58,9 @@ const OTP_CHECKING = "checking the 2FA code";
 const OTP_REJECTED = "OnlyFans didn't accept that code";
 const OTP_NOT_TYPED = "couldn't type the 2FA code";
 const OTP_CODE = /^\d{6,8}$/;
+/** What the code field keeps of what was typed or pasted: spaces and dashes dropped ("123 456", "1234-5678"), nothing
+ *  else changed or cut, so a mistyped or overlong code stays visibly wrong (Submit off) instead of becoming another code. */
+const otpInput = (raw: string) => raw.replace(/[\s-]/g, "");
 
 /** What a finished job left the account on. */
 function attachedText(s: RemoteLoginStatus) {
@@ -126,10 +129,14 @@ export default function BrowserbaseLoginCard({ onLinked, initialNickname = "", p
 
   const otpM = useMutation<RemoteLoginStatus, RelayError, string>({
     mutationFn: (code) => relay.post<RemoteLoginStatus>(`${jobPath(jobId!)}/otp`, { code }),
-    onSuccess: (job, sent) => {
+    onSuccess: async (job, sent) => {
       setOtpErr(null);
       setOtp((cur) => (cur === sent ? "" : cur));
-      qc.setQueryData(["remote-login", job.id], job);
+      // A poll still in flight was read before the code was in: it must not land after this and unlock the field.
+      const key = ["remote-login", job.id];
+      await qc.cancelQueries({ queryKey: key });
+      const cached = qc.getQueryData<RemoteLoginStatus>(key);
+      if (!cached || cached.state === "otp") qc.setQueryData(key, job); // a newer poll already past the prompt wins
     },
     onError: (e) => setOtpErr(`Couldn't send the code: ${e.message}`),
   });
@@ -143,6 +150,7 @@ export default function BrowserbaseLoginCard({ onLinked, initialNickname = "", p
   const otpChecking = onOtp && status.message === OTP_CHECKING;
   const otpRejected = onOtp && status.message.startsWith(OTP_REJECTED);
   const otpNotTyped = onOtp && status.message.startsWith(OTP_NOT_TYPED);
+  const otpLocked = otpM.isPending || otpChecking; // in flight, or OnlyFans is checking it
 
   const cancel = () => { if (jobId) relay.post(`${jobPath(jobId)}/cancel`).catch(() => {}); };
 
@@ -211,17 +219,17 @@ export default function BrowserbaseLoginCard({ onLinked, initialNickname = "", p
           {status.state === "otp" && (
             <form
               className="space-y-2"
-              onSubmit={(e) => { e.preventDefault(); if (OTP_CODE.test(otp) && !otpM.isPending) otpM.mutate(otp); }}
+              onSubmit={(e) => { e.preventDefault(); if (OTP_CODE.test(otp) && !otpLocked) otpM.mutate(otp); }}
             >
               <label htmlFor="bb-otp" className="block text-xs text-fg-dim">2FA code</label>
               <div className="flex gap-2">
                 <Input
                   id="bb-otp" type="text" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]*"
-                  minLength={6} maxLength={8} autoFocus value={otp} placeholder="123456" className="max-w-40"
-                  disabled={otpM.isPending}
-                  onChange={(e) => setOtp(e.target.value.replace(/\D/g, "").slice(0, 8))}
+                  minLength={6} autoFocus value={otp} placeholder="123456" className="max-w-40"
+                  disabled={otpLocked}
+                  onChange={(e) => setOtp(otpInput(e.target.value))}
                 />
-                <Button type="submit" disabled={!OTP_CODE.test(otp) || otpM.isPending || otpChecking}>
+                <Button type="submit" disabled={!OTP_CODE.test(otp) || otpLocked}>
                   {otpM.isPending ? "Sending…" : "Submit code"}
                 </Button>
               </div>

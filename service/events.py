@@ -265,6 +265,17 @@ STATE_TYPES = frozenset({
 # The state events a stream ends after: its browser reconnects, and the
 # reconnect reads the session afresh.
 _ENDS_STREAM = frozenset({"assignment_changed", "sessions_revoked"})
+
+# Set on SIGTERM (server._close_streams_on_term): every open stream ends within
+# one queue poll, so uvicorn's graceful wait finishes instead of cancelling each
+# stream mid-await (one "Exception in ASGI application" traceback apiece) and
+# the shutdown hook — the automation drain — runs in the stop budget.
+_closing = False
+
+
+def close_streams() -> None:
+    global _closing
+    _closing = True
 SSE_TYPES = frozenset({
     "api2_chat_message",
     "toasts",
@@ -1097,7 +1108,7 @@ async def sse_stream(
         yield f"id: {head}\n\n".encode("utf-8")
         last_beat = time.monotonic()
         while True:
-            if await request.is_disconnected():
+            if _closing or await request.is_disconnected():
                 return
             if sub.lost:
                 sub.lost = False

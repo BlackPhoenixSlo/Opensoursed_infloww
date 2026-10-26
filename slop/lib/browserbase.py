@@ -16,9 +16,17 @@ hook `POST /__slop/browserbase` (lib/relay.py) points it here.
                    NOTFOUND (nothing leaves the machine); the self-signed
                    certificate is accepted with `--ignore-certificate-errors`.
   OnlyFans' site   HTTPS on loopback, served for onlyfans.com: the login form
-                   (rendered by script after load, as OF's is), its 2FA prompt
-                   (`input[name="code"]`, after a stale hidden one; a wrong
-                   code re-renders the prompt with an error), `auth_id` set once the right code is in, and
+                   (rendered by script after load, as OF's is; "Signing in…"
+                   for SIGNIN_MS after LOG IN), its 2FA prompt
+                   (`input[name="code"]` in its own form with its own VERIFY
+                   button, after a stale hidden code input and a decoy form
+                   whose "Back to login" is the page's first submit button; a
+                   sent code shows "Verifying…" with no field for VERIFY_MS,
+                   then a wrong one re-renders the prompt with an error; an
+                   `autosubmit` account's field sends its form itself on the
+                   last digit), a hidden reCAPTCHA frame (and a hidden
+                   `.cf-turnstile`) on every one of those pages, served by the
+                   site itself at `/recaptcha/api2/bframe`, `auth_id` set once the right code is in, and
                    /my/chats/, whose page makes one signed /api2/v2/ request and
                    loads OF's signing module (webpack 89668) through
                    `webpackChunkof_vue` with a minimal stand-in for webpack's
@@ -77,12 +85,16 @@ def _free_port() -> int:
 _LOGIN_HTML = """<!doctype html><html><head><title>OnlyFans</title><style>
 body{font-family:Helvetica,Arial,sans-serif;background:#f5f7f8;margin:0}
 .box{max-width:380px;margin:80px auto;background:#fff;border-radius:8px;padding:28px;box-shadow:0 1px 4px #0002}
-h1{color:#00aff0;font-size:26px;margin:0 0 18px}input{display:block;width:100%;box-sizing:border-box;margin:8px 0;
-padding:12px;border:1px solid #ccd;border-radius:6px;font-size:16px}button{width:100%;padding:12px;border:0;
+h1{color:#00aff0;font-size:26px;margin:0 0 18px}input{display:block;width:100%%;box-sizing:border-box;margin:8px 0;
+padding:12px;border:1px solid #ccd;border-radius:6px;font-size:16px}button{width:100%%;padding:12px;border:0;
 border-radius:24px;background:#00aff0;color:#fff;font-weight:700;font-size:15px;margin-top:8px}.err{color:#d33}
-</style></head><body><div class=box id=app>Loading…</div><script>
+</style></head><body><div class=box id=app>Loading…</div>
+<div style="visibility:hidden;position:absolute;top:-10000px"><iframe title="recaptcha challenge expires in two minutes"
+ src="/recaptcha/api2/bframe?k=slop" width=400 height=580></iframe></div><div class=cf-turnstile style=display:none></div>
+<script>
 const app = document.getElementById("app");
 const post = (p, b) => fetch(p, {method: "POST", body: JSON.stringify(b)}).then((r) => r.json());
+const later = (ms) => new Promise((r) => setTimeout(r, ms));
 function showLogin() {
   app.innerHTML = '<h1>OnlyFans</h1><form id=login><input type=text name=email placeholder=Email>' +
     '<input type=password name=password placeholder=Password><button type=submit>LOG IN</button></form>';
@@ -90,24 +102,43 @@ function showLogin() {
     e.preventDefault();
     const f = e.target;
     const j = await post("/__fake/login", {email: f.email.value, password: f.password.value});
-    if (j.otp) showOtp(""); else app.insertAdjacentHTML("beforeend", "<p class=err>Wrong email or password</p>");
+    if (!j.otp) return app.insertAdjacentHTML("beforeend", "<p class=err>Wrong email or password</p>");
+    app.innerHTML = "<h1>OnlyFans</h1><p>Signing in…</p>";
+    await later(%(signin_ms)d);
+    showOtp("", j.autosubmit);
   };
 }
-function showOtp(err) {
+function showOtp(err, autosubmit) {
   app.innerHTML = '<h1>Two-step verification</h1><p>Enter the code from your authenticator app.</p>' +
     (err ? '<p class=err>' + err + '</p>' : '') +
     '<input name=code style=display:none>' +  // a stale hidden code input, ahead of the real one
+    '<form id=decoy><button type=submit>Back to login</button></form>' +  // the page's first submit button
     '<form id=otp><input name=code autocomplete=one-time-code inputmode=numeric placeholder=Code>' +
-    '<button type=submit>VERIFY</button></form>';
-  document.getElementById("otp").onsubmit = async (e) => {
+    '<button type=submit id=verify>VERIFY</button></form>';
+  document.getElementById("decoy").onsubmit = (e) => { e.preventDefault(); post("/__fake/decoy", {}); };
+  const form = document.getElementById("otp"), code = form.code;
+  // How the code was sent: VERIFY clicked (a real click has detail >= 1), Enter in the field (the browser's
+  // implicit submission clicks VERIFY with detail 0), or the field itself on its last digit.
+  let via = null;
+  code.addEventListener("keydown", (e) => { if (e.key === "Enter") via = "enter"; });
+  document.getElementById("verify").addEventListener("click", (e) => { if (e.detail > 0) via = "click"; });
+  if (autosubmit) code.addEventListener("input", () => {
+    if (/^[0-9]{6,8}$/.test(code.value)) { via = "auto"; form.requestSubmit(); }
+  });
+  form.onsubmit = async (e) => {
     e.preventDefault();
-    const j = await post("/__fake/otp", {code: e.target.code.value});
-    if (j.ok) location.href = "/"; else showOtp("Wrong code. Please try again.");
+    const sent = {code: code.value, via: via || "unknown"};
+    app.innerHTML = "<h1>Two-step verification</h1><p>Verifying…</p>";  // the field is gone meanwhile
+    const [j] = await Promise.all([post("/__fake/otp", sent), later(%(verify_ms)d)]);
+    if (j.ok) location.href = "/"; else showOtp("Wrong code. Please try again.", autosubmit);
   };
 }
 if (document.cookie.includes("auth_id=")) app.innerHTML = "<h1>OnlyFans</h1><p>Home (signed in)</p>";
 else setTimeout(showLogin, 400);  // OF renders its form after load
 </script></body></html>"""
+SIGNIN_MS = 2500  # LOG IN -> the 2FA prompt
+VERIFY_MS = 1500  # a sent code -> OF's answer (the prompt again, or signed in)
+_RECAPTCHA_HTML = "<!doctype html><html><body>reCAPTCHA challenge (slop, never shown)</body></html>"
 
 _CHATS_HTML = """<!doctype html><html><head><title>Chats | OnlyFans</title></head><body><h1>Chats</h1><script>
 const S = %(json)s;
@@ -136,16 +167,20 @@ class World:
     the 2FA code `otp`. `chromium`: the browser binary (Playwright's)."""
 
     def __init__(self, tmp: Path, *, accounts: dict[str, str], otp: str, password: str, chromium: str,
-                 rev: str = "202610251200-slop"):
+                 autosubmit: frozenset[str] = frozenset(), rev: str = "202610251200-slop"):
         self.tmp = Path(tmp) / "browserbase"
         self.tmp.mkdir(parents=True, exist_ok=True)
         self.accounts, self.otp, self.password, self.chromium = accounts, otp, password, chromium
+        self.autosubmit = autosubmit  # emails whose 2FA field sends its form itself on the last digit
         now = int(time.time() * 1000)
         self.signs = {uid: signing(uid, rev, now) for uid in accounts.values()}
         self.chunk = next(iter(self.signs.values()))["chunk"]  # one rev, one chunk
         self.calls: list[tuple[str, str]] = []        # Browserbase API: (method, path)
         self.logins: list[dict] = []                  # OF login form posts: {email, password_ok}
         self.otp_tries: list[str] = []                # codes OF's 2FA prompt received, in order
+        self.otp_sends: list[dict] = []               # each of them: {uid, code, via: click | enter | auto}
+        self.decoys = 0                               # sends of the 2FA page's decoy first form
+        self.captcha_frames = 0                       # loads of the hidden reCAPTCHA frame
         self.sessions: dict[str, dict] = {}           # sid -> {proc, cdp, dir, released}
         self._lock = threading.Lock()
         self._servers: list[ThreadingHTTPServer] = []
@@ -319,7 +354,11 @@ class World:
                 path = self.path.split("?")[0]
                 s = world.signs.get(self._cookie("auth_id") or "")
                 if path in ("/", ""):
-                    return self._send(200, _LOGIN_HTML)
+                    return self._send(200, _LOGIN_HTML % {"signin_ms": SIGNIN_MS, "verify_ms": VERIFY_MS})
+                if path.startswith("/recaptcha/"):
+                    with world._lock:
+                        world.captcha_frames += 1
+                    return self._send(200, _RECAPTCHA_HTML)
                 if path.startswith("/my/chats") and s:
                     data = {k: s[k] for k in ("url", "uid", "x_bc", "rev", "sign", "time")}
                     data["rules"] = {"static_param": s["rules"]["static_param"]}
@@ -337,16 +376,22 @@ class World:
                     ok = bool(uid) and body.get("password") == world.password
                     with world._lock:
                         world.logins.append({"email": body.get("email"), "password_ok": ok})
-                    return self._send(200, {"otp": ok}, "application/json",
+                    return self._send(200, {"otp": ok, "autosubmit": body.get("email") in world.autosubmit},
+                                      "application/json",
                                       cookie=f"slop_login={uid}; Domain=onlyfans.com; Path=/; Secure" if ok else None)
                 if self.path == "/__fake/otp":
                     code, uid = str(body.get("code") or ""), self._cookie("slop_login")
                     with world._lock:
                         world.otp_tries.append(code)
+                        world.otp_sends.append({"uid": uid, "code": code, "via": str(body.get("via"))})
                     if uid in world.signs and code == world.otp:
                         return self._send(200, {"ok": True}, "application/json",
                                           cookie=f"auth_id={uid}; Domain=onlyfans.com; Path=/; Secure")
                     return self._send(200, {"ok": False}, "application/json")
+                if self.path == "/__fake/decoy":
+                    with world._lock:
+                        world.decoys += 1
+                    return self._send(200, {"ok": True}, "application/json")
                 self._send(404, "not found")
 
         return H

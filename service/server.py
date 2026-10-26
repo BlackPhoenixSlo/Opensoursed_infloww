@@ -1230,6 +1230,33 @@ def _spawn_bg(coro, name: str) -> asyncio.Task:
 
 
 @app.on_event("startup")
+async def _close_streams_on_term() -> None:
+    """SIGTERM ends every open SSE stream before uvicorn's graceful wait, and
+    no automation run or send starts after it.
+
+    uvicorn installs its exit handler before startup hooks run, so this wraps
+    it: streams close first (events.close_streams) and the automation lane
+    stops claiming (automation_executor.stop_claiming; the shutdown drain waits
+    for what it already claimed), then uvicorn stops as before. Without it each
+    open stream holds the wait to its timeout and is cancelled, and new sends
+    start during that wait. Not behind the test-mode guard: slop stops the relay
+    with it."""
+    import signal
+    import events
+    import automation_executor
+    prev = signal.getsignal(signal.SIGTERM)
+    if not callable(prev):
+        return
+
+    def _on_term(sig, frame):
+        events.close_streams()
+        automation_executor.stop_claiming()
+        prev(sig, frame)
+
+    signal.signal(signal.SIGTERM, _on_term)
+
+
+@app.on_event("startup")
 async def _start_event_pumps() -> None:
     global _supervisor_task, _tx_ingest_task, _tx_fast_task, _automation_exec_task, _main_loop
     _main_loop = asyncio.get_running_loop()
@@ -1499,6 +1526,12 @@ async def _stop_event_pumps() -> None:
     # Save the lane counters before anything else can raise — a clean stop is
     # the one restart where we can avoid losing the last flush interval.
     _lane_stats_flush(force=True)
+    # Finish every automation run that has claimed a send (a mass message on
+    # its way to OF) before anything below stops, and start no new one: a restart
+    # never leaves a send half done (automation_executor.drain, bounded).
+    from automation_executor import drain as _drain_automations
+    with contextlib.suppress(Exception):
+        await _drain_automations()
     # CancelledError is not an "Exception" in 3.8+ (it's BaseException) so we
     # have to suppress it explicitly — otherwise FastAPI logs a noisy traceback
     # at every clean shutdown.

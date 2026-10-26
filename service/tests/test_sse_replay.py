@@ -494,6 +494,36 @@ async def case_revoking_a_sign_ins_sessions_ends_its_streams_only():
         await events.unsubscribe("all", q)
 
 
+async def case_sigterm_ends_open_streams_then_stops_the_relay():
+    # A relay stop must not wait out uvicorn's graceful timeout per open tab
+    # (each stream cancelled mid-await, one traceback apiece): SIGTERM closes
+    # every stream and stops the automation lane claiming new sends (none may
+    # start during uvicorn's graceful wait), then uvicorn's own handler runs.
+    import signal
+    import server
+    import automation_executor as ax
+    _reset()
+    gen = _stream()
+    await _frames(gen, 2)
+    calls = []
+    prev = signal.signal(signal.SIGTERM, lambda sig, frame: calls.append(sig))
+    try:
+        await server._close_streams_on_term()
+        signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+        assert calls == [signal.SIGTERM], "uvicorn's handler still runs"
+        assert ax.begin_send() is False, "no send is claimed after SIGTERM"
+        try:
+            await asyncio.wait_for(gen.__anext__(), 3)
+            raise AssertionError("the stream kept going after SIGTERM")
+        except StopAsyncIteration:
+            pass
+        assert events.subscriber_count() == 0
+    finally:
+        signal.signal(signal.SIGTERM, prev)
+        events._closing = False
+        ax._draining = False
+
+
 async def case_proxies_save_survives_a_malformed_old_file():
     _reset()
     old_path = proxies.REGISTRY_PATH

@@ -39,7 +39,8 @@ The OnlyFans password lives as a local of the worker thread, is never stored
 on the job, and `scrub()` strips it from every job message, error and log line.
 A submitted 2FA code waits in the job's private slot until the worker takes it
 (then only the worker's local holds it); it is never logged and never in the
-status.
+status. Every code taken is scrubbed from the job's error, and the job forgets
+them all when it ends.
 
 BACKENDS. `backend` keeps the source's selector, default "local". This repo
 removed the local headless-Chromium capture (cleanup 9a: capture_session_proxy,
@@ -134,6 +135,8 @@ FILL_ATTEMPTS = 3         # fill, then retype key by key, verifying each time
 _EMAIL_FIELD = 'input[name="email"], input[type="email"], input[autocomplete="username"]'
 _PASSWORD_FIELD = 'input[name="password"], input[type="password"]'
 _SUBMIT_BUTTON = 'button[type="submit"]'
+# The 2FA form's own submit button, when it shows one.
+_OTP_SUBMIT_BUTTON = f"{_SUBMIT_BUTTON}:visible"
 # The cookie banner OnlyFans shows some egresses (EU): decline the optional ones.
 _COOKIE_ONLY_NECESSARY = 'button:has-text("Only necessary cookies")'
 _OTP_SELECTORS = (
@@ -185,16 +188,20 @@ class RemoteLoginConflict(RuntimeError):
     """A live job already exists for this email (HTTP 409)."""
 
 
+class RemoteLoginExpired(LookupError):
+    """The job is past its window: it takes no code (HTTP 404, as an expired job)."""
+
+
 class _Cancelled(Exception):
     pass
 
 
 def scrub(text: Any, *secrets: str | None) -> str:
-    """`text` with every non-empty secret replaced by ***."""
+    """`text` with every non-empty secret replaced by ***, longest first (a
+    code inside another code or the password leaves no part of either)."""
     s = "" if text is None else str(text)
-    for secret in secrets:
-        if secret:
-            s = s.replace(secret, "***")
+    for secret in sorted({x for x in secrets if x}, key=len, reverse=True):
+        s = s.replace(secret, "***")
     return s
 
 
@@ -224,10 +231,10 @@ class RemoteLoginJob:
     # A 2FA code the operator submitted, until the worker takes it. Request
     # threads only write it (submit_otp); only the worker touches the page.
     # _otp_busy: a code is pending or being checked (cleared when the job asks
-    # again or leaves the prompt); _otp_last: the last code, for scrub().
+    # again or leaves the prompt); _otp_seen: every code taken, for scrub().
     _otp_code: str | None = field(default=None, repr=False)
     _otp_busy: bool = field(default=False, repr=False)
-    _otp_last: str | None = field(default=None, repr=False)
+    _otp_seen: set[str] = field(default_factory=set, repr=False)
 
     def set_state(self, state: str, message: str = "") -> None:
         with self._lock:
@@ -256,16 +263,21 @@ class RemoteLoginJob:
         """Queue a 2FA code for the worker to type; the status says it is being
         checked. Spaces and dashes ("123 456", "123-456") are dropped first.
         ValueError: not 6-8 digits; RemoteLoginConflict: the job is not on the
-        2FA prompt, or a code is already pending or being checked."""
+        2FA prompt, or a code is already pending or being checked;
+        RemoteLoginExpired: past expires_at - CAPTURE_RESERVE_S (the worker types
+        no code then), checked under the lock so a code is never queued late."""
         code = re.sub(r"[\s-]", "", code or "")
         if not OTP_CODE_RE.fullmatch(code):
             raise ValueError("the 2FA code is 6 to 8 digits")
         with self._lock:
+            if time.time() > self.expires_at - CAPTURE_RESERVE_S:
+                raise RemoteLoginExpired("no such login job (expired?)")
             if self.state != STATE_OTP:
                 raise RemoteLoginConflict(f"the login is not waiting for a 2FA code (state: {self.state})")
             if self._otp_busy:
                 raise RemoteLoginConflict("a code is already being checked")
-            self._otp_code, self._otp_last, self._otp_busy = code, code, True
+            self._otp_code, self._otp_busy = code, True
+            self._otp_seen.add(code)
             self.message = OTP_CHECKING
 
     def otp_retry(self, message: str) -> None:
@@ -276,9 +288,16 @@ class RemoteLoginJob:
             self.state, self.message = STATE_OTP, message
             self._otp_code, self._otp_busy = None, False
 
-    def last_otp(self) -> str | None:
+    def otp_codes(self) -> tuple[str, ...]:
+        """Every 2FA code submitted to this job, for scrub()."""
         with self._lock:
-            return self._otp_last
+            return tuple(self._otp_seen)
+
+    def forget_otp(self) -> None:
+        """Drop every code (the job has ended; it stays readable JOB_TTL_S)."""
+        with self._lock:
+            self._otp_code, self._otp_busy = None, False
+            self._otp_seen.clear()
 
     def take_otp(self) -> str | None:
         """The pending 2FA code, emptying the slot (worker thread only)."""
@@ -398,12 +417,13 @@ def _serve(job: RemoteLoginJob, *, secrets: tuple[str | None, ...],
     except _Cancelled:
         job.set_state(STATE_CANCELLED, "cancelled")
     except Exception as e:  # noqa: BLE001
-        msg = scrub(f"{type(e).__name__}: {e}", *secrets, job.last_otp())
+        msg = scrub(f"{type(e).__name__}: {e}", *secrets, *job.otp_codes())
         log.warning("remote login %s failed: %s", job.id, msg)
         job.fail(msg)
     finally:
         if not job.is_terminal():  # body returned without reaching a final state
             job.fail("login ended without capturing a session")
+        job.forget_otp()  # the error is scrubbed: the job keeps no code once it ends
 
 
 @contextmanager
@@ -618,16 +638,22 @@ def submit_login_form(page) -> None:
 
 
 def _detect_challenge(page) -> bool:
-    """A human-verification challenge is on screen: Cloudflare interstitial
-    text / elements, or a Turnstile / reCAPTCHA / hCaptcha / GeeTest frame."""
+    """A human-verification challenge is ON SCREEN: Cloudflare interstitial
+    text / elements, or a Turnstile / reCAPTCHA / hCaptcha / GeeTest frame.
+    Only visible ones count: a hidden widget or frame (reCAPTCHA parks its
+    challenge frame hidden on the page) is nothing for the human to solve."""
     try:
         if page.evaluate(
             """() => {
                 const t = (document.body && document.body.innerText || '').toLowerCase();
                 if (t.includes('just a moment') || t.includes('verify you are human')
                     || t.includes('checking your browser')) return true;
-                return !!document.querySelector(
-                    '#challenge-running, #challenge-stage, #challenge-form, .cf-turnstile');
+                const shown = (el) => {
+                    const r = el.getBoundingClientRect();
+                    return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden';
+                };
+                return [...document.querySelectorAll(
+                    '#challenge-running, #challenge-stage, #challenge-form, .cf-turnstile')].some(shown);
             }"""
         ):
             return True
@@ -635,9 +661,30 @@ def _detect_challenge(page) -> bool:
         pass
     needles = ("turnstile", "recaptcha", "hcaptcha", "geetest", "challenges.cloudflare")
     try:
-        return any(any(n in (f.url or "").lower() for n in needles) for f in page.frames)
+        return any(any(n in (f.url or "").lower() for n in needles) and _frame_on_screen(f)
+                   for f in page.frames)
     except Exception:  # noqa: BLE001
         return False
+
+
+def _frame_on_screen(frame) -> bool:
+    """`frame`'s own <iframe> element, and each one it sits in, is visible
+    (the page's main frame always is). A detached frame is not."""
+    try:
+        while frame.parent_frame is not None:
+            el = frame.frame_element()
+            try:
+                if not el.is_visible():
+                    return False
+            finally:  # checked every poll: release the handle
+                try:
+                    el.dispose()
+                except Exception:  # noqa: BLE001
+                    pass
+            frame = frame.parent_frame
+    except Exception:  # noqa: BLE001
+        return False
+    return True
 
 
 def _detect_otp(page) -> bool:
@@ -675,26 +722,43 @@ def _wait(page, seconds: float) -> None:
 
 def _enter_otp(job: RemoteLoginJob, page, code: str) -> bool:
     """Type `code` into OnlyFans' 2FA field (one attempt, short timeouts, so a
-    cancel is seen within seconds) and press Enter in it, else click the submit
+    cancel is seen within seconds) and send it: click the visible submit
     button of the field's own form (never the page's first one: that could be
-    the login form). False when the field would not take the code."""
+    the login form), or press Enter in the field when its form shows none or
+    the button won't take the click (covered). A field gone after the fill
+    submitted itself on the last digit: the code is in, and OTP_VERIFY_S
+    decides. False when the field would not take the code, or neither the
+    button nor Enter could send it."""
     field = page.locator(_OTP_FIELD).first
     try:
         field.fill(code, timeout=OTP_STEP_TIMEOUT_MS)
-        if field.input_value(timeout=OTP_STEP_TIMEOUT_MS) != code:
-            return False
     except Exception as e:  # noqa: BLE001 — Playwright's message echoes the value
         log.info("filling OnlyFans' 2FA field failed: %s", type(e).__name__)
         return False
+    if not _detect_otp(page):
+        return True  # the form sent itself
+    try:
+        if field.input_value(timeout=OTP_STEP_TIMEOUT_MS) != code:
+            return False
+    except Exception as e:  # noqa: BLE001
+        log.info("reading OnlyFans' 2FA field failed: %s", type(e).__name__)
+        return not _detect_otp(page)
     _check(job, CAPTURE_RESERVE_S)
+    try:
+        button = field.locator("xpath=ancestor::form").locator(_OTP_SUBMIT_BUTTON).first
+        if button.count():
+            button.click(timeout=OTP_STEP_TIMEOUT_MS)
+            return True
+    except Exception as e:  # noqa: BLE001
+        log.info("clicking OnlyFans' 2FA submit button failed: %s", type(e).__name__)
+    if not _detect_otp(page):
+        return True  # the click went through after all
+    _check(job, CAPTURE_RESERVE_S)  # a cancel or the deadline during the click's wait: no Enter
     try:
         field.press("Enter", timeout=OTP_STEP_TIMEOUT_MS)
     except Exception as e:  # noqa: BLE001
-        log.info("pressing Enter in OnlyFans' 2FA field failed: %s", type(e).__name__)
-        try:
-            field.locator("xpath=ancestor::form").locator(_SUBMIT_BUTTON).first.click(timeout=OTP_STEP_TIMEOUT_MS)
-        except Exception as e2:  # noqa: BLE001
-            log.info("clicking OnlyFans' 2FA submit failed: %s", type(e2).__name__)
+        log.info("sending OnlyFans' 2FA code failed: %s", type(e).__name__)
+        return False
     return True
 
 
@@ -702,17 +766,16 @@ def _drive_until_logged_in(job: RemoteLoginJob, page, context) -> str:
     """Poll for auth_id, surfacing challenge / 2FA to the human in the live
     view. Never touches a challenge itself. On the 2FA prompt, a code the
     operator submitted (job.submit_otp) is typed in; when OnlyFans still shows
-    the prompt OTP_VERIFY_S later, the job asks for the code again."""
+    the prompt OTP_VERIFY_S later, or shows it again sooner, the job asks for
+    the code again (OTP_REJECTED). A visible 2FA field wins over any captcha
+    frame beside it."""
     otp_sent_at: float | None = None
     while True:
         _check(job, CAPTURE_RESERVE_S)
         uid = _auth_id(context)
         if uid:
             return uid
-        if _detect_challenge(page):
-            otp_sent_at = None
-            job.set_state(STATE_CHALLENGE, "human verification required — solve it in the live view")
-        elif _detect_otp(page):
+        if _detect_otp(page):
             code = job.take_otp()
             if code is not None:
                 if _enter_otp(job, page, code):
@@ -721,13 +784,15 @@ def _drive_until_logged_in(job: RemoteLoginJob, page, context) -> str:
                     otp_sent_at = None
                     job.otp_retry(OTP_NOT_TYPED)
             elif job.state != STATE_OTP:  # the prompt is (back) on screen
+                sent_lately = otp_sent_at is not None and time.time() - otp_sent_at < OTP_VERIFY_S
                 otp_sent_at = None
-                job.set_state(STATE_OTP, OTP_ASK)
+                job.set_state(STATE_OTP, OTP_REJECTED if sent_lately else OTP_ASK)
             elif otp_sent_at is not None and time.time() - otp_sent_at >= OTP_VERIFY_S:
                 otp_sent_at = None
                 job.otp_retry(OTP_REJECTED)
-        else:
-            otp_sent_at = None
+        elif _detect_challenge(page):  # otp_sent_at kept: a captcha between a code and the prompt again
+            job.set_state(STATE_CHALLENGE, "human verification required — solve it in the live view")
+        else:  # otp_sent_at kept: the prompt coming back soon means the code was not taken
             if job.state != STATE_TYPING:
                 job.set_state(STATE_TYPING, "waiting for OnlyFans")
         _wait(page, POLL_S)

@@ -10,10 +10,14 @@
  *   - on OnlyFans' 2FA prompt ("otp") a numeric code field (autofocused, 6-8 digits) and Submit code appear above the
  *     live view; Submit POSTs {code} to /admin/login/remote/{id}/otp; a code OnlyFans rejected, one the relay couldn't
  *     type, or a refused POST, shows an error and the field takes another code; the field is locked while the code is
- *     in flight; leaving the prompt (or a new job) clears the typed code and the error.
+ *     in flight and while OnlyFans checks it (a poll read before the code was in never unlocks it); leaving the prompt
+ *     (or a new job) clears the typed code and the error;
+ *   - the field drops only spaces and dashes: a pasted "1234-5678" is the 8-digit code, anything else stays visibly
+ *     wrong (Submit off) instead of turning into another code.
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -143,11 +147,10 @@ describe("BrowserbaseLoginCard", () => {
     const field = screen.getByLabelText("2FA code");
     expect(field).toHaveFocus();
     expect(field).toHaveAttribute("inputmode", "numeric");
-    expect(field).toHaveAttribute("maxlength", "8");
     expect(screen.getByTitle("Browserbase live view")).toHaveAttribute("src", current.live_view_url);
     const submit = screen.getByRole("button", { name: "Submit code" });
     fireEvent.change(field, { target: { value: "12 3a" } });
-    expect(field).toHaveValue("123");
+    expect(field).toHaveValue("123a");
     expect(submit).toBeDisabled();
     fireEvent.change(field, { target: { value: "123456" } });
     relayPost.mockImplementation(() => Promise.resolve(job({ state: "otp", message: "checking the 2FA code" })));
@@ -184,8 +187,81 @@ describe("BrowserbaseLoginCard", () => {
     fireEvent.submit(field.closest("form")!);
     expect(relayPost.mock.calls.filter(([p]) => p === "/admin/login/remote/job1/otp")).toHaveLength(1);
     await act(async () => answer(job({ state: "otp", message: "checking the 2FA code" })));
-    await waitFor(() => expect(screen.getByLabelText("2FA code")).toBeEnabled());
+    expect(await screen.findByText("Checking the code with OnlyFans…")).toBeInTheDocument();
+    expect(screen.getByLabelText("2FA code")).toBeDisabled(); // still locked while OnlyFans checks it
     expect(screen.getByLabelText("2FA code")).toHaveValue("");
+    current = job({ state: "otp", message: "OnlyFans didn't accept that code (or hasn't answered yet) — try again", live_view_url: "https://www.browserbase.com/devtools-fullscreen/x" });
+    await act(async () => { await client.refetchQueries({ queryKey: ["remote-login", "job1"] }); });
+    await waitFor(() => expect(screen.getByLabelText("2FA code")).toBeEnabled());
+  });
+
+  it("keeps the field locked when a poll read before the code was in lands after the POST", async () => {
+    current = job({ state: "otp", message: "OnlyFans asks for the 2FA code — enter it here or in the live view", live_view_url: "https://www.browserbase.com/devtools-fullscreen/x" });
+    start();
+    const field = await screen.findByLabelText("2FA code");
+    let stale: (j: RemoteLoginStatus) => void = () => {};
+    const ask = current;
+    relayGet.mockImplementation((path: string) => path === "/admin/proxies"
+      ? Promise.resolve({ proxies: [], pool: { size: 0, account_ids: [] } })
+      : new Promise<RemoteLoginStatus>((ok) => { stale = ok; }));
+    void client.refetchQueries({ queryKey: ["remote-login", "job1"] }); // a poll in flight, read before the code
+    fireEvent.change(field, { target: { value: "123456" } });
+    relayPost.mockImplementation(() => Promise.resolve(job({ state: "otp", message: "checking the 2FA code", live_view_url: ask.live_view_url })));
+    fireEvent.click(screen.getByRole("button", { name: "Submit code" }));
+    expect(await screen.findByText("Checking the code with OnlyFans…")).toBeInTheDocument();
+    await act(async () => { // the stale poll answers now; give react-query time to land it
+      stale(ask);
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    expect(screen.getByText("Checking the code with OnlyFans…")).toBeInTheDocument();
+    expect(screen.getByLabelText("2FA code")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Submit code" })).toBeDisabled();
+  });
+
+  it("keeps a newer poll that is already past the prompt when the POST answers later", async () => {
+    current = job({ state: "otp", message: "OnlyFans asks for the 2FA code", live_view_url: "https://www.browserbase.com/devtools-fullscreen/x" });
+    start();
+    const field = await screen.findByLabelText("2FA code");
+    let answer: (j: RemoteLoginStatus) => void = () => {};
+    relayPost.mockImplementation(() => new Promise<RemoteLoginStatus>((ok) => { answer = ok; }));
+    fireEvent.change(field, { target: { value: "123456" } });
+    fireEvent.click(screen.getByRole("button", { name: "Submit code" }));
+    await waitFor(() => expect(relayPost).toHaveBeenCalled());
+    current = job({ state: "typing", message: "waiting for OnlyFans", live_view_url: "https://www.browserbase.com/devtools-fullscreen/x" });
+    await act(async () => { await client.refetchQueries({ queryKey: ["remote-login", "job1"] }); }); // the code went in
+    await waitFor(() => expect(screen.queryByLabelText("2FA code")).not.toBeInTheDocument());
+    await act(async () => { // the POST's answer, read before the worker took the code, lands last
+      answer(job({ state: "otp", message: "checking the 2FA code", live_view_url: "https://www.browserbase.com/devtools-fullscreen/x" }));
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    expect(screen.queryByLabelText("2FA code")).not.toBeInTheDocument();
+    expect(client.getQueryData<RemoteLoginStatus>(["remote-login", "job1"])?.state).toBe("typing");
+  });
+
+  it("takes a pasted 1234-5678 as the 8-digit code, and leaves anything else visibly wrong", async () => {
+    current = job({ state: "otp", message: "OnlyFans asks for the 2FA code", live_view_url: "https://www.browserbase.com/devtools-fullscreen/x" });
+    start();
+    const field = await screen.findByLabelText("2FA code");
+    const user = userEvent.setup();
+    await user.click(field);
+    await user.paste("1234-5678");
+    expect(field).toHaveValue("12345678");
+    const submit = screen.getByRole("button", { name: "Submit code" });
+    expect(submit).toBeEnabled();
+    await user.clear(field);
+    await user.paste(" 123 456 ");
+    expect(field).toHaveValue("123456");
+    for (const typed of ["12a3456", "123456789", "123.456"]) {
+      await user.clear(field);
+      await user.type(field, typed);
+      expect(field).toHaveValue(typed); // not turned into another code
+      expect(submit).toBeDisabled();
+    }
+    await user.clear(field);
+    await user.paste("1234-5678");
+    relayPost.mockImplementation(() => Promise.resolve(job({ state: "otp", message: "checking the 2FA code" })));
+    await user.click(submit);
+    await waitFor(() => expect(relayPost).toHaveBeenLastCalledWith("/admin/login/remote/job1/otp", { code: "12345678" }));
   });
 
   it("says when the relay couldn't type the code", async () => {

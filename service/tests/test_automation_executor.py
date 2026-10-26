@@ -802,6 +802,86 @@ async def case_supervisor_drain_runs_due_job():
         assert len(runs) == 1 and runs[0].status == "ok", runs
 
 
+# ── shutdown drain ───────────────────────────────────────────────────
+
+async def case_drain_waits_for_a_run_that_claimed_a_send_then_refuses_new_claims():
+    finished = []
+
+    async def sending_run():
+        assert ax.begin_send()
+        await asyncio.sleep(0.3)
+        finished.append(True)
+
+    async def planning_run():   # never reached its claim: not waited for
+        await asyncio.sleep(5)
+
+    sender = asyncio.create_task(sending_run())
+    planner = asyncio.create_task(planning_run())
+    await asyncio.sleep(0)
+    try:
+        out = await ax.drain(timeout_s=5)
+        assert out["waited"] == 1 and out["left"] == 0, out
+        assert finished == [True] and sender.done() and not planner.done()
+        assert ax.begin_send() is False, "a pass must not claim while the relay drains"
+    finally:
+        planner.cancel()
+        ax._draining = False
+
+
+async def case_drain_stops_waiting_once_the_send_is_settled():
+    # What a pass does after its send is recorded (the free stream's follow-up
+    # script, an LLM call) is not worth holding a deploy for.
+    async def run_with_a_slow_tail():
+        assert ax.begin_send()
+        await asyncio.sleep(0.2)
+        ax.end_send()
+        await asyncio.sleep(30)
+
+    t = asyncio.create_task(run_with_a_slow_tail())
+    await asyncio.sleep(0)
+    try:
+        out = await ax.drain(timeout_s=10)
+        assert out["waited"] == 1 and out["left"] == 0 and out["s"] < 2, out
+        assert not t.done()
+    finally:
+        t.cancel()
+        ax._draining = False
+
+
+async def case_drain_is_bounded_by_its_timeout():
+    async def stuck_run():
+        assert ax.begin_send()
+        await asyncio.sleep(30)
+
+    t = asyncio.create_task(stuck_run())
+    await asyncio.sleep(0)
+    try:
+        out = await ax.drain(timeout_s=0.2)
+        assert out["waited"] == 1 and out["left"] == 1 and out["s"] < 2, out
+    finally:
+        t.cancel()
+        ax._draining = False
+
+
+async def case_a_draining_supervisor_starts_no_run_and_leaves_the_job_pending():
+    aid = "acc_draining"
+    await _seed_account(aid)
+    _use_fake({})
+    job_id = await enqueue_job(aid, "scrape_chats", payload={"chat_ids": [4002]})
+    ax._draining = True
+    try:
+        await ax._drain_due_jobs_once()
+        await ax._join_inflight_runs()
+    finally:
+        ax._draining = False
+    async with get_session() as s:
+        job = await s.get(ScheduledJob, job_id)
+        assert job.status == "pending", job.status
+        runs = (await s.execute(
+            select(AutomationRun).where(AutomationRun.account_id == aid))).scalars().all()
+        assert runs == [], runs
+
+
 # ── automation_rules → scheduled_jobs materialization ────────────────
 
 async def case_rule_materializes_job():
@@ -1172,4 +1252,8 @@ _harness.run(
     case_rule_quiet_hours_holds_job,
     case_rule_quiet_hours_outside_band_materializes,
     case_quiet_hours_never_run_on_the_server_clock,
+    case_drain_waits_for_a_run_that_claimed_a_send_then_refuses_new_claims,
+    case_drain_stops_waiting_once_the_send_is_settled,
+    case_drain_is_bounded_by_its_timeout,
+    case_a_draining_supervisor_starts_no_run_and_leaves_the_job_pending,
 )

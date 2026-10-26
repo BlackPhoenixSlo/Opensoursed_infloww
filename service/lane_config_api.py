@@ -91,10 +91,13 @@ router = APIRouter(tags=["lane-config"])
 # Long enough for the 200 to reach the browser before the process goes away —
 # the panel needs the budget in that response to render "1 left".
 _RESTART_DELAY_S = 0.5
-# uvicorn's graceful shutdown waits for in-flight requests, and `/health?all`
-# alone budgets 20s. Past this the operator asked for a restart and did not get
-# one, which is worse than dropping the straggler, so we stop asking.
-_RESTART_GRACE_S = 25.0
+# uvicorn's graceful shutdown waits for in-flight requests (Dockerfile:
+# UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN), then the shutdown hook waits for any
+# automation run that claimed a send (automation_executor.DRAIN_S, the same
+# RELAY_DRAIN_S). Cutting that drain would turn a clean stop into a crash, so
+# the hard exit waits past both. Past this the operator asked for a restart and
+# did not get one, which is worse than dropping the straggler, so we stop asking.
+_RESTART_GRACE_S = 25.0 + float(os.environ.get("RELAY_DRAIN_S", "45"))
 # Identifies THIS process, so the panel can tell a relay that came back from one
 # that never went down. Polling for "does the port answer" is not enough: the
 # first poll can land in the half-second before the SIGTERM, and the page would

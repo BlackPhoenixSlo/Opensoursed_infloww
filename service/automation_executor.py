@@ -43,6 +43,7 @@ import asyncio
 import inspect
 import json
 import logging
+import os
 import time
 from collections import defaultdict
 from contextvars import ContextVar
@@ -247,6 +248,70 @@ _inflight_pairs: set[tuple[str, str]] = set()
 # every busy tick.
 _last_served: dict[str, float] = {}
 _inflight_tasks: set = set()
+
+
+# ── Shutdown drain ───────────────────────────────────────────────────
+# A restart is safe at any moment. On SIGTERM the
+# relay's SIGTERM handler calls `stop_claiming()` (no new run or send from
+# then on) and its shutdown hook calls `drain()` first: every run
+# that has already claimed a send is waited for, up to `DRAIN_S`, until the
+# send is settled. A pass calls `begin_send()` right before its claim and
+# `end_send()` once the send is recorded and the next one planned (what comes
+# after, the follow-up script, is not waited for); once draining `begin_send`
+# answers False and the pass leaves its planned send as it is, to fire after
+# the restart. A run the bound cuts off, or a SIGKILL, is the crash case the
+# automation's next pass heals. DRAIN_S sits
+# inside the compose `stop_grace_period`, with uvicorn's graceful timeout
+# (Dockerfile) before it.
+DRAIN_S = float(os.environ.get("RELAY_DRAIN_S", "45"))
+_draining = False
+_sends_open: dict = {}   # the task that claimed a send -> a future set when it is settled
+
+
+def begin_send() -> bool:
+    """Called by a pass right before it claims a send, with no await between
+    this and the claim's own first await. False while the relay drains (do not
+    claim); otherwise the current task's send is one `drain()` waits for, until
+    `end_send()` or the task's end."""
+    if _draining:
+        return False
+    task = asyncio.current_task()
+    if task is not None and task not in _sends_open:
+        _sends_open[task] = asyncio.get_running_loop().create_future()
+        task.add_done_callback(end_send)
+    return True
+
+
+def stop_claiming() -> None:
+    """SIGTERM (server._close_streams_on_term): no new run and no new send from
+    here on, so none starts during uvicorn's graceful wait; `drain()` later waits
+    for the sends already claimed."""
+    global _draining
+    _draining = True
+
+
+def end_send(task=None) -> None:
+    """The current task's send is settled: `drain()` stops waiting for it."""
+    fut = _sends_open.pop(task or asyncio.current_task(), None)
+    if fut is not None and not fut.done():
+        fut.set_result(None)
+
+
+async def drain(timeout_s: float | None = None) -> dict:
+    """Shutdown: start no new run, then wait up to `timeout_s` (default
+    `DRAIN_S`) for every send that passed `begin_send()` to settle. Returns
+    `{"waited", "left", "s"}`: how many there were, how many were still
+    running at the bound, and how long it took."""
+    stop_claiming()
+    pending = {f for f in _sends_open.values() if not f.done()}
+    t0 = time.monotonic()
+    left: set = set()
+    if pending:
+        log.info("relay_drain waiting for %d send(s) claimed and not yet settled", len(pending))
+        _done, left = await asyncio.wait(pending, timeout=DRAIN_S if timeout_s is None else timeout_s)
+    out = {"waited": len(pending), "left": len(left), "s": round(time.monotonic() - t0, 2)}
+    (log.warning if left else log.info)("relay_drain done %s", out)
+    return out
 
 
 async def _join_inflight_runs() -> None:
@@ -614,7 +679,7 @@ def _write_gate(account_id: str) -> WriteGate:
 async def of_write_paced(account_id, fn, *, min_gap_s: float = _OF_WRITE_GAP_S,
                          tries: int = 2, pause_s: float = 11.0,
                          send_purpose: str | None = None, operator: bool | None = None,
-                         dm: bool = False):
+                         dm: bool = False, before_write=None):
     """SPACE this OF write ≥ `min_gap_s` after the previous one for this account
     (proactive — so we rarely trip the limit at all), then run it through the
     reactive async retry as a backstop.
@@ -637,6 +702,11 @@ async def of_write_paced(account_id, fn, *, min_gap_s: float = _OF_WRITE_GAP_S,
     waits for a place in the account's DM window (dm_rate, OF_DM_PER_MIN); an
     operator's only counts. A plain wait like the spacing, the slot kept.
 
+    `before_write`: an async callable run once the turn is granted, right
+    before the write. send_mass_message mints its run there, so a run row means
+    the write was next, never "still waiting for its turn": a restart during
+    the spacing wait leaves nothing minted, and the send is planned again.
+
     The spacing wait yields the event loop, so during the wait the worker
     threads and the loop remain available for other work. If the account has
     been idle longer than the gap, there's no wait at all."""
@@ -656,6 +726,8 @@ async def of_write_paced(account_id, fn, *, min_gap_s: float = _OF_WRITE_GAP_S,
     if wait > 0.001:
         log.info("of_write_paced account=%s spaced %.1fs%s (loop/threads stay free)",
                  aid, wait, " operator" if operator else "")
+    if before_write is not None:
+        await before_write()
     if send_purpose != "manual":
         return await of_write_with_retry(fn, tries=tries, pause_s=pause_s)
     guard_token = OUTBOUND_TEXT_GUARD.set(None)
@@ -2240,6 +2312,8 @@ async def _drain_due_jobs_once() -> None:
             # it back ahead of fresh runs (run_slot.SlotPool). An operator's
             # run takes the operator tier: the reserve, else ahead of everyone.
             async with run_slot.hold(sem, operator=operator):
+                if _draining:   # shutting down: the job stays pending for the next process
+                    return
                 _last_served[aid] = asyncio.get_running_loop().time()
                 await run_once(aid, kind)
         except asyncio.CancelledError:

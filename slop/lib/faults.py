@@ -169,6 +169,36 @@ def _otp_code_never_consumed() -> None:
     remote_login.RemoteLoginJob.take_otp = lambda self: None
 
 
+def _challenge_counts_hidden_frames() -> None:
+    """The served Browserbase login's challenge check as it was before
+    2026-10-25: any captcha frame URL on the page counts, on screen or not, and
+    so does a hidden Cloudflare element (bug class: a hidden reCAPTCHA frame
+    reported as a verification check for the human to solve)."""
+    import remote_login
+
+    def detect_any_frame(page) -> bool:
+        try:
+            if page.evaluate(
+                """() => {
+                    const t = (document.body && document.body.innerText || '').toLowerCase();
+                    if (t.includes('just a moment') || t.includes('verify you are human')
+                        || t.includes('checking your browser')) return true;
+                    return !!document.querySelector(
+                        '#challenge-running, #challenge-stage, #challenge-form, .cf-turnstile');
+                }"""
+            ):
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+        needles = ("turnstile", "recaptcha", "hcaptcha", "geetest", "challenges.cloudflare")
+        try:
+            return any(any(n in (f.url or "").lower() for n in needles) for f in page.frames)
+        except Exception:  # noqa: BLE001
+            return False
+
+    remote_login._detect_challenge = detect_any_frame
+
+
 @dataclass(frozen=True)
 class Fault:
     apply: Callable[[], None]
@@ -210,10 +240,21 @@ FAULTS: dict[str, Fault] = {
     # slop/run browserbase-otp --break (the scenario's FAULT)
     "otp-code-never-consumed": Fault(_otp_code_never_consumed, (
         "API: a wrong 2FA code comes back as rejected and the job stays on the 2FA prompt",
+        "API: the prompt back after a wrong code says rejected at once (inside OTP_VERIFY_S), never a fresh ask",
         "API: the right 2FA code signs in; the session is saved and linked to the owner",
+        "API: a 2FA field that submits itself on the last digit: the code counts as sent (never \"couldn't "
+        "type\"), a wrong one is rejected, the right one signs in",
         "OnlyFans' 2FA field received exactly the codes submitted, in order",
+        "every 2FA code was sent with the 2FA form's own VERIFY button (by the field itself where it submits "
+        "itself); the page's first button never",
+        'card: a pasted "1234-5678" is the 8-digit code 12345678 (field, Submit on, what OnlyFans got)',
         "card: a wrong code shows the rejection and the field takes another code",
         "card: the right code links the account (job done, user_accounts row)",
+    )),
+    # slop/run browserbase-otp --break --fault=challenge-counts-hidden-frames
+    "challenge-counts-hidden-frames": Fault(_challenge_counts_hidden_frames, (
+        "API: a hidden captcha frame on OnlyFans' pages is never reported as a verification check "
+        "(no status says challenge)",
     )),
 }
 

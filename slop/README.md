@@ -42,8 +42,8 @@ run's `summary.txt` and written to its `break.json`.
 |---|---|
 | `run` | The single entrypoint (bash, then `lib/cli.py`). |
 | `lib/stack.py` | A throwaway stack for each scenario: the relay on a temp SQLite DB, plus `next dev` if the scenario has UI. Uses free loopback ports and restores `app/tsconfig.json` and `next-env.d.ts` on exit. |
-| `lib/relay.py` | Runs `scripts/demo-shots/relay_guarded.py` (network guards, redirected secrets and sessions, `CHATTERLY_TEST_MODE`), starts the production persist worker, adds loopback-only `/__slop/*` hooks (below) and answers OnlyFans' side of `OFClient.send_message` (and `get_messages` from `of-truth.jsonl`). Applies `SLOP_FAULT`. |
-| `lib/browserbase.py` | The outside world of a served Browserbase login, on loopback: `World(tmp, accounts={email: uid}, otp=, password=, chromium=)` runs Browserbase's API (`POST /v1/sessions` launches a fresh local Chromium and answers its CDP URL as `connectUrl`; `/debug` answers a live-view stand-in page that shows that Chromium's tab; release stops it) and OnlyFans' site over a self-signed TLS server (login form, 2FA prompt, `/my/chats/` with a signed request and a stand-in of OF's signing module, `/api2/v2/users/me`). Chromium maps `onlyfans.com` to the fake site and every other host to NOTFOUND. Records `calls`, `logins`, `otp_tries`, `sessions`. |
+| `lib/relay.py` | Runs `scripts/demo-shots/relay_guarded.py` (network guards, redirected secrets and sessions, `CHATTERLY_TEST_MODE`), starts the production persist worker, adds loopback-only `/__slop/*` hooks (below) and answers OnlyFans' side of `OFClient.send_message` (and `get_messages` from `of-truth.jsonl`). Passes `UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN` (5, as the Dockerfile) to uvicorn. Applies `SLOP_FAULT`. |
+| `lib/browserbase.py` | The outside world of a served Browserbase login, on loopback: `World(tmp, accounts={email: uid}, otp=, password=, chromium=, autosubmit={email})` runs Browserbase's API (`POST /v1/sessions` launches a fresh local Chromium and answers its CDP URL as `connectUrl`; `/debug` answers a live-view stand-in page that shows that Chromium's tab; release stops it) and OnlyFans' site over a self-signed TLS server (login form, "Signing in…" for `SIGNIN_MS`, 2FA prompt with a decoy first form, "Verifying…" with no field for `VERIFY_MS` after a code, `/my/chats/` with a signed request and a stand-in of OF's signing module, `/api2/v2/users/me`). Every page carries a hidden reCAPTCHA frame (served from the fake site). An `autosubmit` account's 2FA field sends its form itself on the last digit. Chromium maps `onlyfans.com` to the fake site and every other host to NOTFOUND. Records `calls`, `logins`, `otp_tries`, `otp_sends` (code and how it was sent: `click`, `enter` or `auto`), `decoys`, `captcha_frames`, `sessions`. |
 | `lib/faults.py` | Break-it-once faults: each patches a real product function inside the throwaway relay and lists the check names it `targets`. |
 | `lib/procmon.py` | Relay CPU and RSS every 1 s, each interval tagged with `rec.stage`: the whole process from `ps` (its process group; passes 100% when executor threads run SQLite outside the GIL) and the event-loop thread alone from `GET /__slop/loop-cpu` (`time.thread_time()`; the one-core ceiling). Writes `resources.json`, a per-stage table in `summary.txt` (process CPU mean / p95 / max %, 100% = one core; cores; loop CPU mean / p95; RSS max / end) and, when the scenario sets `CPU_BUDGET_PCT`, the budget check `relay process CPU mean <= N% of one core in every stage`. With `--profile`, tells the relay's sampler the stage and saves `profile-<stage>.txt` (loop thread and other threads: top self functions or SQL statements, self lines, cumulative), `profile-<stage>-{loop,threads}.collapsed` (flamegraph input) and `profile.json`; `summary.txt` gets the top 10 of the peak-CPU stage. |
 | `lib/client.py` | Timed HTTP client. Every actor call is recorded (route, status, latency), so the stock invariants need no extra code. Set `ctx.rec.stage` to also keep calls per load stage (`ctx.rec.summary(stage)`); `ctx.rec.timeline` keeps every call with its end time. Idle keep-alive connections are reused only under 2 s (`KEEPALIVE_EXPIRY_S`): httpx's 5 s default equals uvicorn's and gets requests reset after a relay stall. |
@@ -113,11 +113,12 @@ frame, so compare CPU numbers only between runs with the same `--profile` settin
 raised: successes only, so a dropped or failed frame shows as `processed - transcoded`),
 `persist_drops`, `queue_depth`. `POST /__slop/telemetry-flush`: the product's
 `service/db/write_telemetry.py` JSON line now (reason `flush`, as on shutdown), so a scenario reads
-every count back from `relay.log`. `POST /__slop/browserbase {api, chunk_url_tpl}` points
+every count back from `relay.log`. `POST /__slop/browserbase {api, chunk_url_tpl[, job_window_s]}` points
 `remote_login.BROWSERBASE_API` and `session_bootstrap.CHUNK_URL_TPL` at a `lib/browserbase.py`
 World, sets dummy `BROWSERBASE_API_KEY` / `BROWSERBASE_PROJECT_ID`, and makes curl_cffi (which
 bypasses the socket guard) refuse every non-loopback host. All `/__slop/*` hooks exist only in
-`lib/relay.py`, never in `service/`.
+`lib/relay.py`, never in `service/`. `job_window_s` shortens `remote_login.JOB_WINDOW_S` for
+the jobs started next (time compression; the hook without it restores the default).
 
 In the browser, `/api/of/*` (OF-live reads) is held pending. Screens therefore show
 what the relay's own DB serves, such as the Fan List's local seed. Every other
@@ -241,21 +242,31 @@ reads or writes `service/chatterly.db`, real sessions, prod or any remote. The
   errors) are counted in metric `pump`, not the stock no-5xx check. Fault
   `of-writer-holds-batches-3s` (a writer that waits instead of flushing as soon as work exists).
 - `2026-10-25-browserbase-otp-login`: Add creator > Browserbase login when OnlyFans asks
-  for a 2FA code. One owner, two logins against `lib/browserbase.py`: over the API (start,
-  the job stops in state `otp` with a live view, a wrong code via `POST
-  /admin/login/remote/{id}/otp` is "being checked" (a second code meanwhile is 409), then
-  comes back as rejected with the job still on the prompt, the right code signs in;
-  `accounts` + `user_accounts` rows, `GET /admin/accounts`, the session files; 409 for a
-  finished job, 400 for a malformed code or body, never echoed)
-  and, with UI, through the card (screenshots `card-otp-prompt`, `card-otp-rejected`,
-  `card-otp-linked`, then the job status and the `user_accounts` row). Also: OnlyFans' 2FA
-  field got exactly the submitted codes in order, every Browserbase session released, no
-  code or password in any status or `relay.log`. A flow, not a volume one: `--users` and
-  `--scale` change nothing. Bypasses: Browserbase is a local Chromium per session behind a
-  fake API (no Browserbase proxies, no captcha solving); the live view is a stand-in page of
-  CDP screenshots; OnlyFans is a loopback TLS site (self-signed, Chromium told to ignore
-  certificate errors) whose signing chunk is synthetic (the relay derives and verifies its
-  rules with the real `of_signer`) and whose page-side signing module is a stand-in the
-  login extension's interceptor captures; `CHUNK_URL_TPL` redirected to it. Fault
-  `otp-code-never-consumed` (the job never reads the code) turns only the code checks
-  (API and card) red.
+  for a 2FA code. One owner, four logins against `lib/browserbase.py`, every OnlyFans page
+  carrying a hidden reCAPTCHA frame and the 2FA page a decoy first form. API: the job stops
+  in state `otp` with a live view, a wrong code via `POST /admin/login/remote/{id}/otp` is
+  "being checked" (a second code meanwhile is 409), then comes back as rejected as soon as
+  the prompt is back (inside `OTP_VERIFY_S`, never a fresh ask) with the job still on the
+  prompt, the right code signs in; `accounts` + `user_accounts` rows, `GET /admin/accounts`,
+  the session files; 409 for a finished job, 400 for a malformed code or body, never
+  echoed. AUTO: a 2FA field that sends its form itself on the last digit: a wrong code is
+  rejected (never "couldn't type"), the right one signs in. LATE: a job with an 80 s window
+  (the hook's `job_window_s`): a code after its deadline is 404, the expired-job answer, and
+  never reaches OnlyFans. With UI, the card (screenshots `card-otp-prompt`,
+  `card-otp-pasted`, `card-otp-rejected`, `card-otp-linked`): "1234-5678" pasted from the
+  clipboard is the 8-digit code (wrong: rejected on the card), then the right code links
+  the account (job status, `user_accounts` row). Also: no status ever says `challenge`
+  (and the hidden frame did load); OnlyFans' 2FA field got exactly the submitted codes in
+  order, each sent with the 2FA form's own VERIFY button (or by the field itself), the
+  decoy never; every Browserbase session released; no code (wrong or right, any login) or
+  password in any status, `relay.log` or `next.log`. A flow, not a volume one: `--users`
+  and `--scale` change nothing. Bypasses: Browserbase is a local Chromium per session
+  behind a fake API (no Browserbase proxies, no captcha solving); the live view is a
+  stand-in page of CDP screenshots; OnlyFans is a loopback TLS site (self-signed, Chromium
+  told to ignore certificate errors) whose signing chunk is synthetic (the relay derives
+  and verifies its rules with the real `of_signer`) and whose page-side signing module is a
+  stand-in the login extension's interceptor captures; `CHUNK_URL_TPL` redirected to it;
+  the LATE job's window is compressed. Fault `otp-code-never-consumed` (the job never reads
+  the code) turns only the code checks (API, AUTO and card) red;
+  `--fault=challenge-counts-hidden-frames` (the pre-fix challenge check: any captcha frame
+  counts, on screen or not) turns only the "no status says challenge" check red.

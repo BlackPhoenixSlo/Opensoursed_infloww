@@ -62,6 +62,9 @@ class Stack:
             DEEPINFRA_API_KEY="slop-fake", GOOGLE_DRIVE_API_KEY="slop-fake",
             DEMO_SHOTS_ROOT=str(ROOT), DEMO_SHOTS_TMP=str(self.tmp), DEMO_SHOTS_RELAY_PORT=str(self._relay_port),
             SLOP_FAULT=self.fault or "", SLOP_PROFILE="1" if self.profile else "",
+            # The Dockerfile's: on SIGTERM open streams (/events) are cut after 5 s and the
+            # shutdown hook runs (lib/relay.py passes it to uvicorn.run).
+            UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN="5",
         )
         self._relay_env = env
         self._relay = self._spawn([str(PY), str(Path(__file__).with_name("relay.py"))], env, "relay.log", cwd=ROOT)

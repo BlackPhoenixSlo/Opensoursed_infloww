@@ -74,6 +74,15 @@ EXPOSE 8787
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD curl -fsS http://127.0.0.1:8787/livez > /dev/null || exit 1
 
+# On SIGTERM uvicorn waits for open connections before the app's shutdown hook
+# runs, and a browser tab's /events stream never closes by itself: without a
+# bound the hook never ran and `docker stop` ended in SIGKILL. 5 s, then the
+# streams are cut and the hook drains the automation runs that claimed a send
+# (automation_executor.drain, RELAY_DRAIN_S); the compose stop_grace_period
+# covers both. An env var, so every `uvicorn` command in this image
+# gets it.
+ENV UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN=5
+
 # Single worker on purpose — SQLite write lock + the WebSocket pump is a
 # module-level singleton. Production mode, no --reload.
 CMD ["uvicorn", "service.server:app", "--host", "0.0.0.0", "--port", "8787"]

@@ -68,20 +68,30 @@ No browser and NO network: `_bb_request` / `urlopen` / the page are faked.
   case_otp_code_signs_in:
       start over HTTP → login form typed → OnlyFans' 2FA prompt puts the job
       in "otp" → POST /otp with the code → the job's own thread types it into
-      the 2FA field and presses Enter → auth_id → capture → done. The code is
-      in no status, response or log line.
+      the 2FA field and clicks its form's own VERIFY button → auth_id →
+      capture → done. The code is in no status, response or log line, nor in
+      the finished job's memory.
   case_otp_wrong_code_retries:
       a code OnlyFans does not take leaves the job in "otp" with OTP_REJECTED
       after OTP_VERIFY_S; while it is checked, another code is 409; a second
       code is typed over it and signs in.
   case_otp_prompt_back_within_verify_window:
-      the 2FA prompt goes away and comes back before OTP_VERIFY_S: the job is
-      back in "otp" asking for the code (not stuck in "typing").
+      the 2FA prompt goes away after a code and comes back before
+      OTP_VERIFY_S: the job is back in "otp" saying OnlyFans didn't accept
+      that code (OTP_REJECTED, not a fresh ask, not stuck in "typing").
   case_enter_otp_one_attempt_cancel_and_form_scope:
       _enter_otp: one fill with short timeouts (a swallowed fill is "couldn't
       type", no retyping); a cancel between fill and submit is seen before the
-      submit; the fallback submit is the 2FA field's own form's button, never
-      the page's first submit button (the login form's).
+      submit; the code is sent with the 2FA field's own form's visible submit
+      button, never the page's first one (the login form's), and with Enter
+      only when that form shows none; a field that submits itself on the last
+      digit (gone after the fill) is a code sent, not "couldn't type".
+  case_challenge_only_visible:
+      only a visible captcha / Turnstile frame is a challenge: a hidden one, one
+      inside a hidden frame or a detached one is not.
+  case_otp_prompt_beside_a_captcha_frame:
+      the 2FA prompt with a hidden captcha frame, or a visible reCAPTCHA badge,
+      on the page: the job asks for the code (not "challenge") and signs in.
   case_otp_only_a_visible_field:
       a stale hidden 2FA input is no prompt (_detect_otp False) and never the
       field the code is typed into: every _OTP_FIELD selector is `:visible`.
@@ -92,6 +102,13 @@ No browser and NO network: `_bb_request` / `urlopen` / the page are faked.
   case_otp_scrubbed_from_job_error:
       an exception whose message carries the submitted code (Playwright echoes
       filled values) reaches the job error and the log as ***.
+  case_otp_every_code_scrubbed_then_forgotten:
+      every code taken during the job (not only the latest) is *** in the
+      error and the log; the ended job holds no code.
+  case_api_otp_expired_job_is_404:
+      POST /otp on a job past expires_at - CAPTURE_RESERVE_S is the status
+      route's expired 404, even while the job still reads "otp"; nothing lands
+      in the slot.
   case_api_otp_gates:
       POST /otp: 404 unknown job, 403 another principal's job, 409 a job not on
       the 2FA prompt, 400 a code that is not 6-8 digits or a body that is not
@@ -147,7 +164,7 @@ def _set_env(key="bb_test_key", project="proj-xyz"):
 def _job(**kw):
     now = time.time()
     base = dict(id=uuid.uuid4().hex, email="e@x.com", principal=None,
-                created_at=now, expires_at=now + 30)
+                created_at=now, expires_at=now + rl.JOB_WINDOW_S)
     base.update(kw)
     return rl.RemoteLoginJob(**base)
 
@@ -573,12 +590,28 @@ class _FormPage:
     def goto(self, *_a, **_k):
         return None
 
+    frames: list = []
+
     def evaluate(self, *_a):
         return False
 
-    @property
-    def frames(self):
-        return []
+
+class _Frame:
+    """A fake Playwright frame: its URL, its parent frame (None: the page's
+    main frame) and whether its own <iframe> element is visible."""
+
+    def __init__(self, url, *, parent=None, visible=True, detached=False):
+        self.url, self.parent_frame, self.visible, self.detached = url, parent, visible, detached
+        self.handles = []  # every element handle given out, and whether it was disposed
+
+    def frame_element(self):
+        if self.detached:
+            raise Exception("Frame was detached")
+        el = _Field([], "iframe", visible=self.visible)
+        el.disposed = False
+        el.dispose = lambda: setattr(el, "disposed", True)
+        self.handles.append(el)
+        return el
 
 
 def case_form_waited_filled_verified():
@@ -741,7 +774,9 @@ GOOD_OTP = "246810"
 
 
 class _OtpField(_Field):
-    """OnlyFans' 2FA field: Enter with the right code signs the page in."""
+    """OnlyFans' 2FA field in its own form, with its own VERIFY button:
+    sending the form (the button, or Enter in the field) with the right code
+    signs the page in."""
 
     def __init__(self, page):
         super().__init__(page.log, "otp")
@@ -750,11 +785,36 @@ class _OtpField(_Field):
     def is_visible(self):
         return self.page.on_prompt()
 
+    def locator(self, sel):
+        if sel == "xpath=ancestor::form":
+            return self
+        assert sel == rl._OTP_SUBMIT_BUTTON, sel
+        return _OtpVerify(self)
+
     def press(self, key, timeout=None):
         super().press(key, timeout)
+        if key == "Enter":
+            self.send()
+
+    def send(self):
         self.page.otp_tries.append(self.value)
-        if key == "Enter" and self.value == GOOD_OTP:
+        if self.value == GOOD_OTP:
             self.page.signed_in = True
+
+
+class _OtpVerify(_Field):
+    """The 2FA form's own (visible) submit button."""
+
+    def __init__(self, otp_field):
+        super().__init__(otp_field.log, "otp-form-submit")
+        self.otp_field = otp_field
+
+    def count(self):
+        return 1
+
+    def click(self, timeout=None):
+        super().click(timeout)
+        self.otp_field.send()
 
 
 class _OtpPage(_FormPage):
@@ -794,14 +854,14 @@ class _LogTap(logging.Handler):
         self.lines.append(record.getMessage())
 
 
-def _otp_login(steps):
+def _otp_login(steps, page=None):
     """Start a served login over HTTP on an _OtpPage (fake Browserbase,
     fake persist), run `steps(job_id, page)` once the job asks for the code,
     and wait for the job to end. Returns (job, page, log lines, statuses)."""
     _set_env()
     _NAV_ERRORS.clear()
     calls, urlopen = _fake_browserbase()
-    page, order, statuses = _OtpPage(), [], []
+    page, order, statuses = page or _OtpPage(), [], []
     restore = _persist_fakes(order)
     orig_init = _FakeBrowserCtx.__init__
 
@@ -856,12 +916,12 @@ def case_otp_code_signs_in():
     job, page, lines, statuses = _otp_login(_steps)
     assert job.state == rl.STATE_DONE, (job.state, job.error)
     assert job.account_id == "777"
-    otp = [e for e in page.log if e[1] == "otp"]
-    assert otp == [("fill", "otp"), ("press", "otp", "Enter")], page.log
+    otp = [e for e in page.log if e[1].startswith("otp")]
+    assert otp == [("fill", "otp"), ("click", "otp-form-submit")], page.log  # the 2FA form's own button
     assert page.otp_tries == [GOOD_OTP]
     blob = json.dumps(statuses) + "\n".join(lines)
     assert GOOD_OTP not in blob and OF_PW not in blob, "the code / password leaked into a status or log line"
-    assert job._otp_code is None
+    assert GOOD_OTP not in repr(vars(job)), "the finished job still holds the code"
 
 
 def case_otp_wrong_code_retries():
@@ -893,43 +953,59 @@ def case_otp_wrong_code_retries():
 
 
 def case_otp_prompt_back_within_verify_window():
-    seen = []
+    """A code sent, the prompt gone and back inside OTP_VERIFY_S: rejected,
+    not a fresh ask, also when a visible captcha showed in the gap."""
+    main = _Frame("https://onlyfans.com/")
+    for gap_captcha in (False, True):
+        seen = []
 
-    def _steps(jid, page, statuses):
-        job = rl.get_job(jid)
-        assert client.post(f"/admin/login/remote/{jid}/otp", json={"code": "000000"}).status_code == 200
-        _until(lambda: page.otp_tries == ["000000"])
-        page.hide_prompt = True  # OnlyFans navigates away from the prompt...
-        _until(lambda: job.state == rl.STATE_TYPING)
-        seen.append(job.public())
-        page.hide_prompt = False  # ...and shows it again, well inside OTP_VERIFY_S (15 s)
-        _until(lambda: job.state == rl.STATE_OTP, timeout=3)
-        seen.append(job.public())
-        assert client.post(f"/admin/login/remote/{jid}/otp", json={"code": GOOD_OTP}).status_code == 200
+        def _steps(jid, page, statuses):
+            job = rl.get_job(jid)
+            assert client.post(f"/admin/login/remote/{jid}/otp", json={"code": "000000"}).status_code == 200
+            _until(lambda: page.otp_tries == ["000000"])
+            page.hide_prompt = True  # OnlyFans navigates away from the prompt...
+            if gap_captcha:  # ...to a visible captcha...
+                page.frames = [main, _Frame("https://www.google.com/recaptcha/api2/anchor?k=x", parent=main)]
+            _until(lambda: job.state == (rl.STATE_CHALLENGE if gap_captcha else rl.STATE_TYPING))
+            seen.append(job.public())
+            page.hide_prompt = False  # ...and shows it again, well inside OTP_VERIFY_S (15 s)
+            _until(lambda: job.state == rl.STATE_OTP, timeout=3)
+            seen.append(job.public())
+            assert client.post(f"/admin/login/remote/{jid}/otp", json={"code": GOOD_OTP}).status_code == 200
 
-    job, page, lines, statuses = _otp_login(_steps)
-    assert seen[0]["state"] == rl.STATE_TYPING, seen
-    assert seen[1]["state"] == rl.STATE_OTP and seen[1]["message"] == rl.OTP_ASK, seen
-    assert job.state == rl.STATE_DONE and page.otp_tries == ["000000", GOOD_OTP], (job.state, page.otp_tries)
+        job, page, lines, statuses = _otp_login(_steps)
+        assert seen[0]["state"] == (rl.STATE_CHALLENGE if gap_captcha else rl.STATE_TYPING), seen
+        # a code went in OTP_VERIFY_S ago at most: OnlyFans didn't take it (or hasn't answered), not a fresh ask
+        assert seen[1]["state"] == rl.STATE_OTP and seen[1]["message"] == rl.OTP_REJECTED, (gap_captcha, seen)
+        assert job.state == rl.STATE_DONE and page.otp_tries == ["000000", GOOD_OTP], (job.state, page.otp_tries)
 
 
 class _OtpFormField(_Field):
     """A 2FA field for _enter_otp alone: records timeouts; `press_fails`
     makes Enter raise; `on_fill` runs after a fill; `locator()` reaches the
-    field's own form's submit button."""
+    field's own form's visible submit button (`button=False`: the form has
+    none); `submits_itself`: the fill sends the form on its last digit and the
+    field is gone (no longer visible, input_value times out)."""
 
-    def __init__(self, log, *, swallow=0, press_fails=False, on_fill=None):
+    def __init__(self, log, *, swallow=0, press_fails=False, on_fill=None, button=True, submits_itself=False,
+                 click_fails=False, on_click=None):
         super().__init__(log, "otp", swallow=swallow)
         self.press_fails, self.on_fill, self.timeouts = press_fails, on_fill, []
+        self.button, self.submits_itself, self.click_fails = button, submits_itself, click_fails
+        self.on_click = on_click
 
     def fill(self, value, timeout=None):
         self.timeouts.append(timeout)
         super().fill(value, timeout)
+        if self.submits_itself:
+            self.visible = False
         if self.on_fill:
             self.on_fill()
 
     def input_value(self, timeout=None):
         self.timeouts.append(timeout)
+        if not self.visible:
+            raise Exception(f"Timeout {timeout}ms exceeded")
         return self.value
 
     def press(self, key, timeout=None):
@@ -940,7 +1016,18 @@ class _OtpFormField(_Field):
 
     def locator(self, sel):
         self.log.append(("locator", sel))
-        return self if sel.startswith("xpath=") else _Field(self.log, "otp-form-submit")
+        if sel.startswith("xpath="):
+            return self
+        btn = _Field(self.log, "otp-form-submit")
+        btn.count = lambda: 1 if self.button else 0
+        if self.click_fails:  # covered (an overlay): Playwright's click times out
+            def _click(timeout=None):
+                self.log.append(("click", "otp-form-submit"))
+                if self.on_click:
+                    self.on_click()
+                raise Exception(f"Timeout {timeout}ms exceeded")
+            btn.click = _click
+        return btn
 
 
 def case_enter_otp_one_attempt_cancel_and_form_scope():
@@ -957,19 +1044,170 @@ def case_enter_otp_one_attempt_cancel_and_form_scope():
     assert rl._enter_otp(job, page, GOOD_OTP) is False
     assert page.log == [("fill", "otp")], page.log
     assert set(field.timeouts) == {rl.OTP_STEP_TIMEOUT_MS}, field.timeouts
-    # Enter fails: the fallback is the 2FA form's own submit, not the page's first one
-    field = _OtpFormField([], press_fails=True)
+    # the code is sent with the 2FA form's own visible submit button: no Enter, never the page's first button
+    assert rl._OTP_SUBMIT_BUTTON.endswith(":visible"), rl._OTP_SUBMIT_BUTTON
+    field = _OtpFormField([])
     page = page_with(field)
     assert rl._enter_otp(job, page, GOOD_OTP) is True
-    assert page.log == [("fill", "otp"), ("press", "otp", "Enter"),
-                        ("locator", "xpath=ancestor::form"), ("locator", rl._SUBMIT_BUTTON),
+    assert page.log == [("fill", "otp"), ("locator", "xpath=ancestor::form"), ("locator", rl._OTP_SUBMIT_BUTTON),
                         ("click", "otp-form-submit")], page.log
     assert ("click", "submit") not in page.log
+    # a 2FA form with no visible submit button: Enter in the field
+    field = _OtpFormField([], button=False)
+    page = page_with(field)
+    assert rl._enter_otp(job, page, GOOD_OTP) is True
+    assert page.log == [("fill", "otp"), ("locator", "xpath=ancestor::form"), ("locator", rl._OTP_SUBMIT_BUTTON),
+                        ("press", "otp", "Enter")], page.log
+    assert ("click", "submit") not in page.log
+    # a button that will not take the click (covered by an overlay): Enter in the field all the same
+    field = _OtpFormField([], click_fails=True)
+    page = page_with(field)
+    assert rl._enter_otp(job, page, GOOD_OTP) is True
+    assert page.log[-2:] == [("click", "otp-form-submit"), ("press", "otp", "Enter")], page.log
+    # a cancel that lands while the click times out: no Enter after it
+    cjob = _job(state=rl.STATE_OTP, expires_at=time.time() + 600)
+    field = _OtpFormField([], click_fails=True, on_click=cjob._cancel.set)
+    page = page_with(field)
+    assert isinstance(_raises(rl._Cancelled, rl._enter_otp, cjob, page, GOOD_OTP), rl._Cancelled)
+    assert ("press", "otp", "Enter") not in page.log, page.log
+    # neither works: the code never went out
+    field = _OtpFormField([], click_fails=True, press_fails=True)
+    page = page_with(field)
+    assert rl._enter_otp(job, page, GOOD_OTP) is False
+    # a field that submits itself on the last digit is gone after the fill: the code is in (not "couldn't
+    # type"), and there is nothing left to click or press
+    field = _OtpFormField([], submits_itself=True)
+    page = page_with(field)
+    assert rl._enter_otp(job, page, GOOD_OTP) is True
+    assert page.log == [("fill", "otp")], page.log
     # a cancel that lands while the code is typed: no submit
     field = _OtpFormField([], on_fill=job._cancel.set)
     page = page_with(field)
     assert isinstance(_raises(rl._Cancelled, rl._enter_otp, job, page, GOOD_OTP), rl._Cancelled)
     assert page.log == [("fill", "otp")], page.log
+
+
+def case_challenge_only_visible():
+    """A captcha / Turnstile frame counts only when it is on screen: its own
+    <iframe> and every frame it sits in are visible. A hidden one (reCAPTCHA's
+    parked challenge frame, a leftover widget) is no verification check."""
+    page = _FormPage()
+    main = _Frame("https://onlyfans.com/")
+    hidden = _Frame("https://www.google.com/recaptcha/api2/bframe?k=x", parent=main, visible=False)
+    page.frames = [main, hidden]
+    assert rl._detect_challenge(page) is False, "a hidden reCAPTCHA frame is no challenge"
+    page.frames = [main, _Frame("https://www.google.com/recaptcha/api2/anchor?k=x", parent=main)]
+    assert rl._detect_challenge(page) is True, "a visible reCAPTCHA frame is a challenge"
+    page.frames = [main, hidden, _Frame("https://challenges.cloudflare.com/cdn-cgi/x", parent=hidden)]
+    assert rl._detect_challenge(page) is False, "a frame inside a hidden frame is not on screen"
+    page.frames = [main, _Frame("https://js.hcaptcha.com/x", parent=main, detached=True)]
+    assert rl._detect_challenge(page) is False, "a detached frame is not on screen"
+    page.frames = [_Frame("https://challenges.cloudflare.com/cdn-cgi/challenge-platform/x")]
+    assert rl._detect_challenge(page) is True, "the page itself on a challenge URL is a challenge"
+    # checked every poll for the job's life: each <iframe> handle is released, the browser keeps none
+    handles = [h for f in (main, hidden) for h in f.handles]
+    assert handles and all(h.disposed for h in handles), [h.disposed for h in handles]
+
+
+def case_otp_prompt_beside_a_captcha_frame():
+    """OnlyFans' 2FA prompt with a captcha frame on the page (a hidden one, or
+    a visible reCAPTCHA badge): the visible 2FA field wins. The job asks for
+    the code (not stuck in "challenge" with /otp 409) and the code signs in."""
+    main = _Frame("https://onlyfans.com/")
+    for frame in (_Frame("https://www.google.com/recaptcha/api2/bframe?k=x", parent=main, visible=False),
+                  _Frame("https://www.google.com/recaptcha/api2/anchor?k=x&size=invisible", parent=main)):
+        page = _OtpPage()
+        page.frames = [main, frame]
+
+        def _steps(jid, _page, statuses):
+            assert statuses[-1]["state"] == rl.STATE_OTP and statuses[-1]["message"] == rl.OTP_ASK, statuses[-1]
+            r = client.post(f"/admin/login/remote/{jid}/otp", json={"code": GOOD_OTP})
+            assert r.status_code == 200, r.text
+
+        job, page, _lines, _statuses = _otp_login(_steps, page)
+        assert job.state == rl.STATE_DONE and page.otp_tries == [GOOD_OTP], (frame.visible, job.state, job.error)
+
+
+def case_otp_every_code_scrubbed_then_forgotten():
+    """Every code taken during the job is scrubbed from its error and its log
+    line, not only the latest; once the job ends no code stays in its memory
+    (a finished job is kept JOB_TTL_S)."""
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _backend(_job):
+        yield None, None
+
+    first, second = "111111", "222222"
+
+    def _body(_page, _ctx):
+        raise RuntimeError(f'Locator.fill: fill("{first}") then fill("{second}")')
+
+    job = _job(state=rl.STATE_OTP)
+    job.submit_otp(first)
+    assert job.take_otp() == first
+    job.otp_retry(rl.OTP_REJECTED)
+    job.submit_otp(second)
+    assert job.take_otp() == second
+    tap = _LogTap()
+    logging.getLogger().addHandler(tap)
+    orig = rl._browserbase_backend
+    rl._browserbase_backend = _backend
+    try:
+        rl._serve(job, secrets=(OF_PW,), body=_body)
+    finally:
+        rl._browserbase_backend = orig
+        logging.getLogger().removeHandler(tap)
+    blob = json.dumps(job.public()) + "\n".join(tap.lines)
+    assert job.state == rl.STATE_ERROR and job.error.count("***") == 2, job.error
+    assert first not in blob and second not in blob, "an earlier code reached the job error or a log line"
+    held = repr(vars(job))
+    assert first not in held and second not in held, "the finished job still holds a code"
+
+
+def case_api_otp_expired_job_is_404():
+    """A job past its window takes no code: POST /otp is 404, as the status
+    route answers for an expired job, once the job is past expires_at -
+    CAPTURE_RESERVE_S (its thread no longer types a code then), even while
+    the job still reads "otp" (the worker may be in browser I/O)."""
+    otp = lambda jid: client.post(f"/admin/login/remote/{jid}/otp", json={"code": GOOD_OTP})
+    gone = client.get("/admin/login/remote/nope").json()
+    now = time.time()
+    try:
+        for exp in (now + rl.CAPTURE_RESERVE_S - 1, now - 30):
+            j = _job(principal=None, state=rl.STATE_OTP, expires_at=exp)
+            rl._jobs[j.id] = j
+            r = otp(j.id)
+            assert r.status_code == 404 and r.json() == gone, (exp - now, r.status_code, r.text)
+            assert j._otp_code is None and not j._otp_busy and j.message != rl.OTP_CHECKING
+        j = _job(principal=None, state=rl.STATE_OTP, expires_at=now + rl.CAPTURE_RESERVE_S + 30)
+        rl._jobs[j.id] = j
+        assert otp(j.id).status_code == 200, "a job inside its window takes the code"
+        # the deadline passing while a submit waits for the job's lock: checked under the lock, no code queued
+        import threading
+        j = _job(principal=None, state=rl.STATE_OTP, expires_at=time.time() + rl.CAPTURE_RESERVE_S + 30)
+        out = []
+
+        def _submit():
+            try:
+                j.submit_otp(GOOD_OTP)
+                out.append("taken")
+            except rl.RemoteLoginExpired:
+                out.append("expired")
+
+        with j._lock:
+            t = threading.Thread(target=_submit)
+            t.start()
+            time.sleep(0.05)  # the submit is waiting for the lock, inside the window
+            j.expires_at = time.time() + rl.CAPTURE_RESERVE_S - 1  # its deadline passes meanwhile
+        t.join(2)
+        assert out == ["expired"], out
+        assert j._otp_code is None and not j._otp_busy and j.message != rl.OTP_CHECKING
+        theirs = _job(principal="someone-else", state=rl.STATE_OTP, expires_at=now - 30)
+        rl._jobs[theirs.id] = theirs
+        assert otp(theirs.id).status_code == 403, "another principal's job is 403 first"
+    finally:
+        rl._jobs.clear()
 
 
 def case_otp_only_a_visible_field():
@@ -1004,6 +1242,14 @@ def case_otp_code_spaces_and_dashes():
             assert r.status_code == 400 and bad not in r.text and fresh._otp_code is None, (bad, r.text)
     finally:
         rl._jobs.clear()
+
+
+def case_scrub_longest_secret_first():
+    """A code inside another code (or the password): every order of the
+    secrets leaves none of either."""
+    for secrets in (("123456", "12345678"), ("12345678", "123456")):
+        out = rl.scrub("codes 12345678 and 123456", *secrets)
+        assert "1234" not in out and "78" not in out, (secrets, out)
 
 
 def case_otp_scrubbed_from_job_error():

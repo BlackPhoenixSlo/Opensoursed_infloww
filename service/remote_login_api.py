@@ -4,6 +4,8 @@
   POST /admin/login/remote/start          begin a login job → the job's status
   GET  /admin/login/remote/{id}           poll status (no secrets)
   POST /admin/login/remote/{id}/otp       {"code"}: the 2FA code, while the job is in "otp"
+                                          (404 once the job is past its code deadline, the
+                                          answer for an expired job)
   POST /admin/login/remote/{id}/cancel    cancel the job
 
 The human solves any challenge in the Browserbase live view whose URL the
@@ -65,10 +67,13 @@ def _principal() -> str | None:
     return u.id if u is not None else None
 
 
+_NO_JOB = "no such login job (expired?)"
+
+
 def _require_job(job_id: str) -> remote_login.RemoteLoginJob:
     job = remote_login.get_job(job_id)
     if job is None:
-        raise HTTPException(status_code=404, detail="no such login job (expired?)")
+        raise HTTPException(status_code=404, detail=_NO_JOB)
     if _principal() != job.principal:
         raise HTTPException(status_code=403, detail="not your login job")
     return job
@@ -143,6 +148,8 @@ def remote_login_otp(job_id: str, body: Any = Body(None)) -> dict[str, Any]:
         job.submit_otp(code)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except remote_login.RemoteLoginExpired:  # past its code deadline (its thread types no code), maybe still "otp"
+        raise HTTPException(status_code=404, detail=_NO_JOB)
     except remote_login.RemoteLoginConflict as e:
         raise HTTPException(status_code=409, detail=str(e))
     return job.public()

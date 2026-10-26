@@ -12,10 +12,13 @@ redirected secrets and sessions, CHATTERLY_TEST_MODE) plus loopback-only hooks.
        polls it each second: the loop's own CPU, the one-core ceiling).
   POST /__slop/telemetry-flush  emit service/db/write_telemetry's JSON line now
        (reason "flush"; its shutdown line, early), so the counts are in relay.log.
-  POST /__slop/browserbase  {api, chunk_url_tpl}  points the served Browserbase
+  POST /__slop/browserbase  {api, chunk_url_tpl, job_window_s?}  points the served Browserbase
        login (remote_login.py) at lib/browserbase.py's loopback world: the
        Browserbase API base (`remote_login.BROWSERBASE_API`), fake API keys in
        the env, and OnlyFans' signing-chunk URL (`session_bootstrap.CHUNK_URL_TPL`).
+       `job_window_s` sets `remote_login.JOB_WINDOW_S` for the jobs started
+       after it (time compression, declared: a job that runs out of its window
+       without waiting the real 285 s); without it, the product's own value.
        It also refuses every non-loopback curl_cffi request (recorded in the
        off-host log): the login builds a REAL OFClient for the new account, and
        curl_cffi goes past the socket guard.
@@ -473,6 +476,9 @@ def _wire(app) -> None:
         import session_bootstrap
         from curl_cffi import requests as cffi
         remote_login.BROWSERBASE_API = body["api"]
+        default_window = getattr(remote_login, "__slop_job_window_s__", remote_login.JOB_WINDOW_S)
+        remote_login.__slop_job_window_s__ = default_window
+        remote_login.JOB_WINDOW_S = body.get("job_window_s") or default_window
         os.environ["BROWSERBASE_API_KEY"] = "slop-browserbase-key"
         os.environ["BROWSERBASE_PROJECT_ID"] = "slop-project"
         session_bootstrap.CHUNK_URL_TPL = body["chunk_url_tpl"]
@@ -531,6 +537,9 @@ def _wire(app) -> None:
 
 def _run(app, *a, **k):
     _wire(app)
+    grace = os.environ.get("UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN")
+    if grace:  # the Dockerfile's ENV; only uvicorn's CLI reads it, relay_guarded calls uvicorn.run
+        k.setdefault("timeout_graceful_shutdown", int(grace))
     return _real_run(app, *a, **k)
 
 

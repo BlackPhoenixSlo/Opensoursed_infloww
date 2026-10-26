@@ -31,6 +31,11 @@ services:
     image: openinflowwww-relay:latest
     container_name: openinflowwww-relay
     restart: unless-stopped
+    # A restart is safe at any time: on SIGTERM the relay cuts open streams
+    # after 5 s (Dockerfile UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN), then waits up to
+    # RELAY_DRAIN_S (45 s) for automation runs that claimed a send, then stops.
+    # The 10 s default would SIGKILL it mid-drain.
+    stop_grace_period: 75s
     # ── Blast radius ────────────────────────────────────────────────
     # NO container on this stack had a CPU ceiling until 2026-08-22
     # (`NanoCpus=0` on every one), which is what let one unbounded loop in
@@ -203,6 +208,9 @@ services:
       # unless-stopped` only catches actual exits, not hangs or
       # deadlocks where the process stays alive but stops answering.
       autoheal: "true"
+      # autoheal's restart stops with its own timeout (10 s by default), not
+      # stop_grace_period: give it the same 75 s, so its restart drains too.
+      autoheal.stop.timeout: "75"
       # Traefik sends the relay's own paths here directly, skipping the Next
       # hop (capped at 0.4 CPU) for every API call, /img stream and SSE.
       # Exactly the paths app/next.config.ts rewrites to the relay unchanged

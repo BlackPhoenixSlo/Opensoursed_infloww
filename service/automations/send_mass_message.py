@@ -346,7 +346,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             if auto_lid is not None and auto_lid not in excluded_user_lists:
                 excluded_user_lists = [*excluded_user_lists, auto_lid]
 
-        # ── 2) Mint the mass_runs row up front (the broadcast anchor) ────
+        # ── 2) The mass_runs row (the broadcast anchor), minted once this
+        # write's turn at the account's gate comes, right before the POST
+        # (`before_write` below): a run row means "handed to OF", never "still
+        # waiting for the 11 s spacing", so a restart in that wait mints nothing.
         audience_filter = json.dumps({
             "user_lists": list(user_lists),
             "included_users": recipients,
@@ -361,19 +364,23 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             "excluded_user_lists": list(excluded_user_lists),
             "fence": fence_attached,
         })
-        async with get_session() as s:
-            mr = MassRun(
-                account_id=str(account_id),
-                funnel_id=funnel.id if funnel else None,
-                started_by_employee_id=employee_id,
-                automation_kind=attr_kind,
-                audience_filter=audience_filter,
-                recipient_count=len(recipients),
-                status="running",
-            )
-            s.add(mr)
-            await s.flush()
-            mass_run_id = int(mr.id)
+        mass_run_id = 0
+
+        async def _mint() -> None:
+            nonlocal mass_run_id
+            async with get_session() as s:
+                mr = MassRun(
+                    account_id=str(account_id),
+                    funnel_id=funnel.id if funnel else None,
+                    started_by_employee_id=employee_id,
+                    automation_kind=attr_kind,
+                    audience_filter=audience_filter,
+                    recipient_count=len(recipients),
+                    status="running",
+                )
+                s.add(mr)
+                await s.flush()
+                mass_run_id = int(mr.id)
 
         # ── 3) Fire the OF broadcast (off-thread so the loop never blocks) ─
         # Proactively SPACE this broadcast ≥ the gap after the account's
@@ -395,6 +402,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 online_only=online_only,
             ),
             send_purpose="fenced",
+            before_write=_mint,
         )
     # OF's queue id — needed by callers that schedule a forever-window unsend
     # (mass_premade, the relay auto-unsend timer). NOT persisted on mass_runs.

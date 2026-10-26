@@ -268,7 +268,37 @@ def case_the_payload_carries_what_the_panel_binds_to():
         assert key in state["budget"], (key, state["budget"])
 
 
+def case_the_hard_exit_waits_past_the_automation_drain():
+    # A self-restart is a SIGTERM: uvicorn's graceful wait, then the shutdown
+    # hook's drain of runs that claimed a send. The hard exit must not cut
+    # that drain, or the restart becomes the crash case.
+    import re
+    import automation_executor as ax
+    dockerfile = (Path(__file__).resolve().parents[2] / "Dockerfile").read_text()
+    graceful = float(re.search(r"UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN=(\d+)", dockerfile).group(1))
+    assert lane_config_api._RESTART_GRACE_S >= graceful + ax.DRAIN_S + 10, (
+        lane_config_api._RESTART_GRACE_S, graceful, ax.DRAIN_S)
+
+
+def case_every_stop_of_the_relay_waits_past_the_automation_drain():
+    # docker stop / compose up (stop_grace_period) and autoheal's restart (its
+    # own label) both SIGKILL past their timeout: each must outlast uvicorn's
+    # graceful wait plus the drain.
+    import re
+    import automation_executor as ax
+    root = Path(__file__).resolve().parents[2]
+    graceful = float(re.search(r"UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN=(\d+)",
+                               (root / "Dockerfile").read_text()).group(1))
+    relay = (root / "docker-compose.yml").read_text().split("\n  openinflowwww-app:")[0]
+    grace = float(re.search(r"\n    stop_grace_period: (\d+)s", relay).group(1))
+    heal = float(re.search(r'\n      autoheal\.stop\.timeout: "(\d+)"', relay).group(1))
+    assert grace >= graceful + ax.DRAIN_S + 10, (grace, graceful, ax.DRAIN_S)
+    assert heal == grace, (heal, grace)
+
+
 _harness.run(
+    case_every_stop_of_the_relay_waits_past_the_automation_drain,
+    case_the_hard_exit_waits_past_the_automation_drain,
     case_the_routes_live_under_the_page_not_under_admin,
     case_there_is_no_admin_twin,
     case_a_relay_that_is_not_pid_1_refuses_without_spending,
