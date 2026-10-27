@@ -667,9 +667,12 @@ export function MassMessageComposer({
       className="fixed inset-0 z-50 bg-black/50 grid place-items-center p-0 sm:p-4"
       onClick={() => { if (!send.isPending) { reset(); onClose(); } }}
     >
+      {/* min-h-0 / min-w-0: a grid item's auto minimum is its content, so on a
+       *  phone (h-full, no max-h) the panel grew to the form's full height and
+       *  width, past the screen, and the body never scrolled to Send. */}
       <div
         onClick={(e) => e.stopPropagation()}
-        className="w-full h-full sm:h-auto max-w-none sm:max-w-[640px] max-h-none sm:max-h-[90vh] flex flex-col bg-panel border-0 sm:border border-border rounded-none sm:rounded-xl shadow-2xl"
+        className="min-h-0 min-w-0 w-full h-full sm:h-auto max-w-none sm:max-w-[640px] max-h-none sm:max-h-[90vh] flex flex-col bg-panel border-0 sm:border border-border rounded-none sm:rounded-xl shadow-2xl"
       >
         <header className="px-4 py-3 border-b border-border flex items-center justify-between">
           <h2 className="text-sm font-semibold">
@@ -879,7 +882,7 @@ export function MassMessageComposer({
             <select
               value={funnelId ?? ""}
               onChange={(e) => setFunnelId(e.target.value ? Number(e.target.value) : null)}
-              className="flex-1 bg-bg border border-border rounded-md px-2 py-1.5 text-base md:text-xs focus:outline-none focus:border-accent"
+              className="min-w-0 flex-1 bg-bg border border-border rounded-md px-2 py-1.5 text-base md:text-xs focus:outline-none focus:border-accent"
             >
               <option value="">— none (just send the opener) —</option>
               {(funnelsQ.data ?? []).map((f) => (

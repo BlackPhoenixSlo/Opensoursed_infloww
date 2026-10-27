@@ -349,6 +349,34 @@ describe("Fan insights closing", () => {
     expect(onClose).toHaveBeenCalledTimes(2);
   });
 
+  it("a swipe right on the slide-over or its backdrop closes it; a swipe left, the pinned column and 1024px+ do not", () => {
+    const onClose = vi.fn();
+    const swipe = (el: Element, x0: number, x1: number) => {
+      fireEvent.touchStart(el, { touches: [{ clientX: x0, clientY: 300 }], changedTouches: [{ clientX: x0, clientY: 300 }] });
+      fireEvent.touchMove(el, { touches: [{ clientX: x1, clientY: 300 }], changedTouches: [{ clientX: x1, clientY: 300 }] });
+      fireEvent.touchEnd(el, { touches: [], changedTouches: [{ clientX: x1, clientY: 300 }] });
+    };
+    const { unmount } = renderInsights({ layout: "slide-over", onClose });
+    const dialog = screen.getByRole("dialog", { name: "Fan insights" });
+    swipe(dialog, 300, 150);
+    expect(onClose).not.toHaveBeenCalled();
+    swipe(dialog, 150, 300);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    swipe(dialog.previousElementSibling!, 20, 200);            // the backdrop
+    expect(onClose).toHaveBeenCalledTimes(2);
+    unmount();
+
+    renderInsights({ layout: "pinned", onClose });
+    swipe(screen.getByRole("complementary", { name: "Fan insights" }), 150, 300);
+    expect(onClose).toHaveBeenCalledTimes(2);
+    cleanup();
+
+    viewport.wide = true;
+    renderInsights({ layout: "slide-over", onClose });
+    swipe(screen.getByRole("dialog", { name: "Fan insights" }), 150, 300);
+    expect(onClose).toHaveBeenCalledTimes(2);
+  });
+
   it("the pinned column is the Fan insights landmark, not a dialog, and ignores Esc", async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();

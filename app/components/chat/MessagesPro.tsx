@@ -37,6 +37,7 @@ import { usePlatformAccounts } from "@/hooks/useAccounts";
 import { usePickAllModels } from "@/hooks/usePickAllModels";
 import { useSfw } from "@/hooks/useBlurMode";
 import { useHotkeys } from "@/hooks/useHotkeys";
+import { keepChatEntry, useChatBackEntry } from "@/hooks/useChatBackEntry";
 import { useIsDesktop } from "@/hooks/useIsDesktop";
 import { useScope } from "@/contexts/ScopeContext";
 import { MP } from "@/lib/messagesPro";
@@ -185,6 +186,10 @@ export function MessagesPro({ deepLink }: { deepLink?: MessagesProDeepLink } = {
     setArrival(undefined);
     setSelected(null);
   }, []);
+  // Below lg the open Thread has its own history entry, so the platform's back
+  // (edge swipe, Android back) returns to the Fan List before leaving; the
+  // Thread's Back and its swipe right go through that same entry (`backToList`).
+  const backToList = useChatBackEntry(!desktop, selected !== null, clearSelection);
 
   // After ✕ on a Fan tab: open the tab the strip names (the last remaining),
   // or, with none, empty the Thread (messages.js:2577-2578).
@@ -471,7 +476,7 @@ export function MessagesPro({ deepLink }: { deepLink?: MessagesProDeepLink } = {
             fanId={selected.fanId}
             chat={arrivalChat || selected.chat}
             insightsOpenAtStart={!arrival}
-            onBack={clearSelection}
+            onBack={backToList}
           />
         ) : (
           <ThreadEmptyState />
@@ -485,14 +490,15 @@ export function MessagesPro({ deepLink }: { deepLink?: MessagesProDeepLink } = {
  *  state argument is `null`, not `window.history.state`: Next's patched
  *  replaceState skips its router sync for state carrying its `__NA` marker,
  *  and an unsynced router would write the parameter back on its next commit.
- *  With `null` it copies its internal state and dispatches a restore, and the
- *  address bar still changes synchronously. */
+ *  With `null` (or the open Thread's mark, `keepChatEntry`) it copies its
+ *  internal state and dispatches a restore, and the address bar still changes
+ *  synchronously. */
 function stripSearchParam(name: string) {
   const url = new URL(window.location.href);
   if (!url.searchParams.has(name)) return;
   url.searchParams.delete(name);
   const qs = url.searchParams.toString();
-  window.history.replaceState(null, "", url.pathname + (qs ? `?${qs}` : "") + url.hash);
+  window.history.replaceState(keepChatEntry(), "", url.pathname + (qs ? `?${qs}` : "") + url.hash);
 }
 
 /** The minimum chat a Deep link's Thread needs before the Fan List has its

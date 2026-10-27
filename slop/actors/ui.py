@@ -12,6 +12,8 @@ SSE event, long tasks (>50 ms), heap, rendered Fan List rows, and a text watcher
 for marker DMs (`watch` / `seen`)."""
 from __future__ import annotations
 
+import asyncio
+import re
 import time
 from contextlib import asynccontextmanager
 from urllib.parse import urlsplit
@@ -27,6 +29,7 @@ document.addEventListener('DOMContentLoaded', () => { const s = document.createE
   document.documentElement.appendChild(s); });"""
 # Relay routes outside /api/of/ that are OnlyFans-live reads too: held like /api/of/*.
 OF_LIVE_PATHS = ("/admin/vault/wall-media",)
+SEND_PATH = re.compile(r"/api/of/v2/chats/\d+/messages")
 # precise-memory-info: without it performance.memory is bucketed and never moves.
 LAUNCH_ARGS = ["--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost",
                "--enable-precise-memory-info"]
@@ -98,23 +101,72 @@ PROBE_JS = r"""(() => {
 })();"""
 
 
-async def _owner_page(browser, ctx, viewport, held, aborted, init_scripts=(), *, scale=1):
-    """A tab signed in as the owner on ctx.app. `scale`: the device scale factor
-    (2 for a zoomed crop). A fault with a `browser` script runs it in every page."""
+def _client_fault(ctx) -> tuple:
+    """The run's client fault (lib/faults.py `browser=`): compiled (regex, replacement) pairs."""
+    from slop.lib.faults import FAULTS
+    f = FAULTS.get(getattr(ctx, "fault", None) or "")
+    return tuple((re.compile(rx), rx, rep) for rx, rep in f.browser) if f else ()
+
+
+async def _patched(r, ctx, patches) -> None:
+    """Serve the app's JS with the client fault's rewrites; count each rewrite's matches
+    (ctx.browser_fault_hits, which lib/cli.py requires to be > 0 for every rewrite) and the
+    files they hit (ctx.browser_fault_files). A file that cannot be fetched (the page moved
+    on mid-load) is aborted, never served unpatched."""
+    hits = ctx.__dict__.setdefault("browser_fault_hits", {})
+    files = ctx.__dict__.setdefault("browser_fault_files", {})
+    try:
+        resp = await r.fetch()
+        body = await resp.text()
+    except Exception:  # noqa: BLE001
+        try:
+            await r.abort()
+        except Exception:  # noqa: BLE001 — the page is gone
+            pass
+        return
+    path = urlsplit(r.request.url).path
+    for rx, key, rep in patches:
+        body, n = rx.subn(rep, body)
+        hits[key] = hits.get(key, 0) + n
+        if n:
+            files[path] = files.get(path, 0) + n
+    await r.fulfill(response=resp, body=body)
+
+
+async def _owner_page(browser, ctx, viewport, held, aborted, init_scripts=(), *, http=None, app=None,
+                      send=False, through=(), scale=1, touch=False):
+    """A tab signed in as `http`'s session (default the owner's) on `app` (default ctx.app).
+    `send`: let the chat send (POST /api/of/v2/chats/{fan}/messages) through to the relay,
+    whose OnlyFans hop lib/relay.py answers; `through`: exact /api/of/ paths let through to
+    the relay too (a read whose OnlyFans hop lib/relay.py fakes), compiled patterns a GET's
+    whole path must match, or (method, compiled pattern) pairs for another method (e.g. the
+    chat mute's POST / DELETE); every other /api/of/ call stays held. `scale`: the device
+    scale factor (2 for a zoomed crop). `touch`: a phone's context (touch input, mobile
+    viewport), for `tap` and `swipe`."""
     bctx = await browser.new_context(viewport={"width": viewport[0], "height": viewport[1]},
-                                     device_scale_factor=scale)
-    host = urlsplit(ctx.app).hostname
+                                     device_scale_factor=scale, has_touch=touch, is_mobile=touch)
+    host = urlsplit(app or ctx.app).hostname
     await bctx.add_cookies([{"name": c.name, "value": c.value, "domain": host, "path": "/"}
-                            for c in ctx.owner.c.cookies.jar])
+                            for c in (http or ctx.owner).c.cookies.jar])
     fault = FAULTS.get(ctx.fault or "")
-    for js in (INIT_JS, *init_scripts, *((fault.browser,) if fault and fault.browser else ())):
+    for js in (INIT_JS, *init_scripts, *((fault.browser_js,) if fault and fault.browser_js else ())):
         await bctx.add_init_script(js)
+
+    patches = _client_fault(ctx)
 
     async def route(r):
         u = urlsplit(r.request.url)
         if u.hostname not in ("127.0.0.1", "localhost"):
             aborted.append(r.request.url)
             await r.abort()
+        elif patches and u.path.startswith("/_next/static/") and u.path.endswith(".js"):
+            await _patched(r, ctx, patches)
+        elif (send and r.request.method == "POST" and SEND_PATH.fullmatch(u.path)) or any(
+                t == u.path if isinstance(t, str)
+                else (r.request.method == t[0] and t[1].fullmatch(u.path)) if isinstance(t, tuple)
+                else (r.request.method == "GET" and t.fullmatch(u.path))
+                for t in through):
+            await r.continue_()
         elif u.path.startswith("/api/of/") or u.path in OF_LIVE_PATHS:
             held.append(r)  # never answered: OF is not reachable from a slop run
         else:
@@ -130,13 +182,36 @@ async def _owner_page(browser, ctx, viewport, held, aborted, init_scripts=(), *,
 
 
 @asynccontextmanager
-async def owner_browser(ctx, viewport=(1600, 1000), scale=1):
+async def owner_browser(ctx, viewport=(1600, 1000), through=(), send=False, scale=1, touch=False):
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(args=LAUNCH_ARGS)
         try:
-            yield await _owner_page(browser, ctx, viewport, [], [], scale=scale)
+            yield await _owner_page(browser, ctx, viewport, [], [], through=through, send=send, scale=scale,
+                                    touch=touch)
         finally:
             await browser.close()
+
+
+async def close_popup(opener, pop) -> None:
+    """Close `pop`, a window `opener`'s page opened (same context, same routes). Its held
+    /api/of/ reads are aborted first: Chromium resumes requests still paused at the Fetch domain
+    when their page detaches, so a plain close would let them through to the relay, whose
+    offline OnlyFans answers 500. Aborted, they die as a closed window's fetches do."""
+    held = opener.slop["held_of_reads"]
+
+    def page_of(r):
+        try:
+            return r.request.frame.page
+        except Exception:  # noqa: BLE001 — a worker's request has no frame
+            return None
+
+    for r in [r for r in held if page_of(r) is pop]:
+        held.remove(r)
+        try:
+            await r.abort()
+        except Exception:  # noqa: BLE001 — already gone with its frame
+            pass
+    await pop.close()
 
 
 @asynccontextmanager
@@ -152,6 +227,17 @@ async def owner_tabs(ctx, n: int, viewport=(1600, 1000), probe: bool = True):
             await browser.close()
 
 
+@asynccontextmanager
+async def chatter_tab(ctx, http, app: str, viewport=(1600, 1000)):
+    """One tab signed in as a chatter (`http`'s cookie) on `app`, its chat send let through."""
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(args=LAUNCH_ARGS)
+        try:
+            yield await _owner_page(browser, ctx, viewport, [], [], http=http, app=app, send=True)
+        finally:
+            await browser.close()
+
+
 async def take(page) -> dict:
     return await page.evaluate("() => window.__slop.take()")
 
@@ -163,6 +249,39 @@ async def watch(page, text: str, timeout_ms: int = 60_000) -> None:
 async def seen(page, text: str) -> float | None:
     """Epoch ms the watched text appeared (None: it never did within the timeout)."""
     return await page.evaluate("(t) => window.__slop.marks[t]", text)
+
+
+async def pick_creator(page, name: str, timeout_ms: int = 60_000) -> None:
+    """Picks a Creator on a My Automations page's creator column (`CreatorRail`, Smart lists' own): clicks its row
+    and waits until that row is the current pick."""
+    rows = page.get_by_test_id("of-creator-column").get_by_test_id("of-creator-row")
+    mine = page.get_by_text(name, exact=True)
+    await rows.filter(has=mine).first.click(timeout=timeout_ms)
+    await rows.and_(page.locator("[aria-current='true']")).filter(has=mine).first.wait_for(timeout=timeout_ms)
+
+
+async def swipe(page, x0: float, y0: float, x1: float, y1: float, *, ms: int = 200, steps: int = 10,
+                cancel: bool = False, before_end=None, via: tuple[tuple[float, float], ...] = ()) -> None:
+    """One finger from (x0, y0) to (x1, y1) over `ms`, as Chromium's touch input (CDP
+    Input.dispatchTouchEvent): the page sees real touch and pointer events, and the
+    compositor scrolls as it would for a finger. `via` bends the path through those
+    points (`steps` moves per leg). `cancel` ends it as the OS taking the gesture does
+    (touchcancel); `before_end` (async) runs with the finger still down."""
+    pts = [(x0, y0), *via, (x1, y1)]
+    legs = len(pts) - 1
+    cdp = await page.context.new_cdp_session(page)
+    try:
+        await cdp.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [{"x": x0, "y": y0}]})
+        for (ax, ay), (bx, by) in zip(pts, pts[1:]):
+            for i in range(1, steps + 1):
+                await asyncio.sleep(ms / legs / steps / 1000)
+                await cdp.send("Input.dispatchTouchEvent", {"type": "touchMove", "touchPoints": [
+                    {"x": ax + (bx - ax) * i / steps, "y": ay + (by - ay) * i / steps}]})
+        if before_end:
+            await before_end()
+        await cdp.send("Input.dispatchTouchEvent", {"type": "touchCancel" if cancel else "touchEnd", "touchPoints": []})
+    finally:
+        await cdp.detach()
 
 
 async def shot(ctx, page, name: str, timeout_ms: float = 30_000) -> str:

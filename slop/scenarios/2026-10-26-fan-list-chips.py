@@ -53,6 +53,8 @@ UI = True
 FAULT = "fan-list-owe-reply-last-sort-never-active"
 VIEWPORT = (1470, 915)  # the owner's reference shot: a 400px Fan List pane
 NARROW = (320, 700)  # below lg the Fan List is the whole screen: the narrowest phone
+PHONE = (390, 844)  # a common phone: the sort menu opened and an order picked there
+SORT_MENU = ["Sort by", "Newest first", "Amount spent", "Spend + unread on top", "Spend + recency"]
 OWE_DOT = "Read · awaiting your reply"
 EXTRA_SORT = "Spend + unread on top"
 SORT_KEY = "chatterly:chat-sort-mode"
@@ -72,11 +74,14 @@ C_SORT_STORED = "the sort choice is in localStorage and survives a reload"
 C_PENCIL = "the pencil shows only for one Creator with an OF list, and opens the folder picker"
 C_PIN = "pinning a list in the pencil's picker is one pin write and adds its chip"
 C_ONE_LINE = "the filter row keeps one line at the 400px pane (All Models and one Creator)"
+C_MENU_ORDER = ("the sort menu lists Sort by, then Newest first, Amount spent, Spend + unread on top, Spend + recency,"
+                " with no divider (1470px and a 390px phone)")
+C_PHONE_PICK = "on a 390px phone, picking Amount spent in the sort menu names the sort button by it and stores it"
 C_MENU_PLACE = "the sort menu opens inside the Fan List pane, under the sort button (All Models and one Creator)"
 C_CONSOLE = "no console error in the browser session"
 C_5XX = "no 5xx from the app or relay in the browser session (OF's /api/of/* is faked or held)"
 UI_CHECKS = (C_ORDER, C_NO_PLUS, C_UNREAD, C_OWE, C_OWE_ROWS, C_DOTS, C_SORT, C_SORT_STORED, C_PENCIL, C_PIN,
-             C_ONE_LINE, C_MENU_PLACE, C_CONSOLE, C_5XX)
+             C_ONE_LINE, C_MENU_PLACE, C_MENU_ORDER, C_PHONE_PICK, C_CONSOLE, C_5XX)
 
 
 async def run(ctx) -> None:
@@ -300,11 +305,16 @@ async def _sort_look(page) -> dict:
 
 
 async def _menu_marks(page) -> dict:
-    """The sort menu's entries, the one carrying the check mark, and its pressed state."""
+    """The sort menu's entries, the one carrying the check mark, and its pressed state; `items` is
+    every child top to bottom (a row by its name without ✓ or sub-line, a divider as "|")."""
     return await page.locator("section[aria-label=Sort]").evaluate(
         """m => { const rows = [...m.querySelectorAll('button')].map(b => ({
                text: b.textContent.trim(), pressed: b.getAttribute('aria-pressed') }));
-             return { rows, marked: rows.filter(r => r.text.startsWith('✓')).map(r => r.text.slice(1)) }; }""")
+             const items = [...m.children].map(e => e.getAttribute('role') === 'separator' ? '|'
+               : e.tagName === 'BUTTON' ? [...e.querySelectorAll('span')].find(x => !x.children.length
+                   && x.textContent.trim() && x.textContent.trim() !== '✓')?.textContent.trim()
+               : e.textContent.trim());
+             return { rows, items, marked: rows.filter(r => r.text.startsWith('✓')).map(r => r.text.slice(1)) }; }""")
 
 
 async def _menu_place(page) -> dict:
@@ -594,6 +604,28 @@ async def _screens(ctx, view, creators) -> None:
         ctx.metric("narrow", {"viewport": NARROW, "all_models": narrow_all, "one_creator": narrow_one})
         ctx.note(f"filter row at {NARROW[0]}px: All Models {narrow_all['lines']} line(s), "
                  f"one Creator {narrow_one['lines']} line(s)")
+        aborted += page.slop["offhost_aborted"]
+        statuses += page.slop["statuses"]
+
+    # A 390px phone: the sort menu's trigger, the menu open, and the order picked there.
+    async with ui.owner_browser(ctx, viewport=PHONE, scale=2) as page:
+        console.watch(page.context)
+        await _open(ctx, page, view, lists, pins)
+        shots["m"] = await shot(page, f"m-phone-{PHONE[0]}-sort-trigger")
+        await _sort_button(page).click()
+        await page.locator("section[aria-label=Sort]").wait_for()
+        marks_phone = await _menu_marks(page)
+        shots["n"] = await shot(page, f"n-phone-{PHONE[0]}-sort-menu-open")
+        await page.locator("section[aria-label=Sort]").get_by_role("button", name=re.compile("^Amount spent")).click()
+        await _filter_row(page).get_by_role("button", name="Sort: Amount spent").wait_for(timeout=10_000)
+        stored_phone = await page.evaluate(f"() => localStorage.getItem({json.dumps(SORT_KEY)})")
+        look_phone = await _sort_look(page)
+        shots["o"] = await shot(page, f"o-phone-{PHONE[0]}-amount-spent-settled")
+        ctx.check(C_MENU_ORDER, marks_default["items"] == marks_phone["items"] == SORT_MENU,
+                  desktop=marks_default["items"], phone=marks_phone["items"])
+        ctx.check(C_PHONE_PICK, stored_phone == "spend" and look_phone["label"] == "Sort: Amount spent",
+                  stored=stored_phone, label=look_phone["label"])
+        ctx.metric("phone", {"viewport": PHONE, "sort_menu": marks_phone, "stored_sort": stored_phone})
         aborted += page.slop["offhost_aborted"]
         statuses += page.slop["statuses"]
 

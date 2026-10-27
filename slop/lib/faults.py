@@ -9,11 +9,23 @@ caught: the invariants are blind to it.
 A fault patches a real product function inside the throwaway relay process
 (never the repo files). Add one per bug class a scenario claims to catch, and
 name in `targets` the exact check names (ctx.check) that must see it.
+
+A client fault (`browser=`) patches the app's code the way the relay's are
+patched, in flight: actors/ui.py rewrites the JavaScript `next dev` serves on
+its way to Chromium (a Playwright route; `next dev` serves each module
+unminified), never the repo files. A run where a rewrite never matched the
+served code is INFRA (the pattern went stale), so it cannot read as NOT CAUGHT.
+
+A flow kept in files of its own (`lib/<flow>_faults.py`) brings its faults there:
+its `register(Fault)` returns them by name and they join FAULTS below, when the
+module is present.
 """
 from __future__ import annotations
 
+import importlib
 import itertools
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 
 
@@ -133,6 +145,11 @@ def _write_telemetry_misses_1_in_50_dms() -> None:
     write_telemetry.frame = undercount  # events.handle_event looks it up per frame
 
 
+# Fleet faults (`--shards=N`, lib/edge.py). They break the fleet's wiring, not a
+# function inside one relay, so they have no in-relay `apply`: `stack(fleet)` runs
+# in the harness before the stack starts and changes what lib/edge.py hands the
+# processes (env, the Caddyfile it renders) or flags the scenario.
+
 def _of_writer_per_op_txns() -> None:
     """The OF-cache writer never starts (db/of_writer.py as if batching were off):
     every DM's event_inbox row, its transcode and every mark-read is written through
@@ -157,6 +174,107 @@ def _of_writer_holds_batches_3s() -> None:
         return await real(batch)
 
     of_writer._flush = held
+
+
+def _fleet_whois_off(fleet) -> None:
+    """Every shard but the front runs without FLEET_SECRET, so its relay never
+    mounts GET /auth/fleet/whois (404): the front cannot find a login held on a
+    peer (bug class: a shard deployed without the fleet secret, or a renamed
+    route). The DM path, the edge and every relay's own sign-in are untouched."""
+    for i in range(1, fleet.stack.shards):
+        fleet.stack.relay_env[i].pop("FLEET_SECRET", None)
+        fleet.stack.relay_env[i]["FLEET_SECRET"] = ""
+
+
+def _fleet_host_swap(fleet) -> None:
+    """The edge sends s04's host to s05's relay and app and s05's to s04's (bug
+    class: a fleet map / Caddyfile edit that crosses two shards' ports). Only
+    the Caddyfile changes; every process keeps its true env and FLEET_PEERS."""
+    fleet.swap_edge("s04", "s05")
+
+
+def _litestream_paused(fleet) -> None:
+    """Litestream on the replicated shard stops shipping (SIGSTOP) from the second
+    load stage until the replica is checked (bug class: a wedged or crashed
+    replicator). The relay, its DB and every request path are untouched."""
+    fleet.flags.add("litestream-paused")
+
+
+def _fence_off(fleet) -> None:
+    """The epoch fence is off on the dead box: the oi-epoch box A runs (its boot gate
+    and its watch unit, both from the copy fleet.py installs in /opt/oi/bin) has
+    `is_stale()` answering False, as if the check were never there (the mutant
+    16-failover-build's --break uses). Box B, the bucket and the restore are
+    untouched. lib/box.py installs that copy on box A; the repo file is never edited."""
+    fleet.flags.add("fence-off")
+
+
+def _restore_stale_point(fleet) -> None:
+    """The failover restores an old point instead of the latest: oi-restore gets a
+    time 10 s before the kill (bug class: a stale generation / wrong lineage picked,
+    a lagging replica). The fence, the edge repoint and the relays are untouched."""
+    fleet.flags.add("restore-stale-point")
+
+
+def _chatter_access_ignored() -> None:
+    """A chatter's per-Creator access (the Employee setup's account list,
+    chatter_account_access) is ignored: every chatter sees all of its Agency's
+    Creators. The Agency boundary holds (an owner's rows never widen another
+    owner's), so only a check for an unassigned Creator of the chatter's OWN
+    Agency can see it (bug class: a dropped or inverted allowlist filter)."""
+    import chatters
+
+    chatters._filter_owner_accounts = lambda pairs, restrictions: {aid for _uid, aid in pairs}
+
+
+def _reports_ignore_of_earnings() -> None:
+    """The reports read the ledger alone, as before 2026-10-25: OnlyFans' own
+    daily earnings (of_earnings_daily) are stored but never read, so a Creator's
+    days before it was connected (or that the ledger missed) count $0 and a
+    window with unknown days still gets a growth %. The job and the ledger are
+    untouched: only the checks that compare the reports with OF's Statistics see it."""
+    import of_stats_daily
+
+    async def ledger_only(account_ids, start, end, *, now=None):
+        return {}, None
+
+    of_stats_daily.earnings_window = ledger_only
+
+
+def _of_zero_erases_db_sale() -> None:
+    """OF's day replaces the ledger's, as shipped in f96535be0: for every (Creator,
+    UTC day) OF's figure is stored for, each category reads OF's net in place of
+    the ledger's, so OF's $0 (or a chargeback day's negative) takes away a sale the
+    ledger holds. The job, its parser and the ledger are the product's own: only
+    `stats._of_top_ups` (max(OF, ledger)) is swapped for OF - ledger, unfloored."""
+    import of_stats_daily
+    import stats
+    import tx_rollup
+    from sqlalchemy import text
+
+    async def of_replaces(s, of_cells, dims):
+        if not of_cells:
+            return []
+        params = tx_rollup.Binds()
+        keys = ", ".join((*dims, "category"))
+        sql = (f"SELECT {keys}, SUM(o_gross - l_gross) AS gross_cents, SUM(o_net - l_net) AS net_cents, "
+               "SUM(o_sales - l_sales) AS sales, SUM((o_gross - l_gross) - (o_net - l_net)) AS fee_cents "
+               f"FROM ({stats._of_top_up_rows(params, of_cells)}) GROUP BY {keys}")
+        return [{**{d: getattr(r, d) for d in dims}, "kind": of_stats_daily.EARNINGS_KIND[r.category],
+                 "gross_cents": r.gross_cents, "net_cents": r.net_cents, "net_missing": 0,
+                 "net_or_80_cents": r.net_cents, "sales": r.sales, "fee_cents": r.fee_cents, "vat_cents": 0}
+                for r in (await s.execute(text(sql), params)).all()]
+
+    stats._of_top_ups = of_replaces
+
+
+def _health_lane_4_core() -> None:
+    """The /setup probe's ceiling (admission.HEALTH_PROBE) back at its 4-core-era 4.
+    Set before any loop builds the lane's semaphore (the lane reads `cap` then), so
+    the whole run probes 4 Creators at a time: the slow ones behind a dead proxy
+    hold every slot and healthy Creators queue past the route's budget."""
+    import admission
+    admission.HEALTH_PROBE.cap = 4
 
 
 def _otp_code_never_consumed() -> None:
@@ -244,7 +362,6 @@ Module._load = function (request, ...rest) {
 };"""
 
 
-
 def _otp_state_not_session_dead() -> None:
     """The classifier's code-101 branch reverted (as before fix/otp-state-session-health):
     OF's 2FA demand is not a dead session, so nothing flags, notifies or pauses the account."""
@@ -291,13 +408,21 @@ def _session_dead_claim_not_atomic() -> None:
 _FAN_LIST_OWE_REPLY_LAST_SORT_NEVER_ACTIVE = """(() => {
   const css = '[role=group][aria-label="Fan List filters"] button[title*=" extra \u2014 Owe reply"]'
     + ' { order: 99; }';
-  const calm = () => document.querySelectorAll('button[aria-label^="Sort: "]').forEach((b) => {
+  // The sort menu as before 2026-10-27: Newest first, a divider, then "Sort by" over the extras.
+  const oldMenu = () => document.querySelectorAll("section[aria-label=Sort]").forEach((m) => {
+    const head = m.firstElementChild, first = head && head.nextElementSibling;
+    if (!head || head.tagName === "BUTTON" || !first) return;
+    const sep = document.createElement("div");
+    sep.setAttribute("role", "separator");
+    first.after(sep, head);
+  });
+  const calm = () => { oldMenu(); document.querySelectorAll('button[aria-label^="Sort: "]').forEach((b) => {
     if (b.getAttribute("aria-pressed") === "true") b.setAttribute("aria-pressed", "false");
     if (b.classList.contains("bg-accent")) {
       b.classList.remove("bg-accent", "text-white", "border-accent");
       b.classList.add("text-fg-dim");
     }
-  });
+  }); };
   const start = () => {
     const s = document.createElement("style");
     s.textContent = css;
@@ -313,11 +438,46 @@ _FAN_LIST_OWE_REPLY_LAST_SORT_NEVER_ACTIVE = """(() => {
 class Fault:
     apply: Callable[[], None] | None  # inside the relay (lib/relay.py); None for a harness-side fault
     targets: tuple[str, ...]  # check names that must go PASS -> FAIL under this fault
-    browser: str | None = None  # init script in every page actors/ui opens: a bug in the app's browser code
+    stack: Callable[[object], None] | None = None  # harness side, before the stack starts (fleet: lib/edge.Fleet)
+    # Client side: (regex, replacement) pairs applied to every JS file under /_next/static/ the
+    # browser actor loads (actors/ui.py); each must match at least once in the run, and the
+    # matches must land in exactly `browser_files` distinct files (else INFRA: a pattern that
+    # also hits another module breaks more than the one function the fault claims).
+    browser: tuple[tuple[str, str], ...] = ()
+    browser_files: int = 1
+    browser_js: str | None = None  # init script in every page actors/ui opens: a bug in the app's browser code
     desktop: str | None = None  # JS the Electron wrapper (actors/notif_click) runs before desktop/main.js
 
 
 FAULTS: dict[str, Fault] = {
+    # slop/run mobile-gestures --break (client side)
+    # app/hooks/useChatBackEntry.ts: no history entry when a Thread opens on a phone, as before
+    # 2026-10-26. Back from an open chat leaves Messages Pro, and the Thread's swipe right no longer
+    # goes through an entry (it still returns to the Fan List); the drawer swipes, Fan insights'
+    # swipe, the pin, the reload and desktop checks stay green.
+    "mobile-chat-no-history-entry": Fault(None, (
+        "phone: opening a chat adds one same-URL history entry; back returns to the Fan List on Messages Pro, "
+        "and a second back leaves it",
+        "phone: Forward onto an open chat's history entry stays on it (Fan List, entry unmarked, no bounce) "
+        "and the next Forward reaches the later page",
+        "phone: a swipe right on an open chat returns to the Fan List through its history entry "
+        "(Messages Pro kept, the entry popped, nothing else navigated)",
+    ), browser=((r"window\.history\.pushState(?=\(\{(?:\\n|\s)*\[CHAT_ENTRY\])", "(() => {})"),)),
+    # app/hooks/useChatBackEntry.ts: Forward onto the chat's entry (no chat open) goes back again, as
+    # before 2026-10-27, so it bounces and every entry after it is out of reach. Back, the reload (a
+    # fresh mount still pops) and the Thread swipe stay green.
+    "mobile-chat-forward-bounce": Fault(None, (
+        "phone: Forward onto an open chat's history entry stays on it (Fan List, entry unmarked, no bounce) "
+        "and the next Forward reaches the later page",
+    ), browser=((r"window\.history\.replaceState(?=\(unmarked\(\))", "(() => popOnce())"),)),
+    # app/hooks/useSwipe.ts: once a move locks sideways, a later vertical move and a scroll of what the
+    # finger is on no longer cancel it, as before 2026-10-27: a drag that turned into a scroll still
+    # opens the nav menu if it ends sideways. Every straight swipe stays green. `next dev` serves
+    # useSwipe's one module in two chunks (the shell's layout, Messages Pro's page): two files.
+    "mobile-swipe-ignores-turn": Fault(None, (
+        "phone: a drag that starts sideways, turns vertical and ends sideways does not open the nav menu",
+    ), browser=((r"if \(Math\.abs\(dy\) >= Math\.abs\(dx\)\)", "if (!horizontal && Math.abs(dy) >= Math.abs(dx))"),
+                (r"if \(start && \(s === document", "if (false && start && (s === document")), browser_files=2),
     "transcoder-drops-1-in-10": Fault(_transcoder_drops_1_in_10, (
         "every DM is in its thread (/admin/messages)",
         "unreadMessagesCount == seeded + sent for every burst fan",
@@ -331,7 +491,7 @@ FAULTS: dict[str, Fault] = {
                          "OS notification")),
             ("desktop", ("main-window toast", "Messages Pro toast", "top bar bell row", "native notification")))
         for e in entries
-    ), browser=_NOTIF_CLICK_OPENS_BROWSER_TAB, desktop=_NOTIF_CLICK_DESKTOP_IGNORES_MESSAGES_PRO),
+    ), browser_js=_NOTIF_CLICK_OPENS_BROWSER_TAB, desktop=_NOTIF_CLICK_DESKTOP_IGNORES_MESSAGES_PRO),
     "sse-fanout-reorders-within-thread": Fault(_sse_fanout_reorders_within_thread, (
         "per-thread order preserved on every /events stream",
     )),
@@ -358,6 +518,47 @@ FAULTS: dict[str, Fault] = {
     # slop/run relay-crash --break (the scenario's FAULT)
     "of-writer-holds-batches-3s": Fault(_of_writer_holds_batches_3s, (
         "crash loses only DMs the relay took < 1000ms before the kill",
+    )),
+    # slop/run fleet-200 --break (the scenario's FAULT), or --fault=<one of these>
+    "fleet-whois-off": Fault(None, (
+        "landing login and signup route to the owning / open shard",
+    ), stack=_fleet_whois_off),
+    "fleet-host-swap": Fault(None, (
+        "edge routes each host to its own shard",
+        "no cross-shard leakage: each Agency sees exactly its own shard's data at its host",
+    ), stack=_fleet_host_swap),
+    "litestream-paused": Fault(None, (
+        "Litestream replica of the replicated shard restores every DM written while it ran",
+    ), stack=_litestream_paused),
+    # slop/run box-failover --break (the scenario's FAULT), or --fault=restore-stale-point
+    "fence-off": Fault(None, (
+        "fence: the returned box runs no relay and writes nothing for the moved shards",
+    ), stack=_fence_off),
+    # slop/run chatter-crowd --break (the scenario's FAULT)
+    "chatter-access-ignored": Fault(_chatter_access_ignored, (
+        "no chatter saw an unassigned Creator of its own Agency (stream, inbox, account list, direct reads)",
+    )),
+    # slop/run chatter-crowd --layout=one-agency --break --fault=health-lane-4-core
+    "health-lane-4-core": Fault(_health_lane_4_core, (
+        "owner /setup (GET /health?all_accounts=1, one proxy's Creators dead): 200, exactly the "
+        "Agency's Creators, every Creator off the dead proxy ok, only the dead proxy's time out, "
+        "every gated stage",
+    )),
+    # slop/run creator-earnings --break --fault=reports-ignore-of-earnings
+    "reports-ignore-of-earnings": Fault(_reports_ignore_of_earnings, (
+        "before the history is read, a window with unknown days says so (history_missing_days > 0)",
+        "Dashboard and Creator reports totals by kind == max(OF, ledger) per complete day + the ledger (today)",
+        "Earnings trends: every day == max(OF, ledger) per category (today: the ledger's)",
+        "Creator performance: each Creator's net == max(OF, ledger) per day + today's ledger",
+        "growth: the prior window is OF's too, with no unknown day",
+        "a window older than OF's kept history says its days are unknown",
+    )),
+    # slop/run creator-earnings --break (the scenario's FAULT)
+    "of-zero-erases-db-sale": Fault(_of_zero_erases_db_sale, (
+        "DB sale not erased by OF zero day",
+        "Dashboard and Creator reports totals by kind == max(OF, ledger) per complete day + the ledger (today)",
+        "Earnings trends: every day == max(OF, ledger) per category (today: the ledger's)",
+        "Creator performance: each Creator's net == max(OF, ledger) per day + today's ledger",
     )),
     # slop/run session-health-otp --break (the scenario's FAULT)
     "otp-state-not-session-dead": Fault(_otp_state_not_session_dead, (
@@ -410,8 +611,20 @@ FAULTS: dict[str, Fault] = {
     "fan-list-owe-reply-last-sort-never-active": Fault(None, (
         "chips on screen: All, Owe reply, Pinned, Unread, With Tips, the pinned lists, Priority",
         "an extra sort turns the sort button active (blue), named by it, with its ✓, and puts unread rows first",
-    ), browser=_FAN_LIST_OWE_REPLY_LAST_SORT_NEVER_ACTIVE),
+        "the sort menu lists Sort by, then Newest first, Amount spent, Spend + unread on top, Spend + recency,"
+        " with no divider (1470px and a 390px phone)",
+    ), browser_js=_FAN_LIST_OWE_REPLY_LAST_SORT_NEVER_ACTIVE),
+    "restore-stale-point": Fault(None, (
+        "RPO: every DM box A took more than 2s before the kill is in the restored DB",
+        "counts match per shard after recovery: restored + taken on box B, nothing else",
+    ), stack=_restore_stale_point),
 }
+
+for _mod in sorted(Path(__file__).parent.glob("*_faults.py")):
+    _more = importlib.import_module(f"{__package__}.{_mod.stem}" if __package__ else _mod.stem).register(Fault)
+    if _more.keys() & FAULTS.keys():
+        raise SystemExit(f"slop: {_mod.name} redefines faults {sorted(_more.keys() & FAULTS.keys())}")
+    FAULTS.update(_more)
 
 
 def apply(name: str | None) -> None:
@@ -421,3 +634,9 @@ def apply(name: str | None) -> None:
         raise SystemExit(f"slop: unknown fault {name!r}; known: {', '.join(FAULTS)}")
     if FAULTS[name].apply is not None:
         FAULTS[name].apply()
+
+
+def apply_stack(name: str | None, fleet) -> None:
+    """The harness-side half of a fault (lib/edge.Fleet calls it before the stack starts)."""
+    if name and name in FAULTS and FAULTS[name].stack is not None:
+        FAULTS[name].stack(fleet)

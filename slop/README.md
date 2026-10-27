@@ -18,6 +18,7 @@ slop/run big-model --dms-per-min=50,100,200       # any --knob=value is a scenar
 slop/run big-model --profile                      # + per-stage stack profile of the relay
 slop/run big-model --break --fault=access-log-writer-spin-waits --baseline=slop/evidence/<run-dir>
                                                  # break-it-once with another fault than the scenario's
+SLOP_PY=/usr/local/bin/python slop/run ...       # another Python for the relay
 ```
 
 Needs the repo's `venv/` (FastAPI, uvicorn, httpx, Playwright with Chromium) and
@@ -36,24 +37,46 @@ INCONCLUSIVE: either run hit infra, the baseline is not green on a target, a tar
 was skipped, or a target name matches no check. The verdict is appended to the fault
 run's `summary.txt` and written to its `break.json`.
 
+A client fault (`Fault(None, targets, browser=((regex, replacement), ...))`) breaks the
+app's own code the same way, in flight and never in the repo: `actors/ui.py` routes every
+`/_next/static/**.js` the browser loads, applies the rewrites to the unminified module
+`next dev` serves, and counts the matches (`browser_fault_hits` in `metrics.json`, and
+`browser_fault_files`: the files the rewrites hit, each with its matches summed over every
+load of it). A run where a rewrite matched nothing is INFRA (a stale pattern, or `--no-ui`),
+so it can never read as NOT CAUGHT; so is one whose matches landed in any number of distinct
+files but the fault's `browser_files` (default 1): the pattern must stay unique to the
+module it breaks, or a red check could be another module's. Declared: only the fault run
+routes the JS through the harness (fetched, rewritten, served), so its page loads are a
+little slower; a file the page dropped mid-load is aborted, never served unpatched. A check
+that runs the app's own TypeScript in node (`lib/app_ts.py`) gets the same rewrites on the
+modules it loads, so a client fault can be caught without a browser too: those matches count
+toward `browser_fault_hits`, the modules they hit are `app_ts_fault_files`, and they too must
+land in 0 or exactly `browser_files` modules.
+
+The load must not depend on the fault: actors pick what to do from the seed, not from
+what the faulted route answered, else the fault also changes the load and a latency
+budget goes red as noise.
+
 ## Layout
 
 | Path | Role |
 |---|---|
 | `run` | The single entrypoint (bash, then `lib/cli.py`). |
-| `lib/stack.py` | A throwaway stack for each scenario: the relay on a temp SQLite DB, plus `next dev` if the scenario has UI. Uses free loopback ports and restores `app/tsconfig.json` and `next-env.d.ts` on exit. |
-| `lib/relay.py` | Runs `scripts/demo-shots/relay_guarded.py` (network guards, redirected secrets and sessions, `CHATTERLY_TEST_MODE`), starts the production persist worker, adds loopback-only `/__slop/*` hooks (below) and answers OnlyFans' side of `OFClient.send_message` (and `get_messages` from `of-truth.jsonl`). Passes `UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN` (5, as the Dockerfile) to uvicorn. Applies `SLOP_FAULT`. |
-| `lib/browserbase.py` | The outside world of a served Browserbase login, on loopback: `World(tmp, accounts={email: uid}, otp=, password=, chromium=, autosubmit={email})` runs Browserbase's API (`POST /v1/sessions` launches a fresh local Chromium and answers its CDP URL as `connectUrl`; `/debug` answers a live-view stand-in page that shows that Chromium's tab; release stops it) and OnlyFans' site over a self-signed TLS server (login form, "Signing in…" for `SIGNIN_MS`, 2FA prompt with a decoy first form, "Verifying…" with no field for `VERIFY_MS` after a code, `/my/chats/` with a signed request and a stand-in of OF's signing module, `/api2/v2/users/me`). Every page carries a hidden reCAPTCHA frame (served from the fake site). An `autosubmit` account's 2FA field sends its form itself on the last digit. Chromium maps `onlyfans.com` to the fake site and every other host to NOTFOUND. Records `calls`, `logins`, `otp_tries`, `otp_sends` (code and how it was sent: `click`, `enter` or `auto`), `decoys`, `captcha_frames`, `sessions`. |
+| `lib/stack.py` | A throwaway stack for each scenario: the relay on a temp SQLite DB, plus `next dev` if the scenario has UI. Uses free loopback ports and restores `app/tsconfig.json` and `next-env.d.ts` on exit (a file that did not exist before the run is deleted, not restored; a run without `next dev` touches neither). Points `TYPESAFE_BASE_URL` at the relay's loopback fake (a flow's relay part serves it, and points the DeepSeek provider at its own); `SLOP_LIVE=1` instead passes the caller's `TYPESAFE_API_KEY` / `DEEPSEEK_API_KEY` and allows only `api.typesafe.ai` and `api.deepseek.com` off-host. `shards=N` (a fleet): N relays, each with its own temp dir (`sNN/`: DB, sessions, off-host log), port, process group and SESSION_SECRET, logs `relay-sNN.log`; `next dev` only on the scenario's `APPS` shard indexes (`next-sNN.log`), or on its `UI_APPS` when the run has UI. `boxes={name: (shard indexes)}` (a scenario's `BOXES`, with `SHARDS_PER_BOX`) lays the shards out as the boxes do: `<box>/shards/sNN/` with `data/chatterly.db`, `service/` (sessions, secrets, off-host log) and a `.env` with the session secrets, as `oi-backup` reads them. `kill_group(pid)` SIGKILLs any process group it started; `stop_relay(i, grace_s)` stops relay `i` as `docker stop` does (SIGTERM to its group, SIGKILL past the grace) and returns when it exited and how long it took. A scenario's `RELAY_ENV` dict is added to every relay's env (lib/cli.py). `relay_cmd()`, `relay_env_of(i)`, `spawn(cmd, env, log)` and `wait_ready(...)` start another relay (another box's) the stack still reaps and collects off-host logs from. `SLOP_PY` picks the relay's Python. A stack with `next dev` takes an exclusive per-checkout lock (`app/.next/slop.lock`, flock): a second one refuses with INFRA and names the holder, since both would share `app/.next/slop*` and rewrite `app/tsconfig.json`. |
+| `lib/relay.py` | Runs `scripts/demo-shots/relay_guarded.py` (network guards, redirected secrets and sessions, `CHATTERLY_TEST_MODE`), starts the production persist worker, adds loopback-only `/__slop/*` hooks (below) and answers OnlyFans' side of `OFClient.send_message` (and `get_messages` from `of-truth.jsonl`; OF Statistics' `earnings_chart` / `my_profile_stats` / `subscribers_chart` from `of-statistics.json`, each read 0.3 s, counted as `of_earnings_reads`; `me()` from `of-me.json`). `POST /__slop/of-stats-tick` runs one `of_stats_daily` pass now. A flow's relay part, `lib/<flow>_relay.py` when present, adds to the offline OnlyFans (its `OF` class joins `_OfflineOF`'s bases) and wires its own hooks (`wire(app, loopback, relay)`, at the end of `_wire`). `SLOP_SUPERVISOR=1` starts the real automation supervisor (`CHATTERLY_TEST_MODE` skips it otherwise). Passes `UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN` (5, as the Dockerfile) to uvicorn. Applies `SLOP_FAULT`. |
 | `lib/of_wire.py` | OnlyFans' API at its wire, on loopback (`FakeOF`, a stdlib `ThreadingHTTPServer` in the harness process, a thread per request): what the relay's REAL `OFClient` (curl_cffi, signed headers) reaches when a scenario sets `OF_WIRE = True`. `lib/cli.py` starts it and points the relay's `OF_API_ORIGIN` (the product's loopback-only seam, ADR 0024) at it. Answers the hash CDN, the signing chunk (`/static/prod/f/<rev>/2313.js`, `lib/browserbase.py`'s synthetic one, so a paste-curl `POST /admin/session/bootstrap` derives its rules), `GET /api2/v2/users/me` (with the WS ticket, `wsUrl` + `wsAuthToken`) and `POST /api2/v2/chats/{fan}/messages` (kept per Creator, in order); any other path is a counted 404 (`unmodelled`). Serves OF's chat WebSocket too (`websockets`, its own thread and loop): `{"act":"connect"}` is answered `{"connected":true,"v":"5.4.0"}` as OF does, then nothing is pushed; `ws_connects` records each connect, `drop_ws(ids)` ends those Creators' sockets (the pump reconnects through `/users/me`). `set_otp(ids)` makes those Creators' every `/api2/` call answer 400 with OF's code-101 `otpState` body. Records every call (`calls`: time, Creator, route, status) in arrival order. |
-| `lib/faults.py` | Break-it-once faults: each patches a real product function inside the throwaway relay and lists the check names it `targets`. A fault with `browser=` (JS) is instead an init script in every page `actors/ui` opens, for a bug in the app's browser code; with `desktop=` (JS), code the Electron wrapper of `actors/notif_click` runs before `desktop/main.js`, for a bug in the desktop app. |
-| `lib/procmon.py` | Relay CPU and RSS every 1 s, each interval tagged with `rec.stage`: the whole process from `ps` (its process group; passes 100% when executor threads run SQLite outside the GIL) and the event-loop thread alone from `GET /__slop/loop-cpu` (`time.thread_time()`; the one-core ceiling). Writes `resources.json`, a per-stage table in `summary.txt` (process CPU mean / p95 / max %, 100% = one core; cores; loop CPU mean / p95; RSS max / end) and, when the scenario sets `CPU_BUDGET_PCT`, the budget check `relay process CPU mean <= N% of one core in every stage`. With `--profile`, tells the relay's sampler the stage and saves `profile-<stage>.txt` (loop thread and other threads: top self functions or SQL statements, self lines, cumulative), `profile-<stage>-{loop,threads}.collapsed` (flamegraph input) and `profile.json`; `summary.txt` gets the top 10 of the peak-CPU stage. |
+| `lib/browserbase.py` | The outside world of a served Browserbase login, on loopback: `World(tmp, accounts={email: uid}, otp=, password=, chromium=, autosubmit={email})` runs Browserbase's API (`POST /v1/sessions` launches a fresh local Chromium and answers its CDP URL as `connectUrl`; `/debug` answers a live-view stand-in page that shows that Chromium's tab; release stops it) and OnlyFans' site over a self-signed TLS server (login form, "Signing in…" for `SIGNIN_MS`, 2FA prompt with a decoy first form, "Verifying…" with no field for `VERIFY_MS` after a code, `/my/chats/` with a signed request and a stand-in of OF's signing module, `/api2/v2/users/me`). Every page carries a hidden reCAPTCHA frame (served from the fake site). An `autosubmit` account's 2FA field sends its form itself on the last digit. Chromium maps `onlyfans.com` to the fake site and every other host to NOTFOUND. Records `calls`, `logins`, `otp_tries`, `otp_sends` (code and how it was sent: `click`, `enter` or `auto`), `decoys`, `captcha_frames`, `sessions`. |
+| `lib/app_ts.py` | The app's own TypeScript in node, for a check that rests on client logic (`app/lib/`, `app/hooks/`), also in a `--no-ui` run: `await run(ctx, script, payload)` starts `node lib/app_ts.mjs`, which loads the app's modules through vite's SSR loader (vitest's vite, the app's `@/` alias, no config) and calls `script`'s `run(load, input)` with the JSON `payload`; it returns the script's JSON output. The run's client fault rewrites the modules as they load (above). About 0.5 s per call; its vite cache goes to the run's temp dir. |
+| `lib/faults.py` | Break-it-once faults: each patches a real product function inside the throwaway relay (or, `browser=`, the app's served JS in the browser actor) and lists the check names it `targets`. A flow's own faults live in `lib/<flow>_faults.py` (`register(Fault)` returns them by name) and join `FAULTS` when the module is present; a name defined twice stops the run. A fault with `browser_js=` (JS) is instead an init script in every page `actors/ui` opens, for a bug in the app's browser code; with `desktop=` (JS), code the Electron wrapper of `actors/notif_click` runs before `desktop/main.js`, for a bug in the desktop app. |
+| `lib/procmon.py` | Relay CPU and RSS every 1 s, each interval tagged with `rec.stage`: the whole process from `ps` (its process group; passes 100% when executor threads run SQLite outside the GIL; read from `/proc` where `ps` is missing, e.g. inside the relay image calibrate.sh uses) and the event-loop thread alone from `GET /__slop/loop-cpu` (`time.thread_time()`; the one-core ceiling). `follow(pgid, relay_http)` switches it to a relay's new process (a shard that moved boxes). Writes `resources.json`, a per-stage table in `summary.txt` (process CPU mean / p95 / max %, 100% = one core; cores; loop CPU mean / p95; RSS max / end) and, when the scenario sets `CPU_BUDGET_PCT`, the budget check `relay process CPU mean <= N% of one core in every stage`. Pool columns: `spills` (the pool's own counter) and the pool-wait p95 / max (time inside the pool's checkout, a histogram from `lib/relay.py`); with `POOL_GATE = {"spills": 0, "wait_p95_ms": 100}` the scenario gets the decision-5 pool gate check. A fleet run has one monitor per shard (`resources-sNN.json`, one table, the CPU budget over every shard). With `--profile`, tells the relay's sampler the stage and saves `profile-<stage>.txt` (loop thread and other threads: top self functions or SQL statements, self lines, cumulative), `profile-<stage>-{loop,threads}.collapsed` (flamegraph input) and `profile.json`; `summary.txt` gets the top 10 of the peak-CPU stage. |
 | `lib/client.py` | Timed HTTP client. Every actor call is recorded (route, status, latency), so the stock invariants need no extra code. Set `ctx.rec.stage` to also keep calls per load stage (`ctx.rec.summary(stage)`); `ctx.rec.timeline` keeps every call with its end time. Idle keep-alive connections are reused only under 2 s (`KEEPALIVE_EXPIRY_S`): httpx's 5 s default equals uvicorn's and gets requests reset after a relay stall. |
 | `lib/report.py` | Invariants, metrics and the evidence writer. `ctx.check(..., budget=True)` labels a latency budget (a miss is still FAIL); `ctx.check(name, None)` or `ctx.skip(name, reason)` records SKIP (no samples, `--no-ui`), shown and never a pass. `ctx.note(...)` adds lines (e.g. a per-stage table) to `summary.txt`. |
-| `lib/cli.py` | Discovers scenarios, handles the knobs, adds the stock invariants, and runs the break-it-once logic. `OF_WIRE = True` starts `lib/of_wire.py` for the run (`ctx.of_wire`) and sets the relay's `OF_API_ORIGIN` to it. `EXPECTED_TRACEBACKS = ((marker, text), ...)`: a relay Traceback whose preceding log line holds `marker` and whose exception line holds `text` is the product logging an error the scenario provokes on purpose, not an unexpected one. |
-| `seed/` | One seeder per entity: `agency` (real `POST /auth/register`, `n` Agencies), `creators` (optional owner per Creator), `fans` (one size, or a size per Creator), `threads`, `of_sessions` (a captured session file per Creator, `session_wire.json` in the bootstrap's shape with `lib/browserbase.py`'s synthetic signing rules, and `latest.json` pointed at it, so the relay builds a REAL `OFClient`; only for an `OF_WIRE` run). Sizes come from `seed.SCALES`. |
-| `seed/profiles/` | Named world shapes that only compose seeders: `agency_inbox`, `multi_agency_big_models` (5 Agencies, 20 Creators, 3 big). |
-| `actors/` | Simulated people: `fan_dm` (fans DMing: `serial`, the pump's shape, one frame in flight per Creator, optional `rate`; `burst`, many in flight per Creator; or open-loop `Paced` DMs/minute with tips, PPV purchases and typing), `chatter` (head page, thread, mark read, reply), `manager` (SSE listener with arrival times; `states=(types)` also keeps those `state` events as (type, fields, `__account_id`), batch frames unwrapped; `ended` if the stream died; plus inbox reads), `ui` (signed-in Chromium, screenshots; `owner_browser(..., scale=2)` for a zoomed crop; `owner_tabs` + `PROBE_JS` for SSE receipt/handler time, long tasks, heap, rows, marker text), `notif_click` (the owner clicking a fan DM's notification from each place it shows, in headless Chromium and in the real Electron app (temp userData, never the user's profile; SKIP without the binary); each click must leave one Messages Pro window, never reloaded, with a Fan that had no tab now active, stored and its chat open; its bypasses are in the module docstring). |
+| `lib/cli.py` | Discovers scenarios, handles the knobs, adds the stock invariants, and runs the break-it-once logic. A scenario that crashes leaves `scenario-traceback.txt`. `OF_WIRE = True` starts `lib/of_wire.py` for the run (`ctx.of_wire`) and sets the relay's `OF_API_ORIGIN` to it. `EXPECTED_TRACEBACKS = ((marker, text), ...)`: a relay Traceback whose preceding log line holds `marker` and whose exception line holds `text` is the product logging an error the scenario provokes on purpose, not an unexpected one. |
+| `seed/` | One seeder per entity: `agency` (real `POST /auth/register`, `n` Agencies), `creators` (optional owner per Creator), `fans` (one size, or a size per Creator), `threads`, `chatters` (employees via the real `POST /admin/chatters/invite` + `POST /chatter/register`; `account_ids=` per username is the invite's Employee setup, the Creators that chatter may work), `earnings` (OF Statistics' daily net per Creator and category in `<tmp>/of-statistics.json`, plus the `transactions` rows the ledger caught: a trickle before the Creator was connected, most of it since, some sales today; `accounts.created_at` = the connection day), `of_sessions` (a captured session file per Creator, `session_wire.json` in the bootstrap's shape with `lib/browserbase.py`'s synthetic signing rules, and `latest.json` pointed at it, so the relay builds a REAL `OFClient`; only for an `OF_WIRE` run). Sizes come from `seed.SCALES`. A World's `stream` gives a fleet shard its own RNG streams and `user_prefix` its own usernames. |
+| `seed/profiles/` | Named world shapes that only compose seeders: `agency_inbox`, `multi_agency_big_models` (5 Agencies, 20 Creators, 3 big), `one_agency` (one relay: one Agency with 50 Creators, 9 big, plus a neighbour Agency with 1 Creator and no chatters). |
+| `actors/` | Simulated people: `fan_dm` (fans DMing: `serial`, the pump's shape, one frame in flight per Creator, optional `rate`; `say`, given lines per fan, serial per Creator; `burst`, many in flight per Creator; or open-loop `Paced` DMs/minute with tips, PPV purchases and typing), `chatter` (head page, thread, mark read, reply; `Crowd`: employee mode, each chatter its own `POST /chatter/login` cookie, own `/events` stream and the request pattern of a real chatter tab (tab open, chat open, send, 60 s polls, perflog), human-paced, only its assigned Creators), `manager` (SSE listener with arrival times, each chat message's (account, fan) and every event's `__account_id`; `states=(types)` also keeps those `state` events as (type, fields, `__account_id`), batch frames unwrapped; ready on the stream's first body line, the subscriber is registered by then; `ended` if the stream died; plus inbox reads), `ui` (signed-in Chromium, screenshots; `owner_browser(..., through=, send=)` lets exact `/api/of/` paths or compiled GET path patterns, and the chat send, through to the relay; `close_popup(opener, pop)` closes a window the page opened, its held `/api/of/` reads aborted first (Chromium lets paused requests through when their page closes); `touch=True` is a phone's context (touch input, mobile viewport) and `swipe(page, x0, y0, x1, y1, cancel=, before_end=, via=)` one finger as Chromium touch input (CDP); `chatter_tab` signs in as a chatter and lets its chat send through; `owner_tabs` + `PROBE_JS` for SSE receipt/handler time, long tasks, heap, rows, marker text), `reports` (owners reading the Dashboard's earnings card and Creator reports' Overview with the app's own report reads, human think time), `notif_click` (the owner clicking a fan DM's notification from each place it shows, in headless Chromium and in the real Electron app (temp userData, never the user's profile; SKIP without the binary); each click must leave one Messages Pro window, never reloaded, with a Fan that had no tab now active, stored and its chat open; its bypasses are in the module docstring). `fan_dm.serial(..., ids=)` shares one message-id counter across calls; `phase=` staggers each Creator's open-loop start; `stop=` (an Event) ends an open-ended flood and `out=` receives records as they are sent. |
 | `scenarios/` | One file per feature or task: `YYYY-MM-DD-<feature-slug>.py`. |
+| `README.<flow>.md` | A flow kept in files of its own (its relay part, faults, seeders, actors, scenarios) documents them there, beside this one. |
 | `evidence/` | Gitignored. One folder per run, with `latest` pointing at the newest. |
 
 ## How a run works
@@ -93,16 +116,26 @@ account, which a slop stack never has); `next dev` when `/login` does.
 - **One OF read is faked, on request.** When a scenario writes OnlyFans' side of the
   record to `$DEMO_SHOTS_TMP/of-truth.jsonl` (`ctx.stack.tmp`), the chat scrape's
   `get_messages` pages it (below); `automation_executor._make_client` falls back to the
-  same offline client. No file: the read fails as before.
+  same offline client. No file: the read fails as before. Likewise OF Statistics'
+  earnings / profile / subscriber charts from `of-statistics.json` (latency 0.3 s, a
+  guess); `POST /__slop/of-stats-tick` runs one `of_stats_daily.tick(pause_s=0)` pass,
+  bypassing the hourly timer, the 300 s boot grace and the pause between reads.
 - **`/api/of/*` is held in the browser.** OF-live reads never answer (below).
+- **Automations run on demand.** `POST /__slop/run-automation {account_id, kind,
+  payload}` runs `automations.run_once` under the real run-slot pool (operator=False),
+  so a scenario ticks an automation `kind` when it wants instead of the scheduler's cadence.
+  With `claim: true` (no payload) `run_once` claims the earliest due `scheduled_jobs` row of
+  the kind and runs its payload, as the supervisor's run does (`no_job` when none): only the
+  cadence is bypassed. Every `get_messages` call reaching the fake OF is counted per chat
+  (`of_get_messages` at `GET /__slop/fake/calls`).
 - **OnlyFans at its wire (`OF_WIRE = True`).** The relay's real `OFClient` (curl_cffi,
   the product's signing, its own error handling) talks to `lib/of_wire.py` through the
   product's `OF_API_ORIGIN` seam; `seed/of_sessions` writes each Creator's session file.
-  curl_cffi then refuses every non-loopback host (as for the Browserbase hook). Declared:
-  the `Sign` / `Time` / `X-Hash` headers are only checked to be present, never verified;
-  the hash CDN always answers; 50 ms per call is a guess at OF's latency; the code-101
-  body's `message` text is a guess (its `otpState` / `strong` payload is what OF web's
-  bundle reads). `POST /__slop/automation-tick` runs one
+  No flow's offline automation client is installed then, and curl_cffi refuses every non-loopback host
+  (as for the Browserbase hook). Declared: the `Sign` / `Time` / `X-Hash` headers are only
+  checked to be present, never verified; the hash CDN always answers; 50 ms per call is a
+  guess at OF's latency; the code-101 body's `message` text is a guess (its `otpState` /
+  `strong` payload is what OF web's bundle reads). `POST /__slop/automation-tick` runs one
   `automation_executor._drain_due_jobs_once()` pass and waits for every task it spawned
   (and the dead-session probe): it stands in for the supervisor's 30 s cadence; the claim,
   the run slots, `run_once` and the per-account 11 s write spacing are the product's.
@@ -112,7 +145,6 @@ account, which a slop stack never has); `next dev` when `/login` does.
   `_restart_account_pump` starts a real pump. `POST /__slop/pump-supervise` runs one
   `server._reconcile_pumps()` pass (the pump supervisor's body; its 15 s cadence is the
   bypass) and answers each pump's state; `GET /__slop/pumps` answers the states alone.
-
 `GET /__slop/loop-cpu` answers `time.thread_time()` from the event-loop thread (polled
 once a second) plus the DB pool counters (`db`: connections opened/closed, checked out
 now and peak since the last poll, checkouts, and `nested` = a checkout by a task that
@@ -161,9 +193,17 @@ as in an OOM kill) and returns the epoch time; `ctx.stack.start_relay()` (blocki
 `asyncio.to_thread`) starts it again on the same DB, port and env, appending to
 `relay.log`. Open `Http` pools die with it: `ctx.owner.share()` afresh after.
 
-Upgrade path: when a fake OnlyFans that speaks the WS protocol
+Upgrade path: when the fake OnlyFans designed in `.scratch/soak-test/03-system-design.md`
 exists, `actors/fan_dm.py` sends through it instead, and the real pump consumes the
 frame. Scenarios do not change.
+
+**p95 vs the last green run** (stock): a scenario that sets `P95_VS_LAST = (r, a)` and records
+metric `p95_vs_last_green` ({key: ms}) gets `p95 within rx (+ams) of the last green run`, against
+the newest earlier run of the same scenario with the same knobs, no fault, no infra and every check
+pass/skip (named in `summary.txt`). The first such run is the baseline (SKIP). With
+`P95_VS_LAST_MIN_N = n` the scenario also records metric `p95_vs_last_green_n` ({key: samples}): a key
+is compared only when both runs have >= n samples (the others are listed as skipped in the check and
+`summary.txt`), and an earlier run without that metric is not a candidate.
 
 ## How a task adds to this (the compounding rule)
 
@@ -183,7 +223,8 @@ frame. Scenarios do not change.
    not snapshots; budgets are `budget=True` checks. With no samples, or with
    `--no-ui` for a UI check, `ctx.skip` it rather than passing it. A UI scenario
    takes at least one screenshot with `ui.shot`.
-5. **New fault:** add it to `lib/faults.py` with the exact check names it `targets`.
+5. **New fault:** add it to `lib/faults.py` (a flow kept in files of its own: its
+   `lib/<flow>_faults.py`) with the exact check names it `targets`.
    It patches the product function whose bug class the scenario claims to catch.
    Then run `slop/run <slug> --break`. The task is not done until it prints `CAUGHT`.
 6. Run `--scale=small` while iterating, then `--scale=medium --users=200` before you
@@ -216,6 +257,8 @@ reads or writes `service/chatterly.db`, real sessions, prod or any remote. The
 
 ## Scenarios
 
+A flow with a `README.<flow>.md` lists its scenarios there.
+
 - `2026-10-23-inbox-unread-fan-burst`: `--users` fans DM their Creators, sent the
   pump's way (one frame in flight per Creator, all Creators at once; `--rate=N` for
   open loop, with scheduled vs achieved rate and lag in `metrics.json` `pump`), while
@@ -236,7 +279,7 @@ reads or writes `service/chatterly.db`, real sessions, prod or any remote. The
   Fans DM at an open-loop rate per big Creator ramped through stages
   (`--dms-per-min=50,100,200`, each `--stage-s`; normal Creators 5/min; tips,
   PPV purchases, typing), `--users` chatters work the inbox, and the owner's
-  browser holds 4 live tabs (All Models inbox, 2 popouts, Group). Checks:
+  browser holds a live tab per page in `TABS` (All Models inbox, 2 popouts, Group). Checks:
   nothing dropped (event_inbox, messages, each Agency's /events, the inbox tab),
   no cross-Agency leak, per-thread order on every stream, no `resync` overflow,
   unread per thread, one ledger row per tip/purchase, one row per reply; budgets
@@ -270,6 +313,31 @@ reads or writes `service/chatterly.db`, real sessions, prod or any remote. The
   kill. Bypass: the fan pump has its own Recorder, so frames sent into the outage (transport
   errors) are counted in metric `pump`, not the stock no-5xx check. Fault
   `of-writer-holds-batches-3s` (a writer that waits instead of flushing as soon as work exists).
+- `2026-10-25-creator-earnings-of-truth`: Dashboard and Creator reports money against
+  OnlyFans Statistics. `seed/earnings` writes OF's daily net per Creator for
+  `--set history_days=` (130) and the ledger rows the DB caught (a trickle before the
+  Creator was connected `--set connected_days=` (9) ago, most since, some today).
+  Before the history job: API checks and, with UI, the Dashboard (This month) and
+  Creator reports (Last 30 days) screenshots. Then `--users` owners (`actors/reports`)
+  read the reports while `POST /__slop/of-stats-tick` runs job passes until the history
+  is in, and again after. Checks: reads per pass bounded, 400 days stored per Creator,
+  the last pass reads nothing; before the history, unknown days are reported
+  (`history_missing_days`) and growth shows "-"; after, totals by kind, every trend day
+  and each Creator's net == OF's complete days + today's ledger, the prior window
+  (growth) is OF's with no unknown day, a window older than OF's kept history says its
+  days are unknown, Employee sales unchanged, net/gross 0.8; UI totals == API; p95 per
+  route vs the budget and the last green run. Every money check reads max(OF, ledger)
+  per Creator, UTC day and category. Two seeded disagreements: "DB sale not erased by
+  OF zero day" (OF charts $0 on a day the ledger holds a pending $14 PPV message, as on
+  app.inflowwww.com 2026-10-21; API and, with UI, Creator reports / Creator performance
+  on that day, screenshots `creator-*-zero-day-*`) and a sale at 23:30 UTC-7 read with
+  the report zone America/Los_Angeles (on its local day once, not again on OF's next
+  UTC day). The fake answers as OF measured 2026-10-25: every asked category, zero or
+  not, PPV messages under `chat_messages`, a `total`. Bypasses: OF Statistics faked from
+  `of-statistics.json` (0.3 s per read, a guess), the job's timer and boot grace via the
+  tick hook, owners go straight to the relay. Faults: `of-zero-erases-db-sale` (the
+  scenario's: OF's day replaces the ledger's, as shipped in f96535be0) and
+  `reports-ignore-of-earnings` (the ledger-only reports) turn only their checks red.
 - `2026-10-25-browserbase-otp-login`: Add creator > Browserbase login when OnlyFans asks
   for a 2FA code. One owner, four logins against `lib/browserbase.py`, every OnlyFans page
   carrying a hidden reCAPTCHA frame and the 2FA page a decoy first form. API: the job stops
@@ -381,3 +449,23 @@ reads or writes `service/chatterly.db`, real sessions, prod or any remote. The
   aborts are not counted as console errors. Fault `fan-list-owe-reply-last-sort-never-active`
   (a browser init script: Owe reply laid out last, where the "+" sat, and the sort button
   never pressed or blue) turns only the chip-order and sort-active checks red.
+- `2026-10-26-mobile-gestures`: the owner on a phone (390x844, `owner_browser(touch=True)`,
+  swipes as Chromium touch input via `ui.swipe`, CDP `Input.dispatchTouchEvent`). Dashboard:
+  a vertical drag, a swipe from the OS edge zone (x < 24px) and a drag that turns vertical
+  then ends sideways open nothing, a swipe right
+  from mid-screen opens the nav menu (URL unchanged), a swipe left closes it. Messages Pro:
+  no menu swipe; opening a chat adds one same-URL history entry (`useChatBackEntry`), back
+  returns to the Fan List still on Messages Pro and a second back leaves; Forward onto
+  that entry stays on it (unmarked, no bounce) and the next Forward reaches the later page; a cancelled
+  sideways swipe leaves the Thread pinned ("Jumping to latest") and a vertical drag releases
+  it; the Thread's swipe right returns to the Fan List through that entry; Fan insights'
+  swipe right closes only Fan insights; a reload with a chat open lands on the Fan List with
+  no chat entry left. Desktop (1600px, touch input): nothing opens or closes, no history
+  entry. No 5xx from the relay. No volume, so no budget (settle times are metrics). Bypasses:
+  no phone OS, so iOS's / Android's own edge-back is not in the loop (`history.back()` stands
+  in for it; the edge-zone check proves only that the page ignores such a touch); `/api/of/*`
+  held. Fault `mobile-chat-no-history-entry` (client: no `pushState` when a chat opens) turns
+  only the three checks of that entry red (back, Forward, the Thread swipe through it);
+  `mobile-chat-forward-bounce` (Forward onto the entry goes back again) only Forward;
+  `mobile-swipe-ignores-turn` (a sideways lock ignores a later vertical move and the scroll)
+  only the turned drag.

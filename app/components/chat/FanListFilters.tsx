@@ -52,7 +52,7 @@ export function MenuDivider() {
 }
 
 /** The Fan List's sort orders. "Newest first" is Infloww's; the others are
- *  Inflowwww's, under it in the same sort control (spec, Filters). `sub`
+ *  Inflowwww's, after it under the same "Sort by" header (spec, Filters). `sub`
  *  explains an order under its name; `old` is the old gear option's
  *  tooltip, its extra tooltip's second line. */
 const SORT_ORDERS: Record<ChatSortMode, { label: string; sub?: string; old?: string }> = {
@@ -69,7 +69,7 @@ const SORT_ORDERS: Record<ChatSortMode, { label: string; sub?: string; old?: str
 };
 /** Infloww's order, the sort control's first. */
 const NEWEST_FIRST: ChatSortMode = "recent";
-/** Inflowwww's orders, under Newest first in the sort control, in this order. */
+/** Inflowwww's orders, after Newest first in the sort control, in this order. */
 const EXTRA_SORT_ORDERS = (["spend", "spend-unread", "hybrid"] as const)
   .map((key) => ({ key, ...SORT_ORDERS[key] }));
 
@@ -378,8 +378,8 @@ function GearMenu({
 
 /** The sort control (Gap row 10): an icon button after the gear, named by
  *  the order in force, and active while that order is not Infloww's
- *  "Newest first". Its menu offers Newest first, then Inflowwww's extra
- *  orders under "Sort by", the order in force marked ✓ (spec, Filters). */
+ *  "Newest first". Its menu lists, under "Sort by", Newest first and then
+ *  Inflowwww's extra orders, the order in force marked ✓ (spec, Filters). */
 function SortControl({ sortMode, onSortModeChange }: SortChoice) {
   const { open, setOpen, ref, triggerProps, menuProps } = useFanListMenu<HTMLDivElement>();
   const label = `Sort: ${SORT_ORDERS[sortMode].label}`;
@@ -403,6 +403,7 @@ function SortControl({ sortMode, onSortModeChange }: SortChoice) {
       </button>
       {open && (
         <section {...menuProps} aria-label="Sort" className={cn(MENU, O.sortMenuPlace)}>
+          <div className={cn(MP.menu.head, "uppercase text-fg-dim")}>Sort by</div>
           <button
             type="button"
             onClick={() => choose(NEWEST_FIRST)}
@@ -412,8 +413,6 @@ function SortControl({ sortMode, onSortModeChange }: SortChoice) {
             {mark(NEWEST_FIRST)}
             <span>{SORT_ORDERS[NEWEST_FIRST].label}</span>
           </button>
-          <MenuDivider />
-          <div className={cn(MP.menu.head, "uppercase text-fg-dim")}>Sort by</div>
           {EXTRA_SORT_ORDERS.map((opt) => (
             <ExtraMenuRow
               key={opt.key}

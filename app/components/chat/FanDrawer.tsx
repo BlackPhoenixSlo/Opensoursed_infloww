@@ -30,6 +30,7 @@ import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } fr
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useFan } from "@/hooks/useFan";
+import { useSwipe } from "@/hooks/useSwipe";
 import { useAccountLabel } from "@/hooks/useAccounts";
 import { OF_USER_STALE_MS, ofUserNameKey, useOFUser } from "@/hooks/useOFUser";
 import { useMassExclude } from "@/hooks/useMassExclude";
@@ -361,6 +362,11 @@ export function FanDrawer({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose, pinned, lightbox]);
+  // A swipe right on the slide-over or its backdrop closes it, as Esc does: not
+  // the pinned column, and not while the lightbox is up.
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLElement>(null);
+  useSwipe(overlayRef, { enabled: open && !pinned && !lightbox, dir: "right", onSwipe: onClose, follow: panelRef });
 
   if (!open) return null;
 
@@ -805,6 +811,7 @@ export function FanDrawer({
   // branch shows the same content as a slide-over).
   const panel = (
     <aside
+      ref={panelRef}
       role={pinned ? undefined : "dialog"}
       aria-modal={pinned ? undefined : true}
       aria-label="Fan insights"
@@ -997,7 +1004,7 @@ export function FanDrawer({
   // The overlay is hidden at lg+: there its pinned twin is the in-flow
   // column, and below lg this slide-over is the only branch.
   return (
-    <div className="absolute inset-0 z-30 flex pointer-events-none lg:hidden">
+    <div ref={overlayRef} className="absolute inset-0 z-30 flex pointer-events-none lg:hidden">
       <div className="flex-1 min-w-14 sm:min-w-0 bg-black/40 pointer-events-auto" onClick={onClose} />
       {panel}
     </div>

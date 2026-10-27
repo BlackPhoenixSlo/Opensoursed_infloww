@@ -488,7 +488,7 @@ async def desktop(ctx, account_id: str, fans: list[dict]) -> list[dict]:
                     await r.continue_()
 
             # As actors/ui's pages: focus on request, and the fault's page script.
-            primed = "window.__slopPrimed = 1;\n" + FOCUS_JS + "\n" + (fault.browser if fault and fault.browser else "")
+            primed = "window.__slopPrimed = 1;\n" + FOCUS_JS + "\n" + (fault.browser_js if fault and fault.browser_js else "")
 
             async def prime(p):
                 # A window opened before the init script reached it (Messages Pro) runs it now.

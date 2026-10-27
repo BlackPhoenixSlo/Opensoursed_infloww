@@ -61,6 +61,51 @@ describe("AppShell drawer below lg", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
+  it("closes on a swipe left on the drawer or its backdrop, not on a swipe right", () => {
+    render(<AppShell>page</AppShell>);
+    const pt = (x: number) => ({ clientX: x, clientY: 300 });
+    const swipe = (el: Element, x0: number, x1: number) => {
+      fireEvent.touchStart(el, { touches: [pt(x0)], changedTouches: [pt(x0)] });
+      fireEvent.touchMove(el, { touches: [pt(x1)], changedTouches: [pt(x1)] });
+      fireEvent.touchEnd(el, { touches: [], changedTouches: [pt(x1)] });
+    };
+    fireEvent.click(toggle());
+    const dialog = screen.getByRole("dialog", { name: "Menu" });
+    swipe(dialog, 100, 250);
+    expect(screen.getByRole("dialog", { name: "Menu" })).toBeInTheDocument();
+    swipe(dialog, 250, 100);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(toggle()).toHaveAttribute("aria-expanded", "false");
+
+    // The backdrop (the page beside the drawer) closes it too.
+    fireEvent.click(toggle());
+    swipe(document.querySelector("[data-state='open'].fixed.inset-0")!, 350, 200);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("opens on a swipe right from mid-screen; not from the OS edge zone, a scroll, a field, or over a dialog", () => {
+    render(<AppShell><input aria-label="field" /></AppShell>);
+    const swipe = (el: Element, x0: number, x1: number, y1 = 300) => {
+      fireEvent.touchStart(el, { touches: [{ clientX: x0, clientY: 300 }], changedTouches: [{ clientX: x0, clientY: 300 }] });
+      fireEvent.touchMove(el, { touches: [{ clientX: x1, clientY: y1 }], changedTouches: [{ clientX: x1, clientY: y1 }] });
+      fireEvent.touchEnd(el, { touches: [], changedTouches: [{ clientX: x1, clientY: y1 }] });
+    };
+    const page = main();
+    swipe(page, 10, 200);                      // iOS / Android back zone
+    swipe(page, 150, 160, 600);                // a vertical scroll
+    swipe(screen.getByLabelText("field"), 150, 300);
+    const modal = document.createElement("div");
+    modal.setAttribute("role", "dialog");
+    document.body.appendChild(modal);
+    swipe(page, 150, 300);
+    modal.remove();
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    swipe(page, 150, 300);
+    expect(screen.getByRole("dialog", { name: "Menu" })).toBeInTheDocument();
+    expect(toggle()).toHaveAttribute("aria-expanded", "true");
+  });
+
   it("closes when the route changes", () => {
     const { rerender } = render(<AppShell>page</AppShell>);
     fireEvent.click(toggle());
@@ -82,6 +127,27 @@ const desktop = () => {
 };
 
 const main = () => document.querySelector("main")!;
+
+describe("AppShell swipe to open, off a phone", () => {
+  it("no swipe opens the drawer at desktop width or on Messages Pro", () => {
+    const swipe = () => {
+      fireEvent.touchStart(main(), { touches: [{ clientX: 150, clientY: 300 }], changedTouches: [{ clientX: 150, clientY: 300 }] });
+      fireEvent.touchMove(main(), { touches: [{ clientX: 300, clientY: 300 }], changedTouches: [{ clientX: 300, clientY: 300 }] });
+      fireEvent.touchEnd(main(), { touches: [], changedTouches: [{ clientX: 300, clientY: 300 }] });
+    };
+    pathname = "/messages-pro";
+    const { unmount } = render(<AppShell>page</AppShell>);
+    swipe();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    unmount();
+
+    pathname = "/";
+    desktop();
+    render(<AppShell>page</AppShell>);
+    swipe();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+});
 
 describe("AppShell on Messages Pro: a window of its own (ADR-0002)", () => {
   for (const [width, setWidth] of [["desktop", desktop], ["phone", () => {}]] as const) {

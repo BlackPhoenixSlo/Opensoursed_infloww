@@ -55,11 +55,15 @@ KEEPALIVE_EXPIRY_S = 2.0
 
 
 class Http:
-    """One signed-in session (cookie jar) against the relay."""
+    """One signed-in session (cookie jar) against the relay. `host` sends that Host
+    header (a fleet edge routes on it); `prefix` goes in front of every route label
+    (e.g. "edge s03 ") so edge calls get their own p95 rows."""
 
-    def __init__(self, base: str, rec: Recorder, *, limits: int = 100):
-        self.rec = rec
-        self.c = httpx.AsyncClient(base_url=base, timeout=30,
+    def __init__(self, base: str, rec: Recorder, *, limits: int = 100, host: str | None = None,
+                 prefix: str = "", headers: dict | None = None):
+        self.rec, self.host, self.prefix, self.headers = rec, host, prefix, dict(headers or {})
+        hdrs = {**self.headers, **({"Host": host} if host else {})}
+        self.c = httpx.AsyncClient(base_url=base, timeout=30, headers=hdrs,
                                    limits=httpx.Limits(max_connections=limits, max_keepalive_connections=limits,
                                                        keepalive_expiry=KEEPALIVE_EXPIRY_S))
 
@@ -68,13 +72,13 @@ class Http:
         try:
             r = await self.c.request(method, path, **kw)
         except httpx.HTTPError as e:
-            self.rec.add(label(method, path), 599, (time.perf_counter() - t0) * 1000)
+            self.rec.add(self.prefix + label(method, path), 599, (time.perf_counter() - t0) * 1000)
             self.rec.errors.append(f"{method} {path}: {type(e).__name__} {e} "
                                    f"(cause {e.__cause__ or e.__context__!r}; stage {self.rec.stage})")
             raise
-        self.rec.add(label(method, path), r.status_code, (time.perf_counter() - t0) * 1000)
+        self.rec.add(self.prefix + label(method, path), r.status_code, (time.perf_counter() - t0) * 1000)
         if r.status_code >= 400 and len(self.rec.errors) < 50:
-            self.rec.errors.append(f"{method} {path} -> {r.status_code} {r.text[:200]}")
+            self.rec.errors.append(f"{self.prefix}{method} {path} -> {r.status_code} {r.text[:200]}")
         return r
 
     async def get(self, path: str, **kw) -> httpx.Response:
@@ -83,9 +87,13 @@ class Http:
     async def post(self, path: str, **kw) -> httpx.Response:
         return await self.request("POST", path, **kw)
 
+    async def put(self, path: str, **kw) -> httpx.Response:
+        return await self.request("PUT", path, **kw)
+
     def share(self, rec: Recorder | None = None, limits: int = 100) -> "Http":
         """A second client on the same session (e.g. one per actor pool)."""
-        h = Http(str(self.c.base_url), rec or self.rec, limits=limits)
+        h = Http(str(self.c.base_url), rec or self.rec, limits=limits, host=self.host, prefix=self.prefix,
+                 headers=self.headers)
         h.c.cookies = self.c.cookies
         return h
 

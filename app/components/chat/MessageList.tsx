@@ -313,8 +313,21 @@ export function MessageList(props: MessageListProps) {
       firstLoadPendingRef.current = false;
       setAutoPinActive(false);
     };
+    // A finger releases only once it moves more up/down than sideways: a
+    // sideways swipe (the Thread's swipe back, kept or cancelled) is not a scroll.
+    let touch0: { x: number; y: number } | null = null;
+    const onTouchStart = (e: TouchEvent) => {
+      const t = e.touches[0];
+      touch0 = t ? { x: t.clientX, y: t.clientY } : null;
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      const t = e.touches[0];
+      if (touch0 && t && Math.abs(t.clientY - touch0.y) <= Math.abs(t.clientX - touch0.x)) return;
+      release(e);
+    };
     c.addEventListener("wheel", release, { passive: true });
-    c.addEventListener("touchmove", release, { passive: true });
+    c.addEventListener("touchstart", onTouchStart, { passive: true });
+    c.addEventListener("touchmove", onTouchMove, { passive: true });
     c.addEventListener("keydown", release);
     // "↓ Latest" affordance: passive scroll listener tracks distance from
     // bottom so we can surface the jump button when the user scrolls up.
@@ -344,7 +357,8 @@ export function MessageList(props: MessageListProps) {
       if (rafId != null) cancelAnimationFrame(rafId);
       c.removeEventListener("load", onMediaLoad, true);
       c.removeEventListener("wheel", release);
-      c.removeEventListener("touchmove", release);
+      c.removeEventListener("touchstart", onTouchStart);
+      c.removeEventListener("touchmove", onTouchMove);
       c.removeEventListener("keydown", release);
       c.removeEventListener("scroll", onScroll);
     };
@@ -540,7 +554,7 @@ export function MessageList(props: MessageListProps) {
       // manual pin when media loads above the fold ("bounce to middle"
       // bug, fix #11). We own scroll position via the effects above.
       style={{ overflowAnchor: "none" }}
-      className={cn("h-full overflow-y-auto overflow-x-hidden flex flex-col", MP.messageList.body)}
+      className={cn("h-full overflow-y-auto overflow-x-hidden overscroll-y-contain flex flex-col", MP.messageList.body)}
     >
       {/* The refresh failed but we still have history — say so WITHOUT taking
        *  the thread away. `sticky` (not `absolute`) so it never covers the

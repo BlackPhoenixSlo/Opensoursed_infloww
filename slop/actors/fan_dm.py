@@ -173,7 +173,8 @@ class Paced:
 
 
 async def serial(http, targets: list[dict], per_fan: int, *, rate: float = 0, text: str = "slop dm",
-                 ids=None) -> list[dict]:
+                 ids=None, phase: dict[str, float] | None = None, stop: asyncio.Event | None = None,
+                 out: list[dict] | None = None) -> list[dict]:
     """The pump's shape: per Creator ONE frame in flight at a time (the OF WebSocket
     pump awaits `_broadcast_event` per frame, service/server.py), Creators in
     parallel. A Creator's frames go round-robin over its fans (DM 1 of each, then
@@ -184,18 +185,34 @@ async def serial(http, targets: list[dict], per_fan: int, *, rate: float = 0, te
     returns (the pump's backlog). Returns one record per frame sent: account_id,
     fan_id, message_id, status, and epoch-ms `due` (== `t0` closed-loop), `t0`
     (handed to the relay) and `t1` (the relay returned). `ids`: a shared
-    itertools.count when several calls must not reuse message ids."""
+    itertools.count when several calls must not reuse message ids (a fleet run).
+    `phase` (open loop): Creator id -> seconds its schedule starts after the
+    others (frame i due at start + phase + i/rate), so Creators with one rate do
+    not all fire at the same instant; a phase below 1/rate keeps every frame
+    inside the same window. Missing: 0 (every Creator in step, as before).
+    `stop`: no new frame once it is set (a flood that runs until the scenario
+    ends it; pass a large per_fan). `out`: append records there as they are
+    sent (a scenario reads them while the flood runs)."""
     ids = ids if ids is not None else itertools.count(INJECT_ID_BASE)
     by_acct: dict[str, list[dict]] = {}
     for f in targets:
         by_acct.setdefault(f["account_id"], []).append(f)
-    out: list[dict] = []
+    out = out if out is not None else []
 
     async def pump(aid: str, fans: list[dict]) -> None:
-        start = time.time()
+        start = time.time() + ((phase or {}).get(aid, 0.0) if rate > 0 else 0.0)
         for i, (k, f) in enumerate((k, f) for k in range(per_fan) for f in fans):
             if rate > 0:
-                await asyncio.sleep(max(0.0, start + i / rate - time.time()))
+                wait = max(0.0, start + i / rate - time.time())
+                if stop is None:
+                    await asyncio.sleep(wait)
+                else:
+                    try:
+                        await asyncio.wait_for(stop.wait(), wait)
+                    except asyncio.TimeoutError:
+                        pass
+            if stop is not None and stop.is_set():
+                return
             mid = next(ids)
             rec = {"account_id": aid, "fan_id": f["id"], "message_id": mid, "t0": time.time() * 1000}
             rec["due"] = (start + i / rate) * 1000 if rate > 0 else rec["t0"]
@@ -208,4 +225,34 @@ async def serial(http, targets: list[dict], per_fan: int, *, rate: float = 0, te
             out.append(rec)
 
     await asyncio.gather(*(pump(a, fs) for a, fs in by_acct.items()))
+    return out
+
+
+SAY_ID_BASE = 9_560_000_000_000
+_say_ids = itertools.count(SAY_ID_BASE)
+
+
+async def say(http, lines: list[tuple[dict, str]]) -> list[dict]:
+    """Each fan says his own line, the pump's shape (`serial`): per Creator one
+    frame in flight, in list order, Creators in parallel. Returns one record per
+    frame: account_id, fan_id, message_id, text, status, t0/t1 (epoch ms)."""
+    by_acct: dict[str, list[tuple[dict, str]]] = {}
+    for f, text in lines:
+        by_acct.setdefault(f["account_id"], []).append((f, text))
+    out: list[dict] = []
+
+    async def pump(aid: str, items: list[tuple[dict, str]]) -> None:
+        for f, text in items:
+            mid = next(_say_ids)
+            rec = {"account_id": aid, "fan_id": f["id"], "message_id": mid, "text": text,
+                   "t0": time.time() * 1000}
+            try:
+                r = await inject(http, aid, frame(mid, f, text))
+                rec["status"] = r.status_code
+            except Exception as e:  # recorded by the client; keep pumping
+                rec["status"], rec["error"] = 599, type(e).__name__
+            rec["t1"] = time.time() * 1000
+            out.append(rec)
+
+    await asyncio.gather(*(pump(a, it) for a, it in by_acct.items()))
     return out

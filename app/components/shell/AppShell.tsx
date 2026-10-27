@@ -7,7 +7,9 @@
  * top bar's collapse button folds to Infloww's 60px icon rail (the icons
  * stay); below lg it is an off-canvas drawer (a
  * Radix dialog: focus trap, Escape, backdrop click) opened from that same
- * button. The drawer closes on any route change.
+ * button, or by a swipe right that starts anywhere on the page but the OS's
+ * edge zones, outside any open dialog (`useSwipe`). The drawer closes on any
+ * route change, or on a swipe left on it or its backdrop.
  *
  * Messages Pro (`isPopoutRoute`) is a window of its own, as in Infloww: the
  * sidebar opens it with `openPopout`, and on its routes the shell renders
@@ -38,7 +40,7 @@
  */
 
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 
 import { hasCreatorColumn } from "@/components/of-manager/OfManagerChrome";
@@ -50,6 +52,7 @@ import Sidebar from "@/components/shell/Sidebar";
 import TopBar from "@/components/shell/TopBar";
 import { ClockHeartbeat } from "@/components/shifts/ClockButton";
 import { useIsDesktop } from "@/hooks/useIsDesktop";
+import { OS_EDGE_PX, useSwipe } from "@/hooks/useSwipe";
 import { isPopoutRoute, openPopout, POPOUT_WINDOW } from "@/lib/nav";
 
 const SIDEBAR_ID = "app-sidebar";
@@ -67,10 +70,18 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [drawerPath, setDrawerPath] = useState<string | null>(null);
   const drawerOpen = !docked && drawerPath === pathname;
   const setDrawerOpen = (open: boolean) => setDrawerPath(open ? pathname : null);
+  const drawerRef = useRef<HTMLDivElement>(null);
+  const popout = isPopoutRoute(pathname);
+  useSwipe(null, {
+    enabled: !docked && !popout && !drawerOpen, dir: "right", onSwipe: () => setDrawerPath(pathname),
+    edgeGuard: OS_EDGE_PX, ignoreWhile: "[role='dialog'], [aria-modal='true']",
+  });
+  // The drawer and its backdrop cover the page, so the whole document listens while it is open.
+  useSwipe(null, { enabled: drawerOpen, dir: "left", onSwipe: () => setDrawerPath(null), follow: drawerRef });
 
   // Messages Pro has no top bar, so the shell offset `.h-chat` subtracts
   // (`--shell-top`, globals.css) is 0 and the panes fill the window.
-  if (isPopoutRoute(pathname)) {
+  if (popout) {
     return (
       <main className="min-w-0" style={{ ["--shell-top" as string]: "0px" }}>
         <LeaveDesktopMainWindow pathname={pathname} />
@@ -103,6 +114,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           <Dialog.Portal>
             <Dialog.Overlay className="lg:hidden fixed inset-0 z-40 bg-black/50" />
             <Dialog.Content
+              ref={drawerRef}
               id={DRAWER_ID}
               aria-describedby={undefined}
               className="lg:hidden fixed inset-y-0 left-0 z-50 flex max-w-[85vw] outline-none"

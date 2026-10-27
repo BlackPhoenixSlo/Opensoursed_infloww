@@ -18,11 +18,17 @@ from pathlib import Path
 # Sizes per --scale. Seeders read only the keys they own; add keys as you need them.
 SCALES: dict[str, dict[str, float]] = {
     "small":  {"creators": 3,  "fans_per_creator": 50,   "thread_frac": 0.6, "history_msgs": 4,
-               "big_fans_per_creator": 2_000},
+               "big_fans_per_creator": 2_000, "fm_walkers_per_creator": 6,
+               "paid_captions_per_owner": 4, "of_chats_per_creator": 50,
+               "caption_import_rows": 1_000},
     "medium": {"creators": 10, "fans_per_creator": 500,  "thread_frac": 0.5, "history_msgs": 6,
-               "big_fans_per_creator": 10_000},
+               "big_fans_per_creator": 10_000, "fm_walkers_per_creator": 20,
+               "paid_captions_per_owner": 8, "of_chats_per_creator": 150,
+               "caption_import_rows": 5_000},
     "huge":   {"creators": 10, "fans_per_creator": 5000, "thread_frac": 0.4, "history_msgs": 6,
-               "big_fans_per_creator": 50_000},
+               "big_fans_per_creator": 50_000, "fm_walkers_per_creator": 36,
+               "paid_captions_per_owner": 8, "of_chats_per_creator": 300,
+               "caption_import_rows": 5_000},
 }
 
 
@@ -36,13 +42,16 @@ class World:
     user_id: str | None = None        # the Agency's users.id (seed/agency.py)
     owner: object | None = None       # lib.client.Http signed in as the owner
     data: dict = field(default_factory=dict)  # seeder outputs: creators, fans, threads, ...
+    stream: str = ""                  # a fleet shard's id: its own RNG streams (seed/profiles/fleet.py)
+    user_prefix: str = "slop"         # usernames seed/agency.py registers
 
     @property
     def size(self) -> dict[str, float]:
         return SCALES[self.scale]
 
     def rng(self, name: str) -> random.Random:
-        h = hashlib.sha256(f"{self.seed}:{name}".encode()).hexdigest()
+        key = f"{self.seed}:{self.stream}:{name}" if self.stream else f"{self.seed}:{name}"
+        h = hashlib.sha256(key.encode()).hexdigest()
         return random.Random(int(h[:16], 16))
 
     def sql(self) -> sqlite3.Connection:

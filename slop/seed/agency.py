@@ -20,7 +20,7 @@ async def seed(w: World, n: int = 1) -> str:
     out = []
     for i in range(n):
         http = w.owner if i == 0 else Http(str(w.owner.c.base_url), w.owner.rec)
-        username = f"slop{w.seed}" if i == 0 else f"slop{w.seed}a{i}"
+        username = f"{w.user_prefix}{w.seed}" if i == 0 else f"{w.user_prefix}{w.seed}a{i}"
         out.append({"user_id": await _register(http, username), "username": username, "http": http})
     w.user_id = out[0]["user_id"]
     w.data["agency"] = {"user_id": w.user_id, "username": out[0]["username"]}

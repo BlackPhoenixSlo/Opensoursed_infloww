@@ -10,6 +10,7 @@ import json
 import subprocess
 import sys
 import time
+import traceback
 from pathlib import Path
 
 SLOP = Path(__file__).resolve().parents[1]
@@ -18,7 +19,7 @@ sys.path.insert(0, str(SLOP.parent))  # so `slop.seed...` and `slop.actors...` i
 from slop.lib.client import Http, Recorder  # noqa: E402
 from slop.lib.faults import FAULTS  # noqa: E402
 from slop.lib.procmon import ProcMon, render  # noqa: E402
-from slop.lib.report import Report, run_dir  # noqa: E402
+from slop.lib.report import EVIDENCE, Report, run_dir  # noqa: E402
 from slop.lib.stack import Stack  # noqa: E402
 from slop.seed import SCALES, World  # noqa: E402
 
@@ -36,27 +37,56 @@ def load(path: Path):
     return mod
 
 
-class Ctx:
-    """What a scenario gets: the stack, the owner session, the knobs, check/metric."""
+class Shard:
+    """One relay of a fleet run (`--shards=N`): its id (s01..), relay URL, app URL
+    (None where no `next dev` runs), temp DB, seed World (own RNG stream and
+    usernames) and owner session. `mon` is its ProcMon."""
 
-    def __init__(self, name, stack, report, rec, args, params, *, fault=None):
+    def __init__(self, stack, i: int, rec, args):
+        self.idx, self.id = i, stack.shard_ids[i]
+        self.url, self.app = stack.shard_urls[i], stack.app_urls.get(i)
+        self.db, self.sessions, self.pid = stack.shard_dbs[i], stack.shard_sessions[i], stack.shard_pids[i]
+        self.owner = Http(self.url, rec)
+        self.world = World(db=self.db, sessions=self.sessions, seed=args.seed, scale=args.scale, owner=self.owner,
+                           stream=self.id, user_prefix=f"{self.id}o")
+        self.mon: ProcMon | None = None
+
+
+class Ctx:
+    """What a scenario gets: the stack, the owner session, the knobs, check/metric.
+    A fleet run (`--shards=N`, N > 1) also gets `shards` (one Shard each; shard 0
+    is `owner` / `world`) and `fleet` (lib/edge.py: the Caddy edge and the map)."""
+
+    def __init__(self, name, stack, report, rec, args, params, *, ui=False, fault=None, fleet=None):
         self.name, self.stack, self.report, self.rec = name, stack, report, rec
-        self.fault = fault  # the injected lib/faults.py name (a fault's `browser` script runs in actors/ui pages)
-        self.of_wire = None  # lib/of_wire.FakeOF when the scenario sets OF_WIRE
         self.scale, self.users, self.seed = args.scale, args.users, args.seed
         self.relay, self.app, self.out = stack.relay, stack.app, report.out
-        self.params = params
-        self.owner = Http(stack.relay, rec)
-        self.world = World(db=stack.db, sessions=stack.sessions, seed=args.seed, scale=args.scale, owner=self.owner)
+        self.params, self.ui, self.fault, self.fleet = params, ui, fault, fleet
+        self.shards = [Shard(stack, i, rec, args) for i in range(stack.shards)] if stack.shards > 1 else []
+        if self.shards:
+            self.owner, self.world = self.shards[0].owner, self.shards[0].world
+        else:
+            self.owner = Http(stack.relay, rec)
+            self.world = World(db=stack.db, sessions=stack.sessions, seed=args.seed, scale=args.scale,
+                               owner=self.owner)
         self.check, self.metric, self.note, self.skip = report.check, report.metric, report.note, report.skip
 
     def param(self, key: str, default):
         v = self.params.get(key, default)
         return type(default)(v) if default is not None else v
 
-    async def build(self, profile: str) -> World:
+    async def build(self, profile: str):
+        """The profile's World; a fleet profile (`build_fleet`) gets every shard's
+        World and returns them as a list."""
         t0 = time.time()
         mod = importlib.import_module(f"slop.seed.profiles.{profile}")
+        if hasattr(mod, "build_fleet"):
+            ws = await mod.build_fleet([s.world for s in self.shards])
+            self.metric("seed", {"profile": profile, "seconds": round(time.time() - t0, 2), "shards": len(ws),
+                                 "creators": sum(len(w.data.get("creators", [])) for w in ws),
+                                 "fans_total": sum(len(v) for w in ws for v in w.data.get("fans", {}).values()),
+                                 "threads": sum(len(w.data.get("threads", [])) for w in ws)})
+            return ws
         w = await mod.build(self.world)
         self.metric("seed", {"profile": profile, "seconds": round(time.time() - t0, 2),
                              **{k: len(v) for k, v in w.data.items() if isinstance(v, list)},
@@ -68,10 +98,75 @@ def _stock_checks(report: Report, rec: Recorder, out: Path, mod=None) -> None:
     """Invariants every scenario gets for free."""
     report.check("no 5xx or transport error on any actor call", rec.count(lambda s: s >= 500) == 0,
                  count=rec.count(lambda s: s >= 500))
-    unexpected, offline = _tracebacks(out / "relay.log", tuple(getattr(mod, "EXPECTED_TRACEBACKS", ())))
+    unexpected = offline = 0
+    expected = tuple(getattr(mod, "EXPECTED_TRACEBACKS", ()))
+    for log in sorted(out.glob("relay*.log")):  # relay.log, or relay-sNN.log per fleet shard
+        u, o = _tracebacks(log, expected)
+        unexpected, offline = unexpected + u, offline + o
     report.metric("relay_tracebacks", {"unexpected": unexpected, "offline_expected": offline})
     report.check("relay logged no unexpected Traceback", unexpected == 0, count=unexpected,
                  offline_expected=offline)
+    if mod is not None and getattr(mod, "P95_VS_LAST", None) and not report.infra:
+        _p95_vs_last_green(report, out, mod.P95_VS_LAST, getattr(mod, "P95_VS_LAST_MIN_N", 0))
+
+
+# Knobs that must match for a previous run to be "the same run" (baseline, last green).
+def _same_knobs(have: dict, want: dict) -> dict:
+    diff = {k: (have.get(k), v) for k, v in want.items() if have.get(k) != v}
+    diff |= {k: (have[k], None) for k in have if k not in want and k not in ("git_sha", "git_dirty")}
+    return diff
+
+
+def _p95_vs_last_green(report: Report, out: Path, tol, min_n: int = 0) -> None:
+    """Stock: each p95 the scenario put in metric `p95_vs_last_green` ({key: ms})
+    against the newest earlier run of the same scenario with the same knobs, no
+    fault, no infra and every check pass/skip. FAIL when cur > max(r * last,
+    last + a) for `P95_VS_LAST = (r, a)` in the scenario. The first such run sets
+    the baseline (SKIP). With `P95_VS_LAST_MIN_N = n` the scenario also records
+    metric `p95_vs_last_green_n` ({key: samples}); a key is compared only when
+    both runs have >= n samples (the rest are listed as skipped), and an earlier
+    run without that metric is not a candidate."""
+    r, a = float(tol[0]), float(tol[1])
+    name = f"p95 within {r:g}x (+{a:g}ms) of the last green run"
+    cur = report.metrics.get("p95_vs_last_green") or {}
+    if not cur:
+        report.skip(name, "scenario recorded no p95_vs_last_green metric")
+        return
+    want = {k: v for k, v in report.params.items() if k not in ("git_sha", "git_dirty")}
+    last = None
+    for d in sorted(EVIDENCE.glob(f"*-{report.scenario}-*"), reverse=True):
+        if d == out or d.is_symlink() or not d.is_dir():
+            continue
+        try:
+            meta = json.loads((d / "metrics.json").read_text())
+            checks = json.loads((d / "invariants.json").read_text())
+        except (OSError, ValueError):
+            continue
+        if meta.get("infra") or _same_knobs(meta.get("params", {}), want) or not meta.get("p95_vs_last_green"):
+            continue
+        if min_n and not meta.get("p95_vs_last_green_n"):
+            continue
+        if all(c.get("status") in ("pass", "skip") for c in checks):
+            last = (d, meta["p95_vs_last_green"], meta.get("p95_vs_last_green_n") or {})
+            break
+    if last is None:
+        report.skip(name, "no earlier green run with these knobs: this run is the baseline")
+        return
+    d, prev, prev_n = last
+    cur_n = report.metrics.get("p95_vs_last_green_n") or {}
+    both = [k for k, v in cur.items() if v is not None and prev.get(k) is not None]
+    few = {k: {"now_n": cur_n.get(k, 0), "last_n": prev_n.get(k, 0)} for k in both
+           if min_n and min(cur_n.get(k, 0), prev_n.get(k, 0)) < min_n}
+    rows = {k: {"now": cur[k], "last": prev[k], "limit": round(max(r * prev[k], prev[k] + a), 1)}
+            for k in both if k not in few}
+    worse = {k: x for k, x in rows.items() if x["now"] > x["limit"]}
+    report.check(name, bool(rows) and not worse, budget=True, last_green=d.name, worse=worse,
+                 compared=len(rows), **({"min_n": min_n, "skipped_few_samples": few} if min_n else {}))
+    report.note("", f"p95 vs the last green run {d.name} (measured; limit = max({r:g}x, +{a:g}ms)"
+                    + (f"; compared only with >= {min_n} samples in both runs" if min_n else "") + "):",
+                *(f"  {k:<58} now {x['now']:>8} last {x['last']:>8} limit {x['limit']:>8}"
+                  f"{'  WORSE' if k in worse else ''}" for k, x in rows.items()),
+                *(f"  {k:<58} skipped: n now {x['now_n']}, last {x['last_n']} (< {min_n})" for k, x in few.items()))
 
 
 # Log lines that announce a traceback the offline stack causes by design: the
@@ -103,6 +198,53 @@ def _tracebacks(log: Path, expected: tuple[tuple[str, str], ...] = ()) -> tuple[
             else:
                 unexpected += 1
     return unexpected, offline
+
+
+async def _fleet_resources(report: Report, mons: dict[str, ProcMon], mod, out: Path) -> None:
+    """A fleet run: per shard resources-sNN.json and table rows; the CPU budget
+    over every shard (the max); the decision-5 pool gate if the scenario sets
+    POOL_GATE = {"spills": 0, "wait_p95_ms": 100}."""
+    summs = {}
+    for sid, mon in mons.items():
+        await mon.write(out)
+        (out / "resources.json").rename(out / f"resources-{sid}.json")
+        summs[sid] = mon.summary()
+    report.metric("relay_resources", summs)
+    report.note(*_fleet_table(mons))
+    stages = sorted({s for m in mons.values() for s in m.stages()}) or ["run"]
+    budget = getattr(mod, "CPU_BUDGET_PCT", None)
+    if budget is not None:
+        per = {f"{sid} {s}": summs[sid][s]["cpu_mean_pct"] for sid in mons for s in stages if s in summs[sid]}
+        report.check(f"relay process CPU mean <= {budget}% of one core in every stage",
+                     bool(per) and all(v is not None and v <= budget for v in per.values()), budget=True,
+                     budget_pct=budget, max_per_stage={s: max((summs[sid][s]["cpu_mean_pct"] or 0)
+                                                             for sid in mons if s in summs[sid]) for s in stages})
+    gate = getattr(mod, "POOL_GATE", None)
+    if gate is not None:
+        name = (f"DB pool gate (decision 5): {gate['spills']} spills and pool-wait p95 < {gate['wait_p95_ms']}ms, "
+                "every shard, every stage")
+        per = {f"{sid} {s}": {"spills": summs[sid][s]["pool_spills"], "wait_p95_ms": summs[sid][s]["pool_wait_p95_ms"],
+                              "n": summs[sid][s]["pool_wait_n"]}
+               for sid in mons for s in stages if s in summs[sid]}
+        bad = {k: v for k, v in per.items()
+               if v["spills"] > gate["spills"] or (v["wait_p95_ms"] or 0) >= gate["wait_p95_ms"]}
+        if not any(v["n"] for v in per.values()):
+            report.skip(name, "no pool checkouts were timed (lib/relay.py _db_probe)")
+        else:
+            report.check(name, not bad, budget=True, bad=bad,
+                         spills=sum(v["spills"] for v in per.values()),
+                         wait_p95_max_ms=max((v["wait_p95_ms"] or 0) for v in per.values()))
+
+
+def _fleet_table(mons: dict[str, ProcMon]) -> list[str]:
+    """procmon's table once, its rows per shard."""
+    out: list[str] = []
+    for sid, mon in mons.items():
+        t, n = mon.table(), len(mon.summary())
+        if not out:
+            out = ["per shard: " + t[0], *t[1:len(t) - n]]
+        out += [f"  [{sid}]", *t[len(t) - n:]]
+    return out
 
 
 async def _resources(report: Report, mon: ProcMon, mod, out: Path) -> None:
@@ -149,37 +291,65 @@ async def run_one(name: str, path: Path, args, params, *, fault: str | None = No
     """One scenario run on its own stack. `report.infra` is set when the stack or
     the scenario itself broke (no verdict possible)."""
     mod = load(path)
-    ui = bool(getattr(mod, "UI", False)) and not args.no_ui
+    ui, shards = _knobs(mod, args, params)
     out = run_dir(name, tag)
     p = {"scenario": name, "scale": args.scale, "users": args.users, "seed": args.seed, "ui": ui,
-         "fault": fault, **({"profile": True} if args.profile else {}), **_git(), **params}
+         "fault": fault, **({"shards": shards} if shards > 1 else {}),
+         **({"profile": True} if args.profile else {}), **_git(), **params}
     report, rec = Report(name, out, p), Recorder()
-    print(f"slop: {name} scale={args.scale} users={args.users} seed={args.seed} ui={ui} fault={fault} -> {out}")
+    print(f"slop: {name} scale={args.scale} users={args.users} seed={args.seed} ui={ui} fault={fault}"
+          f"{f' shards={shards}' if shards > 1 else ''} -> {out}")
     t0 = time.time()
     try:
-        stack = Stack(ui=ui, fault=fault, logdir=out, profile=args.profile)
-        of_wire, wire = None, contextlib.ExitStack()  # entered once, here: the relay needs its origin to start
+        stack = Stack(ui=ui, fault=fault, logdir=out, profile=args.profile, shards=shards,
+                      apps=tuple(getattr(mod, "APPS", ())) or (tuple(getattr(mod, "UI_APPS", ())) if ui else ()),
+                      boxes=getattr(mod, "BOXES", None),
+                      shards_per_box=getattr(mod, "SHARDS_PER_BOX", None))
+        for i in range(stack.shards):  # a scenario's RELAY_ENV: extra env for every relay it starts
+            stack.relay_env[i].update(getattr(mod, "RELAY_ENV", {}))
+        fleet = None
+        if shards > 1:
+            from slop.lib.edge import Fleet  # fleet runs only: the Caddy edge from deploy/fleet/fleet.py
+            fleet = Fleet(stack, out, fault)
+        of_wire, wire = None, contextlib.ExitStack()  # entered once, here: the relays need its origin to start
         if getattr(mod, "OF_WIRE", False):  # OnlyFans' API on loopback (lib/of_wire.py), the relay's OF_API_ORIGIN
             from slop.lib.of_wire import FakeOF
             of_wire = wire.enter_context(FakeOF())
-            stack.relay_env["OF_API_ORIGIN"] = of_wire.origin
-        with wire, stack:  # the fake OF outlives the relay it serves
-            print(f"slop: stack up in {time.time() - t0:.0f}s (relay {stack.relay}{', app ' + stack.app if ui else ''})")
-            ctx = Ctx(name, stack, report, rec, args, params, fault=fault)
+            for i in range(stack.shards):
+                stack.relay_env[i]["OF_API_ORIGIN"] = of_wire.origin
+        with wire, stack, (fleet or contextlib.nullcontext()):  # the fake OF outlives the relays it serves
+            print(f"slop: stack up in {time.time() - t0:.0f}s (relay {stack.relay}{', app ' + stack.app if stack.app else ''}"
+                  f"{f', {shards} shards, apps on ' + ','.join(stack.shard_ids[i] for i in stack.apps) if shards > 1 else ''}"
+                  f"{', edge ' + fleet.edge_url if fleet and fleet.edge_url else ''})")
+            ctx = Ctx(name, stack, report, rec, args, params, ui=ui, fault=fault, fleet=fleet)
             ctx.of_wire = of_wire
-            hook = Http(stack.relay, Recorder())  # /__slop/loop-cpu and /profile: not actor calls
-            mon = ProcMon(stack.relay_pid, rec, hook, profile=args.profile)
+            pids = [(s.id, s.pid, s.url) for s in ctx.shards] or [(None, stack.relay_pid, stack.relay)]
+            hooks = [Http(url, Recorder()) for _, _, url in pids]  # /__slop/loop-cpu and /profile: not actor calls
+            mons = {sid: ProcMon(pid, rec, h, profile=args.profile) for (sid, pid, _), h in zip(pids, hooks)}
+            for sh in ctx.shards:
+                sh.mon = mons[sh.id]
+            mon = next(iter(mons.values()))
             ctx.mon = mon  # a scenario may read mon.intervals (per-second relay CPU) for a windowed check
-            mon.start()
+            for m in mons.values():
+                m.start()
             try:
                 await mod.run(ctx)
             except Exception as e:  # a crashed scenario has no verdict, but keeps its evidence
                 report.infra = f"scenario crashed: {type(e).__name__}: {e}"
                 report.check("scenario ran to completion", False, error=f"{type(e).__name__}: {e}")
+                (out / "scenario-traceback.txt").write_text(traceback.format_exc())
             finally:
-                await mon.stop()
-                await _resources(report, mon, mod, out)
-                await hook.aclose()
+                _client_fault_applied(report, ctx, fault)
+                for m in mons.values():
+                    await m.stop()
+                if ctx.shards:
+                    await _fleet_resources(report, mons, mod, out)
+                else:
+                    await _resources(report, mon, mod, out)
+                for h in hooks:
+                    await h.aclose()
+                for sh in ctx.shards:
+                    await sh.owner.aclose()
                 await ctx.owner.aclose()
     except (SystemExit, Exception) as e:  # the stack did not come up (or died tearing down)
         report.infra = f"stack: {e}"
@@ -191,11 +361,45 @@ async def run_one(name: str, path: Path, args, params, *, fault: str | None = No
     return report
 
 
+def _client_fault_applied(report: Report, ctx, fault: str | None) -> None:
+    """A client fault (lib/faults.py `browser=`) ran as declared, else INFRA, never a verdict:
+    every rewrite matched the JS the browser loaded or the app modules lib/app_ts.py ran in
+    node (else a stale pattern, or a run with no UI and no such check), and in each of the two
+    that it hit the matches landed in exactly the fault's `browser_files` distinct files (else
+    the pattern is not unique to the function it breaks: a red check could be another module's)."""
+    f = FAULTS.get(fault or "")
+    if not f or not f.browser:
+        return
+    hits = getattr(ctx, "browser_fault_hits", {})
+    files = getattr(ctx, "browser_fault_files", {})
+    ts_files = getattr(ctx, "app_ts_fault_files", {})
+    report.metric("browser_fault_hits", {rx: hits.get(rx, 0) for rx, _ in f.browser})
+    report.metric("browser_fault_files", files)
+    if ts_files:
+        report.metric("app_ts_fault_files", ts_files)
+    missed = [rx for rx, _ in f.browser if not hits.get(rx)]
+    if report.infra:
+        return
+    if missed:
+        report.infra = f"client fault {fault}: its rewrite never matched the app's served JS: {missed}"
+    elif any(len(fs) not in (0, f.browser_files) for fs in (files, ts_files)):
+        report.infra = (f"client fault {fault}: its rewrites matched {len(files)} served files and "
+                        f"{len(ts_files)} node modules, expected {f.browser_files} each: "
+                        f"{sorted(files)} {sorted(ts_files)}")
+
+
+def _knobs(mod, args, params: dict | None = None) -> tuple[bool, int]:
+    """(ui, shards) a run of `mod` uses: UI unless --no-ui; --shards, else the scenario's
+    `shards_for(params)` (a layout knob that changes the shard count), else its SHARDS, else 1."""
+    n = args.shards or (mod.shards_for(params or {}) if hasattr(mod, "shards_for") else getattr(mod, "SHARDS", 1))
+    return bool(getattr(mod, "UI", False)) and not args.no_ui, int(n or 1)
+
+
 def _status(checks: list[dict]) -> dict[str, str]:
     return {c["name"]: c.get("status") or ("pass" if c["ok"] else "fail") for c in checks}
 
 
-def _load_baseline(d: Path, name: str, ui: bool, args, params) -> tuple[dict, str | None]:
+def _load_baseline(d: Path, name: str, ui: bool, args, params, shards: int = 1) -> tuple[dict, str | None]:
     """(statuses, problem) from a previous no-fault run of the same scenario and knobs."""
     try:
         checks = json.loads((d / "invariants.json").read_text())
@@ -204,9 +408,9 @@ def _load_baseline(d: Path, name: str, ui: bool, args, params) -> tuple[dict, st
         return {}, f"baseline {d} unreadable: {e}"
     bp = meta.get("params", {})
     want = {"scenario": name, "scale": args.scale, "users": args.users, "seed": args.seed, "ui": ui,
-            "fault": None, **({"profile": True} if args.profile else {}), **params}
-    diff = {k: (bp.get(k), v) for k, v in want.items() if bp.get(k) != v}
-    diff |= {k: (bp[k], None) for k in bp if k not in want and k not in ("git_sha", "git_dirty")}
+            "fault": None, **({"shards": shards} if shards > 1 else {}),
+            **({"profile": True} if args.profile else {}), **params}
+    diff = _same_knobs(bp, want)
     if diff:
         return {}, f"baseline {d} was run with other knobs (have, want): {diff}"
     if meta.get("infra"):
@@ -224,8 +428,8 @@ def break_one(name: str, path: Path, args, params) -> str:
     targets = FAULTS[fault].targets
     if args.baseline:
         base_dir = Path(args.baseline).resolve()
-        ui = bool(getattr(mod, "UI", False)) and not args.no_ui
-        base, problem = _load_baseline(base_dir, name, ui, args, params)
+        ui, shards = _knobs(mod, args, params)
+        base, problem = _load_baseline(base_dir, name, ui, args, params, shards)
     else:
         print(f"slop: break-it-once {fault}: green baseline first")
         b = asyncio.run(run_one(name, path, args, params, tag="baseline"))
@@ -287,6 +491,8 @@ def main() -> int:
     ap.add_argument("--profile", action="store_true",
                     help="run a stack sampler in the relay; per-stage profile-<stage>.txt in the evidence")
     ap.add_argument("--no-ui", action="store_true", help="skip Playwright/next dev even if the scenario has UI")
+    ap.add_argument("--shards", type=int, default=None,
+                    help="a fleet: N relays behind the real Caddy edge (lib/edge.py); default the scenario's SHARDS")
     ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE", help="scenario param")
     ap.add_argument("--list", action="store_true")
     args, extra = ap.parse_known_args()

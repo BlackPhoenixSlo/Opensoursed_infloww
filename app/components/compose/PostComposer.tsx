@@ -261,9 +261,12 @@ export function PostComposer({
       className="fixed inset-0 z-50 bg-black/50 grid place-items-center p-0 sm:p-4"
       onClick={() => { if (!create.isPending) { reset(); onClose(); } }}
     >
+      {/* min-h-0 / min-w-0: a grid item's auto minimum is its content, so on a
+       *  phone (h-full, no max-h) the panel grew past the screen and the body
+       *  never scrolled to the footer. Same fix as MassMessageComposer. */}
       <div
         onClick={(e) => e.stopPropagation()}
-        className="w-full h-full sm:h-auto max-w-none sm:max-w-[560px] max-h-none sm:max-h-[90vh] flex flex-col bg-panel border-0 sm:border border-border rounded-none sm:rounded-xl shadow-2xl"
+        className="min-h-0 min-w-0 w-full h-full sm:h-auto max-w-none sm:max-w-[560px] max-h-none sm:max-h-[90vh] flex flex-col bg-panel border-0 sm:border border-border rounded-none sm:rounded-xl shadow-2xl"
       >
         <header className="px-4 py-3 border-b border-border flex items-center justify-between">
           <h2 className="text-sm font-semibold">New post</h2>

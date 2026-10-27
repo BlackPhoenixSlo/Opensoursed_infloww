@@ -161,7 +161,7 @@ describe("FanListFilters", () => {
     expect(screen.queryByRole("region", { name: "Inbox settings" })).not.toBeInTheDocument();
   });
 
-  it("the sort control is an icon button the gear's size, named \"Sort: Newest first\" and at rest by default; its menu lists ✓ Newest first, then Sort by and the three extra orders, each an Inflowwww extra; choosing one reports it and closes the menu", async () => {
+  it("the sort control is an icon button the gear's size, named \"Sort: Newest first\" and at rest by default; its menu lists Sort by, then ✓ Newest first and the three extra orders (no divider between them), the extras each an Inflowwww extra; choosing one reports it and closes the menu", async () => {
     const user = userEvent.setup();
     const cb = renderFilters();
     const sort = within(filterRow()).getByRole("button", { name: "Sort: Newest first" });
@@ -177,6 +177,15 @@ describe("FanListFilters", () => {
     await user.click(sort);
     expect(sort).toHaveAttribute("aria-expanded", "true");
     const menu = screen.getByRole("region", { name: "Sort" });
+    // The header first, then the four orders, nothing between them.
+    expect(Array.from(menu.children, (el) => el.textContent)).toEqual([
+      "Sort by",
+      "✓Newest first",
+      "Amount spent",
+      "Spend + unread on top unread → owe reply → idle",
+      "Spend + recency spend × time-decay",
+    ]);
+    expect(within(menu).queryByRole("separator")).not.toBeInTheDocument();
     const entries = within(menu).getAllByRole("button");
     expect(entries.map((b) => b.textContent)).toEqual([
       "✓Newest first",
@@ -185,7 +194,6 @@ describe("FanListFilters", () => {
       "Spend + recency spend × time-decay",
     ]);
     expect(entries.map((b) => b.getAttribute("aria-pressed"))).toEqual(["true", "false", "false", "false"]);
-    expect(within(menu).getByText("Sort by")).toBeInTheDocument();
     expect(entries.map((b) => b.getAttribute("title"))).toEqual([
       null,
       "Inflowwww extra — Extra sort orders",

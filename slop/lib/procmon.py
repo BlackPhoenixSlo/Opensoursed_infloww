@@ -17,10 +17,59 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import time
 from pathlib import Path
 
 INTERVAL_S = 1.0
+# Upper bounds (ms) of the pool-wait histogram lib/relay.py _db_probe reports.
+WAIT_BOUNDS_MS = (0.5, 1, 2, 5, 10, 25, 50, 75, 100, 250, 500, 1000, 2000, float("inf"))
+_PS: dict = {"t": 0.0, "out": "", "lock": None, "loop": None}  # one `ps -A` per 0.5 s for every monitor (fleet)
+
+
+def _proc_all() -> str:
+    """`ps -A -o pgid=,time=,rss=` read from /proc, for Linux without procps (the relay
+    image calibrate.sh runs the harness in): TIME as 0:<seconds>, RSS in KiB."""
+    tick, page_kb = os.sysconf("SC_CLK_TCK"), os.sysconf("SC_PAGE_SIZE") // 1024
+    out = []
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            with open(f"/proc/{pid}/stat") as f:
+                st = f.read().rpartition(")")[2].split()  # fields after the command name
+        except OSError:
+            continue  # gone meanwhile
+        out.append(f"{st[2]} 0:{(int(st[11]) + int(st[12])) / tick:.2f} {int(st[21]) * page_kb}")
+    return "\n".join(out)
+
+
+async def _ps_all() -> str:
+    loop = asyncio.get_running_loop()
+    if _PS["loop"] is not loop:  # one lock per event loop: --break runs two loops in one process
+        _PS.update(lock=asyncio.Lock(), loop=loop, t=0.0)
+    async with _PS["lock"]:
+        if time.monotonic() - _PS["t"] > 0.5 and shutil.which("ps") is None:
+            _PS.update(t=time.monotonic(), out=await asyncio.to_thread(_proc_all))
+        elif time.monotonic() - _PS["t"] > 0.5:
+            p = await asyncio.create_subprocess_exec("ps", "-A", "-o", "pgid=,time=,rss=",
+                                                     stdout=asyncio.subprocess.PIPE)
+            out, _ = await p.communicate()
+            _PS.update(t=time.monotonic(), out=out.decode())
+        return _PS["out"]
+
+
+def wait_p95(hist: list[int]) -> float | None:
+    """The bucket upper bound (ms) holding the 95th percentile pool wait."""
+    n = sum(hist)
+    if not n:
+        return None
+    k, run = 0.95 * n, 0
+    for b, c in zip(WAIT_BOUNDS_MS, hist):
+        run += c
+        if run >= k:
+            return b
+    return WAIT_BOUNDS_MS[-1]
 
 
 def _cpu_seconds(s: str) -> float:
@@ -53,14 +102,18 @@ class ProcMon:
         self.profile_stage: str | None = None
         self.profile_errors: list[str] = []
         self.nested_at: dict = {}  # top stacks of nested DB checkouts (lib/relay.py _db_probe)
+        self._fresh = False  # the next sample starts a new series (follow())
+
+    def follow(self, pgid: int, relay_http) -> None:
+        """Watch another process group from now on (the shard's relay restarted elsewhere, e.g.
+        restored on another box). No interval spans the switch: CPU counters restart."""
+        self.pgid, self.http, self._fresh = pgid, relay_http, True
 
     async def _ps(self) -> tuple[float, float] | None:
-        p = await asyncio.create_subprocess_exec("ps", "-A", "-o", "pgid=,time=,rss=",
-                                                 stdout=asyncio.subprocess.PIPE)
-        out, _ = await p.communicate()
+        out = await _ps_all()
         cpu = rss = 0.0
         hit = False
-        for line in out.decode().splitlines():
+        for line in out.splitlines():
             parts = line.split()
             if len(parts) == 3 and parts[0] == str(self.pgid):
                 cpu += _cpu_seconds(parts[1])
@@ -76,7 +129,7 @@ class ProcMon:
                 s = {"t": time.time(), "stage": stage, "cpu_s": got[0], "rss_mb": round(got[1], 1),
                      "loop_s": loop and loop["thread_s"], "loop_t": loop and loop["mono_s"],
                      "db": (loop or {}).get("db"), "threads": threads, "load1": round(os.getloadavg()[0], 2)}
-                if self.samples:
+                if self.samples and not self._fresh:
                     prev = self.samples[-1]
                     wall = s["t"] - prev["t"]
                     if wall > 0:
@@ -91,10 +144,16 @@ class ProcMon:
                                                "db_peak": db.get("out_peak"),
                                                "db_new": db["opened"] - pdb["opened"] if db and pdb else None,
                                                "db_nested": db["nested"] - pdb["nested"] if db and pdb else None,
+                                               "db_spills": (db["spills"] - pdb["spills"]
+                                                             if db.get("spills") is not None
+                                                             and pdb.get("spills") is not None else None),
+                                               "db_wait": (db.get("wait") or {}).get("hist"),
+                                               "db_wait_max_ms": (db.get("wait") or {}).get("max_ms"),
                                                "host_load1": s["load1"], **self._requests_until(s["t"])})
                         if db.get("nested_at"):
                             self.nested_at = db["nested_at"]
                 self.samples.append(s)
+                self._fresh = False
             if self.profile and stage != self.profile_stage:
                 await self._tell_profiler(stage)
             try:
@@ -111,6 +170,11 @@ class ProcMon:
 
     async def _threads(self) -> int | None:
         """Threads in the relay process now (each pooled SQLite connection is one aiosqlite thread)."""
+        if shutil.which("ps") is None:  # Linux without procps: the relay is its group's leader
+            try:
+                return len(os.listdir(f"/proc/{self.pgid}/task")) or None
+            except OSError:
+                return None
         p = await asyncio.create_subprocess_exec("ps", "-M", "-p", str(self.pgid), stdout=asyncio.subprocess.PIPE)
         out, _ = await p.communicate()
         n = len(out.decode().splitlines()) - 1
@@ -162,7 +226,8 @@ class ProcMon:
                          "db_conns_peak": _max(i.get("db_peak") for i in ivs),
                          "db_opened": sum(i.get("db_new") or 0 for i in ivs),
                          "db_nested": sum(i.get("db_nested") or 0 for i in ivs),
-                         "host_load_max": _max(i.get("host_load1") for i in ivs)}
+                         "host_load_max": _max(i.get("host_load1") for i in ivs),
+                         **_pool(ivs)}
         return out
 
     def stages(self) -> list[str]:
@@ -178,15 +243,18 @@ class ProcMon:
                 f"{v['cores_mean']:>6} {v['loop_mean_pct'] if v['loop_mean_pct'] is not None else '-':>8} "
                 f"{v['loop_p95_pct'] if v['loop_p95_pct'] is not None else '-':>7} {v['rss_max_mb']:>8} {v['rss_end_mb']:>8}"
                 f" {_dash(v['threads_max']):>7} {_dash(v['db_conns_peak']):>7} {v['db_opened']:>7} {v['db_nested']:>7}"
-                f" {_dash(v['host_load_max']):>7}"
+                f" {_dash(v['host_load_max']):>7} {v['pool_spills']:>6} {_dash(v['pool_wait_p95_ms']):>7}"
+                f" {_dash(v['pool_wait_max_ms']):>8}"
                 for n, v in s.items()]
         return ["relay CPU/RSS (measured every 1 s; 100% = one core; '-' = outside any stage). cpu = whole process",
                 "(ps), loop = the event-loop thread alone (time.thread_time via /__slop/loop-cpu), the 1-core ceiling:",
                 "threads = relay threads (max); dbPeak = SQLAlchemy connections checked out at once (max);",
                 "dbOpen = SQLite connections opened; nested = checkouts by a task already holding one (lib/relay.py);",
-                "hostLd = the machine's 1-min load average (max; other processes compete for the cores):",
+                "hostLd = the machine's 1-min load average (max; other processes compete for the cores);",
+                "spills = pool checkouts that waited SPILL_AFTER_S and opened an extra connection; waitP95 / waitMax =",
+                "time inside the pool's checkout (ms; p95 is the histogram bucket's upper bound):",
                 "  stage       wall_s  cpu%mean cpu%p95 cpu%max  cores loop%mean loop%p95  rssMax   rssEnd"
-                " threads  dbPeak  dbOpen  nested  hostLd", *rows]
+                " threads  dbPeak  dbOpen  nested  hostLd spills waitP95  waitMax", *rows]
 
     async def write(self, out: Path) -> None:
         (out / "resources.json").write_text(json.dumps(
@@ -210,6 +278,16 @@ class ProcMon:
                 (out / f"profile-{stage}-{part}.collapsed").write_text("\n".join(
                     f"{k} {round(v)}" for k, v in sorted(p[part]["stacks"].items(), key=lambda kv: -kv[1])) + "\n")
         return prof
+
+
+def _pool(ivs: list[dict]) -> dict:
+    hist = [0] * len(WAIT_BOUNDS_MS)
+    for i in ivs:
+        for k, c in enumerate(i.get("db_wait") or []):
+            hist[k] += c
+    mx = _max(i.get("db_wait_max_ms") for i in ivs)
+    return {"pool_spills": sum(i.get("db_spills") or 0 for i in ivs), "pool_wait_n": sum(hist),
+            "pool_wait_p95_ms": wait_p95(hist), "pool_wait_max_ms": round(mx, 1) if mx is not None else None}
 
 
 def _dash(v) -> object:

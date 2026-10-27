@@ -921,7 +921,7 @@ export function FanList({
 
       <div
         className={cn(
-          "flex-1 min-h-0 overflow-y-auto transition-opacity",
+          "flex-1 min-h-0 overflow-y-auto overscroll-y-contain transition-opacity",
           q.isFetching && q.isPlaceholderData && "opacity-60",
         )}
       >

@@ -22,23 +22,6 @@ redirected secrets and sessions, CHATTERLY_TEST_MODE) plus loopback-only hooks.
        It also refuses every non-loopback curl_cffi request (recorded in the
        off-host log): the login builds a REAL OFClient for the new account, and
        curl_cffi goes past the socket guard.
-  POST /__slop/automation-tick  one `automation_executor._drain_due_jobs_once()`
-       pass, answered when every task it spawned (and the dead-session probe)
-       has finished: {spawned, ms}. Bypass, declared: the supervisor's 30 s
-       cadence (the caller says when); the claim, run slots, `run_once` and
-       the per-account write spacing are the product's.
-With `OF_API_ORIGIN` set (a scenario's `OF_WIRE`: lib/of_wire.py, the product's
-ADR 0024 seam) the executor's clients are REAL `OFClient`s talking to that
-loopback OnlyFans (where the Creator has a session; `_OfflineOF` where it has
-the stub), and curl_cffi refuses every non-loopback host (`_guard_curl_cffi`).
-The WS pumps run too, against the fake's socket: `server._start_account_pump`
-(no-op'd by _run_ui_safe) is pointed at the product's `_do_start_account_pump`
-on the relay loop, so a re-capture's `_restart_account_pump` and a supervisor
-pass start real pumps.
-  POST /__slop/pump-supervise  one `server._reconcile_pumps()` pass (the pump
-       supervisor's body), then {pumps: {account: running|exited|cancelled}}.
-       Bypass, declared: the supervisor's 15 s cadence (the caller says when).
-  GET  /__slop/pumps           the same states, no pass.
 
 The other half of that same wire: a chatter's reply goes OUT to OnlyFans through
 `OFClient.send_message`. The seeded Creators' stub sessions cannot build an
@@ -50,15 +33,85 @@ Everything around the send (attribution row, unread clear, `chat_responded`,
 cache busts) is the product's own code.
 
 One OF read is faked, and only when a scenario writes OF's side of the record:
-`get_messages` (GET /api2/v2/chats/{fan}/messages, the chat scrape's read) pages
+`get_messages` (GET /api2/v2/chats/{fan}/messages, the chat scrape's read; every
+call counted per chat as `of_get_messages` at /__slop/fake/calls) pages
 `$DEMO_SHOTS_TMP/of-truth.jsonl` (one line per message OnlyFans holds:
 {account_id, fan_id, message}), newest first, as OF does. The executor's
 client seam (`automation_executor._make_client`, used by the scrape and the
 chat's rescrape-now route) falls back to `_OfflineOF` the same way. Without the
 file, `get_messages` re-raises the build error like any other read.
 
+OF Statistics is faked the same way, only when a scenario writes
+`$DEMO_SHOTS_TMP/of-statistics.json` (per Creator: earnings per UTC day and
+category, visitors, new subs, renewals): `earnings_chart`, `my_profile_stats`
+and `subscribers_chart` answer in OF's shapes for the asked days (an earnings
+read after `OF_STATS_LATENCY_S`, a guess at OF's latency). The
+background jobs' seam (`client_pool.get`, what `of_stats_daily` reads through)
+falls back to `_OfflineOF` too.
+
+  POST /__slop/of-stats-tick  one `of_stats_daily.tick(pause_s=0)` pass now.
+       Bypass, declared: it stands in for the job's hourly timer and 300 s boot
+       grace, and drops the pause between OF reads; the pass itself is the job's.
+
+OF's `/users/me` is faked the same way, only when a scenario writes
+`$DEMO_SHOTS_TMP/of-me.json` ({"latency_s": s, "dead": [account ids], "dead_s": s}):
+`me()` (the /setup table's per-Creator probe, `GET /health?all_accounts=1`) answers
+the Creator after `latency_s`, blocking in the probe's worker thread as the real
+curl does; a Creator in `dead` sits behind a dead proxy: it waits `dead_s` (the
+client's own timeout) and raises. `proxy_label` / `proxy_url` answer None (no proxy
+registry in a slop run). Without the file, `me()` re-raises the build error.
+
 The hooks are not product requests: no `actions` audit row is written for them
 (the real pump hands a frame to _broadcast_event with no HTTP request around it).
+
+The executor's supervisor runs due automations once a minute; `_run_ui_safe`
+neuters that loop, so
+
+  POST /__slop/run-automation  {account_id, kind}  -> automation_executor.run_once
+       under a run slot of the executor's own pool (`run_slot.hold`), as the
+       supervisor's `_one` runs a due (account, kind). Bypass, declared: the
+       scheduled-job claim and the 60 s cadence (the caller says when). With
+       `claim: true` the claim is the product's (`run_once` with no payload
+       claims the earliest due job of the kind and runs its payload; `no_job`
+       when none): only the supervisor's cadence is bypassed.
+  POST /__slop/automation-tick  one `automation_executor._drain_due_jobs_once()`
+       pass, answered when every task it spawned (and the dead-session probe)
+       has finished: {spawned, ms}. Bypass, declared: the supervisor's 30 s
+       cadence (the caller says when); the claim, run slots, `run_once` and
+       the per-account write spacing are the product's.
+With `OF_API_ORIGIN` set (a scenario's `OF_WIRE`: lib/of_wire.py, the product's
+ADR 0024 seam) the executor's clients are REAL `OFClient`s talking to that
+loopback OnlyFans (no flow's offline automation client is installed) and curl_cffi
+refuses every non-loopback host (`_guard_curl_cffi`). The WS pumps run too, against the
+fake's socket: `server._start_account_pump` (no-op'd by _run_ui_safe) is pointed
+at the product's `_do_start_account_pump` on the relay loop, so a re-capture's
+`_restart_account_pump` and a supervisor pass start real pumps.
+  POST /__slop/pump-supervise  one `server._reconcile_pumps()` pass (the pump
+       supervisor's body), then {pumps: {account: running|exited|cancelled}}.
+       Bypass, declared: the supervisor's 15 s cadence (the caller says when).
+  GET  /__slop/pumps           the same states, no pass.
+  GET  /__slop/fake/calls  the fakes' calls by label (a flow's fakes count theirs
+       here), OF's PPVs per fan (`of_ppv`) and its chat reads (`of_get_messages`);
+       `live`: SLOP_LIVE=1, the fakes not installed.
+
+A flow kept in files of its own brings its part of this relay in
+`lib/<flow>_relay.py` (its module docstring says what it fakes and wires), loaded
+when present: its `OF` class, if any, joins `_OfflineOF`'s bases (more of
+OnlyFans answered), and its `wire(app, loopback, relay)` runs at the end of
+`_wire` (its hooks; `relay` is this module's namespace: this file runs as
+__main__, so a plugin cannot import it).
+
+With SLOP_SUPERVISOR=1 (a scenario's RELAY_ENV) the relay runs the real automation
+supervisor (`automation_executor.automation_supervisor`, its boot heal included)
+from startup, as `server._automation_exec_task`, so the shutdown hook stops it as
+in prod. `_run_ui_safe` swaps the module attribute for a no-op before this wrapper
+runs, so the function is compiled again from its own source in the module's
+namespace (`_real_supervisor`). Bypass, declared: none of the rest of the startup
+spawn block runs (CHATTERLY_TEST_MODE).
+
+UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN (the Dockerfile's ENV, which only uvicorn's CLI
+reads) is passed to `uvicorn.run` as `timeout_graceful_shutdown`, so a SIGTERM
+stops as the container does.
 
 With SLOP_PROFILE=1 (`slop/run --profile`) a stack sampler thread runs in this
 process (`_Sampler`): ~200 times a second it reads every thread's Python stack
@@ -73,6 +126,7 @@ worker; IDLE_LEAVES / IDLE_LINE) counts as idle and is left out of the shares.
 """
 
 import contextvars
+import importlib
 import inspect
 import json
 import linecache
@@ -83,7 +137,7 @@ import sys
 import threading
 import time
 import urllib.parse
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 
 ROOT = Path(os.environ["DEMO_SHOTS_ROOT"])
@@ -94,9 +148,14 @@ import uvicorn  # noqa: E402
 _real_run = uvicorn.run
 _stats = {"received": 0, "processed": 0, "transcoded": 0, "of_sends": 0}
 OF_SEND_ID_BASE = 9_700_000_000_000
+OF_STATS_LATENCY_S = 0.3  # how long the faked OF Statistics read takes (a guess at OF's)
+
+# The flows' own parts of this relay (module docstring), as top-level modules (lib/ is on sys.path).
+PLUGINS = [importlib.import_module(m.stem) for m in sorted(Path(__file__).resolve().parent.glob("*_relay.py"))]
+_SELF = sys.modules[__name__]  # this module: runpy below puts relay_guarded's in sys.modules["__main__"]
 
 
-class _OfflineOF:
+class _OfflineOF(*(m.OF for m in PLUGINS if hasattr(m, "OF"))):
     """A Creator whose OFClient cannot be built in a slop run: OnlyFans' answer to
     POST /api2/v2/chats/{chat_id}/messages, and the build error for anything else."""
 
@@ -104,14 +163,21 @@ class _OfflineOF:
         self.account_id, self._err = account_id, err
         self.user_id = str(account_id)
 
-    def send_message(self, chat_id, text, **_kw) -> dict:
+    def send_message(self, chat_id, text, *, price=0, media_files=None, **_kw) -> dict:
         from datetime import datetime, timezone
         _stats["of_sends"] += 1
-        return {"id": OF_SEND_ID_BASE + _stats["of_sends"], "text": text, "price": 0, "isFree": True,
-                "mediaCount": 0, "media": [], "fromUser": {"id": int(self.account_id)},
+        media = list(media_files or [])
+        if price:   # a PPV: OF answers it priced and locked; kept per fan for the checks
+            _of_ppv[f"{self.account_id}:{chat_id}"].append(round(float(price) * 100))
+        return {"id": OF_SEND_ID_BASE + _stats["of_sends"], "text": text, "price": price or 0,
+                "isFree": not price, "mediaCount": len(media), "media": [{"id": m} for m in media],
+                "fromUser": {"id": int(self.account_id)},
                 "createdAt": datetime.now(timezone.utc).isoformat(timespec="milliseconds")}
 
     def get_messages(self, chat_id, *, limit=10, order="desc", before_id=None, **_kw) -> dict:
+        # Every GET /chats/{fan}/messages that reached OF, answered or not: OF
+        # counts it as the Creator reading the chat (`of_get_messages`).
+        _of_get_messages[f"{self.account_id}:{chat_id}"] += 1
         truth = Path(os.environ.get("DEMO_SHOTS_TMP", "")) / "of-truth.jsonl"
         if not truth.is_file():
             raise self._err
@@ -126,8 +192,101 @@ class _OfflineOF:
             rows = [m for m in rows if (int(m["id"]) < int(before_id)) == (order == "desc")]
         return {"list": rows[:limit], "hasMore": len(rows) > limit}
 
+    # OF Statistics, from `$DEMO_SHOTS_TMP/of-statistics.json` when a scenario wrote it:
+    # {account_id: {"earnings": {day: {category: [net_cents, count]}}, "visitors": {day: n},
+    #  "new_subs": {day: n}, "renewals": {day: n}}}. A day OF has nothing for is zero.
+    def _statistics(self) -> dict:
+        f = Path(os.environ.get("DEMO_SHOTS_TMP", "")) / "of-statistics.json"
+        if not f.is_file():
+            raise self._err
+        import json
+        return json.loads(f.read_text()).get(self.account_id) or {}
+
+    @staticmethod
+    def _days(start: str, end: str) -> list[str]:
+        from datetime import date, timedelta
+        d, last = date.fromisoformat(start[:10]), date.fromisoformat(end[:10])
+        out = []
+        while d <= last:
+            out.append(d.isoformat())
+            d += timedelta(days=1)
+        return out
+
+    @staticmethod
+    def _series(days: list[str], by_day: dict, scale: float = 1.0) -> list[dict]:
+        return [{"date": f"{d}T00:00:00+00:00", "count": round(by_day.get(d, 0) * scale, 2) if scale != 1.0
+                 else by_day.get(d, 0)} for d in days]
+
+    def earnings_chart(self, *, start=None, end=None, with_total=True, filter=None, monthly_total=False, **_kw):
+        """GET /api2/v2/earnings/chart as two live Creators answered Statements'
+        filters on 2026-10-25: every asked category named, with or without
+        earnings, `messages` under the key `chat_messages`, chartAmount in net
+        dollars per UTC day (points stamped 00:00+00:00), chartCount when
+        `{c}_count` was asked, the net `total` and the period's `gross` (net /
+        0.8 to the cent); `total` asked is every category's sum."""
+        _stats["of_earnings_reads"] = _stats.get("of_earnings_reads", 0) + 1
+        time.sleep(OF_STATS_LATENCY_S)  # the job reads in a worker thread (asyncio.to_thread), as from OF
+        days, earned = self._days(start, end), self._statistics().get("earnings", {})
+        out = {}
+        for c in sorted({f.rsplit("_", 1)[0] for f in (filter or [])}):
+            if c == "total":
+                amount = {d: sum(v[0] for v in earned.get(d, {}).values()) for d in days}
+                count = {d: sum(v[1] for v in earned.get(d, {}).values()) for d in days}
+            else:
+                amount = {d: earned.get(d, {}).get(c, [0, 0])[0] for d in days}
+                count = {d: earned.get(d, {}).get(c, [0, 0])[1] for d in days}
+            net = sum(amount.values())
+            block = {"chartAmount": self._series(days, amount, 0.01), "total": round(net / 100, 2),
+                     "gross": round(net / 100 / 0.8, 2), "delta": 0}
+            if f"{c}_count" in (filter or []):
+                block["chartCount"] = self._series(days, count)
+            out["chat_messages" if c == "messages" else c] = block
+        return out
+
+    def my_profile_stats(self, *, start=None, end=None, **_kw):
+        """GET /api2/v2/users/me/profile/stats: the visitors chart."""
+        return {"chart": {"visitors": self._series(self._days(start, end), self._statistics().get("visitors", {}))}}
+
+    def subscribers_chart(self, *, start=None, end=None, by=None, **_kw):
+        """GET /api2/v2/subscriptions/subscribers/chart?by=new|renew."""
+        col = {"new": "new_subs", "renew": "renewals"}.get(by, "new_subs")
+        return {"subscribes": self._series(self._days(start, end), self._statistics().get(col, {}))}
+
+    def me(self) -> dict:
+        """GET /api2/v2/users/me from `$DEMO_SHOTS_TMP/of-me.json` (module docstring)."""
+        f = Path(os.environ.get("DEMO_SHOTS_TMP", "")) / "of-me.json"
+        if not f.is_file():
+            raise self._err
+        import json
+        cfg = json.loads(f.read_text())
+        if self.account_id in cfg.get("dead", ()):
+            time.sleep(float(cfg["dead_s"]))
+            raise ConnectionError(f"proxy timed out after {cfg['dead_s']}s")  # what a dead proxy ends in
+        time.sleep(float(cfg["latency_s"]))
+        return {"id": int(self.account_id), "name": f"creator {self.account_id}"}
+
     def __getattr__(self, name):
+        if name in ("proxy_label", "proxy_url") and (
+                Path(os.environ.get("DEMO_SHOTS_TMP", "")) / "of-me.json").is_file():
+            return None
         raise self._err
+
+
+def _real_supervisor():
+    """`automation_executor.automation_supervisor` as written (module docstring)."""
+    import ast
+
+    import automation_executor as ax
+    tree = ast.parse(Path(ax.__file__).read_text())
+    fn = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef) and n.name == "automation_supervisor")
+    ns: dict = {}
+    exec(compile(ast.Module(body=[fn], type_ignores=[]), ax.__file__, "exec"), ax.__dict__, ns)
+    return ns["automation_supervisor"]
+
+
+_fake_calls: Counter = Counter()
+_of_ppv: dict[str, list[int]] = defaultdict(list)  # "acct:fan" -> PPV prices (cents)
+_of_get_messages: Counter = Counter()  # "acct:fan" -> GET /chats/{fan}/messages calls
 
 
 # The canonical writers event_transcoder.transcode() dispatches to (looked up as
@@ -327,6 +486,9 @@ class _Sampler:
                 for n, b in self.stages.items()}}
 
 
+WAIT_BOUNDS_MS = (0.5, 1, 2, 5, 10, 25, 50, 75, 100, 250, 500, 1000, 2000, float("inf"))
+
+
 def _db_probe():
     """Counters on the product's SQLAlchemy pool, from SQLAlchemy's own pool events
     (read-only listeners, no product code changed): connections opened / closed so
@@ -397,9 +559,32 @@ def _db_probe():
     event.listen(sync.pool, "checkout", on_checkout)
     event.listen(sync.pool, "checkin", on_checkin)
 
+    # Pool wait: wall time inside the pool's own `_do_get` (queue wait, plus the
+    # connect when it opens one), wrapped on this instance only; histogram since
+    # the last poll (upper bounds in ms) and the pool's own `spills` counter
+    # (db/engine.py _SpillQueuePool: checkouts that waited SPILL_AFTER_S).
+    pool = sync.pool
+    wait = {"hist": [0] * len(WAIT_BOUNDS_MS), "max_ms": 0.0, "n": 0}
+    if hasattr(pool, "_do_get"):
+        real_get = pool._do_get
+
+        def timed_get():
+            t0 = time.perf_counter()
+            try:
+                return real_get()
+            finally:
+                ms = (time.perf_counter() - t0) * 1000
+                wait["n"] += 1
+                wait["max_ms"] = max(wait["max_ms"], ms)
+                wait["hist"][next(i for i, b in enumerate(WAIT_BOUNDS_MS) if ms <= b)] += 1
+
+        pool._do_get = timed_get
+
     def snap() -> dict:
-        out = {**c, "nested_at": dict(nested_at.most_common(5))}
+        out = {**c, "nested_at": dict(nested_at.most_common(5)),
+               "spills": getattr(pool, "spills", None), "wait": {**wait, "hist": list(wait["hist"])}}
         c["out_peak"] = c["out"]
+        wait.update(hist=[0] * len(WAIT_BOUNDS_MS), max_ms=0.0, n=0)
         return out
 
     return snap
@@ -477,37 +662,22 @@ def _wire(app) -> None:
             return _OfflineOF(str(account_id), e)
 
     automation_executor._make_client = make_client
+    # The background jobs' seam (of_stats_daily reads through the pool): the same fallback.
+    import client_pool
+    real_get = client_pool.get
+
+    def pool_get(account_id):
+        try:
+            return real_get(account_id)
+        except Exception as e:  # noqa: BLE001 — re-raised on first use, unchanged
+            return _OfflineOF(str(account_id), e)
+
+    client_pool.get = pool_get
     app.on_event("startup")(events.start_persist_worker)
 
     def _loopback(request: Request) -> None:
         if (request.client.host if request.client else "") not in ("127.0.0.1", "::1"):
             raise HTTPException(status_code=403, detail="slop hooks are loopback-only")
-
-    if os.environ.get("OF_API_ORIGIN"):
-        # OnlyFans is lib/of_wire.py on loopback (a scenario's OF_WIRE): the clients
-        # are the product's (a real OFClient where the Creator has a session), and
-        # curl_cffi stays on loopback.
-        _guard_curl_cffi()
-        _wire_pumps(app, _loopback, server)
-
-    async def automation_tick(request: Request) -> dict:
-        """One supervisor pass (`_drain_due_jobs_once`: due (account, kind) pairs, a
-        detached `run_once` each under the run-slot pool, the dead-session probe),
-        then wait for the runs and the probe it spawned. Bypass, declared: the 30 s
-        cadence (the caller says when); the pass itself is the executor's."""
-        import asyncio
-        _loopback(request)
-        ax = automation_executor
-        t = time.perf_counter()
-        await ax._drain_due_jobs_once()
-        spawned = len(ax._inflight_tasks)
-        while ax._inflight_tasks:
-            await asyncio.gather(*list(ax._inflight_tasks), return_exceptions=True)
-        if ax._session_probe_task is not None:
-            await asyncio.gather(ax._session_probe_task, return_exceptions=True)
-        return {"spawned": spawned, "ms": round((time.perf_counter() - t) * 1000, 1)}
-
-    app.add_api_route("/__slop/automation-tick", automation_tick, methods=["POST"])
 
     async def of_ws_frame(request: Request) -> dict:
         _loopback(request)
@@ -533,6 +703,18 @@ def _wire(app) -> None:
         _loopback(request)
         from db import write_telemetry
         return {"line": write_telemetry.emit("flush")}
+
+    async def of_stats_tick(request: Request) -> dict:
+        """One pass of the OF Statistics job (`of_stats_daily.tick`), now and with
+        no pause between OF reads: its hourly loop's timer (after a 300 s boot
+        grace) is what this replaces. Everything inside the pass is the job's own code."""
+        _loopback(request)
+        import of_stats_daily
+        before = _stats.get("of_earnings_reads", 0)
+        done = await of_stats_daily.tick(pause_s=0)
+        return {"done": done, "of_earnings_reads": _stats.get("of_earnings_reads", 0) - before}
+
+    app.add_api_route("/__slop/of-stats-tick", of_stats_tick, methods=["POST"])
 
     async def browserbase(request: Request) -> dict:
         _loopback(request)
@@ -577,12 +759,71 @@ def _wire(app) -> None:
         _loopback(request)
         return {"thread_s": time.thread_time(), "mono_s": time.monotonic(), "db": db()}
 
+    import asyncio
+
+    import automation_executor as ax
+    import run_slot
+
+    if os.environ.get("OF_API_ORIGIN"):
+        # OnlyFans is lib/of_wire.py on loopback (a scenario's OF_WIRE): the automation
+        # lane keeps the product's client (a real OFClient where the Creator has a
+        # session, `_OfflineOF` where it has the stub), and curl_cffi stays on loopback.
+        _guard_curl_cffi()
+        _wire_pumps(app, _loopback, server)
+    live = os.environ.get("SLOP_LIVE") == "1"
+    if os.environ.get("SLOP_SUPERVISOR") == "1":
+        supervisor = _real_supervisor()
+
+        async def start_supervisor() -> None:
+            server._automation_exec_task = asyncio.create_task(supervisor(), name="automation-exec")
+
+        app.on_event("startup")(start_supervisor)
+
+    async def run_automation(request: Request) -> dict:
+        _loopback(request)
+        b = await request.json()
+        if ax._run_sem is None:
+            ax._run_sem = run_slot.SlotPool(ax._MAX_CONCURRENT_RUNS, reserve=ax._OPERATOR_RESERVED_RUNS)
+        t = time.perf_counter()
+        async with run_slot.hold(ax._run_sem, operator=False):
+            # `claim`: no payload, so run_once claims the earliest due
+            # scheduled job of the kind and runs ITS payload (the supervisor's
+            # binding); otherwise the given payload, bypassing the queue.
+            payload = None if b.get("claim") else (b.get("payload") or {})
+            res = await ax.run_once(str(b["account_id"]), b["kind"], payload=payload)
+        return {"result": res, "ms": round((time.perf_counter() - t) * 1000, 1)}
+
+    async def fake_calls(request: Request) -> dict:
+        _loopback(request)
+        return {"live": live, "calls": dict(_fake_calls), "of_ppv": dict(_of_ppv),
+                "of_get_messages": dict(_of_get_messages)}
+
+    async def automation_tick(request: Request) -> dict:
+        """One supervisor pass (`_drain_due_jobs_once`: due (account, kind) pairs, a
+        detached `run_once` each under the run-slot pool, the dead-session probe),
+        then wait for the runs and the probe it spawned. Bypass, declared: the 30 s
+        cadence (the caller says when); the pass itself is the executor's."""
+        _loopback(request)
+        t = time.perf_counter()
+        await ax._drain_due_jobs_once()
+        spawned = len(ax._inflight_tasks)
+        while ax._inflight_tasks:
+            await asyncio.gather(*list(ax._inflight_tasks), return_exceptions=True)
+        if ax._session_probe_task is not None:
+            await asyncio.gather(ax._session_probe_task, return_exceptions=True)
+        return {"spawned": spawned, "ms": round((time.perf_counter() - t) * 1000, 1)}
+
+    app.add_api_route("/__slop/run-automation", run_automation, methods=["POST"])
+    app.add_api_route("/__slop/automation-tick", automation_tick, methods=["POST"])
+    app.add_api_route("/__slop/fake/calls", fake_calls, methods=["GET"])
     app.add_api_route("/__slop/loop-cpu", loop_cpu, methods=["GET"])
     app.add_api_route("/__slop/profile", profile_stage, methods=["POST"])
     app.add_api_route("/__slop/profile", profile_dump, methods=["GET"])
     app.add_api_route("/__slop/of-ws-frame", of_ws_frame, methods=["POST"])
     app.add_api_route("/__slop/stats", stats, methods=["GET"])
     app.add_api_route("/__slop/telemetry-flush", telemetry_flush, methods=["POST"])
+    for m in PLUGINS:
+        m.wire(app, _loopback, _SELF)
 
 
 def _wire_pumps(app, _loopback, server) -> None:

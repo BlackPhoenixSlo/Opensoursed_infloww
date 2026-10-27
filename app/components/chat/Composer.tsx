@@ -664,6 +664,7 @@ export function Composer({
     <>
       <div
         data-composer-area
+        data-no-swipe
         onDragOver={(e) => {
           if (!uploadDisabled && Array.from(e.dataTransfer?.types ?? []).includes("Files")) e.preventDefault();
         }}

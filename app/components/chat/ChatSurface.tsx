@@ -21,6 +21,8 @@ import { proxyImage } from "@/lib/mediaUrl";
 import { messagesPaintKey, useChatMessages } from "@/hooks/useChatMessages";
 import { fetchOlderSeed, mergeSeedIntoMessages, useChatMessagesLocal } from "@/hooks/useChatMessagesLocal";
 import { useChatAttribution } from "@/hooks/useChatAttribution";
+import { keepChatEntry } from "@/hooks/useChatBackEntry";
+import { OS_EDGE_PX, useSwipe } from "@/hooks/useSwipe";
 import { useSendMessage, type SendStatus } from "@/hooks/useSendMessage";
 import { useLikeMessage } from "@/hooks/useLikeMessage";
 import { useTogglePinMessage } from "@/hooks/useTogglePinMessage";
@@ -137,7 +139,9 @@ export function ChatSurface({
    *  closes and reopens them; nothing keeps them open. */
   insightsOpenAtStart: boolean;
   /** Optional mobile-only back arrow. When provided, the header gets a
-   *  `<` button on the left (visible below lg) that runs this callback.
+   *  `<` button on the left (visible below lg) that runs this callback, and
+   *  so does a swipe right on the Thread below lg (not from the OS's edge
+   *  zones, the Composer, or while Fan insights or a dialog is open).
    *  /inbox uses it to clear the selected chat and reveal the ChatList
    *  again on small screens; popout / group don't pass it. */
   onBack?: () => void;
@@ -192,6 +196,13 @@ export function ChatSurface({
   // buttons (on unsold PPVs) preload the composer with that PPV's
   // text + media + price, identical to picking a saved template.
   const composerApiRef = useRef<ComposerApi | null>(null);
+  // Below lg a swipe right on the Thread is its Back (`onBack`), as the header's
+  // `<` is; never while Fan insights or a dialog is over it.
+  const threadRef = useRef<HTMLDivElement>(null);
+  useSwipe(threadRef, {
+    enabled: !!onBack && !drawerOpen, dir: "right", onSwipe: () => onBack?.(), follow: threadRef,
+    edgeGuard: OS_EDGE_PX, ignoreWhile: "[role='dialog'], [aria-modal='true']",
+  });
 
   // Resolve the model account's OF user id — needed to decide direction
   // (outgoing if message.fromUser.id === ownerUserId).
@@ -663,7 +674,7 @@ export function ChatSurface({
       // Strip the param so a refresh doesn't re-jump out from under a scroll.
       const url = new URL(window.location.href);
       url.searchParams.delete("msg");
-      window.history.replaceState({}, "", url.pathname + (url.search || ""));
+      window.history.replaceState(keepChatEntry(), "", url.pathname + (url.search || ""));
       return;
     }
     if (!handle.hasOlder || handle.isLoadingOlder) return;
@@ -763,7 +774,7 @@ export function ChatSurface({
 
   return (
     <div className="relative flex flex-1 h-full min-h-0 min-w-0 bg-bg overflow-hidden">
-      <div data-mp-pane="thread" className="@container relative flex flex-col flex-1 min-w-0 min-h-0">
+      <div ref={threadRef} data-mp-pane="thread" className="@container relative flex flex-col flex-1 min-w-0 min-h-0">
       <ChatHeader
         accountId={accountId} fanId={fanId} chat={chat} onBack={onBack}
         name={headerName} username={fanUsername}

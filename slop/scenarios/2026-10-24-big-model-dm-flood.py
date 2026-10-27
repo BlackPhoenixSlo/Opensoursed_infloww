@@ -4,8 +4,8 @@ boundary at an open-loop rate that ramps per big Creator through stages
 (--dms-per-min=50,100,200, each held --stage-s seconds; normal Creators ~5/min),
 with ~3% tips, ~2% PPV purchases and typing frames mixed in. Meanwhile --users
 chatters work the inbox (head page, thread, mark read, reply) and the owner's
-browser holds 4 live tabs: the All Models inbox (5 models incl. the 3 big), two
-popout chats and Group, each with its own /events stream.
+browser holds a live tab per page in TABS (the All Models inbox, 5 models incl. the
+3 big; two popout chats; Group), each with its own /events stream.
 
 Correctness invariants (any FAIL here is a bug): every frame accepted; zero
 persist drops; every DM in event_inbox and in `messages`; every DM reached its
@@ -691,7 +691,7 @@ async def assess(ctx, w, paced, chatters, listeners, markers, stages, tab_takes,
              *rows_out,
              "  (p95s; ws-frame = POST /__slop/of-ws-frame; thread-upd = max marker DM -> rendered in its open",
              "   popout/group thread; list-upd = max marker DM -> row in the All Models list; LT/min = max",
-             "   over the 4 tabs; rows/heap = inbox tab)")
+             "   over the tabs; rows/heap = inbox tab)")
 
     for route, budget in P95_BUDGET_MS.items():
         per = worst.get(route, {})

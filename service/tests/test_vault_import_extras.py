@@ -716,7 +716,7 @@ def _on_one_loop(owner, server, send, spawned) -> tuple:
     async def go():
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app),
                                      base_url="http://testserver",
-                                     cookies=owner.cookies) as ac:
+                                     cookies=dict(owner.cookies)) as ac:
             r = await send(ac)
         for coro in spawned:
             await coro
