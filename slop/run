@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
-# slop/run <scenario|all> [--scale=small|medium|huge] [--users=N] [--seed=N] [--break] [--no-ui] [--set k=v]
+# slop/run <scenario|all> [--scale=small|medium|huge] [--users=N] [--seed=N] [--break] [--no-ui] [--timeout=S] [--set k=v]
 # Throwaway loopback stack per scenario; evidence in slop/evidence/<stamp>-<scenario>/ (latest -> newest).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# A linked worktree (git worktree add) has no venv/ or node_modules of its own: link the
+# main checkout's, the ones it has, where the worktree has none (never over a real dir).
+MAIN="$(dirname "$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || echo "$ROOT/.git")")"
+if [ "$MAIN" != "$ROOT" ]; then
+  for d in venv app/node_modules web/node_modules; do
+    if [ ! -e "$ROOT/$d" ] && [ ! -L "$ROOT/$d" ] && [ -d "$MAIN/$d" ]; then
+      ln -s "$MAIN/$d" "$ROOT/$d" && echo "slop: worktree: linked $d -> $MAIN/$d" >&2
+    fi
+  done
+fi
 exec "$ROOT/venv/bin/python" -u "$ROOT/slop/lib/cli.py" "$@"

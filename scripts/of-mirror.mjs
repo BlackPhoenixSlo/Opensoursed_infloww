@@ -55,7 +55,7 @@
  *   app/public/of-mirror/NOTICE.md           what the folder contains
  *   app/lib/of-mirror-pages.ts               the sections and pages the route serves
  *   app/lib/of-mirror-build.ts               the OF build (x-of-rev) the static dir is from,
- *                                            which the drift banner checks the live build against
+ *                                            which MirrorFreshnessBanner checks the live build against
  *
  * --check needs no inputs: it re-runs the guard's pattern checks (hosts, remote urls, emails, IPs,
  * handles, links, "$" amounts, digit runs) over the committed app/public/of-mirror and checks that

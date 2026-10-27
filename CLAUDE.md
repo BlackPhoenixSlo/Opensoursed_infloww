@@ -1,4 +1,5 @@
 # Slop tests — mass data + mass user actions. Read slop/README.md first.
+- Fresh worktree: `slop/run --list` once links the main checkout's `venv/`, `app/` and `web/node_modules` (then `venv/bin/python` runs service tests too).
 - Iterate: `slop/run <scenario> --scale=small`. Prove: `slop/run <scenario> --scale=medium --users=200 --no-ui` then `slop/run <scenario> --break` (must print CAUGHT, exit 0). Quote the run folder under `slop/evidence/`, never `latest`.
 - Stacks reuse `scripts/demo-shots/relay_guarded.py` + `fetch-guard.cjs`: temp DB, loopback only; never `service/chatterly.db` or prod.
 - Fan traffic enters via `POST /__slop/of-ws-frame` (`slop/lib/relay.py`), serial per Creator like the real pump (`fan_dm.serial`, `--rate` for open-loop). Never add test hooks inside `service/`.

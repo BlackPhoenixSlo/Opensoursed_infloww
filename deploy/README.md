@@ -89,3 +89,6 @@ them; `service/.env.example` lists every variable with empty values.
 
 After it's up, open the URL and connect an OnlyFans account by capturing your
 session with the Chrome extension in `loginExtensionMulti/` (see its README).
+
+Two boxes (a primary plus a backup/standby, with hourly backups, a daily Google
+Drive copy, a boot fence, and failover/failback steps): see [`docs/two-box.md`](../docs/two-box.md).

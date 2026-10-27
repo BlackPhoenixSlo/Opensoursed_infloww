@@ -25,7 +25,7 @@ type Body = Record<string, unknown>;
 const byAccount = (key: string, aid: string | undefined): QueryKey => (aid ? [key, aid] : [key]);
 
 const KEYS: Record<string, (aid: string | undefined, body: Body) => QueryKey[]> = {
-  session_dead: () => [["accounts"], ["drift"], ["app-errors", "recent"]],
+  session_dead: () => [["accounts"], ["app-errors", "recent"]],
   agency_notifications: () => [["agency-notifications"]],  // the owner's centre (AgencyNotifications.tsx)
   account_active: () => [["accounts"], ["chatter"]],
   proxy_switched: () => [["proxies"], ["accounts"]],
@@ -71,7 +71,7 @@ function throttle(fn: () => void, ms: number) {
  *  re-arms each at its offline rate instead of waiting out the live one. */
 const SSE_POLLED: QueryKey[] = [
   ["scheduled-sends"], ["automation-rules"], ["stats", "automation-runs"],
-  ["app-errors", "recent"], ["drift"],
+  ["app-errors", "recent"],
 ];
 
 export function useAccountStateEvents(): void {

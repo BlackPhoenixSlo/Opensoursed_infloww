@@ -172,7 +172,6 @@ export default function PasteCurlCard({ extInstalled, onLinked, initialNickname 
   function refreshCaches() {
     qc.invalidateQueries({ queryKey: ["accounts"] });
     qc.invalidateQueries({ queryKey: ["proxies"] });
-    qc.invalidateQueries({ queryKey: ["drift"] });
     qc.invalidateQueries({ queryKey: ["health-all"] });
   }
 

@@ -144,7 +144,7 @@ async def mark_event_processed(
 # ── Account / proxy reads ────────────────────────────────────────────
 # Sparse on purpose. accounts.py + proxies.py are still the source of truth
 # for writes in phase A; these reads are for the new code paths (SSE
-# subscriber count by account, drift banner queries, etc.) that prefer
+# subscriber count by account, etc.) that prefer
 # typed rows over JSON files.
 
 

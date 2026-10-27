@@ -7,6 +7,7 @@ import contextlib
 import importlib
 import importlib.util
 import json
+import signal
 import subprocess
 import sys
 import time
@@ -287,9 +288,34 @@ def _git() -> dict:
             "git_dirty": bool(git("status", "--porcelain").strip())}
 
 
-async def run_one(name: str, path: Path, args, params, *, fault: str | None = None, tag: str = "") -> Report:
-    """One scenario run on its own stack. `report.infra` is set when the stack or
-    the scenario itself broke (no verdict possible)."""
+class ScenarioTimeout(BaseException):
+    """--timeout ran out. A BaseException, so a scenario's `except Exception` cannot swallow it."""
+
+
+@contextlib.contextmanager
+def _deadline(seconds: int):
+    """SIGALRM after `seconds` raises ScenarioTimeout in the main thread, wherever it is: an
+    await (asyncio.run then cancels the scenario, so its finally blocks and the stack's
+    teardown run) or a blocking call. Fires again every 120 s while a teardown hangs too."""
+    if not seconds:
+        yield
+        return
+
+    def fire(*_):
+        signal.alarm(120)
+        raise ScenarioTimeout()
+    old = signal.signal(signal.SIGALRM, fire)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old)
+
+
+def run_one(name: str, path: Path, args, params, *, fault: str | None = None, tag: str = "") -> Report:
+    """One scenario run on its own stack, at most `--timeout` seconds. `report.infra` is
+    set when the stack or the scenario itself broke, or it timed out (no verdict possible)."""
     mod = load(path)
     ui, shards = _knobs(mod, args, params)
     out = run_dir(name, tag)
@@ -299,7 +325,25 @@ async def run_one(name: str, path: Path, args, params, *, fault: str | None = No
     report, rec = Report(name, out, p), Recorder()
     print(f"slop: {name} scale={args.scale} users={args.users} seed={args.seed} ui={ui} fault={fault}"
           f"{f' shards={shards}' if shards > 1 else ''} -> {out}")
-    t0 = time.time()
+    t0, live = time.time(), {}
+    with _deadline(args.timeout):
+        try:
+            asyncio.run(_run_stack(name, mod, out, report, rec, args, params, ui, shards, fault, t0, live))
+        except ScenarioTimeout:
+            signal.alarm(0)
+            stack = live.get("stack")
+            if stack is not None and stack.tmp.exists():  # its teardown never finished: finish it
+                stack.__exit__(None, None, None)
+            report.infra = f"timed out after {args.timeout}s (slop/run --timeout); stack torn down, run moves on"
+            report.check("scenario finished within --timeout", False, timeout_s=args.timeout)
+    _stock_checks(report, rec, out, mod)
+    report.metric("seconds", round(time.time() - t0, 1))
+    report.write(rec.summary(), rec.errors)
+    print((out / "summary.txt").read_text())
+    return report
+
+
+async def _run_stack(name, mod, out, report, rec, args, params, ui, shards, fault, t0, live) -> None:
     try:
         stack = Stack(ui=ui, fault=fault, logdir=out, profile=args.profile, shards=shards,
                       apps=tuple(getattr(mod, "APPS", ())) or (tuple(getattr(mod, "UI_APPS", ())) if ui else ()),
@@ -318,6 +362,7 @@ async def run_one(name: str, path: Path, args, params, *, fault: str | None = No
             for i in range(stack.shards):
                 stack.relay_env[i]["OF_API_ORIGIN"] = of_wire.origin
         with wire, stack, (fleet or contextlib.nullcontext()):  # the fake OF outlives the relays it serves
+            live["stack"] = stack  # entered: a timeout that cuts its teardown short finishes it (run_one)
             print(f"slop: stack up in {time.time() - t0:.0f}s (relay {stack.relay}{', app ' + stack.app if stack.app else ''}"
                   f"{f', {shards} shards, apps on ' + ','.join(stack.shard_ids[i] for i in stack.apps) if shards > 1 else ''}"
                   f"{', edge ' + fleet.edge_url if fleet and fleet.edge_url else ''})")
@@ -354,11 +399,6 @@ async def run_one(name: str, path: Path, args, params, *, fault: str | None = No
     except (SystemExit, Exception) as e:  # the stack did not come up (or died tearing down)
         report.infra = f"stack: {e}"
         report.check("stack started", False, error=str(e))
-    _stock_checks(report, rec, out, mod)
-    report.metric("seconds", round(time.time() - t0, 1))
-    report.write(rec.summary(), rec.errors)
-    print((out / "summary.txt").read_text())
-    return report
 
 
 def _client_fault_applied(report: Report, ctx, fault: str | None) -> None:
@@ -432,11 +472,11 @@ def break_one(name: str, path: Path, args, params) -> str:
         base, problem = _load_baseline(base_dir, name, ui, args, params, shards)
     else:
         print(f"slop: break-it-once {fault}: green baseline first")
-        b = asyncio.run(run_one(name, path, args, params, tag="baseline"))
+        b = run_one(name, path, args, params, tag="baseline")
         base_dir, base, problem = b.out, _status(b.checks), (f"baseline infra failure: {b.infra}" if b.infra else None)
     broken_dir, broken, broken_problem = None, {}, None
     if not problem:
-        r = asyncio.run(run_one(name, path, args, params, fault=fault, tag="break"))
+        r = run_one(name, path, args, params, fault=fault, tag="break")
         broken_dir, broken = r.out, _status(r.checks)
         broken_problem = f"fault run infra failure: {r.infra}" if r.infra else None
 
@@ -493,6 +533,10 @@ def main() -> int:
     ap.add_argument("--no-ui", action="store_true", help="skip Playwright/next dev even if the scenario has UI")
     ap.add_argument("--shards", type=int, default=None,
                     help="a fleet: N relays behind the real Caddy edge (lib/edge.py); default the scenario's SHARDS")
+    ap.add_argument("--timeout", type=int, default=1800, metavar="SECONDS",
+                    help="wall clock per scenario run (stack up to teardown); past it the run is INFRA and "
+                         "the next one starts. 0 = none. Default 1800 (the slowest green run, big-model "
+                         "medium/200, takes ~830 s)")
     ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE", help="scenario param")
     ap.add_argument("--list", action="store_true")
     args, extra = ap.parse_known_args()
@@ -522,7 +566,7 @@ def main() -> int:
             print(f"slop: {v} {n}")
         vs = set(verdicts.values())
         return 3 if "INCONCLUSIVE" in vs else 1 if "NOT CAUGHT" in vs else 0
-    reports = {n: asyncio.run(run_one(n, p, args, params)) for n, p in picked.items()}
+    reports = {n: run_one(n, p, args, params) for n, p in picked.items()}
     for n, r in reports.items():
         print(f"slop: {'INFRA' if r.infra else 'OK  ' if r.ok else 'FAIL'} {n}")
     if any(r.infra for r in reports.values()):

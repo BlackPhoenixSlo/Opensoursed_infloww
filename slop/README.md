@@ -19,12 +19,22 @@ slop/run big-model --profile                      # + per-stage stack profile of
 slop/run big-model --break --fault=access-log-writer-spin-waits --baseline=slop/evidence/<run-dir>
                                                  # break-it-once with another fault than the scenario's
 SLOP_PY=/usr/local/bin/python slop/run ...       # another Python for the relay
+slop/run all --timeout=600                       # wall clock per scenario run (default 1800 s, 0 = none)
 ```
 
 Needs the repo's `venv/` (FastAPI, uvicorn, httpx, Playwright with Chromium) and
-`node` with `app/node_modules` for UI scenarios. Exit code: 0 every scenario passed
+`node` with `app/node_modules` for UI scenarios (`web/node_modules` for fleet-200's
+landing build). In a linked worktree (`git worktree add`), `slop/run` links each one
+it lacks to the main checkout's on the first call (`slop/run --list` is enough), so
+`venv/bin/python` for service tests works there too. Exit code: 0 every scenario passed
 (SKIP is not a pass, but not a failure), 1 a check failed, 3 infra (the stack did not
-come up, or the scenario crashed). With `--break`: 0 CAUGHT, 1 NOT CAUGHT, 3 INCONCLUSIVE.
+come up, the scenario crashed, or it ran past `--timeout`). With `--break`: 0 CAUGHT,
+1 NOT CAUGHT, 3 INCONCLUSIVE.
+
+`--timeout` bounds each scenario run from stack start to teardown (a hung browser
+close or teardown included). Past it, SIGALRM cancels the scenario, its finally blocks
+and the stack's teardown run, the run is INFRA (`scenario finished within --timeout`
+FAIL, summary written), and the next scenario starts.
 
 ## Break-it-once
 

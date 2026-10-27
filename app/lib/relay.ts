@@ -348,24 +348,10 @@ export interface ProxyMeta {
   assigned_account?: { id: string; nickname?: string | null } | null;
 }
 
-export interface DriftReport {
+/** GET /admin/rev/live: OF's live build as the relay last saw it on OF's responses. */
+export interface LiveRev {
   live_rev: string | null;
-  live_known: boolean;
   live_fetched_at?: number | null;
-  live_error?: string | null;
-  any_drift: boolean;
-  accounts: Array<{
-    account_id: string;
-    nickname?: string | null;
-    has_session: boolean;
-    session_rev: string | null;
-    live_rev?: string | null;
-    live_known?: boolean;
-    drift: boolean;
-    stale: boolean;
-    captured_at?: string | null;
-    reason?: string;
-  }>;
 }
 
 export interface BootstrapResponse {

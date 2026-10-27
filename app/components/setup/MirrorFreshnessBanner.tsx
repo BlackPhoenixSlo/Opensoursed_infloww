@@ -5,14 +5,15 @@
  * an agency's): OF Manager's mirror is behind when OF's live build is newer than
  * the one it was captured from (OF_MIRROR_BUILD, written by scripts/of-mirror.mjs).
  * The live build is the one the relay already reads off OF's API responses
- * (live_rev.py) and /admin/rev/drift reports, the DriftBanner's read, so this
- * costs no extra OF call. Dismissible per live build, apart from DriftBanner.
+ * (live_rev.py) and /admin/rev/live reports, so this costs no extra OF call.
+ * Dismissible per live build.
  */
 
 import { useSyncExternalStore } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { TriangleAlert } from "lucide-react";
 
-import { useDriftReport } from "@/components/setup/DriftBanner";
+import { relay, type LiveRev } from "@/lib/relay";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { OF_MIRROR_BUILD } from "@/lib/of-mirror-build";
 
@@ -33,9 +34,14 @@ const buildTime = (rev: string | null | undefined) => rev?.match(/^(\d{12})-/)?.
 export default function MirrorFreshnessBanner() {
   const dismissedFor = useSyncExternalStore(subscribeDismissed, readDismissed, () => null);
 
-  const drift = useDriftReport(); // DriftBanner's read: one for both
+  const liveRev = useQuery<LiveRev>({
+    queryKey: ["live-rev"],
+    queryFn: () => relay.get<LiveRev>("/admin/rev/live"),
+    refetchInterval: 15 * 60_000,
+    staleTime: 60_000,
+  });
 
-  const rev = drift.data?.live_rev;
+  const rev = liveRev.data?.live_rev;
   const live = buildTime(rev);
   if (!rev || !live || live <= buildTime(OF_MIRROR_BUILD)! || dismissedFor === rev) return null;
 
@@ -46,7 +52,7 @@ export default function MirrorFreshnessBanner() {
     window.dispatchEvent(new CustomEvent(DISMISS_EVENT));
   };
 
-  // DriftBanner's look: HB's inline warning alert.
+  // HB's inline warning alert (page-parity 02): #ffa15f on its 12% tint, 8px corners, no border.
   return (
     <div role="alert" title={EXTRA_LABEL} className="rounded-lg bg-[rgba(255,161,95,.12)] px-4 py-3 text-[#ffa15f]">
       <div className="flex items-start gap-3">

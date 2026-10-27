@@ -20,11 +20,10 @@
  *                      account" open it at its platform step (`onAdd`). Edit and
  *                      Delete are the table's own modals. The extras below sit between its table and
  *                      its footer.
- *   • DriftBanner    — only while a model is stale; an Inflowwww extra kept
- *                      outside the disclosure, since an alert hidden in a
- *                      closed disclosure fails its purpose.
- *   • MirrorFreshnessBanner — founder only, beside it: OF Manager's mirror is
- *                      behind OF's live build (a maintainer's re-capture).
+ *   • MirrorFreshnessBanner — founder only: OF Manager's mirror is behind OF's
+ *                      live build (a maintainer's re-capture). Kept outside the
+ *                      disclosure, since an alert hidden in a closed disclosure
+ *                      fails its purpose.
  *   • one collapsed "Inflowwww extras" disclosure, founder only, holding
  *     ManagedAgencyKeysCard and KeysCard (the server's house keys). YOUR
  *     agency's LLM keys live in Settings → AI keys.
@@ -34,7 +33,6 @@
 import { Suspense, useCallback, useEffect, useState, type ComponentProps } from "react";
 import { useSearchParams } from "next/navigation";
 
-import DriftBanner from "@/components/setup/DriftBanner";
 import MirrorFreshnessBanner from "@/components/setup/MirrorFreshnessBanner";
 import AccountsTable from "@/components/setup/AccountsTable";
 import AddCreatorModal, {
@@ -79,7 +77,6 @@ export default function SetupPage() {
 
       {/* The table draws the content's padding (creators-manage#12) and its footer; our extras sit between them. */}
       <AccountsTable onLink={(at) => setAdding({ at })} onAdd={(from) => setAdding(from)}>
-        <DriftBanner />
         {me?.is_admin && <MirrorFreshnessBanner />}
 
         <p className="md:hidden text-sm text-fg-dim" title={EXTRA_LABEL}>{DESKTOP_ONLY_LINE}</p>

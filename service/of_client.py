@@ -718,7 +718,7 @@ class OFClient:
 
         Also the single place we passively observe OF's current build hash:
         every response carries `x-of-rev` in the headers, which feeds the
-        global live-rev cache for drift detection (see live_rev.py).
+        global live-rev cache that picks the sign rules (see live_rev.py, sign_rules.py).
 
         A call `_denied` names (logout, account deletion, ending sessions,
         telemetry), or any write for a deactivated Creator, is refused and
@@ -758,7 +758,7 @@ class OFClient:
             # `x-of-rev` on most /api2/v2/* responses; note() is a no-op
             # if the header's missing or unchanged so this is cheap on
             # every call. If this ever raises we want to know — it's the
-            # only way the global drift detector gets fresh data.
+            # only way the global live-rev cache (sign rules) gets fresh data.
             try:
                 rev_hdr = r.headers.get("x-of-rev") or r.headers.get("X-OF-Rev")
                 if rev_hdr:

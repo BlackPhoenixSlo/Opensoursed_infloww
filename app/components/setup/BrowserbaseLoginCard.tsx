@@ -119,7 +119,7 @@ export default function BrowserbaseLoginCard({ onLinked, initialNickname = "", p
   useEffect(() => {
     if (!done || linkedRef.current === status!.id) return;
     linkedRef.current = status!.id;
-    for (const key of ["accounts", "proxies", "drift", "health-all"]) qc.invalidateQueries({ queryKey: [key] });
+    for (const key of ["accounts", "proxies", "health-all"]) qc.invalidateQueries({ queryKey: [key] });
     onLinked?.(status!.account_id!);
   }, [done, status, qc, onLinked]);
 

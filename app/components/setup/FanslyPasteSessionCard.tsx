@@ -141,9 +141,8 @@ export default function FanslyPasteSessionCard({ onLinked, initialNickname = "",
       });
       setBlob("");
       // Same caches the OF path invalidates, so the account shows up in the
-      // switcher / accounts table / drift immediately.
+      // switcher / accounts table immediately.
       qc.invalidateQueries({ queryKey: ["accounts"] });
-      qc.invalidateQueries({ queryKey: ["drift"] });
       qc.invalidateQueries({ queryKey: ["health-all"] });
       if (data.account_id) onLinked?.(data.account_id);
     } catch (err) {

@@ -207,9 +207,9 @@
       <code>/api2/v2/</code> request after you log in, grabs
       <code>user-id</code>, <code>x-bc</code>, <code>x-of-rev</code>,
       <code>sign</code>, <code>time</code>, <code>user-agent</code> + cookies,
-      and packages them as a curl command. Each sign-in captures a fresh
-      <code>x-of-rev</code>, so when the relay flags rev drift just log in
-      again and paste the new curl.
+      and packages them as a curl command. A captured session keeps working
+      across OnlyFans updates; log in again and paste a new curl only when
+      the relay shows the creator as Disconnected.
     </div>
   </div>
   <script src="popup.js"></script>

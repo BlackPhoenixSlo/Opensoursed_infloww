@@ -40,7 +40,7 @@ let accounts: Acct[];
 let health: () => Promise<unknown>;
 let proxies: () => Promise<unknown>;
 let employees: () => Promise<unknown>;
-let drift: unknown;
+let liveRev: unknown;
 /** The agency's `account` Settings blob, whose `creators` key holds the Creator profiles (useCreatorProfiles). */
 let settings: Record<string, unknown> | null;
 let fetchMock: Mock;
@@ -51,7 +51,7 @@ beforeEach(() => {
   health = () => Promise.resolve({ ok: true, accounts: [] });
   proxies = () => Promise.resolve({ proxies: [], pool: { size: 0, account_ids: [] }, accounts: [] });
   employees = () => Promise.resolve({ employees: [] });
-  drift = { any_drift: false, live_rev: "rev-1", accounts: [] };
+  liveRev = { live_rev: "rev-1" };
   settings = { language: "en" };
   relayPut.mockReset();
   relayPut.mockImplementation((path: string, body: Record<string, unknown>) => {
@@ -64,7 +64,7 @@ beforeEach(() => {
     if (path === "/health?all_accounts=1") return health();
     if (path === "/admin/proxies") return proxies();
     if (path.startsWith("/admin/employees?")) return employees();
-    if (path === "/admin/rev/drift") return Promise.resolve(drift);
+    if (path === "/admin/rev/live") return Promise.resolve(liveRev);
     if (path === "/admin/users/llm-key-status") return Promise.resolve({ agencies: [] });
     if (path === "/admin/settings/account") {
       return settings ? Promise.resolve({ tab: "account", config: settings }) : Promise.reject(new RelayError(401, null, "relay 401"));
@@ -140,7 +140,7 @@ describe("/creators — the creator table leads", () => {
     for (const p of paths) {
       expect([
         "/admin/accounts", "/health?all_accounts=1", "/admin/proxies", "/admin/employees?include_disabled=false",
-        "/admin/rev/drift", "/admin/my-llm-keys", "/admin/settings/account",
+        "/admin/rev/live", "/admin/my-llm-keys", "/admin/settings/account",
       ]).toContain(p);
     }
   });
@@ -943,37 +943,33 @@ describe("/creators — extras between the table and the footer", () => {
     expect(screen.queryByRole("heading", { name: "Server keys" })).toBeNull();
   });
 
-  it("shows the drift banner above the footer, outside the disclosure and titled as an extra, only while a model is stale", async () => {
+  it("shows the mirror freshness alarm above the footer, outside the disclosure and titled as an extra, to the founder only", async () => {
     accounts = [{ id: "acct-a", nickname: "Alpha" }];
-    me = { is_admin: true }; // the disclosure is a Master's only
-    drift = { any_drift: true, live_rev: "rev-2", accounts: [{ account_id: "acct-a", nickname: "Alpha", drift: true }] };
+    liveRev = { live_rev: "202612010900-abcdef0123" };
+    me = { is_admin: true };
     const { unmount } = renderWithProviders(<Page />);
-    const banner = (await screen.findByText("Session stale — re-capture required")).closest(`[title="${EXTRA_LABEL}"]`)!;
+    const banner = (await screen.findByText("OF Manager mirror is behind OnlyFans")).closest(`[title="${EXTRA_LABEL}"]`)!;
     expect(banner).not.toBeNull();
     expect(follows(table(), banner)).toBe(true);
     expect(follows(banner, screen.getByText("Total: 1 creators"))).toBe(true);
     expect(screen.getByText(EXTRAS_OVERFLOW_LABEL).closest("details")).not.toContainElement(banner as HTMLElement);
     unmount();
 
-    drift = { any_drift: false, live_rev: "rev-2", accounts: [] };
-    renderWithProviders(<Page />);
-    await screen.findByText("Total: 1 creators");
-    expect(screen.queryByText("Session stale — re-capture required")).toBeNull();
-  });
-
-  it("shows the mirror freshness alarm to the founder only", async () => {
-    accounts = [{ id: "acct-a", nickname: "Alpha" }];
-    drift = { any_drift: false, live_rev: "202612010900-abcdef0123", accounts: [] };
-    me = { is_admin: true };
-    const { unmount } = renderWithProviders(<Page />);
-    await screen.findByText("OF Manager mirror is behind OnlyFans");
-    unmount();
-
+    relayGet.mockClear();
     me = { is_admin: false };
     renderWithProviders(<Page />);
     await screen.findByText("Total: 1 creators");
-    await waitFor(() => expect(relayGet).toHaveBeenCalledWith("/admin/rev/drift"));
+    expect(relayGet).not.toHaveBeenCalledWith("/admin/rev/live");
     expect(screen.queryByText("OF Manager mirror is behind OnlyFans")).toBeNull();
+  });
+
+  it("never warns that a session is stale when OF ships a new build: a session outlives OF's frontend revs", async () => {
+    accounts = [{ id: "acct-a", nickname: "Alpha", has_session: true }];
+    liveRev = { live_rev: "202612010900-abcdef0123" };
+    me = { is_admin: true };
+    renderWithProviders(<Page />);
+    await screen.findByText("OF Manager mirror is behind OnlyFans");
+    expect(screen.queryByText(/Session stale|re-capture required/)).toBeNull();
   });
 });
 

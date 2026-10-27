@@ -1425,9 +1425,9 @@ async def _start_event_pumps() -> None:
     _supervisor_task = asyncio.create_task(_pump_supervisor(), name="pump-supervisor")
     log.info("event pumps started for %d account(s)", len(_account_pumps))
 
-    # Probe the live OF build hash so the drift detector has a value ready
-    # by the time the UI loads /admin/rev/drift. Network — run off-thread so
-    # a slow CF response doesn't block FastAPI startup.
+    # Seed the live OF build hash from the session files so sign_rules and
+    # /admin/rev/live have a value before the first OF response lands. Off-thread
+    # so reading every session file doesn't block FastAPI startup.
     asyncio.get_running_loop().run_in_executor(None, live_rev.refresh)
 
     # Periodic GC of `_storyboard_locks` — the prune cron clears the on-disk
@@ -9483,56 +9483,19 @@ def reload_session(account_id: str | None = Query(None)) -> dict[str, Any]:
     return {"ok": True, "account_id": aid, "user_id": c.user_id, "x_of_rev": c.x_of_rev}
 
 
-@app.get("/admin/rev/drift")
-def admin_rev_drift() -> dict[str, Any]:
-    """Per-account drift report. For each account with a captured session,
-    compare its stored x-of-rev against the live homepage probe. The UI's
-    'session stale — re-capture required' banner reads this endpoint on
-    page load and after any /admin/reload-session call."""
+@app.get("/admin/rev/live")
+def admin_rev_live() -> dict[str, Any]:
+    """OF's live build (`x-of-rev`) as the relay last saw it on OF's own API
+    responses (live_rev.py), plus the last central sign-rule refresh. The
+    founder's OF Manager mirror-freshness banner reads `live_rev`. A session
+    captured at an older build keeps working, so nothing here flags sessions."""
     live_snap = live_rev.get()
-    live = live_snap.get("rev")
-    rows: list[dict[str, Any]] = []
-    any_drift = False
-    for meta in account_registry.list_accounts():
-        aid = meta["id"]
-        if not meta.get("has_session"):
-            rows.append({
-                "account_id": aid, "nickname": meta.get("nickname"),
-                "has_session": False, "session_rev": None,
-                "drift": False, "stale": True, "reason": "no_session",
-            })
-            continue
-        sp = account_registry.latest_session_path(aid)
-        try:
-            s = json.loads(sp.read_text()) if sp else {}
-        except Exception:
-            s = {}
-        session_rev = (s.get("headers") or {}).get("x_of_rev")
-        cmp = live_rev.compare(session_rev)
-        row = {
-            "account_id": aid,
-            "nickname": meta.get("nickname"),
-            "has_session": True,
-            "session_rev": session_rev,
-            "live_rev": cmp.get("live_rev"),
-            "live_known": cmp.get("live_known"),
-            "drift": cmp.get("drift", False),
-            "stale": cmp.get("drift", False),
-            "captured_at": s.get("captured_at"),
-        }
-        if cmp.get("drift"):
-            any_drift = True
-        rows.append(row)
     return {
-        "live_rev": live,
-        "live_known": bool(live),
+        "live_rev": live_snap.get("rev"),
         "live_fetched_at": live_snap.get("fetched_at"),
-        "live_error": live_snap.get("error"),
-        "any_drift": any_drift,
         # The last central sign-rule refresh (sign_rules.refresh): which build,
         # whose capture it copied, which accounts took it.
         "sign_rules": sign_rules.last(),
-        "accounts": rows,
     }
 
 

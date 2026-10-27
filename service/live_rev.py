@@ -3,9 +3,10 @@ Live x-of-rev tracker.
 
 OnlyFans pins a per-deploy build hash into the `x-of-rev` request header
 on every signed `/api2/v2/*` call from their SPA. The relay replays
-that header on outgoing calls; when our captured rev drifts too far
-behind OF's current build, signed requests start failing intermittently
-("session stale — re-capture required").
+that header on outgoing calls. OF's signing rules belong to a build, so a
+new live build triggers a sign-rule refresh (sign_rules.py). A session
+captured at an older build keeps working: the rev is not a session-freshness
+signal, and nothing flags sessions on it.
 
 History: we used to scrape OF's homepage HTML to learn the current rev.
 That never actually worked — OF doesn't embed the rev in the homepage
@@ -23,8 +24,8 @@ Today the cache is fed from two trustworthy sources:
     `/api2/v2/*` responses, so the cache stays current as long as the
     relay is actively making any API call.
 
-`get()`, `refresh()`, `compare()` keep their previous signatures so
-admin endpoints in server.py don't need changes.
+Readers: sign_rules (which build's rules to spread) and GET /admin/rev/live
+(the founder's OF Manager mirror-freshness banner).
 """
 
 from __future__ import annotations
@@ -107,8 +108,8 @@ def _seed_from_sessions() -> None:
         log.warning("live_rev session seed walk failed", exc_info=True)
         return
     if not candidates:
-        # Worth knowing — if NO account has a session-captured rev, drift
-        # detection is degraded until the first /api2/v2/* response lands.
+        # Worth knowing — if NO account has a session-captured rev, the live
+        # rev stays unknown until the first /api2/v2/* response lands.
         log.info("live_rev session seed: no captured x_of_rev in any account session")
         return
     candidates.sort(reverse=True)  # ISO-8601 ts sorts lexicographically
@@ -138,25 +139,3 @@ def get(stale_ok: bool = True) -> dict[str, Any]:
     if _cache["rev"] is None:
         return refresh()
     return dict(_cache)
-
-
-def compare(session_rev: str | None) -> dict[str, Any]:
-    """Compare a session's recorded x-of-rev against the live one.
-    `drift=True` is only reported when both values are known and they
-    disagree. When we don't yet have a live value (cold relay, no
-    sessions, no API calls yet), drift defaults to False so we don't
-    cry wolf."""
-    snap = get()
-    live = snap.get("rev")
-    out: dict[str, Any] = {
-        "live_rev": live,
-        "session_rev": session_rev,
-        "live_known": bool(live),
-        "error": snap.get("error"),
-        "fetched_at": snap.get("fetched_at"),
-    }
-    if not live or not session_rev:
-        out["drift"] = False
-        return out
-    out["drift"] = (str(live).strip() != str(session_rev).strip())
-    return out

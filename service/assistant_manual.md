@@ -236,12 +236,12 @@ proxies and keys are desktop-only."
 6. Press **Bootstrap from cURL**. Success shows the account as linked, and the
    model appears in the creators table and every creator select.
 
-**Re-capturing.** The session is a copy of that browser login, so it goes stale.
-When OnlyFans ships a new front-end, Manage creators shows an amber **"Session
-stale — re-capture required"** banner naming the models affected and the new
-rev. (Its **Dismiss** button only hides it for that one rev; a new rev brings it
-back.) Fix is the same steps: sign in again, Copy cURL, paste, Bootstrap. That
-also immediately clears a paused account (see below).
+**Re-capturing.** The session is a copy of that browser login. It keeps working
+across OnlyFans front-end updates (new builds), so a new OnlyFans build is never
+a reason to re-capture. Re-capture only when OnlyFans rejects the login: the
+model shows Disconnected in Manage creators and its automations are paused (see
+below). Fix is the same steps: sign in again, Copy cURL, paste, Bootstrap. That
+also immediately clears a paused account.
 
 **Caveats:**
 - Picking a proxy shows an amber teleport warning, and pressing Bootstrap asks

@@ -1,6 +1,6 @@
 /**
  * The mirror freshness alarm (roadmap 8.7): the live OF build, as
- * /admin/rev/drift reports it from the relay's own OF traffic, against the
+ * /admin/rev/live reports it from the relay's own OF traffic, against the
  * build the OF Manager mirror was captured from. Fixture revs are invented
  * except OF_MIRROR_BUILD itself.
  */
@@ -15,57 +15,51 @@ vi.mock("@/lib/relay", async (importOriginal) => ({
 }));
 
 import MirrorFreshnessBanner from "./MirrorFreshnessBanner";
-import DriftBanner from "./DriftBanner";
 import { relay } from "@/lib/relay";
 import { OF_MIRROR_BUILD } from "@/lib/of-mirror-build";
 const relayGet = relay.get as unknown as Mock;
 
 const MIRROR = "OF Manager mirror is behind OnlyFans";
-const SESSION = "Session stale — re-capture required";
-let drift: unknown;
+let live: unknown;
 
 beforeEach(() => {
   window.localStorage.clear();
   relayGet.mockReset();
-  relayGet.mockImplementation(() => Promise.resolve(drift));
+  relayGet.mockImplementation(() => Promise.resolve(live));
 });
 afterEach(cleanup);
 
-const report = (live_rev: string | null, any_drift = false) => ({
-  live_rev, live_known: !!live_rev, any_drift,
-  accounts: any_drift ? [{ account_id: "acct-a", nickname: "Alpha", has_session: true, session_rev: null, drift: true, stale: true }] : [],
-});
+const report = (live_rev: string | null) => ({ live_rev, live_fetched_at: null });
 
 describe("MirrorFreshnessBanner", () => {
   it("flags the mirror when OF's live build is newer than the captured one, naming both", async () => {
-    drift = report("202612010900-abcdef0123");
+    live = report("202612010900-abcdef0123");
     renderWithProviders(<MirrorFreshnessBanner />);
     await screen.findByText(MIRROR);
+    expect(relayGet).toHaveBeenCalledWith("/admin/rev/live");
     expect(screen.getByText(OF_MIRROR_BUILD)).toBeTruthy();
     expect(screen.getByText("202612010900-abcdef0123")).toBeTruthy();
   });
 
   it("stays quiet on the captured build, an older one (a stale session seed), or an unknown live rev", async () => {
     for (const rev of [OF_MIRROR_BUILD, "202601010000-0000000000", "rev-2", null]) {
-      drift = report(rev);
+      live = report(rev);
       const { unmount, queryClient } = renderWithProviders(<MirrorFreshnessBanner />);
-      await vi.waitFor(() => expect(queryClient.getQueryState(["drift"])?.status).toBe("success"));
+      await vi.waitFor(() => expect(queryClient.getQueryState(["live-rev"])?.status).toBe("success"));
       expect(screen.queryByText(MIRROR)).toBeNull();
       unmount();
     }
   });
 
-  it("is dismissed per live build, and dismissing it leaves the Session stale warning up", async () => {
-    drift = report("202612010900-abcdef0123", true);
-    const { unmount } = renderWithProviders(<><DriftBanner /><MirrorFreshnessBanner /></>);
+  it("is dismissed per live build: a newer build brings it back", async () => {
+    live = report("202612010900-abcdef0123");
+    const { unmount } = renderWithProviders(<MirrorFreshnessBanner />);
     const mirror = (await screen.findByText(MIRROR)).closest("[role=alert]")!;
-    await screen.findByText(SESSION);
     fireEvent.click(mirror.querySelector("button")!);
     expect(screen.queryByText(MIRROR)).toBeNull();
-    expect(screen.getByText(SESSION)).toBeTruthy();
     unmount();
 
-    drift = report("202612020900-fedcba9876");
+    live = report("202612020900-fedcba9876");
     renderWithProviders(<MirrorFreshnessBanner />);
     await screen.findByText(MIRROR);
   });
