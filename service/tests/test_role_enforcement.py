@@ -1198,7 +1198,7 @@ def _seed_employee_report() -> None:
     # init_db (create_all) builds no views: apply the shipped attribution view,
     # as test_timesheet_api.py does.
     path = Path(__file__).resolve().parents[1] / "db" / "migrations" / "versions" / \
-        "20260710_0200_attr_view_orphan_rows.py"
+        "20261027_0100_converters_window.py"
     spec = importlib.util.spec_from_file_location("mig_attr_view", path)
     mig = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mig)

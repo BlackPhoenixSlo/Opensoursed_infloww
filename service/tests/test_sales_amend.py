@@ -161,7 +161,7 @@ def case_no_one_credits_nobody_until_cleared_and_moves_the_reports_revenue_to_un
 
     _post(OWNER_A, ONE.format(T_MSG), {"employee_id": None})  # cleared: the message's sender again
     assert _override(T_MSG) is None
-    assert _records(C1_DAY)[T_MSG] == ("message", E1, "Auto"), _records(C1_DAY)
+    assert _records(C1_DAY)[T_MSG] == ("converters", E1, "Auto"), _records(C1_DAY)
     assert _reports(C1) == {E1: 1000, None: 300, E2: 200}, _reports(C1)
     assert _reassigns(T_MSG)[-1]["before"] == {"employee_id": 0}
 
@@ -248,7 +248,7 @@ def case_a_clock_events_sales_move_together_and_a_repeat_finds_none():
     rows = _records(C3_DAY)
     assert {tx: rows[tx] for tx in (T_IN, T_IN_MANUAL, T_IN_PENDING, T_OTHER, T_AFTER)} == {
         T_IN: ("manual", E2, "Owner"), T_IN_MANUAL: ("manual", E2, "Owner"), T_IN_PENDING: ("manual", E2, "Owner"),
-        T_OTHER: ("message", E2, "Auto"), T_AFTER: ("message", E1, "Auto")}, rows
+        T_OTHER: ("converters", E2, "Auto"), T_AFTER: ("converters", E1, "Auto")}, rows
     assert _post(OWNER_A, BATCH, {"employee_id": E2, "clock_event_id": EV}) == {
         "updated": 0, "attributed_employee_id": E2, "tx_ids": [], "skipped_split": 0}
 

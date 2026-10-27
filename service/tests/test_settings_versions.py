@@ -49,7 +49,7 @@ CONVERTERS = {"messages": "converters", "posts_tips": "converters", "subscriptio
 async def _apply_view() -> None:
     # init_db (create_all) builds no views: apply the shipped attribution view,
     # as test_sales_attribution_rules.py does.
-    spec = importlib.util.spec_from_file_location("mig_attr_view", _MIGRATIONS / "20260710_0200_attr_view_orphan_rows.py")
+    spec = importlib.util.spec_from_file_location("mig_attr_view", _MIGRATIONS / "20261027_0100_converters_window.py")
     mig = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mig)
     async with get_session() as s:

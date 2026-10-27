@@ -4,7 +4,7 @@
 
 `GET /admin/stats/sales-records` lists one row per credited share of each sale Employee reports count (roadmap
 S7: one crediting path, so each Employee's Earnings add up to its Employee reports revenue), each with its `rule`
-(`manual`, `message`, `tip_lookback`, `shift` or `unassigned`) and "Assigned by" ("Auto" for rule-based credit,
+(`manual`, `message`, `converters`, `shift` or `unassigned`) and "Assigned by" ("Auto" for rule-based credit,
 "Manual" for an override), filtered by Creator, Employees, Sales types, Date and "Show unassigned sales",
 paged by `before_id`, and with `format=csv` the whole filtered set streamed as CSV with the 50k cap, which
 `X-Row-Count` carries as an upper bound (the /admin/paid-messages precedent).
@@ -19,9 +19,9 @@ the sale's Agency 400, and each write one `sales.reassign` action with the old a
 reads ("Owner" or "Master"); the audit middleware's generic row is still written and never read.
 
 The seam is the Relay over HTTP with real session cookies from the shared two-Agency fixture, over messages,
-transactions and fans seeded straight into the temp DB with fixed past timestamps; the view is the revision
-this ticket adds (`*_attr_view_sales_records.py`), applied as test_sales_attribution_rules applies its
-predecessor. The migration itself round-trips on a throwaway SQLite file. Every expected row is written out
+transactions and fans seeded straight into the temp DB with fixed past timestamps; the view is the current
+revision (`*_converters_window.py`, 0099), applied as test_sales_attribution_rules applies it. This ticket's
+revision (`*_attr_view_sales_records.py`, 0069) and 0099 each round-trip on a throwaway SQLite file. Every expected row is written out
 by hand from the seed.
 
 ASSUMPTION: a single foreign `?account_id=` is answered 403 by `_account_isolation_middleware` (server.py)
@@ -76,13 +76,14 @@ def _load(pattern: str):
 
 MIG = _load("*_attr_view_sales_records.py")
 PREDECESSOR = _load("20260710_0200_attr_view_orphan_rows.py")
+HEAD = _load("*_converters_window.py")
 
 
 async def _apply_view() -> None:
     # init_db (create_all) builds no views: apply this ticket's revision.
     async with get_session() as s:
         await s.execute(text("DROP VIEW IF EXISTS per_employee_revenue_with_attribution"))
-        await s.execute(text(MIG._NEW_VIEW_SQL))
+        await s.execute(text(HEAD._NEW_VIEW_SQL))
 
 
 asyncio.run(_apply_view())
@@ -168,7 +169,7 @@ _fan(C1, 13, None, "fixture_fan_13")
 M1 = _message(C1, 11, E1, _at("09:00"))
 M2 = _message(C1, 12, None, _at("09:30"))   # an outbound message no Employee sent
 M3 = _message(C1, 16, E1, _at("09:45"))
-_message(C1, 13, E2, _at("10:00", "2026-05-02"))  # E2 wrote to fan 13 two days before its tip
+_message(C1, 13, E2, _at("09:50"))  # E2 wrote to fan 13 twenty minutes before its tip
 
 T_MSG = _sale(C1, "ppv_message", 1000, _at("10:00"), fan=11, message_id=M1, net=800)
 T_NOSENDER = _sale(C1, "tip", 400, _at("10:05"), fan=12, message_id=M2)
@@ -196,9 +197,9 @@ ORDER = [T_PENDING, T_TIE, T_MANUAL_TIP, T_MANUAL, T_ORPHAN, T_NOBODY, T_LOOK, T
 def case_each_rule_and_assigned_by_lands_on_the_right_sale():
     got = {row["tx_id"]: (row["rule"], row["employee_id"], row["assigned_by"]) for row in _rows(OWNER_A, C1_DAY)}
     assert got == {
-        T_MSG: ("message", E1, "Auto"),
+        T_MSG: ("converters", E1, "Auto"),
         T_NOSENDER: ("unassigned", None, "Auto"),
-        T_LOOK: ("tip_lookback", E2, "Auto"),
+        T_LOOK: ("converters", E2, "Auto"),
         T_NOBODY: ("unassigned", None, "Auto"),
         T_ORPHAN: ("unassigned", None, "Auto"),
         T_MANUAL: ("manual", E3, "Manual"),
@@ -213,7 +214,7 @@ def case_a_row_carries_every_column_of_the_read_contract():
     assert rows[T_MSG] == {
         "tx_id": T_MSG, "occurred_at": "2026-05-04T10:00:00Z", "employee_id": E1, "employee_name": "sr_emp_1",
         "account_id": C1, "fan_id": 11, "fan_label": "Fixture Fan Eleven", "earnings_cents": 1000,
-        "gross_cents": 1000, "net_cents": 800, "kind": "ppv_message", "rule": "message", "assigned_by": "Auto",
+        "gross_cents": 1000, "net_cents": 800, "kind": "ppv_message", "rule": "converters", "assigned_by": "Auto",
         "status": "cleared",
     }, rows[T_MSG]
     assert rows[T_LOOK]["fan_label"] == "@fixture_fan_13", rows[T_LOOK]
@@ -256,7 +257,7 @@ def case_each_sale_is_credited_as_employee_reports_credit_it_under_any_sales_set
         rows = {row["tx_id"]: row for row in _rows(OWNER_A, C1_DAY)}
         assert (rows[T_MSG]["earnings_cents"], rows[T_MSG]["gross_cents"]) == (800, 1000), rows[T_MSG]
         assert (rows[T_LOOK]["earnings_cents"], rows[T_LOOK]["gross_cents"]) == (400, 500), rows[T_LOOK]
-        assert (rows[T_LOOK]["employee_id"], rows[T_LOOK]["rule"]) == (E2, "tip_lookback"), rows[T_LOOK]
+        assert (rows[T_LOOK]["employee_id"], rows[T_LOOK]["rule"]) == (E2, "converters"), rows[T_LOOK]
         # With the opt-in on, the subscription Employee reports count is listed too.
         assert any(r["kind"] == "subscription" for r in _rows(OWNER_A, f"{C1_DAY}&limit=500"))
     finally:
@@ -335,7 +336,7 @@ def case_csv_exports_the_whole_filtered_set_with_its_header_and_row_count():
     # precedent, messages.py), not the exact count: the file itself holds 9 rows.
     assert count == "50000", count
     assert lines[-1] == [str(T_MSG), "2026-05-04T10:00:00Z", str(E1), "sr_emp_1", C1, "11", "Fixture Fan Eleven",
-                         "1000", "1000", "800", "ppv_message", "message", "Auto", "cleared"], lines[-1]
+                         "1000", "1000", "800", "ppv_message", "converters", "Auto", "cleared"], lines[-1]
     lines, count = _csv(f"{C1_DAY}&assigned=unassigned")
     assert [int(line[0]) for line in lines[1:]] == [T_TIE, T_ORPHAN, T_NOBODY, T_NOSENDER] and count == "50000"
 
@@ -446,7 +447,7 @@ def _g_sale(fan: int, sender: int | None, hhmm: str) -> int:
     at = _at(hhmm, G_DAY)
     if sender is None:
         return _sale(CA, "tip", 100, at, fan=fan)
-    return _sale(CA, "ppv_message", 100, at, fan=fan, message_id=_message(CA, fan, sender, _at("09:00", G_DAY)))
+    return _sale(CA, "ppv_message", 100, at, fan=fan, message_id=_message(CA, fan, sender, _at("11:30", G_DAY)))
 
 
 G_OWN, G_PEER, G_SUB, G_DEEP_SALE, G_ELSE, G_LOOSE = (
@@ -565,7 +566,7 @@ MASTER_ACTOR = f"master:{IDS['agency_master']}"
 
 def case_reassign_and_clear_each_write_one_sales_reassign_entry_that_assigned_by_reads():
     t = _sale(C3, "ppv_message", 800, _at("13:05"), fan=51, message_id=_message(C3, 51, E1, _at("13:00")))
-    assert _c3_row(t) == ("message", E1, "Auto")
+    assert _c3_row(t) == ("converters", E1, "Auto")
 
     r = _attribute(OWNER_A, t, E2)
     # The route keeps its response.
@@ -575,7 +576,7 @@ def case_reassign_and_clear_each_write_one_sales_reassign_entry_that_assigned_by
     assert _actions(t) == ([_entry(OWNER_ACTOR, None, E2, E1)], 1), _actions(t)
 
     _attribute(OWNER_A, t, None)  # clear: the Rule credits the message's sender again
-    assert _c3_row(t) == ("message", E1, "Auto")
+    assert _c3_row(t) == ("converters", E1, "Auto")
     assert _actions(t) == ([_entry(OWNER_ACTOR, None, E2, E1), _entry(OWNER_ACTOR, E2, None, E2)], 2), _actions(t)
 
     _attribute(MASTER, t, E3)
@@ -691,6 +692,54 @@ def case_the_view_revision_round_trips_on_a_throwaway_file():
         assert sql.strip() == PREDECESSOR._NEW_VIEW_SQL.strip(), "downgrade did not restore the predecessor"
         _run(MIG.upgrade)
         assert _view_columns(path) == old + ["tx_id", "rule"], _view_columns(path)
+    finally:
+        engine.dispose()
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+
+def case_the_converters_window_revision_round_trips_on_a_throwaway_file():
+    """0099 adds the three touch columns and the view's `sender_id`, `converter_id`, `converter_at`; its
+    downgrade restores 0069's view byte for byte and drops the columns."""
+    assert HEAD.down_revision == "0098_runtime_switches", HEAD.down_revision
+    workdir = Path(tempfile.mkdtemp(prefix="converters_window_migration_"))
+    path = workdir / "mig.db"
+    assert path != Path(_harness.DB_PATH)
+    engine = sa.create_engine(f"sqlite:///{path}")
+    base = ["sent_by_employee_id", "automation_kind", "account_id", "kind", "amount_cents", "occurred_at",
+            "tx_id", "rule"]
+    touch = ["credit_sender_id", "credit_converter_id", "credit_converter_at"]
+
+    def _tx_columns() -> list[str]:
+        conn = sqlite3.connect(path)
+        try:
+            return [r[1] for r in conn.execute("pragma table_info(transactions)") if r[1] in touch]
+        finally:
+            conn.close()
+    try:
+        Base.metadata.create_all(engine)
+
+        def _run(step) -> None:
+            with engine.begin() as conn:
+                with Operations.context(MigrationContext.configure(conn)):
+                    step()
+
+        _run(MIG.upgrade)
+        _run(HEAD.upgrade)
+        assert _view_columns(path) == base + ["sender_id", "converter_id", "converter_at"], _view_columns(path)
+        assert _tx_columns() == touch
+        _run(HEAD.downgrade)
+        assert _view_columns(path) == base, _view_columns(path)
+        assert _tx_columns() == []
+        conn = sqlite3.connect(path)
+        try:
+            sql = conn.execute("select sql from sqlite_master where name='per_employee_revenue_with_attribution'"
+                               ).fetchone()[0]
+        finally:
+            conn.close()
+        assert sql.strip() == MIG._NEW_VIEW_SQL.strip(), "downgrade did not restore 0069's view"
+        _run(HEAD.upgrade)
+        assert _tx_columns() == touch and _view_columns(path)[-3:] == ["sender_id", "converter_id", "converter_at"]
     finally:
         engine.dispose()
         shutil.rmtree(workdir, ignore_errors=True)

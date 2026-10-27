@@ -3,25 +3,34 @@ daily rollups `tx_hourly` / `tx_daily`, kept exact by SQLite triggers (roadmap
 W2 2.1, 2.2).
 
 Why triggers. A sale's credit depends on rows several writers touch: the
-ledger ingest, the WS pump, the Fansly ingest, the PPV relink, the orphan
-sweep, the owner's reassign, outbound message writes, placeholder adoption.
-A trigger runs inside each of those writes' own transaction, so no writer can
-forget it and the stored answer is never stale.
+ledger ingest, the WS pump, the Fansly ingest, the PPV relink, the owner's
+reassign, outbound message writes, placeholder adoption. A trigger runs inside
+each of those writes' own transaction, so no writer can forget it and the
+stored answer is never stale.
 
-1. Attribution (`transactions.credit_employee_id`, `credit_rule`,
-   `credit_automation_kind`): the row of the view
-   `per_employee_revenue_with_attribution` (revision 0069) for this sale,
-   computed per row by the view's own three branches:
-     message-linked  the linked message's sender (`message`);
-     standalone tip  the 7-day lookback's latest outbound sender (`tip_lookback`);
-     otherwise       nobody;
-   the manual override `attributed_employee_id` wins every branch (`manual`),
-   and a branch that finds nobody is `unassigned`. It is computed for every
-   row, any kind or status; readers keep the view's rows (REVENUE_KINDS,
-   TRACKED_STATUSES) where they mean the view. The view stays in the schema
-   as the oracle `credit_mismatches` checks against.
-   Recomputed when the sale's own keys change, and when a message it links to
-   or could look back to is inserted, updated or deleted.
+1. Attribution, the row of the view `per_employee_revenue_with_attribution`
+   (revision 0099) for this sale, computed per row, two statements:
+     touch  `credit_sender_id` and `credit_automation_kind`: the linked
+            message's sender and automation kind (Message sender's answer;
+            "Exclude welcome messages" reads the kind);
+            `credit_converter_id`, `credit_converter_at`: for a revenue kind
+            (REVENUE_KINDS), the last human chatter's send to the fan at or
+            before the sale within the longest window an Agency can set
+            (`converter_lookback`, CONVERTERS_WINDOW_MAX_S);
+     credit `credit_employee_id`, `credit_rule`: the manual override
+            `attributed_employee_id` (`manual`), else that send's Employee
+            when it is inside the default window, CONVERTERS_WINDOW_DEFAULT_S
+            (`converters`), else nobody (`unassigned`).
+   The window an Agency sets is versioned Sales Settings, so it is applied
+   where the other rules are, in the read path (sales_attribution.credit):
+   the stored credit is Converters' answer under the default window, the one
+   the rollups sum; a Creator under any other window is read sale by sale
+   from the touch columns. It is computed for every row, any status (the
+   converter only for revenue kinds); readers keep the view's rows
+   (REVENUE_KINDS, TRACKED_STATUSES) where they mean the view. The view
+   stays in the schema as the oracle `credit_mismatches` checks against.
+   Recomputed when the sale's own keys change, and when a message it links
+   to or could look back to is inserted, updated or deleted.
 
 2. Rollups (`tx_hourly`, `tx_daily`): every row's money summed per (account,
    UTC hour or day, kind, status, linked, credited Employee, rule, automation
@@ -33,9 +42,9 @@ forget it and the stored answer is never stale.
    (when no hour buckets are asked), whole hours from `tx_hourly`, the partial
    hours at either edge from the ledger rows.
 
-ASSUMPTION: ties in the lookback (two messages at the same `created_at`) break
-by the higher message id; the view leaves that order undefined. Rung 5.
-Overturned if a tie should credit someone else.
+ASSUMPTION: ties in the lookback (two sends at the same `created_at`) break
+by the higher message id. Rung 5. Overturned if a tie should credit someone
+else.
 """
 from __future__ import annotations
 
@@ -51,52 +60,100 @@ from sqlalchemy import text
 
 log = logging.getLogger("of-relay.tx_rollup")
 
-_TIPS = "('tip', 'tip_post', 'tip_stream')"
+# Converters' window (Infloww: "the last Chatter who messaged the fan within X
+# hours and Y minutes of the sale"; one value in seconds for every row of its
+# Sales Settings, 1 h by default, at most 999 h 59 min). settings_schema
+# validates the Sales blob's `attribution.converters_window_seconds` by these.
+CONVERTERS_WINDOW_DEFAULT_S = 3600
+CONVERTERS_WINDOW_MIN_S = 60
+CONVERTERS_WINDOW_MAX_S = 999 * 3600 + 59 * 60
 
-# The view's branches, for the `transactions` row named `transactions`.
-# `+m.direction` keeps the lookback off ix_messages_dir_created: with no
-# sqlite_stat1, SQLite otherwise picks it (account, direction, created_at) and
-# walks every outbound message of the Creator's 7 days for each sale, where
-# ix_messages_chat_seq walks one fan's.
+# attribution_backfill.REVENUE_KINDS in SQL (test_tx_rollup checks they match).
+_REVENUE = "('ppv', 'ppv_message', 'ppv_post', 'ppv_stream', 'tip', 'tip_post', 'tip_stream', 'custom')"
+
+
+def _shift(ts: str, seconds: int) -> str:
+    """SQL of timestamp `ts` moved by `seconds`, to the millisecond, in the
+    stored text form (so it compares with the columns as text)."""
+    return f"strftime('%Y-%m-%d %H:%M:%f', {ts}, '{seconds:+d} seconds')"
+
+
+def within_window(occurred_at: datetime | None, converter_at: datetime | None, window_s: int) -> bool:
+    """Whether the converter candidate's send at `converter_at` is within
+    `window_s` of the sale at `occurred_at` (inclusive), the read path's twin
+    of the triggers' default-window test (`_IN_DEFAULT`)."""
+    if occurred_at is None or converter_at is None:
+        return False
+    return occurred_at - converter_at <= timedelta(seconds=window_s)
+
+
+def human_send(m: str, *, planner_hint: bool = False) -> str:
+    """SQL: message `m` is a human chatter's own 1:1 send, the only kind of
+    touch Converters credits: an Employee's outbound message, not part of a
+    mass message, not an automation's, not the Automation sentinel's
+    (msg_stats.chatter_sends; the sentinel as employees.get_automation_employee_id
+    finds it, so a box without it excludes none). `planner_hint` writes
+    `+m.direction`, which keeps a per-fan lookup off ix_messages_dir_created:
+    with no sqlite_stat1, SQLite otherwise picks it (account, direction,
+    created_at) and walks every outbound message of the Creator's window
+    for each sale, where ix_messages_chat_seq walks one fan's."""
+    return (f"{'+' if planner_hint else ''}{m}.direction = 'out' AND {m}.sent_by_employee_id IS NOT NULL "
+            f"AND {m}.mass_run_id IS NULL AND {m}.automation_kind IS NULL "
+            f"AND {m}.sent_by_employee_id NOT IN "
+            "(SELECT e.id FROM employees e WHERE e.display_name = 'Automation' AND e.is_active = 0)")
+
+
+def converter_lookback(t: str) -> str:
+    """SQL `FROM ... LIMIT 1` of sale `t`'s converter candidate: the last human
+    chatter's send to the fan at or before `t.occurred_at`, within
+    CONVERTERS_WINDOW_MAX_S. The one lookback; the read path narrows it to
+    the Agency's window (sales_attribution.credit)."""
+    return (f"FROM messages m WHERE m.account_id = {t}.account_id AND m.fan_id = {t}.fan_id "
+            f"AND {human_send('m', planner_hint=True)} AND m.created_at <= {t}.occurred_at "
+            f"AND m.created_at >= {_shift(f'{t}.occurred_at', -CONVERTERS_WINDOW_MAX_S)} "
+            "ORDER BY m.created_at DESC, m.message_id DESC LIMIT 1")
+
+
+# The fragments, for the `transactions` row named `transactions`.
 _LINKED = ("FROM messages m WHERE m.account_id = transactions.account_id "
            "AND m.fan_id = transactions.fan_id AND m.message_id = transactions.message_id")
-_LOOKBACK = ("FROM messages m WHERE m.account_id = transactions.account_id "
-             "AND m.fan_id = transactions.fan_id AND +m.direction = 'out' "
-             "AND m.sent_by_employee_id IS NOT NULL AND m.created_at <= transactions.occurred_at "
-             "AND m.created_at > datetime(transactions.occurred_at, '-7 days') "
-             "ORDER BY m.created_at DESC, m.message_id DESC LIMIT 1")
-_IS_LINKED = f"(transactions.message_id IS NOT NULL AND EXISTS (SELECT 1 {_LINKED}))"
-_IS_TIP = f"(transactions.kind IN {_TIPS} AND transactions.message_id IS NULL)"
+_CONVERTER = converter_lookback("transactions")
+_IS_REVENUE = f"transactions.kind IN {_REVENUE}"
+_IN_DEFAULT = (f"{_shift('transactions.credit_converter_at', 0)} >= "
+               f"{_shift('transactions.occurred_at', -CONVERTERS_WINDOW_DEFAULT_S)}")
 
-
-def _branch(col: str) -> str:
-    return (f"(CASE WHEN {_IS_LINKED} THEN (SELECT m.{col} {_LINKED}) "
-            f"WHEN {_IS_TIP} THEN (SELECT m.{col} {_LOOKBACK}) END)")
-
-
-_AUTO = _branch("sent_by_employee_id")
+# Two statements, each followed by the same WHERE: the touch columns, then the
+# credit from them (the second reads the first's values).
+_SET_TOUCH = (
+    "UPDATE transactions SET "
+    f"credit_sender_id = (SELECT m.sent_by_employee_id {_LINKED}), "
+    f"credit_automation_kind = (SELECT m.automation_kind {_LINKED}), "
+    f"credit_converter_id = CASE WHEN {_IS_REVENUE} THEN (SELECT m.sent_by_employee_id {_CONVERTER}) END, "
+    f"credit_converter_at = CASE WHEN {_IS_REVENUE} THEN (SELECT m.created_at {_CONVERTER}) END "
+)
 _SET_CREDIT = (
     "UPDATE transactions SET "
-    f"credit_employee_id = COALESCE(transactions.attributed_employee_id, {_AUTO}), "
+    "credit_employee_id = COALESCE(transactions.attributed_employee_id, "
+    f"CASE WHEN {_IN_DEFAULT} THEN transactions.credit_converter_id END), "
     "credit_rule = CASE WHEN transactions.attributed_employee_id IS NOT NULL THEN 'manual' "
-    f"WHEN {_AUTO} IS NOT NULL THEN (CASE WHEN {_IS_LINKED} THEN 'message' ELSE 'tip_lookback' END) "
-    "ELSE 'unassigned' END, "
-    f"credit_automation_kind = {_branch('automation_kind')} "
+    f"WHEN {_IN_DEFAULT} THEN 'converters' ELSE 'unassigned' END "
 )
+
+
+def _credit(where: str) -> list[str]:
+    """The statements recomputing the credit of the rows `where` selects."""
+    return [_SET_TOUCH + where, _SET_CREDIT + where]
 
 
 def _recredit_for_message(r: str) -> list[str]:
     """Statements recomputing the sales message `r` (NEW or OLD) links to or,
-    when it is an Employee's outbound message, could be the lookback of."""
-    return [
-        _SET_CREDIT + f"WHERE account_id = {r}.account_id AND fan_id = {r}.fan_id "
-                      f"AND message_id = {r}.message_id",
-        _SET_CREDIT + f"WHERE {r}.direction = 'out' AND {r}.sent_by_employee_id IS NOT NULL "
-                      f"AND account_id = {r}.account_id AND fan_id = {r}.fan_id "
-                      f"AND message_id IS NULL AND kind IN {_TIPS} "
-                      f"AND occurred_at >= {r}.created_at "
-                      f"AND occurred_at <= datetime({r}.created_at, '+8 days')",
-    ]
+    when it is a human chatter's send, could be the converter of (any
+    revenue sale of the fan up to CONVERTERS_WINDOW_MAX_S after it)."""
+    return (_credit(f"WHERE account_id = {r}.account_id AND fan_id = {r}.fan_id "
+                    f"AND message_id = {r}.message_id")
+            + _credit(f"WHERE {human_send(r)} AND account_id = {r}.account_id AND fan_id = {r}.fan_id "
+                      f"AND kind IN {_REVENUE} AND occurred_at >= {r}.created_at "
+                      f"AND occurred_at <= {_shift(f'{r}.created_at', CONVERTERS_WINDOW_MAX_S)}"))
 
 
 # Each rollup table: its time bucket column and that bucket of a timestamp.
@@ -158,7 +215,7 @@ _CREDIT_KEYS = ("account_id", "fan_id", "kind", "message_id", "occurred_at", "at
 _ROLLUP_COLS = ("account_id", "occurred_at", "kind", "status", "message_id", "amount_cents", "net_cents",
                 "fee_cents", "vat_cents", "credit_employee_id", "credit_rule", "credit_automation_kind")
 _MSG_COLS = ("account_id", "fan_id", "message_id", "direction", "created_at", "sent_by_employee_id",
-             "automation_kind")
+             "automation_kind", "mass_run_id")
 
 # The rollups hold exactly the rows whose credit is set. A new row enters them
 # through its own credit write (trg_tx_credit_ins's UPDATE fires
@@ -168,10 +225,10 @@ _MSG_COLS = ("account_id", "fan_id", "message_id", "direction", "created_at", "s
 TRIGGERS: dict[str, str] = {
     "trg_tx_credit_ins": ("AFTER INSERT ON transactions BEGIN "
                           + "; ".join(_upsert(t, "NEW", "+") for t in _GRAINS) + "; "
-                          + _SET_CREDIT + "WHERE id = NEW.id; END"),
+                          + "; ".join(_credit("WHERE id = NEW.id")) + "; END"),
     "trg_tx_credit_upd": (f"AFTER UPDATE OF {', '.join(_CREDIT_KEYS)} ON transactions "
                           f"WHEN {_changed(_CREDIT_KEYS)} BEGIN "
-                          + _SET_CREDIT + "WHERE id = NEW.id; END"),
+                          + "; ".join(_credit("WHERE id = NEW.id")) + "; END"),
     "trg_msg_credit_ins": "AFTER INSERT ON messages BEGIN "
                           + "; ".join(_recredit_for_message("NEW")) + "; END",
     "trg_msg_credit_upd": (f"AFTER UPDATE OF {', '.join(_MSG_COLS)} ON messages "
@@ -190,11 +247,12 @@ TRIGGERS: dict[str, str] = {
 }
 _OURS = "(name GLOB 'trg_tx_*' OR name GLOB 'trg_msg_credit_*')"
 
-# Unset on a box: credit every pending row (`credit_rule` NULL: every row the
-# columns were added to) and rebuild the rollups from the credited rows. Renamed
-# when the rollups gain a sum (was 20261019_tx_credit_rollup; fee and VAT came
-# 2026-10-20), so each box rebuilds them once with the new column filled.
-_BACKFILL = "20261020_tx_rollup_fee_vat"
+# Unset on a box: recompute every row's credit and rebuild the rollups from the
+# credited rows. Renamed when the rollups gain a sum or the credit changes
+# meaning (was 20261019_tx_credit_rollup; fee and VAT came 2026-10-20 as
+# 20261020_tx_rollup_fee_vat; Converters' touch columns and the 1 h default
+# window 2026-10-27), so each box recomputes and rebuilds them once.
+_BACKFILL = "20261027_tx_credit_converters"
 _CHUNK = 20_000  # ids per backfill transaction
 
 
@@ -244,20 +302,22 @@ def _install(conn) -> int:
 
 
 def _credit_chunk(conn, lo: int, hi: int) -> None:
-    """Credit the pending rows with `lo <= id < hi`."""
-    conn.execute(text(_SET_CREDIT + "WHERE id >= :lo AND id < :hi AND credit_rule IS NULL"), {"lo": lo, "hi": hi})
+    """Recompute the credit of the rows with `lo <= id < hi`."""
+    for stmt in _credit("WHERE id >= :lo AND id < :hi"):
+        conn.execute(text(stmt), {"lo": lo, "hi": hi})
 
 
 def backfill(sync_engine) -> bool:
-    """Once per box (the `_BACKFILL` marker): credit the pending rows by id
-    range, one transaction per chunk, so an interrupted run resumes where it
-    stopped; then, in one transaction, rebuild both rollups from the credited
-    rows and set the marker. The triggers are already live, so a row written
-    meanwhile is credited by them. Returns whether it ran."""
+    """Once per box (the `_BACKFILL` marker): recompute every row's credit by
+    id range, one transaction per chunk (every row, since a renamed marker
+    means the credit's meaning changed: an interrupted run starts over, which
+    is idempotent); then, in one transaction, rebuild both rollups from the
+    credited rows and set the marker. The triggers are already live, so a row
+    written meanwhile is credited by them. Returns whether it ran."""
     with sync_engine.connect() as conn:
         if conn.execute(text("SELECT 1 FROM data_migrations WHERE name = :n"), {"n": _BACKFILL}).first():
             return False
-        lo, hi = conn.execute(text("SELECT MIN(id), MAX(id) FROM transactions WHERE credit_rule IS NULL")).one()
+        lo, hi = conn.execute(text("SELECT MIN(id), MAX(id) FROM transactions")).one()
     started = time.monotonic()
     if lo is not None:
         for at in range(lo, hi + 1, _CHUNK):
@@ -277,8 +337,8 @@ def ensure(sync_engine) -> bool:
     changed ones), then `backfill` once per box. Raises on failure; init_db
     logs it critical, boots on, and retries in the background until it
     succeeds (db.engine `_tx_rollup_retry`), so a failed install leaves the
-    previous triggers and an interrupted backfill resumes. Returns whether it
-    backfilled."""
+    previous triggers and an interrupted backfill runs again. Returns whether
+    it backfilled."""
     from db.engine import _DATA_MIGRATIONS_DDL
 
     with _immediate(sync_engine) as conn:
@@ -295,12 +355,13 @@ def ensure(sync_engine) -> bool:
 def credit_mismatches(conn, limit: int = 20) -> list[Any]:
     """Rows where the materialised credit disagrees with the attribution view
     (verification; the view itself scans all history, so not for a request)."""
+    pairs = (("sent_by_employee_id", "credit_employee_id"), ("rule", "credit_rule"),
+             ("automation_kind", "credit_automation_kind"), ("sender_id", "credit_sender_id"),
+             ("converter_id", "credit_converter_id"), ("converter_at", "credit_converter_at"))
     return conn.execute(text(
-        "SELECT t.id, v.sent_by_employee_id, v.rule, v.automation_kind, "
-        "t.credit_employee_id, t.credit_rule, t.credit_automation_kind "
+        f"SELECT t.id, {', '.join(f'v.{a}' for a, _ in pairs)}, {', '.join(f't.{b}' for _, b in pairs)} "
         "FROM per_employee_revenue_with_attribution v JOIN transactions t ON t.id = v.tx_id "
-        "WHERE v.sent_by_employee_id IS NOT t.credit_employee_id OR v.rule IS NOT t.credit_rule "
-        "OR v.automation_kind IS NOT t.credit_automation_kind LIMIT :n"), {"n": limit}).all()
+        f"WHERE {' OR '.join(f'v.{a} IS NOT t.{b}' for a, b in pairs)} LIMIT :n"), {"n": limit}).all()
 
 
 def rollup_mismatches(conn) -> list[Any]:

@@ -16,23 +16,21 @@ stories 41-48 and 52-54), in this order:
      on; with it off `subscription`, `rebill` and `referral` stay out of the
      report and `ppv_stream`, `tip_stream` are Unattributed). Any other kind
      the attribution view carries (`custom`) keeps the view's answer.
-       - Converters: the `per_employee_revenue_with_attribution` view's answer
-         (the linked message's sender, else for a standalone tip the 7-day
-         lookback).
+       - Converters (Infloww: "Sale is attributed to the last Chatter who
+         messaged the fan within X hours and Y minutes of the sale"): the
+         last human chatter's send to the fan at or before the sale, when it
+         is within the Agency's window (`attribution.converters_window_seconds`,
+         1 h by default, in effect at the sale's `occurred_at` like every
+         rule), else Unattributed. For every kind it rules: message PPV, a
+         tip linked to a message, a standalone tip, a post purchase or tip.
+         A human chatter's send is an Employee's own outbound 1:1 message:
+         no mass message, no automation, not the Automation Employee
+         (`tx_rollup.human_send`). The linked message's sender is not
+         credited as such: a PPV sent by A and bought after B chatted is B's.
        - Message sender: the linked message's sender, else Unattributed.
-
-         ASSUMPTION (for Needs-the-human): under the spec's kind map Message
-         sender only ever rules the Messages group (Posts and Tips offers no
-         Message sender, settings_schema.py:118), and for those sales the
-         Converters answer is also the linked sender or Unattributed (the
-         lookback serves only tips with no message, which are Posts and
-         Tips). So Message sender and Converters credit every sale the same,
-         and story 43's "the stricter rule is visibly stricter" is not met.
-         Rung 1 for the equivalence (the view's branches, migration 0042),
-         rung 4 for leaving the map as the spec wrote it (nothing written).
-         test_sales_attribution_rules' Message sender case pins it.
-         Overturned by a kind map that lets Message sender reach standalone
-         tips, or a stricter definition of Message sender.
+         Story 43's "the stricter rule is visibly stricter" holds: Message
+         sender never credits a sale without a linked message, and credits
+         the sender where Converters credits the last chatter.
        - Shift schedule: the Employees with an open Clock event on that
          Creator at `occurred_at`, or an agency-wide one (w4-a) whose
          Employee holds that Creator in an occurrence containing it
@@ -67,14 +65,18 @@ it was reassigned by hand, since the toggle names the sale's message, not its
 credit. Rung 4 (nothing is written; turning the toggle off restores it).
 Overturned if the owner wants a manual reassignment to keep the sale.
 
-The Converters answer is the attribution view's answer for the sale,
-materialised on the row at write time (`transactions.credit_*`, kept by the
-triggers in tx_rollup.py, which test_tx_rollup proves equal to the view), so
-no read computes a lookback. Employee reports sum the rollups (`tx_daily`,
-`tx_hourly`) for every Creator no Shift schedule rule reaches and whose Rules
-do not change inside the window (`grouped=True`); any other Creator's sales are
-read one by one, since the Clock events, or the Rules, at each sale's instant
-decide its credit. Sales records lists the same shares
+The touches a rule reads are materialised on the row at write time
+(`transactions.credit_*`, kept by the triggers in tx_rollup.py, which
+test_tx_rollup proves equal to the attribution view): the linked message's
+sender, and the converter candidate (the last human chatter's send within
+999 h 59 min, `tx_rollup.converter_lookback`, the one lookback), with the
+credit under the default 1 h window. So no read computes a lookback: `credit`
+narrows the candidate to the Agency's window (`tx_rollup.within_window`).
+Employee reports sum the rollups (`tx_daily`, `tx_hourly`) for every Creator
+no Shift schedule rule reaches, whose Rules do not change inside the window,
+keep Converters' default window and use no Message sender (`grouped=True`);
+any other Creator's sales are read one by one, since the Clock events, the
+Rules, or the touches at each sale's instant decide its credit. Sales records lists the same shares
 row by row (`credit_context` and `credit`), so both pages credit each sale to
 the same Employees for the same amount (roadmap S7).
 
@@ -146,15 +148,24 @@ class CreditedSale(NamedTuple):
 
 class Rules(NamedTuple):
     """An Agency's effective rule per revenue group ("converters", "sender",
-    "shift"; None is Unattributed), whether Shift schedule fell back, and its
+    "shift"; None is Unattributed), whether Shift schedule fell back, its
     two toggles: "Exclude welcome messages" and "Exclude the 20% OnlyFans
-    fee"."""
+    fee", and Converters' window in seconds."""
     messages: str
     posts_tips: str
     subscriptions: str | None
     fell_back: bool
     exclude_welcome: bool
     exclude_of_fee: bool
+    window_s: int = tx_rollup.CONVERTERS_WINDOW_DEFAULT_S
+
+    @property
+    def per_row(self) -> bool:
+        """Whether a rollup sum cannot credit these Rules' sales: a Shift
+        schedule or Message sender rule, or a Converters window other than
+        the default the stored credit was computed with."""
+        return ("shift" in (self.messages, self.posts_tips, self.subscriptions) or self.messages == "sender"
+                or self.window_s != tx_rollup.CONVERTERS_WINDOW_DEFAULT_S)
 
 
 # ASSUMPTION: a Creator with no owning Agency has no Sales Settings and is
@@ -215,7 +226,8 @@ def rules_for(sales: dict[str, Any], time_tracking_on: bool) -> Rules:
         messages, posts_tips, subscriptions = (
             "converters" if r == "shift" else r for r in asked)
     return Rules(messages, posts_tips, subscriptions, not time_tracking_on and "shift" in asked,
-                 sales.get("exclude_welcome") is True, sales.get("exclude_of_fee") is True)
+                 sales.get("exclude_welcome") is True, sales.get("exclude_of_fee") is True,
+                 attribution.get("converters_window_seconds", tx_rollup.CONVERTERS_WINDOW_DEFAULT_S))
 
 
 async def _rules_by_account(
@@ -287,7 +299,7 @@ class Context(NamedTuple):
     """What crediting a sale reads besides the sale: each Creator's Rules over
     the window, and each Shift schedule Creator's Clock spans `(employee_id,
     lo, hi)`. `per_row` are the Creators whose sales a rollup sum cannot
-    credit: a Shift schedule rule in the window, or Rules that change in it."""
+    credit: Rules that change in the window, or any `Rules.per_row`."""
     rules: dict[str, Timeline]
     clock: dict[str, list[tuple[int, datetime, datetime]]]
     shift_accounts: list[str]
@@ -323,21 +335,24 @@ async def credit_context(s, account_ids: list[str] | None, start: datetime | Non
             if owner.get(aid) == ev.agency_user_id:
                 clock[aid].append((ev.employee_id, lo, hi))
     return Context(rules, clock, shift_accounts,
-                   [a for a, tl in rules.items() if a in shift_accounts or len(tl) > 1])
+                   [a for a, tl in rules.items() if len(tl) > 1 or any(r.per_row for _, r in tl)])
 
 
 def credit(ctx: Context, account_id: str, kind: str, linked: bool, employee_id: int | None, rule: str | None,
            automation_kind: str | None, gross_cents: int, net_or_80_cents: int,
-           occurred_at: datetime | None) -> list[tuple[int | None, int, str]]:
+           occurred_at: datetime | None, *, sender_id: int | None = None, converter_id: int | None = None,
+           converter_at: datetime | None = None) -> list[tuple[int | None, int, str]]:
     """One sale's shares `(employee_id, cents, rule)` under its Agency's
-    rules, from its materialised credit (`employee_id`, `rule` and
-    `automation_kind` are `transactions.credit_*`, `linked` is `message_id IS
-    NOT NULL`); empty when a rule or toggle leaves it out of the reports.
-    A share's `rule` names what credited it: `manual`, `message` (the linked
-    message's sender), `tip_lookback`, `shift` or `unassigned`. The Rules
-    are those in effect at `occurred_at` (`rules_at`). A "No one" override
-    (`NO_ONE`; a rollup sum reads it as None) is one share to nobody, rule
-    `manual`.
+    rules, from its materialised credit (`employee_id`, `rule`,
+    `automation_kind`, `sender_id`, `converter_id` and `converter_at` are
+    `transactions.credit_*`, `linked` is `message_id IS NOT NULL`); empty
+    when a rule or toggle leaves it out of the reports. A share's `rule`
+    names what credited it: `manual`, `message` (the linked message's
+    sender), `converters`, `shift` or `unassigned`. The Rules are those in
+    effect at `occurred_at` (`rules_at`). A rollup sum (no touches, `at`
+    None) is only credited here for Rules that are not `per_row`, where the
+    stored credit is Converters' answer. A "No one" override (`NO_ONE`; a
+    rollup sum reads it as None) is one share to nobody, rule `manual`.
 
     ASSUMPTION: a "No one" sale whose kind Employee reports leave out
     (`_NEVER_REPORTED` with the opt-in off) is listed in the Unattributed
@@ -349,16 +364,20 @@ def credit(ctx: Context, account_id: str, kind: str, linked: bool, employee_id: 
     manual = rule == "manual"
     if not manual and by is None and kind in _NEVER_REPORTED:
         return []
-    # A linked sale's `automation_kind` is its message's (an unlinked tip's is its lookback's).
+    # A sale's `automation_kind` is its linked message's.
     if agency_rules.exclude_welcome and linked and automation_kind in WELCOME_KINDS:
         return []
     amount = net_or_80_cents if agency_rules.exclude_of_fee else gross_cents
     if manual:
         return [(employee_id or None, amount, "manual")]
-    if by == "converters" and kind in REVENUE_KINDS and rule in ("message", "tip_lookback"):
-        return [(employee_id, amount, rule)]
-    if by == "sender" and rule == "message":  # Converters' answer too (ASSUMPTION above)
-        return [(employee_id, amount, rule)]
+    if by == "converters" and kind in REVENUE_KINDS:
+        if agency_rules.window_s == tx_rollup.CONVERTERS_WINDOW_DEFAULT_S:
+            if rule == "converters":
+                return [(employee_id, amount, rule)]
+        elif tx_rollup.within_window(occurred_at, converter_at, agency_rules.window_s):
+            return [(converter_id, amount, "converters")]
+    if by == "sender" and linked and sender_id is not None:
+        return [(sender_id, amount, "message")]
     if by == "shift":
         on = {eid for eid, lo, hi in ctx.clock[account_id] if lo <= occurred_at < hi}
         if on:
@@ -370,7 +389,9 @@ def credit_row(ctx: Context, r: Any) -> list[tuple[int | None, int, str]]:
     """`credit` of a `transactions` row `r` (its account_id, kind, message_id,
     credit_* columns, amount_cents, net_cents and occurred_at)."""
     return credit(ctx, r.account_id, r.kind, r.message_id is not None, r.credit_employee_id, r.credit_rule,
-                  r.credit_automation_kind, r.amount_cents, net_or_80(r.amount_cents, r.net_cents), r.occurred_at)
+                  r.credit_automation_kind, r.amount_cents, net_or_80(r.amount_cents, r.net_cents), r.occurred_at,
+                  sender_id=r.credit_sender_id, converter_id=r.credit_converter_id,
+                  converter_at=r.credit_converter_at)
 
 
 CREDITED_KINDS = REVENUE_KINDS + SUBSCRIPTION_KINDS
@@ -384,8 +405,8 @@ async def credited_sales(account_ids: list[str] | None, start: datetime | None,
     and FALLBACK_LINE when any Agency owning a Creator in scope has Shift
     schedule credited by Converters because its Time tracking is off.
 
-    `grouped=True` sums the sales of every Creator no Shift schedule rule
-    reaches and whose Rules hold for the whole window from the hourly rollup
+    `grouped=True` sums the sales of every Creator whose Rules hold for the
+    whole window and are not `Rules.per_row` from the hourly rollup
     (`occurred_at` None, `sales` the count), and still lists the other
     Creators' sales one by one (`Context.per_row`). With `bucket` ("hour" or
     "minute", `tx_rollup.window_sums`) the sums are per UTC hour or minute,
@@ -410,7 +431,8 @@ async def credited_sales(account_ids: list[str] | None, start: datetime | None,
         per_row = ctx.per_row if grouped else account_ids
         if per_row is None or per_row:
             q = (select(t.id, t.account_id, t.kind, t.message_id, t.credit_employee_id, t.credit_rule,
-                        t.credit_automation_kind, t.amount_cents, t.net_cents, t.occurred_at)
+                        t.credit_automation_kind, t.credit_sender_id, t.credit_converter_id,
+                        t.credit_converter_at, t.amount_cents, t.net_cents, t.occurred_at)
                  .where(t.status.in_(TRACKED_STATUSES), t.kind.in_(CREDITED_KINDS))
                  .order_by(t.id))
             if per_row is not None:

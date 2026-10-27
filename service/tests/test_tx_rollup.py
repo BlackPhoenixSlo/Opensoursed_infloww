@@ -3,12 +3,14 @@
 
 The triggers keep `transactions.credit_*` equal to the attribution view's row for every sale the view
 carries, and `tx_hourly` / `tx_daily` equal to the ledger summed per bucket, across every kind of write the writers make:
-a sale inserted before or after its message, a relink (message_id repointed), a late lookback message, a
-sender changed, a message deleted (placeholder adoption), a manual reassign and its undo, a status flip, an
-amount, net, fee or VAT corrected, a sale deleted. The oracle is the view itself (revision 0069) and a GROUP BY over
-the ledger, compared after every step of a seeded random history. `window_sums` over any window equals the
+a sale inserted before or after its message, a relink (message_id repointed), a late chatter message, a
+sender changed (to a human, an automation, the Automation Employee, a mass send), a message moved or deleted
+(placeholder adoption), a manual reassign and its undo, a status flip, an amount, net, fee or VAT corrected, a
+sale deleted. The touches (the linked sender, the converter candidate: the last human chatter's send within
+999 h 59 min) and the credit under Converters' default 1 h window are checked against the view itself
+(revision 0099) and the rollups against a GROUP BY over the ledger, after every step of a seeded random history. `window_sums` over any window equals the
 same sums read straight off the ledger rows. The once-per-box backfill credits a ledger written before the
-triggers existed, chunk by chunk, and resumes where an interrupted run stopped. The triggers install in one
+triggers existed, chunk by chunk, and an interrupted run starts over. The triggers install in one
 transaction, only the missing or changed ones. A row whose `occurred_at` SQLite cannot parse, or one inserted
 with its credit already set, keeps both exact; hard-deleting an Employee (the FK's ON DELETE SET NULL on
 their messages) recredits their sales.
@@ -38,7 +40,9 @@ ENGINE = sa.create_engine(os.environ["CHATTERLY_DB_URL"])
 ACCOUNTS = ("9100001", "9100002")
 KINDS = ("ppv_message", "ppv_post", "tip", "tip_post", "custom", "subscription", "tip_stream")
 STATUSES = ("cleared", "pending", "refunded")
-EMPLOYEES = (None, 11, 12, 13)
+# 14 is the Automation sentinel (employees.get_automation_employee_id): its sends are no chatter's touch.
+AUTOMATION_EMPLOYEE = 14
+EMPLOYEES = (None, 11, 12, 13, AUTOMATION_EMPLOYEE)
 AUTOMATIONS = (None, None, "welcome_new_sub", "reply_mass_funnel")
 T0 = datetime(2026, 3, 1, 9, 0)
 _TS = "%Y-%m-%d %H:%M:%S.%f"
@@ -60,6 +64,8 @@ async def _seed_accounts() -> None:
     async with get_session() as s:
         for aid in ACCOUNTS:
             s.add(Account(id=aid, nickname=f"rollup_{aid}", color="#aaaaaa"))
+        await s.execute(text("INSERT INTO employees (id, display_name, color, is_active, created_at) "
+                             "VALUES (:e, 'Automation', '#888888', 0, :c)"), {"e": AUTOMATION_EMPLOYEE, "c": T0})
 
 
 asyncio.run(_seed_accounts())
@@ -88,20 +94,22 @@ class History:
         self.txs: list[int] = []
 
     def _at(self) -> datetime:
-        # Distinct, increasing timestamps with a random offset (no lookback ties).
-        self.minute += self.rng.randint(1, 600)
+        # Distinct, increasing timestamps with a random offset (no lookback ties), dense enough that many
+        # sales have a chatter send inside the 1 h window and many do not.
+        self.minute += self.rng.randint(1, 45)
         return T0 + timedelta(minutes=self.minute, seconds=self.rng.randint(0, 59),
                               microseconds=self.rng.randint(0, 999_999))
 
     def message(self) -> None:
         r = self.rng
-        aid, fan, mid = r.choice(ACCOUNTS), r.randint(1, 4), self.next_mid
+        aid, fan, mid = r.choice(ACCOUNTS), r.randint(1, 3), self.next_mid
         self.next_mid += 1
         _sql("INSERT INTO messages (account_id, fan_id, message_id, direction, sender_name, body, media_ids, "
              "media_count, price_cents, is_tip, is_unsent, is_promise, sent_by_employee_id, automation_kind, "
-             "created_at, ingested_at) VALUES (:a, :f, :m, :d, '', '', '[]', 0, 0, 0, 0, 0, :e, :k, :c, :c)",
+             "mass_run_id, created_at, ingested_at) "
+             "VALUES (:a, :f, :m, :d, '', '', '[]', 0, 0, 0, 0, 0, :e, :k, :mr, :c, :c)",
              a=aid, f=fan, m=mid, d=r.choice(("out", "out", "out", "in")), e=r.choice(EMPLOYEES),
-             k=r.choice(AUTOMATIONS), c=_ts(self._at()))
+             k=r.choice(AUTOMATIONS), mr=r.choice((None, None, None, 5)), c=_ts(self._at()))
         self.msgs.append((aid, fan, mid))
 
     def sale(self) -> None:
@@ -110,7 +118,7 @@ class History:
         if linked:
             aid, fan, mid = r.choice(self.msgs)
         else:
-            aid, fan, mid = r.choice(ACCOUNTS), r.randint(1, 4), None
+            aid, fan, mid = r.choice(ACCOUNTS), r.randint(1, 3), None
             if r.random() < 0.1:
                 mid = self.next_mid  # a sale whose message is not here yet
                 self.next_mid += 1
@@ -145,13 +153,13 @@ class History:
                  a=aid, f=fan, m=None if taken else mid, t=tid)
         elif step == "sender":
             aid, fan, mid = r.choice(self.msgs)
-            _sql("UPDATE messages SET sent_by_employee_id = :e, automation_kind = :k WHERE account_id = :a "
-                 "AND fan_id = :f AND message_id = :m", e=r.choice(EMPLOYEES), k=r.choice(AUTOMATIONS),
-                 a=aid, f=fan, m=mid)
+            _sql("UPDATE messages SET sent_by_employee_id = :e, automation_kind = :k, mass_run_id = :mr "
+                 "WHERE account_id = :a AND fan_id = :f AND message_id = :m", e=r.choice(EMPLOYEES),
+                 k=r.choice(AUTOMATIONS), mr=r.choice((None, None, 5)), a=aid, f=fan, m=mid)
         elif step == "move_message":
             aid, fan, mid = r.choice(self.msgs)
             _sql("UPDATE messages SET created_at = :c WHERE account_id = :a AND fan_id = :f AND message_id = :m",
-                 c=_ts(self._at() - timedelta(days=r.randint(0, 9))), a=aid, f=fan, m=mid)
+                 c=_ts(self._at() - timedelta(minutes=r.randint(0, 180))), a=aid, f=fan, m=mid)
         elif step == "delete_message":
             msg = r.choice(self.msgs)
             self.msgs.remove(msg)
@@ -189,17 +197,31 @@ def case_credit_and_rollup_stay_exact_across_every_write():
         rules = {r for (r,) in conn.execute(text(
             "SELECT DISTINCT rule FROM per_employee_revenue_with_attribution"))}
         n = conn.execute(text("SELECT COUNT(*) FROM per_employee_revenue_with_attribution")).scalar()
-    assert rules == {"manual", "message", "tip_lookback", "unassigned"}, f"every rule exercised, got {rules}"
+    assert rules == {"manual", "converters", "unassigned"}, f"every rule exercised, got {rules}"
     assert n > 50, f"the view carried {n} sales; the history is too thin to prove anything"
+    # Both sides of the window and every kind of send that is no touch were exercised.
+    [(inside, outside, linked_other)] = _sql(
+        "SELECT SUM(credit_rule = 'converters'), "
+        "SUM(credit_rule = 'unassigned' AND credit_converter_id IS NOT NULL), "
+        "SUM(credit_rule = 'converters' AND credit_sender_id IS NOT credit_employee_id AND message_id IS NOT NULL) "
+        "FROM transactions")
+    assert inside and outside and linked_other, (inside, outside, linked_other)
+    assert not _sql("SELECT 1 FROM transactions WHERE credit_converter_id = :e", e=AUTOMATION_EMPLOYEE)
+
+
+def case_the_sql_revenue_kinds_are_the_python_ones():
+    from attribution_backfill import REVENUE_KINDS
+    assert tx_rollup._REVENUE == "(" + ", ".join(f"'{k}'" for k in REVENUE_KINDS) + ")"
 
 
 def case_one_message_moves_every_sale_it_credits():
-    """The named writes, one at a time, with the credit written out by hand."""
+    """The named writes, one at a time, with the credit written out by hand: (employee, rule, automation
+    kind, linked sender, converter candidate)."""
     aid, fan = ACCOUNTS[0], 99
 
     def credit(tid):
-        return tuple(_sql("SELECT credit_employee_id, credit_rule, credit_automation_kind FROM transactions "
-                          "WHERE id = :t", t=tid)[0])
+        return tuple(_sql("SELECT credit_employee_id, credit_rule, credit_automation_kind, credit_sender_id, "
+                          "credit_converter_id FROM transactions WHERE id = :t", t=tid)[0])
 
     def tx(kind, at, mid=None):
         return _sql("INSERT INTO transactions (account_id, fan_id, kind, message_id, amount_cents, currency, "
@@ -212,30 +234,50 @@ def case_one_message_moves_every_sale_it_credits():
              "created_at, ingested_at) VALUES (:a, :f, :m, 'out', '', '', '[]', 0, 0, 0, 0, 0, :e, :k, :c, :c)",
              a=aid, f=fan, m=mid, e=emp, k=kind, c=_ts(at))
 
+    nobody = (None, "unassigned", None, None, None)
     day = datetime(2026, 4, 10, 12, 0)
     ppv = tx("ppv_message", day, mid=555)
-    tip = tx("tip", day + timedelta(hours=5))
-    assert credit(ppv) == (None, "unassigned", None) and credit(tip) == (None, "unassigned", None)
+    tip = tx("tip", day + timedelta(minutes=30))
+    assert credit(ppv) == nobody and credit(tip) == nobody
     msg(555, day - timedelta(minutes=1), 11, "welcome_new_sub")      # the PPV's message arrives late
-    assert credit(ppv) == (11, "message", "welcome_new_sub"), credit(ppv)
-    assert credit(tip) == (11, "tip_lookback", "welcome_new_sub"), "the same message is the tip's lookback"
-    msg(556, day + timedelta(hours=1), 13)                            # a later outbound: the tip's lookback now
-    assert credit(tip) == (13, "tip_lookback", None) and credit(ppv)[0] == 11
-    _sql("UPDATE messages SET sent_by_employee_id = 12 WHERE account_id = :a AND fan_id = :f AND message_id = 556",
+    assert credit(ppv) == (None, "unassigned", "welcome_new_sub", 11, None), credit(ppv)
+    assert credit(tip) == nobody, credit(tip)
+    msg(554, day - timedelta(minutes=2), AUTOMATION_EMPLOYEE)         # the Automation Employee: no touch either
+    assert credit(ppv)[4] is None and credit(tip) == nobody
+    msg(556, day - timedelta(minutes=10), 13)                         # a chatter's send: both sales' converter
+    assert credit(ppv) == (13, "converters", "welcome_new_sub", 11, 13), credit(ppv)
+    assert credit(tip) == (13, "converters", None, None, 13), credit(tip)
+    msg(558, day + timedelta(minutes=10), 12)                         # after the PPV, before the tip
+    assert credit(tip) == (12, "converters", None, None, 12) and credit(ppv)[0] == 13
+    _sql("UPDATE messages SET automation_kind = 'reply_mass_funnel' WHERE account_id = :a AND fan_id = :f "
+         "AND message_id = 558", a=aid, f=fan)                          # it was an automation's after all
+    assert credit(tip) == (13, "converters", None, None, 13), credit(tip)
+    _sql("UPDATE messages SET sent_by_employee_id = 11 WHERE account_id = :a AND fan_id = :f AND message_id = 556",
          a=aid, f=fan)
-    assert credit(tip) == (12, "tip_lookback", None)
+    assert credit(tip)[0] == 11 and credit(ppv)[0] == 11
     _sql("UPDATE transactions SET attributed_employee_id = 13 WHERE id = :t", t=ppv)  # manual reassign
-    assert credit(ppv) == (13, "manual", "welcome_new_sub")
+    assert credit(ppv) == (13, "manual", "welcome_new_sub", 11, 11), credit(ppv)
     _sql("UPDATE transactions SET attributed_employee_id = NULL WHERE id = :t", t=ppv)
-    assert credit(ppv) == (11, "message", "welcome_new_sub")
+    assert credit(ppv) == (11, "converters", "welcome_new_sub", 11, 11), credit(ppv)
+    _sql("UPDATE messages SET created_at = :c WHERE account_id = :a AND fan_id = :f AND message_id = 556",
+         c=_ts(day - timedelta(minutes=61)), a=aid, f=fan)              # moved out of the PPV's hour
+    assert credit(ppv) == (None, "unassigned", "welcome_new_sub", 11, 11), credit(ppv)
+    assert credit(tip) == (None, "unassigned", None, None, 11), credit(tip)
+    _sql("UPDATE messages SET created_at = :c WHERE account_id = :a AND fan_id = :f AND message_id = 556",
+         c=_ts(day - timedelta(minutes=60)), a=aid, f=fan)              # exactly 1 h: inside
+    assert credit(ppv)[:2] == (11, "converters"), credit(ppv)[:2]
     _sql("DELETE FROM messages WHERE account_id = :a AND fan_id = :f AND message_id = 556", a=aid, f=fan)
-    assert credit(tip) == (11, "tip_lookback", "welcome_new_sub"), "back to the earlier lookback"
+    assert credit(ppv) == (None, "unassigned", "welcome_new_sub", 11, None) and credit(tip) == nobody
     _sql("DELETE FROM messages WHERE account_id = :a AND fan_id = :f AND message_id = 555", a=aid, f=fan)
-    assert credit(ppv) == (None, "unassigned", None) and credit(tip) == (None, "unassigned", None)
-    msg(557, day - timedelta(days=8), 11)                             # outside the 7-day lookback
-    assert credit(tip) == (None, "unassigned", None)
+    assert credit(ppv) == nobody and credit(tip) == nobody
+    msg(557, day - timedelta(days=40), 11)                            # far back: still the candidate
+    assert credit(tip) == (None, "unassigned", None, None, 11), credit(tip)
     _sql("UPDATE transactions SET message_id = 557 WHERE id = :t", t=ppv)  # relink
-    assert credit(ppv) == (11, "message", None)
+    assert credit(ppv) == (None, "unassigned", None, 11, 11), credit(ppv)
+    _sql("UPDATE messages SET created_at = :c WHERE account_id = :a AND fan_id = :f AND message_id = 557",
+         c=_ts(day - timedelta(hours=999, minutes=59, seconds=1)), a=aid, f=fan)  # past 999 h 59 min
+    assert credit(ppv) == (None, "unassigned", None, 11, None), credit(ppv)
+    assert credit(tip) == nobody, credit(tip)
     _assert_exact("after the named writes")
 
 
@@ -351,7 +393,7 @@ def case_no_emptied_bucket_is_left_whichever_trigger_fires_first():
                    "status, source) VALUES (:a, :f, 'ppv_message', 600, 'USD', :o, 'cleared', 'ledger') "
                    "RETURNING id", a=aid, f=fan, o=_ts(at + timedelta(minutes=3)))[0][0]
         _sql("UPDATE transactions SET message_id = :m WHERE id = :t", m=mid, t=tid)
-        assert _sql("SELECT credit_rule FROM transactions WHERE id = :t", t=tid) == [("message",)]
+        assert _sql("SELECT credit_rule FROM transactions WHERE id = :t", t=tid) == [("converters",)]
         _assert_exact(f"after a relink, {recreate or 'install order'} last")
         _sql("UPDATE transactions SET message_id = NULL WHERE id = :t", t=tid)
         _assert_exact(f"after an unlink, {recreate or 'install order'} last")
@@ -435,7 +477,7 @@ def case_hard_deleting_an_employee_recredits_their_sales():
                "'ledger') RETURNING id", a=aid, f=fan, o=_ts(at + timedelta(minutes=5)))[0][0]
     tip = _sql("INSERT INTO transactions (account_id, fan_id, kind, amount_cents, currency, occurred_at, status, "
                "source) VALUES (:a, :f, 'tip', 400, 'USD', :o, 'cleared', 'ledger') RETURNING id",
-               a=aid, f=fan, o=_ts(at + timedelta(hours=2)))[0][0]
+               a=aid, f=fan, o=_ts(at + timedelta(minutes=50)))[0][0]
     credited = "SELECT credit_employee_id FROM transactions WHERE id IN (:p, :t) ORDER BY id"
     assert _sql(credited, p=ppv, t=tip) == [(eid,), (eid,)]
     with ENGINE.begin() as conn:
@@ -451,7 +493,8 @@ def case_backfill_credits_a_ledger_written_before_the_triggers_and_resumes():
         for name in tx_rollup.TRIGGERS:
             conn.execute(text(f"DROP TRIGGER {name}"))
         conn.execute(text("UPDATE transactions SET credit_employee_id = NULL, credit_rule = NULL, "
-                          "credit_automation_kind = NULL"))
+                          "credit_automation_kind = NULL, credit_sender_id = NULL, credit_converter_id = NULL, "
+                          "credit_converter_at = NULL"))
         conn.execute(text("UPDATE tx_hourly SET gross_cents = gross_cents + 1"))
         conn.execute(text("DELETE FROM tx_daily"))
     assert tx_rollup.ensure(ENGINE) is False, "the marker is set: no second backfill"
@@ -460,7 +503,7 @@ def case_backfill_credits_a_ledger_written_before_the_triggers_and_resumes():
     _sql("DELETE FROM data_migrations WHERE name = :n", n=tx_rollup._BACKFILL)
     pending = _sql("SELECT COUNT(*) FROM transactions")[0][0]
 
-    # Interrupted after its first chunk: that chunk stays credited, the marker unset.
+    # Interrupted after its first chunk: that chunk stays credited, the marker unset; the next run starts over.
     chunk, real, calls = tx_rollup._CHUNK, tx_rollup._credit_chunk, []
 
     def flaky(conn, lo, hi):
@@ -482,7 +525,7 @@ def case_backfill_credits_a_ledger_written_before_the_triggers_and_resumes():
     History(seed=3).sale()  # the triggers are live while it is pending
 
     try:
-        assert tx_rollup.ensure(ENGINE) is True, "the next boot resumes"
+        assert tx_rollup.ensure(ENGINE) is True, "the next boot runs it again"
     finally:
         tx_rollup._CHUNK = chunk
     assert not _sql("SELECT 1 FROM transactions WHERE credit_rule IS NULL")

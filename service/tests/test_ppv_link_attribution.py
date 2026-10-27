@@ -96,7 +96,8 @@ async def _seed_base() -> None:
         if await s.get(Account, AID) is None:
             s.add(Account(id=AID, nickname="Acc 1"))
         if await s.get(Employee, AUTOMATION) is None:
-            s.add(Employee(id=AUTOMATION, display_name="Automation", is_active=True))
+            # inactive, as employees.get_automation_employee_id finds the sentinel
+            s.add(Employee(id=AUTOMATION, display_name="Automation", is_active=False))
         if await s.get(Employee, BILL) is None:
             # Bill works for the signed-in owner's Agency
             s.add(Employee(id=BILL, display_name="Bill", is_active=True,
@@ -108,12 +109,13 @@ async def _seed_base() -> None:
 
 
 async def _create_view() -> None:
-    # The view's current revision, 0069: it keeps 0042's branches and rows and
-    # appends `tx_id`, which the reassign route reads (ticket 34).
+    # The view's current revision, 0099 (Converters: the last human chatter
+    # within the default hour); it carries `tx_id`, which the reassign route
+    # reads (ticket 34).
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     path = os.path.join(here, "db", "migrations", "versions",
-                        "20261016_0300_attr_view_sales_records.py")
-    spec = importlib.util.spec_from_file_location("mig0069", path)
+                        "20261027_0100_converters_window.py")
+    spec = importlib.util.spec_from_file_location("mig0099", path)
     mig = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mig)
     async with get_session() as s:
@@ -378,8 +380,9 @@ async def case_view_exactly_once() -> None:
     await _create_view()
     fan = 208
     async with get_session() as s:
-        # A: linked ppv (message match).
-        s.add(_msg(fan, 20801, SALE - timedelta(hours=1), BILL,
+        # A: linked ppv (message match), sent 2 h before: no chatter in the
+        # hour, so these sales stay Unattributed under Converters.
+        s.add(_msg(fan, 20801, SALE - timedelta(hours=2), BILL,
                    price_cents=777, is_paid=True))
         s.add(_tx(fan, cents=777, message_id=20801))
         # C: standalone tip (message_id NULL).

@@ -188,13 +188,16 @@ PRIORITY_MASS_KIND = "priority_mass"
 
 async def channel_sales(s, *, account_ids: list[str] | None, start: datetime,
                         end: datetime) -> list[ChannelSales]:
-    """Per Creator and credited Employee (`transactions.credit_employee_id`),
-    the cents of the sales in the window by channel — `direct` (a sale of a
-    message, credited by its sender or by hand), `mass` (the same, of a mass
-    message), `priority` (the same, of a Priority mass message: one direct
-    message per fan, sent by `automations/priority_mass` in the name of the
-    Employee who launched it) and `tip` (a chat tip with no message, credited
-    by the 7-day lookback or by hand) — and `spenders`, the fans who paid a
+    """Per Creator and credited Employee (a manual override, else the linked
+    message's sender `transactions.credit_sender_id`, else for a chat tip
+    with no message the stored Converters credit), the cents of the sales in
+    the window by channel — `direct` (a sale of a message, credited by its
+    sender or by hand), `mass` (the same, of a mass message), `priority`
+    (the same, of a Priority mass message: one direct message per fan, sent
+    by `automations/priority_mass` in the name of the Employee who launched
+    it) and `tip` (a chat tip with no message, credited by hand or to the
+    last human chatter within the default 1 h, `transactions.credit_rule`
+    `converters`) — and `spenders`, the fans who paid a
     direct message or tipped. Not by the Sales Settings rules: Infloww's
     "Direct message sales" is the sales of the messages an employee sent. A sale of an
     automation's message, or of an OnlyFans-native mass message (it carries
@@ -209,21 +212,24 @@ async def channel_sales(s, *, account_ids: list[str] | None, start: datetime,
     fee_off = sorted(a for a, tl in rules.items() if len(tl) == 1 and rules_at(tl, None).exclude_of_fee)
     p = tx_rollup.Binds()
     fmt = tx_rollup.TS_FORMAT
-    conds = [p.in_("t.status", TRACKED_STATUSES), p.in_("t.kind", REVENUE_KINDS), "t.credit_employee_id IS NOT NULL",
+    # Credited by hand, else by the linked message's sender, else (a tip with no message) by Converters.
+    emp = ("(CASE WHEN t.credit_rule = 'manual' THEN t.credit_employee_id "
+           "WHEN t.message_id IS NOT NULL THEN t.credit_sender_id "
+           "WHEN t.credit_rule = 'converters' THEN t.credit_employee_id END)")
+    conds = [p.in_("t.status", TRACKED_STATUSES), p.in_("t.kind", REVENUE_KINDS), f"{emp} IS NOT NULL",
              f"t.occurred_at >= {p.bind(start.strftime(fmt))}", f"t.occurred_at <= {p.bind(end.strftime(fmt))}"]
     if account_ids is not None:
         conds.append(p.in_("t.account_id", account_ids))
     if (auto := await automation_id()) is not None:
-        conds.append(f"t.credit_employee_id != {p.bind(auto)}")
-    # Credited by hand, or by `rule` to a human (not an automation's send).
-    def by(rule: str) -> str:
-        return f"(t.credit_rule = 'manual' OR (t.credit_rule = '{rule}' AND t.credit_automation_kind IS NULL))"
-    # The same credit fields as `by`: a Priority mass message's sale reassigned by hand stays one.
-    priority = f"(t.credit_rule IN ('manual', 'message') AND t.credit_automation_kind = {p.bind(PRIORITY_MASS_KIND)})"
-    channel = (f"CASE WHEN t.message_id IS NOT NULL THEN (CASE WHEN {priority} THEN 'priority' WHEN {by('message')} "
+        conds.append(f"{emp} != {p.bind(auto)}")
+    # A linked sale: credited by hand, or to a human (not an automation's send); a Priority mass message's sale
+    # reassigned by hand stays one.
+    priority = f"t.credit_automation_kind = {p.bind(PRIORITY_MASS_KIND)}"
+    channel = (f"CASE WHEN t.message_id IS NOT NULL THEN (CASE WHEN {priority} THEN 'priority' "
+               "WHEN t.credit_rule = 'manual' OR t.credit_automation_kind IS NULL "
                "THEN (CASE WHEN m.mass_run_id IS NULL THEN 'direct' ELSE 'mass' END) END) "
-               f"WHEN t.kind = 'tip' AND {by('tip_lookback')} THEN 'tip' END")
-    sales = (f"SELECT t.account_id, t.credit_employee_id AS employee_id, t.fan_id, t.occurred_at, "
+               "WHEN t.kind = 'tip' THEN 'tip' END")
+    sales = (f"SELECT t.account_id, {emp} AS employee_id, t.fan_id, t.occurred_at, "
              f"t.amount_cents AS gross, {tx_rollup.net_or_80_sql('t')} AS net, {channel} AS channel "
              "FROM transactions t LEFT JOIN messages m ON m.account_id = t.account_id AND m.fan_id = t.fan_id "
              f"AND m.message_id = t.message_id WHERE {' AND '.join(conds)}")

@@ -35,6 +35,8 @@ from functools import lru_cache
 from typing import Any, Callable
 from zoneinfo import available_timezones
 
+from tx_rollup import CONVERTERS_WINDOW_MAX_S, CONVERTERS_WINDOW_MIN_S
+
 Error = tuple[str, str]
 Check = Callable[[Any], "str | None"]
 
@@ -112,6 +114,14 @@ def _minutes(v: Any) -> str | None:
     return None if ok else "must be a whole number from 1 to 999"
 
 
+def _converters_window(v: Any) -> str | None:
+    # Infloww's hours (0-999) and minutes (0-59) inputs, never both 0: 1 min to 999 h 59 min, in seconds.
+    ok = (isinstance(v, int) and not isinstance(v, bool)
+          and CONVERTERS_WINDOW_MIN_S <= v <= CONVERTERS_WINDOW_MAX_S and v % 60 == 0)
+    return None if ok else (f"must be whole minutes in seconds, from {CONVERTERS_WINDOW_MIN_S} "
+                            f"to {CONVERTERS_WINDOW_MAX_S}")
+
+
 def _fields(raw: dict[str, Any], checks: dict[str, Any], path: str, errors: list[Error]) -> dict[str, Any]:
     """`raw` with each key in `checks` that fails dropped (and its error
     recorded); a check that is a dict is a nested object checked the same way.
@@ -160,6 +170,7 @@ def _sales(raw: dict[str, Any], errors: list[Error]) -> dict[str, Any]:
             "messages": _enum("shift", "sender", "converters"),
             "posts_tips": _enum("shift", "converters"),
             "subscriptions_chatter_opt_in": _bool,
+            "converters_window_seconds": _converters_window,
         },
     }, "sales", errors)
 

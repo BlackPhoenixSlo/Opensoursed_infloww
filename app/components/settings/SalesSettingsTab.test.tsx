@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 import { jsonRes, renderWithProviders } from "@/test-utils";
-import SalesSettingsTab from "@/components/settings/SalesSettingsTab";
+import SalesSettingsTab, { windowAfter } from "@/components/settings/SalesSettingsTab";
 
 type Call = { method: string; url: string; body: unknown };
 
@@ -30,7 +30,7 @@ const DEFAULTS = {
   exclude_welcome: false,
   exclude_of_fee: false,
   multi_employee_shift: false,
-  attribution: { messages: "shift", posts_tips: "shift", subscriptions_chatter_opt_in: false },
+  attribution: { messages: "shift", posts_tips: "shift", subscriptions_chatter_opt_in: false, converters_window_seconds: 3600 },
 };
 
 beforeEach(() => {
@@ -144,7 +144,7 @@ describe("SalesSettingsTab", () => {
     await waitFor(() => expect(puts()).toHaveLength(1));
     expect(puts()[0].body).toEqual({
       ...DEFAULTS,
-      attribution: { messages: "shift", posts_tips: "converters", subscriptions_chatter_opt_in: true },
+      attribution: { ...DEFAULTS.attribution, posts_tips: "converters", subscriptions_chatter_opt_in: true },
     });
   });
 
@@ -153,7 +153,10 @@ describe("SalesSettingsTab", () => {
       exclude_welcome: false,
       exclude_of_fee: true,
       multi_employee_shift: false,
-      attribution: { messages: "converters", posts_tips: "converters", subscriptions_chatter_opt_in: true },
+      attribution: {
+        messages: "converters", posts_tips: "converters", subscriptions_chatter_opt_in: true,
+        converters_window_seconds: 12600,
+      },
       legacy_key: 7,
     };
     getReply = () => jsonRes({ tab: "sales", config: stored });
@@ -183,8 +186,43 @@ describe("SalesSettingsTab", () => {
       exclude_welcome: false,
       exclude_of_fee: false,
       multi_employee_shift: false,
-      attribution: { messages: "sender", posts_tips: "shift", subscriptions_chatter_opt_in: false },
+      attribution: { messages: "sender", posts_tips: "shift", subscriptions_chatter_opt_in: false,
+        converters_window_seconds: 3600 },
     });
+  });
+
+  it("shows Converters' window as 1 hour 0 minutes by default with Infloww's wording", async () => {
+    await mountLoaded();
+    expect(screen.getByRole("spinbutton", { name: "Converters window hours" })).toHaveValue(1);
+    expect(screen.getByRole("spinbutton", { name: "Converters window minutes" })).toHaveValue(0);
+    expect(screen.getByText(/Sale is attributed to the last Chatter who messaged the fan within/)).toBeInTheDocument();
+    expect(screen.getByText(/If no Chatter messaged the fan within 1 hours and 0 minutes before they unlock the/))
+      .toHaveTextContent("the sale will not be attributed to anyone.");
+  });
+
+  it("3 hours 30 minutes saves converters_window_seconds 12600; a stored window pre-fills both inputs", async () => {
+    await mountLoaded();
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Converters window hours" }), { target: { value: "3" } });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Converters window minutes" }), { target: { value: "30" } });
+    fireEvent.click(save());
+    await waitFor(() => expect(puts()).toHaveLength(1));
+    expect(puts()[0].body).toEqual({ ...DEFAULTS, attribution: { ...DEFAULTS.attribution, converters_window_seconds: 12600 } });
+
+    cleanup();
+    getReply = () => jsonRes({ tab: "sales", config: { attribution: { converters_window_seconds: 999 * 3600 + 59 * 60 } } });
+    await mountLoaded();
+    expect(screen.getByRole("spinbutton", { name: "Converters window hours" })).toHaveValue(999);
+    expect(screen.getByRole("spinbutton", { name: "Converters window minutes" })).toHaveValue(59);
+  });
+
+  it("never saves a zero window: clearing the hours snaps to 1 hour, clearing the minutes to 1 minute; bounds clamp", () => {
+    expect(windowAfter(3600, "hours", "")).toBe(3600);
+    expect(windowAfter(3600, "hours", "0")).toBe(3600);
+    expect(windowAfter(60, "minutes", "")).toBe(60);
+    expect(windowAfter(3600 + 60, "hours", "0")).toBe(60);
+    expect(windowAfter(3600, "hours", "5000")).toBe(999 * 3600);
+    expect(windowAfter(3600, "minutes", "75")).toBe(3600 + 59 * 60);
+    expect(windowAfter(3600, "minutes", "-3")).toBe(3600);
   });
 
   it("a backdated save is sent with its effective time and names its reach; a time later than now is refused", async () => {

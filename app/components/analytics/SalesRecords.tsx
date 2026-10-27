@@ -107,7 +107,7 @@ export const SALES_TYPES: { kind: string; label: string }[] = [
 const RULE_LABELS: Record<string, string> = {
   manual: "Manual",
   message: "Message sender",
-  tip_lookback: "Tip lookback",
+  converters: "Converters",
   shift: "Shift schedule",
   unassigned: "Unassigned",
 };

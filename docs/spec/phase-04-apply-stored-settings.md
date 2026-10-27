@@ -178,8 +178,8 @@ Things that stay as they are
 - **Sales attribution rules**, per transaction, in this order:
   1. A manual `attributed_employee_id` wins.
   2. Otherwise the kind's rule applies:
-     - **Converters** is the existing `per_employee_revenue_with_attribution` view's answer.
-     - **Message sender** is the view's answer only when the sale has a linked `message_id`, else Unattributed.
+     - **Converters** credits the last human chatter (an Employee's own 1:1 send: no mass message, no automation, not the Automation Employee) who messaged the fan within `attribution.converters_window_seconds` of the sale (1 h by default, 60 s to 999 h 59 min, the version in effect at `occurred_at`), for every kind it rules; with none, the sale is Unattributed.
+     - **Message sender** is the linked message's sender when the sale has a linked `message_id`, else Unattributed.
      - **Shift schedule** credits the Employees with an open Clock event on that Creator at `occurred_at`. With several of them, the sale is split evenly in whole cents, the remainder going to the lowest Employee id; with none, it is Unattributed.
   3. Shift schedule is replaced by Converters while the Agency's `time-tracking.enabled` is false.
   - Kinds map to rules as follows:

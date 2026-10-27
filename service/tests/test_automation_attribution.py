@@ -73,7 +73,7 @@ async def _create_view() -> None:
     case_mass_ppv_no_overcount."""
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     path = os.path.join(
-        here, "db", "migrations", "versions", "20260710_0200_attr_view_orphan_rows.py"
+        here, "db", "migrations", "versions", "20261027_0100_converters_window.py"
     )
     spec = importlib.util.spec_from_file_location("mig0042", path)
     mig = importlib.util.module_from_spec(spec)

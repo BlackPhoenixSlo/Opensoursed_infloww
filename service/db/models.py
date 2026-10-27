@@ -770,15 +770,20 @@ class Transaction(Base):
     # 7-day-lookback heuristic.
     attributed_employee_id: Mapped[int | None] = mapped_column(Integer)
 
-    # 0077: the attribution view's answer for this row, materialised at write
-    # time by SQLite triggers (tx_rollup.py): the credited Employee (the manual
-    # override above, else the linked message's sender, else for a standalone
-    # tip the 7-day lookback's), the `rule` that chose it (`manual`, `message`,
-    # `tip_lookback`, `unassigned`) and the crediting message's
-    # `automation_kind`. Never written by Python.
+    # 0077/0099: the attribution view's answer for this row, materialised at
+    # write time by SQLite triggers (tx_rollup.py), never written by Python:
+    # the credited Employee (the manual override above, else Converters' under
+    # the default 1 h window), the `rule` that chose it (`manual`,
+    # `converters`, `unassigned`), the linked message's `automation_kind` and
+    # sender (Message sender's answer), and the converter candidate: the last
+    # human chatter's send to the fan before the sale within 999 h 59 min, its
+    # Employee and time (the read path applies the Agency's window to it).
     credit_employee_id: Mapped[int | None] = mapped_column(Integer)
     credit_rule: Mapped[str | None] = mapped_column(String(16))
     credit_automation_kind: Mapped[str | None] = mapped_column(String)
+    credit_sender_id: Mapped[int | None] = mapped_column(Integer)
+    credit_converter_id: Mapped[int | None] = mapped_column(Integer)
+    credit_converter_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     __table_args__ = (
         Index("ix_tx_account_time", "account_id", "occurred_at"),

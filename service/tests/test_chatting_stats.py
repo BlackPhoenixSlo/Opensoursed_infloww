@@ -9,7 +9,8 @@
             only when that message is an Employee's own send. A wait that began before the window is paired
             through the lookback; `system` rows are skipped; an unreplied fan adds nothing.
   sales     by channel to the credited Employee: direct (a sale of its message), mass (of a mass message),
-            chat tips (credited by the 7-day lookback); a sale reassigned by hand moves with it; an
+            chat tips (credited to the last chatter within the default hour); a sale reassigned by hand moves
+            with it; an
             automation's sale, an OF-native mass copy (no sender), a post tip and a refunded sale are in
             none. "Exclude the 20% OnlyFans fee" applies by each sale's time when it changes in the window.
             A Priority mass message's sale is its own channel, to its launcher (or by hand); its sends are
@@ -123,7 +124,7 @@ _msg(C1, 2, E1, DAY.replace(hour=11), body="", price=500, paid=False, unsent=Tru
 _msg(C1, 3, E1, DAY.replace(hour=11, minute=5), mass_run_id=1)                     # one recipient of a mass message
 _msg(C1, 4, E1, DAY.replace(hour=11, minute=6), automation_kind="autoreply")        # an automation's, credited to E1
 _msg(C1, 5, AUTO, DAY.replace(hour=11, minute=7))                                   # the Automation sentinel's
-_msg(C1, 1, E2, DAY.replace(hour=10, minute=30), body="yo")
+_msg(C1, 1, E2, DAY.replace(hour=10, minute=45), body="yo")                       # after the PPV's sale
 _msg(C2, 1, E1, DAY.replace(hour=12), body="hey")                                   # the same fan id, another Creator
 _msg(C1, 6, E1, DAY - timedelta(hours=1))                                           # before the window
 _sale(C1, "ppv_message", 1000, DAY.replace(hour=10, minute=40), fan=1, message_id=SENT_PPV)
@@ -184,7 +185,7 @@ def case_sales_split_by_channel_to_the_credited_employee_net_of_the_fee_once_it_
     direct = _msg(C4, 1, E1, d.replace(hour=8), price=1000)
     mass = _msg(C4, 2, E1, d.replace(hour=8), price=500, mass_run_id=5)
     auto = _msg(C4, 3, E1, d.replace(hour=8), price=700, automation_kind="autoreply")
-    _msg(C4, 4, E1, d.replace(hour=7))
+    _msg(C4, 4, E1, d.replace(hour=9, minute=30))
     native = _msg(C4, 5, None, d.replace(hour=8), price=900)               # an OF-native mass copy: no sender
     refunded = _msg(C4, 6, E1, d.replace(hour=8), price=400)
     reassigned = _msg(C4, 7, E1, d.replace(hour=8), price=600)
@@ -192,7 +193,7 @@ def case_sales_split_by_channel_to_the_credited_employee_net_of_the_fee_once_it_
     _sale(C4, "ppv_message", 1000, d.replace(hour=9), fan=1, message_id=direct)
     _sale(C4, "ppv_message", 500, d.replace(hour=9), fan=2, message_id=mass, status="pending")
     _sale(C4, "ppv_message", 700, d.replace(hour=9), fan=3, message_id=auto)
-    _sale(C4, "tip", 300, d.replace(hour=10), fan=4)                       # lookback: E1's 07:00 send
+    _sale(C4, "tip", 300, d.replace(hour=10), fan=4)                       # Converters: E1's 09:30 send
     _sale(C4, "tip_post", 200, d.replace(hour=10), fan=4)
     _sale(C4, "ppv_message", 900, d.replace(hour=9), fan=5, message_id=native)
     _sale(C4, "ppv_message", 400, d.replace(hour=11), fan=6, message_id=refunded, status="refunded")

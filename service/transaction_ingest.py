@@ -49,7 +49,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import account_health
 import accounts as account_registry
-from attribution_backfill import SETTLED_REVERSALS, attribute_orphans
+from attribution_backfill import SETTLED_REVERSALS
 from cadence import boot_grace
 import client_pool
 from db.engine import engine, get_session
@@ -1415,11 +1415,10 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
 
             # Relink: retry the payment→message link for recent orphaned chat
             # PPVs whose message row arrived AFTER the transaction did (scrape
-            # lag, WS gap). Runs BEFORE attribute_orphans so the linker gets
-            # first shot — a linked sale credits its sender directly and needs
-            # no last-toucher heuristic. newest-first + bounded limit so
+            # lag, WS gap): a linked sale gets its sender (Message sender) and
+            # its message's automation kind. newest-first + bounded limit so
             # permanently-ambiguous rows in the window can't starve fresh
-            # linkable ones. Best-effort, same contract as the sweep below.
+            # linkable ones. Best-effort: a failure never fails the scan.
             try:
                 rl = await relink_orphan_ppvs(
                     account_id=account_id,
@@ -1467,28 +1466,6 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
                     account_id, exc_info=True,
                 )
 
-            # Auto-assign: credit the last-toucher (human OR Automation) for
-            # any sale this scan surfaced that still resolves to no employee,
-            # so the per-employee stats never leave revenue in "Unattributed".
-            # Best-effort — a failure here must never fail the scan. Scoped to
-            # this account + a recent window so the sweep stays cheap per tick;
-            # deep history is handled by the one-shot
-            # db.backfills.backfill_orphan_attribution.
-            try:
-                attr = await attribute_orphans(
-                    account_id=account_id,
-                    since=datetime.utcnow() - timedelta(days=_ATTR_SWEEP_SINCE_DAYS),
-                )
-                if attr["attributed"]:
-                    log.info(
-                        "ingest_tx_attr_sweep account=%s attributed=%d unresolved=%d",
-                        account_id, attr["attributed"], attr["unresolved"],
-                    )
-            except Exception:
-                log.warning(
-                    "ingest_tx_attr_sweep_failed account=%s", account_id,
-                    exc_info=True,
-                )
             dur_ms = int((time.monotonic() - t0) * 1000)
             log.info(
                 "ingest_tx_scan_end account=%s mode=%s pages=%d inserted=%d "

@@ -269,6 +269,9 @@ reads or writes `service/chatterly.db`, real sessions, prod or any remote. The
 
 A flow with a `README.<flow>.md` lists its scenarios there.
 
+- Sales attribution of tips and PPV (`2026-10-27-sales-attribution-tips-ppv`, Converters' window):
+  `README.attribution.md`.
+
 - `2026-10-23-inbox-unread-fan-burst`: `--users` fans DM their Creators, sent the
   pump's way (one frame in flight per Creator, all Creators at once; `--rate=N` for
   open loop, with scheduled vs achieved rate and lag in `metrics.json` `pump`), while

@@ -11,7 +11,10 @@ messages, transactions and Clock events seeded straight into the temp DB with
 fixed past timestamps. Sales Settings and Time tracking are saved through
 `PUT /admin/settings/{tab}`. Each case seeds its own Creator, so its figures
 are read from that Creator's `per_account` entries alone. Every expected figure
-is a worked example written out by hand.
+is a worked example written out by hand. Converters credits the last human
+chatter who messaged the fan within the Agency's window (1 h unless a case
+saves another), so a fixture's chatter message sits that close to its sale
+where the case wants the credit.
 
 Run: ./venv/bin/python service/tests/test_sales_attribution_rules.py   (exit 0 = green)
 """
@@ -22,7 +25,7 @@ _harness.bootstrap()
 import asyncio  # noqa: E402
 import importlib.util  # noqa: E402
 import os  # noqa: E402
-from datetime import datetime  # noqa: E402
+from datetime import datetime, timedelta  # noqa: E402
 
 from sqlalchemy import text  # noqa: E402
 
@@ -32,7 +35,7 @@ from _clock_fixtures import (  # noqa: E402
     IDS, agency_wide_event as _agency_wide_event, employee as _employee, event as _event, shift as _seed_shift,
 )
 from db.engine import get_session  # noqa: E402
-from db.models import Account, Message, Transaction, UserAccount  # noqa: E402
+from db.models import Account, MassRun, Message, Transaction, UserAccount  # noqa: E402
 
 FALLBACK = "Shift schedule needs Time tracking on; credited by Converters."
 DAY = "2026-05-04"
@@ -50,7 +53,7 @@ async def _apply_view() -> None:
     # init_db (create_all) builds no views: apply the shipped attribution view,
     # as test_timesheet_api.py does.
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                        "db", "migrations", "versions", "20260710_0200_attr_view_orphan_rows.py")
+                        "db", "migrations", "versions", "20261027_0100_converters_window.py")
     spec = importlib.util.spec_from_file_location("mig_attr_view", path)
     mig = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mig)
@@ -77,15 +80,23 @@ def _creator(aid: str, owner: str = "agency_a_owner") -> str:
 _next_id = iter(range(7_000_001, 7_100_000))
 
 
-def _message(aid: str, fan: int, sender: int | None, at: datetime, automation_kind: str | None = None) -> int:
-    """One outbound message on `aid` to `fan`; returns its message id."""
+def _message(aid: str, fan: int, sender: int | None, at: datetime, automation_kind: str | None = None,
+             mass: bool = False) -> int:
+    """One outbound message on `aid` to `fan` (one fan's copy of a mass message with `mass`); returns its
+    message id."""
     mid = next(_next_id)
 
     async def _seed():
         async with get_session() as s:
+            run_id = None
+            if mass:
+                run = MassRun(account_id=aid, started_by_employee_id=sender)
+                s.add(run)
+                await s.flush()
+                run_id = run.id
             s.add(Message(account_id=aid, fan_id=fan, message_id=mid, direction="out", body="x",
                           sent_by_employee_id=sender, created_at=at, ingested_at=at,
-                          automation_kind=automation_kind))
+                          automation_kind=automation_kind, mass_run_id=run_id))
     asyncio.run(_seed())
     return mid
 
@@ -111,10 +122,12 @@ def _put(client, tab: str, blob: dict) -> None:
 
 
 def _rules(client, messages: str, posts_tips: str, opt_in: bool = False, time_tracking: bool = True,
-           exclude_welcome: bool = False, exclude_of_fee: bool = False) -> None:
+           exclude_welcome: bool = False, exclude_of_fee: bool = False, window: int | None = None) -> None:
+    attribution = {"messages": messages, "posts_tips": posts_tips, "subscriptions_chatter_opt_in": opt_in}
+    if window is not None:
+        attribution["converters_window_seconds"] = window
     _put(client, "sales", {"exclude_welcome": exclude_welcome, "exclude_of_fee": exclude_of_fee,
-                           "attribution": {"messages": messages, "posts_tips": posts_tips,
-                                           "subscriptions_chatter_opt_in": opt_in}})
+                           "attribution": attribution})
     _put(client, "time-tracking", {"enabled": time_tracking})
 
 
@@ -143,8 +156,9 @@ E1, E2, E3 = _employee("sa_emp_1"), _employee("sa_emp_2"), _employee("sa_emp_3")
 
 def _seed_converters() -> None:
     """On C1, every shape test_ppv_link_attribution's case_view_exactly_once
-    seeds: a PPV unlocked from E1's message (1000), a tip on E1's message
-    (400), a standalone tip whose fan E2 wrote to two days before (500), a
+    seeds: a PPV unlocked from E1's message an hour before (1000, the window's
+    edge: inside), a tip on E1's message (400), a standalone tip whose fan E2
+    wrote to two days before (500, outside the hour: Unattributed), a
     standalone tip from a fan nobody wrote to (300), a PPV whose message was
     never ingested (700), a PPV with no message id at all (650), a tip on a
     never-ingested message reassigned by hand to E2 (350); plus a PPV on E1's
@@ -166,15 +180,15 @@ def _seed_converters() -> None:
 
 
 _seed_converters()
-TODAY = {E1: 1400, E2: 850, E3: 350, None: 1650}
+TODAY = {E1: 1400, E2: 350, E3: 350, None: 2150}
 
 
 def case_converters_reproduces_the_attribution_views_figures():
     _rules(OWNER_A, "converters", "converters")
     assert _credited(OWNER_A, C1) == TODAY
     assert _credited(OWNER_A, C1, "revenue_by_kind") == {
-        E1: {"ppv": 1000, "tip": 400}, E2: {"ppv": 0, "tip": 850},
-        E3: {"ppv": 200, "tip": 150}, None: {"ppv": 1350, "tip": 300}}
+        E1: {"ppv": 1000, "tip": 400}, E2: {"ppv": 0, "tip": 350},
+        E3: {"ppv": 200, "tip": 150}, None: {"ppv": 1350, "tip": 800}}
     assert _credited(OWNER_A, C1, "ppv_conversions") == {E1: 1, E3: 1, None: 2}
     assert _report(OWNER_A)["attribution_fallback"] is None
 
@@ -235,15 +249,92 @@ _sale(C2, "ppv_message", 250, _at("11:10"), fan=23, message_id=6_999_998)
 
 
 def case_message_sender_credits_the_linked_sender_and_leaves_an_unlinked_sale_unattributed():
-    """Message sender reaches only the Messages group under the spec's kind
-    map, and there it gives the Converters answer for every sale (the
-    lookback serves only tips with no message, which are Posts and Tips). So
-    this case pins that equivalence rather than story 43's "visibly
-    stricter" rule (sales_attribution.py ASSUMPTION, for Needs-the-human)."""
+    """Message sender credits E1, who sent the PPV three hours before it was
+    bought, and nobody for the unlinked PPV or the one whose message never
+    arrived. Converters credits nobody for the PPV: no chatter messaged the
+    fan in the hour before (story 43: the two rules differ)."""
     _rules(OWNER_A, "sender", "converters")
     assert _credited(OWNER_A, C2) == {E1: 1000, None: 850}
     _rules(OWNER_A, "converters", "converters")
-    assert _credited(OWNER_A, C2) == {E1: 1000, None: 850}
+    assert _credited(OWNER_A, C2) == {None: 1850}
+
+
+# ── Converters: the last human chatter within the Agency's window ──────────
+
+C4 = _creator("2000004")
+EA, EB = _employee("sa_emp_conv_a"), _employee("sa_emp_conv_b")
+
+
+def _automation_employee() -> int:
+    """The Automation sentinel as employees.get_automation_employee_id finds it."""
+    async def _seed():
+        async with get_session() as s:
+            return (await s.execute(text(
+                "INSERT INTO employees (display_name, color, is_active, created_at) "
+                "VALUES ('Automation', '#888888', 0, :c) RETURNING id"), {"c": _at("00:00")})).scalar()
+    return asyncio.run(_seed())
+
+
+AUTO = _automation_employee()
+# A PPV EA sent at 09:00, bought at 10:30 after EB chatted at 10:20.
+_sale(C4, "ppv_message", 1000, _at("10:30"), fan=41, message_id=_message(C4, 41, EA, _at("09:00")))
+_message(C4, 41, EB, _at("10:20"))
+# EA chats at 11:00; an automation's send, a mass message and the Automation Employee's send follow; a tip
+# at 11:40 is still EA's.
+_message(C4, 42, EA, _at("11:00"))
+_message(C4, 42, EB, _at("11:10"), automation_kind="reply_mass_funnel")
+_message(C4, 42, EB, _at("11:20"), mass=True)
+_message(C4, 42, AUTO, _at("11:30"))
+_sale(C4, "tip", 300, _at("11:40"), fan=42)
+# The window's two sides: EA's last chat 59 min before one tip, EB's 61 min before another; a post
+# purchase and a post tip 3 h after EB's chat, inside 3 h 30 min only.
+_message(C4, 43, EA, _at("13:00"))
+_sale(C4, "tip", 70, _at("13:59"), fan=43)
+_message(C4, 44, EB, _at("13:00"))
+_sale(C4, "tip", 80, _at("14:01"), fan=44)
+_message(C4, 45, EB, _at("15:00"))
+_sale(C4, "ppv_post", 500, _at("18:00"), fan=45)
+_sale(C4, "tip_post", 50, _at("18:00"), fan=45)
+
+
+def case_converters_credits_the_last_human_chatter_within_the_window():
+    _rules(OWNER_A, "converters", "converters")
+    assert _credited(OWNER_A, C4) == {EB: 1000, EA: 300 + 70, None: 80 + 500 + 50}
+    _rules(OWNER_A, "sender", "converters")
+    assert _credited(OWNER_A, C4) == {EA: 1000 + 300 + 70, None: 80 + 500 + 50}, "the PPV is its sender's"
+
+
+def case_a_saved_window_moves_the_boundary_for_every_kind():
+    _rules(OWNER_A, "converters", "converters", window=3 * 3600 + 30 * 60)
+    assert _credited(OWNER_A, C4) == {EB: 1000 + 80 + 500 + 50, EA: 370}
+    _rules(OWNER_A, "converters", "converters", window=60)
+    assert _credited(OWNER_A, C4) == {None: 1000 + 300 + 70 + 80 + 550}
+    # A window version saved from 12:00 on: the earlier sales keep the hour, the later ones take 3 h 30 min.
+    _rules(OWNER_A, "converters", "converters")
+    r = OWNER_A.put("/admin/settings/sales", params={"effective_from": f"{DAY}T12:00:00Z"},
+                    json={"attribution": {"messages": "converters", "posts_tips": "converters",
+                                          "converters_window_seconds": 12600}})
+    assert r.status_code == 200, r.text
+    assert _credited(OWNER_A, C4) == {EB: 1000 + 80 + 550, EA: 370}
+
+    async def _forget_noon():  # later than every since-the-start save: it would outlive them
+        async with get_session() as s:
+            await s.execute(text("DELETE FROM settings_versions WHERE user_id = :u AND tab = 'sales' "
+                                 "AND effective_from > :start"), {"u": IDS["agency_a_owner"], "start": _at("00:00")})
+    asyncio.run(_forget_noon())
+    _rules(OWNER_A, "converters", "converters")
+    assert _credited(OWNER_A, C4) == {EB: 1000, EA: 370, None: 630}
+
+
+def case_the_window_is_validated_and_saved_through_the_settings_route():
+    for bad in (0, 59, 90, 999 * 3600 + 60 * 60, "3600", True, None):
+        r = OWNER_A.put("/admin/settings/sales", params=SINCE_THE_START,
+                        json={"attribution": {"converters_window_seconds": bad}})
+        assert r.status_code == 400, (bad, r.status_code, r.text)
+    _rules(OWNER_A, "converters", "converters", window=999 * 3600 + 59 * 60)
+    got = OWNER_A.get("/admin/settings/sales").json()["config"]["attribution"]
+    assert got["converters_window_seconds"] == 999 * 3600 + 59 * 60, got
+    _rules(OWNER_A, "converters", "converters")
 
 
 # ── Shift schedule ──────────────────────────────────────────────────────────
@@ -312,7 +403,7 @@ EB_SENDER, EB_SHIFT = (_employee("sa_emp_b_sender", "agency_b_owner"),
                        _employee("sa_emp_b_shift", "agency_b_owner"))
 for _aid, _sender, _shift, _owner in ((CA, EA_SENDER, EA_SHIFT, "agency_a_owner"),
                                       (CB, EB_SENDER, EB_SHIFT, "agency_b_owner")):
-    _m = _message(_aid, 61, _sender, _at("09:00"))
+    _m = _message(_aid, 61, _sender, _at("10:00"))
     _sale(_aid, "ppv_message", 800, _at("10:30"), fan=61, message_id=_m)
     _event(_shift, _at("10:00"), _at("11:00"), owner=_owner, account_id=_aid)
 
@@ -343,13 +434,14 @@ _sale(C8, "ppv_message", 60, _at("12:05"), fan=82, manual=E2,
 
 
 def case_exclude_welcome_drops_each_welcome_kinds_sales_and_keeps_the_rest():
-    """Off: E8 keeps 1000 + 200 + 300 + 400 + 500 and E2 its manual 60. On:
-    the send_welcome (1000), welcome (200) and welcome_chatter_for_info (300)
-    sales and the manual welcome sale (60) go; the send_followup (400) and
-    the plain message's sale (500) stay."""
-    _rules(OWNER_A, "converters", "converters", exclude_welcome=False)
+    """Under Message sender (the automations' sends credit no one under
+    Converters). Off: E8 keeps 1000 + 200 + 300 + 400 + 500 and E2 its manual
+    60. On: the send_welcome (1000), welcome (200) and
+    welcome_chatter_for_info (300) sales and the manual welcome sale (60) go;
+    the send_followup (400) and the plain message's sale (500) stay."""
+    _rules(OWNER_A, "sender", "converters", exclude_welcome=False)
     assert _credited(OWNER_A, C8) == {E8: 2400, E2: 60}
-    _rules(OWNER_A, "converters", "converters", exclude_welcome=True)
+    _rules(OWNER_A, "sender", "converters", exclude_welcome=True)
     assert _credited(OWNER_A, C8) == {E8: 900}
     assert _credited(OWNER_A, C8, "ppv_conversions") == {E8: 2}
 
@@ -359,8 +451,8 @@ def case_exclude_welcome_drops_each_welcome_kinds_sales_and_keeps_the_rest():
 C9 = _creator("2000009")
 E9 = _employee("sa_emp_9")
 _sale(C9, "ppv_message", 1000, _at("12:00"), fan=91, net=820,
-      message_id=_message(C9, 91, E9, _at("09:00")))
-_sale(C9, "tip", 999, _at("12:05"), fan=92, message_id=_message(C9, 92, E9, _at("09:00")))
+      message_id=_message(C9, 91, E9, _at("11:30")))
+_sale(C9, "tip", 999, _at("12:05"), fan=92, message_id=_message(C9, 92, E9, _at("11:30")))
 _sale(C9, "tip", 55, _at("12:10"), fan=93)  # nobody wrote to fan 93: Unattributed
 
 
@@ -380,14 +472,15 @@ C10 = _creator("2000010")
 E10A, E10B = _employee("sa_emp_10a"), _employee("sa_emp_10b")
 _event(E10A, _at("10:00"), _at("12:00"), account_id=C10)
 _event(E10B, _at("11:00"), _at("12:00"), account_id=C10)
-_sale(C10, "ppv_message", 1000, _at("10:30"), fan=101, message_id=_message(C10, 101, E10A, _at("09:00")))
+_sale(C10, "ppv_message", 1000, _at("10:30"), fan=101, message_id=_message(C10, 101, E10A, _at("10:00")))
 _sale(C10, "ppv_message", 999, _at("11:30"), fan=102, net=900,
-      message_id=_message(C10, 102, E10A, _at("09:00")))
+      message_id=_message(C10, 102, E10A, _at("11:00")))
 _sale(C10, "tip", 500, _at("11:15"), fan=103,
       message_id=_message(C10, 103, E10A, _at("09:00"), automation_kind="send_welcome"))
+_message(C10, 103, E10A, _at("11:00"))  # E10A chats after the welcome: the tip's converter
 _sale(C10, "tip_post", 250, _at("11:45"), fan=104)  # nobody wrote to fan 104
 # Off the clock: E10A clocked out at 12:00.
-_sale(C10, "ppv_message", 700, _at("13:00"), fan=105, message_id=_message(C10, 105, E10A, _at("09:00")))
+_sale(C10, "ppv_message", 700, _at("13:00"), fan=105, message_id=_message(C10, 105, E10A, _at("12:30")))
 
 
 def _timesheet(client, group: str) -> dict:
@@ -417,7 +510,7 @@ def case_the_timesheets_recorded_earnings_equal_the_per_employee_figures_under_t
 
 def case_an_off_clock_sale_counts_in_employee_reports_but_not_in_the_timesheet():
     """The ASSUMPTION at shifts_api.timesheet: under Converters E10A, the
-    sender, is credited the 700 PPV sold at 13:00, after her 12:00
+    last chatter, is credited the 700 PPV sold at 13:00, after her 12:00
     clock-out, so Employee reports show 2499 + 700 = 3199 while the
     Timesheet keeps worked time only and shows 2499 (1000 + 999 + 500
     inside the Clock event); E10B, who sent nothing, takes 0."""

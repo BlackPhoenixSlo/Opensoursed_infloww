@@ -517,14 +517,14 @@ async def _tx_rollup_retry(sync_url: str) -> None:
 _ATTR_VIEW = "per_employee_revenue_with_attribution"
 # The view's current revision; its SQL is read from the migration so there is
 # one definition, not a second copy here.
-_ATTR_VIEW_MIGRATION = "20261016_0300_attr_view_sales_records.py"
+_ATTR_VIEW_MIGRATION = "20261027_0100_converters_window.py"
 # Columns only the current revision has: a view without them is an older one.
-_ATTR_VIEW_HEAD_COLS = {"tx_id", "rule"}
+_ATTR_VIEW_HEAD_COLS = {"tx_id", "rule", "converter_id", "converter_at"}
 
 
 def ensure_attribution_view(sync_engine) -> str:
     """Create `per_employee_revenue_with_attribution` when it is missing, or
-    rebuild it when it predates revision 0069 (no `tx_id`/`rule`). Stats and
+    rebuild it when it predates revision 0099 (no `converter_id`/`converter_at`). Stats and
     Sales records read it, and without it they 500 with "no such table". A pure
     view rebuild: no stored row changes. Returns "present" | "created" |
     "rebuilt"."""

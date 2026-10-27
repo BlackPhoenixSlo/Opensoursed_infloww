@@ -1107,9 +1107,9 @@ async def per_employee(
 ) -> dict[str, Any]:
     """Per-employee revenue rollup. Each sale is credited by its Creator's
     Agency's Sales Settings rules (`sales_attribution.credited_sales`), whose
-    Converters rule is the `per_employee_revenue_with_attribution` view's
-    answer (linked message's sender, else the standalone tip's 7-day lookback),
-    materialised on the row; summed from the hourly rollup (`grouped=True`).
+    Converters rule credits the last human chatter who messaged the fan within
+    the Agency's window of the sale (1 h by default, materialised on the row);
+    summed from the hourly rollup (`grouped=True`).
 
     Numbers per employee:
       • messages_sent     — count of outbound messages this op wrote by hand
@@ -1117,9 +1117,9 @@ async def per_employee(
       • ppv_conversions   — PPV sales credited to the op
       • revenue_cents     — SUM(amount_cents) of the sales credited to the op
 
-    Special bucket: a sale credited to no one (a standalone tip whose lookback
-    found no outbound message, an orphan PPV/custom sale with no message link
-    and no manual assignment, or a sale a rule leaves Unattributed) lands in an
+    Special bucket: a sale credited to no one (no human chatter messaged the
+    fan within the Converters window, no manual assignment, or a sale a rule
+    leaves Unattributed) lands in an
     "Unattributed" synthetic bucket so the revenue stays visible in the
     per-employee total. `attribution_fallback` carries
     `sales_attribution.FALLBACK_LINE` when an Agency in scope has Shift
@@ -2175,9 +2175,8 @@ def _assigned_by(rule: str, reassign_payload: str | None, override_id: int | Non
     middleware's generic row) and only while that action's new Employee is
     still the override (`override_id`, `transactions.attributed_employee_id`),
     else "Manual": an override set before reassigns were recorded, or since
-    by a writer that records none (the ingest backfill,
-    attribution_backfill.attribute_orphans, fills an empty override, e.g.
-    after an owner's clear).
+    by a writer that recorded none (the former ingest orphan sweep,
+    attribution_backfill's history, filled empty overrides).
 
     ASSUMPTION: the Master reads as "Master", not by name: the payload names
     its actor `master:<users.id>`, and the page shows no owner names. Rung 5.
@@ -2234,7 +2233,7 @@ async def sales_records(
     Employee reports credit it (`sales_attribution.credit`, roadmap S7), so a
     Shift schedule split is one row per Employee and a sale "Exclude welcome
     messages" drops is not listed. Each row has the credited Employee, the
-    `rule` that chose it (`manual`, `message`, `tip_lookback`, `shift` or
+    `rule` that chose it (`manual`, `message`, `converters`, `shift` or
     `unassigned`; a "No one" override is `manual` with no Employee),
     "Assigned by" ("Auto" for rule-based credit; for an override "Owner"
     or "Master" from its latest `sales.reassign` action while it still
@@ -2330,6 +2329,7 @@ async def sales_records(
     q = (
         select(t.id.label("tx_id"), t.occurred_at, t.account_id, t.fan_id, t.amount_cents, t.net_cents, t.kind,
                t.status, t.message_id, t.credit_employee_id, t.credit_rule, t.credit_automation_kind,
+               t.credit_sender_id, t.credit_converter_id, t.credit_converter_at,
                Fan.of_display_name, Fan.of_username,
                case((t.credit_rule == "manual", reassign), else_=None).label("reassign_payload"),
                t.attributed_employee_id.label("override_id"))
@@ -2363,9 +2363,12 @@ async def sales_records(
         if keep is not None:
             wanted = keep if wanted is None else wanted & keep
     if wanted is not None:
-        # A share credits the sale's materialised Employee, or under Shift
-        # schedule whoever was on the clock (`credit`).
-        q = q.where(or_(t.credit_employee_id.in_(wanted), t.account_id.in_(ctx.shift_accounts)))
+        # A share credits the sale's materialised Employee, its linked
+        # message's sender (Message sender), its converter candidate (a
+        # Converters window other than the default), or under Shift schedule
+        # whoever was on the clock (`credit`).
+        q = q.where(or_(t.credit_employee_id.in_(wanted), t.credit_sender_id.in_(wanted),
+                        t.credit_converter_id.in_(wanted), t.account_id.in_(ctx.shift_accounts)))
 
     def _records(r: Any) -> list[dict[str, Any]]:
         """Sale `r`'s shares the filters keep, one record each."""

@@ -58,7 +58,7 @@ async def _seed_timesheet_creators() -> None:
     # init_db (create_all) builds no views: apply the shipped attribution view,
     # as test_stats_revenue.py does.
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                        "db", "migrations", "versions", "20260710_0200_attr_view_orphan_rows.py")
+                        "db", "migrations", "versions", "20261027_0100_converters_window.py")
     spec = importlib.util.spec_from_file_location("mig_attr_view", path)
     mig = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mig)
