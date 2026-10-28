@@ -112,12 +112,17 @@ async def _seed_chatter(username: str, password: str = "secretpw") -> str:
 
 
 async def _link_chatter(chatter_id: str, user_id: str) -> None:
+    # As the product's link (account_security.link_login): `assignment_changed` on commit.
+    import events
     from db.models import ChatterUser
     async with get_session() as s:
         s.add(ChatterUser(chatter_id=chatter_id, user_id=user_id, created_at=datetime.utcnow()))
+        events.on_commit(s, "assignment_changed", agency=user_id)
 
 
 async def _unlink_chatter(chatter_id: str, user_id: str) -> None:
+    # As the product's unlink (employees.py): `assignment_changed` on commit.
+    import events
     from db.models import ChatterUser
     from sqlalchemy import delete
     async with get_session() as s:
@@ -125,6 +130,7 @@ async def _unlink_chatter(chatter_id: str, user_id: str) -> None:
             ChatterUser.chatter_id == chatter_id,
             ChatterUser.user_id == user_id,
         ))
+        events.on_commit(s, "assignment_changed", agency=user_id)
 
 
 # ── 5. Helpers.
@@ -328,8 +334,7 @@ async def case_unlink_strips_account_ids_next_request(ids: dict[str, str]) -> No
     # Tim is linked to both alice and bob. /chatter/me/accounts should
     # list 3 accounts (acct_alice, acct_bob, acct_shared). After alice
     # unlinks tim, the NEXT request should see only acct_bob + acct_shared
-    # — no stale cache, no leftover. ContextVar is per-request so this
-    # exercises the DB read each time.
+    # — no stale cache (chatter_identity_cache.py), no leftover.
     c = _login_chatter("tim")
 
     r = c.get("/chatter/me/accounts")

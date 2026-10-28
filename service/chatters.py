@@ -43,6 +43,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 
 import account_health
+import chatter_identity_cache as identity_cache
 import events
 from account_security import (
     TwoFactorChallenge,
@@ -277,14 +278,15 @@ async def allowed_folder_ids_for_chatter(account_id: str) -> "frozenset[int] | N
     return frozenset(r[0] for r in rows)
 
 
-async def _load_identity_from_db(chatter_id: str) -> "ChatterIdentity | None":
+async def _load_identity(chatter_id: str) -> "identity_cache.CachedIdentity | None":
     """Hydrate a ChatterIdentity by joining
-        chatters → chatter_users → user_accounts (+ users for usernames).
+        chatters → chatter_users → user_accounts (+ users for usernames),
+    in one session, with the Chatter row's revocation and inactivity stamps
+    beside it (the identity cache's entry, chatter_identity_cache.py).
 
     Returns None if the chatter row is missing or inactive. Computes
     `account_ids` as a SET (de-dupes when two owners both granted the same
-    account). One DB roundtrip; cheap enough to do per-request — the
-    middleware caches in the ContextVar so deep code paths don't re-pay.
+    account).
 
     Chatter Access (step 2): per-owner chatter_account_access rows trim each
     owner's contribution to the union BEFORE the set-union, so the resulting
@@ -316,7 +318,7 @@ async def _load_identity_from_db(chatter_id: str) -> "ChatterIdentity | None":
         else:
             account_ids = set()
 
-        return ChatterIdentity(
+        identity = ChatterIdentity(
             id_=row.id,
             username=row.username,
             display_name=row.display_name,
@@ -324,6 +326,42 @@ async def _load_identity_from_db(chatter_id: str) -> "ChatterIdentity | None":
             owner_user_ids=frozenset(owner_ids),
             account_ids=frozenset(account_ids),
         )
+        return identity_cache.CachedIdentity(identity, row.sessions_valid_after, row.last_seen_at)
+
+
+LAST_SEEN_TOUCH_S = 300  # bump chatters.last_seen_at when it is older than this
+
+
+async def _session_identity(chatter_id: str, issued: int) -> tuple[ChatterIdentity | None, bool]:
+    """`(identity, expired)` for a chatter cookie whose HMAC verified, from
+    the identity cache (chatter_identity_cache.py) when fresh. `expired`:
+    revoked (password or 2FA reset, deactivated, Log out other sessions) or
+    idle too long, so the cookie is cleared. A missing or inactive chatter is
+    (None, False)."""
+    entry = identity_cache.get(chatter_id)
+    if entry is None:
+        gen = identity_cache.generation()
+        entry = await _load_identity(chatter_id)
+        if entry is None:
+            return None, False
+        identity_cache.store(chatter_id, entry, gen)
+    now = datetime.utcnow()
+    age = (now - entry.last_seen_at).total_seconds()
+    if age > SESSION_INACTIVITY_SECONDS or session_revoked(issued, entry.sessions_valid_after):
+        return None, True
+    if age > LAST_SEEN_TOUCH_S:
+        # Only while the row is still that old: a sign-in or a concurrent
+        # request may have bumped it since the read.
+        async with get_session() as s:
+            res = await s.execute(update(Chatter).where(
+                Chatter.id == chatter_id,
+                Chatter.last_seen_at < now - timedelta(seconds=LAST_SEEN_TOUCH_S),
+            ).values(last_seen_at=now))
+        if res.rowcount:
+            entry.last_seen_at = now
+        else:
+            identity_cache.drop(chatter_id)  # the next request reads the row's stamp
+    return entry.identity, False
 
 
 # ── Public routes ────────────────────────────────────────────────────
@@ -501,8 +539,8 @@ async def register(
     if challenge is not None:
         return challenge
     _set_session_cookie(response, new_id)
-    identity = await _load_identity_from_db(new_id)
-    return await _me_response(identity)
+    entry = await _load_identity(new_id)
+    return await _me_response(entry.identity if entry else None)
 
 
 @router.post("/login", response_model=ChatterMeResp | TwoFactorChallenge)
@@ -522,8 +560,8 @@ async def login(
         return result
     _, row = result
     _set_session_cookie(response, row.id)
-    identity = await _load_identity_from_db(row.id)
-    return await _me_response(identity)
+    entry = await _load_identity(row.id)
+    return await _me_response(entry.identity if entry else None)
 
 
 @router.post("/logout")
@@ -798,9 +836,9 @@ def _chatter_allowed_admin(path: str, method: str) -> bool:
 
 
 async def chatter_session_middleware(request: Request, call_next):
-    """Read the chatter cookie, hydrate ChatterIdentity, stash on the
-    ContextVar, then call the route. Wipes the cookie on the response if
-    the chatter row went stale (deleted, disabled, idle too long).
+    """Read the chatter cookie, hydrate ChatterIdentity (`_session_identity`),
+    stash on the ContextVar, then call the route. Wipes the cookie on the response if
+    the chatter's session was revoked or idle too long.
 
     Registered AFTER `_auth_session_middleware` in server.py so it runs
     INSIDE auth on the inbound path — by the time we reach the admin
@@ -822,29 +860,9 @@ async def chatter_session_middleware(request: Request, call_next):
     if cookie:
         parsed = _parse_cookie_issued(cookie)
         if parsed:
-            chatter_id, issued = parsed
-            async with get_session() as s:
-                row = (await s.execute(
-                    select(Chatter).where(Chatter.id == chatter_id)
-                )).scalar_one_or_none()
-                if row is not None and row.is_active:
-                    now = datetime.utcnow()
-                    age = (now - row.last_seen_at).total_seconds()
-                    # Revoked (password or 2FA reset, deactivated, Log out
-                    # other sessions) or idle too long: signed out, cookie cleared.
-                    if age > SESSION_INACTIVITY_SECONDS or session_revoked(
-                        issued, row.sessions_valid_after,
-                    ):
-                        expired = True
-                    else:
-                        if age > 300:
-                            await s.execute(update(Chatter).where(
-                                Chatter.id == chatter_id,
-                            ).values(last_seen_at=now))
-            if not expired:
-                identity = await _load_identity_from_db(chatter_id)
-                if identity is not None:
-                    _request_chatter.set(identity)
+            identity, expired = await _session_identity(*parsed)
+            if identity is not None:
+                _request_chatter.set(identity)
 
     # Admin gate: chatter-only sessions are 403'd from owner-only
     # /admin/* surfaces (managed user/proxy/account/etc. mgmt). Per-

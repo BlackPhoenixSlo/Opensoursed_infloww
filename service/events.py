@@ -63,6 +63,7 @@ from typing import AsyncIterator, Awaitable, Callable
 
 from fastapi import Request
 
+import chatter_identity_cache
 from db import of_writer, write_telemetry
 from db.repo import insert_events
 
@@ -694,6 +695,8 @@ def publish_state(
     """Push one account-state event (STATE_TYPES): for `account_id`'s
     sessions, or Agency-wide for `agency` (an owner user id). Best-effort:
     a fan-out hiccup must never fail the change it reports."""
+    if event_type in _ENDS_STREAM:
+        chatter_identity_cache.invalidate()  # before the event goes out: a reconnect reads the new grants
     event: dict = {event_type: fields}
     if account_id is not None:
         event["__account_id"] = str(account_id)

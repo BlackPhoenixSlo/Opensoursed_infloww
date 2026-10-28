@@ -227,6 +227,20 @@ def _chatter_access_ignored() -> None:
     chatters._filter_owner_accounts = lambda pairs, restrictions: {aid for _uid, aid in pairs}
 
 
+def _chatter_identity_cache_stale() -> None:
+    """The chatter identity cache (service/chatter_identity_cache.py) with
+    invalidation and TTL disabled: the bug class is any write site that misses the
+    invalidation. A Chatter Access restriction leaves the chatter's cached identity
+    in place, so the chatter keeps a Creator taken away from it (the TTL is pinned
+    so the run does not depend on when the entry was loaded). Only the own-Agency
+    isolation check's restriction probe (its direct read) can see it."""
+    import chatter_identity_cache
+
+    assert hasattr(chatter_identity_cache, "invalidate") and hasattr(chatter_identity_cache, "TTL_S")
+    chatter_identity_cache.invalidate = lambda: None
+    chatter_identity_cache.TTL_S = float("inf")
+
+
 def _reports_ignore_of_earnings() -> None:
     """The reports read the ledger alone, as before 2026-10-25: OnlyFans' own
     daily earnings (of_earnings_daily) are stored but never read, so a Creator's
@@ -684,6 +698,10 @@ FAULTS: dict[str, Fault] = {
     "chatter-access-ignored": Fault(_chatter_access_ignored, (
         "no chatter saw an unassigned Creator of its own Agency (stream, inbox, account list, direct reads)",
     )),
+    # slop/run chatter-crowd --break --fault=chatter-identity-cache-stale (the restriction probe)
+    "chatter-identity-cache-stale": Fault(_chatter_identity_cache_stale, (
+        "no chatter saw an unassigned Creator of its own Agency (stream, inbox, account list, direct reads)",
+    )),
     # Harness-side, never service/ (lib/relay.py's pool probe; DECLARED: it breaks the harness's
     # reading, not the product). Every pool wait recorded as at least 80 ms, nothing sleeps: the
     # p95 lands in bucket 100 = [75,100), which decision 5's "< 100 ms" holds, so with the half-open
@@ -696,7 +714,7 @@ FAULTS: dict[str, Fault] = {
     # fault run, INFRA by design (the stages' pool data is lost: `nodata`), never CAUGHT.
     # slop/run chatter-crowd --break --baseline=<green> --fault=loop-cpu-polls-dropped  (exit 3)
     "loop-cpu-polls-dropped": Fault(None, ()),
-    # Scenario-side (chatter-crowd's _probe reads ctx.fault): declared plain fault runs, INFRA by
+    # Scenario-side (chatter-crowd's _direct_read reads ctx.fault): declared plain fault runs, INFRA by
     # design (an unproven isolation probe is undecided, never a pass), never CAUGHT. The first
     # sends only the probe without the chatter's cookie (its controls keep theirs); the second
     # points every target control at a fan of the target Creator with no seeded thread.

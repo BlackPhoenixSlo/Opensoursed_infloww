@@ -28,6 +28,7 @@ from sqlalchemy import delete, select  # noqa: E402
 import _agency_fixtures as fx  # noqa: E402
 import accounts as account_registry  # noqa: E402
 import employees  # noqa: E402
+import events  # noqa: E402
 import server  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import (  # noqa: E402
@@ -412,9 +413,10 @@ def case_chatter_with_every_agency_link_removed_is_403():
     r = _probe(orphan, AGENCY_PROBE)
     assert r.status_code == 200, f"while linked: {r.status_code} {r.text}"
 
-    async def _unlink():
+    async def _unlink():  # as the product's unlink: `assignment_changed` on commit
         async with get_session() as s:
             await s.execute(delete(ChatterUser).where(ChatterUser.chatter_id == ORPHAN))
+            events.on_commit(s, "assignment_changed", agency=IDS["agency_a_owner"])
     asyncio.run(_unlink())
 
     r = _probe(orphan, AGENCY_PROBE)
