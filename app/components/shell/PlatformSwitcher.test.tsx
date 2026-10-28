@@ -34,7 +34,7 @@ vi.mock("@/lib/appliedSettings", () => ({ useAppliedSettings: () => ({ data: und
 // ScopeProvider pushes its scope to the SSE bus.
 vi.mock("@/lib/events", () => ({ eventBus: { setScope: vi.fn(), on: () => () => {}, onStateChange: () => () => {} } }));
 
-import PlatformGate, { PlatformSync } from "@/components/shell/PlatformGate";
+import PlatformGate, { LOAD_FAILED_LINE, PlatformSync } from "@/components/shell/PlatformGate";
 import PlatformSwitcher from "@/components/shell/PlatformSwitcher";
 import Sidebar from "@/components/shell/Sidebar";
 import { ScopeProvider, useScope } from "@/contexts/ScopeContext";
@@ -287,8 +287,116 @@ describe("PlatformGate", () => {
     const d = await screen.findByRole("dialog", { name: "Fansly Login" });
     expect(d).toHaveTextContent("Please login Fansly");
     fireEvent.click(within(d).getByRole("button", { name: "Log in" }));
+    // Never a blank between the two: the prompt stays until the Add creator flow has loaded.
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
     expect(await screen.findByText("Link Fansly account")).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Fansly paste session" })).toBeInTheDocument();
+  });
+
+  // PlatformGate loads the Add creator flow with import(); these hold that load, or fail it, until the test says. The
+  // module is a stand-in that shows the flow's title.
+  const ADD_CREATOR = "@/components/setup/AddCreatorModal";
+  afterEach(() => {
+    vi.doUnmock(ADD_CREATOR);
+  });
+  const AddCreatorStandIn = () => <p>Link Fansly account</p>;
+  async function holdAddCreator() {
+    let release!: () => void;
+    let fail!: () => void;
+    const gate = new Promise<void>((res, rej) => {
+      release = res;
+      fail = () => rej(new Error("chunk load failed"));
+    });
+    gate.catch(() => {}); // the import may not be waiting on it yet when it fails
+    vi.doMock(ADD_CREATOR, async () => {
+      await gate;
+      return { default: AddCreatorStandIn };
+    });
+    // Applies the queued mock now. vitest applies it on the next import that fetches; the module is cached from
+    // the real-flow test, so an import() racing the one that applies it (the preload and Log in) gets the real one.
+    await vi.importActual(ADD_CREATOR);
+    return { release, fail };
+  }
+  // Lets every import waiting on the gate land, and React render what it set.
+  const settle = async () => {
+    await act(async () => {
+      await import(ADD_CREATOR).catch(() => {});
+    });
+    await act(() => new Promise((r) => setTimeout(r, 0)));
+  };
+  const fanslyPrompt = () => {
+    accounts = [];
+    pathname = "/growth/scripts";
+    window.localStorage.setItem(PLATFORM_KEY, "fansly");
+  };
+
+  it("Log in, then Cancel before the flow has loaded: the late load opens nothing", async () => {
+    const chunk = await holdAddCreator();
+    fanslyPrompt();
+    render(<Providers><PlatformGate /></Providers>);
+    const d = await screen.findByRole("dialog", { name: "Fansly Login" });
+    fireEvent.click(within(d).getByRole("button", { name: "Log in" }));
+    fireEvent.click(within(d).getByRole("button", { name: "Cancel" }));
+    chunk.release();
+    await settle();
+    expect(screen.queryByText("Link Fansly account")).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("a failed preload is silent: the prompt shows no error before a Log in", async () => {
+    const chunk = await holdAddCreator();
+    fanslyPrompt();
+    render(<Providers><PlatformGate /></Providers>);
+    await screen.findByRole("dialog", { name: "Fansly Login" });
+    chunk.fail();
+    await settle();
+    // The stand-in failed (vitest wraps a mock factory's error), not the real module loaded.
+    await expect(import(ADD_CREATOR)).rejects.toHaveProperty("cause.message", "chunk load failed");
+    expect(screen.getByRole("dialog", { name: "Fansly Login" })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("Log in, then Cancel, then the load fails: the next Fansly page's prompt shows no error", async () => {
+    const chunk = await holdAddCreator();
+    fanslyPrompt();
+    const { rerender } = render(<Providers><PlatformGate /></Providers>);
+    const d = await screen.findByRole("dialog", { name: "Fansly Login" });
+    fireEvent.click(within(d).getByRole("button", { name: "Log in" }));
+    fireEvent.click(within(d).getByRole("button", { name: "Cancel" }));
+    chunk.fail();
+    await settle();
+    await expect(import(ADD_CREATOR)).rejects.toHaveProperty("cause.message", "chunk load failed");
+    pathname = "/growth/vault-pro";
+    rerender(<Providers><PlatformGate /></Providers>);
+    expect(await screen.findByRole("dialog", { name: "Fansly Login" })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("a failed load drops the Log in: the prompt stays, a later load opens nothing unasked, and Log in retries", async () => {
+    let chunk = await holdAddCreator();
+    fanslyPrompt();
+    const { rerender } = render(<Providers><PlatformGate /></Providers>);
+    const d = await screen.findByRole("dialog", { name: "Fansly Login" });
+    fireEvent.click(within(d).getByRole("button", { name: "Log in" }));
+    chunk.fail();
+    await settle();
+    expect(screen.getByRole("dialog", { name: "Fansly Login" })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(LOAD_FAILED_LINE);
+    expect(screen.queryByText("Link Fansly account")).toBeNull();
+
+    // Away to a common page and back: the prompt loads the flow again, and that alone opens nothing.
+    chunk = await holdAddCreator();
+    pathname = "/creators";
+    rerender(<Providers><PlatformGate /></Providers>);
+    pathname = "/growth/scripts";
+    rerender(<Providers><PlatformGate /></Providers>);
+    chunk.release();
+    await settle();
+    expect(screen.queryByText("Link Fansly account")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull(); // a load landed: the error line clears
+
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Fansly Login" })).getByRole("button", { name: "Log in" }));
+    expect(await screen.findByText("Link Fansly account")).toBeInTheDocument();
   });
 
   it("Cancel hides the prompt on this page", async () => {

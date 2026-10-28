@@ -17,7 +17,7 @@
  * to know which principal is driving the request.
  */
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { relay, type AccountMeta } from "@/lib/relay";
@@ -164,4 +164,21 @@ export function usePlatformAccounts(): AccountMeta[] {
   const accounts = useActiveAccounts();
   const platform = usePlatform();
   return useMemo(() => accounts.filter((a) => accountPlatform(a) === platform), [accounts, platform]);
+}
+
+/** The creators, and the picked one (shared by the rail and the selects). */
+export interface GrowthCreator {
+  accounts: AccountMeta[];
+  accountId: string | null;
+  setAccountId: (id: string) => void;
+}
+
+/** The creator a Growth page and its frame share: Tracking and Free trial links' Creator filter, Profile promotion's
+ *  and Smart lists' rail (`growth/GrowthFrame`). */
+export function useGrowthCreator(): GrowthCreator {
+  const accounts = useActiveAccounts();
+  const [picked, setAccountId] = useState<string | null>(null);
+  // Default to the first account until the user picks one.
+  const accountId = picked ?? accounts[0]?.id ?? null;
+  return { accounts, accountId, setAccountId };
 }

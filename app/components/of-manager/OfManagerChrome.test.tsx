@@ -40,7 +40,8 @@ vi.mock("@/hooks/useAccounts", () => ({
 import { renderWithProviders } from "@/test-utils";
 import { ScopeProvider } from "@/contexts/ScopeContext";
 import { chatDraftKey } from "@/lib/ofMirrorChat";
-import { CreatorColumn, OfManagerChrome, hasCreatorColumn } from "./OfManagerChrome";
+import { CreatorColumn } from "./CreatorColumn";
+import { OfManagerChrome } from "./OfManagerChrome";
 
 const ui = () => renderWithProviders(<ScopeProvider><OfManagerChrome><p>OF view</p></OfManagerChrome></ScopeProvider>);
 
@@ -415,13 +416,5 @@ describe("CreatorColumn s4s", () => {
     fireEvent.click(two);
     expect(onChange).toHaveBeenCalledWith("2");
     expect(get).not.toHaveBeenCalled();
-  });
-});
-
-describe("hasCreatorColumn", () => {
-  it("is OF Manager only", () => {
-    expect(hasCreatorColumn("/of-manager/home")).toBe(true);
-    expect(hasCreatorColumn("/messages-pro")).toBe(false);
-    expect(hasCreatorColumn("/of-managerx")).toBe(false);
   });
 });

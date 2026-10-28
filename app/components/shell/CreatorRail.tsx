@@ -11,7 +11,7 @@
 
 import type { ReactNode } from "react";
 
-import { CreatorColumn } from "@/components/of-manager/OfManagerChrome";
+import { CreatorColumn } from "@/components/of-manager/CreatorColumn";
 import { IfCreatorSelect } from "@/components/ui/infloww";
 import type { AccountMeta } from "@/lib/relay";
 import { cn } from "@/lib/utils";

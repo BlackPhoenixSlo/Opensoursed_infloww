@@ -2,7 +2,7 @@
 
 /**
  * PromotionTab — Growth → Profile promotion's content, laid out as Infloww's (bundle: ProfilePromotionCampaign
- * @13957700, antd's legacy set). The page (`GrowthTabPage`) draws the 48px header and the creator rail.
+ * @13957700, antd's legacy set). The page (`GrowthRailFrame`) draws the 48px header and the creator rail.
  *
  * "Promotion campaigns" with the primary "Create promotion" (Infloww's `CreatePromotionModal`, 520px: User type,
  * Promotion type, Offer limit, Offer expiration, Free trial duration or Discount percent, Message; the body is OF
@@ -44,6 +44,8 @@ import {
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { ofErrorMessage } from "@/lib/ofMirrorWrites";
 import { cn } from "@/lib/utils";
+import { GrowthRailFrame } from "@/components/growth/GrowthFrame";
+import { useGrowthCreator } from "@/hooks/useAccounts";
 
 /** Infloww's UserTypeOptions. */
 const AUDIENCES: IfOption<Audience>[] = [
@@ -376,5 +378,15 @@ function CreatePromotionModal({ accountId, onClose }: { accountId: string | null
         {err && <div className="text-err text-xs" role="alert">{err}</div>}
       </div>
     </IfModal>
+  );
+}
+
+/** /growth/profile-promotion: this tab in the Growth rail frame. */
+export function PromotionPage() {
+  const creator = useGrowthCreator();
+  return (
+    <GrowthRailFrame title="Profile promotion" creator={creator}>
+      <PromotionTab accountId={creator.accountId} />
+    </GrowthRailFrame>
   );
 }

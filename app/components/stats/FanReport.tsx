@@ -18,7 +18,7 @@
 
 import { useState } from "react";
 
-import { CreatorColumn } from "@/components/of-manager/OfManagerChrome";
+import { CreatorColumn } from "@/components/of-manager/CreatorColumn";
 import DateRangePicker from "@/components/stats/DateRangePicker";
 import FanReportsCard from "@/components/stats/FanReportsCard";
 import StatsRefreshButton from "@/components/stats/StatsRefreshButton";

@@ -12,7 +12,7 @@
 
 import { useMemo } from "react";
 
-import { CreatorColumn, type S4SMark } from "@/components/of-manager/OfManagerChrome";
+import { CreatorColumn, type S4SMark } from "@/components/of-manager/CreatorColumn";
 import { useIsChatterOnly } from "@/components/shell/useIsChatterOnly";
 import DiscoverCreators from "@/components/s4s/DiscoverCreators";
 import S4SRequests from "@/components/s4s/S4SRequests";

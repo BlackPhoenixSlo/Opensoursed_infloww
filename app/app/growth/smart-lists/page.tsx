@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
 
-import GrowthTabPage from "@/components/growth/GrowthTabPage";
+import { SmartListsPage } from "@/components/growth/SmartListsTab";
 
 export const metadata: Metadata = { title: "Smart lists" };
 
 export default function Page() {
-  return <GrowthTabPage tab="smart" />;
+  return <SmartListsPage />;
 }

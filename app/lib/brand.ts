@@ -7,7 +7,8 @@
 export const BRAND_NAME = process.env.NEXT_PUBLIC_BRAND_NAME || "Inflowwww";
 
 /** A round logo image instead of the OIF square: a path prefix under public/ whose
- *  `-512.png` is the mark, `-32.png` the favicon and `-180.png` the Apple touch icon.
+ *  `-512.png` is the mark (Settings > About), `-32.png` the favicon and `-180.png` the Apple touch icon and the
+ *  small inline mark (SiteLook's IfMark).
  *  Empty = the OIF square. */
 export const BRAND_LOGO = process.env.NEXT_PUBLIC_BRAND_LOGO || "";
 

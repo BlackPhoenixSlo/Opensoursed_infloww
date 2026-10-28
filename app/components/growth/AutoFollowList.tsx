@@ -9,7 +9,7 @@
  * subscriptions expired (money gate on). New subscribers are OnlyFans' own
  * "Auto follow back my fans" setting, which the banner points at.
  *
- * Layout (page-parity 13): the legacy header (GrowthTabPage), the body 16px in with no card, the bundle's help
+ * Layout (page-parity 13): the legacy header (AutoFollowPage), the body 16px in with no card, the bundle's help
  * strip, "Creator:" and "Auto-follow:" selects with Reset at the right, the antd table with a 32px avatar.
  *
  * Counts: Total and Last followed are lifetime; Today / Yesterday / 7 days /
@@ -22,7 +22,7 @@ import { StickyNote } from "lucide-react";
 
 import { ExtraTag } from "@/components/ui/primitives";
 import {
-  EmptyState, IF_TABLE, IfButton, IfPager, IfRangePicker, IfSelect, IfSwitch, type IfOption,
+  EmptyState, IF_TABLE, IfButton, IfPager, IfRangePicker, IfSelect, IfSwitch, InflowwPageHeader, type IfOption,
 } from "@/components/ui/infloww";
 import { AccountAvatarPicture } from "@/components/ui/AccountAvatarPicture";
 import { errMsg } from "@/components/growth/_bits";
@@ -30,6 +30,7 @@ import {
   useAutoFollowRecords, useAutoFollowStats, useAutoFollowSwitch,
   type AutoFollowStatsRow, type RecordSort,
 } from "@/hooks/useAutoFollowList";
+import { useActiveAccounts } from "@/hooks/useAccounts";
 import { type AccountMeta } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 import { onPopoutClick } from "@/lib/nav";
@@ -291,6 +292,17 @@ export function AutoFollowDetails({ account, stats, onBack }: {
         </table>
       </div>
       {total > PAGE && <IfPager total={total} noun={total === 1 ? "record" : "records"} page={page} size={PAGE} onPage={setPage} />}
+    </div>
+  );
+}
+
+/** /growth/auto-follow: a legacy page with no rail: the 48px header, then the list 16px in. It lists every creator
+ *  with its own Creator filter, so it draws (an empty table) with none. */
+export function AutoFollowPage() {
+  return (
+    <div className="flex min-h-full flex-col">
+      <InflowwPageHeader title="Auto-follow" />
+      <AutoFollowList accounts={useActiveAccounts()} />
     </div>
   );
 }

@@ -15,6 +15,8 @@ concurrently and are recorded in arrival order.
   GET  /api2/v2/chats                      OF's chat list, empty (`{"list": []}`): what
                                            the Creators strip's badges read while a
                                            pump is live (bypass, declared: no chats)
+  GET  /api2/v2/users/notifications/count  the bell's counts, all zero (`{"all": 0, ...}`):
+                                           the shell's per-Creator badge read
   POST /api2/v2/chats/{fan}/messages       OF's new message (id, text, createdAt,
                                            fromUser), recorded per Creator in order
   any other path                           404, counted (`unmodelled`)
@@ -213,6 +215,8 @@ class FakeOF:
                                                           "wsAuthToken": f"slop-ws-{uid}"})
                 if method == "GET" and u.path == "/api2/v2/chats":
                     return self._record(uid, route, 200, {"list": [], "hasMore": False, "nextOffset": 0})
+                if method == "GET" and u.path == "/api2/v2/users/notifications/count":
+                    return self._record(uid, route, 200, {"all": 0, "subscribed": 0, "purchases": 0, "tip": 0})
                 m = _SEND.fullmatch(u.path)
                 if method == "POST" and m:
                     body = json.loads(raw or b"{}")

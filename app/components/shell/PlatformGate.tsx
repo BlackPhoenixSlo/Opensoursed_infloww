@@ -24,9 +24,8 @@
  */
 
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-import AddCreatorModal from "@/components/setup/AddCreatorModal";
 import { FlowButton, FlowModal, T } from "@/components/setup/creatorFlow";
 import { useScope } from "@/contexts/ScopeContext";
 import { useAccounts } from "@/hooks/useAccounts";
@@ -35,9 +34,20 @@ import {
   accountPlatform, getPlatform, onPlatformChange, setPlatform, usePlatform, type Platform,
 } from "@/lib/platform";
 
+// Lazy: this gate is in every page's shell (AppShell), but the Add creator flow
+// (the cURL paste card and its parser, ~47 KB) only opens after a "Log in"
+// click on a Fansly page with no session. A static import put it in every
+// first load. The prompt loads it, and stays up until it has, so "Log in"
+// swaps one modal for the other in one render. Not next/dynamic: its first
+// render suspends even on a loaded chunk, and React shows the empty fallback
+// for ~300 ms (its Suspense reveal throttle), a blank screen between the two.
+const loadAddCreatorModal = () => import("@/components/setup/AddCreatorModal").then((m) => m.default);
+type AddCreatorModalType = Awaited<ReturnType<typeof loadAddCreatorModal>>;
+
 export const FANSLY_LOGIN_TITLE = "Fansly Login";
 /** components-view0042, as the brief quotes it (the key's locale chunk is not on disk). */
 export const FANSLY_LOGIN_LINE = "Please login Fansly";
+export const LOAD_FAILED_LINE = "Couldn't load the login — reload the page.";
 
 export function PlatformSync() {
   const pathname = usePathname() ?? "/";
@@ -84,28 +94,48 @@ export default function PlatformGate() {
   const accountsQ = useAccounts();
 
   const [dismissed, setDismissed] = useState<string | null>(null);
-  const [linking, setLinking] = useState(false);
+  // "pending": a "Log in" waits for the flow to load. "failed": that load failed (likely the chunk is gone after
+  // a deploy), so the prompt shows one line until a load lands.
+  const [login, setLogin] = useState<"idle" | "pending" | "failed">("idle");
+  const [AddCreatorModal, setAddCreatorModal] = useState<AddCreatorModalType | null>(null);
   const accounts = accountsQ.data?.accounts;
   const noFanslySession =
     !!accounts && !accounts.some((a) => accountPlatform(a) === "fansly" && a.has_session && !a.session_dead_at);
   const prompt = platform === "fansly" && isPlatformPage("fansly", pathname) && noFanslySession && dismissed !== pathname;
+  // A failed load fails only a pending "Log in": the prompt's preload, or a "Log in" already
+  // cancelled, fails silently. The failed "Log in" leaves the prompt up with the error line.
+  // "Log in" imports again, but a production (Turbopack) build keeps a failed chunk failed until
+  // the page reloads (measured; `next dev` fetches it again), hence the line's "reload the page".
+  const load = useCallback(
+    () => void loadAddCreatorModal().then(
+      (m) => setAddCreatorModal(() => m),
+      () => setLogin((s) => (s === "pending" ? "failed" : s)),
+    ),
+    [],
+  );
+  useEffect(() => {
+    if (prompt) load();
+  }, [prompt, load]);
+  // Every close path drops a pending "Log in", so a load that lands later opens nothing.
+  const dismiss = () => { setLogin("idle"); setDismissed(pathname); };
 
-  if (linking) {
-    return <AddCreatorModal extInstalled={null} at="fansly" onClose={() => { setLinking(false); setDismissed(pathname); }} />;
+  if (login === "pending" && AddCreatorModal) {
+    return <AddCreatorModal extInstalled={null} at="fansly" onClose={dismiss} />;
   }
   if (!prompt) return null;
   return (
     <FlowModal
       title={FANSLY_LOGIN_TITLE}
-      onClose={() => setDismissed(pathname)}
+      onClose={dismiss}
       footer={
         <>
-          <FlowButton onClick={() => setDismissed(pathname)}>{T.cancel}</FlowButton>
-          <FlowButton primary onClick={() => setLinking(true)}>Log in</FlowButton>
+          <FlowButton onClick={dismiss}>{T.cancel}</FlowButton>
+          <FlowButton primary onClick={() => { setLogin("pending"); load(); }}>Log in</FlowButton>
         </>
       }
     >
       <p className="text-sm">{FANSLY_LOGIN_LINE}</p>
+      {login === "failed" && !AddCreatorModal && <p role="alert" className="mt-2 text-sm text-err">{LOAD_FAILED_LINE}</p>}
     </FlowModal>
   );
 }

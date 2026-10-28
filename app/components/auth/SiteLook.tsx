@@ -12,8 +12,10 @@ import { SITE_URL } from "@/lib/site";
  *  A deployment with its own logo (lib/brand.ts BRAND_LOGO) shows that instead. */
 export function IfMark({ className = "size-10" }: { className?: string }) {
   if (BRAND_LOGO) {
-    // eslint-disable-next-line @next/next/no-img-element -- a static 512px PNG from public/, no optimizer needed
-    return <img className={`${className} shrink-0 rounded-full`} src={`${BRAND_LOGO}-512.png`} alt="" aria-hidden="true" />;
+    // The 180px image (the Apple touch icon's), not the 512px one: the mark draws at most 40px, 120 device px on a 3x
+    // phone, and the 512 is 7x the bytes (337 KB against 45 KB for one deployment logo) on the sign-in page's first load.
+    // eslint-disable-next-line @next/next/no-img-element -- a static PNG from public/, no optimizer needed
+    return <img className={`${className} shrink-0 rounded-full`} src={`${BRAND_LOGO}-180.png`} alt="" aria-hidden="true" />;
   }
   return (
     <svg className={`${className} shrink-0`} viewBox="0 0 40 40" aria-hidden="true" focusable="false">

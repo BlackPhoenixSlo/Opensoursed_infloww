@@ -33,12 +33,13 @@ import { Badge, ExtraTag, Input } from "@/components/ui/primitives";
 import { HbButton, HbModal, HB_TABLE } from "@/components/ui/infloww";
 import { CopyButton, SelectInput, errMsg } from "@/components/growth/_bits";
 import { useTrialLinks, useCreateTrialLink, useDeleteTrialLink, type TrialLink } from "@/hooks/useGrowth";
+import { useGrowthCreator } from "@/hooks/useAccounts";
 import { useUser } from "@/contexts/UserContext";
 import LinkEditDialog, { LinkBatchEditDialog } from "@/components/growth/LinkEditDialog";
 import ShareLinksPanel from "@/components/growth/ShareLinksPanel";
 import LinkMetaFields, { FieldLabel, META_LOST, useLinkMetaFields } from "@/components/growth/LinkMetaFields";
 import LinksListFrame, {
-  FrameTabs, RowActions, Switch, Unreachable, createdDay, dateOnly, downloadCsv, useFrameFilters, useSessionGone,
+  FrameTabs, GrowthHbFrame, RowActions, Switch, Unreachable, createdDay, dateOnly, downloadCsv, useFrameFilters, useSessionGone,
   type FrameCol,
 } from "@/components/growth/LinksListFrame";
 import OfferClaimers from "@/components/growth/OfferClaimers";
@@ -321,5 +322,15 @@ function CreateTrialModal({ accountId, sources, tags, onClose }: {
         </form>
       )}
     </HbModal>
+  );
+}
+
+/** /growth/free-trial-links: this tab in the Growth HB frame. */
+export function TrialLinksPage() {
+  const { accountId, setAccountId } = useGrowthCreator();
+  return (
+    <GrowthHbFrame title="Free trial links">
+      <TrialLinksTab accountId={accountId} onAccountChange={setAccountId} />
+    </GrowthHbFrame>
   );
 }

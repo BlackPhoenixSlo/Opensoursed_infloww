@@ -78,7 +78,7 @@ import LinkEditDialog, { LinkBatchEditDialog } from "@/components/growth/LinkEdi
 import ShareLinksPanel from "@/components/growth/ShareLinksPanel";
 import LinkMetaFields, { FieldLabel, META_LOST, useLinkMetaFields } from "@/components/growth/LinkMetaFields";
 import LinksListFrame, {
-  ACT, CreatorFilter, FilterSelect, FrameTabs, LEAD, Pager, RowActions, Switch, TD, TH, Tip, Unreachable,
+  ACT, CreatorFilter, FilterSelect, FrameTabs, GrowthHbFrame, LEAD, Pager, RowActions, Switch, TD, TH, Tip, Unreachable,
   createdDay, dateOnly, downloadCsv, readTime, useFrameFilters, useMetaFilter, useReportTz, useSessionGone,
   DEFAULT_PAGE_SIZE, type PageSize,
 } from "@/components/growth/LinksListFrame";
@@ -88,6 +88,7 @@ import {
   useTrackingLinks, useCreateTrackingLink, useDeleteTrackingLink, useTrackingAnalytics,
   type OfTrackingFan, type OfTrackingLink,
 } from "@/hooks/useGrowth";
+import { useGrowthCreator } from "@/hooks/useAccounts";
 import { useActionAllowed } from "@/components/shell/useGrantedPages";
 import { useUser } from "@/contexts/UserContext";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
@@ -903,5 +904,15 @@ function Analytics({ accountId, linkId }: { accountId: string; linkId: number })
         <div className="text-[11px] text-fg-dim">No clicks yet.</div>
       )}
     </div>
+  );
+}
+
+/** /growth/tracking-links: this tab in the Growth HB frame. */
+export function TrackingLinksPage() {
+  const { accountId, setAccountId } = useGrowthCreator();
+  return (
+    <GrowthHbFrame title="Tracking links">
+      <TrackingLinksTab accountId={accountId} onAccountChange={setAccountId} />
+    </GrowthHbFrame>
   );
 }

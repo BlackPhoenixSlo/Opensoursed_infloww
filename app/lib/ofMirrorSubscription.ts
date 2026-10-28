@@ -39,16 +39,7 @@ import { ofMeQuery, type OfMe } from "@/lib/ofMirrorIdentity";
 import { bundleOptions, NO_BUNDLES_LEFT, trialsRoute, trialViewOf, type BundleSettings } from "@/lib/ofMirrorOffers";
 import { toast } from "@/lib/ofMirrorPost";
 import { message, note, NOT_YET, ofConfirm, ofErrorMessage, type Ask } from "@/lib/ofMirrorWrites";
-
-export type SubPart = "promotions" | "bundles" | "campaigns" | "trials";
-
-/** Relay route per part (`X-Account-Id` from the scope). */
-export const SUB_ROUTES: Record<SubPart, string> = {
-  promotions: "/api/of/v2/promotions",
-  bundles: "/api/of/v2/subscriptions/bundles",
-  campaigns: "/api/of/v2/campaigns",
-  trials: "/api/of/v2/trials",
-};
+import { SUB_ROUTES, type SubPart } from "@/lib/ofSubRoutes";
 
 export interface SubPromotion extends Promotion {
   createdAt?: string | null;

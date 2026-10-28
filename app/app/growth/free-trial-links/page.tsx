@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
 
-import GrowthTabPage from "@/components/growth/GrowthTabPage";
+import { TrialLinksPage } from "@/components/growth/TrialLinksTab";
 
 export const metadata: Metadata = { title: "Free trial links" };
 
 export default function Page() {
-  return <GrowthTabPage tab="trial" />;
+  return <TrialLinksPage />;
 }

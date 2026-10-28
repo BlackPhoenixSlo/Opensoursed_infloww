@@ -72,9 +72,12 @@ vi.mock("@/contexts/EmployeeContext", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/contexts/EmployeeContext")>()),
   useEmployee: () => ({ current: null }),
 }));
-vi.mock("@/contexts/ScopeContext", async (importOriginal) => {
+// A plain factory, not importOriginal: the original sits in an import cycle
+// (ScopeContext -> useAccountStateEvents -> appliedSettings -> ScopeContext),
+// and a module first reached inside importOriginal binds the real useScope.
+vi.mock("@/contexts/ScopeContext", () => {
   const all = { scope: { kind: "all" } };
-  return { ...(await importOriginal<typeof import("@/contexts/ScopeContext")>()), useScope: () => all };
+  return { useScope: () => all };
 });
 vi.mock("@/hooks/useAllModelsInclude", () => ({
   useAllModelsInclude: () => ({ isIncluded: () => true, toggle: vi.fn() }),

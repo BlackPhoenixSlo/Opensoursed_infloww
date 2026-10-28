@@ -17,9 +17,13 @@ import "./globals.css";
 
 /** Instrument Sans (OFL, app/app/fonts/): the closest free match to Infloww's licensed Suisse Int'l, whose app
  *  ships only Regular 400 and Medium 500 (fe-static-assets.infloww.com/font/SuisseIntl-*-WebS.woff2, declared in
- *  its app.asar). Self-hosted so builds and the demo-shots capture need no Google Fonts. */
+ *  its app.asar). Self-hosted so builds and the demo-shots capture need no Google Fonts. WOFF2 from the upstream
+ *  TTF (fontTools; same 501 glyphs and 343 codepoints, wght 400–700 kept) with the wdth axis pinned at its default
+ *  100: nothing here sets font-stretch, so the 75–100 width masters were never drawn. 47 KB on the wire against
+ *  89 KB with them and 112 KB as TTF; renders pixel-identical at 400–700. To use condensed widths, re-cut from
+ *  the TTF without the pin. */
 const ui = localFont({
-  src: "./fonts/InstrumentSans-Variable.ttf",
+  src: "./fonts/InstrumentSans-Variable.woff2",
   weight: "400 700",
   display: "swap",
   variable: "--font-ui",

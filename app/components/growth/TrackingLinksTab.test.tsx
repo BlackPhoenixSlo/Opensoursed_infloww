@@ -1,6 +1,6 @@
 /**
  * Growth > Tracking links, the page component (docs/spec/infloww-parity-round-2/phase-02-growth-pages.md, Testing
- * Decisions, Seam 1; ticket 38). Rendered as the route renders it (`GrowthTabPage tab="tracking"`), with
+ * Decisions, Seam 1; ticket 38). Rendered as the route renders it (`TrackingLinksPage`), with
  * `@/lib/relay` mocked and a fresh QueryClient over two placeholder Creators. What is pinned:
  *
  *  - the tabs, the attribution tip, the filter bar and the Links list column headers appear in the Layout capture's
@@ -59,7 +59,8 @@ vi.mock("@/contexts/ChatterContext", async (importOriginal) => ({
   useChatter: () => ({ chatter: null }),
 }));
 
-import GrowthTabPage from "@/components/growth/GrowthTabPage";
+import { TrackingLinksPage } from "@/components/growth/TrackingLinksTab";
+import { SmartListsPage } from "@/components/growth/SmartListsTab";
 import { relay } from "@/lib/relay";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { renderWithProviders } from "@/test-utils";
@@ -159,7 +160,7 @@ afterEach(() => {
 
 /** Mount the route's page and wait for the first link row. */
 async function mount() {
-  renderWithProviders(<GrowthTabPage tab="tracking" />);
+  renderWithProviders(<TrackingLinksPage />);
   await waitFor(() => expect(screen.getByText("Link one")).toBeTruthy());
 }
 
@@ -326,7 +327,7 @@ describe("Links list rows from the OnlyFans read", () => {
 
   it("shows the capture's \"No data\" when there are no links", async () => {
     ofResult = { ...ofResult, links: [] };
-    renderWithProviders(<GrowthTabPage tab="tracking" />);
+    renderWithProviders(<TrackingLinksPage />);
     expectInCapture("growth-tracking-links#65", "No data");
     await waitFor(() => expect(within(table()).getByText("No data")).toBeTruthy());
   });
@@ -573,7 +574,7 @@ describe("deactivated links", () => {
   });
 
   it("leaves them out of the Dashboard totals", async () => {
-    renderWithProviders(<GrowthTabPage tab="tracking" />);
+    renderWithProviders(<TrackingLinksPage />);
     fireEvent.click(await screen.findByRole("tab", { name: "Dashboard" }));
     const panel = screen.getByRole("tabpanel", { name: "Dashboard" });
     const card = within(panel).getByText("Total clicks").closest("[data-kpi]") as HTMLElement;
@@ -612,7 +613,7 @@ describe("the Date created filter", () => {
       LINK({ id: 2, name: "Twenty days old", created_at: ago(20) }),
       LINK({ id: 3, name: "Made today", created_at: new Date().toISOString() }),
     ];
-    renderWithProviders(<GrowthTabPage tab="tracking" />);
+    renderWithProviders(<TrackingLinksPage />);
     await waitFor(() => expect(screen.getByText("Made today")).toBeTruthy());
     const presets = screen.getByRole("combobox", { name: "Date created presets" }) as HTMLSelectElement;
     const labels = Array.from(presets.options).filter((o) => o.value).map((o) => o.textContent);
@@ -644,7 +645,7 @@ describe("Export", () => {
         LINK({ id: 1, name: "Big, link", url: "https://example.test/c1", clicks: 1200, subscribers: 30, created_at: "2026-03-14T12:00:00Z" }),
         LINK({ id: 2, name: "Other", url: "https://example.test/c2", clicks: 0, subscribers: 0 }),
       ];
-      renderWithProviders(<GrowthTabPage tab="tracking" />);
+      renderWithProviders(<TrackingLinksPage />);
       await waitFor(() => expect(screen.getByText("Big, link")).toBeTruthy());
       fireEvent.change(screen.getByPlaceholderText("Search tracking link name"), { target: { value: "big" } });
       const btn = screen.getByRole("button", { name: "Export" });
@@ -664,14 +665,14 @@ describe("Export", () => {
 
   it("is disabled with no rows to export", async () => {
     ofResult = { ...ofResult, links: [] };
-    renderWithProviders(<GrowthTabPage tab="tracking" />);
+    renderWithProviders(<TrackingLinksPage />);
     await waitFor(() => expect(within(table()).getByText("No data")).toBeTruthy());
     expect((screen.getByRole("button", { name: "Export" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("is not offered to a role denied Export CSV", async () => {
     deniedActions = ["/growth/tracking-links#export"];
-    renderWithProviders(<GrowthTabPage tab="tracking" />);
+    renderWithProviders(<TrackingLinksPage />);
     await waitFor(() => expect(screen.getByText("Link one")).toBeTruthy());
     await waitFor(() => expect(screen.queryByRole("button", { name: "Export" })).toBeNull());
   });
@@ -696,7 +697,7 @@ describe("our notes and extras", () => {
 
   it("says OnlyFans is not reachable when the read says so", async () => {
     ofResult = { links: [], username: null, url_verified: false, of_available: false };
-    renderWithProviders(<GrowthTabPage tab="tracking" />);
+    renderWithProviders(<TrackingLinksPage />);
     await waitFor(() => expect(screen.getByText(/OnlyFans not reachable/)).toBeTruthy());
   });
 });
@@ -707,7 +708,7 @@ describe("the Dashboard tab", () => {
 
   /** Mount the route's page, open the Dashboard tab and return its panel. */
   async function dashboard(): Promise<HTMLElement> {
-    renderWithProviders(<GrowthTabPage tab="tracking" />);
+    renderWithProviders(<TrackingLinksPage />);
     fireEvent.click(await screen.findByRole("tab", { name: "Dashboard" }));
     return screen.getByRole("tabpanel", { name: "Dashboard" });
   }
@@ -847,7 +848,7 @@ describe("the page header (ticket 59)", () => {
   it("prints Date created in the report time zone the header names", async () => {
     // 20:00 UTC on 14 March is 01:30 on 15 March in Asia/Kolkata.
     ofResult.links = [LINK({ id: 1, name: "Late link", created_at: "2026-03-14T20:00:00Z" })];
-    renderWithProviders(<GrowthTabPage tab="tracking" />);
+    renderWithProviders(<TrackingLinksPage />);
     await screen.findByText("UTC+05:30");
     await waitFor(() => expect(cell("Late link", "Date created").textContent).toBe("3/15/2026"));
   });
@@ -859,7 +860,7 @@ describe("the page header (ticket 59)", () => {
     expect(title.classList.contains("font-semibold")).toBe(false);
     expect(title.closest("header")?.classList.contains("p-4")).toBe(true);
     cleanup();
-    renderWithProviders(<GrowthTabPage tab="smart" />);
+    renderWithProviders(<SmartListsPage />);
     expect(screen.getByRole("heading", { level: 1, name: "Smart lists" }).classList.contains("font-semibold")).toBe(true);
   });
 });
@@ -958,7 +959,7 @@ describe("the update row, copy feedback, pager and house lines (ticket 59)", () 
 
   it("pages the rows 50 at a time by default, by 10 / 20 / 50 (#66)", async () => {
     ofResult.links = Array.from({ length: 12 }, (_, i) => LINK({ id: i + 1, code: 100 + i, name: `Row ${i + 1}` }));
-    renderWithProviders(<GrowthTabPage tab="tracking" />);
+    renderWithProviders(<TrackingLinksPage />);
     await waitFor(() => expect(screen.getByText("Row 12")).toBeTruthy());
     expectInCapture("growth-tracking-links#66", 'PAGE_SIZE_OPTIONS=["10","20","50"];const DEFAULT_PAGE_SIZE=50');
     const pager = screen.getByRole("navigation", { name: "Pagination" });
@@ -979,14 +980,14 @@ describe("the update row, copy feedback, pager and house lines (ticket 59)", () 
 
   it("shows no pager when there are no rows, as the bundle's", async () => {
     ofResult = { ...ofResult, links: [] };
-    renderWithProviders(<GrowthTabPage tab="tracking" />);
+    renderWithProviders(<TrackingLinksPage />);
     await waitFor(() => expect(within(table()).getByText("No data")).toBeTruthy());
     expect(screen.queryByRole("navigation", { name: "Pagination" })).toBeNull();
   });
 
   it("labels the house lines that stand in for the bundle's reconnect state as ours (#68)", async () => {
     ofResult = { links: [], username: null, url_verified: false, of_available: false };
-    renderWithProviders(<GrowthTabPage tab="tracking" />);
+    renderWithProviders(<TrackingLinksPage />);
     const line = await screen.findByText(/OnlyFans not reachable/);
     expect(within(line).getByTitle(EXTRA_LABEL)).toBeTruthy();
     fireEvent.click(screen.getByRole("tab", { name: "Dashboard" }));
@@ -1000,7 +1001,7 @@ describe("the update row, copy feedback, pager and house lines (ticket 59)", () 
         ? Promise.resolve({ accounts: [A, B], active_account_id: null })
         : new Promise(() => {}),
     );
-    renderWithProviders(<GrowthTabPage tab="tracking" />);
+    renderWithProviders(<TrackingLinksPage />);
     const row = await screen.findByText(/^Loading/);
     expect(within(row.closest("td") as HTMLElement).getByTitle(EXTRA_LABEL)).toBeTruthy();
   });
@@ -1119,7 +1120,7 @@ describe("earnings: claimers x the ledger", () => {
       { id: 3, earnings_cents: 10000, earnings_net_cents: 8000, fans_who_spent: 1, fans_counted: 4, net_missing_count: 0 },
       { id: 4, earnings_cents: null, earnings_net_cents: null, fans_who_spent: null, fans_counted: null, net_missing_count: 0 },
     ];
-    renderWithProviders(<GrowthTabPage tab="tracking" />);
+    renderWithProviders(<TrackingLinksPage />);
     fireEvent.click(await screen.findByRole("tab", { name: "Dashboard" }));
     const panel = screen.getByRole("tabpanel", { name: "Dashboard" });
     const value = () => (within(panel).getByText("Total earnings").closest("[data-kpi]") as HTMLElement).lastElementChild as HTMLElement;
@@ -1328,7 +1329,7 @@ describe("Edit: Promo cost, Source and Tag, and the columns they fill", () => {
     // ($987.60 − $300.00) / $300.00 × 100 = 229.20% net, ($1,234.50 − $300.00) / $300.00 = 311.50% gross. The mean of
     // the two links' own ROIs (295.04% and −100.00%) would be 97.52%: pooled, a $50 link does not weigh like a $250 one.
     ofResult.links[1] = { ...(ofResult.links[1] as object), promo_cost_cents: 5000 };
-    renderWithProviders(<GrowthTabPage tab="tracking" />);
+    renderWithProviders(<TrackingLinksPage />);
     fireEvent.click(await screen.findByRole("tab", { name: "Dashboard" }));
     const panel = screen.getByRole("tabpanel", { name: "Dashboard" });
     const value = (t: string) =>
@@ -1346,7 +1347,7 @@ describe("Edit: Promo cost, Source and Tag, and the columns they fill", () => {
   it("marks Avg ROI partial when a link with a Promo cost has no earnings figure", async () => {
     ofResult.links[1] = { ...(ofResult.links[1] as object), promo_cost_cents: 5000 };
     earnings.links = [earnings.links[0]];
-    renderWithProviders(<GrowthTabPage tab="tracking" />);
+    renderWithProviders(<TrackingLinksPage />);
     fireEvent.click(await screen.findByRole("tab", { name: "Dashboard" }));
     const panel = screen.getByRole("tabpanel", { name: "Dashboard" });
     const val = () => (within(panel).getByText("Avg ROI").closest("[data-kpi]") as HTMLElement).lastElementChild;
@@ -1356,7 +1357,7 @@ describe("Edit: Promo cost, Source and Tag, and the columns they fill", () => {
   });
 
   it("filters the Dashboard totals by Source", async () => {
-    renderWithProviders(<GrowthTabPage tab="tracking" />);
+    renderWithProviders(<TrackingLinksPage />);
     fireEvent.click(await screen.findByRole("tab", { name: "Dashboard" }));
     const panel = screen.getByRole("tabpanel", { name: "Dashboard" });
     const clicks = () => (within(panel).getByText("Total clicks").closest("[data-kpi]") as HTMLElement).lastElementChild?.textContent;
@@ -1373,7 +1374,7 @@ describe("the HB frame (page-parity ticket 11)", () => {
       if (p === "/admin/accounts") return Promise.resolve({ accounts: [], active_account_id: null });
       return Promise.resolve({});
     });
-    renderWithProviders(<GrowthTabPage tab="tracking" />);
+    renderWithProviders(<TrackingLinksPage />);
     await waitFor(() => expect(screen.getByRole("combobox", { name: "Creator" }).textContent).toContain("Creator"));
     expect(screen.queryByText("No account connected yet.")).toBeNull();
     expect(screen.getByPlaceholderText("Search tracking link name")).toBeTruthy();
@@ -1396,7 +1397,7 @@ describe("the HB frame (page-parity ticket 11)", () => {
       if (p.startsWith("/admin/of-tracking-links")) return Promise.resolve({ links: [], username: null, url_verified: false, of_available: false });
       return Promise.resolve({});
     });
-    renderWithProviders(<GrowthTabPage tab="tracking" />);
+    renderWithProviders(<TrackingLinksPage />);
     expectInCapture("growth-tracking-links#68", "Relink OnlyFans account");
     expect(await screen.findByText("Creator's OnlyFans account is disconnected from Infloww")).toBeTruthy();
     expect(screen.getByRole("link", { name: "Relink OnlyFans account" }).getAttribute("href")).toBe("/creators");

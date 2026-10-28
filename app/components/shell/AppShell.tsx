@@ -43,7 +43,6 @@ import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 
-import { hasCreatorColumn } from "@/components/of-manager/OfManagerChrome";
 import DeniedPageGate from "@/components/shell/DeniedPage";
 import { DesktopUpdateBanner } from "@/components/shell/DesktopUpdateBanner";
 import { FreeTrialExpiredModal } from "@/components/shell/FreeTrial";
@@ -53,7 +52,7 @@ import TopBar from "@/components/shell/TopBar";
 import { ClockHeartbeat } from "@/components/shifts/ClockButton";
 import { useIsDesktop } from "@/hooks/useIsDesktop";
 import { OS_EDGE_PX, useSwipe } from "@/hooks/useSwipe";
-import { isPopoutRoute, openPopout, POPOUT_WINDOW } from "@/lib/nav";
+import { hasCreatorColumn, isPopoutRoute, openPopout, POPOUT_WINDOW } from "@/lib/nav";
 
 const SIDEBAR_ID = "app-sidebar";
 const DRAWER_ID = "app-sidebar-drawer";

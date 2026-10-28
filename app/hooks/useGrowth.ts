@@ -12,9 +12,10 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { ofMeQuery } from "@/lib/ofMirrorIdentity";
+import { ofMeQuery } from "@/lib/ofMe";
 import type { BundleForm, BundleSettings } from "@/lib/ofMirrorOffers";
-import { SUB_ROUTES, type Bundle } from "@/lib/ofMirrorSubscription";
+import type { Bundle } from "@/lib/ofMirrorSubscription";
+import { SUB_ROUTES } from "@/lib/ofSubRoutes";
 
 import { relay } from "@/lib/relay";
 import type { LinkMetaPayload } from "@/components/growth/LinkMetaFields";

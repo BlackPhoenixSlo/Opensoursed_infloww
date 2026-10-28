@@ -10,7 +10,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-  API_KEY_ERROR_EVENT, ApiKeyError, RelayError, describeLoadError, relay, type ApiKeyErrorPayload,
+  API_KEY_ERROR_EVENT, ApiKeyError, RelayError, describeLoadError, relay, request, type ApiKeyErrorPayload,
 } from "@/lib/relay";
 
 const err = (m: string) => new Error(m);
@@ -100,5 +100,33 @@ describe("parseResponse › API-key errors", () => {
     expect(err).toBeInstanceOf(RelayError);
     expect(err).not.toBeInstanceOf(ApiKeyError);
     expect(on).not.toHaveBeenCalled();
+  });
+});
+
+// ── Scoped calls skip the browser cache (Chrome's per-URL cache lock) ───────
+
+describe("request › cache mode", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const modeOf = async (ctx?: Parameters<typeof relay.get>[1], init: RequestInit = { method: "GET" }) => {
+    const f = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", f);
+    await request("/api/of/v2/users/me", init, ctx);
+    return (f.mock.calls[0] as unknown as [string, RequestInit])[1].cache;
+  };
+
+  it("sends a Creator-scoped call with cache: no-store, so N Creators' calls run in parallel", async () => {
+    expect(await modeOf({ accountId: "123" })).toBe("no-store");
+  });
+
+  it("reads the scope from the sent headers, so a caller's own X-Account-Id skips the cache too", async () => {
+    expect(await modeOf(undefined, { method: "GET", headers: { "X-Account-Id": "123" } })).toBe("no-store");
+  });
+
+  it("lets a caller's own init.cache win", async () => {
+    expect(await modeOf({ accountId: "123" }, { method: "GET", cache: "default" })).toBe("default");
+  });
+
+  it("leaves an unscoped call on the browser's default cache", async () => {
+    expect(await modeOf()).toBeUndefined();
   });
 });

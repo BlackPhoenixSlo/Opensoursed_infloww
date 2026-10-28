@@ -514,6 +514,11 @@ export function isPopoutRoute(pathname: string): boolean {
   return allNavLinks().some((l) => l.popout && (pathname === l.href || pathname.startsWith(`${l.href}/`)));
 }
 
+/** The routes with the creator column (OF Manager), where it is the creator switch from lg up. */
+export function hasCreatorColumn(pathname: string): boolean {
+  return pathname === "/of-manager" || pathname.startsWith("/of-manager/");
+}
+
 /** The one Messages Pro window's name, so every open reuses it. */
 export const POPOUT_WINDOW = "messages-pro";
 /** Infloww's Messages Pro window size; a phone opens a tab instead. */

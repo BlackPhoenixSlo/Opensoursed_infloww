@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * SmartListsTab — Growth → Smart lists, on Infloww's `SmartLists` page (page-parity 13): GrowthTabPage draws the
+ * SmartListsTab — Growth → Smart lists, on Infloww's `SmartLists` page (page-parity 13): GrowthRailFrame draws the
  * 48px header and the creator rail; this is the content: the top box ("Search list name", "Create list"), the table
  * (List name, Criteria, Incl. expired, Fans, Actions), "Create smart list" / "Edit smart list" at 600 and the
  * "Delete smart list?" confirm at 416.
@@ -26,6 +26,8 @@ import {
   type SmartScope, type SmartTimeframe,
 } from "@/hooks/useSmartLists";
 import { cn } from "@/lib/utils";
+import { GrowthRailFrame } from "@/components/growth/GrowthFrame";
+import { useGrowthCreator } from "@/hooks/useAccounts";
 
 /** Ours: the header's tooltip (Infloww's page has no description). */
 export const SMART_LISTS_ABOUT =
@@ -601,5 +603,15 @@ function SmartListEditor({
         {err && <div role="alert" className="text-[12px] text-err">{err}</div>}
       </div>
     </IfModal>
+  );
+}
+
+/** /growth/smart-lists: this tab in the Growth rail frame, its title carrying SMART_LISTS_ABOUT. */
+export function SmartListsPage() {
+  const creator = useGrowthCreator();
+  return (
+    <GrowthRailFrame title={<span title={SMART_LISTS_ABOUT}>Smart lists</span>} creator={creator}>
+      <SmartListsTab accountId={creator.accountId} />
+    </GrowthRailFrame>
   );
 }

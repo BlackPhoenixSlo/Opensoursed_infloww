@@ -11,6 +11,7 @@ import {
   deniedPage,
   findNavLink,
   firstPage,
+  hasCreatorColumn,
   isDivider,
   isGroup,
   isPlatformPage,
@@ -354,5 +355,13 @@ describe("openPopout", () => {
       ["/messages-pro/acc1/123", "messages-pro", "popup,width=1470,height=915"],
     ]);
     open.mockRestore();
+  });
+});
+
+describe("hasCreatorColumn", () => {
+  it("is OF Manager only", () => {
+    expect(hasCreatorColumn("/of-manager/home")).toBe(true);
+    expect(hasCreatorColumn("/messages-pro")).toBe(false);
+    expect(hasCreatorColumn("/of-managerx")).toBe(false);
   });
 });

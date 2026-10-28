@@ -109,8 +109,8 @@ class Member:
         self.url, self.shard, self.agency = rec["url"], rec["shard"], rec["owner"]
         self.assigned: frozenset[str] = frozenset(rec["account_ids"])
         self.chatter_id = rec.get("chatter_id")
-        self.probes: list[tuple[str, str, int]] = list(rec.get("probes") or [])  # (kind, account, fan) to be refused
-        self.probes_out: list[tuple] = []
+        self.probes: list[dict] = list(rec.get("probes") or [])  # direct reads to be refused (the scenario's plan)
+        self.probes_out: list[dict] = []
         self.stage: str | None = None
         self.http = None
         self.lis = None
@@ -118,7 +118,8 @@ class Member:
         self.connected_ms: float | None = None
         self.accounts_listed: set[str] | None = None
         self.rows_seen: set[str] = set()
-        self.head: list[tuple[str, int]] = []
+        self.head: list[tuple[str, int]] = []  # the sign-in inbox head's rows of assigned Creators
+        self.head_status: int | None = None
         self.replies: list[dict] = []
         self.opens = 0
         self.errors: list[str] = []
@@ -200,6 +201,7 @@ class Crowd:
             items = body if isinstance(body, list) else (body.get("accounts") or body.get("list") or [])
             m.accounts_listed = {str(x.get("account_id") or x.get("id") if isinstance(x, dict) else x) for x in items}
         head = await self._get(m, f"/admin/chats/recent?limit={self.head}")
+        m.head_status = head.status_code if head is not None else None
         if head is not None and head.status_code == 200:
             for x in head.json().get("list") or []:
                 aid = str(x.get("__accountId") or "")

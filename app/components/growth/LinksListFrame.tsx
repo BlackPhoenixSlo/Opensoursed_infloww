@@ -7,8 +7,9 @@
  * the HB table with its fixed name and Actions columns, and `HbPager`. Tracking links (`TrackingLinksTab`) and Free
  * trial links (`TrialLinksTab`) render through it; each passes its own rows, columns, switches and row actions.
  *
- * The pieces both pages share (the tabs' toggle look, the creator and Source / Tag filters, HB's switch, the reconnect
- * state, the row actions and their confirm) are exported from here too.
+ * The pieces both pages share (the page frame `GrowthHbFrame` with its title and report time zone, the tabs' toggle
+ * look, the creator and Source / Tag filters, HB's switch, the reconnect state, the row actions and their confirm) are
+ * exported from here too.
  */
 
 import { useState, type ReactNode } from "react";
@@ -51,8 +52,8 @@ export function useReportTz(): { reportTz: string | null; ready: boolean } {
 }
 
 /** #6 to #9: the report time zone after the title, 8px either side, 14px/1.5, then a 16px info icon whose tooltip
- *  is "Set by your organization". The page header (`GrowthTabPage`) renders it. */
-export function ReportTimeZone() {
+ *  is "Set by your organization". The page header (`GrowthHbFrame`) renders it. */
+function ReportTimeZone() {
   const { reportTz, ready } = useReportTz();
   return (
     <span className="mx-2 flex items-center text-sm leading-normal text-fg-dim">
@@ -61,6 +62,24 @@ export function ReportTimeZone() {
         <Info size={16} aria-hidden />
       </span>
     </span>
+  );
+}
+
+/** Tracking links and Free trial links are one HB frame (its Layout capture, #4 to #9): the HB body, a 16px-padded
+ *  header with a 24px weight-500 title and the report time zone; its own panels carry the 16px sides. With no
+ *  Creator it still draws the whole frame (the Creator filter empty, Create disabled, the table's "No data"). The
+ *  page (TrackingLinksPage, TrialLinksPage) draws it around its tab; the list below is `LinksListFrame`. */
+export function GrowthHbFrame({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="min-h-full bg-hb-bg">
+      <header className="flex flex-wrap items-start justify-between gap-3 p-4">
+        <div className="flex flex-wrap items-center min-w-0">
+          <h1 className="text-2xl font-medium leading-[1.1667]">{title}</h1>
+          <ReportTimeZone />
+        </div>
+      </header>
+      {children}
+    </div>
   );
 }
 

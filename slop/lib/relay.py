@@ -9,7 +9,11 @@ redirected secrets and sessions, CHATTERLY_TEST_MODE) plus loopback-only hooks.
        quiescence); transcoded (a canonical writer returned without raising: the
        successes only); persist drops; queue depth.
   GET  /__slop/loop-cpu     time.thread_time() of the event-loop thread (lib/procmon.py
-       polls it each second: the loop's own CPU, the one-core ceiling).
+       polls it each second: the loop's own CPU, the one-core ceiling), plus the DB pool
+       counters; the pool-wait histogram is half-open (bucket 100 = [75,100) ms).
+       Harness-side faults honoured here (lib/faults.py, never service/):
+       `loop-cpu-polls-dropped` answers every 4th poll 503; `pool-wait-floor-80ms`
+       records every pool wait as at least 80 ms (recording only, nothing sleeps).
   POST /__slop/telemetry-flush  emit service/db/write_telemetry's JSON line now
        (reason "flush"; its shutdown line, early), so the counts are in relay.log.
   POST /__slop/browserbase  {api, chunk_url_tpl, job_window_s?}  points the served Browserbase
@@ -128,6 +132,7 @@ worker; IDLE_LEAVES / IDLE_LINE) counts as idle and is left out of the shares.
 import contextvars
 import importlib
 import inspect
+import itertools
 import json
 import linecache
 import os
@@ -568,15 +573,18 @@ def _db_probe():
     if hasattr(pool, "_do_get"):
         real_get = pool._do_get
 
+        floor = 80.0 if os.environ.get("SLOP_FAULT") == "pool-wait-floor-80ms" else 0.0  # recorded, not slept
+
         def timed_get():
             t0 = time.perf_counter()
             try:
                 return real_get()
             finally:
-                ms = (time.perf_counter() - t0) * 1000
+                ms = max((time.perf_counter() - t0) * 1000, floor)
                 wait["n"] += 1
                 wait["max_ms"] = max(wait["max_ms"], ms)
-                wait["hist"][next(i for i, b in enumerate(WAIT_BOUNDS_MS) if ms <= b)] += 1
+                # half-open buckets: bound b holds [previous b, b), so bucket 100 means < 100 ms
+                wait["hist"][next(i for i, b in enumerate(WAIT_BOUNDS_MS) if ms < b)] += 1
 
         pool._do_get = timed_get
 
@@ -751,13 +759,26 @@ def _wire(app) -> None:
             raise HTTPException(status_code=404, detail="profiler off (slop/run --profile)")
         return sampler.dump()
 
+    def _schedstat() -> list[int] | None:
+        """This (the event-loop) thread's /proc/thread-self/schedstat: [on-CPU ns, run-queue wait
+        ns, timeslices]; None off Linux. Cumulative; procmon takes the deltas (Q, context only)."""
+        try:
+            with open("/proc/thread-self/schedstat") as fh:
+                return [int(x) for x in fh.read().split()[:3]]
+        except (OSError, ValueError):
+            return None
+
     db = _db_probe()
+    polls = itertools.count(1)
+    drop_polls = os.environ.get("SLOP_FAULT") == "loop-cpu-polls-dropped"
 
     async def loop_cpu(request: Request) -> dict:
         """CPU seconds of the thread this handler runs on: the event loop's, plus the
         DB pool counters (`_db_probe`), polled together once a second by lib/procmon.py."""
         _loopback(request)
-        return {"thread_s": time.thread_time(), "mono_s": time.monotonic(), "db": db()}
+        if drop_polls and next(polls) % 4 == 0:  # fault loop-cpu-polls-dropped: a lost poll
+            raise HTTPException(status_code=503, detail="slop fault loop-cpu-polls-dropped")
+        return {"thread_s": time.thread_time(), "mono_s": time.monotonic(), "db": db(), "sched": _schedstat()}
 
     import asyncio
 

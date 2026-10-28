@@ -22,7 +22,8 @@ import time
 from pathlib import Path
 
 INTERVAL_S = 1.0
-# Upper bounds (ms) of the pool-wait histogram lib/relay.py _db_probe reports.
+# Upper bounds (ms) of the pool-wait histogram lib/relay.py _db_probe reports; half-open
+# (`ms < b`): bucket 100 holds [75,100) ms.
 WAIT_BOUNDS_MS = (0.5, 1, 2, 5, 10, 25, 50, 75, 100, 250, 500, 1000, 2000, float("inf"))
 _PS: dict = {"t": 0.0, "out": "", "lock": None, "loop": None}  # one `ps -A` per 0.5 s for every monitor (fleet)
 
@@ -60,7 +61,7 @@ async def _ps_all() -> str:
 
 
 def wait_p95(hist: list[int]) -> float | None:
-    """The bucket upper bound (ms) holding the 95th percentile pool wait."""
+    """The bucket upper bound (ms, exclusive) holding the 95th percentile pool wait."""
     n = sum(hist)
     if not n:
         return None
@@ -70,6 +71,15 @@ def wait_p95(hist: list[int]) -> float | None:
         if run >= k:
             return b
     return WAIT_BOUNDS_MS[-1]
+
+
+def pool_bent(spills: int, wait_p95_ms: float | None, gate: dict) -> bool:
+    """Decision 5's pool gate, the one predicate every gate site calls (chatter-crowd's
+    judge_stage, lib/cli.py's POOL_GATE check): bent on any spill above the gate, or a
+    pool-wait p95 bucket whose (exclusive) upper bound is over the gate, so bucket 100
+    ([75,100) ms) holds "< 100 ms" and bucket 250 does not. A null wait p95 (no checkout
+    timed) passes; null spills never get here (missing pool data is `nodata` upstream)."""
+    return spills > gate["spills"] or (wait_p95_ms is not None and wait_p95_ms > gate["wait_p95_ms"])
 
 
 def _cpu_seconds(s: str) -> float:
@@ -103,6 +113,7 @@ class ProcMon:
         self.profile_errors: list[str] = []
         self.nested_at: dict = {}  # top stacks of nested DB checkouts (lib/relay.py _db_probe)
         self._fresh = False  # the next sample starts a new series (follow())
+        self._lost = 0  # polls by samples that left no interval (process not seen): counted lost, next interval
 
     def follow(self, pgid: int, relay_http) -> None:
         """Watch another process group from now on (the shard's relay restarted elsewhere, e.g.
@@ -124,11 +135,23 @@ class ProcMon:
     async def _loop(self) -> None:
         while not self._stop.is_set():
             stage = self.rec.stage
+            t_pre, mono_pre = time.time(), time.monotonic()  # stamps around this sample's reads
             got, loop, threads = await asyncio.gather(self._ps(), self._loop_cpu(), self._threads())
+            t_post, mono_post = time.time(), time.monotonic()
+            # One /__slop/loop-cpu poll per sample. Lost (raised or non-200): the relay may have
+            # reset its pool histogram, so that interval's waits are gone. Pool missing: answered
+            # without the wait histogram or the spill counter.
+            lost = loop is None
+            db_now = (loop or {}).get("db") or {}
+            missing = not lost and ((db_now.get("wait") or {}).get("hist") is None or db_now.get("spills") is None)
+            if got is None:
+                self._lost += 1
             if got is not None:
                 s = {"t": time.time(), "stage": stage, "cpu_s": got[0], "rss_mb": round(got[1], 1),
                      "loop_s": loop and loop["thread_s"], "loop_t": loop and loop["mono_s"],
-                     "db": (loop or {}).get("db"), "threads": threads, "load1": round(os.getloadavg()[0], 2)}
+                     "db": (loop or {}).get("db"), "threads": threads, "load1": round(os.getloadavg()[0], 2),
+                     "sched": (loop or {}).get("sched"), "t_pre": t_pre, "mono_pre": mono_pre,
+                     "t_post": t_post, "mono_post": mono_post}
                 if self.samples and not self._fresh:
                     prev = self.samples[-1]
                     wall = s["t"] - prev["t"]
@@ -137,6 +160,7 @@ class ProcMon:
                         lw = (s["loop_t"] - prev["loop_t"]) if s["loop_t"] and prev["loop_t"] else 0
                         lp = round((s["loop_s"] - prev["loop_s"]) / lw * 100, 1) if lw > 0 else None
                         db, pdb = s["db"] or {}, prev["db"] or {}
+                        q, pq = s["sched"], prev["sched"]
                         self.intervals.append({"stage": prev["stage"], "t0": round(prev["t"], 3),
                                                "wall_s": round(wall, 3), "cpu_s": round(d, 3),
                                                "cpu_pct": round(d / wall * 100, 1), "loop_pct": lp,
@@ -149,7 +173,19 @@ class ProcMon:
                                                              and pdb.get("spills") is not None else None),
                                                "db_wait": (db.get("wait") or {}).get("hist"),
                                                "db_wait_max_ms": (db.get("wait") or {}).get("max_ms"),
-                                               "host_load1": s["load1"], **self._requests_until(s["t"])})
+                                               "host_load1": s["load1"], "polls": 1 + self._lost,
+                                               "polls_lost": int(lost) + self._lost, "pool_missing": int(missing),
+                                               # the interval's span: just before the first sample's
+                                               # reads to just after the last's (epoch s, monotonic s)
+                                               "t_pre": round(prev["t_pre"], 3), "t_post": round(s["t_post"], 3),
+                                               "mono_pre": round(prev["mono_pre"], 3),
+                                               "mono_post": round(s["mono_post"], 3),
+                                               # Q: the loop thread's run-queue wait and timeslices
+                                               # (schedstat deltas; null off Linux), context only
+                                               "q_run_delay_ms": round((q[1] - pq[1]) / 1e6, 3) if q and pq else None,
+                                               "q_slices": q[2] - pq[2] if q and pq else None,
+                                               **self._requests_until(s["t"])})
+                        self._lost = 0
                         if db.get("nested_at"):
                             self.nested_at = db["nested_at"]
                 self.samples.append(s)
@@ -181,9 +217,11 @@ class ProcMon:
         return n if n > 0 else None
 
     async def _loop_cpu(self) -> dict | None:
+        """The relay's loop CPU and pool counters; None for a lost poll (raised or non-200)."""
         try:
-            return (await self.http.get("/__slop/loop-cpu")).json()
-        except Exception:  # noqa: BLE001 — a missed sample is just a longer next interval
+            r = await self.http.get("/__slop/loop-cpu")
+            return r.json() if r.status_code == 200 else None
+        except Exception:  # noqa: BLE001 — a lost poll: counted per interval (polls_lost)
             return None
 
     async def _tell_profiler(self, stage: str | None) -> None:
@@ -252,7 +290,7 @@ class ProcMon:
                 "dbOpen = SQLite connections opened; nested = checkouts by a task already holding one (lib/relay.py);",
                 "hostLd = the machine's 1-min load average (max; other processes compete for the cores);",
                 "spills = pool checkouts that waited SPILL_AFTER_S and opened an extra connection; waitP95 / waitMax =",
-                "time inside the pool's checkout (ms; p95 is the histogram bucket's upper bound):",
+                "time inside the pool's checkout (ms; p95 is the bucket's exclusive upper bound, 100 = [75,100)):",
                 "  stage       wall_s  cpu%mean cpu%p95 cpu%max  cores loop%mean loop%p95  rssMax   rssEnd"
                 " threads  dbPeak  dbOpen  nested  hostLd spills waitP95  waitMax", *rows]
 
@@ -287,7 +325,9 @@ def _pool(ivs: list[dict]) -> dict:
             hist[k] += c
     mx = _max(i.get("db_wait_max_ms") for i in ivs)
     return {"pool_spills": sum(i.get("db_spills") or 0 for i in ivs), "pool_wait_n": sum(hist),
-            "pool_wait_p95_ms": wait_p95(hist), "pool_wait_max_ms": round(mx, 1) if mx is not None else None}
+            "pool_wait_p95_ms": wait_p95(hist), "pool_wait_max_ms": round(mx, 1) if mx is not None else None,
+            "polls": sum(i.get("polls", 1) for i in ivs), "polls_lost": sum(i.get("polls_lost", 0) for i in ivs),
+            "pool_missing": sum(i.get("pool_missing", 0) for i in ivs)}
 
 
 def _dash(v) -> object:

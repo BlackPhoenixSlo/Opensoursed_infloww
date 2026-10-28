@@ -93,7 +93,7 @@ function buildUrl(path: string, ctx?: RelayContext, opts?: { refresh?: boolean }
   return url.pathname + url.search;
 }
 
-function buildHeaders(init?: RequestInit, ctx?: RelayContext): HeadersInit {
+function buildHeaders(init?: RequestInit, ctx?: RelayContext): Headers {
   const headers = new Headers(init?.headers);
   if (!headers.has("Accept")) headers.set("Accept", "application/json");
   if (ctx?.employeeId != null) headers.set("X-Employee-Id", String(ctx.employeeId));
@@ -196,7 +196,18 @@ export async function request<T = unknown>(
 ): Promise<T> {
   const url = buildUrl(path, ctx, opts);
   const headers = buildHeaders(init, ctx);
-  const r = await fetch(url, { ...init, headers, credentials: "same-origin" });
+  // A Creator-scoped call (`X-Account-Id`) shares its URL with every other
+  // Creator's call, so the browser HTTP cache cannot tell them apart — and
+  // Chrome holds a per-URL cache lock: N parallel GETs of the same URL run one
+  // after another, each waiting for the previous one's headers. The shell's
+  // per-Creator `users/me` (one per Creator) and Messages Pro's per-Creator
+  // chats/notifications reads paid one round trip per Creator for it —
+  // measured 20 calls = 4.2 s serial vs 0.29 s with `no-store` in Chromium
+  // (Safari/WebKit runs them in parallel either way). `no-store` skips the
+  // cache, so the lock is never taken. Unscoped calls keep the browser's
+  // default. A caller's own `init.cache` wins.
+  const cache = headers.has("X-Account-Id") ? "no-store" : undefined;
+  const r = await fetch(url, { cache, ...init, headers, credentials: "same-origin" });
   return parseResponse<T>(r);
 }
 

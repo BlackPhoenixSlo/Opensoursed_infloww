@@ -362,6 +362,21 @@ Module._load = function (request, ...rest) {
 };"""
 
 
+def _relay_cache_no_single_flight() -> None:
+    """relay_cache's per-key single-flight off: each miss gets a lock of its own, so
+    concurrent misses on one Creator's cold key each read OnlyFans (bug class: a cold
+    burst of one Creator's read stampedes OF; Chrome's per-URL cache lock used to
+    serialize such a burst before the app's no-store)."""
+    import asyncio
+
+    import relay_cache
+
+    async def own_lock(_key):
+        return asyncio.Lock()
+
+    relay_cache._get_or_make_lock = own_lock
+
+
 def _otp_state_not_session_dead() -> None:
     """The classifier's code-101 branch reverted (as before fix/otp-state-session-health):
     OF's 2FA demand is not a dead session, so nothing flags, notifies or pauses the account."""
@@ -538,6 +553,34 @@ FAULTS: dict[str, Fault] = {
     "chatter-access-ignored": Fault(_chatter_access_ignored, (
         "no chatter saw an unassigned Creator of its own Agency (stream, inbox, account list, direct reads)",
     )),
+    # Harness-side, never service/ (lib/relay.py's pool probe; DECLARED: it breaks the harness's
+    # reading, not the product). Every pool wait recorded as at least 80 ms, nothing sleeps: the
+    # p95 lands in bucket 100 = [75,100), which decision 5's "< 100 ms" holds, so with the half-open
+    # gate it is NOT CAUGHT; with `if ms < b` / `wait_p95_ms > gate[...]` reverted it is CAUGHT.
+    # slop/run chatter-crowd --break --baseline=<green> --fault=pool-wait-floor-80ms
+    "pool-wait-floor-80ms": Fault(None, (
+        "DB pool gate (decision 5): 0 spills and pool-wait p95 < 100ms, every shard, every gated stage",
+    )),
+    # Harness-side (lib/relay.py's /__slop/loop-cpu answers every 4th poll 503): a declared plain
+    # fault run, INFRA by design (the stages' pool data is lost: `nodata`), never CAUGHT.
+    # slop/run chatter-crowd --break --baseline=<green> --fault=loop-cpu-polls-dropped  (exit 3)
+    "loop-cpu-polls-dropped": Fault(None, ()),
+    # Scenario-side (chatter-crowd's _probe reads ctx.fault): declared plain fault runs, INFRA by
+    # design (an unproven isolation probe is undecided, never a pass), never CAUGHT. The first
+    # sends only the probe without the chatter's cookie (its controls keep theirs); the second
+    # points every target control at a fan of the target Creator with no seeded thread.
+    # slop/run chatter-crowd --break --baseline=<green> --fault=iso-probe-cookie-dropped  (exit 3)
+    "iso-probe-cookie-dropped": Fault(None, ()),
+    # slop/run chatter-crowd --break --baseline=<green> --fault=iso-target-control-unseeded  (exit 3)
+    "iso-target-control-unseeded": Fault(None, ()),
+    # Harness-side (the scenario passes it to actors/fan_dm.serial, recording only): each fan
+    # frame's `due` is stamped 1500 ms early, nothing is sent at another time, so pump lag p95
+    # passes 1000 ms with the driver's loop fine: why["pump"], never why["load"].
+    # slop/run chatter-crowd --break --baseline=<green> --fault=pump-due-shifted-1500ms
+    "pump-due-shifted-1500ms": Fault(None, (
+        "offered load met: fan frames on schedule (lag p95 <= 1000ms) and the driver's loop lag "
+        "p95 <= 100ms, every gated stage",
+    )),
     # slop/run chatter-crowd --layout=one-agency --break --fault=health-lane-4-core
     "health-lane-4-core": Fault(_health_lane_4_core, (
         "owner /setup (GET /health?all_accounts=1, one proxy's Creators dead): 200, exactly the "
@@ -559,6 +602,10 @@ FAULTS: dict[str, Fault] = {
         "Dashboard and Creator reports totals by kind == max(OF, ledger) per complete day + the ledger (today)",
         "Earnings trends: every day == max(OF, ledger) per category (today: the ledger's)",
         "Creator performance: each Creator's net == max(OF, ledger) per day + today's ledger",
+    )),
+    # slop/run scoped-reads --break (the scenario's FAULT)
+    "relay-cache-no-single-flight": Fault(_relay_cache_no_single_flight, (
+        "cold concurrent burst: OnlyFans saw exactly one call per Creator per read (single-flight)",
     )),
     # slop/run session-health-otp --break (the scenario's FAULT)
     "otp-state-not-session-dead": Fault(_otp_state_not_session_dead, (

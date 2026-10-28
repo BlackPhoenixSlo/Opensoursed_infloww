@@ -19,7 +19,7 @@ sys.path.insert(0, str(SLOP.parent))  # so `slop.seed...` and `slop.actors...` i
 
 from slop.lib.client import Http, Recorder  # noqa: E402
 from slop.lib.faults import FAULTS  # noqa: E402
-from slop.lib.procmon import ProcMon, render  # noqa: E402
+from slop.lib.procmon import ProcMon, pool_bent, render  # noqa: E402
 from slop.lib.report import EVIDENCE, Report, run_dir  # noqa: E402
 from slop.lib.stack import Stack  # noqa: E402
 from slop.seed import SCALES, World  # noqa: E402
@@ -204,7 +204,7 @@ def _tracebacks(log: Path, expected: tuple[tuple[str, str], ...] = ()) -> tuple[
 async def _fleet_resources(report: Report, mons: dict[str, ProcMon], mod, out: Path) -> None:
     """A fleet run: per shard resources-sNN.json and table rows; the CPU budget
     over every shard (the max); the decision-5 pool gate if the scenario sets
-    POOL_GATE = {"spills": 0, "wait_p95_ms": 100}."""
+    POOL_GATE = {"spills": 0, "wait_p95_ms": 100} (procmon.pool_bent, shared with chatter-crowd)."""
     summs = {}
     for sid, mon in mons.items():
         await mon.write(out)
@@ -227,8 +227,7 @@ async def _fleet_resources(report: Report, mons: dict[str, ProcMon], mod, out: P
         per = {f"{sid} {s}": {"spills": summs[sid][s]["pool_spills"], "wait_p95_ms": summs[sid][s]["pool_wait_p95_ms"],
                               "n": summs[sid][s]["pool_wait_n"]}
                for sid in mons for s in stages if s in summs[sid]}
-        bad = {k: v for k, v in per.items()
-               if v["spills"] > gate["spills"] or (v["wait_p95_ms"] or 0) >= gate["wait_p95_ms"]}
+        bad = {k: v for k, v in per.items() if pool_bent(v["spills"], v["wait_p95_ms"], gate)}
         if not any(v["n"] for v in per.values()):
             report.skip(name, "no pool checkouts were timed (lib/relay.py _db_probe)")
         else:

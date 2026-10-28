@@ -174,7 +174,7 @@ class Paced:
 
 async def serial(http, targets: list[dict], per_fan: int, *, rate: float = 0, text: str = "slop dm",
                  ids=None, phase: dict[str, float] | None = None, stop: asyncio.Event | None = None,
-                 out: list[dict] | None = None) -> list[dict]:
+                 out: list[dict] | None = None, due_shift_ms: float = 0.0) -> list[dict]:
     """The pump's shape: per Creator ONE frame in flight at a time (the OF WebSocket
     pump awaits `_broadcast_event` per frame, service/server.py), Creators in
     parallel. A Creator's frames go round-robin over its fans (DM 1 of each, then
@@ -192,7 +192,9 @@ async def serial(http, targets: list[dict], per_fan: int, *, rate: float = 0, te
     inside the same window. Missing: 0 (every Creator in step, as before).
     `stop`: no new frame once it is set (a flood that runs until the scenario
     ends it; pass a large per_fan). `out`: append records there as they are
-    sent (a scenario reads them while the flood runs)."""
+    sent (a scenario reads them while the flood runs). `due_shift_ms`: record each
+    `due` this much earlier, nothing sent at another time (fault
+    pump-due-shifted-1500ms, recording only)."""
     ids = ids if ids is not None else itertools.count(INJECT_ID_BASE)
     by_acct: dict[str, list[dict]] = {}
     for f in targets:
@@ -215,7 +217,7 @@ async def serial(http, targets: list[dict], per_fan: int, *, rate: float = 0, te
                 return
             mid = next(ids)
             rec = {"account_id": aid, "fan_id": f["id"], "message_id": mid, "t0": time.time() * 1000}
-            rec["due"] = (start + i / rate) * 1000 if rate > 0 else rec["t0"]
+            rec["due"] = ((start + i / rate) * 1000 if rate > 0 else rec["t0"]) - due_shift_ms
             try:
                 r = await inject(http, aid, frame(mid, f, f"{text} {k + 1}/{per_fan}"))
                 rec["status"] = r.status_code
