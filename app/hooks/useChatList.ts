@@ -330,10 +330,12 @@ async function fetchPage(
   // defaults to 'user' outside a request context, so an untagged call silently
   // eats one of the per-account lane's reserved user slots. Only a click waits
   // on 'user'; the 90s head poll and the hover prefetch are 'background'.
-  { refresh = false, priority = "user", order = "recent" }: {
+  { refresh = false, priority = "user", order = "recent", signal }: {
     refresh?: boolean;
     priority?: "user" | "background";
     order?: ChatListOrder;
+    /** Aborts the page's relay calls (a superseded search; see useChatList). */
+    signal?: AbortSignal;
   } = {},
 ): Promise<ChatsPage> {
   const qs = new URLSearchParams();
@@ -369,7 +371,7 @@ async function fetchPage(
   if (scope.kind === "model") {
     try {
       const resp = await relay.get<OFChatsResp>(
-        path, { accountId: scope.accountId, priority }, undefined, { refresh },
+        path, { accountId: scope.accountId, priority }, signal, { refresh },
       );
       const raw = normalizeChats(resp, scope.accountId);
       perfDelivered(opId, "chat.list", { count: raw.length, hasMore: !!resp.hasMore });
@@ -392,13 +394,15 @@ async function fetchPage(
   const results = await Promise.allSettled(
     accounts.map(async (acc) => {
       const r = await relay.get<OFChatsResp>(
-        path, { accountId: acc.id, priority }, undefined, { refresh },
+        path, { accountId: acc.id, priority }, signal, { refresh },
       );
       const raw = normalizeChats(r, acc.id);
       void enrichWithUsers(raw, acc.id, qc).catch(() => {});
       return { raw, hasMore: !!r.hasMore };
     }),
   );
+  // A superseded search: every account's call was aborted, not failed.
+  signal?.throwIfAborted();
   const merged: OFChatItem[] = [];
   let anyMore = false;
   let failed = 0;
@@ -600,7 +604,7 @@ export function useChatList(params: ChatListParams = {}) {
     initialPageParam: 0,
     getNextPageParam: (lastPage, allPages) =>
       lastPage.hasMore ? allPages.length * limit : undefined,
-    queryFn: ({ pageParam }) => {
+    queryFn: ({ pageParam, signal }) => {
       // Bypass is scoped to PAGE 0 of the refetch triggered by refresh() (the
       // flag lives until the refetch settles; queryFn no longer clears it on
       // first consumption). Page 0 forced-fresh rewarms the shared server
@@ -612,9 +616,14 @@ export function useChatList(params: ChatListParams = {}) {
       // assemble turned one deep-scrolled unified Refresh into an OF storm.
       const offset = (pageParam as number) ?? 0;
       const bypass = refreshOnceRef.current && offset === 0;
+      // A search hands React Query its signal: once the box holds another
+      // search, nothing observes this key and React Query aborts its calls
+      // (each a live OF search, seconds long) instead of letting them land in a
+      // cache nobody reads. A list without a search is not aborted: a chip or
+      // folder switched away from is often switched back to, and its pages stay.
       return fetchPage(
         scope, accounts, offset, filter, listId, query, limit, qc,
-        { refresh: bypass, order },
+        { refresh: bypass, order, signal: query ? signal : undefined },
       );
     },
     staleTime: 30_000,

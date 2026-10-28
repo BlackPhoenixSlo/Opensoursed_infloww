@@ -13,7 +13,8 @@ process and a caller could grow it on purpose. Pinned:
   • crossing the cap sweeps, then evicts the soonest-to-expire down to the
     low-water mark, so the cache never exceeds `_MAX_ENTRIES` and the next 100
     new-key misses run at most ONE more full sweep;
-  • a held lock is never dropped.
+  • a held lock is never dropped;
+  • a failed fetch's error (kept for callers queued behind it) goes with its lock.
 
 Run: ./venv/bin/python service/tests/test_relay_cache_bounds.py   (exit 0 = green)
 """
@@ -25,6 +26,7 @@ import relay_cache as rc  # noqa: E402
 def _reset(cap: int = 5000) -> None:
     rc._cache.clear()
     rc._locks.clear()
+    rc._failed.clear()
     rc._ns_grace.clear()
     rc._MAX_ENTRIES = cap
     rc._next_sweep_at = rc.time.monotonic() + 3600   # no interval sweep unless a case asks
@@ -112,6 +114,25 @@ async def case_a_held_lock_is_never_dropped():
             _sweep_due()
             await _put("payouts", "A", (f"n{i}",), 60)
         assert rc._locks.get(("payouts", "A", ("held",))) is held, "a held lock was dropped"
+
+
+async def case_a_failed_fetch_is_swept_with_its_lock():
+    """Search text keys fail too: the error kept for queued callers must not
+    outlive the key's lock, or a dead proxy grows `_failed` for good."""
+    _reset()
+
+    def boom():
+        raise RuntimeError("dead proxy")
+
+    for q in ("a", "an", "ann"):
+        try:
+            await rc.get_or_fetch("list_chats", "A", (q,), 30, boom)
+        except RuntimeError:
+            pass
+    assert len(rc._failed) == 3, rc._failed
+    _sweep_due()
+    await _put("me_stats", "A", ("x",), 60)
+    assert not rc._failed, f"failures outlived their locks: {list(rc._failed)}"
 
 
 _harness.run()

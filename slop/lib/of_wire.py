@@ -17,9 +17,25 @@ concurrently and are recorded in arrival order.
                                            pump is live (bypass, declared: no chats)
   GET  /api2/v2/users/notifications/count  the bell's counts, all zero (`{"all": 0, ...}`):
                                            the shell's per-Creator badge read
+  GET  /cdn-cgi/trace                      Cloudflare's trace, as `proxies.probe` reads it
+                                           (ip / loc / colo lines; lib/relay.py points
+                                           `proxies.TRACE_URL` here under OF_WIRE), so a
+                                           proxy's confirm and recheck probes go through
+                                           the fake proxy to loopback, never to 1.1.1.1
   POST /api2/v2/chats/{fan}/messages       OF's new message (id, text, createdAt,
                                            fromUser), recorded per Creator in order
+  GET  /api2/v2/subscriptions/count/all    the fan counts (`subscribers.active/all/expired`,
+                                           fixed per Creator): the Dashboard's Per-model cards
+  GET  /api2/v2/subscriptions/subscribers/chart
+                                           OF's Subscriptions chart, no new fans (`subscribers` 0)
+  GET  /api2/v2/payouts/referrals/chart    Statements › Referrals, $0 (`total` 0): the
+                                           Dashboard's Referrals tile
+  GET  /api2/v2/users/notifications        the alerts feed, empty: the purchases poller
   any other path                           404, counted (`unmodelled`)
+
+`extra_s[uid]` adds seconds to every /api2/ call of that Creator: a Creator whose proxy
+fails and is retried (bypass, declared: no proxy hop exists here, so the retries are
+modelled as their measured cost, not run).
 
 OF's chat WebSocket (`wsUrl`, ws://127.0.0.1:<port>/ws3/<uid>; the relay's real
 of_ws pump connects here): the client's `{"act":"connect","token":…}` is answered
@@ -65,6 +81,7 @@ class FakeOF:
     def __init__(self, latency_s: float = LATENCY_S):
         self.latency_s = latency_s
         self.otp: set[str] = set()
+        self.extra_s: dict[str, float] = {}  # per Creator, seconds added to each /api2/ call
         self.lock = threading.Lock()
         self.calls: list[dict] = []          # every call, arrival order: {t, account, method, route, status}
         self.sends: dict[str, list[dict]] = {}  # per Creator, the messages OF accepted, in order (`t`: arrival)
@@ -199,11 +216,14 @@ class FakeOF:
                 if method == "GET" and _CHUNK.fullmatch(u.path):
                     return self._record("", "GET /static/prod/f/{rev}/2313.js", 200, fake.chunk(),
                                         "application/javascript")
+                if method == "GET" and u.path == "/cdn-cgi/trace":
+                    return self._record("", route, 200, "fl=1\nh=127.0.0.1\nip=127.0.0.1\nts=0\n"
+                                        "visit_scheme=http\nloc=SL\ncolo=SLOP\nhttp=http/1.1\n", "text/plain")
                 uid = self.headers.get("User-ID") or ""
                 if u.path.startswith("/api2/") and not all(self.headers.get(h) for h in ("Sign", "Time", "X-Hash")):
                     with fake.lock:
                         fake.unsigned += 1
-                time.sleep(fake.latency_s)
+                time.sleep(fake.latency_s + (fake.extra_s.get(uid, 0.0) if u.path.startswith("/api2/") else 0.0))
                 with fake.lock:
                     otp = uid in fake.otp
                 if u.path.startswith("/api2/") and otp:
@@ -217,6 +237,17 @@ class FakeOF:
                     return self._record(uid, route, 200, {"list": [], "hasMore": False, "nextOffset": 0})
                 if method == "GET" and u.path == "/api2/v2/users/notifications/count":
                     return self._record(uid, route, 200, {"all": 0, "subscribed": 0, "purchases": 0, "tip": 0})
+                if method == "GET" and u.path == "/api2/v2/subscriptions/count/all":
+                    n = int(uid or 0) % 900 + 100
+                    return self._record(uid, route, 200, {"subscribers": {"active": n, "all": 2 * n, "expired": n},
+                                                          "subscriptions": {"active": 0, "all": 0, "expired": 0}})
+                if method == "GET" and u.path == "/api2/v2/subscriptions/subscribers/chart":
+                    return self._record(uid, route, 200, {"subscribers": 0, "subscribes": [], "earnings": [],
+                                                          "total": 0, "delta": 0})
+                if method == "GET" and u.path == "/api2/v2/payouts/referrals/chart":
+                    return self._record(uid, route, 200, {"total": 0, "delta": 0, "chartAmount": [], "chartCount": []})
+                if method == "GET" and u.path == "/api2/v2/users/notifications":
+                    return self._record(uid, route, 200, {"list": [], "hasMore": False})
                 m = _SEND.fullmatch(u.path)
                 if method == "POST" and m:
                     body = json.loads(raw or b"{}")

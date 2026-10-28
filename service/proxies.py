@@ -383,32 +383,38 @@ def assign_account(label: str, account_id: str | None) -> dict[str, Any]:
                 return p
         raise KeyError(f"no proxy with label {label!r}")
 
-    aid = str(account_id)
     with _lock:
         data = load()
-        target = None
-        for p in data["proxies"]:
-            # Lift legacy singular into the list before mutating, so a
-            # pre-multi-binding entry doesn't silently lose its original
-            # binding when a second account is added.
-            ids = _ids_on(p)
-            if p.get("label") == label:
-                target = p
-                if aid not in ids:
-                    ids.append(aid)
-            else:
-                # Account moves: drop it from every OTHER proxy. Same
-                # invariant the old single-binding code enforced, just
-                # expressed against a list.
-                ids = [x for x in ids if x != aid]
-            p["assigned_account_ids"] = ids
-            _sync_legacy_singular(p)
-        if target is None:
-            raise KeyError(f"no proxy with label {label!r}")
-        # Clear the legacy filename binding so the two don't fight each other.
-        target["assigned_session"] = None
+        target = _bind(data, label, str(account_id))
         save(data)
         return target
+
+
+def _bind(data: dict[str, Any], label: str, aid: str) -> dict[str, Any]:
+    """`assign_account`'s registry edit on `data` (the caller holds `_lock`
+    and saves): `aid` onto `label`, off every other proxy."""
+    target = None
+    for p in data["proxies"]:
+        # Lift legacy singular into the list before mutating, so a
+        # pre-multi-binding entry doesn't silently lose its original
+        # binding when a second account is added.
+        ids = _ids_on(p)
+        if p.get("label") == label:
+            target = p
+            if aid not in ids:
+                ids.append(aid)
+        else:
+            # Account moves: drop it from every OTHER proxy. Same
+            # invariant the old single-binding code enforced, just
+            # expressed against a list.
+            ids = [x for x in ids if x != aid]
+        p["assigned_account_ids"] = ids
+        _sync_legacy_singular(p)
+    if target is None:
+        raise KeyError(f"no proxy with label {label!r}")
+    # Clear the legacy filename binding so the two don't fight each other.
+    target["assigned_session"] = None
+    return target
 
 
 def unbind_account(label: str, account_id: str) -> dict[str, Any]:
@@ -527,6 +533,8 @@ def probe(p: dict[str, Any], timeout_s: int = 15) -> dict[str, Any]:
             out["error"] = "proxy_probe_failed: no ip in the trace"
     except Exception as e:  # curl errors: refused CONNECT, timeout, TLS, DNS
         out["error"] = f"proxy_probe_failed: {e}"
+    finally:
+        log.info("proxy_probe label=%s ok=%s", p.get("label") or "-", out["ok"])
     return out
 
 
@@ -672,31 +680,182 @@ def sync_pool(text: str | None, rng: random.Random | None = None) -> dict[str, A
     return result
 
 
-def _egress_ip(p: dict[str, Any]) -> str:
-    return str(p.get("verified_ip") or p.get("host") or "")
+def _endpoint(p: dict[str, Any]) -> str:
+    return f"{p.get('host') or ''}:{p.get('port') or ''}"
 
 
-def assign_pool(account_id: str, rng: random.Random | None = None) -> tuple[dict[str, Any], bool]:
-    """Bind `account_id` to an Inflowwww proxy. Sticky: an account already on a
-    pool proxy keeps it. Otherwise the least-used one: fewest other accounts
-    already leaving from its IP (bindings on any proxy count), ties broken at
-    random, so a new account gets an IP of its own while one is free. Several
-    accounts share one once the pool is full. Returns (entry, kept).
-    LookupError when empty."""
-    current = get_for_account(account_id)
-    if is_pool(current):
+def _egress_key(entries: list[dict[str, Any]]) -> Callable[[dict[str, Any]], str]:
+    """The key `_pick_pool` counts bindings by, one rule for pool and custom
+    entries alike: the egress IP a probe verified for the entry's host:port
+    (on this entry or any other with the same host:port), else host:port (a
+    gateway provider hands out one IP per port). So one endpoint held both as
+    a custom and as a pool entry counts once, verified or not, and two ports
+    verified on one IP count as one."""
+    ip_of: dict[str, str] = {}
+    for p in entries:
+        if p.get("verified_ip"):
+            ip_of.setdefault(_endpoint(p), str(p["verified_ip"]))
+    return lambda p: str(p.get("verified_ip") or ip_of.get(_endpoint(p)) or _endpoint(p))
+
+
+# What the caller (proxy_health) knows and this module does not: a proxy's last
+# seen country, and whether it answers right now (one probe). Injected, so this
+# module never imports proxy_health.
+Geo = Callable[[dict[str, Any]], str | None]
+Verify = Callable[[dict[str, Any]], bool]
+
+
+def _pick_pool(candidates: list[dict[str, Any]], data: dict[str, Any], aid: str,
+               rng: random.Random, *, like: dict[str, Any] | None, geo: Geo) -> dict[str, Any]:
+    """The least-used of `candidates`: fewest other accounts already leaving
+    from its egress (`_egress_key`; bindings on any proxy in `data` count), ties broken at
+    random, so a new account gets an IP of its own while one is free. With
+    `like`, a candidate in the same country as `like` (when both are known:
+    `geo`, else the stored verification) wins over a less-used one elsewhere:
+    a Creator moved off a dead proxy keeps its region."""
+    def country(p: dict[str, Any]) -> str | None:
+        return geo(p) or p.get("verified_geo") or None
+
+    entries = data.get("proxies", [])
+    key = _egress_key(entries)
+    used: dict[str, int] = {}
+    for p in entries:
+        used[key(p)] = used.get(key(p), 0) + sum(1 for x in _ids_on(p) if x != aid)
+    want_geo = country(like) if like else None
+    same = [p for p in candidates if want_geo and country(p) == want_geo]
+    candidates = same or candidates
+    least = min(used.get(key(p), 0) for p in candidates)
+    return rng.choice([p for p in candidates if used.get(key(p), 0) == least])
+
+
+def _pick_answering(candidates: list[dict[str, Any]], data: dict[str, Any], aid: str,
+                    rng: random.Random, *, like: dict[str, Any] | None, geo: Geo,
+                    verify: Verify, checked: dict[str, bool],
+                    probes: int | None = None) -> dict[str, Any] | None:
+    """The one destination check, for a new binding and a failover alike: the
+    least-used candidate (`_pick_pool`) that answers `verify` right now; one
+    that does not is passed over for the next. `checked` remembers each
+    label's answer for the caller's whole pass (a failover moving several
+    Creators probes each destination once). At most `probes` new probes (None:
+    no limit). None when none answers within them: nobody is moved onto a
+    proxy that failed its probe."""
+    left = list(candidates)
+    while left:
+        pick = _pick_pool(left, data, aid, rng, like=like, geo=geo)
+        label = pick.get("label") or ""
+        if label not in checked:
+            if probes is not None and probes <= 0:
+                return None
+            checked[label] = bool(verify(pick))
+            probes = None if probes is None else probes - 1
+        if checked[label]:
+            return pick
+        left = [p for p in left if p.get("label") != label]
+    return None
+
+
+# A login's attach step waits on its probes: at most this many candidates are
+# probed (each with the caller's short timeout) before it falls back.
+ATTACH_PROBES = 2
+
+
+def _pool_entry_of(data: dict[str, Any], aid: str) -> dict[str, Any] | None:
+    """The pool entry in `data` that `aid` is bound to, None when on none."""
+    return next((p for p in data["proxies"] if is_pool(p) and aid in _ids_on(p)), None)
+
+
+def assign_pool(account_id: str, *, bad: set[str], due: set[str], geo: Geo, verify: Verify,
+                rng: random.Random | None = None) -> tuple[dict[str, Any], bool]:
+    """Bind `account_id` to an Inflowwww proxy (callers: `proxy_health.assign_pool`,
+    which injects `bad`, `due`, `geo`, `verify`). Sticky: an account already on
+    a pool proxy keeps it unless that proxy is in `due` (bad long enough that
+    its failover is due: the same predicate `proxy_health._failover` runs on);
+    then it moves as a failover would move it, but only onto a pick that
+    answered its probe (none answers: it stays, surfaced as `proxy_down`; a
+    move is an OnlyFans IP change). An account on no pool proxy gets the
+    least-used pool proxy not in `bad` that answers a probe right now
+    (`_pick_answering`), so a login during an outage lands on one that works;
+    when none answers, the least-used not in `bad` anyway (an untried one
+    first), and when every pool proxy is in `bad`, the least-used of them
+    (surfaced as `proxy_down`): a finished login is never thrown away. At most
+    ATTACH_PROBES probes (the attach request waits on them). The bind is a
+    compare-and-set under the registry lock: when a concurrent failover or
+    assign rebound the account meanwhile, that binding is kept (one IP change,
+    not two). Several accounts share one once the pool is full. Returns
+    (entry, kept). LookupError only when the pool is empty."""
+    aid = str(account_id)
+    rng = rng or random
+    data = load()
+    current = _pool_entry_of(data, aid)
+    cur = current.get("label") if current else None
+    if current and cur not in due:
         return current, True
-    pool = pool_entries()
+    pool = [p for p in data["proxies"] if is_pool(p)]
     if not pool:
         raise LookupError(f"no {BRAND_NAME} proxies are set up on this relay")
-    aid = str(account_id)
-    used: dict[str, int] = {}
-    for p in list_proxies():
-        ip = _egress_ip(p)
-        used[ip] = used.get(ip, 0) + sum(1 for x in _ids_on(p) if x != aid)
-    least = min(used[_egress_ip(p)] for p in pool)
-    pick = (rng or random).choice([p for p in pool if used[_egress_ip(p)] == least])
-    return assign_account(pick["label"], account_id), False
+    candidates = [p for p in pool if p.get("label") not in bad and p.get("label") != cur]
+    checked: dict[str, bool] = {}
+    pick = _pick_answering(candidates, data, aid, rng, like=current, geo=geo,
+                           verify=verify, checked=checked, probes=ATTACH_PROBES)
+    if pick is None:
+        if current:
+            return current, True
+        untried = [p for p in candidates if (p.get("label") or "") not in checked]
+        pick = _pick_pool(untried or candidates or pool, data, aid, rng, like=None, geo=geo)
+    with _lock:
+        data = load()
+        now = _pool_entry_of(data, aid)
+        if now is not None and now.get("label") != cur:
+            return now, True
+        target = _bind(data, pick["label"], aid)
+        save(data)
+    return target, False
+
+
+def failover_pool(label: str, *, bad: set[str], geo: Geo, verify: Verify,
+                  rng: random.Random | None = None) -> list[str] | None:
+    """Move every account on the bad pool proxy `label` to a pool proxy not in
+    `bad` that answers right now (each to the least-used, same country first,
+    `_pick_answering`), then apply the moves in ONE registry write, so `save`
+    evicts their clients and reconnects their chat sockets together. The
+    destinations are probed outside the registry lock; the write re-reads the
+    registry. Nothing is probed, nothing moves, and None is returned (not
+    applicable), when `label` is not a pool proxy or holds no account. An
+    account no answering destination is found for stays (surfaced as
+    `proxy_down`). A custom proxy is never failed over: the user chose it.
+    Returns the moved account ids ([]: it ran and nobody moved)."""
+    rng = rng or random
+    data = load()
+    source = next((p for p in data["proxies"] if p.get("label") == label), None)
+    if not is_pool(source) or not _ids_on(source):
+        return None
+    skip = set(bad) | {label}
+    healthy = [p for p in data["proxies"] if is_pool(p) and p.get("label") not in skip]
+    checked: dict[str, bool] = {}
+    plan: dict[str, str] = {}
+    for aid in _ids_on(source):
+        target = _pick_answering(healthy, data, aid, rng, like=source, geo=geo, verify=verify,
+                                 checked=checked)
+        if target is None:
+            break   # nobody answers: the rest stay too
+        plan[aid] = target["label"]
+        target["assigned_account_ids"] = _ids_on(target) + [aid]   # the next pick counts it
+    if not plan:
+        return []
+    with _lock:
+        data = load()
+        by_label = {p.get("label"): p for p in data["proxies"]}
+        source = by_label.get(label)
+        if not is_pool(source):
+            return None
+        moved = [aid for aid in _ids_on(source)
+                 if aid in plan and is_pool(by_label.get(plan[aid]))]
+        if not moved:
+            return []
+        for aid in moved:
+            _bind(data, plan[aid], aid)
+        save(data)
+    return moved
 
 
 # ── Scrubbing pool secrets out of free text ────────────────────────────────

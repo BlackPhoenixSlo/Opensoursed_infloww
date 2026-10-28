@@ -30,7 +30,7 @@ runs; `solveCaptchas` is always false. Once logged in, the login extension's own
 saved by `session_bootstrap.from_request` and `server.post_bootstrap_hooks`, the
 paste-curl path.
 
-- `proxy`: `"infloww"` binds with `proxies.assign_pool` and `"custom"` (+ `proxy_label`)
+- `proxy`: `"infloww"` binds with `proxy_health.assign_pool` and `"custom"` (+ `proxy_label`)
   with `proxies.assign_account`, the registry calls behind `POST /admin/proxy-pool/assign`
   and `/admin/proxies/assign` that Paste cURL's attach step makes; `"none"` binds nothing
   (a row's re-login sends it, so the account keeps its proxy). Omitted: `"custom"` when
@@ -107,17 +107,19 @@ logged (password redacted) and blocks the sync (below).
   text unchanged when there is no pool.
 - Pool entries are not mirrored into the SQL `proxies` table (`db/import_legacy.py`);
   rows mirrored earlier are deleted on the next import.
-- `GET /admin/proxies` → `pool: {size, account_ids}`: how many pool proxies the relay
-  holds and which of the viewer's accounts are on one. With `size: 0` the UI shows the
-  Inflowwww proxy option disabled.
+- `GET /admin/proxies` → `pool: {size, account_ids, bad}`: how many pool proxies the
+  relay holds, which of the viewer's accounts are on one, and how many pool proxies are
+  held bad right now (below; which accounts sit on one: `proxy_down` on
+  `GET /admin/accounts`). With `size: 0` the UI shows the Inflowwww proxy option disabled.
 
 ```
-POST /admin/proxy-pool/assign  {account_id}  → {ok, kept}   # 409 when the pool is empty
+POST /admin/proxy-pool/assign  {account_id}  → {ok, kept}   # 409: pool empty (below)
 POST /admin/proxy-pool/unbind  {account_id}  → {ok, removed}
 ```
 
 `assign` keeps the account's current pool proxy (`kept: true`); otherwise it picks the
-least-used one, the pool proxy whose IP (`verified_ip`, else host) the fewest other
+least-used one, the pool proxy whose egress (the IP a probe verified for its host:port,
+on this entry or a custom one with the same host:port, else host:port) the fewest other
 accounts leave from (bindings on any proxy count), ties at random, and binds it (moving
 the account off any custom proxy). A new account so gets an IP of its own while the pool
 has one free. The app
@@ -133,6 +135,71 @@ calls the relay's `on_switch` hook, which evicts that account's pooled client an
 its chat WebSocket pump is running, restarts it, so the socket reconnects on the new
 route (`ws-pump[<id>]: proxy changed, reconnecting on the new route`) together with the
 REST calls. Before, the socket stayed on the old route until the relay restarted.
+
+## Health, failover and recheck
+
+ADR-0030. `service/proxy_health.py` keeps one state per proxy label, in memory (a restart
+starts clean), fed by proxied OF calls (`of_client._proxy_retry`: a final `ProxyError`
+after the full 5-try policy, or a refused connect (curl 7), counts one error; a read
+someone waits on, 2 tries in ~1 s, never counts: three of them fit in any blip; any
+answer resets the count; a timeout counts nothing) and by probes (one GET of
+Cloudflare's `https://1.1.1.1/cdn-cgi/trace` through the proxy, a few KB; the Test
+button, the confirm and recheck below, every new binding or move, and the opt-in
+periodic pass `PROXY_HEALTH_INTERVAL_S`, floor 600 s; a failed probe counts one error).
+
+| state | meaning |
+| --- | --- |
+| `healthy` | no consecutive errors |
+| `suspect` | 1..2 consecutive errors, or 3 and the confirm probe not yet run; nothing happens |
+| `bad` | 3 consecutive errors and a failed confirm probe; announced, never picked for a new Creator, rechecked |
+| `rechecking` | bad, a recheck probe in flight |
+
+The confirm probe runs no sooner than `CONFIRM_GAP_S` (30 s) after the streak's first
+error, and not at all if an answer through the proxy reset the count meanwhile. A bad
+proxy is rechecked with one probe after `PROXY_RECHECK_S` (default 20 s, floor 1 s), then
+twice that, doubling up to 600 s (six probes an hour for a proxy that stays dead);
+`PROXY_RECHECK_S` scales the confirm's wait with it. After the second failed recheck, and
+again after every later one while Creators are still on it, the Creators on a bad
+**pool** proxy are moved to the least-used pool proxies that answer a probe right then,
+same country first when both countries are known (a Creator is never moved onto a proxy
+that does not answer), in ONE registry write, so `on_switch` evicts their clients and
+reconnects their chat sockets together. A custom proxy's Creators are never moved: the
+user chose it. A recheck that answers, or any call that gets through, brings the proxy
+back as the least-used standby; nobody is moved back (a second IP change is a second
+OnlyFans security risk). With no answering pool proxy nobody moves and everyone on the bad
+ones is surfaced. `assign` (the attach step, Browserbase's bind) follows the same rule:
+it keeps a Creator on its pool proxy until that proxy's failover is due, skips bad
+proxies, and probes its pick first (at most `ATTACH_PROBES`, 2, picks, 5 s each, as the
+login waits on them), so a login during an outage lands on a proxy that works. When none
+answers, a Creator already on a pool proxy stays there (a move is an IP change: never onto
+a proxy that failed its probe), and one that is not is bound anyway, to the least-used
+proxy not bad (an unprobed one first): a finished login is never thrown away over a probe
+blip. When every pool proxy is bad, a Creator on none is bound to the least-used of them
+(surfaced as `proxy_down`): a login is never lost. Only an empty pool is a 409, nothing
+bound. The bind is a compare-and-set under the registry lock: when a failover
+moved the Creator meanwhile, that binding is kept (one IP change, not two).
+
+Prod timeline for a pool proxy that dies (from the constants and prod's measured ~0.33 s
+per refused try): the first full-policy call fails ~7.7 s in (5 tries, 0.4 + 0.8 + 1.6 +
+3.2 s of pauses); the confirm runs 30 s after it, ~38 s (bad, surfaced); rechecks at +20 s
+(~58 s) and +40 s (~98 s); the move about 100 s after the death. Prod's CONNECT-403
+blips (0 to 32 s, both proxies, every chain ending in a success;
+`slop/evidence/20261028T111800Z-scale-vs-load-7cc9bbd67`) end before the confirm runs
+(at least 7.7 + 30 s after a blip starts), so they mark nothing bad and move nobody.
+
+What the operator sees: `GET /admin/proxies` carries `health` per custom proxy
+(`state`, `down`, `errors`, `last_error`, `last_error_at`, `bad_since`, `next_recheck_at`,
+`probe`, `failed_over`, `failed_over_at`) and `pool.bad`;
+`GET /admin/accounts` carries `proxy_down`. The Proxies table reads "unreachable since
+<time> (<n> refused) — recheck at <time>" and the Accounts table badges the Creator
+"proxy unreachable". Down and up changes publish the `proxy_switched` account-state event
+with `down`, so open tabs refetch both lists. The relay log carries `proxy <label> is DOWN
+(confirmed by probe)`, `<n> Creator(s) moved to healthy pool proxies`, `nobody moved (no
+pool proxy answers)`, `proxy_probe label=<label> ok=<bool>` (every probe), `is back up
+(recheck)`.
+
+Not done, on purpose: no fail-back, no per-call rotation, no automatic replacement of a
+proxy that stays dead (replace its env entry; the sync rebinds its Creators).
 
 ## Paste many at once
 

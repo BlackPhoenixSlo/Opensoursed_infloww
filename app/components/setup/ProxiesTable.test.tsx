@@ -66,6 +66,29 @@ describe("ProxiesTable paste proxies", () => {
   });
 });
 
+describe("ProxiesTable proxy health", () => {
+  it("reads Unavailable with the reason while the relay holds a proxy bad, whatever its stored IP", async () => {
+    relayGet.mockResolvedValue({
+      proxies: [{
+        label: "hu-1", host: "p.invalid", port: 8080, scheme: "http", assigned_accounts: [], verified_ip: "203.0.113.7",
+        health: { state: "bad", errors: 3, bad_since: 1_800_000_000, next_recheck_at: 1_800_000_040 },
+      }, {
+        label: "hu-2", host: "q.invalid", port: 8080, scheme: "http", assigned_accounts: [], verified_ip: "203.0.113.8",
+        health: { state: "healthy", errors: 0 },
+      }],
+      pool: { size: 0, account_ids: [] },
+      accounts: [],
+    });
+    render(<ProxiesTable />, { wrapper });
+    await screen.findByText("hu-1");
+    expect(screen.getByText(/unreachable since .* \(3 refused\) — recheck at/)).toBeInTheDocument();
+    expect(screen.getByText("Unavailable")).toBeInTheDocument();
+    expect(screen.getByText("Available")).toBeInTheDocument();
+    expect(screen.getByText("203.0.113.8")).toBeInTheDocument();
+    expect(screen.queryByText("203.0.113.7")).not.toBeInTheDocument();
+  });
+});
+
 describe("ProxiesTable delete of a proxy in use", () => {
   it("shows the Relay's 409 message naming the Creators that use it", async () => {
     relayGet.mockResolvedValue({

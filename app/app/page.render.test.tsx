@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { QueryClient } from "@tanstack/react-query";
 
 import { jsonRes, renderWithProviders } from "@/test-utils";
 
@@ -49,6 +50,7 @@ import { DASHBOARD_HEADER, type DashboardControl } from "@/components/home/dashb
 import { REFERRALS_UNAVAILABLE, TILE_ICON } from "@/components/home/DashboardHeader";
 import { periodWindow, type Period } from "@/lib/dateRange";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
+import { shouldPersistKey } from "@/components/providers";
 
 const HONOLULU = "Pacific/Honolulu";
 // Wednesday 2026-10-14 02:00 in Honolulu (12:00Z).
@@ -567,6 +569,71 @@ describe("the channel tiles and the Net / Gross switch (ticket 25)", () => {
     applied = async () => jsonRes({ messaging: { ai_translation: true } });
     await mountHome();
     await shows(TOTAL_NET);
+  });
+});
+
+describe("the saved Total: Total earnings' read and the Applied settings ride the React Query snapshot", () => {
+  const WEEK = ["2026-10-11T10:00:00.000Z", "2026-10-18T09:59:59.999Z"];
+  /** A cache that keeps unobserved entries, as the restored snapshot does. */
+  const restored = () => new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity, staleTime: 0 } } });
+  const never = () => new Promise<Response>(() => {});
+  /** Saved on the last visit, an hour ago: past both reads' staleTime. */
+  const lastVisit = { updatedAt: new Date(WEDNESDAY).getTime() - 60 * 60_000 };
+
+  it("saves those two reads under the signed-in principal, and nothing else the page reads", async () => {
+    const { queryClient } = renderWithProviders(<HomePage />);
+    await shows(TOTAL_NET);
+    const keys = queryClient.getQueryCache().getAll().map((q) => q.queryKey);
+    const saved = keys.filter((k) => shouldPersistKey(k));
+    expect(saved).toEqual(expect.arrayContaining([
+      ["applied-settings", "owner-1", null],
+      ["dashboard", "revenue-by-kind", "owner-1", ...WEEK, "Net"],
+    ]));
+    expect(saved.every((k) => k[0] === "applied-settings" || k[1] === "revenue-by-kind")).toBe(true);
+    // The page's other reads (per-employee, referrals: OnlyFans' figure, the timesheet) stay in memory.
+    expect(keys.some((k) => k[0] === "dashboard" && k[1] === "per-employee")).toBe(true);
+    expect(keys.filter((k) => k[0] === "stats" || (k[0] === "dashboard" && k[1] !== "revenue-by-kind"))
+      .some((k) => shouldPersistKey(k))).toBe(false);
+  });
+
+  it("a return visit paints the saved Total before any read answers, then takes the fresh one", async () => {
+    const qc = restored();
+    qc.setQueryData(["applied-settings", "owner-1", null], await appliedRes().json(), lastVisit);
+    qc.setQueryData(["dashboard", "revenue-by-kind", "owner-1", ...WEEK, "Net"], { rows: [BY_KIND_NET.rows[0]] }, lastVisit);
+    let answer!: () => void;
+    revenue = [() => new Promise((done) => { answer = () => done(jsonRes(BY_KIND_NET)); })];
+    renderWithProviders(<HomePage />, qc);
+    const savedFigure = figure();
+    expect(savedFigure).not.toBeNull();
+    // The refresh goes out at once, not after the Applied settings answer.
+    await waitFor(() => expect(revenueReads()).toHaveLength(1));
+    expect(lastWindow()).toEqual(WEEK);
+    // The saved figure is dimmed as refreshing until the fresh one lands.
+    const fig = () => totalTile().querySelector("[data-figure]");
+    expect(fig()).toHaveAttribute("aria-busy", "true");
+    answer();
+    await shows(TOTAL_NET);
+    expect(savedFigure).not.toBe(TOTAL_NET);
+    await waitFor(() => expect(fig()).not.toHaveAttribute("aria-busy"));
+  });
+
+  it("another principal's saved Total is never shown: the figure shimmers until its own read answers", async () => {
+    const qc = restored();
+    qc.setQueryData(["applied-settings", "owner-1", null], await appliedRes().json(), lastVisit);
+    qc.setQueryData(["dashboard", "revenue-by-kind", "owner-1", ...WEEK, "Net"], BY_KIND_NET, lastVisit);
+    session = { user: { user_id: "owner-2", username: "other" }, chatter: null };
+    applied = never;
+    renderWithProviders(<HomePage />, qc);
+    expect(figure()).toBeNull();
+    expect(within(totalTile()).getByRole("status", { name: "Loading Total earnings" })).toBeInTheDocument();
+    await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u).startsWith("/admin/settings/applied")))
+      .toBe(true));
+    expect(figure()).toBeNull();
+    // The page reads (and the snapshot saves) the Applied settings under this login alone, never the previous one's.
+    const read = qc.getQueryCache().findAll({ queryKey: ["applied-settings"] }).filter((q) => q.getObserversCount() > 0);
+    expect(read.length).toBeGreaterThan(0);
+    expect(read.every((q) => q.queryKey[1] === "owner-2")).toBe(true);
+    expect(qc.getQueryData(["applied-settings", "owner-2", null])).toBeUndefined();
   });
 });
 

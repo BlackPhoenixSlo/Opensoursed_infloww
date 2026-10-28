@@ -17,8 +17,8 @@ import { jsonRes, renderWithProviders } from "@/test-utils";
 
 // The session: an Agency owner unless a case signs in a Chatter only.
 let session: { user: { user_id: string; username: string } | null; chatter: { username: string } | null };
-vi.mock("@/contexts/UserContext", () => ({ useUser: () => ({ user: session.user, loading: false }) }));
-vi.mock("@/contexts/ChatterContext", () => ({ useChatter: () => ({ chatter: session.chatter }) }));
+vi.mock("@/contexts/UserContext", () => { const v = () => ({ user: session.user, loading: false }); return { useUser: v, useOptionalUser: v }; });
+vi.mock("@/contexts/ChatterContext", () => { const v = () => ({ chatter: session.chatter }); return { useChatter: v, useOptionalChatter: v }; });
 vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => ({ accountId: null }) }));
 const downloadCsv = vi.fn();
 vi.mock("@/lib/csv", () => ({ downloadCsv: (...args: unknown[]) => downloadCsv(...args) }));

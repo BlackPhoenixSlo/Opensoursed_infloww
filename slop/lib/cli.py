@@ -347,7 +347,8 @@ async def _run_stack(name, mod, out, report, rec, args, params, ui, shards, faul
         stack = Stack(ui=ui, fault=fault, logdir=out, profile=args.profile, shards=shards,
                       apps=tuple(getattr(mod, "APPS", ())) or (tuple(getattr(mod, "UI_APPS", ())) if ui else ()),
                       boxes=getattr(mod, "BOXES", None),
-                      shards_per_box=getattr(mod, "SHARDS_PER_BOX", None))
+                      shards_per_box=getattr(mod, "SHARDS_PER_BOX", None),
+                      app_mode=getattr(mod, "APP_MODE", "dev"))
         for i in range(stack.shards):  # a scenario's RELAY_ENV: extra env for every relay it starts
             stack.relay_env[i].update(getattr(mod, "RELAY_ENV", {}))
         fleet = None

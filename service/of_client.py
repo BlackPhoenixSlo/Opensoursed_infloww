@@ -50,6 +50,31 @@ log_of = logging.getLogger("of-client")
 OUTBOUND_TEXT_GUARD: ContextVar[Callable[[str], str] | None] = ContextVar(
     "of_outbound_text_guard", default=None)
 
+# A person is waiting on this call: server._proxy sets it for an /api/of/* request
+# that is not `X-Priority: background`. Its GETs (and their x-hash warmup) then get
+# INTERACTIVE_RETRY instead of _proxy_retry's ~6 s, so a dead proxy answers the
+# Fan List / bell / thread in about a second (prod 2026-10-28: 5/5 attempts on
+# chats and notifications reads). Writes keep the full policy whoever asks, and
+# so does everything with no request (ingest scans, automations).
+INTERACTIVE_READ: ContextVar[bool] = ContextVar("of_interactive_read", default=False)
+
+
+class RetryPolicy(NamedTuple):
+    """How `_proxy_retry` treats a refused proxy: `tries` attempts with pauses
+    `pause_s` doubling, and whether its final failure `counts` toward
+    proxy_health's DOWN_AFTER."""
+    tries: int
+    pause_s: float
+    counts: bool
+
+
+# Everything by default: 5 tries, 0.4-3.2 s pauses (~6 s). Its final failure counts.
+FULL_RETRY = RetryPolicy(5, 0.4, True)
+# A read someone waits on: 2 tries, one 0.2 s pause. Its failure does NOT count
+# toward marking the proxy bad: it gives up inside ~1 s, so three of them land
+# within any of prod's 0-32 s CONNECT-403 blips (docs/adr/0030).
+INTERACTIVE_RETRY = RetryPolicy(2, 0.2, False)
+
 
 # Cloudflare's cookies, which OF's responses refresh (see OFClient._persist_cf_cookies).
 CF_COOKIES = frozenset({"__cf_bm", "_cfuvid", "cf_clearance"})
@@ -591,7 +616,7 @@ class OFClient:
 
     # ── Internal: x-hash ────────────────────────────────────────
 
-    def _ensure_x_hash(self) -> str:
+    def _ensure_x_hash(self, policy: RetryPolicy = FULL_RETRY) -> str:
         if self._x_hash:
             return self._x_hash
         # This warmup fires on the FIRST signed request of every fresh client
@@ -608,7 +633,7 @@ class OFClient:
                 "User-Agent": self.user_agent,
             },
             timeout=self.timeout_s,
-        ), what="x-hash")
+        ), what="x-hash", policy=policy)
         r.raise_for_status()
         self._x_hash = r.text.strip()
         return self._x_hash
@@ -737,8 +762,10 @@ class OFClient:
                 log_of.warning("deactivated account=%s method=%s url=%s refused",
                                self.account_id, method, _short_path(url))
                 raise OFDeactivatedError(f"refused: {method} {_short_path(url)} (Creator deactivated)")
+        # A read someone waits on fails fast (INTERACTIVE_READ); a write never does.
+        policy = INTERACTIVE_RETRY if method == "GET" and INTERACTIVE_READ.get() else FULL_RETRY
         # The x-hash warmup runs its own _proxy_retry here, never nested in the one below.
-        self._ensure_x_hash()
+        self._ensure_x_hash(policy=policy)
         try:
             # Datacenter providers (e.g. IPRoyal DC) sporadically 403 on CONNECT
             # under load; the same IP works again moments later. _proxy_retry()
@@ -753,7 +780,7 @@ class OFClient:
                     return self.http.get(url, headers=headers, timeout=self.timeout_s)
                 return self.http.request(method, url, json=json_body,
                                          headers=headers, timeout=self.timeout_s)
-            r = self._proxy_retry(_do, what=f"{method} {_short_path(url)}")
+            r = self._proxy_retry(_do, what=f"{method} {_short_path(url)}", policy=policy)
             # Opportunistic rev capture. OF echoes their current build in
             # `x-of-rev` on most /api2/v2/* responses; note() is a no-op
             # if the header's missing or unchanged so this is cheap on
@@ -773,8 +800,6 @@ class OFClient:
             proxy_health.record(self.proxy_label, True)
             return r
         except requests.exceptions.ProxyError as e:
-            # After _proxy_retry's own retries: one error toward marking the proxy down.
-            proxy_health.record(self.proxy_label, False, str(e))
             log_of.warning(
                 "proxy_error account=%s proxy=%s(%s) method=%s url=%s %s err=%s",
                 self.account_id, self.proxy_label or "—",
@@ -789,9 +814,6 @@ class OFClient:
             )
             raise
         except Exception as e:
-            if self.proxy_url and getattr(e, "code", None) == CurlECode.COULDNT_CONNECT:
-                # Proxied, curl only ever connects to the proxy: it refused or is gone.
-                proxy_health.record(self.proxy_label, False, str(e))
             log_of.warning(
                 "http_error account=%s proxy=%s(%s) method=%s url=%s %s err=%s",
                 self.account_id, self.proxy_label or "—", self._proxy_ip(), method,
@@ -810,17 +832,26 @@ class OFClient:
         except Exception:
             return "?"
 
-    def _proxy_retry(self, fn, *, tries: int = 5, pause_s: float = 0.4, what: str = ""):
+    def _proxy_retry(self, fn, *, what: str = "", policy: RetryPolicy = FULL_RETRY):
         """Run a raw curl_cffi call `fn`, retrying the transient datacenter
-        CONNECT 403 (IPRoyal DC). These outages can outlast a few hundred ms
-        (several concurrent calls have burned 3 x 0.4 s and failed together),
-        so the pause doubles between attempts: 0.4, 0.8, 1.6, 3.2 s (~6 s over
-        5 tries). Retries run against the SAME self.http session — no proxy
-        lookup, no rebuild, no rotation — so OF still sees one sticky IP. This
-        is the single retry policy: both _http_call AND the handful of raw
-        self.http.get/post/put calls (CDN media download, convert
-        upload) funnel through it, so a proxy blip no longer hard-fails a
-        request."""
+        CONNECT 403 (IPRoyal DC) as `policy` says: its tries, and a pause that
+        doubles between attempts. FULL_RETRY (the default) pauses 0.4, 0.8,
+        1.6, 3.2 s (~6 s over 5 tries), as these outages can outlast a few
+        hundred ms; INTERACTIVE_RETRY gives up after 2 tries (~1 s) for a
+        read someone waits on. Retries run against the SAME self.http
+        session — no proxy lookup, no rebuild, no rotation — so OF still sees
+        one sticky IP. Both _http_call AND the handful of raw
+        self.http.get/post/put calls (CDN media download, convert upload)
+        funnel through it, so a proxy blip no longer hard-fails a request.
+
+        It is also where a proxy failure is counted toward proxy_health's
+        DOWN_AFTER (every raw call and _http_call funnel through here, the
+        x-hash warm-up included): the final ProxyError, and curl's "couldn't
+        connect" (7) on a proxied client (curl_cffi raises it as
+        ConnectionError, not ProxyError; with a proxy set the only host curl
+        connects to is the proxy, so it refused or is gone; not retried: a
+        refused port answers at once). Only under a policy that `counts`."""
+        tries = policy.tries
         for attempt in range(tries):
             try:
                 return fn()
@@ -831,8 +862,15 @@ class OFClient:
                         self.account_id, self.proxy_label or "—", self._proxy_ip(),
                         attempt + 1, tries, what, _err_kind(e), str(e)[:200],
                     )
-                    time.sleep(pause_s * 2 ** attempt)
+                    time.sleep(policy.pause_s * 2 ** attempt)
                     continue
+                if policy.counts:
+                    proxy_health.record(self.proxy_label, False, str(e))
+                raise
+            except requests.exceptions.ConnectionError as e:
+                if (policy.counts and self.proxy_url
+                        and getattr(e, "code", None) == CurlECode.COULDNT_CONNECT):
+                    proxy_health.record(self.proxy_label, False, str(e))
                 raise
 
     def get_json(self, path_or_url: str, **kw) -> Any:

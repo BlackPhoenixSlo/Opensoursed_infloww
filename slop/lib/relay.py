@@ -54,6 +54,14 @@ background jobs' seam (`client_pool.get`, what `of_stats_daily` reads through)
 falls back to `_OfflineOF` too.
 
   POST /__slop/of-stats-tick  one `of_stats_daily.tick(pause_s=0)` pass now.
+  POST /__slop/proxy-pool  {text}  -> proxies.sync_pool(text), the startup's own read of
+                           INFLOWW_PROXIES, run now: a scenario's fake proxies (lib/proxy_wire.py)
+                           have their ports only once the relay is up. Then every pooled client is
+                           evicted (server._invalidate_client), as a restart would. Answers the
+                           sync's {size, rebound, dropped, ...}. Under OF_WIRE the relay's
+                           `proxies.TRACE_URL` is lib/of_wire.py's /cdn-cgi/trace, so a proxy's
+                           confirm and recheck probes (service/proxy_health.py) go through the
+                           fake proxy to loopback, never to 1.1.1.1.
        Bypass, declared: it stands in for the job's hourly timer and 300 s boot
        grace, and drops the pause between OF reads; the pass itself is the job's.
 
@@ -741,6 +749,18 @@ def _wire(app) -> None:
 
     app.add_api_route("/__slop/browserbase", browserbase, methods=["POST"])
 
+    async def proxy_pool(request: Request) -> dict:
+        """INFLOWW_PROXIES read now (docstring): the product's `proxies.sync_pool`, then the
+        eviction a restart would do. Hosts stay on the relay as in production."""
+        _loopback(request)
+        body = await request.json()
+        import proxies
+        out = proxies.sync_pool(body.get("text"))
+        server._invalidate_client()
+        return out
+
+    app.add_api_route("/__slop/proxy-pool", proxy_pool, methods=["POST"])
+
     sampler = None
     if os.environ.get("SLOP_PROFILE") == "1":
         sampler = _Sampler()
@@ -791,6 +811,9 @@ def _wire(app) -> None:
         # session, `_OfflineOF` where it has the stub), and curl_cffi stays on loopback.
         _guard_curl_cffi()
         _wire_pumps(app, _loopback, server)
+        # The proxy probe's Cloudflare trace is the fake OF's too (docstring: /__slop/proxy-pool).
+        import proxies as _proxies
+        _proxies.TRACE_URL = os.environ["OF_API_ORIGIN"].rstrip("/") + "/cdn-cgi/trace"
     live = os.environ.get("SLOP_LIVE") == "1"
     if os.environ.get("SLOP_SUPERVISOR") == "1":
         supervisor = _real_supervisor()

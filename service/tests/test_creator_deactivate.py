@@ -249,7 +249,7 @@ class _Wired:
     def client(self, aid: str) -> OFClient:
         c = object.__new__(OFClient)  # no session, no curl handle
         c.account_id, c.proxy_label = aid, None
-        c._ensure_x_hash = lambda: "h"
+        c._ensure_x_hash = lambda **_k: "h"
         c._persist_cf_cookies = lambda r: None
         c._note_signed_ok = lambda url, r: None
 

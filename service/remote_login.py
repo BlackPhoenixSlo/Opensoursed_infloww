@@ -28,7 +28,7 @@ their proxies and then we attach ours"). The session is created with
 Browserbase's managed proxies (`proxies: true`); our proxy is never sent to
 Browserbase. The account's proxy is the Add creator flow's Proxy selection,
 bound the way the paste-curl path binds it (`bind_proxy`): the Inflowwww proxy
-through `proxies.assign_pool`, a custom proxy through `proxies.assign_account`
+through `proxy_health.assign_pool`, a custom proxy through `proxies.assign_account`
 (the registry calls behind POST /admin/proxy-pool/assign and /admin/proxies/
 assign), or nothing for No proxy. It is bound BEFORE the session is saved, so
 every later relay call for the account egresses through it. A session that
@@ -844,13 +844,17 @@ def _request_from_capture(cap: dict[str, Any], cookies: list[dict], user_agent: 
 def bind_proxy(job: RemoteLoginJob, account_id: str) -> None:
     """Bind the flow's proxy choice to `account_id` with the registry calls
     the paste-curl path's attach step makes: POST /admin/proxy-pool/assign
-    (`assign_pool`: kept if already on the pool, else the least-used) and
+    (`proxy_health.assign_pool`: kept if already on the pool unless its
+    failover is due, else the least-used that answers, else the least-used
+    not bad, else (every pool proxy bad) the least-used; LookupError only
+    when the pool is empty) and
     POST /admin/proxies/assign (`assign_account`). No proxy binds nothing, so
     a re-login keeps whatever the account is on."""
     import proxies as proxy_registry
+    import proxy_health
 
     if job.proxy == PROXY_INFLOWWW:
-        proxy_registry.assign_pool(account_id)
+        proxy_health.assign_pool(account_id)
     elif job.proxy == PROXY_CUSTOM:
         proxy_registry.assign_account(job.proxy_label, account_id)
 

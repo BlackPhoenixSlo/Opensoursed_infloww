@@ -52,6 +52,7 @@ import CreatorFilterBar, { NO_FILTERS, type CreatorFilters } from "@/components/
 import TagSettings from "@/components/setup/TagSettings";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { cn, describeDeadSession, fmtRelTime } from "@/lib/utils";
+import { sessionConnectivity, type Connectivity } from "@/lib/sessionConnectivity";
 
 interface AccountsResp {
   accounts: AccountMeta[];
@@ -83,43 +84,31 @@ const PAGE_SIZES = [10, 20, 50] as const;
 /** Platform names (creators-manage#20). */
 const PLATFORM_LABEL = { onlyfans: "OnlyFans", fansly: "Fansly" } as const;
 
-/** A row's connectivity: the capture's label, a tooltip, and its colour. */
-interface Connectivity {
-  label: string;
-  title?: string;
-  tone?: "ok" | "err";
-  /** A flagged dead session: the cell adds its repair badge. */
-  dead?: boolean;
-}
-
 /**
  * The one connectivity mapping (spec phase-04, Implementation Decisions,
- * Connectivity mapping), in the capture's words (creators-manage#23, #40).
- * A flagged session OUTRANKS the live probe: it pauses every automation for
- * the account (service/account_health.py), so a parked account must never
- * read "Connected" beside accounts that are genuinely working.
+ * Connectivity mapping), in the capture's words (creators-manage#23, #40): the
+ * accounts read's verdict (lib/sessionConnectivity, shared with the KPI cards)
+ * outranks the live probe, which decides only a live session.
  */
 function connectivity(a: AccountMeta, h: Health | undefined, read: { loaded: boolean; error: Error | null }): Connectivity {
   // A Fansly session the relay can no longer use reads Infloww's fansly0003 (FANSLY_T.rebind).
   const fansly = a.platform === "fansly";
-  if (a.session_dead_at) return { label: "Disconnected", tone: "err", dead: true, ...(fansly && { title: FANSLY_T.rebind }) };
-  // has_session comes from the accounts read, so a failed health read cannot hide it.
-  if (!a.has_session) return { label: "Not connected" };
-  // The relay does not probe a deactivated Creator (`_health_all_accounts`); its row carries the Deactivated chip.
-  if (!a.is_active) return { label: "—", title: "deactivated: not probed" };
+  // From the accounts read, so a failed health read cannot hide it.
+  const settled = sessionConnectivity(a);
+  if (settled) return settled.dead && fansly ? { ...settled, title: FANSLY_T.rebind } : settled;
   // ASSUMPTION: "—" is ours; no capture label means "we could not ask" (spec, Further Notes, rung 5). Overturned by a
   // capture label for an unknown state.
-  if (read.error) return { label: "—", title: read.error.message };
-  if (!read.loaded) return { label: "Pending connection" };
+  if (read.error) return { label: "—", title: read.error.message, tone: "muted" };
+  if (!read.loaded) return { label: "Pending connection", tone: "muted" };
   // ASSUMPTION: a loaded answer that lacks the row is "—", not "Pending connection": nothing is still probing, and the
   // relay answers one row per account (`_health_all_accounts`), so this only shows a relay fault (rung 5). Overturned
   // if the relay starts answering partial snapshots that a later read completes.
-  if (!h) return { label: "—", title: "no health answer for this Creator" };
+  if (!h) return { label: "—", title: "no health answer for this Creator", tone: "muted" };
   if (h.ok) return { label: "Connected", tone: "ok", title: h.name };
   // A probe that outran the relay's budget is NOT a verdict on the session: the relay stopped waiting, it did not
   // cancel, and the OF call is still running upstream.
-  if (h.timed_out) return { label: "Pending connection", title: h.message };
-  if (h.error === "no_session") return { label: "Not connected" };
+  if (h.timed_out) return { label: "Pending connection", title: h.message, tone: "muted" };
+  if (h.error === "no_session") return { label: "Not connected", tone: "muted" };
   return { label: "Disconnected", tone: "err", title: fansly ? FANSLY_T.rebind : h.error || "down" };
 }
 
@@ -562,6 +551,14 @@ export default function AccountsTable({ onLink, onAdd, children }: {
   );
 }
 
+/** `proxy_down` (service/proxy_health.py): the Creator's proxy failed DOWN_AFTER full-retry calls in a row and a
+ *  probe 30 s after the first of them confirmed it; the relay rechecks it with backoff and moves a Creator on a bad
+ *  Inflowwww proxy to a healthy one after two failed rechecks (docs/adr/0030). While this shows, its reads and sends
+ *  still try the proxy and fail after their retries. */
+const PROXY_DOWN_TITLE = `${EXTRA_LABEL}\nThe proxy this Creator leaves through is unreachable; the relay rechecks it. ` +
+  "On the Inflowwww proxy the Creator is moved to a healthy one after two failed rechecks; on a custom proxy, or with " +
+  "no healthy Inflowwww proxy left, it stays here until the proxy answers again (Creators › Custom proxy to change it).";
+
 /** The capture's status text, coloured (creators-manage#41, #42), and a flagged session's repair badge. */
 function ConnectivityCell({ account, conn }: { account: AccountMeta; conn: Connectivity }) {
   return (
@@ -578,6 +575,11 @@ function ConnectivityCell({ account, conn }: { account: AccountMeta; conn: Conne
             unlinked {fmtRelTime(account.session_dead_at)}
           </span>
         </>
+      )}
+      {account.proxy_down && (
+        <Badge color="err" title={PROXY_DOWN_TITLE}>
+          proxy unreachable
+        </Badge>
       )}
     </span>
   );

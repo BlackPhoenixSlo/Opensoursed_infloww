@@ -466,10 +466,12 @@ export function useSaveAccountDetails(profiles: ReturnType<typeof useCreatorProf
  *  and kept per account (docs/proxies.md). "none" is the relay's own server IP; "custom" one of your proxies. */
 export type ProxyChoice = { type: "infloww" } | { type: "none" } | { type: "custom"; label: string; ok: boolean | null };
 
-/** GET /admin/proxies: your proxies, and the Inflowwww pool as a count and the accounts on it (never its hosts). */
+/** GET /admin/proxies: your proxies, and the Inflowwww pool as a count and the accounts on it (never its hosts);
+ *  `bad`: how many pool proxies are unreachable right now (docs/adr/0030). A Creator still on one reads
+ *  `proxy_down` in `/admin/accounts`. */
 export interface ProxyList {
   proxies: ProxyMeta[];
-  pool: { size: number; account_ids: string[] };
+  pool: { size: number; account_ids: string[]; bad: number };
 }
 /** `fresh`: refetch on mount even when cached, for a caller that must show the relay's state after a write. */
 export function useProxyList(fresh = false) {

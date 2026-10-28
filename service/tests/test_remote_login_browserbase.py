@@ -141,6 +141,7 @@ import auth  # noqa: E402
 import chatters  # noqa: E402
 import employees  # noqa: E402
 import proxies as proxy_registry  # noqa: E402
+import proxy_health  # noqa: E402
 import remote_login as rl  # noqa: E402
 
 _TMP = Path(tempfile.gettempdir()) / f"bb_login_test_{uuid.uuid4().hex}"
@@ -332,17 +333,17 @@ def _with_fakes(urlopen, fn):
 def _persist_fakes(order):
     import server
     import session_bootstrap
-    orig = (proxy_registry.assign_account, proxy_registry.assign_pool,
+    orig = (proxy_registry.assign_account, proxy_health.assign_pool,
             session_bootstrap.from_request, server.post_bootstrap_hooks)
     proxy_registry.assign_account = lambda label, aid: order.append(("bind", label, aid))
-    proxy_registry.assign_pool = lambda aid: order.append(("pool", aid)) or ({}, False)
+    proxy_health.assign_pool = lambda aid: order.append(("pool", aid)) or ({}, False)
     session_bootstrap.from_request = lambda parsed, **kw: (
         order.append(("persist", parsed["headers"]["user-id"], kw.get("nickname")))
         or Path("/x/accounts/777/session_T.json"))
     server.post_bootstrap_hooks = lambda aid: order.append(("hooks", aid))
 
     def restore():
-        (proxy_registry.assign_account, proxy_registry.assign_pool,
+        (proxy_registry.assign_account, proxy_health.assign_pool,
          session_bootstrap.from_request, server.post_bootstrap_hooks) = orig
     return restore
 
@@ -516,10 +517,14 @@ def case_capture_binds_before_persist():
         e = _raises(RuntimeError, rl._capture_and_persist, job, _Page(), _Ctx())
         assert "one egress" in str(e)
 
+        # assign_pool raises only when the pool is empty; a pick that fails its
+        # probe, or every pool proxy bad, still binds a Creator on none
+        # (test_proxy_health: unbound_and_no_pick_answers, unbound_and_every_proxy_bad),
+        # so a finished login is lost only when there is no Inflowwww proxy at all.
         def _no_pool(aid):
             raise LookupError("no Inflowwww proxies are set up on this relay")
 
-        proxy_registry.assign_pool = _no_pool
+        proxy_health.assign_pool = _no_pool
         e = _raises(RuntimeError, rl._capture_and_persist, _job(), _Page(), _Ctx())
         assert "Inflowwww proxy" in str(e) and "one egress" in str(e), e
         assert order == [], "nothing may be persisted when the bind fails"

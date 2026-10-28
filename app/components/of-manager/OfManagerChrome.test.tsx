@@ -404,7 +404,7 @@ describe("CreatorColumn s4s", () => {
     accounts = [{ id: "1", nickname: "asdf", has_session: true }, { id: "2", nickname: "jade", has_session: true }];
     const onChange = vi.fn();
     renderWithProviders(
-      <CreatorColumn variant="s4s" accounts={accounts.map((a) => ({ ...a, is_active: true }))} value="1" onChange={onChange}
+      <CreatorColumn variant="s4s" accounts={accounts.map((a) => ({ ...a, is_active: true, proxy_down: false }))} value="1" onChange={onChange}
         marks={{ "1": { optedIn: true, pending: 2 }, "2": { optedIn: false, pending: 0 } }} />,
     );
     const [one, two] = screen.getAllByTestId("of-creator-row");

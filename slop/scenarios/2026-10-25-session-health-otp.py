@@ -71,7 +71,7 @@ from datetime import datetime, timedelta, timezone
 
 from slop.actors import ui
 from slop.actors.manager import SseListener
-from slop.lib.browserbase import signing
+from slop.lib.browserbase import paste_curl
 from slop.lib.client import Recorder
 from slop.seed import of_sessions
 
@@ -484,7 +484,7 @@ async def run(ctx) -> None:
     boot = {}
     for a in flagged_want:
         r = await pools[owner_of[a]].post("/admin/session/bootstrap", timeout=60, json={
-            "mode": "paste-curl", "curl": _curl(a, rev), "account_id": a, "make_active": False})
+            "mode": "paste-curl", "curl": paste_curl(a, rev), "account_id": a, "make_active": False})
         boot[a] = r.status_code if r.status_code == 200 else f"{r.status_code} {r.text[:200]}"
     cleared = await wait_for(lambda: not (flagged_now() & set(flagged_want)), 20)
     resumed = await wait_for(lambda: {c["account"] for c in fake.ws_connects if c["t"] >= rec_t}
@@ -542,20 +542,6 @@ async def run(ctx) -> None:
     ctx.metric("fake_of", fake.snapshot())
     (ctx.out / "of-wire-calls.json").write_text(json.dumps(fake.calls))
     (ctx.out / "of-ws-connects.json").write_text(json.dumps(fake.ws_connects))
-
-
-def _curl(uid: str, rev: str) -> str:
-    """The Creator's browser's signed /users/me, as DevTools copies it (the login
-    extension's x-relay-static-param included), under lib/browserbase.py's
-    synthetic signing material (the chunk lib/of_wire.py serves)."""
-    s = signing(uid, rev, int(time.time() * 1000))
-    h = {"user-id": uid, "x-bc": s["x_bc"], "x-of-rev": rev, "sign": s["sign"], "time": s["time"],
-         "user-agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-                        "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"),
-         "accept": "application/json, text/plain, */*",
-         "x-relay-static-param": s["rules"]["static_param"]}
-    return (f"curl '{s['url']}' " + " ".join(f"-H '{k}: {v}'" for k, v in h.items())
-            + f" -b 'auth_id={uid}; sess=slop{uid}recaptured'")
 
 
 async def _ui(ctx, otp, owner_of, me, by_id) -> None:

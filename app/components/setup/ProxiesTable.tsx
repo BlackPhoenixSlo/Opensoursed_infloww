@@ -443,9 +443,17 @@ function Pager({ page, pageCount, onPage, pageSize, onPageSize }: {
   );
 }
 
-/** The capture's state (#14) from the latest test, else the stored verification; the detail under it is ours. */
-function proxyStatus(proxy: ProxyMeta, test?: TestResult): { on: boolean; detail: string } {
+/** The capture's state (#14) from the latest test, else the relay's health (a proxy it holds bad is Unavailable,
+ *  whatever the stored verification says), else the stored verification; the detail under it is ours. */
+export function proxyStatus(proxy: ProxyMeta, test?: TestResult): { on: boolean; detail: string } {
   if (test) return test.ok ? { on: true, detail: test.ip ?? "" } : { on: false, detail: test.error || "failed" };
+  const h = proxy.health;
+  if (h && (h.state === "bad" || h.state === "rechecking")) {
+    const since = h.bad_since ? ` since ${new Date(h.bad_since * 1000).toLocaleTimeString()}` : "";
+    const next = h.state === "rechecking" ? "rechecking now" : h.next_recheck_at
+      ? `recheck at ${new Date(h.next_recheck_at * 1000).toLocaleTimeString()}` : "rechecking";
+    return { on: false, detail: `unreachable${since} (${h.errors} refused) — ${next}` };
+  }
   return proxy.verified_ip ? { on: true, detail: proxy.verified_ip } : { on: false, detail: "unverified — run Test" };
 }
 

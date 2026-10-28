@@ -506,8 +506,8 @@ describe.each([
 });
 
 const ACCOUNTS: AccountMeta[] = [
-  { id: "acc1", nickname: "Alice", has_session: true, color: "#f00", is_active: true },
-  { id: "acc2", nickname: "Bea", has_session: false, color: "#0f0", is_active: true },
+  { id: "acc1", nickname: "Alice", has_session: true, color: "#f00", is_active: true, proxy_down: false },
+  { id: "acc2", nickname: "Bea", has_session: false, color: "#0f0", is_active: true, proxy_down: false },
 ];
 
 describe("IfCreatorSelect + useCreatorParam", () => {

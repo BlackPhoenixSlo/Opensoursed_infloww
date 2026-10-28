@@ -28,8 +28,8 @@ import { onNotice } from "@/lib/notices";
 
 // The session: a Chatter only, unless a case signs in an owner.
 let session: { user: { user_id: string; username: string } | null; chatter: { username: string } | null };
-vi.mock("@/contexts/UserContext", () => ({ useUser: () => ({ user: session.user, loading: false, logout: vi.fn() }) }));
-vi.mock("@/contexts/ChatterContext", () => ({ useChatter: () => ({ chatter: session.chatter, logout: vi.fn() }) }));
+vi.mock("@/contexts/UserContext", () => { const v = () => ({ user: session.user, loading: false, logout: vi.fn() }); return { useUser: v, useOptionalUser: v }; });
+vi.mock("@/contexts/ChatterContext", () => { const v = () => ({ chatter: session.chatter, logout: vi.fn() }); return { useChatter: v, useOptionalChatter: v }; });
 vi.mock("@/contexts/EmployeeContext", () => ({ useEmployee: () => ({ current: null, clear: vi.fn() }) }));
 vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => ({ accountId: null }) }));
 

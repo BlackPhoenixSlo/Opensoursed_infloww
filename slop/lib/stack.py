@@ -16,6 +16,11 @@ dir is a box's real layout, `tmp/<box>/shards/sNN/` with `data/chatterly.db`,
 `service/` (DEMO_SHOTS_TMP: sessions/, secrets/) and `.env` (the shard's
 SESSION_SECRET / CHATTER_SESSION_SECRET, as fleet.py's deploy writes it), so the
 box-side scripts (oi-backup, oi-restore, oi-epoch) run on it unchanged.
+`app_mode="prod"` (a scenario's `APP_MODE`) serves the app as production does instead of
+`next dev`: `next build` into `.next/slop-prod` with the run's RELAY_URL (the rewrites are
+baked into the build's routes-manifest), then `next start`; minified, split chunks, so a
+page-load measurement sees the bundle a phone downloads. One shard only.
+
 `spawn()` / `wait_ready()` / `kill_group()` let a scenario start a relay
 elsewhere (a restored shard on the other box) and SIGKILL a process group.
 
@@ -81,8 +86,11 @@ def sid(i: int) -> str:
 class Stack:
     def __init__(self, *, ui: bool, fault: str | None, logdir: Path, profile: bool = False,
                  shards: int = 1, apps: tuple[int, ...] = (), boxes: dict[str, tuple[int, ...]] | None = None,
-                 shards_per_box: int | None = None):
+                 shards_per_box: int | None = None, app_mode: str = "dev"):
         self.ui, self.fault, self.logdir, self.profile = ui, fault, logdir, profile
+        if app_mode not in ("dev", "prod") or (app_mode == "prod" and shards > 1):
+            raise SystemExit(f"slop: app_mode {app_mode!r} (dev, or prod on one shard)")
+        self.app_mode = app_mode
         self.shards = max(1, int(shards))
         fleet = self.shards > 1
         self.apps = tuple(sorted({i for i in apps if 0 <= i < self.shards})) if fleet else ((0,) if ui else ())
@@ -185,6 +193,9 @@ class Stack:
                             NO_PROXY="127.0.0.1,localhost", no_proxy="127.0.0.1,localhost",
                             NODE_OPTIONS=f"--require {DEMO / 'fetch-guard.cjs'}", DEMO_SHOTS_TMP=str(self.shard_tmps[i]))
                 nenv.update(self.app_env.get(i, {}))
+                if self.app_mode == "prod":
+                    self._prod_app(nenv, i)
+                    continue
                 p = self._spawn(["node", "node_modules/next/dist/bin/next", "dev", "--webpack", "-H", "127.0.0.1",
                                  "-p", str(self.app_ports[i])], nenv, self._log("next", i), cwd=ROOT / "app")
                 # One `next dev` at a time: each compiles /login on its first request, and three
@@ -247,6 +258,31 @@ class Stack:
 
     def relay_cmd(self) -> list[str]:
         return [str(PY), str(Path(__file__).with_name("relay.py"))]
+
+    def _prod_app(self, nenv: dict[str, str], i: int) -> None:
+        """`next build` (the Dockerfile's `pnpm build`) into .next/slop-prod against this run's relay,
+        then `next start` (its `pnpm start`). The build's wall time lands in next-build.log."""
+        nenv = dict(nenv, NEXT_DIST_DIR=".next/slop-prod", NODE_ENV="production")
+        nm = ROOT / "app" / "node_modules"
+        if nm.is_symlink():  # a worktree's `slop/run --list` link: Turbopack refuses one pointing out of the project
+            raise SystemExit(f"slop: APP_MODE=prod builds with Turbopack (as `pnpm build`), which refuses a symlinked "
+                             f"app/node_modules; replace the link with an APFS clone: rm {nm} && cp -cR {nm.resolve()} {nm}")
+        t0 = time.time()
+        # `next build` adds its dist dir's type paths to tsconfig.json and rewrites next-env.d.ts: put both back.
+        kept = {f: f.read_bytes() for f in (ROOT / "app" / "tsconfig.json", ROOT / "app" / "next-env.d.ts") if f.exists()}
+        try:
+            with open(self.logdir / "next-build.log", "w") as fh:
+                r = subprocess.run(["node", "node_modules/next/dist/bin/next", "build", "--turbopack"], env=nenv,
+                                   cwd=ROOT / "app", stdout=fh, stderr=subprocess.STDOUT, timeout=900)
+                fh.write(f"\nslop: next build exit {r.returncode} in {time.time() - t0:.1f}s\n")
+        finally:
+            for f, b in kept.items():
+                f.write_bytes(b)
+        if r.returncode != 0:
+            raise SystemExit(f"slop: next build failed (exit {r.returncode}); see {self.logdir}/next-build.log")
+        p = self._spawn(["node", "node_modules/next/dist/bin/next", "start", "-H", "127.0.0.1",
+                         "-p", str(self.app_ports[i])], nenv, self._log("next", i), cwd=ROOT / "app")
+        self._wait("next start", f"{self.app_urls[i]}/login", 120, p)
 
     def relay_env_of(self, i: int) -> dict[str, str]:
         """A copy of the env relay `i` was started with (to start it elsewhere with changes)."""

@@ -26,8 +26,8 @@ vi.mock("@/components/shell/useGrantedPages", () => ({
   useActionAllowed: () => true,
 }));
 vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => ({ accountId: null }) }));
-vi.mock("@/contexts/UserContext", () => ({ useUser: () => ({ user: { user_id: "o", username: "owner" }, loading: false }) }));
-vi.mock("@/contexts/ChatterContext", () => ({ useChatter: () => ({ chatter: null }) }));
+vi.mock("@/contexts/UserContext", () => { const v = () => ({ user: { user_id: "o", username: "owner" }, loading: false }); return { useUser: v, useOptionalUser: v }; });
+vi.mock("@/contexts/ChatterContext", () => { const v = () => ({ chatter: null }); return { useChatter: v, useOptionalChatter: v }; });
 vi.mock("@/components/analytics/SalesRecords", () => ({ default: () => <p>Sales records body</p> }));
 
 import EmployeeReport from "@/components/stats/EmployeeReport";

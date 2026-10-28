@@ -74,6 +74,21 @@ def signing(uid: str, rev: str, time_ms: int) -> dict:
             "x_bc": "slop-x-bc-0123456789abcdef", **signed}
 
 
+def paste_curl(uid: str, rev: str, sess: str = "recaptured") -> str:
+    """The Creator's browser's signed /users/me, as DevTools copies it (the login
+    extension's x-relay-static-param included), under `signing`'s synthetic
+    material (the chunk lib/of_wire.py serves): what the Add creator flow's
+    paste-curl step posts to /admin/session/bootstrap."""
+    s = signing(uid, rev, int(time.time() * 1000))
+    h = {"user-id": uid, "x-bc": s["x_bc"], "x-of-rev": rev, "sign": s["sign"], "time": s["time"],
+         "user-agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"),
+         "accept": "application/json, text/plain, */*",
+         "x-relay-static-param": s["rules"]["static_param"]}
+    return (f"curl '{s['url']}' " + " ".join(f"-H '{k}: {v}'" for k, v in h.items())
+            + f" -b 'auth_id={uid}; sess=slop{uid}{sess}'")
+
+
 def _free_port() -> int:
     s = socket.socket()
     s.bind(("127.0.0.1", 0))

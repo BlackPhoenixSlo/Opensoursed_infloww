@@ -111,13 +111,13 @@ describe("useAccessChangeNotices", () => {
 
   it("tells only the session whose own applied permissions changed", async () => {
     const qc = mount();
-    qc.setQueryData(["applied-settings", "a1"], applied(["inbox"]));
+    qc.setQueryData(["applied-settings", "c1", "a1"], applied(["inbox"]));
     emit("permissions_changed");
-    await refetch(qc, ["applied-settings", "a1"], applied(["inbox"]));
+    await refetch(qc, ["applied-settings", "c1", "a1"], applied(["inbox"]));
     expect(texts).toEqual([]);
 
     emit("permissions_changed");
-    await refetch(qc, ["applied-settings", "a1"], applied(["inbox", "vault"]));
+    await refetch(qc, ["applied-settings", "c1", "a1"], applied(["inbox", "vault"]));
     expect(texts).toEqual(["Your permissions were updated."]);
   });
 

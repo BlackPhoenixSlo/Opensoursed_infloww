@@ -73,6 +73,32 @@ def _bump_gen(namespace: str, account_id: str) -> None:
 _locks: dict[tuple[str, str, tuple], asyncio.Lock] = {}
 _registry_lock = asyncio.Lock()
 
+# The last failed fetch per key: (exception, monotonic end). A caller that was
+# queued on the key's lock while that fetch failed gets that failure instead
+# of going upstream again after it, so single-flight holds on errors too (as
+# relay_coalesce's): N readers of a Creator behind a dead proxy wait for one
+# failure, not N in a row. Decided: the FIRST caller's retry policy decides
+# the outcome for every caller queued behind it (an interactive first caller's
+# 2 tries fail a background waiter fast; a background first caller's 5 tries
+# make an interactive waiter wait them out, as it already was, queued). Only
+# reads go through here, and a background read is re-polled anyway. Each
+# waiter raises its own copy (`_fresh`), so tracebacks don't pile onto one
+# shared instance. Swept with the key's lock.
+_failed: dict[tuple[str, str, tuple], tuple[BaseException, float]] = {}
+
+
+def _fresh(e: BaseException) -> BaseException:
+    """A copy of `e` for one more caller: same class, args and attributes
+    (status_code, detail, code...), no traceback or context of its own. The
+    original when the class can't be copied this way."""
+    try:
+        c = type(e).__new__(type(e))
+        c.args = e.args
+        c.__dict__.update(e.__dict__)
+        return c
+    except Exception:
+        return e
+
 # Per-namespace hit/miss counters for /admin/_debug/relay-cache-stats.
 _hits: dict[str, int] = {}
 _misses: dict[str, int] = {}
@@ -138,6 +164,9 @@ def _maintain(keep: tuple[str, str, tuple]) -> None:
     for k in list(_locks):
         if k != keep and k not in _cache and _idle_lock(k):
             _locks.pop(k, None)
+    for k in list(_failed):
+        if k not in _locks:
+            _failed.pop(k, None)
     low_water = int(_MAX_ENTRIES * _LOW_WATER_RATIO)
     # Only a cap crossing evicts, and always down to low water even when the
     # sweep alone got under the cap: else the next crossing is a few misses away.
@@ -188,7 +217,8 @@ async def get_or_fetch(
     flight through the same per-key lock). Only TTL expiry is softened —
     an `invalidate()` drops the entry, so the next read still misses.
 
-    Exceptions from `fetcher` propagate; nothing is cached on failure.
+    Exceptions from `fetcher` propagate; nothing is cached on failure, and
+    callers queued behind a failed fetch get its exception (see `_failed`).
     """
     key = (namespace, account_id, tuple(key_extras))
     if stale_while_revalidate > _ns_grace.get(namespace, 0.0):
@@ -238,7 +268,15 @@ async def _fetch_locked(
     # Miss path: acquire per-key lock so N concurrent callers on the
     # same cold key produce ONE upstream fetch.
     lock = await _get_or_make_lock(key)
+    arrived = time.monotonic()
     async with lock:
+        # The fetch we queued behind failed: its error is ours too (see _failed).
+        failed = _failed.get(key)
+        if failed is not None and failed[1] >= arrived:
+            log.info("relay_cache %s account=%s: a queued caller gets the failure of the fetch it waited on "
+                     "(%s; that first caller's retry policy decided it)",
+                     namespace, account_id, type(failed[0]).__name__)
+            raise _fresh(failed[0])
         # Re-check the cache after acquiring the lock. A peer coroutine
         # may have already populated it while we were queued.
         if not bypass:
@@ -251,10 +289,15 @@ async def _fetch_locked(
 
         _record_miss(namespace)
         gen0 = _pair_gen.get((namespace, account_id), 0)
-        if asyncio.iscoroutinefunction(fetcher):
-            value = await fetcher()
-        else:
-            value = await asyncio.to_thread(fetcher)
+        try:
+            if asyncio.iscoroutinefunction(fetcher):
+                value = await fetcher()
+            else:
+                value = await asyncio.to_thread(fetcher)
+        except Exception as e:
+            _failed[key] = (e, time.monotonic())
+            raise
+        _failed.pop(key, None)
 
         # Latest-wins: skip the write-back if an invalidation landed while we
         # were upstream — our snapshot predates it. The caller still gets the

@@ -81,7 +81,7 @@ import time
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 
-from slop.actors import fan_dm, manager, ui
+from slop.actors import fan_dm, focus, manager, ui
 from slop.lib.attribution_faults import (AUTO, PPV, SENDER, STAMP, TIP_AFTER, TIP_LEDGER, TIP_WS, TOTALS, WINDOW,
                                          WINDOW330)
 from slop.seed import chatters as chatters_seed
@@ -154,39 +154,6 @@ def _parse(s) -> datetime:
 def _p(xs: list[float], q: float) -> float:
     xs = sorted(xs)
     return xs[min(len(xs) - 1, int(len(xs) * q))]
-
-
-class Sender:
-    """One chatter on its own login (POST /chatter/login: own cookie) sending through the real
-    send route; `price` > 0 sends a PPV. The record carries OF's message id and `createdAt` as the
-    send answered them. Bypass, declared: chatters go straight to the relay (no Next proxy)."""
-
-    def __init__(self, rec: dict):
-        self.username, self.password = rec["username"], rec["password"]
-        self.http = None
-
-    async def login(self, base: str, recorder) -> int:
-        from slop.lib.client import Http  # lazy, as the actors do
-        self.http = Http(base, recorder, limits=2)
-        r = await self.http.post("/chatter/login", json={"username": self.username, "password": self.password})
-        return r.status_code
-
-    async def reply(self, aid: str, fan: int, text: str, *, price: float = 0) -> dict:
-        t0 = time.perf_counter()
-        try:
-            r = await self.http.post(f"/api/of/v2/chats/{fan}/messages", headers={"X-Account-Id": aid},
-                                     json={"text": text, **({"price": price} if price else {})})
-            body = r.json() if r.status_code < 300 else {}
-            body = body if isinstance(body, dict) else {}
-            return {"aid": aid, "fan": fan, "status": r.status_code, "ms": (time.perf_counter() - t0) * 1000,
-                    "id": body.get("id"), "created_at": body.get("createdAt")}
-        except Exception as e:  # noqa: BLE001 — recorded by the client (599)
-            return {"aid": aid, "fan": fan, "status": 599, "ms": (time.perf_counter() - t0) * 1000, "id": None,
-                    "error": type(e).__name__}
-
-    async def close(self) -> None:
-        if self.http is not None:
-            await self.http.aclose()
 
 
 class Ledger:
@@ -283,7 +250,7 @@ async def run(ctx) -> None:
     recs = await chatters_seed.seed(w, owner, w.user_id, names, account_ids=assign)
     emp = sales_touches.employees(w, recs)
     by_creator = {aid: [k for k, r in enumerate(recs) if aid in r["account_ids"]] for aid in creators}
-    chatters = [Sender(r) for r in recs]
+    chatters = [focus.Chatter(r, r["account_ids"][0]) for r in recs]
     sem = asyncio.Semaphore(20)
 
     async def login(c):

@@ -56,6 +56,7 @@ from pathlib import Path  # noqa: E402
 import _agency_fixtures as fx  # noqa: E402
 import accounts as account_registry  # noqa: E402
 import proxies as proxy_registry  # noqa: E402
+import proxy_health  # noqa: E402
 
 proxy_registry.REGISTRY_PATH = Path(tempfile.mkdtemp(prefix="proxy_pool_")) / "proxies.json"
 
@@ -67,6 +68,8 @@ OWNER_A = fx.login_owner("agency_a_owner")
 OWNER_B = fx.login_owner("agency_b_owner")
 
 import server  # noqa: E402
+
+proxy_health.verify_pick = lambda p, **_: True   # a new binding's probe (test_proxy_health covers it): these hosts are fakes
 
 server._invalidate_client = lambda aid=None: None
 server._kick_db_sync = lambda reason: None
@@ -143,13 +146,13 @@ def case_least_used_pick_then_sticky():
     picks = set()
     for seed in range(40):
         proxy_registry.unbind_pool(CREATOR_A)
-        p, kept = proxy_registry.assign_pool(CREATOR_A, random.Random(seed))
+        p, kept = proxy_health.assign_pool(CREATOR_A, random.Random(seed))
         assert not kept and p["label"] in labels
         picks.add(p["label"])
     assert picks == labels, f"40 seeded picks never hit every pool proxy: {picks}"
     first = proxy_registry.get_for_account(CREATOR_A)["label"]
     for seed in range(10):
-        p, kept = proxy_registry.assign_pool(CREATOR_A, random.Random(seed))
+        p, kept = proxy_health.assign_pool(CREATOR_A, random.Random(seed))
         assert kept and p["label"] == first, "a held pool proxy must be kept"
     # Least-used: three accounts land on three different proxies, whatever the seed.
     for seed in range(10):
@@ -157,17 +160,17 @@ def case_least_used_pick_then_sticky():
             proxy_registry.unbind_pool(aid)
         got = {first}
         for aid in ("acct-c", "acct-d"):
-            got.add(proxy_registry.assign_pool(aid, random.Random(seed))[0]["label"])
+            got.add(proxy_health.assign_pool(aid, random.Random(seed))[0]["label"])
         assert got == labels, f"seed {seed}: a free proxy was skipped: {got}"
     # Full pool: the fourth account shares one; the next free slot is the least-used again.
-    shared = proxy_registry.assign_pool("acct-e")[0]["label"]
+    shared = proxy_health.assign_pool("acct-e")[0]["label"]
     assert shared in labels
     alone = next(a for a in ("acct-c", "acct-d") if proxy_registry.get_for_account(a)["label"] != shared)
     freed = proxy_registry.get_for_account(alone)["label"]
     proxy_registry.unbind_pool(alone)
     for seed in range(10):
         proxy_registry.unbind_pool(alone)
-        assert proxy_registry.assign_pool(alone, random.Random(seed))[0]["label"] == freed
+        assert proxy_health.assign_pool(alone, random.Random(seed))[0]["label"] == freed
     for aid in ("acct-c", "acct-d", "acct-e"):
         proxy_registry.unbind_pool(aid)
     # Two pool proxies verified on one IP count as one: the next pick takes the other IP.
@@ -178,11 +181,11 @@ def case_least_used_pick_then_sticky():
     proxy_registry.assign_account(a, CREATOR_A)
     for seed in range(10):
         proxy_registry.unbind_pool("acct-c")
-        assert proxy_registry.assign_pool("acct-c", random.Random(seed))[0]["label"] == c
+        assert proxy_health.assign_pool("acct-c", random.Random(seed))[0]["label"] == c
     proxy_registry.unbind_pool("acct-c")
     # From a custom proxy: moved onto the pool, off the custom one.
     proxy_registry.assign_account("mine", CREATOR_B)
-    p, kept = proxy_registry.assign_pool(CREATOR_B)
+    p, kept = proxy_health.assign_pool(CREATOR_B)
     assert not kept and proxy_registry.is_pool(proxy_registry.get_for_account(CREATOR_B))
     assert CREATOR_B not in proxy_registry.get_by_label("mine")["assigned_account_ids"]
     assert proxy_registry.unbind_pool(CREATOR_B) and proxy_registry.get_for_account(CREATOR_B) is None
@@ -204,7 +207,7 @@ def case_switch_reconnects_the_pump():
         await asyncio.sleep(0.01)
         started.clear()
 
-        proxy_registry.assign_pool(CREATOR_A)            # direct → pool
+        proxy_health.assign_pool(CREATOR_A)            # direct → pool
         await asyncio.sleep(0.01)
         assert old_task.cancelled(), "the old socket must be torn down"
         assert started == [CREATOR_A], started
@@ -212,7 +215,7 @@ def case_switch_reconnects_the_pump():
 
         started.clear()
         evicted.clear()
-        _, kept = proxy_registry.assign_pool(CREATOR_A)  # kept: nothing changes
+        _, kept = proxy_health.assign_pool(CREATOR_A)  # kept: nothing changes
         await asyncio.sleep(0.01)
         assert kept and started == [] and evicted == []
 
@@ -222,7 +225,7 @@ def case_switch_reconnects_the_pump():
 
         started.clear()
         evicted.clear()
-        proxy_registry.assign_pool(CREATOR_B)            # no pump: evicted, none started
+        proxy_health.assign_pool(CREATOR_B)            # no pump: evicted, none started
         await asyncio.sleep(0.01)
         assert started == [] and evicted == [CREATOR_B], (started, evicted)
         assert CREATOR_B not in server._account_pumps
@@ -320,7 +323,7 @@ def case_removed_proxy_is_repicked():
     assert proxy_registry.get_for_account(CREATOR_A) is None
     assert proxy_registry.get_by_label("mine") is not None, "an empty pool must not touch custom proxies"
     try:
-        proxy_registry.assign_pool(CREATOR_A)
+        proxy_health.assign_pool(CREATOR_A)
     except LookupError:
         pass
     else:
@@ -329,8 +332,8 @@ def case_removed_proxy_is_repicked():
 
 def case_list_hides_pool():
     _reset(f"{L1},{L2},{L3}")
-    proxy_registry.assign_pool(CREATOR_A)
-    proxy_registry.assign_pool(CREATOR_B)
+    proxy_health.assign_pool(CREATOR_A)
+    proxy_health.assign_pool(CREATOR_B)
     pool_labels = [p["label"] for p in proxy_registry.pool_entries()]
     for client, mine in ((OWNER_A, CREATOR_A), (OWNER_B, CREATOR_B)):
         r = client.get("/admin/proxies")
@@ -338,7 +341,7 @@ def case_list_hides_pool():
         body = r.json()
         for needle in [*pool_labels, "pool-1.invalid", "pool-2.invalid", "pool-3.invalid", PW]:
             assert needle not in r.text, f"pool field {needle!r} leaked into GET /admin/proxies"
-        assert body["pool"] == {"size": 3, "account_ids": [mine]}, body["pool"]
+        assert body["pool"] == {"size": 3, "account_ids": [mine], "bad": 0}, body["pool"]
     assert "mine" in {p["label"] for p in OWNER_A.get("/admin/proxies").json()["proxies"]}
 
 
@@ -391,7 +394,7 @@ def case_pool_routes():
 
 def case_sync_fails_closed():
     _reset(f"{L1},{L2}")
-    proxy_registry.assign_pool(CREATOR_A)
+    proxy_health.assign_pool(CREATOR_A)
     held = proxy_registry.get_for_account(CREATOR_A)["label"]
     before = proxy_registry.REGISTRY_PATH.read_bytes()
     for text in (None, "", "   ", "  \n , \n# comment", f"{L1},pool-x.invalid:notaport:u:{PW}"):
@@ -480,7 +483,7 @@ def case_save_is_in_place():
 
 def case_pool_errors_are_scrubbed():
     _reset(L1)
-    proxy_registry.assign_pool(CREATOR_A)
+    proxy_health.assign_pool(CREATOR_A)
     proxy_registry.assign_account("mine", CREATOR_B)
     label = proxy_registry.get_for_account(CREATOR_A)["label"]
     host = proxy_registry.get_for_account(CREATOR_A)["host"]

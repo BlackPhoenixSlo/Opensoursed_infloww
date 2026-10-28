@@ -17,6 +17,15 @@
  * fans.subscription_expires_at is also empty). A warning badge sits at
  * the top of EVERY card when `active_subs_source === "unavailable"` so
  * the user knows why every model in the grid shows "—" for active/ARPU.
+ *
+ * The OnlyFans reads (profile, fan count, new fans) go only to a Creator with
+ * a live session (lib/sessionConnectivity leaves it `null`: `has_session`, no
+ * `session_dead_at`, active). Any other card makes no OF call: it shows the DB's
+ * figures, "—" for OF's, and the Creators page's connectivity label and colour
+ * from the same helper. A Creator the accounts read lacks
+ * has no account on this host at all (the Relay lists the on-host registry;
+ * its OF reads answer 404 Unknown account_id), so it is "Not connected" too.
+ * Before the accounts read answers no card reads OF; a failed read reads as before.
  */
 
 import { Badge, Card } from "@/components/ui/primitives";
@@ -24,6 +33,8 @@ import { cn } from "@/lib/utils";
 import { fmtCents, fmtDateShort, fmtInt, fmtPrice } from "@/lib/format";
 import { proxyImage } from "@/lib/mediaUrl";
 import { useAccounts } from "@/hooks/useAccounts";
+import type { AccountMeta } from "@/lib/relay";
+import { sessionConnectivity, type Connectivity } from "@/lib/sessionConnectivity";
 import {
   useAccountProfile,
   useOfSubscriberCounts,
@@ -49,6 +60,19 @@ function isPaidPage(m: PerModelRow, profile: import("@/hooks/useStats").OfProfil
   const k = m.revenue_by_kind;
   const p = m.pending_by_kind;
   return (k.subscription + k.rebill + p.subscription + p.rebill) > 0;
+}
+
+/** Whether a Creator's card may read OnlyFans (`live`), and its connectivity when it may not. `null` until the
+ *  accounts read answers (no OF call yet). A Creator absent from the answered list has no account on this host; a
+ *  failed list reads OF as before. */
+export function ofReadState(
+  account: AccountMeta | undefined, accounts: { isPending: boolean; isError: boolean },
+): { live: boolean; conn: Connectivity | null } | null {
+  if (accounts.isError) return { live: true, conn: null };
+  if (accounts.isPending) return null;
+  if (!account) return { live: false, conn: { label: "Not connected", tone: "muted" } };
+  const conn = sessionConnectivity(account);
+  return { live: conn === null, conn };
 }
 
 export default function PerModelKpiGrid({ from, to }: Props) {
@@ -117,7 +141,8 @@ export default function PerModelKpiGrid({ from, to }: Props) {
         )}
       >
         {models.map((m) => (
-          <ModelCard key={m.account_id} m={m} activeUnavail={activeUnavail} from={from} to={to} />
+          <ModelCard key={m.account_id} m={m} activeUnavail={activeUnavail} from={from} to={to}
+            of={ofReadState(accountsQ.data?.accounts?.find((a) => a.id === m.account_id), accountsQ)} />
         ))}
       </div>
       <MetricsLegend />
@@ -177,28 +202,35 @@ function SkeletonModelCard({ account }: { account: { id: string; nickname?: stri
   );
 }
 
-function ModelCard({ m, activeUnavail, from, to }: { m: PerModelRow; activeUnavail: boolean; from: string | null; to: string | null }) {
+function ModelCard({ m, activeUnavail, from, to, of }: {
+  m: PerModelRow; activeUnavail: boolean; from: string | null; to: string | null;
+  of: ReturnType<typeof ofReadState>;
+}) {
   const kinds = m.revenue_by_kind;
   const pending = m.pending_by_kind;
+  // The OF reads below go out only for a live session (`ofReadState`): a null id disables each.
+  const ofId = of?.live ? m.account_id : null;
+  const offline = of?.conn ?? null;
   // Pull the model's OF profile (avatar + name) per card. React Query
   // dedupes by accountId so re-mounts don't re-fetch. Falls back to the
   // backend's `display_name` (accounts.nickname) and then the bare ID.
-  const profile = useAccountProfile(m.account_id);
+  const profile = useAccountProfile(ofId);
   const p = profile.data;
   // Hold the paid/free badge indeterminate until the OF profile query has
   // settled — otherwise the revenue-window fallback in isPaidPage paints a
-  // guess that can flip once the real subscribePrice/isFree lands in.
-  const paid = profile.isPending ? null : isPaidPage(m, p);
+  // guess that can flip once the real subscribePrice/isFree lands in. With
+  // no live session there is no profile to wait for: the window decides.
+  const paid = offline ? isPaidPage(m, null) : profile.isPending ? null : isPaidPage(m, p);
   // Live OF fan counts — the REAL totals. Our DB `fans` roster is a tiny
   // subset (only fans we've chatted with), so per_model's sub counts read 0
   // for free pages that actually have thousands of fans. subscribers.active
   // is the true current-fan count (the mass-message audience).
-  const counts = useOfSubscriberCounts(m.account_id);
+  const counts = useOfSubscriberCounts(ofId);
   const totalFans = counts.data?.active ?? null;
   // New fans in the window — OF's Statistics > Subscriptions count. Correct
   // for BOTH free and paid pages (uses the subscriber-count series, not the
   // earnings series), so no paid-only gating.
-  const newFansQ = useOfNewFans(m.account_id, from, to);
+  const newFansQ = useOfNewFans(ofId, from, to);
   const newFans = newFansQ.data ?? null;
   // LTV = revenue in the window ÷ the new-count shown in slot 2 (paid pages:
   // new PAID subs; free pages: new fans). Dividing by the displayed number
@@ -247,6 +279,12 @@ function ModelCard({ m, activeUnavail, from, to }: { m: PerModelRow; activeUnava
             {handle ? <>{handle} · </> : null}{m.account_id}
           </div>
         </div>
+        {offline && (
+          <Badge data-of-offline color={offline.tone}
+            title={`No live OnlyFans session${offline.title ? ` (${offline.title})` : ""}: this card shows the ledger's figures and reads nothing from OnlyFans`}>
+            {offline.label}
+          </Badge>
+        )}
         {activeUnavail && (
           <Badge color="warn" title="Backend couldn't read active subscription state — active subs and ARPU are not available">
             subs unavailable
@@ -286,7 +324,7 @@ function ModelCard({ m, activeUnavail, from, to }: { m: PerModelRow; activeUnava
             FREE page shows OF's free-inclusive new-fan count. */}
         <Kpi
           label="Fans"
-          value={totalFans == null ? (counts.isPending ? "…" : "—") : fmtInt(totalFans)}
+          value={totalFans == null ? (counts.isPending && !offline ? "…" : "—") : fmtInt(totalFans)}
           muted={totalFans == null}
           title="Current fans subscribed to this model — OF's own count (subscribers.active), the same audience a mass message reaches. Not our chat DB, which only holds fans we've messaged."
         />
@@ -299,7 +337,7 @@ function ModelCard({ m, activeUnavail, from, to }: { m: PerModelRow; activeUnava
         ) : (
           <Kpi
             label="New fans (30d)"
-            value={newFans == null ? (newFansQ.isPending ? "…" : "—") : fmtInt(newFans)}
+            value={newFans == null ? (newFansQ.isPending && !offline ? "…" : "—") : fmtInt(newFans)}
             muted={newFans == null}
             title="New fans in the selected window (default last 30 days) — OF's own Statistics > Subscriptions count (subscriber series, free-inclusive)."
           />

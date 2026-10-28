@@ -21,7 +21,7 @@ import { useChatMessages } from "@/hooks/useChatMessages";
 import { useInboxRealtime } from "@/hooks/useInboxRealtime";
 import { PREFETCH_IDLE_TIMEOUT_MS, PREFETCH_QUIET_MS } from "@/hooks/useUnreadMessagesPrefetch";
 import { emitEvent, observerStub, relayGet, relayPost, resetComposerHarness, routeRelay, tooltipOf } from "./composerTestHarness";
-import { FanList, ROW_RENDER_STEP, type FanListSelection } from "./FanList";
+import { FanList, ROW_RENDER_STEP, SEARCH_DEBOUNCE_MS, type FanListSelection } from "./FanList";
 
 vi.mock("@/lib/relay", async (orig) =>
   (await import("./composerTestHarness")).mockRelayModule(await orig()));
@@ -91,9 +91,9 @@ let ACCOUNTS: AccountMeta[] = [];
 /* ── fixtures: one Creator, three Fans ─────────────────────────────────── */
 
 const ACCOUNT_ID = "100000001";
-const CREATOR_ACCOUNT: AccountMeta = { id: ACCOUNT_ID, nickname: "Test Creator", color: "#e8618c", is_active: true };
+const CREATOR_ACCOUNT: AccountMeta = { id: ACCOUNT_ID, nickname: "Test Creator", color: "#e8618c", is_active: true, proxy_down: false };
 /** A second active account, for the cases where which account is chosen matters. */
-const OTHER_ACCOUNT: AccountMeta = { id: "100000002", nickname: "Other Creator", color: "#6a8cf0", is_active: true };
+const OTHER_ACCOUNT: AccountMeta = { id: "100000002", nickname: "Other Creator", color: "#6a8cf0", is_active: true, proxy_down: false };
 /** The Creator in scope while `scopeKind` is "model": this one unless a case changes Creator. */
 let scopeCreator = ACCOUNT_ID;
 const CREATOR = { id: Number(ACCOUNT_ID), name: "Test Creator", username: "testcreator" };
@@ -744,6 +744,59 @@ describe("FanList", () => {
     await user.clear(screen.getByPlaceholderText("Search…"));
     expect(screen.queryByPlaceholderText("Search…")).not.toBeInTheDocument();
     expect(search).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("a name typed fast is one search: the box's text, trimmed, once typing rests SEARCH_DEBOUNCE_MS", async () => {
+    const user = userEvent.setup();
+    serveChatsSearchable(CHATS);
+    renderFanList();
+    await rowOf("Fixture Fan Three");
+    await user.click(within(header()).getByRole("button", { name: "Search" }));
+
+    await user.type(screen.getByPlaceholderText("Search…"), "  Fan Two ");
+    // Typing done, the pause not yet over: no search left.
+    const searches = () => chatRequests().map(([path]) => new URLSearchParams(String(path).split("?")[1]).get("query"))
+      .filter((q) => q !== null);
+    expect(searches()).toEqual([]);
+    await vi.waitFor(() => expect(screen.queryByRole("button", { name: /Fixture Fan Three/ })).not.toBeInTheDocument());
+    expect(await rowOf("Fixture Fan Two")).toBeInTheDocument();
+    expect(searches()).toEqual(["Fan Two"]);
+    await new Promise((r) => setTimeout(r, SEARCH_DEBOUNCE_MS * 2));
+    expect(searches()).toEqual(["Fan Two"]);
+  });
+
+  it("a search still in flight when the box holds another is aborted, and the newer one's rows show", async () => {
+    const user = userEvent.setup();
+    // The search for "Fan" never answers, as a live OF search on a slow proxy.
+    const queryOf = (path: string) => new URLSearchParams(path.split("?")[1]).get("query");
+    routeRelay("/api/of/v2/chats?", (path) => queryOf(path) === "Fan" ? new Promise(() => {}) : {
+      list: CHATS.filter((c) => String(c.withUser.name).toLowerCase().includes((queryOf(path) ?? "").toLowerCase())),
+      hasMore: false,
+    });
+    renderFanList();
+    await rowOf("Fixture Fan Three");
+    await user.click(within(header()).getByRole("button", { name: "Search" }));
+    const input = screen.getByPlaceholderText("Search…");
+
+    await user.type(input, "Fan");
+    const first = () => relayGet.mock.calls.find(([path]) => path.startsWith("/api/of/v2/chats?") && queryOf(path) === "Fan");
+    await vi.waitFor(() => expect(first()).toBeDefined());
+    const signal = first()![2];
+    expect(signal?.aborted).toBe(false);
+
+    await user.type(input, " Th");
+    await vi.waitFor(() => expect(screen.queryByRole("button", { name: /Fixture Fan Two/ })).not.toBeInTheDocument());
+    expect(await rowOf("Fixture Fan Three")).toBeInTheDocument();
+    expect(signal?.aborted).toBe(true);
+  });
+
+  it("a list without a search is not aborted when it is switched away from", async () => {
+    serveChats(CHATS);
+    renderFanList();
+    await rowOf("Fixture Fan Three");
+    const listCalls = relayGet.mock.calls.filter(([path]) => path.startsWith("/api/of/v2/chats?"));
+    expect(listCalls.length).toBeGreaterThan(0);
+    expect(listCalls.every((call) => call[2] === undefined)).toBe(true);
   });
 
   it("the header's \"+\" opens the New menu: \"Mass message\", \"Message online fans\" and \"Post\", in that order", async () => {

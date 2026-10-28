@@ -11,8 +11,8 @@ import { jsonRes, renderWithProviders } from "@/test-utils";
 import { SIDEBAR, isDivider, visibleSidebar } from "@/lib/nav";
 
 let session: { user: { user_id: string; username: string } | null; chatter: { username: string } | null };
-vi.mock("@/contexts/UserContext", () => ({ useUser: () => ({ user: session.user, loading: false }) }));
-vi.mock("@/contexts/ChatterContext", () => ({ useChatter: () => ({ chatter: session.chatter }) }));
+vi.mock("@/contexts/UserContext", () => { const v = () => ({ user: session.user, loading: false }); return { useUser: v, useOptionalUser: v }; });
+vi.mock("@/contexts/ChatterContext", () => { const v = () => ({ chatter: session.chatter }); return { useChatter: v, useOptionalChatter: v }; });
 // The Shift schedule reads the week start from the Applied settings (spec phase-04, story 20).
 vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => ({ accountId: null }) }));
 

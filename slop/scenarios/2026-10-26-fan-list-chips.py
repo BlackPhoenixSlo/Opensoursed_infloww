@@ -22,8 +22,10 @@ exactly the owed rows list and the owe dot marks exactly the read-owed ones
 moves the menu's check mark to it and puts the unread rows first; the choice is
 in localStorage and survives a reload; the pencil shows only for one Creator
 with an OF list, opens the folder picker, and a pin there is one write that
-adds the list's chip; the filter row keeps one line at the 400px pane; no
-console error and no 5xx in the browser session.
+adds the list's chip; the filter row keeps one line at the 400px pane; a Fan's
+name typed fast into the search box (one Creator) is one search for the box's
+text, and the rows are its matches; no console error and no 5xx in the browser
+session.
 
 Bypasses, declared:
 - OF's /chats (GET /api/of/v2/chats) is answered in the browser from the
@@ -33,6 +35,9 @@ Bypasses, declared:
   answers three unpinned lists for the first Creator (none for the others), and
   PATCH /api/of/v2/lists/{id}/pin-chat is recorded and flips the list's
   `isPinnedToChat`, so the picker's next read shows it;
+- the search is counted at the browser's wire, where /chats is answered: each
+  is a request the app sends the relay (its OF search is not run). The typing
+  pace (SEARCH_KEY_MS) is a guess at a fast typist;
 - every other /api/of/* read stays held (actors/ui.py), so spend, tipsEnabled
   ("Unread with tips") and the profile reads are absent;
 - console lines for requests the harness itself aborts (off-host URLs) are not
@@ -62,6 +67,7 @@ CHIPS = ["All", "Owe reply", "Pinned", "Unread", "With Tips", "Priority"]
 PINNED = "VIP whales"
 PIN_LISTS = "Pin lists as chips"
 PLUS = re.compile(r" extras$")  # "<brand> extras", the overflow trigger's name
+SEARCH_KEY_MS = 100  # the gap between keys of a fast typist (a guess: ~120 words a minute)
 
 C_ORDER = "chips on screen: All, Owe reply, Pinned, Unread, With Tips, the pinned lists, Priority"
 C_NO_PLUS = 'no "+" Extras overflow and no "✎ Lists" chip in the Fan List (All Models and one Creator with lists)'
@@ -80,8 +86,9 @@ C_PHONE_PICK = "on a 390px phone, picking Amount spent in the sort menu names th
 C_MENU_PLACE = "the sort menu opens inside the Fan List pane, under the sort button (All Models and one Creator)"
 C_CONSOLE = "no console error in the browser session"
 C_5XX = "no 5xx from the app or relay in the browser session (OF's /api/of/* is faked or held)"
+C_SEARCH = "a Fan's name typed fast is one search, for the box's text, and the rows are its matches (one Creator)"
 UI_CHECKS = (C_ORDER, C_NO_PLUS, C_UNREAD, C_OWE, C_OWE_ROWS, C_DOTS, C_SORT, C_SORT_STORED, C_PENCIL, C_PIN,
-             C_ONE_LINE, C_MENU_PLACE, C_MENU_ORDER, C_PHONE_PICK, C_CONSOLE, C_5XX)
+             C_ONE_LINE, C_MENU_PLACE, C_MENU_ORDER, C_PHONE_PICK, C_SEARCH, C_CONSOLE, C_5XX)
 
 
 async def run(ctx) -> None:
@@ -417,6 +424,37 @@ def _console_errors(ctx, aborted: list[str]) -> list[dict]:
             and not (r["text"].startswith("Failed to load resource") and r.get("at", "").rsplit(":", 2)[0] in off)]
 
 
+async def _search(ctx, page, served: list[str], view, creator, shots: dict) -> dict:
+    """The owner opens the search box on one Creator and types a Fan's name as a
+    fast typist does; the /chats requests that carry a `query` are the searches."""
+    rows = view[creator["id"]]
+    name = next(r["withUser"]["name"] for r in rows if r["withUser"].get("name"))
+    want = sorted(r["withUser"]["username"] for r in rows if name.lower() in (r["withUser"].get("name") or "").lower())
+    start = len(served)
+    await page.get_by_role("group", name="Fan List header").get_by_role("button", name="Search").click()
+    box = page.get_by_placeholder("Search…")
+    t0 = asyncio.get_running_loop().time()
+    await box.press_sequentially(name, delay=SEARCH_KEY_MS)
+    typed_s = asyncio.get_running_loop().time() - t0
+    shots["p"] = await ui.shot(ctx, page, "p-search-name-typed")
+    settled = True
+    try:
+        await page.wait_for_function("n => document.querySelectorAll('[data-chat-row]').length === n",
+                                     arg=len(want), timeout=15_000)
+    except Exception:  # noqa: BLE001 — judged below
+        settled = False
+    await page.wait_for_timeout(1500)  # a late search would land here
+    handles = sorted(h or "" for h in await _row_handles(page))
+    shots["q"] = await ui.shot(ctx, page, "q-search-settled")
+    sent = [{k: v[0] for k, v in parse_qs(urlsplit(u).query).items()} for u in served[start:]]
+    searches = [q["query"] for q in sent if q.get("query")]
+    await page.keyboard.press("Escape")
+    out = {"typed": name, "keys": len(name), "typed_s": round(typed_s, 2), "searches": searches,
+           "rows": handles, "want": want, "settled": settled}
+    ctx.check(C_SEARCH, searches == [name] and handles == want and settled, **out)
+    return out
+
+
 async def _screens(ctx, view, creators) -> None:
     c0, c1 = creators[0], creators[1]
     lists, pins = _lists_fixture(c0["id"])
@@ -569,10 +607,11 @@ async def _screens(ctx, view, creators) -> None:
         want_pinned = CHIPS[:5] + [f"Folder {PINNED}"] + CHIPS[5:]
         ctx.check(C_ORDER, chips_all == CHIPS and chips_pinned == want_pinned,
                   all_models=chips_all, one_creator_pinned=chips_pinned, want=CHIPS, want_pinned=want_pinned)
+        search = await _search(ctx, page, served, view, c1, shots)
         ctx.metric("ui", {"chats_reads_answered": len(served), "loaded": lt, "owe_badge": owe_off, "owe_rows": n_rows,
                           "owe_dots": dots_on, "sort": look, "sort_menu": marks, "stored_sort": stored,
                           "pin_writes": pins, "filter_row_all_models": lines_all,
-                          "filter_row_one_creator": lines_one})
+                          "filter_row_one_creator": lines_one, "search": search})
         aborted += page.slop["offhost_aborted"]
         statuses += page.slop["statuses"]
 

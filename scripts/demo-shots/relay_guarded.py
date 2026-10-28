@@ -128,6 +128,10 @@ _import_legacy.SESSIONS_DIR = _accounts.SESSIONS_DIR
 _import_legacy.ACCOUNTS_DIR = _accounts.ACCOUNTS_DIR
 _import_legacy.ACTIVE_FILE = _accounts.ACTIVE_FILE
 _import_legacy.PROXIES_FILE = TMP / "proxies.json"
+# The proxy registry itself (service/proxies.json) the same file: a proxy added through
+# /admin/proxies is written there, and a checkout's real proxies never reach a client.
+import proxies as _proxies  # noqa: E402
+_proxies.REGISTRY_PATH = _import_legacy.PROXIES_FILE
 
 import _run_ui_safe  # noqa: E402,F401  (sets CHATTERLY_TEST_MODE, neuters loops)
 import uvicorn  # noqa: E402

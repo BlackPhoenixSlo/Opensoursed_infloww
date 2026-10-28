@@ -20,7 +20,10 @@
  * before those settings answer.
  *
  * Total earnings and the channel tiles read one
- * `GET /admin/stats/revenue?from&to&group_by=kind`. Total sums every kind,
+ * `GET /admin/stats/revenue?from&to&group_by=kind`. That answer and the Applied
+ * settings are saved with the React Query snapshot (components/providers.tsx),
+ * keyed by the signed-in principal: a return visit paints the last Total at
+ * once, cut by the saved settings, and refreshes both. Total sums every kind,
  * `unknown` included; each channel sums the kinds `CHANNEL_KINDS` maps to it
  * (ticket 25), so the channels can sum to less than Total and nothing here
  * says they add up. The header is Agency-wide: it sends no `account_id` (and
@@ -61,6 +64,7 @@ import {
 import { dayIn, referralsTotal, useReferrals, type ReferralsResp } from "@/hooks/useReferrals";
 import type { PerEmployeeResp } from "@/hooks/useStats";
 import { useAppliedSettings } from "@/lib/appliedSettings";
+import { usePrincipalId } from "@/hooks/useEmployeeKey";
 import { periodWindow, type Period } from "@/lib/dateRange";
 import { fmtCents } from "@/lib/format";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
@@ -172,11 +176,14 @@ function TileIcon({ k }: { k: Channel }) {
   );
 }
 
-/** The Total earnings figure: the currency sign at 25px beside a 34px number (capture #42). */
-function Figure({ text }: { text: string }) {
+/** The Total earnings figure: the currency sign at 25px beside a 34px number (capture #42). `refreshing`: a figure
+ *  already shown (the saved one on a return visit) whose read is out again; ours, dimmed in place (no layout shift)
+ *  until the fresh answer lands. */
+function Figure({ text, refreshing = false }: { text: string; refreshing?: boolean }) {
   const sign = text.startsWith("$") ? "$" : "";
   return (
-    <span data-figure className="font-bold text-accent tabular-nums">
+    <span data-figure aria-busy={refreshing || undefined} title={refreshing ? "Refreshing…" : undefined}
+      className={cn("font-bold text-accent tabular-nums transition-opacity", refreshing && "opacity-60")}>
       <span className="text-[25px] leading-[15px]">{sign}</span>
       <span className="text-[34px] leading-[45px]">{text.slice(sign.length)}</span>
     </span>
@@ -401,9 +408,11 @@ const BASIS_OPTIONS = control("basis").labels.map((l) => ({ value: l.split(" ")[
 export default function DashboardHeader() {
   const { from, to, ready, reportTz } = useDashboardPeriod();
   const [basis, setBasis] = useState<Basis>(DEFAULT_BASIS);
+  const principalId = usePrincipalId();
 
   const revenue = useQuery<RevenueResp>({
-    queryKey: ["dashboard", "revenue-by-kind", from, to, basis],
+    // Saved with the snapshot (providers.tsx PERSIST_KEYS): the principal keeps one login's figure from another's.
+    queryKey: ["dashboard", "revenue-by-kind", principalId, from, to, basis],
     queryFn: () => {
       const qs = new URLSearchParams({ from, to, group_by: "kind" });
       if (basis === "Net") qs.set("include_net", "true");
@@ -470,7 +479,7 @@ export default function DashboardHeader() {
             {!ready || revenue.isPending ? (
               <span className="h-[45px] flex items-center"><Shimmer what={label("total")} className="h-[34px] w-32" /></span>
             ) : (
-              <Figure text={money(totalCents)} />
+              <Figure text={money(totalCents)} refreshing={revenue.isFetching} />
             )}
           </div>
           <div className="flex flex-col md:flex-row xl:flex-[3] min-w-0">

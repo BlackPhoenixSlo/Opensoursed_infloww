@@ -10,6 +10,12 @@
  * Agencies names one, so the scope is part of the query key. Every Blob tab
  * save invalidates `APPLIED_SETTINGS_KEY` (settingsBlob.ts), so a change shows
  * with no reload.
+ *
+ * The answer is saved with the React Query snapshot (components/providers.tsx),
+ * so a return visit cuts the Dashboard's days at once. Its key carries the
+ * signed-in principal (`usePrincipalId`), the snapshot's rule for every saved
+ * per-login answer: a stale tab of the previous login, which keeps saving,
+ * writes only under its own principal, never into this one's settings.
  */
 
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
@@ -19,6 +25,7 @@ import { isChatterOnly } from "@/lib/session";
 import { useOptionalChatter } from "@/contexts/ChatterContext";
 import { useScope } from "@/contexts/ScopeContext";
 import { useOptionalUser } from "@/contexts/UserContext";
+import { usePrincipalId } from "@/hooks/useEmployeeKey";
 import { zoneOffsetNow } from "@/lib/creatorClock";
 import { browserTimeZone, type WeekStart } from "@/lib/shifts";
 
@@ -47,10 +54,10 @@ export interface AppliedSettings {
 /** The query key prefix every Blob tab save invalidates. */
 export const APPLIED_SETTINGS_KEY = ["applied-settings"] as const;
 
-/** The read for the Creator `accountId` (null: none in scope). */
-function appliedQuery(accountId: string | null) {
+/** The read for the Creator `accountId` (null: none in scope), as the principal `principalId` sees it. */
+function appliedQuery(principalId: string, accountId: string | null) {
   return {
-    queryKey: [...APPLIED_SETTINGS_KEY, accountId],
+    queryKey: [...APPLIED_SETTINGS_KEY, principalId, accountId],
     queryFn: () => relay.get<AppliedSettings>("/admin/settings/applied", { accountId }),
     staleTime: 60_000,
     refetchOnWindowFocus: false,
@@ -62,7 +69,7 @@ function appliedQuery(accountId: string | null) {
 
 export function useAppliedSettings() {
   const { accountId } = useScope();
-  return useQuery<AppliedSettings>(appliedQuery(accountId));
+  return useQuery<AppliedSettings>(appliedQuery(usePrincipalId(), accountId));
 }
 
 /** Whether this session may use AI translation in a chat with the Creator
@@ -74,7 +81,7 @@ export function useAppliedSettings() {
  *  and decides what `undefined` means. */
 export function useTranslationAllowed(accountId: string | null): boolean | undefined {
   const chatterOnly = isChatterOnly(useOptionalUser()?.user, useOptionalChatter()?.chatter);
-  const q = useQuery<AppliedSettings>({ ...appliedQuery(accountId), enabled: chatterOnly });
+  const q = useQuery<AppliedSettings>({ ...appliedQuery(usePrincipalId(), accountId), enabled: chatterOnly });
   if (!chatterOnly) return true;
   return q.data?.messaging.ai_translation;
 }
@@ -83,7 +90,7 @@ export function useTranslationAllowed(accountId: string | null): boolean | undef
  *  picks its own Creator reads it; null (the browser's) while loading, on
  *  error and when never saved. */
 export function useReportTimeZone(accountId: string | null): string | null {
-  return useQuery<AppliedSettings>(appliedQuery(accountId)).data?.preferences?.report_tz ?? null;
+  return useQuery<AppliedSettings>(appliedQuery(usePrincipalId(), accountId)).data?.preferences?.report_tz ?? null;
 }
 
 /** The Agency's time zone (Settings › Preferences "Time zone"), which the

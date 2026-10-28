@@ -153,6 +153,38 @@ async def main() -> None:
     assert await get_or_fetch("notifications", "accOther", (), 60, lambda: "LEAK") == "other", \
         "case11: leaked across accounts"
 
+    # ── Case 12: single-flight on failure too. Callers queued behind a fetch
+    #            that fails get ITS exception; none goes upstream after it
+    #            (a Creator behind a dead proxy: N readers, one failure). A
+    #            caller arriving after the failure fetches again (case 6).
+    calls = 0
+
+    async def slow_boom():
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.05)
+        raise RuntimeError(f"boom {calls}")
+
+    got = await asyncio.gather(*[
+        get_or_fetch("ns12", "acc1", (), 60, slow_boom) for _ in range(5)
+    ], return_exceptions=True)
+    assert calls == 1, f"case12: queued callers went upstream again, calls={calls}"
+    assert [str(e) for e in got] == ["boom 1"] * 5, f"case12: {got}"
+    assert len({id(e) for e in got}) == 5 and all(type(e) is RuntimeError for e in got), \
+        "case12: each waiter raises its own copy of the failure (no shared traceback)"
+    from fastapi import HTTPException
+    from service import relay_cache as _rc0
+    h = _rc0._fresh(HTTPException(status_code=502, detail={"upstream_status": "proxy_unreachable"}))
+    assert (type(h), h.status_code, h.detail) == (HTTPException, 502, {"upstream_status": "proxy_unreachable"}), h
+    try:
+        await get_or_fetch("ns12", "acc1", (), 60, slow_boom)
+    except RuntimeError as e:
+        assert str(e) == "boom 2", f"case12: a later caller got the old failure: {e}"
+    assert calls == 2, f"case12: a later caller did not fetch, calls={calls}"
+    assert await get_or_fetch("ns12", "acc1", (), 60, lambda: "ok") == "ok", "case12: no recovery"
+    from service import relay_cache as _rc
+    assert ("ns12", "acc1", ()) not in _rc._failed, "case12: a success left the failure behind"
+
     print("[relay_cache] all cases passed")
 
 

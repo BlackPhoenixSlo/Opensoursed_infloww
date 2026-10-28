@@ -55,7 +55,7 @@ import proxy_health  # noqa: E402  # proxy up/down + trace probe (2.14)
 import live_rev  # noqa: E402
 import sign_rules  # noqa: E402  # one sign-rule refresh for every account (2.17)
 import secrets_store  # noqa: E402  # UI-writable key store (Setup → Keys)
-from of_client import DEFAULT_TIMEOUT_S, IMPERSONATE, OF_CDN_SUFFIXES, OFClient, OFAPIError, OFDeactivatedError, OFDeniedError  # noqa: E402
+from of_client import DEFAULT_TIMEOUT_S, IMPERSONATE, INTERACTIVE_READ, OF_CDN_SUFFIXES, OFClient, OFAPIError, OFDeactivatedError, OFDeniedError  # noqa: E402
 import client_pool  # noqa: E402 — the relay's one OFClient pool
 from curl_cffi import requests as curl_requests  # noqa: E402  # proxy/network error types
 
@@ -2251,8 +2251,11 @@ def _proxy(call):
 
     Also serializes the upstream call through the per-account priority
     lane, so a bulk background enrichment can't starve a user-initiated
-    fetch (vault open, chat click)."""
+    fetch (vault open, chat click). A request that is not `X-Priority:
+    background` marks its reads interactive (of_client.INTERACTIVE_READ):
+    a dead proxy fails them after 2 tries, not 5; writes keep the 5."""
     aid: str | None = None
+    token = None
     try:
         req = _request_ctx.get()
         if req is not None:
@@ -2260,6 +2263,9 @@ def _proxy(call):
                 aid = _resolve_account_id(req)
             except HTTPException:
                 aid = None
+            # Someone is waiting on this request: its reads fail fast on a dead proxy.
+            if _current_priority() != "background":
+                token = INTERACTIVE_READ.set(True)
         with _priority_lane(aid):
             return call()
     except OFDeactivatedError:
@@ -2306,6 +2312,9 @@ def _proxy(call):
             status_code=502,
             detail={"upstream_status": "network", "upstream_body": _pool_safe_error(aid, str(e)[:500])},
         )
+    finally:
+        if token is not None:
+            INTERACTIVE_READ.reset(token)
 
 
 def _account_ttl(namespace: str, ttl_seconds: float):
@@ -9661,7 +9670,7 @@ async def admin_accounts_list(response: Response) -> dict[str, Any]:
     except Exception:
         log.exception("dead_session_map failed")
         dead, off = {}, set()
-    # The Creator's proxy failed DOWN_AFTER calls in a row (proxy_health).
+    # The Creator's proxy is bad: DOWN_AFTER counted failures in a row and a failed confirm probe (proxy_health).
     down = proxy_health.down_labels()
     for a in all_accounts:
         health = dead.get(a.get("id"), account_health.NO_DEAD_SESSION)
@@ -10067,12 +10076,15 @@ def admin_proxies_list() -> dict[str, Any]:
     by_aid = {a["id"]: a for a in accounts}
     enriched = []
     pool_ids: list[str] = []
-    pool_size = 0
+    pool_size = pool_bad = 0
+    down = proxy_health.down_labels()
     for p in proxies_list:
         if proxy_registry.is_pool(p):
-            # Never listed: only the count and the viewer's accounts on it.
+            # Never listed: only the count, how many are bad (proxy_health), and
+            # the viewer's accounts on one (`proxy_down` on /admin/accounts says which are down).
             pool_size += 1
             pool_ids += [aid for aid in proxy_registry._ids_on(p) if aid in by_aid]
+            pool_bad += p.get("label") in down
             continue
         if user is not None:
             pu = p.get("user_id")
@@ -10100,7 +10112,7 @@ def admin_proxies_list() -> dict[str, Any]:
         "proxies": enriched,
         # Inflowwww proxy pool: how many the relay holds, and which of the
         # viewer's accounts are on one. Hosts and credentials stay here.
-        "pool": {"size": pool_size, "account_ids": pool_ids},
+        "pool": {"size": pool_size, "account_ids": pool_ids, "bad": pool_bad},
         # Slim account list shaped the way the picker wants it.
         "accounts": [{
             "id": a["id"], "nickname": a.get("nickname"),
@@ -10285,12 +10297,14 @@ class _PoolBody(BaseModel):
 # Its own prefix, so no custom proxy label can shadow these routes.
 @app.post("/admin/proxy-pool/assign")
 def admin_proxies_pool_assign(body: _PoolBody = Body(...)) -> dict[str, Any]:
-    """Put an account on an Inflowwww proxy: kept if it already holds one,
-    else one picked at random (proxies.assign_pool). The answer names no
-    host, label or credentials. 409 when the env pool is empty."""
+    """Put an account on an Inflowwww proxy: kept if it already holds one
+    unless its failover is due, else the least-used one that answers a probe,
+    or the least-used not bad when none answers, or the least-used when every
+    pool proxy is bad (proxy_health.assign_pool). The answer names no host,
+    label or credentials. 409 only when the env pool is empty (nothing bound)."""
     assert_account_owned(body.account_id)
     try:
-        _, kept = proxy_registry.assign_pool(body.account_id)
+        _, kept = proxy_health.assign_pool(body.account_id)
     except LookupError as e:
         raise HTTPException(status_code=409, detail=str(e))
     if not kept:

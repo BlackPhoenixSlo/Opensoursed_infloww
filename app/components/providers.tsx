@@ -82,34 +82,47 @@ const PERSIST_THROTTLE_MS = 4_000;
 // the pop-out's, the ones just switched between.
 const PERSIST_MAX_THREADS = 30;
 
-// Keys we want shared across tabs. Anything not on this list stays
-// in-memory only.
-const PERSIST_PREFIXES = new Set([
-  "chats",          // inbox sidebar — biggest popout win
-  "chat-folders",   // pinned-folder chip strip — avoids 1s lag on tab switch
-  "messages",       // per-chat thread; popout reuses the inbox's loaded pages
-  "of-me",          // model account profile — small, reused everywhere
-  "of-user",        // single-fan profile lookup (popout header)
-  "vault-lists",    // folders for the Add-to-lists picker (kills 2s lag)
-  "vault-history",  // per-fan sent/purchased history for picker badges
-  "wall-media",     // ids posted on the wall — blue ring in vault picker
-  "templates",      // composer's quick-reply picker
-  "saved-replies",  // composer's saved replies
-  "fan",            // local fan-row drawer data
-  "fan-spend",      // bulk lifetime-spend per chat row (24h staleTime)
-  "fan-chat-media", // FanDrawer Sales + Unsold PPV galleries — slow OF
+// Keys we want shared across tabs: a query is saved when its key starts with
+// one of these segment lists. Anything not on this list stays in-memory only.
+// Rule for an answer that depends on who is signed in: its key carries the
+// principal (`usePrincipalId`; "accounts" files it by user id), so a stale tab
+// of the previous login, which keeps saving on its throttle, can only write
+// under its own principal and never into the next login's entry. "accounts",
+// "applied-settings" and "dashboard/revenue-by-kind" follow it; the older
+// per-Creator entries rely on wipeIdentityStorage alone (login, logout, an
+// identity change).
+const PERSIST_KEYS: ReadonlyArray<readonly string[]> = [
+  ["chats"],          // inbox sidebar — biggest popout win
+  ["chat-folders"],   // pinned-folder chip strip — avoids 1s lag on tab switch
+  ["messages"],       // per-chat thread; popout reuses the inbox's loaded pages
+  ["of-me"],          // model account profile — small, reused everywhere
+  ["of-user"],        // single-fan profile lookup (popout header)
+  ["vault-lists"],    // folders for the Add-to-lists picker (kills 2s lag)
+  ["vault-history"],  // per-fan sent/purchased history for picker badges
+  ["wall-media"],     // ids posted on the wall — blue ring in vault picker
+  ["templates"],      // composer's quick-reply picker
+  ["saved-replies"],  // composer's saved replies
+  ["fan"],            // local fan-row drawer data
+  ["fan-spend"],      // bulk lifetime-spend per chat row (24h staleTime)
+  ["fan-chat-media"], // FanDrawer Sales + Unsold PPV galleries — slow OF
                     //   call (3-9s), 30min SWR, 24h gcTime. Surviving
                     //   tab reload / popout open avoids 6s of blank
                     //   "Sales" section every time the drawer re-mounts.
-  "last-purchases", // payouts transactions feed — staleTime Infinity
-  "employees",      // employee picker
-  "accounts",       // active-models sidebar
-  "chatter",        // chatter principal — me / owners / accounts
-]);
+  ["last-purchases"], // payouts transactions feed — staleTime Infinity
+  ["employees"],      // employee picker
+  ["accounts"],       // active-models sidebar
+  ["chatter"],        // chatter principal — me / owners / accounts
+  ["applied-settings"], // the Agency's applied settings (report zone, week
+                    //   start, permissions), keyed by principal. A return
+                    //   visit cuts the Dashboard's days without waiting.
+  ["dashboard", "revenue-by-kind"], // the Dashboard's Total earnings (a DB
+                    //   sum, keyed by principal): a return visit paints the
+                    //   last Total at once, then refreshes it. Its siblings
+                    //   under "dashboard" stay in memory.
+];
 
-function shouldPersistKey(queryKey: readonly unknown[]): boolean {
-  const head = queryKey[0];
-  return typeof head === "string" && PERSIST_PREFIXES.has(head);
+export function shouldPersistKey(queryKey: readonly unknown[]): boolean {
+  return PERSIST_KEYS.some((p) => p.every((seg, i) => queryKey[i] === seg));
 }
 
 export default function Providers({ children }: { children: React.ReactNode }) {

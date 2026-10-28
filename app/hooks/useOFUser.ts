@@ -317,7 +317,7 @@ export function useOFUser(accountId: string, fanId: FanId) {
     ...ofUserQuery<OFUser>(accountId, fanId),
     enabled: !!accountId && !!fanId,
     // Policy + its invalidation sources are documented in the header above.
-    // Also persisted across reloads ([providers.tsx] PERSIST_PREFIXES
+    // Also persisted across reloads ([providers.tsx] PERSIST_KEYS
     // "of-user"), so the 5 minutes survive a refresh.
     //
     // Audited before relaxing: no send path reads this. The drawer renders

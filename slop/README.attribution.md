@@ -4,7 +4,7 @@ Who Employee reports and Sales records credit for a fan's TIP and PPV, in the sl
 and its rules are in `README.md`; this file is only what this flow adds. Its files: `lib/attribution_relay.py`
 (OnlyFans' payouts ledger; module docstring), `lib/attribution_faults.py` (faults and the check names they target),
 `seed/sales_touches.py`, `scenarios/2026-10-27-sales-attribution-tips-ppv.py` (its docstring is the spec).
-The scenario's `Sender.reply(price=)` sends a PPV through the real send route.
+`actors/focus.Chatter.reply(price=)` sends a PPV through the real send route.
 
 ## Layout
 

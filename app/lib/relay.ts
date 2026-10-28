@@ -335,6 +335,24 @@ export interface AccountMeta {
   /** False while the owner has the Creator deactivated (Creators › ⋮ › Deactivate): its pollers and automations
    *  stop, and the switcher and inbox drop it, while reports, grants and the Creators page keep its row. */
   is_active: boolean;
+  /** True while the proxy this Creator leaves through is bad (service/proxy_health.py: DOWN_AFTER failed
+   *  full-retry calls in a row and a failed confirm probe; rechecked with backoff). A Creator on a bad Inflowwww proxy is
+   *  moved to a healthy one after two failed rechecks (docs/adr/0030); one on a custom proxy, or with no
+   *  standby, stays and wears this flag. */
+  proxy_down: boolean;
+}
+
+/** `health` on a custom proxy (service/proxy_health.py `snapshot`). `state`: healthy | suspect (failed calls
+ *  in a row, under the threshold) | bad (confirmed by a probe; rechecked with backoff) | rechecking (a recheck
+ *  probe in flight); the proxy is down in the last two, read from `state` alone. Times are unix seconds. */
+export interface ProxyHealth {
+  state: "healthy" | "suspect" | "bad" | "rechecking";
+  errors: number;
+  last_error?: string | null;
+  last_error_at?: number | null;
+  bad_since?: number | null;
+  next_recheck_at?: number | null;
+  probe?: { ok?: boolean; ip?: string | null; geo?: string | null; colo?: string | null; ttfb_ms?: number | null; error?: string | null };
 }
 
 export interface ProxyMeta {
@@ -347,6 +365,7 @@ export interface ProxyMeta {
   notes?: string;
   verified_ip?: string | null;
   verified_at?: string | null;
+  health?: ProxyHealth;
   /** Canonical: many accounts may share one proxy. Sourced from
    *  `proxies.json :: assigned_account_ids`. The UI flags >1 with a
    *  shared-egress warning because OF correlates same-IP behaviour. */

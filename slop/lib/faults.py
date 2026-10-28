@@ -377,6 +377,82 @@ def _relay_cache_no_single_flight() -> None:
     relay_cache._get_or_make_lock = own_lock
 
 
+def _interactive_reads_full_proxy_retry() -> None:
+    """The fail-fast read policy reverted (as before the fail-fast interactive reads): a read
+    someone waits on retries a dead proxy 5 times with 0.4-3.2 s pauses, as background
+    work does (bug class: a person's Fan List / bell / thread waits ~7 s for a 502).
+    Counting is left as it is (interactive-failures-counted covers that)."""
+    import of_client
+    of_client.INTERACTIVE_RETRY = of_client.FULL_RETRY._replace(counts=of_client.INTERACTIVE_RETRY.counts)
+
+
+def _interactive_failures_counted() -> None:
+    """An interactive read's final proxy failure counts toward proxy_health's DOWN_AFTER
+    again (as before the proxy failover's review): it gives up inside ~1 s, so three of
+    them land inside one CONNECT-403 blip (bug class: a blip that self-heals marks the
+    proxy bad, badges its Creators and keeps new logins off it)."""
+    import of_client
+    of_client.INTERACTIVE_RETRY = of_client.INTERACTIVE_RETRY._replace(counts=True)
+
+
+def _relay_cache_failure_not_shared() -> None:
+    """relay_cache's single-flight on success only (as before the fail-fast interactive reads):
+    nothing is kept of a failed fetch, so each caller queued on the key's lock goes
+    upstream again after it, one after another (bug class: N readers of a Creator behind
+    a dead proxy wait N failures in a row)."""
+    import relay_cache
+
+    class _Forgets(dict):
+        def __setitem__(self, _k, _v) -> None:
+            pass
+
+    relay_cache._failed = _Forgets()
+
+def _proxy_failover_never_moves() -> None:
+    """The failover step gone (as before the proxy failover): a pool proxy confirmed bad
+    and rechecked is surfaced, but its Creators are never moved to a healthy pool proxy
+    (bug class: every read and send of theirs fails until the proxy answers again)."""
+    import proxy_health
+
+    def no_move(label: str) -> list:
+        proxy_health.log.warning("slop fault proxy-failover-never-moves: %s not failed over", label)
+        return []
+    proxy_health._failover = no_move
+
+
+def _pool_assign_drops_unanswered_login() -> None:
+    """The attach as review round 1 left it: a Creator on no pool proxy for whom no pick
+    answers its probe gets a LookupError (409; a Browserbase login says "nothing was
+    saved") and is bound to nothing (bug class: a finished login thrown away on a
+    pool-wide probe blip)."""
+    import proxies
+
+    real = proxies.assign_pool
+
+    def assign_pool(account_id, *, bad, due, geo, verify, rng=None):
+        answers: list[bool] = []
+
+        def counted(p):
+            answers.append(bool(verify(p)))
+            return answers[-1]
+        was_on_pool = proxies.is_pool(proxies.get_for_account(account_id))
+        out = real(account_id, bad=bad, due=due, geo=geo, verify=counted, rng=rng)
+        if not was_on_pool and not out[1] and answers and not any(answers):
+            proxies.unbind_pool(account_id)
+            raise LookupError("slop fault pool-assign-drops-unanswered-login: no Inflowwww proxy answers")
+        return out
+    proxies.assign_pool = assign_pool
+
+
+def _proxy_recheck_never_runs() -> None:
+    """No recheck of a bad proxy (as before the proxy failover): once confirmed bad it stays
+    bad until a call through it happens to answer; with its Creators moved away nobody calls
+    through it, so it never comes back as a standby (bug class: the pool shrinks for good)."""
+    import proxy_health
+    proxy_health._recheck_loop = lambda label: proxy_health.log.warning(
+        "slop fault proxy-recheck-never-runs: %s not rechecked", label)
+
+
 def _otp_state_not_session_dead() -> None:
     """The classifier's code-101 branch reverted (as before fix/otp-state-session-health):
     OF's 2FA demand is not a dead session, so nothing flags, notifies or pauses the account."""
@@ -413,6 +489,61 @@ def _session_dead_claim_not_atomic() -> None:
         return newly
 
     account_health.mark_session_dead = mark_session_dead
+
+
+# The Dashboard's Total earnings chained behind OnlyFans' live reads (bug class: a figure the
+# ledger answers in ~70 ms made to wait on per-Creator OF reads through the proxies): the
+# revenue read's answer is held until no /api/of/ fetch is in flight, after at least one began.
+_DASHBOARD_TOTAL_WAITS_OF_READS = """(() => {
+  const real = window.fetch; let inflight = 0, seen = 0;
+  // Until the page's OF reads have started and all ended (20 s at most, so a page with none cannot hang).
+  const quiet = () => new Promise((ok) => { const t0 = Date.now();
+    const t = () => ((seen > 0 && inflight === 0) || Date.now() - t0 > 20000) ? ok() : setTimeout(t, 50); t(); });
+  window.fetch = function (input, init) {
+    const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+    if (url.includes('/api/of/')) {
+      inflight++; seen++;
+      const p = real.apply(this, arguments);
+      p.then(() => inflight--, () => inflight--);
+      return p;
+    }
+    if (url.includes('/admin/stats/revenue')) return real.apply(this, arguments).then(async (r) => { await quiet(); return r; });
+    return real.apply(this, arguments);
+  };
+})();"""
+
+
+# app/components/providers.tsx: the React Query snapshot as before 2026-10-28, without the Dashboard's revenue read
+# and the Applied settings (`applied-settings`, `dashboard/revenue-by-kind`): every write to the snapshot store drops
+# them, so a return visit cuts its days and reads its Total over the network again.
+_DASHBOARD_TOTAL_NOT_SAVED = """(() => {
+  const put = IDBObjectStore.prototype.put;
+  const fixed = (k) => Array.isArray(k) && (k[0] === 'applied-settings' || (k[0] === 'dashboard' && k[1] === 'revenue-by-kind'));
+  IDBObjectStore.prototype.put = function (value, key) {
+    if (this.name === 'snapshot' && typeof value === 'string') {
+      try {
+        const c = JSON.parse(value), qs = c && c.clientState && c.clientState.queries;
+        if (Array.isArray(qs)) { c.clientState.queries = qs.filter((q) => !fixed(q.queryKey)); value = JSON.stringify(c); }
+      } catch (e) { /* not the snapshot's JSON: written as is */ }
+    }
+    return put.call(this, value, key);
+  };
+})();"""
+
+# app/components/stats/PerModelKpiGrid.tsx: the Per-model cards blind to which Creators have a session, as before
+# 2026-10-28. `GET /admin/accounts` reaches the page as a 503 (the request itself still goes out and answers), so the
+# cards take their failed-list path and send every Creator's OnlyFans reads, the session-less one's included (404
+# Unknown account_id), with no "Not connected" label.
+_DASHBOARD_OFFLINE_CREATOR_READS_OF = """(() => {
+  const real = window.fetch;
+  window.fetch = function (input, init) {
+    const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+    const p = real.apply(this, arguments);
+    if (new URL(url, location.href).pathname !== '/admin/accounts') return p;
+    return p.then(() => new Response(JSON.stringify({ detail: 'slop fault: accounts unavailable' }),
+      { status: 503, headers: { 'Content-Type': 'application/json' } }));
+  };
+})();"""
 
 
 # The Fan List as before ADR-0003's 2026-10-26 amendment, in the two ways its
@@ -607,6 +738,36 @@ FAULTS: dict[str, Fault] = {
     "relay-cache-no-single-flight": Fault(_relay_cache_no_single_flight, (
         "cold concurrent burst: OnlyFans saw exactly one call per Creator per read (single-flight)",
     )),
+    # slop/run dead-proxy --break (the scenario's FAULT)
+    "interactive-reads-full-proxy-retry": Fault(_interactive_reads_full_proxy_retry, (
+        "dead proxy: interactive reads answer within budget",
+        "dead proxy: each upstream call took the retries its priority gets (interactive 2, background 5), "
+        "and the proxy saw exactly those",
+    )),
+    # slop/run dead-proxy --break --fault=interactive-failures-counted
+    "interactive-failures-counted": Fault(_interactive_failures_counted, (
+        "dead proxy: a read someone waits on never counts toward bad; the background reads' full-policy "
+        "failures do, and no confirm runs inside the blip",
+    )),
+    # slop/run 2026-10-28-dead-proxy-interactive-reads --scale=medium --users=200 --break --fault=relay-cache-failure-not-shared
+    "relay-cache-failure-not-shared": Fault(_relay_cache_failure_not_shared, (
+        "dead proxy: interactive reads answer within budget",
+    )),
+    # slop/run proxy-failover --break (the scenario's FAULT)
+    "proxy-failover-never-moves": Fault(_proxy_failover_never_moves, (
+        "dead pool proxy: its Creators are on a healthy pool proxy within budget, reads and sends answer again",
+    )),
+    # slop/run proxy-failover --break --fault=pool-assign-drops-unanswered-login
+    "pool-assign-drops-unanswered-login": Fault(_pool_assign_drops_unanswered_login, (
+        "login during a pool-wide outage: no probe answers, yet the session is saved and bound to a pool "
+        "proxy within budget (a login is never lost; every-proxy-bad: test_proxy_health)",
+    )),
+    # slop/run proxy-failover --break --fault=proxy-recheck-never-runs
+    "proxy-recheck-never-runs": Fault(_proxy_recheck_never_runs, (
+        "dead pool proxy: its Creators are on a healthy pool proxy within budget, reads and sends answer again",
+        "revived proxy: the recheck brings it back within budget and the next new Creator lands on the least-used "
+        "proxy (the revived one, once its Creators moved) and reads through it",
+    )),
     # slop/run session-health-otp --break (the scenario's FAULT)
     "otp-state-not-session-dead": Fault(_otp_state_not_session_dead, (
         "account_health flags exactly the 2FA Creators, reason otp_required",
@@ -661,6 +822,29 @@ FAULTS: dict[str, Fault] = {
         "the sort menu lists Sort by, then Newest first, Amount spent, Spend + unread on top, Spend + recency,"
         " with no divider (1470px and a 390px phone)",
     ), browser_js=_FAN_LIST_OWE_REPLY_LAST_SORT_NEVER_ACTIVE),
+    # slop/run 2026-10-26-fan-list-chips --break --fault=fan-search-every-keystroke (client side)
+    # app/components/chat/FanList.tsx: the search box's text is sent at once, as before 2026-10-28,
+    # so a name typed fast is a search per key; the rows still settle on the whole name's matches.
+    "fan-search-every-keystroke": Fault(None, (
+        "a Fan's name typed fast is one search, for the box's text, and the rows are its matches (one Creator)",
+    ), browser=((r",\s*SEARCH_DEBOUNCE_MS,", ", 0,"),)),  # useTrailingDebounce's delay; `= 250` is its definition
+    # slop/run 2026-10-28-dashboard-load --break (the scenario's FAULT). Since 2026-10-28 a return visit paints the
+    # saved Total before any answer, so only the first visits wait: the budgets (return visits) stay green.
+    "dashboard-total-waits-of-reads": Fault(None, (
+        "Total earnings painted before the slow-proxy Creator's OnlyFans reads ended (it never waits on OF)",
+    ), browser_js=_DASHBOARD_TOTAL_WAITS_OF_READS),
+    # slop/run 2026-10-28-dashboard-load --break --fault=dashboard-total-not-saved
+    "dashboard-total-not-saved": Fault(None, (
+        "a visit with the saved query cache painted the saved Total before its revenue read answered, "
+        "the figure the settled page shows",
+        "lte: Total earnings painted within BUDGET_MS on a return visit",
+        "slow4g: Total earnings painted within BUDGET_MS on a return visit",
+    ), browser_js=_DASHBOARD_TOTAL_NOT_SAVED),
+    # slop/run 2026-10-28-dashboard-load --break --fault=dashboard-offline-creator-reads-of
+    "dashboard-offline-creator-reads-of": Fault(None, (
+        "the session-less Creator's card sent no OnlyFans request and shows 'Not connected'; "
+        "every live Creator's card read OF",
+    ), browser_js=_DASHBOARD_OFFLINE_CREATOR_READS_OF),
     "restore-stale-point": Fault(None, (
         "RPO: every DM box A took more than 2s before the kill is in the restored DB",
         "counts match per shard after recovery: restored + taken on box B, nothing else",

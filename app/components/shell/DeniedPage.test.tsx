@@ -15,8 +15,8 @@ let pathname = "/";
 let applied: { data?: AppliedSettings; isLoading?: boolean } = {};
 let user: { username: string } | null = null;
 vi.mock("next/navigation", () => ({ usePathname: () => pathname, useSearchParams: () => new URLSearchParams() }));
-vi.mock("@/contexts/UserContext", () => ({ useUser: () => ({ user, logout: vi.fn() }) }));
-vi.mock("@/contexts/ChatterContext", () => ({ useChatter: () => ({ chatter: { username: "fixture-chatter" } }) }));
+vi.mock("@/contexts/UserContext", () => { const v = () => ({ user, logout: vi.fn() }); return { useUser: v, useOptionalUser: v }; });
+vi.mock("@/contexts/ChatterContext", () => { const v = () => ({ chatter: { username: "fixture-chatter" } }); return { useChatter: v, useOptionalChatter: v }; });
 vi.mock("@/components/shell/TopBar", () => ({ default: () => null }));
 // The platform selector and gate read accounts and roster counts (PlatformSwitcher.test covers them).
 vi.mock("@/components/shell/PlatformSwitcher", () => ({

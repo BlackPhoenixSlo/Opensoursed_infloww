@@ -287,6 +287,25 @@ describe("AccountsTable — deactivate / activate a creator", () => {
     await waitFor(() => expect(relayPost).toHaveBeenCalledWith("/admin/accounts/acct-off/active", { active: true }));
   });
 
+  it("badges a Creator whose proxy the relay holds bad", async () => {
+    relayGet.mockImplementation((path: string) => {
+      if (path === "/admin/accounts") {
+        return Promise.resolve({
+          accounts: [
+            { id: "acct-on", nickname: "Onna", has_session: true, is_active: true, proxy_down: true },
+            { id: "acct-ok", nickname: "Okko", has_session: true, is_active: true, proxy_down: false },
+          ],
+          active_account_id: "acct-on",
+        });
+      }
+      if (path.startsWith("/health")) return Promise.resolve({ ok: true, accounts: [] });
+      return Promise.resolve({});
+    });
+    render(<AccountsTable />, { wrapper });
+    await screen.findAllByText("Onna");
+    expect(screen.getAllByText("proxy unreachable")).toHaveLength(1);
+  });
+
   it("filters on Account status", async () => {
     serve();
     render(<AccountsTable />, { wrapper });

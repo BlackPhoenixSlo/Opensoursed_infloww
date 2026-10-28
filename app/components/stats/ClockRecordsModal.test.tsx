@@ -10,9 +10,7 @@ import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/re
 
 import { jsonRes, renderWithProviders } from "@/test-utils";
 
-vi.mock("@/contexts/UserContext", () => ({
-  useUser: () => ({ user: { user_id: "owner-1", username: "owner" }, loading: false }),
-}));
+vi.mock("@/contexts/UserContext", () => { const v = () => ({ user: { user_id: "owner-1", username: "owner" }, loading: false }); return { useUser: v, useOptionalUser: v }; });
 vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => ({ accountId: null }) }));
 let storedTz: string | null;
 

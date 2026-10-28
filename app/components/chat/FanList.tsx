@@ -17,6 +17,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { chatRowKey, useChatList, listPaintKey } from "@/hooks/useChatList";
 import { useUnreadMessagesPrefetch } from "@/hooks/useUnreadMessagesPrefetch";
+import { useTrailingDebounce } from "@/hooks/useTrailingDebounce";
 import { prefetchChatMessages } from "@/hooks/useChatMessages";
 import { fetchAllVaultLists } from "@/hooks/useVaultMedia";
 import { ofUserNameKey, useOFUserNameMap, type OFUserName } from "@/hooks/useOFUser";
@@ -73,6 +74,11 @@ const SCROLL_CAP_STEP = 200;
 // the rest stay in the data (chip counts, Select all) and wait
 // behind a "Show N more" row at the end.
 export const ROW_RENDER_STEP = 200;
+// The search box is sent as OF's `query` once typing pauses this long: each
+// live search takes seconds (measured 6.8-8.3 s on a live deployment), so a name typed fast is
+// one search, not one per letter. 250 ms, as the PPV fan search, the GIF and
+// tag pickers and the in-thread search debounce.
+export const SEARCH_DEBOUNCE_MS = 250;
 
 if (typeof window !== "undefined" && !(window as unknown as { __chatlistBuildLogged?: boolean }).__chatlistBuildLogged) {
   console.info("[ChatList] build chats-scroll-cap-v6 (rt-row-bubble) loaded");
@@ -109,7 +115,10 @@ export function FanList({
   const creatorName = useAccountLabel(scope.kind === "model" ? scope.accountId : null);
   const qc = useQueryClient();
   const [active, setActive] = useState<ActiveChip>({ kind: "builtin", key: "all" });
-  const [query, setQuery] = useState("");
+  // `typed` is the search box; `query` is the search the list runs, `typed`
+  // trimmed once it rests SEARCH_DEBOUNCE_MS. Clearing the box applies at once.
+  const [typed, setTyped] = useState("");
+  const query = useTrailingDebounce(typed.trim(), SEARCH_DEBOUNCE_MS, (q) => !q);
   const [markingAll, setMarkingAll] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [splitInboxOpen, setSplitInboxOpen] = useState(false);
@@ -860,8 +869,8 @@ export function FanList({
         <FanListHeader
           title={scope.kind === "all" ? "All Models" : creatorName}
           creatorId={singleAcctId}
-          query={query}
-          onQueryChange={setQuery}
+          query={typed}
+          onQueryChange={setTyped}
           galleryFan={selected}
         />
         {actions}

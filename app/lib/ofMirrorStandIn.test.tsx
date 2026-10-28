@@ -12,8 +12,8 @@ import { relay } from "./relay";
 
 const router = { push: vi.fn(), replace: vi.fn() };
 vi.mock("next/navigation", () => ({ useRouter: () => router, useSearchParams: () => new URLSearchParams() }));
-vi.mock("@/contexts/UserContext", () => ({ useUser: () => ({ user: { user_id: "owner-1" } }) }));
-vi.mock("@/contexts/ChatterContext", () => ({ useChatter: () => ({ chatter: null }) }));
+vi.mock("@/contexts/UserContext", () => { const v = () => ({ user: { user_id: "owner-1" } }); return { useUser: v, useOptionalUser: v }; });
+vi.mock("@/contexts/ChatterContext", () => { const v = () => ({ chatter: null }); return { useChatter: v, useOptionalChatter: v }; });
 vi.mock("@/lib/events", () => ({ eventBus: { setScope: vi.fn(), on: () => () => {}, onStateChange: () => () => {} } }));
 
 const MODEL = "7";
