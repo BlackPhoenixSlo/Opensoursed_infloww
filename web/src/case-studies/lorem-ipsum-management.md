@@ -31,7 +31,7 @@ Self-hosting means the data lives on your server, so nobody else is backing it u
 
 Back up the files that the stack keeps on the host, next to the compose file. The `service/` ones are bind-mounted into the relay; `.env` is read by Compose:
 
-- `service/chatterly.db`: the SQLite store.
+- `service/data/chatterly.db`: the SQLite store.
 - `service/sessions/`: the captured sessions.
 - `service/proxies.json`: the proxy registry.
 - `service/secrets/`: the server keys and the admin password.

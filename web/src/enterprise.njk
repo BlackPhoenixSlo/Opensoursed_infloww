@@ -47,7 +47,7 @@ description: "The Inflowwww enterprise plan: self-hosting, your own backups and 
   <h2 id="backups" class="text-2xl font-semibold tracking-tight sm:text-3xl">Your backups</h2>
   <div class="prose mt-4">
     <p>
-      Everything that matters is on the host: <code>service/chatterly.db</code> (SQLite), <code>service/sessions/</code>,
+      Everything that matters is on the host: <code>service/data/chatterly.db</code> (SQLite), <code>service/sessions/</code>,
       <code>service/proxies.json</code>, <code>service/secrets/</code> and <code>.env</code>, plus the vault image folders
       (<code>service/vault_thumbs/</code>, <code>vault_posters/</code>, <code>vault_images/</code>), which can't be
       downloaded again once OnlyFans' signed URLs expire. The <code>service/</code> ones are bind-mounted into the relay;

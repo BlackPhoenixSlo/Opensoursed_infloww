@@ -23,10 +23,9 @@ cd openinflowwww
 # openinflowwww-app joins the external network n8n_default; it must exist.
 docker network create n8n_default
 
-# Bind-mounted state files. They must exist as files, not directories.
+# Bind-mounted state. proxies.json must exist as a file, not a directory.
 echo '{"proxies": []}' > service/proxies.json
-touch service/chatterly.db
-mkdir -p service/sessions
+mkdir -p service/data service/sessions
 
 # Without SHARE_TOKEN the share-link gate is off (sign-in is the only gate);
 # without the session secrets every rebuild signs all users out.

@@ -42,11 +42,10 @@ description: "How to move an agency to self-hosted Inflowwww, step by step, plus
 cd openinflowwww</code></pre>
 
     <h3>2. Create the network, the state files and .env</h3>
-    <p>The app joins an external network called <code>n8n_default</code>, so it has to exist. (The network name comes from the maintainer's own Traefik setup; you don't need n8n.) The state files are bind-mounted, so they have to exist as files, not directories.</p>
+    <p>The app joins an external network called <code>n8n_default</code>, so it has to exist. (The network name comes from the maintainer's own Traefik setup; you don't need n8n.) The state is bind-mounted, so <code>proxies.json</code> has to exist as a file, not a directory; the database goes in <code>service/data/</code>.</p>
     <pre class="overflow-x-auto whitespace-pre"><code>docker network create n8n_default
 echo '{"proxies": []}' &gt; service/proxies.json
-touch service/chatterly.db
-mkdir -p service/sessions
+mkdir -p service/data service/sessions
 
 cat &gt; .env &lt;&lt;ENV
 SHARE_TOKEN=$(openssl rand -hex 24)

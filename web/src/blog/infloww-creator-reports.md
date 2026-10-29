@@ -66,7 +66,7 @@ That table tells you when fans buy, which is when your strongest chatter should 
 
 ## Where the data lives
 
-Creator reports reads from the relay's SQLite database, `service/chatterly.db`, on your server. Back that file up like you would any business record. Sessions and the database live on your server.
+Creator reports reads from the relay's SQLite database, `service/data/chatterly.db`, on your server. Back that file up like you would any business record. Sessions and the database live on your server.
 
 **Next steps**
 

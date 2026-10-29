@@ -121,7 +121,7 @@ description: "Get Inflowwww running and run a team on it: Quick start, first log
   <a href="{{ '/roadmap/#known-gaps' | url }}">Known gaps</a> on the roadmap.
 </p>
 <p>
-  The passwords sit in <code>service/chatterly.db</code> and the proxy logins in <code>service/proxies.json</code>, so
+  The passwords sit in <code>service/data/chatterly.db</code> and the proxy logins in <code>service/proxies.json</code>, so
   guard both like the sessions folder, and don't reuse a password from anywhere else.
 </p>
 
@@ -148,7 +148,7 @@ description: "Get Inflowwww running and run a team on it: Quick start, first log
   <code>.env</code> is read by Compose:
 </p>
 <ul>
-  <li><code>service/chatterly.db</code>: the SQLite store.</li>
+  <li><code>service/data/chatterly.db</code>: the SQLite store (with its <code>-wal</code>/<code>-shm</code> files beside it).</li>
   <li><code>service/sessions/</code>: the captured sessions.</li>
   <li><code>service/proxies.json</code>: the proxy registry.</li>
   <li><code>service/secrets/</code>: the server keys and the admin password.</li>
@@ -156,11 +156,11 @@ description: "Get Inflowwww running and run a team on it: Quick start, first log
   <li>The vault image folders (<code>service/vault_thumbs/</code>, <code>vault_posters/</code>, <code>vault_images/</code>): once OnlyFans' signed URLs expire, those images can't be downloaded again.</li>
 </ul>
 <p>
-  The database runs in WAL mode inside the container, so do not just copy the file while the relay is running. Use
+  The database runs in WAL mode, so do not just copy the file while the relay is running. Use
   SQLite's backup API from inside the container. From the install folder:
 </p>
 <pre class="overflow-x-auto whitespace-pre"><code>mkdir -p backups
-docker exec openinflowwww-relay python -c "import sqlite3; d = sqlite3.connect('/tmp/chatterly-backup.db'); sqlite3.connect('/app/service/chatterly.db').backup(d); d.close()"
+docker exec openinflowwww-relay python -c "import sqlite3; d = sqlite3.connect('/tmp/chatterly-backup.db'); sqlite3.connect('/app/service/data/chatterly.db').backup(d); d.close()"
 docker cp openinflowwww-relay:/tmp/chatterly-backup.db backups/chatterly-$(date +%F).db
 sudo tar czf backups/state-$(date +%F).tgz service/sessions service/proxies.json service/secrets service/vault_thumbs service/vault_posters service/vault_images .env</code></pre>
 <p>
@@ -178,22 +178,38 @@ cp backups/chatterly-2026-10-12.db restore-test/chatterly.db
 sqlite3 restore-test/chatterly.db "PRAGMA integrity_check;"   # prints: ok</code></pre>
 <p>A real restore means stopping the stack, putting the files back, and starting it again:</p>
 <pre class="overflow-x-auto whitespace-pre"><code>docker compose down
-cp backups/chatterly-2026-10-12.db service/chatterly.db
+rm -f service/data/chatterly.db-wal service/data/chatterly.db-shm
+cp backups/chatterly-2026-10-12.db service/data/chatterly.db
 sudo tar xzf backups/state-2026-10-12.tgz
 docker compose up -d</code></pre>
 <p>
-  <code>docker compose down</code> lets SQLite checkpoint and close cleanly. The compose file asks you to avoid
-  <code>docker kill</code> for the same reason.
+  The <code>rm</code> drops the old database's WAL, which must not be replayed into the restored copy. Outside a
+  restore, a WAL left after a stop is normal: it sits on the host beside the database and the relay replays it on start.
 </p>
 
 <h2 id="updating">Updating</h2>
 <p>
-  Back up first: <code>service/chatterly.db</code>, <code>service/sessions/</code>, <code>service/proxies.json</code>,
+  Back up first: <code>service/data/chatterly.db</code>, <code>service/sessions/</code>, <code>service/proxies.json</code>,
   <code>service/secrets/</code>, <code>.env</code> and the vault folders (<code>service/vault_thumbs/</code>,
   <code>service/vault_posters/</code>, <code>service/vault_images/</code>). Copy the database with the
   <a href="#backups">backup command above</a> (sqlite3's backup API), not <code>cp</code>, while it runs. Then, from the install folder:
 </p>
 <pre class="overflow-x-auto whitespace-pre"><code>git pull &amp;&amp; docker compose up -d --build</code></pre>
+<p>
+  Installed before 2026-10-29 (your database is <code>service/chatterly.db</code>)? The first update after that date
+  moves it into the folder <code>service/data/</code>, so SQLite's <code>-wal</code> file sits next to it on the server.
+  Run this once instead of the line above (or re-run <code>deploy/deploy-here.sh</code>, which does the same):
+</p>
+<pre class="overflow-x-auto whitespace-pre"><code>docker compose stop openinflowwww-relay
+git pull
+test -s service/chatterly.db &amp;&amp; test ! -e service/data/chatterly.db &amp;&amp; mkdir -p service/data &amp;&amp;
+  rm -f service/data/chatterly.db-wal service/data/chatterly.db-shm &amp;&amp;
+  mv service/chatterly.db service/data/chatterly.db &amp;&amp;
+  { docker cp openinflowwww-relay:/app/service/chatterly.db-wal service/data/ 2&gt;/dev/null &amp;&amp; echo "carried the last writes" || true; }
+docker compose up -d --build</code></pre>
+<p>
+  The <code>docker cp</code> picks up writes the old container still held; no "carried" line means there were none.
+</p>
 <p>
   Never re-paste the Quick start on a running install. From inside the install folder it clones a second copy into
   <code>openinflowwww/openinflowwww</code> and restarts the containers on that copy's empty database and new
