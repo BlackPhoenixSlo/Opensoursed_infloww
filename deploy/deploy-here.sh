@@ -67,8 +67,28 @@ cd "$DIR"
 
 # ---------- 3. bind-mount targets ----------
 [ -f service/proxies.json ] || echo '{"proxies":[]}' > service/proxies.json
-[ -f service/chatterly.db ] || touch service/chatterly.db
-mkdir -p service/sessions service/storyboard_cache
+mkdir -p service/data service/sessions service/storyboard_cache
+# The DB moved from service/chatterly.db (a file mount) to service/data/ (a
+# directory mount, so its -wal/-shm are on the host). An install from before
+# the move: checkpoint and stop the relay, move the DB, carry any WAL the old
+# container still holds (the relay replays it on start).
+if [ -s service/chatterly.db ] && [ -e service/data/chatterly.db ]; then
+  die "both service/chatterly.db and service/data/chatterly.db exist: keep the right one, move the other out of the way, re-run"
+fi
+if [ -s service/chatterly.db ]; then
+  say "moving service/chatterly.db to service/data/ (one time)"
+  cid=$(docker compose ps -aq openinflowwww-relay)
+  if [ -n "$cid" ]; then
+    docker exec "$cid" python3 -c 'import sqlite3; print("  checkpoint", sqlite3.connect("/app/service/chatterly.db", timeout=30).execute("pragma wal_checkpoint(TRUNCATE)").fetchone())' \
+      || echo "  relay not running: no checkpoint"
+    docker compose stop openinflowwww-relay
+  fi
+  rm -f service/data/chatterly.db-wal service/data/chatterly.db-shm
+  mv service/chatterly.db service/data/chatterly.db && rm -f service/chatterly.db-shm service/chatterly.db-wal
+  if [ -n "$cid" ] && docker cp "$cid:/app/service/chatterly.db-wal" service/data/chatterly.db-wal 2>/dev/null; then
+    echo "  carried the old container's WAL"
+  fi
+fi
 
 # ---------- 4. .env (idempotent — keep existing keys, mint session secrets once) ----------
 # No secrets required: session secrets are generated, the share gate is off

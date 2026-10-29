@@ -20,10 +20,10 @@ git clone <this repo> openinflowwww && cd openinflowwww
 # openinflowwww-app joins the external network n8n_default; it must exist.
 docker network create n8n_default
 
-# Bind-mounted state files. They must exist as files, not directories.
+# Bind-mounted state. proxies.json must exist as a file, not a directory.
+# The SQLite DB lives in service/data/ (created on first boot, with its -wal/-shm).
 echo '{"proxies": []}' > service/proxies.json
-touch service/chatterly.db
-mkdir -p service/sessions
+mkdir -p service/data service/sessions
 
 # Compose reads .env beside docker-compose.yml. Nothing in it is strictly
 # required: without SHARE_TOKEN the share-link gate is off (sign-in is the
@@ -64,6 +64,22 @@ needs no token or account and does not start unless you ask for it:
 `docker compose --profile tunnel up -d`. It prints a random
 `trycloudflare.com` URL that changes on every restart. To install on a VPS,
 use `deploy/deploy-here.sh`, which does the steps above for you.
+
+**Upgrading an install from before 2026-10-29** (DB at `service/chatterly.db`):
+the DB now lives in the directory `service/data/`, so its `-wal` stays on the
+host. Move it once, before the first `up` on the new compose, or the relay
+starts on an empty DB (`deploy/deploy-here.sh` does this itself):
+
+```bash
+docker compose stop openinflowwww-relay && git pull
+test -s service/chatterly.db && test ! -e service/data/chatterly.db && mkdir -p service/data &&
+  rm -f service/data/chatterly.db-wal service/data/chatterly.db-shm &&
+  mv service/chatterly.db service/data/chatterly.db &&
+  { docker cp openinflowwww-relay:/app/service/chatterly.db-wal service/data/ 2>/dev/null && echo "carried the last writes" || true; }
+docker compose up -d --build
+```
+
+The `docker cp` takes the writes the old container still held, if any.
 
 ## Surfaces
 

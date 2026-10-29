@@ -13,7 +13,7 @@
 # (behind Traefik, the relay's own paths go to the relay directly; see its labels).
 #
 # Persisted on the host (so a rebuild never wipes your auth or history):
-#   ./service/chatterly.db        SQLite event store
+#   ./service/data/               SQLite event store (chatterly.db + its -wal/-shm)
 #   ./service/sessions/           captured OF sessions
 #   ./service/proxies.json        proxy registry
 #
@@ -88,6 +88,15 @@ services:
       # issuer, the help assistant, proxy messages); empty = Inflowwww. The app
       # takes the same BRAND_NAME as a build arg (below).
       BRAND_NAME: "${BRAND_NAME:-}"
+      # The SQLite DB, in the bind-mounted directory below. Literal values, not
+      # ${...}: a compose .env cannot move the DB, and service/.env loses to
+      # them (db/engine.py loads it with override=False). DATABASE_URL is what
+      # the relay opens; CHATTERLY_DB_URL is the alembic CLI's
+      # (db/migrations/env.py); CONVO_REVIEW_DB the convo-check scripts'.
+      # Bare metal (no container) keeps service/chatterly.db (db/engine.py).
+      DATABASE_URL: "sqlite+aiosqlite:////app/service/data/chatterly.db"
+      CHATTERLY_DB_URL: "sqlite:////app/service/data/chatterly.db"
+      CONVO_REVIEW_DB: /app/service/data/chatterly.db
       # Where the video scrub storyboard cache lives. Bind-mounted below
       # so it persists across container restarts — without this every
       # `docker compose down` wipes hours of accumulated extracts and
@@ -158,11 +167,13 @@ services:
       # X-Forwarded-For is believed. Unset or empty = loopback + private ranges.
       # TRUSTED_PROXIES: "${TRUSTED_PROXIES:-}"
     volumes:
-      # File bind-mount for the SQLite event store. WAL + SHM sidecars
-      # are created in /app/service/ inside the container; on `docker
-      # compose down` (SIGTERM) SQLite checkpoints them back into the
-      # bind-mounted file. Avoid `docker kill` if you can.
-      - ./service/chatterly.db:/app/service/chatterly.db
+      # The SQLite event store: a DIRECTORY, not the file. SQLite keeps its
+      # -wal and -shm beside the DB; with only the file mounted (until
+      # 2026-10-29) they sat in the container's writable layer, so a killed
+      # relay's last writes were lost on the next `up` (measured 2026-10-29).
+      # Here the WAL is on the host and the next start replays it. Lane files
+      # without their own *_PATH land here too. Older install: README "Upgrading".
+      - ./service/data:/app/service/data
       - ./service/sessions:/app/service/sessions
       - ./service/proxies.json:/app/service/proxies.json
       # Setup → Keys / Server keys (secrets_store). A DIRECTORY, not the JSON

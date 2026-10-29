@@ -33,6 +33,8 @@ service/chatterly.db-wal
 service/chatterly.db-shm
 service/chatterly.db.bak*
 service/chatterly.db.devbak*
+# The containers' DB directory (docker-compose.yml mounts it): chatterly.db + -wal/-shm
+service/data/
 *.devbak.*
 service/sessions/
 service/storyboard_cache/

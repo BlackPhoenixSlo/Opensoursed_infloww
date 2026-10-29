@@ -34,6 +34,7 @@ app/.turbo/
 
 # capture artefacts that don't belong in the runtime image
 service/sessions/
+service/data/
 service/proxies.json
 # Bind-mounted image caches — they can be gigabytes, and the container gets
 # them from the host mount, never from the build context.

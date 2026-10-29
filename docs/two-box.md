@@ -24,7 +24,8 @@ APP_CPUS=0.4`. Docker refuses a `cpus` above the core count.
 **The system.**
 - **Relay** (`openinflowwww-relay`, Python): holds the OnlyFans sessions,
   ingests messages, runs automations and scheduled sends, and owns the SQLite DB
-  `service/chatterly.db`.
+  `service/data/chatterly.db` (a bind-mounted directory, so its `-wal`/`-shm`
+  are on the host too).
 - **App** (`openinflowwww-app`, Next.js): the UI. It proxies the relay's paths.
 - Both run under Docker Compose behind Traefik (or any TLS proxy) on `<PRIMARY_IP>`.
 
@@ -33,16 +34,15 @@ APP_CPUS=0.4`. Docker refuses a `cpus` above the core count.
    both would send. The stack runs on the primary or the standby, never on both.
    The boot fence (section 5) enforces this when a box powers on. Before a
    failover, a human stops the primary in the provider's panel.
-2. **Back up the DB in-container before any change** (section 2). Only the DB
-   file is bind-mounted; its WAL lives in the container, so the host file misses
-   recent writes.
-3. **Never `docker compose down` / `up --force-recreate` without a WAL
-   checkpoint and a clean stop first** (section 2.3). `docker compose restart`
-   keeps the container, so it is safe.
+2. **Back up the DB in-container before any change** (section 2): the backup
+   API gives one consistent copy while the relay writes.
+3. **Stop the relay cleanly before anything that recreates it** (section 2.3),
+   so claimed sends drain. The WAL is on the host beside the DB, so a recreate
+   keeps every write; never delete a `-wal` beside a DB you keep.
 4. **A Creator with 401 / expired session is a normal OnlyFans state.** A human
    logs that Creator in again. Never patch sessions or the DB for it.
 5. **Query the DB in-container, read-only:** `docker exec -i openinflowwww-relay python3`
-   with `sqlite3.connect("file:/app/service/chatterly.db?mode=ro", uri=True)`.
+   with `sqlite3.connect("file:/app/service/data/chatterly.db?mode=ro", uri=True)`.
 6. **Leave everything else on the box alone:** other stacks, the proxy's own config.
 
 ## 2. Hourly backup to the standby
@@ -67,7 +67,7 @@ cd <APP_DIR>
 S=$(date -u +%Y%m%dT%H%M%SZ); T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 docker exec -i openinflowwww-relay python3 - <<'EOF'
 import sqlite3
-s = sqlite3.connect("file:/app/service/chatterly.db?mode=ro", uri=True, timeout=60)
+s = sqlite3.connect("file:/app/service/data/chatterly.db?mode=ro", uri=True, timeout=60)
 d = sqlite3.connect("/tmp/bk.db"); s.backup(d); d.close()
 EOF
 docker cp openinflowwww-relay:/tmp/bk.db "$T/chatterly.db" && docker exec openinflowwww-relay rm /tmp/bk.db
@@ -112,17 +112,18 @@ first bundle of each UTC day into `daily/` (keep 30).
 
 ```bash
 cd <APP_DIR>
-docker exec openinflowwww-relay python3 -c "import sqlite3; print(sqlite3.connect('/app/service/chatterly.db', timeout=30).execute('pragma wal_checkpoint(TRUNCATE)').fetchone())"   # (0, 0, 0)
+docker exec openinflowwww-relay python3 -c "import sqlite3; print(sqlite3.connect('/app/service/data/chatterly.db', timeout=30).execute('pragma wal_checkpoint(TRUNCATE)').fetchone())"   # (0, 0, 0)
 docker compose stop openinflowwww-relay
-docker cp openinflowwww-relay:/app/service/chatterly.db-wal service/chatterly.db-wal 2>/dev/null && echo "WAL left: fold it in"
+ls -l service/data/chatterly.db-wal 2>/dev/null || echo "no WAL left"
 ```
 
 A small WAL is often left (measured: 41 KB, written between the checkpoint and
-the stop). Fold it in on the host, then recreate:
+the stop). That is normal: it is on the host, and the relay replays it on
+start. Only before copying the DB to another box (failback), fold it in on
+the host with the relay stopped:
 
 ```bash
-rm -f service/chatterly.db-shm
-python3 -c "import sqlite3; print(sqlite3.connect('service/chatterly.db').execute('pragma wal_checkpoint(TRUNCATE)').fetchone())"
+python3 -c "import sqlite3; print(sqlite3.connect('file:service/data/chatterly.db?mode=rw', uri=True).execute('pragma wal_checkpoint(TRUNCATE)').fetchone())"
 ```
 
 ### 2.4 Staleness check
@@ -248,7 +249,7 @@ run). Messages that fans sent in the gap are still on OnlyFans.
 
 1. **Human:** start the primary. The fence keeps the stack down: the log says
    `boot: FENCED ...`, and both containers are `running=false`.
-2. On the standby, do a checkpointed stop (2.3) and fold in any WAL left behind.
+2. On the standby, do a checkpointed stop (2.3) and fold in any WAL left behind on the host.
    Then `docker update --restart=no` on both containers.
 3. Copy the standby's DB, sessions, secrets and proxies to a staging dir on the
    primary through a compressed pipe:
@@ -257,7 +258,8 @@ run). Messages that fans sent in the gap are still on OnlyFans.
    run `integrity_check`.
 4. `rm /root/active-here` on the standby.
 5. On the primary:
-   1. `docker compose down`. This drops the stale containers and any WAL left in them.
+   1. `docker compose down`, then `rm -f service/data/chatterly.db-wal service/data/chatterly.db-shm`:
+      they belong to the primary's stale DB and must not be replayed into the copy.
    2. Keep the current files aside.
    3. Copy the staging files in.
    4. Clear the fence, then `docker compose up -d --no-build`.
@@ -305,7 +307,7 @@ primary unless marked.
 ## 10. When to stop and ask the human
 
 - **Anything that can lose data:** a DB restore, deleting under `service/` or the
-  bundles, or recreating the relay with a WAL left.
+  bundles, or deleting a `-wal` beside a DB you keep.
 - **Anything that could start a second relay:** a fence marker, `active=yes`, or
   not knowing where the stack is live.
 - **Anything that needs a human login:** the provider's panel, DNS, an OnlyFans

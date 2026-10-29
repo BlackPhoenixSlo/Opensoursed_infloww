@@ -63,7 +63,9 @@ COPY fansly/fansly_client.py fansly/fansly_shim.py fansly/fansly_signer.py \
 # auth or your event history. Volume targets:
 #   /app/service/sessions   — captured OF sessions (loginExtensionMulti output)
 #   /app/service/proxies.json — proxy registry
-#   /app/service/chatterly.db — SQLite event store (WAL + SHM created beside it)
+#   /app/service/data/        — SQLite event store, a directory so the WAL + SHM
+#                               SQLite creates beside chatterly.db are on the host
+#                               too (compose sets DATABASE_URL to it)
 RUN mkdir -p /app/service/sessions
 # The login extension's interceptor, injected by the Browserbase login
 # (remote_login.INTERCEPTOR_PATH) so its capture matches the extension's.
