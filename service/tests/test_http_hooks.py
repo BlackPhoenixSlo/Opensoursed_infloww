@@ -243,8 +243,8 @@ def case_the_relay_registers_every_hook_in_one_layer_in_the_documented_order():
         "label_request_writes",          # db/write_telemetry: innermost, labels the request's writes
     ], names
     layers = server.app.user_middleware
-    assert [m.cls.__name__ for m in layers] == ["BaseHTTPMiddleware", "GZipMiddleware"], layers
-    assert layers[0].kwargs["dispatch"] == server._http_hooks.dispatch
+    assert [m.cls.__name__ for m in layers] == ["RequestLog", "BaseHTTPMiddleware", "GZipMiddleware"], layers
+    assert layers[1].kwargs["dispatch"] == server._http_hooks.dispatch
 
 
 def case_a_chatter_denied_by_role_is_refused_before_the_route_and_the_audit_writer():

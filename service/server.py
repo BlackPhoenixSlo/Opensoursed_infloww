@@ -797,6 +797,12 @@ class _RedactShareSecret(logging.Filter):
 
 logging.getLogger("uvicorn.access").addFilter(_RedactShareSecret())
 
+# Outermost layer (added after the hook chain; Starlette: last added = outermost):
+# one `req id=… ms=…` line per request and X-Request-Id echoed. Pure ASGI, not a
+# BaseHTTPMiddleware (see http_hooks). An unmatched path is logged redacted.
+from request_log import RequestLog as _RequestLog  # noqa: E402
+app.add_middleware(_RequestLog, redact=redact_share_secret)
+
 
 @_http_hooks.add
 async def _api_access_log(request: Request, call_next):
@@ -869,6 +875,7 @@ async def _persist_unhandled_errors(request: Request, call_next):
                     account_id=account_id[:64] if account_id else None,
                     employee_id=employee_id,
                     user_agent=(request.headers.get("user-agent") or "")[:512] or None,
+                    context_json=json.dumps({"request_id": getattr(request.state, "request_id", None)}),
                 ))
                 await s.commit()
         except Exception:
