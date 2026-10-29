@@ -17,6 +17,7 @@ import { useKeyDraft } from "@/hooks/useKeyDraft";
 import { useSaveSecrets, useSecrets } from "@/hooks/useSecrets";
 import { Badge, Button, Card } from "@/components/ui/primitives";
 import SecretKeyField from "@/components/setup/SecretKeyField";
+import { Skeleton } from "@/components/ui/Skeleton";
 
 const DRIVE_KEY = "GOOGLE_DRIVE_API_KEY";
 
@@ -39,7 +40,7 @@ function DriveKeyEditor() {
   );
   const k = data?.keys?.[DRIVE_KEY];
 
-  if (isLoading) return <div className="text-sm text-fg-dim">Loading…</div>;
+  if (isLoading) return <div className="space-y-2" aria-busy="true"><Skeleton className="h-4 w-32" /><Skeleton className="h-9 w-full" /></div>;
   if (error || !k) return <div className="text-sm text-err">Couldn&apos;t load the key&apos;s status.</div>;
   return (
     <div className="space-y-2">

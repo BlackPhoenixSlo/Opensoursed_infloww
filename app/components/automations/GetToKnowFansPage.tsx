@@ -33,6 +33,7 @@ import {
 import { useSaveStyleConfig, useStyleConfig, type StyleConfig } from "@/hooks/useStyleConfig";
 import { VAULT_PICK_MAX } from "@/lib/ofMirrorChat";
 import type { VaultMedia } from "@/lib/relay";
+import { Skeleton } from "@/components/ui/Skeleton";
 
 const TITLE = "Get to know fans";
 const KIND = "welcome_chatter_for_info";
@@ -60,7 +61,7 @@ const toDollars = (cents: number) => Math.round(cents) / 100;
 export default function GetToKnowFansPage() {
   const { accountId, creators, loading } = useAutomationCreator();
   if (!accountId) {
-    return <PageFrame title={TITLE} creators={creators}>{!loading && <NoCreator />}</PageFrame>;
+    return <PageFrame title={TITLE} creators={creators}><NoCreator loading={loading} /></PageFrame>;
   }
   // Keyed, so switching creator re-seeds the settings and the Model info box.
   return <GetToKnowFans key={accountId} accountId={accountId} creators={creators} />;
@@ -93,7 +94,7 @@ function GetToKnowFans({ accountId, creators }: { accountId: string; creators: C
         <FormBlock title="Automation">
           {meta?.summary && <p className="text-[14px] text-fg-dim">{meta.summary}</p>}
           {rulesQ.isLoading || (rule && kindsQ.isLoading) ? (
-            <p className="text-[14px] text-muted">Loading…</p>
+            <FormSkeleton />
           ) : rulesQ.isError ? (
             <p className="text-[14px] text-muted">
               {(rulesQ.error as Error)?.message || "Could not load this automation."} Model info below still applies.
@@ -268,15 +269,25 @@ function RuleSettings({ accountId, rule, meta }: { accountId: string; rule: Auto
   );
 }
 
+/** A form block's fields while its read runs: a label bar over an input-sized bar, twice. */
+function FormSkeleton() {
+  return (
+    <div role="status" aria-label="Loading" className="space-y-3">
+      <Skeleton className="h-3 w-28" />
+      <Skeleton className="h-10 w-full" />
+      <Skeleton className="h-3 w-40" />
+      <Skeleton className="h-10 w-full" />
+    </div>
+  );
+}
+
 /** The load gate: the box mounts only once the stored brain is in hand, so a failed read is never saved back. */
 function ModelInfo({ accountId }: { accountId: string }) {
   const cfgQ = useAccountConfig(accountId);
   return (
     <FormBlock title="Model info">
-      {cfgQ.data ? <ModelInfoForm accountId={accountId} resp={cfgQ.data} /> : (
-        <p className={cfgQ.isLoading ? "text-[14px] text-muted" : "text-[14px] text-err"}>
-          {cfgQ.isLoading ? "Loading…" : (cfgQ.error as Error)?.message || "Could not load Model info."}
-        </p>
+      {cfgQ.data ? <ModelInfoForm accountId={accountId} resp={cfgQ.data} /> : cfgQ.isLoading ? <FormSkeleton /> : (
+        <p className="text-[14px] text-err">{(cfgQ.error as Error)?.message || "Could not load Model info."}</p>
       )}
     </FormBlock>
   );

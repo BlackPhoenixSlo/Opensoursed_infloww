@@ -34,6 +34,7 @@ import AddProxyModal, {
 import CreatorEgressTable, {
   EMPTY_TEXT, PROXY_TABLE, proxyTh, type TestResult,
 } from "@/components/setup/CreatorEgressTable";
+import { SkeletonRows } from "@/components/ui/Skeleton";
 
 interface ProxiesResp {
   proxies: Array<
@@ -251,19 +252,14 @@ export default function ProxiesTable() {
               <tr><td colSpan={7} className="p-4 text-err">{(proxiesQ.error as Error).message}</td></tr>
             )}
             {/* #20, #21: antd's simple empty (ticket 00's `EmptyState size="sm"`: the tray, then "No data"), 32px
-                above and below. #22: while the read runs, antd's Table draws the same empty body faded under its
-                spinner. */}
-            {(proxiesQ.data || refused || proxiesQ.isLoading) && proxies.length === 0 && (
+                above and below, once the read has answered. #22: antd's Table draws that empty body faded under a
+                spinner while the read runs; ours draws placeholder rows instead (the owner's every-page-paints-its-
+                layout ask, 2026-10-29), so "No data" never shows before the answer. */}
+            {proxiesQ.isLoading && <SkeletonRows cols={7} rows={4} />}
+            {(proxiesQ.data || refused) && !proxiesQ.isLoading && proxies.length === 0 && (
               <tr>
                 <td colSpan={7} className="p-4">
-                  <div className="relative">
-                    <EmptyState size="sm" className={proxiesQ.isLoading ? "opacity-50" : undefined} textClassName={EMPTY_TEXT} />
-                    {proxiesQ.isLoading && (
-                      <div role="status" aria-label="Loading" className="absolute inset-0 flex items-center justify-center">
-                        <Loader2 size={20} className="animate-spin text-accent" aria-hidden />
-                      </div>
-                    )}
-                  </div>
+                  <EmptyState size="sm" textClassName={EMPTY_TEXT} />
                 </td>
               </tr>
             )}

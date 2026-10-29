@@ -25,7 +25,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  ArrowLeft, EllipsisVertical, Link2, Loader2, Pencil, Plus, Trash2, UserCheck, UserX,
+  ArrowLeft, EllipsisVertical, Link2, Pencil, Plus, Trash2, UserCheck, UserX,
   type LucideIcon,
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
@@ -53,6 +53,7 @@ import TagSettings from "@/components/setup/TagSettings";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { cn, describeDeadSession, fmtRelTime } from "@/lib/utils";
 import { sessionConnectivity, type Connectivity } from "@/lib/sessionConnectivity";
+import { SkeletonRows } from "@/components/ui/Skeleton";
 
 interface AccountsResp {
   accounts: AccountMeta[];
@@ -428,16 +429,10 @@ export default function AccountsTable({ onLink, onAdd, children }: {
               </tr>
             </thead>
             <tbody>
-              {/* The bundle's PulserIndicator over the table (creators-manage#51): a 20px accent spinner centred over
-                  the faded empty body, as Custom proxy draws its loading. */}
-              {accountsQ.isLoading && message(
-                <div className="relative">
-                  <EmptyState size="sm" className="opacity-50" />
-                  <div role="status" aria-label="Loading" className="absolute inset-0 grid place-items-center">
-                    <Loader2 className="h-5 w-5 animate-spin text-accent" aria-hidden />
-                  </div>
-                </div>,
-              )}
+              {/* Loading: placeholder rows under the column heads. The bundle draws its PulserIndicator here, a
+                  spinner over the faded empty body (creators-manage#51); the owner asked every page to paint its
+                  layout before its data (2026-10-29), which overrides that parity, here and on Custom proxy. */}
+              {accountsQ.isLoading && <SkeletonRows cols={COLUMNS.length} cellClassName={HB_TABLE.td} />}
               {/* The capture records no error line in its table (creators-manage#50, #51): ours, labelled. */}
               {accountsQ.error && message(<div className="h-12 leading-[48px] text-err" title={EXTRA_LABEL}>{(accountsQ.error as Error).message}</div>)}
               {/* antd's simple empty (creators-manage#50): the 40px art and "No data", 32px above and below. */}

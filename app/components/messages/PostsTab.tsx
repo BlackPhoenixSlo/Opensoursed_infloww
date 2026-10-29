@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/primitives";
 import { PostCard } from "@/components/messages/PostCard";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { usePosts } from "@/hooks/usePosts";
+import { TableSkeleton } from "@/components/ui/Skeleton";
 
 export default function PostsTab() {
   const accounts = useActiveAccounts();
@@ -86,7 +87,7 @@ export default function PostsTab() {
           Pick a model to see their posts.
         </div>
       ) : q.isPending ? (
-        <div className="p-8 text-center text-sm text-fg-dim">Loading…</div>
+        <TableSkeleton rows={6} className="m-4" />
       ) : posts.length === 0 ? (
         <div className="p-8 text-center text-sm text-fg-dim border border-border rounded-xl bg-panel">
           No posts on this account yet.

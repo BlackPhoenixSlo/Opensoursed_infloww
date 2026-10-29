@@ -16,6 +16,7 @@ import { PostCard } from "@/components/messages/PostCard";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useTopPosts, type TopBy } from "@/hooks/usePosts";
 import { cn } from "@/lib/utils";
+import { TableSkeleton } from "@/components/ui/Skeleton";
 
 interface Props {
   from: string | null;
@@ -101,7 +102,7 @@ export default function TopPostsTab({ from, to }: Props) {
           Pick a model to see top posts.
         </div>
       ) : q.isPending ? (
-        <div className="p-8 text-center text-sm text-fg-dim">Loading…</div>
+        <TableSkeleton rows={6} className="m-4" />
       ) : posts.length === 0 ? (
         <div className="p-8 text-center text-sm text-fg-dim border border-border rounded-xl bg-panel">
           No posts in this window.

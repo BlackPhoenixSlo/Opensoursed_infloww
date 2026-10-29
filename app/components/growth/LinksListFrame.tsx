@@ -33,6 +33,7 @@ import { parseUtc } from "@/lib/format";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { utcOffsetLabel } from "@/lib/utcOffset";
 import { cn } from "@/lib/utils";
+import { SkeletonRows } from "@/components/ui/Skeleton";
 
 export const NOT_WIRED = "not wired";
 
@@ -764,12 +765,8 @@ export default function LinksListFrame<T>({
             </thead>
             <tbody>
               {loading ? (
-                /* Ours: the bundle spins (`loading:{spinning}`); the house has no spinner primitive. */
-                <tr>
-                  <td colSpan={span} className={cn(TD, "text-fg-dim")}>
-                    <span className="inline-flex items-center gap-2">Loading… <ExtraTag /></span>
-                  </td>
-                </tr>
+                /* Ours: the bundle spins (`loading:{spinning}`); the house draws placeholder rows. */
+                <SkeletonRows cols={span} rows={5} cellClassName={TD} />
               ) : sessionGone && shown.length === 0 ? (
                 <tr><td colSpan={span} className="py-16"><Reconnect /></td></tr>
               ) : shown.length === 0 ? (

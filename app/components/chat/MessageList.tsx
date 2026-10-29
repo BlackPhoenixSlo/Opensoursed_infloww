@@ -42,6 +42,7 @@ import { BubbleActions } from "@/components/chat/BubbleActions";
 import { useInflowwPalette } from "@/components/chat/InflowwPalette";
 import { PpvStatusLine, ppvPriceLabel } from "@/components/chat/PpvStatus";
 import { MP } from "@/lib/messagesPro";
+import { Skeleton } from "@/components/ui/Skeleton";
 
 /** The Fan's read pointer from two copies (spec F28): the larger of the two,
  *  the one that is set, or null. OF's `lastReadMessageId` only grows, so the
@@ -420,8 +421,11 @@ export function MessageList(props: MessageListProps) {
   // floats up into the middle of the pane until messages arrive.
   if (isLoading && messages.length === 0) {
     return (
-      <div className="flex-1 min-h-0 grid place-items-center p-8 text-center text-sm text-fg-dim">
-        Loading messages…
+      // The thread's bubbles as placeholder bars, theirs left and ours right, where the messages will be.
+      <div role="status" aria-label="Loading messages" className="flex-1 min-h-0 flex flex-col justify-end gap-3 overflow-hidden p-4">
+        {(["w-40", "w-56", "w-32", "w-48", "w-36"] as const).map((w, i) => (
+          <Skeleton key={i} className={cn("h-9 rounded-2xl", w, i % 2 ? "self-end" : "self-start")} />
+        ))}
       </div>
     );
   }

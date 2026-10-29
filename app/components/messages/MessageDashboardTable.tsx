@@ -28,6 +28,7 @@ import { automationLabel } from "@/components/messages/MessageRowGeneric";
 import UnsendMessageButton, { canOfferUnsend } from "@/components/messages/UnsendMessageButton";
 import { AccountAvatarPicture } from "@/components/ui/AccountAvatarPicture";
 import { EmptyState, IF_TABLE } from "@/components/ui/infloww";
+import { Skeleton } from "@/components/ui/Skeleton";
 import { useAccounts } from "@/hooks/useAccounts";
 import { useLoadMoreSentinel } from "@/hooks/useLoadMoreSentinel";
 import type { PaidMessageRow } from "@/hooks/usePaidMessages";
@@ -94,7 +95,11 @@ export default function MessageDashboardTable({
   if (error) {
     body = <FullRow span={span}><EmptyState kind="error" text="Unable to load page. Try again later" onRetry={onRetry} /></FullRow>;
   } else if (loading) {
-    body = <FullRow span={span}><span className="text-[14px] text-muted">Loading…</span></FullRow>;
+    body = Array.from({ length: 6 }, (_, i) => (
+      <tr key={i} className={IF_TABLE.row} aria-busy="true">
+        {COLUMNS.map((c, j) => <td key={j} className={IF_TABLE.td}><Skeleton className="h-3 w-16" /></td>)}
+      </tr>
+    ));
   } else if (!rows.length) {
     body = <FullRow span={span}><EmptyState /></FullRow>;
   } else {

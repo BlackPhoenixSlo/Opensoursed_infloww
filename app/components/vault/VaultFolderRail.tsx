@@ -22,6 +22,7 @@ import { createOfFolder, deleteOfFolder, renameOfFolder, sortOfFolders } from "@
 import { type FanId } from "@/lib/fanId";
 import { type VaultList } from "@/lib/relay";
 import { cn } from "@/lib/utils";
+import { Skeleton } from "@/components/ui/Skeleton";
 
 /** The rail column (#16): 208px with a 1px L1 right rule on the page colour (B-nav), stacked over the grid on a
  *  phone. Exported so the page's no-Creator frame draws the same column. */
@@ -467,7 +468,9 @@ export default function VaultFolderRail({ folders, loading, error, onRetry, sele
             </div>
           </button>
           {loading ? (
-            <div className="px-3 py-3 text-xs text-muted">Loading…</div>
+            <div className="space-y-2 px-3 py-3" aria-busy="true">
+              {Array.from({ length: 5 }, (_, i) => <Skeleton key={i} className="h-8 w-full" />)}
+            </div>
           ) : error ? (
             /* #35: the rail's error and its Refresh. */
             <EmptyState

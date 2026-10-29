@@ -21,6 +21,7 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { EmptyState, IfButton, IfModal } from "@/components/ui/infloww";
+import { Skeleton } from "@/components/ui/Skeleton";
 import { ExtraTag } from "@/components/ui/primitives";
 import { ProjectionAvatar, message, monthName, utcDate, utcDay, utcTime } from "@/components/s4s/s4sBits";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
@@ -78,7 +79,11 @@ export default function S4SSchedule({ profile, livePosting }: { profile: S4SProf
           <p role="status" className="mt-1 text-[12px] text-[#999]">{BANNER} <ExtraTag /></p>
         )}
         {q.isError && <p role="alert" className="mt-4 text-[14px] text-err">{message(q.error)}</p>}
-        {q.isLoading && <p className="mt-4 text-[14px] text-fg-dim">Loading…</p>}
+        {q.isLoading && (
+          <div role="status" aria-label="Loading" className="mt-4 space-y-2">
+            {Array.from({ length: 4 }, (_, i) => <Skeleton key={i} className="h-12 w-full rounded-lg" />)}
+          </div>
+        )}
         {q.isSuccess && daySlots.length === 0 && (
           <EmptyState size="md" className="mt-[180px]" textClassName="text-[14px] font-semibold text-fg" text="No scheduled Share for Shares" />
         )}

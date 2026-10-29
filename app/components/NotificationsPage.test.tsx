@@ -9,8 +9,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-const { relayGet, scope, accounts, router } = vi.hoisted(() => ({
+const { relayGet, scope, accounts, router, accountsQ } = vi.hoisted(() => ({
   relayGet: vi.fn(),
+  accountsQ: { isLoading: false },
   router: { push: vi.fn(), back: vi.fn() },
   scope: { accountId: "acc-1" as string | null },
   accounts: [
@@ -20,7 +21,7 @@ const { relayGet, scope, accounts, router } = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/relay", () => ({ relay: { get: (...args: unknown[]) => relayGet(...args) } }));
-vi.mock("@/hooks/useAccounts", () => ({ useActiveAccounts: () => accounts }));
+vi.mock("@/hooks/useAccounts", () => ({ useActiveAccounts: () => accounts, useAccounts: () => accountsQ }));
 vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => scope }));
 vi.mock("next/navigation", () => ({
   useRouter: () => router,
@@ -194,6 +195,20 @@ describe("NotificationsPage", () => {
       expect(screen.getByRole("link", { name: "Manage creators" })).toHaveAttribute("href", "/creators");
       expect(relayGet).not.toHaveBeenCalled();
     } finally {
+      accounts.push({ id: "acc-1", nickname: "Creator One" }, { id: "acc-2", nickname: "Creator Two" });
+    }
+  });
+
+  it("while the Creators load: the rows' placeholder bars, not the no-session state", () => {
+    scope.accountId = null;
+    accounts.splice(0, accounts.length);
+    accountsQ.isLoading = true;
+    try {
+      renderWithProviders(<NotificationsPage />);
+      expect(screen.queryByText(/No active sessions/)).toBeNull();
+      expect(screen.getByRole("status", { name: "Loading notifications" }).querySelectorAll("[data-loading]").length).toBe(3);
+    } finally {
+      accountsQ.isLoading = false;
       accounts.push({ id: "acc-1", nickname: "Creator One" }, { id: "acc-2", nickname: "Creator Two" });
     }
   });

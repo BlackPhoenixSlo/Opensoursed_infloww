@@ -13,6 +13,7 @@ import { ExtraTag } from "@/components/ui/primitives";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import type { AccountMeta, ProxyMeta } from "@/lib/relay";
 import { cn } from "@/lib/utils";
+import { SkeletonRows } from "@/components/ui/Skeleton";
 
 /** The legacy antd table's look on its dark algorithm (page-parity 03), shared with `ProxiesTable`: the head row
  *  filled `colorFillAlter` rgba(255,255,255,.04) (#1e1e1e on #151515) with 8px top corners, 14px / 600 head text, a
@@ -122,7 +123,7 @@ export default function CreatorEgressTable({
               );
             })}
             {loading && (
-              <tr><td colSpan={5} className="p-4 text-fg-dim">Loading creators…</td></tr>
+              <SkeletonRows cols={5} rows={4} />
             )}
             {!loading && (unavailable || accounts.length === 0) && (
               <tr><td colSpan={5} className="p-4"><EmptyState size="sm" textClassName={EMPTY_TEXT} /></td></tr>

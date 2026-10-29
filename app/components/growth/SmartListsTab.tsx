@@ -28,6 +28,7 @@ import {
 import { cn } from "@/lib/utils";
 import { GrowthRailFrame } from "@/components/growth/GrowthFrame";
 import { useGrowthCreator } from "@/hooks/useAccounts";
+import { TableSkeleton } from "@/components/ui/Skeleton";
 
 /** Ours: the header's tooltip (Infloww's page has no description). */
 export const SMART_LISTS_ABOUT =
@@ -241,7 +242,11 @@ const HEADS = ["List name", "Criteria", "Incl. expired", "Fans", "Actions"];
 
 interface Draft { key: number; editing: SmartList | null; name: string; rules: SmartRules | null }
 
-export default function SmartListsTab({ accountId }: { accountId: string | null }) {
+export default function SmartListsTab({ accountId, accountsLoading = false }: {
+  accountId: string | null;
+  /** The Creators are still loading: the list is loading, not "no creator". */
+  accountsLoading?: boolean;
+}) {
   const pageQ = useSmartListsPage(accountId);
   const createM = useCreateSmartList(accountId);
   const updateM = useUpdateSmartList(accountId);
@@ -295,8 +300,9 @@ export default function SmartListsTab({ accountId }: { accountId: string | null 
   );
 
   let body: ReactNode;
-  if (!accountId) body = <EmptyState kind="creator" text="No creator connected yet" />;
-  else if (pageQ.isLoading) body = <p className="py-10 text-center text-fg-dim">Loading…</p>;
+  // The Creators or this Creator's lists still loading: the list's rows as placeholder bars, not an empty state.
+  if (!accountId) body = accountsLoading ? <TableSkeleton rows={5} /> : <EmptyState kind="creator" text="No creator connected yet" />;
+  else if (pageQ.isLoading) body = <TableSkeleton rows={5} />;
   else if (pageQ.isError) body = <EmptyState kind="error" text={errMsg(pageQ.error, "Failed to load")} onRetry={() => void pageQ.refetch()} />;
   else if (!lists.length) body = <EmptyState text="You haven’t created a smart list yet" action={createButton} />;
   else if (!shown.length) body = <EmptyState kind="search" />;
@@ -611,7 +617,7 @@ export function SmartListsPage() {
   const creator = useGrowthCreator();
   return (
     <GrowthRailFrame title={<span title={SMART_LISTS_ABOUT}>Smart lists</span>} creator={creator}>
-      <SmartListsTab accountId={creator.accountId} />
+      <SmartListsTab accountId={creator.accountId} accountsLoading={creator.loading} />
     </GrowthRailFrame>
   );
 }

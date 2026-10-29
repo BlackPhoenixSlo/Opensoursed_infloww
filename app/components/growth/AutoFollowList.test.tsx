@@ -123,7 +123,15 @@ describe("AutoFollowList", () => {
     mount([]);
     expect(screen.getByText("Automatically follow fans whose subscriptions have expired")).toBeTruthy();
     expect(screen.getByRole("columnheader", { name: "Creator name" })).toBeTruthy();
-    expect(screen.getByText("No data")).toBeTruthy();
+    // Placeholder rows while the stats read runs, then the empty state once it answers.
+    expect(screen.queryByText("No data")).toBeNull();
+    expect(await screen.findByText("No data")).toBeTruthy();
+  });
+
+  it("while the Creators load the table shows placeholder rows, not No data", () => {
+    render(<QueryClientProvider client={client}><AutoFollowList accounts={[]} accountsLoading /></QueryClientProvider>);
+    expect(screen.queryByText("No data")).toBeNull();
+    expect(document.querySelectorAll("tbody [data-loading]").length).toBeGreaterThan(0);
   });
 
   it("a row click opens the details view of the fans followed, sortable", async () => {

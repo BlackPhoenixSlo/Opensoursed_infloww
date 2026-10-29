@@ -29,6 +29,7 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import { ChevronRight, Plus } from "lucide-react";
 
 import { Badge } from "@/components/ui/primitives";
+import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState, IF_TABLE, IfButton, IfInput, IfLearn, IfModal, IfSelect, IfSwitch } from "@/components/ui/infloww";
 import { PageFrame } from "@/components/shell/PageFrame";
 import {
@@ -221,7 +222,7 @@ export default function ReadyMadePanel({ only }: { only: RuleKind }) {
           onEdit={(r) => { setAdding(false); setEditing(r); }}
           onDelete={setDeleting}
         />
-      ) : !creator.loading && <NoCreator />}
+      ) : <NoCreator loading={creator.loading} />}
       {(adding || editing) && accountId && (
         <ReadyMadeRuleEditor
           key={editing?.id ?? "new"}
@@ -298,7 +299,11 @@ function RuleTable({
           </tr>
         </thead>
         <tbody>
-          {loading ? line("Loading…") : error ? line(error, "text-err") : rules.length === 0 ? (
+          {loading ? Array.from({ length: 4 }, (_, i) => (
+            <tr key={i} className={IF_TABLE.row} data-loading>
+              {RULE_COLUMNS.map((c) => <td key={c} className={IF_TABLE.td}><Skeleton className="h-3 w-20" /></td>)}
+            </tr>
+          )) : error ? line(error, "text-err") : rules.length === 0 ? (
             <tr><td colSpan={RULE_COLUMNS.length}><EmptyState kind="data" text={empty} className={TABLE_EMPTY} /></td></tr>
           ) : rules.map((r) => {
             const expanded = open.has(r.id);

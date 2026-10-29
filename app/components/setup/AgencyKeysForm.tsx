@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { relay } from "@/lib/relay";
 import { useKeyDraft } from "@/hooks/useKeyDraft";
 import { LABELS, HELP, wrongFieldWarning } from "@/components/setup/providerFields";
+import { Skeleton } from "@/components/ui/Skeleton";
 
 /**
  * AgencyKeysForm — set an agency's LLM keys FOR them.
@@ -75,7 +76,7 @@ export function AgencyKeysForm(
       </p>
       {loadError && <div className="text-xs text-err" role="alert">{loadError}</div>}
       {providers === null ? (
-        <div className="text-xs text-fg-dim">Loading…</div>
+        <div className="space-y-2" aria-busy="true"><Skeleton className="h-4 w-24" /><Skeleton className="h-9 w-full" /><Skeleton className="h-9 w-full" /></div>
       ) : (
         Object.entries(providers).map(([name, k]) => (
           <div key={name} className="space-y-1">

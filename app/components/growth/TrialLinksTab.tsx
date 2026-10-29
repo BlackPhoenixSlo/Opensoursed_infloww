@@ -96,8 +96,10 @@ function trialMeta(l: TrialLink): string {
 type TabKey = "list" | "share";
 const TABS: Array<{ key: TabKey; label: string }> = [{ key: "list", label: "Links list" }, { key: "share", label: "Share links" }];
 
-export default function TrialLinksTab({ accountId, onAccountChange }: {
+export default function TrialLinksTab({ accountId, onAccountChange, accountsLoading = false }: {
   accountId: string | null;
+  /** The Creators list is still loading (no Creator picked yet): placeholder rows, not "No data". */
+  accountsLoading?: boolean;
   /** The creator filter picks the Creator every read and write below is for. */
   onAccountChange: (id: string) => void;
 }) {
@@ -185,9 +187,9 @@ export default function TrialLinksTab({ accountId, onAccountChange }: {
               </button>
             </>
           ) : null}
-          notice={!ofAvailable && !linksQ.isLoading && !sessionGone
+          notice={linksQ.data && !ofAvailable && !sessionGone
             ? <Unreachable text="OnlyFans not reachable — showing saved links only." /> : null}
-          loading={linksQ.isLoading}
+          loading={linksQ.isLoading || (!accountId && accountsLoading)}
           columns={columns}
           rows={links}
           rowKey={(l) => keyOf(l)}
@@ -327,10 +329,10 @@ function CreateTrialModal({ accountId, sources, tags, onClose }: {
 
 /** /growth/free-trial-links: this tab in the Growth HB frame. */
 export function TrialLinksPage() {
-  const { accountId, setAccountId } = useGrowthCreator();
+  const { accountId, setAccountId, loading } = useGrowthCreator();
   return (
     <GrowthHbFrame title="Free trial links">
-      <TrialLinksTab accountId={accountId} onAccountChange={setAccountId} />
+      <TrialLinksTab accountId={accountId} onAccountChange={setAccountId} accountsLoading={loading} />
     </GrowthHbFrame>
   );
 }

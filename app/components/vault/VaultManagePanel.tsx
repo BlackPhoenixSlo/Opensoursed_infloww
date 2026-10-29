@@ -16,7 +16,7 @@
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 
 import { useQueryClient } from "@tanstack/react-query";
-import { FolderInput, Loader2, Square, Trash2, X } from "lucide-react";
+import { FolderInput, Square, Trash2, X } from "lucide-react";
 
 import { AiKeyNotice } from "@/components/AiKeyNotice";
 import { EmptyState, IfModal } from "@/components/ui/infloww";
@@ -58,6 +58,7 @@ import {
 import { ApiKeyError, relay, type VaultList, type VaultMedia } from "@/lib/relay";
 import { type FanId } from "@/lib/fanId";
 import { EXTRA_LABEL, EXTRAS_OVERFLOW_LABEL } from "@/lib/openinflowwwwExtras";
+import { Skeleton } from "@/components/ui/Skeleton";
 
 type Tile = VaultMedia & { _ai?: Record<string, unknown> };
 
@@ -778,9 +779,9 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
 
           >
             {showLoading ? (
-              // The bundle's `Spin` while the grid loads.
-              <div role="status" aria-label="Loading" className="flex justify-center py-10 text-fg-dim">
-                <Loader2 size={24} className="animate-spin" aria-hidden />
+              // The bundle spins (`Spin`) while the grid loads; ours draws the grid's tiles as placeholders.
+              <div role="status" aria-label="Loading" className="grid grid-cols-3 md:grid-cols-6 gap-2 py-4">
+                {Array.from({ length: 12 }, (_, i) => <Skeleton key={i} className="aspect-square w-full rounded-md" />)}
               </div>
             ) : items.length === 0 && pageError ? (
               // #72: the grid's error, which Refresh above answers.
@@ -821,7 +822,7 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
                 {/* Ours: the bundle scrolls with no count and no load-more fallback. */}
                 <div title={EXTRA_LABEL} className="text-center text-xs text-fg-dim pt-1 pb-2">
                   {pageFetching ? (
-                    "Loading…"
+                    <Skeleton className="mx-auto h-3 w-16" />
                   ) : src.hasMore ? (
                     // Always clickable — auto-load is the happy path, but the
                     // user must never be stranded staring at a dead hint line.

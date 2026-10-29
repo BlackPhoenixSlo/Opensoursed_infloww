@@ -14,7 +14,9 @@ concurrently and are recorded in arrival order.
                                            wsAuthToken}: the WS pump's ticket
   GET  /api2/v2/chats                      OF's chat list, empty (`{"list": []}`): what
                                            the Creators strip's badges read while a
-                                           pump is live (bypass, declared: no chats)
+                                           pump is live (bypass, declared: no chats);
+                                           a scenario may set `chats[uid]` (OF chat
+                                           items) and gets them back, `offset`/`limit`
   GET  /api2/v2/users/notifications/count  the bell's counts, all zero (`{"all": 0, ...}`):
                                            the shell's per-Creator badge read
   GET  /cdn-cgi/trace                      Cloudflare's trace, as `proxies.probe` reads it
@@ -31,6 +33,11 @@ concurrently and are recorded in arrival order.
   GET  /api2/v2/payouts/referrals/chart    Statements › Referrals, $0 (`total` 0): the
                                            Dashboard's Referrals tile
   GET  /api2/v2/users/notifications        the alerts feed, empty: the purchases poller
+  GET  /api2/v2/payouts/transactions       the payouts feed, empty: Messages Pro's money rail
+  GET  /api2/v2/campaigns, /promotions, /vault/lists, /vault/media, /posts, /users/{id}/posts
+                                           empty pages (`{"list": [], "hasMore": false}`):
+                                           the page sweep's tracking links, offers, vault, feed
+  GET  /api2/v2/trials                     the free trial links, empty (`[]`, a bare list)
   any other path                           404, counted (`unmodelled`)
 
 `extra_s[uid]` adds seconds to every /api2/ call of that Creator: a Creator whose proxy
@@ -82,6 +89,7 @@ class FakeOF:
         self.latency_s = latency_s
         self.otp: set[str] = set()
         self.extra_s: dict[str, float] = {}  # per Creator, seconds added to each /api2/ call
+        self.chats: dict[str, list[dict]] = {}  # per Creator, the chat list /api2/v2/chats pages through
         self.lock = threading.Lock()
         self.calls: list[dict] = []          # every call, arrival order: {t, account, method, route, status}
         self.sends: dict[str, list[dict]] = {}  # per Creator, the messages OF accepted, in order (`t`: arrival)
@@ -234,7 +242,12 @@ class FakeOF:
                                                           "wsUrl": f"ws://127.0.0.1:{fake._ws_port}/ws3/{uid}",
                                                           "wsAuthToken": f"slop-ws-{uid}"})
                 if method == "GET" and u.path == "/api2/v2/chats":
-                    return self._record(uid, route, 200, {"list": [], "hasMore": False, "nextOffset": 0})
+                    q = parse_qs(u.query)
+                    off, lim = int((q.get("offset") or ["0"])[0]), int((q.get("limit") or ["10"])[0])
+                    with fake.lock:
+                        chats = list(fake.chats.get(uid, ()))
+                    return self._record(uid, route, 200, {"list": chats[off:off + lim],
+                                                          "hasMore": off + lim < len(chats), "nextOffset": off + lim})
                 if method == "GET" and u.path == "/api2/v2/users/notifications/count":
                     return self._record(uid, route, 200, {"all": 0, "subscribed": 0, "purchases": 0, "tip": 0})
                 if method == "GET" and u.path == "/api2/v2/subscriptions/count/all":
@@ -248,6 +261,17 @@ class FakeOF:
                     return self._record(uid, route, 200, {"total": 0, "delta": 0, "chartAmount": [], "chartCount": []})
                 if method == "GET" and u.path == "/api2/v2/users/notifications":
                     return self._record(uid, route, 200, {"list": [], "hasMore": False})
+                if method == "GET" and u.path == "/api2/v2/payouts/transactions":
+                    return self._record(uid, route, 200, {"list": [], "hasMore": False})
+                # The page sweep's reads of a Creator with none of these yet: OF's empty pages (of_client's shapes;
+                # /trials answers a bare list).
+                if method == "GET" and u.path in ("/api2/v2/campaigns", "/api2/v2/promotions", "/api2/v2/vault/lists",
+                                                  "/api2/v2/vault/media"):
+                    return self._record(uid, route, 200, {"list": [], "hasMore": False})
+                if method == "GET" and (u.path == "/api2/v2/posts" or re.fullmatch(r"/api2/v2/users/\d+/posts", u.path)):
+                    return self._record(uid, route, 200, {"list": [], "hasMore": False})
+                if method == "GET" and u.path == "/api2/v2/trials":
+                    return self._record(uid, route, 200, [])
                 m = _SEND.fullmatch(u.path)
                 if method == "POST" and m:
                     body = json.loads(raw or b"{}")

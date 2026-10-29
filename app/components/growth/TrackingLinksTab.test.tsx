@@ -995,15 +995,16 @@ describe("the update row, copy feedback, pager and house lines (ticket 59)", () 
     expect(within(dash).getByTitle(EXTRA_LABEL)).toBeTruthy();
   });
 
-  it("labels the house loading row as ours", async () => {
+  it("draws placeholder rows, not a Loading line or No data, while the links read runs", async () => {
     relayGet.mockImplementation((path: string) =>
       String(path) === "/admin/accounts"
         ? Promise.resolve({ accounts: [A, B], active_account_id: null })
         : new Promise(() => {}),
     );
     renderWithProviders(<TrackingLinksPage />);
-    const row = await screen.findByText(/^Loading/);
-    expect(within(row.closest("td") as HTMLElement).getByTitle(EXTRA_LABEL)).toBeTruthy();
+    await waitFor(() => expect(table().querySelectorAll("tbody [data-loading]").length).toBeGreaterThan(0));
+    expect(screen.queryByText(/^Loading/)).toBeNull();
+    expect(within(table()).queryByText("No data")).toBeNull();
   });
 });
 
@@ -1380,7 +1381,8 @@ describe("the HB frame (page-parity ticket 11)", () => {
     expect(screen.getByPlaceholderText("Search tracking link name")).toBeTruthy();
     expect(screen.getByRole("combobox", { name: "Source" })).toBeTruthy();
     expect((screen.getByRole("button", { name: "Create tracking link" }) as HTMLButtonElement).disabled).toBe(true);
-    expect(within(table()).getByText("No data")).toBeTruthy();
+    // The Creators read answered empty: only then the table's empty state, never while it runs.
+    expect(await within(table()).findByText("No data")).toBeTruthy();
   });
 
   it("puts the page on the HB body and Create on the HB primary (the CTA orange)", async () => {

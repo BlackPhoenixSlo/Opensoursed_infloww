@@ -37,6 +37,7 @@ import {
   tabOf, useSensitiveWords,
 } from "@/lib/sensitiveWords";
 import { cn } from "@/lib/utils";
+import { Skeleton } from "@/components/ui/Skeleton";
 
 interface ImportResult {
   total: number;
@@ -175,7 +176,11 @@ export default function SensitiveWordsPage() {
           <h2 className="my-4 text-[14px] font-medium text-fg">Sensitive words list</h2>
           <div className={cn("rounded-lg px-2.5 py-[15px]", HOME_B_TH)}>
             {listQ.isLoading ? (
-              <p className="text-xs text-fg-dim">Loading…</p>
+              <div className="flex flex-wrap gap-2" aria-busy="true">
+                {["w-16", "w-24", "w-20", "w-14", "w-28", "w-16", "w-20"].map((w, i) => (
+                  <Skeleton key={i} className={cn("h-8 rounded-md", w)} />
+                ))}
+              </div>
             ) : listQ.isError ? (
               <EmptyState kind="error" size="md" text="Couldn't load the list." onRetry={() => void listQ.refetch()}
                 className={EMPTY_BOX} />

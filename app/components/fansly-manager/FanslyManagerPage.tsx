@@ -21,6 +21,7 @@ import { EmptyState, IfCreatorSelect, InflowwPageHeader, useCreatorParam } from 
 import { useAccounts, useActiveAccounts } from "@/hooks/useAccounts";
 import type { NavLink } from "@/lib/nav";
 import { accountPlatform } from "@/lib/platform";
+import { TableSkeleton } from "@/components/ui/Skeleton";
 
 /** Each built page's body, by its nav href. The route (app/fansly-manager/[page]) renders this page only for a built
  *  link (`!notBuilt`), so every href it passes is here. */
@@ -40,8 +41,8 @@ export function FanslyManagerPage({ link }: { link: Pick<NavLink, "href" | "labe
   const [accountId, setAccountId] = useCreatorParam(accounts);
   const Body = BODIES[link.href];
 
-  // Wait for the flags rather than flash "not available" on a page that is on.
-  if (link.flag && !flags) return null;
+  // Wait for the flags rather than flash "not available" on a page that is on: the page's rows as placeholder bars.
+  if (link.flag && !flags) return <div className="p-4"><TableSkeleton rows={6} /></div>;
   if (link.flag && !flags?.[link.flag]) {
     return (
       <div className="flex h-full min-h-[calc(100dvh-var(--shell-top,56px))] items-center justify-center bg-bg px-6">

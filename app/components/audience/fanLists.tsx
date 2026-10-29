@@ -4,6 +4,8 @@ import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { relay } from "@/lib/relay";
+import { Skeleton } from "@/components/ui/Skeleton";
+import { cn } from "@/lib/utils";
 
 /**
  * The house fan-list picker parts, shared by every surface that targets an OF
@@ -211,7 +213,13 @@ export function ListColumn({
   emptyLabel: string;
   disabled?: boolean;
 }) {
-  if (loading) return <div className="text-[11px] text-fg-dim">Loading…</div>;
+  if (loading) {
+    return (
+      <div className="space-y-1.5" aria-busy="true">
+        {["w-32", "w-24", "w-28"].map((w) => <Skeleton key={w} className={cn("h-4", w)} />)}
+      </div>
+    );
+  }
   if (lists.length === 0) {
     return <div className="text-[11px] text-fg-dim italic">{emptyLabel}</div>;
   }

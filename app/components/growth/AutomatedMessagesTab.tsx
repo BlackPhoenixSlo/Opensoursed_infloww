@@ -75,6 +75,8 @@ import LifecycleMessageEditor, { PAID_ONLY_KINDS } from "./LifecycleMessageEdito
 import PurchaseFollowupEditor from "./PurchaseFollowupEditor";
 import { SM, SM_AUTOMATED_COLUMNS, SM_TRIGGERS } from "./smartMessagesControls";
 import { fmtPrice } from "@/lib/format";
+import { SkeletonRows } from "@/components/ui/Skeleton";
+import { useAccounts } from "@/hooks/useAccounts";
 
 const NUDGE = SM_TRIGGERS[0];
 const WELCOME = SM_TRIGGERS[1];
@@ -171,6 +173,9 @@ function dayOf(iso: string | null, timeZone: string | null): string | null {
 
 export default function AutomatedMessagesTab({ accountId }: { accountId: string | null }) {
   const rulesQ = useAutomationRules(accountId);
+  // No Creator yet because the Creators are still loading: the table is loading, not empty.
+  const accountsLoading = useAccounts().isLoading;
+  const loading = rulesQ.isLoading || (!accountId && accountsLoading);
   const cfgQ = useNudgeConfig(accountId);
   const reportTz = useReportTimeZone(accountId);
   const [draft, setDraft] = useState<Filters>(NO_FILTERS);
@@ -342,8 +347,8 @@ export default function AutomatedMessagesTab({ accountId }: { accountId: string 
             </tr>
           </thead>
           <tbody>
-            {rulesQ.isLoading ? (
-              <EmptyRow extra>Loading…</EmptyRow>
+            {loading ? (
+              <SkeletonRows cols={SM_AUTOMATED_COLUMNS.length} rows={5} cellClassName={IF_TABLE.td} />
             ) : (
               <>
                 {shown.map((r) => (

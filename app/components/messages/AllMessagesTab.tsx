@@ -47,6 +47,7 @@ import {
 } from "@/hooks/usePaidMessages";
 import { cn } from "@/lib/utils";
 import type { FanId } from "@/lib/fanId";
+import { TableSkeleton } from "@/components/ui/Skeleton";
 
 interface Props {
   from: string | null;
@@ -223,7 +224,7 @@ function AllTab({ from, to, fanId, onClearFanId }: Props) {
       )}
 
       {q.isPending ? (
-        <div className="p-8 text-center text-sm text-fg-dim">Loading…</div>
+        <TableSkeleton rows={6} className="m-4" />
       ) : rows.length === 0 ? (
         <div className="p-8 text-center text-sm text-fg-dim border border-border rounded-xl bg-panel">
           No messages match these filters.

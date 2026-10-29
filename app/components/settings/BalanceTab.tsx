@@ -15,13 +15,14 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { useScope } from "@/contexts/ScopeContext";
-import { useActiveAccounts } from "@/hooks/useAccounts";
+import { useAccounts, useActiveAccounts } from "@/hooks/useAccounts";
 import { fmtCents, fmtPrice } from "@/lib/format";
 import { relay } from "@/lib/relay";
 import type { Payout } from "@/lib/ofMirrorFeeds";
 import { LoadError, SettingsPanel, SettingsTable, TABLE_CELL, TABLE_ROW } from "@/components/settings/SettingsPanel";
 import { EmptyState, IfCreatorSelect } from "@/components/ui/infloww";
 import { cn } from "@/lib/utils";
+import { TableSkeleton } from "@/components/ui/Skeleton";
 
 const BALANCE = "/api/of/v2/payments/referrals/balance";
 const PAYOUTS = "/api/of/v2/payouts/requests/referral?limit=10";
@@ -68,6 +69,7 @@ const LABEL = "text-[length:var(--if-fs)] font-[var(--if-fw-title)] text-[var(--
 export default function BalanceTab() {
   const { accountId: scoped } = useScope();
   const accounts = useActiveAccounts();
+  const accountsLoading = useAccounts().isLoading;
   const [picked, setPicked] = useState<string | null>(null);
   const accountId = picked ?? scoped ?? accounts[0]?.id ?? null;
   const picker = accounts.length > 0 && <IfCreatorSelect accounts={accounts} value={accountId} onChange={setPicked} />;
@@ -84,7 +86,10 @@ export default function BalanceTab() {
   if (!accountId) {
     return (
       <SettingsPanel title="Your Balance" actions={picker}>
-        <EmptyState kind="data" text="Select a creator to see its balance" className="h-[260px]" />
+        {/* No Creator yet because the Creators are still loading: the panel's rows as placeholder bars. */}
+        {accountsLoading
+          ? <TableSkeleton rows={4} />
+          : <EmptyState kind="data" text="Select a creator to see its balance" className="h-[260px]" />}
       </SettingsPanel>
     );
   }

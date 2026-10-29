@@ -77,6 +77,7 @@ import { fmtCents } from "@/lib/format";
 import { RECORDED_EARNINGS_TIP, useTimesheet, type TimesheetRow } from "@/lib/shifts";
 import { assignedRole, unknownRoleLabel, withBuiltIns, type RolesBlob } from "@/lib/roles";
 import { cn } from "@/lib/utils";
+import { SkeletonRows } from "@/components/ui/Skeleton";
 
 /** The four filters; "" is each select's "All" option. "pending" is the invites not accepted yet. */
 type Filters = { name: string; creator: string; status: "" | "active" | "inactive" | "pending"; role: string };
@@ -550,7 +551,7 @@ export default function EmployeesTab() {
             </thead>
             <tbody>
               {q.isLoading && (
-                <tr><td colSpan={8} className="p-6 text-center text-muted">Loading…</td></tr>
+                <SkeletonRows cols={8} />
               )}
               {!q.isLoading && pageLines.length === 0 && (
                 <tr><td colSpan={8}><EmptyState kind="data" className="py-[12vh]" /></td></tr>

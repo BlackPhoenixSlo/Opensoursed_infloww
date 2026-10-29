@@ -48,6 +48,7 @@ import UnattributedDrawer from "@/components/stats/UnattributedDrawer";
 import { type Gran, granShown, rangeDays } from "@/components/stats/chart";
 import { IfBody, IfTabs, InflowwPageHeader } from "@/components/ui/infloww";
 import { ExtraTag } from "@/components/ui/primitives";
+import { TableSkeleton } from "@/components/ui/Skeleton";
 import { useReportRange } from "@/hooks/useReportRange";
 import { useChattingStats, useIngestHealth } from "@/hooks/useStats";
 import { fmtTimeOnly } from "@/lib/format";
@@ -122,7 +123,10 @@ function EmployeeReportBody({ routeTab }: { routeTab: EmployeeTab }) {
           )} />
         {tab === "sales" ? (
           <SalesRecords />
-        ) : ready && (
+        ) : !ready ? (
+          // The Applied settings (the report's time zone) are still in flight: the table's rows as placeholder bars.
+          <TableSkeleton rows={6} className="mt-6" />
+        ) : (
           <div className="space-y-8 pt-6">
             {tab === "performance" ? (
               <Charts tab="performance" from={fromIso} to={toIso} bucket={bucket} chatterOnly={chatterOnly} />

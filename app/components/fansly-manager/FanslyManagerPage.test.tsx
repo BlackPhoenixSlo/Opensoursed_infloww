@@ -59,10 +59,11 @@ describe("FanslyManagerPage", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("waits for the flags rather than flash not available", () => {
+  it("waits for the flags rather than flash not available: placeholder rows, no text", () => {
     flags = undefined;
     const { container } = renderWithProviders(<FanslyManagerPage link={findNavLink("/fansly-manager/lists")!} />);
-    expect(container).toBeEmptyDOMElement();
+    expect(container.querySelectorAll("[data-loading]").length).toBeGreaterThan(0);
+    expect(container.textContent).toBe("");
   });
 
   it("Notifications reads the feed and counts for the Fansly creator", async () => {

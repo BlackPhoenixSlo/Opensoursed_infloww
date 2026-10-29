@@ -24,6 +24,7 @@ import { relay } from "@/lib/relay";
 import { AgencyKeysForm } from "@/components/setup/AgencyKeysForm";
 import { AgencyKeyBadges } from "@/components/setup/AgencyKeyBadges";
 import { useUser } from "@/contexts/UserContext";
+import { TableSkeleton } from "@/components/ui/Skeleton";
 
 interface AdminUserRow {
   id: string;
@@ -145,7 +146,7 @@ export default function AdminUsersPage() {
       )}
 
       {rows === null ? (
-        <div className="text-sm text-fg-dim">Loading…</div>
+        <TableSkeleton rows={5} />
       ) : rows.length === 0 ? (
         <div className="text-sm text-fg-dim">No users registered yet.</div>
       ) : (
@@ -332,7 +333,7 @@ function GrantForm({ user, onChanged }: { user: AdminUserRow; onChanged: () => v
       </label>
       {error && <div className="text-sm text-err" role="alert">{error}</div>}
       {overview === null ? (
-        <div className="text-sm text-fg-dim">Loading accounts…</div>
+        <TableSkeleton rows={4} />
       ) : (
         <div className="grid gap-3">
           <section>

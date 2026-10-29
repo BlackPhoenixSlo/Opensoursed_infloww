@@ -48,7 +48,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { CheckCheck, Settings } from "lucide-react";
 
-import { useActiveAccounts } from "@/hooks/useAccounts";
+import { useAccounts, useActiveAccounts } from "@/hooks/useAccounts";
 import { IfBody, IfButton, IfTabs, InflowwPageHeader } from "@/components/ui/infloww";
 import {
   FILTERS,
@@ -73,6 +73,7 @@ const TABS = FILTERS.map((f) => {
 export default function NotificationsPage() {
   const router = useRouter();
   const activeAccounts = useActiveAccounts();
+  const accountsLoading = useAccounts().isLoading;
   const [filter, setFilter] = useState(FILTERS[0]);
   // Pages read per Creator on the current tab (one when absent); a tab
   // change starts every Creator at one.
@@ -93,7 +94,9 @@ export default function NotificationsPage() {
   const targetAccountIds = feed.accountIds;
   const accountLabel = useAccountLabelMap(activeAccounts);
   const merged = pageable ? feed.rows : feed.rows.slice(0, NOTIF_ALL_CAP);
-  const anyLoading = feed.loading;
+  // Loading until the Creators answer too: with none known yet the feed reads nothing, and "No notifications" would
+  // show before the first read.
+  const anyLoading = feed.loading || accountsLoading;
   const firstError = feed.error;
   // Creators with more to read: their last page came back full.
   const lastOffset = (aid: string) => ((pages[aid] ?? 1) - 1) * NOTIF_PAGE_SIZE;
@@ -136,7 +139,10 @@ export default function NotificationsPage() {
       <IfBody>
         <section className="mx-auto max-w-[1000px]">
           <h2 className="mb-2.5 text-[14px] font-semibold text-fg">OnlyFans notifications</h2>
-          {targetAccountIds.length === 0 ? (
+          {targetAccountIds.length === 0 && accountsLoading ? (
+            // No Creator known yet because the Creators are still loading: the rows' places, not "No active sessions".
+            <FeedStatus loading error={undefined} empty={false} size="page" />
+          ) : targetAccountIds.length === 0 ? (
             <NoSessionsNote size="page" />
           ) : (
             <>

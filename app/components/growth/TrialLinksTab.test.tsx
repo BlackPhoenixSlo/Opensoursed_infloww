@@ -97,6 +97,22 @@ describe("TrialLinksTab on the Tracking links frame", () => {
     expect(screen.queryByText("Fresh link")).toBeNull();
     expect(screen.getByText("No data")).toBeTruthy();
   });
+
+  it("while the Creators load: placeholder rows, no No data and no OnlyFans-not-reachable notice", () => {
+    renderWithProviders(<TrialLinksTab accountId={null} onAccountChange={() => {}} accountsLoading />);
+    const table = screen.getByRole("table", { name: "Links list" });
+    expect(table.querySelectorAll("tbody [data-loading]").length).toBeGreaterThan(0);
+    expect(screen.queryByText("No data")).toBeNull();
+    expect(screen.queryByText(/not reachable/)).toBeNull();
+  });
+
+  it("says OnlyFans is not reachable only once the list read answers so", async () => {
+    links = [trial({ id: 3, of_trial_id: null, name: "Saved link", source: "mirror" })];
+    extra = { of_available: false };
+    mount();
+    await screen.findByText("Saved link");
+    expect(screen.getByText(/OnlyFans not reachable/)).toBeTruthy();
+  });
 });
 
 describe("TrialLinksTab Create", () => {

@@ -33,6 +33,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { EmptyState, IfButton, IfInput, IfModal } from "@/components/ui/infloww";
+import { Skeleton } from "@/components/ui/Skeleton";
 import { ExtraTag } from "@/components/ui/primitives";
 import { ProjectionAvatar, S4SMediaCarousel, message } from "@/components/s4s/s4sBits";
 import {
@@ -264,6 +265,12 @@ export default function DiscoverCreators({ from }: { from: S4SProfile | null }) 
       )}
       {settled && filtered && items.length === 0 && (
         <EmptyState kind="search" className="py-24" text={<EmptyText title="No creators available" line="Try searching another keyword" />} />
+      )}
+      {q.isPending && (
+        // The first read in flight: the cards' places as placeholder bars, not a blank page.
+        <div role="status" aria-label="Loading" className="grid grid-cols-1 items-start gap-4 px-6 pb-6 md:grid-cols-2">
+          {Array.from({ length: 4 }, (_, i) => <Skeleton key={i} className="h-36 w-full rounded-lg" />)}
+        </div>
       )}
       {items.length > 0 && (
         <div className="grid grid-cols-1 items-start gap-4 px-6 pb-6 md:grid-cols-2">

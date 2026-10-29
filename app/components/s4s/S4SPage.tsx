@@ -20,8 +20,9 @@ import S4SSchedule from "@/components/s4s/S4SSchedule";
 import S4SSettingPanel from "@/components/s4s/S4SSettingPanel";
 import { UTC_NOTE } from "@/components/s4s/s4sBits";
 import { EmptyState, IfCreatorSelect, InflowwPageHeader, useCreatorParam } from "@/components/ui/infloww";
-import { useActiveAccounts } from "@/hooks/useAccounts";
+import { useAccounts, useActiveAccounts } from "@/hooks/useAccounts";
 import { useS4SProfiles, useS4SRequests } from "@/lib/s4s";
+import { TableSkeleton } from "@/components/ui/Skeleton";
 
 export type S4SSection = "discover-creators" | "requests" | "schedule" | "settings";
 
@@ -40,6 +41,7 @@ export default function S4SPage({ title, section }: { title: string; section: S4
 
 function OwnerBody({ section }: { section: S4SSection }) {
   const accounts = useActiveAccounts();
+  const accountsLoading = useAccounts().isLoading;
   const [accountId, setAccountId] = useCreatorParam(accounts);
   const profilesQ = useS4SProfiles();
   const receivedQ = useS4SRequests("received");
@@ -57,7 +59,8 @@ function OwnerBody({ section }: { section: S4SSection }) {
   }, [profiles, receivedQ.data]);
 
   let body;
-  if (!accountId) body = <EmptyState kind="creator" text="No creator connected yet" className="py-24" />;
+  // No Creator yet because the Creators are still loading: the section's rows as placeholder bars.
+  if (!accountId) body = accountsLoading ? <TableSkeleton rows={6} /> : <EmptyState kind="creator" text="No creator connected yet" className="py-24" />;
   else if (section === "discover-creators") body = <DiscoverCreators from={profile} />;
   else if (section === "requests") body = <S4SRequests profile={profile} accountId={accountId} />;
   else if (section === "schedule") body = <S4SSchedule profile={profile} livePosting={profilesQ.data?.live_posting} />;

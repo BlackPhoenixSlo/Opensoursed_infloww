@@ -1285,7 +1285,7 @@ describe("the header row and the Automated filter bar and table read like the bu
     }
   });
 
-  it("the house loading and read-failure lines carry the Inflowwww extra label; the bundle's No Data does not", async () => {
+  it("loading draws placeholder rows (no text); the read-failure line carries the Inflowwww extra label; No Data does not", async () => {
     // Loading: the rules read never answers.
     window.history.replaceState(null, "", "/growth/smart-messages");
     stubReads({});
@@ -1294,7 +1294,9 @@ describe("the header row and the Automated filter bar and table read like the bu
       String(path).startsWith("/admin/automation-rules") ? new Promise(() => {}) : answer(path, ctx));
     client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
     render(<QueryClientProvider client={client}><SmartMessagesPage /></QueryClientProvider>);
-    expect(await within(panel()).findByText("Loading…")).toHaveAttribute("title", EXTRA_LABEL);
+    await waitFor(() => expect(panel().querySelectorAll("tbody [data-loading]").length).toBeGreaterThan(0));
+    expect(within(panel()).queryByText(/Loading/)).toBeNull();
+    expect(within(panel()).queryByText(NO_DATA)).toBeNull();
     cleanup();
 
     await mount(undefined, { failRules: true });

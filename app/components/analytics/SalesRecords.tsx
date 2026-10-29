@@ -89,6 +89,7 @@ import { groupsInTreeOrder, useEmployeeGroups } from "@/lib/employeeGroups";
 import { fmtPrice } from "@/lib/format";
 import { relay } from "@/lib/relay";
 import { cn } from "@/lib/utils";
+import { TableSkeleton } from "@/components/ui/Skeleton";
 
 const ROUTE = "/admin/stats/sales-records";
 
@@ -314,7 +315,7 @@ export default function SalesRecords() {
   if (pages.isError) {
     body = <EmptyState kind="error" text={pages.error.message} onRetry={() => pages.refetch()} className="py-12" />;
   } else if (pages.isPending) {
-    body = <p className="p-4 text-[14px] text-fg-dim">Loading…</p>;
+    body = <TableSkeleton rows={8} className="m-4" />;
   } else if (rows.length === 0) {
     body = <EmptyState className="py-12" />;
   } else {

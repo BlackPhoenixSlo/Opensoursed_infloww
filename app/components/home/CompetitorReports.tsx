@@ -61,6 +61,7 @@ import {
 } from "@/components/stats/chart";
 import ExportMenu, { type ExportChoice } from "@/components/stats/ExportMenu";
 import { EmptyState } from "@/components/ui/infloww";
+import { Skeleton, TableSkeleton } from "@/components/ui/Skeleton";
 import { useReferralRevenue } from "@/hooks/useReferrals";
 import IngestHealthBanner from "@/components/stats/IngestHealthBanner";
 import PerModelKpiGrid from "@/components/stats/PerModelKpiGrid";
@@ -504,12 +505,17 @@ export default function CompetitorReports({ frame = "card" }: { frame?: Frame } 
   // Nothing mounts, so nothing is read, until the Applied settings answer: no request goes out with the
   // browser's days first (StatsReport waits the same way).
   if (!range.ready) {
+    // The Applied settings (the report's time zone) are still in flight: the report's rows as placeholder bars, so
+    // the page is not blank (the page frame has no surface of its own to show a bare pulse on).
     return (
-      <div
-        className={cn("h-[400px] animate-pulse", frame === "card" && "rounded-md border")}
-        style={frame === "card" ? { background: "var(--color-panel)", borderColor: "var(--color-border)" } : undefined}
-        aria-busy="true"
-      />
+      <div className={cn("p-4", frame === "card" && "rounded-md border")} aria-busy="true"
+        style={frame === "card" ? { background: "var(--color-panel)", borderColor: "var(--color-border)" } : undefined}>
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          <Skeleton className="h-8 w-48" />
+          <Skeleton className="ml-auto h-8 w-24" />
+        </div>
+        <TableSkeleton rows={6} />
+      </div>
     );
   }
   return <CreatorReportsCard range={range} frame={frame} />;

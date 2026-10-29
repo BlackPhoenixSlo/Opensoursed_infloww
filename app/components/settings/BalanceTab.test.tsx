@@ -12,7 +12,7 @@ const { scope, roster } = vi.hoisted(() => ({
 }));
 vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => scope }));
 // The panel's own Creator picker lists the session-backed Creators; none unless a test sets them.
-vi.mock("@/hooks/useAccounts", () => ({ useActiveAccounts: () => roster.accounts }));
+vi.mock("@/hooks/useAccounts", () => ({ useActiveAccounts: () => roster.accounts, useAccounts: () => ({ isLoading: false }) }));
 vi.mock("@/components/ui/AccountAvatarPicture", () => ({ AccountAvatarPicture: () => null }));
 
 import { jsonRes, renderWithProviders } from "@/test-utils";

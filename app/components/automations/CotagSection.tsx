@@ -23,6 +23,7 @@ import { Button } from "@/components/ui/primitives";
 import { useAccountConfig, useSaveAccountConfig, type AccountConfigResp } from "@/hooks/useAccountConfig";
 
 import { relay } from "@/lib/relay";
+import { Skeleton } from "@/components/ui/Skeleton";
 
 export interface CotagPatch {
   cotag_tag_videos?: boolean;
@@ -156,8 +157,10 @@ export default function CotagSection({ accountId, tagVideos, username, onChange 
 export function CotagCard({ accountId }: { accountId: string }) {
   const cfgQ = useAccountConfig(accountId);
   if (!cfgQ.data?.config) {
-    return cfgQ.isError
-      ? <p className="text-sm text-err">{(cfgQ.error as Error)?.message || "Could not load the co-creator tag."}</p>
+    if (cfgQ.isError) return <p className="text-sm text-err">{(cfgQ.error as Error)?.message || "Could not load the co-creator tag."}</p>;
+    // The config read in flight: the form's places as placeholder bars, not a blank card.
+    return cfgQ.isLoading
+      ? <div role="status" aria-label="Loading" className="space-y-3"><Skeleton className="h-4 w-40" /><Skeleton className="h-10 w-full" /></div>
       : null;
   }
   return <CotagForm accountId={accountId} resp={cfgQ.data} />;

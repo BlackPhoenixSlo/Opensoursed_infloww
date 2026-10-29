@@ -560,6 +560,27 @@ _DASHBOARD_OFFLINE_CREATOR_READS_OF = """(() => {
 })();"""
 
 
+# app/components/auth/AuthGate.tsx as before 2026-10-29: nothing drawn while the principal probes run, so the page is
+# blank until the app's JS has loaded and /auth/me answered. The server's HTML still carries the boot skeleton (a
+# browser rewrite cannot reach the server render), so it is hidden from the first byte: the screen is what the old
+# gate's `null` drew. Declared: CSS, not the gate's code.
+_BOOT_SKELETON_NOT_DRAWN = """(() => {
+  const s = new CSSStyleSheet();
+  s.replaceSync('[data-boot-skeleton] { display: none !important; }');
+  document.adoptedStyleSheets = [...document.adoptedStyleSheets, s];
+})();"""
+
+
+# The signed-in pages as before 2026-10-29's round two: nothing in place of a page's placeholder bars while its first
+# reads run (the old pages drew a spinner, a "Loading…" line or the empty state there instead). Declared: CSS hides every
+# `[data-loading]` placeholder from the first byte, not the pages' code.
+_PAGE_PLACEHOLDERS_NOT_DRAWN = """(() => {
+  const s = new CSSStyleSheet();
+  s.replaceSync('[data-loading] { display: none !important; }');
+  document.adoptedStyleSheets = [...document.adoptedStyleSheets, s];
+})();"""
+
+
 # The Fan List as before ADR-0003's 2026-10-26 amendment, in the two ways its
 # scenario must see: Owe reply laid out last in the chip row, where the "+"
 # overflow sat, and a sort button that never looks active (not pressed, not
@@ -863,6 +884,20 @@ FAULTS: dict[str, Fault] = {
         "the session-less Creator's card sent no OnlyFans request and shows 'Not connected'; "
         "every live Creator's card read OF",
     ), browser_js=_DASHBOARD_OFFLINE_CREATOR_READS_OF),
+    # slop/run 2026-10-28-dashboard-load --break --fault=boot-skeleton-not-drawn: the two first-paint checks.
+    "boot-skeleton-not-drawn": Fault(None, (
+        "Dashboard loads whose JS comes over the network (first, after-deploy): the page's frame (the earnings "
+        "card's labels, placeholder bars for the figures) painted before the app's first relay read, and the "
+        "settled page has no skeleton left",
+        "Messages Pro, first visit: its frame (the Fan List's skeleton rows) painted before the app's first relay "
+        "read, and the settled list shows Fan rows and no skeleton",
+    ), browser_js=_BOOT_SKELETON_NOT_DRAWN),
+    # slop/run 2026-10-28-dashboard-load --break --fault=page-placeholders-not-drawn: the page sweep alone.
+    "page-placeholders-not-drawn": Fault(None, (
+        "every signed-in page, its relay reads held: no blank area, spinner, 'Loading…' line or empty state "
+        "before its first data (its layout with placeholder bars instead), and none of those left once the reads "
+        "answer",
+    ), browser_js=_PAGE_PLACEHOLDERS_NOT_DRAWN),
     "restore-stale-point": Fault(None, (
         "RPO: every DM box A took more than 2s before the kill is in the restored DB",
         "counts match per shard after recovery: restored + taken on box B, nothing else",

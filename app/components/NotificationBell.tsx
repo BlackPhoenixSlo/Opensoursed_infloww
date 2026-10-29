@@ -93,6 +93,7 @@ import {
   type SoundPref,
 } from "@/lib/notifSettings";
 import { BRAND_NAME } from "@/lib/brand";
+import { Skeleton } from "@/components/ui/Skeleton";
 
 /** The bell's tabs, shared with the full Notifications page
  *  (`components/NotificationsPage.tsx`), which reads the same request. */
@@ -268,7 +269,7 @@ export function FeedStatus({ loading, error, empty, size = "bell", onRetry }: {
     if (loading) {
       return (
         <div role="status" aria-label="Loading notifications" className="space-y-px overflow-hidden rounded-[12px]">
-          {[0, 1, 2].map((i) => <div key={i} className="h-[60px] animate-pulse bg-bg-elev-2" />)}
+          {[0, 1, 2].map((i) => <Skeleton key={i} className="h-[60px] w-full rounded-none" />)}
         </div>
       );
     }

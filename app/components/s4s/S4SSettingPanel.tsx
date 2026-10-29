@@ -20,6 +20,7 @@ import { ChevronLeft } from "lucide-react";
 import { VaultPicker } from "@/components/chat/VaultPicker";
 import { Field, FieldTextarea } from "@/components/settings/SettingsPanel";
 import { EmptyState, IF_TABLE, IfButton, IfModal, IfSelect, IfSwitch, type IfOption } from "@/components/ui/infloww";
+import { TableSkeleton } from "@/components/ui/Skeleton";
 import { ExtraTag } from "@/components/ui/primitives";
 import { ProjectionAvatar, S4SMediaStrip, message } from "@/components/s4s/s4sBits";
 import { vaultTileThumb } from "@/hooks/useVaultCache";
@@ -71,7 +72,7 @@ export default function S4SSettingPanel({ query, profile }: {
   profile: S4SProfile | null;
 }) {
   const [managing, setManaging] = useState(false);
-  if (query.isPending) return <p className="p-6 text-[14px] text-fg-dim">Loading…</p>;
+  if (query.isPending) return <div className="p-6"><TableSkeleton rows={4} /></div>;
   if (query.error) return <p role="alert" className="p-6 text-[14px] text-err">{message(query.error)}</p>;
   if (!profile) return <EmptyState kind="creator" text="No creator connected yet" className="py-24" />;
   return managing

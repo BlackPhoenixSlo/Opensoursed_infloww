@@ -24,6 +24,7 @@ import TipRow from "@/components/messages/TipRow";
 import { Button } from "@/components/ui/primitives";
 import { buildTipsListQuery, useTipsList } from "@/hooks/useTipsList";
 import { cn } from "@/lib/utils";
+import { TableSkeleton } from "@/components/ui/Skeleton";
 
 interface Props {
   from: string | null;
@@ -109,7 +110,7 @@ export default function TipsTab({ from, to, presetFanQuery }: Props) {
       )}
 
       {q.isPending ? (
-        <div className="p-8 text-center text-sm text-fg-dim">Loading…</div>
+        <TableSkeleton rows={6} className="m-4" />
       ) : rows.length === 0 ? (
         <div className="p-8 text-center text-sm text-fg-dim border border-border rounded-xl bg-panel">
           No tips in this window.

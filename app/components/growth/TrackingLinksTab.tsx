@@ -94,6 +94,7 @@ import { useUser } from "@/contexts/UserContext";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { fmtPrice } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { SkeletonRows } from "@/components/ui/Skeleton";
 
 /** The internal link is same-origin (Next rewrites /t/* to the relay). */
 function publicUrl(path: string): string {
@@ -123,9 +124,11 @@ const TABS: Array<{ key: TabKey; label: string }> = [
 ];
 
 export default function TrackingLinksTab({
-  accountId, onAccountChange,
+  accountId, onAccountChange, accountsLoading = false,
 }: {
   accountId: string | null;
+  /** The Creators are still loading: the list is loading, not empty. */
+  accountsLoading?: boolean;
   /** The creator filter (#17) picks the Creator every read and write below is for. */
   onAccountChange: (id: string) => void;
 }) {
@@ -140,7 +143,7 @@ export default function TrackingLinksTab({
       <FrameTabs tabs={owner ? TABS : TABS.slice(0, 2)} value={tab} onChange={setTab} label="Tracking links" idPrefix="tl" />
       <div role="tabpanel" id={`tl-panel-${tab}`} aria-labelledby={`tl-tab-${tab}`}>
         {tab === "list"
-          ? <LinksList accountId={accountId} onAccountChange={onAccountChange} net={net} onNet={setNet} />
+          ? <LinksList accountId={accountId} onAccountChange={onAccountChange} net={net} onNet={setNet} accountsLoading={accountsLoading} />
           : tab === "share"
             ? <TrackingShares accountId={accountId} onAccountChange={onAccountChange} />
             : <Dashboard accountId={accountId} onAccountChange={onAccountChange} net={net} onNet={setNet} />}
@@ -306,7 +309,7 @@ function exportCsv(rows: OfTrackingLink[], cols: Col[], tz: string | null) {
 
 type TabProps = { accountId: string | null; onAccountChange: (id: string) => void; net: boolean; onNet: (on: boolean) => void };
 
-function LinksList({ accountId, onAccountChange, net, onNet }: TabProps) {
+function LinksList({ accountId, onAccountChange, net, onNet, accountsLoading = false }: TabProps & { accountsLoading?: boolean }) {
   const { q, links } = useLinks(accountId, net);
   const deleteM = useDeleteOfTrackingLink(accountId);
   const filters = useFrameFilters();
@@ -370,7 +373,8 @@ function LinksList({ accountId, onAccountChange, net, onNet }: TabProps) {
         /* Ours when the read fails while the session looks alive; a dead session gets the bundle's reconnect state
            (#68) in the table body instead. */
         notice={!q.isLoading && !ofAvailable && !sessionGone ? <Unreachable /> : null}
-        loading={q.isLoading}
+        // No Creator picked yet because the Creators are still loading: the table is loading, not empty.
+        loading={q.isLoading || (!accountId && accountsLoading)}
         /* #34: only the columns with data draw (`visibleCols`), so the table fits. */
         columns={cols.map((c) => ({
           title: c.title, width: c.width, tip: c.tip, hint: c.hint, cell: (l: OfTrackingLink) => c.cell?.(l, reportTz) ?? "—",
@@ -624,11 +628,7 @@ function LinkDetails({ accountId, link, net, onBack }: {
           </thead>
           <tbody>
             {q.isLoading ? (
-              <tr>
-                <td colSpan={span} className={cn(TD, "text-fg-dim")}>
-                  <span className="inline-flex items-center gap-2">Loading… <ExtraTag /></span>
-                </td>
-              </tr>
+              <SkeletonRows cols={span} rows={5} cellClassName={TD} />
             ) : shown.length === 0 ? (
               <tr><td colSpan={span} className={cn(TD, "text-center text-fg-dim")}>No data</td></tr>
             ) : (
@@ -909,10 +909,10 @@ function Analytics({ accountId, linkId }: { accountId: string; linkId: number })
 
 /** /growth/tracking-links: this tab in the Growth HB frame. */
 export function TrackingLinksPage() {
-  const { accountId, setAccountId } = useGrowthCreator();
+  const { accountId, setAccountId, loading } = useGrowthCreator();
   return (
     <GrowthHbFrame title="Tracking links">
-      <TrackingLinksTab accountId={accountId} onAccountChange={setAccountId} />
+      <TrackingLinksTab accountId={accountId} onAccountChange={setAccountId} accountsLoading={loading} />
     </GrowthHbFrame>
   );
 }

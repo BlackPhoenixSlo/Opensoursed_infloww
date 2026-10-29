@@ -10,6 +10,7 @@ import type { ReactNode } from "react";
 
 import type { CreatorPick } from "@/components/shell/CreatorRail";
 import { EmptyState, IfButton, IfModal, IfSwitch, useCreatorParam } from "@/components/ui/infloww";
+import { Skeleton } from "@/components/ui/Skeleton";
 import { useAccounts, useActiveAccounts } from "@/hooks/useAccounts";
 import { cn } from "@/lib/utils";
 
@@ -23,8 +24,26 @@ export function useAutomationCreator() {
   return { accountId, creators, loading };
 }
 
-/** No Creator has a live session: ticket 04's creator art in the list body's 400px. */
-export function NoCreator() {
+/** No Creator has a live session: ticket 04's creator art in the list body's 400px. While the account list is still
+ *  `loading` it is the page's form instead, as placeholder bars (a FormBlock's heading and box), so the page is not
+ *  blank before the creator resolves. */
+export function NoCreator({ loading = false }: { loading?: boolean }) {
+  if (loading) {
+    return (
+      <div className="space-y-8" role="status" aria-label="Loading">
+        {[0, 1].map((i) => (
+          <section key={i}>
+            <Skeleton className="mb-4 h-5 w-40" />
+            <div className="space-y-4 rounded-lg border border-border p-6 max-sm:p-4">
+              <Skeleton className="h-4 w-3/4" />
+              <Skeleton className="h-9 w-full" />
+              <Skeleton className="h-4 w-1/2" />
+            </div>
+          </section>
+        ))}
+      </div>
+    );
+  }
   return <EmptyState kind="creator" text="No creator with a live session" className="min-h-[400px]" />;
 }
 

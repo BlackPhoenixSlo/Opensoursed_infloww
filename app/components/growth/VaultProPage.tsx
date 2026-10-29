@@ -17,7 +17,7 @@
  */
 
 import { useState } from "react";
-import { ArrowLeft, ListFilter, Loader2, MoreHorizontal, Plus, Search } from "lucide-react";
+import { ArrowLeft, ListFilter, MoreHorizontal, Plus, Search } from "lucide-react";
 
 import { CreatorRail } from "@/components/shell/CreatorRail";
 import { EmptyState, IfButton, IfLearn, InflowwPageHeader } from "@/components/ui/infloww";
@@ -28,6 +28,7 @@ import VaultManagePanel, { VAULT_GRID_CLASS, VAULT_PANES_CLASS } from "@/compone
 import VaultMediaToolbar from "@/components/vault/VaultMediaToolbar";
 import { VaultTour, useVaultTour, type VaultTourStep } from "@/components/vault/VaultTour";
 import { EXTRA_LABEL, EXTRAS_OVERFLOW_LABEL } from "@/lib/openinflowwwwExtras";
+import { Skeleton } from "@/components/ui/Skeleton";
 
 /** #7: the bundle's Learn opens this help article (`openExternalUrl`, index.9f50f370.js @13108064). */
 const LEARN_HREF = "https://help.infloww.com/en/articles/9346888-vault-pro";
@@ -229,9 +230,9 @@ function VaultProBody() {
           ready ? (
             <VaultEmptyFrame />
           ) : (
-            // #13: the bundle's `Spin` while the page loads.
-            <div role="status" aria-label="Loading" className="flex justify-center py-10 text-fg-dim">
-              <Loader2 size={24} className="animate-spin" aria-hidden />
+            // #13: the bundle spins (`Spin`) while the page loads; ours draws the vault's tiles as placeholders.
+            <div role="status" aria-label="Loading" className="grid grid-cols-3 md:grid-cols-6 gap-2 px-3 md:px-6 py-4">
+              {Array.from({ length: 8 }, (_, i) => <Skeleton key={i} className="aspect-square w-full rounded-md" />)}
             </div>
           )
         ) : (

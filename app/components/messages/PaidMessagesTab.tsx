@@ -21,6 +21,7 @@ import MessageRow from "@/components/messages/MessageRow";
 import { Button } from "@/components/ui/primitives";
 import { buildPaidMessagesQuery, usePaidMessages, type PaidStatus } from "@/hooks/usePaidMessages";
 import { cn } from "@/lib/utils";
+import { TableSkeleton } from "@/components/ui/Skeleton";
 
 interface Props {
   from: string | null;
@@ -105,7 +106,7 @@ export default function PaidMessagesTab({ from, to }: Props) {
       )}
 
       {q.isPending ? (
-        <div className="p-8 text-center text-sm text-fg-dim">Loading…</div>
+        <TableSkeleton rows={6} className="m-4" />
       ) : rows.length === 0 ? (
         <div className="p-8 text-center text-sm text-fg-dim border border-border rounded-xl bg-panel">
           No paid messages in this window.

@@ -12,7 +12,7 @@ const { scope, roster } = vi.hoisted(() => ({
   roster: { accounts: [] as Array<{ id: string; nickname: string; has_session: boolean }> },
 }));
 vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => scope }));
-vi.mock("@/hooks/useAccounts", () => ({ useActiveAccounts: () => roster.accounts }));
+vi.mock("@/hooks/useAccounts", () => ({ useActiveAccounts: () => roster.accounts, useAccounts: () => ({ isLoading: false }) }));
 vi.mock("@/components/ui/AccountAvatarPicture", () => ({ AccountAvatarPicture: () => null }));
 vi.mock("@/lib/relay", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/lib/relay")>();

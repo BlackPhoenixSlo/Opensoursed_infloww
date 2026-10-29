@@ -30,11 +30,12 @@ import {
   useAutoFollowRecords, useAutoFollowStats, useAutoFollowSwitch,
   type AutoFollowStatsRow, type RecordSort,
 } from "@/hooks/useAutoFollowList";
-import { useActiveAccounts } from "@/hooks/useAccounts";
+import { useAccounts, useActiveAccounts } from "@/hooks/useAccounts";
 import { type AccountMeta } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 import { onPopoutClick } from "@/lib/nav";
 import { fmtCents } from "@/lib/format";
+import { SkeletonRows } from "@/components/ui/Skeleton";
 
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July",
   "August", "September", "October", "November", "December"];
@@ -76,8 +77,13 @@ const RESET = "border-accent text-accent";
 /** Infloww's column widths (Total follows 120, Last followed 200, Action 80). */
 const W = { total: "w-[120px]", last: "w-[200px]", action: "w-[80px]" };
 
-export default function AutoFollowList({ accounts }: { accounts: AccountMeta[] }) {
+export default function AutoFollowList({ accounts, accountsLoading = false }: {
+  accounts: AccountMeta[];
+  /** The Creators are still loading: placeholder rows, not "No data". */
+  accountsLoading?: boolean;
+}) {
   const stats = useAutoFollowStats();
+  const loading = accountsLoading || stats.isLoading;
   const sw = useAutoFollowSwitch();
   const [creator, setCreator] = useState<string>("all");
   const [onFilter, setOnFilter] = useState<OnFilter>("all");
@@ -150,7 +156,9 @@ export default function AutoFollowList({ accounts }: { accounts: AccountMeta[] }
             </tr>
           </thead>
           <tbody>
-            {rows.length === 0 && (
+            {/* The Creators and their counts still on the way: placeholder rows, not "No data". */}
+            {loading && <SkeletonRows cols={8} rows={4} cellClassName={IF_TABLE.td} />}
+            {!loading && rows.length === 0 && (
               <tr><td colSpan={8}><EmptyState className="min-h-[400px]" /></td></tr>
             )}
             {rows.map(({ account, s }) => {
@@ -266,6 +274,7 @@ export function AutoFollowDetails({ account, stats, onBack }: {
             </tr>
           </thead>
           <tbody>
+            {q.isLoading && <SkeletonRows cols={5} rows={4} cellClassName={IF_TABLE.td} />}
             {!q.isLoading && (q.data?.rows.length ?? 0) === 0 && (
               <tr><td colSpan={5}><EmptyState className="min-h-[400px]" /></td></tr>
             )}
@@ -302,7 +311,7 @@ export function AutoFollowPage() {
   return (
     <div className="flex min-h-full flex-col">
       <InflowwPageHeader title="Auto-follow" />
-      <AutoFollowList accounts={useActiveAccounts()} />
+      <AutoFollowList accounts={useActiveAccounts()} accountsLoading={useAccounts().isLoading} />
     </div>
   );
 }

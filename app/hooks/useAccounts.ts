@@ -171,14 +171,17 @@ export interface GrowthCreator {
   accounts: AccountMeta[];
   accountId: string | null;
   setAccountId: (id: string) => void;
+  /** The Creators are still loading (so no Creator is picked yet): a page shows its placeholders, not "no creator". */
+  loading: boolean;
 }
 
 /** The creator a Growth page and its frame share: Tracking and Free trial links' Creator filter, Profile promotion's
  *  and Smart lists' rail (`growth/GrowthFrame`). */
 export function useGrowthCreator(): GrowthCreator {
   const accounts = useActiveAccounts();
+  const loading = useAccounts().isLoading;
   const [picked, setAccountId] = useState<string | null>(null);
   // Default to the first account until the user picks one.
   const accountId = picked ?? accounts[0]?.id ?? null;
-  return { accounts, accountId, setAccountId };
+  return { accounts, accountId, setAccountId, loading };
 }

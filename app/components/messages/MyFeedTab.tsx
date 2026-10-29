@@ -22,6 +22,7 @@ import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useMyFeed, type FeedMediaType, type OFPost } from "@/hooks/usePosts";
 import { relay } from "@/lib/relay";
 import { cn } from "@/lib/utils";
+import { TableSkeleton } from "@/components/ui/Skeleton";
 
 // Mirror of useMyFeed's page shape, for typing the optimistic cache edits.
 interface FeedPage {
@@ -186,7 +187,7 @@ export default function MyFeedTab() {
           Pick a model to see their profile feed.
         </div>
       ) : q.isPending ? (
-        <div className="p-8 text-center text-sm text-fg-dim">Loading…</div>
+        <TableSkeleton rows={6} className="m-4" />
       ) : posts.length === 0 ? (
         <div className="p-8 text-center text-sm text-fg-dim border border-border rounded-xl bg-panel">
           No posts on this profile yet.

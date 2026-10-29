@@ -120,7 +120,8 @@ const ART_HEIGHT = { sm: 40, md: 90, lg: 100 } as const;
  * Infloww's `Empty$1` (`._empty-wrap_1iayr_1 img{height:100px;margin-bottom:8px}`, text T3): the illustration, 8px,
  * then a 14px #999 line, centred. `size="sm"` is the antd table's simple empty (40px art, 32px above and below);
  * `md` the 90px art Sensitive words uses. `kind="error"` with `onRetry` adds `AbnormalRequestError`'s primary "Retry"
- * 10px below; `action` puts any other button there.
+ * 10px below; `action` puts any other button there. `data-empty-state` names it for slop's page sweep (an empty state
+ * on screen before a page's first read answered is a false one).
  */
 export function EmptyState({
   kind = "data", text = "No data", onRetry, action, size = "lg", className, textClassName,
@@ -134,7 +135,7 @@ export function EmptyState({
   textClassName?: string;
 }) {
   return (
-    <div className={cn("flex flex-col items-center justify-center text-center", size === "sm" && "py-8", className)}>
+    <div data-empty-state={kind} className={cn("flex flex-col items-center justify-center text-center", size === "sm" && "py-8", className)}>
       <EmptyArt kind={kind} height={ART_HEIGHT[size]} />
       <p className={cn("text-[14px] text-muted", size === "md" ? "mt-2.5" : "mt-2", textClassName)}>{text}</p>
       {kind === "error" && onRetry && (

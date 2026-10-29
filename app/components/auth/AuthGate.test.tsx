@@ -65,3 +65,28 @@ describe("AuthGate on /chatter-login", () => {
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Back for another shift?");
   });
 });
+
+describe("AuthGate while the principal probes run", () => {
+  it("a browser with a session cookie sees the route's skeleton frame, not a blank page", () => {
+    mockPath = "/";
+    mockUser = { user: null, loading: true };
+    render(<AuthGate signedIn><div>SHELL</div></AuthGate>);
+    expect(screen.queryByText("SHELL")).toBeNull();
+    expect(document.querySelector("[data-boot-skeleton]")?.getAttribute("data-boot-skeleton")).toBe("dashboard");
+  });
+
+  it("a browser without one sees nothing, so a signed-out visitor never sees the app's frame flash", () => {
+    mockPath = "/";
+    mockUser = { user: null, loading: true };
+    const { container } = render(<AuthGate><div>SHELL</div></AuthGate>);
+    expect(container.innerHTML).toBe("");
+  });
+
+  it("once signed in, the page replaces the skeleton", () => {
+    mockPath = "/";
+    mockUser = { user: { user_id: "u1", username: "owner" }, loading: false };
+    render(<AuthGate signedIn><div>SHELL</div></AuthGate>);
+    expect(screen.getByText("SHELL")).toBeTruthy();
+    expect(document.querySelector("[data-boot-skeleton]")).toBeNull();
+  });
+});

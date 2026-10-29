@@ -74,6 +74,7 @@ import { cn } from "@/lib/utils";
 import { useTabParam } from "@/hooks/useTabParam";
 import { OnlyfansLine } from "@/components/shell/inflowwIcons";
 import { EmptyState, IfCard, IfSegmented, IfSelect } from "@/components/ui/infloww";
+import { Skeleton } from "@/components/ui/Skeleton";
 import {
   control, DEFAULT_BASIS, DEFAULT_PERIOD, isPeriod, PERIOD_TABS, type Basis, type DashboardControlKey,
 } from "@/components/home/dashboardControls";
@@ -156,7 +157,7 @@ function Info({ k }: { k: DashboardControlKey }) {
 function Shimmer({ what, className }: { what: string; className: string }) {
   return (
     <span role="status" aria-label={`Loading ${what}`} data-loading className="flex items-center">
-      <span className={cn("block rounded bg-bg-elev-2 animate-pulse", className)} />
+      <Skeleton className={className} />
     </span>
   );
 }

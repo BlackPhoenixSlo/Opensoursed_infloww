@@ -268,12 +268,13 @@ describe("/creators/proxy", () => {
     expect(confirmSpy).not.toHaveBeenCalled();
   });
 
-  it("shows antd's spinner over the empty table while the proxies read runs", async () => {
+  it("shows placeholder rows, not No data, while the proxies read runs", async () => {
     relayGet.mockReturnValue(new Promise(() => {}));
     renderWithProviders(<Page />);
-    // creators-proxy#22: the table's loading spinner, not a text row.
-    const spin = within(proxyTable()).getByRole("status", { name: "Loading" });
-    expect(spin).toBeInTheDocument();
+    // creators-proxy#22 drew antd's spinner over an empty table; the owner's 2026-10-29 ask is placeholder rows on
+    // every page, and no false "No data" before the first answer.
+    expect(proxyTable().querySelectorAll("tbody [data-loading]").length).toBeGreaterThan(0);
+    expect(within(proxyTable()).queryByText("No data")).toBeNull();
     expect(screen.queryByText(/Loading proxies/)).toBeNull();
   });
 

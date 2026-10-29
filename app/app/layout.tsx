@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import { cookies } from "next/headers";
 import localFont from "next/font/local";
 
 import Providers from "@/components/providers";
@@ -159,9 +160,15 @@ const CHUNK_ERROR_BOOT_SCRIPT = `
 // so there is nothing worth prerendering.
 export const dynamic = "force-dynamic";
 
-export default function RootLayout({
+// The relay's session cookies (service/auth.py COOKIE_NAME, service/chatters.py COOKIE_NAME). Their presence, not
+// their validity: AuthGate paints the page's skeleton for a browser that holds one while /auth/me decides.
+const SESSION_COOKIES = ["chatterly_session", "chatterly_chatter_session"];
+
+export default async function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
+  const jar = await cookies();
+  const signedIn = SESSION_COOKIES.some((n) => jar.has(n));
   // The font variable lets us reference --font-ui from Tailwind's
   // `font-sans` token (configured in globals.css @theme).
   return (
@@ -178,7 +185,7 @@ export default function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: PINCH_BLOCK_BOOT_SCRIPT }} />
         <script dangerouslySetInnerHTML={{ __html: CHUNK_ERROR_BOOT_SCRIPT }} />
         <Providers>
-          <AuthGate>
+          <AuthGate signedIn={signedIn}>
             {/* One help conversation for the corner dock and /help-center. */}
             <AssistantProvider>
               <ImpersonationBanner />

@@ -17,6 +17,7 @@ import { useTenantKeys, useSaveTenantKeys } from "@/hooks/useTenantKeys";
 import { LABELS, HELP, wrongFieldWarning } from "@/components/setup/providerFields";
 import { useKeyDraft } from "@/hooks/useKeyDraft";
 import { Badge, Button, Card, Input } from "@/components/ui/primitives";
+import { Skeleton } from "@/components/ui/Skeleton";
 
 export default function AgencyKeysCard() {
   const { data, isLoading, error } = useTenantKeys();
@@ -103,7 +104,7 @@ export default function AgencyKeysCard() {
         </div>
       )}
 
-      {isLoading && <div className="text-sm text-fg-dim">Loading…</div>}
+      {isLoading && <div className="space-y-2" aria-busy="true"><Skeleton className="h-4 w-32" /><Skeleton className="h-9 w-full" /></div>}
       {error && (
         <div className="text-sm text-err">
           Couldn&apos;t load your key status — sign in as an account owner.

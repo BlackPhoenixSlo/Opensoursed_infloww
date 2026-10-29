@@ -26,6 +26,7 @@ import UserDataTab from "@/components/stats/UserDataTab";
 import { AccountAvatarPicture } from "@/components/ui/AccountAvatarPicture";
 import { IfBody, IfSelect, InflowwPageHeader, type IfOption } from "@/components/ui/infloww";
 import { ExtraTag } from "@/components/ui/primitives";
+import { TableSkeleton } from "@/components/ui/Skeleton";
 import { useAccounts, useActiveAccounts } from "@/hooks/useAccounts";
 import { useReportRange } from "@/hooks/useReportRange";
 import { BRAND_NAME } from "@/lib/brand";
@@ -73,7 +74,11 @@ export default function FanReport() {
             <FanReportsCard from={fromIso} to={toIso} fromDay={from} toDay={to} accountId={accountId}
               timeZone={reportTz} range={range} />
           ) : (
-            <div className="flex flex-wrap items-center gap-3">{range}</div>
+            <>
+              <div className="flex flex-wrap items-center gap-3">{range}</div>
+              {/* Until the range and the Creators answer (with no Creator at all, the column's own state shows). */}
+              {(!ready || accountsQ.isPending) && <TableSkeleton rows={6} />}
+            </>
           )}
           {accountId && (
             <section aria-label={`${BRAND_NAME} extras`} className="space-y-3 pt-2">

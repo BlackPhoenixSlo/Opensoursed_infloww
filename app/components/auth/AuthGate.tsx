@@ -18,6 +18,10 @@
  * report) renders <ShareReport> bare. All other routes: gate behind one of the two
  * principals; otherwise render <Landing> in place so the URL stays
  * stable and the post-login redirect target is whatever the user asked.
+ *
+ * While the probes run, a browser that holds a session cookie (`signedIn`, read by the root layout on the server)
+ * sees the route's BootSkeleton, from the server's HTML on, instead of a blank page; one without sees nothing until
+ * the probes answer, so a signed-out visitor never sees the app's frame flash before the landing.
  */
 
 import { usePathname } from "next/navigation";
@@ -27,8 +31,9 @@ import { useChatter } from "@/contexts/ChatterContext";
 import Landing from "@/components/auth/Landing";
 import ChatterLogin from "@/components/auth/ChatterLogin";
 import ShareReport from "@/components/growth/ShareReport";
+import BootSkeleton from "@/components/shell/BootSkeleton";
 
-export default function AuthGate({ children }: { children: React.ReactNode }) {
+export default function AuthGate({ children, signedIn = false }: { children: React.ReactNode; signedIn?: boolean }) {
   const { user, loading: userLoading } = useUser();
   const { chatter, loading: chatterLoading } = useChatter();
   const pathname = usePathname();
@@ -43,7 +48,7 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
   if (pathname?.startsWith("/share/")) return <ShareReport />;
   // Wait for BOTH probes to settle so we don't flash <Landing> before
   // chatter detection completes (or vice versa).
-  if (userLoading || chatterLoading) return null;
+  if (userLoading || chatterLoading) return signedIn ? <BootSkeleton pathname={pathname ?? "/"} /> : null;
   if (user || chatter) return <>{children}</>;
   return <Landing />;
 }

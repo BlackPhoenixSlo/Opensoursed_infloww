@@ -30,7 +30,7 @@ const KIND = "gen_info";
 export default function GenInfoPage() {
   const { accountId, creators, loading } = useAutomationCreator();
   if (!accountId) {
-    return <PageFrame title={TITLE} creators={creators}>{!loading && <NoCreator />}</PageFrame>;
+    return <PageFrame title={TITLE} creators={creators}><NoCreator loading={loading} /></PageFrame>;
   }
   // Keyed, so a switch in flight can never land on the next creator.
   return <GenInfo key={accountId} accountId={accountId} creators={creators} />;

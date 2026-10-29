@@ -12,7 +12,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { ChevronLeft, ChevronRight, Loader2, Pencil, Trash2, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Pencil, Trash2, X } from "lucide-react";
 
 import { AccountAvatarPicture, type AvatarAccount } from "@/components/ui/AccountAvatarPicture";
 import { EmptyState } from "@/components/ui/infloww";
@@ -20,6 +20,7 @@ import {
   MONTHS, WEEKDAYS, employeeColours, fmtShiftTime, gmtOffset, type ShiftOccurrence, type ZonedDay,
 } from "@/lib/shifts";
 import { cn } from "@/lib/utils";
+import { Skeleton } from "@/components/ui/Skeleton";
 
 /** Infloww's `pastRecordBackgroundColor`: the bar of a Shift that has ended. */
 const PAST_BAR = "#D9D9D9";
@@ -136,8 +137,8 @@ export default function ShiftGrid({
   let body: ReactNode;
   if (loading) {
     body = (
-      <div role="status" aria-label="Loading" className="grid min-h-[100px] place-items-center">
-        <Loader2 className="h-6 w-6 animate-spin text-accent" aria-hidden />
+      <div role="status" aria-label="Loading" className="space-y-2 p-2">
+        {Array.from({ length: 4 }, (_, i) => <Skeleton key={i} className="h-10 w-full" />)}
       </div>
     );
   } else if (error) {

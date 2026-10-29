@@ -534,7 +534,11 @@ A flow with a `README.<flow>.md` lists its scenarios there.
 - `2026-10-28-dashboard-load`: the owner opens the Dashboard on a phone ~190 ms from the
   host (production build behind `lib/wan.py`, OnlyFans on `lib/of_wire.py`): Total
   earnings paints from the saved snapshot before any answer and never waits on OF, the
-  session-less Creator's card reads no OF. Checks (incl. the saved-Total and offline-card
-  checks), budgets, bypasses and faults (`dashboard-total-waits-of-reads`,
-  `dashboard-total-not-saved`, `dashboard-offline-creator-reads-of`): the scenario's
-  docstring.
+  session-less Creator's card reads no OF; the Dashboard and Messages Pro paint their frame
+  (skeleton) from the server's HTML before the app's first relay read; the page sweep opens
+  every signed-in page with its relay reads held: placeholder bars, never blank, a spinner,
+  "Loading…" or an empty state before the first data. Checks (incl. the saved-Total,
+  offline-card, frame and sweep checks), budgets, bypasses and faults
+  (`dashboard-total-waits-of-reads`, `dashboard-total-not-saved`,
+  `dashboard-offline-creator-reads-of`, `boot-skeleton-not-drawn`,
+  `page-placeholders-not-drawn`): the scenario's docstring.

@@ -41,6 +41,7 @@ import {
 } from "@/hooks/useAutomations";
 import { boolKnob } from "@/lib/boolKnob";
 import { cn } from "@/lib/utils";
+import { Skeleton } from "@/components/ui/Skeleton";
 
 type Mode = "clock" | "interval";
 
@@ -219,7 +220,7 @@ export default function AutoStoriesTab() {
   );
 
   if (!accountId) {
-    return <PageFrame title={TITLE} creators={creators} actions={LEARN}>{!loading && <NoCreator />}</PageFrame>;
+    return <PageFrame title={TITLE} creators={creators} actions={LEARN}><NoCreator loading={loading} /></PageFrame>;
   }
 
   const last = rule?.last_run;
@@ -231,7 +232,7 @@ export default function AutoStoriesTab() {
           <div>
             <FieldLabel htmlFor="story-folder">Vault folder</FieldLabel>
             {foldersQ.isLoading ? (
-              <p className="text-[14px] text-muted">Loading folders…</p>
+              <Skeleton className="h-9 w-full" />
             ) : folders.length === 0 ? (
               <p className="text-[14px] text-muted">No vault folders with photos found for this account.</p>
             ) : (

@@ -87,7 +87,7 @@ const clamp = (raw: string, lo: number, hi: number) =>
 export default function AutoReplyPage() {
   const { accountId, creators, loading } = useAutomationCreator();
   if (!accountId) {
-    return <PageFrame title={TITLE} creators={creators} actions={LEARN}>{!loading && <NoCreator />}</PageFrame>;
+    return <PageFrame title={TITLE} creators={creators} actions={LEARN}><NoCreator loading={loading} /></PageFrame>;
   }
   // Keyed, so switching creator re-seeds the form from that creator's blob.
   return <AutoReplyForm key={accountId} accountId={accountId} creators={creators} />;
@@ -100,7 +100,7 @@ function AutoReplyForm({ accountId, creators }: { accountId: string; creators: C
   if (cfgQ.isLoading || !cfgQ.data) {
     return (
       <PageFrame title={TITLE} creators={creators} actions={LEARN}>
-        {cfgQ.isLoading ? <p className="text-[14px] text-muted">Loading…</p> : (
+        {cfgQ.isLoading ? <NoCreator loading /> : (
           <p className="text-[14px] text-err">
             {(cfgQ.error as Error)?.message || "Could not load the Auto-reply settings."}
           </p>

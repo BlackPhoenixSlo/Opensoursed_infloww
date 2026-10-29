@@ -18,6 +18,7 @@ import { useMemo, useState } from "react";
 import { Card, Button } from "@/components/ui/primitives";
 import { relay, type AuditAction, type Employee } from "@/lib/relay";
 import { useRoster } from "@/hooks/useRoster";
+import { TableSkeleton } from "@/components/ui/Skeleton";
 
 interface AuditResp { actions: AuditAction[]; limit: number; offset: number }
 
@@ -100,7 +101,7 @@ export default function AuditTab() {
           </div>
         </div>
 
-        {auditQ.isLoading && <div className="text-fg-dim text-sm">Loading…</div>}
+        {auditQ.isLoading && <TableSkeleton rows={8} />}
         {auditQ.error && (
           <div className="text-err text-sm">{(auditQ.error as Error).message || "failed"}</div>
         )}

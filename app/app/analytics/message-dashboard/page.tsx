@@ -41,6 +41,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import DateRangePicker, { type RangePreset } from "@/components/stats/DateRangePicker";
 import { IfBody, IfLearn, IfTabs, InflowwPageHeader, type IfOption } from "@/components/ui/infloww";
 import { ExtraTag } from "@/components/ui/primitives";
+import { TableSkeleton } from "@/components/ui/Skeleton";
 import AllMessagesTab from "@/components/messages/AllMessagesTab";
 import CustomsTab from "@/components/messages/CustomsTab";
 import MyFeedTab from "@/components/messages/MyFeedTab";
@@ -186,7 +187,8 @@ function MessagesPageInner() {
 
       <IfBody className="space-y-4">
         {!infloww && <div className="flex justify-end">{picker}</div>}
-        {ready && (
+        {/* Until the Applied settings (the report's time zone) answer: the table's rows as placeholder bars. */}
+        {!ready ? <TableSkeleton rows={6} /> : (
           <div className={cn("grid grid-cols-1 gap-5", rail && "lg:grid-cols-[1fr_320px]")}>
             <div className="min-w-0">
               {infloww && (
