@@ -39,6 +39,7 @@ proxy_registry.REGISTRY_PATH = _TMP / "proxies.json"
 account_registry.ACCOUNTS_DIR = _TMP / "accounts"
 
 import server as _srv  # noqa: E402
+import proxies_admin_api  # noqa: E402
 
 _srv._invalidate_client = lambda aid=None: None
 _srv._kick_db_sync = lambda reason: None
@@ -67,7 +68,7 @@ def _reset(owner=None) -> None:
 
 def _refused(user, label) -> HTTPException:
     try:
-        as_user(user, _srv.admin_proxies_remove, label)
+        as_user(user, proxies_admin_api.admin_proxies_remove, label)
     except HTTPException as e:
         return e
     raise AssertionError("delete of an in-use proxy must be refused")
@@ -75,7 +76,7 @@ def _refused(user, label) -> HTTPException:
 
 def case_unbound_proxy_deletes() -> None:
     _reset()
-    assert as_user(None, _srv.admin_proxies_remove, "hu-1") == {"ok": True}
+    assert as_user(None, proxies_admin_api.admin_proxies_remove, "hu-1") == {"ok": True}
     assert proxy_registry.get_by_label("hu-1") is None
 
 
@@ -94,7 +95,7 @@ def case_deleted_account_binding_does_not_count() -> None:
     account_registry.upsert_account("gone", nickname="Gone")
     proxy_registry.assign_account("hu-1", "gone")
     account_registry.delete_account("gone")
-    assert as_user(None, _srv.admin_proxies_remove, "hu-1") == {"ok": True}
+    assert as_user(None, proxies_admin_api.admin_proxies_remove, "hu-1") == {"ok": True}
 
 
 def case_signed_in_user_counts_only_own_creators() -> None:
@@ -108,7 +109,7 @@ def case_signed_in_user_counts_only_own_creators() -> None:
     assert e.detail == "Proxy already in use by Mine. Unbind it first.", e.detail
     # A binding the caller cannot see (GET /admin/proxies hides it) does not block, and goes with the proxy.
     proxy_registry.unbind_account("hu-1", "mine")
-    assert as_user(_U("u1", ["mine"]), _srv.admin_proxies_remove, "hu-1") == {"ok": True}
+    assert as_user(_U("u1", ["mine"]), proxies_admin_api.admin_proxies_remove, "hu-1") == {"ok": True}
     assert proxy_registry.get_by_label("hu-1") is None
 
 

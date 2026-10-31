@@ -15,7 +15,7 @@
  * a step + save the funnel text first, then attach its media here.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useReducer } from "react";
 
 import { Button, Card, Input } from "@/components/ui/primitives";
 import { VaultPicker } from "@/components/chat/VaultPicker";
@@ -28,15 +28,13 @@ import {
   useFunnelMedia,
   useSaveFunnelMedia,
   type FunnelSummary,
-  type PpvStep,
 } from "@/hooks/useFunnels";
-
-/** Local draft for one PPV step's media (keyed by step number elsewhere). */
-interface StepDraft {
-  ids: number[];
-  /** How many of the leading picked media go out FREE as the teaser. */
-  previewCount: number;
-}
+import {
+  buildPayload,
+  funnelMediaReducer,
+  initialFunnelMedia,
+  pickerIds as pickerIdsOf,
+} from "@/components/automations/funnelMediaReducer";
 
 /** A PPV step in the funnel that needs media, with its 1-based step number. */
 interface PpvSlot {
@@ -61,11 +59,8 @@ export function FunnelMediaPane({
   const mediaQ = useFunnelMedia(funnel.id, accountId);
   const saveM = useSaveFunnelMedia();
 
-  const [openerIds, setOpenerIds] = useState<number[]>([]);
-  const [steps, setSteps] = useState<Record<string, StepDraft>>({});
-  const [pickerFor, setPickerFor] = useState<"opener" | string | null>(null);
-  const [seeded, setSeeded] = useState(false);
-  const [done, setDone] = useState(false);
+  const [state, dispatch] = useReducer(funnelMediaReducer, initialFunnelMedia);
+  const { openerIds, steps, done } = state;
 
   // The funnel's PPV steps (the only ones that carry media), in order.
   const ppvSlots = useMemo<PpvSlot[]>(() => {
@@ -78,48 +73,14 @@ export function FunnelMediaPane({
     });
     return out;
   }, [fullQ.data]);
+  const stepNos = useMemo(() => ppvSlots.map((s) => s.stepNo), [ppvSlots]);
 
-  // Seed once from the saved binding + the funnel's steps.
+  // Seed once from the saved binding + the funnel's steps (the reducer ignores
+  // later refetches, so edits survive the save's own invalidate).
   useEffect(() => {
-    if (seeded || !fullQ.data || !mediaQ.data) return;
-    setOpenerIds((mediaQ.data.opening_media_ids ?? []).filter((n) => n > 0));
-    const next: Record<string, StepDraft> = {};
-    for (const slot of ppvSlots) {
-      const m = mediaQ.data.steps_media?.[String(slot.stepNo)];
-      const ids = (m?.media_files ?? []).filter((n) => n > 0);
-      const previewCount = Math.min((m?.previews ?? []).length, ids.length);
-      next[String(slot.stepNo)] = { ids, previewCount };
-    }
-    setSteps(next);
-    setSeeded(true);
-  }, [seeded, fullQ.data, mediaQ.data, ppvSlots]);
-
-  function patchStep(stepNo: number, patch: Partial<StepDraft>) {
-    setDone(false);
-    setSteps((prev) => ({
-      ...prev,
-      [String(stepNo)]: { ...(prev[String(stepNo)] ?? { ids: [], previewCount: 0 }), ...patch },
-    }));
-  }
-
-  /** Copy one PPV step's media + teaser count onto every OTHER PPV step (a common
-   *  ask when the same set sells across steps). Teaser is re-clamped per target. */
-  function copyToAllPpv(fromStepNo: number) {
-    const src = steps[String(fromStepNo)];
-    if (!src || src.ids.length === 0) return;
-    setDone(false);
-    setSteps((prev) => {
-      const next = { ...prev };
-      for (const slot of ppvSlots) {
-        if (slot.stepNo === fromStepNo) continue;
-        next[String(slot.stepNo)] = {
-          ids: [...src.ids],
-          previewCount: Math.min(src.previewCount, src.ids.length),
-        };
-      }
-      return next;
-    });
-  }
+    if (state.seeded || !fullQ.data || !mediaQ.data) return;
+    dispatch({ type: "hydrate", media: mediaQ.data, stepNos });
+  }, [state.seeded, fullQ.data, mediaQ.data, stepNos]);
 
   // Resolve every picked id (opener + all steps) → full VaultMedia for thumbnails.
   // Bare ids carry no image URL, so we fan out a by-id vault read (cached,
@@ -136,62 +97,20 @@ export function FunnelMediaPane({
     return raw ? proxyImage(raw, accountId) : "";
   }
 
-  /** Move the item at `i` one slot left (-1) or right (+1), preserving the rest.
-   *  Order matters: the send goes out in this order and the first `previewCount`
-   *  are the FREE teaser, so reordering picks which images are free. */
-  function reorder(ids: number[], i: number, dir: -1 | 1): number[] {
-    const j = i + dir;
-    if (j < 0 || j >= ids.length) return ids;
-    const next = [...ids];
-    [next[i], next[j]] = [next[j], next[i]];
-    return next;
-  }
-  function moveOpener(i: number, dir: -1 | 1) {
-    setDone(false);
-    setOpenerIds((prev) => reorder(prev, i, dir));
-  }
-  function moveStep(stepNo: number, i: number, dir: -1 | 1) {
-    patchStep(stepNo, { ids: reorder(steps[String(stepNo)]?.ids ?? [], i, dir) });
-  }
-  function removeOpener(i: number) {
-    setDone(false);
-    setOpenerIds((prev) => prev.filter((_, k) => k !== i));
-  }
-  function removeStep(stepNo: number, i: number) {
-    const d = steps[String(stepNo)];
-    if (!d) return;
-    const ids = d.ids.filter((_, k) => k !== i);
-    patchStep(stepNo, { ids, previewCount: Math.min(d.previewCount, ids.length) });
-  }
-
   async function save() {
     if (!accountId) return;
-    setDone(false);
-    const steps_media: Record<string, { media_files: number[]; previews: number[] }> = {};
-    for (const slot of ppvSlots) {
-      const d = steps[String(slot.stepNo)];
-      if (!d || d.ids.length === 0) continue; // empty → omit (server drops it too)
-      steps_media[String(slot.stepNo)] = {
-        media_files: d.ids,
-        previews: d.ids.slice(0, Math.min(d.previewCount, d.ids.length)),
-      };
-    }
+    const rev = state.rev;
+    dispatch({ type: "saveStart" });
     await saveM.mutateAsync({
       funnelId: funnel.id,
       accountId,
-      opening_media_ids: openerIds,
-      steps_media,
+      ...buildPayload(openerIds, steps, stepNos),
     });
-    setDone(true);
+    dispatch({ type: "saveOk", rev });
   }
 
   // What the open picker is currently editing → its selected ids.
-  const pickerIds =
-    pickerFor === "opener"
-      ? openerIds
-      : pickerFor != null
-        ? steps[pickerFor]?.ids ?? []
-        : [];
+  const pickerIds = pickerIdsOf(state);
 
   if (!accountId) {
     return (
@@ -234,15 +153,15 @@ export function FunnelMediaPane({
               title="Opening message media"
               hint="Sent with the funnel opener (optional)."
               ids={openerIds}
-              onPick={() => setPickerFor("opener")}
-              onClear={() => { setDone(false); setOpenerIds([]); }}
+              onPick={() => dispatch({ type: "openPicker", target: "opener" })}
+              onClear={() => dispatch({ type: "setOpener", ids: [] })}
             />
             {openerIds.length > 0 && (
               <MediaStrip
                 ids={openerIds}
                 thumbFor={thumbFor}
-                onMove={(i, dir) => moveOpener(i, dir)}
-                onRemove={(i) => removeOpener(i)}
+                onMove={(i, dir) => dispatch({ type: "move", target: "opener", i, dir })}
+                onRemove={(i) => dispatch({ type: "remove", target: "opener", i })}
               />
             )}
           </div>
@@ -256,17 +175,17 @@ export function FunnelMediaPane({
           ) : (
             ppvSlots.map((slot) => {
               const d = steps[String(slot.stepNo)] ?? { ids: [], previewCount: 0 };
-              const free = Math.min(d.previewCount, d.ids.length);
+              const free = d.previewCount; // reducer keeps it ≤ ids.length
               return (
                 <div key={slot.stepNo} className="space-y-1.5">
                   <MediaRow
                     title={slot.label}
                     hint="The paywalled vault media for this PPV step."
                     ids={d.ids}
-                    onPick={() => setPickerFor(String(slot.stepNo))}
+                    onPick={() => dispatch({ type: "openPicker", target: slot.stepNo })}
                     // Split clear: this wipes the MEDIA (and its teaser); the
                     // "clear teaser" link below resets only the free-preview count.
-                    onClear={() => patchStep(slot.stepNo, { ids: [], previewCount: 0 })}
+                    onClear={() => dispatch({ type: "setStep", stepNo: slot.stepNo, patch: { ids: [], previewCount: 0 } })}
                     clearLabel="clear media"
                   />
                   {d.ids.length > 0 && (
@@ -278,10 +197,10 @@ export function FunnelMediaPane({
                           min={0}
                           max={d.ids.length}
                           value={String(d.previewCount)}
-                          onChange={(e) => {
-                            const n = Math.max(0, Math.min(Number(e.target.value) || 0, d.ids.length));
-                            patchStep(slot.stepNo, { previewCount: n });
-                          }}
+                          // Raw count; the reducer clamps it to 0..ids.length.
+                          onChange={(e) =>
+                            dispatch({ type: "setStep", stepNo: slot.stepNo, patch: { previewCount: Number(e.target.value) || 0 } })
+                          }
                           className="inline-block w-16 mx-1 align-middle"
                         />
                         of {d.ids.length}{" "}
@@ -291,7 +210,7 @@ export function FunnelMediaPane({
                         {free > 0 && (
                           <button
                             type="button"
-                            onClick={() => patchStep(slot.stepNo, { previewCount: 0 })}
+                            onClick={() => dispatch({ type: "setStep", stepNo: slot.stepNo, patch: { previewCount: 0 } })}
                             className="ml-2 text-fg-dim hover:text-err underline"
                           >
                             clear teaser
@@ -306,14 +225,16 @@ export function FunnelMediaPane({
                         ids={d.ids}
                         free={free}
                         thumbFor={thumbFor}
-                        onMove={(i, dir) => moveStep(slot.stepNo, i, dir)}
-                        onRemove={(i) => removeStep(slot.stepNo, i)}
+                        onMove={(i, dir) => dispatch({ type: "move", target: slot.stepNo, i, dir })}
+                        onRemove={(i) => dispatch({ type: "remove", target: slot.stepNo, i })}
                       />
 
+                      {/* Same set across steps is common: copy media + teaser to
+                          every OTHER PPV step (teaser re-clamped per target). */}
                       {ppvSlots.length > 1 && (
                         <button
                           type="button"
-                          onClick={() => copyToAllPpv(slot.stepNo)}
+                          onClick={() => dispatch({ type: "copyToAll", fromStepNo: slot.stepNo, stepNos })}
                           className="pl-1 text-[11px] text-accent hover:underline"
                         >
                           ⧉ Copy media to all PPV steps
@@ -344,8 +265,8 @@ export function FunnelMediaPane({
       </div>
 
       <VaultPicker
-        open={pickerFor !== null}
-        onClose={() => setPickerFor(null)}
+        open={state.pickerFor !== null}
+        onClose={() => dispatch({ type: "closePicker" })}
         accountId={accountId}
         fanId={null}
         initialSelectedIds={pickerIds}
@@ -353,15 +274,7 @@ export function FunnelMediaPane({
           const ids = picked
             .map((m) => m.id)
             .filter((id): id is number => typeof id === "number" && id > 0);
-          if (pickerFor === "opener") {
-            setOpenerIds(ids);
-          } else if (pickerFor != null) {
-            const stepNo = Number(pickerFor);
-            const prev = steps[pickerFor]?.previewCount ?? 0;
-            patchStep(stepNo, { ids, previewCount: Math.min(prev, ids.length) });
-          }
-          setDone(false);
-          setPickerFor(null);
+          dispatch({ type: "pickConfirm", ids });
         }}
       />
     </Card>

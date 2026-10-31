@@ -12,37 +12,10 @@
  * mounted bubbles re-render in sync after a flip.
  */
 
-import { useEffect, useState } from "react";
+import { createStoredFlag } from "@/lib/storageSync";
 
 const STORAGE_KEY = "chatterly:compact-media";
 const EVENT = "chatterly-compact-media-change";
 
-export function readCompactMedia(): boolean {
-  if (typeof window === "undefined") return true;
-  return window.localStorage.getItem(STORAGE_KEY) !== "0";
-}
-
-export function useCompactMedia(): [boolean, (next: boolean) => void] {
-  const [val, setVal] = useState<boolean>(() => readCompactMedia());
-
-  useEffect(() => {
-    const onChange = () => setVal(readCompactMedia());
-    window.addEventListener(EVENT, onChange);
-    window.addEventListener("storage", onChange);
-    return () => {
-      window.removeEventListener(EVENT, onChange);
-      window.removeEventListener("storage", onChange);
-    };
-  }, []);
-
-  function update(next: boolean) {
-    setVal(next);
-    try {
-      if (next) window.localStorage.removeItem(STORAGE_KEY);
-      else window.localStorage.setItem(STORAGE_KEY, "0");
-      window.dispatchEvent(new Event(EVENT));
-    } catch { /* quota — silent */ }
-  }
-
-  return [val, update];
-}
+// Default ON; off is stored as "0", on removes the key.
+export const { read: readCompactMedia, use: useCompactMedia } = createStoredFlag(STORAGE_KEY, EVENT, true);

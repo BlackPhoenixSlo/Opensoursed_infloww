@@ -72,6 +72,8 @@ export function CreatorColumn(props: {
   onChange?: (accountId: string) => void;
   /** A controlled column's "All creators" pick; `on` while it is the pick. */
   all?: { on: boolean; pick: () => void };
+  /** A controlled column with no "All creators" row at all (pages that always work on one creator). */
+  noAll?: boolean;
   className?: string;
   variant?: "s4s";
   marks?: Record<string, S4SMark>;
@@ -98,12 +100,14 @@ function ScopedColumn({ accounts, onPicked, className }: { accounts: AccountMeta
   );
 }
 
-function ColumnBody({ accounts, value, onChange, all, groups, ofManager = false, className, variant, marks }: {
+function ColumnBody({ accounts, value, onChange, all, noAll = false, groups, ofManager = false, className, variant, marks }: {
   accounts: AccountMeta[];
   value?: string | null;
   onChange: (accountId: string) => void;
   /** The "All creators" pick (OF Manager's, or a controlled column's); without it the menu only closes. */
   all?: { on: boolean; pick: () => void };
+  /** No "All creators" row. */
+  noAll?: boolean;
   /** OF Manager's creator groups (the Tags) under All creators; `value` "" is none picked. */
   groups?: { tags: string[]; value: string; pick: (tag: string) => void };
   /** OF Manager's own column: it collapses, warms the hovered creator's OF view and owns the `/` key. */
@@ -227,8 +231,8 @@ function ColumnBody({ accounts, value, onChange, all, groups, ofManager = false,
           <RotateCw aria-hidden className="w-4 h-4" />
         </button>
       </div>}
-      {(s4s || collapsed) && <div className="h-4 shrink-0" />}
-      {!s4s && !collapsed && <div className="relative" ref={menuRef}>
+      {(s4s || collapsed || noAll) && <div className="h-4 shrink-0" />}
+      {!s4s && !collapsed && !noAll && <div className="relative" ref={menuRef}>
         <button
           type="button"
           onClick={() => setMenuOpen((v) => !v)}

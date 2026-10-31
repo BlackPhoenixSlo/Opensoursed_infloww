@@ -78,6 +78,7 @@ import lane_config
 import run_slot
 import dispatch_plan
 import run_decide
+from of_coerce import cents_or_zero as _to_cents, strip_tags as _strip_html  # noqa: F401 — ax._to_cents / ax._strip_html importers
 # The fan lease + post-send cooldown (fan_lease.py) and the paced OF write
 # (of_write.py) are re-exported as the SAME objects (`ax._write_gates is
 # of_write._write_gates`, one `_RUN_WRITE` ContextVar). Rebinding one on ax
@@ -358,18 +359,7 @@ async def _join_inflight_runs() -> None:
 _run_locks: dict[tuple[str, str], asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
-# ── Tiny parsing helpers (local copies — same house pattern as ───────
-#    transaction_ingest.py / event_transcoder.py each keeping their own) ─
-
-def _to_cents(price: Any) -> int:
-    """OF prices arrive as floats like 9.99 → 999 cents. 0/None/'' → 0."""
-    try:
-        if price is None or price == "":
-            return 0
-        return int(round(float(price) * 100))
-    except Exception:
-        return 0
-
+# ── Tiny parsing helpers (callers use ax._parse_iso) ─────────────────
 
 from isotime import parse_iso as _parse_iso  # noqa: E402 — OF ISO 8601 → naive UTC (callers use ax._parse_iso)
 
@@ -386,19 +376,6 @@ def _media_ids(media: list | None) -> list[int]:
         elif isinstance(mid, str) and mid.isdigit():
             out.append(int(mid))
     return out
-
-
-_HTML_OPEN = "<"
-
-
-def _strip_html(s: str | None) -> str:
-    """Cheap tag-stripper for inbox previews (OF wraps bodies in <p>…</p>)."""
-    if not s:
-        return ""
-    if _HTML_OPEN not in s:
-        return s.strip()
-    import re
-    return re.sub(r"<[^>]+>", "", s).strip()
 
 
 # ── scheduled_jobs queue (the queue itself: job_queue.py) ─────────────

@@ -77,6 +77,7 @@ from db.models import (
     Fan, ScheduledJob, SmartList, SubscriberSnapshot, Transaction,
     User, UserAccount,
 )
+from isotime import iso_plain
 # The rule engine (DSL sets, resolve, validation, rule readers) is pure, in
 # smart_list_rules. Imported here: what this module uses, plus what importers
 # take from smart_lists_api (resolve, _validate_rules, uses_subscription_facts).
@@ -330,23 +331,19 @@ def _rules_of(row: SmartList) -> dict:
         return {"match": "all", "rules": []}
 
 
-def _iso(dt: datetime | None) -> str | None:
-    return dt.isoformat() if dt else None
-
-
 def _serialize(row: SmartList) -> dict:
     return {
         "id": row.id,
         "account_id": row.account_id,
         "name": row.name,
         "rules": _rules_of(row),
-        "created_at": _iso(row.created_at),
-        "updated_at": _iso(row.updated_at),
+        "created_at": iso_plain(row.created_at),
+        "updated_at": iso_plain(row.updated_at),
         "is_active": bool(row.is_active),
         "of_list_id": row.of_list_id,
         "sync_state": row.sync_state,
         "sync_error": row.sync_error,
-        "synced_at": _iso(row.synced_at),
+        "synced_at": iso_plain(row.synced_at),
         "member_count": row.member_count,
     }
 

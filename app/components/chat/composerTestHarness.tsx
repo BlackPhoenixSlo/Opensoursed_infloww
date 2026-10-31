@@ -177,6 +177,10 @@ export function resetComposerHarness() {
   clearRefusedOffers(); // refused schedules outlive a Composer (./refusedOffers)
 }
 
+/** The Fan a suite's Composer is for unless it names one (ChatSurface
+ *  always has its Fan). */
+export const HARNESS_FAN = 500;
+
 /** Render the Composer as the chat surface does. Returns RTL utils, the
  *  `onSend` spy (what each send puts on the wire) and the API ref. */
 export async function renderComposer(props: Partial<ComposerProps> = {}) {
@@ -184,7 +188,7 @@ export async function renderComposer(props: Partial<ComposerProps> = {}) {
   const onSend = vi.fn<(args: SendArgs) => Promise<void>>(() => Promise.resolve());
   const api: React.MutableRefObject<ComposerApi | null> = { current: null };
   const utils = renderWithProviders(
-    <Composer accountId="acct-1" fanId={null} onSend={onSend} composerApiRef={api} {...props} />,
+    <Composer accountId="acct-1" fanId={HARNESS_FAN} onSend={onSend} composerApiRef={api} {...props} />,
   );
   return { ...utils, onSend, api };
 }

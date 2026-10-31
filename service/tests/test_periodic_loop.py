@@ -29,6 +29,7 @@ import asyncio  # noqa: E402
 
 import server  # noqa: E402
 import diag_api  # noqa: E402
+import img_api  # noqa: E402
 
 
 class _StopLoop(BaseException):
@@ -167,7 +168,7 @@ def case_the_real_sweepers_ask_for_the_right_first_delay() -> None:
     expectations = [
         (server, "_raw_json_evictor_loop", grace, "_raw_json_sweep"),
         (server, "_audit_retention_evictor_loop", grace, "_audit_retention_sweep"),
-        (server, "_img_cache_evictor_loop", server._IMG_CACHE_EVICT_INTERVAL_S, "_img_cache_sweep"),
+        (img_api, "_img_cache_evictor_loop", img_api._IMG_CACHE_EVICT_INTERVAL_S, "_img_cache_sweep"),
         (diag_api, "_perflog_evictor_loop", diag_api._PERFLOG_EVICT_INTERVAL_S, "_perflog_sweep"),
     ]
 

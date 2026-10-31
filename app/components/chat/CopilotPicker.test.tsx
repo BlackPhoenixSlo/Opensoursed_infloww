@@ -109,10 +109,4 @@ describe("CopilotPicker", () => {
     expect(panel.getByText("Pick a style to get 3 replies for this chat.")).toBeTruthy();
     expect(suggestCalls()).toHaveLength(1);
   });
-
-  it("is disabled with no fan open", async () => {
-    await renderComposer({ fanId: null });
-    const ai = within(screen.getByRole("toolbar", { name: "Composer buttons" })).getByRole("button", { name: "AI" });
-    expect((ai as HTMLButtonElement).disabled).toBe(true);
-  });
 });

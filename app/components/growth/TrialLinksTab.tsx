@@ -39,9 +39,10 @@ import LinkEditDialog, { LinkBatchEditDialog } from "@/components/growth/LinkEdi
 import ShareLinksPanel from "@/components/growth/ShareLinksPanel";
 import LinkMetaFields, { FieldLabel, META_LOST, useLinkMetaFields } from "@/components/growth/LinkMetaFields";
 import LinksListFrame, {
-  FrameTabs, GrowthHbFrame, RowActions, Switch, Unreachable, createdDay, dateOnly, downloadCsv, useFrameFilters, useSessionGone,
+  FrameTabs, GrowthHbFrame, RowActions, Switch, Unreachable, dateOnly, downloadCsv, useFrameFilters, useSessionGone,
   type FrameCol,
 } from "@/components/growth/LinksListFrame";
+import { createdDay } from "@/components/growth/frameDates";
 import OfferClaimers from "@/components/growth/OfferClaimers";
 import { DASH, TRIAL_TIPS, aeps, money, profit, roi, share, updatedAgo } from "@/components/growth/linkMetrics";
 import { claimsText } from "@/components/growth/offerFormat";

@@ -28,6 +28,7 @@ from api_errors import raise_if_free_page_denied
 from auth import assert_account_owned
 from db.engine import get_session
 from db.models import PromoCampaign
+from isotime import iso_plain
 from of_mirror import delete_mirrored, merge_mirrors
 from of_promos import (extract_created_promo, fetch_of_promos, normalise_of_promo,
                        promo_type_body, promo_type_store)
@@ -35,10 +36,6 @@ from of_promos import (extract_created_promo, fetch_of_promos, normalise_of_prom
 log = logging.getLogger("of-relay.promotions_api")
 
 router = APIRouter()
-
-
-def _iso(dt) -> str | None:
-    return dt.isoformat() if dt else None
 
 
 @router.get("/admin/promotions")
@@ -72,8 +69,8 @@ async def list_promotions(account_id: str = Query(...)) -> dict[str, Any]:
             # auto-reactivate state (promo_reactivate automation)
             "auto_reactivate": bool(m.auto_reactivate),
             "reactivate_count": int(m.reactivate_count or 0),
-            "last_reactivated_at": _iso(m.last_reactivated_at),
-            "created_at": _iso(m.created_at),
+            "last_reactivated_at": iso_plain(m.last_reactivated_at),
+            "created_at": iso_plain(m.created_at),
             "source": "mirror",
         }
 
@@ -250,7 +247,7 @@ async def update_promotion(mirror_id: int, body: _PatchBody = Body(...)) -> dict
         row.auto_reactivate = bool(body.auto_reactivate)
         out = {"id": row.id, "auto_reactivate": row.auto_reactivate,
                "reactivate_count": int(row.reactivate_count or 0),
-               "last_reactivated_at": _iso(row.last_reactivated_at)}
+               "last_reactivated_at": iso_plain(row.last_reactivated_at)}
     log.info("promo_auto_reactivate id=%s -> %s", mirror_id, body.auto_reactivate)
     return out
 

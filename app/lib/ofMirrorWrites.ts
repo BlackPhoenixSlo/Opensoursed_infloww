@@ -32,6 +32,7 @@ import { useScope } from "@/contexts/ScopeContext";
 import { relay, RelayError } from "@/lib/relay";
 import { parseSendFailure } from "@/lib/sendFailure";
 import { floatLabel } from "@/lib/ofMirrorSettings";
+import { afterProfileWrite, MIRROR } from "@/lib/ofMirrorKeys";
 import { frameNavigate, LIST_ROW, STORY, takeCarried, toast } from "@/lib/ofMirrorPost";
 import { mirrorPageOfPath } from "@/lib/of-mirror-route";
 import { openDatepicker, tabDate, type Day } from "@/lib/ofMirrorDatepicker";
@@ -80,7 +81,7 @@ const STREAM_DESCRIPTION = ".create-scheduled__description [contenteditable], te
 const LINK_NAME = "input[name='name']";
 
 /** What an offer dialog's write refreshes: the settings rows, the right column's promotions and users/me's. */
-const OFFER_READS = [["of-settings"], ["of-mirror-data"], ["of-me"]] as const;
+const OFFER_READS = [["of-settings"], [MIRROR], ["of-me"]] as const;
 
 const PROMOTION_SUBMIT: Submit = {
   button: ".modal-footer button[type='submit']", // Start campaign
@@ -778,9 +779,8 @@ export function useOfWrites(frameRef: RefObject<HTMLIFrameElement | null>, src: 
   const streamDate = stream ? params.get("date") : null;
   const streamTime = stream ? params.get("time") : null;
   const refresh = () => {
-    qc.invalidateQueries({ queryKey: ["of-me", accountId] });
-    qc.invalidateQueries({ queryKey: ["of-settings"] });
-    qc.invalidateQueries({ queryKey: ["reply-on-subscribe", accountId] });
+    void afterProfileWrite(qc, accountId);
+    void qc.invalidateQueries({ queryKey: ["reply-on-subscribe", accountId] });
   };
   const { mutateAsync: saveProfile } = useMutation({
     mutationFn: (body: ProfilePatch) => relay.patch("/api/of/v2/users/me", body, { accountId }),

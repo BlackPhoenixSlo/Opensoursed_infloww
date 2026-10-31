@@ -13,10 +13,10 @@ import { useEffect, useState } from "react";
 
 import {
   EMPTY_REPLY,
-  extractError,
   revealDraft,
   type TemplateDraft,
 } from "@/components/settings/TemplateDraftEditor";
+import { extractError } from "@/components/settings/extractError";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import {
   useSavedReplies,

@@ -41,7 +41,10 @@ Creator's session file vanishes from disk (no endpoint does that and leaves the 
 up), so the next supervisor pass must Stop its running pump and its OF socket closes;
 then, its session back, its pump crash-loops (exits at once without parking,
 lib/pump_relay.py) under 1 s supervisor passes, and each restart must come its
-backoff (0, then 15 s) after the exit, no sooner and not much later.
+backoff (0, then 15 s) after the exit, no sooner and not much later. Alongside, from phase A
+on: OnlyFans ends one more healthy Creator's socket (WS_GAP_IDX, used by no other phase) GAP_DROPS
+times, each after its pump reconnected (backoff 1, 2, 4 s: the next would be 8), lets the socket stay
+up RESET_AFTER_S (+ UP_MARGIN_S), and ends it once more.
 
 Invariants: account_health flags exactly the 2FA Creators (otp_required); one
 session_dead notification per (owner, 2FA Creator) though many callers met the 101
@@ -58,7 +61,8 @@ side-effect check). Recovery: the flags clear, every parked send reaches OF exac
 once in fire-time order with its outbound row, no second notification, each pump
 reconnects; a probe-cleared Creator's pump is restarted by the next supervisor pass; a
 running pump whose Creator lost its session is stopped and its socket closed; a
-crash-looping pump's restarts respect the backoff and keep coming.
+crash-looping pump's restarts respect the backoff and keep coming; after a socket up
+RESET_AFTER_S, a dropped one reconnects within WS_GAP_MAX_S (its backoff started over).
 UI: the bell's 2FA row (trigger) opens Creators with Browserbase login
 (settled), the row reads, and the Creator's row shows the "automations paused"
 badge naming Browserbase login. Budgets: route p95s and the tick's, vs the last
@@ -75,7 +79,8 @@ Break-it-once: otp-state-not-session-dead (the classifier's 101 branch reverted)
 session-dead-claim-not-atomic (the read-then-write flip it replaced).
 reconcile-never-restarts, reconcile-ignores-parked (lib/pump_faults.py: the supervisor
 pass without its Restart, or blind to the dead-session flag); reconcile-never-stops (the
-pass without its Stop); supervisor-ignores-backoff (every Restart at once).
+pass without its Stop); supervisor-ignores-backoff (every Restart at once);
+of-ws-backoff-never-resets (lib/egress_faults.py: decide() deaf to Failed.up_s, the gap is 8 s).
 Screenshots: trigger-bell-2fa-row, settled-browserbase-login, settled-creators-badge.
 """
 from __future__ import annotations
@@ -90,6 +95,7 @@ from slop.actors import ui
 from slop.actors.manager import SseListener
 from slop.lib.browserbase import paste_curl
 from slop.lib.client import Recorder
+from slop.lib.egress_faults import RESET_AFTER_S, WS_GAP, WS_GAP_MAX_S
 from slop.lib.pump_faults import (BACKOFF_SLACK_S, BACKOFF_WANT_S, BACKOFF_WINDOW_S, PROBE_RESTART,
                                   PUMP_BACKOFF, PUMP_STOP, WS_PARKED, WS_WINDOW_S)
 from slop.seed import of_sessions
@@ -101,6 +107,9 @@ FAULT = "otp-state-not-session-dead"
 OTP_IDX = (3, 5, 9)  # Agency 0 (UI owner): Creator 3; Agency 1: Creators 5 and 9 (profile's owner layout)
 RELINK = "/creators?relink=browserbase"
 READS = 12  # concurrent inbox reads per OTP_IDX Creator at the flip, alongside its pump's reconnect
+WS_GAP_IDX = 2    # healthy[2]: healthy[0] is phase D's, healthy[1] phase E's
+GAP_DROPS = 3     # socket ends before the long uptime: the pump's backoff 1, 2, 4 s, the next 8
+UP_MARGIN_S = 5.0  # the long uptime past RESET_AFTER_S
 # The run that meets OF's 2FA demand logs its OFAPIError (automation_run_failed): expected (under the
 # fault; a green run's pump and reads flag first); the scenario's own checks count the runs.
 EXPECTED_TRACEBACKS = (("automation_run_failed", "otpState"),
@@ -273,6 +282,7 @@ async def run(ctx) -> None:
               bad_token=[c["account"] for c in conns if not c["token_ok"]][:5])
 
     readers = [asyncio.create_task(owner_reader(a["user_id"])) for a in ags]
+    ws_gap = asyncio.create_task(_ws_gap(fake, healthy[WS_GAP_IDX]))
 
     # ── Phase A: every login healthy ──────────────────────────────────────────
     ctx.rec.stage = "healthy"
@@ -561,6 +571,11 @@ async def run(ctx) -> None:
               pump_after_pass=after_d, socket_reconnected=back_d)
     await _phase_e_stop(ctx, w, fake, healthy[1], supervise, wait_for)
     await _phase_e_backoff(ctx, healthy[1], supervise)
+    g = await ws_gap  # sleeps out the long uptime here if the phases ended sooner
+    ctx.check(WS_GAP, len(g["early_gaps_s"]) == GAP_DROPS and None not in g["early_gaps_s"]
+              and g["early_gaps_s"][-1] >= 3.0 and g["reconnects_while_up"] == 0
+              and (g["up_s"] or 0) >= RESET_AFTER_S and g["gap_s"] is not None and g["gap_s"] <= WS_GAP_MAX_S,
+              **g, reset_after_s=RESET_AFTER_S, max_gap_s=WS_GAP_MAX_S)
     ctx.check("lib/of_wire.py saw only signed calls it models", fake.unsigned == 0 and not fake.unmodelled,
               unsigned=fake.unsigned, unmodelled=dict(fake.unmodelled))
 
@@ -585,6 +600,39 @@ async def run(ctx) -> None:
     ctx.metric("fake_of", fake.snapshot())
     (ctx.out / "of-wire-calls.json").write_text(json.dumps(fake.calls))
     (ctx.out / "of-ws-connects.json").write_text(json.dumps(fake.ws_connects))
+
+
+async def _ws_gap(fake, aid: str) -> dict:
+    """GAP_DROPS socket ends, the long uptime, one more end (module docstring); gaps: each end to the
+    pump's next socket (lib/of_wire.py's ws_connects)."""
+    async def reconnect(after: float, timeout_s: float = 40.0) -> float | None:
+        t_end = time.time() + timeout_s
+        while time.time() < t_end:
+            with fake.lock:
+                t = next((c["t"] for c in fake.ws_connects if c["account"] == aid and c["t"] > after), None)
+            if t is not None:
+                return t
+            await asyncio.sleep(0.05)
+        return None
+
+    out = {"creator": aid, "early_gaps_s": [], "up_s": None, "reconnects_while_up": None, "gap_s": None}
+    up_at = None
+    for _ in range(GAP_DROPS):
+        t0 = time.time()
+        await asyncio.to_thread(fake.drop_ws, [aid])
+        up_at = await reconnect(t0)
+        out["early_gaps_s"].append(round(up_at - t0, 2) if up_at else None)
+        if up_at is None:
+            return out
+    await asyncio.sleep(max(0.0, up_at + RESET_AFTER_S + UP_MARGIN_S - time.time()))
+    t0 = time.time()
+    with fake.lock:
+        out["reconnects_while_up"] = sum(1 for c in fake.ws_connects if c["account"] == aid and c["t"] > up_at)
+    out["up_s"] = round(t0 - up_at, 1)
+    await asyncio.to_thread(fake.drop_ws, [aid])
+    t = await reconnect(t0)
+    out["gap_s"] = round(t - t0, 2) if t else None
+    return out
 
 
 async def _phase_e_stop(ctx, w, fake, aid: str, supervise, wait_for) -> None:

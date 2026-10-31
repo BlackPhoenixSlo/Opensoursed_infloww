@@ -34,7 +34,7 @@ import { readAuthSnapshot, writeAuthSnapshot } from "@/lib/authSnapshot";
 import { clearSendStash } from "@/lib/sendStash";
 import { clearRefusedOffers } from "@/components/chat/refusedOffers";
 import { clearPersistedCache } from "@/lib/rqPersister";
-import { authError, isTwoFactorChallenge, TwoFactorRequired, type TwoFactorChallenge } from "@/lib/twoFactor";
+import { isTwoFactorChallenge, postAuthJSON, TwoFactorRequired, type TwoFactorChallenge } from "@/lib/twoFactor";
 
 import {
   decideUserSession, initialUserSession, probeAction, type BootStatus, type MeOutcome, type UserSessionAction,
@@ -112,20 +112,6 @@ interface UserContextValue {
 }
 
 const UserContext = createContext<UserContextValue | null>(null);
-
-async function postJSON<T>(path: string, body: unknown): Promise<T> {
-  const r = await fetch(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify(body),
-    credentials: "same-origin",
-  });
-  const text = await r.text();
-  let parsed: unknown = text;
-  try { parsed = text ? JSON.parse(text) : null; } catch { /* keep text */ }
-  if (!r.ok) throw authError(r.status, parsed);
-  return parsed as T;
-}
 
 /** Drop the previous identity's in-memory stores: unsent messages (a send
  *  waiting on its files) and refused schedules' drafts. Shared between
@@ -293,7 +279,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
   );
 
   const login = useCallback(async (username: string, password: string) => {
-    const dto = await postJSON<AuthedUserDTO | TwoFactorChallenge>("/auth/login", { username, password });
+    const dto = await postAuthJSON<AuthedUserDTO | TwoFactorChallenge>("/auth/login", { username, password });
     // 2FA on: no cookie yet; the form asks for the code (TwoFactorStep).
     if (isTwoFactorChallenge(dto)) throw new TwoFactorRequired(dto);
     // Wipe any cache from the previous identity BEFORE flipping the user
@@ -315,14 +301,14 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
   }, [queryClient, send]);
 
   const register = useCallback(async (username: string, password: string) => {
-    const dto = await postJSON<AuthedUserDTO>("/auth/register", { username, password });
+    const dto = await postAuthJSON<AuthedUserDTO>("/auth/register", { username, password });
     void wipeIdentityCaches(queryClient);
     send({ type: "confirmed", user: dto });
     return dto;
   }, [queryClient, send]);
 
   const logout = useCallback(async () => {
-    try { await postJSON<unknown>("/auth/logout", {}); } catch { /* best effort */ }
+    try { await postAuthJSON<unknown>("/auth/logout", {}); } catch { /* best effort */ }
     const wiped = wipeIdentityCaches(queryClient);
     send({ type: "logout" });
     // The snapshot delete must commit before the navigation tears the page down.
@@ -344,7 +330,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
       // throws on 403/404 before any cookie is set. Then wipe caches —
       // the next /auth/me + every downstream fetch resolves to the
       // impersonated user.
-      const dto = await postJSON<{ impersonating: { user_id: string; username: string } }>(
+      const dto = await postAuthJSON<{ impersonating: { user_id: string; username: string } }>(
         "/admin/impersonate",
         { user_id: userId, admin_password: adminPassword },
       );

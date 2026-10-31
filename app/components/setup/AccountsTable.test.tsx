@@ -15,17 +15,20 @@
  * (the deleted row disappears).
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
-import { cleanup, render, screen, waitFor, fireEvent, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-vi.mock("@/lib/relay", () => ({ relay: { get: vi.fn(), delete: vi.fn(), post: vi.fn() } }));
+vi.mock("@/lib/relay", () => ({ relay: { get: vi.fn(), delete: vi.fn(), post: vi.fn(), put: vi.fn() } }));
 
-import AccountsTable from "@/components/setup/AccountsTable";
-import { relay } from "@/lib/relay";
+import AccountsTable, { connectivity } from "@/components/setup/AccountsTable";
+import AddCreatorModal from "@/components/setup/AddCreatorModal";
+import { FANSLY_T } from "@/components/setup/FanslyPasteSessionCard";
+import { relay, type AccountMeta } from "@/lib/relay";
 const relayGet = relay.get as unknown as Mock;
 const relayDelete = relay.delete as unknown as Mock;
 const relayPost = relay.post as unknown as Mock;
+const relayPut = relay.put as unknown as Mock;
 
 let client: QueryClient;
 function wrapper({ children }: { children: ReactNode }) {
@@ -37,6 +40,7 @@ beforeEach(() => {
   relayGet.mockReset();
   relayDelete.mockReset();
   relayPost.mockReset();
+  relayPut.mockReset();
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
@@ -354,5 +358,111 @@ describe("AccountsTable — paging", () => {
     fireEvent.click(screen.getByRole("option", { name: "20" }));
     expect(currentPage()).toBe("1");
     expect(screen.getAllByText("Model 20").length).toBeGreaterThan(0);
+  });
+});
+
+/** The connectivity mapping (creators-manage#23, #40): the accounts read outranks the live probe. */
+describe("connectivity", () => {
+  type H = Parameters<typeof connectivity>[1];
+  const LIVE = { id: "a", has_session: true, is_active: true } as AccountMeta;
+  const LOADED = { loaded: true, error: null };
+  it.each<[string, AccountMeta, H, { loaded: boolean; error: Error | null }, { label: string; tone: string; title?: string }]>([
+    ["loaded, ok", LIVE, { account_id: "a", ok: true, name: "Bella" }, LOADED, { label: "Connected", tone: "ok", title: "Bella" }],
+    ["loaded, timed out", LIVE, { account_id: "a", ok: false, timed_out: true, message: "slow" }, LOADED,
+      { label: "Pending connection", tone: "muted", title: "slow" }],
+    ["loaded, no session", LIVE, { account_id: "a", ok: false, error: "no_session" }, LOADED, { label: "Not connected", tone: "muted" }],
+    ["loaded, down", LIVE, { account_id: "a", ok: false, error: "401" }, LOADED, { label: "Disconnected", tone: "err", title: "401" }],
+    ["loaded, Fansly down", { ...LIVE, platform: "fansly" }, { account_id: "a", ok: false, error: "401" }, LOADED,
+      { label: "Disconnected", tone: "err", title: FANSLY_T.rebind }],
+    ["health read failed", LIVE, undefined, { loaded: false, error: new Error("boom") }, { label: "—", tone: "muted", title: "boom" }],
+    ["health still loading", LIVE, undefined, { loaded: false, error: null }, { label: "Pending connection", tone: "muted" }],
+    ["no health row", LIVE, undefined, LOADED, { label: "—", tone: "muted", title: "no health answer for this Creator" }],
+    ["deactivated (not probed), even with an ok probe", { ...LIVE, is_active: false }, { account_id: "a", ok: true, name: "B" }, LOADED,
+      { label: "—", tone: "muted", title: "deactivated: not probed" }],
+    ["no session outranks the probe", { ...LIVE, has_session: false }, { account_id: "a", ok: true }, LOADED,
+      { label: "Not connected", tone: "muted" }],
+    ["a dead session outranks a failed read", { ...LIVE, session_dead_at: "t" }, undefined, { loaded: false, error: new Error("x") },
+      { label: "Disconnected", tone: "err" }],
+    ["a dead Fansly session names the rebind", { ...LIVE, platform: "fansly", session_dead_at: "t" }, { account_id: "a", ok: true },
+      LOADED, { label: "Disconnected", tone: "err", title: FANSLY_T.rebind }],
+  ])("%s", (_name, a, h, read, want) => {
+    expect(connectivity(a, h, read)).toMatchObject(want);
+  });
+});
+
+/** Escape closes only the top modal (the modal stack in ui/infloww), and the Delete modal deletes only on step 2. */
+describe("AccountsTable modals — Escape", () => {
+  function serve() {
+    relayGet.mockImplementation((path: string) => {
+      if (path === "/admin/accounts") {
+        return Promise.resolve({ accounts: [{ id: "acct-on", nickname: "Onna", has_session: true, is_active: true }], active_account_id: null });
+      }
+      if (path.startsWith("/health")) return Promise.resolve({ ok: true, accounts: [{ account_id: "acct-on", ok: true, name: "Onna" }] });
+      if (path === "/admin/proxies") return Promise.resolve({ proxies: [] });
+      return Promise.resolve({});
+    });
+  }
+  const esc = () => fireEvent.keyDown(document, { key: "Escape" });
+
+  it("Change proxy over Edit account details: Escape closes Change proxy only", async () => {
+    serve();
+    render(<AccountsTable />, { wrapper });
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    await screen.findByRole("dialog", { name: "Edit account details" });
+    const change = screen.getByRole("button", { name: "Change" });
+    await waitFor(() => expect(change).toBeEnabled());
+    fireEvent.click(change);
+    await screen.findByRole("dialog", { name: "Change proxy" });
+    esc();
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Change proxy" })).not.toBeInTheDocument());
+    expect(screen.getByRole("dialog", { name: "Edit account details" })).toBeInTheDocument();
+    esc();
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("Escape on the Delete modal's step 2 closes it and deletes nothing", async () => {
+    serve();
+    render(<AccountsTable />, { wrapper });
+    await screen.findAllByText("Onna");
+    pick("Onna", "Delete");
+    fireEvent.click(screen.getByRole("button", { name: "Delete creator" }));
+    expect(screen.getByRole("button", { name: "Submit" })).toBeInTheDocument();
+    esc();
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(relayDelete).not.toHaveBeenCalled();
+  });
+});
+
+/** The header's Add creator modal, step 1: a double-click on "Next: Link creator account" saves the Creator once
+ *  (the second click lands before React re-renders, on the step the first left busy). */
+describe("AddCreatorModal — Next: Link creator account", () => {
+  it("a double-click saves the Creator once, then Back walks proxy → platform → details", async () => {
+    let release = () => {};
+    relayGet.mockImplementation((p: string) => p === "/admin/settings/account"
+      ? Promise.resolve({ tab: "account", config: { language: "en" } })
+      : p === "/admin/proxies" ? Promise.resolve({ proxies: [], pool: { size: 0, account_ids: [] }, accounts: [] })
+        : Promise.resolve({}));
+    relayPut.mockImplementation((_p: string, body: unknown) =>
+      new Promise((r) => { release = () => r({ tab: "account", config: body }); }));
+    render(<AddCreatorModal extInstalled={null} onClose={() => {}} />, { wrapper });
+    const d = () => screen.getByRole("dialog");
+    const btn = (n: string) => within(d()).getByRole("button", { name: n });
+    fireEvent.change(within(d()).getByLabelText("Creator name"), { target: { value: "Nova" } });
+    fireEvent.change(within(d()).getByLabelText("Gender"), { target: { value: "Female" } });
+    await waitFor(() => expect(btn("Done")).toBeEnabled());
+    const next = btn("Next: Link creator account");
+    // Both clicks inside ONE act: no re-render between them.
+    act(() => { next.click(); next.click(); });
+    await waitFor(() => expect(relayPut).toHaveBeenCalled());
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(relayPut.mock.calls.filter(([p]) => p === "/admin/settings/account")).toHaveLength(1);
+    await act(async () => { release(); });
+    await within(d()).findByText("Which platform’s account would you like to link?");
+    fireEvent.click(btn("Next"));
+    await within(d()).findByText("Proxy selection");
+    fireEvent.click(btn("Back"));
+    await within(d()).findByText("Which platform’s account would you like to link?");
+    fireEvent.click(btn("Back"));
+    expect(within(d()).getByLabelText("Creator name")).toHaveValue("Nova");
   });
 });

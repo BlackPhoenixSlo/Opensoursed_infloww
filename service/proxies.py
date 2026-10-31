@@ -37,6 +37,7 @@ import os
 import random
 import re
 import threading
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -54,28 +55,129 @@ def _empty() -> dict[str, Any]:
     return {"proxies": []}
 
 
-def load() -> dict[str, Any]:
+# The text of the last proxies.json that parsed as a registry (a read or this
+# process's own `save`): what a torn read falls back on. Text, not the dict, so
+# every caller gets its own copy to mutate. Swapped whole under `_good_lock`;
+# `_gen` counts `save`s, so a read that a save overtook never stores its older text.
+_last_good_text: str | None = None
+_gen = 0
+_good_lock = threading.Lock()
+_torn_logged = False  # this run of torn reads was logged: once per run, not per read
+
+
+@dataclass(frozen=True)
+class Ok:
+    data: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class Torn:
+    """proxies.json exists but is no registry: `save` writes in place (truncate,
+    write, fsync), so a reader between the truncate and the write sees an empty
+    or half-written file. `last_good`: the previous good read, if any."""
+    last_good: dict[str, Any] | None
+
+
+Registry = Ok | Torn
+
+
+def registry() -> Registry:
+    """proxies.json as read now. No file is an empty registry (nothing set up)."""
+    global _last_good_text, _torn_logged
     if not REGISTRY_PATH.exists():
-        return _empty()
+        return Ok(_empty())
+    gen = _gen
     try:
-        data = json.loads(REGISTRY_PATH.read_text())
-    except json.JSONDecodeError:
-        return _empty()
-    if not isinstance(data, dict) or "proxies" not in data:
-        return _empty()
-    return data
+        text = REGISTRY_PATH.read_text()
+        data = json.loads(text)
+    except (OSError, ValueError):
+        data = None
+    if not isinstance(data, dict) or not isinstance(data.get("proxies"), list):
+        if not _torn_logged:  # the first torn read after a good one (or start): not every read
+            _torn_logged = True
+            log.warning("proxies_registry_torn fallback=%s", "last_good" if _last_good_text else "none")
+        return Torn(json.loads(_last_good_text) if _last_good_text else None)
+    if _torn_logged:
+        _torn_logged = False
+        log.info("proxies_registry_recovered")
+    with _good_lock:
+        if _gen == gen:   # else a save landed mid-read: its text is newer than ours
+            _last_good_text = text
+    return Ok(data)
+
+
+def load() -> dict[str, Any]:
+    """The registry; a torn read gives the last good one, never an empty one
+    while there is one (a torn read made an empty registry: every proxied
+    account's next client went direct). Empty only before any good read."""
+    data = _known(registry())
+    return data if data is not None else _empty()
+
+
+def _known(reg: Registry) -> dict[str, Any] | None:
+    """The registry a read tells: Ok its data, Torn the last good one (None: none)."""
+    return reg.data if isinstance(reg, Ok) else reg.last_good
+
+
+class RegistryUnreadable(RuntimeError):
+    """proxies.json does not parse as a registry right now: nothing is written."""
+
+
+def _load_for_write() -> dict[str, Any]:
+    """The registry for a writer (under `_lock`), read whole or not at all: any
+    torn read raises RegistryUnreadable. Under `_lock` a torn file is another
+    process mid-write; saving the last good one plus our edit would drop its
+    write (and with no good read, every entry)."""
+    r = registry()
+    if isinstance(r, Ok):
+        return r.data
+    raise RegistryUnreadable(f"{REGISTRY_PATH.name} does not parse; not written")
+
+
+@dataclass(frozen=True)
+class Proxy:
+    entry: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class Direct:
+    pass
+
+
+@dataclass(frozen=True)
+class Refuse:
+    reason: str
+
+
+class EgressRefused(RegistryUnreadable):
+    """No client may be built: which egress the account has is unknown."""
+
+
+def egress(reg: Registry, account_id: str, session_filename: str | None = None) -> Proxy | Direct | Refuse:
+    """Where a client for `account_id` (its session file `session_filename`)
+    sends its traffic. A torn read with a good one before it answers from that
+    one. With none before it, nothing tells whether the account is proxied (no
+    session file or account record says so), so every account is Refused:
+    going direct would show OnlyFans the host's IP for a proxied Creator; a
+    refused build is retried on its next use."""
+    data = _known(reg)
+    if data is None:
+        return Refuse("proxies.json is unreadable and was never read whole: egress unknown")
+    p = _account_entry(data, account_id) or _session_entry(data, session_filename)
+    return Proxy(p) if p is not None else Direct()
 
 
 def save(data: dict[str, Any]) -> None:
     """Write in place (same inode): proxies.json is bind-mounted into the relay
     container as a single file, where a temp-file rename fails (EXDEV/EBUSY).
     Truncate, write, flush and fsync; a torn write reads as unparseable, which
-    `sync_pool` refuses to overwrite (`_load_for_sync`). Mode "w" truncates
+    no writer overwrites (`_load_for_write` raises). Mode "w" truncates
     the existing file; it never makes a new one.
 
     Every write goes through here, so this is where an account's egress
     changes: each account whose proxy (or that proxy's endpoint) differs
     from before gets a `proxy_switched` SSE event."""
+    global _last_good_text, _gen
     try:
         before = _egress_by_account(load())
     except Exception:   # a malformed old entry must not block the write
@@ -85,6 +187,9 @@ def save(data: dict[str, Any]) -> None:
         f.write(text)
         f.flush()
         os.fsync(f.fileno())
+    with _good_lock:
+        _last_good_text = text
+        _gen += 1
     _pool_tokens_cache.clear()
     if before is None:
         return
@@ -139,10 +244,13 @@ def get_for_session(session_filename: str) -> dict[str, Any] | None:
     """Return the proxy currently assigned to `session_filename`, or None.
     Legacy: pre-multi-account installs bound proxies to a specific session
     file. New installs bind to account_id (see `get_for_account`)."""
-    for p in list_proxies():
-        if p.get("assigned_session") == session_filename:
-            return p
-    return None
+    return _session_entry(load(), session_filename)
+
+
+def _session_entry(data: dict[str, Any], session_filename: str | None) -> dict[str, Any] | None:
+    if not session_filename:
+        return None
+    return next((p for p in data.get("proxies", []) if p.get("assigned_session") == session_filename), None)
 
 
 def _ids_on(p: dict[str, Any]) -> list[str]:
@@ -165,13 +273,14 @@ def get_for_account(account_id: str) -> dict[str, Any] | None:
     Each account belongs to at most ONE proxy (enforced in `assign_account`);
     a proxy may serve many accounts (and the picker flags >1 with a shared-
     egress warning, because OF can correlate same-IP accounts)."""
+    return _account_entry(load(), account_id)
+
+
+def _account_entry(data: dict[str, Any], account_id: str | None) -> dict[str, Any] | None:
     if not account_id:
         return None
     aid = str(account_id)
-    for p in list_proxies():
-        if aid in _ids_on(p):
-            return p
-    return None
+    return next((p for p in data.get("proxies", []) if aid in _ids_on(p)), None)
 
 
 def proxy_url(p: dict[str, Any]) -> str:
@@ -209,7 +318,7 @@ def upsert(entry: dict[str, Any]) -> dict[str, Any]:
     entry.setdefault("verified_geo", None)
 
     with _lock:
-        data = load()
+        data = _load_for_write()
         for i, p in enumerate(data["proxies"]):
             if p.get("label") == label:
                 # Preserve any fields the caller didn't supply.
@@ -329,7 +438,7 @@ def upsert_from_line(line: str, default_scheme: str = "http",
 
 def remove(label: str) -> bool:
     with _lock:
-        data = load()
+        data = _load_for_write()
         before = len(data["proxies"])
         data["proxies"] = [p for p in data["proxies"] if p.get("label") != label]
         if len(data["proxies"]) == before:
@@ -342,7 +451,7 @@ def assign(label: str, session_filename: str | None) -> dict[str, Any]:
     """Bind a proxy to a session file (LEGACY). Prefer `assign_account`.
     Enforces 1:1 — if another proxy already owns that session, it is unassigned."""
     with _lock:
-        data = load()
+        data = _load_for_write()
         target = None
         for p in data["proxies"]:
             if p.get("label") == label:
@@ -384,7 +493,7 @@ def assign_account(label: str, account_id: str | None) -> dict[str, Any]:
         raise KeyError(f"no proxy with label {label!r}")
 
     with _lock:
-        data = load()
+        data = _load_for_write()
         target = _bind(data, label, str(account_id))
         save(data)
         return target
@@ -422,7 +531,7 @@ def unbind_account(label: str, account_id: str) -> dict[str, Any]:
     without a proxy (falls back to direct egress until reassigned)."""
     aid = str(account_id)
     with _lock:
-        data = load()
+        data = _load_for_write()
         target = None
         for p in data["proxies"]:
             if p.get("label") == label:
@@ -450,7 +559,7 @@ def migrate_legacy_assignments(filename_to_account: dict[str, str]) -> int:
     mirrored for legacy readers."""
     rebound = 0
     with _lock:
-        data = load()
+        data = _load_for_write()
         for p in data["proxies"]:
             # Lift legacy singular into the list if not yet migrated.
             ids = list(p.get("assigned_account_ids") or [])
@@ -479,7 +588,7 @@ def record_verification(label: str, *, ip: str | None, geo: str | None,
                         ok: bool) -> None:
     """Persist the last egress-IP probe result for a proxy."""
     with _lock:
-        data = load()
+        data = _load_for_write()
         for p in data["proxies"]:
             if p.get("label") == label:
                 if ok:
@@ -594,20 +703,6 @@ def parse_pool(text: str | None) -> tuple[list[dict[str, Any]], list[str]]:
     return entries, errors
 
 
-def _load_for_sync() -> dict[str, Any] | None:
-    """`load`, except a proxies.json that exists but cannot be read as a
-    registry gives None instead of an empty one (so sync never overwrites it)."""
-    if not REGISTRY_PATH.exists():
-        return _empty()
-    try:
-        data = json.loads(REGISTRY_PATH.read_text())
-    except (OSError, ValueError):
-        return None
-    if not isinstance(data, dict) or not isinstance(data.get("proxies"), list):
-        return None
-    return data
-
-
 def sync_pool(text: str | None, rng: random.Random | None = None) -> dict[str, Any]:
     """Make the registry's pool entries match POOL_ENV (called at startup).
     New proxies are added, kept ones refreshed with their bindings intact, and
@@ -624,8 +719,9 @@ def sync_pool(text: str | None, rng: random.Random | None = None) -> dict[str, A
     result: dict[str, Any] = {"size": 0, "errors": errors, "rebound": 0,
                               "dropped": 0, "changed": False, "skipped": None}
     with _lock:
-        data = _load_for_sync()
-        if data is None:
+        try:
+            data = _load_for_write()
+        except RegistryUnreadable:
             log.error("%s: %s exists but does not parse; pool sync skipped", POOL_ENV, REGISTRY_PATH)
             result["skipped"] = "registry unreadable"
             return result
@@ -803,7 +899,7 @@ def assign_pool(account_id: str, *, bad: set[str], due: set[str], geo: Geo, veri
         untried = [p for p in candidates if (p.get("label") or "") not in checked]
         pick = _pick_pool(untried or candidates or pool, data, aid, rng, like=None, geo=geo)
     with _lock:
-        data = load()
+        data = _load_for_write()
         now = _pool_entry_of(data, aid)
         if now is not None and now.get("label") != cur:
             return now, True
@@ -843,7 +939,7 @@ def failover_pool(label: str, *, bad: set[str], geo: Geo, verify: Verify,
     if not plan:
         return []
     with _lock:
-        data = load()
+        data = _load_for_write()
         by_label = {p.get("label"): p for p in data["proxies"]}
         source = by_label.get(label)
         if not is_pool(source):

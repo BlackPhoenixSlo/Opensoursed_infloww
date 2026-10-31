@@ -34,6 +34,12 @@ interactive reads already failed and no 5-try chain able to end yet, the proxy's
 error each and still `suspect` (the confirm waits CONFIRM_GAP_S, 30 s, past a blip); every
 healthy Creator's read answered 200 meanwhile; lib/of_wire.py saw only signed calls it
 models. p95 of the healthy reads vs the last green run.
+Torn registry (before the death, proxy alive): TORN (5) more Creators, bound to the same proxy
+after the DEAD ones (THINK_S apart) and never read before, each read `users/me` once while
+the harness rewrites the relay's proxies.json in place in a loop (truncate, half, 2 ms, the
+rest: what `save`'s in-place write shows a reader); every client the relay builds for them must name the proxy
+(its `client_egress` line), none direct or refused, all reads 200, and at least one of those
+build lines carries `registry=torn` (a build did meet a torn file: the check is not vacuous).
 
 Bypasses, declared: the dead proxy is SOCKS5 on loopback that refuses each CONNECT after
 0.33 s (lib/proxy_wire.py: measured per-try time on prod; curl 97 not 56, both
@@ -48,7 +54,9 @@ needed for the dead thread read (it never reaches OnlyFans); the owner pauses TH
 (1 s) between adding the proxy and binding Creators: back to back, the product's
 fire-and-forget SQL mirror syncs (`_kick_db_sync`) race and one logs `sync_from_disk
 failed` (UNIQUE proxies.label), a product race outside this flow, not hidden by
-EXPECTED_TRACEBACKS.
+EXPECTED_TRACEBACKS; the torn registry is the harness writing the relay's temp proxies.json
+(outside service/), SETTLE_S after the binds, so their fire-and-forget SQL mirror syncs (which
+read the file too) are done before it starts.
 
 Break-it-once: interactive-reads-full-proxy-retry (the 5-try policy back for interactive
 reads) turns only the budget and the tries check red; `--fault=interactive-failures-counted`
@@ -56,16 +64,20 @@ reads) turns only the budget and the tries check red; `--fault=interactive-failu
 (callers queued behind a failed relay_cache fetch each go upstream again, one after
 another: the bell's and Fan List's readers of one dead Creator wait N failures) turns
 only the budget red, at `--scale=medium --users=200` (at small no reader queues behind
-another, so it is NOT CAUGHT there: measured 2026-10-28).
+another, so it is NOT CAUGHT there: measured 2026-10-28);
+`--fault=proxies-torn-read-goes-direct` (lib/egress_faults.py: a torn read is an empty
+registry again) turns only the torn-registry check red.
 """
 from __future__ import annotations
 
 import asyncio
 import re
+import threading
 import time
 from collections import Counter, defaultdict
 
 from slop.lib.client import Recorder
+from slop.lib.egress_faults import TORN_DIRECT
 from slop.lib.procmon import pct
 from slop.lib.proxy_wire import REFUSE_S, ProxyWire
 from slop.seed import of_sessions
@@ -86,6 +98,8 @@ ARRIVE_S = 5.0          # people open their Creator over this window (seeded tim
 THINK_S = 1.0           # the owner's pause between adding the proxy and binding Creators
 EARLY_S = 5.0           # the health read after the death: before any 5-try chain can end (6 s + 5 tries)
 DOWN_AFTER = 3          # service/proxy_health.py: counted failures that would start the confirm
+TORN = 5                # proxied Creators whose first client is built while proxies.json is rewritten
+SETTLE_S = 3.0          # the binds' SQL mirror syncs (db/import_legacy reads proxies.json) end before the rewrites
 
 DEAD_READS = {
     "chats": "/api/of/v2/chats?limit=25&offset=0&order=recent",
@@ -114,6 +128,8 @@ C_WIRE = "lib/of_wire.py saw only signed calls it models"
 _RETRY = re.compile(rf"proxy_error_retry account=(\d+) proxy={LABEL}\(.*? attempt=(\d+)/(\d+) GET (\S+) ")
 _FINAL = re.compile(rf"proxy_error account=(\d+) proxy={LABEL}\(.*? method=GET url=(\S+) ")
 _PROBE = re.compile(rf"proxy_probe label={LABEL} ok=False")
+_EGRESS = re.compile(r"client_egress account=(\d+) proxy=([^(\s]*)\([^)]*\)( registry=torn)?")
+_EGRESS_REFUSED = re.compile(r"client_egress_refused account=(\d+)")
 
 
 async def _read(http, path: str, aid: str, kind: str, headers: dict | None = None) -> dict:
@@ -132,6 +148,57 @@ def _unreachable(r: dict) -> bool:
     return r["status"] == 502 and ((r["body"] or {}).get("detail") or {}).get("upstream_status") == "proxy_unreachable"
 
 
+async def _torn_registry(ctx, owner, torn: list[str], bound: list[int]) -> None:
+    """TORN's first reads while proxies.json is rewritten in place in a loop (module docstring)."""
+    path, log = ctx.stack.tmp / "proxies.json", ctx.out / "relay.log"
+    await asyncio.sleep(SETTLE_S)
+    whole = path.read_bytes()
+    stop, cycles = threading.Event(), [0]
+
+    def rewrite() -> None:   # the bypass, declared: the harness's writes, as `save`'s in-place write
+        half = len(whole) // 2
+        while not stop.is_set():
+            with open(path, "r+b") as f:
+                f.truncate(0)
+                f.write(whole[:half])
+                f.flush()
+                time.sleep(0.002)
+                f.write(whole[half:])
+                f.flush()
+            cycles[0] += 1
+            time.sleep(0.0002)   # whole only briefly, so most builds meet a torn file (at 1 ms: 2 of 5
+            #                      direct under the fault, 20261031T042016Z-…-break-b090)
+
+    off = log.stat().st_size
+    writer = threading.Thread(target=rewrite, name="slop-torn-proxies", daemon=True)
+    writer.start()
+    try:
+        await asyncio.sleep(0.05)
+        reads = await asyncio.gather(*(_read(owner, "/api/of/v2/users/me", a, "torn") for a in torn))
+    finally:
+        stop.set()
+        await asyncio.to_thread(writer.join)
+        path.write_bytes(whole)
+    await asyncio.sleep(0.5)  # the relay's last log lines reach relay.log
+    with open(log, "rb") as f:
+        f.seek(off)
+        text = f.read().decode(errors="replace")
+    egress, torn_builds = defaultdict(list), 0
+    for m in _EGRESS.finditer(text):
+        if m.group(1) in torn:
+            egress[m.group(1)].append(m.group(2))
+            torn_builds += bool(m.group(3))
+    off_proxy = {a: ps for a, ps in egress.items() if any(p != LABEL for p in ps)}
+    refused = sorted({m.group(1) for m in _EGRESS_REFUSED.finditer(text)} & set(torn))
+    unbuilt = [a for a in torn if a not in egress]
+    not_200 = Counter(x["status"] for x in reads if x["status"] != 200)
+    ctx.check(TORN_DIRECT, all(s == 200 for s in bound) and not not_200 and not unbuilt and not off_proxy
+              and not refused and torn_builds >= 1,
+              creators=len(torn), binds_not_200=[s for s in bound if s != 200], reads_not_200=dict(not_200),
+              builds=sum(len(v) for v in egress.values()), unbuilt=unbuilt[:5], off_proxy=off_proxy,
+              refused=refused, builds_on_torn_registry=torn_builds, rewrite_cycles=cycles[0])
+
+
 async def run(ctx) -> None:
     w = await ctx.build(PROFILE)
     of_sessions.seed(w, w.data["creators"])
@@ -139,12 +206,13 @@ async def run(ctx) -> None:
     aids = [c["id"] for c in w.data["creators"] if c["owner"] == main]
     n_dead = int(ctx.param("dead", DEAD))
     dead, healthy = aids[:n_dead], aids[n_dead:n_dead + HEALTHY]
+    torn = aids[n_dead + HEALTHY:n_dead + HEALTHY + TORN]
     proxy = ProxyWire(float(ctx.param("refuse_ms", REFUSE_S * 1000)) / 1000)
     with proxy:
-        await _run(ctx, w, proxy, dead, healthy)
+        await _run(ctx, w, proxy, dead, healthy, torn)
 
 
-async def _run(ctx, w, proxy: ProxyWire, dead: list[str], healthy: list[str]) -> None:
+async def _run(ctx, w, proxy: ProxyWire, dead: list[str], healthy: list[str], torn: list[str]) -> None:
     owner, fake = ctx.owner, ctx.of_wire
 
     # ── the owner puts DEAD Creators on the proxy (the product's routes), each reads once through it ──
@@ -154,10 +222,20 @@ async def _run(ctx, w, proxy: ProxyWire, dead: list[str], healthy: list[str]) ->
     await asyncio.sleep(THINK_S)  # the owner picks Creators (docstring: the SQL mirror's race)
     for a in dead:
         bound.append((await owner.post("/admin/proxies/assign", json={"label": LABEL, "account_id": a})).status_code)
+    # TORN's binds before the warm-up (each bind evicts every pooled client, DEAD's warm ones too), THINK_S
+    # apart: back to back, a bind's save truncates proxies.json under the last one's SQL mirror sync
+    # (db/import_legacy reads it raw: `sync_from_disk failed`, measured 1 in 20 binds,
+    # 20261031T041506Z-…-b090).
+    torn_bound = []
+    for a in torn:
+        await asyncio.sleep(THINK_S)
+        r = await owner.post("/admin/proxies/assign", json={"label": LABEL, "account_id": a})
+        torn_bound.append(r.status_code)
     warm = await asyncio.gather(*(_read(owner, "/api/of/v2/users/me", a, "warm") for a in dead))
     tunneled = sum(1 for c in proxy.connects if c["alive"])
     ctx.check(C_BIND, all(s == 200 for s in bound) and all(x["status"] == 200 for x in warm) and tunneled >= len(dead),
               routes=bound, warm={x["aid"]: x["status"] for x in warm}, tunneled=tunneled)
+    await _torn_registry(ctx, owner, torn, torn_bound)
 
     # ── the proxy dies; background reads and people's reads land together ──
     rng = w.rng("dead_proxy_people")

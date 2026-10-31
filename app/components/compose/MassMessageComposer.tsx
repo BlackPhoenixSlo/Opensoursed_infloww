@@ -36,16 +36,16 @@ import { SensitiveWordWarning } from "@/components/chat/SensitiveWordWarning";
 
 import { sanitizePriceInput } from "@/lib/priceInput";
 
-import { AccountPicker } from "./AccountPicker";
 import { AudiencePanel } from "./AudiencePanel";
 import { FanOutResults, FanOutStatus } from "./FanOutResults";
+import { IncludeModelsChips } from "./IncludeModelsChips";
 import { fanOutLocked, includedTargets } from "./fanOut";
 import { MediaTray } from "./MediaTray";
 import { OnlineTargetingPanel } from "./OnlineTargetingPanel";
 import { ScheduleField } from "./ScheduleField";
 import { useMassSend } from "./useMassSend";
 import {
-  confirmPrompt, effectivePrice, fieldAction, initMassForm, massMessageReducer, validateMass,
+  confirmPrompt, effectivePrice, fieldAction, gifNote, initMassForm, massMessageReducer, validateMass,
   type MassField, type MassForm,
 } from "./massMessageReducer";
 import { fmtPrice } from "@/lib/format";
@@ -77,7 +77,7 @@ export function MassMessageComposer({
   const activeAccounts = usePlatformAccounts();
   // The composers' shared include set (useAllModelsInclude) — a model
   // un-checked in any composer's chip strip is omitted from a broadcast here.
-  const { isIncluded, toggle: toggleAllModelsInclude } = useAllModelsInclude();
+  const { isIncluded } = useAllModelsInclude();
   // Sends without an explicit employeeId attribute to the Automation system
   // employee (id=2). See memory: project_x_employee_id_pipeline.md — relay's
   // X-Employee-Id header is opt-in per call, no global injector.
@@ -219,60 +219,11 @@ export function MassMessageComposer({
           {/* All-models switch — pivots the modal between single-account
            *  mode (vault + custom-list audiences) and fan-out mode
            *  (uploads only + system audiences only). */}
-          <label className="flex items-center gap-2 text-xs cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={allModels}
-              disabled={locked}
-              onChange={(e) => dispatch({ type: "setAllModels", on: e.target.checked })}
-            />
-            <span className="font-medium">Broadcast from ALL models</span>
-            <span className="text-fg-dim">
-              ({broadcastAccounts.length}/{activeAccounts.length} included)
-            </span>
-          </label>
-
-          {allModels ? (
-            <>
-              <div className="text-[11px] text-fg-dim border border-dashed border-border rounded-md py-2 px-3">
-                All-models broadcasts are text-only for now — uploads from
-                computer are temporarily disabled.
-              </div>
-              {/* Chip strip — the composers' shared include set. Click a
-               *  chip to drop / re-add a model from the broadcast (and
-               *  from the other composers' all-models broadcasts). */}
-              <div className="flex flex-wrap gap-1.5">
-                {activeAccounts.map((a) => {
-                  const inc = isIncluded(a.id);
-                  return (
-                    <button
-                      key={a.id}
-                      type="button"
-                      onClick={() => toggleAllModelsInclude(a.id)}
-                      title={inc ? "Click to exclude from broadcast" : "Click to include"}
-                      className={
-                        "flex items-center gap-1.5 px-2 py-1 rounded-full text-[11px] border transition-colors " +
-                        (inc
-                          ? "bg-bg-elev-1 border-border text-fg"
-                          : "bg-bg border-border/60 text-fg-dim line-through opacity-60")
-                      }
-                    >
-                      <span
-                        className="w-2 h-2 rounded-full shrink-0"
-                        style={{ background: a.color || "#666" }}
-                      />
-                      <span>{a.nickname || a.id}</span>
-                    </button>
-                  );
-                })}
-                {activeAccounts.length === 0 && (
-                  <span className="text-[11px] text-fg-dim">No active sessions.</span>
-                )}
-              </div>
-            </>
-          ) : (
-            <AccountPicker value={accountId} onChange={setAccountId} />
-          )}
+          <IncludeModelsChips
+            noun="broadcast" allModels={allModels} locked={locked}
+            onAllModels={(on) => dispatch({ type: "setAllModels", on })}
+            accountId={accountId} onAccount={setAccountId}
+          />
 
           {/* The content — locked (disabled) once a model sent the broadcast. */}
           <fieldset disabled={locked} className="min-w-0 space-y-3 disabled:opacity-60">
@@ -334,9 +285,7 @@ export function MassMessageComposer({
                   </div>
                 ))}
                 <span className="ml-auto text-[10px] text-fg-dim">
-                  {pickedGifs.length > 1
-                    ? `${pickedGifs.length} GIFs — first rides this broadcast; rest fan out as standalone sends`
-                    : "1 GIF attached"}
+                  {gifNote(form)}
                 </span>
               </div>
             )}

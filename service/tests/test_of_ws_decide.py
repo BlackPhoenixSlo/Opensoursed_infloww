@@ -1,11 +1,12 @@
 """
-of_ws_decide.decide(state, Failed(dead_reason)) -> (state', Wait | GiveUp): the OnlyFans
+of_ws_decide.decide(state, Failed(dead_reason, up_s)) -> (state', Wait | GiveUp): the OnlyFans
 WebSocket pump's reconnect rules (service/of_ws.py's events() is the shell) as tables.
 
-  case_backoff_doubles_to_the_cap        transient failures wait 1, 2, 4, 8, 16, 30, 30 … s;
-                                         a socket that connected and was then closed is a
-                                         Failed too, so the backoff never resets while the
-                                         pump lives
+  case_backoff_doubles_to_the_cap        transient failures wait 1, 2, 4, 8, 16, 30, 30 … s
+  case_uptime_resets_the_backoff         a failed pass whose socket was up >= RESET_AFTER_S
+                                         (60 s, Failed.up_s) starts the backoff over; a
+                                         shorter one keeps it doubling; a dead session
+                                         after a long uptime still gives up
   case_classifier_answer_to_effect       a real 101 otpState gives up, a socket close
                                          reconnects (the classifier's full table:
                                          test_session_health.py)
@@ -42,7 +43,8 @@ import account_health  # noqa: E402
 import of_ws  # noqa: E402
 import of_ws_decide as d  # noqa: E402
 from of_client import OFAPIError  # noqa: E402
-from of_ws_decide import RECONNECT_MAX_S, RECONNECT_MIN_S, Failed, GiveUp, Pump, Wait, decide  # noqa: E402
+from of_ws_decide import (RECONNECT_MAX_S, RECONNECT_MIN_S, RESET_AFTER_S, Failed, GiveUp,  # noqa: E402
+                          Pump, Wait, decide)
 
 OTP_BODY = ('{"error":{"code":101,"message":"Confirm it is you","payload":{"otpState":'
             '{"appOtp":true},"strong":false}}}')
@@ -68,6 +70,29 @@ def case_backoff_doubles_to_the_cap() -> None:
     # From any backoff: (state, the wait now, the next state's backoff)
     for b, wait, nxt in [(1, 1, 2), (2, 2, 4), (15, 15, 30), (16, 16, 30), (29, 29, 30), (30, 30, 30)]:
         assert decide(Pump(b), Failed(None)) == (Pump(nxt), Wait(wait)), b
+
+
+def case_uptime_resets_the_backoff() -> None:
+    assert RESET_AFTER_S == 60
+    # (backoff before, the failed pass's socket uptime) -> (the wait now, the next backoff)
+    for b, up, wait, nxt in [
+        (8, None, 8, 16),    # never opened: keeps doubling
+        (8, 0.05, 8, 16),    # closed right after the hello: keeps doubling
+        (8, 59.9, 8, 16),
+        (8, 60, 1, 2),       # up a minute: starts over
+        (30, 3600, 1, 2),
+        (1, 120, 1, 2),
+        (16, 30, 16, 30),
+    ]:
+        assert decide(Pump(b), Failed(None, up)) == (Pump(nxt), Wait(wait)), (b, up)
+    # Short uptimes in a row: 1, 2, 4, 8 as before up_s existed.
+    st, waits = Pump(), []
+    for _ in range(4):
+        st, eff = decide(st, Failed(None, 0.05))
+        waits.append(eff.s)
+    assert waits == [1, 2, 4, 8], waits
+    # A dead session after a long uptime: GiveUp, unchanged.
+    assert decide(Pump(30), Failed("otp_required", 600)) == (Pump(1), GiveUp("otp_required"))
 
 
 def case_classifier_answer_to_effect() -> None:
@@ -166,7 +191,9 @@ async def case_shell_refreshes_ticket_before_every_reconnect() -> None:
     # Each pass: the ticket first, then the socket (its hello carries that ticket's token).
     for (t_me, _), (t_hello, _) in zip(c.issued, hellos):
         assert t_me <= t_hello, (c.issued, hellos)
-    assert all(isinstance(ev, Failed) and ev.dead_reason is None for ev, _ in spy.steps), spy.steps
+    # Each drop: a Failed whose socket was up ~0.05 s (no reset).
+    assert all(isinstance(ev, Failed) and ev.dead_reason is None and 0 <= ev.up_s < 1
+               for ev, _ in spy.steps), spy.steps
     assert [eff for _, eff in spy.steps] == [Wait(1), Wait(2), Wait(4)], spy.steps
     g1, g2 = (b[0] - a[0] for a, b in zip(c.issued, c.issued[1:]))
     assert 0.9 <= g1 < 1.5 and 1.9 <= g2 < 2.5, (g1, g2)
@@ -190,7 +217,10 @@ async def case_shell_transient_then_dead() -> None:
         srv.close()
         await srv.wait_closed()
     assert len(hellos) == 1 and len(c.issued) == 2, (hellos, c.issued)
-    assert spy.steps == [(Failed(None), Wait(1)), (Failed("otp_required"), GiveUp("otp_required"))], spy.steps
+    # The drop had a socket up ~0.05 s; the 101 came from /users/me, before any socket.
+    (ev1, eff1), (ev2, eff2) = spy.steps
+    assert ev1.dead_reason is None and 0 <= ev1.up_s < 1 and eff1 == Wait(1), spy.steps
+    assert (ev2, eff2) == (Failed("otp_required"), GiveUp("otp_required")), spy.steps
 
 
 async def case_shell_without_classifier_never_gives_up() -> None:

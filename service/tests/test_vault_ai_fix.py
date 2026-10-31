@@ -30,6 +30,9 @@ Cases:
   case_resolving_the_dispute_removes_it:
       after the fix the item no longer contradicts itself — otherwise the
       operator works the same list forever.
+  case_iffy_reasons_table / case_priority_table / case_grade_of_table /
+  case_propose_bare_codes_table:
+      pure-function rows pinning CURRENT behaviour of the review-queue helpers.
 
 Run: cd service/tests && \
   PYTHONPATH=$(cd .. && pwd) ../../venv/bin/python test_vault_ai_fix.py
@@ -223,7 +226,6 @@ def case_confirming_is_evidence_not_a_no_op() -> None:
     assert acc["accuracy"] == round(5 / 6, 4), acc
 
     # An UNGRADED item must not count as correct — that is the whole failure.
-    asyncio.run(_seed(_next_account(), []))
     aid2 = _next_account()
     asyncio.run(_seed(aid2, [(770, _THONG)]))
     assert asyncio.run(F.flags_accuracy(aid2, version=3))["accuracy"] is None
@@ -385,6 +387,119 @@ def case_a_dressed_woman_is_never_offered_fully_nude() -> None:
     assert F.propose(nude, ["lingerie_but_nothing_on"])["flags"][
         "clothing_state"] == "fully_nude"
 
+# Consistent base: no contradiction, nothing bare, every region answered.
+_TAME = {"explicitness": "suggestive", "clothing_state": "lingerie_on",
+         **_flags(vulva="covered", breasts="not_in_frame",
+                  over_vulva="black lace thong")}
+
+
+def case_iffy_reasons_table() -> None:
+    thong = {"vulva_vis": "covered", "over_vulva": "black lace thong"}
+    blind = {**_TAME, "explicitness": "explicit", "vulva_vis": "not_in_frame"}
+    prose = {**_TAME, "vulva_vis": "not_in_frame",
+             "description": "Stroking her exposed clitoris."}
+    rows = (
+        ("vulva covered, nothing named", {**_TAME, "over_vulva": ""}, None,
+         ["unexplained_cover"]),
+        ("unexplained but locked", {**_TAME, "over_vulva": ""}, {"vulva_vis"}, []),
+        ("impossible garment is no name",
+         {**_TAME, "breasts_vis": "covered", "over_breasts": "pink thong"}, None,
+         ["unexplained_cover"]),
+        ("two unexplained regions, one reason",
+         {**_TAME, "over_vulva": "", "breasts_vis": "covered"}, None,
+         ["unexplained_cover"]),
+        ("fingering through a thong",
+         {**_TAME, **thong, "explicitness": "explicit", "acts": ["fingering"]},
+         None, ["act_vs_covered"]),
+        ("toy penetration through a thong",
+         {**_TAME, **thong, "explicitness": "explicit", "penetration": "toy"},
+         None, ["act_vs_covered"]),
+        ("penetration none", {**_TAME, **thong, "penetration": "none"}, None, []),
+        ("penetration unclear", {**_TAME, **thong, "penetration": "unclear"},
+         None, []),
+        ("rubbing_clit over fabric",
+         {**_TAME, **thong, "explicitness": "explicit", "acts": ["rubbing_clit"]},
+         None, []),
+        ("sex_doggy not in the act set",
+         {**_TAME, **thong, "explicitness": "explicit", "acts": ["sex_doggy"]},
+         None, []),
+        ("passes disagree", _THONG, None, ["passes_disagree"]),
+        ("explicit, nothing in frame", blind, None, ["blind"]),
+        ("hardcore, nothing in frame", {**blind, "explicitness": "hardcore"},
+         None, ["blind"]),
+        ("suggestive, nothing in frame", {**blind, "explicitness": "suggestive"},
+         None, []),
+        ("sfw, nothing in frame", {**blind, "explicitness": "sfw"}, None, []),
+        ("prose says exposed, flags not_in_frame", prose, None, ["prose_vs_flags"]),
+        ("prose agrees with bare flags", {**prose, "vulva_vis": "bare"}, None, []),
+        ("prose vs flags but locked", prose, {"vulva_vis"}, []),
+        ("exposure word >40 chars away",
+         {**prose, "description": "Exposed " + "and " * 12 + "her clitoris."},
+         None, []),
+        ("word boundary: clitoral is not clit",
+         {**prose, "description": "Her exposed clitoral hood."}, None, []),
+    )
+    for name, fields, locked, want in rows:
+        got = F.iffy_reasons(fields, locked or set())
+        assert got == want, f"{name}: {got} != {want}"
+
+
+def case_priority_table() -> None:
+    def key(fields, lanes=(), reasons=()):
+        return F._priority(fields, list(lanes), 3, list(reasons))
+
+    def graded(v):
+        return {**_TAME, F.GRADE_KEY: {"v": v}}
+
+    bare = {**_TAME, "explicitness": "explicit", "clothing_state": "pulled_down",
+            "breasts_vis": "bare"}
+    assert vault_ai_brief.contradictions(bare) == [], "fixture: bare must be clean"
+    before = (
+        ("ungraded before graded v3", key(_TAME), key(graded(3))),
+        ("ungraded before graded v4", key(_TAME), key(graded(4))),
+        ("more reasons earlier", key(_TAME, reasons=["a", "b"]),
+         key(_TAME, reasons=["a"])),
+        ("contradiction before none", key(_THONG), key(_TAME)),
+        ("tease 10 before unpaid", key(_TAME, ["tease 10"]), key(_TAME, ["mass"])),
+        ("tease 50 before unpaid", key(_TAME, ["tease 50"]), key(_TAME, ["mass"])),
+        ("safe explicit before unpaid", key(_TAME, ["safe explicit"]),
+         key(_TAME, ["stories"])),
+        ("any bare breaks the tie", key(bare), key(_TAME)),
+    )
+    for name, first, second in before:
+        assert first < second, f"{name}: {first} !< {second}"
+    assert key(graded(2)) == key(_TAME), "a v2 grade is not graded at v3"
+
+
+def case_grade_of_table() -> None:
+    for name, fields, want in (
+        ("None", None, {}),
+        ("not a dict", ["x"], {}),
+        ("no grade", {}, {}),
+        ("grade not a dict", {F.GRADE_KEY: "yes"}, {}),
+        ("grade dict", {F.GRADE_KEY: {"v": 3}}, {"v": 3}),
+    ):
+        got = F.grade_of(fields)
+        assert got == want, f"{name}: {got} != {want}"
+
+
+def case_propose_bare_codes_table() -> None:
+    skirt = {"vulva_vis": "covered", "over_vulva": "denim skirt"}
+    for name, fields, code, want in (
+        ("dressed but topless",
+         {**_TAME, **skirt, "clothing_state": "dressed", "breasts_vis": "bare"},
+         "dressed_but_bare",
+         {"flags": {"clothing_state": "pulled_down"},
+          "describe": {"breasts_vis": "covered"}}),
+        ("sfw but both bare",
+         {**_TAME, "explicitness": "sfw", "vulva_vis": "bare",
+          "breasts_vis": "bare"}, "sfw_but_bare",
+         {"flags": {"clothing_state": "partially_off", "explicitness": "suggestive"},
+          "describe": {"vulva_vis": "covered", "breasts_vis": "covered"}}),
+    ):
+        got = F.propose(fields, [code])
+        assert got == want, f"{name}: {got} != {want}"
+
 
 _harness.run(
     case_dispute_offers_both_readings,
@@ -400,4 +515,8 @@ _harness.run(
     case_confirming_is_evidence_not_a_no_op,
     case_accuracy_refuses_to_mix_prompt_versions,
     case_queue_puts_ungraded_and_costly_items_first,
+    case_iffy_reasons_table,
+    case_priority_table,
+    case_grade_of_table,
+    case_propose_bare_codes_table,
 )

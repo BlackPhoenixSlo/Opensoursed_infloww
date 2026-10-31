@@ -35,6 +35,7 @@ import curl_cffi  # noqa: E402
 
 import of_client  # noqa: E402
 import server  # noqa: E402 — after _harness (DB) + the cache dir are bound
+import img_api  # noqa: E402
 
 PROXY = {"http": "http://u:p@proxy.example:8000", "https": "http://u:p@proxy.example:8000"}
 
@@ -163,19 +164,19 @@ def _img(u: str) -> dict[str, list]:
     account = SimpleNamespace(http=SimpleNamespace(get=_get("account"), proxies=dict(PROXY),
                                                    cookies={"sess": "acct"}, headers={"user-agent": "acct-ua"}),
                               timeout_s=30)
-    saved = (server._get_client, server._DIRECT_HTTP)
+    saved = (server._get_client, img_api._DIRECT_HTTP)
     server._get_client = lambda *a, **k: account
-    server._DIRECT_HTTP = SimpleNamespace(get=_get("direct"))
+    img_api._DIRECT_HTTP = SimpleNamespace(get=_get("direct"))
     try:
         req = SimpleNamespace(headers={"range": "bytes=0-", "x-account-id": "acct-1"})
-        resp = server.proxy_image(req, u=u)
+        resp = img_api.proxy_image(req, u=u)
 
         async def _drain():   # releases the fetch slot the stream holds
             async for _ in resp.body_iterator:
                 pass
         asyncio.run(_drain())
     finally:
-        server._get_client, server._DIRECT_HTTP = saved
+        server._get_client, img_api._DIRECT_HTTP = saved
     return seen
 
 
@@ -191,7 +192,7 @@ def case_img_static_hosts_are_direct():
 
 
 def case_the_direct_session_is_bare():
-    s = server._DIRECT_HTTP
+    s = img_api._DIRECT_HTTP
     assert s.discard_cookies is True, "a Set-Cookie from OF must not be kept and replayed"
     assert dict(s.cookies) == {} and dict(s.headers) == {} and not s.proxies, (s.cookies, s.headers, s.proxies)
 

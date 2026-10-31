@@ -69,6 +69,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useScope } from "@/contexts/ScopeContext";
 import { gifSearch, gifTrending, relay, type GiphyItem, type OFChatItem, type TaggedFriendUser, type TaggedFriendUsersResp, type VaultUploadResp } from "@/lib/relay";
 import { chatPath, fill, handleOf, make, mirrorQuery, nameOf, usersListPath, withChatUsers, restore, rowsOf, setAttr, setText, stamp, toggleTile, USER_LISTS, type UserList } from "@/lib/ofMirrorData";
+import { afterChatWrite } from "@/lib/ofMirrorKeys";
 import { bindAddMedia, bindTags, bindVaultSearch, bindVaultTools, collectSchedule, mediaTaker, renderCalendar, tagHref, tagsRoute, tagViewOf, type TagView } from "@/lib/ofMirrorPost";
 import { bindComposer, GIF_ALONE, isMobile } from "@/lib/ofMirrorComposer";
 import { hasFormatting, ofHtml, setOfHtml } from "@/lib/ofMirrorFormat";
@@ -1390,13 +1391,8 @@ export function useOfChat(frameRef: RefObject<HTMLIFrameElement | null>, src: st
     const frame = frameRef.current;
     if (!frame || !page) return;
     let unbind: (() => void) | undefined;
-    // The mirror's reads, and the chat list and thread (Messages Pro's useChatList / useChatMessages caches).
-    const refresh = () =>
-      Promise.all([
-        qc.invalidateQueries({ queryKey: ["of-mirror-data", accountId] }),
-        qc.invalidateQueries({ queryKey: ["chats"] }),
-        qc.invalidateQueries({ queryKey: ["messages", accountId] }),
-      ]);
+    // A chat write's refresh, and the thread (Messages Pro's useChatMessages cache).
+    const refresh = () => Promise.all([afterChatWrite(qc, accountId), qc.invalidateQueries({ queryKey: ["messages", accountId] })]);
     const enc = chat ? encodeURIComponent(chat) : "";
     const handlers: ChatHandlers | null = accountId
       ? {

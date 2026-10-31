@@ -26,6 +26,7 @@ _harness.bootstrap()
 from datetime import datetime  # noqa: E402
 
 import server  # noqa: E402
+import accounts_admin_api  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Account, Chat, Message  # noqa: E402
 
@@ -71,7 +72,7 @@ async def case_compute_roster_count_from_of():
     server._load_client = lambda _aid: fake
     server.relay_cache.invalidate("list_chats", "acct-of")
     try:
-        out = await server._compute_roster_count_of("acct-of")
+        out = await accounts_admin_api._compute_roster_count_of("acct-of")
     finally:
         server._load_client = orig
         server.relay_cache.invalidate("list_chats", "acct-of")
@@ -93,7 +94,7 @@ async def case_roster_count_caps_at_window():
     server._load_client = lambda _aid: fake
     server.relay_cache.invalidate("list_chats", "acct-cap")
     try:
-        out = await server._compute_roster_count_of("acct-cap")
+        out = await accounts_admin_api._compute_roster_count_of("acct-cap")
     finally:
         server._load_client = orig
         server.relay_cache.invalidate("list_chats", "acct-cap")
@@ -187,37 +188,37 @@ async def case_roster_bust_recomputes_only_target():
         return {"unread": 1, "owe_reply": 0}
 
     orig_user = server._get_request_user
-    orig_compute = server._compute_roster_count_of
+    orig_compute = accounts_admin_api._compute_roster_count_of
     server._get_request_user = lambda: _User()
-    server._compute_roster_count_of = _fake_compute
+    accounts_admin_api._compute_roster_count_of = _fake_compute
     # Start from a clean cache so the first read is a guaranteed cold miss.
     server.relay_cache.invalidate("roster_count", "acct-x")
     server.relay_cache.invalidate("roster_count", "acct-y")
     try:
         # 1. Cold: both models computed once.
-        r_cold = await server.admin_accounts_roster_counts(_Resp())
+        r_cold = await accounts_admin_api.admin_accounts_roster_counts(_Resp())
         assert sorted(calls) == ["acct-x", "acct-y"], calls
         assert set(r_cold["counts"]) == {"acct-x", "acct-y"}, r_cold
 
         # 2. Warm: served entirely from cache — no new fetcher calls.
-        await server.admin_accounts_roster_counts(_Resp())
+        await accounts_admin_api.admin_accounts_roster_counts(_Resp())
         assert len(calls) == 2, f"warm read recomputed: {calls}"
 
         # 3. Bust the target: exactly one recompute, only acct-x — and the
         #    response carries ONLY the target, so no other (cold) model can be
         #    re-read off the back of a swap/hover/read.
-        r_bust = await server.admin_accounts_roster_counts(_Resp(), bust="acct-x")
+        r_bust = await accounts_admin_api.admin_accounts_roster_counts(_Resp(), bust="acct-x")
         assert calls[2:] == ["acct-x"], f"bust rescanned more than target: {calls[2:]}"
         assert set(r_bust["counts"]) == {"acct-x"}, r_bust
 
         # 4. Bust a foreign id (not owned): ignored — falls through to the full
         #    map (both cached), so nothing recomputed and no foreign eviction.
-        r_foreign = await server.admin_accounts_roster_counts(_Resp(), bust="acct-z")
+        r_foreign = await accounts_admin_api.admin_accounts_roster_counts(_Resp(), bust="acct-z")
         assert calls[3:] == [], f"foreign bust evicted/recomputed: {calls[3:]}"
         assert set(r_foreign["counts"]) == {"acct-x", "acct-y"}, r_foreign
     finally:
         server._get_request_user = orig_user
-        server._compute_roster_count_of = orig_compute
+        accounts_admin_api._compute_roster_count_of = orig_compute
         server.relay_cache.invalidate("roster_count", "acct-x")
         server.relay_cache.invalidate("roster_count", "acct-y")
 
@@ -310,12 +311,12 @@ async def case_bust_rewarms_shared_list_window():
     server.relay_cache.invalidate("roster_count", AID)
     try:
         # Bust path: live read + counts from the same rows.
-        out = await server._compute_roster_count_of(AID, bypass=True)
+        out = await accounts_admin_api._compute_roster_count_of(AID, bypass=True)
         assert out == {"unread": 3, "owe_reply": 5}, out
         assert fake.calls == 1, f"bypass read OF {fake.calls}x, wanted 1"
 
         # Badge recompute off the warm window: zero further OF calls.
-        out2 = await server._compute_roster_count_of(AID)
+        out2 = await accounts_admin_api._compute_roster_count_of(AID)
         assert out2 == out, out2
         assert fake.calls == 1, f"warm-window recompute hit OF: {fake.calls}"
 
@@ -338,7 +339,7 @@ async def case_bust_rewarms_shared_list_window():
         server._chats_window_fetched_at[AID] = (
             server._time_mod.monotonic() - server._ROSTER_WINDOW_MAX_AGE_S - 1
         )
-        out3 = await server._compute_roster_count_of(AID)
+        out3 = await accounts_admin_api._compute_roster_count_of(AID)
         assert out3 == out, out3
         assert fake.calls == 2, f"aged window must force a live re-read: {fake.calls}"
     finally:
@@ -380,27 +381,27 @@ async def case_ws_kept_window_is_folded_past_300s_within_its_list_ttl():
     try:
         pump.connected_at = server._time_mod.monotonic()
         of_ws.register_pump(AID, pump)
-        await server._compute_roster_count_of(AID)  # cold: one live read
+        await accounts_admin_api._compute_roster_count_of(AID)  # cold: one live read
         assert fake.calls == 1, fake.calls
         aged = server._time_mod.monotonic() - server._ROSTER_WINDOW_MAX_AGE_S - 1
 
         # Connected before the read and still up: the aged window is folded.
         pump.connected_at = aged - 1
         server._chats_window_fetched_at[AID] = aged
-        out = await server._compute_roster_count_of(AID)
+        out = await accounts_admin_api._compute_roster_count_of(AID)
         assert out == {"unread": 2, "owe_reply": 4}, out
         assert fake.calls == 1, f"a WS-kept window re-read OF: {fake.calls}"
 
         # Reconnected after the read: the gap may have missed frames.
         pump.connected_at = aged + 1
         server._chats_window_fetched_at[AID] = aged
-        await server._compute_roster_count_of(AID)
+        await accounts_admin_api._compute_roster_count_of(AID)
         assert fake.calls == 2, f"a window older than the socket must re-read: {fake.calls}"
 
         # Pump down: the age rule as before.
         of_ws.unregister_pump(AID)
         server._chats_window_fetched_at[AID] = aged
-        await server._compute_roster_count_of(AID)
+        await accounts_admin_api._compute_roster_count_of(AID)
         assert fake.calls == 3, f"no pump, aged window must re-read: {fake.calls}"
     finally:
         of_ws.unregister_pump(AID)

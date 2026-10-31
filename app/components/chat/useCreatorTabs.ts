@@ -41,7 +41,7 @@ import { useCallback, useMemo, useSyncExternalStore } from "react";
 import { useAccounts, usePlatformAccounts } from "@/hooks/useAccounts";
 import { useEmployeeKey } from "@/hooks/useEmployeeKey";
 import type { AccountMeta } from "@/lib/relay";
-import { subscribeToStorage } from "@/lib/storageSync";
+import { readStorage, subscribeToStorage } from "@/lib/storageSync";
 
 export type CreatorTabsStore = {
   open: AccountMeta[];
@@ -100,14 +100,6 @@ function parseSavedTabs(raw: string | null): SavedTabs {
   return isSavedTabs(parsed) ? parsed : DEFAULT_TABS;
 }
 
-function readRaw(storageKey: string | null): string | null {
-  return storageKey === null ? null : window.localStorage.getItem(storageKey);
-}
-
-function serverRaw(): string | null {
-  return null;
-}
-
 /** `creators` in the saved order: saved ids filtered to live Creators, then
  *  the live Creators the saved order lacks, in the relay's order. */
 function inSavedOrder(creators: AccountMeta[], order: string[]): AccountMeta[] {
@@ -131,7 +123,7 @@ export function useCreatorTabs(): CreatorTabsStore {
 
   const ready = accountsSettled && storageKey !== null;
 
-  const raw = useSyncExternalStore(subscribe, () => readRaw(storageKey), serverRaw);
+  const raw = useSyncExternalStore(subscribe, () => readStorage(storageKey), () => null);
   const saved = useMemo(() => parseSavedTabs(raw), [raw]);
 
   const update = useCallback((change: (prev: SavedTabs) => SavedTabs) => {
@@ -139,7 +131,7 @@ export function useCreatorTabs(): CreatorTabsStore {
     // nothing renders a ✕ or a picker row to click. The guard only narrows
     // `storageKey` for setItem; the invariant is stated here, not asserted away.
     if (storageKey === null) return;
-    const next = change(parseSavedTabs(readRaw(storageKey)));
+    const next = change(parseSavedTabs(readStorage(storageKey)));
     window.localStorage.setItem(storageKey, JSON.stringify(next));
     window.dispatchEvent(new Event(EVENT));
   }, [storageKey]);

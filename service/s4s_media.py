@@ -41,9 +41,10 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 from sqlalchemy import delete, or_, select, update
 
+from agency_scope import agency_account_ids
 import automation_executor as ax
 from db.engine import get_session
-from db.models import S4SMedia, S4SPost, S4SProfile, S4SRequest, S4SSlot, UserAccount
+from db.models import S4SMedia, S4SPost, S4SProfile, S4SRequest, S4SSlot
 from s4s_common import _json_object, _owner_context, listed_to
 
 log = logging.getLogger("of-relay.s4s_media")
@@ -343,9 +344,7 @@ async def get_media(media_id: str) -> Response:
         raise HTTPException(status_code=404, detail="media not found") from None
     async with get_session() as s:
         row = await s.get(S4SMedia, mid)
-        own = set((await s.execute(
-            select(UserAccount.account_id).where(UserAccount.user_id == ctx.agency_user_id)
-        )).scalars().all())
+        own = await agency_account_ids(s, ctx.agency_user_id)
         allowed = row is not None and row.account_id in own
         if row is not None and not allowed and row.post_id is not None:
             allowed = (await s.execute(

@@ -14,6 +14,7 @@ vi.mock("./VaultPicker", async () =>
   (await import("./composerTestHarness")).vaultPickerStubModule);
 
 import { pickSendAt, renderComposer, resetComposerHarness, routeRelay } from "./composerTestHarness";
+import { relay } from "@/lib/relay";
 import { clearRefusedOffers } from "./refusedOffers";
 
 beforeEach(() => resetComposerHarness());
@@ -162,5 +163,35 @@ describe("Composer: a refused schedule's tags and chat", () => {
     expect(screen.queryByText(/Not scheduled/)).not.toBeInTheDocument();
     rerender(chat(1));
     expect(screen.queryByText(/Not scheduled/)).not.toBeInTheDocument();
+  });
+
+  it("a refusal dropped after an identity switch revokes its media's blob previews", async () => {
+    const revokeObjectURL = vi.fn();
+    Object.assign(URL, { createObjectURL: vi.fn((f: Blob) => `blob:${(f as File).name}`), revokeObjectURL });
+    vi.mocked(relay.uploadFile).mockResolvedValue({ ready: true, deduped: false, vault_id: 31, send_with: [31] });
+    try {
+      const user = userEvent.setup();
+      const { onSend, rerender, chat } = await chats();
+      const refuse = holdNextSend(onSend);
+
+      await user.upload(screen.getByLabelText("Upload from computer"), new File(["x"], "a.png", { type: "image/png" }));
+      await waitFor(() => expect(screen.queryByText(/uploading/i)).not.toBeInTheDocument());
+      await user.type(textbox(), "later");
+      await pickSendAt(user, 5);
+      await user.click(textbox());
+      await user.keyboard("{Enter}");
+      await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+      expect(onSend.mock.calls[0][0].attached?.[0]?._localPreview).toBe("blob:a.png");
+      rerender(chat(2));
+      act(() => clearRefusedOffers()); // the identity switches while it is in flight
+      expect(revokeObjectURL).not.toHaveBeenCalledWith("blob:a.png");
+      await act(async () => refuse(new Error("relay said no")));
+
+      expect(screen.queryByText(/Not scheduled/)).not.toBeInTheDocument();
+      expect(revokeObjectURL).toHaveBeenCalledWith("blob:a.png");
+    } finally {
+      delete (URL as { createObjectURL?: unknown }).createObjectURL;
+      delete (URL as { revokeObjectURL?: unknown }).revokeObjectURL;
+    }
   });
 });

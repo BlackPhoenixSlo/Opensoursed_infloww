@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import type { PickedTemplate } from "@/components/chat/TemplatePicker";
 import {
-  buildMassBody, confirmPrompt, fieldAction, gifOnlyForm, initMassForm, MASS_ALREADY_SENT, massMessageReducer,
-  validateMass,
+  buildMassBody, confirmPrompt, fieldAction, gifNote, gifOnlyForm, initMassForm, MASS_ALREADY_SENT,
+  MASS_ONE_GIF_ALL_MODELS, massMessageReducer, validateMass,
   type MassAction, type MassCtx, type MassForm,
 } from "@/components/compose/massMessageReducer";
 import type { TaggedCreatorChoice, VaultMedia } from "@/lib/relay";
@@ -261,6 +261,10 @@ describe("validateMass — the one check (button and mutation)", () => {
     ["a fresh-upload claim counts", { text: "", attached: [media(0, { _claim: { p: 1 } })] }, {}, null],
     ["BUG: all-models ignores media and says so (media can't be added there)", { allModels: true, accountId: null, text: "", attached: [media(1)] }, {}, "Add text or a GIF"],
     ["a GIF alone is enough", { text: "", pickedGifs: [gif("g")] }, {}, null],
+    ["one account: extra GIFs go as their own sends", { pickedGifs: [gif("g1"), gif("g2")] }, {}, null],
+    ["all-models: one GIF rides the broadcast", { allModels: true, accountId: null, pickedGifs: [gif("g1")] }, {}, null],
+    ["BUG: all-models refuses a 2nd GIF (was: sent the first only, the rest dropped silently)",
+      { allModels: true, accountId: null, pickedGifs: [gif("g1"), gif("g2")] }, {}, MASS_ONE_GIF_ALL_MODELS],
     ["no audience", { includes: new Set() }, {}, smart],
     ["an include Smart List is an audience", { includes: new Set(), smartInclude: new Set([1]) }, {}, null],
     ["…an exclude one is not", { includes: new Set(), smartExclude: new Set([1]) }, {}, smart],
@@ -271,6 +275,19 @@ describe("validateMass — the one check (button and mutation)", () => {
     ["invalid schedule", { schedule: "not a date" }, {}, "Invalid schedule date"],
   ])("%s", (_n, over, c, want) => {
     expect(validateMass(form(over), ctx(c))).toBe(want);
+  });
+});
+
+describe("gifNote — the GIF strip's note", () => {
+  it.each<[string, Partial<MassForm>, string]>([
+    ["one GIF", { pickedGifs: [gif("g1")] }, "1 GIF attached"],
+    ["one account: the rest go as their own sends", { pickedGifs: [gif("g1"), gif("g2")] },
+      "2 GIFs — first rides this broadcast; rest fan out as standalone sends"],
+    ["all-models: one GIF", { allModels: true, pickedGifs: [gif("g1")] }, "1 GIF attached"],
+    ["all-models: a 2nd GIF says what validateMass says", { allModels: true, pickedGifs: [gif("g1"), gif("g2")] },
+      MASS_ONE_GIF_ALL_MODELS],
+  ])("%s", (_n, over, want) => {
+    expect(gifNote(form(over))).toBe(want);
   });
 });
 

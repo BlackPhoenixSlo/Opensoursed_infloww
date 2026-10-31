@@ -965,7 +965,7 @@ async def case_unwarmed_video_warms_from_the_resigned_url():
     warming a fresh url and then reading the OLD hash finds nothing."""
     _clear_disk()
     _OF.reset()
-    import server as srv
+    import storyboard
 
     old_mp4 = "https://cdn3.onlyfans.com/v/old.mp4?Policy=EXPIRED"
     new_mp4 = "https://cdn3.onlyfans.com/v/new.mp4?Policy=FRESH"
@@ -985,9 +985,9 @@ async def case_unwarmed_video_warms_from_the_resigned_url():
         """Write the storyboard where the REAL warmer would — under the hash of
         the url it was handed."""
         warmed.append(url)
-        h = srv._video_path_hash(url)
-        for i in range(srv._STORYBOARD_FRAMES):
-            fp = srv._storyboard_frame_path(h, i)
+        h = storyboard._video_path_hash(url)
+        for i in range(storyboard._STORYBOARD_FRAMES):
+            fp = storyboard._storyboard_frame_path(h, i)
             fp.parent.mkdir(parents=True, exist_ok=True)
             fp.write_bytes(_JPEG)
         return "warmed"
@@ -1001,7 +1001,7 @@ async def case_unwarmed_video_warms_from_the_resigned_url():
     finally:
         vault_frames.warm_one_sync = orig
         for u in warmed:
-            shutil.rmtree(srv._STORYBOARD_DIR / srv._video_path_hash(u), ignore_errors=True)
+            shutil.rmtree(storyboard._STORYBOARD_DIR / storyboard._video_path_hash(u), ignore_errors=True)
 
     assert warmed == [new_mp4], f"warmed the stale url: {warmed}"
     assert got.reason == "ok", got.reason

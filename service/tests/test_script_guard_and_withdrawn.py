@@ -28,7 +28,7 @@ import json  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
 
 import messages as messages_api  # noqa: E402
-import server  # noqa: E402
+import saved_replies_api  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Account, Message, SavedReply, VaultItem  # noqa: E402
 
@@ -63,7 +63,7 @@ async def case_saved_replies_flag_removed_media():
                         removed_at=now))
 
     async def flagged() -> dict[str, list[int]]:
-        resp = await server.admin_saved_replies_list(account_id=AID)
+        resp = await saved_replies_api.admin_saved_replies_list(account_id=AID)
         return {r["title"]: r["removed_media_ids"] for r in resp["list"]}
 
     # 103 was never mirrored: unknown is not deleted.

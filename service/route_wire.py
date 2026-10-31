@@ -1,7 +1,7 @@
 """service/route_wire.py — wire-time and path-id helpers any router may share.
 
 `parse_utc` reads an ISO-8601 time with a zone into naive UTC (how times are
-stored), `wire` writes one back as an ISO string ending in Z, and
+stored), `wire` (= isotime.iso_z) writes one back as an ISO string ending in Z, and
 `own_row_or_404` reads a row by its path id for its owner only. First used by
 the `/admin/shifts` routers (service/shifts_api.py, service/clock_api.py).
 """
@@ -9,9 +9,11 @@ the `/admin/shifts` routers (service/shifts_api.py, service/clock_api.py).
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, TypeVar, overload
+from typing import Any, TypeVar
 
 from fastapi import HTTPException
+
+from isotime import iso_z
 
 
 def parse_utc(value: Any, field: str, status: int = 422) -> datetime:
@@ -34,13 +36,8 @@ def parse_utc(value: Any, field: str, status: int = 422) -> datetime:
     return dt.astimezone(timezone.utc).replace(tzinfo=None)
 
 
-@overload
-def wire(dt: datetime) -> str: ...
-@overload
-def wire(dt: None) -> None: ...
-def wire(dt: datetime | None) -> str | None:
-    """A stored naive-UTC time as the wire's ISO string ending in Z; None stays None."""
-    return None if dt is None else dt.isoformat() + "Z"
+# A stored naive-UTC time as the wire's ISO string ending in Z; None stays None.
+wire = iso_z
 
 
 _Row = TypeVar("_Row")

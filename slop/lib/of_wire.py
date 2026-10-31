@@ -26,10 +26,14 @@ concurrently and are recorded in arrival order.
                                            the fake proxy to loopback, never to 1.1.1.1
   POST /api2/v2/chats/{fan}/messages       OF's new message (id, text, createdAt,
                                            fromUser), recorded per Creator in order
+                                           with its wire body (`body`)
   POST /api2/v2/messages/queue             a mass message queued: `{id, text, createdAt}`,
                                            the wire body kept per Creator in order
                                            (`queue`); the answer's shape is a guess
                                            (of_client reads only `id`)
+  DELETE /api2/v2/messages/queue/{id}      a mass message unsent: `{"success": true}`, each
+                                           (`t`, `id`) kept per Creator in order (`unsends`;
+                                           bypass, declared: OF's answer body is a guess)
   POST /api2/v2/posts                      a feed post created: `{id, text, postedAt}`, the
                                            wire body kept per Creator in order (`posts`);
                                            the answer's shape is a guess (`id` is read)
@@ -90,7 +94,7 @@ reconnects through /users/me.
 `fail` (a set of (uid, route) the scenario arms and clears at any time, route as recorded, e.g.
 `"POST /api2/v2/messages/queue"`): while armed, that Creator's every call on that route is answered
 500 (`FAIL_BODY`, a guess at OF's error body) after the usual wait, recorded in `calls` and never kept
-in `queue` / `posts`: OnlyFans failing one model of a fan-out.
+in `queue` / `posts` / `unsends`: OnlyFans failing one model of a fan-out.
 
 A Creator in `otp` (set by the scenario at any time) is a login OnlyFans has
 asked to confirm with a 2FA code: every /api2/ call it makes is answered 400
@@ -122,6 +126,7 @@ OTP_BODY = {"error": {"code": 101, "message": "Confirm it is you", "payload": {
 FAIL_BODY = {"error": {"code": 0, "message": "slop fake: OF internal error"}}
 _SEND = re.compile(r"/api2/v2/chats/(\d+)/messages")
 _VAULT_ONE = re.compile(r"/api2/v2/vault/media/(\d+)")
+_QUEUE_ONE = re.compile(r"/api2/v2/messages/queue/(\d+)")
 _LIST_USERS = re.compile(r"/api2/v2/lists/(\d+)/users(?:/(\d+))?")
 _NUM = re.compile(r"/\d+(?=/|$)")
 _CHUNK = re.compile(r"/static/prod/f/[^/]+/2313\.js")
@@ -142,6 +147,7 @@ class FakeOF:
         self.sends: dict[str, list[dict]] = {}  # per Creator, the messages OF accepted, in order (`t`: arrival)
         self.queue: dict[str, list[dict]] = {}  # per Creator, the mass-message wire bodies, in order (`t`, `id` added)
         self.posts: dict[str, list[dict]] = {}  # per Creator, the post-create wire bodies, in order (`t`, `id` added)
+        self.unsends: dict[str, list[dict]] = {}  # per Creator, the mass unsends, in order ({t, id})
         self.vault: dict[str, dict[int, dict]] = {}  # per Creator, media id -> the by-id read's media dict
         self.campaigns: dict[str, list[dict]] = {}  # per Creator, OF's /campaigns rows in OF's list order
         self.lists: dict[str, list[dict]] = {}  # per Creator, its custom fan lists (OF's list items), made order
@@ -247,6 +253,7 @@ class FakeOF:
                     "sends": {a: len(v) for a, v in self.sends.items()},
                     "queue": {a: len(v) for a, v in self.queue.items()},
                     "posts": {a: len(v) for a, v in self.posts.items()},
+                    "unsends": {a: len(v) for a, v in self.unsends.items()},
                     "ws_connects": len(self.ws_connects),
                     "by_route": {f"{a} {r} {s}": n for (a, r, s), n in sorted(per.items())}}
 
@@ -411,6 +418,11 @@ class FakeOF:
                             {"t": time.time(), "id": mid, **body})
                     return self._record(uid, route, 200, {"id": mid, "text": body.get("text") or "",
                                                           ("createdAt" if queue else "postedAt"): now})
+                qm = _QUEUE_ONE.fullmatch(u.path)
+                if method == "DELETE" and qm:
+                    with fake.lock:
+                        fake.unsends.setdefault(uid, []).append({"t": time.time(), "id": int(qm.group(1))})
+                    return self._record(uid, route, 200, {"success": True})
                 m = _SEND.fullmatch(u.path)
                 if method == "POST" and m:
                     body = json.loads(raw or b"{}")
@@ -420,7 +432,8 @@ class FakeOF:
                                "createdAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00"),
                                "fromUser": {"id": int(uid or 0)}, "mediaCount": 0, "media": [],
                                "isFree": True, "lockedText": False}
-                        fake.sends.setdefault(uid, []).append({"fan_id": int(m.group(1)), "t": time.time(), **msg})
+                        fake.sends.setdefault(uid, []).append({"fan_id": int(m.group(1)), "t": time.time(), **msg,
+                                                               "body": body})
                     return self._record(uid, route, 200, msg)
                 with fake.lock:
                     fake.unmodelled[route] += 1

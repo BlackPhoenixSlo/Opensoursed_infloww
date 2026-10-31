@@ -54,14 +54,16 @@ import {
   EMPTY_DRAFT, afterRefusedSchedule, buildSendArgs, canBeFreePreview, canSend, composerDraft, composerView,
   type FullDraft, type SendArgs,
 } from "./composerDraft";
+import { gifPlan, scheduledToast } from "./composerSubmit";
 import { ComposerToolbar } from "./ComposerToolbar";
 import { OutboundTranslationStrip, outboundTranslationKey, useOutboundTranslation } from "./OutboundTranslation";
 import { FreePreviews, PpvRow, toLocalInput } from "./PpvRow";
 import { PpvTiles } from "./PpvTiles";
 import {
-  dismissRefusedOffer, dispatchRefusedOffers, isOfferHere, readRefusedOffers, revokeUnlessHeld, useRefusedOffers,
+  dismissRefusedOffer, dispatchRefusedOffers, isOfferHere, offerRefusedSchedule, readRefusedOffers, useRefusedOffers,
   type RefusedOffer,
 } from "./refusedOffers";
+import { useBlobPreviews } from "./useBlobPreviews";
 import { useScriptSuggestions } from "./useScriptSuggestions";
 import { TimedMessagePopover, TimedReminderNotice } from "./TimedMessagePopover";
 import { ReplyStrip, type QuotedReply } from "./ReplyStrip";
@@ -92,10 +94,10 @@ export interface ComposerApi {
 
 export interface ComposerProps {
   accountId: string | null;
-  /** When the composer is bound to a single fan (chat surface), passing
-   *  fanId here unlocks the vault picker's per-fan badges + filter. Mass-
-   *  send composers leave this null. */
-  fanId?: FanId | null;
+  /** The Fan whose chat this is: every send goes to it (the parent keys the
+   *  Composer by Creator and Fan), and it drives the vault picker's per-fan
+   *  badges + filter. */
+  fanId: FanId;
   /** The Fan's name, for a refused schedule's notice in the other chats. */
   fanName?: string | null;
   /** May resolve to the send's outcome: a send waiting on its uploads
@@ -127,7 +129,7 @@ export interface ComposerProps {
 }
 
 export function Composer({
-  accountId, fanId = null, fanName = null, onSend, disabled, inflight = 0, placeholder,
+  accountId, fanId, fanName = null, onSend, disabled, inflight = 0, placeholder,
   canSend: chatCanSend = true, cannotSendReason,
   quoted, onClearQuoted,
   composerApiRef, onAdvance, onHoldChange,
@@ -152,24 +154,11 @@ export function Composer({
     latestRef.current = { text, draft };
   });
   const [gifPickerOpen, setGifPickerOpen] = useState(false);
-  // Media a change drops take their blob previews with them, unless a
-  // remaining tile (from the same file) still shows one, a send took them
-  // (`sentPreviewsRef`: the optimistic bubble shows it until the server copy
-  // arrives), or a held refused offer still shows them (./refusedOffers). The
-  // chat closing revokes the rest.
-  const shownRef = useRef(attached);
-  const sentPreviewsRef = useRef(new Set<string | undefined>());
-  useEffect(() => {
-    const live = new Set(attached.map((m) => m._localPreview));
-    live.forEach((u) => sentPreviewsRef.current.delete(u));
-    revokeUnlessHeld(shownRef.current.map((m) => m._localPreview)
-      .filter((u) => !live.has(u) && !sentPreviewsRef.current.has(u)));
-    shownRef.current = attached;
-  }, [attached]);
   useEffect(() => () => {
     latestRef.current = null;
-    revokeUnlessHeld(shownRef.current.map((m) => m._localPreview));
   }, []);
+  // The tiles' blob previews (./useBlobPreviews).
+  const previews = useBlobPreviews(attached);
   const setTags = (tags: TaggedCreatorChoice[]) => act({ type: "setTags", tags });
   const [pickerOpen, setPickerOpen] = useState(false);
   /** Transient confirmation after a quick-send / scheduler fires. Lets the
@@ -185,9 +174,8 @@ export function Composer({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   // Per-fan vault history — drives the green "BOUGHT" badge so the chatter
   // can see at a glance which attached tiles the fan already paid for (and
-  // can avoid charging again). Only meaningful for single-fan composers
-  // (fanId set); mass-send variants render gray/red without bought-state.
-  const fanVaultQ = useFanVaultHistory(accountId, fanId ?? null, fanId != null);
+  // can avoid charging again).
+  const fanVaultQ = useFanVaultHistory(accountId, fanId);
 
   // The "Next in" bubbles: the next step of the chat's user Script.
   const scripts = useScriptSuggestions(accountId, fanId);
@@ -237,8 +225,7 @@ export function Composer({
 
   /** Its media's blob previews go with it, unless something else shows them. */
   function dismissOffer(offer: RefusedOffer) {
-    const gone = dismissRefusedOffer(offer, attached.map((m) => m._localPreview));
-    gone.forEach((u) => sentPreviewsRef.current.delete(u));
+    previews.forget(dismissRefusedOffer(offer, attached.map((m) => m._localPreview)));
   }
 
   // Clear any pending toast/migration-banner timer on unmount so it can't
@@ -255,10 +242,10 @@ export function Composer({
     const now = Date.now();
     if (!canSend(draft, { ...sendCtx, text: body, now })) return;
     // A typed price > 0 makes it PPV; a Timed message's delay wins over the
-    // explicit "at". OF accepts ONE GIF per send (verified live 2026-05-23):
-    // the first rides on this send, the rest go as GIF-only sends below.
+    // explicit "at". The first GIF rides on this send, the rest go as
+    // GIF-only sends below (gifPlan).
     const args = buildSendArgs(draft, { text: body, delayMinutes: opts?.delayMinutes, now });
-    const trailingGifs = pickedGifs.slice(1);
+    const { trailing: trailingGifs } = gifPlan(pickedGifs);
     // Infloww's send-rate guard: a send at once within 3 s of the model's last
     // one (any of its Fans) stays in the composer, with OF's reason above it.
     if (!args.scheduledAt && !claimSendGap(accountId)) {
@@ -273,7 +260,7 @@ export function Composer({
     const refused: FullDraft = { text, draft };
     // An identity switch while it is in flight makes its refusal stale.
     const epoch = readRefusedOffers().epoch;
-    draft.attached.forEach((m) => sentPreviewsRef.current.add(m._localPreview));
+    previews.markSent(draft.attached);
     setText("");
     act({ type: "sent" });
     // Files still uploading go with this send (canSend keeps a schedule from
@@ -295,27 +282,19 @@ export function Composer({
       // double-reported or have its text pushed back into the composer.
       if (!args.scheduledAt) throw err;
       const why = err instanceof Error && err.message ? err.message : "unknown error";
-      // An offer names its Fan's chat; a Composer without a Fan (none today:
-      // ChatSurface always has one) gets the draft back over its own.
-      if (afterRefusedSchedule(latestRef.current) === "restore" || fanId == null) {
+      if (afterRefusedSchedule(latestRef.current) === "restore") {
         putBack(refused);
         showToast(`⚠ Not scheduled — ${why}`);
       } else {
         // The chatter has typed on, or left the chat: their edits stay, the
-        // refused one waits beside them, in every chat.
-        dispatchRefusedOffers({ type: "refused", offer: { ...refused, accountId, fanId, fanName, why }, epoch });
+        // refused one waits beside them, in every chat. One from before an
+        // identity switch is dropped, its previews revoked.
+        const shown = latestRef.current?.draft.attached.map((m) => m._localPreview) ?? [];
+        previews.forget(offerRefusedSchedule({ ...refused, accountId, fanId, fanName, why }, epoch, shown));
       }
       return;
     }
-    if (args.scheduledAt) {
-      const fireAt = new Date(args.scheduledAt).getTime();
-      const minsFromNow = Math.max(1, Math.round((fireAt - Date.now()) / 60_000));
-      if (fireAt - Date.now() <= EXECUTOR_MAX_MINUTES * 60_000) {
-        showToast(`⏱ Scheduled · sending in ${minsFromNow} min (saved — survives reload)`);
-      } else {
-        showToast(`⏱ Queued on OF for ${new Date(args.scheduledAt).toLocaleString()}`);
-      }
-    }
+    if (args.scheduledAt) showToast(scheduledToast(args.scheduledAt, Date.now(), EXECUTOR_MAX_MINUTES));
     // Advance the Script if the just-sent message rode a step of one (the
     // draft's `script`, set by its template pick).
     scripts.advance(picked);
@@ -667,7 +646,7 @@ export function Composer({
           onCalendar={() => act({ type: "schedule", open: !scheduleOpen })}
           onSend={() => submit()}
           accountId={accountId}
-          onToggleOutbound={fanId != null ? outbound.toggle : undefined}
+          onToggleOutbound={outbound.toggle}
         >
           {quoted && (
             <div className={MP.ours.Composer.reply}>

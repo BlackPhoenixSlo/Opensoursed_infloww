@@ -6,6 +6,7 @@
  */
 
 import { valid } from "@/lib/ofMirrorData";
+import { undoList } from "@/lib/ofMirrorUndo";
 import { usd } from "@/lib/ofMirrorMoney";
 import { elOf, iconOf } from "@/lib/ofMirrorAvatar";
 
@@ -49,35 +50,8 @@ export const timeText = (d: Date, tz: string | null) => {
 
 // ---------------------------------------------------------------- the page's changes, undone before each apply
 
-const undos = new WeakMap<Document, (() => void)[]>();
-export function track(doc: Document, undo: () => void) {
-  let u = undos.get(doc);
-  if (!u) undos.set(doc, (u = []));
-  u.push(undo);
-}
-export function restoreStats(doc: Document) {
-  const u = undos.get(doc) ?? [];
-  while (u.length) u.pop()!();
-}
-export function setText(doc: Document, el: Element | null | undefined, text: string) {
-  if (!el) return;
-  const was = el.textContent ?? "";
-  if (was === text) return;
-  track(doc, () => (el.textContent = was));
-  el.textContent = text;
-}
-export function setClass(doc: Document, el: Element, cls: string, on: boolean) {
-  if (el.classList.contains(cls) === on) return;
-  track(doc, () => el.classList.toggle(cls, !on));
-  el.classList.toggle(cls, on);
-}
-export function setAttr(doc: Document, el: Element, name: string, value: string | null) {
-  const was = el.getAttribute(name);
-  if (was === value) return;
-  track(doc, () => (was === null ? el.removeAttribute(name) : el.setAttribute(name, was)));
-  if (value === null) el.removeAttribute(name);
-  else el.setAttribute(name, value);
-}
+// Its own undo list per page; a class change is undone by toggling the class back (it may come back last in the attribute).
+export const { track, restore: restoreStats, setText, setClass, setAttr, swapIn } = undoList({ attrMode: "single", classUndo: "toggle", skipEqualText: true });
 export function add(doc: Document, el: Element, where: Element, how: "after" | "append" | "before" = "append") {
   if (how === "after") where.after(el);
   else if (how === "before") where.before(el);
@@ -90,19 +64,6 @@ export function display(doc: Document, el: HTMLElement | null | undefined, show:
   track(doc, () => (was === null ? el.removeAttribute("style") : el.setAttribute("style", was)));
   if (show) el.style.removeProperty("display");
   else el.style.display = "none";
-}
-/** The first text node of `el` matching `pattern`, with it replaced by `to`. */
-export function swapIn(doc: Document, el: Element | null | undefined, pattern: RegExp, to: string) {
-  if (!el) return;
-  const walker = doc.createTreeWalker(el, 4 /* NodeFilter.SHOW_TEXT */);
-  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
-    const was = n.nodeValue ?? "";
-    if (!pattern.test(was)) continue;
-    const node = n;
-    track(doc, () => (node.nodeValue = was));
-    node.nodeValue = was.replace(pattern, to);
-    return;
-  }
 }
 /**
  * A control the generator disabled with the tooltip (data-oi-enable), enabled once its source answers: OF's own control

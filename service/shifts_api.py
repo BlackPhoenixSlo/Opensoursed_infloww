@@ -111,7 +111,6 @@ OVERLAP_HORIZON = timedelta(weeks=53)
 # older callers. The helpers live in service/shifts_common.py and
 # service/route_wire.py; `_overlap_s` (imported above) in shifts_timesheet.
 _owner_context = shift_owner_context
-_agency_account_ids = agency_account_ids
 _agency_employee_ids = agency_employee_ids
 _parse_range = parse_range
 _json_object = json_body

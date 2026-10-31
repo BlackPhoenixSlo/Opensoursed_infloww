@@ -174,4 +174,11 @@ describe("isValidFanId", () => {
       expect(isValidFanId(bad)).toBe(false);
     }
   });
+
+  it("rejects a NUMBER that is not a safe integer — its digits are already rounded", () => {
+    for (const bad of [2 ** 53, 1.5, NaN, Infinity]) expect(isValidFanId(bad)).toBe(false);
+    expect(isValidFanId(7)).toBe(true);
+    // The string form of the same digits is fine: strings carry the wire's exact id.
+    expect(isValidFanId(String(2 ** 53))).toBe(true);
+  });
 });

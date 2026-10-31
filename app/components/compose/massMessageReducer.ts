@@ -245,6 +245,20 @@ export interface MassCtx {
 /** Why a spent form (see `gifFailures`) can't be sent again. */
 export const MASS_ALREADY_SENT = "The broadcast was sent. Close this and start a new one to send again.";
 
+/** Why an all-models form with more than one GIF can't be sent. */
+export const MASS_ONE_GIF_ALL_MODELS = "All-models broadcasts carry one GIF: remove the extra ones";
+
+/** The all-models round is ONE send per model: the trailing GIF sends
+ *  (gifOnlyForm) are one-account only, so a 2nd GIF would be dropped silently. */
+const tooManyGifs = (f: Pick<MassForm, "allModels" | "pickedGifs">) => f.allModels && f.pickedGifs.length > 1;
+
+/** The GIF strip's note (only drawn with ≥1 GIF picked). */
+export function gifNote(f: Pick<MassForm, "allModels" | "pickedGifs">): string {
+  const n = f.pickedGifs.length;
+  if (tooManyGifs(f)) return MASS_ONE_GIF_ALL_MODELS;
+  return n > 1 ? `${n} GIFs — first rides this broadcast; rest fan out as standalone sends` : "1 GIF attached";
+}
+
 /** Why this form can't be sent, or null. */
 export function validateMass(f: MassForm, ctx: MassCtx): string | null {
   if (f.gifFailures) return MASS_ALREADY_SENT;
@@ -258,6 +272,7 @@ export function validateMass(f: MassForm, ctx: MassCtx): string | null {
     // All-models is text-only: media is no way out there.
     return f.allModels ? "Add text or a GIF" : "Add text, media, or a GIF";
   }
+  if (tooManyGifs(f)) return MASS_ONE_GIF_ALL_MODELS;
   // An include Smart List IS an audience (it replaces the list chips) — where
   // Smart Lists are offered at all (one account).
   if (f.includes.size === 0 && (f.allModels || f.smartInclude.size === 0)) {

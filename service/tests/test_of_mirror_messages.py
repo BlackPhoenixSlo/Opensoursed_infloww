@@ -36,6 +36,7 @@ _harness.bootstrap()
 
 import of_client  # noqa: E402
 import server  # noqa: E402
+import img_api  # noqa: E402
 
 FAN = 9001
 API = of_client.API_BASE
@@ -123,12 +124,12 @@ def case_send_route_passes_the_release_form_fields():
     async def no_resale(*a, **k):
         return None
 
-    orig = (server._get_client, server._resolve_account_id, server._reject_if_resale, server._pin_sent_media,
+    orig = (server._get_client, server._resolve_account_id, server._reject_if_resale, img_api._pin_sent_media,
             employees.resolve_outbound_employee_id, rc.invalidate)
     server._get_client = lambda *a, **k: c
     server._resolve_account_id = lambda *a, **k: "acct"
     server._reject_if_resale = no_resale
-    server._pin_sent_media = lambda *a, **k: None
+    img_api._pin_sent_media = lambda *a, **k: None
     employees.resolve_outbound_employee_id = no_employee
     rc.invalidate = lambda *a, **k: None
     try:
@@ -137,7 +138,7 @@ def case_send_route_passes_the_release_form_fields():
         plain = server.SendMessageBody(text="plain")
         asyncio.run(server.send_message(request=None, chat_id=FAN, body=plain))
     finally:
-        (server._get_client, server._resolve_account_id, server._reject_if_resale, server._pin_sent_media,
+        (server._get_client, server._resolve_account_id, server._reject_if_resale, img_api._pin_sent_media,
          employees.resolve_outbound_employee_id, rc.invalidate) = orig
     (m1, p1, tagged), (m2, p2, untagged) = c.sent
     assert (m1, p1) == (m2, p2) == ("POST", f"{API}/chats/{FAN}/messages"), c.sent

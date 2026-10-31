@@ -54,7 +54,7 @@
  * AnswerText, so it is a link to the page that does it.
  */
 
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useReducer, useRef, useState, type ReactNode } from "react";
 import { usePathname } from "next/navigation";
 import { ArrowUp, ChevronDown, SendHorizontal, X } from "lucide-react";
 
@@ -66,10 +66,16 @@ import { useEmployee } from "@/contexts/EmployeeContext";
 import { useOptionalUser } from "@/contexts/UserContext";
 import { useScope } from "@/contexts/ScopeContext";
 import { useActiveAccounts } from "@/hooks/useAccounts";
-import { RelayError, relay, type AccountMeta } from "@/lib/relay";
+import { relay, type AccountMeta } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 import { AnswerText } from "./AnswerText";
 import { BRAND_NAME } from "@/lib/brand";
+import {
+  assistantReducer, initialAssistantState, settledFrom, settledFromError,
+  type AskResponse, type AssistantCore,
+} from "./assistantReducer";
+
+export type { Turn } from "./assistantReducer";
 
 /** Open/closed survives a reload; the conversation does not. */
 const OPEN_KEY = "chatterly:assistant_open";
@@ -87,32 +93,12 @@ const MAX_QUESTION_CHARS = 1000;
 const NO_ACCOUNT_HINT =
   "No account connected yet — answers come from the manual. To connect one: Creators → Manage creators → Add creator.";
 
-/** The endpoint's response contract. `error` is a machine tag for the log
- *  (cap | config | provider | empty_answer | empty_question); `answer` is
- *  always a human sentence, including on every one of those. */
-interface AskResponse {
-  answer: string;
-  error: string | null;
-}
-
-export interface Turn {
-  id: number;
-  question: string;
-  /** null while the POST is in flight — that's the "thinking…" row. */
-  answer: string | null;
-  error: string | null;
-}
-
 // ── The provider ───────────────────────────────────────────────────
 
-interface AssistantState {
-  /** False until the persisted open bit has been read (first client render). */
-  hydrated: boolean;
-  open: boolean;
+/** The reducer's fields (assistantReducer.ts; `onHelpPage` stays inside)
+ *  plus the provider's own. */
+interface AssistantState extends Omit<AssistantCore, "onHelpPage"> {
   toggle: () => void;
-  turns: Turn[];
-  /** A reply settled while no surface showed it: the launcher's red dot. */
-  unread: boolean;
   ask: (question: string) => void;
   accountId: string | null;
   accounts: AccountMeta[];
@@ -132,14 +118,13 @@ const AssistantContext = createContext<AssistantState | null>(null);
 export function AssistantProvider({ children }: { children: ReactNode }) {
   // The server doesn't know the persisted bit, so the first client render
   // must not either — read it in an effect and paint nothing until then.
-  const [hydrated, setHydrated] = useState(false);
-  const [open, setOpen] = useState(false);
-  const [turns, setTurns] = useState<Turn[]>([]);
-  const [unread, setUnread] = useState(false);
+  // hydrated / open / turns / unread move together: assistantReducer.ts.
+  const [state, dispatch] = useReducer(assistantReducer, initialAssistantState);
+  const { hydrated, open } = state;
   const pathname = usePathname();
-  // A reply is "read" if the dock is open or the help page is on screen.
-  const seenRef = useRef(false);
-  useEffect(() => { seenRef.current = open || pathname === HELP_PATH; }, [open, pathname]);
+  // A reply is "read" if the dock is open or the help page is on screen; the
+  // reducer holds both and reads them when the answer lands.
+  useEffect(() => { dispatch({ type: "route", onHelpPage: pathname === HELP_PATH }); }, [pathname]);
   const nextId = useRef(0);
 
   const { accountId: scopedId } = useScope();
@@ -167,32 +152,26 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
   const accountId = scopedId ?? pickedValid ?? accounts[0]?.id ?? null;
 
   useEffect(() => {
+    let stored = false;
     try {
-      setOpen(window.localStorage.getItem(OPEN_KEY) === "1");
+      stored = window.localStorage.getItem(OPEN_KEY) === "1";
     } catch {
       /* ignore quota / safari private */
-    } finally {
-      setHydrated(true);
     }
+    dispatch({ type: "hydrate", open: stored });
   }, []);
 
-  const toggle = useCallback(() => {
-    setOpen((v) => {
-      const next = !v;
-      if (next) setUnread(false);
-      try { window.localStorage.setItem(OPEN_KEY, next ? "1" : "0"); } catch {}
-      return next;
-    });
-  }, []);
+  // Persist the open bit once it is known (never the pre-hydration default).
+  useEffect(() => {
+    if (!hydrated) return;
+    try { window.localStorage.setItem(OPEN_KEY, open ? "1" : "0"); } catch {}
+  }, [hydrated, open]);
 
-  const settle = useCallback((id: number, answer: string, error: string | null) => {
-    setTurns((list) => list.map((t) => (t.id === id ? { ...t, answer, error } : t)));
-    if (!seenRef.current) setUnread(true);
-  }, []);
+  const toggle = useCallback(() => dispatch({ type: "toggle" }), []);
 
   const ask = useCallback(async (question: string) => {
     const id = nextId.current++;
-    setTurns((list) => [...list, { id, question, answer: null, error: null }]);
+    dispatch({ type: "asked", id, question });
     try {
       const r = await relay.post<AskResponse>(
         "/admin/assistant/ask",
@@ -202,27 +181,17 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
         accountId ? { question, account_id: accountId } : { question },
         { accountId, employeeId },
       );
-      const answer = (r?.answer || "").trim();
-      settle(
-        id,
-        answer || "The assistant came back empty — try asking again.",
-        answer ? (r?.error ?? null) : "empty_answer",
-      );
+      dispatch(settledFrom(id, r));
     } catch (e) {
-      // Getting HERE means the request never reached a verdict — the relay is
-      // down, the share token is stale, or `assert_account_owned` said no.
-      // Every failure the endpoint itself knows about arrives as a 200.
-      const detail = e instanceof RelayError ? e.message : "";
-      settle(
-        id,
-        `Couldn't reach the assistant${detail ? ` (${detail})` : ""} — try again in a moment.`,
-        "transport",
-      );
+      dispatch(settledFromError(id, e));
     }
-  }, [accountId, employeeId, settle]);
+  }, [accountId, employeeId]);
 
+  // `onHelpPage` stays inside the reducer: drop it from the context value at runtime too.
+  const { onHelpPage: _onHelpPage, ...core } = state;
+  void _onHelpPage;
   const value: AssistantState = {
-    hydrated, open, toggle, turns, unread, ask, accountId, accounts,
+    ...core, toggle, ask, accountId, accounts,
     scoped: scopedId !== null, setPicked, userName,
   };
   return <AssistantContext.Provider value={value}>{children}</AssistantContext.Provider>;
@@ -303,7 +272,7 @@ export function AssistantPanel({
   const listRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   // An in-flight answer does NOT lock the composer: concurrent turns are fine —
-  // `settle()` matches answers to turns by id, never by order.
+  // `settled` (assistantReducer) matches answers to turns by id, never by order.
   const canSend = draft.trim().length > 0;
   const empty = turns.length === 0;
   const page = variant === "page";

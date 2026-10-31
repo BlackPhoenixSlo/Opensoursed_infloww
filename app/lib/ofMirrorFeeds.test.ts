@@ -1,9 +1,9 @@
-/** Home's story strip from GET /stories and GET /streams/feed (applyStories) and its tiles' clicks (bindStory). */
+/** Home's story strip from GET /stories and GET /streams/feed (applyStories) and its tiles' clicks (bindStory); the queue calendar's wallClock/fromWallClock across DST. */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { applyData, partsOf } from "./ofMirrorData";
-import { allWatched, storyItems, stripStreams, stripUsers, type FeedStream, type StoryEntry, type StoryUser } from "./ofMirrorFeeds";
+import { allWatched, fromWallClock, storyItems, stripStreams, stripUsers, type FeedStream, type StoryEntry, type StoryUser, wallClock } from "./ofMirrorFeeds";
 import { READ_ONLY } from "./ofMirrorWrites";
 import { bindStory } from "./ofMirrorPost";
 import { VIEWER } from "./ofMirrorVault";
@@ -249,3 +249,49 @@ describe("Home's story strip: new vs watched, live and scheduled streams (OF's S
   });
 });
 
+/**
+ * The queue's Agency time zone across DST edges (wallClock / fromWallClock). The wall is a host-local Date holding the
+ * zone's fields, so the host's own DST gaps would shift it (a US host turns 02:30 on 2026-03-08 into 03:30 before
+ * fromWallClock sees it): the host is pinned to UTC here.
+ */
+describe("wallClock / fromWallClock across DST", () => {
+  const was = process.env.TZ;
+  beforeAll(() => void (process.env.TZ = "UTC"));
+  afterAll(() => void (was === undefined ? delete process.env.TZ : (process.env.TZ = was)));
+  const fields = (d: Date) => [d.getFullYear(), d.getMonth() + 1, d.getDate(), d.getHours(), d.getMinutes()];
+
+  it.each([
+    ["NY, a minute before spring-forward (EST)", "2026-03-08T06:59:00Z", "America/New_York", [2026, 3, 8, 1, 59]],
+    ["NY, spring-forward: 02:00 EST reads 03:00 EDT (02:xx never shows)", "2026-03-08T07:00:00Z", "America/New_York", [2026, 3, 8, 3, 0]],
+    ["NY, fall-back overlap, first 01:30 (EDT)", "2026-11-01T05:30:00Z", "America/New_York", [2026, 11, 1, 1, 30]],
+    ["NY, fall-back overlap, second 01:30 (EST)", "2026-11-01T06:30:00Z", "America/New_York", [2026, 11, 1, 1, 30]],
+    ["Kolkata, +05:30 all year", "2026-03-08T07:30:00Z", "Asia/Kolkata", [2026, 3, 8, 13, 0]],
+    ["Kolkata, the date rolls over", "2026-06-15T20:00:00Z", "Asia/Kolkata", [2026, 6, 16, 1, 30]],
+  ])("wallClock: %s", (_, iso, zone, want) => expect(fields(wallClock(new Date(iso), zone))).toEqual(want));
+
+  it.each([
+    ["no zone", undefined],
+    ["empty zone", ""],
+    ["a zone Intl does not know", "Nope/Zone"],
+  ])("wallClock: %s passes `at` through", (_, zone) => {
+    const at = new Date("2026-03-08T07:30:00Z");
+    expect(wallClock(at, zone)).toBe(at);
+  });
+
+  it.each([
+    // In the gap 02:30 does not exist: two steps land on 06:30Z (02:30 read as EDT), whose wall reads 01:30 EST.
+    // Current behaviour, known backward shift (the same instant as 01:30) — reported, not fixed.
+    ["NY spring-forward gap 02:30", [2026, 3, 8, 2, 30], "America/New_York", "2026-03-08T06:30:00.000Z"],
+    ["NY 01:30, before the gap", [2026, 3, 8, 1, 30], "America/New_York", "2026-03-08T06:30:00.000Z"],
+    ["NY 03:30, after the gap", [2026, 3, 8, 3, 30], "America/New_York", "2026-03-08T07:30:00.000Z"],
+    // In the overlap 01:30 happens twice: the first (EDT) is picked.
+    ["NY fall-back overlap 01:30", [2026, 11, 1, 1, 30], "America/New_York", "2026-11-01T05:30:00.000Z"],
+    ["Kolkata 02:30", [2026, 3, 8, 2, 30], "Asia/Kolkata", "2026-03-07T21:00:00.000Z"],
+    ["no zone: the wall as is", [2026, 3, 8, 2, 30], undefined, "2026-03-08T02:30:00.000Z"],
+  ])("fromWallClock: %s", (_, [y, m, d, h, mi], zone, iso) => expect(fromWallClock(new Date(y, m - 1, d, h, mi), zone).toISOString()).toBe(iso));
+
+  it("the host is pinned", () => {
+    expect(Intl.DateTimeFormat().resolvedOptions().timeZone).toBe("UTC");
+    expect(new Date(2026, 6, 1).getTimezoneOffset()).toBe(0);
+  });
+});

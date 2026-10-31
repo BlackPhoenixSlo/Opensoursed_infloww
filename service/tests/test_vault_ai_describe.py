@@ -180,13 +180,13 @@ async def case_frame_ladder_by_duration() -> None:
     coverage of the pooled union of all findings (3f 38% / 6f 49% / 9f 47% /
     12f 55%, mean beats 1.9 → 3.7). 3→6 is a real gain, 6→9 is inside
     run-to-run noise, 9→12 buys the beats a long clip needs. 12 is the ceiling
-    (`server._STORYBOARD_FRAMES`).
+    (`storyboard._STORYBOARD_FRAMES`).
     """
     # The ladder itself is table-tested in test_vault_ai_vision_decide.
     # Never ask for more than the storyboard actually holds.
-    import server as srv
-    assert vault_ai_vision_decide._FRAME_LADDER_MAX <= srv._STORYBOARD_FRAMES, \
-        (vault_ai_vision_decide._FRAME_LADDER_MAX, srv._STORYBOARD_FRAMES)
+    import storyboard
+    assert vault_ai_vision_decide._FRAME_LADDER_MAX <= storyboard._STORYBOARD_FRAMES, \
+        (vault_ai_vision_decide._FRAME_LADDER_MAX, storyboard._STORYBOARD_FRAMES)
 
     # …and the ladder is what _describe_one actually asks _collect_images for.
     aid = _fresh_account()

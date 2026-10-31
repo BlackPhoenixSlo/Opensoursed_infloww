@@ -39,6 +39,10 @@ import { loadVaultPick, MASS_SEND, vaultPickKey } from "@/lib/ofMirrorChat";
 import { formatCount, ofMeQuery } from "@/lib/ofMirrorIdentity";
 import { LIST_SORTS, vaultListsPath, vaultMediaPath, viewOf } from "@/lib/ofMirrorVault";
 import { message, NOT_YET } from "@/lib/ofMirrorWrites";
+import { undoList } from "@/lib/ofMirrorUndo";
+import { nextFeedOffset, nextMarker, nextOffset, pageRows, POSTS_PAGE, rowsOf, uniqueRows } from "@/lib/ofMirrorPaging";
+// Re-exported: their importers still read them from here.
+export { nextFeedOffset, nextMarker, nextOffset, pageRows, POSTS_PAGE, rowsOf, uniqueRows } from "@/lib/ofMirrorPaging";
 import { avatarOf, initials } from "@/lib/ofMirrorAvatar";
 import { chatsQuery, chatsRequest, chatsView } from "@/lib/ofMirrorChats";
 import { fanIdFromParam } from "@/lib/fanId";
@@ -292,61 +296,13 @@ export interface MirrorData {
   templates?: Partial<Record<Template, Element>>;
 }
 
-// Every change to the page's own nodes registers its undo; clones are just removed.
-const undos = new WeakMap<Document, (() => void)[]>();
-// While `own` runs: its own list, so restore leaves those changes alone.
-let sink: (() => void)[] | null = null;
-export function track(doc: Document, undo: () => void) {
-  if (sink) return void sink.push(undo);
-  let u = undos.get(doc);
-  if (!u) undos.set(doc, (u = []));
-  u.push(undo);
-}
-/**
- * Run `apply` with its changes kept apart from the page's data (restore does not undo them); returns their undo. For a
- * binder's rows on a page whose data restore re-runs, e.g. Home's tag dialog over the Home feed.
- */
-export function own(apply: () => void): () => void {
-  const mine: (() => void)[] = [];
-  const was = sink;
-  sink = mine;
-  try {
-    apply();
-  } finally {
-    sink = was;
-  }
-  return () => {
-    while (mine.length) mine.pop()!();
-  };
-}
-export function setAttr(doc: Document, el: Element, name: string, value: string | null) {
-  const was = el.getAttribute(name);
-  if (was === value) return;
-  track(doc, () => (was === null ? el.removeAttribute(name) : el.setAttribute(name, was)));
-  if (value === null) el.removeAttribute(name);
-  else el.setAttribute(name, value);
-}
-/** Turn the class `cls` on `el` on or off (as ofMirrorStatsDom's setClass, on this page's undo list; restore puts the class attribute back as it was). */
-export function setClass(doc: Document, el: Element, cls: string, on: boolean) {
-  if (el.classList.contains(cls) === on) return;
-  const was = el.getAttribute("class");
-  track(doc, () => (was === null ? el.removeAttribute("class") : el.setAttribute("class", was)));
-  el.classList.toggle(cls, on);
-}
+// Every change to the page's own nodes registers its undo (ofMirrorUndo); clones are just removed. Text is tracked even
+// when it is the same (restore puts it back over a later change). `own`: a binder's rows on a page whose data
+// restore re-runs, e.g. Home's tag dialog over the Home feed.
+export const { track, own, setAttr, setClass, setText, restore } = undoList({ attrMode: "single", classUndo: "snapshot", skipEqualText: false });
 /** Drop the classes `cls` from `el`. */
 export function dropClass(doc: Document, el: Element, ...cls: string[]) {
   setAttr(doc, el, "class", [...el.classList].filter((c) => !cls.includes(c)).join(" "));
-}
-export function setText(doc: Document, el: Element, text: string) {
-  const was = el.textContent ?? "";
-  track(doc, () => (el.textContent = was));
-  el.textContent = text;
-}
-
-/** Put the page back as captured. */
-export function restore(doc: Document): void {
-  const u = undos.get(doc) ?? [];
-  while (u.length) u.pop()!();
 }
 
 /** A copy of `tpl` without the markers useOfRow leaves on the page's own nodes. */
@@ -1418,54 +1374,6 @@ export function useRevalidate(accountId: string | null, path: string | null, cac
 export const TRANSACTIONS = "/api/of/v2/payouts/transactions";
 export const TRANSACTIONS_PAGE = 10;
 
-/**
- * An offset-paged read's next offset after `pages` (OF's `{list, hasMore, nextOffset?}`): OF's `nextOffset` (a list's
- * posts send it), else the rows read so far (Statements' Earnings: OF pages those by `marker` and sends no nextOffset,
- * the Relay by offset); none when OF has no more.
- */
-export function nextOffset(last: unknown, pages: unknown[]): number | undefined {
-  if (!(last as { hasMore?: unknown } | null)?.hasMore || !rowsOf(last)?.length) return undefined;
-  const next = (last as { nextOffset?: unknown }).nextOffset;
-  return typeof next === "number" ? next : pages.reduce<number>((n, p) => n + (rowsOf(p)?.length ?? 0), 0);
-}
-
-/** Home's feed's and My profile's wall's page size (OF's GET /posts and GET /users/{id}/posts, 20 a page). */
-export const POSTS_PAGE = 20;
-
-/**
- * Home's feed's next offset (GET /posts, offset-paged): OF's `{list, hasMore, nextOffset?}` as nextOffset; a bare
- * array (the Relay passes OF's answer as it comes) has more when it is a full page.
- */
-export function nextFeedOffset(last: unknown, pages: unknown[]): number | undefined {
-  if (!Array.isArray(last)) return nextOffset(last, pages);
-  return last.length >= POSTS_PAGE ? pages.reduce<number>((n, p) => n + (rowsOf(p)?.length ?? 0), 0) : undefined;
-}
-
-/**
- * My profile's wall's next page (GET /users/{id}/posts?format=infinite): OF's `tailMarker`, sent back as
- * `before_publish_time`, while OF says `hasMore` with rows and a marker that moved (the same one again would loop).
- */
-export function nextMarker(last: unknown, _pages: unknown[], lastParam: string | null): string | undefined {
-  const o = last as { hasMore?: unknown; tailMarker?: unknown } | null | undefined;
-  const tail = typeof o?.tailMarker === "number" ? String(o.tailMarker) : o?.tailMarker;
-  if (!o?.hasMore || !rowsOf(last)?.length || typeof tail !== "string" || !tail || tail === lastParam) return undefined;
-  return tail;
-}
-
-/** Rows once each by id, where each first came (OF's offset pages overlap, as the Vault's: vaultPageMedia); id-less rows all stay. */
-export function uniqueRows<T extends { id?: unknown }>(rows: T[]): T[];
-export function uniqueRows<T extends { id?: unknown }>(rows: T[] | undefined): T[] | undefined;
-export function uniqueRows<T extends { id?: unknown }>(rows: T[] | undefined): T[] | undefined {
-  const seen = new Set<string>();
-  return rows?.filter((r) => r.id == null || (!seen.has(String(r.id)) && !!seen.add(String(r.id))));
-}
-
-/** An offset-paged read's rows in order (none: no first page yet, or it is not OF's list). */
-export function pageRows<T>(pages: unknown[] | undefined): T[] | undefined {
-  if (!pages?.length || !rowsOf(pages[0])) return undefined;
-  return pages.flatMap((p) => rowsOf<T>(p) ?? []);
-}
-
 /** GET /users/list for `ids` (OF's batch user read, a dict by id). */
 export const usersListPath = (ids: readonly string[]) => `/api/of/v2/users/list?${ids.map((id) => `ids=${encodeURIComponent(id)}`).join("&")}`;
 
@@ -1606,15 +1514,6 @@ const MORE_PX = 400;
 export const CHATS_PAGE = 20;
 /** How near the visible end (px) the chat list's last row brings its next page: vue-infinite-loading's default distance, OF's loader. */
 const CHATS_MORE_PX = 100;
-
-/** `{list: [...]}` (or `{chats: [...]}`), or a bare array: the rows; anything else: none. */
-export function rowsOf<T>(r: unknown): T[] | undefined {
-  if (Array.isArray(r)) return r as T[];
-  const o = r as { list?: unknown; chats?: unknown } | null | undefined;
-  if (Array.isArray(o?.list)) return o.list as T[];
-  if (Array.isArray(o?.chats)) return o.chats as T[];
-  return undefined;
-}
 
 /** On a DATA_PAGES page with a single model selected, show the model's rows on every frame load and data or query change. */
 export function useOfData(frameRef: RefObject<HTMLIFrameElement | null>, src: string): void {

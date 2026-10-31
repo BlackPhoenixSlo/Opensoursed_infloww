@@ -127,6 +127,40 @@ async def case_ignores_non_chat_and_junk() -> None:
         assert pn.parse_purchase(junk) is None, junk
 
 
+_POST = {"id": 5, "type": "paided_post", "subType": "your_post_purchased",
+         "replacePairs": {"{POST_URL}": "https://onlyfans.com/123456/handle",
+                          "{PRICE}": "$10.00"},
+         "user": {"id": 77}}
+
+_CLASSIFY_TABLE = [
+    ("real chat buy", _REAL, "chat_purchase"),
+    ("chat, subType missing", {k: v for k, v in _REAL.items() if k != "subType"},
+     "chat_purchase"),
+    ("chat, link only in text", {k: v for k, v in _REAL.items() if k != "replacePairs"},
+     "chat_purchase"),
+    ("chat, foreign subType", dict(_REAL, subType="subscriber_pay_for_post"), "other"),
+    ("chat, no link", {"type": "paided_message", "text": "hi"}, "other"),
+    ("wall post buy", _POST, "post_purchase"),
+    ("post, subType missing", {k: v for k, v in _POST.items() if k != "subType"},
+     "post_purchase"),
+    ("post, foreign subType", dict(_POST, subType="stream_purchased"), "other"),
+    ("post, no fan", {k: v for k, v in _POST.items() if k != "user"}, "other"),
+    ("post, no url", dict(_POST, replacePairs={}), "other"),
+    ("favorited", dict(_REAL, type="favorited"), "other"),
+    ("None", None, "other"),
+    ("str", "", "other"),
+    ("int", 42, "other"),
+    ("list", [], "other"),
+    ("empty dict", {}, "other"),
+]
+
+
+async def case_classify_table() -> None:
+    for name, item, want in _CLASSIFY_TABLE:
+        got = pn.classify(item)
+        assert got == want, f"{name}: classify -> {got!r}, want {want!r}"
+
+
 # ── The flip is scoped and idempotent ────────────────────────────────
 
 async def case_flip_and_idempotent() -> None:
@@ -372,6 +406,7 @@ async def case_an_all_scope_tab_counts_as_somebody_watching() -> None:
 _harness.run(
     case_parses_real_payload,
     case_ignores_non_chat_and_junk,
+    case_classify_table,
     case_flip_and_idempotent,
     case_never_flips_inbound_or_free,
     case_scoped_to_the_right_fan,

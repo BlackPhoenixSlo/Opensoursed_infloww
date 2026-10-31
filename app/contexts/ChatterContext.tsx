@@ -38,7 +38,7 @@ import {
 
 import { clearIdentityMemory, wipeIdentityStorage } from "@/contexts/UserContext";
 import { chatterAccountsQuery } from "@/lib/chatterAccounts";
-import { authError, isTwoFactorChallenge, TwoFactorRequired, type TwoFactorChallenge } from "@/lib/twoFactor";
+import { isTwoFactorChallenge, postAuthJSON, TwoFactorRequired, type TwoFactorChallenge } from "@/lib/twoFactor";
 
 export interface ChatterOwnerAccountDTO {
   account_id: string;
@@ -101,20 +101,6 @@ interface ChatterContextValue {
 }
 
 const ChatterContext = createContext<ChatterContextValue | null>(null);
-
-async function postJSON<T>(path: string, body: unknown): Promise<T> {
-  const r = await fetch(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify(body),
-    credentials: "same-origin",
-  });
-  const text = await r.text();
-  let parsed: unknown = text;
-  try { parsed = text ? JSON.parse(text) : null; } catch { /* keep text */ }
-  if (!r.ok) throw authError(r.status, parsed);
-  return parsed as T;
-}
 
 function wipeNonChatterCaches(queryClient: ReturnType<typeof useQueryClient>) {
   // Cancel in-flight queries from the previous identity so their resolved
@@ -192,7 +178,7 @@ export function ChatterProvider({ children }: { children: React.ReactNode }) {
   }, [queryClient]);
 
   const login = useCallback(async (username: string, password: string) => {
-    const dto = await postJSON<ChatterMeDTO | TwoFactorChallenge>("/chatter/login", { username, password });
+    const dto = await postAuthJSON<ChatterMeDTO | TwoFactorChallenge>("/chatter/login", { username, password });
     // 2FA on, or the Agency requires it: no cookie yet (TwoFactorStep).
     if (isTwoFactorChallenge(dto)) throw new TwoFactorRequired(dto);
     // Seed FIRST so the chatter principal is visible the instant any
@@ -206,7 +192,7 @@ export function ChatterProvider({ children }: { children: React.ReactNode }) {
   const register = useCallback(
     async (username: string, password: string, token: string, displayName?: string) => {
       const url = `/chatter/register?token=${encodeURIComponent(token)}`;
-      const dto = await postJSON<ChatterMeDTO | TwoFactorChallenge>(url, {
+      const dto = await postAuthJSON<ChatterMeDTO | TwoFactorChallenge>(url, {
         username, password, display_name: displayName,
       });
       // The inviting Agency requires 2FA: set it up before the first session.
@@ -219,7 +205,7 @@ export function ChatterProvider({ children }: { children: React.ReactNode }) {
   );
 
   const logout = useCallback(async () => {
-    try { await postJSON<unknown>("/chatter/logout", {}); } catch { /* best effort */ }
+    try { await postAuthJSON<unknown>("/chatter/logout", {}); } catch { /* best effort */ }
     // Full wipe — including the chatter family — because logout is the
     // "start over" moment. cancelQueries first so resolving fetches
     // don't repopulate the cache we're about to drop.

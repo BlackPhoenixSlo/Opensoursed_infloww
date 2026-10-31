@@ -396,7 +396,7 @@ describe("the script editor is the capture's 535px modal (#72 to #79)", () => {
     expectInCapture("growth-scripts#72", "535px");
     // IfModal's antd box (jsdom drops its `min(535px, …)` width, so the source pins the 535).
     expect(dialog).toHaveClass("rounded-[10px]");
-    expect(readFileSync(resolve(__dirname, "ScriptsPage.tsx"), "utf8")).toMatch(/<IfModal title=\{title\} width=\{535\}/);
+    expect(readFileSync(resolve(__dirname, "ScriptModals.tsx"), "utf8")).toMatch(/<IfModal title=\{title\} width=\{535\}/);
     for (const [id, label] of [
       ["growth-scripts#73", "Name"], ["growth-scripts#74", "Tags"], ["growth-scripts#75", "Text"],
       ["growth-scripts#76", "Message price"], ["growth-scripts#79", "Internal notes"],

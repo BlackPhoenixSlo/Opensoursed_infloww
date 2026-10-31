@@ -1,5 +1,5 @@
 """
-Employee CRUD + audit middleware.
+Employee CRUD; re-exports the audit middleware (audit_log.py).
 
 The "employee picker" is auth-lite: no passwords, no sessions. The user
 clicks who they are on first page load; the browser stores the chosen id
@@ -13,8 +13,6 @@ This module owns:
   • `PATCH  /admin/employees/{id}`      — rename / recolor / disable
   • `DELETE /admin/employees/{id}`      — soft-delete (sets is_active=false)
   • `GET    /admin/audit`               — paginated audit log
-  • `audit_middleware`                  — FastAPI middleware that writes
-    a row to `actions` for every mutating request that succeeded.
 
 Why a separate file and not inline in server.py: server.py is already
 ~2200 lines. Each new concern that fits cleanly into its own module
@@ -26,7 +24,6 @@ import json
 import logging
 import os
 import re
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, NamedTuple
 
@@ -41,9 +38,17 @@ from db.models import (
     Action, Chatter, ChatterAccountAccess, ChatterUser, Employee, EmployeeAccountAccess, EmployeeGroup,
     UserAccount,
 )
-from auth import assert_account_owned, get_request_user
+from auth import get_request_user
 import audit_labels
-import notifications_api
+from agency_scope import agency_account_ids
+# Re-exported for existing `employees.` importers.
+from agency_context import (  # noqa: F401
+    AgencyContext, _chatter_agency_for_creator, agency_context, agency_contexts, owner_context,
+)
+from audit_log import (  # noqa: F401
+    _AUDIT_SKIP_PREFIXES, BACKGROUND_WRITES, _safe_snapshot, audit_action, audit_middleware,
+)
+from isotime import iso_z
 from settings_schema import BUILT_IN_ROLE_IDS
 
 log = logging.getLogger("of-relay.employees")
@@ -205,7 +210,7 @@ async def list_employees(include_disabled: bool = Query(True)) -> dict[str, Any]
                 # `last_login_at` is the login's latest sign-in or request (the session
                 # middleware's ~5-minute `last_seen_at`), `two_factor` whether 2FA is on.
                 row["username"] = facts.username
-                row["last_login_at"] = (facts.last_seen.isoformat() + "Z") if facts.last_seen else None
+                row["last_login_at"] = iso_z(facts.last_seen)
                 row["two_factor"] = facts.two_factor
                 row["is_active"] = bool(e.is_active and facts.linked)
                 row["account_ids"] = list(facts.allowed) or None
@@ -505,9 +510,7 @@ async def _set_login_access(s, e: Employee, body: "_EmployeeAccessBody") -> dict
             detail="an employee needs at least one Creator; deactivate them to remove all access",
         )
     if not wildcard:
-        owned = set((await s.execute(
-            select(UserAccount.account_id).where(UserAccount.user_id == e.user_id)
-        )).scalars().all())
+        owned = await agency_account_ids(s, e.user_id)
         foreign = [a for a in ids if a not in owned]
         if foreign:
             raise HTTPException(status_code=403, detail=f"account {foreign[0]!r} is not one of yours")
@@ -572,9 +575,7 @@ async def validate_employee_setup(owner_id: str, setup: dict[str, Any]) -> dict[
     async with get_session() as s:
         if out.get("account_ids"):
             ids = sorted(set(out["account_ids"]))
-            owned = set((await s.execute(
-                select(UserAccount.account_id).where(UserAccount.user_id == owner_id)
-            )).scalars().all())
+            owned = await agency_account_ids(s, owner_id)
             foreign = [a for a in ids if a not in owned]
             if foreign:
                 raise HTTPException(status_code=403, detail=f"account {foreign[0]!r} is not one of yours")
@@ -1121,118 +1122,6 @@ async def get_or_create_mirror_employee(
         return None
 
 
-@dataclass(frozen=True)
-class AgencyContext:
-    """Which Agency, which Employee, Owner or Master — for one request,
-    from the session alone (docs/spec/phase-01)."""
-    agency_user_id: str        # users.id of the Agency
-    employee_id: int | None    # Mirror Employee for a Chatter session; None for an Owner session
-    is_owner: bool             # True for an Owner session (Master included)
-    is_master: bool            # users.is_admin
-
-
-async def agency_context(*, account_id: str | None = None) -> AgencyContext:
-    """The Agency context of the current request, from the session cookies'
-    ContextVars and the database only — never from client-supplied input.
-
-    Await it inside a handler. A caller with a Creator in its path, query or
-    body passes that id as `account_id`. Refusals, in order: 401 `sign in
-    required` with no session (ALLOW_ANONYMOUS_ADMIN does not change this);
-    403 `not your account` when `account_id` is not the principal's; 403
-    `chatter is not linked to an agency`; 400 `name a creator to choose the
-    agency` for a chatter linked to several Agencies who names no Creator.
-    503 when the chatter's Mirror Employee cannot be resolved.
-
-    An Owner session (it wins over a chatter cookie in the same browser, as
-    in `_actor_account_ids`) is the Agency itself: no Employee, and a named
-    Creator never moves it into another Agency — the Master included.
-    Impersonation needs no case: the session middleware has already
-    overlaid the impersonated owner onto `get_request_user()`.
-
-    A Chatter session acts in one of its linked Agencies, as its own Mirror
-    Employee there (created on first use): the only Agency when it has one,
-    else the one `_chatter_agency_for_creator` picks for the named Creator.
-    """
-    user = get_request_user()
-    from chatters import get_request_chatter as _grc
-    chatter = _grc() if user is None else None
-    if user is None and chatter is None:
-        raise HTTPException(status_code=401, detail="sign in required")
-    assert_account_owned(account_id)
-    if user is not None:
-        return AgencyContext(
-            agency_user_id=user.id,
-            employee_id=None,
-            is_owner=True,
-            is_master=bool(user.is_admin),
-        )
-    if not chatter.owner_user_ids:
-        raise HTTPException(status_code=403, detail="chatter is not linked to an agency")
-    if account_id:
-        agency_user_id = await _chatter_agency_for_creator(
-            chatter.id, chatter.owner_user_ids, account_id,
-        )
-    elif len(chatter.owner_user_ids) == 1:
-        (agency_user_id,) = chatter.owner_user_ids
-    else:
-        raise HTTPException(status_code=400, detail="name a creator to choose the agency")
-    return await _chatter_context(chatter, agency_user_id)
-
-
-async def _chatter_context(chatter, agency_user_id: str) -> AgencyContext:
-    """A Chatter session's context in one linked Agency, as its Mirror
-    Employee there (created on first use); 503 when it cannot be resolved."""
-    employee_id = await get_or_create_mirror_employee(
-        chatter.id, agency_user_id,
-        display_name=chatter.display_name or chatter.username,
-        color=chatter.color,
-    )
-    if employee_id is None:
-        # ASSUMPTION: the 503 detail is `mirror employee unavailable`; the spec
-        # fixes only the status. Overturned if a later Phase's UI needs
-        # different wording.
-        raise HTTPException(status_code=503, detail="mirror employee unavailable")
-    return AgencyContext(
-        agency_user_id=agency_user_id,
-        employee_id=employee_id,
-        is_owner=False,
-        is_master=False,
-    )
-
-
-async def owner_context(account_id: str | None, detail: str) -> AgencyContext:
-    """`agency_context` for an owner-only endpoint.
-
-    ASSUMPTION: a Chatter session is refused 403 (`detail`) before
-    `agency_context` runs, so a chatter linked to two Agencies gets 403 (not
-    its 400 "name a creator") and no Mirror Employee is created by an
-    endpoint it may not use. Rung 5, the spec's check order (401, then 403).
-    Overturned if Phase 4's Permission roles open owner endpoints to some
-    chatters.
-    """
-    if get_request_user() is None:
-        from chatters import get_request_chatter as _grc
-        if _grc() is not None:
-            raise HTTPException(status_code=403, detail=detail)
-    return await agency_context(account_id=account_id)
-
-
-async def agency_contexts(*, account_id: str | None = None) -> list[AgencyContext]:
-    """Every Agency context the current request acts in: `agency_context`'s
-    one, except for a chatter linked to several Agencies that names no
-    Creator, which gets one per linked Agency (in Agency id order) instead of
-    the 400 — for reads that combine them (docs/spec/phase-04, the Applied
-    settings read and Role enforcement). Same refusals and 503 otherwise.
-    """
-    if not account_id and get_request_user() is None:
-        from chatters import get_request_chatter as _grc
-        chatter = _grc()
-        if chatter is not None and len(chatter.owner_user_ids) > 1:
-            return [await _chatter_context(chatter, agency_user_id)
-                    for agency_user_id in sorted(chatter.owner_user_ids)]
-    return [await agency_context(account_id=account_id)]
-
-
 async def json_object(request: Request, status_code: int) -> dict[str, Any]:
     """The request body as a JSON object, else `status_code` "expected a
     JSON object"."""
@@ -1243,37 +1132,6 @@ async def json_object(request: Request, status_code: int) -> dict[str, Any]:
     if not isinstance(body, dict):
         raise HTTPException(status_code=status_code, detail="expected a JSON object")
     return body
-
-
-async def _chatter_agency_for_creator(
-    chatter_id: str,
-    owner_user_ids: set[str] | frozenset[str],
-    account_id: str,
-) -> str:
-    """The Agency a chatter acts in for a Creator it named (and that already
-    passed `assert_account_owned`): the alphabetically first linked owner
-    that holds the Creator in `user_accounts` and whose Chatter Access
-    allowlist for this chatter does not exclude it.
-
-    Unlike `resolve_chatter_employee_id`'s unfiltered tie-break, the
-    allowlist applies first, so a cross-granted Creator allowed only under
-    the later Agency resolves there (docs/spec/phase-01, Resolution rules).
-    """
-    from chatters import _account_restrictions_for, _filter_owner_accounts
-    async with get_session() as s:
-        holders = await _sorted_holder_owner_ids(s, account_id, owner_user_ids)
-        restrictions = await _account_restrictions_for(s, chatter_id)
-    allowed = [
-        uid for uid in holders
-        if _filter_owner_accounts([(uid, account_id)], restrictions)
-    ]
-    if not allowed:
-        # ASSUMPTION: no allowed holder despite `assert_account_owned`
-        # passing (links or allowlist changed between the session load and
-        # this read) is refused as `not your account`, not a 5xx. Overturned
-        # if the owner wants such races surfaced as server errors.
-        raise HTTPException(status_code=403, detail="not your account")
-    return allowed[0]
 
 
 def _warn_automation_missing_once() -> None:
@@ -1314,236 +1172,6 @@ async def get_automation_employee_id() -> int:
     if not in_test:
         _automation_emp_id_cache = row
     return row
-
-
-# ── Audit middleware ────────────────────────────────────────────────
-
-# Endpoints we DON'T audit even when they're "POST/PATCH/DELETE." Adding
-# a row for every health probe / SSE retry would drown the real signal.
-_AUDIT_SKIP_PREFIXES = (
-    "/health",
-    "/events",
-    "/ws/",
-    "/admin/audit",     # don't audit reads of the audit log itself
-    "/admin/rev/",       # drift probe — read-only
-    "/docs",
-    "/openapi.json",
-    "/app/",             # static UI
-    "/admin/shifts/clock-heartbeat",  # the clocked-in tab's renew, every 30-60 s of activity
-    "/admin/agency-notifications",    # marking a notification read
-    # The served Browserbase login (remote_login_api): its start body carries
-    # the OnlyFans PASSWORD, which must never be written to the actions table.
-    "/admin/login",
-)
-# Note: do NOT include "/" here — every absolute path starts with "/", so
-# `startswith("/")` would silently skip every endpoint. The root path is
-# handled by the static-UI mount which only serves GET anyway.
-
-# The app's own background writes, as (method, path prefix): audited like any
-# write, under the session's Employee, but no sign of anyone at work. Perf-log
-# flushes (every 10 s while requests run, app/lib/perfLog.ts) and error
-# reports (app/lib/errorReporter.ts). The Auto clock-out sweep leaves them out
-# of an Employee's activity (clock_api._auto_clock_out).
-BACKGROUND_WRITES = (("POST", "/admin/perflog/"), ("POST", "/admin/errors"))
-
-
-def audit_action(method: str, path: str) -> str:
-    """The generic audit row's `actions.action`: "METHOD path"."""
-    return f"{method} {path}"
-
-
-async def audit_middleware(request: Request, call_next):
-    """FastAPI HTTP middleware. Wraps every request so:
-      • if method is mutating (POST / PATCH / PUT / DELETE) and the
-        response is 2xx, we log a row to `actions`.
-      • employee_id comes from the `X-Employee-Id` header (NULL if absent).
-      • payload_json captures a truncated snapshot of the body for replay.
-
-    Failure isolation: every step is try/except + log. A bad audit write
-    never affects the actual response the user sees.
-    """
-    # Snapshot enough to log BEFORE call_next so a failed downstream still
-    # gets recorded (with status_code set in the post-block).
-    method = request.method
-    path = request.url.path
-    should_audit = (
-        method in ("POST", "PATCH", "PUT", "DELETE")
-        and not any(path.startswith(p) for p in _AUDIT_SKIP_PREFIXES)
-    )
-
-    # Reading the body consumes it; we have to re-inject for the handler.
-    body_bytes = b""
-    binary_payload_snapshot: str | None = None
-    if should_audit:
-        # Skip buffering binary uploads — a 30MB image would otherwise sit in
-        # RSS for the lifetime of the request just so we can snapshot it.
-        ctype = request.headers.get("content-type", "")
-        if ctype.startswith(("multipart/", "application/octet-stream")):
-            binary_payload_snapshot = (
-                f"<binary upload, {request.headers.get('content-length', '?')} bytes>"
-            )
-        else:
-            try:
-                body_bytes = await request.body()
-            except Exception:
-                body_bytes = b""
-
-            # Reinject so downstream handlers (Pydantic body parsers) can still
-            # read it. FastAPI's request._body cache makes this stick.
-            async def _receive() -> dict:
-                return {"type": "http.request", "body": body_bytes, "more_body": False}
-            request._receive = _receive  # type: ignore[attr-defined]
-
-    notice_step = await notifications_api.audit_snapshot(method, path) if should_audit else None
-    response = await call_next(request)
-
-    if should_audit and 200 <= response.status_code < 300:
-        try:
-            emp_id_raw = request.headers.get("x-employee-id")
-            emp_id: int | None = None
-            if emp_id_raw and emp_id_raw.isdigit():
-                emp_id = int(emp_id_raw)
-            account_id = (
-                request.headers.get("x-account-id")
-                or request.query_params.get("account_id")
-            )
-            user = get_request_user()
-            # Chatter principal: the X-Employee-Id header is meaningless
-            # (the chatter doesn't pick from /admin/employees and we want
-            # one canonical per-owner mirror Employee anyway). Drop it
-            # outright, then auto-resolve (chatter, account.owner_id) →
-            # Employee, materialising the row on first hit. The User
-            # cookie takes precedence — if a founder happens to be both
-            # owner-signed-in AND chatter-signed-in (testing on the same
-            # browser), the request still attributes to their User-owned
-            # Employee via the existing spoof guard below.
-            if user is None:
-                # Lazy import: chatters imports employees indirectly via
-                # the audit middleware path, so deferring keeps boot
-                # order one-way (chatters → auth → employees).
-                from chatters import get_request_chatter as _grc
-                chatter = _grc()
-                if chatter is not None:
-                    if emp_id is not None:
-                        _warn_chatter_header_ignored_once()
-                        emp_id = None
-                    emp_id = await resolve_chatter_employee_id(
-                        chatter_id=chatter.id,
-                        owner_user_ids=chatter.owner_user_ids,
-                        account_id=account_id,
-                        display_name=chatter.display_name or chatter.username,
-                        color=chatter.color,
-                    )
-            # Cross-user spoof guard: if a signed-in friend passes an
-            # X-Employee-Id, the chatter MUST belong to them. Otherwise
-            # drop the attribution to NULL (or Automation downstream for
-            # /api/of/* paths). Stops friend A from writing actions under
-            # friend B's chatter.
-            if emp_id is not None and user is not None:
-                async with get_session() as _vs:
-                    owned = await _vs.get(Employee, emp_id)
-                # Admins/master may act as ANY existing employee (full-registry
-                # scope); a non-admin friend may only use their own employees.
-                if owned is None or (owned.user_id != user.id and not user.is_admin):
-                    log.warning(
-                        "x-employee-id=%s rejected: not owned by user=%s (path=%s)",
-                        emp_id, user.id, path,
-                    )
-                    emp_id = None
-            # Owner session with no (valid) pick: the owner did it.
-            if emp_id is None and user is not None:
-                emp_id = await get_owner_employee_id(user)
-            # Header-less fallback for OF proxy paths only. When no human
-            # pressed send (mass-message, scheduled jobs, automation that
-            # happens to round-trip through HTTP), we attribute to the
-            # system Automation employee so the row doesn't disappear from
-            # per-employee stats.
-            #
-            # NOTE: in-process automation runners (subprocess.run /
-            # direct function calls in service/automations/runners.py) do
-            # NOT pass through this middleware. They must write their own
-            # audit + attribution explicitly. This fallback only catches
-            # the rare HTTP-routed automation case.
-            #
-            # /admin/* paths are intentionally NOT covered — a missing
-            # X-Employee-Id there indicates a misconfigured client and
-            # should stay NULL so it surfaces in the audit log.
-            if emp_id is None and path.startswith("/api/of/"):
-                try:
-                    emp_id = await get_automation_employee_id()
-                except LookupError:
-                    _warn_automation_missing_once()
-            await _write_action(
-                employee_id=emp_id,
-                account_id=account_id,
-                action=audit_action(method, path),
-                payload_json=binary_payload_snapshot if binary_payload_snapshot is not None else _safe_snapshot(body_bytes),
-                target_type=None,
-                target_id=_extract_target_id(path),
-            )
-            if notice_step is not None:
-                await notice_step(body_bytes, emp_id, account_id)
-        except Exception:
-            log.exception("audit write failed (path=%s)", path)
-
-    return response
-
-
-async def _write_action(
-    *, employee_id: int | None, account_id: str | None,
-    action: str, payload_json: str | None,
-    target_type: str | None, target_id: str | None,
-) -> None:
-    async with get_session() as s:
-        s.add(Action(
-            employee_id=employee_id,
-            account_id=account_id,
-            action=action,
-            target_type=target_type,
-            target_id=target_id,
-            payload_json=payload_json,
-            at=datetime.utcnow(),
-        ))
-
-
-def _safe_snapshot(body_bytes: bytes) -> str | None:
-    """Best-effort string snapshot of the request body for the audit log.
-    JSON: pretty-print up to 4 KB. Binary: skip. Empty: NULL."""
-    if not body_bytes:
-        return None
-    try:
-        text = body_bytes.decode("utf-8", errors="replace")[:4096]
-        # If it looks like JSON, normalize so the audit-log view is readable.
-        try:
-            parsed = json.loads(text)
-            # Redact obvious secrets so audit isn't a vector for leaks; `code`
-            # and `ticket` are the 2FA sign-in's (account_security_api).
-            if isinstance(parsed, dict):
-                for k in list(parsed.keys()):
-                    if any(s in k.lower() for s in ("password", "token", "secret", "api_key")) \
-                            or k.lower() in ("code", "ticket"):
-                        parsed[k] = "***"
-            return json.dumps(parsed)[:4096]
-        except Exception:
-            return text
-    except Exception:
-        return None
-
-
-def _extract_target_id(path: str) -> str | None:
-    """Heuristic: the last path segment is the target id if it's not a
-    static verb. Catches `/admin/accounts/ACCOUNT_ID`, `/admin/proxies/hu-1`.
-    Returns None for fixed-shape paths like `/admin/session/bootstrap`."""
-    parts = [p for p in path.split("/") if p]
-    if not parts:
-        return None
-    last = parts[-1]
-    # Don't treat known-action segments as ids.
-    if last in {"active", "bootstrap", "assign", "test", "reload-session",
-                "status", "events", "audit", "employees", "accounts",
-                "proxies", "sessions"}:
-        return None
-    return last
 
 
 def _safe_loads(s: str | None) -> Any:

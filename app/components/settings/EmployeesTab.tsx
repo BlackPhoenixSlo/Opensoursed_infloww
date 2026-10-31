@@ -81,6 +81,7 @@ import { SkeletonRows } from "@/components/ui/Skeleton";
 import {
   BATCH_ACTIONS, employeesModalReducer, initialEmployeesModal, type BatchAction, type EmployeesModal,
 } from "@/components/settings/employeesModalReducer";
+import { usePagedFilters, usePagedRows } from "@/hooks/pagedFilters";
 
 /** The four filters; "" is each select's "All" option. "pending" is the invites not accepted yet. */
 type Filters = { name: string; creator: string; status: "" | "active" | "inactive" | "pending"; role: string };
@@ -222,18 +223,19 @@ export default function EmployeesTab() {
   const assignments = rolesBlob.value.assignments ?? {};
   const agencyName = useAgencyName();
   const [selected, setSelected] = useState<Set<number>>(new Set());
-  const [filters, setFilters] = useState<Filters>(NO_FILTERS);
-  const [page, setPage] = useState(1);
+  // The filters, the tree's group and the page in one reducer: a filter or group change lands on page 1 in one action
+  // (usePagedFilters). `group` is the tree's group, or null for the root (every group).
+  const { page, set, setPage, clamp, group: pickedId, ...filters } =
+    usePagedFilters<Filters & { group: number | null }>({ ...NO_FILTERS, group: null });
   const groupTree = groupsInTreeOrder(useEmployeeGroups().data?.groups ?? []);
   const groupList = groupTree.map((g) => g.group);
-  /** The tree's group, or null for the root (every group). A group deleted meanwhile falls back to the root. */
-  const [pickedId, setPickedId] = useState<number | null>(null);
+  // A group deleted meanwhile falls back to the root.
   const picked = groupList.find((g) => g.id === pickedId);
   const groupId = picked ? picked.id : null;
   const groupName = (id: number | null | undefined) => groupList.find((g) => g.id === id)?.name ?? "—";
-  const clearSelection = () => { setSelected(new Set()); setPage(1); };
-  const pickGroup = (id: number | null) => { setPickedId(id); clearSelection(); };
-  const filter = (patch: Partial<Filters>) => { setFilters((f) => ({ ...f, ...patch })); clearSelection(); };
+  // The one way the list resets: patch the filters / group (none: a Batch save), back to page 1, nobody ticked.
+  const refilter = (patch: Partial<Filters & { group: number | null }> = {}) => { set(patch); setSelected(new Set()); };
+  const pickGroup = (group: number | null) => refilter({ group });
   const [warning, warn] = useWarning();
 
   const roleOf = (e: Employee): HeldRole =>
@@ -256,7 +258,7 @@ export default function EmployeesTab() {
   // Closes that very dialog (the value it was opened with); a no-op once another is open.
   const close = (modal: EmployeesModal) => dispatchDialog({ type: "close", modal });
   // A Batch save's own success (mutate-level: a Cancel's reset drops it), closing only the Batch dialog it saved from.
-  const closeBatch = (modal: EmployeesModal) => { close(modal); clearSelection(); };
+  const closeBatch = (modal: EmployeesModal) => { close(modal); refilter(); };
 
   const invitesQ = useQuery<PendingInvite[]>({
     queryKey: INVITES_KEY,
@@ -282,8 +284,7 @@ export default function EmployeesTab() {
     ...shown.map((e): Line => ({ kind: "employee", e })),
     ...invites.map((i): Line => ({ kind: "invite", i })),
   ];
-  const pageAt = Math.min(page, Math.max(1, Math.ceil(lines.length / PAGE_SIZE)));
-  const pageLines = lines.slice((pageAt - 1) * PAGE_SIZE, pageAt * PAGE_SIZE);
+  const { current: pageAt, shown: pageLines } = usePagedRows(lines, PAGE_SIZE, { page, clamp });
   const selectable = pageLines.flatMap((l) => (l.kind === "employee" && !isOwner(l.e) ? [l.e] : []));
   const allTicked = selectable.length > 0 && selectable.every((e) => selected.has(e.id));
   const tickAll = () => setSelected((s) => {
@@ -499,24 +500,24 @@ export default function EmployeesTab() {
           <label className={FILTER_LABEL}>
             By employee:
             <IfInput aria-label="By employee" placeholder="Employee" value={filters.name}
-              onChange={(ev) => filter({ name: ev.target.value })} className="w-[150px]" />
+              onChange={(ev) => refilter({ name: ev.target.value })} className="w-[150px]" />
           </label>
           <label className={FILTER_LABEL}>
             By Creator:
             <IfSelect aria-label="By Creator" placeholder="Creator" value={filters.creator || null} options={creatorOptions}
-              onChange={(v) => filter({ creator: v })} className="w-[200px]" />
+              onChange={(v) => refilter({ creator: v })} className="w-[200px]" />
           </label>
           <label className={FILTER_LABEL}>
             By status:
             <IfSelect aria-label="By status" placeholder="Status" value={filters.status || null} options={statusOptions}
-              onChange={(v) => filter({ status: v })} className="w-[150px]" />
+              onChange={(v) => refilter({ status: v })} className="w-[150px]" />
           </label>
           <label className={FILTER_LABEL}>
             By role:
             <IfSelect aria-label="By role" placeholder="Role" value={filters.role || null} options={roleOptions}
-              onChange={(v) => filter({ role: v })} className="w-[150px]" />
+              onChange={(v) => refilter({ role: v })} className="w-[150px]" />
           </label>
-          <IfButton onClick={() => filter(NO_FILTERS)} className="ml-auto">Reset</IfButton>
+          <IfButton onClick={() => refilter(NO_FILTERS)} className="ml-auto">Reset</IfButton>
         </div>
 
         {(q.error || saveError) && (

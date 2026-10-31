@@ -14,7 +14,12 @@
  * on a fan already in some tab focuses that specific tab; otherwise the
  * fan goes into the freshest tab with room; if all live tabs are full,
  * a fresh group tab is spawned. Net effect: no accidental duplicates of
- * the same fan across multiple group tabs.
+ * the same fan across multiple group tabs. A duplicate that still happens
+ * (a 👥 click while the tab holding the fan reloads) converges: older wins,
+ * the younger tab drops the fan at mount or on its next heartbeat. A tab
+ * whose heartbeat went stale (throttled / frozen past the TTL, then woken or
+ * reloaded) comes back as the youngest, so a fan routed around it meanwhile
+ * stays where he went.
  *
  * BroadcastChannel messages carry the target tabId so only the addressed
  * tab acts on add/focus.
@@ -22,7 +27,7 @@
 
 import { useEffect, useReducer, useRef, useState } from "react";
 import Link from "next/link";
-import { useQueries, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useQueries, useQueryClient } from "@tanstack/react-query";
 
 import { FanList } from "@/components/chat/FanList";
 import { GroupPane } from "@/components/group/GroupPane";
@@ -31,9 +36,7 @@ import { useIsDesktop } from "@/hooks/useIsDesktop";
 import { useInboxRealtime } from "@/hooks/useInboxRealtime";
 import { cachedOFUserQuery } from "@/hooks/useOFUser";
 import { cn } from "@/lib/utils";
-import { relay, type OFChatItem } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
-import { fanIdFromParam, sameUserId } from "@/lib/fanId";
 import { onPopoutClick } from "@/lib/nav";
 import {
   GROUP_CHANNEL_NAME,
@@ -42,112 +45,18 @@ import {
   GROUP_REPLACE_EVENT,
   GROUP_SLOT_CAP,
   GROUP_WINDOW_NAME,
-  isGroupSlot,
-  parseSlotsParam,
+  cleanGroupMessage,
+  listOf,
   readAllLiveGroupTabs,
   removeGroupTabRegistry,
   writeGroupTabRegistry,
-  type GroupChannelMessage,
-  type GroupSlot,
 } from "@/lib/groupChannel";
 import { BRAND_NAME } from "@/lib/brand";
-import { initialSlotsState, slotsReducer } from "./slotsReducer";
-
-const STORAGE_KEY = "chatterly:group-slots";
-const TAB_ID_KEY = "chatterly:group-tab-id";
-
-/** The slots this tab held before a reload. Both fan id shapes: a
- *  `typeof fan !== "number"` check here dropped every Fansly slot on reload. */
-function readSlots(): GroupSlot[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = window.sessionStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as unknown;
-    return Array.isArray(parsed) ? parsed.filter(isGroupSlot) : [];
-  } catch {
-    return [];
-  }
-}
-
-function writeSlots(slots: readonly GroupSlot[]): void {
-  try {
-    window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(slots));
-  } catch {
-    /* quota / safari private — accept the loss */
-  }
-}
-
-/** Parse the seed params once and clear them from the URL so a refresh
- *  doesn't re-seed or re-claim:
- *    ?add=<acctId>:<fanId>              — one fan (👥 from a chat header)
- *    ?slots=<acctId>:<fanId>,...        — a whole list (money rail's last-8)
- *    ?spawn=<token>                     — pairs us with the source tab
- *  Returns the seeded slots (empty when this is a plain reload). */
-function takeSeedParams(): { seeds: GroupSlot[]; spawnToken: string | null } {
-  if (typeof window === "undefined") return { seeds: [], spawnToken: null };
-  const url = new URL(window.location.href);
-  const rawAdd = url.searchParams.get("add");
-  const rawSlots = url.searchParams.get("slots");
-  const spawnToken = url.searchParams.get("spawn");
-  if (!rawAdd && !rawSlots && !spawnToken) return { seeds: [], spawnToken: null };
-  url.searchParams.delete("add");
-  url.searchParams.delete("slots");
-  url.searchParams.delete("spawn");
-  // replaceState — we don't want these to live in history.
-  window.history.replaceState({}, "", url.pathname + (url.search ? url.search : "") + url.hash);
-  if (rawSlots) return { seeds: parseSlotsParam(rawSlots), spawnToken };
-  if (!rawAdd) return { seeds: [], spawnToken };
-  const idx = rawAdd.lastIndexOf(":");
-  if (idx <= 0) return { seeds: [], spawnToken };
-  const accountId = rawAdd.slice(0, idx);
-  // Not `Number(...)`: a Fansly snowflake does not survive float64, so the
-  // "👥 group" button opened a slot pointing at a fan that does not exist.
-  const fan = fanIdFromParam(rawAdd.slice(idx + 1));
-  if (!accountId || fan == null) return { seeds: [], spawnToken };
-  return { seeds: [{ accountId, fanId: fan }], spawnToken };
-}
-
-/** Stable per-tab id. Re-uses an existing one from sessionStorage so a
- *  refresh doesn't rotate identity (which would orphan the registry
- *  entry for TTL before scanners cleaned up). */
-function resolveTabId(): string {
-  if (typeof window === "undefined") return "";
-  try {
-    const existing = window.sessionStorage.getItem(TAB_ID_KEY);
-    if (existing) return existing;
-    const cryptoObj = window.crypto as Crypto & { randomUUID?: () => string };
-    const id = cryptoObj.randomUUID
-      ? cryptoObj.randomUUID()
-      : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-    window.sessionStorage.setItem(TAB_ID_KEY, id);
-    return id;
-  } catch {
-    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-  }
-}
-
-/** How many of `slots` have a cached chats row whose last message is the
- *  Fan's (the first cached copy of the row counts, as before). */
-function countUnresponded(qc: QueryClient, slots: readonly GroupSlot[]): number {
-  const want = new Map(slots.map((s) => [`${s.accountId}:${s.fanId}`, s]));
-  const found = new Map<string, OFChatItem>();
-  const entries = qc.getQueriesData<{ pages: { rows: OFChatItem[] }[] }>({ queryKey: ["chats"] });
-  for (const [, data] of entries) {
-    if (!data?.pages) continue;
-    for (const p of data.pages) for (const c of p.rows) {
-      const k = `${c.__accountId ?? ""}:${c.withUser.id}`;
-      if (want.has(k) && !found.has(k)) found.set(k, c);
-    }
-  }
-  let n = 0;
-  for (const [k, s] of want) {
-    const lm = found.get(k)?.lastMessage;
-    if (!lm) continue;
-    if (lm.fromUser?.id != null && !sameUserId(lm.fromUser.id, s.accountId)) n++;
-  }
-  return n;
-}
+import { initialSlotsState, keptSlots, slotsReducer } from "./slotsReducer";
+import {
+  countUnresponded, isStaleReload, olderTabs, readLastBeat, readSlots, resolveCreatedAt, resolveTabId, takeSeedParams,
+  writeLastBeat, writeSlots,
+} from "./groupTabStorage";
 
 export default function GroupChatPage() {
   // Keep SSE patches landing in the right query caches — same hook the
@@ -168,9 +77,13 @@ export default function GroupChatPage() {
   const channelRef = useRef<BroadcastChannel | null>(null);
 
   useEffect(() => {
-    tabIdRef.current = resolveTabId();
-    createdAtRef.current = Date.now();
-    const { seeds, spawnToken } = takeSeedParams();
+    const { seeds, spawnToken, fresh } = takeSeedParams();
+    // A reload keeps the tab's id and age (sessionStorage), so the older-wins
+    // reconcile still treats it as the older tab; a fresh tab gets new ones.
+    // A reload past the TTL since its last beat is reborn young, as a stale
+    // tick is (below): the first tick after mount cannot see that gap.
+    tabIdRef.current = resolveTabId(fresh);
+    createdAtRef.current = resolveCreatedAt(fresh || isStaleReload(readLastBeat(), Date.now()));
     spawnTokenRef.current = spawnToken;
     // ?add= / ?slots= is the marker that this is a FRESHLY-OPENED group
     // tab (someone clicked 👥 group on a chat, or "open last 8" on the
@@ -189,9 +102,9 @@ export default function GroupChatPage() {
     writeSlots(initial);
     // Reconcile-on-mount: drop slots that an OLDER live tab already
     // holds. Handles the residual case where two source tabs raced
-    // to spawn and we both ended up with the same fan. Older wins.
-    const older = readAllLiveGroupTabs().filter((t) =>
-      t.tabId !== tabIdRef.current && t.createdAt < createdAtRef.current);
+    // to spawn and we both ended up with the same fan. Older wins (and
+    // the heartbeat below keeps applying it once both are live).
+    const older = olderTabs(readAllLiveGroupTabs(), { tabId: tabIdRef.current, createdAt: createdAtRef.current });
     dispatch({ type: "hydrate", slots: initial, heldElsewhere: older });
   }, []);
 
@@ -207,9 +120,7 @@ export default function GroupChatPage() {
   // event instead of a `replace` message.
   useEffect(() => {
     const onReplace = (e: Event) => {
-      const next = (e as CustomEvent<{ slots?: unknown }>).detail?.slots;
-      if (!Array.isArray(next)) return;
-      dispatch({ type: "replace", slots: next });
+      dispatch({ type: "replace", slots: listOf((e as CustomEvent<{ slots?: unknown } | null>).detail?.slots) });
     };
     window.addEventListener(GROUP_REPLACE_EVENT, onReplace);
     return () => window.removeEventListener(GROUP_REPLACE_EVENT, onReplace);
@@ -242,8 +153,10 @@ export default function GroupChatPage() {
       if (spawnTokenRef.current) {
         try { channel.postMessage({ type: "claim", tabId, spawnToken: spawnTokenRef.current }); } catch {}
       }
-      channel.onmessage = (e: MessageEvent<GroupChannelMessage>) => {
-        const msg = e.data;
+      // Any same-origin page can post here: cleanGroupMessage checks the
+      // envelope; slotsReducer still decides each slot (and its ack).
+      channel.onmessage = (e: MessageEvent<unknown>) => {
+        const msg = cleanGroupMessage(e.data);
         if (!msg) return;
         // Address filter: ignore messages not meant for THIS tab.
         // Multiple group tabs are alive simultaneously and each scopes
@@ -254,7 +167,7 @@ export default function GroupChatPage() {
         // applies the message to and queues it; the ack effect posts it.
         // The source spawns an overflow tab on ok:false.
         if (msg.type === "replace") {
-          dispatch({ type: "replace", slots: Array.isArray(msg.slots) ? msg.slots : [], reqId: msg.reqId });
+          dispatch({ type: "replace", slots: msg.slots, reqId: msg.reqId });
         }
         if (msg.type === "add") {
           dispatch({ type: "add", slot: { accountId: msg.accountId, fanId: msg.fanId }, reqId: msg.reqId });
@@ -298,29 +211,38 @@ export default function GroupChatPage() {
   // Heartbeat: write this tab's registry entry now (so source tabs see a
   // slot change at once) and every GROUP_HEARTBEAT_MS. The registry is
   // keyed by this tab's id, so multiple group tabs each have their own
-  // entry — scanners see all of them.
+  // entry — scanners see all of them. Every beat is one reconcile: drop the
+  // fans an OLDER live tab holds (the mount rule, kept while both live) and
+  // advertise only the rest, so a fan we yield never makes his holder drop
+  // him too. A tab that reloads keeps its age, so when a younger tab took one
+  // of its fans meanwhile, the younger one gives him up.
+  //
+  // Stale tab: a gap since our last beat longer than the registry TTL (a
+  // hidden tab throttled to ~1 timer/min, a frozen one) means scanners saw
+  // us dead and may have put our fans in another tab, acked ok. Such a tab
+  // is reborn young (createdAt = now, persisted): every live tab is older,
+  // so it gives up whatever any of them holds, now and if a racing add lands
+  // there just after this read. The interval and visibilitychange run the
+  // same tick, so whichever fires first sees the gap. Never on the first
+  // tick after mount: a reload keeps its age, or was already reborn at mount
+  // when its stored last beat was stale (above), and StrictMode's re-run
+  // follows a beat.
   useEffect(() => {
     if (!hydrated) return;
     const tabId = tabIdRef.current;
     if (!tabId) return;
     const tick = () => {
-      writeGroupTabRegistry(tabId, createdAtRef.current, slots);
-      lastTickAtRef.current = Date.now();
+      const now = Date.now();
+      if (lastTickAtRef.current > 0 && now - lastTickAtRef.current > GROUP_HEARTBEAT_TTL_MS) {
+        createdAtRef.current = resolveCreatedAt(true, now);
+      }
+      const older = olderTabs(readAllLiveGroupTabs(), { tabId, createdAt: createdAtRef.current });
+      if (older.length > 0) dispatch({ type: "dropHeldBy", others: older });
+      writeGroupTabRegistry(tabId, createdAtRef.current, keptSlots(slots, older));
+      writeLastBeat(now);
+      lastTickAtRef.current = now;
     };
-    // Frozen-tab reconcile: if this tab was background-throttled for
-    // longer than the registry TTL, another tab may have spawned and
-    // taken on our fans assuming we were dead. On wake, drop any of
-    // our slots that ANY other live tab also holds — the user has
-    // moved on, the other tab is canonical.
-    const onVisibility = () => {
-      if (document.visibilityState !== "visible") return;
-      const stale = Date.now() - lastTickAtRef.current > GROUP_HEARTBEAT_TTL_MS;
-      // Refresh our heartbeat immediately regardless — keeps scanners
-      // from treating us as dead during the reconcile pass.
-      tick();
-      if (!stale) return;
-      dispatch({ type: "dropHeldBy", others: readAllLiveGroupTabs().filter((t) => t.tabId !== tabId) });
-    };
+    const onVisibility = () => { if (document.visibilityState === "visible") tick(); };
     tick();
     const interval = window.setInterval(tick, GROUP_HEARTBEAT_MS);
     document.addEventListener("visibilitychange", onVisibility);

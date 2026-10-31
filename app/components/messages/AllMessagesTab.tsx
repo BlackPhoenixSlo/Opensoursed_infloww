@@ -24,7 +24,7 @@
  * Export, and MessageDashboardTable, over our outbound messages of that kind.
  */
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { RotateCw } from "lucide-react";
 
 import CsvExportButton from "@/components/messages/CsvExportButton";
@@ -35,8 +35,8 @@ import MessageDashboardTable from "@/components/messages/MessageDashboardTable";
 import MessageRowGeneric from "@/components/messages/MessageRowGeneric";
 import MessagesFilters from "@/components/messages/MessagesFilters";
 import UnsendMessageButton, { canOfferUnsend } from "@/components/messages/UnsendMessageButton";
+import InfiniteListFooter from "@/components/messages/InfiniteListFooter";
 import { IfButton } from "@/components/ui/infloww";
-import { Button } from "@/components/ui/primitives";
 import {
   buildPaidMessagesQuery,
   usePaidMessages,
@@ -161,19 +161,6 @@ function AllTab({ from, to, fanId, onClearFanId }: Props) {
     [q.data],
   );
 
-  const sentinelRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    const el = sentinelRef.current;
-    if (!el) return;
-    const io = new IntersectionObserver((entries) => {
-      if (entries[0]?.isIntersecting && q.hasNextPage && !q.isFetchingNextPage) {
-        q.fetchNextPage();
-      }
-    }, { rootMargin: "200px" });
-    io.observe(el);
-    return () => io.disconnect();
-  }, [q.hasNextPage, q.isFetchingNextPage, q.fetchNextPage]);
-
   return (
     <div className="space-y-3">
       <MessageDashboardFilters value={dash} onChange={setDash} />
@@ -245,27 +232,12 @@ function AllTab({ from, to, fanId, onClearFanId }: Props) {
             </div>
           ))}
 
-          <div ref={sentinelRef} className="h-4" />
-
-          {q.hasNextPage && (
-            <div className="flex justify-center pt-2">
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                onClick={() => q.fetchNextPage()}
-                disabled={q.isFetchingNextPage}
-              >
-                {q.isFetchingNextPage ? "Loading…" : "Load more"}
-              </Button>
-            </div>
-          )}
-
-          {!q.hasNextPage && rows.length > 0 && (
-            <div className="text-center text-[11px] text-fg-dim py-2">
-              · end of results ·
-            </div>
-          )}
+          <InfiniteListFooter
+            hasNextPage={q.hasNextPage}
+            isFetchingNextPage={q.isFetchingNextPage}
+            fetchNextPage={q.fetchNextPage}
+            endLabel="end of results"
+          />
         </div>
       )}
     </div>

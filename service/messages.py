@@ -24,7 +24,6 @@ of_client.py and the relay endpoints in server.py.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from datetime import datetime, timedelta
 from typing import Any
@@ -40,6 +39,7 @@ from db.models import Account, Chat, Employee, Message, MessageMedia, Transactio
 from attribution_backfill import TRACKED_STATUSES
 from stats import _parse_date
 from auth import assert_account_owned, assert_employee_filter_owned, clamp_account_filter
+from of_coerce import json_list
 from of_shapes import DIM_KEYS, media_urls   # shared OF payload-shape readers
 from messages_query import (  # noqa: F401 — some re-exported (tests: messages._collapsed_mass_rows)
     _CSV_HEADER, _apply_dashboard_filters, _build_messages_query, _collapsed_mass_rows,
@@ -65,7 +65,7 @@ def _row_to_dict(
         "direction": m.direction,
         "sender_name": m.sender_name,
         "body": m.body,
-        "media_ids": _safe_load_list(m.media_ids),
+        "media_ids": json_list(m.media_ids),
         # Per-item media with NULLABLE width/height — the render-stability
         # cache (18_chat_render_stability §1.1). `media_ids` (id-only, legacy)
         # is kept for back-compat; `media` carries the dims the skeleton/grid
@@ -92,16 +92,6 @@ def _row_to_dict(
         "created_at": m.created_at.isoformat() if m.created_at else None,
         "ingested_at": m.ingested_at.isoformat() if m.ingested_at else None,
     }
-
-
-def _safe_load_list(raw: str | None) -> list[Any]:
-    if not raw:
-        return []
-    try:
-        v = json.loads(raw)
-        return v if isinstance(v, list) else []
-    except (ValueError, TypeError):
-        return []
 
 
 # ── media dimensions (18_chat_render_stability §1.1) ────────────────────

@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { amountFrom, anchorFor, clampToViewport, lastOutboundOf, replyStateOf } from "./MoneyRail";
+import { distinctPayers, mergeMoneyRows, payerIdOf, type MergedItem } from "./useMoneyRailFeed";
+import { initialRailDock, railDockReducer, type RailDockState } from "./useRailDock";
+import type { CachedNotification } from "@/lib/notifSettings";
 import type { OFChatItem } from "@/lib/relay";
 import type { AttributionResponse } from "@/hooks/useChatAttribution";
 
@@ -252,5 +255,126 @@ describe("amountFrom: the Buys & tips amount chip in the house price format", ()
     expect(amountFrom("Jim has purchased your message for $25.22!")).toBe("$25.22");
     expect(amountFrom("Ann tipped $1,250.00")).toBe("$1,250");
     expect(amountFrom("no money here")).toBeNull();
+  });
+});
+
+describe("mergeMoneyRows", () => {
+  const at = (min: number) => new Date(Date.UTC(2026, 9, 31, 12, min)).toISOString();
+  const hist = (id: string, min: number, type: string, typeKey: CachedNotification["typeKey"] = null): CachedNotification =>
+    ({ id, accountId: "a", type, typeKey, user: { id: 1 }, text: `h${id}`, createdAt: at(min) });
+  const ids = (rows: MergedItem[]) => rows.map((m) => `${m.accountId}:${m.n.id}:${m.typeKey}:${m.n.text ?? ""}`);
+
+  it.each([
+    ["feed row beats the history row with the same aid:id",
+      [{ aid: "a", type: "tip" as const, rows: [{ id: 1, text: "feed", createdAt: at(1) }] }],
+      { a: [hist("1", 5, "tip")] }, ["a"], ["a:1:tip:feed"]],
+    ["same id on another account is not a dupe",
+      [{ aid: "b", type: "tip" as const, rows: [{ id: 1, text: "feed", createdAt: at(1) }] }],
+      { a: [hist("1", 5, "tip")] }, ["a", "b"], ["a:1:tip:h1", "b:1:tip:feed"]],
+    ["history: money only, typeKey else mapped from type",
+      [], { a: [hist("1", 1, "message", "message"), hist("2", 2, "tip"), hist("3", 3, "x", "purchases"), hist("4", 4, "favorited")] },
+      ["a"], ["a:3:purchases:h3", "a:2:tip:h2"]],
+    ["history only for the picked accounts",
+      [], { a: [hist("1", 1, "tip")], z: [hist("2", 2, "tip")] }, ["a"], ["a:1:tip:h1"]],
+    ["newest first; undated rows last; ties keep list order",
+      [{ aid: "a", type: "purchases" as const, rows: [{ id: 1, createdAt: at(1) }, { id: 2 }, { id: 3, createdAt: at(9) }] },
+       { aid: "a", type: "tip" as const, rows: [{ id: 4, createdAt: at(1) }] }],
+      {}, ["a"], ["a:3:purchases:", "a:1:purchases:", "a:4:tip:", "a:2:purchases:"]],
+    ["unloaded lists contribute nothing",
+      [{ aid: "a", type: "tip" as const, rows: undefined }], {}, ["a"], []],
+  ])("%s", (_l, lists, history, aids, want) => {
+    expect(ids(mergeMoneyRows(lists, history, aids))).toEqual(want);
+  });
+
+  it("caps at 50, keeping the newest", () => {
+    const rows = Array.from({ length: 60 }, (_, i) => ({ id: i, createdAt: at(i) }));
+    const out = mergeMoneyRows([{ aid: "a", type: "tip", rows }], {}, ["a"]);
+    expect(out).toHaveLength(50);
+    expect(out[0].n.id).toBe(59);
+    expect(out[49].n.id).toBe(10);
+  });
+});
+
+describe("payerIdOf / distinctPayers", () => {
+  const row = (accountId: string, user?: { id?: number | string }, fromUser?: { id?: number | string }): MergedItem =>
+    ({ n: { user, fromUser } as MergedItem["n"], accountId, typeKey: "tip", ts: 0 });
+
+  it.each([
+    [row("a", { id: 1 }, { id: 2 }), 1],
+    [row("a", {}, { id: 2 }), 2],
+    [row("a"), undefined],
+  ])("payerIdOf %#", (m, want) => {
+    expect(payerIdOf(m)).toBe(want);
+  });
+
+  const rows = [
+    row("a", { id: 1 }), row("a", {}, { id: 1 }), row("b", { id: 1 }), row("a"), row("a", { id: 0 }),
+    row("a", { id: 2 }), row("a", { id: 3 }),
+  ];
+  it.each([
+    // [cap, expected] — order kept, one per account × fan, payerless rows skipped
+    [undefined, ["a:1", "b:1", "a:2", "a:3"]],
+    [2, ["a:1", "b:1"]],
+    [3, ["a:1", "b:1", "a:2"]],
+  ])("cap %s", (cap, want) => {
+    expect(distinctPayers(rows, cap).map((p) => `${p.accountId}:${p.fanId}`)).toEqual(want);
+  });
+});
+
+describe("railDockReducer", () => {
+  const placed = (over: Partial<RailDockState["dock"]> = {}): RailDockState => ({
+    ...initialRailDock, mounted: true, viewportH: 800,
+    dock: { open: false, x: 100, y: 100, anchor: "top", ...over },
+  });
+
+  it("load sets the dock and the viewport and mounts, without a save", () => {
+    const dock = { open: true, x: 5, y: 6, anchor: "bottom" as const };
+    expect(railDockReducer(initialRailDock, { type: "load", dock, viewportH: 700 }))
+      .toEqual({ dock, viewportH: 700, mounted: true, saves: 0 });
+  });
+
+  it.each([
+    // [label, action, expected dock, saves]
+    ["dragMove clamps, pins to the top, and never saves",
+      { type: "dragMove", x: 9999, y: -5, panelH: 420, viewportW: 1000, viewportH: 800 } as const,
+      { open: false, x: 710, y: 0, anchor: "top" }, 0],
+    ["drop in the lower half re-anchors to the bottom and saves",
+      { type: "drop", rect: { top: 700, bottom: 768, height: 68 }, viewportH: 800 } as const,
+      { open: false, x: 100, y: 32, anchor: "bottom" }, 1],
+    ["drop in the upper half keeps the top",
+      { type: "drop", rect: { top: 20, bottom: 88, height: 68 }, viewportH: 800 } as const,
+      { open: false, x: 100, y: 20, anchor: "top" }, 1],
+    ["an unmeasurable drop still saves the dock as it is",
+      { type: "drop", rect: null, viewportH: 800 } as const,
+      { open: false, x: 100, y: 100, anchor: "top" }, 1],
+    ["toggle flips open and saves",
+      { type: "toggle" } as const,
+      { open: true, x: 100, y: 100, anchor: "top" }, 1],
+  ])("%s", (_l, action, dock, saves) => {
+    expect(railDockReducer(placed(), action)).toMatchObject({ dock, saves });
+  });
+
+  it.each([
+    // [label, start, action, expected dock, viewportH, saves]
+    ["a top-anchored dock pulled back on screen, saved",
+      placed({ x: 900, y: 700 }), { type: "resize", viewportW: 500, viewportH: 400, panelH: 68 } as const,
+      { x: 210, y: 332, anchor: "top" }, 400, 1],
+    ["bottom-anchored: clamped in top-space, re-expressed from the bottom",
+      placed({ x: 0, y: 500, anchor: "bottom" }), { type: "resize", viewportW: 1000, viewportH: 400, panelH: 68 } as const,
+      { x: 0, y: 332, anchor: "bottom" }, 400, 1],
+    ["in bounds: only the viewport changes, no save",
+      placed(), { type: "resize", viewportW: 1000, viewportH: 600, panelH: 68 } as const,
+      { x: 100, y: 100 }, 600, 0],
+    ["never-dragged (no x/y): only the viewport, no save",
+      { ...placed(), dock: { open: false, x: null, y: null, anchor: "bottom" } } as RailDockState,
+      { type: "resize", viewportW: 300, viewportH: 300, panelH: 68 } as const,
+      { x: null, y: null }, 300, 0],
+  ])("resize: %s", (_l, start, action, dock, viewportH, saves) => {
+    expect(railDockReducer(start, action)).toMatchObject({ dock, viewportH, saves });
+  });
+
+  it("a resize that changes nothing keeps the same state (no re-render)", () => {
+    const s = placed();
+    expect(railDockReducer(s, { type: "resize", viewportW: 1000, viewportH: 800, panelH: 68 })).toBe(s);
   });
 });

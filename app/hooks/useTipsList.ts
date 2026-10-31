@@ -12,6 +12,7 @@
 
 import { keepPreviousData, useInfiniteQuery } from "@tanstack/react-query";
 
+import { reportQuery, type ReportQueryParams } from "@/hooks/reportQuery";
 import { relay } from "@/lib/relay";
 import { type FanId } from "@/lib/fanId";
 
@@ -44,11 +45,7 @@ export interface TipsListPage {
   next_before_id: number | null;
 }
 
-export interface UseTipsListParams {
-  from: string | null;
-  to: string | null;
-  account_id?: string | null;
-  employee_id?: number | null;
+export interface UseTipsListParams extends ReportQueryParams {
   fan_query?: string | null;
   limit?: number;
 }
@@ -56,11 +53,7 @@ export interface UseTipsListParams {
 /** The list's query string; `csv` is the whole filtered set's export (no
  *  limit or cursor), for `CsvExportButton`. */
 export function buildTipsListQuery(params: UseTipsListParams, beforeId: number | null, csv = false): string {
-  const qs = new URLSearchParams();
-  if (params.from) qs.set("from", params.from);
-  if (params.to) qs.set("to", params.to);
-  if (params.account_id) qs.set("account_id", params.account_id);
-  if (params.employee_id != null) qs.set("employee_id", String(params.employee_id));
+  const qs = reportQuery(params);
   if (params.fan_query && params.fan_query.length >= 2) {
     qs.set("fan_query", params.fan_query);
   }

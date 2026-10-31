@@ -95,7 +95,8 @@ def _sessions() -> list[tuple[str, Any, dict]]:
     """(account id, latest session path, parsed session) for every OnlyFans
     account with a readable session."""
     out = []
-    for meta in account_registry.list_accounts():
+    # Watchers too: a watcher signs its reads with the same rules.
+    for meta in account_registry.list_accounts(include_watchers=True):
         aid = meta.get("id")
         if not aid or not meta.get("has_session") or meta.get("platform", "onlyfans") != "onlyfans":
             continue

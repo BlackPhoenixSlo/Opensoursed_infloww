@@ -17,13 +17,13 @@ import of `event_transcoder` (no cycle). Tables: tests/test_event_transcode_deci
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal, Union
 
 from events_decide import first_key
 from of_shapes import giphy_dm_id   # stdlib-only OF payload-shape reader
+from of_coerce import cents_or_zero as to_cents, strip_tags as strip_html  # noqa: F401 — td.strip_html (event_transcoder, tests)
 
 # ── Field parsers ────────────────────────────────────────────────────
 
@@ -38,17 +38,6 @@ def parse_iso(s: str | None) -> datetime | None:
         return None
 
 
-def to_cents(price: Any) -> int:
-    """OF prices come as floats like 9.99. Convert via int(round(... * 100))
-    to avoid 9.99 → 998 floating-point traps."""
-    try:
-        if price is None or price == "":
-            return 0
-        return int(round(float(price) * 100))
-    except Exception:
-        return 0
-
-
 def media_ids(media: list | None) -> list[int]:
     """Pluck media.id from each item; skip non-int."""
     if not isinstance(media, list):
@@ -60,15 +49,6 @@ def media_ids(media: list | None) -> list[int]:
             if isinstance(mid, int):
                 out.append(mid)
     return out
-
-
-def strip_html(s: str) -> str:
-    """Quick-and-dirty tag strip for the chat-list preview. OF returns
-    minimal HTML (<p>, <span class>, <strong>); regex is enough.
-    Full sanitization happens client-side when the body is rendered."""
-    if not s:
-        return ""
-    return re.sub(r"<[^>]+>", "", s).strip()
 
 
 # ── Routing ──────────────────────────────────────────────────────────

@@ -39,6 +39,15 @@ clock-out on Creator 0, as `/clock-in` + `/clock-out` would leave it).
    one such mass message per Creator, the modal closes. Had the box been enabled, an edit is typed before
    the retry (the operator's edit the lock exists to stop). Screenshots mass-partial-trigger,
    mass-partial-failure, mass-retry-done; bodies in mass-retry-bodies.json.
+1c. Mass messages tab bulk unsend (Smart Messages > Mass Messages, `?tab=mass`; components/settings/
+   massUnsendRules.ts `bulkTargets`): Creators 0 and 1's cached broadcasts by SQL (seed/mass_broadcast_cache.py,
+   as `upsert_many` writes OF's feed: free text, GIF-only, image, paid text, each 5-9 h old; fresh ones (1 h, and
+   3 h: under the 4 h gate, an hour's margin for a slow run); an already unsent one; one OF says can no longer
+   be unsent; x3 at small, x8 above), Creator 0's model chip on, "Unsend free text >4h" (its count the expected rows'),
+   confirm() accepted -> the browser's DELETEs, the relay's answers (200), OF's wire unsends (one per expected
+   row, no other) and the cache's `is_canceled` flips are exactly Creator 0's free, image-less, >= 4 h,
+   unsendable rows; every other row (Creator 1's matching ones included) unchanged. Screenshots
+   mass-bulk-unsend-trigger, mass-bulk-unsend-settled; the id sets in mass-bulk-unsend.json.
 2. Post (Messages dashboard > My feed > + New post): a typed $10 on a text-only post is refused
    ("A paid post needs at least one image"); "Post from ALL models" hides the price row (all-models
    is text-only), Post is on, and each model's `POST /api/of/v2/posts` is free and text-only and
@@ -125,6 +134,10 @@ clock-out on Creator 0, as `/clock-in` + `/clock-out` would leave it).
    exclude one list each, Start funnel -> the queue POST (parsed) carries only Creator 1's lists.
    Chip state is read off aria-pressed. Screenshots audience-fl-trigger, audience-fl-switch-settled,
    audience-fl-sent; bodies in audience-fl-bodies.json.
+11b. Funnel media (FunnelMediaPane + funnelMediaReducer), Auto Funnel, Creator 0: the first funnel's Media,
+   the opener's Pick media, vault tile 9020, Attach, Save media -> "Saved for <Creator>" and
+   GET /admin/funnels/{id}/media/{account} holds opening_media_ids [9020]. Screenshot funnel-media-saved;
+   the GET in funnel-media.json.
 12. Tracking links (app/components/growth/pagedFilters.ts via LinksListFrame's useFrameFilters): 140 links
    per Creator (120 active = 3 pages of 50, 20 deactivated), Source IG on every other active one. On page 3
    a Source pick, then (back on page 3) "Show deactivated links", each leave the pager on page 1 with the
@@ -186,6 +199,12 @@ clock-out on Creator 0, as `/clock-in` + `/clock-out` would leave it).
    schedules it through to the relay (200, the body and one new scheduled_jobs scheduled_send row carry
    text, price, lock and tag). `chat-refused.json`. Screenshots chat-refused-other-chat (trigger),
    chat-refused-restored (settled), chat-refused-rescheduled.
+18c. Chat PPV send (app/components/chat/Composer.tsx submit, composerSubmit.ts gifPlan): Messages Pro on
+   Creator 0, its first Fan's chat: a vault pick (picker tile 9020), a file upload (held at the browser's
+   wire), PPV $10, lock text, 2 GIFs, text, Enter -> nothing reaches OF while the upload runs; the upload
+   lands -> OF's wire gets one send (text, price, lock, both media, the first GIF), then one GIF-only send
+   (the second GIF, no text, price or media), after it; the relay answers 200 to both. `chat-ppv.json` (the
+   browser's send bodies and OF's send log). Screenshots chat-ppv-trigger, chat-ppv-settled.
 19. Bell (app/components/notificationBellReducer.ts) on the Dashboard: 3 fan DMs to the scoped
    Creator through the pump hook (each waits for its toast) -> the top bar badge reads 3; opening
    the bell clears it (one `chatterly:notif-cleared`) and it stays clear after Escape. Then one
@@ -313,7 +332,18 @@ taggable creators (`/api/of/v2/posts/tagged-friend-users`) are answered at the b
 (shape a guess); the first scheduled-sends POST is answered 400 at the browser's wire with the relay's own
 Fansly refusal text (the seeded Creators are OnlyFans, which the relay never refuses), the second goes to
 the relay unchanged (no supervisor fires it).
+In 18c OF's /chats is answered the same way; Giphy's trending list (`/api/of/v2/giphy/proxy/gifs/*`, Giphy is
+off-host) is answered at the browser's wire with 2 GIFs (loopback images); the upload (`POST /api/of/v2/upload`:
+OF's signed upload and S3 PUT are not in lib/of_wire.py) is held, then answered at the browser's wire as a
+deduped re-upload of vault item 9021 (`/upload`'s own shape); both chat sends go browser -> relay -> OF's wire
+unchanged, their browser bodies recorded on the way.
+In 1c the bulk unsend's DELETEs (`/api/of/v2/messages/queue/{id}`) go browser -> relay -> OF's wire unchanged
+(lib/of_wire.py's `DELETE /api2/v2/messages/queue/{id}`, each kept in `unsends`; its answer body is a guess).
+That DELETE is in THROUGH for the whole run, not only 1c: ui.owner_browser takes one `through=` per browser,
+and no other section sends one.
 
+Fault `bulk-unsend-picks-unselected` (`lib/mass_unsend_faults.py`: `bulkTargets` drops the model chips'
+scope, so the bulk action unsends Creator 1's matching rows too: only the 1c check).
 Faults (client side, `lib/reducers_faults.py`): `free-template-keeps-price` (the scenario's: the
 mass reducer's `pickTemplate` keeps the draft's price and lock for a free template),
 `mass-broadcast-ignores-invalid` (Broadcast's `disabled` stops reading validateMass; the send's own
@@ -369,7 +399,8 @@ every page's folder sort goes through, saves no label: only the label check), `d
 only the partial-failure check), `fanlist-load-more-click-no-op` (Load more asks for nothing: the three fan list
 checks),
 `refused-schedule-lost-on-switch` (a refusal
-after a chat switch is put back into the closed chat, not offered); each turns only its own checks red.
+after a chat switch is put back into the closed chat, not offered), `trailing-gif-before-upload` (lib/composer_faults.py:
+the trailing GIF stops waiting on the send's uploads: only the PPV send check); each turns only its own checks red.
 """
 from __future__ import annotations
 
@@ -404,7 +435,9 @@ from slop.lib.reducers_faults import (ADMIN_EMPTY, ADMIN_GATE, ADMIN_ROSTER_FAIL
                                         VAULT_RELOAD, VAULT_SORT, VAULT_SORT_LABEL, VAULT_MIRROR_SORT_LABEL, PICKER_SHIMMER,
                                         REDESCRIBE_KEEPS, REDESCRIBE_SHOWS, VM_PRICE, VM_TICKS)
 from slop.lib.nudge_faults import NUDGE_ABA
-from slop.seed import agency_notifications, of_sessions, ts
+from slop.lib.mass_unsend_faults import MASS_BULK_UNSEND
+from slop.lib.composer_faults import PPV_SEND_BODY
+from slop.seed import agency_notifications, mass_broadcast_cache, of_sessions, ts
 
 PROFILE = "agency_inbox"
 UI = True
@@ -416,9 +449,13 @@ ACK_BUDGET_MS = 150  # the sender (lib/groupChannel.ts ADD_ACK_TIMEOUT_MS) gives
 SNOWFLAKE = "900234567890123456"  # a Fansly fan id: past 2^53, only exact as a string
 PERSIST_SETTLE_MS = 6_000  # app/components/providers.tsx PERSIST_THROTTLE_MS (4 s) + rqPersister's 1 s idle wait
 
+# No fault targets it (proof shot + side effect for the funnel media pane), so the name lives here.
+FUNNEL_MEDIA_SAVED = "funnel media: an opener vault pick, Save media -> 'Saved' shown and the GET holds the pick"
+
 SECTIONS = {
     "mass": (MASS_FREE, MASS_GATE, MASS_GATE_SEND, MASS_BODY, MASS_ALL),
     "mass-retry": (MASS_PARTIAL, MASS_RETRY),
+    "mass-unsend": (MASS_BULK_UNSEND,),
     "post": (POST_PRICED, POST_ALL, POST_BODIES, POST_RETRY, POST_LOCKED),
     "dupes": (DUPES_CONFIRM, DUPES_HIDE),
     "dupes-partial": (DUPES_PARTIAL,),
@@ -433,6 +470,7 @@ SECTIONS = {
     "gtkf": (GTKF_INFLIGHT,),
     "audience-pm": (PM_SWITCH, PM_ROW),
     "audience-fl": (FL_SEED, FL_SWITCH),
+    "funnel-media": (FUNNEL_MEDIA_SAVED,),
     "frame": (FRAME_PAGE1,),
     "autofollow": (AF_OFFSET0,),
     "clock": (CLOCK_INVERTED, CLOCK_SAVED),
@@ -441,6 +479,7 @@ SECTIONS = {
     "premade": (PREMADE_ROWS, PREMADE_PAYLOAD, PREMADE_STORED),
     "fanlist": (FANLIST_SCOPE, FANLIST_LOAD_MORE, FANLIST_RETURN, FANLIST_REWARM),
     "chat-refused": (CHAT_REFUSED_SHOWN, CHAT_REFUSED_RESTORED),
+    "chat-ppv": (PPV_SEND_BODY,),
     "bell": (BELL_CLEARS, AGENCY_READ),
     "vaultmanage": (VM_TICKS, VM_PRICE),
     "redescribe": (REDESCRIBE_SHOWS, REDESCRIBE_KEEPS),
@@ -481,8 +520,9 @@ MASS_VOLUME_RUNS = ("mass fan-out at volume: every queue POST the relay took lef
 SMART_LIST = "slop whales"
 QUEUE = "/api/of/v2/messages/queue"
 POSTS = "/api/of/v2/posts"
-# The two writes ui.py lets through to the relay (every other /api/of/ call stays held).
-THROUGH = (("POST", re.compile(re.escape(QUEUE))), ("POST", re.compile(re.escape(POSTS))))
+UNSEND = re.compile(re.escape(QUEUE) + r"/(\d+)")  # the mass unsend (section 1c)
+# The writes ui.py lets through to the relay (every other /api/of/ call stays held).
+THROUGH = (("POST", re.compile(re.escape(QUEUE))), ("POST", re.compile(re.escape(POSTS))), ("DELETE", UNSEND))
 POST_TEXT = "slop text-only post"
 PRICE_NOTE = "Minimum $3 USD or free"  # app/lib/sendGuards.ts
 HASH_KIND = "thumb/md5+dhash8+ahash8"  # service/vault_dupes.py
@@ -711,7 +751,7 @@ async def _pick_template(page, title: str) -> None:
 
 
 def _wire(ctx, kind: str) -> dict[str, list[dict]]:
-    """OF's wire bodies so far (lib/of_wire.py `queue` or `posts`), per Creator."""
+    """OF's wire bodies so far (lib/of_wire.py `queue`, `posts` or `unsends`), per Creator."""
     with ctx.of_wire.lock:
         return {a: list(v) for a, v in getattr(ctx.of_wire, kind).items()}
 
@@ -941,6 +981,72 @@ async def _mass_retry(ctx, page, chk) -> None:
         retried=[{"account": x["account"], "text": x["body"].get("text")} for x in retry], want=[failing],
         relay_statuses=_statuses(page, QUEUE)[s1:], modal_closed=closed, of_wire=wire)
     await page.unroute(lambda u: urlsplit(u).path == QUEUE)
+
+
+async def _mass_unsend(ctx, page, chk) -> None:
+    """Section 1c: a model chip + a bulk action unsends exactly that Creator's matching rows."""
+    creators = [c["id"] for c in ctx.world.data["creators"]]
+    picked, other = creators[0], creators[1]
+    nick = ctx.world.data["creators"][0]["nickname"]
+    copies = 3 if ctx.scale == "small" else 8
+    seeded = mass_broadcast_cache.seed(ctx.world, [picked, other], copies)
+    # The spec (massUnsendRules.ts `isFreeTextOld` + `isActionable`, in the chip's scope), from the seed.
+    want = sorted([a, q] for (a, q), r in seeded.items()
+                  if a == picked and r["free"] and not r["media"] and r["hours"] >= 4
+                  and r["can_unsend"] and not r["canceled"])
+    n0 = {a: len(v) for a, v in _wire(ctx, "unsends").items()}
+
+    def sent() -> list[dict]:  # OF's wire unsends since this section began
+        return [{"account": a, "id": x["id"]} for a, v in _wire(ctx, "unsends").items() for x in v[n0.get(a, 0):]]
+
+    browser: list[str] = []
+
+    def on_request(req) -> None:
+        if req.method == "DELETE" and UNSEND.fullmatch(urlsplit(req.url).path):
+            browser.append(req.url)
+
+    page.on("request", on_request)
+    try:
+        await page.goto(f"{ctx.app}/growth/smart-messages?tab=mass", wait_until="domcontentloaded")
+        await page.get_by_text("slop free text 1.0", exact=True).first.wait_for(timeout=WAIT_MS)
+        await page.get_by_role("button", name=nick, exact=True).click(timeout=10_000)
+        await page.get_by_text("slop free text 1.0", exact=True).first.wait_for(state="detached", timeout=10_000)
+        bulk = page.get_by_role("button", name=re.compile(r"^Unsend free text >4h \(\d+\)$"))
+        await bulk.wait_for(timeout=10_000)
+        label = await bulk.inner_text()
+        listed = await page.locator("tbody tr").count()
+        await _painted(page)
+        await ui.shot(ctx, page, "mass-bulk-unsend-trigger")
+        await bulk.click(timeout=10_000)  # confirm() accepted (the page's dialog handler)
+        await _until(lambda: len(sent()) >= len(want), 60)
+        await page.get_by_role("button", name=re.compile(r"^Unsend free text >4h \(0\)$")).wait_for(timeout=30_000)
+        await page.wait_for_timeout(1_000)  # a pick past the expected rows would land within this
+        await _painted(page)
+        await ui.shot(ctx, page, "mass-bulk-unsend-settled")
+        listed_after = await page.locator("tbody tr").count()
+    finally:
+        page.remove_listener("request", on_request)
+    con = ctx.world.sql()
+    db = {(a, q): (bool(c), bool(u)) for a, q, c, u in con.execute(
+        "SELECT account_id, queue_id, is_canceled, can_unsend FROM mass_broadcast_cache WHERE queue_id >= ?",
+        (mass_broadcast_cache.ID_BASE,)).fetchall()}
+    con.close()
+    flipped = sorted([a, q] for (a, q), (c, _u) in db.items() if c and not seeded[(a, q)]["canceled"])
+    unflipped = sorted([a, q] for (a, q), r in seeded.items() if r["canceled"] and not db[(a, q)][0])
+    wire = sorted([x["account"], x["id"]] for x in sent())
+    statuses = [st for st, url in page.slop["statuses"] if UNSEND.fullmatch(urlsplit(url).path)]
+    browser_ids = sorted(int(UNSEND.fullmatch(urlsplit(u).path).group(1)) for u in browser)
+    n = len(want)
+    detail = {"chip": nick, "picked": picked, "other": other, "button": label, "rows_listed": listed,
+              "rows_listed_after": listed_after, "want": want, "of_wire": wire, "db_flipped": flipped,
+              "db_unflipped_canceled": unflipped, "browser_deletes": browser_ids, "relay_statuses": statuses}
+    (ctx.out / "mass-bulk-unsend.json").write_text(json.dumps(detail, indent=1))
+    chk(MASS_BULK_UNSEND, n > 0 and label == f"Unsend free text >4h ({n})" and wire == want and flipped == want
+        and browser_ids == sorted(q for _a, q in want) and statuses == [200] * n and not unflipped,
+        **{k: v for k, v in detail.items() if k not in ("want", "of_wire", "db_flipped")},
+        want_n=n, of_wire_n=len(wire), flipped_n=len(flipped),
+        of_wire_extra=[x for x in wire if x not in want][:10], of_wire_missing=[x for x in want if x not in wire][:10],
+        db_extra=[x for x in flipped if x not in want][:10], db_missing=[x for x in want if x not in flipped][:10])
 
 
 async def _post(ctx, page, chk) -> None:
@@ -2304,6 +2410,14 @@ FANSLY_NOTE = ("Fansly scheduled sends support text and GIFs for now — PPV pri
                "on the Fansly path yet.")
 TAGGABLE = {"id": 7707, "name": "slop Tagged Kim", "user": {"id": 7707, "name": "slop Tagged Kim", "username": "slopkim"}}
 INPUT = 'Press "/" + keyword to quickly search scripts'  # the chat Composer's placeholder
+PPV_TEXT = "slop ppv with two gifs"
+PPV_PICK = 9020  # Creator 0's last-but-one loner (`_seed_vault`): no duplicate section hides it
+PPV_UPLOADED = 9021  # the upload's answer: OF already has the file (deduped), as /upload answers a re-upload
+PPV_GIFS = ("slopgif1", "slopgif2")
+PPV_UPLOAD_HOLD_S = 3.0  # the upload runs this long after Enter: any send to OF meanwhile is early
+# A 1x1 PNG for the file chooser.
+PNG_1PX = bytes.fromhex("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+                        "0000000d49444154789c6360000002000154a24f5d0000000049454e44ae426082")
 
 
 def _scheduled_rows(ctx, aid: str) -> dict[int, dict]:
@@ -2439,6 +2553,112 @@ async def _chat_refused(ctx, page, chk) -> None:
             and bool(again) and all(again.get(k) == v for k, v in want.items()) and str(again.get("fan_id")) == str(fan_a["id"])
             and status == 200 and len(new_rows) == 1 and all(new_rows[0].get(k) == v for k, v in want.items())
             and str(new_rows[0].get("fan_id")) == str(fan_a["id"]) and not fives, **out)
+    finally:
+        hold["release"].set()
+        for pat, fn in routes:
+            await page.unroute(pat, fn)
+
+
+async def _chat_ppv(ctx, page, chk) -> None:
+    """A PPV with a vault pick, an upload still running, a lock and 2 GIFs, sent from Creator 0's first Fan's
+    chat: OF's wire gets the message with the first GIF once the upload lands, then the second GIF alone."""
+    c = ctx.world.data["creators"][0]
+    view = await _chat_view(ctx, ctx.world.data["creators"])
+    fan = view[c["id"]][0]["withUser"]
+    gif_url = f"{ctx.app}/icon.svg"  # loopback: ui.py aborts off-host images
+    gifs = [{"type": "gif", "id": g, "title": f"slop gif {i + 1}",
+             "images": {"original": {"url": gif_url, "width": "64", "height": "64"},
+                        "fixed_height": {"url": gif_url, "width": "64", "height": "64"}}}
+            for i, g in enumerate(PPV_GIFS)]
+    hold = {"release": asyncio.Event(), "uploads": 0, "sends": [], "released_t": None}
+
+    async def chats(route):
+        req = route.request
+        if req.method != "GET":
+            return await route.fallback()
+        _aid, off, lim, _plain, rows = _chats_query(req, view)
+        await _serve_chats(route, rows, off, lim)
+
+    async def giphy(route):
+        await route.fulfill(status=200, content_type="application/json",
+                            body=json.dumps({"data": gifs, "pagination": {"total_count": 2, "count": 2, "offset": 0}}))
+
+    async def upload(route):
+        hold["uploads"] += 1
+        await hold["release"].wait()
+        await route.fulfill(status=200, content_type="application/json", body=json.dumps(
+            {"ready": True, "deduped": True, "vault_id": PPV_UPLOADED, "send_with": [PPV_UPLOADED],
+             "existing": {"id": PPV_UPLOADED, "type": "photo", "files": None}}))
+
+    async def send(route):
+        req = route.request
+        if req.method != "POST":
+            return await route.fallback()
+        hold["sends"].append({"t": time.time(), "body": req.post_data_json})
+        await route.continue_()  # to the relay, whose OFClient sends to lib/of_wire.py
+
+    send_path = f"/api/of/v2/chats/{fan['id']}/messages"
+    routes = ((lambda u: urlsplit(u).path == "/api/of/v2/chats", chats),
+              (lambda u: urlsplit(u).path.startswith("/api/of/v2/giphy/proxy/gifs/"), giphy),
+              (lambda u: urlsplit(u).path == "/api/of/v2/upload", upload),
+              (lambda u: urlsplit(u).path == send_path, send))
+    for pat, fn in routes:
+        await page.route(pat, fn)
+    n_status = len(page.slop["statuses"])
+    with ctx.of_wire.lock:
+        n_wire = len(ctx.of_wire.sends.get(c["id"], []))
+    box = page.get_by_placeholder(INPUT, exact=True)
+    png = ctx.out / "chat-ppv-upload.png"
+    png.write_bytes(PNG_1PX)
+
+    def wire() -> list[dict]:
+        with ctx.of_wire.lock:
+            return [m for m in ctx.of_wire.sends.get(c["id"], [])[n_wire:] if str(m["fan_id"]) == str(fan["id"])]
+
+    try:
+        await page.goto(f"{ctx.app}/messages-pro", wait_until="domcontentloaded")
+        await _creator_tab(page, c)
+        await page.locator("[data-chat-row]").filter(has_text=f"@{fan['username']}").first.click(timeout=WAIT_MS)
+        await box.wait_for(timeout=WAIT_MS)
+        await page.get_by_role("button", name="Vault", exact=True).click(timeout=10_000)
+        await page.locator(f"[data-tile-id='{PPV_PICK}']").first.click(timeout=WAIT_MS)
+        await page.get_by_role("button", name=re.compile(r"^Attach")).last.click(timeout=10_000)
+        await page.get_by_label("Upload from computer", exact=True).set_input_files(str(png))
+        await _until(lambda: hold["uploads"] >= 1, 30)
+        await page.get_by_role("textbox", name="PPV price").fill("10")
+        await page.get_by_role("checkbox", name="lock text").check()
+        for g in gifs:
+            await page.get_by_role("button", name="GIF", exact=True).click(timeout=10_000)
+            await page.locator(f"button[title='{g['title']}']").first.click(timeout=30_000)
+        await box.fill(PPV_TEXT)
+        await _painted(page)
+        await ui.shot(ctx, page, "chat-ppv-trigger")
+        await box.press("Enter")
+        await asyncio.sleep(PPV_UPLOAD_HOLD_S)  # the upload still runs: nothing may reach OF yet
+        early = wire()
+        hold["released_t"] = time.time()
+        hold["release"].set()
+        await _until(lambda: len(wire()) >= 2, 30)
+        await asyncio.sleep(1.0)  # a third send would land here
+        await _painted(page)
+        await ui.shot(ctx, page, "chat-ppv-settled")
+        got = wire()
+        fives = [u for st, u in page.slop["statuses"][n_status:] if st >= 500]
+        answered = [st for st, u in page.slop["statuses"][n_status:] if urlsplit(u).path == send_path]
+        out = {"fan": fan["id"], "uploads": hold["uploads"], "released_t": hold["released_t"],
+               "browser_sends": hold["sends"], "of_wire_early": early, "of_wire_sends": got,
+               "relay_statuses": answered, "relay_5xx": fives[:5]}
+        (ctx.out / "chat-ppv.json").write_text(json.dumps(out, indent=2, default=str))
+        main, trail = (got + [{}, {}])[:2]
+        mb, tb = main.get("body") or {}, trail.get("body") or {}
+        chk(PPV_SEND_BODY, not early and len(got) == 2 and len(hold["sends"]) == 2
+            and main.get("t", 0) >= hold["released_t"] and trail.get("t", 0) >= main.get("t", 0)
+            and PPV_TEXT in (mb.get("text") or "") and mb.get("price") == 10 and mb.get("lockedText") is True
+            and sorted(mb.get("mediaFiles") or []) == [PPV_PICK, PPV_UPLOADED] and mb.get("giphyId") == PPV_GIFS[0]
+            and tb.get("giphyId") == PPV_GIFS[1] and not tb.get("text") and not tb.get("price")
+            and not tb.get("mediaFiles") and answered == [200, 200] and not fives,
+            early=len(early), sends=len(got), main=mb, trailing=tb, relay_statuses=answered,
+            order=[m.get("t") for m in got], released_t=hold["released_t"])
     finally:
         hold["release"].set()
         for pat, fn in routes:
@@ -3219,6 +3439,34 @@ async def _audience_fl(ctx, page, chk) -> None:
     await page.unroute(_lists_path)
 
 
+async def _funnel_media(ctx, page, chk) -> None:
+    """Section 11b: the opener's vault pick saved through the pane; the GET holds it."""
+    c = ctx.world.data["creators"][0]
+    await page.goto(f"{ctx.app}/growth/auto-funnel", wait_until="domcontentloaded", timeout=WAIT_MS)
+    await ui.pick_creator(page, c["nickname"], timeout_ms=WAIT_MS)
+    await page.get_by_role("button", name="Media", exact=True).first.click(timeout=WAIT_MS)
+    heading = page.get_by_role("heading", name=re.compile(r"^Funnel media · "))
+    await heading.wait_for(timeout=WAIT_MS)
+    funnel_name = (await heading.inner_text()).split("·", 1)[1].rsplit(" for ", 1)[0].strip()
+    funnels = (await ctx.owner.get("/admin/funnels")).json()["funnels"]
+    funnel = next(f for f in funnels if f["name"] == funnel_name)
+    pane = page.locator("div").filter(has=heading).filter(has=page.get_by_role("button", name="Save media")).last
+    await pane.get_by_role("button", name="🖼 Pick media").first.click(timeout=WAIT_MS)  # the opener row is first
+    await page.locator(f"[data-tile-id='{PPV_PICK}']").first.click(timeout=WAIT_MS)
+    await page.get_by_role("button", name=re.compile(r"^Attach")).last.click(timeout=10_000)
+    await pane.get_by_role("button", name="🖼 1 picked").first.wait_for(timeout=10_000)
+    await pane.get_by_role("button", name="Save media").click(timeout=10_000)
+    saved = pane.get_by_text(re.compile(r"^Saved for "))
+    await saved.wait_for(timeout=30_000)
+    await _painted(page)
+    await ui.shot(ctx, page, "funnel-media-saved")
+    r = await ctx.owner.get(f"/admin/funnels/{funnel['id']}/media/{c['id']}")
+    got = r.json() if r.status_code == 200 else {"status": r.status_code}
+    (ctx.out / "funnel-media.json").write_text(json.dumps(got, indent=1))
+    chk(FUNNEL_MEDIA_SAVED, r.status_code == 200 and got.get("opening_media_ids") == [PPV_PICK],
+        funnel=funnel["id"], account=c["id"], saved=await saved.inner_text(), got=got)
+
+
 ROW_NAMES = """() => [...document.querySelectorAll('tbody tr')].map((tr) => {
   const s = tr.querySelector('span[title^="slop link "]'); return s ? s.getAttribute('title') : null; })
   .filter(Boolean)"""
@@ -3752,7 +4000,8 @@ async def run(ctx) -> None:
         await page.context.add_init_script(TOURS_SEEN)
         page.context.set_default_navigation_timeout(WAIT_MS)  # a goto's first visit compiles the page too
         page.on("dialog", lambda d: asyncio.ensure_future(d.accept()))
-        for name, fn in (("mass", _mass), ("mass-retry", _mass_retry), ("post", _post), ("dupes", _dupes),
+        for name, fn in (("mass", _mass), ("mass-retry", _mass_retry), ("mass-unsend", _mass_unsend),
+                         ("post", _post), ("dupes", _dupes),
                          ("dupes-partial", _dupes_partial), ("group", _group),
                          ("nudge", _nudge),
                          ("admin", lambda c, p, k: _as_master(c, p, k, master, "admin", _admin)),
@@ -3762,9 +4011,10 @@ async def run(ctx) -> None:
                          ("admin-gate", lambda c, p, k: _admin_gate(c, p, k, master)), ("autoreply", _autoreply),
                          ("gtkf", _gtkf),
                          ("audience-pm", _audience_pm), ("audience-fl", _audience_fl),
+                         ("funnel-media", _funnel_media),
                          ("frame", lambda c, p, k: _frame(c, p, k, links)), ("autofollow", _autofollow),
                          ("clock", _clock), ("vault", _vault), ("premade", _premade),
-                         ("fanlist", _fanlist), ("chat-refused", _chat_refused), ("bell", _bell), ("vaultmanage", _vaultmanage),
+                         ("fanlist", _fanlist), ("chat-refused", _chat_refused), ("chat-ppv", _chat_ppv), ("bell", _bell), ("vaultmanage", _vaultmanage),
                          ("redescribe", _redescribe), ("shimmer", _shimmer), ("scripts", _scripts),
                          ("session", _session)):
             await _section(ctx, page, name, lambda chk, fn=fn: fn(ctx, page, chk))

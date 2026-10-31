@@ -15,7 +15,22 @@ import { fmtCents, fmtPrice } from "@/lib/format";
 
 export const DASH = "—";
 
-/** Infloww's tooltips on the free trial link columns (the tracking link ones are TrackingLinksTab's `TIPS`). */
+/** The tracking link columns' tooltips (Links list and Dashboard): the bundle's `tips` (its `useSelfCol` columns and
+ *  `LINK_DASHBOARD_DATA`); the capture does not record them. */
+export const TIPS = {
+  cvr: "Subscription conversion rate: Percentage of clicks that become subscribers. Includes those who signed up for free trial subscription through the tracking link",
+  promoCost: "Amount spent on promotions or marketing campaigns for tracking link. Please set this for more accurate data calculations",
+  earnings: "Total amount spent by fans on subscriptions and content via tracking link",
+  spendingCvr: "Spending conversion rate: Percentage of fans who spent on content or gave tips",
+  profit: "Profit: Earnings − Promo cost",
+  cpc: "Cost per click: Promo cost divided by number of clicks",
+  epc: "Earnings per click: Earnings divided by number of clicks",
+  cps: "Cost per subscriber: Promo cost divided by number of subscribers, including those on free trial; average acquisition cost of a subscriber",
+  aeps: "Average earnings per subscriber: Earnings divided by number of subscribers",
+  roi: "Return of investment: Profit divided by Promo cost, multiplied by 100.",
+};
+
+/** Infloww's tooltips on the free trial link columns (the tracking link ones are `TIPS` above). */
 export const TRIAL_TIPS = {
   spendClaim: "Percentage of fans who claimed a free trial that purchased subscriptions, spent on content, or gave tips",
   promoCost: "Amount spent on promotions or marketing campaigns for free trial link. Please set this for more accurate data calculations",
@@ -31,6 +46,12 @@ export const TRIAL_TIPS = {
 export function money(cents: number): string {
   return fmtCents(cents);
 }
+
+/** A count with the bundle's thousands commas (its `numberFormat`, index.9f50f370.js @13927845). */
+export const count = (n: number) => n.toLocaleString("en-US");
+
+/** The marker on a net figure that leaves out transactions OnlyFans has no net for yet. */
+export const PARTIAL = " *";
 
 const hasCost = (cost: number | null | undefined): cost is number => cost != null && cost > 0;
 
@@ -96,14 +117,24 @@ export function linkAverages(links: CostedLink[]): { cpc: string; cps: string; r
   };
 }
 
-/** AEPS: Earnings / subscribers. */
-export function aeps(earnings: number | null | undefined, subs: number | null | undefined): string {
-  return earnings == null || !subs ? DASH : fmtPrice(earnings / subs);
-}
-
-/** A share of fans ("25.00%"): Spend/Claim's fans who spent over the claims. */
+/** `part / whole` as a percent to 2 decimals ("25.00%"); "—" with no part or a zero / missing whole. */
 export function share(part: number | null | undefined, whole: number | null | undefined): string {
   return part == null || !whole ? DASH : `${((part / whole) * 100).toFixed(2)}%`;
+}
+
+/** Subscription CVR (#41, #77): subs over clicks, "—" with no clicks. */
+export function cvr({ subscribers, clicks }: { subscribers: number; clicks: number }): string {
+  return share(subscribers, clicks);
+}
+
+/** `cents / n` as money (EPC, AEPS): null when the link has no earnings figure, "—" when `n` is zero. */
+export function per(cents: number | null | undefined, n: number | null | undefined): string | null {
+  return cents == null ? null : n ? fmtPrice(cents / n) : DASH;
+}
+
+/** AEPS: Earnings / subscribers, "—" without an earnings figure too. */
+export function aeps(earnings: number | null | undefined, subs: number | null | undefined): string {
+  return per(earnings, subs) ?? DASH;
 }
 
 // ── The Edit dialog's Promo cost ($), Infloww's `PromoCostField` ──

@@ -27,9 +27,9 @@ import { useEffect, useState } from "react";
 import { relay, type ProxyMeta, type AccountMeta } from "@/lib/relay";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { Button } from "@/components/ui/primitives";
-import { EmptyState, InflowwPageHeader } from "@/components/ui/infloww";
+import { EmptyState, IfModal, InflowwPageHeader } from "@/components/ui/infloww";
 import AddProxyModal, {
-  EMPTY_DRAFT, draftLabel, useEscape, type BulkResp, type ProxyDraft, type ProxyScheme,
+  EMPTY_DRAFT, draftLabel, type BulkResp, type ProxyDraft, type ProxyScheme,
 } from "@/components/setup/AddProxyModal";
 import CreatorEgressTable, {
   EMPTY_TEXT, PROXY_TABLE, proxyTh, type TestResult,
@@ -336,23 +336,19 @@ export default function ProxiesTable() {
 }
 
 /** creators-proxy#38: `DeleteProxy`, an `XModal` (antd's 520px, centred, no close cross) titled with the question,
- *  then Cancel and the danger primary Delete. The box is #25's: 10px corners, a 22px 24px header, 16px body, 11px 24px
- *  footer. A mask click closes it, as `DeleteProxy` leaves antd's `maskClosable` on; so does Escape. */
+ *  then Cancel and the danger primary Delete; Escape closes it. Drawn by ticket 00's `IfModal` (#25's box: #1f1f1f, 10px
+ *  corners, a 22px 24px header), so it joins the modal stack: Escape closes only the top modal, Tab stays inside, and
+ *  focus goes back to the row's Delete. Ours: a mask click does not close it (antd's `maskClosable` is on there). */
 function DeleteProxyModal({ removing, onDelete, onClose }: { removing: boolean; onDelete: () => void; onClose: () => void }) {
-  useEscape(onClose);
   const foot = "h-8 py-0 px-[15px] min-w-[72px] rounded text-sm font-normal whitespace-nowrap";
   return (
-    <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/70" onClick={onClose}>
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="delete-proxy-title"
-        className="w-[520px] max-w-[calc(100vw-32px)] rounded-[10px] overflow-hidden bg-[#1f1f1f] shadow-xl text-sm [html[data-theme=light]_&]:bg-white"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div id="delete-proxy-title" className="px-6 py-[22px] text-base font-semibold">Delete proxy</div>
-        <div className="p-4">Are you sure you want to delete this proxy?</div>
-        <div className="flex items-center justify-end gap-2 px-6 py-[11px]">
+    <IfModal
+      title="Delete proxy"
+      onClose={onClose}
+      closable={false}
+      keyboard
+      footer={
+        <>
           <Button variant="ghost" className={foot} onClick={onClose}>
             Cancel
           </Button>
@@ -360,9 +356,11 @@ function DeleteProxyModal({ removing, onDelete, onClose }: { removing: boolean; 
             {removing && <Loader2 size={14} className="animate-spin" aria-hidden />}
             Delete
           </Button>
-        </div>
-      </div>
-    </div>
+        </>
+      }
+    >
+      Are you sure you want to delete this proxy?
+    </IfModal>
   );
 }
 

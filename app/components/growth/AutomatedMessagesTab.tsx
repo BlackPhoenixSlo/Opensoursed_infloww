@@ -62,19 +62,18 @@ import {
 import { ExtraTag } from "@/components/ui/primitives";
 import { useAutomationRules, useSwitchKind, type AutomationRule } from "@/hooks/useAutomations";
 import { type LifecycleKind } from "@/hooks/useLifecycleMessageConfig";
-import { useNudgeConfig, type NudgeSlots } from "@/hooks/useNudgeConfig";
+import { useNudgeConfig } from "@/hooks/useNudgeConfig";
 import { useFreePageRefusal } from "@/hooks/usePaidPage";
 import { useReportTimeZone } from "@/lib/appliedSettings";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { cn } from "@/lib/utils";
 
 import { AutomatedCard } from "./CreateMessagePopUp";
-import { extrasOfPayload } from "./SmartMessageFields";
+import { type ColumnLabel, dayOf, extrasCells, shortDate, slotLines, statusOf } from "./automatedRows";
 import { DelayedWelcomeEditor } from "./DelayedWelcomeEditor";
 import LifecycleMessageEditor, { PAID_ONLY_KINDS } from "./LifecycleMessageEditor";
 import PurchaseFollowupEditor from "./PurchaseFollowupEditor";
 import { SM, SM_AUTOMATED_COLUMNS, SM_TRIGGERS } from "./smartMessagesControls";
-import { fmtPrice } from "@/lib/format";
 import { SkeletonRows } from "@/components/ui/Skeleton";
 import { useAccounts } from "@/hooks/useAccounts";
 
@@ -100,17 +99,7 @@ const STATUS_VALUES = [SM.statusScheduled, SM.statusActive, SM.statusCompleted, 
 /** Every status a row of ours can take: a rule is on or off, and one that is
  *  on can sit before its Effective date or past its Expiry. */
 const WIRED_STATUS: ReadonlySet<string> = new Set(STATUS_VALUES.map((s) => s.label));
-/** A rule or switch that is on reads "Active", off "Canceled"; on, before its
- *  Effective date "Scheduled", from its Expiry "Completed". */
-function statusOf(on: boolean, payload?: Record<string, unknown>, now: number = Date.now()): string {
-  if (!on) return SM.statusCanceled.label;
-  const { starts_at, ends_at } = extrasOfPayload(payload);
-  if (starts_at && Date.parse(starts_at) > now) return SM.statusScheduled.label;
-  if (ends_at && Date.parse(ends_at) <= now) return SM.statusCompleted.label;
-  return SM.statusActive.label;
-}
 
-type ColumnLabel = (typeof SM_AUTOMATED_COLUMNS)[number]["label"];
 type Row = {
   trigger: WiredTrigger;
   /** The rule's kind and on/off: the Actions cell's Cancel switches it off. */
@@ -127,49 +116,8 @@ type Row = {
 type Filters = { q: string; status: string; trigger: string; createdFrom: string; createdTo: string };
 const NO_FILTERS: Filters = { q: "", status: "", trigger: "", createdFrom: "", createdTo: "" };
 
-/** Every message line of the nudge's tease pools, in stored order. */
-function slotLines(slots: NudgeSlots | undefined): string[] {
-  return Object.values(slots ?? {})
-    .flatMap((bucket) => Object.values(bucket ?? {}).flatMap((entry) => entry?.text ?? []))
-    .map((t) => t.trim())
-    .filter(Boolean);
-}
-
-/** The cells a rule's Smart Message settings fill: the bundle's " --" / "--"
- *  where one is unset (index.9f50f370.js @16299052, @16300051, @16301218). */
-function extrasCells(payload: Record<string, unknown>, timeZone: string | null): Partial<Record<ColumnLabel, ReactNode>> {
-  const x = extrasOfPayload(payload);
-  const n = x.media_ids?.length ?? 0;
-  const price = (x.price_cents ?? 0) / 100;
-  return {
-    "Attachment(s)": n ? `${n} media` : "--",
-    Price: price ? fmtPrice(Math.round(price * 100)) : "--",
-    "Start date": shortDate(x.starts_at ?? null, timeZone) ?? "--",
-    "End date": shortDate(x.ends_at ?? null, timeZone) ?? "--",
-  };
-}
-
 /** The Sent cell: the rules list's count of what the rule really sent. */
 const sentOf = (r: AutomationRule) => (typeof r.sent === "number" ? r.sent.toLocaleString("en-US") : undefined);
-
-/** "MMM D, YYYY" in the report time zone, as the bundle's date columns render
- *  (`dayjs(...).tz(sn).format("MMM D, YYYY")`, index.9f50f370.js @16301606);
- *  the browser's zone when none is saved. */
-function shortDate(iso: string | null, timeZone: string | null): string | null {
-  if (!iso) return null;
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime())
-    ? null
-    : d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: timeZone ?? undefined });
-}
-
-/** The day of `iso` as YYYY-MM-DD in the report time zone, for the Date
- *  created filter's comparison. */
-function dayOf(iso: string | null, timeZone: string | null): string | null {
-  if (!iso) return null;
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? null : d.toLocaleDateString("en-CA", { timeZone: timeZone ?? undefined });
-}
 
 export default function AutomatedMessagesTab({ accountId }: { accountId: string | null }) {
   const rulesQ = useAutomationRules(accountId);

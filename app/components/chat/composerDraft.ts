@@ -22,15 +22,16 @@
  *     an upload still transcoding (`_claim`) and an uploaded item's own files
  *     and blob preview; media with a suggested price set the price to the
  *     highest of them and open the PPV row.
- *   • Blob previews are a side effect and stay in the Composer.
+ *   • Blob previews are a side effect and stay out of it (useBlobPreviews).
  */
 
-import { applyTemplate } from "@/lib/composeDraft";
+import { applyTemplate, canBeFreePreview } from "@/lib/composeDraft";
 import type { VaultMedia } from "@/lib/relay";
 import { parsePrice, sanitizePriceInput } from "@/lib/priceInput";
 import { priceNote } from "@/lib/sendGuards";
 import type { PendingUpload } from "@/hooks/useComposerUploads";
 
+import { gifPlan } from "./composerSubmit";
 import type { PickedGif } from "./GifPicker";
 import type { PickedTemplate } from "./TemplatePicker";
 import type { TaggedCreatorChoice } from "./TagCreatorsPicker";
@@ -313,7 +314,8 @@ export function buildSendArgs(
   }
   if (d.attached.length > 0) args.attached = d.attached;
   if (d.taggedCreators.length > 0) args.taggedUsers = d.taggedCreators.map((c) => c.id);
-  if (d.pickedGifs[0]) args.giphyId = d.pickedGifs[0].id;
+  const { first: gif } = gifPlan(d.pickedGifs);
+  if (gif) args.giphyId = gif.id;
   if (opts.delayMinutes && opts.delayMinutes > 0) {
     args.scheduledAt = new Date(opts.now + opts.delayMinutes * 60_000).toISOString();
   } else if (isScheduling(d, opts.now)) {
@@ -324,11 +326,7 @@ export function buildSendArgs(
 }
 
 /** Whether an attached tile can ride in the numeric `previews` array (the
- *  free-teaser split). A freshly-uploaded item still transcoding carries a
- *  `_claim` instead of a real vault id, so it CAN be sent as media but
- *  CANNOT be referenced by id in `previews` — OF would lock it. Keeping the
- *  send-time filter and the FREE-badge render in one predicate stops the UI
- *  from promising a free teaser the wire layer silently drops. */
-export function canBeFreePreview(m: VaultMedia): boolean {
-  return !m._claim && Number.isFinite(m.id) && m.id > 0;
-}
+ *  free-teaser split): lib/composeDraft's one rule, re-exported for the
+ *  FREE-badge render (PpvTiles), so the UI never promises a free teaser the
+ *  wire layer drops. */
+export { canBeFreePreview };

@@ -75,6 +75,7 @@ import ownership
 import relay_cache
 from db.engine import get_session
 from db.models import Message, PurchaseNotice
+from of_coerce import cents_or_zero
 
 log = logging.getLogger("of-relay.purchase_notif")
 
@@ -101,12 +102,7 @@ def _parse_amount_cents(raw: Any) -> int:
     here (we resolve by message id, not by price), so a odd currency format
     must not drop an otherwise-valid purchase."""
     m = _AMOUNT_RE.search(str(raw or ""))
-    if not m:
-        return 0
-    try:
-        return int(round(float(m.group(1)) * 100))
-    except (TypeError, ValueError):
-        return 0
+    return cents_or_zero(m.group(1)) if m else 0
 
 
 def parse_purchase(n: Any) -> dict[str, Any] | None:
@@ -396,71 +392,100 @@ async def _message_paid(account_id: str, fan_id: int, message_id: int) -> bool:
         )).scalar_one_or_none())
 
 
+def classify(n: Any) -> str:
+    """Pure: "chat_purchase" | "post_purchase" | "other" — the one decision
+    `_handle_items` dispatches on. Chat wins when both parsers could match (they
+    cannot: `paided_message` vs `paided_post`)."""
+    if parse_purchase(n):
+        return "chat_purchase"
+    if parse_post_purchase(n):
+        return "post_purchase"
+    return "other"
+
+
+async def _apply_chat(account_id: str, n: Any, out: dict[str, int],
+                      *, announce: bool) -> bool:
+    """Chat purchase (`classify(n) == "chat_purchase"`) → announce, flip is_paid,
+    stamp the message's media. Returns whether THIS sighting finished a fresh
+    purchase (pokes followup)."""
+    parsed = parse_purchase(n)
+    assert parsed, "classify said chat_purchase"
+    out["seen"] += 1
+    key = _NotifKey("msg", str(account_id), parsed["notif_id"])
+    # The ANNOUNCE lane, deliberately above the _is_done gate: a
+    # purchase is news whether or not this call is the one that flips
+    # is_paid, and on a live seller the ledger linker usually wins that
+    # race — so the very first sighting is already marked done, and
+    # gating on _is_done first would retire the announcement before it
+    # was ever heard. Remembered only on a real delivery.
+    if (announce and _should_announce(key, parsed["created_at"])
+            and await _broadcast_purchase(account_id, parsed)):
+        _remember(_ANNOUNCED_NOTIFS, key)
+    if _is_done(key):
+        return False
+    flipped = await _flip_paid(
+        account_id, parsed["fan_id"], parsed["message_id"], parsed["created_at"])
+    if flipped:
+        out["flipped"] += 1
+        log.info(
+            "purchase_notif_flip account=%s fan=%s msg=%s amount_cents=%s at=%s",
+            account_id, parsed["fan_id"], parsed["message_id"],
+            parsed["amount_cents"], parsed["created_at"])
+    stamped = await ownership.try_stamp_message(
+        account_id, parsed["fan_id"], parsed["message_id"],
+        price_cents=parsed["amount_cents"], context="notif_chat")
+    out["stamped"] += stamped
+    # Done once flipped/stamped/already-paid; a message row that
+    # hasn't landed yet (scrape lag) stays retryable.
+    if key.notif_id is not None and (
+        flipped or stamped
+        or await _message_paid(account_id, parsed["fan_id"],
+                               parsed["message_id"])
+    ):
+        _remember(_DONE_NOTIFS, key)
+        return _is_fresh(parsed["created_at"])
+    return False
+
+
+async def _apply_post(account_id: str, client: Any, n: Any,
+                      out: dict[str, int]) -> None:
+    """Post purchase (`classify(n) == "post_purchase"`) → stamp the post's media
+    as owned (retryable until resolved)."""
+    post = parse_post_purchase(n)
+    assert post, "classify said post_purchase"
+    out["posts"] += 1
+    key = _NotifKey("post", str(account_id), post["notif_id"])
+    if _is_done(key):
+        return
+    res = await ownership.try_stamp_post(
+        account_id, post["fan_id"], post["post_id"],
+        price_cents=post["amount_cents"], client=client,
+        context="notif_post")
+    out["stamped"] += res["stamped"]
+    if key.notif_id is not None and res["resolved"]:
+        _remember(_DONE_NOTIFS, key)
+
+
 async def _handle_items(account_id: str, client: Any, items: list,
                         *, announce: bool = False) -> dict[str, int]:
-    """Shared per-notification dispatch for the 30s poll and the deep backfill.
-    Chat purchase → flip is_paid + stamp the message's media as owned. Post
-    purchase → stamp the post's media as owned. The STAMP legs are isolated
-    (the try_stamp_* wrappers swallow and leave the notification retryable);
-    an error in the is_paid flip or paid-check propagates to the caller — the
-    30s poll swallows it there and unfinished notifications retry on the next
-    sighting. Fully-handled events are remembered so re-sightings stop
-    costing queries; an event whose message row hasn't landed yet (scrape
+    """Shared per-notification dispatch for the 30s poll and the deep backfill:
+    `classify` each, then `_apply_chat` / `_apply_post`. The STAMP legs are
+    isolated (the try_stamp_* wrappers swallow and leave the notification
+    retryable); an error in the is_paid flip or paid-check propagates to the
+    caller — the 30s poll swallows it there and unfinished notifications retry
+    on the next sighting. Fully-handled events are remembered so re-sightings
+    stop costing queries; an event whose message row hasn't landed yet (scrape
     lag) or whose post can't be resolved yet (wall scan lag) is NOT marked
     done and retries on the next poll."""
     out = {"seen": 0, "flipped": 0, "posts": 0, "stamped": 0}
     fresh_purchase = False
     for n in (items or []):
-        parsed = parse_purchase(n)
-        if parsed:
-            out["seen"] += 1
-            key = _NotifKey("msg", str(account_id), parsed["notif_id"])
-            # The ANNOUNCE lane, deliberately above the _is_done gate: a
-            # purchase is news whether or not this call is the one that flips
-            # is_paid, and on a live seller the ledger linker usually wins that
-            # race — so the very first sighting is already marked done, and
-            # gating on _is_done first would retire the announcement before it
-            # was ever heard. Remembered only on a real delivery.
-            if (announce and _should_announce(key, parsed["created_at"])
-                    and await _broadcast_purchase(account_id, parsed)):
-                _remember(_ANNOUNCED_NOTIFS, key)
-            if _is_done(key):
-                continue
-            flipped = await _flip_paid(
-                account_id, parsed["fan_id"], parsed["message_id"], parsed["created_at"])
-            if flipped:
-                out["flipped"] += 1
-                log.info(
-                    "purchase_notif_flip account=%s fan=%s msg=%s amount_cents=%s at=%s",
-                    account_id, parsed["fan_id"], parsed["message_id"],
-                    parsed["amount_cents"], parsed["created_at"])
-            stamped = await ownership.try_stamp_message(
-                account_id, parsed["fan_id"], parsed["message_id"],
-                price_cents=parsed["amount_cents"], context="notif_chat")
-            out["stamped"] += stamped
-            # Done once flipped/stamped/already-paid; a message row that
-            # hasn't landed yet (scrape lag) stays retryable.
-            if key.notif_id is not None and (
-                flipped or stamped
-                or await _message_paid(account_id, parsed["fan_id"],
-                                       parsed["message_id"])
-            ):
-                _remember(_DONE_NOTIFS, key)
-                fresh_purchase = fresh_purchase or _is_fresh(parsed["created_at"])
-            continue
-        post = parse_post_purchase(n)
-        if post:
-            out["posts"] += 1
-            key = _NotifKey("post", str(account_id), post["notif_id"])
-            if _is_done(key):
-                continue
-            res = await ownership.try_stamp_post(
-                account_id, post["fan_id"], post["post_id"],
-                price_cents=post["amount_cents"], client=client,
-                context="notif_post")
-            out["stamped"] += res["stamped"]
-            if key.notif_id is not None and res["resolved"]:
-                _remember(_DONE_NOTIFS, key)
+        kind = classify(n)
+        if kind == "chat_purchase":
+            if await _apply_chat(account_id, n, out, announce=announce):
+                fresh_purchase = True
+        elif kind == "post_purchase":
+            await _apply_post(account_id, client, n, out)
     if fresh_purchase:
         # A chat purchase is now provable (is_paid), so the post-purchase
         # follow-up need not wait out its cadence (W2 2.10). Once per batch, on

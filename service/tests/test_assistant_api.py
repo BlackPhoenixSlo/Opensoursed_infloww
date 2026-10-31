@@ -42,6 +42,7 @@ import _harness  # MUST be first — binds a throwaway temp DB
 
 _harness.bootstrap()
 
+import asyncio  # noqa: E402
 import json  # noqa: E402
 import os  # noqa: E402
 import tempfile  # noqa: E402
@@ -76,14 +77,20 @@ from llm_client import (  # noqa: E402
 
 AID = "acc_assistant_test"
 
-# The fetches' wall-clock budgets (0.3–1.5 s) are product latency guards, not
-# what these cases test: on a loaded box (parallel suites, load avg ~30) the
-# 200-rule fetch took 1.8–2.8 s and degraded to docs-only, so the cap case read
-# no LIVE STATE and the happy path grew a fan-pack FAIL_NOTE. Failure paths are
-# driven by raising stubs below, never by timing, so a loose budget hides none.
-assistant_state.TIMEOUT_S = 30.0
-assistant_fan_pack.TIMEOUT_S = 30.0
-assistant_fan_pack.RESOLVE_TIMEOUT_S = 30.0
+# CONTENT cases run with NO deadline. The fetch budgets are product latency
+# guards read at call time; a content case that runs under one is a race with
+# the box's load (measured 2026-10-31, load avg ~70: cold first resolve 0.4–0.9 s
+# vs 0.3, the 200-rule state fetch 2.6–6.6 s vs 1.0). `None` is asyncio's own
+# "no deadline", not a looser number. The budget path itself is proven with no
+# clock by `case_a_fetch_that_never_returns_degrades_on_its_budget`, and
+# `case_content_cases_never_race_the_clock` fails if a deadline creeps back.
+PRODUCT_BUDGETS = {
+    (assistant_state, "TIMEOUT_S"): assistant_state.TIMEOUT_S,
+    (assistant_fan_pack, "RESOLVE_TIMEOUT_S"): assistant_fan_pack.RESOLVE_TIMEOUT_S,
+    (assistant_fan_pack, "TIMEOUT_S"): assistant_fan_pack.TIMEOUT_S,
+}
+for _mod, _name in PRODUCT_BUDGETS:
+    setattr(_mod, _name, None)
 
 
 # ── Fake LLM ──────────────────────────────────────────────────────────
@@ -470,6 +477,84 @@ async def case_a_state_fetch_failure_degrades_to_docs_only():
         assert assistant_state.HEADER not in user, user
     finally:
         assistant_state._fetch_state = orig
+
+
+async def case_content_cases_never_race_the_clock():
+    """What the `None` budgets buy, proven on the call itself rather than on a
+    clock: every `asyncio.wait_for` a content ask makes — state fetch, fan
+    resolve, fan pack — goes out with `timeout=None`. A deadline creeping back
+    (the overrides above dropped, or a new budget added) shows up here as a
+    number, not as a flake on a loaded box."""
+    aid, fan_id = "acc_clock", 980100200
+    await _seed_fan(aid, fan_id)
+    async with get_session() as s:
+        s.add(AutomationRule(account_id=aid, name="chat", kind="autoreply",
+                             trigger_json=json.dumps({"every_seconds": 60}),
+                             steps_json="{}", is_enabled=True))
+    real_wait_for = asyncio.wait_for
+    calls: list[tuple[str, object]] = []
+
+    async def recorder(aw, timeout, *a, **kw):
+        calls.append((getattr(aw, "__qualname__", repr(aw)), timeout))
+        return await real_wait_for(aw, timeout, *a, **kw)
+
+    asyncio.wait_for = recorder      # the attr assistant_state + _fan_pack call
+    try:
+        spy = _Spy("Clock-free.")
+        _patch(spy)
+        out = await _ask(question=f"why is {fan_id} quiet", account_id=aid)
+    finally:
+        asyncio.wait_for = real_wait_for
+    assert out == {"answer": "Clock-free.", "error": None}, out
+    names = [name for name, _ in calls]
+    for seam in ("_fetch_state", "_resolve", "_pack"):
+        assert seam in names, (seam, calls)
+    assert all(t is None for _, t in calls), ("a content case ran on a deadline", calls)
+    user = _user_of(spy)
+    assert assistant_state.HEADER in user, user
+    assert "autoreply: ON, checks every 1m" in user, user
+    assert f"Subject: fan {fan_id}" in user, user
+
+
+async def case_a_fetch_that_never_returns_degrades_on_its_budget():
+    """The budget's own contract, with no race in it: a fetch awaiting an Event
+    nobody sets can only end by its deadline, so the degrade path is certain on
+    any box. Each of the three budgets, one at a time; and the product ships
+    real ones — `None` is a test-only setting."""
+    for (mod, name), budget in PRODUCT_BUDGETS.items():
+        assert isinstance(budget, float) and budget > 0, (mod.__name__, name, budget)
+
+    aid, fan_id = "acc_hang", 980100300
+    await _seed_fan(aid, fan_id)
+    never = asyncio.Event()
+
+    async def hang(*_a):
+        await never.wait()
+
+    rows = [  # (seam, budget, the note the answer must carry)
+        ((assistant_state, "_fetch_state"), (assistant_state, "TIMEOUT_S"),
+         assistant_state.FAIL_NOTE),
+        ((assistant_fan_pack, "_resolve"), (assistant_fan_pack, "RESOLVE_TIMEOUT_S"),
+         assistant_fan_pack.FAIL_NOTE),
+        ((assistant_fan_pack, "_pack"), (assistant_fan_pack, "TIMEOUT_S"),
+         assistant_fan_pack.FAIL_NOTE),
+    ]
+    for (smod, sname), (bmod, bname), note in rows:
+        real = getattr(smod, sname)
+        setattr(smod, sname, hang)
+        setattr(bmod, bname, 0.001)
+        try:
+            spy = _Spy("Docs answer.")
+            _patch(spy)
+            # The outer 30 s is a hang guard, not a budget: a budget that stops
+            # being honoured goes red here instead of freezing the suite.
+            out = await asyncio.wait_for(
+                _ask(question=f"why is {fan_id} quiet", account_id=aid), 30)
+        finally:
+            setattr(smod, sname, real)
+            setattr(bmod, bname, None)
+        assert out["error"] is None, (sname, out)
+        assert out["answer"] == "Docs answer." + note, (sname, out)
 
 
 async def case_the_state_block_respects_the_cap_dropping_last_run_first():
@@ -1749,6 +1834,87 @@ async def case_a_recipient_list_is_redacted_whatever_type_the_ids_arrive_as():
     assert _knob("user_lists", ["fans"], 22) == 'user_lists=["fans"]'
 
 
+def _fit_case(head_n=2, proven=(), beats=(), core=(), essential=("ESS turn",),
+              figures=()):
+    head = [f"HEAD-{i}" for i in range(head_n)] + [""]
+    thread = assistant_evidence.Thread(["T-HEAD"], list(beats), ["T-TAIL"])
+    current = assistant_evidence.Current(["C-HEAD"], list(essential), list(core),
+                                         list(figures))
+    lines = (head + list(proven) + thread.head + list(beats) + thread.tail
+             + current.head + list(essential) + list(core) + list(figures))
+    # `_fit` sheds IN PLACE, so it gets copies: the originals are the oracle.
+    return head, lines, assistant_evidence._fit(
+        list(head), list(proven), thread, current)
+
+
+def case_fit_sheds_in_its_documented_order():
+    """`_fit`'s ladder as a table: figures, beats to the floor, core, beats to
+    one, essential, then the line-boundary cut. Widths are hand-computed so
+    each row's answer is decided by ONE rung; swapping any two adjacent rungs
+    turns at least one row red.
+
+    Width arithmetic (rows 1-6): fixed lines HEAD-0, HEAD-1, "", T-HEAD,
+    T-TAIL, C-HEAD, "ESS turn" sum to 38 chars; ten 200-char beats; 20 lines,
+    so 19 joins. Total = 2057 + P + CORE + FIG. Shedding a line frees its
+    width + 1: FIG 51, a beat 201, small CORE 51, ESS 9."""
+    cap, floor = assistant_evidence.CAP_CHARS, assistant_evidence.THREAD_FLOOR
+    beat = lambda i: f"B{i:02d} " + "b" * 196                 # 200 chars a beat
+    beats10 = [beat(i) for i in range(10)]
+    fig = ["FIG " + "f" * 46]                                 # 50 chars
+    core = ["CORE " + "c" * 45]                               # 50 chars
+    P = lambda n: ["P " + "p" * (n - 2)]                      # one n-char line
+    rows = [
+        # name, inputs, (beats, core, figures, essential, C-HEAD), exact
+        ("exactly AT the cap: passthrough, nothing shed",       # 2057+1843+100 = 4000
+         dict(proven=P(1843), beats=beats10, core=core, figures=fig),
+         (10, True, True, True, True), True),
+        ("over by < one FIG line: FIG goes, all 10 beats stay",  # 4030 -51 = 3979
+         dict(proven=P(1873), beats=beats10, core=core, figures=fig),
+         (10, True, False, True, True), False),
+        ("over by FIG + 9: FIG, then ONE beat; core stays",      # 4060 -51 -201 = 3808
+         dict(proven=P(1903), beats=beats10, core=core, figures=fig),
+         (9, True, False, True, True), False),
+        ("over by FIG + 5 beats + 200: beats stop AT the floor, core goes",
+         # 2057+2644+505+50 = 5256 -51 -1005 = 4200 -506 = 3694
+         dict(proven=P(2644), beats=beats10, core=["CORE " + "c" * 500],
+              figures=fig),
+         (floor, False, False, True, True), False),
+        ("past core by 700: beats to the bone (1), essential stays",
+         # 5807 -51 -1005 -51 = 4700 -4x201 = 3896
+         dict(proven=P(3650), beats=beats10, core=core, figures=fig),
+         (1, False, False, True, True), False),
+        ("past beats-to-1 by 5: essential goes, C-HEAD stays",
+         # 5916 -51 -1005 -51 -804 = 4005 -9 = 3996
+         dict(proven=P(3759), beats=beats10, core=core, figures=fig),
+         (1, False, False, False, True), False),
+        ("PROVEN alone over the cap: cut on a newline, at most CAP_CHARS",
+         dict(proven=[f"P{i:02d} " + "p" * 77 for i in range(60)], beats=beats10,
+              core=["CORE z"], figures=fig),
+         (0, False, False, False, False), False),
+    ]
+    for name, kw, (n_beats, core_kept, fig_kept, ess_kept, chead_kept), exact in rows:
+        head, lines, out = _fit_case(**kw)
+        full = "\n".join(lines).rstrip("\n")
+        assert len(out) <= cap, (name, len(out))
+        assert out.startswith("\n".join(head)), (name, "the head was shed", out[:80])
+        # Every surviving line is a WHOLE input line — no fact half-written.
+        assert set(out.splitlines()) <= set(lines), (name, out[-120:])
+        assert (out == full) is exact, (name, "passthrough", len(full), len(out))
+        kept = [ln for ln in out.splitlines() if ln.startswith("B")]
+        assert kept == beats10[:n_beats], (name, len(kept))      # oldest-last popped
+        assert ("CORE" in out) is core_kept, (name, "core")
+        assert ("FIG" in out) is fig_kept, (name, "figures")
+        assert ("ESS turn" in out) is ess_kept, (name, "essential")
+        assert ("C-HEAD" in out) is chead_kept, (name, "C-HEAD")
+    # The final cut, on the last row: a prefix of PROVEN, ending at a line
+    # boundary, and it kept every line that fit.
+    full = "\n".join(lines)
+    assert len(full) > cap and full.startswith(out), "cut is not a prefix"
+    assert full[len(out)] == "\n", "cut mid-line"
+    assert len(out) + 1 + len(full[len(out) + 1:].split("\n")[0]) > cap, \
+        "the cut threw away a line that fit"
+
+
 _harness.run(
     case_happy_path_returns_the_model_answer,
     case_an_empty_question_never_buys_a_call,
@@ -1765,6 +1931,8 @@ _harness.run(
     case_the_live_state_block_rides_the_user_message,
     case_config_flags_appear_and_secrets_never_leak,
     case_a_state_fetch_failure_degrades_to_docs_only,
+    case_content_cases_never_race_the_clock,
+    case_a_fetch_that_never_returns_degrades_on_its_budget,
     case_the_state_block_respects_the_cap_dropping_last_run_first,
     case_the_system_prompt_is_byte_stable,
     case_a_planted_skip_row_comes_back_verbatim_and_his_words_do_not,
@@ -1806,4 +1974,5 @@ _harness.run(
     case_a_fewshot_may_not_invent_a_knob,
     case_two_fewshots_that_pull_opposite_ways_both_survive,
     case_a_recipient_list_is_redacted_whatever_type_the_ids_arrive_as,
+    case_fit_sheds_in_its_documented_order,
 )

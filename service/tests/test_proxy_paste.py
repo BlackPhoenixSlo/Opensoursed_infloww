@@ -41,6 +41,7 @@ from pathlib import Path  # noqa: E402
 
 import auth  # noqa: E402
 import proxies as proxy_registry  # noqa: E402
+import proxies_admin_api  # noqa: E402
 
 _TMP = Path(tempfile.gettempdir()) / f"proxy_paste_test_{uuid.uuid4().hex}"
 _TMP.mkdir(parents=True, exist_ok=True)
@@ -177,8 +178,8 @@ def case_bulk_mixed_good_and_bad() -> None:
         f"ftp://bob:{PW}@1.2.3.4:21",      # 6 bad scheme
         "   9.9.9.9:3128   ",              # 7
     ])
-    body = _srv._ProxyBulkBody(text=text, scheme="socks5")
-    out = as_user(None, _srv.admin_proxies_bulk, body)
+    body = proxies_admin_api._ProxyBulkBody(text=text, scheme="socks5")
+    out = as_user(None, proxies_admin_api.admin_proxies_bulk, body)
     assert [a["label"] for a in out["added"]] == ["1.2.3.4:8080", "hu-2", "9.9.9.9:3128"], out
     assert out["added"][0] == {"label": "1.2.3.4:8080", "host": "1.2.3.4", "port": 8080,
                                "scheme": "socks5", "username": "bob"}
@@ -194,7 +195,7 @@ def case_bulk_mixed_good_and_bad() -> None:
 
     # Nothing good → no pool invalidation.
     calls.clear()
-    out = as_user(None, _srv.admin_proxies_bulk, _srv._ProxyBulkBody(text="#x\n\nnope"))
+    out = as_user(None, proxies_admin_api.admin_proxies_bulk, proxies_admin_api._ProxyBulkBody(text="#x\n\nnope"))
     assert out["added"] == [] and out["errors"][0]["line"] == 3
     assert calls == []
 
@@ -203,19 +204,19 @@ def case_bulk_ownership_mirrors_single_upsert() -> None:
     _reset()
     _srv, _ = _stub_server()
     proxy_registry.upsert_from_line("1.1.1.1:1 shared")         # shared default
-    out = as_user(_U("u1"), _srv.admin_proxies_bulk, _srv._ProxyBulkBody(
+    out = as_user(_U("u1"), proxies_admin_api.admin_proxies_bulk, proxies_admin_api._ProxyBulkBody(
         text=f"2.2.2.2:2:bob:{PW} mine\n1.1.1.1:1:bob:{PW} shared"))
     assert [a["label"] for a in out["added"]] == ["mine"]
     assert proxy_registry.get_by_label("mine")["user_id"] == "u1"
     assert out["errors"][0]["reason"] == "shared default proxy is read-only"
     assert proxy_registry.get_by_label("shared").get("username") is None
-    out = as_user(_U("u2"), _srv.admin_proxies_bulk, _srv._ProxyBulkBody(text="3.3.3.3:3 mine"))
+    out = as_user(_U("u2"), proxies_admin_api.admin_proxies_bulk, proxies_admin_api._ProxyBulkBody(text="3.3.3.3:3 mine"))
     assert out["errors"][0]["reason"] == "not your proxy"
     assert proxy_registry.get_by_label("mine")["host"] == "2.2.2.2"
     # The owner sees it in the list; the other user does not.
-    seen = {p["label"] for p in as_user(_U("u1"), _srv.admin_proxies_list)["proxies"]}
+    seen = {p["label"] for p in as_user(_U("u1"), proxies_admin_api.admin_proxies_list)["proxies"]}
     assert "mine" in seen
-    seen = {p["label"] for p in as_user(_U("u2"), _srv.admin_proxies_list)["proxies"]}
+    seen = {p["label"] for p in as_user(_U("u2"), proxies_admin_api.admin_proxies_list)["proxies"]}
     assert "mine" not in seen
 
 

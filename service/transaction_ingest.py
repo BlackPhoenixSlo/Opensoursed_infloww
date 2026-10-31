@@ -169,7 +169,6 @@ from transaction_ingest_decide import (  # noqa: E402,F401
     _ENABLE_PPV_FINGERPRINT,
     _FAIL_BACKOFF_S,
     _FAILS_BEFORE_PAUSE,
-    _HTML_TAG,
     _NON_REVENUE_STATUSES,
     _REFUND_STATUSES,
     _ROLLING_WINDOW_DAYS,

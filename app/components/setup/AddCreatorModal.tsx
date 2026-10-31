@@ -33,10 +33,12 @@
  */
 
 import { ExternalLink, UserPlus } from "lucide-react";
-import { useEffect, useReducer, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import PasteCurlCard from "@/components/setup/PasteCurlCard";
-import { buildAccountPayload, canNext, initialWizard, wizardReducer, type Platform } from "@/components/setup/addCreatorWizard";
+import {
+  buildAccountPayload, canBack, canNext, useWizardReducer, type Platform,
+} from "@/components/setup/addCreatorWizard";
 import BrowserbaseLoginCard from "@/components/setup/BrowserbaseLoginCard";
 import FanslyPasteSessionCard, { FANSLY_FORM_ID, FANSLY_T } from "@/components/setup/FanslyPasteSessionCard";
 import {
@@ -97,14 +99,16 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
   const profiles = useCreatorProfiles();
   const roster = useRoster();
   const save = useSaveAccountDetails(profiles);
-  const [state, dispatch] = useReducer(wizardReducer, { recovery: at && SECTIONS[at].platform, draft, linkAnother }, initialWizard);
+  // `dispatch` answers whether the wizard took the action: a save runs only when its submitStart was taken, so a
+  // double-click's second click saves nothing (useWizardReducer).
+  const [state, dispatch] = useWizardReducer({ recovery: at && SECTIONS[at].platform, draft, linkAnother });
   const { step, details, draftId, taken, platform, picked } = state;
   // The Proxy selection: the Inflowwww proxy by default when the relay has a pool, else No proxy. A row's recovery
   // (`at`) skips the step and binds nothing, so the account keeps the proxy it is on.
   const proxiesQ = useProxyList();
   const proxy: ProxyChoice = picked ?? (proxiesQ.data?.pool?.size ? { type: "infloww" } : { type: "none" });
-  const next = () => dispatch({ type: "next" });
-  const back = () => dispatch({ type: "back" });
+  const next = () => { dispatch({ type: "next" }); };
+  const back = () => { dispatch({ type: "back" }); };
   const of = platform === "onlyfans";
   const count = of ? 3 : 2;
 
@@ -118,8 +122,7 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
   // Done / Next on step 1 (`addCreators`): the Creator is saved before any account; saved, the flow moves on
   // (submitOk). True when it saved.
   const saveDetails = async () => {
-    if (!canNext(state)) return false;
-    dispatch({ type: "submitStart" });
+    if (!dispatch({ type: "submitStart" })) return false;
     try {
       let id: string | undefined;
       if (draftId) await profiles.updateDraft(draftId, details);
@@ -187,15 +190,19 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
         </div>
       );
       footer = (
-        <FlowButton primary disabled={!canNext(state)} onClick={next}>
-          {T.next}
-        </FlowButton>
+        <>
+          {canBack(state) && <FlowButton onClick={back}>{T.back}</FlowButton>}
+          <FlowButton primary disabled={!canNext(state)} onClick={next}>
+            {T.next}
+          </FlowButton>
+        </>
       );
       break;
     case "select-proxy":
       body = <SelectProxyUI value={proxy} onChange={(value) => dispatch({ type: "setField", field: "proxy", value })} />;
       footer = (
         <StepIndicator active={0} count={3}>
+          {canBack(state) && <FlowButton onClick={back}>{T.back}</FlowButton>}
           <FlowButton primary disabled={!canNext(state)} onClick={next}>{T.connectOnlyFans}</FlowButton>
         </StepIndicator>
       );
@@ -270,7 +277,7 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
           <FlowButton
             primary disabled={!canNext(state)}
             onClick={() => {
-              dispatch({ type: "submitStart" });
+              if (!dispatch({ type: "submitStart" })) return;
               save.mutate(buildAccountPayload(state, step, roster), {
                 onSuccess: () => { toast(T.updateSuccess); dispatch({ type: "submitOk" }); },
                 onError: (e) => { toast((e as Error).message, "err"); dispatch({ type: "submitErr" }); },

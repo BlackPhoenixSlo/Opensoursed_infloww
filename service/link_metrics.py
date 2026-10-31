@@ -110,6 +110,7 @@ from attribution_backfill import TRACKED_STATUSES
 from auth import assert_account_owned
 from db.engine import get_session
 from db.models import LinkClaimer, LinkMeta, PromoCampaign, PromoListSetting, Transaction
+from isotime import iso_z
 import of_tracking_api
 from of_promos import fetch_of_promos, fetch_of_trials, safe_int, to_cents
 from of_tracking_api import _BUCKET, _LOCKS, _MetaFields, _blank, _parse_of_time
@@ -142,10 +143,6 @@ _LIST_FAILED_AT: dict[str, float] = {}           # account -> the last failed ad
 
 def _now() -> datetime:
     return datetime.utcnow()
-
-
-def _iso(dt: datetime | None) -> str | None:
-    return dt.isoformat() + "Z" if dt else None
 
 
 def _lock(account_id: str) -> asyncio.Lock:
@@ -541,7 +538,7 @@ async def for_list(account_id: str, kind: str, groups: dict[Any, list[int]],
         times = [checked.get(o) for o in ids]
         updated_at = None if (not times or any(t is None for t in times)) else min(times)
         refreshing = maybe_refresh(account_id, kind, links, updated_at)
-    return {"by": by, "updated_at": _iso(updated_at), "refreshing": refreshing}
+    return {"by": by, "updated_at": iso_z(updated_at), "refreshing": refreshing}
 
 
 # ── Details: the link's fans ─────────────────────────────────────────
@@ -592,7 +589,7 @@ async def link_fans(account_id: str = Query(...), kind: str = Query(..., pattern
     for fid, f in _group_fans(book, kind, of_ids).items():
         c = f["claimer"]
         fans.append({"fan_id": fid, "name": c.name or "", "username": c.username or "",
-                     "subscribe_at": _iso(c.subscribe_at), "first_seen_at": _iso(c.first_seen_at),
+                     "subscribe_at": iso_z(c.subscribe_at), "first_seen_at": iso_z(c.first_seen_at),
                      "since": f["spend"], "lifetime": _lifetime(c)})
     fans.sort(key=lambda r: (-((r["since"] or {}).get("total_net_cents") or 0),
                              -((r["lifetime"] or {}).get("total_cents") or 0), r["fan_id"]))
@@ -600,7 +597,7 @@ async def link_fans(account_id: str = Query(...), kind: str = Query(..., pattern
         walked_at = (await s.execute(select(func.max(LinkMeta.walked_at)).where(
             LinkMeta.account_id == account_id, LinkMeta.kind == kind,
             LinkMeta.of_id.in_(of_ids)))).scalar()
-    return {"fans": fans, "ledger_since": _iso(book.ledger_since), "walked_at": _iso(walked_at),
+    return {"fans": fans, "ledger_since": iso_z(book.ledger_since), "walked_at": iso_z(walked_at),
             "refreshing": refreshing}
 
 

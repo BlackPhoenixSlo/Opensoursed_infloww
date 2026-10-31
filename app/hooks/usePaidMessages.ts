@@ -16,6 +16,7 @@
 
 import { keepPreviousData, useInfiniteQuery } from "@tanstack/react-query";
 
+import { reportQuery, type ReportQueryParams } from "@/hooks/reportQuery";
 import { relay } from "@/lib/relay";
 import { type FanId } from "@/lib/fanId";
 
@@ -99,11 +100,7 @@ export type SenderType = "any" | "employee" | "automation";
 /** The Direct messages / OnlyFans mass messages split. */
 export type MessageKind = "all" | "direct" | "mass";
 
-export interface UsePaidMessagesParams {
-  from: string | null;
-  to: string | null;
-  account_id?: string | null;
-  employee_id?: number | null;
+export interface UsePaidMessagesParams extends ReportQueryParams {
   status?: PaidStatus;
   /** Defaults to "paid" backend-side so omitting preserves PPV semantics. */
   type?: MessageType;
@@ -127,11 +124,7 @@ export function buildPaidMessagesQuery(
   cursor: PaidMessagesCursor | null = null,
   extra?: { format?: "json" | "csv" },
 ): string {
-  const qs = new URLSearchParams();
-  if (params.from) qs.set("from", params.from);
-  if (params.to) qs.set("to", params.to);
-  if (params.account_id) qs.set("account_id", params.account_id);
-  if (params.employee_id != null) qs.set("employee_id", String(params.employee_id));
+  const qs = reportQuery(params);
   if (params.status && params.status !== "all") qs.set("status", params.status);
   if (params.type && params.type !== "paid") qs.set("type", params.type);
   if (params.direction && params.direction !== "out") qs.set("direction", params.direction);

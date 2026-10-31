@@ -27,7 +27,7 @@ SECURITY
     to Browserbase; it is bound after the login (remote_login.bind_proxy). With
     no choice given, the flow's default: the Inflowwww proxy when the relay has
     a pool, else none. A custom label goes through the same visibility rule as
-    binding one (server._assert_proxy_assignable): your own or a shared
+    binding one (proxies_admin_api._assert_proxy_assignable): your own or a shared
     default, never another user's.
 """
 from __future__ import annotations
@@ -42,6 +42,7 @@ import auth
 import proxies as proxy_registry
 import remote_login
 from brand import BRAND_NAME
+from proxies_admin_api import _assert_proxy_assignable
 
 router = APIRouter()
 
@@ -91,7 +92,7 @@ def _resolve_proxy(choice: str, label: str) -> tuple[str, str]:
     if choice == remote_login.PROXY_CUSTOM:
         if not label:
             raise HTTPException(status_code=400, detail="a custom proxy needs proxy_label")
-        return choice, remote_login.live_server()._assert_proxy_assignable(label)["label"]
+        return choice, _assert_proxy_assignable(label)["label"]
     if choice == remote_login.PROXY_INFLOWWW and not has_pool:
         raise HTTPException(status_code=409, detail=f"no {BRAND_NAME} proxies are set up on this relay")
     return choice, ""

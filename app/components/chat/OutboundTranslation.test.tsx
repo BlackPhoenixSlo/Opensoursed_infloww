@@ -114,14 +114,4 @@ describe("OutboundTranslation", () => {
     await user.click(screen.getByRole("button", { name: "Translate my messages" }));
     expect(strip()).toBeNull();
   });
-
-  it("a composer with no Fan offers no outbound translation", async () => {
-    const user = userEvent.setup();
-    await renderComposer({ fanId: null });
-    await user.click(textbox());
-    await user.keyboard("{Alt>}t{/Alt}");
-    expect(strip()).toBeNull();
-    await user.click(screen.getByRole("button", { name: "Translate" }));
-    expect(screen.queryByRole("button", { name: "Translate my messages" })).toBeNull();
-  });
 });

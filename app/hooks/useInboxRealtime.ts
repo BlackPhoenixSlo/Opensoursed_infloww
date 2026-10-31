@@ -166,6 +166,12 @@ function invalidateFanRevenue(qc: QueryClient, accountId: string, fanId: FanId) 
   void qc.invalidateQueries({ queryKey: ["fan", accountId, fanId] });
   // Per-account payouts walk — "Last purchase" stat (24h staleTime otherwise).
   void qc.invalidateQueries({ queryKey: ["last-purchases", accountId] });
+  // Spend-batch chunks holding him (key: `aid`, comma-joined ids) — the list
+  // chips. His chunks only.
+  void qc.invalidateQueries({
+    queryKey: ["fan-spend", accountId],
+    predicate: (q) => String(q.queryKey[2] ?? "").split(",").includes(String(fanId)),
+  });
 }
 
 // Moved to lib/threadCache; re-exported for the modules and tests that import them here.

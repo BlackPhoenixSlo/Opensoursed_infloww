@@ -37,6 +37,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useScope } from "@/contexts/ScopeContext";
 import { relay } from "@/lib/relay";
 import { make } from "@/lib/ofMirrorData";
+import { undoList } from "@/lib/ofMirrorUndo";
 import { ofMeQuery } from "@/lib/ofMirrorIdentity";
 import { clearChart, drawLines, type LinesSpec } from "@/lib/ofMirrorChart";
 import { basePage } from "@/lib/ofMirrorRow";
@@ -122,41 +123,9 @@ export function moneyOf(part: MoneyPart, body: unknown): MoneyData {
   return { referralEarnings: o.referralEarnings as number | null };
 }
 
-// This module's own undo list per page (ofMirrorData's restore must not undo these, nor these its rows).
-const undos = new WeakMap<Document, (() => void)[]>();
-function track(doc: Document, undo: () => void) {
-  let u = undos.get(doc);
-  if (!u) undos.set(doc, (u = []));
-  u.push(undo);
-}
-function restoreMoney(doc: Document) {
-  const u = undos.get(doc) ?? [];
-  while (u.length) u.pop()!();
-}
-function setText(doc: Document, el: Element | null | undefined, text: string) {
-  if (!el) return;
-  const was = el.textContent ?? "";
-  if (was === text) return;
-  track(doc, () => (el.textContent = was));
-  el.textContent = text;
-}
-function setClass(doc: Document, el: Element, cls: string, on: boolean) {
-  if (el.classList.contains(cls) === on) return;
-  const was = el.getAttribute("class");
-  track(doc, () => (was === null ? el.removeAttribute("class") : el.setAttribute("class", was)));
-  el.classList.toggle(cls, on);
-}
-/** Set (null: remove) an attribute, undone by restoreMoney (every attribute back in its order: the markup byte for byte). */
-function setAttr(doc: Document, el: Element | null | undefined, name: string, value: string | null) {
-  if (!el || el.getAttribute(name) === value) return;
-  const was = [...el.attributes].map((a) => [a.name, a.value] as const);
-  track(doc, () => {
-    for (const a of [...el.attributes]) el.removeAttribute(a.name);
-    for (const [n, v] of was) el.setAttribute(n, v);
-  });
-  if (value === null) el.removeAttribute(name);
-  else el.setAttribute(name, value);
-}
+// This module's own undo list per page (ofMirrorData's restore must not undo these, nor these its rows); an attribute's
+// undo puts every attribute back in its order (the markup byte for byte).
+const { track, restore: restoreMoney, setText, setClass, setAttr, swapIn } = undoList({ attrMode: "all-in-order", classUndo: "snapshot", skipEqualText: true });
 
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 /** "$1,234.00": OF's UtilsMoney. */
@@ -171,20 +140,6 @@ function setMoney(doc: Document, el: Element | null | undefined, v: unknown) {
   const n = num(v);
   setText(doc, el, n === null ? DASH : ` ${usd(n)} `);
   setClass(doc, el, "m-zero-value", n === 0);
-}
-
-/** Replace the first `pattern` match in `el`'s text nodes with `to`. */
-function swapIn(doc: Document, el: Element | null | undefined, pattern: RegExp, to: string) {
-  if (!el) return;
-  const walker = doc.createTreeWalker(el, 4 /* NodeFilter.SHOW_TEXT */);
-  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
-    const was = n.nodeValue ?? "";
-    if (!pattern.test(was)) continue;
-    const node = n;
-    track(doc, () => (node.nodeValue = was));
-    node.nodeValue = was.replace(pattern, to);
-    return;
-  }
 }
 
 const MIN_AMOUNT = /\$\d[\d,]*(?:\.\d+)?/;

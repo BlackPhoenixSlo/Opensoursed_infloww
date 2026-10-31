@@ -73,6 +73,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import accounts as account_registry  # noqa: E402
 import server  # noqa: E402
+import accounts_admin_api  # noqa: E402
 from db.engine import get_session  # noqa: E402
 
 # ── In-process registry so the DB-seeded (non-numeric) test ids are
@@ -116,7 +117,7 @@ account_registry.upsert_account = _patched_upsert
 # "list_chats" window and takes the bust path's bypass flag).
 async def _fixed_roster_count(aid, *, bypass=False):
     return {"unread": 1, "owe_reply": 2}
-server._compute_roster_count_of = _fixed_roster_count
+accounts_admin_api._compute_roster_count_of = _fixed_roster_count
 # Keep the post-write DB sync from doing real work in the test process.
 server._kick_db_sync = lambda *_a, **_k: None
 

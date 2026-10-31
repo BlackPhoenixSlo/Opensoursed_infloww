@@ -12,10 +12,9 @@ Passwords are stored plaintext per user decision (friends-only scale; the
 relay sits behind the share-token gate). When the DB file ever moves to
 a wider surface, switch to argon2/bcrypt before exposing.
 
-Session cookie payload: f"{user_id}.{issued_at_epoch}.{hmac_sig}". The
-hmac is keyed by os.environ["SESSION_SECRET"] (auto-generated and
-persisted on first boot if missing, so dev doesn't have to think about
-it). 30-day inactivity expiry — every authed request bumps
+Session cookie payload: f"{user_id}.{issued_ms}.{hmac_sig}" (signed_cookie).
+The hmac is keyed by SESSION_SECRET (session_secret.load_secret: env, then
+the persisted file, else generated on first boot). 30-day inactivity expiry — every authed request bumps
 `users.last_seen_at`; once the gap exceeds 30 days the cookie is
 rejected and the user has to log in again.
 """
@@ -43,8 +42,11 @@ from sqlalchemy.exc import IntegrityError
 
 import events
 from account_security import TwoFactorChallenge, password_sign_in
+from agency_scope import agency_account_ids
 from db.engine import get_session
-from session_stamps import issued_ms, now_ms, session_revoked, sign
+import session_stamps
+import signed_cookie
+from session_stamps import now_ms, session_verdict
 from db.models import (
     User,
     UserAccount,
@@ -58,6 +60,7 @@ from db.models import (
 COOKIE_NAME = "chatterly_session"
 COOKIE_MAX_AGE_SECONDS = 30 * 24 * 3600  # browser-side hint; server is the source of truth
 SESSION_INACTIVITY_SECONDS = 30 * 24 * 3600
+LAST_SEEN_TOUCH_S = 300  # bump users.last_seen_at when it is older than this
 
 # Founder impersonation. Short-lived so a forgotten "view as" session
 # can't quietly persist across the founder's coffee break. 1h is plenty
@@ -332,12 +335,10 @@ def split_account_ids(*raw: str | None) -> list[str]:
     return list(dict.fromkeys(a.strip() for one in raw for a in (one or "").split(",") if a.strip()))
 
 
-# ── Cookie signing (session_stamps.sign) ──────────────────────────────
+# ── Cookie signing (signed_cookie, under session_stamps.SESSION_SECRET) ──
 
 def _make_cookie(user_id: str) -> str:
-    issued = str(now_ms())
-    payload = f"{user_id}.{issued}"
-    return f"{payload}.{sign(payload)}"
+    return signed_cookie.make(session_stamps.SESSION_SECRET, user_id, str(now_ms()))
 
 
 def _parse_cookie(value: str) -> str | None:
@@ -352,17 +353,7 @@ def _parse_cookie(value: str) -> str | None:
 
 def _parse_cookie_issued(value: str) -> tuple[str, int] | None:
     """`(user_id, issued_ms)` if the cookie's HMAC verifies, else None."""
-    parts = value.split(".")
-    if len(parts) != 3:
-        return None
-    user_id, issued, sig = parts
-    expected = sign(f"{user_id}.{issued}")
-    if not hmac.compare_digest(sig, expected):
-        return None
-    try:
-        return user_id, issued_ms(issued)
-    except ValueError:
-        return None
+    return signed_cookie.parse_issued(session_stamps.SESSION_SECRET, value)
 
 
 def _make_impersonate_cookie(impersonated_user_id: str, founder_user_id: str) -> str:
@@ -374,20 +365,18 @@ def _make_impersonate_cookie(impersonated_user_id: str, founder_user_id: str) ->
     effectively invalidates the impersonation.
     """
     issued = str(int(datetime.utcnow().timestamp()))
-    payload = f"{impersonated_user_id}.{founder_user_id}.{issued}"
-    return f"{payload}.{sign(payload)}"
+    return signed_cookie.make(
+        session_stamps.SESSION_SECRET, impersonated_user_id, founder_user_id, issued,
+    )
 
 
 def _parse_impersonate_cookie(value: str) -> tuple[str, str, int] | None:
     """Returns `(impersonated_user_id, founder_user_id, issued_epoch)` or
     None on any malformation / signature mismatch."""
-    parts = value.split(".")
-    if len(parts) != 4:
+    fields = signed_cookie.parse(session_stamps.SESSION_SECRET, value, 3)
+    if fields is None:
         return None
-    imp, founder, issued, sig = parts
-    expected = sign(f"{imp}.{founder}.{issued}")
-    if not hmac.compare_digest(sig, expected):
-        return None
+    imp, founder, issued = fields
     try:
         issued_int = int(issued)
     except ValueError:
@@ -639,12 +628,13 @@ async def session_middleware(request: Request, call_next):
                 )).scalar_one_or_none()
                 if row is not None:
                     now = datetime.utcnow()
-                    age = (now - row.last_seen_at).total_seconds()
                     # Revoked (Log out other sessions, 2FA turned on) or idle
                     # too long: signed out, and the cookie is cleared.
-                    if age > SESSION_INACTIVITY_SECONDS or session_revoked(
-                        issued, row.sessions_valid_after,
-                    ):
+                    verdict = session_verdict(
+                        issued, row.sessions_valid_after, row.last_seen_at, now,
+                        max_idle_s=SESSION_INACTIVITY_SECONDS, touch_s=LAST_SEEN_TOUCH_S,
+                    )
+                    if verdict == "expired":
                         expired = True
                     else:
                         is_admin = bool(getattr(row, "is_admin", False))
@@ -664,7 +654,7 @@ async def session_middleware(request: Request, call_next):
                         # Only bump last_seen_at once per ~5 min to avoid
                         # write amplification — a chat session fires
                         # hundreds of requests/min.
-                        if age > 300:
+                        if verdict == "touch":
                             # A cosmetic activity stamp must NEVER be able to
                             # fail the request it rides on. Two things here:
                             #
@@ -682,7 +672,7 @@ async def session_middleware(request: Request, call_next):
                             # is how a write-storm turned into a dead-looking
                             # UI on 2026-08-21. Note the throttle cannot
                             # re-arm on its own while the write keeps failing:
-                            # `age` is read from the row, so a never-committed
+                            # `last_seen_at` is read from the row, so a never-committed
                             # stamp stays stale and EVERY subsequent request
                             # retries the write. Failing quietly is what breaks
                             # that loop.
@@ -976,9 +966,7 @@ async def admin_list_user_accounts(user_id: str) -> GrantOverview:
         )).scalar_one_or_none()
         if u is None:
             raise HTTPException(status_code=404, detail=f"unknown user {user_id!r}")
-        granted_ids = set((await s.execute(
-            select(UserAccount.account_id).where(UserAccount.user_id == user_id)
-        )).scalars().all())
+        granted_ids = await agency_account_ids(s, user_id)
 
     all_accounts = list_accounts()
     granted: list[GrantedAccount] = []

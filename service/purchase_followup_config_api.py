@@ -29,10 +29,10 @@ from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import select
 
 import smart_message_extras as extras
 from auth import assert_account_owned
+from automation_rule_read import primary_rule, rule_steps, rules_of_kind
 from automation_rules_api import ensure_kind_rule
 from automations.purchase_followup import (
     DEFAULT_DELAY, DEFAULT_FREQUENCY, STORED_FREQUENCY, delay_of,
@@ -74,34 +74,10 @@ def _validate(cfg: Any) -> dict[str, Any]:
     return out
 
 
-async def _rules(s, account_id: str) -> list[AutomationRule]:
-    """Every row of the kind, oldest first."""
-    return list((await s.execute(
-        select(AutomationRule).where(
-            AutomationRule.account_id == account_id,
-            AutomationRule.kind == KIND).order_by(AutomationRule.id)
-    )).scalars())
-
-
-def _primary(rules: list[AutomationRule]) -> AutomationRule | None:
-    """The row the sweep runs: the first switched on, else the first."""
-    return next((r for r in rules if r.is_enabled), rules[0] if rules else None)
-
-
-def _steps(rule: AutomationRule | None) -> dict:
-    if rule is None or not rule.steps_json:
-        return {}
-    try:
-        steps = json.loads(rule.steps_json)
-    except Exception:
-        return {}
-    return steps if isinstance(steps, dict) else {}
-
-
 def _public(rules: list[AutomationRule]) -> dict[str, Any]:
     if not rules:
         return _defaults()
-    steps = _steps(_primary(rules))
+    steps = rule_steps(primary_rule(rules))
     return {
         "enabled": any(r.is_enabled for r in rules),
         "text": str(steps.get("text") or ""),
@@ -115,7 +91,7 @@ def _public(rules: list[AutomationRule]) -> dict[str, Any]:
 async def get_purchase_followup_config(account_id: str = Query(...)) -> dict[str, Any]:
     assert_account_owned(account_id)
     async with get_session() as s:
-        config = _public(await _rules(s, account_id))
+        config = _public(await rules_of_kind(s, account_id, KIND))
     return {"account_id": account_id, "config": config, "defaults": _defaults()}
 
 
@@ -129,7 +105,7 @@ async def put_purchase_followup_config(body: _ConfigBody = Body(...)) -> dict[st
     assert_account_owned(body.account_id)
     clean = _validate(body.config)
     async with get_session() as s:
-        rules = await _rules(s, body.account_id)
+        rules = await rules_of_kind(s, body.account_id, KIND)
         was_on = any(r.is_enabled for r in rules)
         merged = {**_public(rules), **clean}
         extras.check(merged)
@@ -140,7 +116,7 @@ async def put_purchase_followup_config(body: _ConfigBody = Body(...)) -> dict[st
             # edited while it was off.
             if not merged["text"] or (not was_on and not clean.get("text")):
                 raise HTTPException(422, "a message text is required to turn this on")
-        steps = _steps(_primary(rules))
+        steps = rule_steps(primary_rule(rules))
         fresh = not steps
         steps.update(enabled=merged["enabled"], text=merged["text"])
         if "delay_range" in clean:
@@ -162,7 +138,7 @@ async def put_purchase_followup_config(body: _ConfigBody = Body(...)) -> dict[st
         await ensure_kind_rule(s, body.account_id, KIND, enable=merged["enabled"],
                                name=_RULE_NAME, every_seconds=_EVERY_S, steps=steps)
         await s.flush()
-        rules = await _rules(s, body.account_id)
+        rules = await rules_of_kind(s, body.account_id, KIND)
         for rule in rules:                  # every row carries the same config
             rule.trigger_json = trigger
             rule.steps_json = json.dumps(steps)

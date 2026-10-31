@@ -34,6 +34,7 @@ import { useScope } from "@/contexts/ScopeContext";
 import { relay, type OFChatItem, type OFUserMini } from "@/lib/relay";
 import { chatPath, mirrorQuery, setAvatar, usersListPath } from "@/lib/ofMirrorData";
 import { ofMeQuery } from "@/lib/ofMirrorIdentity";
+import { afterChatWrite } from "@/lib/ofMirrorKeys";
 import { frameNavigate, takeCarried, toast } from "@/lib/ofMirrorPost";
 import { setIconName } from "@/lib/ofMirrorThread";
 import { ELSEWHERE } from "@/lib/ofMirrorTooltip";
@@ -554,8 +555,7 @@ export function bindChatTools(doc: Document, page: string, ctx: ChatToolsContext
 export function chatToolWrites(accountId: string, fan: string, qc: QueryClient): ChatToolWrites {
   const f = encodeURIComponent(fan);
   const refresh = <T,>(r: T) => {
-    void qc.invalidateQueries({ queryKey: ["of-mirror-data", accountId] });
-    void qc.invalidateQueries({ queryKey: ["chats"] });
+    void afterChatWrite(qc, accountId);
     return r;
   };
   const opts = { accountId };

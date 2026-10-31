@@ -55,6 +55,7 @@ from auth import require_user
 from db.engine import _DATA_MIGRATIONS_DDL, get_session
 from db.models import SETTINGS_EPOCH, VERSIONED_SETTINGS_TABS, Employee, SettingsVersion, UserSetting
 from employees import AgencyContext, agency_contexts, is_login
+from isotime import iso_z
 from permissions import (
     _role, data_scope, denied_actions, denied_cards, enforced, granted_pages, narrowest_scope, opt_in_granted,
 )
@@ -134,10 +135,6 @@ async def applied_versions(s, agency_user_id: str, tab: str) -> list[tuple[datet
     return [(at, parse_blob(tab, blob)[0]) for at, blob in await _versions(s, agency_user_id, tab)]
 
 
-def _wire(dt: datetime) -> str:
-    return dt.isoformat() + "Z"
-
-
 async def _history(s, user_id: str, tab: str) -> list[dict[str, Any]]:
     """The versioned tab's Settings history, latest effective first:
     `{effective_from, saved_at, in_effect}`. `effective_from` is null for a
@@ -146,8 +143,8 @@ async def _history(s, user_id: str, tab: str) -> list[dict[str, Any]]:
     now = datetime.utcnow()
     current = next((r.id for r in reversed(rows) if r.effective_from <= now), None)
     return [{
-        "effective_from": None if r.effective_from == SETTINGS_EPOCH else _wire(r.effective_from),
-        "saved_at": _wire(r.created_at),
+        "effective_from": None if r.effective_from == SETTINGS_EPOCH else iso_z(r.effective_from),
+        "saved_at": iso_z(r.created_at),
         "in_effect": r.id == current,
     } for r in reversed(rows)]
 

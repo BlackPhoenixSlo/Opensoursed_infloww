@@ -45,7 +45,8 @@ log = logging.getLogger("of-ws")
 PING_INTERVAL_S = 25         # OF sends `{"unread_tips":...}` style updates;
                               # no formal ping/pong needed, but a benign
                               # `get_onlines` keeps NATs happy.
-# The reconnect backoff (1 s doubling to 30 s) and the give-up rule: of_ws_decide.
+# The reconnect backoff (1 s doubling to 30 s, reset when the failed pass's socket
+# had been up 60 s: Failed.up_s) and the give-up rule: of_ws_decide.
 
 
 class SessionDead(Exception):
@@ -198,8 +199,9 @@ class OFWebSocket:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                state, eff = of_ws_decide.decide(
-                    state, of_ws_decide.Failed(self._session_dead(e) if self._session_dead else None))
+                state, eff = of_ws_decide.decide(state, of_ws_decide.Failed(
+                    self._session_dead(e) if self._session_dead else None,
+                    up_s=time.monotonic() - connected_at if connected_at is not None else None))
                 if isinstance(eff, of_ws_decide.GiveUp):
                     log.warning("ws session dead account=%s reason=%s — not reconnecting",
                                 self._account_id(), eff.reason)

@@ -2,8 +2,8 @@
  * The /group tab's state as a pure reducer: the slot list, which pane the
  * mobile tab strip shows, and the BroadcastChannel add-acks still owed. Every
  * write the page makes (mount hydrate, Fan List pick, money-rail replace,
- * BroadcastChannel add / replace, wake reconcile, pane close, tab pick) is an
- * action here; the page only dispatches.
+ * BroadcastChannel add / replace, wake / heartbeat reconcile, pane close, tab
+ * pick) is an action here; the page only dispatches.
  *
  *   • "Same fan" is `sameSlot` (lib/groupChannel): fan ids arrive as numbers
  *     (OF) or strings (Fansly snowflakes), and `123` / `"123"` are one fan.
@@ -42,12 +42,12 @@ export interface SlotsState {
 export type Action =
   /** Mount: the restored or seeded list, minus fans an older live tab holds. */
   | { type: "hydrate"; slots: readonly GroupSlot[]; heldElsewhere: readonly { slots: readonly GroupSlot[] }[] }
-  /** A Fan List pick (no reqId) or a channel `add` (reqId: ack owed). */
-  | { type: "add"; slot: GroupSlot; reqId?: string }
-  /** Money rail "open last 8": the channel (reqId) or the same-tab DOM event. */
-  | { type: "replace"; slots: readonly GroupSlot[]; reqId?: string }
+  /** A Fan List pick (no reqId) or a channel `add` (reqId: ack owed). Untrusted: decided here (isGroupSlot). */
+  | { type: "add"; slot: unknown; reqId?: string }
+  /** Money rail "open last 8": the channel (reqId) or the same-tab DOM event. Untrusted entries: dropped here. */
+  | { type: "replace"; slots: readonly unknown[]; reqId?: string }
   | { type: "remove"; slot: GroupSlot }
-  /** Wake reconcile: drop slots any of `others` also holds. */
+  /** Wake / heartbeat reconcile: drop slots any of `others` also holds. */
   | { type: "dropHeldBy"; others: readonly { slots: readonly GroupSlot[] }[] }
   | { type: "select"; index: number }
   /** These acks were posted; take them off the queue. */
@@ -68,6 +68,13 @@ function clean(list: readonly unknown[]): GroupSlot[] {
 
 function heldBy(s: GroupSlot, others: readonly { slots: readonly GroupSlot[] }[]): boolean {
   return others.some((t) => t.slots.some((x) => sameSlot(x, s)));
+}
+
+/** The slots none of `others` holds: what `dropHeldBy` with the same
+ *  `others` leaves. A tab beats with this, not its current list, so the slots
+ *  it is about to yield are never advertised. */
+export function keptSlots(slots: readonly GroupSlot[], others: readonly { slots: readonly GroupSlot[] }[]): GroupSlot[] {
+  return slots.filter((s) => !heldBy(s, others));
 }
 
 /** New slot list; `active` stays on the same fan if present, else clamps. */

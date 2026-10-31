@@ -11,6 +11,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 
+import { reportQuery, type ReportQueryParams } from "@/hooks/reportQuery";
 import { relay } from "@/lib/relay";
 import { type FanId } from "@/lib/fanId";
 
@@ -34,22 +35,14 @@ export interface TopTippersResp {
   rows: TopTipperRow[];
 }
 
-export interface UseTopTippersParams {
-  from: string | null;
-  to: string | null;
-  account_id?: string | null;
-  employee_id?: number | null;
+export interface UseTopTippersParams extends ReportQueryParams {
   limit?: number;
 }
 
 /** The leaderboard's query string; `csv` is every tipper's export (no
  *  limit), for `CsvExportButton`. */
 export function buildTopTippersQuery(params: UseTopTippersParams, csv = false): string {
-  const qs = new URLSearchParams();
-  if (params.from) qs.set("from", params.from);
-  if (params.to) qs.set("to", params.to);
-  if (params.account_id) qs.set("account_id", params.account_id);
-  if (params.employee_id != null) qs.set("employee_id", String(params.employee_id));
+  const qs = reportQuery(params);
   if (csv) qs.set("format", "csv");
   else if (params.limit != null) qs.set("limit", String(params.limit));
   return qs.toString();

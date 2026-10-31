@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { PickedTemplate } from "@/components/chat/TemplatePicker";
+import { buildSendArgs, canBeFreePreview as chatCanBeFreePreview, EMPTY_DRAFT } from "@/components/chat/composerDraft";
 import { applyTemplate, canBeFreePreview, previewIdsFor, type ComposeDraft } from "@/lib/composeDraft";
 import type { VaultMedia } from "@/lib/relay";
 
@@ -93,5 +94,19 @@ describe("previewIdsFor / canBeFreePreview — the one free-preview rule", () =>
     ["NaN id", v(Number.NaN), false],
   ])("canBeFreePreview: %s", (_n, m, want) => {
     expect(canBeFreePreview(m)).toBe(want);
+  });
+  // Both call shapes read the one rule: the chat Composer's (`buildSendArgs`,
+  // and PpvTiles' FREE badge via chat/composerDraft's re-export) and the mass
+  // / post composers' (`previewIdsFor`).
+  it("chat/composerDraft re-exports this predicate, not a copy", () => {
+    expect(chatCanBeFreePreview).toBe(canBeFreePreview);
+  });
+  it.each<[string, VaultMedia[], number]>([
+    ["vault ids", [v(1), v(2), v(3)], 2],
+    ["a claim and a bad id among them", [v(0, claim), v(4), v(-1), v(5)], 3],
+    ["a claim on a real id", [v(7, claim), v(8)], 2],
+  ])("buildSendArgs' previews == previewIdsFor: %s", (_n, attached, count) => {
+    const args = buildSendArgs({ ...EMPTY_DRAFT, attached, price: "10", previewCount: count }, { text: "x", now: 0 });
+    expect(args.previews).toEqual(previewIdsFor(attached, count, 10));
   });
 });

@@ -359,4 +359,11 @@ describe("chatToolWrites: the exact Relay requests", () => {
       ["/api/of/v2/users/800000002/block", o],
     ]);
   });
+  it("a write refreshes the model's mirror reads and the chat lists, not the threads", async () => {
+    const qc = new QueryClient();
+    vi.spyOn(relay, "put").mockResolvedValue({});
+    const inval = vi.spyOn(qc, "invalidateQueries");
+    await chatToolWrites("acc", "800000002", qc).rename("x");
+    expect(inval.mock.calls.map(([f]) => f?.queryKey)).toEqual([["of-mirror-data", "acc"], ["chats"]]);
+  });
 });

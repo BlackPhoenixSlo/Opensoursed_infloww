@@ -167,6 +167,45 @@ class LLMKeyError(LLMConfigError, LLMHTTPError):
 # caller is told which. 429 stays transient (see _RETRYABLE_STATUS).
 _KEY_STATUS = {401: "invalid", 403: "invalid", 402: "no_credit"}
 
+
+# ── One failed attempt → what next (pure; _fire's loop obeys it) ───────────
+
+@dataclass(frozen=True)
+class Retry:
+    pause_s: float
+
+
+@dataclass(frozen=True)
+class KeyErr:
+    kind: str           # a _KEY_STATUS value → LLMKeyError(kind)
+
+
+@dataclass(frozen=True)
+class Fail:
+    reason: str         # "not_retryable" | "attempts_exhausted"
+
+
+def llm_attempt_outcome(status_or_exc_kind: int | str, attempt: int,
+                        max_attempts: int) -> Retry | KeyErr | Fail:
+    """Decide after a failed attempt (0-based `attempt` of `max_attempts`).
+
+    An int is the provider's HTTP status; ANY str means a request-side fault
+    (timeout / transport / non-JSON body), all transient. The str's content is
+    never read (_fire passes the exception class name, for the reader). Only
+    _RETRYABLE_STATUS and request faults retry, and never past the last
+    attempt; a key status is never retried.
+    """
+    last = attempt + 1 >= max_attempts
+    if isinstance(status_or_exc_kind, str) or status_or_exc_kind in _RETRYABLE_STATUS:
+        if not last:
+            # Module global read now, not bound at def time (tests patch it).
+            return Retry(_LLM_RETRY_BACKOFF_S * (attempt + 1))
+        return Fail("attempts_exhausted")
+    kind = _KEY_STATUS.get(status_or_exc_kind)
+    if kind:
+        return KeyErr(kind)
+    return Fail("not_retryable")
+
 # ── The user's sentence for a key error ─────────────────────────────────────
 # One author for it, so the toast, the automation notice and the help bot all
 # say the same thing. It names a screen, which is product copy rather than
@@ -983,13 +1022,10 @@ async def chat(
     endpoint = httpx.URL(url).path  # e.g. "/chat/completions" (deepseek)
 
     now = datetime.utcnow()
-    day = now.strftime("%Y-%m-%d")
 
     # ── 2. Atomic pre-flight cap reservation (in millicents) ────────────
-    est_in = _estimate_input_tokens(messages)
-    reserve_mc = _cost_millicents(model, est_in, _ASSUMED_OUTPUT_TOKENS)
-    cap_mc = await _get_cap_cents(account_id) * _MILLICENTS_PER_CENT  # cap is stored in cents
-    await _reserve(day, account_id, reserve_mc, cap_mc, now, prov.name, user_id)  # raises LLMCapExceeded
+    hold = await _reserve_call(model, messages, account_id=account_id,
+                               user_id=user_id, provider=prov.name, now=now)  # raises LLMCapExceeded
 
     # ── Build the OpenAI-compatible body ────────────────────────────────
     body: dict[str, Any] = {
@@ -1030,70 +1066,127 @@ async def chat(
         "Accept": "application/json",
     }
 
+    data, latency_ms = await _fire(url, headers, body, call_id=call_id, hold=hold,
+                                   model=model, purpose=purpose)
+    return await _finalize_ok(data, latency_ms, call_id=call_id, hold=hold,
+                              model=model, purpose=purpose,
+                              response_format=response_format)
+
+
+# ── chat() steps: reserve → fire → finalize ────────────────────────────────
+
+@dataclass(frozen=True)
+class _Hold:
+    """One call's cap reservation, made ONCE before the fire: refunded when
+    _fire gives up (HTTP or request error), settled to the real cost by
+    _finalize_ok. Pre-existing gap, not covered: a CancelledError mid-fire or
+    an exception inside _finalize_ok leaves the reservation held."""
+    now: datetime
+    account_id: str | None
+    user_id: str | None
+    provider: str
+    reserve_mc: int
+
+    @property
+    def day(self) -> str:
+        return self.now.strftime("%Y-%m-%d")
+
+    async def refund(self) -> None:
+        await _adjust_daily(self.day, self.account_id, -self.reserve_mc, -1,
+                            self.now, self.provider, self.user_id)  # release reservation
+
+    async def settle(self, actual_mc: int) -> None:
+        # Reconcile the rollup with the real cost (delta vs. the estimate reserved).
+        await _adjust_daily(self.day, self.account_id, actual_mc - self.reserve_mc, 0,
+                            self.now, self.provider, self.user_id)
+
+
+async def _reserve_call(model: str, messages: list[dict], *, account_id: str | None,
+                        user_id: str | None, provider: str, now: datetime) -> _Hold:
+    est_in = _estimate_input_tokens(messages)
+    hold = _Hold(now, account_id, user_id, provider,
+                 _cost_millicents(model, est_in, _ASSUMED_OUTPUT_TOKENS))
+    cap_mc = await _get_cap_cents(account_id) * _MILLICENTS_PER_CENT  # cap is stored in cents
+    await _reserve(hold.day, account_id, hold.reserve_mc, cap_mc, now, provider,
+                   user_id)  # raises LLMCapExceeded
+    return hold
+
+
+async def _give_up(call_id: int | None, hold: _Hold, body: dict, msg: str,
+                   latency_ms: int) -> None:
+    # On an error row, upgrade the receipt to carry the image-redacted
+    # body: `error_text` is the PROVIDER's sentence, not ours, so this
+    # is the only at-rest record of what we actually sent.
+    await _finalize_call(call_id, status="error", error_text=msg[:2000],
+                         latency_ms=latency_ms,
+                         prompt_json=_redacted_json(body))
+    await hold.refund()
+
+
+async def _fire(url: str, headers: dict, body: dict, *, call_id: int | None,
+                hold: _Hold, model: str, purpose: str) -> tuple[dict, int]:
+    """POST with retries; on a terminal failure also finalizes the error row,
+    refunds `hold` and raises LLMKeyError / LLMHTTPError."""
+    provider = hold.provider
     # ── 4. Fire (retry transient faults; see _LLM_MAX_ATTEMPTS) ─────────
-    # The reservation + audit row above are made ONCE. Only the network round
-    # trip repeats; a permanent failure finalizes and releases exactly once,
-    # below, when the attempts run out.
-    data = None
+    # The reservation + audit row are made ONCE, by the caller. Only the network
+    # round trip repeats; a permanent failure finalizes and releases exactly
+    # once, below, when llm_attempt_outcome stops retrying.
     for attempt in range(_LLM_MAX_ATTEMPTS):
-        last = attempt + 1 >= _LLM_MAX_ATTEMPTS
         t0 = time.monotonic()
         try:
             async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT_S) as client:
                 resp = await client.post(url, headers=headers, json=body)
             latency_ms = int(round((time.monotonic() - t0) * 1000))
             resp.raise_for_status()
-            data = resp.json()
-            break
+            return resp.json(), latency_ms
         except httpx.HTTPStatusError as e:
             latency_ms = int(round((time.monotonic() - t0) * 1000))
+            status = e.response.status_code
+            outcome = llm_attempt_outcome(status, attempt, _LLM_MAX_ATTEMPTS)
             # e.response.text is the provider's error body (not our prompt) → safe to keep.
             snippet = (e.response.text or "")[:500]
-            kind = _KEY_STATUS.get(e.response.status_code)
-            if kind:
+            if isinstance(outcome, KeyErr):
                 # …except on a key refusal: providers echo part of the key they
                 # refused ("Your api key: ****abcd"), and this text is stored
                 # (error_text) and carried by the exception. The status says it all.
-                snippet = f"API key {kind} (provider body withheld: it can echo the key)"
-            msg = f"{prov.name} HTTP {e.response.status_code}: {snippet}"
-            if e.response.status_code in _RETRYABLE_STATUS and not last:
+                snippet = f"API key {outcome.kind} (provider body withheld: it can echo the key)"
+            msg = f"{provider} HTTP {status}: {snippet}"
+            if isinstance(outcome, Retry):
                 log.warning("llm_client: %s HTTP %s — retry %d/%d model=%s purpose=%s",
-                            prov.name, e.response.status_code, attempt + 1,
+                            provider, status, attempt + 1,
                             _LLM_MAX_ATTEMPTS, model, purpose)
-                await asyncio.sleep(_LLM_RETRY_BACKOFF_S * (attempt + 1))
+                await asyncio.sleep(outcome.pause_s)
                 continue
-            # On an error row, upgrade the receipt to carry the image-redacted
-            # body: `error_text` is the PROVIDER's sentence, not ours, so this
-            # is the only at-rest record of what we actually sent.
-            await _finalize_call(call_id, status="error", error_text=msg[:2000],
-                                 latency_ms=latency_ms,
-                                 prompt_json=_redacted_json(body))
-            await _adjust_daily(day, account_id, -reserve_mc, -1, now, prov.name, user_id)  # release reservation
+            await _give_up(call_id, hold, body, msg, latency_ms)
             log.warning("llm_client: %s call failed model=%s purpose=%s status=%s latency=%dms",
-                        prov.name, model, purpose, e.response.status_code, latency_ms)
-            if kind:
-                raise LLMKeyError(kind, prov.name, purpose, detail=msg,
-                                  status=e.response.status_code) from e
-            raise LLMHTTPError(msg, status=e.response.status_code) from e
+                        provider, model, purpose, status, latency_ms)
+            if isinstance(outcome, KeyErr):
+                raise LLMKeyError(outcome.kind, provider, purpose, detail=msg,
+                                  status=status) from e
+            raise LLMHTTPError(msg, status=status) from e
         except (httpx.RequestError, ValueError) as e:
             # httpx.RequestError = timeout / connection / transport, all transient.
             # ValueError = resp.json() on a non-JSON body; a re-fire may get a clean one.
             latency_ms = int(round((time.monotonic() - t0) * 1000))
-            msg = f"{prov.name} request error: {type(e).__name__}: {e}"
-            if not last:
+            outcome = llm_attempt_outcome(type(e).__name__, attempt, _LLM_MAX_ATTEMPTS)
+            msg = f"{provider} request error: {type(e).__name__}: {e}"
+            if isinstance(outcome, Retry):
                 log.warning("llm_client: %s %s — retry %d/%d model=%s purpose=%s latency=%dms",
-                            prov.name, type(e).__name__, attempt + 1,
+                            provider, type(e).__name__, attempt + 1,
                             _LLM_MAX_ATTEMPTS, model, purpose, latency_ms)
-                await asyncio.sleep(_LLM_RETRY_BACKOFF_S * (attempt + 1))
+                await asyncio.sleep(outcome.pause_s)
                 continue
-            await _finalize_call(call_id, status="error", error_text=msg[:2000],
-                                 latency_ms=latency_ms,
-                                 prompt_json=_redacted_json(body))
-            await _adjust_daily(day, account_id, -reserve_mc, -1, now, prov.name, user_id)
+            await _give_up(call_id, hold, body, msg, latency_ms)
             log.warning("llm_client: %s call errored model=%s purpose=%s latency=%dms (%s)",
-                        prov.name, model, purpose, latency_ms, type(e).__name__)
+                        provider, model, purpose, latency_ms, type(e).__name__)
             raise LLMHTTPError(msg) from e
+    raise AssertionError("unreachable: the last attempt always returns or raises")
 
+
+async def _finalize_ok(data: dict, latency_ms: int, *, call_id: int | None, hold: _Hold,
+                       model: str, purpose: str,
+                       response_format: dict | None) -> LLMResult:
     # ── 5. Parse + cost + finalize ──────────────────────────────────────
     choice = (data.get("choices") or [{}])[0]
     message = choice.get("message") or {}
@@ -1136,8 +1229,7 @@ async def chat(
         cache_hit_tokens=cache_hit_tokens,
         cost_cents=actual_mc,  # millicents (see _cost_millicents)
     )
-    # Reconcile the rollup with the real cost (delta vs. the estimate reserved).
-    await _adjust_daily(day, account_id, actual_mc - reserve_mc, 0, now, prov.name, user_id)
+    await hold.settle(actual_mc)
 
     # reasoning= is DIAGNOSTIC ONLY and is deliberately not a column. Providers
     # that report it count it INSIDE completion_tokens (confirmed on both), so
@@ -1146,13 +1238,13 @@ async def chat(
     # is not proportionate. Absent (None) on providers that don't report it.
     log.info("llm_client: %s %s purpose=%s latency=%dms in=%s out=%s cache_hit=%s "
              "reasoning=%s cost=%dmc",
-             prov.name, model, purpose, latency_ms, tokens_in, tokens_out,
+             hold.provider, model, purpose, latency_ms, tokens_in, tokens_out,
              cache_hit_tokens, reasoning_tokens, actual_mc)
 
     return LLMResult(
         call_id=call_id,
         model=model,
-        provider=prov.name,
+        provider=hold.provider,
         content=content,
         parsed=parsed,
         reasoning_content=reasoning_content,

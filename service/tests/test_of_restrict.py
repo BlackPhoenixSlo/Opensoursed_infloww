@@ -25,6 +25,7 @@ import _harness  # noqa: F401 — MUST be first (binds temp DB before engine imp
 _harness.bootstrap()
 
 import server  # noqa: E402
+import accounts_admin_api  # noqa: E402
 from automations._common import (  # noqa: E402
     HARD_SKIP_REASONS,
     OF_RESTRICTED_REASON,
@@ -230,11 +231,11 @@ async def case_roster_fold_excludes_restricted():
         {"withUser": {"id": 5}, "unreadMessagesCount": 0,
          "lastMessage": {"fromUser": {"id": 5}}},
     ]
-    out = server._roster_counts_from_rows(rows, me, exclude={1, 2})
+    out = accounts_admin_api._roster_counts_from_rows(rows, me, exclude={1, 2})
     assert out == {"unread": 1, "owe_reply": 1}, out
     # Sanity: without the registry set, fans 1+2 count again — but the
     # OF-stamped row (fan 3) stays excluded unconditionally.
-    base = server._roster_counts_from_rows(rows, me)
+    base = accounts_admin_api._roster_counts_from_rows(rows, me)
     assert base == {"unread": 2, "owe_reply": 2}, base
 
 

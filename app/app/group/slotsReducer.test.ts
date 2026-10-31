@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { GROUP_SLOT_CAP, sameSlot, type GroupSlot } from "@/lib/groupChannel";
-import { initialSlotsState, slotsReducer, type Ack, type Action, type SlotsState } from "./slotsReducer";
+import { GROUP_SLOT_CAP, isGroupSlot, sameSlot, type GroupSlot } from "@/lib/groupChannel";
+import { initialSlotsState, keptSlots, slotsReducer, type Ack, type Action, type SlotsState } from "./slotsReducer";
 
 const A = "100000001";
 const B = "100000002";
@@ -31,6 +31,13 @@ describe("slotsReducer: actions in -> slots, acks, active out", () => {
       [add("", "e"), add("abc", "x"), add(0, "z"), add(-5, "n"), add(1, "acct", "")], [s(1)],
       [{ reqId: "e", ok: false }, { reqId: "x", ok: false }, { reqId: "z", ok: false }, { reqId: "n", ok: false },
         { reqId: "acct", ok: false }], 0],
+    ["untrusted add payloads (null, a string, no fan id) are refused with an ack", st([s(1)]),
+      [{ type: "add", slot: null, reqId: "n" }, { type: "add", slot: `${A}:2`, reqId: "s" },
+        { type: "add", slot: { accountId: A }, reqId: "f" }], [s(1)],
+      [{ reqId: "n", ok: false }, { reqId: "s", ok: false }, { reqId: "f", ok: false }], 0],
+    ["replace drops untrusted entries", st([s(9)]),
+      [{ type: "replace", slots: [null, `${A}:1`, 5, { accountId: A, fanId: { n: 1 } }, s(1)], reqId: "r" }], [s(1)],
+      [{ reqId: "r", ok: true }], 0],
     ["a Fan List pick (no reqId) owes no ack", st([]), [add(1)], [s(1)], [], 0],
     ["burst past the cap: the add past it is refused", st(range(GROUP_SLOT_CAP - 2)),
       [add(1, "a"), add(2, "b"), add(3, "c")], [...range(GROUP_SLOT_CAP - 2), s(1), s(2)],
@@ -73,7 +80,8 @@ describe("slotsReducer: actions in -> slots, acks, active out", () => {
       if (a.type !== "add") continue;
       const ack = state.acks[state.acks.length - 1];
       expect(ack.reqId).toBe(a.reqId);
-      expect(ack.ok).toBe(state.slots.some((x) => sameSlot(x, a.slot)));
+      const slot = a.slot;
+      expect(ack.ok).toBe(isGroupSlot(slot) && state.slots.some((x) => sameSlot(x, slot)));
       expect(state.slots.length).toBeLessThanOrEqual(GROUP_SLOT_CAP);
     }
   });
@@ -150,5 +158,18 @@ describe("slotsReducer: input hygiene", () => {
     fold(cur, [add(4, "b"), { type: "remove", slot: s(1) }, { type: "dropHeldBy", others: [{ slots: [s(2)] }] },
       { type: "replace", slots: [s(7)] }, { type: "acksSent", reqIds: ["a"] }, { type: "select", index: 1 }]);
     expect(JSON.stringify(cur)).toBe(before);
+  });
+});
+
+// What a tab beats with while it yields: exactly what dropHeldBy leaves.
+describe("keptSlots", () => {
+  it.each<[string, GroupSlot[], GroupSlot[][], GroupSlot[]]>([
+    ["drops a fan another tab holds (other id shape)", [s(1), s(SNOW)], [[s("1")]], [s(SNOW)]],
+    ["the same fan id on another account stays", [s(3, B)], [[s(3, A)]], [s(3, B)]],
+    ["no other tabs keeps all", [s(1), s(2)], [], [s(1), s(2)]],
+  ])("%s", (_name, slots, held, want) => {
+    const others = held.map((h) => ({ slots: h }));
+    expect(keptSlots(slots, others)).toEqual(want);
+    expect(slotsReducer(st(slots), { type: "dropHeldBy", others }).slots).toEqual(want);
   });
 });

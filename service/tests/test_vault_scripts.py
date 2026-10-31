@@ -180,6 +180,7 @@ os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"
 
 import asyncio  # noqa: E402
 import json  # noqa: E402
+import threading  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
 
 from sqlalchemy import select  # noqa: E402
@@ -1014,6 +1015,10 @@ class _FakeOF:
         # Real membership per list. OF's add is APPEND-ONLY, so the fake keeps
         # a union too — that is what makes the read-back meaningful.
         self.members: dict[int, list[int]] = {}
+        # Set once the request has returned. The read-back is detached, so it
+        # may finish after the response; reads block until then, which forces
+        # that order instead of leaving it to thread scheduling.
+        self.responded = threading.Event()
 
     def create_vault_list(self, name: str) -> dict:
         if self.fail_on and self.fail_on in name:
@@ -1030,22 +1035,40 @@ class _FakeOF:
 
     def vault_media(self, *, limit=100, offset=0, type="all", list_id=None, **kw) -> dict:
         """Read one list back, paginated like OF's."""
+        if not self.responded.wait(timeout=10):
+            raise AssertionError("read-back ran inside the request")
         ids = self.members.get(int(list_id), []) if list_id is not None else []
         return {"list": [{"id": m} for m in ids[offset:offset + limit]]}
 
 
-async def _apply_with_of(aid: str, fake: _FakeOF, keep: int = 1) -> dict:
-    """Call the endpoint with the OF client faked at the _make_client seam."""
+async def _apply_with_of(aid: str, fake: _FakeOF, keep: int = 1,
+                         mirror: bool = True) -> dict:
+    """Call the endpoint with the OF client faked at the _make_client seam.
+
+    The membership read-back runs DETACHED (`create_task`) so the operator's
+    request does not wait on it. In the server the loop keeps running and it
+    finishes; here `asyncio.run` would cancel it on return, so whether the cache
+    got bound depended on thread scheduling (both mirror-membership cases
+    "xpassed" ~1 run in 4). Await every task the call spawned before returning
+    (bounded: a hang guard, not a tolerance).
+    """
     import automation_executor as ax
     import vault_ai_api
 
     orig = ax._make_client
     ax._make_client = lambda *_a, **_k: fake
+    before = asyncio.all_tasks()
+    fake.responded.clear()
+    payload = {"account_id": aid, "keep": keep, "confirm": True}
+    if mirror:
+        payload["mirror_to_of"] = True
     try:
-        return await vault_ai_api.apply_folder_plan(
-            {"account_id": aid, "keep": keep, "confirm": True, "mirror_to_of": True})
+        res = await vault_ai_api.apply_folder_plan(payload)
     finally:
         ax._make_client = orig
+        fake.responded.set()
+    await asyncio.wait_for(asyncio.gather(*(asyncio.all_tasks() - before)), timeout=10)
+    return res
 
 
 async def _of_list_ids(aid: str) -> dict[str, int | None]:
@@ -1062,19 +1085,7 @@ def case_apply_does_not_touch_of_unless_asked() -> None:
     aid = _next_account()
     _plan_seed(aid)
     fake = _FakeOF()
-
-    async def _run():
-        import automation_executor as ax
-        import vault_ai_api
-        orig = ax._make_client
-        ax._make_client = lambda *_a, **_k: fake
-        try:
-            return await vault_ai_api.apply_folder_plan(
-                {"account_id": aid, "keep": 1, "confirm": True})
-        finally:
-            ax._make_client = orig
-
-    asyncio.run(_run())
+    asyncio.run(_apply_with_of(aid, fake, mirror=False))
     assert fake.created == [] and fake.added == [], "wrote to OF without mirror_to_of"
     assert all(v is None for v in asyncio.run(_of_list_ids(aid)).values())
 
@@ -1107,10 +1118,6 @@ def case_mirror_rerun_reuses_the_same_of_list() -> None:
     assert fake.created == first_created, f"created duplicate OF lists: {fake.created}"
 
 
-@_harness.xfail("picker cache does not carry OF list membership — "
-                "OF has 5, grid shows 0; never ran until the run() guard landed; "
-                "flaps run-to-run (XPASS 2/6 serial runs 10-30)",
-                strict=False)
 def case_mirror_binds_membership_into_the_cache() -> None:
     """The picker resolves an OF folder by scanning each cached item's
     `of_folder_ids`, and that column is written ONLY by a full collect. So a
@@ -1137,9 +1144,6 @@ def case_mirror_binds_membership_into_the_cache() -> None:
         assert shown > 0, f"{made['name']}: folder mirrored but invisible in the picker"
 
 
-@_harness.xfail("cache drops items OF still holds — same root cause as "
-                "case_mirror_binds_membership_into_the_cache; flaps run-to-run",
-                strict=False)
 def case_mirror_membership_follows_of_not_the_plan() -> None:
     """OF's add is append-only, so a list carries the union of every generation
     of the rules that has run. The cache must agree with OF — otherwise the grid
@@ -1148,12 +1152,16 @@ def case_mirror_membership_follows_of_not_the_plan() -> None:
     _plan_seed(aid)
     fake = _FakeOF()
     res = asyncio.run(_apply_with_of(aid, fake))
-    lid = res["created"][0]["of_list_id"]
+    plan = asyncio.run(vault_scripts.plan_ai_folders(aid, keep=1))
+    planned = {f["name"]: {int(i["media_id"]) for i in f["items"]}
+               for f in plan["folders"]}
+    lid = next(c["of_list_id"] for c in res["created"] if c["name"] == "AI-mass")
 
     # a stray from an older ruleset, still on OF but not in the current plan
-    stray = 2001
-    if stray not in fake.members[lid]:
-        fake.members[lid].append(stray)
+    stray = 2004
+    assert stray not in planned["AI-mass"], planned["AI-mass"]
+    assert stray not in fake.members[lid], fake.members[lid]
+    fake.members[lid].append(stray)
 
     asyncio.run(_apply_with_of(aid, fake))
 

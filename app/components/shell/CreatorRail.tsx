@@ -6,7 +6,8 @@
  * the page's content. Below md the column hides and a creator select tops the content instead.
  *
  * The page keeps its own pick (`?creator=`, state, a context): `value` and `onChange` only show and change it.
- * `onAll` makes "All creators" a pick (`value` null while it is on), for pages that work across creators.
+ * `onAll` makes "All creators" a pick (`value` null while it is on), for pages that work across creators;
+ * `noAll` drops the "All creators" row entirely, for pages that always work on one creator.
  */
 
 import type { ReactNode } from "react";
@@ -21,6 +22,8 @@ export type CreatorPick = {
   value: string | null;
   onChange: (accountId: string) => void;
   onAll?: () => void;
+  /** No "All creators" row: the page always works on one creator. */
+  noAll?: boolean;
 };
 
 export function CreatorRail({ creators, top = "48px", className, children }: {
@@ -31,7 +34,7 @@ export function CreatorRail({ creators, top = "48px", className, children }: {
   className?: string;
   children: ReactNode;
 }) {
-  const { accounts, value, onChange, onAll } = creators;
+  const { accounts, value, onChange, onAll, noAll } = creators;
   return (
     // `.h-chat` on the column subtracts the header (`top`) too.
     <div className="flex min-h-0 min-w-0 flex-1" style={{ ["--shell-top" as string]: `calc(var(--chrome-top) + ${top})` }}>
@@ -40,6 +43,7 @@ export function CreatorRail({ creators, top = "48px", className, children }: {
         value={value}
         onChange={onChange}
         all={onAll && { on: value === null, pick: onAll }}
+        noAll={noAll}
         className="md:flex w-[260px] border-r border-border"
       />
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">

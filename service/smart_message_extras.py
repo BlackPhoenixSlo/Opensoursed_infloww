@@ -46,6 +46,8 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from isotime import parse_iso  # extras.parse_iso: automations/send_welcome.py reads it here
+
 log = logging.getLogger("of-relay.smart_message_extras")
 
 MEDIA_MAX = 40                   # OF's vault dialog: "N / 40 Selected"
@@ -60,19 +62,6 @@ _ALL_KEYS = ("media_ids", "price_cents", "frequency", "starts_at", "ends_at", "u
 
 def _int(v: Any) -> bool:
     return isinstance(v, int) and not isinstance(v, bool)
-
-
-def parse_iso(raw: Any) -> datetime | None:
-    """An ISO stamp as naive UTC, or None when absent or unreadable."""
-    if not isinstance(raw, str) or not raw.strip():
-        return None
-    try:
-        ts = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if ts.tzinfo is not None:
-        ts = ts.astimezone(timezone.utc).replace(tzinfo=None)
-    return ts
 
 
 def _iso(ts: datetime) -> str:

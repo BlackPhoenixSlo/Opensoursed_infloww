@@ -95,6 +95,7 @@ import {
 import { BRAND_NAME } from "@/lib/brand";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { initialBellState, notificationBellReducer, ofListOnScreen } from "./notificationBellReducer";
+import { NOTIF_PAGE_SIZE, fmtTime, notifPath, parseList, renderText } from "@/lib/notifText";
 
 /** The bell's tabs, shared with the full Notifications page
  *  (`components/NotificationsPage.tsx`), which reads the same request. */
@@ -136,25 +137,10 @@ export interface MergedItem {
   ts: number;
 }
 
-/** Rows per feed read (`notifPath`'s limit); a shorter page ends a Creator's feed. */
-export const NOTIF_PAGE_SIZE = 20;
 /** The cap on the merged list the bell shows, and the full page's "All". */
 export const NOTIF_ALL_CAP = 50;
 
-/** The feed's request for a tab: one page of rows from `offset` (the bell reads 0). */
-export function notifPath(type: string | null, offset = 0): string {
-  const q = new URLSearchParams({ limit: String(NOTIF_PAGE_SIZE), offset: String(offset) });
-  if (type) q.set("type", type);
-  return `/api/of/v2/users/notifications?${q.toString()}`;
-}
-
-export function parseList(raw: unknown): NotificationItem[] {
-  if (Array.isArray(raw)) return raw as NotificationItem[];
-  if (raw && typeof raw === "object" && Array.isArray((raw as { list?: unknown }).list)) {
-    return (raw as { list: NotificationItem[] }).list;
-  }
-  return [];
-}
+export { NOTIF_PAGE_SIZE, notifPath, parseList } from "@/lib/notifText";
 
 /** One feed read: its Creator, its offset and how many rows it returned
  *  (undefined until it has data). */
@@ -820,7 +806,7 @@ export function Row({
 }) {
   const user = n.user || n.fromUser || {};
   const avatar = proxyImage(user.avatar ?? null, accountId);
-  const text = renderText(n.text || n.description || "", n.replacePairs);
+  const text = renderText(n.text || n.description || "", n.replacePairs, "");
   const href = notificationHref(accountId, user);
   const page = size === "page";
   const body = (
@@ -982,32 +968,6 @@ function QuickReplyField({ accountId, fanId, name }: { accountId: string; fanId:
       {outcome && !outcome.ok && <div role="alert" className="text-xs text-err">{outcome.reason}</div>}
     </form>
   );
-}
-
-function renderText(raw: string, replacePairs?: Record<string, string>): string {
-  let s = raw;
-  if (replacePairs) {
-    for (const [k, v] of Object.entries(replacePairs)) {
-      s = s.split(k).join(v);
-    }
-  }
-  return s.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
-}
-
-function fmtTime(iso?: string): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  const ms = Date.now() - d.getTime();
-  const sec = Math.floor(ms / 1000);
-  if (sec < 60) return `${sec}s ago`;
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  const day = Math.floor(hr / 24);
-  if (day < 30) return `${day}d ago`;
-  return d.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
 export function useAccountLabelMap(accounts: ReturnType<typeof useActiveAccounts>): Map<string, string> {

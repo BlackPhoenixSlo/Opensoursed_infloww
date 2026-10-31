@@ -5,14 +5,14 @@ pytest (repo convention).
 
 Why this suite exists. A storyboard build is an mp4 download AND an ffmpeg
 process, so alone among the relay's admission lanes the scarce resource is CPU
-rather than descriptors, and the box has two cores. `server._storyboard_locks`
+rather than descriptors, and the box has two cores. `storyboard._storyboard_locks`
 stops the SAME video being built twice and says nothing at all about N DIFFERENT
 videos, which is the case that actually happens: a describe sweep runs
 `vault_ai_api._VISION_GLOBAL_CONCURRENCY` items at once and every un-warmed clip
 among them starts a build inside its vision slot.
 
 The lane therefore has to hold for BOTH entry points, and they are in different
-modules — `server._ensure_storyboard_frame` (a /img/scrub hover) and
+modules — `storyboard._ensure_storyboard_frame` (a /img/scrub hover) and
 `vault_frames.warm_one_sync` (the collect warm phase, and describe). A cap that
 only covered the hover would have left the expensive path exactly as it was, so
 these cases drive both and assert their SUM is bounded.
@@ -50,6 +50,7 @@ os.environ["STORYBOARD_BUILD_CONCURRENCY"] = "2"
 
 import admission  # noqa: E402
 import server  # noqa: E402 — after _harness (DB) + the store dir are bound
+import storyboard  # noqa: E402
 import vault_frames  # noqa: E402
 
 _BUILD_CAP = 2
@@ -86,8 +87,8 @@ def case_distinct_videos_are_capped():
     N different videos putting N ffmpeg processes on a 2-core box — that is what
     `_STORYBOARD_BUILD_CAP` is for, and it is the only CPU-bound lane here."""
     meter = _Meter()
-    real_dl = server._storyboard_download
-    real_extract = server._storyboard_extract_batch
+    real_dl = storyboard._storyboard_download
+    real_extract = storyboard._storyboard_extract_batch
 
     def _fake_download(request, u, src_path, session_id=None):
         meter.enter(u)
@@ -104,20 +105,20 @@ def case_distinct_videos_are_capped():
         finally:
             meter.leave()
 
-    server._storyboard_download = _fake_download
-    server._storyboard_extract_batch = _fake_extract
+    storyboard._storyboard_download = _fake_download
+    storyboard._storyboard_extract_batch = _fake_extract
     try:
         vids = [f"https://cdn2.onlyfans.com/files/v/vv/clip{n}/source.mp4" for n in range(12)]
 
         def _one(u: str) -> bool:
-            return server._ensure_storyboard_frame(
-                _FakeRequest(), u, server._video_path_hash(u), 0, hint_duration=10.0)
+            return storyboard._ensure_storyboard_frame(
+                _FakeRequest(), u, storyboard._video_path_hash(u), 0, hint_duration=10.0)
 
         with ThreadPoolExecutor(max_workers=len(vids)) as pool:
             oks = list(pool.map(_one, vids))
     finally:
-        server._storyboard_download = real_dl
-        server._storyboard_extract_batch = real_extract
+        storyboard._storyboard_download = real_dl
+        storyboard._storyboard_extract_batch = real_extract
 
     assert all(oks), f"a capped build must still produce its frame: {oks}"
     assert len(meter.calls) == len(vids), \
@@ -140,7 +141,7 @@ def case_the_describe_path_shares_the_build_lane():
     Both entry points are driven together here, because they take the SAME
     semaphore and the thing worth proving is that their SUM is bounded."""
     meter = _Meter()
-    real_extract = server._storyboard_extract_batch
+    real_extract = storyboard._storyboard_extract_batch
 
     def _fake_extract(src_path, dest, indices, dur):
         meter.enter(str(dest))
@@ -170,7 +171,7 @@ def case_the_describe_path_shares_the_build_lane():
                         pass
                 return _R()
 
-    server._storyboard_extract_batch = _fake_extract
+    storyboard._storyboard_extract_batch = _fake_extract
     try:
         vids = [f"https://cdn2.onlyfans.com/files/v/vv/warm{n}/source.mp4"
                 for n in range(10)]
@@ -181,7 +182,7 @@ def case_the_describe_path_shares_the_build_lane():
         with ThreadPoolExecutor(max_workers=len(vids)) as pool:
             outcomes = list(pool.map(_one, vids))
     finally:
-        server._storyboard_extract_batch = real_extract
+        storyboard._storyboard_extract_batch = real_extract
 
     assert all(o == "warmed" for o in outcomes), \
         f"a capped warm must still produce frames: {outcomes}"

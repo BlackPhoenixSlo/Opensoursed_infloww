@@ -43,7 +43,7 @@ import { useCallback, useLayoutEffect, useMemo, useRef, useSyncExternalStore } f
 import { useAccounts, usePlatformAccounts } from "@/hooks/useAccounts";
 import { useEmployeeKey } from "@/hooks/useEmployeeKey";
 import { fanIdFromParam, type FanId } from "@/lib/fanId";
-import { subscribeToStorage } from "@/lib/storageSync";
+import { readStorage, subscribeToStorage } from "@/lib/storageSync";
 
 export type FanTab = { accountId: string; fanId: FanId; name: string };
 
@@ -93,14 +93,6 @@ function parseTabs(raw: string | null): FanTab[] {
   return tabs;
 }
 
-function readRaw(storageKey: string | null): string | null {
-  return storageKey === null ? null : window.localStorage.getItem(storageKey);
-}
-
-function serverRaw(): string | null {
-  return null;
-}
-
 export function useFanTabs(): {
   tabs: FanTab[];
   stored: FanTab[];
@@ -111,7 +103,7 @@ export function useFanTabs(): {
 } {
   const employeeKey = useEmployeeKey();
   const storageKey = employeeKey === null ? null : `${KEY_PREFIX}${employeeKey}`;
-  const raw = useSyncExternalStore(subscribe, () => readRaw(storageKey), serverRaw);
+  const raw = useSyncExternalStore(subscribe, () => readStorage(storageKey), () => null);
   const stored = useMemo(() => parseTabs(raw), [raw]);
 
   // "Loaded" is a list the accounts read has answered with: a read that is
@@ -135,7 +127,7 @@ export function useFanTabs(): {
    *  then throws instead of being dropped or filed under the wrong key. */
   const update = useCallback(<R extends string>(change: (prev: FanTab[]) => FanTab[] | R): R | null => {
     if (storageKey === null) throw new Error("useFanTabs: the Employee is unresolved; gate on employeeKey");
-    const next = change(parseTabs(readRaw(storageKey)));
+    const next = change(parseTabs(readStorage(storageKey)));
     if (typeof next === "string") return next;
     const stored: StoredTab[] = next.map((t) => ({ accountId: t.accountId, fanId: String(t.fanId), name: t.name }));
     window.localStorage.setItem(storageKey, JSON.stringify(stored));

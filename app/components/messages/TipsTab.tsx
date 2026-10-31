@@ -9,19 +9,18 @@
  * TopTippersCard — when it changes, we adopt it into local state so the
  * filter input reflects the click. The user can still edit it after.
  *
- * Pagination is keyset (transaction_id DESC) via useTipsList; the
- * sentinel triggers fetchNextPage() via IntersectionObserver and a
- * manual "Load more" button is rendered as the keyboard escape hatch.
+ * Pagination is keyset (transaction_id DESC) via useTipsList, paged by
+ * InfiniteListFooter.
  * "Export CSV" downloads the whole filtered set, not the loaded pages
  * (`/admin/tips-list?format=csv`, as the PPV tab's).
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import CsvExportButton from "@/components/messages/CsvExportButton";
 import MessagesFilters from "@/components/messages/MessagesFilters";
 import TipRow from "@/components/messages/TipRow";
-import { Button } from "@/components/ui/primitives";
+import InfiniteListFooter from "@/components/messages/InfiniteListFooter";
 import { buildTipsListQuery, useTipsList } from "@/hooks/useTipsList";
 import { cn } from "@/lib/utils";
 import { TableSkeleton } from "@/components/ui/Skeleton";
@@ -59,22 +58,6 @@ export default function TipsTab({ from, to, presetFanQuery }: Props) {
     () => (q.data?.pages ?? []).flatMap((p) => p.rows),
     [q.data],
   );
-
-  const sentinelRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    const el = sentinelRef.current;
-    if (!el) return;
-    const io = new IntersectionObserver(
-      (entries) => {
-        if (entries[0]?.isIntersecting && q.hasNextPage && !q.isFetchingNextPage) {
-          q.fetchNextPage();
-        }
-      },
-      { rootMargin: "200px" },
-    );
-    io.observe(el);
-    return () => io.disconnect();
-  }, [q.hasNextPage, q.isFetchingNextPage, q.fetchNextPage]);
 
   return (
     <div className="space-y-3">
@@ -126,27 +109,12 @@ export default function TipsTab({ from, to, presetFanQuery }: Props) {
             <TipRow key={r.transaction_id} row={r} />
           ))}
 
-          <div ref={sentinelRef} className="h-4" />
-
-          {q.hasNextPage && (
-            <div className="flex justify-center pt-2">
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                onClick={() => q.fetchNextPage()}
-                disabled={q.isFetchingNextPage}
-              >
-                {q.isFetchingNextPage ? "Loading…" : "Load more"}
-              </Button>
-            </div>
-          )}
-
-          {!q.hasNextPage && rows.length > 0 && (
-            <div className="text-center text-[11px] text-fg-dim py-2">
-              · end of results ·
-            </div>
-          )}
+          <InfiniteListFooter
+            hasNextPage={q.hasNextPage}
+            isFetchingNextPage={q.isFetchingNextPage}
+            fetchNextPage={q.fetchNextPage}
+            endLabel="end of results"
+          />
         </div>
       )}
     </div>

@@ -14,7 +14,10 @@ the inbox tab got every DM of its 5 models with no `resync`; unread counts per
 thread match (exact for threads no chatter touched, bounded for the rest); tips
 and PPV purchases each one ledger row; every chatter reply one outbound row;
 every marker DM renders in the tabs that show its thread; no browser tab crashed;
-no 5xx anywhere; a manual send's chat-list bump (lib/chatsCache in node, on the
+no 5xx anywhere; every add into the (hidden) Group tab mid-flood, over the real
+BroadcastChannel from a same-origin page in its browser context, is acked exactly
+once and truthfully (ok exactly when the fan is in the tab's registry after it,
+held slots kept in order, the cap kept); a manual send's chat-list bump (lib/chatsCache in node, on the
 owner's real head pages and a real send per model) heads the sent fan's row in its
 Creator's caches, fan id string or number, other Creators' untouched. Whether each
 marker also became an All Models list row is a budget (list-upd), not an invariant:
@@ -29,7 +32,19 @@ labelled where the measured value matches it.
 
 Break-it-once: sse-fanout-reorders-within-thread (fan-out delivers a fan's DM
 after their next one). Nothing is lost and the DB is right, so only the
-per-thread order check on the streams can catch it.
+per-thread order check on the streams can catch it. --fault=group-ack-before-apply
+(lib/group_faults.py): the Group tab acks an add before applying it.
+
+Declared bypass: headless Chromium never hides a page (measured: visibilityState
+stays "visible" after another page of the context is brought to front, old and new
+headless), so the Group tab's hidden state is emulated (document.visibilityState /
+hidden overridden, visibilitychange fired; unhidden the same way, which runs the
+page's real wake path). A real background tab's timer throttling is not reproduced.
+Declared bypass: the adds come from a bare same-origin page posting `add` messages
+straight onto the BroadcastChannel, not through a source tab's openGroupTab routing
+(which would focus the tab holding a fan, and open an overflow tab rather than add
+past the cap): the bursts deliberately add a held fan and more fans than there is
+room for, to exercise the tab's ack rule, which that routing never sends it.
 """
 from __future__ import annotations
 
@@ -37,6 +52,7 @@ import asyncio
 import itertools
 import json
 import os
+import re
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -47,6 +63,7 @@ from slop.actors import chatter, fan_dm, manager, ui
 from slop.lib import app_ts
 from slop.lib.chats_cache_faults import SEND_BUMP
 from slop.lib.events_faults import BUS_BACKOFF, BUS_NOTHING_DROPPED, BUS_ORDER
+from slop.lib.group_faults import GROUP_HIDDEN_ACK
 
 PROFILE = "multi_agency_big_models"
 UI = True
@@ -107,6 +124,45 @@ TABS = ("inbox", "popout-a", "popout-b", "group")
 EVENTS_TS = Path(__file__).resolve().parents[1] / "lib" / "events_ts.mjs"
 CHATS_CACHE_TS = Path(__file__).resolve().parents[1] / "lib" / "chats_cache_ts.mjs"
 SEND_BUMP_LIMIT, SEND_BUMP_PAGE = 100, 20  # head page read, rows per cache page
+# Adds into the hidden Group tab, once per stage mid-flood: new fans of the UI Agency's
+# normal Creators (the first burst more than its free slots, so some are refused) plus one
+# held fan under the other id shape. The cap is read from the app at group_setup.
+GROUP_CHANNEL_TS = Path(__file__).resolve().parents[2] / "app" / "lib" / "groupChannel.ts"
+GROUP_NEW_FANS = (7, 2)        # first stage, every later stage
+GROUP_CALL_S = 30              # one sender / registry call; the ack wait inside it is GROUP_ACK_S
+GROUP_ACK_S = GROUP_CALL_S - 5
+GROUP_REG = """(id) => { try { return JSON.parse(localStorage.getItem('chatterly:group-tab:' + id)); }
+  catch (e) { return null; } }"""
+# Every add posted in one task, as a source tab's openGroupTab does; every ack kept per reqId
+# (a second one would show), waiting until each has one (or GROUP_ACK_S: `timedOut`), then
+# 300 ms for late extras.
+GROUP_SEND = """async ([tabId, adds, waitMs]) => {
+  const ch = new BroadcastChannel('chatterly-group');
+  const reqIds = adds.map((_, i) => 'slop-g-' + i + '-' + Math.random().toString(36).slice(2));
+  const got = {};
+  const timedOut = await new Promise((res) => {
+    ch.onmessage = (e) => {
+      const m = e.data;
+      if (!m || m.type !== 'add-ack' || !reqIds.includes(m.reqId)) return;
+      (got[m.reqId] = got[m.reqId] || []).push(m.ok);
+      if (reqIds.every((r) => got[r])) setTimeout(() => res(false), 300);
+    };
+    setTimeout(() => res(true), waitMs);
+    reqIds.forEach((reqId, i) => ch.postMessage(
+      { type: 'add', tabId, reqId, accountId: adds[i][0], fanId: adds[i][1] }));
+  });
+  ch.close();
+  return { acks: reqIds.map((r) => got[r] || []), timedOut };
+}"""
+# Emulated page visibility (the declared bypass above): override, fire, report.
+GROUP_HIDE = """(hidden) => {
+  if (hidden) {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+  } else { delete document.visibilityState; delete document.hidden; }
+  document.dispatchEvent(new Event('visibilitychange'));
+  return document.visibilityState;
+}"""
 BUS_PLAN = {"scope": "all", "warm_ms": 2000, "outages": [6, 2], "pause_ms": 3000, "tail_ms": 3000,
             "reconnect_ms": 3000, "scale": 100, "timeout_ms": 30000}
 
@@ -205,6 +261,8 @@ async def run(ctx) -> None:
 
     bus_task: asyncio.Task | None = None
     bus_out: dict = {"error": "the load never started"}
+    group: dict | None = None  # None: no UI
+    group_bursts: list[dict] = []
     cm = ui.owner_tabs(ctx, len(TABS)) if ctx.app else None
     pages = await cm.__aenter__() if cm else None
     try:
@@ -249,6 +307,7 @@ async def run(ctx) -> None:
             for name in TABS:
                 await ui.take(tab[name])  # drop the page-load samples
             ctx.metric("ui_warm_seconds", round(time.time() - t0, 1))
+            group = await group_setup(ctx, tab["group"], w, ui_models, big, pools)
 
         paced.rates = {c["id"]: normal_dpm for c in creators if not c["big"]}
         paced.start()
@@ -277,7 +336,10 @@ async def run(ctx) -> None:
                 markers.append({"stage": st["name"], "account_id": f["account_id"], "fan_id": f["id"],
                                 "message_id": mid, "text": text, "t0": t_inj, "status": r.status_code,
                                 "watchers": watchers})
+            burst = asyncio.create_task(group_burst(ctx, group, st["name"], i)) if group else None
             await asyncio.sleep(stage_s / 2)
+            if burst:
+                group_bursts.append(await burst)
             st["t1"] = time.time() * 1000
             # Between stages nothing is attributed to a stage: a slow tab read here must
             # not stretch the stage it follows (the load keeps running at its rate).
@@ -348,9 +410,109 @@ async def run(ctx) -> None:
     await assess(ctx, w, paced, chatters, listeners, markers, stages, tab_takes, final_rx, quiet,
                  seeded_unread, owner_of, ui_models, big, lag_samples, ui_read, tab)
     assess_stall(ctx, stall)
+    assess_group(ctx, group, group_bursts, len(stages))
     await assess_telemetry(ctx, paced.sent + [m for m in markers if m["status"] < 300], quiet,
                            chatters.actions, ui_read_calls[0])
     await assess_send_bump(ctx, ui_models)
+
+
+async def group_setup(ctx, page, w, ui_models: list[str], big: list[str], pools: dict) -> dict:
+    """The Group tab's id, a sender page in its browser context (a same-origin static asset with no
+    app code, as a source tab is another page of the same browser) and the fans the bursts add."""
+    if not (m := re.search(r"export const GROUP_SLOT_CAP = (\d+);", GROUP_CHANNEL_TS.exists() and GROUP_CHANNEL_TS.read_text() or "")):
+        return {"error": f"no `export const GROUP_SLOT_CAP = <n>;` in {GROUP_CHANNEL_TS}"}
+    tab_id = await tab_call(page, "group id",
+                            lambda p: p.evaluate("() => sessionStorage.getItem('chatterly:group-tab-id')"))
+    if not tab_id:
+        return {"error": "the Group tab has no tab id"}
+    sender = await page.context.new_page()
+    await sender.goto(f"{ctx.app}/icon.svg", wait_until="load")
+    rng = w.rng("scenario:big-model-dm-flood:group")
+    aids = [a for a in ui_models if a not in big] or ui_models
+    fans = [(a, f["id"]) for a in aids for f in pools[a][:50]]
+    rng.shuffle(fans)
+    return {"page": page, "sender": sender, "tab_id": tab_id, "fans": fans, "cap": int(m.group(1))}
+
+
+async def group_burst(ctx, g: dict, stage: str, i: int) -> dict:
+    """One burst into the hidden Group tab while the stage's load runs: hide it, post new fans plus
+    one held fan under the other id shape, read its registry, unhide it. Never raises."""
+    out: dict = {"stage": stage}
+    if "error" in g:
+        return out | {"error": g["error"]}
+    page, sender, tab_id = g["page"], g["sender"], g["tab_id"]
+    try:
+        before = (await asyncio.wait_for(sender.evaluate(GROUP_REG, tab_id), GROUP_CALL_S) or {}).get("slots", [])
+        n = GROUP_NEW_FANS[0] if i == 0 else GROUP_NEW_FANS[1]
+        start = 0 if i == 0 else GROUP_NEW_FANS[0] + (i - 1) * GROUP_NEW_FANS[1]
+        new = [list(x) for x in g["fans"][start:start + n]]
+        adds = new[:n // 2] + ([[before[0]["accountId"], str(before[0]["fanId"])]] if before else []) + new[n // 2:]
+        if i == 0:
+            await tab_call(page, "screenshot", lambda p, nm: ui.shot(ctx, p, nm, 55_000), "group-burst-trigger")
+        out |= {"before": before, "adds": adds}
+        out["hidden"] = await tab_call(page, "hide", lambda p: p.evaluate(GROUP_HIDE, True))
+        try:
+            t0 = time.time()
+            sent = await asyncio.wait_for(sender.evaluate(GROUP_SEND, [tab_id, adds, GROUP_ACK_S * 1000]), GROUP_CALL_S)
+            out["acks"], out["ack_timed_out"] = sent["acks"], sent["timedOut"]
+            out["ack_s"] = round(time.time() - t0, 2)
+            out["after"] = (await asyncio.wait_for(sender.evaluate(GROUP_REG, tab_id), GROUP_CALL_S)
+                            or {}).get("slots")
+        finally:
+            out["shown"] = await tab_call(page, "unhide", lambda p: p.evaluate(GROUP_HIDE, False))
+    except Exception as e:  # noqa: BLE001 — a stalled tab / sender: the check fails on it, the run goes on
+        out["error"] = f"{type(e).__name__}: {e}"[:500]
+    return out
+
+
+def group_expect(before: list, adds: list, cap: int) -> tuple[list[str], list[tuple]]:
+    """The one add rule (app/app/group/slotsReducer.ts), per add in order: "held" (the fan is already in the
+    list, either id shape: ok, list unchanged), "refused" (`cap` reached: not ok), "taken" (appended: ok).
+    Returns the verdicts and the list the tab should hold after."""
+    held = [(s["accountId"], str(s["fanId"])) for s in before]
+    verdicts = []
+    for a, f in adds:
+        k = (a, str(f))
+        if k in held:
+            verdicts.append("held")
+        elif len(held) >= cap:
+            verdicts.append("refused")
+        else:
+            held.append(k)
+            verdicts.append("taken")
+    return verdicts, held
+
+
+def assess_group(ctx, g: dict | None, bursts: list[dict], n_stages: int) -> None:
+    """Per burst: the tab was hidden when the adds came; every add got exactly one ack within GROUP_ACK_S (a
+    timeout is its own failure, not a wrong ack); each ack is ok exactly when the add rule's verdict is held or
+    taken, against the slots the tab held; the registry after holds exactly the rule's list (held slots first, in
+    order; taken fans appended in send order; refused ones absent; no duplicate, the cap kept). Over the run: one
+    burst per stage, some taken and some refused."""
+    if g is None:
+        ctx.skip(GROUP_HIDDEN_ACK, "no UI (--no-ui): no Group tab")
+        return
+    bad, timed_out, taken, refused = [], [], 0, 0
+    for b in bursts:
+        if "error" in b:
+            bad.append(b)
+            continue
+        verdicts, want = group_expect(b["before"], b["adds"], g["cap"])
+        taken += verdicts.count("taken")
+        refused += verdicts.count("refused")
+        want_oks = [v != "refused" for v in verdicts]
+        # One type per field: every add's acks as a list ([] none, [ok] one, more: a duplicate ack).
+        b["verdicts"], b["want_oks"], b["got_oks"] = verdicts, want_oks, b["acks"]
+        got = [(s["accountId"], str(s["fanId"])) for s in (b["after"] or [])]
+        brief = {k: b[k] for k in ("stage", "hidden", "shown", "verdicts", "got_oks", "ack_s")} | {"want": want, "got": got}
+        if b["ack_timed_out"]:
+            timed_out.append(brief)
+        elif b["hidden"] != "hidden" or b["shown"] != "visible" or b["acks"] != [[ok] for ok in want_oks] or got != want:
+            bad.append(brief)
+    ctx.metric("group_bursts", [{k: v for k, v in b.items() if k not in ("before", "after")} for b in bursts])
+    ctx.check(GROUP_HIDDEN_ACK, len(bursts) == n_stages and not bad and not timed_out and taken > 0 and refused > 0,
+              bursts=len(bursts), stages=n_stages, taken=taken, refused=refused, wrong=bad[:3],
+              ack_timeouts=timed_out[:3], ack_s=[b.get("ack_s") for b in bursts])
 
 
 async def assess_send_bump(ctx, models: list[str]) -> None:

@@ -62,6 +62,7 @@ os.environ["IMG_FETCH_CONCURRENCY"] = "4"
 
 import admission  # noqa: E402
 import server  # noqa: E402 — after _harness (DB) + the store dirs are bound
+import img_api  # noqa: E402
 
 _CAP = 4
 
@@ -174,7 +175,7 @@ def _fire(urls: list[str], *, hold_s: float = 0.05,
     server._get_client = lambda *a, **kw: _FakeClient(meter, hold_s)
     try:
         def _one(u: str):
-            resp = server.proxy_image(_FakeRequest(headers), u=u)
+            resp = img_api.proxy_image(_FakeRequest(headers), u=u)
             _drain(resp)
             return resp
 
@@ -209,13 +210,13 @@ def case_a_cache_hit_takes_no_slot():
     """A warm tile must not queue behind cold ones. Saturate the gate, then ask
     for something already on disk and require an immediate answer."""
     warm = _url("warm")
-    server._img_cache_write(warm, "image/jpeg", b"already-here")
+    img_api._img_cache_write(warm, "image/jpeg", b"already-here")
 
     held = [admission.IMG_FETCH.enter('saturate') for _ in range(_CAP)]
     assert all(held), "could not saturate the gate; the rest of this case is meaningless"
     try:
         started = time.monotonic()
-        resp = server.proxy_image(_FakeRequest(), u=warm)
+        resp = img_api.proxy_image(_FakeRequest(), u=warm)
         elapsed = time.monotonic() - started
         assert resp.headers.get("X-Img-Cache") == "HIT", \
             f"a warm tile did not serve from disk: {resp.headers.get('X-Img-Cache')!r}"
@@ -238,7 +239,7 @@ def case_the_herd_collapses():
     handed over only after the cache write, so the waiter it wakes cannot see an
     empty store. Release before the write and this case fails with 2 calls."""
     u = _url("herd")
-    before = server._img_cache_collapsed
+    before = img_api._img_cache_collapsed
     meter = _Meter()
     real_get_client = server._get_client
     real_lane = admission.IMG_FETCH
@@ -246,7 +247,7 @@ def case_the_herd_collapses():
     admission.IMG_FETCH = admission.Lane('img_fetch', 'NO_SUCH_ENV', 1, 15.0)
     try:
         def _one(_i):
-            resp = server.proxy_image(_FakeRequest(), u=u)
+            resp = img_api.proxy_image(_FakeRequest(), u=u)
             _drain(resp)
 
         with ThreadPoolExecutor(max_workers=2) as pool:
@@ -265,7 +266,7 @@ def case_the_herd_collapses():
         f"two callers for ONE url made {len(meter.calls)} upstream fetches — "
         "the waiter is not re-reading the store inside its slot"
     )
-    assert server._img_cache_collapsed > before, \
+    assert img_api._img_cache_collapsed > before, \
         "the collapse happened but was never counted (nothing would show it in prod)"
 
 

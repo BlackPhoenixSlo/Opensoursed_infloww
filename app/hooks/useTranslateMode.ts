@@ -10,58 +10,17 @@
  * button (ChatSurface) and every mounted MessageList stay in sync.
  */
 
-import { useEffect, useState } from "react";
-
 import { useTranslationAllowed } from "@/lib/appliedSettings";
+import { createStoredFlag } from "@/lib/storageSync";
 
 const STORAGE_KEY = "chatterly:translate-en";
 const EVENT = "chatterly-translate-mode-change";
 
-// Module-level source of truth. localStorage is best-effort persistence only —
-// if its write throws (quota / private mode), same-tab instances still agree
-// via this variable, so the button can never show ON while the thread stays
-// untranslated. null = not read yet this page load.
-let current: boolean | null = null;
-
-export function readTranslateMode(): boolean {
-  if (current !== null) return current;
-  if (typeof window === "undefined") return false;
-  try {
-    current = window.localStorage.getItem(STORAGE_KEY) === "1";
-  } catch {
-    current = false;
-  }
-  return current;
-}
-
-export function useTranslateMode(): [boolean, (next: boolean) => void] {
-  const [val, setVal] = useState<boolean>(() => readTranslateMode());
-
-  useEffect(() => {
-    const onLocal = () => setVal(readTranslateMode());
-    // Cross-tab flip: another tab wrote localStorage — invalidate the module
-    // cache so the re-read picks up the other tab's value.
-    const onStorage = () => { current = null; setVal(readTranslateMode()); };
-    window.addEventListener(EVENT, onLocal);
-    window.addEventListener("storage", onStorage);
-    return () => {
-      window.removeEventListener(EVENT, onLocal);
-      window.removeEventListener("storage", onStorage);
-    };
-  }, []);
-
-  function update(next: boolean) {
-    current = next;
-    setVal(next);
-    try {
-      if (next) window.localStorage.setItem(STORAGE_KEY, "1");
-      else window.localStorage.removeItem(STORAGE_KEY);
-    } catch { /* quota — silent; module state still flipped */ }
-    window.dispatchEvent(new Event(EVENT));
-  }
-
-  return [val, update];
-}
+// Default OFF; on is stored as "1", off removes the key. localStorage is
+// best-effort persistence only — if its write throws (quota / private mode),
+// the flag holds the choice in memory so same-tab readers still agree, and the
+// button can never show ON while the thread stays untranslated.
+export const { read: readTranslateMode, use: useTranslateMode } = createStoredFlag(STORAGE_KEY, EVENT, false);
 
 /** The effective translate mode in a chat with the Creator `accountId`: the
  *  stored mode AND the Agency's AI translation switch (spec phase-04, stories

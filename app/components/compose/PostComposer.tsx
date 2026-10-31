@@ -28,10 +28,10 @@ import { recordSchedule } from "@/lib/scheduleHistory";
 
 import { sanitizePriceInput } from "@/lib/priceInput";
 
-import { AccountPicker } from "./AccountPicker";
 import { MediaTray } from "./MediaTray";
 import { ScheduleField } from "./ScheduleField";
 import { FanOutResults, FanOutStatus } from "./FanOutResults";
+import { IncludeModelsChips } from "./IncludeModelsChips";
 import { fanOutLocked, includedTargets, runFanOut } from "./fanOut";
 import {
   buildPostBody, initPostForm, postComposerReducer, postFieldAction, postPrice, sendAccount, validatePost,
@@ -63,7 +63,7 @@ export function PostComposer({
   const activeAccounts = usePlatformAccounts();
   // The composers' shared include set (useAllModelsInclude) — a model
   // un-checked in any composer's chip strip is omitted from a broadcast here.
-  const { isIncluded, toggle: toggleAllModelsInclude } = useAllModelsInclude();
+  const { isIncluded } = useAllModelsInclude();
   // The whole form (postComposerReducer).
   const [form, dispatch] = useReducer(postComposerReducer, null, initPostForm);
   const { allModels, text, attached, price, previewCount, schedule, progress, results, taggedCreators } = form;
@@ -86,7 +86,7 @@ export function PostComposer({
   // Honour the shared include set: models the user unchecked in a
   // composer's chip strip are dropped from the broadcast fan-out; a model
   // that already took this post (a partial fan-out's success) is not re-posted.
-  const { included: broadcastAccounts, targets } = includedTargets(activeAccounts, isIncluded, results);
+  const { targets } = includedTargets(activeAccounts, isIncluded, results);
 
   // The one validity check — the Post button, its reason line and the
   // mutation all read it.
@@ -179,60 +179,11 @@ export function PostComposer({
         </header>
 
         <div className="flex-1 overflow-y-auto p-4 space-y-3">
-          <label className="flex items-center gap-2 text-xs cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={allModels}
-              disabled={locked}
-              onChange={(e) => dispatch({ type: "setAllModels", on: e.target.checked })}
-            />
-            <span className="font-medium">Post from ALL models</span>
-            <span className="text-fg-dim">
-              ({broadcastAccounts.length}/{activeAccounts.length} included)
-            </span>
-          </label>
-
-          {allModels ? (
-            <>
-              <div className="text-[11px] text-fg-dim border border-dashed border-border rounded-md py-2 px-3">
-                All-models posts are text-only for now — uploads from
-                computer are temporarily disabled.
-              </div>
-              {/* Creator picker — click a chip to drop / re-add a model
-               *  from the broadcast (and from the all-models aggregate
-               *  everywhere else). Mirrors MassMessageComposer. */}
-              <div className="flex flex-wrap gap-1.5">
-                {activeAccounts.map((a) => {
-                  const inc = isIncluded(a.id);
-                  return (
-                    <button
-                      key={a.id}
-                      type="button"
-                      onClick={() => toggleAllModelsInclude(a.id)}
-                      title={inc ? "Click to exclude from broadcast" : "Click to include"}
-                      className={
-                        "flex items-center gap-1.5 px-2 py-1 rounded-full text-[11px] border transition-colors " +
-                        (inc
-                          ? "bg-bg-elev-1 border-border text-fg"
-                          : "bg-bg border-border/60 text-fg-dim line-through opacity-60")
-                      }
-                    >
-                      <span
-                        className="w-2 h-2 rounded-full shrink-0"
-                        style={{ background: a.color || "#666" }}
-                      />
-                      <span>{a.nickname || a.id}</span>
-                    </button>
-                  );
-                })}
-                {activeAccounts.length === 0 && (
-                  <span className="text-[11px] text-fg-dim">No active sessions.</span>
-                )}
-              </div>
-            </>
-          ) : (
-            <AccountPicker value={accountId} onChange={setAccountId} />
-          )}
+          <IncludeModelsChips
+            noun="post" allModels={allModels} locked={locked}
+            onAllModels={(on) => dispatch({ type: "setAllModels", on })}
+            accountId={accountId} onAccount={setAccountId}
+          />
 
           {/* The content — locked (disabled) once a model took the post. */}
           <fieldset disabled={locked} className="min-w-0 space-y-3 disabled:opacity-60">

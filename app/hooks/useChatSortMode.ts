@@ -22,7 +22,7 @@
  * (docs/spec/phase-02-fan-list-pane.md, Interfaces).
  */
 
-import { useEffect, useState } from "react";
+import { createStoredValue } from "@/lib/storageSync";
 
 export type ChatSortMode = "recent" | "spend" | "spend-unread" | "hybrid";
 
@@ -33,35 +33,13 @@ function isMode(v: unknown): v is ChatSortMode {
   return v === "recent" || v === "spend" || v === "spend-unread" || v === "hybrid";
 }
 
-export function readChatSortMode(): ChatSortMode {
-  if (typeof window === "undefined") return "recent";
-  const raw = window.localStorage.getItem(STORAGE_KEY);
-  return isMode(raw) ? raw : "recent";
-}
-
-export function useChatSortMode(): [ChatSortMode, (next: ChatSortMode) => void] {
-  const [val, setVal] = useState<ChatSortMode>(() => readChatSortMode());
-
-  useEffect(() => {
-    const onChange = () => setVal(readChatSortMode());
-    window.addEventListener(EVENT, onChange);
-    window.addEventListener("storage", onChange);
-    return () => {
-      window.removeEventListener(EVENT, onChange);
-      window.removeEventListener("storage", onChange);
-    };
-  }, []);
-
-  function update(next: ChatSortMode) {
-    setVal(next);
-    try {
-      window.localStorage.setItem(STORAGE_KEY, next);
-      window.dispatchEvent(new Event(EVENT));
-    } catch { /* quota — silent */ }
-  }
-
-  return [val, update];
-}
+export const { read: readChatSortMode, use: useChatSortMode } = createStoredValue<ChatSortMode>(
+  STORAGE_KEY,
+  EVENT,
+  "recent",
+  (raw) => (isMode(raw) ? raw : "recent"),
+  (v) => v,
+);
 
 /** Hybrid score: spend dollars weighted by an exponential decay against
  *  hours since the fan's last interaction. Half-life is tiered by chat

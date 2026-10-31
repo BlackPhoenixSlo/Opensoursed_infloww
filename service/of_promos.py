@@ -29,6 +29,7 @@ import asyncio
 import logging
 
 import automation_executor as ax
+from of_coerce import cents_or_zero
 
 log = logging.getLogger("of-relay.of_promos")
 
@@ -59,11 +60,7 @@ def coerce_of_id(v) -> int | None:
         return None
 
 
-def to_cents(v) -> int:
-    try:
-        return int(round(float(v) * 100))
-    except (TypeError, ValueError):
-        return 0
+to_cents = cents_or_zero
 
 
 def normalise_of_promo(item: dict) -> dict:

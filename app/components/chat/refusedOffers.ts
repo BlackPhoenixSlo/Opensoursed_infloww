@@ -18,7 +18,8 @@
  * (`revokeUnlessHeld`), dismissing one revokes those nothing else shows
  * (`dismissRefusedOffer`). An identity switch drops them all and bumps the
  * `epoch` (`clearRefusedOffers`, from `clearIdentityMemory` in UserContext),
- * so a refusal of the previous identity's send landing after it is dropped.
+ * so a refusal of the previous identity's send landing after it is dropped,
+ * its previews revoked (`offerRefusedSchedule`).
  */
 
 import { useSyncExternalStore } from "react";
@@ -70,8 +71,8 @@ export function refusedOffersReducer(s: RefusedOffersState, a: RefusedOffersActi
   }
 }
 
-/** The offer was written in this chat (a Composer without a Fan has none). */
-export function isOfferHere(o: RefusedOffer, accountId: string | null, fanId: FanId | null): boolean {
+/** The offer was written in this chat. */
+export function isOfferHere(o: RefusedOffer, accountId: string | null, fanId: FanId): boolean {
   return o.accountId === accountId && sameUserId(o.fanId, fanId);
 }
 
@@ -90,6 +91,18 @@ export function previewsFreedBy(s: RefusedOffersState, id: number, shown: Array<
   const kept = heldPreviews(refusedOffersReducer(s, { type: "removed", id }));
   shown.forEach((u) => u && kept.add(u));
   return offer.draft.attached.map((m) => m._localPreview).filter((u): u is string => !!u && !kept.has(u));
+}
+
+/** The blob previews action `a` drops unoffered — a refusal the reducer
+ *  turns away (its send started before an identity switch) — but those a held
+ *  offer or `shown` (the Composer's tiles) still shows; none otherwise. */
+export function previewsDroppedBy(
+  s: RefusedOffersState, a: RefusedOffersAction, shown: Array<string | undefined>,
+): string[] {
+  if (a.type !== "refused" || refusedOffersReducer(s, a) !== s) return [];
+  const kept = heldPreviews(s);
+  shown.forEach((u) => u && kept.add(u));
+  return a.offer.draft.attached.map((m) => m._localPreview).filter((u): u is string => !!u && !kept.has(u));
 }
 
 /* ── the module's one state ─────────────────────────────────────────────── */
@@ -125,6 +138,19 @@ export function revokeUnlessHeld(urls: Array<string | undefined>): void {
 export function dismissRefusedOffer(offer: RefusedOffer, shown: Array<string | undefined>): string[] {
   const gone = previewsFreedBy(state, offer.id, shown);
   dispatchRefusedOffers({ type: "removed", id: offer.id });
+  revokePreviews(gone);
+  return gone;
+}
+
+/** Offer a refused schedule; one from before an identity switch is dropped
+ *  and its previews nothing else shows (`shown`: the Composer's tiles) are
+ *  revoked. Returns those revoked. */
+export function offerRefusedSchedule(
+  offer: Omit<RefusedOffer, "id">, epoch: number, shown: Array<string | undefined>,
+): string[] {
+  const action: RefusedOffersAction = { type: "refused", offer, epoch };
+  const gone = previewsDroppedBy(state, action, shown);
+  dispatchRefusedOffers(action);
   revokePreviews(gone);
   return gone;
 }

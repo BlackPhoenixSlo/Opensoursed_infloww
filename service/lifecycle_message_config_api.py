@@ -48,6 +48,7 @@ from sqlalchemy import select
 import smart_message_extras as extras
 from account_page import subscribe_price_cents
 from auth import assert_account_owned
+from automation_rule_read import primary_rule, rule_steps, rules_of_kind
 from automation_rules_api import ensure_kind_rule
 from automations.lifecycle_messages import (
     DEFAULT_FREQUENCY, DISCOUNT_KINDS, FREE_PAGE_REFUSAL, HOURS, KINDS, PAID_ONLY,
@@ -140,28 +141,6 @@ def _validate(kind: str, cfg: Any) -> dict[str, Any]:
     return out
 
 
-async def _rules(s, account_id: str, kind: str) -> list[AutomationRule]:
-    return list((await s.execute(
-        select(AutomationRule).where(
-            AutomationRule.account_id == account_id,
-            AutomationRule.kind == kind).order_by(AutomationRule.id)
-    )).scalars())
-
-
-def _primary(rules: list[AutomationRule]) -> AutomationRule | None:
-    return next((r for r in rules if r.is_enabled), rules[0] if rules else None)
-
-
-def _steps(rule: AutomationRule | None) -> dict:
-    if rule is None or not rule.steps_json:
-        return {}
-    try:
-        steps = json.loads(rule.steps_json)
-    except Exception:
-        return {}
-    return steps if isinstance(steps, dict) else {}
-
-
 def _first_text(messages: list[dict]) -> str:
     return messages[0]["variants"][0] if messages else ""
 
@@ -169,7 +148,7 @@ def _first_text(messages: list[dict]) -> str:
 def _public(kind: str, rules: list[AutomationRule]) -> dict[str, Any]:
     if not rules:
         return _defaults(kind)
-    steps = _steps(_primary(rules))
+    steps = rule_steps(primary_rule(rules))
     messages = messages_of(steps)
     return {"enabled": any(r.is_enabled for r in rules),
             "text": _first_text(messages),
@@ -201,7 +180,7 @@ async def get_lifecycle_message_config(
     assert_account_owned(account_id)
     kind = _kind(kind)
     async with get_session() as s:
-        config = _public(kind, await _rules(s, account_id, kind))
+        config = _public(kind, await rules_of_kind(s, account_id, kind))
     return {"account_id": account_id, "kind": kind, "config": config,
             "defaults": _defaults(kind)}
 
@@ -224,7 +203,7 @@ async def put_lifecycle_message_config(body: _ConfigBody = Body(...)) -> dict[st
         raise HTTPException(422, f"This Creator {FREE_PAGE_REFUSAL}")
     name = KINDS[kind]
     async with get_session() as s:
-        rules = await _rules(s, body.account_id, kind)
+        rules = await rules_of_kind(s, body.account_id, kind)
         was_on = any(r.is_enabled for r in rules)
         merged = {**_public(kind, rules), **clean}
         extras.check(merged)
@@ -232,7 +211,7 @@ async def put_lifecycle_message_config(body: _ConfigBody = Body(...)) -> dict[st
             assert_owner()
             if not merged["text"] or (not was_on and not clean.get("text")):
                 raise HTTPException(422, "a message text is required to turn this on")
-        steps = _steps(_primary(rules))
+        steps = rule_steps(primary_rule(rules))
         steps.update(enabled=merged["enabled"], text=merged["text"],
                      messages=merged["messages"])
         extras.store(steps, merged)
@@ -247,7 +226,7 @@ async def put_lifecycle_message_config(body: _ConfigBody = Body(...)) -> dict[st
         await ensure_kind_rule(s, body.account_id, kind, enable=merged["enabled"],
                                name=name, every_seconds=_EVERY_S, steps=steps)
         await s.flush()
-        rules = await _rules(s, body.account_id, kind)
+        rules = await rules_of_kind(s, body.account_id, kind)
         for rule in rules:
             rule.trigger_json = trigger
             rule.steps_json = json.dumps(steps)

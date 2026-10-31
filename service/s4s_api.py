@@ -75,7 +75,8 @@ from db.models import Account, Action, S4SBlock, S4SPost, S4SProfile, UserAccoun
 from employees import AgencyContext
 from s4s_common import _json_object, _owner_context, listed_to
 from s4s_media import post_media, prune
-from s4s_requests_api import _own_ids, _primary_caption, _projection, _wire
+from route_wire import own_row_or_404, wire
+from s4s_requests_api import _own_ids, _primary_caption, _projection
 from s4s_schedule_api import opt_out_cascade
 
 log = logging.getLogger("of-relay.s4s_api")
@@ -236,7 +237,7 @@ async def list_profiles() -> dict[str, Any]:
     ASSUMPTION: "own" is the Agency's `user_accounts` rows, the Master's
     included, so a Master lists only the Creators linked to its own user, as
     Phase 1's Agency context makes the Master its own Agency. Rung 3
-    (`shifts_api._agency_account_ids`). Overturned if the Master should list
+    (`agency_scope.agency_account_ids`). Overturned if the Master should list
     every Creator in the Deployment.
     """
     ctx = await _owner_context()
@@ -387,19 +388,6 @@ def _caption(body: dict[str, Any]) -> str:
     return v
 
 
-async def _own_post(s, account_id: str, raw_id: str) -> S4SPost:
-    """The Creator's S4S post by its path id, or 404 (another Creator's,
-    missing, or not an id; the three are indistinguishable)."""
-    try:
-        post_id = int(raw_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="post not found") from None
-    post = await s.get(S4SPost, post_id)
-    if post is None or post.account_id != account_id:
-        raise HTTPException(status_code=404, detail="post not found")
-    return post
-
-
 @router.post("/profiles/{account_id}/posts")
 async def create_post(account_id: str, request: Request) -> dict[str, Any]:
     """A new S4S post, Primary when the Creator has no Primary post.
@@ -435,7 +423,7 @@ async def create_post(account_id: str, request: Request) -> dict[str, Any]:
 async def edit_post(account_id: str, post_id: str, request: Request) -> dict[str, Any]:
     await _owner_context(account_id)
     async with get_session() as s:
-        post = await _own_post(s, account_id, post_id)
+        post = await own_row_or_404(s, S4SPost, post_id, "post", "account_id", account_id)
         post.caption = _caption(await _json_object(request))
         post.updated_at = datetime.utcnow()
         await s.flush()
@@ -449,7 +437,7 @@ async def delete_post(account_id: str, post_id: str) -> dict[str, Any]:
     and go at once unless a live request or slot still names them."""
     await _owner_context(account_id)
     async with get_session() as s:
-        post = await _own_post(s, account_id, post_id)
+        post = await own_row_or_404(s, S4SPost, post_id, "post", "account_id", account_id)
         await s.delete(post)
         await s.flush()
         await _fill_primary(s, account_id)
@@ -465,7 +453,7 @@ async def set_primary_post(account_id: str, post_id: str) -> dict[str, Any]:
     two."""
     await _owner_context(account_id)
     async with get_session() as s:
-        post = await _own_post(s, account_id, post_id)
+        post = await own_row_or_404(s, S4SPost, post_id, "post", "account_id", account_id)
         now = datetime.utcnow()
         await s.execute(
             update(S4SPost)
@@ -521,9 +509,7 @@ async def discover(q: str = "") -> list[dict[str, Any]]:
         await _fill_primary(s)
         rows = (await s.execute(stmt)).all()
         media = await post_media(s, [post_id for _, post_id, _ in rows])
-        own = set((await s.execute(
-            select(UserAccount.account_id).where(UserAccount.user_id == ctx.agency_user_id)
-        )).scalars().all())
+        own = await _own_ids(s, ctx.agency_user_id)
     return [
         {
             "profile_id": p.id,
@@ -544,7 +530,7 @@ async def discover(q: str = "") -> list[dict[str, Any]]:
 
 
 def _block_out(b: S4SBlock) -> dict[str, Any]:
-    return {**json.loads(b.projection_json), "blocked_at": _wire(b.created_at)}
+    return {**json.loads(b.projection_json), "blocked_at": wire(b.created_at)}
 
 
 @router.get("/blocks")

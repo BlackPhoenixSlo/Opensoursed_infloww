@@ -42,6 +42,7 @@ from automation_registry import canonical_kind, is_registered, kind_family
 from db.engine import get_session
 from db.models import AutomationRule, AutomationRun, Message, ScheduledJob
 from dispatch_plan import TZ_MAX, TZ_MIN, Interval, next_due, trigger_of, tz_offset
+from isotime import iso_plain
 from job_queue import rule_last_fired_at
 from permissions import require_opt_in_kind
 
@@ -269,10 +270,6 @@ def _payload_of(rule: AutomationRule) -> dict:
     return p if isinstance(p, dict) else {}
 
 
-def _iso(dt: datetime | None) -> str | None:
-    return dt.isoformat() if dt else None
-
-
 async def _last_run(s, account_id: str, kind: str) -> AutomationRun | None:
     return (
         await s.execute(
@@ -314,7 +311,7 @@ async def _serialize(s, rule: AutomationRule) -> dict[str, Any]:
                 select(func.count()).select_from(AutomationRun)
                 .where(AutomationRun.account_id == rule.account_id, AutomationRun.kind == kind)
             )).scalar_one()
-        next_due_at = _iso(next_due(trig, fired, now, run_count=runs))
+        next_due_at = iso_plain(next_due(trig, fired, now, run_count=runs))
     return {
         "id": rule.id,
         "account_id": rule.account_id,
@@ -331,11 +328,11 @@ async def _serialize(s, rule: AutomationRule) -> dict[str, Any]:
         "trigger": _trigger_json(rule),
         "payload": _payload_of(rule),
         "quiet_hours": json.loads(rule.quiet_hours_json) if rule.quiet_hours_json else None,
-        "created_at": _iso(rule.created_at),
+        "created_at": iso_plain(rule.created_at),
         "last_run": None if last is None else {
             "status": last.status,
-            "started_at": _iso(last.started_at),
-            "completed_at": _iso(last.completed_at),
+            "started_at": iso_plain(last.started_at),
+            "completed_at": iso_plain(last.completed_at),
             "error_text": last.error_text,
             "stats": _safe_json(last.stats_json),
         },

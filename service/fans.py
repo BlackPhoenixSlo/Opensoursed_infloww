@@ -35,6 +35,7 @@ from db.models import (
 )
 from auth import assert_account_owned
 from geo_timezones import resolve_timezone_for_place
+from of_coerce import json_list
 
 # Statuses that mean "this money is gone / never landed" — chargebacks,
 # refunds, hard failures. Everything else (cleared AND still-pending payout
@@ -102,7 +103,7 @@ def _row_to_dict(f: Fan) -> dict[str, Any]:
         "applied_notes_at": (
             f.applied_notes_at.isoformat() if f.applied_notes_at else None
         ),
-        "tags": _safe_load_list(f.tags),
+        "tags": json_list(f.tags, coerce=str),
         "lifetime_spend_cents": f.lifetime_spend_cents,
         "subscription_status": f.subscription_status,
         "subscribed_at": f.subscribed_at.isoformat() if f.subscribed_at else None,
@@ -144,16 +145,6 @@ def _row_to_dict(f: Fan) -> dict[str, Any]:
         "created_at": f.created_at.isoformat() if f.created_at else None,
         "updated_at": f.updated_at.isoformat() if f.updated_at else None,
     }
-
-
-def _safe_load_list(raw: str | None) -> list[str]:
-    if not raw:
-        return []
-    try:
-        v = json.loads(raw)
-        return [str(x) for x in v] if isinstance(v, list) else []
-    except (ValueError, TypeError):
-        return []
 
 
 def _safe_load_obj(raw: str | None) -> dict[str, Any]:
@@ -454,11 +445,16 @@ async def get_fan(account_id: str, fan_id: int) -> dict[str, Any]:
     async with get_session() as s:
         f = await s.get(Fan, (account_id, fan_id))
         if f is None:
+            # Two drawer opens race here: ON CONFLICT lets the loser no-op
+            # instead of a duplicate-key 500, then both read the one row.
             await _ensure_account_row(s, account_id)
-            f = Fan(account_id=account_id, fan_id=fan_id, source="onlyfans")
-            s.add(f)
+            await s.execute(
+                sqlite_insert(Fan)
+                .values(account_id=account_id, fan_id=fan_id, source="onlyfans")
+                .on_conflict_do_nothing(index_elements=["account_id", "fan_id"])
+            )
             await s.commit()
-            await s.refresh(f)
+            f = await s.get(Fan, (account_id, fan_id))
         row = _with_persona_claims(_row_to_dict(f), f)
         # Join the gen_info profile so the drawer can show the rich note + openers.
         prof = await s.get(FanProfile, (account_id, fan_id))

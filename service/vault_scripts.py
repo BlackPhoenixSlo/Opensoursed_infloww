@@ -5,20 +5,9 @@ of clips that escalates, almost always along the same arc —
 
     clothed  →  stripping / lingerie  →  nude  →  touching  →  masturbation
 
-and then uploads the whole run to OF in one go. Two facts make that arc
-recoverable, and one fact makes it necessary:
-
-  * Recoverable (1) — a batch is a tight burst in OF's own `createdAt`. On the graded vault
-    166 of 249 consecutive gaps are under 10 seconds; day-long gaps separate the
-    shoots. So a gap threshold splits the vault into candidate scripts with no
-    vision work at all.
-  * Recoverable (2) — every item's rung on the ladder is already in the V2
-    describe fields (`clothing_state`, `acts`, `penetration`). Scoring is pure
-    arithmetic over data we have: no LLM call, no OF traffic, instant re-run.
-  * Necessary — the upload is frequently REVERSED. Phone galleries hand the
-    picker newest-first, so the batch lands masturbation-first and the arc reads
-    backwards. Sorting a folder by `createdAt` therefore shows the payoff before
-    the tease, which is exactly backwards for selling it.
+Every item's rung on that ladder is already in the V2 describe fields
+(`clothing_state`, `acts`, `penetration`), so scoring is pure arithmetic over
+data we have: no LLM call, no OF traffic, instant re-run.
 
 This module scores each item on that ladder (`escalation_score`), orders items
 for sending (`send_sort_key`),
@@ -31,17 +20,16 @@ writes only our own folder rows.
 """
 from __future__ import annotations
 
-import json
 import logging
 import re
 from datetime import datetime
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from sqlalchemy import select
 
 import vault_ai_brief
 from db.engine import get_session
-from db.models import VaultFolderItem, VaultItem
+from db.models import VaultFolder, VaultFolderItem, VaultItem
 
 log = logging.getLogger("of-relay.vault_scripts")
 
@@ -189,12 +177,6 @@ def escalation_score(fields: dict[str, Any]) -> int | None:
     return max(rungs) if rungs else None
 
 
-# ── Batching ────────────────────────────────────────────────────────
-
-# ── Orientation ─────────────────────────────────────────────────────
-
-# ── Planning ────────────────────────────────────────────────────────
-
 async def _load_rows(account_id: str) -> list[dict[str, Any]]:
     async with get_session() as s:
         recs = (await s.execute(
@@ -208,10 +190,7 @@ async def _load_rows(account_id: str) -> list[dict[str, Any]]:
 
     out: list[dict[str, Any]] = []
     for mid, kind, created, dur, fields_json, status in recs:
-        try:
-            fields = json.loads(fields_json) if fields_json else {}
-        except (TypeError, ValueError):
-            fields = {}
+        fields = vault_ai_brief.load_fields(fields_json)
         out.append({
             "media_id": int(mid), "kind": kind, "created_at": created,
             "duration_seconds": dur, "fields": fields, "describe_status": status,
@@ -222,9 +201,8 @@ async def _load_rows(account_id: str) -> list[dict[str, Any]]:
 
 # ── Send order ──────────────────────────────────────────────────────
 #
-# `escalation_score` above answers "how far along the arc is this?", which is
-# what DIRECTION detection needs: one monotone number Kendall tau can correlate
-# against upload order. It is deliberately coarse.
+# `escalation_score` above answers "how far along the arc is this?" — one
+# monotone number, deliberately coarse.
 #
 # Deciding what to SEND FIRST is a different question, and a single 0-100 blob
 # flattens distinctions that decide the sale. The key below is a tuple, and it
@@ -289,15 +267,10 @@ def send_order_reason(fields: dict[str, Any]) -> dict[str, Any]:
 
 # ── Outfit scripts (what a script actually IS) ──────────────────────
 #
-# The upload-burst grouping above finds "media pushed to OF in one sitting".
-# That is NOT a script. Measured on the graded vault, bursts are kind-PURE — she uploads
-# her photos in one go and her clips in another — so burst grouping splits every
-# real shoot down the middle and can never produce the mix an operator means.
-#
 # A script is a SHOOT: one outfit, worn across both stills and clips, escalating
-# from covered to explicit, uploaded around the same time. The linking signal is
-# therefore the OUTFIT, and it is already in the describe output as
-# `clothing_items`. Grouping by it re-joins what the burst split:
+# from covered to explicit, uploaded around the same time. Upload bursts are
+# kind-PURE (photos in one go, clips in another), so the linking signal is the
+# OUTFIT, already in the describe output as `clothing_items`. On the graded vault:
 #
 #   black : 46 items = 36 photos + 10 videos, sfw→suggestive→explicit
 #   pink  : 19 items = 14 photos +  5 videos, sfw→suggestive→explicit
@@ -406,6 +379,17 @@ def outfit_key(fields: dict[str, Any]) -> str:
     return f"{colour} {kind}".strip()
 
 
+def _tally(items: list[dict[str, Any]]) -> tuple[dict[str, int], dict[str, int], int]:
+    """(kinds, tiers, closes_on_own) over enriched rows — the counts every
+    shoot and lane carries."""
+    kinds: dict[str, int] = {}
+    tiers: dict[str, int] = {}
+    for r in items:
+        kinds[r["kind"]] = kinds.get(r["kind"], 0) + 1
+        tiers[r["why"]["tier"]] = tiers.get(r["why"]["tier"], 0) + 1
+    return kinds, tiers, sum(1 for r in items if r["why"]["closes"])
+
+
 async def collect_outfit_scripts(
     account_id: str, *, window_hours: int = DEFAULT_OUTFIT_WINDOW_HOURS,
     min_items: int = MIN_SCRIPT_ITEMS, require_escalation: bool = True,
@@ -457,20 +441,14 @@ async def collect_outfit_scripts(
             placed.sort(key=lambda r: send_sort_key(r["fields"], media_id=r["media_id"]))
             ordered = placed + unplaced
 
-            kinds: dict[str, int] = {}
-            tiers: dict[str, int] = {}
-            for r in ordered:
-                kinds[r["kind"]] = kinds.get(r["kind"], 0) + 1
-                tiers[r["why"]["tier"]] = tiers.get(r["why"]["tier"], 0) + 1
-
-            started = ordered[0]["created_at"]
+            kinds, tiers, closes = _tally(ordered)
             out.append({
                 "outfit": outfit,
                 "name": ai_folder_name(short_outfit(outfit)),
                 "size": len(ordered), "kinds": kinds, "tiers": tiers,
                 "rungs": sorted(rungs),
                 "mixed": len(kinds) > 1,
-                "closes_on_own": sum(1 for r in ordered if r["why"]["closes"]),
+                "closes_on_own": closes,
                 "started_at": min(r["created_at"] for r in seg if r["created_at"]),
                 "ended_at": max(r["created_at"] for r in seg if r["created_at"]),
                 "items": [{**r, "manual_order": i + 1}
@@ -486,21 +464,18 @@ async def collect_outfit_scripts(
 #
 # Not every outfit group is a sellable shoot. the graded vault's `black top` (15 stills,
 # ZERO closers) and `white top` (4 stills) have nothing to land a sale on — but
-# they are perfectly good STORY material, and the explicit tail of a weak group
-# still works as a free teaser on a mass send.
+# they are perfectly good STORY material.
 #
-# So the leftovers get re-cut by heat instead of by outfit, into the two lanes
-# an operator actually sends on:
+# So the vault gets re-cut by heat instead of by outfit, into the lanes an
+# operator actually sends on, e.g.:
 #
 #   Stories        sfw → suggestive   safe enough to post publicly
-#   Mass / teaser  suggestive → explicit  the free hook on a broadcast
+#   Mass           suggestive only    the free hook on a broadcast
 #
 # The bands OVERLAP on `suggestive` deliberately, and that is the case the
 # per-folder ordering was built for: a suggestive still belongs in both lanes and
-# holds a DIFFERENT position in each — near the top of Stories (it is the
-# spiciest thing there) and at the bottom of Mass (it is the mildest thing
-# there). One item, two folders, two orders. Nothing about that works if order
-# lives on the item.
+# holds an independent position in each. One item, two folders, two orders.
+# Nothing about that works if order lives on the item.
 # Every folder this module proposes is prefixed so an operator can always tell
 # at a glance which folders a human curated and which the pipeline generated —
 # and can delete the whole generated set without touching their own work.
@@ -661,10 +636,10 @@ def _lane_mass(why: dict, fields: dict, kind: str) -> bool:
 
 def _lane_covered_explicit(why: dict, fields: dict, kind: str) -> bool:
     """Tagged explicit, but nothing is actually on show — a top or underwear is
-    still on, or she is turned away. The tier says "explicit" because of what the
-    scene IS, not because of what is VISIBLE, so this material is safe on a mass
-    send or a story even though the heat rung alone would rule it out. It is
-    equally not a tease: there is no reveal in it to charge for.
+    still on, or the region is out of shot. The tier says "explicit" because of
+    what the scene IS, not because of what is VISIBLE, so this material is safe
+    on a mass send or a story even though the heat rung alone would rule it out.
+    It is equally not a tease: there is no reveal in it to charge for.
 
     Gated on the two flags rather than on `body_focus` alone. The earlier version
     required `ass`/`back` in focus as a proxy for "turned away" and tested
@@ -737,8 +712,8 @@ def _decently_covered(fields: dict) -> bool:
 
 
 def _lane_tease_10(why: dict, fields: dict, kind: str) -> bool:
-    """$10 — a real reveal, but she is still a little hidden: breasts out, or
-    nude with her pussy not in frame. Images only.
+    """$10 — a real reveal, but she is still a little hidden: breasts out,
+    something still on, pussy not on show. Images only.
 
     Still COVERED is the whole point: fully nude is the $50 tier, never this
     one, however little is actually in frame. What remains is the middle band —
@@ -807,16 +782,16 @@ def _lane_clips(why: dict, fields: dict, kind: str) -> bool:
 # end up in a dropdown and (once mirrored) in the OF app, where
 # "AI-$50 tease · images, fully nude or pussy visible" is unusable. The long
 # form lives in `purpose`, which the preview shows underneath.
-PURPOSE_LANES: tuple[tuple[str, str, str, Any], ...] = (
+PURPOSE_LANES: tuple[tuple[str, str, str, Callable[[dict, dict, str], bool]], ...] = (
     ("stories", "stories",
      "sfw → suggestive — safe enough to post publicly", _lane_stories),
     ("mass", "mass",
      "suggestive only — mass messages and media", _lane_mass),
     ("covered_explicit", "safe explicit",
-     "turned away — reads explicit but shows only her back or ass, so it is "
-     "safe to mass", _lane_covered_explicit),
+     "reads explicit, but nothing bare — each region out of shot or under "
+     "named clothing, so it is safe to mass", _lane_covered_explicit),
     ("tease_10", "tease 10",
-     "images — boobs out or still covered, never fully nude (that is the $50)",
+     "images — boobs out, pussy not on show, never fully nude (that is the $50)",
      _lane_tease_10),
     ("tease_50", "tease 50",
      "images — fully nude or pussy visible, never with lingerie still on",
@@ -873,15 +848,11 @@ async def collect_purpose_folders(
         what makes it a cut rather than a lane — every folder carries both keys
         so no consumer has to test for their presence."""
         picked.sort(key=lambda r: send_sort_key(r["fields"], media_id=r["media_id"]))
-        kinds: dict[str, int] = {}
-        tier_counts: dict[str, int] = {}
-        for r in picked:
-            kinds[r["kind"]] = kinds.get(r["kind"], 0) + 1
-            tier_counts[r["why"]["tier"]] = tier_counts.get(r["why"]["tier"], 0) + 1
+        kinds, tiers, closes = _tally(picked)
         return {
             "lane": slug, "name": ai_folder_name(name), "purpose": purpose,
-            "size": len(picked), "kinds": kinds, "tiers": tier_counts,
-            "closes_on_own": sum(1 for r in picked if r["why"]["closes"]),
+            "size": len(picked), "kinds": kinds, "tiers": tiers,
+            "closes_on_own": closes,
             "solo": solo_of is not None, "solo_of": solo_of,
             "items": [{**r, "manual_order": i + 1}
                       for i, r in enumerate(picked)],
@@ -1015,17 +986,14 @@ async def plan_ai_folders(
         account_id, window_hours=window_hours, min_items=min_items)
     lanes = await collect_purpose_folders(account_id, solo=solo)
 
-    def _folder(name: str, source: str, purpose: str,
-                items: list[dict[str, Any]], **extra: Any) -> dict[str, Any]:
-        kinds: dict[str, int] = {}
-        tiers: dict[str, int] = {}
-        for r in items:
-            kinds[r["kind"]] = kinds.get(r["kind"], 0) + 1
-            tiers[r["why"]["tier"]] = tiers.get(r["why"]["tier"], 0) + 1
+    def _folder(group: dict[str, Any], source: str, purpose: str,
+                **extra: Any) -> dict[str, Any]:
+        """`group` is a shoot or a lane; its counts are carried, not recounted."""
+        items = group["items"]
         return {
-            "name": name, "source": source, "purpose": purpose,
-            "size": len(items), "kinds": kinds, "tiers": tiers,
-            "closes_on_own": sum(1 for r in items if r["why"]["closes"]),
+            "name": group["name"], "source": source, "purpose": purpose,
+            "size": len(items), "kinds": group["kinds"], "tiers": group["tiers"],
+            "closes_on_own": group["closes_on_own"],
             # Defaults, so EVERY folder answers "are you a solo cut" — a script
             # is not one. `extra` overrides for the lanes, which know.
             "solo": False, "solo_of": None,
@@ -1040,11 +1008,11 @@ async def plan_ai_folders(
         }
 
     folders = [
-        _folder(s["name"], "script", f"one shoot — {s['outfit']}", s["items"],
+        _folder(s, "script", f"one shoot — {s['outfit']}",
                 outfit=s["outfit"], mixed=s["mixed"])
         for s in shoots[:max(0, keep)]
     ] + [
-        _folder(f["name"], "lane", f["purpose"], f["items"], lane=f["lane"],
+        _folder(f, "lane", f["purpose"], lane=f["lane"],
                 solo=f["solo"], solo_of=f["solo_of"])
         for f in lanes
     ]
@@ -1094,8 +1062,6 @@ async def apply_ai_folders(account_id: str, plan: dict[str, Any]) -> dict[str, A
 
     Internal folders only. No OF writes, nothing sent.
     """
-    from db.models import VaultFolder  # lazy: keeps the import graph flat
-
     created: list[dict[str, Any]] = []
     async with get_session() as s:
         for spec in plan.get("folders") or []:

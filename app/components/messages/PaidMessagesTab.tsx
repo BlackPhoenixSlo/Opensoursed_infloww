@@ -7,18 +7,17 @@
  * employee, status, fan search) is local to this tab so switching to
  * the Tips tab in the future doesn't pollute its filter state.
  *
- * Pagination is keyset (message_id DESC) via usePaidMessages — the
- * sentinel below the last row triggers fetchNextPage() via
- * IntersectionObserver.
+ * Pagination is keyset (message_id DESC) via usePaidMessages, paged by
+ * InfiniteListFooter.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 
 import CsvExportButton from "@/components/messages/CsvExportButton";
 import GroupMassButton from "@/components/messages/GroupMassButton";
 import MessagesFilters from "@/components/messages/MessagesFilters";
 import MessageRow from "@/components/messages/MessageRow";
-import { Button } from "@/components/ui/primitives";
+import InfiniteListFooter from "@/components/messages/InfiniteListFooter";
 import { buildPaidMessagesQuery, usePaidMessages, type PaidStatus } from "@/hooks/usePaidMessages";
 import { cn } from "@/lib/utils";
 import { TableSkeleton } from "@/components/ui/Skeleton";
@@ -59,22 +58,6 @@ export default function PaidMessagesTab({ from, to }: Props) {
     () => (q.data?.pages ?? []).flatMap((p) => p.rows),
     [q.data],
   );
-
-  const sentinelRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    const el = sentinelRef.current;
-    if (!el) return;
-    const io = new IntersectionObserver((entries) => {
-      if (entries[0]?.isIntersecting && q.hasNextPage && !q.isFetchingNextPage) {
-        q.fetchNextPage();
-      }
-    }, { rootMargin: "200px" });
-    io.observe(el);
-    return () => io.disconnect();
-    // We want the observer to re-attach whenever the page set or fetch
-    // state changes so a freshly-arrived page reliably starts loading
-    // the next one when the sentinel is already in view.
-  }, [q.hasNextPage, q.isFetchingNextPage, q.fetchNextPage]);
 
   return (
     <div className="space-y-3">
@@ -122,27 +105,12 @@ export default function PaidMessagesTab({ from, to }: Props) {
             <MessageRow key={`${r.account_id}:${r.fan_id}:${r.message_id}`} row={r} />
           ))}
 
-          <div ref={sentinelRef} className="h-4" />
-
-          {q.hasNextPage && (
-            <div className="flex justify-center pt-2">
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                onClick={() => q.fetchNextPage()}
-                disabled={q.isFetchingNextPage}
-              >
-                {q.isFetchingNextPage ? "Loading…" : "Load more"}
-              </Button>
-            </div>
-          )}
-
-          {!q.hasNextPage && rows.length > 0 && (
-            <div className="text-center text-[11px] text-fg-dim py-2">
-              · end of results ·
-            </div>
-          )}
+          <InfiniteListFooter
+            hasNextPage={q.hasNextPage}
+            isFetchingNextPage={q.isFetchingNextPage}
+            fetchNextPage={q.fetchNextPage}
+            endLabel="end of results"
+          />
         </div>
       )}
     </div>

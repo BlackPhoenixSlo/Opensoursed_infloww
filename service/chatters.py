@@ -24,7 +24,6 @@ Tables (migration 0024_chatter_login):
 
 from __future__ import annotations
 
-import hmac
 import json
 import logging
 import os
@@ -32,7 +31,6 @@ import secrets
 import uuid
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
-from hashlib import sha256
 from pathlib import Path
 
 log = logging.getLogger("of-relay.chatters")
@@ -68,7 +66,9 @@ from auth import (
     _normalize_username,
     _validate_password,
 )
-from session_stamps import issued_ms, now_ms, session_revoked
+import signed_cookie
+from session_secret import load_secret
+from session_stamps import now_ms, session_verdict
 
 
 # ── Constants ─────────────────────────────────────────────────────────
@@ -85,25 +85,7 @@ INVITE_TTL_SECONDS = 24 * 3600
 _SECRET_FILE = Path(__file__).resolve().parent / ".chatter_secret"
 
 
-def _load_session_secret() -> bytes:
-    env = os.environ.get("CHATTER_SESSION_SECRET", "").strip()
-    if env:
-        return env.encode("utf-8")
-    try:
-        if _SECRET_FILE.exists():
-            return _SECRET_FILE.read_text().strip().encode("utf-8")
-    except OSError:
-        pass
-    new = secrets.token_urlsafe(48)
-    try:
-        _SECRET_FILE.write_text(new)
-        os.chmod(_SECRET_FILE, 0o600)
-    except OSError:
-        pass
-    return new.encode("utf-8")
-
-
-_SESSION_SECRET = _load_session_secret()
+_SESSION_SECRET = load_secret("CHATTER_SESSION_SECRET", _SECRET_FILE)
 
 
 # ── Identity snapshot ────────────────────────────────────────────────
@@ -148,14 +130,12 @@ def get_request_chatter() -> "ChatterIdentity | None":
 
 # ── Cookie signing ────────────────────────────────────────────────────
 
-def _sign(payload: str) -> str:
-    return hmac.new(_SESSION_SECRET, payload.encode("utf-8"), sha256).hexdigest()
+def _sign(payload: str) -> str:  # kept as alias for old private name
+    return signed_cookie.sign(_SESSION_SECRET, payload)
 
 
 def _make_cookie(chatter_id: str) -> str:
-    issued = str(now_ms())
-    payload = f"{chatter_id}.{issued}"
-    return f"{payload}.{_sign(payload)}"
+    return signed_cookie.make(_SESSION_SECRET, chatter_id, str(now_ms()))
 
 
 def _parse_cookie(value: str) -> str | None:
@@ -166,17 +146,7 @@ def _parse_cookie(value: str) -> str | None:
 
 def _parse_cookie_issued(value: str) -> tuple[str, int] | None:
     """`(chatter_id, issued_ms)` if the cookie's HMAC verifies, else None."""
-    parts = value.split(".")
-    if len(parts) != 3:
-        return None
-    chatter_id, issued, sig = parts
-    expected = _sign(f"{chatter_id}.{issued}")
-    if not hmac.compare_digest(sig, expected):
-        return None
-    try:
-        return chatter_id, issued_ms(issued)
-    except ValueError:
-        return None
+    return signed_cookie.parse_issued(_SESSION_SECRET, value)
 
 
 def _set_session_cookie(response: Response, chatter_id: str) -> None:
@@ -346,10 +316,11 @@ async def _session_identity(chatter_id: str, issued: int) -> tuple[ChatterIdenti
             return None, False
         identity_cache.store(chatter_id, entry, gen)
     now = datetime.utcnow()
-    age = (now - entry.last_seen_at).total_seconds()
-    if age > SESSION_INACTIVITY_SECONDS or session_revoked(issued, entry.sessions_valid_after):
+    verdict = session_verdict(issued, entry.sessions_valid_after, entry.last_seen_at, now,
+                              max_idle_s=SESSION_INACTIVITY_SECONDS, touch_s=LAST_SEEN_TOUCH_S)
+    if verdict == "expired":
         return None, True
-    if age > LAST_SEEN_TOUCH_S:
+    if verdict == "touch":
         # Only while the row is still that old: a sign-in or a concurrent
         # request may have bumped it since the read.
         async with get_session() as s:

@@ -49,6 +49,7 @@ asyncio.run(init_db())
 from fastapi import HTTPException  # noqa: E402
 
 import server  # noqa: E402
+import accounts_admin_api  # noqa: E402
 import relay_cache  # noqa: E402
 import vault_cache  # noqa: E402
 import accounts as account_registry  # noqa: E402
@@ -94,7 +95,7 @@ async def main() -> None:
     deleted: dict = {}
     relay_calls, vault_calls = _install_recorders(deleted)
 
-    res = await server.admin_accounts_remove(_TEST_AID)
+    res = await accounts_admin_api.admin_accounts_remove(_TEST_AID)
     assert res.get("ok") is True, f"case1: endpoint did not report ok: {res}"
     assert relay_calls == [_TEST_AID], f"case1: relay_cache.invalidate_account not called with id: {relay_calls}"
     assert vault_calls == [_TEST_AID], f"case1: vault_cache.invalidate not called with id: {vault_calls}"
@@ -105,7 +106,7 @@ async def main() -> None:
     vault_calls.clear()
     raised = False
     try:
-        await server.admin_accounts_remove("not-a-real-account")
+        await accounts_admin_api.admin_accounts_remove("not-a-real-account")
     except HTTPException as e:
         raised = True
         assert e.status_code == 404, f"case2: wrong status {e.status_code}"
@@ -121,7 +122,7 @@ async def main() -> None:
         raise RuntimeError("relay cache exploded")
     relay_cache.invalidate_account = _boom
 
-    res = await server.admin_accounts_remove(_TEST_AID)
+    res = await accounts_admin_api.admin_accounts_remove(_TEST_AID)
     assert res.get("ok") is True, f"case3: a cache failure broke the delete: {res}"
     assert deleted.get(_TEST_AID) is True, "case3: delete_account skipped after cache failure"
 

@@ -9,11 +9,11 @@
  * as a "#N" chip on each card. Uses the page-level date range.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/primitives";
 import { PostCard } from "@/components/messages/PostCard";
-import { useActiveAccounts } from "@/hooks/useAccounts";
+import ModelSelect, { usePickedModel } from "@/components/messages/ModelSelect";
 import { useTopPosts, type TopBy } from "@/hooks/usePosts";
 import { cn } from "@/lib/utils";
 import { TableSkeleton } from "@/components/ui/Skeleton";
@@ -31,13 +31,8 @@ const METRICS: { key: TopBy; label: string }[] = [
 ];
 
 export default function TopPostsTab({ from, to }: Props) {
-  const accounts = useActiveAccounts();
-  const [accountId, setAccountId] = useState<string | null>(null);
+  const { accounts, accountId, setAccountId } = usePickedModel();
   const [by, setBy] = useState<TopBy>("purchases");
-
-  useEffect(() => {
-    if (accountId == null && accounts.length > 0) setAccountId(accounts[0].id);
-  }, [accounts, accountId]);
 
   const q = useTopPosts(accountId, by, from, to);
   const posts = useMemo(() => q.data ?? [], [q.data]);
@@ -45,21 +40,7 @@ export default function TopPostsTab({ from, to }: Props) {
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-3 p-3 bg-panel border border-border rounded-xl">
-        <label className="flex flex-col gap-1">
-          <span className="text-[10px] uppercase tracking-wide text-fg-dim">Model</span>
-          <select
-            value={accountId ?? ""}
-            onChange={(e) => setAccountId(e.target.value || null)}
-            className="bg-bg border border-border rounded-lg px-3 py-2 text-base md:px-2 md:py-1.5 md:text-xs text-fg focus:outline-none focus:border-accent"
-          >
-            {accounts.length === 0 && <option value="">No models</option>}
-            {accounts.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.nickname || a.id}
-              </option>
-            ))}
-          </select>
-        </label>
+        <ModelSelect accounts={accounts} value={accountId} onChange={setAccountId} />
 
         <label className="flex flex-col gap-1 w-full md:w-auto">
           <span className="text-[10px] uppercase tracking-wide text-fg-dim">Rank by</span>

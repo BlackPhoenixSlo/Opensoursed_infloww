@@ -41,6 +41,7 @@ from automations._wordfilter import banned_hit_summary, filter_banned, load_bann
 from db.engine import get_session
 from db.models import PriorityMassRecipient, PriorityMassRun, ScheduledJob, SensitiveWord
 from employees import agency_contexts, json_object, resolve_outbound_employee_id
+from of_coerce import cents_or_zero
 
 log = logging.getLogger("of-relay.priority_mass_api")
 
@@ -129,7 +130,7 @@ def _validate(body: dict) -> dict:
     if not isinstance(locked, bool):
         raise HTTPException(422, "locked_text must be true or false")
     return {"account_id": account_id, "text": text, "media": media, "previews": previews,
-            "price_cents": int(round(float(price) * 100)), "locked_text": bool(locked and price),
+            "price_cents": cents_or_zero(price), "locked_text": bool(locked and price),
             "audience": {"user_lists": list(dict.fromkeys(lists)),
                          "excluded_user_lists": excluded}}
 

@@ -605,12 +605,13 @@ def case_one_endpoint_counts_once_custom_or_pool():
 def case_proxies_list_counts_bad_pool():
     a, b, c = _pool()
     import server
+    import proxies_admin_api
     real_user, real_list = server._get_request_user, server.account_registry.list_accounts
     server._get_request_user = lambda: types.SimpleNamespace(id="o", account_ids={"1", "2", "3", "4", "5", "6"})
-    server.account_registry.list_accounts = lambda: [{"id": str(i)} for i in range(1, 7)]
+    server.account_registry.list_accounts = lambda **_: [{"id": str(i)} for i in range(1, 7)]
     try:
         proxy_health._state[a] = {**proxy_health_decide.blank(), "down": True}
-        out = server.admin_proxies_list()
+        out = proxies_admin_api.admin_proxies_list()
     finally:
         server._get_request_user, server.account_registry.list_accounts = real_user, real_list
     assert out["pool"] == {"size": 3, "account_ids": out["pool"]["account_ids"], "bad": 1}, out["pool"]
@@ -859,16 +860,17 @@ def case_concurrent_errors_start_one_watcher_and_one_failover():
 def case_routes_carry_health():
     _registry()
     import server   # route functions called directly: no request user, the unauthed path
+    import proxies_admin_api
     real = proxies.probe
     proxies.probe = lambda p, timeout_s=15: {"ok": True, "ip": "203.0.113.7", "geo": "HU",
                                              "colo": "BUD", "ttfb_ms": 80, "error": None}
     try:
-        out = server.admin_proxies_test("hu-1")
+        out = proxies_admin_api.admin_proxies_test("hu-1")
     finally:
         proxies.probe = real
     assert out["colo"] == "BUD", out
     assert proxies.get_by_label("hu-1")["verified_geo"] == "HU", "the Test button still records"
-    rows = {p["label"]: p for p in server.admin_proxies_list()["proxies"]}
+    rows = {p["label"]: p for p in proxies_admin_api.admin_proxies_list()["proxies"]}
     assert rows["hu-1"]["health"]["probe"]["ttfb_ms"] == 80, rows["hu-1"]["health"]
     assert rows["spare"]["health"] == {"down": False, "errors": 0, "state": "healthy"}, rows["spare"]
     assert rows["hu-1"]["health"]["state"] == "healthy"
@@ -877,15 +879,16 @@ def case_routes_carry_health():
 def case_accounts_list_flags_proxy_down():
     _registry()
     import server
+    import accounts_admin_api
     from fastapi import Response
     import asyncio
     fake_user = types.SimpleNamespace(account_ids={"101", "201"})
     real_user, real_list = server._get_request_user, server.account_registry.list_accounts
     server._get_request_user = lambda: fake_user
-    server.account_registry.list_accounts = lambda: [{"id": "101"}, {"id": "201"}]
+    server.account_registry.list_accounts = lambda **_: [{"id": "101"}, {"id": "201"}]
     try:
         proxy_health._state["hu-1"] = {**proxy_health_decide.blank(), "down": True}
-        out = asyncio.run(server.admin_accounts_list(Response()))
+        out = asyncio.run(accounts_admin_api.admin_accounts_list(Response()))
     finally:
         server._get_request_user, server.account_registry.list_accounts = real_user, real_list
     flags = {a["id"]: a["proxy_down"] for a in out["accounts"]}

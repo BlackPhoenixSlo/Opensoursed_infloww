@@ -234,8 +234,38 @@ def save_meta(account_id: str, meta: dict[str, Any]) -> None:
         (adir / "meta.json").write_text(json.dumps(meta, indent=2))
 
 
-def list_accounts() -> list[dict[str, Any]]:
-    """Return all accounts with their meta, sorted by last_used_at desc."""
+# An account's `role` in its meta.json. Absent = a Creator (every account that
+# predates the field). "watcher" = a plain fan account the agency subscribes to
+# its Creators to read what they send; it is no Creator, so every roster
+# (`list_accounts()` by default) leaves it out: no pump, no scrape, no ingest.
+ROLE_WATCHER = "watcher"
+ROLES = (ROLE_WATCHER,)
+
+
+def get_role(account_id: str) -> str | None:
+    """The account's role, or None for a Creator (read like `get_platform`)."""
+    meta = load_meta(account_id) or {}
+    role = meta.get("role")
+    return role if role in ROLES else None
+
+
+def is_watcher(account_id: str) -> bool:
+    return get_role(account_id) == ROLE_WATCHER
+
+
+def set_role(account_id: str, role: str | None) -> dict[str, Any]:
+    """Set (`role` in ROLES) or clear (None) the account's role. Writes through
+    `upsert_account`, which keeps the other fields."""
+    if role is not None and role not in ROLES:
+        raise ValueError(f"unknown role {role!r}")
+    return upsert_account(account_id, role=role or "")
+
+
+def list_accounts(include_watchers: bool = False) -> list[dict[str, Any]]:
+    """Return all accounts with their meta, sorted by last_used_at desc.
+
+    Watchers (`role` "watcher") are left out unless `include_watchers`: every
+    caller that walks the Creator roster gets Creators only."""
     _ensure_dirs()
     out: list[dict[str, Any]] = []
     if not ACCOUNTS_DIR.is_dir():
@@ -250,6 +280,8 @@ def list_accounts() -> list[dict[str, Any]]:
             meta = load_meta(adir.name)
             if not meta:
                 continue
+        if not include_watchers and meta.get("role") == ROLE_WATCHER:
+            continue
         latest = (adir / "latest.json")
         # A session exists if the OnlyFans pointer (latest.json) is present, OR
         # this is a Fansly account whose session blob (fansly_session.json) is.
@@ -351,7 +383,8 @@ def upsert_account(account_id: str, *,
                    nickname: str | None = None,
                    color: str | None = None,
                    platform: str | None = None,
-                   name: str | None = None) -> dict[str, Any]:
+                   name: str | None = None,
+                   role: str | None = None) -> dict[str, Any]:
     """Create or update an account's metadata. Pass only the fields you want
     to change — others are preserved.
 
@@ -370,6 +403,10 @@ def upsert_account(account_id: str, *,
         "created_at": existing.get("created_at") or _utc_now(),
         "last_used_at": existing.get("last_used_at"),
     }
+    # `role`: None keeps the stored one, "" clears it (`set_role`).
+    kept_role = existing.get("role") if role is None else role
+    if kept_role:
+        meta["role"] = kept_role
     save_meta(account_id, meta)
     return meta
 

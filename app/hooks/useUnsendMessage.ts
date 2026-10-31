@@ -28,7 +28,7 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { dropSeedMessage } from "@/hooks/useChatMessagesLocal";
 import { relay, RelayError, type OFMessage } from "@/lib/relay";
-import { type FanId } from "@/lib/fanId";
+import { isValidFanId, type FanId } from "@/lib/fanId";
 
 export interface UnsendQueueInfo {
   id: number;
@@ -56,8 +56,8 @@ export function useUnsendMessage(accountId: string | null, fanId: FanId | null) 
       // rounded value was then the target of a DELETE — at best a silent 404,
       // at worst naming a different real message. A truncated id on a read
       // path is a stale badge; on a destructive call it is data loss.
-      const id = String(msg.id ?? "");
-      if (!/^\d+$/.test(id) || /^0+$/.test(id)) return null;
+      if (!isValidFanId(msg.id)) return null;
+      const id = String(msg.id);
 
       // Optimistic: snapshot prior state so we can restore on failure,
       // then drop the bubble from the cache.

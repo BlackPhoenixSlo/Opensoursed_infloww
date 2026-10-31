@@ -18,6 +18,7 @@ import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 
 import { renderWithProviders } from "@/test-utils";
 import { MassMessageComposer } from "@/components/compose/MassMessageComposer";
+import { MASS_ONE_GIF_ALL_MODELS } from "@/components/compose/massMessageReducer";
 import { PRICE_NOTE } from "@/lib/sendGuards";
 
 const postSpy = vi.fn(async (..._a: unknown[]) => ({}));
@@ -218,5 +219,24 @@ describe("MassMessageComposer — all-models partial failure", () => {
     expect(confirmSpy).toHaveBeenLastCalledWith("Broadcast from 1 model?");
     expect(postSpy.mock.calls.map((c) => [(c[2] as { accountId: string }).accountId, (c[1] as { text: string }).text]))
       .toEqual([["acct2", "hello all"]]);
+  });
+});
+
+describe("MassMessageComposer — all-models takes one GIF", () => {
+  it("BUG: a 2nd GIF disables Broadcast with its reason (was: only the first sent, the rest dropped)", async () => {
+    renderWithProviders(<MassMessageComposer onClose={vi.fn()} />);
+    typeText("hello all");
+    fireEvent.click(screen.getByRole("checkbox", { name: /Broadcast from ALL models/ }));
+    for (const t of ["one", "two"]) {
+      fireEvent.click(screen.getByRole("button", { name: "GIF" }));
+      fireEvent.click(screen.getByRole("button", { name: `pick ${t}` }));
+    }
+    const btn = broadcast();
+    await waitFor(() => expect(btn.getAttribute("title")).toBe(MASS_ONE_GIF_ALL_MODELS));
+    expect(btn).toHaveProperty("disabled", true);
+    expect(screen.getByRole("status").textContent).toBe(MASS_ONE_GIF_ALL_MODELS);
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Remove GIF" })[1]);
+    await waitFor(() => expect(btn).toHaveProperty("disabled", false));
   });
 });

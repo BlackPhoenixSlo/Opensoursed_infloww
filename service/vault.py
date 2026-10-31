@@ -12,7 +12,6 @@ to DB-first is a separate decision pending SSE reliability measurement
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
@@ -25,16 +24,6 @@ from auth import assert_account_owned
 
 log = logging.getLogger("of-relay.vault")
 router = APIRouter()
-
-
-def _safe_load_list(raw: str | None) -> list[Any]:
-    if not raw:
-        return []
-    try:
-        v = json.loads(raw)
-        return v if isinstance(v, list) else []
-    except (ValueError, TypeError):
-        return []
 
 
 @router.get("/admin/vault/media-stats")

@@ -43,6 +43,7 @@ _CACHE_DIR = Path(tempfile.gettempdir()) / f"img_cache_test_{uuid.uuid4().hex}"
 os.environ["IMG_CACHE_DIR"] = str(_CACHE_DIR)
 
 import server  # noqa: E402 — after _harness (DB) + IMG_CACHE_DIR are bound
+import img_api  # noqa: E402
 
 # Same physical vault asset (identical host+path), three different signatures —
 # exactly what OF hands us across re-lists / signature expiry / different accounts.
@@ -53,27 +54,27 @@ _URL_SIG_C = _HOST_PATH + "?Expires=999&Signature=sig-three"
 
 
 def case_resigned_url_shares_entry():
-    server._img_cache_write(_URL_SIG_A, "image/jpeg", b"the-image-bytes")
+    img_api._img_cache_write(_URL_SIG_A, "image/jpeg", b"the-image-bytes")
     # A request bearing a DIFFERENT signature for the same asset must HIT.
-    hit = server._img_cache_lookup(_URL_SIG_B)
+    hit = img_api._img_cache_lookup(_URL_SIG_B)
     assert hit is not None, "re-signed URL missed the cache (key not signature-stripped)"
     bin_p, ct = hit
     assert ct == "image/jpeg", f"content-type lost: {ct!r}"
     assert bin_p.read_bytes() == b"the-image-bytes", "served bytes differ from written bytes"
     # And the key is literally identical across all three signatures.
-    keys = {server._img_cache_key(u) for u in (_URL_SIG_A, _URL_SIG_B, _URL_SIG_C)}
+    keys = {img_api._img_cache_key(u) for u in (_URL_SIG_A, _URL_SIG_B, _URL_SIG_C)}
     assert len(keys) == 1, f"signatures produced different keys: {keys}"
 
 
 def case_key_is_account_agnostic():
     # The key fn takes only the URL — no account dimension — so two accounts
     # that fetch the same asset (each with its own signed URL) share one entry.
-    k_a = server._img_cache_key(_URL_SIG_A)
-    k_b = server._img_cache_key(_URL_SIG_B)
+    k_a = img_api._img_cache_key(_URL_SIG_A)
+    k_b = img_api._img_cache_key(_URL_SIG_B)
     assert k_a == k_b, "cache key must not depend on which account/signature fetched it"
     # Sanity: a genuinely different asset gets a different key.
     other = "https://cdn2.onlyfans.com/files/z/zz/other/source.jpg?Signature=x"
-    assert server._img_cache_key(other) != k_a, "distinct assets collided on one key"
+    assert img_api._img_cache_key(other) != k_a, "distinct assets collided on one key"
 
 
 def case_send_to_many_writes_once():
@@ -82,9 +83,9 @@ def case_send_to_many_writes_once():
     # each arriving with a freshly-signed URL.
     for i in range(100):
         signed = url.replace("s0", f"s{i}")
-        server._img_cache_write(signed, "image/jpeg", b"shared-bytes")
-    h = server._img_cache_key(url)
-    bin_p, _ = server._img_cache_paths(h)
+        img_api._img_cache_write(signed, "image/jpeg", b"shared-bytes")
+    h = img_api._img_cache_key(url)
+    bin_p, _ = img_api._img_cache_paths(h)
     sub = bin_p.parent
     bins = [p for p in sub.iterdir() if p.name == bin_p.name]
     assert len(bins) == 1, f"expected exactly one .bin for the shared image, found {len(bins)}"
@@ -93,35 +94,35 @@ def case_send_to_many_writes_once():
 
 def case_touch_keeps_hot_entry_warm():
     url = "https://cdn2.onlyfans.com/files/h/hh/hot-asset/source.jpg?Signature=hot"
-    server._img_cache_write(url, "image/jpeg", b"hot")
-    h = server._img_cache_key(url)
-    bin_p, ct_p = server._img_cache_paths(h)
+    img_api._img_cache_write(url, "image/jpeg", b"hot")
+    h = img_api._img_cache_key(url)
+    bin_p, ct_p = img_api._img_cache_paths(h)
     # Backdate the entry to 1s shy of the TTL but well past the touch throttle —
     # i.e. it's been sitting a long time but is being served right now.
     import time as _t
-    aged = _t.time() - (server._IMG_CACHE_TTL_S - 1)
+    aged = _t.time() - (img_api._IMG_CACHE_TTL_S - 1)
     os.utime(bin_p, (aged, aged))
     os.utime(ct_p, (aged, aged))
     # A served hit refreshes the mtime...
-    server._img_cache_touch(bin_p, ct_p)
+    img_api._img_cache_touch(bin_p, ct_p)
     fresh_mtime = bin_p.stat().st_mtime
     assert fresh_mtime > aged + 1000, "touch did not refresh a stale-but-served entry's mtime"
     # ...so the TTL evictor leaves the now-warm entry alone.
-    server._img_cache_evict_once()
+    img_api._img_cache_evict_once()
     assert bin_p.is_file(), "evictor reclaimed a freshly-served (touched) entry"
 
 
 def case_cold_entry_still_evicts():
     url = "https://cdn2.onlyfans.com/files/c/cc/cold-asset/source.jpg?Signature=cold"
-    server._img_cache_write(url, "image/jpeg", b"cold")
-    h = server._img_cache_key(url)
-    bin_p, ct_p = server._img_cache_paths(h)
+    img_api._img_cache_write(url, "image/jpeg", b"cold")
+    h = img_api._img_cache_key(url)
+    bin_p, ct_p = img_api._img_cache_paths(h)
     import time as _t
-    expired = _t.time() - (server._IMG_CACHE_TTL_S + 60)
+    expired = _t.time() - (img_api._IMG_CACHE_TTL_S + 60)
     os.utime(bin_p, (expired, expired))
     os.utime(ct_p, (expired, expired))
     # No touch (nobody served it) → past TTL → evictor reclaims it.
-    server._img_cache_evict_once()
+    img_api._img_cache_evict_once()
     assert not bin_p.is_file(), "evictor failed to reclaim a cold, expired entry"
 
 

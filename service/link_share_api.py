@@ -52,6 +52,7 @@ from auth import assert_account_owned
 from chatters import assert_owner, current_actor
 from db.engine import get_session
 from db.models import LinkShare
+from isotime import iso_z
 from of_promos import safe_int
 
 log = logging.getLogger("of-relay.link_share_api")
@@ -66,10 +67,6 @@ MAX_LINKS = 100                # Infloww's links per share link
 
 def _now() -> datetime:
     return datetime.utcnow()
-
-
-def _iso(dt: datetime | None) -> str | None:
-    return dt.isoformat() + "Z" if dt else None
 
 
 def _refuse_chatter() -> None:
@@ -141,8 +138,8 @@ def _status(row: LinkShare, now: datetime) -> str:
 def _out(row: LinkShare, now: datetime) -> dict[str, Any]:
     return {"id": row.id, "name": row.name, "kind": row.kind, "path": f"/share/{row.id}.{row.secret}",
             "of_ids": json.loads(row.of_ids_json), "include_earnings": bool(row.include_earnings),
-            "created_at": _iso(row.created_at), "expires_at": _iso(row.expires_at),
-            "updated_at": _iso(row.snapshot_at), "status": _status(row, now)}
+            "created_at": iso_z(row.created_at), "expires_at": iso_z(row.expires_at),
+            "updated_at": iso_z(row.snapshot_at), "status": _status(row, now)}
 
 
 @router.get("/admin/link-shares")
@@ -236,5 +233,5 @@ async def share_data(key: str, response: Response) -> dict[str, Any]:
     response.headers["Cache-Control"] = "no-store"
     response.headers["X-Robots-Tag"] = "noindex"
     return {"name": row.name, "kind": row.kind, "include_earnings": bool(row.include_earnings),
-            "updated_at": _iso(row.snapshot_at), "expires_at": _iso(row.expires_at),
+            "updated_at": iso_z(row.snapshot_at), "expires_at": iso_z(row.expires_at),
             "ready": row.snapshot_at is not None, "links": [r for r in json.loads(row.rows_json) if r]}

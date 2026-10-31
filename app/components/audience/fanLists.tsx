@@ -70,7 +70,7 @@ const TOP_LIST_NAMES: string[] = [
   "following",
 ];
 
-function topRank(name: string): number {
+export function topRank(name: string): number {
   const i = TOP_LIST_NAMES.indexOf(name.toLowerCase());
   return i === -1 ? TOP_LIST_NAMES.length : i;
 }

@@ -16,12 +16,12 @@ reading `transaction_ingest._classify_kind` and friends.
 """
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
-from typing import Any, Iterable, Literal, NamedTuple
+from typing import Iterable, Literal, NamedTuple
 
 from attribution_backfill import SETTLED_REVERSALS
+from of_coerce import cents_or_none as _to_cents, strip_tags as _strip_html
 
 # ── Kind catalog (HTML-stripped description prefix -> kind) ─────────
 # Order matters — match top-to-bottom. Public so the admin
@@ -57,7 +57,6 @@ _STATUS_MAP = {
     "pending_return": "refund_pending",
 }
 
-_HTML_TAG = re.compile(r"<[^>]+>")
 _REFUND_STATUSES = SETTLED_REVERSALS
 _NON_REVENUE_STATUSES = (*SETTLED_REVERSALS, "failed")
 
@@ -85,27 +84,12 @@ def _normalize_status(raw_status: str | None) -> str:
 
 # ── Parsing helpers ─────────────────────────────────────────────────
 
-def _strip_html(s: str | None) -> str:
-    if not s:
-        return ""
-    return _HTML_TAG.sub("", s).strip()
-
-
 def _classify_kind(description: str | None) -> str:
     text_ = _strip_html(description) if description and "<" in description else (description or "").strip()
     for prefix, kind in KIND_CATALOG:
         if text_.startswith(prefix):
             return kind
     return "unknown"
-
-
-def _to_cents(v: Any) -> int | None:
-    if v is None or v == "":
-        return None
-    try:
-        return int(round(float(v) * 100))
-    except Exception:
-        return None
 
 
 def _parse_iso(s: str | None) -> datetime | None:

@@ -36,6 +36,7 @@ import audit_labels  # noqa: E402
 import events  # noqa: E402
 import notifications_api  # noqa: E402
 import server  # noqa: E402
+import accounts_admin_api  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Action, AgencyNotification, Shift  # noqa: E402
 from notifications_api import Notice  # noqa: E402
@@ -354,8 +355,8 @@ def case_the_roster_strip_that_hits_otp_state_flags_the_creator_and_notifies():
             raise OFAPIError(f"400 for https://onlyfans.com/api2/v2/chats\n{body}", response=_Resp())
         return {"unread": 0, "owe_reply": 0}
 
-    saved = server._compute_roster_count_of
-    server._compute_roster_count_of = _counts
+    saved = accounts_admin_api._compute_roster_count_of
+    accounts_admin_api._compute_roster_count_of = _counts
     try:
         r = OWNER_A.get(f"/admin/accounts/roster-counts?bust={acc}")
         assert r.status_code == 200, r.text
@@ -364,7 +365,7 @@ def case_the_roster_strip_that_hits_otp_state_flags_the_creator_and_notifies():
         rows = _rows(A, "session_dead")
         assert [r.account_id for r in rows] == [acc], [(r.account_id, r.text) for r in rows]
     finally:
-        server._compute_roster_count_of = saved
+        accounts_admin_api._compute_roster_count_of = saved
         asyncio.run(account_health.clear_session_dead(acc))
 
 

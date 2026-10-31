@@ -11,7 +11,7 @@ import { createPortal } from "react-dom";
 
 import type { OFMedia, OFMessage } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
-import { type FanId } from "@/lib/fanId";
+import { sameUserId, type FanId } from "@/lib/fanId";
 import { cn } from "@/lib/utils";
 import { stillUrl } from "@/lib/ofMedia";
 import { blurImageClass, useBlurMode } from "@/hooks/useBlurMode";
@@ -62,8 +62,8 @@ export function MediaStrip({ msg, locked, accountId, fanId, isOutgoing, eagerMed
   // the marks on the tiles are both driven from this one list, so they cannot
   // disagree; deriving the count from `msg.media.length` instead let the
   // footer claim "remove 1 of 4" over a row where nothing was marked.
-  const sameId = (a: unknown, b: unknown) => a != null && b != null && String(a) === String(b);
-  const refusedHere = items.filter((m) => m.id != null && refusedIds.some((r) => sameId(r, m.id)));
+  const isRefused = (m: OFMedia) => refusedIds.some((r) => sameUserId(r, m.id));
+  const refusedHere = items.filter(isRefused);
   // THE COLLAPSED VIEW CARRIES THE REFUSED TILES. Expansion is the operator's
   // alone again — a plain boolean, default closed — because the question "may a
   // tile OF named be hidden?" is no longer answered by state at all: a refused
@@ -90,7 +90,7 @@ export function MediaStrip({ msg, locked, accountId, fanId, isOutgoing, eagerMed
   const indexed = items.map((m, i) => [m, i] as const);
   const visible = expanded
     ? indexed
-    : indexed.filter(([m, i]) => i < cap || (m.id != null && refusedIds.some((r) => sameId(r, m.id))));
+    : indexed.filter(([m, i]) => i < cap || isRefused(m));
   const hiddenCount = items.length - visible.length;
   // Click-to-zoom lightbox. Holds the index into `items` of the tile being
   // viewed full-res (null = closed) — taken from the pair above, never from the
@@ -140,7 +140,7 @@ export function MediaStrip({ msg, locked, accountId, fanId, isOutgoing, eagerMed
           // and then flashes one in when the async lookup lands. `isSuccess`
           // distinguishes "not loaded" from "confirmed not bought".
           const wasBought = fanVaultQ.isSuccess && fanEntry?.was_purchased === true;
-          const inPreviews = m.id != null && previewIds.some((pv) => sameId(pv, m.id));
+          const inPreviews = previewIds.some((pv) => sameUserId(pv, m.id));
           const showBadge = isOutgoing && (wasBought || isPPV);
           const badge = (
             showBadge ? (
@@ -168,7 +168,7 @@ export function MediaStrip({ msg, locked, accountId, fanId, isOutgoing, eagerMed
           // sentence, which talks about "media" without saying which — and a
           // bundle of near-identical thumbs is exactly where that fails the
           // operator (lib/sendFailure records what it cost on 2026-08-16).
-          const wasRefused = m.id != null && refusedIds.some((r) => sameId(r, m.id));
+          const wasRefused = isRefused(m);
           // Fansly locked media reports price=0 (so message-level `locked` is
           // false) but canView=false — treat per-media canView===false as
           // locked → 🔒 tile, not a grey skeleton. Guard on !isOutgoing: OF

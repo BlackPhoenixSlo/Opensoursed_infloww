@@ -43,6 +43,23 @@ export function authError(status: number, parsed: unknown): RelayError {
   return new RelayError(status, parsed, message);
 }
 
+/** Auth routes' POST: JSON both ways, the session cookie same-origin.
+ *  Resolves to the parsed body (text if not JSON, `null` if empty); a
+ *  non-2xx throws `authError`. */
+export async function postAuthJSON<T>(path: string, body: unknown): Promise<T> {
+  const r = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(body),
+    credentials: "same-origin",
+  });
+  const text = await r.text();
+  let parsed: unknown = text;
+  try { parsed = text ? JSON.parse(text) : null; } catch { /* keep text */ }
+  if (!r.ok) throw authError(r.status, parsed);
+  return parsed as T;
+}
+
 export type SignedInKind = "user" | "chatter";
 
 /** The sign-in form's one password check, owners then employees
@@ -51,18 +68,10 @@ export type SignedInKind = "user" | "chatter";
  *  step, else `authError` (401 wrong password, 403 `account_deactivated`,
  *  429 `too_many_attempts`). */
 export async function signIn(username: string, password: string): Promise<SignedInKind> {
-  const r = await fetch("/auth/sign-in", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({ username, password }),
-    credentials: "same-origin",
-  });
-  const text = await r.text();
-  let parsed: unknown = text;
-  try { parsed = text ? JSON.parse(text) : null; } catch { /* keep text */ }
-  if (!r.ok) throw authError(r.status, parsed);
+  const parsed = await postAuthJSON<{ kind: SignedInKind } | TwoFactorChallenge>(
+    "/auth/sign-in", { username, password });
   if (isTwoFactorChallenge(parsed)) throw new TwoFactorRequired(parsed);
-  return (parsed as { kind: SignedInKind }).kind;
+  return parsed.kind;
 }
 
 /** A typed refusal's `code` ("account_deactivated", "too_many_attempts",

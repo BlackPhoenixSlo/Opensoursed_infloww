@@ -21,7 +21,6 @@ import { proxyImage } from "@/lib/mediaUrl";
 import { messagesPaintKey, useChatMessages } from "@/hooks/useChatMessages";
 import { fetchOlderSeed, mergeSeedIntoMessages, useChatMessagesLocal } from "@/hooks/useChatMessagesLocal";
 import { useChatAttribution } from "@/hooks/useChatAttribution";
-import { keepChatEntry } from "@/hooks/useChatBackEntry";
 import { OPEN_DIALOG, OS_EDGE_PX, useSwipe } from "@/hooks/useSwipe";
 import { useSendMessage, type SendStatus } from "@/hooks/useSendMessage";
 import { useLikeMessage } from "@/hooks/useLikeMessage";
@@ -53,6 +52,9 @@ import { PinnedBar, PinnedPopover } from "./PinnedPanel";
 import { quoteFromMessage, type QuotedReply } from "./ReplyStrip";
 import { useUnsendChoice } from "./UnsendChoice";
 import { chatDrawerReducer, initialChatDrawer } from "./chatDrawer";
+import { newBackfillIds } from "./jumpAnchor";
+import { useJumpToMessage } from "./useJumpToMessage";
+import { useMarkChatRead } from "./useMarkChatRead";
 
 export type { QuotedReply };
 
@@ -83,47 +85,6 @@ export function readCachedOwnerId(accountId: string): number | null {
   } catch {
     return null;
   }
-}
-
-// How many pages of history the ?msg= anchor may pull. Each one is a live
-// OnlyFans request, so this bounds a repeatedly-clicked surface to a handful of
-// upstream calls rather than "page until found".
-const ANCHOR_MAX_PAGES = 6;
-
-/** Mark a chat read: our local marker (zeroes chats.unread_count; resolves
- *  whether it cleared one), OF's — a "seen" receipt — only when OF still shows
- *  it unread, and the blue dot off every cached chat list at once. */
-function markChatRead(
-  qc: ReturnType<typeof useQueryClient>, accountId: string, fanId: number | string, ofUnread: boolean,
-): Promise<boolean> {
-  const local = relay
-    .post<{ cleared?: boolean }>(`/admin/messages/${accountId}/${fanId}/mark-read`, undefined)
-    .then((res) => !!res?.cleared)
-    .catch((err) => {
-      console.warn("[mark-read local] failed", err);
-      return false;
-    });
-  if (ofUnread) {
-    relay
-      .post(`/api/of/v2/chats/${fanId}/mark-as-read`, undefined, { accountId })
-      .catch((err) => console.warn("[mark-as-read] failed", err));
-  }
-  type Page = { rows: OFChatItem[]; hasMore: boolean };
-  type Infinite = { pages: Page[]; pageParams: unknown[] };
-  qc.getQueryCache().findAll({ queryKey: ["chats"] }).forEach((q) => {
-    const data = q.state.data as Infinite | undefined;
-    if (!data?.pages) return;
-    const newPages: Page[] = data.pages.map((p) => ({
-      ...p,
-      rows: p.rows.map((c) =>
-        (c.__accountId ?? "") === accountId && sameUserId(c.withUser.id, fanId)
-          ? { ...c, hasUnread: false, unreadMessagesCount: 0 }
-          : c,
-      ),
-    }));
-    qc.setQueryData(q.queryKey, { ...data, pages: newPages });
-  });
-  return local;
 }
 
 export function ChatSurface({
@@ -163,8 +124,7 @@ export function ChatSurface({
 }) {
   const { current: currentEmployee } = useEmployee();
   const qc = useQueryClient();
-  const { refreshOne: refreshRosterOne, patchLocal: patchRosterLocal } =
-    useRosterCountActions();
+  const { refreshOne: refreshRosterOne } = useRosterCountActions();
 
   // Fan insights, and the header's Notes / Edit name focus requests (chatDrawer).
   const [drawer, dispatchDrawer] = useReducer(
@@ -180,10 +140,6 @@ export function ChatSurface({
   const drawerOpen = drawer.open;
   const [quoted, setQuoted] = useState<QuotedReply | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
-  const [highlightId, setHighlightId] = useState<number | null>(null);
-  // Which ?msg= target we've already resolved, and how many pages that cost.
-  const anchorRef = useRef<string | null>(null);
-  const anchorPagesRef = useRef(0);
   const [pinnedOpen, setPinnedOpen] = useState(false);
   // Imperative handle on Composer — lets FanDrawer's "Send to chat"
   // buttons (on unsold PPVs) preload the composer with that PPV's
@@ -309,6 +265,11 @@ export function ChatSurface({
     return handle.loadOlder();
   }, [handle, accountId, fanId, qc]);
 
+  // Search / pinned / ?msg= jumps put a highlight ring on a rendered bubble.
+  const { highlightId, jumpToMessage } = useJumpToMessage({
+    accountId, fanId, handle, loadOlder: loadOlderSeeded, onJump: () => setSearchOpen(false),
+  });
+
   // `painted` — the first commit that puts real bubbles on screen. This is
   // the number the thread should be judged on: `delivered` measures OF's
   // round-trip, but the seed above means the user is usually reading history
@@ -396,49 +357,11 @@ export function ChatSurface({
     }
   }, [qc, accountId, fanId, refreshRosterOne]);
 
-  // Mark the chat read on open. Patches the inbox cache locally so the
-  // blue dot disappears immediately, then fires the server POST in the
-  // background (fire-and-forget — OF will catch up on its next poll
-  // even if our request 5xxs).
-  useEffect(() => {
-    if (markRead !== "onOpen") return;
-    let cancelled = false;
-    // (1) LOCAL read-marker — zero our chats.unread_count regardless of OF's
-    //     state. Opening a chat we DON'T reply to must move it off the roster's
-    //     blue (unread) count and onto orange (owe reply). Fires even when OF
-    //     already considered it read (chat.hasUnread === false), so it can't be
-    //     gated on hasUnread. Refresh the roster badge only when it cleared.
-    // (2) OF read-marker — only when OF still shows it unread (avoids a needless
-    //     upstream call + "seen" receipt on an already-read chat).
-    void markChatRead(qc, accountId, fanId, !!chat.hasUnread).then((cleared) => {
-      if (cleared && !cancelled) {
-        // Opening an unread chat moves it off the roster's BLUE (unread) and
-        // onto ORANGE (read, fan spoke last) in the same tick — patch the cached
-        // badge optimistically so it drops instantly. We deliberately DON'T
-        // re-read OF here: the mark-read POST already busts the server-side
-        // roster cache, and the badge is OF-truth, so an immediate re-read could
-        // race OF's own read-processing and flicker the count back up. The 60s
-        // poll (now reading a busted cache) reconciles to OF-truth cleanly.
-        patchRosterLocal(accountId, (c) => ({
-          unread: Math.max(0, c.unread - 1),
-          owe_reply: c.owe_reply + 1,
-        }));
-      }
-    });
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accountId, fanId, patchRosterLocal]);
-
-  // "afterFirstSend": the first send that reaches OF marks the chat read (OF
-  // "seen" too) — once, even if it settles after the chatter moved on. The
-  // send already took the roster badge down, so it isn't patched again.
-  const markedRef = useRef(markRead === "onOpen");
+  const noteSettled = useMarkChatRead({ accountId, fanId, hasUnread: !!chat.hasUnread, markRead });
   const settleSend = useCallback((status: SendStatus) => {
     onSendSettled?.(status);
-    if (status !== "sent" || markedRef.current) return;
-    markedRef.current = true;
-    void markChatRead(qc, accountId, fanId, !!chat.hasUnread);
-  }, [onSendSettled, qc, accountId, fanId, chat.hasUnread]);
+    noteSettled(status);
+  }, [onSendSettled, noteSettled]);
   const sender = useSendMessage({
     accountId,
     fanId,
@@ -508,7 +431,7 @@ export function ChatSurface({
     const myId = meQ.data?.id;
     if (!myId || messages.length === 0) return;
 
-    const items: Array<{
+    const candidates: Array<{
       message_id: string;
       media_ids: number[];
       price_cents: number;
@@ -527,8 +450,7 @@ export function ChatSurface({
         .map((x) => (typeof x.id === "number" ? x.id : Number(x.id)))
         .filter((n) => Number.isFinite(n) && n > 0);
       if (mediaIds.length === 0) continue;
-      if (backfilledMsgIdsRef.current.has(mid)) continue;
-      items.push({
+      candidates.push({
         message_id: mid,
         media_ids: mediaIds,
         price_cents: Math.max(0, Math.round((m.price || 0) * 100)),
@@ -537,8 +459,13 @@ export function ChatSurface({
         // is meaningless — leave was_purchased null in that case.
         was_purchased: (m.price ?? 0) > 0 ? !!m.isOpened : null,
       });
-      backfilledMsgIdsRef.current.add(mid);
     }
+    // Each id once (its first message), and never one already backfilled.
+    const firstById = new Map<string, (typeof candidates)[number]>();
+    for (const c of candidates) if (!firstById.has(c.message_id)) firstById.set(c.message_id, c);
+    const ids = newBackfillIds(backfilledMsgIdsRef.current, candidates.map((c) => c.message_id));
+    const items = ids.map((id) => firstById.get(id)!);
+    for (const id of ids) backfilledMsgIdsRef.current.add(id);
     if (items.length === 0) return;
 
     relay
@@ -629,55 +556,6 @@ export function ChatSurface({
   function onQuoteReply(msg: OFMessage) {
     setQuoted(quoteFromMessage(msg));
   }
-
-  function jumpToMessage(id: number) {
-    setHighlightId(id);
-    setSearchOpen(false);
-    // Drop the highlight ring after a couple seconds so it doesn't linger
-    // through the next scroll-up that brings it back into view.
-    setTimeout(() => setHighlightId((cur) => (cur === id ? null : cur)), 3000);
-  }
-
-  // ── ?msg=<id> — open the thread ON a specific message ────────────────────
-  //
-  // /customs links here so an operator lands on the TIP that bought a custom,
-  // not just on the fan. The highlight machinery above only works on a bubble
-  // that is RENDERED, and the tip may be well above the first page, so this
-  // pages backwards until it finds it.
-  //
-  // ⚠️ BOUNDED TO ANCHOR_MAX_PAGES, and the bound is the point: every
-  // loadOlder() is a live OnlyFans API call, so an unbounded "page until found"
-  // turns one click into dozens of upstream requests and a rate-limit risk on a
-  // surface an operator clicks repeatedly. Past the bound the thread simply
-  // opens where it is — the /customs row already carries the tip's date and
-  // amount, so an old one stays findable by hand.
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const want = new URLSearchParams(window.location.search).get("msg");
-    if (!want) return;
-    const key = `${accountId}:${fanId}:${want}`;
-    if (anchorRef.current === key) return;   // once per (thread, target)
-    if (handle.isLoading) return;
-
-    const target = String(want);
-    const rows = handle.data ?? [];
-    if (rows.some((m) => String(m.id) === target)) {
-      anchorRef.current = key;
-      jumpToMessage(Number(target));
-      // Strip the param so a refresh doesn't re-jump out from under a scroll.
-      const url = new URL(window.location.href);
-      url.searchParams.delete("msg");
-      window.history.replaceState(keepChatEntry(), "", url.pathname + (url.search || ""));
-      return;
-    }
-    if (!handle.hasOlder || handle.isLoadingOlder) return;
-    if ((anchorPagesRef.current += 1) > ANCHOR_MAX_PAGES) {
-      anchorRef.current = key;               // give up quietly, stay put
-      return;
-    }
-    void loadOlderSeeded();
-  }, [accountId, fanId, handle.data, handle.isLoading, handle.hasOlder,
-      handle.isLoadingOlder]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   // Server-scheduled sends live in a separate query; merge them into
   // the message stream as pseudo-bubbles so the operator sees what's

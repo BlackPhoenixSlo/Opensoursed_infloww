@@ -40,6 +40,7 @@ import { relay, type OFMedia } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
 import { stillUrl } from "@/lib/ofMedia";
 import { plain, valid } from "@/lib/ofMirrorData";
+import { mirrorKey } from "@/lib/ofMirrorKeys";
 import { fromWallClock, QUEUE, QUEUE_CHANGE, queueDay, useAgencyZone, wallClock, type QueueActions, type QueueKind } from "@/lib/ofMirrorFeeds";
 import { dateTimeFields, localIso, message, minuteAhead, modalButton, note, NOT_YET, openModal, parseDate, SELECT_MODEL, TOO_SOON } from "@/lib/ofMirrorWrites";
 import { loadDraft, saveDraft, type PostDraft } from "@/lib/ofMirrorPost";
@@ -624,7 +625,7 @@ export function useOfQueue(frameRef: RefObject<HTMLIFrameElement | null>, src: s
     if (!frame || !on) return;
     const ctx = { accountId };
     const done = (r: unknown) => {
-      qc.invalidateQueries({ queryKey: ["of-mirror-data", accountId] });
+      qc.invalidateQueries({ queryKey: mirrorKey(accountId) });
       return r;
     };
     const enc = encodeURIComponent;

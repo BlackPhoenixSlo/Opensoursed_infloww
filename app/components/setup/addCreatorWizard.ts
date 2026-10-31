@@ -5,7 +5,9 @@
  *
  *   creators-details → select-platform → (OnlyFans) select-proxy → login → linked → creator-details → success
  *   login ⇄ role → alt ("Still unable…", OnlyFans only); login's Cancel goes back to select-proxy (OnlyFans) or
- *   select-platform.
+ *   select-platform; select-proxy's Back to select-platform, select-platform's to creators-details. Back never goes
+ *   to a step before the one the modal opened on (`opened`, by FLOW_ORDER): a draft or "Link another account" opens at
+ *   select-platform, so that step has no Back; a row's recovery opens at login, so login's Back goes nowhere.
  *
  * `next` goes only where `canNext` allows — the same check every Next button is disabled by. A save's end
  * (`submitOk`) moves on by itself; `next` on a saving step is a no-op. Creator details, platform and proxy pick live
@@ -13,7 +15,14 @@
  * moved) still lands. A sign-in that settles late still links, to the newest account, on any step but success or
  * one whose save is running.
  * Saving itself is the component's (toasts, the profile and mutation hooks).
+ *
+ * An action the reducer refuses (a `next` canNext forbids, a `submitStart` while saving, a Back with nowhere to go)
+ * returns the very same state object. `useWizardReducer` relies on that: its `dispatch` runs the reducer on the
+ * newest state (not the render's, so a double-click's second click sees what the first did) and answers whether
+ * the action was taken — the component starts a save only when its `submitStart` was.
  */
+
+import { useCallback, useRef, useState } from "react";
 
 import {
   creatorDetailsError, proxyChoiceReady, type AccountDetails, type ProxyChoice, type useSaveAccountDetails,
@@ -38,6 +47,8 @@ export type WizardStep =
 
 export interface WizardState {
   step: WizardStep;
+  /** The step the modal opened on: Back never goes to a step before it in FLOW_ORDER. */
+  opened: WizardStep["kind"];
   details: CreatorDetails;
   /** The saved Creator (a draft) the account links to. */
   draftId?: string;
@@ -70,8 +81,12 @@ export function initialWizard({ recovery, draft, linkAnother }: {
   linkAnother?: { creator: CreatorDetails; linked: readonly Platform[] };
 }): WizardState {
   const taken = linkAnother?.linked ?? [];
+  const step: WizardStep = recovery
+    ? { kind: "login" }
+    : draft || linkAnother ? { kind: "select-platform" } : { kind: "creators-details", busy: false };
   return {
-    step: recovery ? { kind: "login" } : draft || linkAnother ? { kind: "select-platform" } : { kind: "creators-details", busy: false },
+    step,
+    opened: step.kind,
     details: draft ?? linkAnother?.creator ?? { name: "", gender: "" },
     draftId: draft?.id,
     taken,
@@ -136,22 +151,39 @@ function next(state: WizardState): WizardState {
   }
 }
 
-function back(state: WizardState): WizardState {
+/** The steps Back moves between, in flow order (role / alt only ever go back to login). */
+const FLOW_ORDER: readonly WizardStep["kind"][] = ["creators-details", "select-platform", "select-proxy", "login"];
+/** May Back land on `kind`? Not on a step before the one the modal opened on. */
+const notBeforeOpened = (state: WizardState, kind: WizardStep["kind"]): boolean =>
+  FLOW_ORDER.indexOf(kind) >= FLOW_ORDER.indexOf(state.opened);
+
+/** The step Back goes to, or null where it has none. */
+function backTo(state: WizardState): WizardStep | null {
   switch (state.step.kind) {
     case "login":
-      return go(state, { kind: state.platform === "onlyfans" ? "select-proxy" : "select-platform" });
+      return { kind: state.platform === "onlyfans" ? "select-proxy" : "select-platform" };
     case "role": // Creator, or Cancel
     case "alt":
-      return go(state, { kind: "login" });
-    case "creators-details":
-    case "select-platform":
+      return { kind: "login" };
     case "select-proxy":
+      return { kind: "select-platform" };
+    case "select-platform":
+      return { kind: "creators-details", busy: false };
+    case "creators-details":
     case "linked":
     case "creator-details":
     case "success":
-      return state;
+      return null;
   }
 }
+
+function back(state: WizardState): WizardState {
+  const to = backTo(state);
+  return to && notBeforeOpened(state, to.kind) ? go(state, to) : state;
+}
+
+/** Does the step have a Back (its button is drawn)? */
+export const canBack = (s: WizardState): boolean => back(s) !== s;
 
 /** Details, platform and proxy apply on any step (a late edit lands); the account only where it is edited. */
 function setField(state: WizardState, action: Extract<WizardAction, { type: "setField" }>): WizardState {
@@ -198,4 +230,22 @@ export function buildAccountPayload(
   s: Pick<WizardState, "details" | "draftId">, step: AccountStep, roster: Employee[] | null,
 ): Parameters<ReturnType<typeof useSaveAccountDetails>["mutate"]>[0] {
   return { accountId: step.accountId, before: "", roster, details: step.account, creator: s.details, draftId: s.draftId };
+}
+
+/** The wizard for a component: `[state, dispatch]`, where `dispatch` runs `wizardReducer` on the newest state (a
+ *  click that lands before React re-renders reads the step the previous click left) and returns true when the
+ *  reducer took the action (a new state object), false when it refused it (the same one). */
+export function useWizardReducer(init: Parameters<typeof initialWizard>[0]): [WizardState, (a: WizardAction) => boolean] {
+  // One reduction per action: the result is stored as is (a useReducer would
+  // run the reducer a second time to apply it).
+  const [state, setState] = useState(() => initialWizard(init));
+  const latest = useRef(state);
+  const dispatch = useCallback((action: WizardAction): boolean => {
+    const after = wizardReducer(latest.current, action);
+    if (after === latest.current) return false;
+    latest.current = after;
+    setState(after);
+    return true;
+  }, []);
+  return [state, dispatch];
 }

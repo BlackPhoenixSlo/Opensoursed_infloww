@@ -15,7 +15,7 @@
 
 import { useCallback, useSyncExternalStore } from "react";
 
-import { subscribeToStorage } from "@/lib/storageSync";
+import { readStorage, subscribeToStorage } from "@/lib/storageSync";
 
 /** Every Insights block, in its default order: the selling order — who the Fan
  *  is, what he spends, what to resell him, what we know, whether mass sends
@@ -40,10 +40,6 @@ const subscribe = subscribeToStorage(EVENT);
 
 const isId = (v: unknown): v is InsightsBlockId =>
   (INSIGHTS_BLOCKS as readonly unknown[]).includes(v);
-
-function readRaw(): string | null {
-  return window.localStorage.getItem(STORAGE_KEY);
-}
 
 function parse(raw: string | null): Layout {
   let order: InsightsBlockId[] = [];
@@ -75,22 +71,22 @@ function write(next: Layout) {
 }
 
 export function useInsightsBlocks() {
-  const layout = parsed(useSyncExternalStore(subscribe, readRaw, () => null));
+  const layout = parsed(useSyncExternalStore(subscribe, () => readStorage(STORAGE_KEY), () => null));
   const shown = layout.order.filter((id) => !layout.hidden.includes(id));
   const removed = layout.order.filter((id) => layout.hidden.includes(id));
 
   /** `next` is the shown blocks in their new order; removed blocks keep their slots. */
   const reorder = useCallback((next: InsightsBlockId[]) => {
-    const cur = parsed(readRaw());
+    const cur = parsed(readStorage(STORAGE_KEY));
     const queue = [...next];
     write({ ...cur, order: cur.order.map((id) => (cur.hidden.includes(id) ? id : queue.shift() ?? id)) });
   }, []);
   const remove = useCallback((id: InsightsBlockId) => {
-    const cur = parsed(readRaw());
+    const cur = parsed(readStorage(STORAGE_KEY));
     if (!cur.hidden.includes(id)) write({ ...cur, hidden: [...cur.hidden, id] });
   }, []);
   const add = useCallback((id: InsightsBlockId) => {
-    const cur = parsed(readRaw());
+    const cur = parsed(readStorage(STORAGE_KEY));
     if (cur.hidden.includes(id)) write({ ...cur, hidden: cur.hidden.filter((h) => h !== id) });
   }, []);
 

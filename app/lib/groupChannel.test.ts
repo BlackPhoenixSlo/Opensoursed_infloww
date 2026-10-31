@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-  GROUP_SLOT_CAP, GROUP_TAB_KEY_PREFIX, isGroupSlot, openGroupTab, parseSlotsParam, readAllLiveGroupTabs,
+  GROUP_HEARTBEAT_TTL_MS, GROUP_SLOT_CAP, GROUP_TAB_KEY_PREFIX, cleanGroupMessage, cleanGroupTab, cleanSlots,
+  isGroupSlot, openGroupTab, parseSlotsParam, readAllLiveGroupTabs,
 } from "./groupChannel";
 
 const SNOW = "900234567890123456";
@@ -23,6 +24,74 @@ describe("isGroupSlot", () => {
     ["a:1", false],
   ])("%j -> %s", (x, want) => {
     expect(isGroupSlot(x)).toBe(want);
+  });
+});
+
+describe("cleanSlots", () => {
+  it.each<[unknown, unknown[]]>([
+    [undefined, []],
+    ["a:1", []],
+    [{ 0: { accountId: "a", fanId: 1 } }, []],
+    [[{ accountId: "a", fanId: 1, extra: 1 }, null, { accountId: "a", fanId: "abc" }, { accountId: "a", fanId: SNOW }],
+      [{ accountId: "a", fanId: 1 }, { accountId: "a", fanId: SNOW }]],
+  ])("%j -> %j", (x, want) => {
+    expect(cleanSlots(x)).toEqual(want);
+  });
+});
+
+// The receive side of the channel: anything a same-origin page posts.
+describe("cleanGroupMessage", () => {
+  const T = { tabId: "t", reqId: "r" };
+  it.each<[string, unknown, unknown]>([
+    ["null", null, null],
+    ["a string", "add", null],
+    ["a number", 7, null],
+    ["unknown type", { ...T, type: "nope" }, null],
+    ["no tabId", { type: "focus" }, null],
+    ["numeric tabId", { type: "focus", tabId: 1 }, null],
+    ["focus", { type: "focus", tabId: "t", x: 1 }, { type: "focus", tabId: "t" }],
+    ["add without reqId owes no ack: ignored", { type: "add", tabId: "t", accountId: "a", fanId: 1 }, null],
+    ["add", { ...T, type: "add", accountId: "a", fanId: 1 }, { ...T, type: "add", accountId: "a", fanId: 1 }],
+    ["add: Fansly snowflake stays the same string", { ...T, type: "add", accountId: "a", fanId: SNOW },
+      { ...T, type: "add", accountId: "a", fanId: SNOW }],
+    // Malformed slot: passed on as it came (only the envelope is judged here); slotsReducer refuses it, and the
+    // tab still owes an ok:false.
+    ["add: bad fan id passed on", { ...T, type: "add", accountId: "a", fanId: { n: 1 } },
+      { ...T, type: "add", accountId: "a", fanId: { n: 1 } }],
+    ["add: missing account passed on", { ...T, type: "add", fanId: 1 }, { ...T, type: "add", accountId: undefined, fanId: 1 }],
+    ["replace without slots: none (refused)", { ...T, type: "replace" }, { ...T, type: "replace", slots: [] }],
+    ["replace with non-list slots: none", { ...T, type: "replace", slots: "a:1" }, { ...T, type: "replace", slots: [] }],
+    ["replace passes its entries on as they came", { ...T, type: "replace", slots: [{ accountId: "a", fanId: SNOW }, 5] },
+      { ...T, type: "replace", slots: [{ accountId: "a", fanId: SNOW }, 5] }],
+    ["replace without reqId", { type: "replace", tabId: "t", slots: [] }, null],
+    ["add-ack", { ...T, type: "add-ack", ok: true }, { ...T, type: "add-ack", ok: true }],
+    ["add-ack: a non-boolean ok is not ok", { ...T, type: "add-ack", ok: "yes" }, { ...T, type: "add-ack", ok: false }],
+    ["claim", { type: "claim", tabId: "t", spawnToken: "s" }, { type: "claim", tabId: "t", spawnToken: "s" }],
+    ["claim without token", { type: "claim", tabId: "t" }, null],
+  ])("%s", (_name, x, want) => {
+    expect(cleanGroupMessage(x)).toEqual(want);
+  });
+});
+
+describe("cleanGroupTab", () => {
+  const NOW = 1_000_000;
+  const ok = { tabId: "t", heartbeat: NOW - 10, createdAt: 5, slots: [] };
+  it.each<[string, unknown, unknown]>([
+    ["garbage", "x", null],
+    ["null", null, null],
+    ["missing slots", { ...ok, slots: undefined }, null],
+    ["non-array slots", { ...ok, slots: {} }, null],
+    ["non-number heartbeat", { ...ok, heartbeat: "1" }, null],
+    ["stale", { ...ok, heartbeat: NOW - GROUP_HEARTBEAT_TTL_MS - 1 }, null],
+    ["live", ok, ok],
+    ["non-number createdAt falls back to the heartbeat", { ...ok, createdAt: "5" }, { ...ok, createdAt: NOW - 10 }],
+    ["missing createdAt falls back to the heartbeat", { ...ok, createdAt: undefined }, { ...ok, createdAt: NOW - 10 }],
+    ["zero createdAt falls back to the heartbeat", { ...ok, createdAt: 0 }, { ...ok, createdAt: NOW - 10 }],
+    ["Fansly slot stays a string, malformed dropped",
+      { ...ok, slots: [{ accountId: "a", fanId: SNOW }, { accountId: "a", fanId: 1.5 }] },
+      { ...ok, slots: [{ accountId: "a", fanId: SNOW }] }],
+  ])("%s", (_name, x, want) => {
+    expect(cleanGroupTab(x, NOW)).toEqual(want);
   });
 });
 

@@ -35,6 +35,7 @@ import { utcOffsetLabel } from "@/lib/utcOffset";
 import { cn } from "@/lib/utils";
 import { SkeletonRows } from "@/components/ui/Skeleton";
 import { usePagedFilters } from "@/hooks/pagedFilters";
+import { addDays, createdDay, dayKey, monthStartBefore } from "@/components/growth/frameDates";
 
 export const NOT_WIRED = "not wired";
 
@@ -89,18 +90,6 @@ export function GrowthHbFrame({ title, children }: { title: string; children: Re
 export function dateOnly(iso: string | null, tz: string | null): string {
   const d = parseUtc(iso);
   return d ? d.toLocaleDateString(undefined, { timeZone: tz ?? undefined }) : "—";
-}
-
-/** `at` as YYYY-MM-DD in the report time zone (`en-CA` prints the ISO order). */
-export function dayKey(at: Date, tz: string | null): string {
-  return at.toLocaleDateString("en-CA", { timeZone: tz ?? undefined, year: "numeric", month: "2-digit", day: "2-digit" });
-}
-
-/** The day a link was created, in the report time zone; null with no (or a bad) date. Our links' stamps come
- *  zone-less (naive UTC), so they are read as UTC. */
-export function createdDay(l: { created_at: string | null }, tz: string | null): string | null {
-  const d = parseUtc(l.created_at);
-  return d ? dayKey(d, tz) : null;
 }
 
 /** The time the relay's read landed, in the report time zone the title names. */
@@ -291,21 +280,6 @@ export function Switch({ label, on, onChange }: { label: string; on: boolean; on
 }
 
 // ── Date created (#21, #22) ──
-
-/** A YYYY-MM-DD day moved by `n` days. */
-function addDays(day: string, n: number): string {
-  const d = new Date(`${day}T00:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + n);
-  return d.toISOString().slice(0, 10);
-}
-
-/** The first of the month `m` months before a YYYY-MM-DD day (dayjs `subtract(m,"month").startOf("month")`). */
-function monthStartBefore(day: string, m: number): string {
-  const d = new Date(`${day}T00:00:00Z`);
-  d.setUTCDate(1);
-  d.setUTCMonth(d.getUTCMonth() - m);
-  return d.toISOString().slice(0, 10);
-}
 
 /** The bundle's `datePresets` (`getDatePresetValue`): from and to, inclusive, around today in the report time zone. */
 const DATE_PRESETS: Array<{ label: string; range: (today: string) => [string, string] }> = [

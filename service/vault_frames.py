@@ -34,6 +34,7 @@ import logging
 from typing import Any, NamedTuple
 
 import admission  # bounded-concurrency lanes — a LEAF, so no lazy server import
+import storyboard  # the scrub-frame store — no server import, so not lazy
 import automation_executor as ax  # _make_client seam (same one automations use)
 import vault_mirror  # the OF-media → mirror-row mapping (thumb_of)
 import vault_stills
@@ -123,10 +124,8 @@ def warm_one_sync(client: Any, url: str, dur: float) -> str:
 
     Returns its own outcome vocabulary; `_WARM_REASON` is the only place that
     translates it into this module's."""
-    import server as srv  # lazy: avoid the server↔vault_frames import cycle
-
-    h = srv._video_path_hash(url)
-    if srv._storyboard_all_frames_present(h):
+    h = storyboard._video_path_hash(url)
+    if storyboard._storyboard_all_frames_present(h):
         return "cached"
 
     # The ffmpeg lane — the SAME lane `/img/scrub` takes, and taken here for a
@@ -138,7 +137,7 @@ def warm_one_sync(client: Any, url: str, dur: float) -> str:
     # never queues at all.
     if not admission.STORYBOARD_BUILD.enter(f"warm h={h}"):
         return "busy"
-    dest = srv._STORYBOARD_DIR / h
+    dest = storyboard._STORYBOARD_DIR / h
     src_path = dest / "source.tmp"
     try:
         dest.mkdir(parents=True, exist_ok=True)
@@ -153,8 +152,8 @@ def warm_one_sync(client: Any, url: str, dur: float) -> str:
             r.close()
         except Exception:  # noqa: BLE001
             pass
-        ok = srv._storyboard_extract_batch(
-            src_path, dest, srv._ALL_FRAME_INDICES, max(0.1, dur or 1.0)
+        ok = storyboard._storyboard_extract_batch(
+            src_path, dest, storyboard._ALL_FRAME_INDICES, max(0.1, dur or 1.0)
         )
         return "warmed" if ok else "extract_fail"
     except Exception:  # noqa: BLE001
@@ -190,14 +189,12 @@ def storyboard_frames(url: str | None, want: int) -> list[str]:
     nothing and concludes the clip is un-renderable."""
     if not url:
         return []
-    import server as srv  # lazy
-
-    h = srv._video_path_hash(url)
-    if not srv._storyboard_all_frames_present(h):
+    h = storyboard._video_path_hash(url)
+    if not storyboard._storyboard_all_frames_present(h):
         return []
     out: list[str] = []
-    for i in spread(srv._STORYBOARD_FRAMES, want):
-        p = srv._storyboard_frame_path(h, i)
+    for i in spread(storyboard._STORYBOARD_FRAMES, want):
+        p = storyboard._storyboard_frame_path(h, i)
         if p.is_file():
             out.append(vision.img_data_url(p.read_bytes()))
     return out

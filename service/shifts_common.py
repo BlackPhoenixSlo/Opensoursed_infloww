@@ -15,7 +15,8 @@ from typing import Any, TypeVar
 from fastapi import HTTPException, Request
 from sqlalchemy import select
 
-from db.models import ClockEvent, Employee, Shift, UserAccount
+from agency_scope import agency_account_ids  # noqa: F401 — shifts_api / clock_api import it from here
+from db.models import ClockEvent, Employee, Shift
 from employees import AgencyContext, json_object, owner_context
 from route_wire import own_row_or_404, parse_utc
 
@@ -26,13 +27,6 @@ OWNER_ONLY = "only the agency owner manages the Shift schedule"
 
 async def shift_owner_context(account_id: str | None = None) -> AgencyContext:
     return await owner_context(account_id, OWNER_ONLY)
-
-
-async def agency_account_ids(s, agency_user_id: str) -> set[str]:
-    rows = (await s.execute(
-        select(UserAccount.account_id).where(UserAccount.user_id == agency_user_id)
-    )).scalars().all()
-    return set(rows)
 
 
 async def agency_employee_ids(s, agency_user_id: str, ids: list[int]) -> set[int]:

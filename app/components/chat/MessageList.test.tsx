@@ -534,7 +534,7 @@ describe("MessageList reply strip, with the real Composer", () => {
         <MessageList {...baseProps} messages={messages} ownerUserId={555}
                      onQuoteReply={(m) => setQuoted(quoteFromMessage(m))} />
         <section aria-label="Composer slot">
-          <Composer accountId="acct1" fanId={null} onSend={() => Promise.resolve()}
+          <Composer accountId="acct1" fanId={42} onSend={() => Promise.resolve()}
                     quoted={quoted} onClearQuoted={() => setQuoted(null)} />
         </section>
       </>

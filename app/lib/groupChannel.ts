@@ -32,9 +32,10 @@ import { fanIdFromParam, isValidFanId, sameUserId, type FanId } from "@/lib/fanI
  *     its list afterwards (added, or already held) and {ok:false} when it
  *     is not (full, or a malformed slot). Source awaits ACK with a short
  *     timeout and spawns an overflow tab on nack/timeout.
- *   • Frozen-tab unfreeze: /group runs a duplicate-reconcile pass on
- *     visibilitychange when it detects its own heartbeat went stale —
- *     drops slots any other live tab also holds (that tab is canonical).
+ *   • Frozen-tab unfreeze: when a /group tab's own heartbeat went stale
+ *     (next beat or visibilitychange, whichever first), it is reborn the
+ *     youngest tab and drops slots any other live tab also holds (that tab
+ *     is canonical).
  *   • Cross-target focus: source tracks groupRef.tabId via a `claim`
  *     message from the spawned /group tab. Focus only uses the held
  *     Window ref when its tabId matches the routing target; otherwise
@@ -83,6 +84,18 @@ export function isGroupSlot(x: unknown): x is GroupSlot {
   return typeof accountId === "string" && accountId !== "" && isValidFanId(fanId);
 }
 
+/** An untrusted value as a list: itself when it is an array, else empty. */
+export const listOf = (x: unknown): readonly unknown[] => (Array.isArray(x) ? x : []);
+
+/** The valid slots of an untrusted list, `accountId` + `fanId` only, in order
+ *  (no dedupe or cap: slotsReducer does that). Not an array: none. The fan id
+ *  keeps its wire shape: a Fansly snowflake stays a string. The one slot
+ *  cleaner for storage (sessionStorage, the localStorage registry); channel
+ *  and DOM-event slots go to slotsReducer as they came, which drops the same. */
+export function cleanSlots(x: unknown): GroupSlot[] {
+  return listOf(x).filter(isGroupSlot).map((s) => ({ accountId: s.accountId, fanId: s.fanId }));
+}
+
 export interface GroupTabRegistry {
   tabId: string;
   /** When this tab first registered. Used as a deterministic tiebreaker
@@ -103,6 +116,59 @@ export type GroupChannelMessage =
   | { type: "focus"; tabId: string }
   | { type: "claim"; tabId: string; spawnToken: string };
 
+/** What `cleanGroupMessage` hands a receiver: the envelope checked, an add's
+ *  account / fan id and a replace's entries still untrusted — slotsReducer
+ *  decides them (and the ack). */
+export type ReceivedGroupMessage =
+  | Exclude<GroupChannelMessage, { type: "add" } | { type: "replace" }>
+  | { type: "add"; tabId: string; reqId: string; accountId: unknown; fanId: unknown }
+  | { type: "replace"; tabId: string; reqId: string; slots: readonly unknown[] };
+
+const str = (v: unknown): v is string => typeof v === "string";
+
+/** A BroadcastChannel message, which any same-origin page can post: the
+ *  envelope checked (known type, string tabId / reqId / spawnToken), or null
+ *  (ignored). The payload is not judged here: an addressed add or replace
+ *  with a malformed slot still reaches slotsReducer, which refuses it and so
+ *  still owes (and sends) its ack. A replace's non-list slots read as none. */
+export function cleanGroupMessage(x: unknown): ReceivedGroupMessage | null {
+  if (!x || typeof x !== "object") return null;
+  const m = x as Record<string, unknown>;
+  if (!str(m.tabId)) return null;
+  const tabId = m.tabId;
+  switch (m.type) {
+    case "add":
+      return str(m.reqId) ? { type: "add", tabId, reqId: m.reqId, accountId: m.accountId, fanId: m.fanId } : null;
+    case "replace":
+      return str(m.reqId) ? { type: "replace", tabId, reqId: m.reqId, slots: listOf(m.slots) } : null;
+    case "add-ack":
+      return str(m.reqId) ? { type: "add-ack", tabId, reqId: m.reqId, ok: m.ok === true } : null;
+    case "focus":
+      return { type: "focus", tabId };
+    case "claim":
+      return str(m.spawnToken) ? { type: "claim", tabId, spawnToken: m.spawnToken } : null;
+    default:
+      return null;
+  }
+}
+
+/** One localStorage registry entry (untrusted: another build, a torn write),
+ *  live at `now`, or null (malformed or stale). A missing / non-positive
+ *  `createdAt` falls back to the heartbeat. */
+export function cleanGroupTab(x: unknown, now: number): GroupTabRegistry | null {
+  if (!x || typeof x !== "object") return null;
+  const r = x as Record<string, unknown>;
+  const { tabId, heartbeat, createdAt } = r;
+  if (!str(tabId) || typeof heartbeat !== "number" || !Array.isArray(r.slots)) return null;
+  if (now - heartbeat > GROUP_HEARTBEAT_TTL_MS) return null;
+  // Both id shapes: a `=== "number"` filter here once dropped every Fansly
+  // (string snowflake) slot as malformed.
+  return {
+    tabId, heartbeat, slots: cleanSlots(r.slots),
+    createdAt: typeof createdAt === "number" && createdAt > 0 ? createdAt : heartbeat,
+  };
+}
+
 /** Same-tab replace. BroadcastChannel does NOT deliver to the posting
  *  context, so when the money rail is clicked from inside the /group tab
  *  itself (the rail is in the root layout, so it renders there too) we hand
@@ -122,22 +188,8 @@ export function readAllLiveGroupTabs(): GroupTabRegistry[] {
       const raw = window.localStorage.getItem(key);
       if (!raw) continue;
       try {
-        const parsed = JSON.parse(raw) as Partial<GroupTabRegistry>;
-        if (
-          typeof parsed.tabId !== "string" ||
-          typeof parsed.heartbeat !== "number" ||
-          !Array.isArray(parsed.slots)
-        ) {
-          continue;
-        }
-        if (now - parsed.heartbeat > GROUP_HEARTBEAT_TTL_MS) continue;
-        // Both id shapes: a `=== "number"` filter here once dropped every
-        // Fansly (string snowflake) slot as malformed.
-        const slots = parsed.slots.filter(isGroupSlot);
-        const createdAt = typeof parsed.createdAt === "number" && parsed.createdAt > 0
-          ? parsed.createdAt
-          : parsed.heartbeat;
-        out.push({ tabId: parsed.tabId, createdAt, heartbeat: parsed.heartbeat, slots });
+        const tab = cleanGroupTab(JSON.parse(raw) as unknown, now);
+        if (tab) out.push(tab);
       } catch { /* skip malformed entry */ }
     }
   } catch { /* localStorage unavailable */ }
@@ -174,14 +226,14 @@ function ensureSourceChannel(): BroadcastChannel | null {
   if (sourceChannel) return sourceChannel;
   try {
     sourceChannel = new BroadcastChannel(GROUP_CHANNEL_NAME);
-    sourceChannel.onmessage = (e: MessageEvent<GroupChannelMessage>) => {
-      const msg = e.data;
+    sourceChannel.onmessage = (e: MessageEvent<unknown>) => {
+      const msg = cleanGroupMessage(e.data);
       if (!msg) return;
       if (msg.type === "add-ack") {
         const resolver = pendingAcks.get(msg.reqId);
         if (resolver) {
           pendingAcks.delete(msg.reqId);
-          resolver(!!msg.ok);
+          resolver(msg.ok);
         }
         return;
       }

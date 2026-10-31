@@ -38,6 +38,8 @@ import asyncio
 import logging
 import time
 
+from of_coerce import cents_or_none
+
 log = logging.getLogger("of-relay.account-page")
 
 # The skip reason every feed path reports when it declines to post. One string
@@ -67,12 +69,9 @@ def _price_cents(profile: object) -> int | None:
     if not isinstance(profile, dict):
         return None
     raw = profile.get("subscribePrice")
-    if raw is None or isinstance(raw, bool):
+    if isinstance(raw, bool):
         return None
-    try:
-        return int(round(float(raw) * 100))
-    except (TypeError, ValueError):
-        return None
+    return cents_or_none(raw)
 
 
 def prime(account_id: str, profile: object) -> None:

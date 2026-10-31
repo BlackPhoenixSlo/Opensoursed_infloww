@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  aeps, costPer, formatPromoCost, linkAverages, money, parsePromoCost, profit, profitCents, promoCostText, roi, share, updatedAgo,
+  aeps, costPer, cvr, formatPromoCost, linkAverages, money, parsePromoCost, per, profit, profitCents, promoCostText, roi, share, updatedAgo,
 } from "./linkMetrics";
 
 describe("linkMetrics", () => {
@@ -90,5 +90,79 @@ describe("linkMetrics", () => {
     expect(linkAverages([unknown]).roi).toBe("—");
     expect(linkAverages([unknown]).roiPartial).toBe(false);
     expect(linkAverages([{ ...one, earnings_partial: true }]).roiPartial).toBe(true);
+  });
+
+  it.each([
+    // [subscribers, clicks, CVR]
+    [2435, 23037, "10.57%"],
+    [1, 3, "33.33%"], // 33.333… to 2 decimals
+    [2, 3, "66.67%"], // 66.666… rounds up
+    [0, 50, "0.00%"],
+    [5, 5, "100.00%"],
+    [12, 0, "—"], // zero clicks: nothing to divide by
+    [0, 0, "—"],
+  ])("Subscription CVR of %i subs over %i clicks is %s", (subscribers, clicks, want) => {
+    expect(cvr({ subscribers, clicks })).toBe(want);
+  });
+
+  it.each([
+    // [earnings cents, n, EPC / AEPS]
+    [14181440, 23037, "$6.16"],
+    [100000, 3, "$333.33"], // 33,333.33… cents
+    [1000, 4, "$2.50"],
+    [100000, 100, "$10"], // whole dollars print without cents (fmtPrice)
+    [0, 10, "$0"],
+    [5000, 0, "—"], // zero clicks / subs
+    [5000, null, "—"],
+    [null, 10, null], // no earnings figure: the column has no value for this link
+    [undefined, 10, null],
+  ])("earnings %s cents per %s is %s", (cents, n, want) => {
+    expect(per(cents, n)).toBe(want);
+  });
+
+  it.each([
+    // [part, whole, Subscription CVR / Spending CVR]
+    [0, 0, "—"],
+    [0, 7, "0.00%"],
+    [12, 0, "—"],
+    [1, 800, "0.13%"], // 0.125 %: a half hundredth
+    [1, 200, "0.50%"],
+    [1, 3, "33.33%"],
+    [2, 3, "66.67%"],
+    [9_999_999, 10_000_000, "100.00%"], // large, rounds up
+    [123_456_789, 987_654_321, "12.50%"],
+    [5, 5, "100.00%"],
+    [5, -10, "-50.00%"], // negative clicks: divided as given (current behaviour)
+  ])("Subscription CVR / Spending CVR of %i over %i is %s", (part, whole, want) => {
+    expect(cvr({ subscribers: part, clicks: whole })).toBe(want);
+    expect(share(part, whole)).toBe(want);
+  });
+
+  it.each([
+    // [fans who spent, counted fans, share] (the Spending CVR cell itself is null with no spend figure)
+    [null, 10, "—"],
+    [null, null, "—"],
+    [3, null, "—"],
+    [3, 0, "—"],
+    [0, 0, "—"],
+    [0, 4, "0.00%"],
+  ])("share of %s fans who spent over %s counted fans is %s", (spent, counted, want) => {
+    expect(share(spent, counted)).toBe(want);
+  });
+
+  it.each([
+    // [earnings cents, subs, want]
+    [null, 25, "—"],
+    [null, 0, "—"],
+    [98760, null, "—"],
+    [98760, 0, "—"],
+    [0, 25, "$0"],
+    [1, 2, "$0.01"], // half a cent rounds away from zero
+    [1001, 2, "$5.01"], // 500.5 cents
+    [100000, 3, "$333.33"],
+    [100000, 100, "$10"],
+    [999_999_999_99, 7, "$142,857,142.86"], // large
+  ])("AEPS of %s cents over %s subs is %s", (earnings, subs, want) => {
+    expect(aeps(earnings, subs)).toBe(want);
   });
 });

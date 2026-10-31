@@ -2,6 +2,13 @@
 """Inflowwww proxy pool: every proxy in `INFLOWW_PROXIES`, seeded into the registry as hidden system
 entries, one bound per account (least-used IP) and kept (docs/proxies.md, "Inflowwww proxy pool").
 
+  case_parse_proxy_line_table:         each pasted format → {host, port, scheme, user, pass, label}; each bad
+                                       line → its ValueError reason.
+  case_parse_pool_table:               separators, comments, repeats, bad lines → (labels, error count).
+  case_pick_pool_table:                least-used egress (own bindings not counted; one verified IP shared by
+                                       two ports counts once); same-country wins over less-used; ties random.
+  case_pick_answering_table:           least-used that answers; a silent one passed over; `checked` reused;
+                                       `probes` caps new probes; none answering → None.
   case_parse_zero_to_three_lines:      empty/blank/None → none; newline or comma separated; labels infloww-<hash>.
   case_parse_bad_and_repeated_lines:   a bad line is an error (password redacted); a repeated proxy counts once.
   case_pool_has_no_cap:                five lines parse and sync as five pool entries, each with its own label.
@@ -607,6 +614,127 @@ def case_sql_mirror_skips_pool():
     finally:
         eng.dispose()
     assert n == 1 and "mine" in labels and pool_label not in labels, (n, labels)
+
+
+def case_parse_proxy_line_table():
+    # line -> (host, port, scheme, username, password, label)
+    for line, want in [
+        ("1.2.3.4:8080", ("1.2.3.4", 8080, "http", None, None, "1.2.3.4:8080")),
+        ("h.invalid:8080:u:p", ("h.invalid", 8080, "http", "u", "p", "h.invalid:8080")),
+        ("h.invalid:8080:u:p:with:colons", ("h.invalid", 8080, "http", "u", "p:with:colons", "h.invalid:8080")),
+        ("u:p@h.invalid:8080", ("h.invalid", 8080, "http", "u", "p", "h.invalid:8080")),
+        ("u:p@w@h.invalid:8080", ("h.invalid", 8080, "http", "u", "p@w", "h.invalid:8080")),
+        ("h.invalid:8080@u:p", ("h.invalid", 8080, "http", "u", "p", "h.invalid:8080")),
+        ("1.2.3.4:8080@user:1234", ("1.2.3.4", 8080, "http", "user", "1234", "1.2.3.4:8080")),
+        ("SOCKS5://h.invalid:1080 my-label", ("h.invalid", 1080, "socks5", None, None, "my-label")),
+        ("https://u:p@h.invalid:443", ("h.invalid", 443, "https", "u", "p", "h.invalid:443")),
+    ]:
+        e = proxy_registry.parse_proxy_line(line)
+        got = (e["host"], e["port"], e["scheme"], e.get("username"), e.get("password"), e["label"])
+        assert got == want, (line, got)
+    assert proxy_registry.parse_proxy_line("h.invalid:1", default_scheme="socks5")["scheme"] == "socks5"
+    for line, why in [
+        ("", "empty line"), ("   ", "empty line"), ("ftp://h.invalid:21", "unsupported scheme"),
+        ("h.invalid", "unrecognised format"), ("h.invalid:1:u", "unrecognised format"),
+        (":8080", "no host"), ("h.invalid:port", "port must be a number"),
+        ("h.invalid:0", "port out of range"), ("h.invalid:65536", "port out of range"),
+        ("h.invalid:8080:u:", "auth must be user:pass"), (":p@h.invalid:8080", "auth must be user:pass"),
+    ]:
+        try:
+            proxy_registry.parse_proxy_line(line)
+            raise AssertionError(f"{line!r} parsed")
+        except ValueError as e:
+            assert why in str(e), (line, str(e))
+
+
+def case_parse_pool_table():
+    # text -> (entries, errors); labels infloww-<8 hex>
+    for text, n, n_err in [
+        (None, 0, 0), ("", 0, 0), ("# a.invalid:1\n\n , ", 0, 0),
+        ("a.invalid:1", 1, 0), ("a.invalid:1\nb.invalid:2", 2, 0), ("a.invalid:1,b.invalid:2", 2, 0),
+        ("a.invalid:1,a.invalid:1", 1, 0), ("a.invalid:1,u:x@a.invalid:1", 2, 0),
+        ("a.invalid:1:u:p1,a.invalid:1:u:p2", 1, 0),                 # a password rotation: same label
+        ("a.invalid:1,bad,b.invalid:x", 1, 2), ("  a.invalid:1  ,\t# c\n", 1, 0),
+    ]:
+        entries, errors = proxy_registry.parse_pool(text)
+        assert (len(entries), len(errors)) == (n, n_err), (text, entries, errors)
+        assert all(proxy_registry.is_reserved_label(e["label"]) for e in entries), entries
+    errors = proxy_registry.parse_pool("bad.invalid:x:u:secretpw")[1]
+    assert len(errors) == 1 and "secretpw" not in errors[0], errors
+
+
+def _e(label, host, port=1, ids=(), ip=None, geo=None):
+    p = {"label": label, "host": host, "port": port, "assigned_account_ids": list(ids)}
+    if ip:
+        p["verified_ip"] = ip
+    if geo:
+        p["verified_geo"] = geo
+    return p
+
+
+class _FirstRng:
+    """rng.choice over the tied candidates: the first, so ties are visible."""
+    def choice(self, xs):
+        return xs[0]
+
+
+def case_pick_pool_table():
+    nogeo = lambda p: None  # noqa: E731
+    A, B, C = _e("a", "a.invalid", ids=["1", "2"]), _e("b", "b.invalid", ids=["3"]), _e("c", "c.invalid")
+    # (entries, candidate labels, aid, like, geo) -> picked label
+    rows = [
+        ([A, B, C], "abc", "9", None, nogeo, "c"),                         # least used
+        ([A, B], "ab", "9", None, nogeo, "b"),
+        ([A, B], "ab", "3", None, nogeo, "b"),                             # own binding not counted: b is 0
+        ([_e("a", "a.invalid", ids=["1"]), _e("b", "b.invalid", ids=["2"])], "ab", "9", None, nogeo, "a"),  # tie: rng
+        # one verified IP behind two ports counts once: x+y share 2 bindings, z has 1
+        ([_e("x", "h.invalid", 1, ["1"], ip="9.9.9.9"), _e("y", "h.invalid", 2, ["2"], ip="9.9.9.9"),
+          _e("z", "z.invalid", 1, ["3"])], ["x", "z"], "9", None, nogeo, "z"),
+        # same host:port as a custom entry: counted together, verified or not
+        ([_e("custom", "h.invalid", 7, ["1", "2"]), _e("p", "h.invalid", 7), _e("q", "q.invalid", 7, ["3"])],
+         ["p", "q"], "9", None, nogeo, "q"),
+        # same country as `like` wins over less-used elsewhere; unknown country: least-used
+        ([_e("de", "de.invalid", 1, ["1", "2"], geo="Berlin, DE"), _e("fr", "fr.invalid", 1, geo="Paris, FR")],
+         ["de", "fr"], "9", _e("old", "old.invalid", geo="Berlin, DE"), nogeo, "de"),
+        ([_e("de", "de.invalid", 1, ["1"], geo="Berlin, DE"), _e("fr", "fr.invalid", 1)],
+         ["de", "fr"], "9", _e("old", "old.invalid"), nogeo, "fr"),
+        # geo() (proxy_health's last seen country) outranks the stored one
+        ([_e("a", "a.invalid", 1, ["1"], geo="X, DE"), _e("b", "b.invalid", 1, geo="Y, DE")],
+         "ab", "9", _e("old", "old.invalid", geo="Z, FR"), lambda p: "Z, FR" if p["label"] in ("a", "old") else None, "a"),
+    ]
+    for entries, labels, aid, like, geo, want in rows:
+        cands = [e for e in entries if e["label"] in labels]
+        assert len(cands) == len(labels), (labels, entries)
+        got = proxy_registry._pick_pool(cands, {"proxies": entries}, aid, _FirstRng(), like=like, geo=geo)
+        assert got["label"] == want, (want, got)
+
+
+def case_pick_answering_table():
+    nogeo = lambda p: None  # noqa: E731
+    a, b, c = _e("a", "a.invalid"), _e("b", "b.invalid", ids=["1"]), _e("c", "c.invalid", ids=["1", "2"])
+    data = {"proxies": [a, b, c]}
+    # (answers, checked before, probes) -> (pick, labels probed, checked after)
+    for answers, before, probes, want, probed in [
+        ({"a": True}, {}, None, "a", ["a"]),
+        ({"a": False, "b": True}, {}, None, "b", ["a", "b"]),
+        ({"a": False, "b": False, "c": True}, {}, None, "c", ["a", "b", "c"]),
+        ({"a": False, "b": False, "c": False}, {}, None, None, ["a", "b", "c"]),
+        ({"b": True}, {"a": False}, None, "b", ["b"]),                 # a's answer reused, not re-probed
+        ({}, {"a": True}, None, "a", []),
+        ({"a": False, "b": False, "c": True}, {}, 2, None, ["a", "b"]),  # probes cap: c never probed
+        ({"b": True}, {"a": False}, 1, "b", ["b"]),                    # a cached probe costs nothing
+        ({}, {}, 0, None, []),
+    ]:
+        seen: list[str] = []
+
+        def verify(p, answers=answers, seen=seen):
+            seen.append(p["label"])
+            return answers[p["label"]]
+        checked = dict(before)
+        got = proxy_registry._pick_answering([a, b, c], data, "9", _FirstRng(), like=None, geo=nogeo,
+                                             verify=verify, checked=checked, probes=probes)
+        assert (got["label"] if got else None, seen) == (want, probed), (answers, before, probes, got, seen)
+        assert all(checked[k] == answers[k] for k in seen), checked
 
 
 _harness.run()

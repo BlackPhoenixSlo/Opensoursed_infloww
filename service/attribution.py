@@ -20,15 +20,24 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timedelta
-from html import unescape
 from typing import Iterable
 
 import re
-import unicodedata
 
 from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+# `_norm_body` (the placeholder pairing key) and `_seconds_apart` live in the pure
+# `attribution_pair`; re-exported here because other modules import them from us.
+from attribution_pair import (  # noqa: F401
+    _DEFAULT_MANUAL_YIELD_S,
+    _norm_body,
+    _seconds_apart,
+    adopt_windows,
+    hard_yield,
+    manual_yield_s,
+    pair_placeholders,
+)
 from db.engine import get_session
 from db.models import Chat, Message, Transaction
 
@@ -42,57 +51,6 @@ def _preview_text(body: str | None) -> str:
     if not body:
         return ""
     return re.sub(r"<[^>]+>", "", body).strip()[:120]
-
-
-# Pairing key for placeholder ↔ real-row matching. NOT cosmetic and NOT the same
-# question `_preview_text` answers: we store a caption with plain `\n`, OF echoes
-# the SAME caption back with `<br />` around it, so a byte-equality key never
-# matched a multi-line body and `adopt_thread_placeholders` returned 0 for every
-# one of them (161k live stubs, 4,113 of them pairable once normalized).
-#
-# Tags collapse to a SPACE, not to "": OF sometimes swaps the newline for `<br/>`
-# rather than wrapping it, and stripping to "" would glue `foo<br/>bar` into
-# `foobar` while our own copy normalizes to `foo bar`. A space is right for both
-# shapes because the whitespace collapse below folds the duplicate away.
-#
-# Deliberately LOCAL rather than imported from `automations/`:
-# `welcome_chatter_for_info` already imports this module, so reaching the other
-# way closes an import cycle. `reply_mass_funnel._norm_body` is the same shape for
-# the same reason but is NOT the same function — it casefolds and does not unescape
-# or NFC-normalize. Do not consolidate them without measuring: casefolding here
-# would let two sends differing only in case pair and delete one, and dropping the
-# unescape there would change opener matching. Same idea, different contracts.
-# `</?[A-Za-z]…>` and not `<[^>]+>`: a tag NAME starts with a letter, and the
-# loose form ate real prose — "i want u < 3 tonight > ok" collapsed to "i want
-# u ok". Worse, it did so ASYMMETRICALLY: our stored copy holds the raw `<`,
-# OF echoes it escaped as `&lt;`, so the two sides of the SAME send normalized
-# to different keys and the pair was missed.
-_TAG_RE = re.compile(r"</?[A-Za-z][^>]*>")
-_WS_RE = re.compile(r"\s+")
-
-
-def _norm_body(body: str | None) -> str:
-    """Body → pairing key, or "" for a body that must never pair.
-
-    "" is a REFUSAL, not a key: `<photo>` / `<video>` (and any media-only send)
-    strip to nothing, and folding all of them into one bucket would let an
-    unrelated stub adopt an unrelated row. Every caller must skip an empty key.
-
-    Tags are stripped BEFORE entities are unescaped, and that order is deliberate
-    even though it is not the convergent one. A caption of ours holding a literal
-    `i <3 u > all` loses that span while OF's escaped echo keeps it, so the pair is
-    MISSED — today's duplicate survives, which is the status quo. Unescaping first
-    would converge those two, but it also turns any escaped angle bracket in a
-    fan-visible caption into a strippable tag, and this order is the one measured
-    against all 4,113 pairable prod rows (0 ambiguous). A missed pair costs a
-    duplicate; a wrong pair stamps the wrong run on a real send and deletes the
-    evidence.
-    """
-    if not body:
-        return ""
-    txt = unescape(_TAG_RE.sub(" ", body))
-    txt = unicodedata.normalize("NFC", txt)
-    return _WS_RE.sub(" ", txt).strip()
 
 
 async def _advance_chat_preview(
@@ -169,25 +127,19 @@ async def _advance_chat_preview(
             account_id, fan_id, message_id, exc_info=True,
         )
 
-# Default stand-down after a human takes over a chat (the W7 hard-yield). 1 min;
-# per-account override via account_ai_config.webhook_config_json.manual_yield_minutes.
-_DEFAULT_MANUAL_YIELD_S = 60
-
 
 async def _manual_yield_seconds(account_id: str) -> int:
-    """Per-account manual-chatter stand-down in seconds (Instant reply settings).
-    Default 60s; 0 disables the yield. Bad/absent config → default."""
+    """Per-account manual-chatter stand-down in seconds (Instant reply settings):
+    loads `webhook_config_json`, `attribution_pair.manual_yield_s` decides.
+    A failed read → the 60 s default."""
     try:
         from db.models import AccountAiConfig
         async with get_session() as s:
             cfg = await s.get(AccountAiConfig, str(account_id))
-        if cfg and cfg.webhook_config_json:
-            mins = (json.loads(cfg.webhook_config_json) or {}).get("manual_yield_minutes")
-            if mins is not None:
-                return max(0, int(float(mins) * 60))
     except Exception:
         log.debug("manual_yield_seconds read failed", exc_info=True)
-    return _DEFAULT_MANUAL_YIELD_S
+        return _DEFAULT_MANUAL_YIELD_S
+    return manual_yield_s(cfg.webhook_config_json if cfg else None)
 
 
 # Synthetic-id band for optimistic mass placeholders. Picked to sit in the
@@ -253,16 +205,25 @@ async def mass_sender_tag(sent_by_employee_id: int | None) -> str:
         be noise.
 
     Best-effort: any lookup failure returns "" — a missing tag must never break
-    the (already-succeeded) send's attribution write.
+    the (already-succeeded) send's attribution write. A failed sentinel lookup
+    assumes a human sender and still resolves the tag.
     """
     if sent_by_employee_id is None:
         return ""
     try:
         from employees import get_automation_employee_id
-        try:
-            auto_id = await get_automation_employee_id()
-        except Exception:
-            auto_id = None
+        auto_id = await get_automation_employee_id()
+    except Exception:
+        auto_id = None
+    return await _mass_sender_tag(sent_by_employee_id, auto_id)
+
+
+async def _mass_sender_tag(sent_by_employee_id: int | None, auto_id: int | None) -> str:
+    """`mass_sender_tag` with the Automation sentinel's id already resolved (None:
+    its lookup failed). The one home of the "no sender / sentinel → no tag" rule."""
+    if sent_by_employee_id is None:
+        return ""
+    try:
         if auto_id is not None and int(sent_by_employee_id) == int(auto_id):
             return ""
         from db.models import Employee
@@ -397,6 +358,9 @@ async def write_outbound_attribution(
         having run, or anything else), log a WARNING and write NULL —
         attribution is degraded but the row still lands.
     """
+    # The Automation sentinel's id, looked up at most ONCE per write: by the
+    # fallback below when it runs, else for the tag / yield decision further down.
+    auto_id: int | None = None
     if sent_by_employee_id is None:
         # Chatter session present? Then the resolver in employees.py
         # SHOULD have returned a mirror Employee id, but raised /
@@ -420,7 +384,7 @@ async def write_outbound_attribution(
         else:
             try:
                 from employees import get_automation_employee_id
-                sent_by_employee_id = await get_automation_employee_id()
+                sent_by_employee_id = auto_id = await get_automation_employee_id()
             except LookupError:
                 log.warning(
                     "Automation employee not found (migration 0011 not run?); "
@@ -435,35 +399,31 @@ async def write_outbound_attribution(
                     exc_info=True,
                 )
 
-    # MASS row → stamp the visible sender tag ("mass-kingsley1"). A per-chat 1:1
-    # send (mass_run_id None) stays untagged — the Messages tab surfaces those
-    # via the Employee join. Resolved AFTER the sent_by fallback above so an
-    # automation-fired broadcast (Automation sentinel) correctly yields no tag.
-    mass_tag = await mass_sender_tag(sent_by_employee_id) if mass_run_id is not None else ""
-
-    # W7 HARD YIELD — manual chatter always wins. A HUMAN sending a 1:1 chat
-    # message rests the fan so no automation (any tier) fires on a fan a
-    # human is handling. Reuses W3's per-fan cooldown. Scope is deliberate:
-    #   • mass_run_id is None  → only genuine 1:1 sends; a manual BROADCAST
-    #     attributes the triggering human per-recipient with mass_run_id SET,
-    #     and we must NOT cooldown the whole audience (they should reply).
-    #   • sent_by_employee_id != Automation sentinel → excludes automation
-    #     sends (they resolve to the sentinel above and set their OWN
-    #     cooldown post-send); NULL (degraded chatter resolution) excluded.
-    # Resolved BEFORE the write (reads only), so the row, the preview and the
-    # rest are ONE short write transaction. A lookup hiccup only skips the
-    # yield. Late imports avoid the attribution↔executor cycle.
-    yield_s = 0
-    if mass_run_id is None and sent_by_employee_id is not None:
+    # MASS row → the visible sender tag ("mass-kingsley1", `_mass_sender_tag`); a
+    # 1:1 send stays untagged (the Messages tab surfaces it via the Employee join).
+    # 1:1 row → maybe the W7 HARD YIELD (`attribution_pair.hard_yield`: who counts
+    # as a human 1:1 sender, why a broadcast never rests its audience). Both AFTER
+    # the sent_by fallback above, so an automation-fired send (Automation
+    # sentinel) gets neither. Reads only, BEFORE the write, so the row, the preview
+    # and the cooldown are ONE short write transaction. A failed sentinel lookup
+    # skips the yield (the tag still resolves); late imports avoid the
+    # attribution↔executor cycle.
+    if sent_by_employee_id is not None and auto_id is None:
         try:
             from employees import get_automation_employee_id
-            if sent_by_employee_id != await get_automation_employee_id():
-                # Stand-down duration is per-account (Instant reply settings,
-                # webhook_config_json.manual_yield_minutes); default 1 min. 0
-                # disables the manual yield for that account.
-                yield_s = await _manual_yield_seconds(str(account_id))
+            auto_id = await get_automation_employee_id()
         except Exception:
-            log.debug("w7 hard-yield cooldown skipped", exc_info=True)
+            if mass_run_id is None:
+                log.debug("w7 hard-yield cooldown skipped", exc_info=True)
+    if mass_run_id is not None:
+        mass_tag = await _mass_sender_tag(sent_by_employee_id, auto_id)
+    else:
+        mass_tag = ""
+    # Stand-down duration is per-account (Instant reply settings,
+    # webhook_config_json.manual_yield_minutes); default 1 min, 0 disables.
+    yield_s = (await _manual_yield_seconds(str(account_id))
+               if hard_yield(mass_run_id=mass_run_id, sent_by=sent_by_employee_id,
+                             automation_id=auto_id) else 0)
 
     try:
         # Ours, not OF's (who sent it is nowhere on OF): its own immediate
@@ -760,17 +720,13 @@ async def adopt_thread_placeholders(s, *, account_id: str, fan_id: int) -> int:
         if not placeholders:
             return 0
 
-        # Normalize ONCE into a dict, BEFORE any pairing. The cross-product below
-        # is O(P x R), so normalizing inside the comparison would run a regex per
-        # PAIR — prod's worst thread is 51 stubs x 1,901 outbound rows, ~97k of
-        # them, on the INBOX RENDER path (messages.py). Keyed up front it is one
-        # regex per ROW, O(P + R). The read below is what keeps R small.
-        ph_by_key: dict[str, list[Message]] = {}
-        for p in placeholders:
-            key = _norm_body(p.body)
-            if key:                      # "" is a refusal — see _norm_body
-                ph_by_key.setdefault(key, []).append(p)
-        if not ph_by_key:
+        # Keyed placeholders only (`_norm_body` "" is a refusal — media-only stubs
+        # never pair). Normalizing stays linear: each stub here and again in
+        # `pair_placeholders`, each real row once there, never per PAIR — prod's
+        # worst thread is 51 stubs x 1,901 outbound rows on the INBOX RENDER path
+        # (messages.py), so O(P + R), not O(P x R).
+        keyed = [p for p in placeholders if _norm_body(p.body)]
+        if not keyed:
             return 0
 
         # Read only the outbound rows that could WIN a pair: those within the
@@ -791,16 +747,8 @@ async def adopt_thread_placeholders(s, *, account_id: str, fan_id: int) -> int:
         #
         # Rows with an unusable created_at fall outside every range, and would
         # have scored `inf` anyway (see `_seconds_apart`).
-        span = timedelta(seconds=_MAX_ADOPT_SECONDS)
-        stamps = sorted(p.created_at for group in ph_by_key.values()
-                        for p in group if p.created_at is not None)
-        ranges: list[list[datetime]] = []
-        for t in stamps:
-            lo, hi = t - span, t + span
-            if ranges and lo <= ranges[-1][1]:
-                ranges[-1][1] = max(ranges[-1][1], hi)
-            else:
-                ranges.append([lo, hi])
+        ranges = adopt_windows([p.created_at for p in keyed if p.created_at is not None],
+                               timedelta(seconds=_MAX_ADOPT_SECONDS))
         if not ranges:
             return 0        # every keyed stub has an unusable clock — all `inf`
         reals = (await s.execute(
@@ -814,79 +762,19 @@ async def adopt_thread_placeholders(s, *, account_id: str, fan_id: int) -> int:
             )
         )).scalars().all()
 
-        real_by_key: dict[str, list[Message]] = {}
-        for r in reals:
-            key = _norm_body(r.body)
-            if key in ph_by_key:
-                real_by_key.setdefault(key, []).append(r)
-        if not real_by_key:
-            return 0
-
-        # Pair GLOBALLY nearest-first, not placeholder-by-placeholder. One caption
-        # can legitimately go to the same fan twice (two runs, weeks apart), and
-        # there are usually more stubs than ingested rows — so letting each stub
-        # grab its own nearest lets an OLD stub claim a row that belongs to a
-        # recent one, purely because it was iterated first. Sorting every
-        # candidate pair by distance and claiming greedily makes the result
-        # independent of row order.
-        pairs = sorted(
-            ((_seconds_apart(r.created_at, ph.created_at), ph, r)
-             for key, rs in real_by_key.items()
-             for ph in ph_by_key[key]
-             for r in rs),
-            key=lambda t: t[0],
-        )
+        # Which stub folds into which row: `pair_placeholders` (nearest-first,
+        # the 6 h bound, one-to-one, a row another run already holds is left).
         adopted = 0
-        claimed: set[int] = set()   # a real row absorbs at most one placeholder
-        used: set[int] = set()
-        for _dist, ph, real in pairs:
-            # Sorted nearest-first, so the first pair past the bound ends it. A
-            # placeholder and the row it stands for are seconds to minutes apart —
-            # the stub is written as the send goes out and the real row arrives on
-            # the next ingest. Without a bound the pairing was distance-ORDERED but
-            # not distance-LIMITED, so a stub whose own real row never ingested
-            # eventually claimed whatever same-caption row existed, however far
-            # away: the same caption sent to the same fan a month later would be
-            # stamped with a month-old mass_run_id and automation_kind, and the
-            # stub deleted, making the mis-attribution unrecoverable. `inf` (an
-            # unusable timestamp on either side) is past the bound too, which is
-            # exactly what `_seconds_apart` promises but could not previously
-            # enforce — it made a bad row lose the ordering, never the match.
-            if _dist > _MAX_ADOPT_SECONDS:
-                break
-            if real.message_id in claimed or ph.message_id in used:
-                continue
-            # `claimed`/`used` only last ONE invocation, and adoption runs on
-            # every ingest of the thread. A real row already stamped by a
-            # DIFFERENT run was adopted on an earlier pass; letting a second
-            # same-caption stub claim it now would overwrite nothing (the
-            # `or`-transfers below are no-ops) yet still DELETE that stub — the
-            # send it recorded would vanish. Leave the duplicate instead.
-            if real.mass_run_id is not None and (
-                    ph.mass_run_id is None
-                    or int(real.mass_run_id) != int(ph.mass_run_id)):
-                continue
+        for ph, real in pair_placeholders(keyed, reals, _MAX_ADOPT_SECONDS):
             # Move the ledger reference BEFORE the delete, or refuse the pair.
-            # A refusal retires BOTH sides, and each for its own reason. Pairs are
-            # sorted nearest-first, so everything either row still has coming is
-            # FARTHER away than the pair we just refused:
-            #   • the real row is contested — without the claim the very next stub
-            #     adopts the row we just declared unsafe and IT gets deleted, which
-            #     is the loss the refusal existed to prevent, one iteration later;
-            #   • the stub's ledger row is the thing that could not move, so
-            #     letting it fall through to the next-nearest real row folds it
-            #     into a DIFFERENT send: wrong run, wrong kind, its transaction
-            #     repointed at the wrong message, and the stub deleted.
-            # Both leave today's duplicate, which is the status quo and reversible.
+            # The pair has already claimed BOTH sides (see pair_placeholders), so
+            # a refusal leaves today's duplicate — the status quo, reversible —
+            # rather than letting either row fall through to a farther, wrong one.
             if not await _repoint_transaction(
                 s, account_id=account_id, fan_id=fan_id,
                 old_id=int(ph.message_id), new_id=int(real.message_id),
             ):
-                claimed.add(real.message_id)
-                used.add(ph.message_id)
                 continue
-            claimed.add(real.message_id)
-            used.add(ph.message_id)
             real.automation_kind = real.automation_kind or ph.automation_kind
             real.mass_run_id = real.mass_run_id or ph.mass_run_id
             real.sent_by_employee_id = (real.sent_by_employee_id
@@ -929,16 +817,6 @@ async def adopt_thread_placeholders(s, *, account_id: str, fan_id: int) -> int:
         log.exception("placeholder adopt failed (account=%s fan=%s)",
                       account_id, fan_id)
         return 0
-
-
-def _seconds_apart(a: datetime | None, b: datetime | None) -> float:
-    """|a - b| in seconds; `inf` when either side is missing, so a row with an
-    unusable timestamp LOSES the nearest-match instead of winning it. (created_at
-    is NOT NULL, but a row once reached prod holding '' — see db/models.py — and
-    a corrupt cell must not silently become the best candidate.)"""
-    if a is None or b is None:
-        return float("inf")
-    return abs((a - b).total_seconds())
 
 
 _LOGGED_TX_COLLISIONS: set[tuple[str, int, int]] = set()

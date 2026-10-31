@@ -41,6 +41,7 @@ from auth import _assert_admin_password, get_request_user, require_master
 from automation_registry import canonical_kind
 from db.engine import get_session
 from db.models import Account, AccountAiConfig, AutomationRule, AutomationRun, ScheduledJob
+from isotime import iso_plain
 
 router = APIRouter(prefix="/admin/system", tags=["system-admin"],
                    dependencies=[Depends(require_master)])
@@ -159,10 +160,6 @@ async def set_system_switch(name: str, body: dict = Body(...)) -> dict[str, Any]
     return {"switch": row}
 
 
-def _iso(dt) -> str | None:
-    return dt.isoformat() if dt else None
-
-
 @router.get("/runs")
 async def system_runs(
     limit: int = Query(100, ge=1, le=500),
@@ -200,9 +197,9 @@ async def system_runs(
 
     return {
         "runs": [{"id": r.id, "account_id": r.account_id, "kind": r.kind, "status": r.status,
-                  "started_at": _iso(r.started_at), "completed_at": _iso(r.completed_at),
+                  "started_at": iso_plain(r.started_at), "completed_at": iso_plain(r.completed_at),
                   "stats_json": r.stats_json, "error_text": r.error_text} for r in runs],
         "jobs": [{"id": j.id, "account_id": j.account_id, "kind": j.kind, "status": j.status,
-                  "run_at": _iso(j.run_at), "attempts": j.attempts, "rule_id": j.rule_id,
+                  "run_at": iso_plain(j.run_at), "attempts": j.attempts, "rule_id": j.rule_id,
                   "last_error": j.last_error} for j in jobs],
     }

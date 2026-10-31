@@ -25,7 +25,8 @@
  *  can quietly re-narrow it to `number` and reintroduce the rounding bug. */
 export type FanId = number | string;
 
-/** Do two ids name the same account, across the number/string split?
+/** Do two ids name the same platform object (user, message, media), across
+ *  the number/string split?
  *
  *  Compare through String() on both sides — never `Number()`, which silently
  *  collapses snowflakes past 2^53. A raw `===` between the two forms is ALWAYS
@@ -65,7 +66,8 @@ export function compareFanIds(a: FanId | null | undefined, b: FanId | null | und
   return sa.localeCompare(sb);
 }
 
-/** Is this a usable account id, whatever shape the wire sent it in?
+/** Is this a usable platform id (user, message, media), whatever shape the
+ *  wire sent it in?
  *
  *  The validity test for an opaque id — `Number.isFinite` was being used for
  *  this and is wrong twice over: it rejects a perfectly good string snowflake

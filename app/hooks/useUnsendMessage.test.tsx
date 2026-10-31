@@ -89,4 +89,14 @@ describe("useUnsendMessage", () => {
       .toEqual([MID]);
     expect(seedIds()).toEqual([MID, MID - 1]);
   });
+
+  it.each(["0", "000", "abc", "", "-1", -1, 0, 2 ** 53])("never DELETEs an invalid id %j", async (id) => {
+    client.setQueryData(["messages", ACCT, FAN], [msg(MID)]);
+    const { result } = renderHook(() => useUnsendMessage(ACCT, FAN), { wrapper });
+    let resp: unknown;
+    await act(async () => { resp = await result.current.unsendOne({ id } as unknown as OFMessage); });
+    expect(resp).toBeNull();
+    expect(relayDelete).not.toHaveBeenCalled();
+    expect(client.getQueryData<OFMessage[]>(["messages", ACCT, FAN])?.map((m) => Number(m.id))).toEqual([MID]);
+  });
 });

@@ -49,40 +49,32 @@ on), and otherwise ends it with a reason.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
+from agency_scope import agency_account_ids
 from auth import get_request_user
 from automation_executor import enqueue_job
 from db.engine import get_session
 from db.models import Action, S4SBlock, S4SPost, S4SProfile, S4SRequest, S4SSlot, UserAccount
-from s4s_common import _json_object, _owner_context
+from route_wire import parse_utc, wire as _wire  # `OPEN` and `_wire` are s4s_schedule_api's imports too
+from s4s_common import (OPEN, VERBS, Refuse, _json_object, _owner_context, daily_full, next_status,
+                        partner_refusal, request_refusal)
 from s4s_media import snapshot
 
 
 router = APIRouter(prefix="/admin/s4s", tags=["s4s"])
 
-OPEN = ("pending", "skipped")
-# Infloww's limit (`s4s0096`): requests one Creator sends per UTC day.
-MAX_SENT_PER_DAY = 50
 _SEND_FIELDS = ("from_account_id", "to_profile_id", "slot_at")
-_ANSWERS = {"accept": "accepted", "skip": "skipped", "decline": "declined"}
 
 
-def _wire(dt: datetime | None) -> str | None:
-    return None if dt is None else dt.isoformat() + "Z"
-
-
-async def _own_ids(s, agency_user_id: str) -> set[str]:
-    """The Agency's Creators: its `user_accounts` rows, as `list_profiles`
-    lists them (a Master owns only its own links)."""
-    return set((await s.execute(
-        select(UserAccount.account_id).where(UserAccount.user_id == agency_user_id)
-    )).scalars().all())
+# The Agency's Creators, as `list_profiles` lists them (a Master owns only its own
+# links); kept as `_own_ids` because s4s_api and s4s_schedule_api import it.
+_own_ids = agency_account_ids
 
 
 def _audit(s, action: str, account_id: str, request_id: int, payload: dict[str, Any],
@@ -153,20 +145,6 @@ async def _expire_due(s, account_ids: set[str], now: datetime) -> None:
 # ── Send ─────────────────────────────────────────────────────────────
 
 
-def _parse_utc(value: Any) -> datetime:
-    """An ISO-8601 time with a zone → naive UTC (shifts_api's rule, with
-    this router's 400 for a malformed body)."""
-    if not isinstance(value, str) or not value:
-        raise HTTPException(status_code=400, detail="slot_at: an ISO-8601 UTC time is required")
-    try:
-        dt = datetime.fromisoformat(value)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="slot_at: not an ISO-8601 time") from None
-    if dt.tzinfo is None:
-        raise HTTPException(status_code=400, detail="slot_at: the time needs a zone (end it with Z)")
-    return dt.astimezone(timezone.utc).replace(tzinfo=None)
-
-
 def _parse_send(body: dict[str, Any]) -> tuple[str, int, datetime]:
     """ASSUMPTION: a key outside the three is 400, as for the profile body.
     Rung 3 (`s4s_api._parse_profile_body`). Overturned with that one."""
@@ -179,7 +157,7 @@ def _parse_send(body: dict[str, Any]) -> tuple[str, int, datetime]:
     to_pid = body.get("to_profile_id")
     if isinstance(to_pid, bool) or not isinstance(to_pid, int):
         raise HTTPException(status_code=400, detail="to_profile_id: the partner's S4S profile id is required")
-    return from_id, to_pid, _parse_utc(body.get("slot_at"))
+    return from_id, to_pid, parse_utc(body.get("slot_at"), "slot_at", status=400)
 
 
 async def _primary_caption(s, account_id: str) -> str | None:
@@ -256,7 +234,7 @@ async def _booked(s, account_id: str, slot_at: datetime) -> int:
 
 
 async def _limit_full(s, p: S4SProfile, slot_at: datetime) -> bool:
-    return await _booked(s, p.account_id, slot_at) >= p.daily_limit
+    return daily_full(await _booked(s, p.account_id, slot_at), p.daily_limit)
 
 
 def _other(r: S4SRequest, box: str) -> str:
@@ -288,16 +266,13 @@ def _out(r: S4SRequest, box: str, partner_in_agency: bool) -> dict[str, Any]:
 
 async def _partner(s, from_id: str, to_pid: int) -> S4SProfile:
     """The partner profile `from_id` may send to: 404 for one Discovery would
-    not list (missing, hidden, no Agency left, or blocked either way — a block
-    reads as a partner that is not there, as Discovery hides it too), 400 for
-    the sender's own Creator."""
+    not list (missing, hidden, or no Agency left), else `partner_refusal`."""
     to_p = await s.get(S4SProfile, to_pid)
     if to_p is None or not to_p.discovery_visible or not await _in_agency(s, to_p.account_id):
         raise HTTPException(status_code=404, detail="partner not found")
-    if to_p.account_id == from_id:
-        raise HTTPException(status_code=400, detail="a Creator cannot send an S4S request to itself")
-    if await blocked_between(s, from_id, to_p.account_id):
-        raise HTTPException(status_code=404, detail="partner not found")
+    refusal = partner_refusal(from_id, to_p.account_id, await blocked_between(s, from_id, to_p.account_id))
+    if refusal is not None:
+        raise HTTPException(status_code=refusal.status, detail=refusal.detail)
     return to_p
 
 
@@ -320,31 +295,28 @@ async def send_request(request: Request) -> dict[str, Any]:
     now = datetime.utcnow()
     async with get_session() as s:
         to_p = await _partner(s, from_id, to_pid)
-        if await _sent_today(s, from_id, now) >= MAX_SENT_PER_DAY:
-            raise HTTPException(status_code=409,
-                                detail=f"a Creator sends at most {MAX_SENT_PER_DAY} S4S requests a day (UTC)")
         from_p = (await s.execute(
             select(S4SProfile).where(S4SProfile.account_id == from_id)
         )).scalar_one_or_none()
-        if from_p is None or not from_p.opted_in or not to_p.opted_in:
-            raise HTTPException(status_code=409, detail="both Creators must be opted in to Share for Share")
         from_caption = await _primary_caption(s, from_id)
         to_caption = await _primary_caption(s, to_p.account_id)
-        if from_caption is None or to_caption is None:
-            raise HTTPException(status_code=409, detail="both Creators need a Primary post")
-        if slot_at <= now:
-            raise HTTPException(status_code=409, detail="the proposed time has passed")
         open_pair = (await s.execute(
             select(S4SRequest.id).where(
                 S4SRequest.from_account_id == from_id, S4SRequest.to_account_id == to_p.account_id,
                 S4SRequest.status.in_(OPEN),
             ).limit(1)
         )).first()
-        if open_pair is not None:
-            raise HTTPException(status_code=409, detail="an open request to this partner already exists")
-        for p in (from_p, to_p):
-            if await _limit_full(s, p, slot_at):
-                raise HTTPException(status_code=409, detail="a Daily limit is full on that day")
+        sent_today = await _sent_today(s, from_id, now)
+        booked_from = await _booked(s, from_id, slot_at)
+        booked_to = await _booked(s, to_p.account_id, slot_at)
+        refusal = request_refusal(
+            from_p=from_p, to_p=to_p, sent_today=sent_today,
+            primaries=from_caption is not None and to_caption is not None, slot_at=slot_at, now=now,
+            open_pair=open_pair is not None, booked_from=booked_from, booked_to=booked_to,
+        )
+        if refusal is not None:
+            raise HTTPException(status_code=refusal.status, detail=refusal.detail)
+        assert from_p is not None and from_caption is not None and to_caption is not None
         row = S4SRequest(
             from_account_id=from_id, to_account_id=to_p.account_id, slot_at=slot_at,
             from_caption=from_caption, to_caption=to_caption,
@@ -377,7 +349,7 @@ PROPOSAL_HOUR = 6
 async def propose_time(from_account_id: str | None = None, to_profile_id: str | None = None) -> dict[str, Any]:
     """06:00 UTC on the first day from tomorrow on (never today) on which both
     Creators' Daily limits have room, as `{slot_at}` (null when none within
-    PROPOSAL_DAYS, or the sender is not opted in). The same `_limit_full`
+    PROPOSAL_DAYS, or the sender is not opted in). The same `daily_full`
     rule Send and Accept apply, so the proposal is not refused for a full day.
 
     Only the instant is answered: of the partner's schedule it says no more
@@ -496,19 +468,24 @@ async def _transition(raw_id: str, verb: str) -> dict[str, Any]:
         request_id = int(raw_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="request not found") from None
-    receiver = verb in _ANSWERS
+    box, movable, _ = VERBS[verb]
     now = datetime.utcnow()
     async with get_session() as s:
         r = await s.get(S4SRequest, request_id)
-        party = None if r is None else (r.to_account_id if receiver else r.from_account_id)
-        if party is None or party not in await _own_ids(s, ctx.agency_user_id):
-            raise HTTPException(status_code=404, detail="request not found")
-        values: dict[str, Any] = {"status": _ANSWERS.get(verb, "cancelled")}
+        party = None if r is None else (r.to_account_id if box == "received" else r.from_account_id)
+        # Not the verb's party → None (404 like no box).
+        held = box if party is not None and party in await _own_ids(s, ctx.agency_user_id) else None
+        new = next_status(None if r is None else r.status, verb, held)
+        if isinstance(new, Refuse):
+            raise HTTPException(status_code=new.status, detail=new.detail)
+        assert r is not None and party is not None
+        values: dict[str, Any] = {"status": new}
         if verb in ("accept", "decline"):
             values["answered_at"] = now
+        # The guard again: of two racing moves exactly one changes the row.
         moved = await s.execute(
             update(S4SRequest)
-            .where(S4SRequest.id == request_id, S4SRequest.status.in_(("pending",) if receiver else OPEN),
+            .where(S4SRequest.id == request_id, S4SRequest.status.in_(movable),
                    S4SRequest.slot_at > now)
             .values(**values)
             .execution_options(synchronize_session=False)
@@ -519,9 +496,7 @@ async def _transition(raw_id: str, verb: str) -> dict[str, Any]:
         payload: dict[str, Any] = {"agency_user_id": ctx.agency_user_id}
         if verb == "accept":
             payload["slot_ids"] = [sl.id for sl in await _book(s, r, ctx.employee_id)]
-        action = "s4s.request_cancel" if verb == "cancel" else f"s4s.request_{verb}"
-        _audit(s, action, party, r.id, payload, ctx.employee_id)
-        box = "received" if receiver else "sent"
+        _audit(s, f"s4s.request_{verb}", party, r.id, payload, ctx.employee_id)
         return _out(r, box, await _in_agency(s, _other(r, box)))
 
 

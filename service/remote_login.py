@@ -65,7 +65,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 from brand import BRAND_NAME
+import remote_login_decide as decide
 from relay_host import live_server
+from remote_login_decide import (OTP_ASK, OTP_NOT_TYPED, OTP_REJECTED, OTP_VERIFY_S,  # noqa: F401
+                                 STATE_CHALLENGE, STATE_OTP, STATE_TYPING)
 
 log = logging.getLogger("of-relay.remote-login")
 
@@ -101,11 +104,9 @@ CAPTURE_WAIT_S = 25       # after login: wait for a signed request + static_para
 CAPTURE_RESERVE_S = 60
 POLL_S = 1.0
 JOB_TTL_S = 600           # a finished job stays readable this long
+TIMED_OUT = "login did not complete in time (the Browserbase session window)"
 
 STATE_STARTING = "starting"
-STATE_TYPING = "typing"
-STATE_CHALLENGE = "challenge"
-STATE_OTP = "otp"
 STATE_CAPTURING = "capturing"
 STATE_DONE = "done"
 STATE_ERROR = "error"
@@ -134,14 +135,9 @@ _OTP_SELECTORS = (
 # prompt nor where the code is typed.
 _OTP_FIELD = ", ".join(f"{s}:visible" for s in _OTP_SELECTORS)
 OTP_CODE_RE = re.compile(r"\d{6,8}")
-# After a submitted code: still on the 2FA prompt this long (no auth_id), the
-# operator is asked again. A timer, not an OnlyFans answer, hence the wording.
-OTP_VERIFY_S = 15
+# OTP_VERIFY_S, the OTP_* wording and the typing/challenge/otp states: remote_login_decide (re-exported here)
 OTP_STEP_TIMEOUT_MS = 2_000  # one fill / read / press on the 2FA field: short, so cancel is seen
-OTP_ASK = "OnlyFans asks for the 2FA code — enter it here or in the live view"
 OTP_CHECKING = "checking the 2FA code"
-OTP_REJECTED = "OnlyFans didn't accept that code (or hasn't answered yet) — try again"
-OTP_NOT_TYPED = "couldn't type the 2FA code — try again or type it in the live view"
 
 # Stores the interceptor's postMessage payloads on window.__relayCapture,
 # merging rules the way the extension's bridge.js does (static_param arrives on
@@ -697,7 +693,7 @@ def _check(job: RemoteLoginJob, reserve_s: float = 0) -> None:
     if job._cancel.is_set():
         raise _Cancelled()
     if time.time() > job.expires_at - reserve_s:
-        raise TimeoutError("login did not complete in time (the Browserbase session window)")
+        raise TimeoutError(TIMED_OUT)
 
 
 def _wait(page, seconds: float) -> None:
@@ -751,38 +747,43 @@ def _enter_otp(job: RemoteLoginJob, page, code: str) -> bool:
 
 def _drive_until_logged_in(job: RemoteLoginJob, page, context) -> str:
     """Poll for auth_id, surfacing challenge / 2FA to the human in the live
-    view. Never touches a challenge itself. On the 2FA prompt, a code the
-    operator submitted (job.submit_otp) is typed in; when OnlyFans still shows
-    the prompt OTP_VERIFY_S later, or shows it again sooner, the job asks for
-    the code again (OTP_REJECTED). A visible 2FA field wins over any captcha
-    frame beside it."""
-    otp_sent_at: float | None = None
+    view. Never touches a challenge itself. The rules (a submitted code typed
+    in, OTP_REJECTED / OTP_ASK, a 2FA field winning over a captcha):
+    remote_login_decide.login_step; this loop reads the page and performs."""
+    state = decide.Drive()
     while True:
-        _check(job, CAPTURE_RESERVE_S)
-        uid = _auth_id(context)
-        if uid:
-            return uid
-        if _detect_otp(page):
-            code = job.take_otp()
-            if code is not None:
-                if _enter_otp(job, page, code):
-                    otp_sent_at = time.time()
-                else:
-                    otp_sent_at = None
-                    job.otp_retry(OTP_NOT_TYPED)
-            elif job.state != STATE_OTP:  # the prompt is (back) on screen
-                sent_lately = otp_sent_at is not None and time.time() - otp_sent_at < OTP_VERIFY_S
-                otp_sent_at = None
-                job.set_state(STATE_OTP, OTP_REJECTED if sent_lately else OTP_ASK)
-            elif otp_sent_at is not None and time.time() - otp_sent_at >= OTP_VERIFY_S:
-                otp_sent_at = None
-                job.otp_retry(OTP_REJECTED)
-        elif _detect_challenge(page):  # otp_sent_at kept: a captcha between a code and the prompt again
-            job.set_state(STATE_CHALLENGE, "human verification required — solve it in the live view")
-        else:  # otp_sent_at kept: the prompt coming back soon means the code was not taken
-            if job.state != STATE_TYPING:
-                job.set_state(STATE_TYPING, "waiting for OnlyFans")
+        state, eff = decide.login_step(state, _poll(job, page, context), OTP_VERIFY_S)
+        if isinstance(eff, decide.TypeCode):
+            state, eff = decide.login_step(
+                state, decide.Typed(_enter_otp(job, page, eff.code), time.time()), OTP_VERIFY_S)
+        if isinstance(eff, decide.Cancel):
+            raise _Cancelled()
+        if isinstance(eff, decide.Expire):
+            raise TimeoutError(TIMED_OUT)
+        if isinstance(eff, decide.LoggedIn):
+            return eff.uid
+        if isinstance(eff, decide.Show):
+            job.set_state(eff.state, eff.message)
+        elif isinstance(eff, decide.AskAgain):
+            job.otp_retry(eff.message)
         _wait(page, POLL_S)
+
+
+def _poll(job: RemoteLoginJob, page, context) -> decide.Poll:
+    """One look at the job and the page, in the order login_step decides
+    (cancel, deadline, auth_id, 2FA field, captcha): a signal an earlier one
+    decides is not read (no page call, no code taken)."""
+    now = time.time()
+    if job._cancel.is_set():
+        return decide.Poll(now, cancel=True)
+    if now > job.expires_at - CAPTURE_RESERVE_S:
+        return decide.Poll(now, expired=True)
+    uid = _auth_id(context)
+    if uid:
+        return decide.Poll(now, uid=uid)
+    if _detect_otp(page):
+        return decide.Poll(now, otp=True, code=job.take_otp(), shown=job.state)
+    return decide.Poll(now, challenge=_detect_challenge(page), shown=job.state)
 
 
 def _read_capture(page) -> dict[str, Any] | None:

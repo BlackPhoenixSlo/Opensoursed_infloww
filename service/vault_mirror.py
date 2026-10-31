@@ -33,17 +33,9 @@ from typing import Any
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from db.models import VaultItem
+from isotime import parse_iso
 
 log = logging.getLogger("of-relay.vault_mirror")
-
-
-def parse_iso(v: Any) -> datetime | None:
-    if not v or not isinstance(v, str):
-        return None
-    try:
-        return datetime.fromisoformat(v.replace("Z", "+00:00")).replace(tzinfo=None)
-    except Exception:  # noqa: BLE001
-        return None
 
 
 def has_still(kind: str | None) -> bool:

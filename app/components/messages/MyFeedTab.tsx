@@ -11,14 +11,15 @@
  * full refetch.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQueryClient, type InfiniteData } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/primitives";
 import { PostCard } from "@/components/messages/PostCard";
 import EditPostModal from "@/components/messages/EditPostModal";
+import InfiniteListFooter from "@/components/messages/InfiniteListFooter";
+import ModelSelect, { usePickedModel } from "@/components/messages/ModelSelect";
 import { PostComposer } from "@/components/compose/PostComposer";
-import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useMyFeed, type FeedMediaType, type OFPost } from "@/hooks/usePosts";
 import { relay } from "@/lib/relay";
 import { cn } from "@/lib/utils";
@@ -38,15 +39,10 @@ const TYPES: { key: FeedMediaType; label: string }[] = [
 ];
 
 export default function MyFeedTab() {
-  const accounts = useActiveAccounts();
-  const [accountId, setAccountId] = useState<string | null>(null);
+  const { accounts, accountId, setAccountId } = usePickedModel();
   const [type, setType] = useState<FeedMediaType>("all");
   const [newPostOpen, setNewPostOpen] = useState(false);
   const [editingPost, setEditingPost] = useState<OFPost | null>(null);
-
-  useEffect(() => {
-    if (accountId == null && accounts.length > 0) setAccountId(accounts[0].id);
-  }, [accounts, accountId]);
 
   const q = useMyFeed(accountId, type);
   const posts = useMemo(
@@ -96,37 +92,10 @@ export default function MyFeedTab() {
     onSuccess: (_data, post) => patchCache(post.id, (p) => ({ ...p, isPinned: !post.isPinned })),
   });
 
-  const sentinelRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    const el = sentinelRef.current;
-    if (!el) return;
-    const io = new IntersectionObserver((entries) => {
-      if (entries[0]?.isIntersecting && q.hasNextPage && !q.isFetchingNextPage) {
-        q.fetchNextPage();
-      }
-    }, { rootMargin: "200px" });
-    io.observe(el);
-    return () => io.disconnect();
-  }, [q.hasNextPage, q.isFetchingNextPage, q.fetchNextPage]);
-
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-3 p-3 bg-panel border border-border rounded-xl">
-        <label className="flex flex-col gap-1">
-          <span className="text-[10px] uppercase tracking-wide text-fg-dim">Model</span>
-          <select
-            value={accountId ?? ""}
-            onChange={(e) => setAccountId(e.target.value || null)}
-            className="bg-bg border border-border rounded-lg px-3 py-2 text-base md:px-2 md:py-1.5 md:text-xs text-fg focus:outline-none focus:border-accent"
-          >
-            {accounts.length === 0 && <option value="">No models</option>}
-            {accounts.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.nickname || a.id}
-              </option>
-            ))}
-          </select>
-        </label>
+        <ModelSelect accounts={accounts} value={accountId} onChange={setAccountId} />
 
         <label className="flex flex-col gap-1 w-full md:w-auto">
           <span className="text-[10px] uppercase tracking-wide text-fg-dim">Type</span>
@@ -207,27 +176,12 @@ export default function MyFeedTab() {
             />
           ))}
 
-          <div ref={sentinelRef} className="h-4" />
-
-          {q.hasNextPage && (
-            <div className="flex justify-center pt-2">
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                onClick={() => q.fetchNextPage()}
-                disabled={q.isFetchingNextPage}
-              >
-                {q.isFetchingNextPage ? "Loading…" : "Load more"}
-              </Button>
-            </div>
-          )}
-
-          {!q.hasNextPage && posts.length > 0 && (
-            <div className="text-center text-[11px] text-fg-dim py-2">
-              · end of feed ·
-            </div>
-          )}
+          <InfiniteListFooter
+            hasNextPage={q.hasNextPage}
+            isFetchingNextPage={q.isFetchingNextPage}
+            fetchNextPage={q.fetchNextPage}
+            endLabel="end of feed"
+          />
         </div>
       )}
 

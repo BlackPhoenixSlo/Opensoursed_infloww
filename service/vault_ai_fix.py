@@ -30,7 +30,6 @@ for `description` and `tags`; this only extends it to the exposure fields.
 from __future__ import annotations
 
 import json
-import json
 import logging
 import re
 from typing import Any
@@ -124,11 +123,11 @@ def _fields(item: VaultItem) -> dict[str, Any]:
     return vault_ai_brief.load_fields(item.ai_fields_json)
 
 
-def _locked(item: VaultItem) -> set[str]:
-    raw = item.locked_fields_json
+def _locked(raw: str | None) -> set[str]:
+    """`locked_fields_json` → set of locked keys. Malformed or non-list → empty."""
     try:
-        got = json.loads(raw) if isinstance(raw, str) else raw
-    except (TypeError, ValueError):
+        got = json.loads(raw or "[]")
+    except ValueError:
         return set()
     return set(got) if isinstance(got, (list, tuple, set)) else set()
 
@@ -230,7 +229,7 @@ async def list_disputes(account_id: str) -> dict[str, Any]:
             .where(VaultItem.account_id == account_id,
                    VaultItem.removed_at.is_(None),
                    VaultItem.kind.in_(("photo", "video")))
-            .order_by(VaultItem.created_at.asc()))).all()
+            .order_by(VaultItem.created_at.asc(), VaultItem.media_id.asc()))).all()
 
     out: list[dict[str, Any]] = []
     checked = 0
@@ -242,10 +241,7 @@ async def list_disputes(account_id: str) -> dict[str, Any]:
         codes = vault_ai_brief.contradictions(fields)
         if not codes:
             continue
-        try:
-            locked = set(json.loads(lj) if isinstance(lj, str) else (lj or []))
-        except (TypeError, ValueError):
-            locked = set()
+        locked = _locked(lj)
         out.append({
             "media_id": int(mid),
             "kind": kind,
@@ -304,7 +300,7 @@ async def apply_fix(account_id: str, media_id: int,
 
         fields = _fields(item)
         overrides = vault_ai_brief.load_fields(item.operator_overrides_json)
-        locked = _locked(item)
+        locked = _locked(item.locked_fields_json)
 
         for key, val in edits.items():
             if val is None:
@@ -364,7 +360,7 @@ def grade_of(fields: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def _priority(fields: dict[str, Any], lanes: list[str], version: int,
-              reasons: list[str] | None = None) -> tuple:
+              reasons: list[str]) -> tuple:
     """Grading order. Never-graded first, then whatever costs most to get wrong.
 
     Two rounds of tuning were scored entirely on items that had already been
@@ -373,7 +369,6 @@ def _priority(fields: dict[str, Any], lanes: list[str], version: int,
     lead — and within them, the ones that gate money or a mass send.
     """
     g = grade_of(fields)
-    reasons = reasons or []
     graded_this_version = int(g.get("v") or 0) >= version
     paid = any(ln in ("tease 10", "tease 50", "safe explicit") for ln in lanes)
     return (graded_this_version, -len(reasons),
@@ -398,7 +393,8 @@ async def review_queue(account_id: str, *, limit: int = 60,
                    VaultItem.locked_fields_json)
             .where(VaultItem.account_id == account_id,
                    VaultItem.removed_at.is_(None),
-                   VaultItem.kind.in_(("photo", "video"))))).all()
+                   VaultItem.kind.in_(("photo", "video")))
+            .order_by(VaultItem.media_id.asc()))).all()
 
     plan = await vault_scripts.plan_ai_folders(account_id, keep=2)
     lanes: dict[int, list[str]] = {}
@@ -416,12 +412,8 @@ async def review_queue(account_id: str, *, limit: int = 60,
         g = grade_of(fields)
         if int(g.get("v") or 0) >= version:
             graded += 1
-        try:
-            locked = set(json.loads(lj) if isinstance(lj, str) else (lj or []))
-        except (TypeError, ValueError):
-            locked = set()
-        why = iffy_reasons(fields, lanes.get(int(mid), []),
-                           locked & set(vault_ai_brief.VIS_REGIONS))
+        locked = _locked(lj)
+        why = iffy_reasons(fields, locked & set(vault_ai_brief.VIS_REGIONS))
         if only_iffy and not why:
             continue
         out.append({
@@ -608,13 +600,10 @@ def _prose_says_bare(text: str, region: str) -> bool:
     return False
 
 
-def iffy_reasons(fields: dict[str, Any], lanes: list[str],
-                 locked: set[str] | None = None) -> list[str]:
+def iffy_reasons(fields: dict[str, Any], locked: set[str]) -> list[str]:
     """Why this item is worth a human look. Empty = leave it alone."""
-    locked = locked or set()
     out: list[str] = []
 
-    named: list[str] = []
     for region in vault_ai_brief.VIS_REGIONS:
         if region in locked:
             continue                      # already settled by hand
@@ -622,8 +611,6 @@ def iffy_reasons(fields: dict[str, Any], lanes: list[str],
         over = vault_ai_brief.garment_over(fields, region)
         if state == "covered" and not over:
             out.append("unexplained_cover")
-        if over:
-            named.append(over.strip().lower())
 
     acts = {str(a).strip().lower() for a in (fields.get("acts") or [])}
     pen = _s(fields.get("penetration"))

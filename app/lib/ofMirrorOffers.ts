@@ -37,6 +37,7 @@ import { useScope } from "@/contexts/ScopeContext";
 import { relay } from "@/lib/relay";
 import { plain } from "@/lib/ofMirrorData";
 import { ofMeQuery, type OfMe } from "@/lib/ofMirrorIdentity";
+import { mirrorKey } from "@/lib/ofMirrorKeys";
 import { showMenu, ORDER_GROUP, type MenuOption } from "@/lib/ofMirrorMenu";
 import { toast } from "@/lib/ofMirrorPost";
 import { message, note, SELECT_MODEL } from "@/lib/ofMirrorWrites";
@@ -748,7 +749,7 @@ export function useOfOffers(frameRef: RefObject<HTMLIFrameElement | null>, src: 
           finish: (id) =>
             relay.post(`/api/of/v2/promotions/${id}/finish`, {}, { accountId }).then((r) => {
               qc.invalidateQueries({ queryKey: ["of-settings", "subscription"] });
-              qc.invalidateQueries({ queryKey: ["of-mirror-data", accountId] });
+              qc.invalidateQueries({ queryKey: mirrorKey(accountId) });
               qc.invalidateQueries({ queryKey: ["of-me", accountId] });
               return r;
             }),

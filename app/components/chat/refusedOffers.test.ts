@@ -5,7 +5,7 @@ import type { VaultMedia } from "@/lib/relay";
 import { EMPTY_DRAFT } from "./composerDraft";
 import {
   NO_OFFERS, clearRefusedOffers, dismissRefusedOffer, dispatchRefusedOffers, heldPreviews, readRefusedOffers,
-  isOfferHere, previewsFreedBy, refusedOffersReducer, revokeUnlessHeld,
+  isOfferHere, offerRefusedSchedule, previewsDroppedBy, previewsFreedBy, refusedOffersReducer, revokeUnlessHeld,
   type RefusedOffer, type RefusedOffersAction, type RefusedOffersState,
 } from "./refusedOffers";
 
@@ -54,12 +54,11 @@ describe("refusedOffersReducer", () => {
 });
 
 describe("isOfferHere", () => {
-  it.each<[string, string | null, number | string | null, boolean]>([
+  it.each<[string, string | null, number | string, boolean]>([
     ["same chat", "a", 1, true],
     ["same Fan, id as a string", "a", "1", true],
     ["another Fan", "a", 2, false],
     ["another Creator", "b", 1, false],
-    ["a Composer without a Fan", "a", null, false],
   ])("%s", (_name, accountId, fanId, want) => {
     expect(isOfferHere(TWO.offers[0], accountId, fanId)).toBe(want);
   });
@@ -77,6 +76,21 @@ describe("previews", () => {
     ["an unknown id frees nothing", 9, [], []],
   ])("%s", (_name, id, shown, want) => {
     expect(previewsFreedBy(TWO, id, shown)).toEqual(want);
+  });
+});
+
+describe("previewsDroppedBy", () => {
+  const C = offer("three", [media(4, "blob:4"), media(5)]);
+  const D = offer("four", [media(2, "blob:2"), media(6, "blob:6"), media(7, "blob:7")]);
+  it.each<[string, RefusedOffersState, RefusedOffersAction, Array<string | undefined>, string[]]>([
+    ["a stale refusal drops its previews", run(TWO, [{ type: "cleared" }]), { type: "refused", offer: C, epoch: 0 },
+      [], ["blob:4"]],
+    ["but those a held offer or the tiles still show", { ...TWO, epoch: 1 }, { type: "refused", offer: D, epoch: 0 },
+      ["blob:7", undefined], ["blob:6"]],
+    ["one of this epoch is offered: none", TWO, { type: "refused", offer: C, epoch: 0 }, [], []],
+    ["other actions drop none here", TWO, { type: "removed", id: 1 }, [], []],
+  ])("%s", (_n, s, a, shown, want) => {
+    expect(previewsDroppedBy(s, a, shown)).toEqual(want);
   });
 });
 
@@ -103,6 +117,18 @@ describe("the module's store", () => {
     expect(dismissRefusedOffer(first, [])).toEqual(["blob:1"]);
     expect(readRefusedOffers().offers.map((o) => o.text)).toEqual(["two"]);
     expect(revoked()).toEqual(["blob:1"]);
+  });
+
+  it.each<[string, boolean, Array<string | undefined>, string[], string[]]>([
+    ["offerRefusedSchedule: a stale one is dropped, its previews revoked but those still shown or held",
+      true, ["blob:7"], ["blob:6"], ["one", "two"]],
+    ["offerRefusedSchedule: a current one is offered, nothing revoked", false, [], [], ["one", "two", "three"]],
+  ])("%s", (_n, stale, shown, want, texts) => {
+    const epoch = readRefusedOffers().epoch - (stale ? 1 : 0);
+    const C = offer("three", [media(2, "blob:2"), media(6, "blob:6"), media(7, "blob:7")]);
+    expect(offerRefusedSchedule(C, epoch, shown)).toEqual(want);
+    expect(revoked()).toEqual(want);
+    expect(readRefusedOffers().offers.map((o) => o.text)).toEqual(texts);
   });
 
   it("revokeUnlessHeld keeps what a held offer shows", () => {

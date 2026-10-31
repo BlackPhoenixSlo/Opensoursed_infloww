@@ -43,6 +43,10 @@ wait: every read checks out a connection (pool_wait_n ~ reads), p95 1 s of the ~
 
 Break-it-once: relay-cache-no-single-flight (each miss its own lock: users/me, whose only
 guard is relay_cache's lock, reaches OF once per client).
+
+Write scope (lib/scope_faults.py): one owner send to a seeded fan with no X-Account-Id
+on this multi-Creator Agency must be a 400 `account_required` that OF never sees;
+`--fault=write-scope-falls-back-active` restores the active-Creator fallback, so it is sent.
 """
 from __future__ import annotations
 
@@ -51,6 +55,7 @@ import time
 from collections import Counter
 
 from slop.lib.client import label
+from slop.lib.scope_faults import C_WRITE_SCOPE
 from slop.seed import of_sessions
 
 PROFILE = "one_agency"
@@ -145,6 +150,19 @@ async def run(ctx) -> None:
               not_200={f"{k[0]} {k[1]}": n for k, n in sbad.items()})
     ctx.check(C_WIRE, fake.unsigned == 0 and not fake.unmodelled, unsigned=fake.unsigned,
               unmodelled=dict(fake.unmodelled))
+
+    # ── a write naming no Creator: refused, never sent as whichever Creator is active ──
+    def of_sends() -> int:
+        with fake.lock:
+            return sum(len(v) for v in fake.sends.values())
+
+    fan = w.data["fans"][aids[1]][0]["id"]
+    s0 = of_sends()
+    r = await ctx.owner.post(f"/api/of/v2/chats/{fan}/messages", json={"text": "slop write scope"})
+    sent = of_sends() - s0
+    detail = (r.json().get("detail") if r.status_code == 400 else None) or {}
+    ctx.check(C_WRITE_SCOPE, r.status_code == 400 and detail.get("error") == "account_required" and sent == 0,
+              http_status=r.status_code, error=detail.get("error"), of_sends=sent, creators=len(aids))
 
     http = {stage: ctx.rec.summary(stage) for stage in ("burst", "serial")}
     ctx.metric("http_by_stage", http)

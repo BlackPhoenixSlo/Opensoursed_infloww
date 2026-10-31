@@ -423,6 +423,8 @@ class _Transport:
              — new scheme; survives re-captures.
           2. Per-session-file binding (assigned_session == path.name)
              — legacy; remains supported for back-compat.
+        A proxies.json read mid-write answers from the last good read; with
+        none, proxies.EgressRefused (never direct: proxies.egress).
         """
         path = Path(path)
         data = json.loads(path.read_text())
@@ -430,14 +432,18 @@ class _Transport:
             # Per-account dirs live at sessions/accounts/<id>/session_*.json
             # so the immediate parent dir name is the account_id.
             account_id = path.parent.name
-            p = proxy_registry.get_for_account(account_id)
-            if p is None:
-                p = proxy_registry.get_for_session(path.name)
+            reg = proxy_registry.registry()
+            eg = proxy_registry.egress(reg, account_id, path.name)
+            if isinstance(eg, proxy_registry.Refuse):
+                log_of.warning("client_egress_refused account=%s reason=%s", account_id, eg.reason)
+                raise proxy_registry.EgressRefused(eg.reason)
+            p = eg.entry if isinstance(eg, proxy_registry.Proxy) else None
             if p is not None:
                 kw["proxies"] = proxy_registry.proxies_dict_for_requests(p)
                 kw["proxy_label"] = p["label"]
-            log_of.info("client_egress account=%s proxy=%s(%s)", account_id,
-                        p["label"] if p else "—", f"{p['host']}:{p['port']}" if p else "direct")
+            log_of.info("client_egress account=%s proxy=%s(%s)%s", account_id,
+                        p["label"] if p else "—", f"{p['host']}:{p['port']}" if p else "direct",
+                        " registry=torn" if isinstance(reg, proxy_registry.Torn) else "")
         client = cls(data, **kw)
         client.session_path = path
         return client
