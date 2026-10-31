@@ -4,7 +4,7 @@
  * (docs/spec/phase-05-remaining-parity-gaps.md, stories 44, Testing Decisions).
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, screen } from "@testing-library/react";
+import { act, cleanup, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const { relayGet } = vi.hoisted(() => ({ relayGet: vi.fn() }));
@@ -14,7 +14,7 @@ vi.mock("@/hooks/useAccounts", () => ({ useActiveAccounts: () => [{ id: "acc-1",
 vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => ({ accountId: "acc-1" }) }));
 
 import { renderWithProviders } from "@/test-utils";
-import { appendNotifHistory, markNotifHistoryResponded } from "@/lib/notifSettings";
+import { NOTIF_CLEARED_EVENT, appendNotifHistory, dispatchNotifArrived, markNotifHistoryResponded } from "@/lib/notifSettings";
 import { NotificationBell } from "./NotificationBell";
 
 afterEach(() => {
@@ -33,6 +33,33 @@ describe("NotificationBell (top bar)", () => {
 
     expect(await screen.findByText("No notifications.")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "See all" })).toHaveAttribute("href", "/notifications");
+  });
+
+  it("badges arrivals while closed, and each open clears it and sends the cleared event once", async () => {
+    relayGet.mockResolvedValue({ list: [] });
+    const cleared = vi.fn();
+    window.addEventListener(NOTIF_CLEARED_EVENT, cleared);
+    try {
+      const user = userEvent.setup();
+      const { rerender } = renderWithProviders(<NotificationBell />);
+      act(() => { dispatchNotifArrived(); dispatchNotifArrived(); });
+      expect(screen.getByTestId("bell-count")).toHaveTextContent("2");
+
+      const bell = screen.getByRole("button", { name: "Notifications" });
+      await user.click(bell);
+      expect(screen.queryByTestId("bell-count")).toBeNull();
+      act(() => { dispatchNotifArrived(); });
+      rerender(<NotificationBell />);
+      expect(screen.queryByTestId("bell-count")).toBeNull();
+      expect(cleared).toHaveBeenCalledTimes(1);
+
+      await user.click(bell); // close: no event
+      expect(cleared).toHaveBeenCalledTimes(1);
+      await user.click(bell); // re-open, nothing new: one more
+      expect(cleared).toHaveBeenCalledTimes(2);
+    } finally {
+      window.removeEventListener(NOTIF_CLEARED_EVENT, cleared);
+    }
   });
 
   it("a row opens the Fan as a Fan tab in the Messages Pro window, not a browser tab", async () => {
@@ -106,5 +133,39 @@ describe("NotificationBell (Agency pane)", () => {
     await userEvent.click(await screen.findByRole("link", { name: "Zoe needs a 2FA code" }));
 
     expect(screen.queryByRole("link", { name: "Zoe needs a 2FA code" })).toBeNull();
+  });
+
+  it("OnlyFans arrivals while the panel shows the Agency tab badge the bell once it closes; on the OnlyFans tab they don't", async () => {
+    relayGet.mockResolvedValue({ list: [] });
+    const user = userEvent.setup();
+    renderWithProviders(<NotificationBell agency={{ unread: 2, panel: <p>Agency feed</p> }} />);
+    expect(await screen.findByTestId("bell-count")).toHaveTextContent("2");
+
+    // Only Agency has news: the panel opens on it, and OnlyFans arrivals land meanwhile.
+    await user.click(screen.getByRole("button", { name: "Notifications" }));
+    expect(await screen.findByText("Agency feed")).toBeInTheDocument();
+    act(() => { dispatchNotifArrived(); });
+    await user.keyboard("{Escape}");
+    expect(screen.queryByText("Agency feed")).toBeNull();
+    expect(screen.getByTestId("bell-count")).toHaveTextContent("3");
+
+    // Read on the OnlyFans tab, they are seen as they land.
+    await user.click(screen.getByRole("button", { name: "Notifications" }));
+    expect(await screen.findByText("No notifications.")).toBeInTheDocument();
+    act(() => { dispatchNotifArrived(); });
+    await user.keyboard("{Escape}");
+    expect(screen.getByTestId("bell-count")).toHaveTextContent("2");
+  });
+
+  it("the Agency tab going away while it is shown puts the OnlyFans list on screen", async () => {
+    relayGet.mockResolvedValue({ list: [] });
+    const user = userEvent.setup();
+    const { rerender } = renderWithProviders(<NotificationBell agency={{ unread: 2, panel: <p>Agency feed</p> }} />);
+    await user.click(screen.getByRole("button", { name: "Notifications" }));
+    expect(await screen.findByText("Agency feed")).toBeInTheDocument();
+
+    rerender(<NotificationBell />);
+    expect(screen.queryByText("Agency feed")).toBeNull();
+    expect(await screen.findByText("No notifications.")).toBeInTheDocument();
   });
 });

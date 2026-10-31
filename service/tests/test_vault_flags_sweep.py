@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-The whole-vault flags sweep (`vault_ai_api.flags_all` + `_run_flags_all`).
+The whole-vault flags sweep (`vault_ai_vision.flags_all` + `_run_flags_all`).
 Durable regression suite (plain-assert, no pytest — repo convention).
 
 WHY THIS EXISTS. The sweep used to run inline in its own POST. A vault of 327
@@ -63,7 +63,7 @@ import json  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
 
 import llm_client  # noqa: E402
-import vault_ai_api as api  # noqa: E402
+import vault_ai_vision  # noqa: E402
 
 
 # flags-all pre-flights the vision key (a missing one is the typed 424, pinned
@@ -85,7 +85,7 @@ def _next_account() -> str:
     return f"flagsweep{_N}"
 
 
-def _flagged(v: int = api._FLAGS_VERSION) -> dict:
+def _flagged(v: int = vault_ai_vision._FLAGS_VERSION) -> dict:
     """A COMPLETE flags answer at version `v` — `flags_known` needs every
     region, so a partial one would exercise the unflagged path while looking
     like a flagged item."""
@@ -136,7 +136,7 @@ class _Gate:
 async def _drain(aid: str) -> None:
     """Let the background task finish before the next case reuses the module."""
     for _ in range(200):
-        if aid not in api._flags_running:
+        if aid not in vault_ai_vision._flags_running:
             return
         await asyncio.sleep(0.01)
     raise AssertionError("sweep never finished")
@@ -148,10 +148,10 @@ async def case_post_returns_before_the_sweep_finishes():
     aid = _next_account()
     await _seed(aid, [(i, None) for i in range(600, 610)])
     gate = _Gate(hold=True)
-    orig, api._flags_one = api._flags_one, gate
+    orig, vault_ai_vision._flags_one = vault_ai_vision._flags_one, gate
     try:
         out = await asyncio.wait_for(
-            api.flags_all({"account_id": aid}), timeout=1.0)
+            vault_ai_vision.flags_all({"account_id": aid}), timeout=1.0)
         assert out["status"] == "running", out
         assert out["candidates"] == 10, out
         assert out["already"] is False, out
@@ -164,18 +164,18 @@ async def case_post_returns_before_the_sweep_finishes():
         assert sorted(gate.calls) == list(range(600, 610)), gate.calls
     finally:
         gate.release.set()
-        api._flags_one = orig
+        vault_ai_vision._flags_one = orig
 
 
 async def case_second_click_does_not_start_a_second_sweep():
     aid = _next_account()
     await _seed(aid, [(i, None) for i in range(620, 626)])
     gate = _Gate(hold=True)
-    orig, api._flags_one = api._flags_one, gate
+    orig, vault_ai_vision._flags_one = vault_ai_vision._flags_one, gate
     try:
-        first = await api.flags_all({"account_id": aid})
-        second = await api.flags_all({"account_id": aid})
-        third = await api.flags_all({"account_id": aid})
+        first = await vault_ai_vision.flags_all({"account_id": aid})
+        second = await vault_ai_vision.flags_all({"account_id": aid})
+        third = await vault_ai_vision.flags_all({"account_id": aid})
         assert first["already"] is False, first
         assert second["already"] is True and third["already"] is True, (second, third)
         gate.release.set()
@@ -185,94 +185,94 @@ async def case_second_click_does_not_start_a_second_sweep():
         assert sorted(gate.calls) == list(range(620, 626)), gate.calls
     finally:
         gate.release.set()
-        api._flags_one = orig
+        vault_ai_vision._flags_one = orig
 
 
 async def case_status_reports_progress_and_db_coverage():
     aid = _next_account()
     await _seed(aid, [(i, None) for i in range(640, 644)])
     gate = _Gate(hold=True)
-    orig, api._flags_one = api._flags_one, gate
+    orig, vault_ai_vision._flags_one = vault_ai_vision._flags_one, gate
     try:
-        idle = await api.flags_all_status(account_id=aid)
+        idle = await vault_ai_vision.flags_all_status(account_id=aid)
         assert idle["running"] is False, idle
         assert idle["coverage"] == {"stills": 4, "flagged": 0, "missing": 4,
                                     "ready": False}, idle["coverage"]
 
-        await api.flags_all({"account_id": aid})
+        await vault_ai_vision.flags_all({"account_id": aid})
         await asyncio.sleep(0.05)
-        mid = await api.flags_all_status(account_id=aid)
+        mid = await vault_ai_vision.flags_all_status(account_id=aid)
         assert mid["running"] is True, mid
         assert mid["progress"]["total"] == 4, mid["progress"]
 
         gate.release.set()
         await _drain(aid)
-        done = await api.flags_all_status(account_id=aid)
+        done = await vault_ai_vision.flags_all_status(account_id=aid)
         assert done["running"] is False, done
         assert done["progress"]["done"] == 4 and done["progress"]["failed"] == 0, done
         # Coverage is the DURABLE half — it survives the process losing its counter.
         assert done["coverage"]["ready"] is True, done["coverage"]
-        api._flags_progress.pop(aid, None)
-        after_restart = await api.flags_all_status(account_id=aid)
+        vault_ai_vision._flags_progress.pop(aid, None)
+        after_restart = await vault_ai_vision.flags_all_status(account_id=aid)
         assert after_restart["progress"] is None
         assert after_restart["coverage"]["flagged"] == 4, after_restart["coverage"]
     finally:
         gate.release.set()
-        api._flags_one = orig
+        vault_ai_vision._flags_one = orig
 
 
 async def case_todo_skips_current_and_keeps_stale():
     aid = _next_account()
     await _seed(aid, [
         (660, _flagged()),                              # current — skip
-        (661, _flagged(api._FLAGS_VERSION - 1)),        # older prompt — redo
+        (661, _flagged(vault_ai_vision._FLAGS_VERSION - 1)),        # older prompt — redo
         (662, None),                                    # never flagged — do
-        (663, {"vulva_vis": "bare", "_flags_v": api._FLAGS_VERSION}),  # partial — redo
+        (663, {"vulva_vis": "bare", "_flags_v": vault_ai_vision._FLAGS_VERSION}),  # partial — redo
     ])
     # NEWEST-first (_seed stamps created_at ascending, so 663 is the most
     # recent). The order is asserted, not just the membership, because `limit`
     # makes it decide WHICH items a bounded pass covers at all.
-    todo = await api._flags_todo(aid)
+    todo = await vault_ai_vision._flags_todo(aid)
     assert todo == [663, 662, 661], todo
-    assert await api._flags_todo(aid, force=True) == [663, 662, 661, 660]
-    assert await api._flags_todo(aid, limit=2) == [663, 662]
+    assert await vault_ai_vision._flags_todo(aid, force=True) == [663, 662, 661, 660]
+    assert await vault_ai_vision._flags_todo(aid, limit=2) == [663, 662]
     # A named set is taken as given — the caller is asking for these.
-    assert await api._flags_todo(aid, only={660}) == [660]
+    assert await vault_ai_vision._flags_todo(aid, only={660}) == [660]
 
 
 async def case_named_ids_stay_inline():
     aid = _next_account()
     await _seed(aid, [(670, None), (671, None)])
     gate = _Gate()
-    orig, api._flags_one = api._flags_one, gate
+    orig, vault_ai_vision._flags_one = vault_ai_vision._flags_one, gate
     try:
-        out = await api.flags_all({"account_id": aid, "media_ids": [670]})
+        out = await vault_ai_vision.flags_all({"account_id": aid, "media_ids": [670]})
         # Answers in the response, not a job id — the grading probe reads these.
         assert out["flagged"] == 1 and out["failed"] == 0, out
         assert out["complete"] is True, out
         assert "status" not in out, "a named set must not be handed off"
         assert gate.calls == [670], gate.calls
-        assert aid not in api._flags_running
+        assert aid not in vault_ai_vision._flags_running
     finally:
-        api._flags_one = orig
+        vault_ai_vision._flags_one = orig
 
 
 async def case_a_failing_item_does_not_stop_the_sweep():
     aid = _next_account()
     await _seed(aid, [(i, None) for i in range(680, 685)])
     gate = _Gate(fail={682})
-    orig, api._flags_one = api._flags_one, gate
+    orig, vault_ai_vision._flags_one = vault_ai_vision._flags_one, gate
     try:
-        await api.flags_all({"account_id": aid})
+        await vault_ai_vision.flags_all({"account_id": aid})
         await _drain(aid)
         assert sorted(gate.calls) == list(range(680, 685)), gate.calls
-        prog = api._flags_progress[aid]
+        prog = vault_ai_vision._flags_progress[aid]
         assert prog["done"] == 5 and prog["failed"] == 1, prog
         assert prog["error"] == "provider down", prog
         # The one bad row is exactly what a re-run picks up.
-        assert await api._flags_todo(aid) == [682]
+        assert await vault_ai_vision._flags_todo(aid) == [682]
     finally:
-        api._flags_one = orig
+        vault_ai_vision._flags_one = orig
 
 
 async def case_done_counts_visits_so_a_finished_pass_reads_as_finished():
@@ -293,19 +293,19 @@ async def case_done_counts_visits_so_a_finished_pass_reads_as_finished():
     ids = list(range(690, 695))
     await _seed(aid, [(i, None) for i in ids])
     gate = _Gate(fail={692})
-    orig, api._flags_one = api._flags_one, gate
-    api._flags_running.add(aid)
+    orig, vault_ai_vision._flags_one = vault_ai_vision._flags_one, gate
+    vault_ai_vision._flags_running.add(aid)
     try:
-        await api._run_flags_all(aid, ids)
+        await vault_ai_vision._run_flags_all(aid, ids)
     finally:
-        api._flags_one = orig
-    prog = api._flags_progress[aid]
+        vault_ai_vision._flags_one = orig
+    prog = vault_ai_vision._flags_progress[aid]
     assert prog["total"] == 5, prog
     assert prog["done"] == 5, f"a pass that finished must read as finished: {prog}"
     assert prog["failed"] == 1, prog
     assert prog["error"] == "provider down", prog
     assert prog["cost_millicents"] == 4, f"four successes at 1mc each: {prog}"
-    assert aid not in api._flags_running, "the sweep never cleared its slot"
+    assert aid not in vault_ai_vision._flags_running, "the sweep never cleared its slot"
 
 
 _harness.run(

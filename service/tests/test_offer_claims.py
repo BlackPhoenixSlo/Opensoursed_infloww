@@ -20,6 +20,7 @@ _harness.bootstrap()
 
 import of_client  # noqa: E402
 import server  # noqa: E402
+import of_stats_api  # noqa: E402  # after server: its routes load with it
 
 SUBSCRIBERS = f"{of_client.API_BASE}/subscriptions/subscribers"
 FAN = {"id": 70000001, "name": "Synth Fan A", "username": "synthfana",
@@ -49,19 +50,19 @@ def _via_route(fn, *args, reply=None, **kw):
 
 
 def case_trial_claims_reach_of_as_captured():
-    _, sent = _via_route(server.of_trial_claims, trial_id=4242, limit=10, offset=0)
+    _, sent = _via_route(of_stats_api.of_trial_claims, trial_id=4242, limit=10, offset=0)
     assert sent == [(SUBSCRIBERS, {"limit": 10, "offset": 0, "format": "infinite", "filter[trial_id]": 4242})], sent
     # The HAR's own query order.
     assert list(sent[0][1]) == ["limit", "offset", "format", "filter[trial_id]"], list(sent[0][1])
 
 
 def case_trial_claims_next_page_is_offset_10():
-    _, sent = _via_route(server.of_trial_claims, trial_id=4242, limit=10, offset=10)
+    _, sent = _via_route(of_stats_api.of_trial_claims, trial_id=4242, limit=10, offset=10)
     assert sent[0][1]["offset"] == 10 and sent[0][1]["limit"] == 10, sent
 
 
 def case_fans_spend_passes_through_untouched():
-    out, _ = _via_route(server.of_trial_claims, trial_id=4242, limit=10, offset=0, reply=PAGE)
+    out, _ = _via_route(of_stats_api.of_trial_claims, trial_id=4242, limit=10, offset=0, reply=PAGE)
     assert out == PAGE, out
     d = out["list"][0]["subscribedOnData"]
     parts = ("subscribesSumm", "postsSumm", "messagesSumm", "streamsSumm", "tipsSumm")
@@ -69,13 +70,13 @@ def case_fans_spend_passes_through_untouched():
 
 
 def case_promotion_claims_filter_by_promo_id():
-    _, sent = _via_route(server.of_promotion_claims, promo_id=501, limit=10, offset=0)
+    _, sent = _via_route(of_stats_api.of_promotion_claims, promo_id=501, limit=10, offset=0)
     assert sent == [(SUBSCRIBERS, {"limit": 10, "offset": 0, "format": "infinite", "filter[promoId]": 501})], sent
 
 
 def case_campaign_claimers_page_as_ofs_modal():
-    _, first = _via_route(server.of_campaign_claimers, campaign_id=7, limit=10, offset=0, query=None)
-    _, nxt = _via_route(server.of_campaign_claimers, campaign_id=7, limit=10, offset=10, query=None)
+    _, first = _via_route(of_stats_api.of_campaign_claimers, campaign_id=7, limit=10, offset=0, query=None)
+    _, nxt = _via_route(of_stats_api.of_campaign_claimers, campaign_id=7, limit=10, offset=10, query=None)
     path = f"{of_client.API_BASE}/campaigns/7/claimers"
     assert first == [(path, {"more": "false", "limit": 10, "offset": 0})], first
     assert nxt == [(path, {"more": "true", "limit": 10, "offset": 10})], nxt

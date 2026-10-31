@@ -29,10 +29,8 @@ A bad payload must never break the WS pump or the SSE fan-out.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
-from collections import deque
 from datetime import datetime
 from typing import Any
 
@@ -42,8 +40,8 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from db import of_writer, write_telemetry
 from db.engine import get_session
 from db.models import Chat, Fan, Message, Transaction, is_paid_ratchet
-from of_shapes import giphy_dm_id   # shared OF payload-shape reader
 from automations._common import source_self_heal_set
+import event_transcode_decide as td
 import relay_cache
 from jsonsafe import dump_capped
 
@@ -65,14 +63,8 @@ _last_out_bust: dict[str, float] = {}
 # In-process, no DB write: this answers a question with a 60-minute horizon and a
 # `mass_runs` row is already the durable record of everything WE send. Keyed on
 # RECEIPT time rather than the frame's own `date` — a replayed or clock-skewed
-# frame must not look fresh. Replace-by-queue-id (the finish frame arrives after
-# several updates), drop on cancel, 32 queues per account is far past a day's
-# worth on the heaviest account.
-_QUEUE_RING_MAX = 32
-# A queue of fewer than five recipients is a small hand-send, not a blast. Only the
-# FINISH frame's `total` is trustworthy: the first update carries -1.
-_QUEUE_MIN_RECIPIENTS = 5
-_queue_finishes: dict[str, "deque[tuple[int, float]]"] = {}
+# frame must not look fresh. The ring's rules: `td.queue_fold`.
+_queue_finishes: dict[str, td.Ring] = {}
 
 log = logging.getLogger("of-relay.transcode")
 
@@ -83,40 +75,12 @@ _seen_unknown: set[tuple[str, tuple[str, ...]]] = set()
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
-
-def _parse_iso(s: str | None) -> datetime | None:
-    """OF returns ISO 8601 with `+00:00` suffix. fromisoformat handles it
-    on 3.11+; we strip a trailing `Z` for the older variant just in case."""
-    if not s:
-        return None
-    try:
-        return datetime.fromisoformat(s.replace("Z", "+00:00")).replace(tzinfo=None)
-    except Exception:
-        return None
-
-
-def _to_cents(price: Any) -> int:
-    """OF prices come as floats like 9.99. Convert via int(round(... * 100))
-    to avoid 9.99 → 998 floating-point traps."""
-    try:
-        if price is None or price == "":
-            return 0
-        return int(round(float(price) * 100))
-    except Exception:
-        return 0
-
-
-def _media_ids(media: list | None) -> list[int]:
-    """Pluck media.id from each item; skip non-int."""
-    if not isinstance(media, list):
-        return []
-    out: list[int] = []
-    for m in media:
-        if isinstance(m, dict):
-            mid = m.get("id")
-            if isinstance(mid, int):
-                out.append(mid)
-    return out
+# Pure, in event_transcode_decide; the private names stay for their importers
+# (server, automations.send_mass_message / scheduled_send, the tests).
+_parse_iso = td.parse_iso
+_to_cents = td.to_cents
+_media_ids = td.media_ids
+_strip_html = td.strip_html
 
 
 # ── Top-level dispatch ─────────────────────────────────────────────
@@ -124,96 +88,51 @@ def _media_ids(media: list | None) -> list[int]:
 async def transcode(event: dict) -> None:
     """Route an event to the right canonical-table writer. Called
     fire-and-forget from `events.handle_event`."""
-    if not isinstance(event, dict):
+    r = td.route(event)
+    if r is None:
         return
+    lane, event_type, payload = r
     account_id = event.get("__account_id")
-    # Pick the first non-sentinel top-level key as the event type, matching
-    # events.py:_first_real_key.
-    event_type = None
-    payload: Any = None
-    for k, v in event.items():
-        if not k.startswith("__"):
-            event_type = k
-            payload = v
-            break
-    if not event_type:
-        return
 
     try:
-        if event_type == "api2_chat_message" and isinstance(payload, dict):
-            await _transcode_chat_message(account_id, payload)
-        elif event_type in ("paidMessage", "messageUnlock", "purchase") and isinstance(payload, dict):
-            # PPV-unlock path. Shape not yet observed in production — we
-            # log + record a best-effort transaction so the first one in
-            # the wild leaves enough breadcrumbs to refine the parser.
-            await _transcode_ppv_unlock(account_id, event_type, payload)
-        elif event_type == "toasts":
-            await _transcode_toast(account_id, payload)
-        elif event_type in ("chat_queue_finish", "chat_queue_update"):
-            # A broadcast just left this account. No canonical row (the frame
-            # carries no body and no recipients) — it goes in the in-process ring
-            # above, which is all the 60-minute "did she just blast" question
-            # needs. Handled here rather than falling through: the payload has no
-            # user blob for `_touch_fan_from_event` and the shape is known, so the
-            # discovery log has nothing left to learn from it.
-            _record_queue_frame(account_id, event_type, payload)
-        else:
-            # Online/typing/stories/etc. don't get full transcodes yet,
-            # but they often carry up-to-date avatar + display name. Touch
-            # the Fan row so the inbox cold-start renders from DB without
-            # waiting on OF.
-            await _touch_fan_from_event(account_id, payload)
-            _log_unknown(event_type, payload)
+        match lane:
+            case "chat_message":
+                await _transcode_chat_message(account_id, payload)
+            case "ppv":
+                # PPV-unlock path. Shape not yet observed in production — we
+                # log + record a best-effort transaction so the first one in
+                # the wild leaves enough breadcrumbs to refine the parser.
+                await _transcode_ppv_unlock(account_id, event_type, payload)
+            case "toast":
+                await _transcode_toast(account_id, payload)
+            case "queue":
+                # A broadcast just left this account. No canonical row (the frame
+                # carries no body and no recipients) — it goes in the in-process ring
+                # above, which is all the 60-minute "did she just blast" question
+                # needs. Handled here rather than falling through: the payload has no
+                # user blob for `_touch_fan_from_event` and the shape is known, so the
+                # discovery log has nothing left to learn from it.
+                _record_queue_frame(account_id, event_type, payload)
+            case "other":
+                # Online/typing/stories/etc. don't get full transcodes yet,
+                # but they often carry up-to-date avatar + display name. Touch
+                # the Fan row so the inbox cold-start renders from DB without
+                # waiting on OF.
+                await _touch_fan_from_event(account_id, payload)
+                _log_unknown(event_type, payload)
     except Exception:
         log.exception("transcode failed (account=%s type=%s)", account_id, event_type)
         write_telemetry.drop("transcode_exception")
 
 
 def _record_queue_frame(account_id: Any, event_type: str, payload: Any) -> None:
-    """Fold one `chat_queue_*` frame into the account's ring. Never raises.
-
-    The envelope, as `event_inbox` stores it::
-
-        {"chat_queue_finish": {"id": 46605849959, "date": "...", "isReady": true,
-         "isDone": true, "total": 23, "pending": 0, "canUnsend": true,
-         "unsendSeconds": 1000000, "hasError": false, "isCanceled": false, ...}}
-
-    Only the FINISH frame records — the first update carries `total: -1` and the
-    ones between carry a falling `pending`, so `total` is only trustworthy at the
-    end. A frame that says `isCanceled` records nothing and REMOVES any entry for
-    the same queue: a blast the creator pulled back is not a blast anyone can be
-    replying to."""
-    if not isinstance(payload, dict) or account_id is None:
-        return
-    try:
-        queue_id = int(payload.get("id"))
-    except (TypeError, ValueError):
+    """Fold one `chat_queue_*` frame into the account's ring (`td.queue_fold`).
+    Never raises."""
+    if account_id is None:
         return
     aid = str(account_id)
-    ring = _queue_finishes.get(aid)
-    if payload.get("isCanceled"):
-        if ring is not None:
-            _queue_finishes[aid] = deque(
-                (q, at) for q, at in ring if q != queue_id)
-        return
-    if event_type != "chat_queue_finish":
-        return
-    try:
-        total = int(payload.get("total"))
-    except (TypeError, ValueError):
-        return
-    if total < _QUEUE_MIN_RECIPIENTS:
-        return
-    if ring is None:
-        ring = _queue_finishes[aid] = deque(maxlen=_QUEUE_RING_MAX)
-    # Replace-by-id: OF can re-send a finish frame, and two entries for one queue
-    # would push a real second blast out of a 32-deep ring for no gain.
-    if any(q == queue_id for q, _at in ring):
-        kept = deque((e for e in ring if e[0] != queue_id), maxlen=_QUEUE_RING_MAX)
-        kept.append((queue_id, time.monotonic()))
-        _queue_finishes[aid] = kept
-        return
-    ring.append((queue_id, time.monotonic()))
+    _queue_finishes[aid] = td.queue_fold(_queue_finishes.get(aid, ()), event_type, payload,
+                                         time.monotonic())
 
 
 def blasted_within(account_id: Any, *, seconds: float) -> bool:
@@ -221,11 +140,7 @@ def blasted_within(account_id: Any, *, seconds: float) -> bool:
     `seconds`? Reads the ring above — in-process, so a restart answers False until
     the next blast, which the `mass_runs` half of the caller's check covers for
     everything WE send."""
-    ring = _queue_finishes.get(str(account_id))
-    if not ring:
-        return False
-    floor = time.monotonic() - float(seconds)
-    return any(at >= floor for _q, at in ring)
+    return td.blasted(_queue_finishes.get(str(account_id), ()), time.monotonic(), seconds)
 
 
 async def _transcode_toast(account_id: Any, payload: Any) -> None:
@@ -261,57 +176,19 @@ def _has_subscribe_toast(payload: Any) -> bool:
 
 
 async def _touch_fan_from_event(account_id: Any, payload: Any) -> None:
-    """Opportunistic avatar/display-name refresh for non-message events.
-
-    OF embeds a creator-side user blob under a few different keys (toasts
-    use `data.relatedUser`, online events use `user`, …). We sniff the
-    common shapes and update Fan(avatar_url, of_username, of_display_name)
-    if we got an id + at least one field worth writing. This is a touch,
-    not a transcode — it never creates a new Fan row, only updates ones
-    that already exist (the chat-message path creates).
-
-    Avatar shape varies: messages give `avatar` (string URL), toasts give
-    `avatarThumbs` (dict of size→URL). We prefer c144, fall back to c50.
+    """Opportunistic avatar/display-name refresh for non-message events: the
+    frame's user blob (`td.user_blob`) updates Fan(avatar_url, of_username,
+    of_display_name). This is a touch, not a transcode — it never creates a new
+    Fan row, only updates ones that already exist (the chat-message path creates).
     """
-    if not account_id or not isinstance(payload, dict):
+    if not account_id:
         return
-    user = None
-    if isinstance(payload.get("fromUser"), dict):
-        user = payload["fromUser"]
-    elif isinstance(payload.get("user"), dict):
-        user = payload["user"]
-    elif isinstance(payload.get("data"), dict):
-        d = payload["data"]
-        if isinstance(d.get("relatedUser"), dict):
-            user = d["relatedUser"]
-        elif isinstance(d.get("user"), dict):
-            user = d["user"]
-    if not user:
+    blob = td.user_blob(payload)
+    if blob is None:
         return
-    fan_id = user.get("id")
-    if not isinstance(fan_id, int):
-        return
-    avatar = user.get("avatar")
-    if not avatar:
-        thumbs = user.get("avatarThumbs")
-        if isinstance(thumbs, dict):
-            avatar = thumbs.get("c144") or thumbs.get("c50") or next(
-                (v for v in thumbs.values() if isinstance(v, str)), None,
-            )
-    name = user.get("name")
-    uname = user.get("username")
-    if not (avatar or name or uname):
-        return
-
     # UPDATE-only (no insert) — we don't want a stray toast to mint a Fan
     # row for someone the model has never actually messaged.
-    fields: dict[str, Any] = {}
-    if avatar:
-        fields["avatar_url"] = avatar
-    if name:
-        fields["of_display_name"] = name
-    if uname:
-        fields["of_username"] = uname
+    fan_id, fields = blob
 
     # A typing / online frame repeats the same blob every few seconds: read
     # first (no write lock) and write only what changed — not even updated_at
@@ -319,12 +196,12 @@ async def _touch_fan_from_event(account_id: Any, payload: Any) -> None:
     async with get_session() as s:
         row = (await s.execute(
             select(*(getattr(Fan, k) for k in fields))
-            .where(Fan.account_id == str(account_id), Fan.fan_id == int(fan_id))
+            .where(Fan.account_id == str(account_id), Fan.fan_id == fan_id)
         )).first()
     if row is None or all(v == cur for v, cur in zip(fields.values(), row)):
         return
     aid = str(account_id)
-    await of_writer.write(_touch_fans, (aid, int(fan_id), fields), key=("touch", aid, int(fan_id)))
+    await of_writer.write(_touch_fans, (aid, fan_id, fields), key=("touch", aid, fan_id))
 
 
 async def _touch_fans(conn, items: list) -> list:
@@ -369,19 +246,15 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
             'isFromQueue': bool,
         }
 
-    OF sometimes omits fields; everything below copes with None.
+    OF sometimes omits fields; everything below copes with None. The row, the
+    direction and the hook lanes: `td.dm_plan`.
     """
-    message_id = m.get("id")
-    from_user = m.get("fromUser") or {}
-    fan_id = from_user.get("id")
-    if not message_id or not fan_id or not account_id:
+    plan = td.dm_plan(account_id, m, datetime.utcnow())
+    if isinstance(plan, td.Skip):
         # Without all three we can't form a primary key — log + bail.
         log.debug("chat_message missing message_id/fan_id/account_id: %s",
-                  {"id": message_id, "fan_id": fan_id, "account_id": account_id})
+                  {"id": plan.message_id, "fan_id": plan.fan_id, "account_id": account_id})
         return
-
-    # Direction: 'out' if we sent it, 'in' otherwise.
-    direction = "out" if str(fan_id) == str(account_id) else "in"
 
     # For OUTBOUND messages we sent ourselves, fromUser.id == account_id,
     # which means we can't infer the chat partner from this payload alone.
@@ -390,7 +263,7 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
     # (phase B); here we still want to capture the message body but the
     # (account_id, fan_id, message_id) PK requires SOME fan_id. Skip for now
     # and let the send-side handler own outbound persistence.
-    if direction == "out":
+    if isinstance(plan, td.Outbound):
         # Persistence is owned by the send handler, but the cached OF chat
         # window is stale either way (lastMessage direction flipped → a fan
         # drops off owe-reply, previews moved). This echo is the ONLY signal
@@ -415,52 +288,25 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
             _last_out_bust[aid_out] = now_mono
             relay_cache.invalidate("list_chats", aid_out)
             relay_cache.invalidate("roster_count", aid_out)
-        log.debug("skipping outbound chat_message %s — will be written at send time", message_id)
+        log.debug("skipping outbound chat_message %s — will be written at send time",
+                  plan.message_id)
         return
 
-    # Build the fields we need.
-    created_at = _parse_iso(m.get("createdAt")) or datetime.utcnow()
-    price_cents = _to_cents(m.get("price"))
-    # A tip's $ value rides in top-level `tipAmount` (DOLLARS), NOT `price` — OF
-    # sends a tip as a chat_message with isTip=true and price=0 (the note the fan
-    # attached is in `tipText`). Read tipAmount for the real amount; fall back to
-    # price_cents for any isTip event that somehow lacks tipAmount. Keep this
-    # SEPARATE from price_cents so PPV/paid-unlock logic below is untouched.
-    is_tip = bool(m.get("isTip"))
-    tip_cents = _to_cents(m.get("tipAmount")) if is_tip else 0
-    if is_tip and tip_cents == 0:
-        tip_cents = price_cents
-    media_ids = _media_ids(m.get("media"))
-    is_paid = m.get("isOpened") if price_cents > 0 else None  # NULL for free messages
-    sender_name = (from_user.get("name") or from_user.get("username") or "")[:255]
-    body = m.get("text") or ""
-
+    aid_s, fan_id, message_id = plan.msg["account_id"], plan.msg["fan_id"], plan.msg["message_id"]
     # We persist the full payload as raw_json so future migrations can
     # backfill new columns without re-fetching from OF. 64 KB cap keeps
     # one rogue media-array from blowing up disk usage.
-    raw = dump_capped(m)
-
-    await of_writer.write(_write_dms, {
-        "account_id": str(account_id), "fan_id": int(fan_id), "message_id": int(message_id),
-        "direction": direction, "sender_name": sender_name, "body": body,
-        "media_ids": json.dumps(media_ids), "media_count": int(m.get("mediaCount") or 0),
-        "price_cents": price_cents, "paid": is_paid, "is_tip": is_tip,
-        "purchased_at": _parse_iso(m.get("openedAt")) if is_paid else None,
-        "raw_json": raw, "created_at": created_at, "from_user": from_user,
-        "tip_cents": tip_cents if is_tip and tip_cents > 0 else 0,
-    }, key=(str(account_id), int(fan_id)))
+    await of_writer.write(_write_dms, (plan, dump_capped(m)), key=(aid_s, fan_id))
 
     log.info(
-        "chat_message persisted: account=%s fan=%s msg=%s direction=%s price=%s tip=%s",
-        account_id, fan_id, message_id, direction, price_cents,
-        tip_cents if is_tip else 0,
+        "chat_message persisted: account=%s fan=%s msg=%s direction=in price=%s tip=%s",
+        account_id, fan_id, message_id, plan.msg["price_cents"], plan.tip_cents,
     )
 
     # Cache invalidation — must run AFTER the write above has committed
     # (of_writer.write returns once its batch has) so a concurrent reader
     # that re-fetches doesn't cache the pre-commit upstream state.
-    aid_s = str(account_id)
-    relay_cache.patch("list_chats", aid_s, _inbox_patcher(int(fan_id), m))
+    relay_cache.patch("list_chats", aid_s, _inbox_patcher(fan_id, m))
     # A tip rides on an inbound chat_message (isTip, $ in tipAmount), so this
     # is the tip lane as well as the DM lane. Deliberately NOT gated on
     # `is_tip`: a plain DM is not a notifications-feed row, but the browser
@@ -479,17 +325,26 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
     # Fire-and-forget on the running loop; on_inbound_message never raises, but
     # we guard the create_task too so a dispatch hiccup can't break the pump.
     #
-    # ONE predicate, read twice: a non-tip media/gif DM belongs to the IMAGE lane
-    # below, which OWNS the words for these DMs — it hands off to
-    # on_inbound_message itself, with the image-closer intent when that applies.
-    # Firing the words hook here as well would queue two jobs for one photo. See
-    # webhook_dispatch.on_inbound_image.
-    is_media_dm = bool(media_ids or giphy_dm_id(m)) and not is_tip
-    if not is_media_dm:
+    # Inbound IMAGE (a non-tip photo or gif, `td.dm_plan`) = a buying signal: the
+    # image hook OWNS its words — it hands off to on_inbound_message itself, with
+    # the image-closer intent when that applies — so firing the words hook too
+    # would queue two jobs for one photo. We report WHAT arrived (`has_media`);
+    # what that's worth — buying signal vs. joke — is the hook's call, not ours.
+    # See webhook_dispatch.on_inbound_image.
+    if plan.image:
+        try:
+            from webhook_dispatch import on_inbound_image
+            asyncio.create_task(
+                on_inbound_image(aid_s, fan_id, message_id,
+                                 has_media=plan.has_media)
+            )
+        except Exception:
+            log.debug("image dispatch hook failed", exc_info=True)
+    else:
         try:
             from webhook_dispatch import on_inbound_message
             asyncio.create_task(
-                on_inbound_message(aid_s, int(fan_id), int(message_id))
+                on_inbound_message(aid_s, fan_id, message_id)
             )
         except Exception:
             log.debug("webhook_dispatch hook failed", exc_info=True)
@@ -498,35 +353,14 @@ async def _transcode_chat_message(account_id: str | None, m: dict) -> None:
     # tip_cents — price is 0 for a tip). Kick the tip hook (customs mark) in
     # real time. Separate hook from on_inbound_message
     # so it fires even on a terminal-stage fan.
-    if is_tip and tip_cents > 0:
+    if plan.tip_cents > 0:
         try:
             from webhook_dispatch import on_inbound_tip
             asyncio.create_task(
-                on_inbound_tip(aid_s, int(fan_id), int(message_id), int(tip_cents))
+                on_inbound_tip(aid_s, fan_id, message_id, plan.tip_cents)
             )
         except Exception:
             log.debug("tip dispatch hook failed", exc_info=True)
-    # Inbound IMAGE (a fan-sent photo, NOT a tip) = a buying signal. Kick the
-    # image hook (words hand-off + the default-OFF closer intent) in real time.
-    # Separate from the tip hook above: a tip-with-media is the tip path's; a bare
-    # media DM is this one's. Guard on `not is_tip` (not just the tip_cents>0 branch above) so
-    # a degenerate isTip frame with a 0/missing tipAmount that ALSO carries media
-    # is never misread as a bare buying-signal photo. The hook decides the flags.
-    # A GIPHY dm rides the same hook even though it has NO media (see
-    # of_shapes.giphy_dm_id):
-    # gating on media_ids alone left a gif as a completely blank turn — no text,
-    # no picture, nothing for the AI to answer. We report WHAT arrived
-    # (`has_media`); what that's worth — buying signal vs. joke — is the hook's
-    # call, not ours.
-    elif is_media_dm:
-        try:
-            from webhook_dispatch import on_inbound_image
-            asyncio.create_task(
-                on_inbound_image(aid_s, int(fan_id), int(message_id),
-                                 has_media=bool(media_ids))
-            )
-        except Exception:
-            log.debug("image dispatch hook failed", exc_info=True)
 
 
 async def _write_dms(conn, items: list) -> list:
@@ -537,92 +371,50 @@ async def _write_dms(conn, items: list) -> list:
     The chat's unread goes up by the DMs that were NEW rows only: a re-delivered
     frame (WS replay after a reconnect) is already counted, and adding it again
     is how a badge used to read higher than the thread."""
-    first, last = items[0], items[-1]
+    plans = [p for p, _raw in items]
+    first, last = plans[0].msg, plans[-1].msg
     aid, fan_id = first["account_id"], first["fan_id"]
     pk = ["account_id", "fan_id", "message_id"]
     n_new = 0
-    for d in items:
-        row = dict(account_id=aid, fan_id=fan_id, message_id=d["message_id"],
-                   direction=d["direction"], sender_name=d["sender_name"], body=d["body"],
-                   media_ids=d["media_ids"], media_count=d["media_count"],
-                   price_cents=d["price_cents"], is_paid=d["paid"], is_tip=d["is_tip"],
-                   purchased_at=d["purchased_at"], is_unsent=False, raw_json=d["raw_json"],
-                   created_at=d["created_at"])
-        res = await conn.execute(sqlite_insert(Message).values(**row).on_conflict_do_nothing(index_elements=pk))
+    for p, raw_json in items:
+        row = sqlite_insert(Message).values(**p.msg, raw_json=raw_json)
+        res = await conn.execute(row.on_conflict_do_nothing(index_elements=pk))
         if res.rowcount:
             n_new += 1
             continue
         # Already stored: refresh what OF may have flipped (is_paid after an
         # unlock, the body after an edit).
-        await conn.execute(sqlite_insert(Message).values(**row).on_conflict_do_update(
+        await conn.execute(row.on_conflict_do_update(
             index_elements=pk,
             set_={
-                "body": d["body"],
+                "body": p.msg["body"],
                 # Same ratchet as the scrape upsert (automation_executor): a WS
                 # frame arriving after a purchase aged off the feed reports the
                 # message unpaid again, and an unconditional write here would
                 # undo a sale the other writer had already recorded.
-                "is_paid": is_paid_ratchet(d["paid"]),
-                "is_tip": d["is_tip"],
-                "media_count": d["media_count"],
-                "raw_json": d["raw_json"],
+                "is_paid": is_paid_ratchet(p.msg["is_paid"]),
+                "is_tip": p.msg["is_tip"],
+                "media_count": p.msg["media_count"],
+                "raw_json": raw_json,
             },
         ))
 
     # ── fans upsert ─────────────────────────────────────────
     # New fan: insert with the fields OF gave us. Existing fan: bump
-    # last_message_received_at and refresh display info, leaving AI-extracted
-    # facts (his_age, hobbies, ...) untouched. The newest non-blank value of
-    # each field across the frames wins.
-    user: dict = {}
-    for d in items:
-        for k, v in d["from_user"].items():
-            if v is not None and v != "":
-                user[k] = v
+    # last_message_received_at and refresh display info (never clobbered by a
+    # blank), leaving AI-extracted facts (his_age, hobbies, ...) untouched.
+    # Self-heals a weak/unknown source when a payload carries OF's
+    # subscribedOn/subscribedBy. The rules: `td.fan_upsert`.
+    values, on_conflict, flags = td.fan_upsert(plans)
+    on_conflict.update(updated_at=datetime.utcnow(), **source_self_heal_set(*flags))
     created_at = last["created_at"]
-    fan_stmt = sqlite_insert(Fan).values(
-        account_id=aid,
-        fan_id=fan_id,
-        of_username=user.get("username"),
-        of_display_name=user.get("name"),
-        avatar_url=user.get("avatar"),
-        last_message_received_at=created_at,
-        # Distinguish "real fan of our creator" vs "creator we follow."
-        # `subscribedOn=True` would mean this person is subscribed to us
-        # (= a real fan). `subscribedBy=True` means our account is
-        # subscribed to them (we're the fan, they're a creator).
-        source=(
-            "fan" if user.get("subscribedOn") else
-            "creator_we_follow" if user.get("subscribedBy") else
-            "unknown"
-        ),
-    )
-    # ON CONFLICT: never CLOBBER a populated name/avatar with the blanks OF sends
-    # on a plain message. OF chat-message payloads carry only `fromUser:{id}` (no
-    # username/name/avatar), so unconditionally writing `.get(...)` here used to
-    # null out names captured earlier by a toast/online event — the root cause of
-    # ~80% of fans showing no name. Only refresh these when OF actually gives them.
-    on_conflict = {
-        "last_message_received_at": created_at,
-        "updated_at": datetime.utcnow(),
-    }
-    if user.get("username"):
-        on_conflict["of_username"] = user["username"]
-    if user.get("name"):
-        on_conflict["of_display_name"] = user["name"]
-    if user.get("avatar"):
-        on_conflict["avatar_url"] = user["avatar"]
-    # Self-heal a weak/unknown source if a payload carries OF's
-    # subscribedOn/subscribedBy (rare on a plain DM, present on toast/online
-    # frames) — upgrade-only, never downgrades a known 'fan'/'creator_we_follow'.
-    on_conflict.update(source_self_heal_set(user.get("subscribedOn"), user.get("subscribedBy")))
-    await conn.execute(fan_stmt.on_conflict_do_update(
+    await conn.execute(sqlite_insert(Fan).values(**values).on_conflict_do_update(
         index_elements=["account_id", "fan_id"], set_=on_conflict))
 
     # ── chats upsert ────────────────────────────────────────
     # The "preview" we show in the inbox is the first ~120 chars of body,
     # HTML-stripped just enough that it doesn't read raw <p> tags.
-    preview = _strip_html(last["body"])[:120]
+    preview = td.strip_html(last["body"])[:120]
     await conn.execute(sqlite_insert(Chat).values(
         account_id=aid,
         fan_id=fan_id,
@@ -643,11 +435,11 @@ async def _write_dms(conn, items: list) -> list:
     # ── transaction (tip path) ───────────────────────────────
     # A tip rides on a chat_message with isTip=true; its $ value is in
     # `tipAmount` (dollars), captured as tip_cents — `price` is 0 here.
-    for d in items:
-        if d["tip_cents"]:
+    for p in plans:
+        if p.tip_cents:
             await _record_inbound_payment(
-                conn, account_id=aid, fan_id=fan_id, message_id=d["message_id"],
-                kind="tip", amount_cents=d["tip_cents"], occurred_at=d["created_at"])
+                conn, account_id=aid, fan_id=fan_id, message_id=p.msg["message_id"],
+                kind="tip", amount_cents=p.tip_cents, occurred_at=p.msg["created_at"])
     return [None] * len(items)
 
 
@@ -709,25 +501,14 @@ async def _transcode_ppv_unlock(
     if not account_id:
         return
     _log_unknown(event_type, payload)  # keep the discovery log alive
-    msg = payload.get("message") if isinstance(payload.get("message"), dict) else payload
-    message_id = msg.get("id") or payload.get("messageId") or payload.get("message_id")
-    fan = (msg.get("fromUser") or payload.get("user") or payload.get("fan") or {})
-    fan_id = fan.get("id") if isinstance(fan, dict) else None
-    amount = msg.get("price") or payload.get("price") or payload.get("amount")
-    amount_cents = _to_cents(amount)
-    occurred = _parse_iso(
-        payload.get("openedAt") or payload.get("createdAt") or msg.get("openedAt")
-    ) or datetime.utcnow()
-    if not (message_id and fan_id and amount_cents > 0):
+    ppv = td.ppv_fields(payload, datetime.utcnow())
+    if ppv is None:
         log.info(
             "ppv-unlock event missing fields (type=%s keys=%s) — skipping payment row",
             event_type, tuple(sorted(payload.keys())),
         )
         return
-    await of_writer.write(_write_payments, dict(
-        account_id=str(account_id), fan_id=int(fan_id), message_id=int(message_id),
-        kind="ppv", amount_cents=amount_cents, occurred_at=occurred,
-    ))
+    await of_writer.write(_write_payments, dict(account_id=str(account_id), **ppv))
 
     # Post-commit cache invalidation. See `_transcode_chat_message` for the
     # ordering rationale.
@@ -740,7 +521,7 @@ async def _transcode_ppv_unlock(
     # the fan drawer's revenue caches refresh on the spot instead of waiting
     # for the 5-min payouts tick.
     from events import announce_transaction
-    await announce_transaction(aid_s, fan_id, kind="ppv", reason="ws_unlock")
+    await announce_transaction(aid_s, ppv["fan_id"], kind="ppv", reason="ws_unlock")
 
 
 async def _record_inbound_payment(
@@ -801,16 +582,6 @@ async def _write_payments(conn, items: list) -> list:
     for p in items:
         await _record_inbound_payment(conn, **p)
     return [None] * len(items)
-
-
-def _strip_html(s: str) -> str:
-    """Quick-and-dirty tag strip for the chat-list preview. OF returns
-    minimal HTML (<p>, <span class>, <strong>); regex is enough.
-    Full sanitization happens client-side when the body is rendered."""
-    import re
-    if not s:
-        return ""
-    return re.sub(r"<[^>]+>", "", s).strip()
 
 
 # ── Unknown-event logger ───────────────────────────────────────────

@@ -1060,8 +1060,22 @@ async def case_engine_default_pools_are_what_the_ui_claims():
     assert af._headroom(0) == af._HEADROOM_FACTOR
 
 
+def case_select_follow_pool_table():
+    """Pure pool selection `_run_follow` acts on: hard-skip drop + headroom cap."""
+    from automations import auto_follow as af
+    rows = [  # (merged, hard_skip, headroom, expected)
+        ([3, 1, 2], set(), 10, [3, 1, 2]),             # order kept, not sorted
+        ([1, 2, 3, 4], {1}, 2, [2, 3]),                # skip BEFORE cap (refills)
+        ([1, 2], set(), 0, []),                        # zero headroom
+    ]
+    for merged, skip, head, want in rows:
+        got = af.select_follow_pool(merged, hard_skip=skip, headroom=head)
+        assert got == want, (merged, skip, head, got, want)
+
+
 _harness.run(
     case_engine_default_pools_are_what_the_ui_claims,
+    case_select_follow_pool_table,
     case_dry_run_is_default,
     case_a_missing_or_removed_action_is_skipped_never_followed,
     case_zero_cap_sends_nothing,

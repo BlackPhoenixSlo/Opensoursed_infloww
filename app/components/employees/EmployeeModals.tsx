@@ -28,6 +28,10 @@ import { EllipsisVertical } from "lucide-react";
 import { Button } from "@/components/ui/primitives";
 import { IfModal } from "@/components/ui/infloww";
 import { AccessEditor } from "@/components/employees/EmployeeAccess";
+import {
+  buildEmployeeRequest, canSaveEmployee, picksNoCreators, type SignIn,
+} from "@/components/employees/employeeRequest";
+import { errText } from "@/lib/errText";
 import { relay, type AccountMeta, type Employee } from "@/lib/relay";
 import type { EmployeeGroup } from "@/lib/employeeGroups";
 import type { PermissionRole } from "@/components/settings/PermissionEditor";
@@ -46,10 +50,6 @@ export function ManageRolesLink({ className }: { className?: string }) {
 const INPUT = "w-full bg-bg border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:border-accent";
 const LABEL = "block text-xs font-medium text-fg-dim mb-1";
 
-function errText(err: unknown): string | null {
-  return err ? (err as Error).message || "save failed" : null;
-}
-
 /** Infloww's antd modal (`IfModal`, 440 wide, `wide` 640) while `open`; `onOpenChange(false)` closes it. */
 export function Modal({ open, onOpenChange, title, children, wide = false }: {
   open: boolean;
@@ -63,7 +63,8 @@ export function Modal({ open, onOpenChange, title, children, wide = false }: {
 }
 
 function Footer({ error, saving, canSave, label, onCancel }: {
-  error: string | null;
+  /** The save mutation's error (null/undefined: none). */
+  error: unknown;
   saving: boolean;
   canSave: boolean;
   label: string;
@@ -71,7 +72,7 @@ function Footer({ error, saving, canSave, label, onCancel }: {
 }) {
   return (
     <div className="mt-5 flex items-center justify-end gap-2">
-      {error && <span role="alert" className="mr-auto text-err text-xs">{error}</span>}
+      {error != null && <span role="alert" className="mr-auto text-err text-xs">{errText(error, "save failed")}</span>}
       <Button size="sm" variant="ghost" type="button" onClick={onCancel}>Cancel</Button>
       <Button size="sm" type="submit" disabled={!canSave || saving}>{saving ? "Saving…" : label}</Button>
     </div>
@@ -137,7 +138,6 @@ function CreatorPicker({ creators, value, onChange }: {
   );
 }
 
-type SignIn = "create" | "invite" | "existing";
 const SIGN_IN: Array<{ key: SignIn; label: string }> = [
   { key: "create", label: "Create login" },
   { key: "invite", label: "Invite link" },
@@ -169,37 +169,34 @@ function InviteLink({ invite, onDone }: { invite: InviteResp; onDone: () => void
 }
 
 /** A pending invite's fresh link after Resend (the old link stops working). */
-export function InviteLinkModal({ invite, onClose }: { invite: InviteResp | null; onClose: () => void }) {
+export function InviteLinkModal({ invite, onClose }: { invite: InviteResp; onClose: () => void }) {
   return (
-    <Modal open={invite !== null} onOpenChange={(o) => !o && onClose()} title="Invite link">
-      {invite && <InviteLink invite={invite} onDone={onClose} />}
+    <Modal open onOpenChange={onClose} title="Invite link">
+      <InviteLink invite={invite} onDone={onClose} />
     </Modal>
   );
 }
 
 /** "+ Add employee" (no `employee`) or "Edit" (that row). */
-export function EmployeeFormModal({ open, onOpenChange, employee, roleId, roles, creators, groups }: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
+export function EmployeeFormModal({ employee, roleId, roles, creators, groups, onClose }: {
   employee?: Employee;
-  /** The row's current role id ("" for none). */
+  /** The row's current role id ("" for none); only Edit passes it. */
   roleId?: string;
   roles: PermissionRole[];
   creators: AccountMeta[];
   groups: EmployeeGroup[];
+  onClose: () => void;
 }) {
   return (
-    <Modal open={open} onOpenChange={onOpenChange} title={employee ? "Edit employee" : "Add employee"} wide>
-      {open && (
-        <EmployeeForm
-          employee={employee}
-          initialRole={roleOrChatter(roles, employee ? roleId : undefined)}
-          roles={roles}
-          creators={creators}
-          groups={groups}
-          onDone={() => onOpenChange(false)}
-        />
-      )}
+    <Modal open onOpenChange={onClose} title={employee ? "Edit employee" : "Add employee"} wide>
+      <EmployeeForm
+        employee={employee}
+        initialRole={roleOrChatter(roles, roleId)}
+        roles={roles}
+        creators={creators}
+        groups={groups}
+        onDone={onClose}
+      />
     </Modal>
   );
 }
@@ -222,35 +219,24 @@ function EmployeeForm({ employee, initialRole, roles, creators, groups, onDone }
   const [accountIds, setAccountIds] = useState<string[] | null>(employee ? employee.account_ids ?? null : null);
   const [invite, setInvite] = useState<InviteResp | null>(null);
 
-  const setup = {
-    display_name: name.trim() || null,
-    role_id: role || null,
-    account_ids: accountIds && accountIds.length > 0 ? accountIds : null,
-    group_id: groupId ? Number(groupId) : null,
-  };
+  const form = { employeeId: employee?.id, signIn, name, username, password, role, groupId, accountIds };
   const saveM = useMutation({
-    mutationFn: async () => {
-      if (employee) return relay.put<unknown>(`/admin/employees/${employee.id}/setup`, setup);
-      if (signIn === "create") {
-        return relay.post<unknown>("/admin/employees/login", { ...setup, username: username.trim().toLowerCase(), password });
-      }
-      if (signIn === "existing") {
-        return relay.post<unknown>("/admin/chatters/link", { ...setup, username: username.trim().toLowerCase() });
-      }
-      setInvite(await relay.post<InviteResp>("/admin/chatters/invite", setup));
+    mutationFn: async (): Promise<InviteResp | null> => {
+      const req = buildEmployeeRequest(form);
+      if (req.kind === "invite") return relay.post<InviteResp>(req.path, req.body);
+      await (req.kind === "setup" ? relay.put<unknown>(req.path, req.body) : relay.post<unknown>(req.path, req.body));
       return null;
     },
-    onSuccess: () => {
+    onSuccess: (res) => {
       void qc.invalidateQueries({ queryKey: ["employees"] });
       void qc.invalidateQueries({ queryKey: ["settings-blob", "roles"] });
-      if (employee || signIn !== "invite") onDone();
+      if (res) setInvite(res); else onDone();
     },
   });
 
-  const noCreators = accountIds !== null && accountIds.length === 0;
-  const canSave = !noCreators && (employee
-    ? name.trim() !== ""
-    : signIn === "invite" || (username.trim() !== "" && (signIn === "existing" || password.length >= 6)));
+  const kind = buildEmployeeRequest(form).kind;
+  const noCreators = picksNoCreators(form);
+  const canSave = canSaveEmployee(form);
 
   if (invite) return <InviteLink invite={invite} onDone={onDone} />;
 
@@ -298,22 +284,22 @@ function EmployeeForm({ employee, initialRole, roles, creators, groups, onDone }
       </div>
       <CreatorPicker creators={creators} value={accountIds} onChange={setAccountIds} />
       {noCreators && <p className="text-xs text-fg-dim">Pick at least one creator, or All creators.</p>}
-      <Footer error={errText(saveM.error)} saving={saveM.isPending} canSave={canSave}
-        label={employee ? "Save" : signIn === "invite" ? "Create invite link" : "Add employee"} onCancel={onDone} />
+      <Footer error={saveM.error} saving={saveM.isPending} canSave={canSave}
+        label={kind === "setup" ? "Save" : kind === "invite" ? "Create invite link" : "Add employee"} onCancel={onDone} />
     </form>
   );
 }
 
 /** The Role cell / "Set role". */
 export function RoleModal({ employee, roleId, roles, onClose }: {
-  employee: Employee | null;
+  employee: Employee;
   roleId: string;
   roles: PermissionRole[];
   onClose: () => void;
 }) {
   return (
-    <Modal open={employee !== null} onOpenChange={(o) => !o && onClose()} title="Set role">
-      {employee && <RoleForm employee={employee} initial={roleId} roles={roles} onDone={onClose} />}
+    <Modal open onOpenChange={onClose} title="Set role">
+      <RoleForm employee={employee} initial={roleId} roles={roles} onDone={onClose} />
     </Modal>
   );
 }
@@ -339,16 +325,16 @@ function RoleForm({ employee, initial, roles, onDone }: {
       <p className="text-sm text-fg-dim mb-2">{employee.display_name}{employee.username ? ` (@${employee.username})` : ""}</p>
       <RoleSelect id="role-only" roles={roles} value={role} onChange={setRole} />
       {desc && <p className="text-xs text-fg-dim">{desc}</p>}
-      <Footer error={errText(saveM.error)} saving={saveM.isPending} canSave={role !== initial} label="Save" onCancel={onDone} />
+      <Footer error={saveM.error} saving={saveM.isPending} canSave={role !== initial} label="Save" onCancel={onDone} />
     </form>
   );
 }
 
 /** Reset password: the owner sets the Employee's new password. */
-export function ResetPasswordModal({ employee, onClose }: { employee: Employee | null; onClose: () => void }) {
+export function ResetPasswordModal({ employee, onClose }: { employee: Employee; onClose: () => void }) {
   return (
-    <Modal open={employee !== null} onOpenChange={(o) => !o && onClose()} title="Reset password">
-      {employee && <PasswordForm employee={employee} onDone={onClose} />}
+    <Modal open onOpenChange={onClose} title="Reset password">
+      <PasswordForm employee={employee} onDone={onClose} />
     </Modal>
   );
 }
@@ -387,17 +373,17 @@ function PasswordForm({ employee, onDone }: { employee: Employee; onDone: () => 
           autoComplete="new-password" className={INPUT} />
       </div>
       {mismatch && <p className="text-xs text-err">The passwords don&rsquo;t match.</p>}
-      <Footer error={errText(saveM.error)} saving={saveM.isPending} canSave={pw.length >= 6 && pw === again}
+      <Footer error={saveM.error} saving={saveM.isPending} canSave={pw.length >= 6 && pw === again}
         label="Reset password" onCancel={onDone} />
     </form>
   );
 }
 
 /** The login's Creator and vault-folder limits. */
-export function AccessLimitsModal({ employee, onClose }: { employee: Employee | null; onClose: () => void }) {
+export function AccessLimitsModal({ employee, onClose }: { employee: Employee; onClose: () => void }) {
   return (
-    <Modal open={employee !== null} onOpenChange={(o) => !o && onClose()} title="Access limits" wide>
-      {employee?.chatter_id && <AccessEditor chatterId={employee.chatter_id} onClose={onClose} />}
+    <Modal open onOpenChange={onClose} title="Access limits" wide>
+      {employee.chatter_id && <AccessEditor chatterId={employee.chatter_id} />}
     </Modal>
   );
 }

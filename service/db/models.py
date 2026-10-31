@@ -1646,6 +1646,11 @@ class FunnelState(Base):
     # funnel can't spin forever. Nullable/additive (None == 0), self-heals via
     # ALTER TABLE like the columns above — a linear funnel never bumps it.
     hops: Mapped[int | None] = mapped_column(Integer)
+    # INDEX of the step last sent to the fan: its `check_intervals_min` paces the
+    # reply-wait, also after a `next` jump (funnel_decide). Nullable/additive: init_db
+    # self-heals it via ALTER TABLE, so no migration (mirrors the rest of
+    # funnel_state); NULL (a row from before it) keeps the old step c - 1 rule.
+    last_sent_step: Mapped[int | None] = mapped_column(Integer)
     updated_at: Mapped[datetime] = _ts_now()
 
 

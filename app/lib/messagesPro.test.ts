@@ -659,9 +659,8 @@ describe("the magic-number guard (spec D2 part 3; Seam 1 items 3 and 4)", () => 
     expect(MP_SEEDS).toContain("app/messages-pro/page.tsx");
     expect(OTHER_SEEDS).toContain("app/layout.tsx");
     // "Open in a new window" (ticket 112) and the Fan List's modules (ticket
-    // 113) are shared with Group chat (`/group` reaches them), and the
-    // Composer's modules (ticket 117) with every screen that imports
-    // `sanitizePriceInput`: they are in scope because they read the token module.
+    // 113) are shared with Group chat (`/group` reaches them): they are in
+    // scope because they read the token module, as the Composer's (ticket 117) do.
     for (const member of ["components/chat/MessageList.tsx", "components/chat/FanDrawer.tsx",
                           "components/chat/MessagesPro.tsx", "app/messages-pro/page.tsx",
                           "components/chat/OpenInNewWindowMenu.tsx",

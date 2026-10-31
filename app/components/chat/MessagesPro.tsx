@@ -16,7 +16,7 @@
  * key pattern from §12.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { useIsRestoring, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { FanList, type FanListSelection } from "@/components/chat/FanList";
@@ -24,6 +24,7 @@ import { FanListButtons } from "@/components/chat/FanListButtons";
 import { ChatSurface } from "@/components/chat/ChatSurface";
 import { FanTabsRow } from "@/components/chat/FanTabsRow";
 import { InflowwPalette } from "@/components/chat/InflowwPalette";
+import { initialMessagesProSelection, messagesProSelectionReducer } from "@/components/chat/messagesProSelection";
 import { FAN_TABS_FULL_LABEL, fanTabKey, useFanTabs, useFanTabsCloseRule, type FanTab } from "@/components/chat/useFanTabs";
 import { ThreadEmptyState } from "@/components/chat/ThreadEmptyState";
 import { WindowHeader } from "@/components/chat/WindowHeader";
@@ -60,10 +61,12 @@ export function MessagesPro({ deepLink }: { deepLink?: MessagesProDeepLink } = {
   // `arrival` holds the link while that first selection stands: its Thread is built
   // from the profile lookup below and starts with Fan insights closed. Any
   // selection made after it is in-app (insights open).
-  const [selected, setSelected] = useState<FanListSelection | null>(
-    () => deepLink ? { ...deepLink, chat: deepLinkChat(deepLink, undefined) } : null,
+  const [{ selected, fromLink }, dispatchSelection] = useReducer(
+    messagesProSelectionReducer,
+    deepLink,
+    (link) => initialMessagesProSelection(link ? { ...link, chat: deepLinkChat(link, undefined) } : null),
   );
-  const [arrival, setArrival] = useState(deepLink);
+  const arrival = fromLink ? deepLink : undefined;
   // "Online Fans": the Fan List shows only online Fans while on.
   const [onlineOnly, setOnlineOnly] = useState(false);
   const desktop = useIsDesktop();
@@ -105,8 +108,7 @@ export function MessagesPro({ deepLink }: { deepLink?: MessagesProDeepLink } = {
     if (deepLink && !(sel.accountId === deepLink.accountId && sameUserId(sel.fanId, deepLink.fanId))) {
       stripSearchParam("msg");
     }
-    setArrival(undefined);
-    setSelected(sel);
+    dispatchSelection({ type: "select", sel });
   }, [deepLink]);
 
   // Clicking a Fan tab opens its Thread the way a Deep link does, from the
@@ -183,8 +185,7 @@ export function MessagesPro({ deepLink }: { deepLink?: MessagesProDeepLink } = {
 
   // Empty the Thread: the Thread's Back, and ✕ on the last Fan tab.
   const clearSelection = useCallback(() => {
-    setArrival(undefined);
-    setSelected(null);
+    dispatchSelection({ type: "clear" });
   }, []);
   // Below lg the open Thread has its own history entry, so the platform's back
   // (edge swipe, Android back) returns to the Fan List before leaving; the
@@ -289,7 +290,7 @@ export function MessagesPro({ deepLink }: { deepLink?: MessagesProDeepLink } = {
     }
     if (!selected) return;
     if (scope.kind === "model" && selected.accountId !== scope.accountId) {
-      setSelected(null);
+      dispatchSelection({ type: "clear" });
     }
   }, [scope, selected, deepLink]);
 

@@ -87,7 +87,7 @@ def case_success_resets_the_streak():
         await ti._record_failure(ACCT, RuntimeError("OF 500"))
         await ti._record_failure(ACCT, RuntimeError("OF 500"))
         await ti._mark_success(
-            ACCT, mode="refresh", inserted=0, patched=0, last_marker=None, pages=1,
+            ACCT, mode="refresh", inserted=0, patched=0, last_marker=None,
             page_rows_min_occurred_at=None, page_rows_max_occurred_at=None,
             floor_reached=True)
         assert (await _row()).consecutive_failures == 0

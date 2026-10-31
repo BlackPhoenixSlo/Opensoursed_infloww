@@ -8,18 +8,18 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer } from "react";
 
 import { Button } from "@/components/ui/primitives";
 import { relay, type VaultListsResp } from "@/lib/relay";
 import { fetchAllVaultLists } from "@/hooks/useVaultMedia";
 import { useAccounts } from "@/hooks/useAccounts";
+import { errText } from "@/lib/errText";
 import { type FanId } from "@/lib/fanId";
-
-interface AccessResp {
-  account_ids: string[];
-  folder_access: Record<string, number[]>;
-}
+import {
+  accountsInvalid, buildPayload, canSubmit, employeeAccessReducer, NO_FOLDER_LIMIT,
+  seedEmployeeAccess, visibleAccountIds, type AccessResp, type FolderEntry,
+} from "@/components/employees/employeeAccessState";
 
 // ── Access limits (Chatter Access, step 6.1) ────────────────────────
 //
@@ -31,120 +31,80 @@ interface AccessResp {
 // Both default OFF (= full access). DA-2: an empty restricted set is never
 // persisted — "see nothing" is Deactivate, not an empty allowlist. So when a
 // "Limit …" toggle is ON, at least one selection is required to save.
+// The draft (AccessDraft), its seeding and the save gate/payload: employeeAccessState.ts.
 
-interface FolderGrant {
-  folder_id: FanId;
-  folder_name: string | null;
-}
-
-interface FolderEntry {
-  limit: boolean;
-  grants: FolderGrant[];
-}
-
-export function AccessEditor({ chatterId, onClose }: { chatterId: string; onClose: () => void }) {
-  const qc = useQueryClient();
-  const accountsQ = useAccounts();
-  const ownerAccounts = accountsQ.data?.accounts ?? [];
-
+export function AccessEditor({ chatterId }: { chatterId: string }) {
   const accessQ = useQuery<AccessResp>({
     queryKey: ["admin", "chatters", chatterId, "access"],
     queryFn: () => relay.get<AccessResp>(`/admin/chatters/${chatterId}/access`),
     staleTime: 5_000,
   });
 
-  const [limitModels, setLimitModels] = useState(false);
-  const [selectedAccounts, setSelectedAccounts] = useState<Set<string>>(new Set());
-  // Per-account folder limit state. Seeded from the server's folder_access.
-  const [folderState, setFolderState] = useState<Record<string, FolderEntry>>({});
-  const [seededFor, setSeededFor] = useState<string | null>(null);
-  const [saveErr, setSaveErr] = useState<string | null>(null);
-  const [savedAt, setSavedAt] = useState<number | null>(null);
-
-  // Seed local state once the server access payload lands (re-seed when the
-  // editor is opened for a different chatter).
-  if (accessQ.data && seededFor !== chatterId) {
-    const d = accessQ.data;
-    setLimitModels(d.account_ids.length > 0);
-    setSelectedAccounts(new Set(d.account_ids));
-    const fs: Record<string, FolderEntry> = {};
-    for (const [aid, ids] of Object.entries(d.folder_access || {})) {
-      fs[aid] = {
-        limit: ids.length > 0,
-        grants: ids.map((id) => ({ folder_id: id, folder_name: null })),
-      };
-    }
-    setFolderState(fs);
-    setSeededFor(chatterId);
-  }
-
-  // Accounts the chatter can actually see right now (drives which accounts
-  // get a folder-limit control). Limit OFF ⇒ all of this owner's accounts.
-  const visibleAccountIds = useMemo(() => {
-    if (limitModels) return ownerAccounts.filter((a) => selectedAccounts.has(a.id)).map((a) => a.id);
-    return ownerAccounts.map((a) => a.id);
-  }, [limitModels, selectedAccounts, ownerAccounts]);
-
-  const saveM = useMutation({
-    mutationFn: async () => {
-      await relay.put(`/admin/chatters/${chatterId}/account-access`, {
-        account_ids: limitModels ? [...selectedAccounts] : [],
-      });
-      // Folder grants for every owner account, not just the visible ones — an
-      // account de-selected from "Limit models" must have its prior folder
-      // restriction cleared too (sends []), or stale grants resurrect.
-      const visible = new Set(visibleAccountIds);
-      for (const a of ownerAccounts) {
-        const entry = folderState[a.id];
-        await relay.put(`/admin/chatters/${chatterId}/folder-access`, {
-          account_id: a.id,
-          folders: visible.has(a.id) && entry?.limit ? entry.grants : [],
-        });
-      }
-    },
-    onSuccess: () => {
-      setSavedAt(Date.now());
-      setSaveErr(null);
-      qc.invalidateQueries({ queryKey: ["admin", "chatters", chatterId, "access"] });
-      void qc.invalidateQueries({ queryKey: ["employees"] });
-    },
-    onError: (e) => setSaveErr((e as Error).message || "save failed"),
-  });
-
-  // DA-2: an ON "Limit models" toggle with zero selections is not savable.
-  const accountSelectionInvalid = limitModels && selectedAccounts.size === 0;
-  // Same rule per-account for folders.
-  const folderSelectionInvalid = visibleAccountIds.some(
-    (aid) => folderState[aid]?.limit && (folderState[aid]?.grants.length ?? 0) === 0,
-  );
-  const cannotSave = accountSelectionInvalid || folderSelectionInvalid;
-
-  // Editing any selection invalidates a prior "Saved." confirmation.
-  const setFolderEntry = useCallback((aid: string, next: FolderEntry) => {
-    setSavedAt(null);
-    setFolderState((prev) => ({ ...prev, [aid]: next }));
-  }, []);
-
-  if (accessQ.isLoading) {
-    return <div className="text-fg-dim text-xs">Loading access…</div>;
+  // Once loaded the draft stays mounted (a failed background refetch keeps it too) and is seeded once: a refetch's
+  // new `data` never reaches its reducer, so it cannot wipe edits.
+  if (accessQ.data) {
+    return <AccessDraft key={chatterId} chatterId={chatterId} initial={accessQ.data} />;
   }
   if (accessQ.error) {
-    return <div className="text-err text-xs">{(accessQ.error as Error).message || "failed"}</div>;
+    return <div className="text-err text-xs">{errText(accessQ.error)}</div>;
   }
+  return <div className="text-fg-dim text-xs">Loading access…</div>;
+}
+
+function AccessDraft({ chatterId, initial }: { chatterId: string; initial: AccessResp }) {
+  const qc = useQueryClient();
+  const accountsQ = useAccounts();
+  const ownerAccounts = accountsQ.data?.accounts ?? [];
+  const ownerIds = ownerAccounts.map((a) => a.id);
+
+  const [state, dispatch] = useReducer(employeeAccessReducer, initial, seedEmployeeAccess);
+  const { limitModels, selectedAccounts, folders, savedAt, saveErr } = state;
+
+  const visibleIds = visibleAccountIds(state, ownerIds);
+
+  const saveM = useMutation({
+    // Two writes (account-access, then folder-access per account), so a save can half land: the error says which.
+    mutationFn: async () => {
+      const p = buildPayload(state, ownerIds);
+      try {
+        await relay.put(`/admin/chatters/${chatterId}/account-access`, p.accounts);
+      } catch (e) {
+        throw new Error(`Accounts failed — ${errText(e, "save failed")}; folders not saved`);
+      }
+      try {
+        for (const body of p.folders) {
+          await relay.put(`/admin/chatters/${chatterId}/folder-access`, body);
+        }
+      } catch (e) {
+        throw new Error(`Accounts saved; folders failed — ${errText(e, "save failed")}`);
+      }
+    },
+    onMutate: () => dispatch({ type: "saveStart" }),
+    onSuccess: () => dispatch({ type: "saveOk", at: Date.now() }),
+    onError: (e) => dispatch({ type: "saveErr", msg: errText(e, "save failed") }),
+    // Every outcome: a half-landed save changed the access too (and the list's Assigned Creators with it).
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: ["admin", "chatters", chatterId, "access"] });
+      void qc.invalidateQueries({ queryKey: ["employees"] });
+    },
+  });
+
+  const accountSelectionInvalid = accountsInvalid(state);
+  const cannotSave = !canSubmit(state, ownerIds);
+
+  const setFolderEntry = useCallback(
+    (accountId: string, entry: FolderEntry) => dispatch({ type: "folder", accountId, entry }),
+    [],
+  );
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h4 className="text-sm font-semibold">Access limits</h4>
-        <button type="button" onClick={onClose} className="text-[11px] text-fg-dim hover:text-fg">✕</button>
-      </div>
-
       <div className="space-y-2">
         <label className="flex items-center gap-2 text-sm">
           <input
             type="checkbox"
             checked={limitModels}
-            onChange={(e) => { setSavedAt(null); setLimitModels(e.target.checked); }}
+            onChange={(e) => dispatch({ type: "limitModels", on: e.target.checked })}
           />
           <span>Limit which models this employee sees</span>
         </label>
@@ -162,15 +122,7 @@ export function AccessEditor({ chatterId, onClose }: { chatterId: string; onClos
                 <input
                   type="checkbox"
                   checked={selectedAccounts.has(a.id)}
-                  onChange={(e) => {
-                    setSavedAt(null);
-                    setSelectedAccounts((prev) => {
-                      const next = new Set(prev);
-                      if (e.target.checked) next.add(a.id);
-                      else next.delete(a.id);
-                      return next;
-                    });
-                  }}
+                  onChange={(e) => dispatch({ type: "toggleAccount", id: a.id, on: e.target.checked })}
                 />
                 <span
                   className="inline-block w-2.5 h-2.5 rounded-full"
@@ -189,19 +141,19 @@ export function AccessEditor({ chatterId, onClose }: { chatterId: string; onClos
 
       <div className="space-y-3 border-t border-border/40 pt-3">
         <h5 className="text-xs font-semibold text-fg-dim">Folder limits (per model)</h5>
-        {visibleAccountIds.length === 0 && (
+        {visibleIds.length === 0 && (
           <div className="text-[11px] text-fg-dim">
             {limitModels ? "Select a model above to set folder limits." : "No models available."}
           </div>
         )}
-        {visibleAccountIds.map((aid) => {
+        {visibleIds.map((aid) => {
           const a = ownerAccounts.find((x) => x.id === aid);
           return (
             <FolderLimit
               key={aid}
               accountId={aid}
               accountLabel={a?.nickname || aid}
-              entry={folderState[aid] ?? { limit: false, grants: [] }}
+              entry={folders[aid] ?? NO_FOLDER_LIMIT}
               onChange={setFolderEntry}
             />
           );
@@ -213,7 +165,7 @@ export function AccessEditor({ chatterId, onClose }: { chatterId: string; onClos
           {saveM.isPending ? "Saving…" : "Save access"}
         </Button>
         {savedAt && !saveM.isPending && <span className="text-ok text-[11px]">Saved.</span>}
-        {saveErr && <span className="text-err text-[11px]">{saveErr}</span>}
+        {saveErr && <span role="alert" className="text-err text-[11px]">{saveErr}</span>}
       </div>
     </div>
   );
@@ -285,7 +237,7 @@ function FolderLimit({
         <div className="ml-6 mt-2 space-y-1">
           {listsQ.isLoading && <div className="text-[11px] text-fg-dim">Loading folders…</div>}
           {listsQ.error && (
-            <div className="text-err text-[11px]">{(listsQ.error as Error).message || "failed"}</div>
+            <div className="text-err text-[11px]">{errText(listsQ.error)}</div>
           )}
           {!listsQ.isLoading && folders.length === 0 && !listsQ.error && (
             <div className="text-[11px] text-fg-dim">No custom folders on this model.</div>

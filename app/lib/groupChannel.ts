@@ -1,6 +1,6 @@
 "use client";
 
-import { fanIdFromParam, sameUserId, type FanId } from "@/lib/fanId";
+import { fanIdFromParam, isValidFanId, sameUserId, type FanId } from "@/lib/fanId";
 
 /**
  * groupChannel — coordination layer for the /group tab.
@@ -28,12 +28,13 @@ import { fanIdFromParam, sameUserId, type FanId } from "@/lib/fanId";
  *     to register so we route to it instead. /group reconciles on mount
  *     by createdAt as a secondary safety net.
  *   • Overflow drop (target tab fills between snapshot and broadcast):
- *     adds carry a reqId; the target acks {ok:true} on accept or
- *     {ok:false, reason:"full"} on reject. Source awaits ACK with a
- *     short timeout and spawns an overflow tab on nack/timeout.
+ *     adds carry a reqId; the target acks {ok:true} when the fan is in
+ *     its list afterwards (added, or already held) and {ok:false} when it
+ *     is not (full, or a malformed slot). Source awaits ACK with a short
+ *     timeout and spawns an overflow tab on nack/timeout.
  *   • Frozen-tab unfreeze: /group runs a duplicate-reconcile pass on
  *     visibilitychange when it detects its own heartbeat went stale —
- *     drops slots a younger live tab has also taken on.
+ *     drops slots any other live tab also holds (that tab is canonical).
  *   • Cross-target focus: source tracks groupRef.tabId via a `claim`
  *     message from the spawned /group tab. Focus only uses the held
  *     Window ref when its tabId matches the routing target; otherwise
@@ -50,8 +51,8 @@ export const GROUP_HEARTBEAT_TTL_MS = 6000;
 /** Per-tab registry key prefix. Each /group tab writes
  *  `chatterly:group-tab:<tabId>` with its current state. */
 export const GROUP_TAB_KEY_PREFIX = "chatterly:group-tab:";
-/** Mirrors the cap in app/group/page.tsx. Source tabs need to know
- *  this independently so they can overflow into a fresh tab when all
+/** Most panes one /group tab holds. /group enforces it (slotsReducer);
+ *  source tabs read it too so they can overflow into a fresh tab when all
  *  alive tabs are at cap. */
 export const GROUP_SLOT_CAP = 8;
 /** How long to wait for another spawner to register before we spawn
@@ -64,6 +65,23 @@ const SPAWN_DEFER_MS = 60;
 const ADD_ACK_TIMEOUT_MS = 400;
 
 export interface GroupSlot { accountId: string; fanId: FanId }
+
+/** The one "same fan" test for slots: same Creator account, and the fan
+ *  id compared through `sameUserId` (OF sends numbers, Fansly strings, and
+ *  the same fan can arrive in either shape). Every dup / remove / owner
+ *  check on slots goes through here. */
+export function sameSlot(a: GroupSlot, b: GroupSlot): boolean {
+  return a.accountId === b.accountId && sameUserId(a.fanId, b.fanId);
+}
+
+/** Is `x` a usable slot, from any untrusted source (sessionStorage, the
+ *  localStorage registry, a BroadcastChannel message, a DOM event)? A
+ *  non-empty account id and a valid fan id in either wire shape. */
+export function isGroupSlot(x: unknown): x is GroupSlot {
+  if (!x || typeof x !== "object") return false;
+  const { accountId, fanId } = x as { accountId?: unknown; fanId?: unknown };
+  return typeof accountId === "string" && accountId !== "" && isValidFanId(fanId);
+}
 
 export interface GroupTabRegistry {
   tabId: string;
@@ -113,16 +131,9 @@ export function readAllLiveGroupTabs(): GroupTabRegistry[] {
           continue;
         }
         if (now - parsed.heartbeat > GROUP_HEARTBEAT_TTL_MS) continue;
-        const slots = parsed.slots.filter((s): s is GroupSlot =>
-          !!s && typeof s === "object" &&
-          typeof (s as GroupSlot).accountId === "string" &&
-          // `=== "number"` here silently DROPPED every Fansly slot: those ids
-          // are string snowflakes, so the filter treated a valid group member
-          // as malformed and the tab quietly lost the chat. Accept both wire
-          // forms (see FanId), rejecting only an id that is neither.
-          (typeof (s as GroupSlot).fanId === "number"
-            || typeof (s as GroupSlot).fanId === "string"),
-        );
+        // Both id shapes: a `=== "number"` filter here once dropped every
+        // Fansly (string snowflake) slot as malformed.
+        const slots = parsed.slots.filter(isGroupSlot);
         const createdAt = typeof parsed.createdAt === "number" && parsed.createdAt > 0
           ? parsed.createdAt
           : parsed.heartbeat;
@@ -269,8 +280,9 @@ export function parseSlotsParam(raw: string): GroupSlot[] {
     // rejects anything that is not a positive integer id.
     const fanId = fanIdFromParam(part.slice(idx + 1));
     if (!accountId || fanId == null) continue;
-    if (out.some((s) => s.accountId === accountId && sameUserId(s.fanId, fanId))) continue;
-    out.push({ accountId, fanId });
+    const slot = { accountId, fanId };
+    if (out.some((s) => sameSlot(s, slot))) continue;
+    out.push(slot);
   }
   return out.slice(0, GROUP_SLOT_CAP);
 }
@@ -348,9 +360,7 @@ export async function openGroupTab(accountId: string, fanId: FanId): Promise<Ope
   const live = readAllLiveGroupTabs();
 
   // 1. Already in some live tab? Focus that specific one.
-  const owner = live.find((t) =>
-    t.slots.some((s) => s.accountId === accountId && s.fanId === fanId),
-  );
+  const owner = live.find((t) => t.slots.some((s) => sameSlot(s, { accountId, fanId })));
   if (owner) {
     tryFocusGroupTab(owner.tabId);
     return { kind: "focused" };

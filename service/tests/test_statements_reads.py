@@ -21,6 +21,7 @@ _harness.bootstrap()
 
 import of_client  # noqa: E402
 import server  # noqa: E402
+import of_stats_api  # noqa: E402  # after server: its routes load with it
 
 
 def _client():
@@ -56,19 +57,19 @@ def case_earning_stats_path():
 
 
 def case_referral_balance_is_a_bare_get():
-    _, sent = _via_route(server.of_referrals_balance)
+    _, sent = _via_route(of_stats_api.of_referrals_balance)
     assert sent == [(f"{of_client.API_BASE}/payments/referrals/balance", None)], sent
 
 
 def case_chargebacks_ratio_sends_the_date_range():
-    _, sent = _via_route(server.of_chargebacks_ratio, start="2026-09-16 00:00:00", end="2026-10-16 23:59:59")
+    _, sent = _via_route(of_stats_api.of_chargebacks_ratio, start="2026-09-16 00:00:00", end="2026-10-16 23:59:59")
     assert sent == [(f"{of_client.API_BASE}/payouts/chargebacks/ratio",
                      {"startDate": "2026-09-16 00:00:00", "endDate": "2026-10-16 23:59:59"})], sent
 
 
 def case_chargebacks_ratio_defaults_to_30_days():
     from datetime import datetime
-    _, sent = _via_route(server.of_chargebacks_ratio, start=None, end=None)
+    _, sent = _via_route(of_stats_api.of_chargebacks_ratio, start=None, end=None)
     (path, params), = sent
     assert path == f"{of_client.API_BASE}/payouts/chargebacks/ratio", path
     fmt = "%Y-%m-%d %H:%M:%S"

@@ -1,9 +1,9 @@
 """service/clock_api.py — Clock events: clock in and out, the chatter's own
 view, the owner's clocked-in list, Owner edits, and the lazy Auto clock-out.
 
-Shares the `/admin/shifts` prefix with service/shifts_api.py (the Shift
-schedule), whose helpers it imports; the check order and wire-time rules in
-that module's docstring apply here too.
+Shares the `/admin/shifts` prefix and helpers (service/shifts_common.py,
+service/route_wire.py) with service/shifts_api.py, the Shift schedule; the
+check order and wire-time rules in that module's docstring apply here too.
 
 ASSUMPTION: the spec names one router module `shifts_api` with everything
 "on the same router" (docs/spec/phase-02-shifts-time-tracking.md:3, :72);
@@ -40,7 +40,7 @@ spec's Owns list is read as one module.
 
 Clocking in needs, checked in this order by `_clock_gate`, the Agency's
 `time-tracking` blob to hold `enabled` as literal `true` (409 otherwise), the
-caller's role in its `role_ids` (`_may_clock`; 403 otherwise) and an active
+caller's role in its `role_ids` (`clock_gate`; 403 otherwise) and an active
 Employee (403); each refusal's detail is `{error, message}` (`_refuse`).
 Clocking out of one's own open event needs none of them (`clock_out`). A
 chatter clocks as its Mirror Employee, an owner or the Master in its own
@@ -50,9 +50,9 @@ Agency as the owner's own Employee row (`_my_employees`; docs/spec/phase-02,
 Auto clock-out has no scheduler: every request to either `/admin/shifts`
 router first sweeps the caller's Agencies' open Clock events and closes,
 with close_reason=auto and actor `system`, each one whose inactivity
-deadline has passed, at the deadline itself (`_auto_clock_out`). server.py
-attaches `_sweep_callers_agencies` to both routers. The sweep runs whether or
-not time tracking is on.
+deadline has passed, at the deadline itself (`_auto_clock_out`, its pure
+rule `due_clock_outs`). server.py attaches `_sweep_callers_agencies` to both
+routers. The sweep runs whether or not time tracking is on.
 """
 
 from __future__ import annotations
@@ -71,12 +71,12 @@ from db.models import Account, Action, ClockEvent, Employee, Shift, ShiftAssignm
 from employees import (
     BACKGROUND_WRITES, agency_context, audit_action, find_owner_employee_id, get_owner_employee_id,
 )
+from route_wire import parse_utc, wire
 from sales_attribution import event_sales
 from settings_api import applied_blob
 from shift_time import minutes_up, shift_occurrences
-from shifts_api import (
-    _agency_account_ids, _agency_employee_ids, _json_object, _own_row, _owner_context, _parse_range, _parse_utc,
-    _wire,
+from shifts_common import (
+    agency_account_ids, agency_employee_ids, json_body, own_agency_row, parse_range, shift_owner_context,
 )
 
 router = APIRouter(prefix="/admin/shifts", tags=["shifts"])
@@ -144,36 +144,44 @@ def time_tracking_of(blob: dict[str, Any]) -> TimeTracking:
     return TimeTracking(blob.get("enabled") is True, blob.get("clock_in_reminder") is True, minutes, role_ids)
 
 
-async def _may_clock(s, tt: TimeTracking, agency_user_id: str, employee_id: int | None, owner: bool) -> bool:
-    """Whether this Employee's role is in "Enable clock in and clock out for".
+def needs_roles(tt: TimeTracking, owner: bool) -> bool:
+    """Whether `clock_gate` looks at the `roles` blob: time tracking on, a
+    saved role list, and not the owner's own row (which is role `owner`).
+    `_clock_gate` reads the blob only then."""
+    return tt.enabled and tt.role_ids is not None and not owner
+
+
+def clock_gate(tt: TimeTracking, roles: dict[str, Any], emp: Employee | None, owner: bool) -> str | None:
+    """Why this Employee may not clock, a `_REFUSALS` reason, or None: time
+    tracking off, then its role not in "Enable clock in and clock out for",
+    then an inactive Employee. `emp` is None while the caller has no row
+    there yet.
 
     With `role_ids` never saved nobody may clock, as Infloww's ClockSetting
     shows every role unticked until the list is saved (live, w5-a). The
     owner's own row counts as role `owner`, and any other Employee as its
-    assigned role in the `roles` blob (permissions.`_role`'s `assignments`);
-    an Employee with no role may not clock.
+    assigned role in the applied `roles` blob (permissions.`_role`'s
+    `assignments`); an Employee with no role may not clock.
     """
-    if tt.role_ids is None:
-        return False
-    if owner:
-        return "owner" in tt.role_ids
-    roles = await applied_blob(s, agency_user_id, "roles")
-    role_id = (roles.get("assignments") or {}).get(str(employee_id))
-    return isinstance(role_id, str) and role_id in tt.role_ids
-
-
-async def _clock_gate(s, tt: TimeTracking, agency_user_id: str, emp: Employee | None, owner: bool) -> str | None:
-    """Why this Employee may not clock in this Agency, or None: time tracking
-    off, then its role not enabled (`_may_clock`), then an inactive Employee.
-    The one gate of clock-in, ClockStatus and the clock-in reminder; `emp` is
-    None while the caller has no row there yet."""
     if not tt.enabled:
         return "time_tracking_off"
-    if not await _may_clock(s, tt, agency_user_id, emp.id if emp is not None else None, owner):
+    if needs_roles(tt, owner):
+        role_id = (roles.get("assignments") or {}).get(str(emp.id if emp is not None else None))
+        allowed = isinstance(role_id, str) and role_id in tt.role_ids
+    else:  # the owner's own row, or no role list saved
+        allowed = tt.role_ids is not None and "owner" in tt.role_ids
+    if not allowed:
         return "role_not_enabled"
     if emp is not None and not emp.is_active:
         return "inactive"
     return None
+
+
+async def _clock_gate(s, tt: TimeTracking, agency_user_id: str, emp: Employee | None, owner: bool) -> str | None:
+    """`clock_gate` for this Agency: the one gate of clock-in, ClockStatus
+    and the clock-in reminder, reading the `roles` blob only if `needs_roles`."""
+    roles = await applied_blob(s, agency_user_id, "roles") if needs_roles(tt, owner) else {}
+    return clock_gate(tt, roles, emp, owner)
 
 
 def _signed_in():
@@ -223,8 +231,8 @@ def _clock_json(ev: ClockEvent) -> dict[str, Any]:
         "employee_id": ev.employee_id,
         "account_id": ev.account_id,
         "shift_id": ev.shift_id,
-        "in_utc": _wire(ev.in_utc),
-        "out_utc": _wire(ev.out_utc) if ev.out_utc else None,
+        "in_utc": wire(ev.in_utc),
+        "out_utc": wire(ev.out_utc),
         "close_reason": ev.close_reason,
     }
 
@@ -303,6 +311,21 @@ async def _sweep_callers_agencies() -> None:
         await _auto_clock_out(agencies, datetime.utcnow())
 
 
+def due_clock_outs(
+    open_events: list[ClockEvent], now: datetime, minutes: dict[str, timedelta], latest: dict[int, datetime],
+) -> list[tuple[ClockEvent, datetime]]:
+    """The open events whose deadline is at or before `now`, each with its
+    deadline: the last activity (the latest of the clock-in, `last_seen_utc`
+    and the Employee's `latest` audit time) plus its Agency's `minutes`."""
+    due: list[tuple[ClockEvent, datetime]] = []
+    for ev in open_events:
+        last = max(ev.in_utc, ev.last_seen_utc or ev.in_utc, latest.get(ev.employee_id) or ev.in_utc)
+        deadline = last + minutes[ev.agency_user_id]
+        if now >= deadline:
+            due.append((ev, deadline))
+    return due
+
+
 async def _auto_clock_out(agency_user_ids: set[str], now: datetime) -> None:
     """Close every open Clock event of these Agencies whose deadline is at
     or before `now`, with `out_utc` = the deadline and close_reason=auto, and
@@ -344,11 +367,7 @@ async def _auto_clock_out(agency_user_ids: set[str], now: datetime) -> None:
             .group_by(Action.employee_id)
         )).all()) if people else {}
 
-        for ev in events:
-            last = max(ev.in_utc, ev.last_seen_utc or ev.in_utc, latest.get(ev.employee_id) or ev.in_utc)
-            deadline = last + minutes[ev.agency_user_id]
-            if now < deadline:
-                continue
+        for ev, deadline in due_clock_outs(events, now, minutes, latest):
             before = _clock_json(ev)
             closed = await s.execute(
                 update(ClockEvent)
@@ -385,7 +404,7 @@ async def clock_in(request: Request) -> dict[str, Any]:
     pre-check into the same 409, never a 500.
     """
     user, chatter = _signed_in()
-    body = await _json_object(request)
+    body = await json_body(request)
     account_id = body.get("account_id")
     if account_id is not None and (not isinstance(account_id, str) or not account_id):
         raise HTTPException(status_code=422, detail="account_id must be a Creator id or left out")
@@ -405,7 +424,7 @@ async def clock_in(request: Request) -> dict[str, Any]:
             raise _refuse(reason)
         # The Master clears `agency_context`'s account check for every Creator.
         if ctx.is_owner and account_id is not None and \
-                account_id not in await _agency_account_ids(s, ctx.agency_user_id):
+                account_id not in await agency_account_ids(s, ctx.agency_user_id):
             raise HTTPException(status_code=422, detail="account_id: not a Creator of this agency")
         now = datetime.utcnow()
         matching = await _assigned_shift_now(s, ctx.agency_user_id, emp.id, account_id, now)
@@ -454,7 +473,7 @@ async def clock_out(request: Request) -> dict[str, Any]:
     Overturned if the owner wants such events left to the sweep.
     """
     user, chatter = _signed_in()
-    body = await _json_object(request)
+    body = await json_body(request)
     event_id = body.get("clock_event_id")
     if not isinstance(event_id, int) or isinstance(event_id, bool):
         raise HTTPException(status_code=422, detail="clock_event_id must be an integer")
@@ -555,7 +574,7 @@ async def my_shifts() -> dict[str, Any]:
 
 
 def _my_occurrence(sh: Shift, account_id: str, o_start: datetime, o_end: datetime) -> dict[str, Any]:
-    return {"shift_id": sh.id, "occurrence_start": _wire(o_start), "occurrence_end": _wire(o_end),
+    return {"shift_id": sh.id, "occurrence_start": wire(o_start), "occurrence_end": wire(o_end),
             "tz": sh.tz, "account_id": account_id}
 
 
@@ -587,7 +606,7 @@ async def clocked_in() -> dict[str, Any]:
     is still listed, with `employee`/`account` null. Rung 4: the owner sees
     every open event. Overturned if such events must be hidden.
     """
-    ctx = await _owner_context()
+    ctx = await shift_owner_context()
     async with get_session() as s:
         tt = await _time_tracking(s, ctx.agency_user_id)
         events = (await s.execute(
@@ -616,7 +635,7 @@ async def clocked_in() -> dict[str, Any]:
     def _shift(ev: ClockEvent) -> dict[str, Any] | None:
         sh = shifts.get(ev.shift_id)
         held = _occurrence_at(sh, ev.in_utc) if sh else None
-        return ({"shift_id": sh.id, "occurrence_start": _wire(held[0]), "occurrence_end": _wire(held[1]),
+        return ({"shift_id": sh.id, "occurrence_start": wire(held[0]), "occurrence_end": wire(held[1]),
                  "accounts": [{"id": a, "display_name": nicknames.get(a) or a}
                               for a in held_by.get((sh.id, ev.employee_id), [])]}
                 if held else None)
@@ -629,7 +648,7 @@ async def clocked_in() -> dict[str, Any]:
                          if ev.employee_id is not None else None),
             "account": ({"id": ev.account_id, "display_name": nicknames.get(ev.account_id) or ev.account_id}
                         if ev.account_id is not None else None),
-            "in_utc": _wire(ev.in_utc),
+            "in_utc": wire(ev.in_utc),
             "shift_id": ev.shift_id,
             "shift": _shift(ev),
         } for ev in events],
@@ -696,10 +715,10 @@ async def _status() -> dict[str, Any]:
         "can_clock": can_clock,
         "reason": reason,
         "open": _clock_json(opened) if opened is not None else None,
-        "last_closed": ({"clock_event_id": closed.id, "out_utc": _wire(closed.out_utc),
+        "last_closed": ({"clock_event_id": closed.id, "out_utc": wire(closed.out_utc),
                          "close_reason": closed.close_reason} if closed is not None else None),
         "auto_clock_out_minutes": minutes,
-        "server_now": _wire(now),
+        "server_now": wire(now),
     }
 
 
@@ -762,8 +781,8 @@ async def _events_in_range(s, employee_id: str | None, from_: str | None, to: st
     """The caller's Agency's Clock events intersecting [from, to), newest
     clock-in first; one Employee's when `employee_id` is given or
     `required` (another Agency's or a missing one 404, not an integer 422)."""
-    ctx = await _owner_context()
-    start, end = _parse_range(from_, to)
+    ctx = await shift_owner_context()
+    start, end = parse_range(from_, to)
     q = select(ClockEvent).where(
         ClockEvent.agency_user_id == ctx.agency_user_id,
         ClockEvent.in_utc < end, or_(ClockEvent.out_utc.is_(None), ClockEvent.out_utc > start),
@@ -773,7 +792,7 @@ async def _events_in_range(s, employee_id: str | None, from_: str | None, to: st
             emp_id = int(employee_id or "")
         except ValueError:
             raise HTTPException(status_code=422, detail="employee_id must be an integer") from None
-        if not await _agency_employee_ids(s, ctx.agency_user_id, [emp_id]):
+        if not await agency_employee_ids(s, ctx.agency_user_id, [emp_id]):
             raise HTTPException(status_code=404, detail="employee not found")
         q = q.where(ClockEvent.employee_id == emp_id)
     return list((await s.execute(q)).scalars().all())
@@ -858,14 +877,14 @@ async def owner_edit_clock_event(clock_event_id: str, request: Request) -> dict[
     409 a state conflict). Rung 5. Overturned if the app expects 409 for all
     three.
     """
-    ctx = await _owner_context()
+    ctx = await shift_owner_context()
     async with get_session() as s:
-        ev = await _own_row(s, ctx, ClockEvent, clock_event_id, "clock event")
-        body = await _json_object(request)
+        ev = await own_agency_row(s, ctx, ClockEvent, clock_event_id, "clock event")
+        body = await json_body(request)
         if "in_utc" not in body and "out_utc" not in body:
             raise HTTPException(status_code=422, detail="in_utc or out_utc is required")
-        new_in = _parse_utc(body["in_utc"], "in_utc") if "in_utc" in body else ev.in_utc
-        new_out = _parse_utc(body["out_utc"], "out_utc") if "out_utc" in body else ev.out_utc
+        new_in = parse_utc(body["in_utc"], "in_utc") if "in_utc" in body else ev.in_utc
+        new_out = parse_utc(body["out_utc"], "out_utc") if "out_utc" in body else ev.out_utc
         now = datetime.utcnow()
         if new_out is not None and new_out > now:
             raise HTTPException(status_code=422, detail="the clock-out cannot be in the future")
@@ -906,9 +925,9 @@ async def owner_delete_clock_event(clock_event_id: str) -> dict[str, Any]:
     clocks its Employee out with no record left. Rung 5: the owner may delete
     any record, as in Infloww. Overturned if an open event must be closed
     before it can be deleted."""
-    ctx = await _owner_context()
+    ctx = await shift_owner_context()
     async with get_session() as s:
-        ev = await _own_row(s, ctx, ClockEvent, clock_event_id, "clock event")
+        ev = await own_agency_row(s, ctx, ClockEvent, clock_event_id, "clock event")
         _clock_audit(s, "clock.owner_delete", ev, _clock_json(ev), actor=f"owner:{ctx.agency_user_id}", after=None)
         await s.delete(ev)
         return {"deleted": ev.id}

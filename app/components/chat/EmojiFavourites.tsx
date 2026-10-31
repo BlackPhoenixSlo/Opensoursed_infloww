@@ -22,6 +22,7 @@ import {
   FAVOURITES_EVENT, MAX_FAVOURITES, hasSavedFavourites, loadFavourites, saveFavourites,
 } from "@/lib/emojiFavourites";
 import { cn } from "@/lib/utils";
+import { MP } from "@/lib/messagesPro";
 import { POP_HEAD, POP_PRIMARY, POP_ROW, POP_START, ROW_ICON, usePopover } from "./ComposerToolbar";
 import { EMOJI_LIST, QUICK_EMOJIS } from "./EmojiBar";
 
@@ -88,7 +89,7 @@ export function EmojiFavouritesButton({ disabled }: { disabled?: boolean }) {
         title="Emoji favourites"
         className={cn(ROW_ICON, open ? "text-[var(--inf-accent-text,var(--color-accent))]" : "text-fg-dim hover:text-fg")}
       >
-        <Settings size={20} aria-hidden />
+        <Settings aria-hidden className={MP.ours.EmojiFavourites.gearIcon} />
       </button>
       {open && (
         // Opens rightward (`popStart`): the trigger sits at row 1's left end.
@@ -104,7 +105,7 @@ export function EmojiFavouritesButton({ disabled }: { disabled?: boolean }) {
           <div
             role="group"
             aria-label="Emojis"
-            className="grid grid-cols-8 gap-1 min-h-0 overflow-y-auto px-[10px] py-1"
+            className={cn(MP.ours.EmojiFavourites.grid, "grid grid-cols-8 min-h-0 overflow-y-auto")}
           >
             {GRID.map((e) => {
               const picked = draft.includes(e);
@@ -129,7 +130,7 @@ export function EmojiFavouritesButton({ disabled }: { disabled?: boolean }) {
             <button
               type="button"
               onClick={() => setOpen(false)}
-              className="rounded-[7px] px-3 py-[7px] text-[12.5px] text-fg-dim hover:text-fg hover:bg-bg-elev-1"
+              className={cn(MP.ours.EmojiFavourites.cancel, "text-fg-dim hover:text-fg hover:bg-bg-elev-1")}
             >
               Cancel
             </button>

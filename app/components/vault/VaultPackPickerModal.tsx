@@ -43,6 +43,7 @@ import {
   usePackCandidates,
   type PackCandidate,
 } from "@/hooks/useVaultCache";
+import { makeSlotGate } from "@/components/vault/slotGate";
 
 /** Strictly below the relay's own VAULT_STILL_CONCURRENCY (6) so the pane can
  *  never be the thing that exhausts it, with headroom for the rest of the app. */
@@ -62,38 +63,6 @@ const RUNG_STYLE: Record<string, string> = {
   nude: "border-ok/60 bg-ok/15 text-ok",
   "nude-body": "border-accent/60 bg-accent/15 text-accent",
 };
-
-/** A module-wide gate: at most `limit` tiles hold a slot at once, FIFO after
- *  that. A slot is identified by the grant callback it was handed out to, so
- *  release is exact — releasing a token that is still queued cancels the queue
- *  entry instead of wrongly freeing someone else's slot. */
-function makeSlotGate(limit: number) {
-  let inFlight = 0;
-  const waiting: (() => void)[] = [];
-  return {
-    acquire(grant: () => void) {
-      if (inFlight < limit) {
-        inFlight++;
-        grant();
-        return;
-      }
-      waiting.push(grant);
-    },
-    release(grant: () => void) {
-      const queued = waiting.indexOf(grant);
-      if (queued >= 0) {
-        waiting.splice(queued, 1); // still waiting — never held a slot
-        return;
-      }
-      inFlight = Math.max(0, inFlight - 1);
-      const next = waiting.shift();
-      if (next) {
-        inFlight++;
-        next();
-      }
-    },
-  };
-}
 
 const imageGate = makeSlotGate(MAX_INFLIGHT_IMAGES);
 

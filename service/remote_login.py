@@ -54,7 +54,6 @@ import json
 import logging
 import os
 import re
-import sys
 import threading
 import time
 import urllib.error
@@ -66,6 +65,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from brand import BRAND_NAME
+from relay_host import live_server
 
 log = logging.getLogger("of-relay.remote-login")
 
@@ -88,21 +88,6 @@ BROWSERBASE_API = "https://api.browserbase.com/v1"
 BB_HTTP_TIMEOUT_S = 30
 BB_VIEWPORT = {"width": 1280, "height": 800}
 
-
-def live_server():
-    """The server module that is actually serving.
-
-    uvicorn loads it as `service.server`; a bare `import server` would run a
-    SECOND copy of server.py under the name `server`, with its own state
-    (`_main_loop` unset, its own pump registry). Through that copy the
-    post-bootstrap link to the signed-in user was silently skipped: the
-    account landed on disk and in `accounts`, but owned by nobody."""
-    for name in ("service.server", "server"):
-        mod = sys.modules.get(name)
-        if mod is not None and hasattr(mod, "post_bootstrap_hooks"):
-            return mod
-    import server  # lazy: server imports remote_login_api
-    return server
 
 OF_HOME = "https://onlyfans.com/"
 OF_CHATS = "https://onlyfans.com/my/chats/"

@@ -23,6 +23,8 @@ no tip dispatch). These cases pin the fix.
       the transcoder firing both is what made her text reply photo-blind.
   case_text_dm_still_fires_on_inbound_message / case_tip_dm_...:
       the controls: a plain text DM and a tip still fire the words hook.
+  case_private_helpers_are_the_decide_ones:
+      `_parse_iso` & co. are event_transcode_decide's functions, not copies.
 
 Run: ./venv/bin/python service/tests/test_event_transcoder_tip.py   (exit 0 = pass)
 """
@@ -260,12 +262,11 @@ async def case_text_only_no_image_dispatch():
 
 
 async def case_zero_tip_with_media_not_image_dispatch():
-    # A degenerate isTip frame (tipAmount 0) that ALSO carries media must NOT be
-    # misread as a bare buying-signal photo: `elif media_ids and not is_tip`. It
-    # fires NEITHER the tip hook (tip_cents=0) NOR the image hook (is_tip True).
+    # A degenerate isTip frame (tipAmount 0) with media: words hook only (td.dm_plan).
     await _seed_account()
     _image_dispatched.clear()
     _dispatched.clear()
+    _words_dispatched.clear()
     mid = 10001090300012
     await et.transcode(_tip_event(fan_id=354841559, message_id=mid,
                                   is_tip=True, price=0, tip_amount=0, media=[7002]))
@@ -274,6 +275,8 @@ async def case_zero_tip_with_media_not_image_dispatch():
         "a zero-amount tip with media must not hit the image path"
     assert [d for d in _dispatched if d["message_id"] == mid] == [], \
         "and a $0 tip dispatches no tip either"
+    assert len([d for d in _words_dispatched if d["message_id"] == mid]) == 1, \
+        ("its words still reach the words hook once", _words_dispatched)
 
 
 # ── who fires the WORDS hook (the photo-blind fix) ───────────────────
@@ -350,6 +353,13 @@ async def case_tip_dm_still_fires_on_inbound_message():
         ("a tip still fires the words hook", _words_dispatched)
 
 
+def case_private_helpers_are_the_decide_ones():
+    import event_transcode_decide as td
+    for private, public in ((et._parse_iso, td.parse_iso), (et._to_cents, td.to_cents),
+                            (et._media_ids, td.media_ids), (et._strip_html, td.strip_html)):
+        assert private is public, (private, public)
+
+
 _harness.run(
     case_tip_records_ws_tx_and_dispatches,
     case_tip_amount_fallback_to_price,
@@ -364,4 +374,5 @@ _harness.run(
     case_gif_dm_does_not_fire_on_inbound_message,
     case_text_dm_still_fires_on_inbound_message,
     case_tip_dm_still_fires_on_inbound_message,
+    case_private_helpers_are_the_decide_ones,
 )

@@ -49,6 +49,10 @@ resumes it (service/account_health.py + the run_once gate).
   case_otp_run_marks_account_and_pauses:
       an automation raising that 101 writes an error run, flags the account
       with reason "otp_required", and the next run of another kind skips.
+  case_classifier_leaves_transient_errors_alone:
+      what the OF WebSocket pump meets on a reconnect and must retry (of_ws_decide
+      waits on None): a bare 401 / 429 / 500 from /users/me, a socket OF closed
+      (any code), an open timeout, a proxy CONNECT failure.
 
 Run: ./venv/bin/python service/tests/test_session_health.py  (exit 0 = pass)
 """
@@ -366,9 +370,22 @@ async def case_otp_run_marks_account_and_pauses() -> None:
     assert CALLS["noop"] == before and await _runs_for(aid, "t_noop") == []
 
 
+def case_classifier_leaves_transient_errors_alone() -> None:
+    from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
+    from websockets.frames import Close
+    me = "https://onlyfans.com/api2/v2/users/me"
+    for err in [OFAPIError(f"{status} for {me}\n{{}}") for status in (401, 429, 500)] + [
+            ConnectionClosedOK(Close(1000, ""), None), ConnectionClosedOK(Close(1001, ""), None),
+            ConnectionClosedError(Close(1006, ""), None), ConnectionClosedError(Close(1008, ""), None),
+            ConnectionClosedError(Close(4001, ""), None),
+            TimeoutError("open_timeout"), OSError("proxy CONNECT 407")]:
+        assert account_health.is_session_dead_error(err) is None, err
+
+
 _harness.run(
     case_classifier_only_matches_dead_signatures,
     case_classifier_flags_otp_state,
+    case_classifier_leaves_transient_errors_alone,
     case_otp_state_counts_only_on_a_400,
     case_the_first_reason_stays_while_dead,
     case_otp_run_marks_account_and_pauses,

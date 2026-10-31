@@ -16,12 +16,14 @@
  * applies one shared text-only config across many models at once.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useReducer, useState } from "react";
 import { Radio, Play, Rocket, Eye, ChevronDown, Plus, Save, X, Image as ImageIcon } from "lucide-react";
 
 import { Button, Card, Input } from "@/components/ui/primitives";
 import { EditRawJsonButton } from "@/components/settings/JsonConfigModal";
 import { VaultPicker } from "@/components/chat/VaultPicker";
+import { ImportCaptionsButton } from "@/components/compose/ImportCaptionsButton";
+import { mergeCaptions } from "@/lib/parseCaptions";
 import { type VaultMedia } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
 import { useActiveAccounts } from "@/hooks/useAccounts";
@@ -34,11 +36,23 @@ import {
   useSaveNudgeConfig,
   useBulkApplyNudgeConfig,
   useNudgePreview,
+  useNudgeSavePending,
   type NudgeConfig,
-  type NudgeSlots,
   type NudgeSlotEntry,
 } from "@/hooks/useNudgeConfig";
-import StickySaveBar, { type GateNote } from "@/components/settings/StickySaveBar";
+import StickySaveBar from "@/components/settings/StickySaveBar";
+import {
+  buildConfig,
+  canSave,
+  effectiveConfig,
+  gateNote,
+  initialNudgeOnlineState,
+  nudgeOnlineReducer,
+  pickedIds,
+  previewPayload,
+  rolloutBlock,
+  type FormKey,
+} from "@/components/settings/nudgeOnlineReducer";
 
 const SELECT_CLS =
   "w-full bg-bg border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-accent";
@@ -66,9 +80,14 @@ export default function NudgeOnlineTab({
   initialAccountId?: string | null;
 } = {}) {
   const accounts = useActiveAccounts();
-  const [accountId, setAccountId] = useState<string | null>(initialAccountId);
+  const [state, dispatch] = useReducer(
+    nudgeOnlineReducer, { ...initialNudgeOnlineState, accountId: initialAccountId },
+  );
+  // The picker's one copy: every pick is an `account` dispatch, which resets
+  // the old account's draft and lines in the same update.
+  const { accountId } = state;
   useEffect(() => {
-    if (!accountId && accounts.length > 0) setAccountId(accounts[0].id);
+    if (!accountId && accounts.length > 0) dispatch({ type: "account", accountId: accounts[0].id });
   }, [accounts, accountId]);
 
   const rulesQ = useAutomationRules(accountId);
@@ -79,102 +98,39 @@ export default function NudgeOnlineTab({
   const cfgQ = useNudgeConfig(accountId);
 
   const runM = useRunRuleNow(accountId);
-  const saveCfgM = useSaveNudgeConfig(accountId);
+  const saveCfgM = useSaveNudgeConfig();
   const bulkM = useBulkApplyNudgeConfig();
   const previewM = useNudgePreview();
-  const busy = saveCfgM.isPending;
 
-  /** THE save gate, hoisted so the in-flow Save and the pinned bar read one
-   *  expression instead of two copies of it.
-   *
-   *  `cfgQ.isLoading || !cfgQ.data` is the load half, and it is a DATA-LOSS
-   *  guard. The form below only exists inside the `cfgQ.isLoading ? … : <Card>`
-   *  ternary, but the pinned bar is a sibling of that ternary and renders
-   *  throughout the fetch — and `busy` is false during a fetch, because it only
-   *  watches the three MUTATIONS. So a bar gated on `busy || !accountId` alone
-   *  was live while the form it saves was not on screen, and one click ran
-   *  buildConfig() over `form`/`slots` still at their `useState({})` seeds and
-   *  PUT `{slots:{}}` to /admin/nudge-config — a whole-blob replace that wipes
-   *  the account's nudge config. `!cfgQ.data` also covers the failed-fetch case
-   *  (and the no-account case, where the query is disabled and never "loading").
-   *
-   *  `rulesQ` is the OTHER half: the label below says which rule the save
-   *  lands on, and `rule` is null until the rule list lands. (save() used to
-   *  POST its own nudge_online rule in that window — two 60s detectors, fans
-   *  nudged twice. The PUT is now the only switch: it syncs the rule
-   *  server-side, so save() never touches the rule itself.)
-   *
-   *  `data !== undefined`, deliberately NOT `isSuccess`. This query polls every
-   *  30s and refetches on window focus, and a failed BACKGROUND refetch flips
-   *  `isSuccess` false while `data` stays populated — an `isSuccess` gate would
-   *  take both Save controls away from an operator three screens into an edit,
-   *  with nothing on screen to explain it, until a later poll happened to
-   *  succeed. `data` is undefined only before the first list arrives, which is
-   *  exactly the window that is dangerous. `isPlaceholderData` is the account-
-   *  switch case: the query keeps the PREVIOUS account's rules while the new
-   *  ones load, and saving against those would edit another account's rule. */
-  const canSave =
-    !!accountId && !cfgQ.isLoading && !!cfgQ.data
-    && rulesQ.data !== undefined && !rulesQ.isPlaceholderData;
-  const saveDisabled = busy || !canSave;
+  /** THE save gate and its note — one value for the in-flow Save and the
+   *  pinned bar. Why each half is there: nudgeOnlineReducer `canSave`. */
+  const gate = {
+    accountId, drafted: state.base !== null, cfgError: cfgQ.isError,
+    rulesHasData: rulesQ.data !== undefined, rulesPlaceholder: rulesQ.isPlaceholderData,
+    rulesError: rulesQ.isError,
+  };
+  const saveAllowed = canSave(gate);
+  const { form, slots, jsonDraft, jsonErr, save: saved, runMsg, previewErr, bulkMsg } = state;
+  /** THE save verdict, read once: the in-flow lines and the pinned bar. */
+  const savedOk = saved?.ok === true;
+  const saveErr = saved?.ok === false ? saved.err : null;
+  /** A save PUT in flight for the SHOWN account: after a switch the PUT is the
+   *  other account's (B is not "Saving…"), and back on A it is A's again — a
+   *  second whole-blob PUT must not overlap it. */
+  const busy = useNudgeSavePending(accountId);
+  const saveDisabled = busy || !saveAllowed;
   /** …and THE label, hoisted for the same reason the gate is: it is a statement
    *  about which branch save() will take, and the two controls must not answer
    *  it differently. */
   const saveLabel = rule ? "Save changes" : "Create automation";
+  const note = gateNote(gate);
 
-  /** Why Save is off, when the reason is not on screen. Both controls are grey
-   *  for as long as the two queries take, and a permanently-pinned grey button
-   *  with nothing beside it is indistinguishable from a broken one. `failed`
-   *  picks the colour in ONE place (SaveRow) rather than a ternary per bar:
-   *  waiting is dim, a failed load is red. */
-  const gateNote: GateNote | null = canSave || !accountId ? null : (
-    cfgQ.isError || rulesQ.isError
-      ? { failed: true,
-          text: "Couldn't load this account's nudge settings — Save stays off so it can't write defaults over them or add a second detector." }
-      : { failed: false, text: "Loading this account's nudge settings…" }
-  );
-
-  const eff: NudgeConfig = useMemo(() => {
-    const d = cfgQ.data?.defaults ?? {};
-    const c = cfgQ.data?.config ?? {};
-    return { ...d, ...c };
-  }, [cfgQ.data]);
-
-  const [form, setForm] = useState<NudgeConfig>({});
-  const [slots, setSlots] = useState<NudgeSlots>({});
-  const [jsonDraft, setJsonDraft] = useState("");
-  const [jsonErr, setJsonErr] = useState<string | null>(null);
   const [advOpen, setAdvOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [msg, setMsg] = useState<string | null>(null);
-  /** The SAVE's own verdict, both halves — as opposed to anything else that
-   *  writes `err`/`msg`. The pinned bar needs its own pair because both of those
-   *  are shared with the other buttons on this tab: `msg` carries "✓ Ran one
-   *  detector pass…" from "Run now", and `err` carries "Run failed: …" and
-   *  "Preview failed: …". A bar labelled Save that turns red because a PREVIEW
-   *  failed is narrating someone else's action, and it does it by replacing the
-   *  ✓ of the save that actually did land. Cleared on the next edit so a
-   *  permanently-visible control can't keep claiming a stale verdict. */
-  const [saveOk, setSaveOk] = useState(false);
-  const [saveErr, setSaveErr] = useState<string | null>(null);
 
   // Roll-out checklist (every model checked by default, founder included).
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [bulkMsg, setBulkMsg] = useState<string | null>(null);
-  const initRef = useRef(false);
-  useEffect(() => {
-    if (!initRef.current && accounts.length > 0) {
-      setSelected(new Set(accounts.map((a) => a.id)));
-      initRef.current = true;
-    }
-  }, [accounts]);
-  const toggleModel = (id: string) =>
-    setSelected((prev) => {
-      const n = new Set(prev);
-      n.has(id) ? n.delete(id) : n.add(id);
-      return n;
-    });
+  const allIds = accounts.map((a) => a.id);
+  const picked = pickedIds(state.selected, allIds);
 
   // Preview controls.
   const [previewFan, setPreviewFan] = useState("");
@@ -185,118 +141,90 @@ export default function NudgeOnlineTab({
   const [pickerSlot, setPickerSlot] = useState<string | null>(null);
   const [mediaCache, setMediaCache] = useState<Record<number, VaultMedia>>({});
 
-  // Load effective config into the form/slots when it arrives.
+  // Load the effective config into the draft when it arrives — a refetch
+  // while the draft has unsaved edits keeps them, and a config from before
+  // this account's last save (or one arriving while it is pending) is ignored
+  // (the reducer's `hydrate`). Re-run when `busy` drops: the cache may then
+  // hold that pre-save config, which must not seed the form.
   useEffect(() => {
     if (!cfgQ.data) return;
-    const { slots: s, ...rest } = eff;
-    setForm(rest);
-    const so = (s ?? {}) as NudgeSlots;
-    setSlots(so);
-    setJsonDraft(JSON.stringify(so, null, 2));
-  }, [cfgQ.data, accountId]); // eslint-disable-line react-hooks/exhaustive-deps
+    dispatch({
+      type: "hydrate", eff: effectiveConfig(cfgQ.data), accountId,
+      fetchedAt: cfgQ.dataUpdatedAt, pending: busy,
+    });
+  }, [cfgQ.data, cfgQ.dataUpdatedAt, accountId, busy]);
 
-  /** Every edit invalidates the last save's verdict. The pinned bar holds that
-   *  verdict permanently in view, so it must never outlive the state it
-   *  describes. `msg` goes with it: the in-flow row renders it ("✓ Saved.") and
-   *  would otherwise still be claiming a save the bar has already dropped. */
-  const clearVerdict = () => { setSaveOk(false); setSaveErr(null); setMsg(null); };
-
-  const set = <K extends keyof NudgeConfig>(k: K, v: NudgeConfig[K]) => {
-    clearVerdict();
-    setForm((f) => ({ ...f, [k]: v }));
-  };
-  const num = (k: keyof NudgeConfig, fallback = 0): number => {
+  const set = <K extends FormKey>(k: K, v: NudgeConfig[K]) => dispatch({ type: "field", k, v });
+  const num = (k: FormKey, fallback = 0): number => {
     const v = form[k];
     return typeof v === "number" ? v : fallback;
   };
 
   // Friendly slot edits keep the JSON view in sync (single source = `slots`).
-  const applySlots = (next: NudgeSlots) => {
-    clearVerdict();
-    setSlots(next);
-    setJsonDraft(JSON.stringify(next, null, 2));
-    setJsonErr(null);
-  };
   const setDefaultSlot = (key: string, entry: NudgeSlotEntry) => {
     const def = { ...(slots.default ?? {}) };
     def[key] = entry;
-    applySlots({ ...slots, default: def });
+    dispatch({ type: "slots", slots: { ...slots, default: def } });
   };
-  const applyJson = () => {
-    try {
-      const parsed = JSON.parse(jsonDraft || "{}");
-      if (typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("must be an object");
-      applySlots(parsed as NudgeSlots);
-    } catch (e) {
-      setJsonErr(`Invalid JSON: ${(e as Error).message}`);
-    }
-  };
-
-  function buildConfig(): NudgeConfig {
-    return { ...form, slots };
-  }
 
   // Bulk "Roll out to models" applies the in-memory config to OTHER accounts, so
   // require the active account's edits to be saved (and valid) first — otherwise
   // we'd push unsaved/partial changes the operator hasn't committed here.
-  const dirty = useMemo(() => {
-    if (!cfgQ.data) return false;
-    return JSON.stringify(buildConfig()) !== JSON.stringify(eff);
-  }, [form, slots, eff, cfgQ.data]); // eslint-disable-line react-hooks/exhaustive-deps
+  const block = rolloutBlock(state, picked);
 
   async function save() {
-    setErr(null); setMsg(null); setSaveOk(false); setSaveErr(null);
     // Belt to the buttons' braces: a save here is a whole-blob REPLACE, so
     // never write from a form that was never seeded. The same guard
-    // `useSellerConfig` keeps inside saveCfg for the seller tabs.
-    if (!accountId || !canSave) return;
+    // `useSellerConfig` keeps inside saveCfg for the seller tabs. One PUT per
+    // account at a time: `busy`, plus `state.saving` for a second click before
+    // the mutation cache reports the first one pending.
+    if (!accountId || !saveAllowed || busy || state.saving) return;
+    const cfg = buildConfig(state);
+    dispatch({ type: "saveStart", cfg, accountId });
     try {
       // The PUT is the only switch: it syncs the 60s detector rule (created /
       // woken / parked from `enabled`) in the same write as the config.
-      await saveCfgM.mutateAsync(buildConfig());
-      setMsg("✓ Saved.");
-      setSaveOk(true);
+      await saveCfgM.mutateAsync({ account_id: accountId, config: cfg });
+      dispatch({ type: "saveOk", accountId, at: Date.now() });
     } catch (e) {
-      const m = (e as Error)?.message || "Save failed";
-      setErr(m); setSaveErr(m);
+      dispatch({ type: "saveErr", msg: (e as Error)?.message || "Save failed", accountId, at: Date.now() });
     }
   }
 
   async function runPreview() {
     if (!accountId) return;
-    setErr(null);
+    const p = previewPayload(previewFan, previewHour);
+    if ("error" in p) {
+      dispatch({ type: "previewErr", msg: `Preview failed: ${p.error}` });
+      return;
+    }
+    dispatch({ type: "previewErr", msg: null });
     try {
-      await previewM.mutateAsync({
-        account_id: accountId, config: buildConfig(),
-        fan_id: previewFan.trim() ? Number(previewFan.trim()) : null,
-        hour: previewHour === "" ? null : Number(previewHour),
-      });
+      await previewM.mutateAsync({ account_id: accountId, config: buildConfig(state), ...p });
     } catch (e) {
-      setErr(`Preview failed: ${(e as Error)?.message || "unknown"}`);
+      dispatch({ type: "previewErr", msg: `Preview failed: ${(e as Error)?.message || "unknown"}` });
     }
   }
 
   async function applyToModels() {
-    setBulkMsg(null);
-    if (dirty) { setBulkMsg("Save your changes first, then roll out."); return; }
-    const ids = [...selected];
-    if (ids.length === 0) { setBulkMsg("Pick at least one model."); return; }
+    dispatch({ type: "bulkMsg", msg: block });
+    if (block) return;
     try {
-      const r = await bulkM.mutateAsync({ account_ids: ids, config: buildConfig(), enable: true });
-      setBulkMsg(`✓ Enabled nudge online (text-only) on ${r.count} model${r.count === 1 ? "" : "s"}.`);
+      const r = await bulkM.mutateAsync({ account_ids: picked, config: buildConfig(state), enable: true });
+      dispatch({ type: "bulkMsg", msg: `✓ Enabled nudge online (text-only) on ${r.count} model${r.count === 1 ? "" : "s"}.` });
     } catch (e) {
-      setBulkMsg(`Failed: ${(e as Error)?.message || "unknown error"}`);
+      dispatch({ type: "bulkMsg", msg: `Failed: ${(e as Error)?.message || "unknown error"}` });
     }
   }
 
   async function runNow() {
     if (!rule) return;
-    setMsg(null);
+    dispatch({ type: "runMsg", msg: null });
     try {
       await runM.mutateAsync(rule.id);
-      setMsg("✓ Ran one detector pass — nudges fire after their delay.");
+      dispatch({ type: "runMsg", msg: "✓ Ran one detector pass — nudges fire after their delay." });
     } catch (e) {
-      setMsg(`Run failed: ${(e as Error)?.message || "unknown error"}`);
+      dispatch({ type: "runMsg", msg: `Run failed: ${(e as Error)?.message || "unknown error"}` });
     }
   }
 
@@ -322,7 +250,7 @@ export default function NudgeOnlineTab({
       {accounts.length > 1 && (
         <Field label="Account">
           <select className={SELECT_CLS} value={accountId ?? ""}
-            onChange={(e) => setAccountId(e.target.value)}>
+            onChange={(e) => dispatch({ type: "account", accountId: e.target.value })}>
             {accounts.map((a) => (
               <option key={a.id} value={a.id}>{a.nickname || a.id}</option>
             ))}
@@ -330,8 +258,16 @@ export default function NudgeOnlineTab({
         </Field>
       )}
 
-      {cfgQ.isLoading ? (
-        <div className="text-sm text-fg-dim">Loading…</div>
+      {/* Drawn only once the draft is seeded (the gate's `drafted`) — also not
+       *  while a cached config is ignored as pre-save: fields drawn from the
+       *  unseeded draft would show fallbacks, and an edit typed there would be
+       *  wiped by the hydrate. A failed load says so instead of loading forever;
+       *  no account (none connected) has nothing to load, so nothing is drawn. */}
+      {!gate.drafted ? (
+        !accountId ? null
+          : note?.failed
+            ? <div className="text-sm text-err">{note.text}</div>
+            : <div className="text-sm text-fg-dim">Loading…</div>
       ) : (
         <Card className="p-4 space-y-5">
           {/* Enable */}
@@ -528,7 +464,7 @@ export default function NudgeOnlineTab({
               <SlotEditor
                 key={key}
                 label={label}
-                entry={(slots.default?.[key] as NudgeSlotEntry) ?? { text: [], image: [] }}
+                entry={slots.default?.[key] ?? { text: [], image: [] }}
                 onChange={(entry) => setDefaultSlot(key, entry)}
                 accountId={accountId}
                 mediaCache={mediaCache}
@@ -543,9 +479,9 @@ export default function NudgeOnlineTab({
             <div className="space-y-2">
               <textarea
                 className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-xs font-mono h-56 focus:outline-none focus:border-accent"
-                value={jsonDraft} onChange={(e) => setJsonDraft(e.target.value)} spellCheck={false} />
+                value={jsonDraft} onChange={(e) => dispatch({ type: "jsonDraft", text: e.target.value })} spellCheck={false} />
               <div className="flex items-center gap-2">
-                <Button variant="ghost" onClick={applyJson}>Apply JSON</Button>
+                <Button variant="ghost" onClick={() => dispatch({ type: "applyJson" })}>Apply JSON</Button>
                 <Button variant="ghost"
                   onClick={() => navigator.clipboard?.writeText(jsonDraft)}>Copy</Button>
                 {jsonErr && <span className="text-sm text-err">{jsonErr}</span>}
@@ -560,12 +496,12 @@ export default function NudgeOnlineTab({
             </div>
           </Collapsible>
 
-          {err && <div className="text-sm text-err">{err}</div>}
+          {(previewErr ?? saveErr) && <div className="text-sm text-err">{previewErr ?? saveErr}</div>}
 
           <div className="flex items-center gap-2 pt-1">
             {/* Same gate, same label and same pending word as the pinned twin
              *  below — the two are one control rendered twice. (The row itself
-             *  is not a SaveRow: its feedback lives in the separate `err`/`msg`
+             *  is not a SaveRow: its feedback lives in the error / message
              *  blocks above and below, which a SaveRow would duplicate ~8px
              *  away from where they already are.) */}
             <Button onClick={save} disabled={saveDisabled}>
@@ -580,7 +516,9 @@ export default function NudgeOnlineTab({
             )}
           </div>
 
-          {msg && <div className="text-sm text-accent border-t border-border pt-3">{msg}</div>}
+          {(runMsg ?? savedOk) && (
+            <div className="text-sm text-accent border-t border-border pt-3">{runMsg ?? "✓ Saved."}</div>
+          )}
 
           {rule && last && (
             <div className="text-xs text-fg-dim border-t border-border pt-3">
@@ -615,28 +553,26 @@ export default function NudgeOnlineTab({
             </div>
             <div className="flex gap-2 text-xs shrink-0">
               <button className="text-accent hover:underline"
-                onClick={() => setSelected(new Set(accounts.map((a) => a.id)))}>All</button>
+                onClick={() => dispatch({ type: "setModels", ids: null })}>All</button>
               <button className="text-fg-dim hover:underline"
-                onClick={() => setSelected(new Set())}>None</button>
+                onClick={() => dispatch({ type: "setModels", ids: [] })}>None</button>
             </div>
           </div>
           <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 max-h-56 overflow-auto border border-border rounded-lg p-2">
             {accounts.map((a) => (
               <label key={a.id} className="flex items-center gap-2 text-sm py-0.5 cursor-pointer">
-                <input type="checkbox" checked={selected.has(a.id)} onChange={() => toggleModel(a.id)} />
+                <input type="checkbox" checked={picked.includes(a.id)}
+                  onChange={() => dispatch({ type: "toggleModel", id: a.id, all: allIds })} />
                 <span className="truncate">{a.nickname || a.id}</span>
               </label>
             ))}
           </div>
           <div className="flex items-center gap-2">
-            <Button onClick={applyToModels} disabled={bulkM.isPending || selected.size === 0 || dirty}
-              title={dirty ? "Save your changes first" : undefined}>
+            <Button onClick={applyToModels} disabled={bulkM.isPending || !!block} title={block ?? undefined}>
               <Rocket className="size-4" />
-              {bulkM.isPending ? "Applying…" : `Apply + enable on ${selected.size} model${selected.size === 1 ? "" : "s"}`}
+              {bulkM.isPending ? "Applying…" : `Apply + enable on ${picked.length} model${picked.length === 1 ? "" : "s"}`}
             </Button>
-            <span className="text-xs text-muted">
-              {dirty ? "save your changes first to roll out" : "enables the 60s rule live on each"}
-            </span>
+            <span className="text-xs text-muted">{block ?? "enables the 60s rule live on each"}</span>
           </div>
           {bulkMsg && <div className="text-sm text-accent border-t border-border pt-3">{bulkMsg}</div>}
         </Card>
@@ -679,7 +615,7 @@ export default function NudgeOnlineTab({
           onClose={() => setPickerSlot(null)}
           accountId={accountId}
           fanId={null}
-          initialSelectedIds={(slots.default?.[pickerSlot]?.image as number[]) ?? []}
+          initialSelectedIds={slots.default?.[pickerSlot]?.image ?? []}
           onConfirm={(picked) => {
             setMediaCache((prev) => {
               const next = { ...prev };
@@ -698,26 +634,22 @@ export default function NudgeOnlineTab({
        *
        *  It reads the SAME `canSave` the in-flow button does, and that gate
        *  carries the load half — see the const's own note. This bar is a
-       *  sibling of the `cfgQ.isLoading ? … : <Card>` ternary, so unlike the
+       *  sibling of the `!drafted ? … : <Card>` ternary, so unlike the
        *  in-flow button it is on screen during the fetch, which is exactly how
        *  it once shipped live over an unseeded form.
        *
-       *  Neither `msg` NOR `err` is piped in here, and that is the whole point
-       *  of `saveOk`/`saveErr`. Both are written by the other buttons on this
-       *  tab — "✓ Ran one detector pass…" and "Run failed: …" from Run now,
-       *  "Preview failed: …" from the preview — so a bar labelled Save that
-       *  shows them narrates someone else's action, and a red one replaces the
-       *  ✓ of the save that actually landed. The in-flow row still shows both
-       *  where they belong. */}
+       *  It shows only the save's own verdict (`save`), never Run now's or
+       *  Preview's line: a bar labelled Save that turns red because a preview
+       *  failed narrates someone else's action. */}
       <StickySaveBar
         hostPadding={0}
         onSave={save}
         saving={busy}
-        canSave={canSave}
+        canSave={saveAllowed}
         label={saveLabel}
-        saved={saveOk}
+        saved={savedOk}
         error={saveErr}
-        gateNote={gateNote}
+        gateNote={note}
       />
     </div>
   );
@@ -740,7 +672,7 @@ function NumField({
   return (
     <Field label={label}>
       <Input type="number" min={min} value={value}
-        onChange={(e) => onChange(Number(e.target.value))} />
+        onChange={(e) => { const n = Number(e.target.value); if (Number.isFinite(n)) onChange(n); }} />
     </Field>
   );
 }
@@ -757,6 +689,7 @@ function DollarField({
         value={dollars || ""}
         onChange={(e) => {
           const d = Number(e.target.value);
+          if (!Number.isFinite(d)) return;
           onChange(d > 0 ? Math.round(d * 100) : null);
         }} />
     </Field>
@@ -851,9 +784,13 @@ function SlotEditor({
             onClick={() => removeLine(i)}><X className="size-4" /></button>
         </div>
       ))}
-      <Button variant="ghost" type="button" onClick={addLine}>
-        <Plus className="size-3.5" /> Add line
-      </Button>
+      <div className="flex flex-wrap items-center gap-3">
+        <Button variant="ghost" type="button" onClick={addLine}>
+          <Plus className="size-3.5" /> Add line
+        </Button>
+        <ImportCaptionsButton current={texts}
+          onImport={(items) => onChange({ ...entry, text: mergeCaptions(texts, items).pool })} />
+      </div>
       {/* Images: thumbnails + an add-from-vault tile. Sends ONE (rotated) if several. */}
       <div className="flex flex-wrap items-center gap-4 md:gap-2 pt-1">
         {images.map((id) => (

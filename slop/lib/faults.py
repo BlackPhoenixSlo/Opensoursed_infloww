@@ -145,11 +145,6 @@ def _write_telemetry_misses_1_in_50_dms() -> None:
     write_telemetry.frame = undercount  # events.handle_event looks it up per frame
 
 
-# Fleet faults (`--shards=N`, lib/edge.py). They break the fleet's wiring, not a
-# function inside one relay, so they have no in-relay `apply`: `stack(fleet)` runs
-# in the harness before the stack starts and changes what lib/edge.py hands the
-# processes (env, the Caddyfile it renders) or flags the scenario.
-
 def _of_writer_per_op_txns() -> None:
     """The OF-cache writer never starts (db/of_writer.py as if batching were off):
     every DM's event_inbox row, its transcode and every mark-read is written through
@@ -175,6 +170,11 @@ def _of_writer_holds_batches_3s() -> None:
 
     of_writer._flush = held
 
+
+# Fleet faults (`--shards=N`, lib/edge.py). They break the fleet's wiring, not a
+# function inside one relay, so they have no in-relay `apply`: `stack(fleet)` runs
+# in the harness before the stack starts and changes what lib/edge.py hands the
+# processes (env, the Caddyfile it renders) or flags the scenario.
 
 def _fleet_whois_off(fleet) -> None:
     """Every shard but the front runs without FLEET_SECRET, so its relay never
@@ -463,8 +463,67 @@ def _proxy_recheck_never_runs() -> None:
     bad until a call through it happens to answer; with its Creators moved away nobody calls
     through it, so it never comes back as a standby (bug class: the pool shrinks for good)."""
     import proxy_health
-    proxy_health._recheck_loop = lambda label: proxy_health.log.warning(
+    proxy_health._arm_recheck = lambda label: proxy_health.log.warning(
         "slop fault proxy-recheck-never-runs: %s not rechecked", label)
+
+
+def _proxy_decide_recheck_answer_ignored() -> None:
+    """service/proxy_health_decide.decide (the shell calls it as `ph.decide` at each step) reads an
+    answering recheck as a failed one (a reducer that lost the up transition): a revived proxy nobody
+    calls through stays bad for good (bug class: the pool shrinks; the standby is lost)."""
+    import proxy_health_decide as ph
+    real = ph.decide
+    ph.decide = lambda st, ev: real(st, ph.RecheckResult(ok=False) if isinstance(ev, ph.RecheckResult) else ev)
+
+
+# ── proxy watcher claim hand-off (rwl/proxy-watch-gap) ──
+WATCH_RELEASE_LAG_S = 60.0   # > the proxy-failover scenario's REWATCH_MS and its pool-wide outage (ALL_DEAD_S)
+
+
+def _proxy_watch_claim_released_late() -> None:
+    """The watcher's claim released as before rwl/proxy-watch-gap: after the watcher returned
+    (`_watch`'s finally), not in its last step's decide (every Unwatch dropped). The window between
+    the two, microseconds in the relay, is widened to WATCH_RELEASE_LAG_S so traffic can land in it:
+    a streak's DOWN_AFTER-th error there reads the claim, starts no watcher, and the proxy sits at
+    DOWN_AFTER errors unwatched until a counted error after the release (bug class: a proxy that dies
+    again right as its last watcher ended is never confirmed bad, so never surfaced or failed over)."""
+    import time
+
+    import proxy_health
+    import proxy_health_decide as ph
+    real_decide, real_watch = ph.decide, proxy_health._watch
+
+    def decide(st, ev):
+        st2, effects, nxt = real_decide(st, ev)
+        return st2, [e for e in effects if not isinstance(e, ph.Unwatch)], nxt
+
+    def watch(label: str) -> None:
+        try:
+            real_watch(label)
+        finally:
+            time.sleep(WATCH_RELEASE_LAG_S)
+            with proxy_health._lock:
+                proxy_health._watchers.discard(label)
+    ph.decide = decide
+    proxy_health._watch = watch   # `_step` spawns `_watch` by its module name
+
+
+def _proxy_recheck_unwatches_at_threshold() -> None:
+    """The recheck phase's not-bad exit as before rwl/proxy-watch-gap's round 1 (F1): a recheck step that
+    finds the proxy back up ends the watcher (Unwatch) whatever its count, where decide now goes back to
+    the confirm phase when a streak reached DOWN_AFTER meanwhile (it started no watcher: this one held the
+    claim). Bug class: a proxy revived and dead again during a recheck's sleep sits at DOWN_AFTER errors
+    unwatched, never confirmed bad, so never surfaced or failed over."""
+    import proxy_health_decide as ph
+    real = ph.decide
+
+    def decide(st, ev):
+        st2, effects, nxt = real(st, ev)
+        if isinstance(ev, (ph.RecheckWait, ph.RecheckDue, ph.RecheckResult)) and nxt == ph.Wait(0.0, ph.ConfirmDue):
+            return st2, [*effects, ph.Unwatch()], None
+        return st2, effects, nxt
+    ph.decide = decide   # the shell calls `ph.decide` at each step
+# ── end proxy watcher claim hand-off ──
 
 
 def _otp_state_not_session_dead() -> None:
@@ -615,6 +674,7 @@ _FAN_LIST_OWE_REPLY_LAST_SORT_NEVER_ACTIVE = """(() => {
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start); else start();
 })();"""
 
+
 @dataclass(frozen=True)
 class Fault:
     apply: Callable[[], None] | None  # inside the relay (lib/relay.py); None for a harness-side fault
@@ -626,39 +686,14 @@ class Fault:
     # also hits another module breaks more than the one function the fault claims).
     browser: tuple[tuple[str, str], ...] = ()
     browser_files: int = 1
+    # The same for the app modules lib/app_ts.py loads in node, where a module is one source file
+    # (`next dev` bundles a shared one into each page chunk): None = `browser_files`.
+    ts_files: int | None = None
     browser_js: str | None = None  # init script in every page actors/ui opens: a bug in the app's browser code
     desktop: str | None = None  # JS the Electron wrapper (actors/notif_click) runs before desktop/main.js
 
 
 FAULTS: dict[str, Fault] = {
-    # slop/run mobile-gestures --break (client side)
-    # app/hooks/useChatBackEntry.ts: no history entry when a Thread opens on a phone, as before
-    # 2026-10-26. Back from an open chat leaves Messages Pro, and the Thread's swipe right no longer
-    # goes through an entry (it still returns to the Fan List); the drawer swipes, Fan insights'
-    # swipe, the pin, the reload and desktop checks stay green.
-    "mobile-chat-no-history-entry": Fault(None, (
-        "phone: opening a chat adds one same-URL history entry; back returns to the Fan List on Messages Pro, "
-        "and a second back leaves it",
-        "phone: Forward onto an open chat's history entry stays on it (Fan List, entry unmarked, no bounce) "
-        "and the next Forward reaches the later page",
-        "phone: a swipe right on an open chat returns to the Fan List through its history entry "
-        "(Messages Pro kept, the entry popped, nothing else navigated)",
-    ), browser=((r"window\.history\.pushState(?=\(\{(?:\\n|\s)*\[CHAT_ENTRY\])", "(() => {})"),)),
-    # app/hooks/useChatBackEntry.ts: Forward onto the chat's entry (no chat open) goes back again, as
-    # before 2026-10-27, so it bounces and every entry after it is out of reach. Back, the reload (a
-    # fresh mount still pops) and the Thread swipe stay green.
-    "mobile-chat-forward-bounce": Fault(None, (
-        "phone: Forward onto an open chat's history entry stays on it (Fan List, entry unmarked, no bounce) "
-        "and the next Forward reaches the later page",
-    ), browser=((r"window\.history\.replaceState(?=\(unmarked\(\))", "(() => popOnce())"),)),
-    # app/hooks/useSwipe.ts: once a move locks sideways, a later vertical move and a scroll of what the
-    # finger is on no longer cancel it, as before 2026-10-27: a drag that turned into a scroll still
-    # opens the nav menu if it ends sideways. Every straight swipe stays green. `next dev` serves
-    # useSwipe's one module in two chunks (the shell's layout, Messages Pro's page): two files.
-    "mobile-swipe-ignores-turn": Fault(None, (
-        "phone: a drag that starts sideways, turns vertical and ends sideways does not open the nav menu",
-    ), browser=((r"if \(Math\.abs\(dy\) >= Math\.abs\(dx\)\)", "if (!horizontal && Math.abs(dy) >= Math.abs(dx))"),
-                (r"if \(start && \(s === document", "if (false && start && (s === document")), browser_files=2),
     "transcoder-drops-1-in-10": Fault(_transcoder_drops_1_in_10, (
         "every DM is in its thread (/admin/messages)",
         "unreadMessagesCount == seeded + sent for every burst fan",
@@ -807,6 +842,25 @@ FAULTS: dict[str, Fault] = {
         "revived proxy: the recheck brings it back within budget and the next new Creator lands on the least-used "
         "proxy (the revived one, once its Creators moved) and reads through it",
     )),
+    # slop/run proxy-failover --break --fault=proxy-decide-recheck-answer-ignored
+    "proxy-decide-recheck-answer-ignored": Fault(_proxy_decide_recheck_answer_ignored, (
+        "revived proxy: the recheck brings it back within budget and the next new Creator lands on the least-used "
+        "proxy (the revived one, once its Creators moved) and reads through it",
+    )),
+    # ── proxy watcher claim hand-off (rwl/proxy-watch-gap) ──
+    # slop/run proxy-failover --break --fault=proxy-watch-claim-released-late: the re-watch check, and the
+    # pool-wide outage's (the proxy revived just before it dies again inside the widened window too)
+    "proxy-watch-claim-released-late": Fault(_proxy_watch_claim_released_late, (
+        "re-watch: a pool proxy that dies for good right after a blip ended its watcher is watched again and "
+        "surfaced within budget (its Creator reads proxy_down)",
+        "every pool proxy dead: nobody moves (bindings identical) and every pool Creator reads proxy_down",
+    )),
+    # slop/run proxy-failover --break --fault=proxy-recheck-unwatches-at-threshold: the recheck-gap check
+    "proxy-recheck-unwatches-at-threshold": Fault(_proxy_recheck_unwatches_at_threshold, (
+        "recheck-gap: a bad proxy an answer brings back while its watcher sleeps before a recheck, then "
+        "DOWN_AFTER failed Tests before it wakes, is confirmed bad again by that watcher within budget",
+    )),
+    # ── end proxy watcher claim hand-off ──
     # slop/run session-health-otp --break (the scenario's FAULT)
     "otp-state-not-session-dead": Fault(_otp_state_not_session_dead, (
         "account_health flags exactly the 2FA Creators, reason otp_required",
@@ -924,3 +978,19 @@ def apply_stack(name: str | None, fleet) -> None:
     """The harness-side half of a fault (lib/edge.Fleet calls it before the stack starts)."""
     if name and name in FAULTS and FAULTS[name].stack is not None:
         FAULTS[name].stack(fleet)
+
+
+# --- vault sort label (rwl/vault-sort-humanstyle) ---
+# slop/run 2026-10-29-state-reducers --break --fault=vault-sort-label-not-saved-in-sort
+# app/hooks/useVaultCache.ts `sortOfFolders`: the folder sort label is not saved once OF took the sort (the pre-fix
+# code saved it from the rail alone, so a sort from the OF-mirror Vault page or the new-post dialog left it stale).
+# The rail's Done goes through `sortOfFolders` too: its own label still reads "Custom" (its state follows
+# `sortOfFolders`' return), and after the reload the stored label reads "Default"; the OF-mirror Vault page's sort
+# leaves it there too.
+_reducers = importlib.import_module(f"{__package__}.reducers_faults" if __package__ else "reducers_faults")
+if "vault-sort-label-not-saved-in-sort" in FAULTS:
+    raise SystemExit("slop: faults.py redefines vault-sort-label-not-saved-in-sort")
+FAULTS["vault-sort-label-not-saved-in-sort"] = Fault(
+    None, (_reducers.VAULT_SORT_LABEL, _reducers.VAULT_MIRROR_SORT_LABEL), browser=(
+        (r"\(0,\s*[\w$]+\.saveFolderSort\)\(accountId,", "((..._) => {})(accountId,"),
+    ), browser_files=_reducers.USE_VAULT_CACHE_FILES)

@@ -39,6 +39,8 @@ import { patchQueryData } from "@/lib/cacheWrite";
 import { scheduledSendsKey } from "@/hooks/useServerScheduledSends";
 import type { OFChatItem, OFMessage } from "@/lib/relay";
 import { isValidFanId, sameUserId, type FanId } from "@/lib/fanId";
+import { bumpChatPages, fanRowMatcher, freshestFanRow, mayAddRow, type ChatPages } from "@/lib/chatsCache";
+import { insertByCreatedAt, insertMsg, toUtcIso } from "@/lib/threadCache";
 
 interface ChatMessagePayload {
   id: number;
@@ -106,35 +108,15 @@ export function resolveChatTarget(e: ChatMessageEvent): ChatTarget | null {
   return { accountId, fanId, isOutbound, msg, fromId };
 }
 
-/** Scan every chats cache for a fan's row and return the FRESHEST match (or null).
- *  The same fan can sit in several chats caches (unfiltered, folder, search,
- *  all-scope) at different freshness — a first-match could be a stale inactive
- *  variant and drive a wrong prior/delta. Pick the row whose `lastMessage` is
- *  newest (ties / undated → first seen). Used to read a conversation's PRIOR
- *  badge state before a live event mutates it. Exported for tests. */
+/** Prior row for the badge delta; rule: lib/chatsCache `freshestFanRow`. Exported for tests. */
 export function findFanChatRow(
   qc: QueryClient,
   accountId: string,
   fanId: FanId,
 ): OFChatItem | null {
-  type Page = { rows: OFChatItem[]; hasMore: boolean };
-  type Infinite = { pages: Page[]; pageParams: unknown[] };
-  let best: OFChatItem | null = null;
-  let bestAt = -Infinity;
-  for (const q of qc.getQueryCache().findAll({ queryKey: ["chats"] })) {
-    const data = q.state.data as Infinite | undefined;
-    if (!data?.pages?.length) continue;
-    for (const p of data.pages) {
-      for (const c of p.rows) {
-        if ((c.__accountId ?? "") === accountId && sameUserId(c.withUser?.id, fanId)) {
-          const parsed = Date.parse(c.lastMessage?.createdAt ?? "");
-          const ts = Number.isFinite(parsed) ? parsed : -Infinity;
-          if (best === null || ts > bestAt) { best = c; bestAt = ts; }
-        }
-      }
-    }
-  }
-  return best;
+  const caches = qc.getQueryCache().findAll({ queryKey: ["chats"] })
+    .map((q) => q.state.data as ChatPages | undefined);
+  return freshestFanRow(caches, accountId, fanId);
 }
 
 /** Pure: the roster badge delta for a live message, given the fan's PRIOR chat
@@ -186,49 +168,8 @@ function invalidateFanRevenue(qc: QueryClient, accountId: string, fanId: FanId) 
   void qc.invalidateQueries({ queryKey: ["last-purchases", accountId] });
 }
 
-/** Normalize a message timestamp to a UTC ISO string (…Z).
- *
- *  The relay emits live (`emit_live`) outbound rows — welcome / AI reply / mass
- *  / funnel — with the DB's tz-NAIVE wall clock (`"2026-06-14 09:36:17"`, already
- *  UTC but zone-less). `new Date()` parses that as the VIEWER's local time, which
- *  both skews the bubble's displayed time and corrupts the sort key. REST
- *  `/messages` rows already carry a zone, so the two paths disagreed: live
- *  funnel/mass bubbles rendered at the wrong time AND (see insertByCreatedAt)
- *  stuck out of order. Tag a zone-less value as UTC; pass through one already
- *  zoned. */
-export function toUtcIso(raw: string | undefined): string {
-  if (!raw) return new Date().toISOString();
-  const s = raw.trim();
-  const hasZone = /[zZ]$/.test(s) || /[+-]\d{2}:?\d{2}$/.test(s);
-  const candidate = hasZone
-    ? s
-    : `${s.replace(" ", "T").replace(/(\.\d{3})\d+$/, "$1")}Z`;
-  const d = new Date(candidate);
-  return Number.isNaN(d.getTime()) ? s : d.toISOString();
-}
-
-/** Insert `row` into a thread cache kept in created_at order, instead of
- *  blind-appending. The bug: a live message can enter the cache AFTER newer
- *  rows are already present (a re-run funnel, an out-of-order SSE replay), and a
- *  plain `[...prev, row]` then pins it to the BOTTOM as if it were newest. We
- *  scan from the tail — the overwhelmingly common case is a genuinely new
- *  message that belongs at the end, so that path stays O(1) — and splice the row
- *  in just after the last one that isn't strictly newer (`<=` keeps ties in
- *  arrival order). Timestamps are normalized for the compare so a zoned REST row
- *  and a zone-less live row sort consistently. */
-export function insertByCreatedAt(list: OFMessage[], row: OFMessage): OFMessage[] {
-  const t = Date.parse(toUtcIso(row.createdAt));
-  if (Number.isNaN(t)) return [...list, row];
-  let i = list.length;
-  while (i > 0) {
-    const prevT = Date.parse(toUtcIso(list[i - 1].createdAt));
-    if (Number.isNaN(prevT) || prevT <= t) break;
-    i--;
-  }
-  return i >= list.length
-    ? [...list, row]
-    : [...list.slice(0, i), row, ...list.slice(i)];
-}
+// Moved to lib/threadCache; re-exported for the modules and tests that import them here.
+export { insertByCreatedAt, toUtcIso };
 
 export interface InboxRealtimeOptions {
   /** Whether the page shows the roster badges (default true). A page without
@@ -361,40 +302,24 @@ export function useInboxRealtime({ roster = true }: InboxRealtimeOptions = {}) {
       const thread = qc.getQueryCache().get<OFMessage[]>(hashKey(threadKey));
       if (thread && (thread.state.data !== undefined || thread.state.fetchStatus === "fetching"
           || thread.isActive())) {
-        patchQueryData<OFMessage[]>(qc, threadKey, (prev = []) => {
-          const incoming = String(candidate.id);
-          if (prev.some((m) => String(m.id) === incoming)) return prev;
-          return insertByCreatedAt(prev, candidate);
-        });
+        patchQueryData<OFMessage[]>(qc, threadKey, (prev = []) => insertMsg(prev, candidate));
       }
 
-      // Move the matching row to the top of page 0 — matches legacy /ui
-      // behavior (incoming message bubbles to the top, unread badge bumps).
-      // The InfiniteData cache is shaped { pages: [{ rows, hasMore }], pageParams }.
-      // Strategy: pluck the row from whatever page it's on, update it,
-      // prepend to page 0. useChatList's flatten step dedupes by
-      // (accountId, fanId) so any stale copy on a later page is ignored.
-      // `findAll({ queryKey: ["chats"] })` prefix-matches EVERY chats cache,
-      // but the full key is
-      //   ["chats", scope.kind, accountKey, filter, listId, query, limit].
-      // We must not inject a brand-new row into a filtered / folder / search
-      // view this fan may not belong to (pinned/priority/<folder>/<search>):
-      // the flatten step only de-dupes, it never re-applies the filter, so a
-      // bogus row would stay until that view's next refetch. So only patch a
-      // cache that ALREADY contains this fan's row (bump-to-top, always valid),
-      // and only synthesize a NEW row in the unfiltered key
-      // (filter==null && listId==null && query==null).
-      type Page = { rows: OFChatItem[]; hasMore: boolean };
-      type Infinite = { pages: Page[]; pageParams: unknown[] };
+      // Move the fan's row to the top of every chats cache (incoming message
+      // bubbles up, unread bumps).
       // Out-of-order replay: the message-thread insert above already slotted it by
       // timestamp; do NOT reorder/bump the chat-list row — that would surface a
       // stale preview, inflate unread, and corrupt the prior we read next event.
       if (isStale) return;
-      const isFanRow = (c: OFChatItem) =>
-        (c.__accountId ?? "") === accountId && sameUserId(c.withUser.id, fanId);
+      const isFanRow = fanRowMatcher(accountId, fanId);
       /** The fan's row as this message leaves it: `existing` (or a new row)
-       *  with the message as its preview, unread raised for an inbound one. */
-      const bumpRow = (existing: OFChatItem | null): OFChatItem => {
+       *  with the message as its preview, unread raised for an inbound one.
+       *  Null when this very message already is the row's last one (a
+       *  duplicate delivery, or a list read that had it): re-applying would
+       *  count its unread twice. */
+      const bumpRow = (existing: OFChatItem | null): OFChatItem | null => {
+        const lastId = existing?.lastMessage?.id;
+        if (lastId != null && String(lastId) === String(candidate.id)) return null;
         const base: OFChatItem = existing ?? ({
           __accountId: accountId,
           // Outbound to a fan not yet in the list: fromUser is US, so we don't
@@ -435,79 +360,20 @@ export function useInboxRealtime({ roster = true }: InboxRealtimeOptions = {}) {
         const seedAccount = q.queryKey[2];
         if (seedAccount != null && String(seedAccount) !== accountId) return;
         const existing = data.list.find(isFanRow) ?? null;
-        const last = existing?.lastMessage;
-        if (last?.id != null && String(last.id) === String(candidate.id)) return;
-        if (last?.createdAt && Date.parse(toUtcIso(last.createdAt)) > evtMs) return;
-        qc.setQueryData(q.queryKey, {
-          ...data, list: [bumpRow(existing), ...data.list.filter((c) => !isFanRow(c))],
-        });
+        const lastAt = existing?.lastMessage?.createdAt;
+        if (lastAt && Date.parse(toUtcIso(lastAt)) > evtMs) return;
+        const row = bumpRow(existing);
+        if (!row) return;
+        qc.setQueryData(q.queryKey, { ...data, list: [row, ...data.list.filter((c) => !isFanRow(c))] });
       });
 
       qc.getQueryCache().findAll({ queryKey: ["chats"] }).forEach((q) => {
-        const data = q.state.data as Infinite | undefined;
+        const data = q.state.data as ChatPages | undefined;
         if (!data?.pages?.length) return;
-
-        const filterKey = q.queryKey[3] ?? null;
-        const listIdKey = q.queryKey[4] ?? null;
-        const queryKeyText = q.queryKey[5] ?? null;
-        const isUnfiltered =
-          filterKey === null && listIdKey === null && queryKeyText === null;
-
-        // Does this cache's SCOPE actually include the event's account? The key
-        // is ["chats", kind, accountKey, …]; accountKey is the single id in a
-        // model scope, or the sorted comma-joined included ids in an all scope.
-        // An inbound DM for one of the principal's models (model A) must NOT be
-        // synthesized into ANOTHER of its models' single-account list (model B) —
-        // that's the cross-model leak where the same fan shows up under a model
-        // it doesn't belong to, double-counting unread until the next refetch.
-        const scopeKind = q.queryKey[1];
-        const accountKey = String(q.queryKey[2] ?? "");
-        const accountInScope =
-          scopeKind === "model"
-            ? accountKey === accountId
-            : accountKey.split(",").includes(accountId);
-
-        // Find the fan's row(s) without copying anything: most caches don't
-        // hold this fan, and those must keep their exact data reference so
-        // React Query notifies no subscriber (a 500-row All Models list would
-        // otherwise re-render on every message for every other list).
-        let existing: OFChatItem | null = null;
-        const pagesWithRow = new Set<number>();
-        for (let i = 0; i < data.pages.length; i++) {
-          for (const c of data.pages[i].rows) {
-            if (!isFanRow(c)) continue;
-            existing = c;
-            pagesWithRow.add(i);
-          }
-        }
-
-        // Only SYNTHESIZE a brand-new row into a cache that can validly hold it.
-        // Skip when the fan isn't already present AND either:
-        //   • it's a filtered/folder/search view (we can't know the fan matches
-        //     the filter), or
-        //   • the event's account isn't in this cache's scope (a DIFFERENT
-        //     model's list — the cross-model leak).
-        // Bumping an EXISTING row is always fine: it's already correctly scoped,
-        // so this guard only gates the new-row path.
-        if (!existing && (!isUnfiltered || !accountInScope)) return;
-        // This very message is already the row's last one (a duplicate
-        // delivery, or a list read that already had it): nothing changes, so
-        // write nothing — re-applying would also count its unread twice.
-        const lastId = existing?.lastMessage?.id;
-        if (lastId != null && String(lastId) === String(candidate.id)) return;
-
-        const updatedRow = bumpRow(existing);
-
-        // Strip the old copies from the pages that held one; every other page
-        // keeps its reference (structural sharing then skips it outright).
-        const stripped: Page[] = data.pages.map((p, i) =>
-          pagesWithRow.has(i) ? { ...p, rows: p.rows.filter((c) => !isFanRow(c)) } : p);
-        const [first, ...rest] = stripped;
-        const newPages: Page[] = [
-          { ...first, rows: [updatedRow, ...first.rows] },
-          ...rest,
-        ];
-        qc.setQueryData(q.queryKey, { ...data, pages: newPages });
+        // New row only where lib/chatsCache `mayAddRow`; otherwise a fan-less cache keeps its reference.
+        const mayAdd = mayAddRow(q.queryKey, accountId);
+        const pages = bumpChatPages(data.pages, isFanRow, (e) => (e || mayAdd ? bumpRow(e) : null));
+        if (pages !== data.pages) qc.setQueryData(q.queryKey, { ...data, pages });
       });
     });
 

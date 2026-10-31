@@ -4,7 +4,7 @@ Spec: library/one_section_of_automations/07_send_followup.md.
 
 Drip re-engagement for fans who've gone quiet. Per fan, a small state machine
 tracks "silence started at" and sends up to three Grok-generated nudges at
-silence thresholds **26 h → 64 h → 256 h** (≥18 h minimum gap between sends).
+silence thresholds **26 h → 64 h → 120 h** (≥18 h minimum gap between sends).
 Each nudge can attach a time-of-day-selected image from the `bot` vault folder.
 If the fan replies mid-sequence → `reply_cooldown` (26 h pause); a reply after
 all three nudges → `restart_cooldown` (72 h) then the cycle resets.
@@ -13,7 +13,9 @@ This is the NETWORK-REWRITE of the DOM-era script (07 §"Network-rewrite
 mapping"): the sidebar/chat scraping is replaced by DB reads — the WS pump +
 scrape_chats already fill `messages`/`fans` — and the vault DOM clicks are
 replaced by `of_client.vault_lists`/`vault_media`. The state machine is purely
-client-side and carried over unchanged.
+client-side and carried over unchanged; it is ONE pure transition,
+`send_followup_decide.decide(entry, event, thresholds) -> (entry', effects)`, and
+run() below is only its I/O shell (load, decide, perform the effects in order).
 
 It mirrors the scrape_chats reference + send_welcome:
   • of_client ONLY (no DOM), built via the executor's `_make_client` seam so
@@ -47,6 +49,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections import Counter
 from datetime import datetime, timedelta
 
 from sqlalchemy import func, select
@@ -56,6 +59,10 @@ import automation_executor as ax  # _make_client / _parse_iso / fan-lease seams
 import llm_client                  # call .chat at runtime so tests can patch it
 from . import rhythm  # tz_hours_for — THE clock (fixed offset first, zone as fallback)
 from . import _voice  # whose voice this account writes in (NULL → 'her')
+from .send_followup_decide import (  # the drip's phase machine (pure)
+    _STEP_THRESHOLDS_H, Complete, Cooldown, Effect, Entry, Resume, Save, Seen, Send, Sent, Tick,
+    Wait, _resolve_step_thresholds, decide,
+)
 from attribution import write_outbound_attribution
 from audiences import contact_guard_excludes, resolve_window_hours
 from automation_registry import register
@@ -85,29 +92,14 @@ _TEMPERATURE = 0.9                 # matches the spec's Grok call
 _ELIGIBLE_MIN_SPEND_CENTS = 100    # ≥ $1 lifetime spend
 _DEFAULT_FAN_LIMIT = 200           # eligible-fan sweep ceiling per tick
 
-# Silence thresholds per step (hours) and the minimum gap between consecutive
-# sends. Carried over from the DOM script unchanged (07 §pick_next_step).
-# Overridable per-rule via payload["step_hours"] = [h1, h2, h3] (see
-# _resolve_step_thresholds) — the Brain panel's "Follow-ups" delays write it.
-# Step 3 must sit UNDER _MAX_SILENCE_H or the cap retires the fan first and the
-# final nudge never fires (it was 256h > the 168h cap — dead for every fan).
-_STEP_THRESHOLDS_H = {1: 26, 2: 64, 3: 120}
-_MIN_GAP_H = 18
-# Hard cap: never follow up a fan who's been silent longer than this. A chat
-# cold for over a week is ghosted/dead — reminders just waste sends and draw
-# "Cannot send message to this user" rejections. A fan retired here is not gone
-# for good: an inbound after the silence anchor restarts the cycle, same as a
-# finished drip (see _Entry.replied_since_anchor).
-_MAX_SILENCE_H = 24 * 7
+# The drip's thresholds, cap, gap and cooldowns live with its phase machine in
+# send_followup_decide (decide() is the only place they are read); the step
+# thresholds are imported above for preview_compose.
 # Cross-automation contact guard window: skip a due step when ANY sender
 # touched the fan this recently. Nudges stamp only NudgeState (no messages
 # row), so the messages-table reads above can't see them — the shared
 # `contact_guard_excludes` can. absent → 12h, explicit 0 = off.
 _GUARD_DEFAULT_H = 12
-
-# Cooldowns (hours) for the reply / restart branches (07 §Core algorithm).
-_REPLY_COOLDOWN_H = 26
-_RESTART_COOLDOWN_H = 72
 
 # Per-step nudge instruction handed to the LLM as the user turn. Each escalates
 # the re-engagement warmth without ever guilt-tripping the fan.
@@ -266,89 +258,6 @@ def _compose_user(step: int, fan_name: str, silence_hours: float,
     return header + _STEP_USER_INSTRUCTIONS[step]
 
 
-# ── In-memory state entry ─────────────────────────────────────────────
-
-class _Entry:
-    """Mutable mirror of one followup_state row (or a fresh tracking entry)."""
-    __slots__ = ("phase", "cycle", "silence_started_at", "fan_last_reply_at",
-                 "cooldown_until", "messages_sent")
-
-    def __init__(self, row: FollowupState | None = None):
-        if row is None:
-            self.phase = "tracking"
-            self.cycle = 1
-            self.silence_started_at = None
-            self.fan_last_reply_at = None
-            self.cooldown_until = None
-            self.messages_sent: dict[str, str] = {}
-        else:
-            self.phase = row.phase or "tracking"
-            self.cycle = row.cycle or 1
-            self.silence_started_at = row.silence_started_at
-            self.fan_last_reply_at = row.fan_last_reply_at
-            self.cooldown_until = row.cooldown_until
-            try:
-                self.messages_sent = json.loads(row.messages_sent or "{}") or {}
-            except Exception:
-                self.messages_sent = {}
-
-    def replied_since_anchor(self, last_fan: datetime | None) -> bool:
-        """Fan wrote back after we started counting his silence. Anchored on
-        `silence_started_at`, NOT the last outbound — any other automation's
-        send (a PPV blast a minute later) would otherwise bury the reply."""
-        return bool(last_fan and (self.silence_started_at is None
-                                  or last_fan > self.silence_started_at))
-
-    def last_sent_dt(self) -> datetime | None:
-        """Latest send timestamp across messages_sent (for the ≥18h gap)."""
-        best: datetime | None = None
-        for iso in self.messages_sent.values():
-            dt = ax._parse_iso(iso)
-            if dt and (best is None or dt > best):
-                best = dt
-        return best
-
-
-def _resolve_step_thresholds(payload: dict) -> dict[int, float]:
-    """Per-step silence thresholds (hours). `payload['step_hours'] = [h1, h2, h3]`
-    overrides the defaults; any missing/invalid entry falls back to that step's
-    default ({1:26, 2:64, 3:120}). Written by the Brain panel's "Follow-ups"
-    delays so an operator can tune the drip cadence per account.
-
-    A threshold at/over _MAX_SILENCE_H counts as invalid: the cap retires the fan
-    before that step could ever fire, so honouring it would silently kill it."""
-    out = dict(_STEP_THRESHOLDS_H)
-    sh = (payload or {}).get("step_hours")
-    if isinstance(sh, (list, tuple)):
-        for i, step in enumerate((1, 2, 3)):
-            if i < len(sh):
-                try:
-                    val = float(sh[i])
-                except (TypeError, ValueError):
-                    continue
-                if 0 < val < _MAX_SILENCE_H:
-                    out[step] = val
-                elif val >= _MAX_SILENCE_H:
-                    log.warning("send_followup step %s override %.0fh ignored "
-                                "(≥ %sh cap) — using %sh",
-                                step, val, _MAX_SILENCE_H, out[step])
-    return out
-
-
-def _pick_next_step(
-    silence_hours: float, sent: dict, thresholds: dict[int, float] = _STEP_THRESHOLDS_H,
-) -> int | None:
-    """step 1 → 26h, step 2 → 64h, step 3 → 256h (or the per-rule `thresholds`
-    override); else None (07 §pick_next_step)."""
-    if "1" not in sent and silence_hours >= thresholds[1]:
-        return 1
-    if "2" not in sent and silence_hours >= thresholds[2]:
-        return 2
-    if "3" not in sent and silence_hours >= thresholds[3]:
-        return 3
-    return None
-
-
 # ── DB seams (own session each — house pattern) ───────────────────────
 
 async def _load_ai_config(account_id: str) -> dict:
@@ -472,12 +381,34 @@ async def _load_last_message_times(
     return out
 
 
-async def _load_state(account_id: str) -> dict[int, FollowupState]:
+def _fan_message_times_stmt(account_id: str, fan_id: int):
+    def latest(direction: str):
+        return (select(func.max(Message.created_at))
+                .where(Message.account_id == account_id,
+                       Message.fan_id == fan_id,
+                       Message.direction == direction)
+                .scalar_subquery())
+    return select(latest("in"), latest("out"))
+
+
+async def _load_fan_message_times(
+    account_id: str, fan_id: int
+) -> dict[str, datetime | None]:
+    """One fan's {'in','out'} latest times. Not _load_last_message_times with
+    one id: for a single-id IN, SQLite picks ix_messages_dir_created and scans
+    the creator's whole inbox; two scalar MAX() subqueries seek ix_messages_chat_seq."""
+    async with get_session() as s:
+        last_in, last_out = (await s.execute(
+            _fan_message_times_stmt(account_id, fan_id))).one()
+    return {"in": last_in, "out": last_out}
+
+
+async def _load_state(account_id: str) -> dict[int, Entry]:
     async with get_session() as s:
         rows = (await s.execute(
             select(FollowupState).where(FollowupState.account_id == account_id)
         )).scalars().all()
-    return {int(r.fan_id): r for r in rows}
+    return {int(r.fan_id): Entry.from_row(r) for r in rows}
 
 
 async def _load_bios(account_id: str, fan_ids: list[int]) -> dict[int, str]:
@@ -500,7 +431,7 @@ async def _load_bios(account_id: str, fan_ids: list[int]) -> dict[int, str]:
     return out
 
 
-async def _save_entry(account_id: str, fan_id: int, e: _Entry, now: datetime) -> None:
+async def _save_entry(account_id: str, fan_id: int, e: Entry, now: datetime) -> None:
     """Upsert one followup_state row from the in-memory entry."""
     values = dict(
         account_id=str(account_id),
@@ -658,32 +589,29 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     now = datetime.utcnow()
     state = await _load_state(account_id)
 
-    # ── 1) Time-only transitions (no client) ─────────────────────────────
-    transitioned = 0
-    for fid, row in list(state.items()):
-        e = _Entry(row)
-        changed = False
-        if e.phase == "reply_cooldown" and e.cooldown_until and now > e.cooldown_until:
-            e.phase = "tracking"
-            e.silence_started_at = None
-            e.cooldown_until = None
-            changed = True
-        elif e.phase == "restart_cooldown" and e.cooldown_until and now > e.cooldown_until:
-            e.phase = "tracking"
-            e.messages_sent = {}
-            e.cycle += 1
-            e.silence_started_at = None
-            e.cooldown_until = None
-            changed = True
-        if changed:
-            await _save_entry(account_id, fid, e, now)
-            state[fid] = await _reload_one(account_id, fid)
-            transitioned += 1
+    fx: Counter = Counter()  # every effect performed, by value (the run's stats read it)
+
+    async def _perform(fid: int, e: Entry, effects: list[Effect]) -> Send | None:
+        """Carry out decide()'s effects in order; hand back a Send if one is due."""
+        fx.update(effects)
+        due = None
+        for eff in effects:
+            if isinstance(eff, Save):
+                await _save_entry(account_id, fid, e, now)
+            elif isinstance(eff, Resume):
+                state[fid] = e
+            elif isinstance(eff, Send):
+                due = eff
+        return due
+
+    # ── 1) Time-only transitions (no client): expired cooldowns resume ───
+    for fid, e in list(state.items()):
+        await _perform(fid, *decide(e, Tick(now), thresholds))
 
     # No key → stop before any candidate work (the transitions above need none).
     provider = llm_client.MODELS[model].provider
     if not await llm_client.llm_key_available(account_id, provider, _PURPOSE):
-        return {"no_llm_key": provider, "transitioned": transitioned, "followups_sent": 0}
+        return {"no_llm_key": provider, "transitioned": fx[Resume()], "followups_sent": 0}
 
     # ── 2) Eligibility (no client) ───────────────────────────────────────
     blacklist = await _load_blacklist()
@@ -715,11 +643,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             account_id, outbound_hours=guard_h)
 
     sent = 0
-    advanced = 0
     skipped_locked = 0
     skipped_cooldown = 0
-    skipped_guard = 0
-    skipped_unread = 0
     errors = 0
     cap_hit = False
     key_error = None  # a rejected key stops the run: one call, not one per fan
@@ -740,69 +665,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     for fan in eligible:
         fid = fan["fan_id"]
-        e = _Entry(state.get(fid))
-
-        if e.phase in ("reply_cooldown", "restart_cooldown"):
-            continue  # still cooling down (time transitions ran above)
-
         times = msg_times.get(fid, {"in": None, "out": None})
-        last_fan = times["in"]
-        last_model = times["out"]
-
-        fan_replied = bool(last_fan and (last_model is None or last_fan > last_model))
-
-        # He wrote back after we stopped counting his silence — either the drip
-        # ran out of steps or the cap retired him. Same restart either way; the
-        # restart_cooldown expiry above owns the fresh cycle.
-        if e.phase in ("all_sent_waiting", "completed"):
-            if e.replied_since_anchor(last_fan):
-                e.phase = "restart_cooldown"
-                e.cooldown_until = now + timedelta(hours=_RESTART_COOLDOWN_H)
-                e.fan_last_reply_at = last_fan
-                await _save_entry(account_id, fid, e, now)
-                advanced += 1
-            continue
-
-        # phase == "tracking"
-        if fan_replied:
-            # Preserve the fan's reply for human review; pause the drip.
-            e.phase = "reply_cooldown"
-            e.cooldown_until = now + timedelta(hours=_REPLY_COOLDOWN_H)
-            e.fan_last_reply_at = last_fan
-            await _save_entry(account_id, fid, e, now)
-            skipped_unread += 1
-            advanced += 1
-            continue
-
-        # Establish the silence anchor if missing.
-        if e.silence_started_at is None:
-            e.silence_started_at = last_model or now
-        silence_hours = (now - e.silence_started_at).total_seconds() / 3600.0
-
-        # Cap: a fan silent longer than a week is cold — stop the drip entirely
-        # instead of nagging a ghosted/dead chat.
-        if silence_hours > _MAX_SILENCE_H:
-            e.phase = "completed"
-            await _save_entry(account_id, fid, e, now)
-            continue
-
-        next_step = _pick_next_step(silence_hours, e.messages_sent, thresholds)
-        if next_step is None:
-            # Persist the silence anchor we may have just set.
-            await _save_entry(account_id, fid, e, now)
-            continue
-
-        # Enforce ≥18h between consecutive sends.
-        last_sent = e.last_sent_dt()
-        if last_sent and (now - last_sent).total_seconds() / 3600.0 < _MIN_GAP_H:
-            await _save_entry(account_id, fid, e, now)
-            continue
-
-        # A blast/nudge/manual send touched this fan inside the guard window —
-        # piling a drip step on top reads as spam. The step stays "due" and
-        # fires on a later tick once the window clears.
-        if fid in guard_ids:
-            skipped_guard += 1
+        e, effects = decide(state.get(fid) or Entry(),
+                            Seen(now, times["in"], times["out"], fid in guard_ids), thresholds)
+        due = await _perform(fid, e, effects)
+        if due is None:
             continue
         # Another automation messaged this fan recently → rest it (W3 cooldown).
         if await ax.fan_on_cooldown(account_id, fid):
@@ -822,7 +689,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                             cfg, tod, activity, clock,
                             fan["name"], bios.get(fid, ""))},
                         {"role": "user", "content": _compose_user(
-                            next_step, fan["name"], silence_hours,
+                            due.step, fan["name"], due.silence_hours,
                             (cfg.get("_voice") or _voice.HER).fan_address)},
                     ],
                     purpose=_PURPOSE,
@@ -835,8 +702,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 log.warning("send_followup daily LLM cap reached account=%s — stopping",
                             account_id)
                 break
-            except llm_client.LLMKeyError as e:
-                key_error = llm_client.key_error_payload(e)
+            except llm_client.LLMKeyError as exc:
+                key_error = llm_client.key_error_payload(exc)
                 break
             except Exception as gen_exc:
                 _note_error(f"generate: {gen_exc}")
@@ -855,6 +722,17 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 log.warning("send_followup empty draft account=%s fan=%s "
                             "(model returned nothing, or filters stripped it all)",
                             account_id, fid)
+                continue
+
+            # msg_times is one snapshot from before the loop, and the loop plus
+            # the generate above take minutes on a big account. Re-read his
+            # times now: a fan who wrote back meanwhile goes to reply_cooldown
+            # instead of getting a nudge on top of his reply.
+            fresh = await _load_fan_message_times(account_id, fid)
+            e, effects = decide(e, Seen(now, fresh["in"], fresh["out"], fid in guard_ids),
+                                thresholds)
+            due = await _perform(fid, e, effects)
+            if due is None:
                 continue
 
             if dry_run:
@@ -882,15 +760,15 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     client, fid, text, media_files, log=log,
                     send_purpose="gated")
                 result = outcome.result
-            except Exception as e:
-                _note_error(f"send: {e}")
+            except Exception as exc:
+                _note_error(f"send: {exc}")
                 # A known permanent marker → skip_list and done. Otherwise the send
                 # raised something we don't recognise — but a lapsed-sub fan raises
                 # on EVERY send, and followup only advances state on a returned
                 # send, so it re-fires the same nudge every tick forever (the
                 # paying-but-lapsed loop). Probe WHY and quarantine the undeliverable
                 # ones (1-week rest); a genuine transient just retries next tick.
-                if not await skip_unreachable_fan(account_id, fid, e, log=log):
+                if not await skip_unreachable_fan(account_id, fid, exc, log=log):
                     await quarantine_if_undeliverable(client, account_id, fid)
                 log.warning("send_followup send failed account=%s fan=%s",
                             account_id, fid, exc_info=True)
@@ -914,12 +792,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     emit_live=True,  # WORKER→SSE bridge
                 )
 
-            e.messages_sent[str(next_step)] = now.isoformat()
-            if len(e.messages_sent) >= 3:
-                e.phase = "all_sent_waiting"
-            await _save_entry(account_id, fid, e, now)
+            e, effects = decide(e, Sent(due.step, now), thresholds)
+            await _perform(fid, e, effects)
             sent += 1
-            advanced += 1
             sent_ok = True
         finally:
             # W3: keep the lease (let it expire) + rest the fan on a confirmed
@@ -936,13 +811,16 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     return {
         "eligible": len(eligible),
         **audience_stats,
-        "transitioned": transitioned,
+        "transitioned": fx[Resume()],
         "followups_sent": sent,
-        "state_advanced": advanced,
-        "skipped_unread": skipped_unread,
+        # A dry run's `sent` counts would-sends; nothing was saved for them.
+        "state_advanced": (fx[Cooldown("reply")] + fx[Cooldown("restart")]
+                           + (0 if dry_run else sent)),
+        "skipped_unread": fx[Cooldown("reply")],  # his reply is left for a human
         "skipped_locked": skipped_locked,
         "skipped_cooldown": skipped_cooldown,
-        "skipped_guard": skipped_guard,
+        "skipped_guard": fx[Wait()],
+        "completed": fx[Complete()],  # retired by the 7-day silence cap
         "image_attached": image_attached,
         "errors": errors,
         # Names the FIRST failure of the run. Without it "errors: N" is a number
@@ -954,7 +832,3 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         **({"key_error": key_error} if key_error else {}),
     }
 
-
-async def _reload_one(account_id: str, fan_id: int) -> FollowupState | None:
-    async with get_session() as s:
-        return await s.get(FollowupState, (str(account_id), int(fan_id)))

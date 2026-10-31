@@ -7,7 +7,7 @@
  */
 import type { ReactElement } from "react";
 import { expect } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 export function makeTestQueryClient(): QueryClient {
@@ -39,6 +39,11 @@ export function renderWithProviders(ui: ReactElement, client?: QueryClient) {
     queryClient,
   };
 }
+
+/** Let running animations end: vitest.setup's `animate` finishes on a later
+ *  microtask, as a browser's on a later frame (a swipe's settle, and its
+ *  `onSwipe`, land then). */
+export const settled = () => act(async () => {});
 
 /* ── the automation tabs' two Save controls ─────────────────────────────── */
 

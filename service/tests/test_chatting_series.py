@@ -13,6 +13,7 @@ sales" and comparison lines and the Employee performance tab's Sales and Message
             62); October in Europe is 31 days.
   scope     a "self" Data scope charts only its own Employee.
   plans     the bucketed sends read still seeks ix_messages_chatter_sends.
+  fold      `fold_series`, the pure fold, table-driven: a sale on an edge, an empty bucket, Unattributed only, own scope.
 
 Seeded straight into the temp DB; no network.
 
@@ -24,7 +25,8 @@ _harness.bootstrap()
 
 import asyncio  # noqa: E402
 import os  # noqa: E402
-from datetime import datetime, timedelta  # noqa: E402
+from datetime import datetime, timedelta, timezone  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
 from zoneinfo import ZoneInfo  # noqa: E402
 
 import sqlalchemy as sa  # noqa: E402
@@ -35,6 +37,7 @@ import accounts as account_registry  # noqa: E402
 import employees  # noqa: E402
 import msg_stats  # noqa: E402
 import stats  # noqa: E402
+import stats_employees  # noqa: E402
 from _clock_fixtures import IDS, employee as _employee  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Account, Employee, Transaction, UserAccount  # noqa: E402
@@ -109,10 +112,10 @@ D = datetime(2026, 3, 2)  # a Monday
 # Day 1: E1 sends a PPV fan 1 buys (pending) and a text to fan 1 again; E2 one send. Day 2: E1 on two Creators,
 # the same fan id; a mass message and the sentinel's send count for no one. Day 3: an orphan tip (Unattributed).
 P1 = _msg(C1, 1, E1, D.replace(hour=9), price=1000, paid=True)
-_msg(C1, 1, E1, D.replace(hour=10))
+_msg(C1, 1, E1, D.replace(hour=10, minute=45))
 P2 = _msg(C1, 2, E2, D.replace(hour=11), price=500)
-_sale(C1, 1000, D.replace(hour=12), fan=1, message_id=P1, status="pending")
-_sale(C1, 500, D.replace(hour=13), fan=2, message_id=P2)
+_sale(C1, 1000, D.replace(hour=11, minute=30), fan=1, message_id=P1, status="pending")
+_sale(C1, 500, D.replace(hour=11, minute=30), fan=2, message_id=P2)
 _msg(C1, 3, E1, D.replace(day=3, hour=8))
 _msg(C2, 3, E1, D.replace(day=3, hour=8))
 _msg(C1, 4, E1, D.replace(day=3, hour=9), mass_run_id=7)
@@ -158,7 +161,7 @@ def case_one_employees_performance_by_hour():
     assert len(body["series"]) == 24, body
     e1 = body["by_employee"][str(E1)]
     assert len(e1) == 24 and (e1[9]["direct_ppvs_sent"], e1[10]["direct_messages_sent"]) == (1, 1), e1
-    assert e1[12]["sales_cents"] == 1000 and sum(_col(e1, "sales_cents")) == 1000, e1
+    assert e1[11]["sales_cents"] == 1000 and sum(_col(e1, "sales_cents")) == 1000, e1
 
 
 def case_a_granularity_the_ranges_calendar_days_do_not_allow_is_refused():
@@ -250,7 +253,7 @@ def case_the_points_add_up_to_the_tables_totals_when_the_rules_change_in_the_win
                     params={"effective_from": "2026-03-03T00:00:00Z"})
     assert r.status_code == 200, r.text
     p = _msg(C2, 8, E1, D.replace(day=3, hour=20), price=1000)
-    _sale(C2, 1000, D.replace(day=3, hour=21, minute=30), fan=8, message_id=p)
+    _sale(C2, 1000, D.replace(day=3, hour=20, minute=30), fan=8, message_id=p)
     body = _get(bucket="day", **RANGE)
     assert _col(body["by_employee"][str(E1)], "sales_cents") == [1000, 800, 0], body
     table = {e["employee_id"]: e for e in _get(**RANGE)["employees"]}
@@ -259,6 +262,51 @@ def case_the_points_add_up_to_the_tables_totals_when_the_rules_change_in_the_win
         for eid, row in table.items():
             assert sum(_col(body["by_employee"][str(eid)], key)) == row[key], (key, eid)
         assert sum(_col(body["series"], key)) == sum(row[key] for row in table.values()), key
+
+
+def _send(eid: int | None, bucket: int, messages: int = 1) -> SimpleNamespace:
+    return SimpleNamespace(employee_id=eid, bucket=bucket, messages=messages, ppvs=0, unlocked=0, fans=1)
+
+
+def _credit(eid: int | None, at: datetime | None, cents: int) -> SimpleNamespace:
+    return SimpleNamespace(employee_id=eid, occurred_at=at, amount_cents=cents)
+
+
+FOLD_EDGES = [D, D.replace(day=3), D.replace(day=4)]
+FOLD_AUTO = 99
+# (what, sends, credited sales, own, series' sales and messages, each Employee's sales and messages)
+FOLD_CASES = [
+    ("a sale exactly on an edge opens that bucket; a microsecond before, or before every edge, an earlier one",
+     [], [_credit(10, FOLD_EDGES[1], 100), _credit(10, FOLD_EDGES[1] - timedelta(microseconds=1), 20),
+          _credit(10, D - timedelta(hours=1), 3)], None,
+     ([23, 100, 0], [0, 0, 0]), {"10": ([23, 100, 0], [0, 0, 0])}),
+    ("an empty bucket stays a zero point, in the series and per Employee",
+     [_send(20, 2, messages=2), _send(10, 0)], [], None,
+     ([0, 0, 0], [1, 0, 2]), {"10": ([0, 0, 0], [1, 0, 0]), "20": ([0, 0, 0], [0, 0, 2])}),
+    ("Unattributed only: no point moves, no Employee listed",
+     [_send(None, 1)], [_credit(None, FOLD_EDGES[1], 500)], None,
+     ([0, 0, 0], [0, 0, 0]), {}),
+    ("the own scope keeps its Employees; the Automation sentinel and a sale with no time count for no one",
+     [_send(10, 0), _send(20, 0), _send(FOLD_AUTO, 1)],
+     [_credit(10, FOLD_EDGES[2], 70), _credit(20, FOLD_EDGES[2], 30), _credit(FOLD_AUTO, FOLD_EDGES[0], 9),
+      _credit(10, None, 5)], {10},
+     ([0, 0, 70], [1, 0, 0]), {"10": ([0, 0, 70], [1, 0, 0])}),
+]
+
+
+def case_fold_series_buckets_and_filters_like_the_route():
+    starts = ["2026-03-02T00:00", "2026-03-03T00:00", "2026-03-04T00:00"]
+    bad = []
+    for what, sends, credited, own, (sales, sent), want in FOLD_CASES:
+        series, by_emp = stats_employees.fold_series(FOLD_EDGES, sends, credited, FOLD_AUTO, own, timezone.utc)
+        got = ((_col(series, "start"), _col(series, "sales_cents"), _col(series, "direct_messages_sent")),
+               {k: (_col(v, "sales_cents"), _col(v, "direct_messages_sent")) for k, v in by_emp.items()},
+               list(by_emp) == sorted(by_emp, key=int))
+        if got != ((starts, sales, sent), want, True):
+            bad.append((what, got))
+    assert not bad, bad
+    berlin, _ = stats_employees.fold_series(FOLD_EDGES, [], [], FOLD_AUTO, None, ZoneInfo("Europe/Berlin"))
+    assert _col(berlin, "start")[0] == "2026-03-02T01:00", berlin
 
 
 _harness.run()

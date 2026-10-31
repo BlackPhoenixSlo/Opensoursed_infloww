@@ -14,6 +14,8 @@
  *    `skip_photo_only`, and a missing DeepInfra key shows its own link;
  *  - the Human style boxes at the bottom render the style blob's `autoreply`
  *    layers (default ON), and Save PUTs only the touched ones to style-config;
+ *    a box toggled while that PUT is in flight survives its success, and
+ *    "Saved" waits until no edit made during a save is left unsaved;
  *  - the page header (page-parity ticket 16) holds the Auto-reply switch, and
  *    `?creator=` picks the Creator whose blob seeds the form.
  */
@@ -238,6 +240,53 @@ describe("AutoReplyPage", () => {
       account_id: "acc-a",
       config: { nonnative_autoreply: false, typos_autoreply: true },
     });
+  });
+
+  it("keeps a style box toggled while the style save is in flight", async () => {
+    mockReads();
+    let land!: (v: unknown) => void;
+    put.mockImplementation((path: string) => path === "/admin/style-config"
+      ? new Promise((res) => { land = res; })
+      : Promise.resolve({ account_id: "acc-a", config: {} }));
+    renderWithProviders(<AutoReplyPage />);
+
+    fireEvent.click(await screen.findByRole("switch", { name: /Realistic typos/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole("switch", { name: /Human style/ }));   // while the PUT is out
+    land({ account_id: "acc-a", config: { typos_autoreply: false } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).not.toBeDisabled());
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.getByRole("switch", { name: /Human style/ })).not.toBeChecked();
+    expect(screen.queryByText("Saved")).toBeNull();   // the in-flight toggle is not saved yet
+
+    put.mockResolvedValue({ account_id: "acc-a", config: {} });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(4));
+    const styles = put.mock.calls.filter(([path]) => path === "/admin/style-config");
+    expect(styles[1][1].config).toEqual({ autoreply: false });
+    expect(await screen.findByText("Saved")).toBeInTheDocument();
+  });
+
+  it("does not show Saved over a field edited while the save was in flight", async () => {
+    mockReads();
+    let land!: (v: unknown) => void;
+    put.mockImplementation(() => new Promise((res) => { land = res; }));
+    renderWithProviders(<AutoReplyPage />);
+
+    const delay = await screen.findByRole("spinbutton", { name: "Reply delay in minutes" });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    fireEvent.change(delay, { target: { value: "9" } });   // while the PUT is out
+    land({ account_id: "acc-a", config: {} });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).not.toBeDisabled());
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByText("Saved")).toBeNull();
+
+    put.mockResolvedValue({ account_id: "acc-a", config: {} });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("Saved")).toBeInTheDocument();
+    expect(put.mock.calls[1][1].config.silence_min_minutes).toBe(9);
   });
 
   it("toggles Auto-reply from the page header and saves it", async () => {

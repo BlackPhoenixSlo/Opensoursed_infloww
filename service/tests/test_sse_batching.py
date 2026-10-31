@@ -92,8 +92,7 @@ def _knobs(**kw):
 
 def _reset() -> None:
     events._subs.clear()
-    events._rings.clear()
-    events._evicted.clear()
+    events._ring = events.ed.Rings(events._EPOCH)
 
 
 async def case_quiet_stream_is_one_frame_per_event():

@@ -81,13 +81,18 @@ instead of always advancing +1::
     {"step": 1, "messages": [...],
      "next": {"bought": 5, "ignored": 2, "keyword": {"more": 3}, "default": 3}}
 
-`resolve_next(step, facts)` picks the target with precedence keyword > bought >
-ignored(didn't reply) > default > (+1 fallback); targets are step NUMBERS mapped
-to indices. ABSENT `next` behaves EXACTLY like +1, so every existing funnel is
+`_funnel_routing.resolve_next(step, facts, ...)` picks the target with precedence
+keyword > bought > ignored(didn't reply) > default > (+1 fallback); targets are
+step NUMBERS mapped to indices. ABSENT `next` behaves EXACTLY like +1, so every existing funnel is
 unaffected. A `next` can point backward, so `funnel_state.hops` counts re-routes
 and the walker halts a fan past _MAX_HOPS (done + 'loop_guard') — a mis-authored
 cycle can't spin forever. funnels_api validates the shape + that every target
 references a real step.
+
+Every status rule above (end of script, offer taken, wait schedule, `next`
+branches, blocked, unreachable, the post-send advance, the loop guard) is the pure
+`funnel_decide.decide(entry, event, script) -> (entry', effects)`; run() below
+gathers the facts, builds the event and performs the effects in order (I/O only).
 
 Payload knobs (all optional): `mass_run_id` (process one broadcast only),
 `model` (LLM override), `dry_run` (resolve text but neither send nor advance),
@@ -102,6 +107,7 @@ import json
 import logging
 import random
 import re
+from collections import Counter
 from datetime import datetime, timedelta
 from typing import NamedTuple
 
@@ -114,17 +120,19 @@ import run_slot
 import llm_client                  # call .chat at runtime so tests can patch it
 from attribution import write_outbound_attribution
 from automation_registry import register
-from ._common import (
-    LIVE_PROOF_GUARDRAIL, apply_word_restriction, hold_with_typing,
-    is_substantive_msg, load_voice_blocks,
-    load_strip_emojis, load_typing_indicator,
-    load_typing_wpm, resolve_model, skip_unreachable_fan, strip_emojis,
-    typing_delay_seconds,
+from ._model_pick import resolve_model
+from ._outbound_guard import apply_word_restriction
+from ._send_failure import skip_unreachable_fan
+from ._style_flags import load_strip_emojis, load_voice_blocks
+from ._textutil import is_substantive_msg, strip_emojis
+from ._typing_hold import (
+    hold_with_typing, load_typing_indicator, load_typing_wpm, typing_delay_seconds,
 )
 from ._wordfilter import (  # compliance word filter
     banned_hit_summary, filter_banned, load_banned_words,
 )
-from ._funnel_routing import route, step_number_index, strip_html, resolve_next
+from ._funnel_routing import step_number_index, strip_html
+from . import funnel_decide as fd  # the per-fan status machine (pure)
 from ._funnel_signals import (
     has_fan_paid_ppv, last_funnel_out_at, last_inbound_at, latest_reply,
     replied_recipient_fans,
@@ -141,17 +149,14 @@ log = logging.getLogger("of-relay.automation.reply_mass_funnel")
 
 # ── Knobs (ported from 11_reply_mass_funnel.md) ──────────────────────
 _PURPOSE = "reply_mass_funnel"   # also the account_ai_config.model_by_purpose key
-_DEFAULT_INTERVALS = [2, 4, 10]  # minutes between reply-checks (spec default)
-# This funnel walks ONE fan through steps paced by next_check_at (the intervals
-# above), so it re-messages the same fan every few minutes. The generic 30-min W3
+# This funnel walks ONE fan through steps paced by next_check_at (each step's
+# `check_intervals_min`, funnel_decide.DEFAULT_INTERVALS when absent), so it re-messages the same fan every few minutes. The generic 30-min W3
 # cooldown + the 900s kept lease would BOTH clobber that cadence (every 2-min step
 # skipped as "resting"/"locked" until 30 min passed). So, like the other live
 # flows, set a SHORT cooldown and RELEASE the lease on success. Keep it safely
 # BELOW the smallest step interval (120s) so it never blocks a legit next step.
 _REPLY_COOLDOWN_S = 60
-_FALLBACK_CHECK_MIN = 10         # after the interval list is exhausted, re-poll forever
 _DEFAULT_MAX_CHATS = 40          # per-run send cap (logged when it bites)
-_DEFAULT_PPV_PRICE = 24          # spec default for a paid_ppv step with no price
 # Gap between the two back-to-back bubbles of one step — bumped above the old
 # 1.5s so it reads as "typing the next line" rather than an instant double-post.
 # Jittered ±_STEP_GAP_JITTER so sends don't land on a detectable metronome.
@@ -182,27 +187,9 @@ _MSG_CLIP = 400                  # clip each history message body for the prompt
 _HISTORY_TAIL = 20               # last N messages handed to the model on generate
 # Branching loop guard: a `next` map may point BACKWARD, so a mis-authored funnel
 # can form a cycle. Halt a fan after this many `next` re-routes (passed to
-# _funnel_routing.route as `max_hops`). A linear funnel (no `next`) never bumps the
+# funnel_decide as `Script.max_hops`). A linear funnel (no `next`) never bumps the
 # counter, so it never trips. Tests lower this (a11._MAX_HOPS) to trip the guard fast.
 _MAX_HOPS = 20
-
-
-def _step_intervals(steps: list[dict], idx: int) -> list[int]:
-    """The `check_intervals_min` of the step at `idx` (the one we just sent), or
-    the spec default [2,4,10] when missing/malformed."""
-    if 0 <= idx < len(steps):
-        iv = steps[idx].get("check_intervals_min")
-        if isinstance(iv, list) and iv and all(isinstance(x, (int, float)) for x in iv):
-            return [int(x) for x in iv]
-    return list(_DEFAULT_INTERVALS)
-
-
-def _wait_minutes(intervals: list[int], check_count: int) -> int:
-    """Minutes until the next reply-check: intervals[check_count], then the
-    10-minute fallback once the list is exhausted (spec: re-poll forever)."""
-    if 0 <= check_count < len(intervals):
-        return int(intervals[check_count])
-    return _FALLBACK_CHECK_MIN
 
 
 # ── Model resolution (per-account / per-purpose override, 19 §4) ──────
@@ -358,7 +345,7 @@ def _resolve_step_media(step: dict, acct_media: dict | None) -> tuple[list[int],
     """The (media_files, previews) to attach to THIS step's PPV send. Prefers the
     per-account binding (keyed by step number); falls back to any legacy in-step
     `media_files`/`previews` for funnels not yet seeded into funnel_account_media.
-    Previews are clamped to ids actually in the media set."""
+    Previews are clamped to the media set at send time (fd.ppv_send_kwargs)."""
     per = None
     if acct_media:
         per = (acct_media.get("steps") or {}).get(str(step.get("step")))
@@ -368,7 +355,6 @@ def _resolve_step_media(step: dict, acct_media: dict | None) -> tuple[list[int],
     else:
         media = _digit_ids(step.get("media_files"))
         previews = _digit_ids(step.get("previews"))
-    previews = [m for m in previews if m in media]
     return media, previews
 
 
@@ -543,6 +529,7 @@ async def _save_state(cs: FunnelState, now: datetime) -> None:
         if row is None:  # pragma: no cover — defensive (discovery just inserted it)
             return
         row.current_step = cs.current_step
+        row.last_sent_step = cs.last_sent_step
         row.next_check_at = cs.next_check_at
         row.check_count = cs.check_count
         row.status = cs.status
@@ -637,35 +624,14 @@ async def _send_step(
     vault ids are per-account, so the run loop resolves them via
     FunnelAccountMedia before calling here."""
     media = list(media or [])
-    previews = [m for m in (previews or []) if m in media]
-    step_num = step.get("step")
-    try:
-        step_num = int(step_num)
-    except (TypeError, ValueError):
-        step_num = None
+    previews = list(previews or [])   # clamped to `media` by fd.ppv_send_kwargs
+    step_num = fd.step_number(step)
 
     sent = 0
     for i, text in enumerate(texts):
-        kwargs: dict = {}
-        if is_ppv and i == 0:
-            price = step.get("price")
-            try:
-                price = int(price) if price is not None else _DEFAULT_PPV_PRICE
-            except (TypeError, ValueError):
-                price = _DEFAULT_PPV_PRICE
-            # `media`/`previews` are the caller-resolved per-account vault ids
-            # (FunnelAccountMedia), normalized at the top of this function.
-            # PPV: the TEXT is the sales pitch and must stay FREE/readable — only
-            # the MEDIA is paywalled. So lockedText defaults to False (fan reads the
-            # copy, the $24 image stays locked). A step may opt back into a fully
-            # locked text with `"locked_text": true`.
-            kwargs = {"price": price, "locked_text": bool(step.get("locked_text", False))}
-            if media:
-                kwargs["media_files"] = media
-                # Free teaser: the leading N media go out UNLOCKED (OF `previews`);
-                # already clamped to this send's media set by the caller.
-                if previews:
-                    kwargs["previews"] = previews
+        # PPV: price + the caller-resolved per-account vault ids on the FIRST
+        # (only) line; the text stays readable, only the media is paywalled.
+        kwargs = fd.ppv_send_kwargs(step, media, previews) if is_ppv and i == 0 else {}
 
         # Last-mile OF-restricted word substitution — covers both the LLM step
         # replies and any verbatim funnel copy (V1 filtered every send). Done
@@ -719,29 +685,6 @@ async def _send_step(
     return sent
 
 
-async def _branch_now(cs, step: dict, facts: dict, num_to_idx: dict[int, int],
-                      c: int, steps: list[dict], now: datetime, *,
-                      persist: bool = True) -> bool:
-    """Take this step's `next` route IMMEDIATELY (no reply-wait) and persist.
-
-    THE one way an early branch leaves the walker. Both callers reach it the same
-    way — the buyer (`next.bought`) and the non-replier whose reply window is spent
-    (`next.ignored`) — and both must route with the loop guard ARMED (they only run
-    when a `next` map exists, and that map is what can cycle) at the walker's own
-    `_MAX_HOPS`, then save. Returns True iff the fan finished, so the caller counts
-    the completion.
-
-    The ADVANCE path after a successful send does NOT come here: it waits on the
-    step's own interval list and arms the guard only when the step actually carries
-    a `next`, so it calls `route` directly with those arguments.
-    """
-    done = route(cs, resolve_next(step, facts, num_to_idx, c), steps, now,
-                  wait_min=0, guard=True, max_hops=_MAX_HOPS)
-    if persist:
-        await _save_state(cs, now)
-    return done
-
-
 # ── The automation ───────────────────────────────────────────────────
 
 @register("reply_mass_funnel")
@@ -772,11 +715,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     discovered = 0
     discovery_skipped = 0  # anchors past the window — walking only, not scanning
     advanced = 0          # states that sent a step this tick
-    waiting = 0           # due but fan hasn't replied yet → rescheduled
-    completed = 0         # states marked done this tick
-    converted = 0         # halted because the fan bought the offer (#30)
-    branched = 0          # re-routed by a step's `next` map (bought/ignored jump)
-    blocked = 0           # pre-send guard refused a blank/broken step (#1)
+    # waiting / completed / converted / branched / blocked: fx (funnel_decide's
+    # Wait / Complete / Convert / Branch / Block effects performed this tick)
     skipped_locked = 0
     skipped_cooldown = 0
     errors = 0
@@ -812,6 +752,20 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         if not dry_run:
             await _save_state(cs, now)
 
+    fx: Counter = Counter()  # every effect performed, by value (the stats read it)
+
+    async def _perform(cs: FunnelState, e: fd.Entry, effects: list[fd.Effect]) -> bool:
+        """Carry out decide()'s effects in order; Save copies entry' onto the
+        detached row and persists it. True iff it asks for the step to be
+        generated and sent."""
+        fx.update(effects)
+        for eff in effects:
+            if isinstance(eff, fd.Save):
+                for k, v in vars(e).items():
+                    setattr(cs, k, v)
+                await _save(cs)
+        return fd.Generate() in effects
+
     for (mass_run_id, funnel_id, queue_id, started_at,
          discovery_closed_at, audience, discovery_open) in runs:
         steps = await _load_funnel_steps(funnel_id)
@@ -820,7 +774,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                      mass_run_id, funnel_id)
             continue
         # Branching: `next` targets are step NUMBERS → resolve them to indices.
-        num_to_idx = step_number_index(steps)
+        script = fd.Script(steps=steps, num_to_idx=step_number_index(steps),
+                           max_hops=_MAX_HOPS)
         # MEDIA is per-account (vault ids don't carry between models) — resolve
         # this account's binding once per run; _resolve_step_media falls back to
         # any legacy in-step media for funnels not yet seeded.
@@ -895,12 +850,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                          mass_run_id, max_chats)
                 break
 
-            c = cs.current_step
-            if c >= len(steps):
-                cs.status = "done"
-                await _save(cs)
-                completed += 1
+            # The fan's state, threaded through every decide() below; the row
+            # only follows it on a Save.
+            entry, _fx = fd.decide(fd.Entry.from_row(cs), fd.Due(now), script)
+            await _perform(cs, entry, _fx)
+            if fd.Complete() in _fx:        # past the script's end
                 continue
+            c = entry.current_step
 
             fan_id = int(cs.fan_id)
             # Audience fence at the walk too: a fan who left (or never joined)
@@ -920,13 +876,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             try:
                 step = steps[c]
                 is_ppv = step.get("type") == "paid_ppv"
-                branch = step.get("next") if isinstance(step.get("next"), dict) else None
 
-                # ── Branching FACTS — gathered once, drive resolve_next. #30
-                #    "offer taken" (a PPV unlocked since this funnel's baseline —
-                #    our own last PPV, else the broadcast time), whether the fan
-                #    replied since our last funnel message, and that reply's text.
-                paid_since = cs.last_ppv_sent_at or started_at
+                # ── Branching FACTS — gathered once, drive the status machine.
+                #    #30 "offer taken" (a PPV unlocked since this funnel's
+                #    baseline — our own last PPV, else the broadcast time),
+                #    whether the fan replied since our last funnel message, and
+                #    that reply's text.
+                paid_since = fd.offer_since(entry, started_at)
                 bought = bool(paid_since is not None and await has_fan_paid_ppv(
                     account_id, fan_id, paid_since))
                 last_out = await last_funnel_out_at(account_id, fan_id, mass_run_id)
@@ -934,58 +890,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # the old pair scanned the identical rows twice per due fan per tick.
                 replied, reply_text = await latest_reply(account_id, fan_id, last_out)
                 substantive = is_substantive_msg(reply_text) if reply_text else False
-                facts = {"replied": replied, "bought": bought,
-                         "substantive": substantive, "reply_text": reply_text}
-
-                # ── #30 Offer taken? A fan who UNLOCKED a PPV since this funnel
-                #    began (our own step, or another automation's) has converted.
-                #    With NO `next.bought` route this HALTS and hands off to the
-                #    chatters (the legacy behaviour, unchanged). A `next.bought`
-                #    step instead BRANCHES the buyer onward (e.g. to a thank-you /
-                #    upsell arc); we stamp last_ppv_sent_at=now so the SAME purchase
-                #    can't re-fire the branch next tick. Checked before the reply
-                #    gate so a SILENT buyer also stops the nudge sequence.
-                if bought:
-                    if branch is not None and branch.get("bought") is not None:
-                        cs.last_ppv_sent_at = now
-                        if await _branch_now(cs, step, facts, num_to_idx, c, steps, now,
-                                            persist=not dry_run):
-                            completed += 1
-                        branched += 1
-                        continue
-                    cs.status = "done"
-                    cs.last_error = "offer_taken"
-                    await _save(cs)
-                    converted += 1
+                facts = fd.Facts(replied=replied, bought=bought,
+                                 substantive=substantive, reply_text=reply_text)
+                # Offer taken (halt, or a `next.bought` branch), no reply yet
+                # (wait, or a spent window's `next.ignored` branch), else send.
+                entry, _fx = fd.decide(entry, fd.Checked(now, facts), script)
+                if not await _perform(cs, entry, _fx):
                     continue  # finally releases the lease (sent_ok False)
-
-                if not replied:
-                    # Not yet — reschedule on the just-sent step's interval list.
-                    # `check_count` = checks already made since that send; the send
-                    # itself scheduled check #0 at intervals[0] (route, below), so
-                    # THIS miss moves on to intervals[check_count + 1]. For [2,4,10]
-                    # the checks land +2, +6 (2+4), +16 (2+4+10) after the send, then
-                    # every _FALLBACK_CHECK_MIN — the V1 `_advance_next_check` walk.
-                    # (Reading intervals[check_count] BEFORE the bump reused the
-                    # first gap: +2, +4, +8, +18.)
-                    intervals = _step_intervals(steps, max(c - 1, 0))
-                    # `next.ignored` fires ONLY once the reply window is exhausted —
-                    # the check at the END of the last interval (check_count is then
-                    # len-1) found no reply. A fan still inside the [2,4,10] poll is
-                    # rescheduled exactly as before, not branched away prematurely.
-                    if (branch is not None and branch.get("ignored") is not None
-                            and cs.check_count >= len(intervals) - 1):
-                        if await _branch_now(cs, step, facts, num_to_idx, c, steps, now,
-                                            persist=not dry_run):
-                            completed += 1
-                        branched += 1
-                        continue
-                    cs.check_count += 1
-                    wait = _wait_minutes(intervals, cs.check_count)
-                    cs.next_check_at = now + timedelta(minutes=wait)
-                    await _save(cs)
-                    waiting += 1
-                    continue
 
                 if key_error and _is_generated(step):
                     continue  # no usable key this run — one failed call, not one per fan
@@ -1033,11 +944,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 problems = (["banned_words"] if texts is None
                             else _presend_problems(is_ppv, texts, step_media))
                 if problems:
-                    blocked += 1
-                    cs.last_error = "blocked:" + ",".join(problems)
-                    cs.check_count += 1
-                    cs.next_check_at = now + timedelta(minutes=_FALLBACK_CHECK_MIN)
-                    await _save_state(cs, now)
+                    entry, _fx = fd.decide(entry, fd.Blocked(now, tuple(problems)), script)
+                    await _perform(cs, entry, _fx)
                     log.warning("reply_mass_funnel BLOCKED send account=%s fan=%s step=%s "
                                 "reasons=%s", account_id, fan_id, c, problems)
                     continue
@@ -1063,9 +971,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     # the step texts (an LLM call) every tick. Transients stay
                     # pending and retry when next due.
                     if await skip_unreachable_fan(account_id, fan_id, e, log=log):
-                        cs.status = "done"
-                        await _save_state(cs, now)
-                        completed += 1
+                        entry, _fx = fd.decide(entry, fd.Unreachable(now), script)
+                        await _perform(cs, entry, _fx)
                     log.warning("reply_mass_funnel send failed account=%s fan=%s step=%s",
                                 account_id, fan_id, c, exc_info=True)
                     continue
@@ -1073,27 +980,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     errors += 1
                     continue
 
-                # Advance the state machine + schedule the next reply-check. The
-                # step just sent (index c) decides the NEXT step via resolve_next —
-                # a keyword in the reply, a purchase, or the `default`. With NO
-                # `next` map this is exactly the old current_step + 1 walk.
-                if is_ppv:
-                    # Stamp when our own offer went out — the precise baseline for
-                    # the #30 "offer taken" halt on any subsequent tick.
-                    cs.last_ppv_sent_at = now
-                if is_ppv and branch is None:
-                    # A paid_ppv step with no routing stays terminal → hand off to
-                    # the chatters (legacy behaviour, unchanged).
-                    cs.current_step = c + 1
-                    cs.status = "done"
-                    completed += 1
-                else:
-                    intervals = _step_intervals(steps, c)  # the step just sent
-                    if route(cs, resolve_next(step, facts, num_to_idx, c), steps, now,
-                              wait_min=_wait_minutes(intervals, 0),
-                              guard=branch is not None, max_hops=_MAX_HOPS):
-                        completed += 1
-                await _save_state(cs, now)
+                # Advance the state machine + schedule the next reply-check: the
+                # step just sent picks the next one (a reply keyword, a purchase,
+                # `default`, else +1); a routeless PPV hands off (done).
+                entry, _fx = fd.decide(entry, fd.Sent(now, facts), script)
+                await _perform(cs, entry, _fx)
                 advanced += 1
                 sent_ok = True
                 if lost is not None:
@@ -1126,11 +1017,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "discovered": discovered,
         "discovery_skipped": discovery_skipped,
         "advanced": advanced,
-        "waiting": waiting,
-        "completed": completed,
-        "converted": converted,
-        "branched": branched,
-        "blocked": blocked,
+        "waiting": fx[fd.Wait()],
+        "completed": fx[fd.Complete()],
+        "converted": fx[fd.Convert()],
+        "branched": fx[fd.Branch()],
+        "blocked": fx[fd.Block()],
         "skipped_locked": skipped_locked,
         "skipped_cooldown": skipped_cooldown,
         "audience_mode": _audience_pol.mode,

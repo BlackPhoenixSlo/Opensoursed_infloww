@@ -3,7 +3,7 @@
 /**
  * The pieces the My Automations pages (Auto Post, Auto Mass, Auto Story, Auto-reply, Auto Funnel, Get to know fans)
  * share on Infloww's look (page-parity ticket 16): one creator column bound to `?creator=`, the no-creator
- * empty state, the S4S-settings form block and its 56px switch row, and the 416px delete confirm.
+ * empty state, the S4S-settings form block and its 56px switch row, the Save row, and the 416px delete confirm.
  */
 
 import type { ReactNode } from "react";
@@ -101,6 +101,28 @@ export function ConfirmDelete({ title, children, pending, onConfirm, onClose }: 
       )}>
       {children && <p className="text-fg-dim">{children}</p>}
     </IfModal>
+  );
+}
+
+/** A page Save's verdict (HumanStyleBlock.tsx `usePageSave`): saving, saved, or the failed save's message. */
+export interface SaveVerdict { pending: boolean; saved: boolean; error: string | null }
+
+/** Save, then a `warn` (why it is refused), "Saved" or the failed save's message. */
+export function SaveRow({ save, onSave, disabled, warn }: {
+  save: SaveVerdict;
+  onSave: () => void;
+  disabled?: boolean;
+  warn?: string | null;
+}) {
+  return (
+    <div className="flex items-center gap-3">
+      <IfButton variant="primary" onClick={onSave} disabled={save.pending || disabled} className="min-w-[76px]">
+        {save.pending ? "Saving…" : "Save"}
+      </IfButton>
+      {warn && <span className="text-[12px] text-warn">{warn}</span>}
+      {save.saved && <span className="text-[12px] text-ok">Saved</span>}
+      {save.error && <span className="text-[12px] text-err">{save.error}</span>}
+    </div>
   );
 }
 

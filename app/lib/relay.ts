@@ -873,6 +873,9 @@ export interface VaultMedia {
    *  fallback; the detail drawer reads it directly because it wants the
    *  aspect-preserving full frame first and the square only as a backstop. */
   _thumb?: string;
+  /** The /items `_ai` overlay's suggested price (set in /vault), which prices
+   *  a chat Composer's Vault pick. Screens reading more of it widen it. */
+  _ai?: { suggested_price_cents?: number | null };
 }
 /** The subset of the /items `_ai` overlay the caption reads. */
 export interface VaultAiFields {

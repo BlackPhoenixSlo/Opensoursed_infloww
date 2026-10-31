@@ -24,6 +24,8 @@ of_statistics_reads.json's "/payouts/referrals/chart": no network.
       still runs list it unavailable without a second read.
   case_a_deactivated_creator_is_not_read  listed unavailable, no OF read.
   case_fixture_shape                      OF's captured answer parses.
+  case_imported_first_fails_loudly        `import of_stats_api` before server
+      raises, never a silently empty router (routes 404).
 
 Run: ./venv/bin/python service/tests/test_stats_referrals.py
 """
@@ -35,6 +37,8 @@ _harness.bootstrap()
 
 import asyncio  # noqa: E402
 import copy  # noqa: E402
+import subprocess  # noqa: E402
+import sys  # noqa: E402
 import time  # noqa: E402
 import json  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -45,6 +49,7 @@ import account_health  # noqa: E402
 import auth  # noqa: E402
 import relay_cache  # noqa: E402
 import server  # noqa: E402
+import of_stats_api  # noqa: E402  # after server: its routes load with it
 
 FIX = json.loads((Path(__file__).parent / "fixtures" / "of_statistics_reads.json").read_text())
 
@@ -86,7 +91,7 @@ def _reset(**answers):
 
 
 async def _call(account_id=None, f="2026-10-01", t="2026-10-02"):
-    return await server.admin_stats_referrals(account_id=account_id, from_=f, to=t)
+    return await of_stats_api.admin_stats_referrals(account_id=account_id, from_=f, to=t)
 
 
 async def case_one_read_per_creator_in_cents():
@@ -168,23 +173,23 @@ async def case_a_foreign_creator_is_403():
 async def case_late_creator_is_unavailable():
     _reset(**{A: _chart(1, [])})
     _fakes[B] = _FakeOF(_chart(2, []), delay=1.0)
-    budget, server._REFERRALS_BUDGET_S = server._REFERRALS_BUDGET_S, 0.2
+    budget, of_stats_api._REFERRALS_BUDGET_S = of_stats_api._REFERRALS_BUDGET_S, 0.2
     try:
         out = await _call()
         assert out["unavailable"] == [B] and [r["account_id"] for r in out["rows"]] == [A], out
-        assert len(server._referrals_running) == 1, "the late read was cancelled or dropped"
-        await asyncio.gather(*server._referrals_running)
+        assert len(of_stats_api._referrals_running) == 1, "the late read was cancelled or dropped"
+        await asyncio.gather(*of_stats_api._referrals_running)
         out = await _call()
         assert out["unavailable"] == [] and {r["account_id"] for r in out["rows"]} == {A, B}, out
         assert len(_fakes[B].calls) == 1, "the late read did not land in the cache"
     finally:
-        server._REFERRALS_BUDGET_S = budget
+        of_stats_api._REFERRALS_BUDGET_S = budget
 
 
 async def case_one_read_in_flight_per_creator():
     _reset(**{A: _chart(1, [])})
     _fakes[B] = _FakeOF(_chart(2, []), delay=1.0)
-    budget, server._REFERRALS_BUDGET_S = server._REFERRALS_BUDGET_S, 0.2
+    budget, of_stats_api._REFERRALS_BUDGET_S = of_stats_api._REFERRALS_BUDGET_S, 0.2
     try:
         out = await _call()
         assert out["unavailable"] == [B], out
@@ -193,13 +198,13 @@ async def case_one_read_in_flight_per_creator():
             out = await _call(t=t)
             assert out["unavailable"] == [B], out
         assert len(_fakes[B].calls) == 1, f"stale windows stacked up reads: {_fakes[B].calls}"
-        await asyncio.gather(*server._referrals_running)
+        await asyncio.gather(*of_stats_api._referrals_running)
         _fakes[B].delay = 0.0
         out = await _call(t="2026-10-04")
         assert out["unavailable"] == [], out
         assert len(_fakes[B].calls) == 2, _fakes[B].calls
     finally:
-        server._REFERRALS_BUDGET_S = budget
+        of_stats_api._REFERRALS_BUDGET_S = budget
 
 
 async def case_a_deactivated_creator_is_not_read():
@@ -211,6 +216,15 @@ async def case_a_deactivated_creator_is_not_read():
         await account_health.activate(B)
     assert out["unavailable"] == [B] and [r["account_id"] for r in out["rows"]] == [A], out
     assert _fakes[B].calls == [], "a deactivated Creator was read"
+
+
+def case_imported_first_fails_loudly():
+    # Child inherits the harness's temp-DB env; cwd service/ as under uvicorn.
+    r = subprocess.run([sys.executable, "-c", "import of_stats_api"],
+                       cwd=Path(__file__).resolve().parents[1],
+                       capture_output=True, text=True, timeout=120)
+    assert r.returncode != 0, "of_stats_api imported before server silently succeeded"
+    assert "must be imported by server.py" in r.stderr, r.stderr[-2000:]
 
 
 _harness.run()

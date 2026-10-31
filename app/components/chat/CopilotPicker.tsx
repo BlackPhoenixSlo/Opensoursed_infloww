@@ -26,6 +26,7 @@ import { Bot, RefreshCw } from "lucide-react";
 import { relay } from "@/lib/relay";
 import type { FanId } from "@/lib/fanId";
 import { cn } from "@/lib/utils";
+import { MP } from "@/lib/messagesPro";
 import { PILL, PILL_ICON, PILL_LABEL } from "./ComposerToolbar";
 import { MENU_BOX } from "./MenuParts";
 
@@ -111,7 +112,7 @@ export function CopilotPicker({ accountId, fanId, onPick }: CopilotPickerProps) 
         <div
           role="region"
           aria-label="AI Copilot"
-          className={cn(MENU_BOX, "absolute bottom-full right-0 mb-2 w-80 max-h-96 p-2 z-50 text-xs")}
+          className={cn(MENU_BOX, MP.ours.CopilotPicker.panel, "absolute bottom-full z-50")}
         >
           <div className="flex flex-wrap gap-1.5" role="group" aria-label="Reply style">
             {COPILOT_MODES.map((m) => (
@@ -161,7 +162,7 @@ export function CopilotPicker({ accountId, fanId, onPick }: CopilotPickerProps) 
                 onClick={() => void generate(mode, suggestions)}
                 className="flex items-center gap-1 px-2 py-1 rounded text-fg-dim hover:text-fg hover:bg-bg-elev-1"
               >
-                <RefreshCw size={12} aria-hidden />
+                <RefreshCw aria-hidden className={MP.ours.CopilotPicker.regenerateIcon} />
                 Regenerate
               </button>
             </div>

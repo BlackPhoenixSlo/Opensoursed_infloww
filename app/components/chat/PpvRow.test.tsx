@@ -82,6 +82,20 @@ describe("PPV row: the pill and the row", () => {
     for (const tile of tiles) expect(tile).toHaveClass("size-10.5");
   });
 
+  it('while the row holds media the "PPV" pill is aria-disabled, says Clear closes it, and a click keeps the row', async () => {
+    const user = userEvent.setup();
+    await renderComposer();
+
+    await user.click(screen.getByRole("button", { name: /vault/i }));
+    await user.click(await screen.findByRole("button", { name: "Confirm fixture media" }));
+    expect(ppvPill()).toHaveAttribute("aria-disabled", "true");
+    expect(ppvPill()).not.toBeDisabled(); // focus and hover still reach its title
+    expect(ppvPill()).toHaveAttribute("title", expect.stringMatching(/Clear empties and closes it/));
+    await user.click(ppvPill());
+    expect(ppvRow()).toBeInTheDocument();
+    expect(ppvPill()).toHaveAttribute("aria-pressed", "true");
+  });
+
   it('"Clear" empties the row, keeps the text and hides the row', async () => {
     const user = userEvent.setup();
     const { onSend } = await renderComposer();

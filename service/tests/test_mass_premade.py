@@ -20,6 +20,10 @@ Cases:
       a 2-message list sends the first and re-enqueues mass_premade with the rest.
   case_dry_run_plans_nothing:
       dry_run returns the plan, sends nothing, enqueues nothing.
+  case_enqueue_raises_after_broadcast_parks:
+      send once: the broadcast went out, then enqueueing its unsend raised ->
+      exactly 1 broadcast, the claimed job ends 'error' ("may have sent"), and
+      a second run finds nothing to claim (no re-broadcast).
 
 Run: ./venv/bin/python service/tests/test_mass_premade.py  (exit 0 = pass)
 """
@@ -219,6 +223,34 @@ async def case_randomizer():
     assert call["online_only"] is True
 
 
+async def case_enqueue_raises_after_broadcast_parks():
+    aid = "acc_mp_once"
+    await _seed_account(aid)
+    fake = _use_fake()
+    job_id = await ax.enqueue_job(aid, KIND, payload={"messages": [
+        {"text": "<p>once</p>", "online_only": True, "unsend_after_hours": 8}]})
+    real = ax.enqueue_job
+
+    async def boom(account_id, kind, **kw):
+        if kind == "unsend_messages":
+            raise RuntimeError("database is locked")
+        return await real(account_id, kind, **kw)
+    ax.enqueue_job = boom
+    try:
+        res = await run_once(aid, KIND)
+        again = await run_once(aid, KIND)
+    finally:
+        ax.enqueue_job = real
+    assert res["status"] == "error", res
+    assert len(fake.send_calls) == 1, f"one broadcast, got {len(fake.send_calls)}"
+    async with get_session() as s:
+        job = await s.get(ScheduledJob, job_id)
+    assert job.status == "error", f"job {job.status}: a sent broadcast must not be retried"
+    assert "may have sent" in (job.last_error or ""), job.last_error
+    assert again.get("reason") == "no_job", again
+    assert len(fake.send_calls) == 1, "no re-broadcast"
+
+
 _harness.run(
     case_send_and_schedule_unsend,
     case_resend_chain,
@@ -226,4 +258,5 @@ _harness.run(
     case_drip_list,
     case_dry_run_plans_nothing,
     case_randomizer,
+    case_enqueue_raises_after_broadcast_parks,
 )

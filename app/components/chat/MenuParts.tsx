@@ -11,7 +11,7 @@
  * header modules that open these menus all read it.
  */
 
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
 import { MP } from "@/lib/messagesPro";
@@ -19,8 +19,9 @@ import { NOT_WIRED, notWiredTitle, useNotWiredNote, type NotWiredKey } from "./N
 
 /** A `.pop` menu's box (`MP.menu.panel`, mh:361-363): it scrolls past its
  *  72vh, with the Clone's drop shadow, in our colours. Each menu adds its
- *  place (`MP.ours.<Component>`). */
-export const MENU_PANEL = cn(MP.menu.panel, "overflow-auto overscroll-contain shadow-2xl bg-panel border-border");
+ *  place (`MP.ours.<Component>`). It pops in from its top edge (`pop-menu`,
+ *  globals.css); one opening upward sets `origin-bottom`. */
+export const MENU_PANEL = cn(MP.menu.panel, "pop-menu origin-top overflow-auto overscroll-contain shadow-2xl bg-panel border-border");
 
 /** A `.pop .prow` row (`MP.menu.row`, mh:364): one full-width line, its
  *  contents centred on it and left-aligned. Each menu adds its colours. */
@@ -68,12 +69,15 @@ export function NotWiredMenuRow({ why, children }: { why: NotWiredKey; children:
 
 export type MenuStatus = { ok: boolean; msg: string } | null;
 
-/** A menu's status, and `flash`, which shows an outcome for 2.5 seconds. */
+/** A menu's status, and `flash`, which shows an outcome for 2.5 seconds (a
+ *  newer one gets its full 2.5). */
 export function useMenuStatus() {
   const [status, setStatus] = useState<MenuStatus>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   function flash(ok: boolean, msg: string) {
+    if (timer.current) clearTimeout(timer.current);
     setStatus({ ok, msg });
-    setTimeout(() => setStatus(null), 2500);
+    timer.current = setTimeout(() => setStatus(null), 2500);
   }
   return { status, flash };
 }

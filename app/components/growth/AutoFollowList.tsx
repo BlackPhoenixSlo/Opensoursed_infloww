@@ -28,7 +28,7 @@ import { AccountAvatarPicture } from "@/components/ui/AccountAvatarPicture";
 import { errMsg } from "@/components/growth/_bits";
 import {
   useAutoFollowRecords, useAutoFollowStats, useAutoFollowSwitch,
-  type AutoFollowStatsRow, type RecordSort,
+  type AutoFollowStatsRow, type RecordQuery, type RecordSort,
 } from "@/hooks/useAutoFollowList";
 import { useAccounts, useActiveAccounts } from "@/hooks/useAccounts";
 import { type AccountMeta } from "@/lib/relay";
@@ -36,6 +36,7 @@ import { cn } from "@/lib/utils";
 import { onPopoutClick } from "@/lib/nav";
 import { fmtCents } from "@/lib/format";
 import { SkeletonRows } from "@/components/ui/Skeleton";
+import { usePagedFilters } from "@/hooks/pagedFilters";
 
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July",
   "August", "September", "October", "November", "December"];
@@ -215,22 +216,17 @@ export function AutoFollowDetails({ account, stats, onBack }: {
   stats?: AutoFollowStatsRow | null;
   onBack: () => void;
 }) {
-  const [sort, setSort] = useState<RecordSort>("followed_at");
-  const [order, setOrder] = useState<"asc" | "desc">("desc");
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
-  const [page, setPage] = useState(1);
+  const { sort, order, from, to, page, set, setPage } = usePagedFilters<{
+    sort: RecordSort; order: RecordQuery["order"]; from: string; to: string;
+  }>({ sort: "followed_at", order: "desc", from: "", to: "" });
   const q = useAutoFollowRecords(account.id, {
     sort, order, start: localMidnight(from), end: localMidnight(to, 1),
     limit: PAGE, offset: (page - 1) * PAGE,
   });
   const total = q.data?.total ?? 0;
 
-  const sortBy = (key: RecordSort) => {
-    if (key === sort) setOrder(order === "desc" ? "asc" : "desc");
-    else { setSort(key); setOrder("desc"); }
-    setPage(1);
-  };
+  const sortBy = (key: RecordSort) =>
+    set(key === sort ? { order: order === "desc" ? "asc" : "desc" } : { sort: key, order: "desc" });
 
   return (
     <div className="space-y-4 p-4">
@@ -250,8 +246,8 @@ export function AutoFollowDetails({ account, stats, onBack }: {
         ))}
       </dl>
       <div className="flex flex-wrap items-center gap-4">
-        <IfRangePicker from={from} to={to} onChange={(r) => { setFrom(r.from); setTo(r.to); setPage(1); }} />
-        <IfButton className={RESET} onClick={() => { setFrom(""); setTo(""); setPage(1); }}>Reset</IfButton>
+        <IfRangePicker from={from} to={to} onChange={(r) => set({ from: r.from, to: r.to })} />
+        <IfButton className={RESET} onClick={() => set({ from: "", to: "" })}>Reset</IfButton>
       </div>
       {q.isError && <div className="text-sm text-err">{errMsg(q.error, "Could not load the fans followed")}</div>}
       <div className="overflow-x-auto">

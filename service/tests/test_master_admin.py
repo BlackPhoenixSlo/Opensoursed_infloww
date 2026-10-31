@@ -28,6 +28,10 @@ Cases:
       open the gate for everyone):
       a normal owner is 403 on a non-owned account AND sees only its own
       employee.
+  case_user_roster_is_master_only:
+      GET /admin/users and /admin/users/{id}/accounts: a normal owner 403
+      (a detail, no rows), no session refused, the master 200 with every
+      Agency.
 
 Exit 0 = all pass.
 """
@@ -151,7 +155,7 @@ async def _setup() -> dict[str, object]:
     emp_a = await _seed_employee("Alice (A)", owner_a)
     emp_b = await _seed_employee("Bob (B/master)", master)
     emp_c = await _seed_employee("Carol (C)", owner_c)
-    return {"emp_a": emp_a, "emp_b": emp_b, "emp_c": emp_c}
+    return {"emp_a": emp_a, "emp_b": emp_b, "emp_c": emp_c, "master": master}
 
 
 # ── 5. Cases ─────────────────────────────────────────────────────────
@@ -228,6 +232,34 @@ async def case_non_admin_still_blocked(ids: dict[str, object]) -> None:
             detail=f"got {sorted(seen)!r}")
 
 
+async def case_user_roster_is_master_only(ids: dict[str, object]) -> None:
+    """GET /admin/users names every Agency on the deployment and
+    /admin/users/{id}/accounts every OF account: a non-master owner is 403 on
+    both (no other tenant's rows leak), an absent principal 401, the master 200."""
+    owner_a = _login("velvetvoice")
+    users = owner_a.get("/admin/users")
+    body = users.json() if users.headers.get("content-type", "").startswith("application/json") else None
+    _expect("non-master owner is 403 on GET /admin/users with only a detail (no rows)",
+            users.status_code == 403 and isinstance(body, dict) and set(body) == {"detail"},
+            detail=f"got {users.status_code} {users.text[:80]}")
+    master = _login("founder")
+    master_id = ids["master"]
+    accts = owner_a.get(f"/admin/users/{master_id}/accounts")
+    _expect("non-master owner is 403 on GET /admin/users/{id}/accounts", accts.status_code == 403,
+            detail=f"got {accts.status_code} {accts.text[:80]}")
+    anon = TestClient(server.app).get("/admin/users")
+    _expect("no session is refused on GET /admin/users", anon.status_code in (401, 403),
+            detail=f"got {anon.status_code}")
+    r = master.get("/admin/users")
+    names = {u["username"] for u in r.json()} if r.status_code == 200 else set()
+    _expect("master is 200 on GET /admin/users with every Agency",
+            r.status_code == 200 and {"velvetvoice", "founder", "stranger"} <= names,
+            detail=f"got {r.status_code} {sorted(names)!r}")
+    r = master.get(f"/admin/users/{master_id}/accounts")
+    _expect("master is 200 on GET /admin/users/{id}/accounts", r.status_code == 200,
+            detail=f"got {r.status_code} {r.text[:80]}")
+
+
 # ── 6. Runner ────────────────────────────────────────────────────────
 
 async def _main() -> int:
@@ -237,6 +269,7 @@ async def _main() -> int:
         ("master sees all employee rosters", case_master_sees_all_rosters),
         ("master reaches a DB-only account", case_master_reaches_a_db_only_account),
         ("non-admin still blocked (negative)", case_non_admin_still_blocked),
+        ("user roster is master-only", case_user_roster_is_master_only),
     ]
     for i, (title, fn) in enumerate(cases, 1):
         print(f"\n─── Case {i}: {title} " + "─" * max(2, 40 - len(title)))

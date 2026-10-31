@@ -628,7 +628,9 @@ export function useClockRecords(employeeId: number, from: Date, to: Date, enable
 }
 
 /** An Owner edit: either time or both; `out_utc` alone closes an open event. */
-export const editClockEvent = (id: number, body: { in_utc?: string; out_utc?: string }) =>
+export interface ClockEdit { in_utc?: string; out_utc?: string }
+
+export const editClockEvent = (id: number, body: ClockEdit) =>
   relay.patch<ClockEvent>(`/admin/shifts/clock-events/${id}`, body);
 
 /** An Owner delete of a Clock event (roadmap W6 6.6): its time leaves the Timesheet and Employee reports. */

@@ -35,7 +35,7 @@ each id must be an int or a digit string. Unknown keys pass through untouched
 vault_folder/media_indices on steps that the executor ignores).
 
 Either shape may carry an OPTIONAL `next` map that turns the linear walker into a
-BRANCHING storyline — reply_mass_funnel.resolve_next reads it to pick the step
+BRANCHING storyline — _funnel_routing.resolve_next reads it to pick the step
 after this one from the fan's reply:
   {"next": {"bought": 5, "ignored": 2, "keyword": {"more": 3}, "default": 3}}
 Every target is a step NUMBER and must reference an existing step (else 422).
@@ -148,13 +148,13 @@ def _is_generated(step: dict) -> bool:
                                          and step["prompt"].strip()))
 
 
-# The keys reply_mass_funnel.resolve_next understands on a step's `next` map.
+# The keys _funnel_routing.resolve_next understands on a step's `next` map.
 _NEXT_KEYS = frozenset({"bought", "ignored", "default", "keyword"})
 
 
 def _validate_next(idx: int, step: dict) -> None:
     """Shape-check an OPTIONAL `next` branch map — the storyline routing
-    reply_mass_funnel.resolve_next reads to pick the step after this one
+    _funnel_routing.resolve_next reads to pick the step after this one
     ({"bought": n, "ignored": n, "default": n, "keyword": {word: n}}). Every
     target is a STEP NUMBER (validated to reference a real step across the whole
     funnel in _validate_steps). ABSENT `next` → the classic linear +1 walk, so

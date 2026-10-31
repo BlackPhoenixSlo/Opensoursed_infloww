@@ -78,7 +78,7 @@ async def insert_events(rows: list[dict[str, Any]]) -> None:
     that carried a provider id used to fail that way.
 
     RAISES on failure, so the caller can tell a bad batch from a good one and
-    retry its rows one at a time (events._persist_batch).
+    retry its rows one at a time (events_persist._persist_batch).
 
     Goes through the OF-cache writer (db/of_writer): event_inbox is raw OF
     frames, so it shares the transaction of the transcodes queued with it.

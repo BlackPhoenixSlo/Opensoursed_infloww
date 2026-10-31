@@ -21,6 +21,7 @@ import {
   useUpdateRule,
   type AutomationRule,
 } from "@/hooks/useAutomations";
+import { parseJsonObjectOr } from "@/lib/rawJsonReducer";
 
 export function EditRuleJsonButton({
   accountId,
@@ -98,21 +99,7 @@ function EditRuleJsonModal({
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  function parseOrError(): Record<string, unknown> | null {
-    const t = text.trim();
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(t || "{}");
-    } catch (e) {
-      setErr(`Invalid JSON: ${(e as Error).message}`);
-      return null;
-    }
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      setErr('Payload must be a JSON object, e.g. { "enabled": true }');
-      return null;
-    }
-    return parsed as Record<string, unknown>;
-  }
+  const parseOrError = () => parseJsonObjectOr(text, "Payload", '{ "enabled": true }', setErr);
 
   function onSave() {
     setErr(null);

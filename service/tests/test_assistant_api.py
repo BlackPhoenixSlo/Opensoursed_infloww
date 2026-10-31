@@ -55,6 +55,7 @@ from fastapi import HTTPException  # noqa: E402
 import assistant_api  # noqa: E402
 import auth  # noqa: E402
 from automations import _common  # noqa: E402
+from automations import _model_pick  # noqa: E402
 from automations._common import DEFAULT_MODEL, MODEL_PURPOSES  # noqa: E402
 import assistant_evidence  # noqa: E402
 import assistant_state  # noqa: E402
@@ -74,6 +75,15 @@ from llm_client import (  # noqa: E402
 )
 
 AID = "acc_assistant_test"
+
+# The fetches' wall-clock budgets (0.3–1.5 s) are product latency guards, not
+# what these cases test: on a loaded box (parallel suites, load avg ~30) the
+# 200-rule fetch took 1.8–2.8 s and degraded to docs-only, so the cap case read
+# no LIVE STATE and the happy path grew a fan-pack FAIL_NOTE. Failure paths are
+# driven by raising stubs below, never by timing, so a loose budget hides none.
+assistant_state.TIMEOUT_S = 30.0
+assistant_fan_pack.TIMEOUT_S = 30.0
+assistant_fan_pack.RESOLVE_TIMEOUT_S = 30.0
 
 
 # ── Fake LLM ──────────────────────────────────────────────────────────
@@ -1183,13 +1193,13 @@ async def case_resolve_model_is_total_so_the_answer_survives_a_dead_config_read(
 
     spy = _Spy("Still here.")
     _patch(spy)
-    real = _common.get_session
-    _common.get_session = _boom          # only _common's reads break
+    real = _model_pick.get_session
+    _model_pick.get_session = _boom      # only _model_pick's reads break
     try:
         assert await _common.resolve_model(aid, assistant_api.PURPOSE) == DEFAULT_MODEL
         out = await _ask(account_id=aid)
     finally:
-        _common.get_session = real
+        _model_pick.get_session = real
     assert out["answer"] == "Still here.", out
     assert out["error"] is None, out     # a preference is lost, never the answer
     assert spy.calls[-1]["model"] == DEFAULT_MODEL, spy.calls[-1]["model"]

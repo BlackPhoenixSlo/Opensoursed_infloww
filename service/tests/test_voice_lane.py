@@ -768,6 +768,10 @@ def case_no_production_sender_forgets_the_lane():
     # four different indices, so a bare-name map would check one engine's call against
     # another engine's signature.
     laned: dict[tuple[str, str], int | None] = {}
+    # (shim stem, name) -> (defining stem, name) for every relative `from .x import name`.
+    reexports = {(path.stem, a.name): ((n.module or "").split(".")[-1], a.name)
+                 for path, tree in trees.items() for n in tree.body
+                 if isinstance(n, ast.ImportFrom) and n.level for a in n.names}
     for path, tree in trees.items():
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -820,12 +824,17 @@ def case_no_production_sender_forgets_the_lane():
         # that could not take a lane if it wanted to.
         imported_mods: set[str] = set()
         stems = {stem for stem, _ in laned}
+        stems |= {s for (s, _), tgt in reexports.items() if tgt in laned}  # shims
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
                 src = (node.module or "").split(".")[-1]
                 for alias in node.names:
-                    if (src, alias.name) in laned:
-                        owners[alias.asname or alias.name] = (src, alias.name)
+                    hit = (src, alias.name)
+                    # One hop through a re-export shim (`_common` re-exports
+                    # `guard_offplatform` from `_outbound_guard`).
+                    hit = hit if hit in laned else reexports.get(hit, hit)
+                    if hit in laned:
+                        owners[alias.asname or alias.name] = hit
                     if alias.name in stems:          # `from . import rhythm`
                         modules[alias.asname or alias.name] = alias.name
                     if not node.module or node.module.startswith("."):
@@ -860,6 +869,7 @@ def case_no_production_sender_forgets_the_lane():
                 holder = fn.value.id if isinstance(fn.value, ast.Name) else None
                 stem = modules.get(holder or "")
                 key = (stem, fn.attr) if stem else None
+                key = key if key in laned else reexports.get(key, key)
                 name = fn.attr
             elif isinstance(fn, ast.Name):
                 owned = owners.get(fn.id)

@@ -113,8 +113,8 @@ async def _patched(r, ctx, patches) -> None:
     (ctx.browser_fault_hits, which lib/cli.py requires to be > 0 for every rewrite) and the
     files they hit (ctx.browser_fault_files). A file that cannot be fetched (the page moved
     on mid-load) is aborted, never served unpatched."""
-    hits = ctx.__dict__.setdefault("browser_fault_hits", {})
-    files = ctx.__dict__.setdefault("browser_fault_files", {})
+    hits = ctx.browser_fault_hits
+    files = ctx.browser_fault_files
     try:
         resp = await r.fetch()
         body = await resp.text()
@@ -261,27 +261,128 @@ async def pick_creator(page, name: str, timeout_ms: int = 60_000) -> None:
 
 
 async def swipe(page, x0: float, y0: float, x1: float, y1: float, *, ms: int = 200, steps: int = 10,
-                cancel: bool = False, before_end=None, via: tuple[tuple[float, float], ...] = ()) -> None:
+                cancel: bool = False, via: tuple[tuple[float, float], ...] = (),
+                legs: tuple[tuple[int, int], ...] = (), mid=None, hold_ms: int = 0) -> None:
     """One finger from (x0, y0) to (x1, y1) over `ms`, as Chromium's touch input (CDP
     Input.dispatchTouchEvent): the page sees real touch and pointer events, and the
     compositor scrolls as it would for a finger. `via` bends the path through those
-    points (`steps` moves per leg). `cancel` ends it as the OS taking the gesture does
-    (touchcancel); `before_end` (async) runs with the finger still down."""
+    points (`steps` moves per leg); `legs` gives each leg its own (ms, steps), e.g. a
+    slow drag then a quick flick back. `cancel` ends it as the OS taking the gesture does
+    (touchcancel). `mid` (async) runs halfway through the moves and the finger then
+    moves on, so the release keeps the finger's real speed (a sheet's release decision
+    reads the last ~100ms); `hold_ms` holds the finger still at the end, which makes the
+    release speed 0.
+
+    Each event carries the finger's own time (CDP `timestamp`, which becomes the page's
+    `event.timeStamp`), as a phone's digitizer stamps a touch when it happens, not when
+    the page gets it: the moves are paced against the wall clock, but a slow CDP round
+    trip (a busy dev server) no longer stretches the swipe the page measures. A `mid`
+    or hold pauses that clock with the finger: it held still meanwhile."""
     pts = [(x0, y0), *via, (x1, y1)]
-    legs = len(pts) - 1
+    timing = legs or tuple((ms // (len(pts) - 1), steps) for _ in pts[1:])
+    total = sum(n for _, n in timing)
+    done = 0
     cdp = await page.context.new_cdp_session(page)
+    finger = time.time()  # the finger's clock (s since the epoch, as CDP takes it)
+    sync = (finger, time.monotonic())  # a moment both clocks agree on: moves are due from it
+
+    async def send(kind: str, touch: list) -> None:
+        await cdp.send("Input.dispatchTouchEvent", {"type": kind, "touchPoints": touch, "timestamp": finger})
+
+    def held() -> None:  # the finger held still while something else ran: its clock catches up
+        nonlocal finger, sync
+        finger = max(finger, time.time())
+        sync = (finger, time.monotonic())
+
     try:
-        await cdp.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [{"x": x0, "y": y0}]})
-        for (ax, ay), (bx, by) in zip(pts, pts[1:]):
-            for i in range(1, steps + 1):
-                await asyncio.sleep(ms / legs / steps / 1000)
-                await cdp.send("Input.dispatchTouchEvent", {"type": "touchMove", "touchPoints": [
-                    {"x": ax + (bx - ax) * i / steps, "y": ay + (by - ay) * i / steps}]})
-        if before_end:
-            await before_end()
-        await cdp.send("Input.dispatchTouchEvent", {"type": "touchCancel" if cancel else "touchEnd", "touchPoints": []})
+        await send("touchStart", [{"x": x0, "y": y0}])
+        for ((ax, ay), (bx, by)), (leg_ms, n) in zip(zip(pts, pts[1:]), timing):
+            for i in range(1, n + 1):
+                finger += leg_ms / n / 1000
+                await asyncio.sleep(max(0.0, sync[1] + (finger - sync[0]) - time.monotonic()))
+                await send("touchMove", [{"x": ax + (bx - ax) * i / n, "y": ay + (by - ay) * i / n}])
+                done += 1
+                if mid and done == total // 2:
+                    await mid()
+                    held()
+        if hold_ms:
+            await asyncio.sleep(hold_ms / 1000)
+            finger += hold_ms / 1000
+            held()
+        await send("touchCancel" if cancel else "touchEnd", [])
     finally:
         await cdp.detach()
+
+
+# Every touch event the page sees, from `touch_log` on: [kind, clientX, event.timeStamp, performance.now()].
+TOUCH_LOG_JS = """() => {
+  window.__touches = [];
+  if (window.__touchLogOn) return;
+  window.__touchLogOn = true;
+  for (const ty of ['touchstart', 'touchmove', 'touchend', 'touchcancel']) document.addEventListener(ty, (e) => {
+    const t = e.changedTouches[0];
+    window.__touches.push([ty.slice(5), t ? Math.round(t.clientX) : null, Math.round(e.timeStamp), Math.round(performance.now())]);
+  }, { capture: true, passive: true });
+}"""
+
+
+async def touch_log(page) -> None:
+    """Start (or restart) logging the page's touch events; `touches` reads them."""
+    await page.evaluate(TOUCH_LOG_JS)
+
+
+async def touches(page) -> list:
+    return await page.evaluate("() => window.__touches || []")
+
+
+# In-page recorder for one sheet gesture (`sheet_probe`), on the sheet `sel` (its real element, never a
+# `.exit-ghost` copy): the release (the first touchend), the frame it is first off screen (or gone), its
+# unmount, a hit test at `pt` 50ms after it went off, each touchstart (was the sheet still mounted, was a
+# leaving copy there) and each click (on `main`? sheet still mounted?). Installed once per page; each call
+# resets it and sets the sheet and point it watches.
+SHEET_PROBE_JS = """([sel, px, py]) => {
+  window.__sheetSel = sel;
+  window.__sheetPt = [px, py];
+  window.__sheet = { end: null, off: null, off_by: null, gone: null, hit50: null, starts: [], clicks: [] };
+  if (window.__sheetOn) return;
+  window.__sheetOn = true;
+  // `.exit-ghost`: app/hooks/layerMarks.ts EXIT_GHOST.
+  const real = () => document.querySelector(window.__sheetSel + ':not(.exit-ghost):not(.exit-ghost *)');
+  const opts = { capture: true, passive: true };
+  document.addEventListener('touchstart', () => window.__sheet.starts.push(
+    { t: performance.now(), mounted: !!real(), ghost: !!document.querySelector('.exit-ghost') }), opts);
+  document.addEventListener('touchend', () => { const g = window.__sheet; if (g.end === null) g.end = performance.now(); }, opts);
+  document.addEventListener('click', (e) => window.__sheet.clicks.push({ t: performance.now(), mounted: !!real(),
+    main: !!(e.target instanceof Element && e.target.closest('main')) }), true);
+  // `by`: 'rect' (it slid past the edge) or 'gone' (it unmounted first, its slide cut short).
+  const wentOff = (g, by) => { g.off = performance.now(); g.off_by = by; setTimeout(() => {
+    const h = document.elementFromPoint(window.__sheetPt[0], window.__sheetPt[1]);
+    g.hit50 = { main: !!(h && h.closest('main')), sheetMounted: !!real() }; }, 50); };
+  new MutationObserver(() => { const g = window.__sheet;
+    if (g.end !== null && g.gone === null && !real()) { g.gone = performance.now(); if (g.off === null) wentOff(g, 'gone'); }
+  }).observe(document.body, { childList: true, subtree: true });
+  const tick = () => { const g = window.__sheet; const el = real();
+    if (g.end !== null && g.off === null && el) { const r = el.getBoundingClientRect();
+      if (r.right <= 0 || r.left >= window.innerWidth) wentOff(g, 'rect'); }
+    requestAnimationFrame(tick); };
+  requestAnimationFrame(tick);
+}"""
+SHEET_READ_JS = """() => { const g = window.__sheet; const t = (v) => v === null || g.end === null ? null : Math.round(v - g.end);
+  return { release_to_off_ms: t(g.off), release_to_unmount_ms: t(g.gone),
+    off_to_unmount_ms: g.off === null || g.gone === null ? null : Math.round(g.gone - g.off), off_by: g.off_by,
+    hit50: g.hit50,
+    starts: g.starts.map((s) => ({ ms: t(s.t), mounted: s.mounted, ghost: s.ghost })),
+    clicks: g.clicks.map((c) => ({ ms: t(c.t), mounted: c.mounted, main: c.main })) }; }"""
+
+
+async def sheet_probe(page, sel: str, pt: tuple[float, float] = (0, 0)) -> None:
+    """Record the next gesture on the sheet `sel` (`SHEET_PROBE_JS`); `sheet_read` returns it, times in ms
+    from the release."""
+    await page.evaluate(SHEET_PROBE_JS, [sel, pt[0], pt[1]])
+
+
+async def sheet_read(page) -> dict:
+    return await page.evaluate(SHEET_READ_JS)
 
 
 async def shot(ctx, page, name: str, timeout_ms: float = 30_000) -> str:

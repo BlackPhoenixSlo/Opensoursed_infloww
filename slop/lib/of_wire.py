@@ -26,6 +26,13 @@ concurrently and are recorded in arrival order.
                                            the fake proxy to loopback, never to 1.1.1.1
   POST /api2/v2/chats/{fan}/messages       OF's new message (id, text, createdAt,
                                            fromUser), recorded per Creator in order
+  POST /api2/v2/messages/queue             a mass message queued: `{id, text, createdAt}`,
+                                           the wire body kept per Creator in order
+                                           (`queue`); the answer's shape is a guess
+                                           (of_client reads only `id`)
+  POST /api2/v2/posts                      a feed post created: `{id, text, postedAt}`, the
+                                           wire body kept per Creator in order (`posts`);
+                                           the answer's shape is a guess (`id` is read)
   GET  /api2/v2/subscriptions/count/all    the fan counts (`subscribers.active/all/expired`,
                                            fixed per Creator): the Dashboard's Per-model cards
   GET  /api2/v2/subscriptions/subscribers/chart
@@ -34,10 +41,38 @@ concurrently and are recorded in arrival order.
                                            Dashboard's Referrals tile
   GET  /api2/v2/users/notifications        the alerts feed, empty: the purchases poller
   GET  /api2/v2/payouts/transactions       the payouts feed, empty: Messages Pro's money rail
-  GET  /api2/v2/campaigns, /promotions, /vault/lists, /vault/media, /posts, /users/{id}/posts
+  GET  /api2/v2/campaigns                  the tracking links: `campaigns[uid]` as a scenario set
+                                           it (else none), `offset` / `limit` (bare: 10), deleted
+                                           ones only with `with_deleted`, `hasMore`
+  GET  /api2/v2/promotions, /vault/media, /posts, /users/{id}/posts
                                            empty pages (`{"list": [], "hasMore": false}`):
-                                           the page sweep's tracking links, offers, vault, feed
+                                           the page sweep's offers, vault, feed
+  GET  /api2/v2/vault/lists                the Creator's vault folders, `vault_lists[uid]` (a
+                                           scenario sets them; none: an empty page), in the
+                                           custom order last sorted (`vault_order[uid]`; folders
+                                           it does not name after it, as listed), `offset`/`limit`
+  POST /api2/v2/vault/lists/sort           the folder-list sort: each body recorded per Creator in
+                                           order (`vault_sorts`); `{customOrder, sort: "custom"}`
+                                           sets `vault_order[uid]`. Answers `{"success": true}`
+                                           (bypass, declared: OF's answer body is a guess)
+  GET  /api2/v2/subscriptions/subscribers, /subscriptions/subscribes
+                                           empty rosters (`{"list": [], "hasMore": false}`):
+                                           the fans / following a mass send's recipient
+                                           record pages (bypass, declared: no roster)
+  GET  /api2/v2/vault/media/{id}           one vault media by id: `vault[uid][id]` as a
+                                           scenario set it, else OF's 404 "Media Not Found"
+                                           (which the stills path reads as deleted)
   GET  /api2/v2/trials                     the free trial links, empty (`[]`, a bare list)
+  GET  /api2/v2/lists                      the Creator's custom fan lists (`lists[uid]`, none until
+                                           made), `{list, hasMore}`, `offset`/`limit`: a mass send's
+                                           Auto_Exclude sync (service/audiences.py) reads it
+  POST /api2/v2/lists                      a custom list made: `{id, type, name, usersCount}`
+  GET  /api2/v2/lists/{id}/users           its members, a BARE page (`[{id}]`, no hasMore) as
+                                           audiences._page_all documents OF's; another
+                                           Creator's or unknown list: 404
+  POST /api2/v2/lists/{id}/users/{user}    a member added / removed (`list_users[id]`); answers
+  DELETE (same)                            `{"success": true}` (bypass, declared: OF's answer
+                                           body is a guess)
   any other path                           404, counted (`unmodelled`)
 
 `extra_s[uid]` adds seconds to every /api2/ call of that Creator: a Creator whose proxy
@@ -51,6 +86,11 @@ what the client sends (pings) and pushing nothing. Each connect is recorded
 (`ws_connects`: t, account, token as issued). `drop_ws(ids)` closes those
 Creators' sockets, as OF does when it ends a session's socket: the pump
 reconnects through /users/me.
+
+`fail` (a set of (uid, route) the scenario arms and clears at any time, route as recorded, e.g.
+`"POST /api2/v2/messages/queue"`): while armed, that Creator's every call on that route is answered
+500 (`FAIL_BODY`, a guess at OF's error body) after the usual wait, recorded in `calls` and never kept
+in `queue` / `posts`: OnlyFans failing one model of a fan-out.
 
 A Creator in `otp` (set by the scenario at any time) is a login OnlyFans has
 asked to confirm with a 2FA code: every /api2/ call it makes is answered 400
@@ -79,7 +119,10 @@ OTP_BODY = {"error": {"code": 101, "message": "Confirm it is you", "payload": {
     "otpState": {"email": False, "phoneOtp": False, "appOtp": True, "faceOtp": False, "forceFaceOtp": False,
                  "phoneLast4": "", "phoneCode": {}, "faceCode": {}, "emailCode": {}},
     "strong": False}}}
+FAIL_BODY = {"error": {"code": 0, "message": "slop fake: OF internal error"}}
 _SEND = re.compile(r"/api2/v2/chats/(\d+)/messages")
+_VAULT_ONE = re.compile(r"/api2/v2/vault/media/(\d+)")
+_LIST_USERS = re.compile(r"/api2/v2/lists/(\d+)/users(?:/(\d+))?")
 _NUM = re.compile(r"/\d+(?=/|$)")
 _CHUNK = re.compile(r"/static/prod/f/[^/]+/2313\.js")
 
@@ -88,11 +131,21 @@ class FakeOF:
     def __init__(self, latency_s: float = LATENCY_S):
         self.latency_s = latency_s
         self.otp: set[str] = set()
+        self.fail: set[tuple[str, str]] = set()  # (Creator, route) answered 500 while armed
         self.extra_s: dict[str, float] = {}  # per Creator, seconds added to each /api2/ call
         self.chats: dict[str, list[dict]] = {}  # per Creator, the chat list /api2/v2/chats pages through
+        self.vault_lists: dict[str, list[dict]] = {}  # per Creator, its vault folders (OF's list items)
+        self.vault_order: dict[str, list[int]] = {}   # per Creator, the last customOrder sorted
+        self.vault_sorts: dict[str, list[dict]] = {}  # per Creator, every /vault/lists/sort body, in order
         self.lock = threading.Lock()
         self.calls: list[dict] = []          # every call, arrival order: {t, account, method, route, status}
         self.sends: dict[str, list[dict]] = {}  # per Creator, the messages OF accepted, in order (`t`: arrival)
+        self.queue: dict[str, list[dict]] = {}  # per Creator, the mass-message wire bodies, in order (`t`, `id` added)
+        self.posts: dict[str, list[dict]] = {}  # per Creator, the post-create wire bodies, in order (`t`, `id` added)
+        self.vault: dict[str, dict[int, dict]] = {}  # per Creator, media id -> the by-id read's media dict
+        self.campaigns: dict[str, list[dict]] = {}  # per Creator, OF's /campaigns rows in OF's list order
+        self.lists: dict[str, list[dict]] = {}  # per Creator, its custom fan lists (OF's list items), made order
+        self.list_users: dict[int, list[int]] = {}  # list id -> its members, added order
         self.unmodelled: Counter = Counter()
         self.unsigned = 0
         self._ids = iter(range(9_000_000_000, 10**12))
@@ -192,6 +245,8 @@ class FakeOF:
             per = Counter((c["account"], c["route"], c["status"]) for c in self.calls)
             return {"calls": len(self.calls), "unsigned": self.unsigned, "unmodelled": dict(self.unmodelled),
                     "sends": {a: len(v) for a, v in self.sends.items()},
+                    "queue": {a: len(v) for a, v in self.queue.items()},
+                    "posts": {a: len(v) for a, v in self.posts.items()},
                     "ws_connects": len(self.ws_connects),
                     "by_route": {f"{a} {r} {s}": n for (a, r, s), n in sorted(per.items())}}
 
@@ -236,6 +291,10 @@ class FakeOF:
                     otp = uid in fake.otp
                 if u.path.startswith("/api2/") and otp:
                     return self._record(uid, route, 400, OTP_BODY)
+                with fake.lock:
+                    failing = (uid, route) in fake.fail
+                if failing:
+                    return self._record(uid, route, 500, FAIL_BODY)
                 if method == "GET" and u.path == "/api2/v2/users/me":
                     return self._record(uid, route, 200, {"id": int(uid or 0), "username": f"u{uid}",
                                                           "name": f"Creator {uid}", "isPerformer": True,
@@ -265,13 +324,93 @@ class FakeOF:
                     return self._record(uid, route, 200, {"list": [], "hasMore": False})
                 # The page sweep's reads of a Creator with none of these yet: OF's empty pages (of_client's shapes;
                 # /trials answers a bare list).
-                if method == "GET" and u.path in ("/api2/v2/campaigns", "/api2/v2/promotions", "/api2/v2/vault/lists",
-                                                  "/api2/v2/vault/media"):
+                if method == "GET" and u.path == "/api2/v2/campaigns":  # `campaigns[uid]` paged, OF's /campaigns rules
+                    q = parse_qs(u.query)
+                    with fake.lock:
+                        rows = list(fake.campaigns.get(uid, ()))
+                    if "with_deleted" not in q:
+                        rows = [r for r in rows if not r.get("isDeleted")]
+                    off, lim = int(q.get("offset", ["0"])[0]), int(q.get("limit", ["10"])[0])  # bare: first page only
+                    return self._record(uid, route, 200, {"list": rows[off:off + lim], "hasMore": off + lim < len(rows)})
+                if method == "GET" and u.path == "/api2/v2/vault/lists":
+                    q = parse_qs(u.query)
+                    off, lim = int((q.get("offset") or ["0"])[0]), int((q.get("limit") or ["10"])[0])
+                    with fake.lock:
+                        lists = list(fake.vault_lists.get(uid, ()))
+                        rank = {fid: k for k, fid in enumerate(fake.vault_order.get(uid, ()))}
+                    lists.sort(key=lambda f: rank.get(f["id"], len(rank)))  # stable: the unnamed keep their order
+                    return self._record(uid, route, 200, {"list": lists[off:off + lim], "hasMore": off + lim < len(lists)})
+                if method == "POST" and u.path == "/api2/v2/vault/lists/sort":
+                    body = json.loads(raw or b"{}")
+                    with fake.lock:
+                        fake.vault_sorts.setdefault(uid, []).append({"t": time.time(), "body": body})
+                        if body.get("sort") == "custom" and isinstance(body.get("customOrder"), list):
+                            fake.vault_order[uid] = [int(x) for x in body["customOrder"]]
+                    return self._record(uid, route, 200, {"success": True})
+                if method == "GET" and u.path in ("/api2/v2/promotions", "/api2/v2/vault/media"):
                     return self._record(uid, route, 200, {"list": [], "hasMore": False})
                 if method == "GET" and (u.path == "/api2/v2/posts" or re.fullmatch(r"/api2/v2/users/\d+/posts", u.path)):
                     return self._record(uid, route, 200, {"list": [], "hasMore": False})
+                if method == "GET" and u.path in ("/api2/v2/subscriptions/subscribers",
+                                                  "/api2/v2/subscriptions/subscribes"):
+                    return self._record(uid, route, 200, {"list": [], "hasMore": False})
+                vm = _VAULT_ONE.fullmatch(u.path)
+                if method == "GET" and vm:
+                    with fake.lock:
+                        media = fake.vault.get(uid, {}).get(int(vm.group(1)))
+                    if media is None:
+                        return self._record(uid, route, 404, {"error": {"code": 0, "message": "Media Not Found"}})
+                    return self._record(uid, route, 200, media)
                 if method == "GET" and u.path == "/api2/v2/trials":
                     return self._record(uid, route, 200, [])
+                if u.path == "/api2/v2/lists" and method in ("GET", "POST"):
+                    q = parse_qs(u.query)
+                    off, lim = int((q.get("offset") or ["0"])[0]), int((q.get("limit") or ["10"])[0])
+                    with fake.lock:  # _record takes it too: answer after it is released
+                        mine = fake.lists.setdefault(uid, [])
+                        if method == "POST":
+                            lst = {"id": next(fake._ids), "type": "custom",
+                                   "name": json.loads(raw or b"{}").get("name") or "", "usersCount": 0}
+                            mine.append(lst)
+                            fake.list_users[lst["id"]] = []
+                            ans = dict(lst)
+                        else:
+                            ans = {"list": [{**x, "usersCount": len(fake.list_users[x["id"]])}
+                                            for x in mine[off:off + lim]], "hasMore": off + lim < len(mine)}
+                    return self._record(uid, route, 200, ans)
+                lm = _LIST_USERS.fullmatch(u.path)
+                if lm:
+                    lid = int(lm.group(1))
+                    with fake.lock:
+                        members = (fake.list_users.get(lid)
+                                   if any(x["id"] == lid for x in fake.lists.get(uid, ())) else None)
+                        if members is not None and method == "GET" and not lm.group(2):
+                            q = parse_qs(u.query)
+                            off, lim = int((q.get("offset") or ["0"])[0]), int((q.get("limit") or ["10"])[0])
+                            page = [{"id": i} for i in members[off:off + lim]]
+                        elif members is not None and lm.group(2) and method in ("POST", "DELETE"):
+                            fan = int(lm.group(2))
+                            if method == "POST" and fan not in members:
+                                members.append(fan)
+                            elif method == "DELETE" and fan in members:
+                                members.remove(fan)
+                            page = {"success": True}
+                        else:
+                            page = None
+                    if page is not None:
+                        return self._record(uid, route, 200, page)
+                    if members is None:
+                        return self._record(uid, route, 404, {"error": {"code": 0, "message": "List not found"}})
+                if method == "POST" and u.path in ("/api2/v2/messages/queue", "/api2/v2/posts"):
+                    body = json.loads(raw or b"{}")
+                    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+                    queue = u.path.endswith("/queue")
+                    with fake.lock:
+                        mid = next(fake._ids)
+                        (fake.queue if queue else fake.posts).setdefault(uid, []).append(
+                            {"t": time.time(), "id": mid, **body})
+                    return self._record(uid, route, 200, {"id": mid, "text": body.get("text") or "",
+                                                          ("createdAt" if queue else "postedAt"): now})
                 m = _SEND.fullmatch(u.path)
                 if method == "POST" and m:
                     body = json.loads(raw or b"{}")

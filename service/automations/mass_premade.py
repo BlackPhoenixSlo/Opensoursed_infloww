@@ -147,38 +147,50 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     mass_run_id = res.get("mass_run_id")
     now = datetime.utcnow()
 
-    # ── 2) Schedule the unsend (forever-window mass delete) ─────────────
+    # The broadcast is out: a failure from here parks the job ("may have sent",
+    # run_decide.outcome), never resent, so the legs not yet enqueued are lost.
+    # Named in the log so an operator can redo them by hand.
     unsend_job_id: int | None = None
-    unsend_at_iso: str | None = None
-    unsend_after = _pos_float(spec.get("unsend_after_hours"))
-    if unsend_after and queue_id is not None:
-        unsend_at = now + timedelta(hours=unsend_after)
-        unsend_job_id = await ax.enqueue_job(
-            account_id, "unsend_messages",
-            payload={"targets": [{"queue_id": int(queue_id), "mass_run_id": mass_run_id}]},
-            run_at=unsend_at,
-        )
-        unsend_at_iso = unsend_at.isoformat() + "Z"
-    elif unsend_after and queue_id is None:
-        log.warning("mass_premade: unsend_after set but OF returned no queue id — no auto-unsend")
-
-    # ── 3a) Way 1 resend: re-enqueue this message with count-1 ──────────
     resend_job_id: int | None = None
-    resend_at_iso: str | None = None
-    resend_count = int(spec.get("resend_count") or 0)
-    resend_after = _pos_float(spec.get("resend_after_hours"))
-    if resend_count > 0 and resend_after:
-        resend_spec = {**spec, "resend_count": resend_count - 1}
-        resend_at = now + timedelta(hours=resend_after)
-        resend_job_id = await ax.enqueue_followup(
-            account_id, "mass_premade",
-            payload={"messages": [resend_spec]},
-            run_at=resend_at,
-        )
-        resend_at_iso = resend_at.isoformat() + "Z"
+    remaining: int | None = None
+    try:
+        # ── 2) Schedule the unsend (forever-window mass delete) ─────────────
+        unsend_at_iso: str | None = None
+        unsend_after = _pos_float(spec.get("unsend_after_hours"))
+        if unsend_after and queue_id is not None:
+            unsend_at = now + timedelta(hours=unsend_after)
+            unsend_job_id = await ax.enqueue_job(
+                account_id, "unsend_messages",
+                payload={"targets": [{"queue_id": int(queue_id), "mass_run_id": mass_run_id}]},
+                run_at=unsend_at,
+            )
+            unsend_at_iso = unsend_at.isoformat() + "Z"
+        elif unsend_after and queue_id is None:
+            log.warning("mass_premade: unsend_after set but OF returned no queue id — no auto-unsend")
 
-    # ── 3b) Way 2 drip: hand the rest of the list forward ───────────────
-    remaining = await _drip_rest(account_id, rest)
+        # ── 3a) Way 1 resend: re-enqueue this message with count-1 ──────────
+        resend_at_iso: str | None = None
+        resend_count = int(spec.get("resend_count") or 0)
+        resend_after = _pos_float(spec.get("resend_after_hours"))
+        if resend_count > 0 and resend_after:
+            resend_spec = {**spec, "resend_count": resend_count - 1}
+            resend_at = now + timedelta(hours=resend_after)
+            resend_job_id = await ax.enqueue_followup(
+                account_id, "mass_premade",
+                payload={"messages": [resend_spec]},
+                run_at=resend_at,
+            )
+            resend_at_iso = resend_at.isoformat() + "Z"
+
+        # ── 3b) Way 2 drip: hand the rest of the list forward ───────────────
+        remaining = await _drip_rest(account_id, rest)
+    except BaseException:
+        log.warning("mass_premade_followons_dropped account=%s run_id=%s mass_run=%s "
+                    "unsend=%s resend=%s rest=%s (unsend %sh, resends %s, rest %d message(s); "
+                    "the broadcast went out, the job parks)", account_id, run_id, mass_run_id,
+                    unsend_job_id, resend_job_id, remaining,
+                    spec.get("unsend_after_hours"), spec.get("resend_count") or 0, len(rest))
+        raise
 
     return {
         "status": "ok",

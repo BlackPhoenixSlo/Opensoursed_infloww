@@ -1,8 +1,8 @@
 """
 Background ingest supervisor for OF's /api2/v2/payouts/transactions ledger.
 
-Single async supervisor task per process. 10-min ticks. Sequential per-account
-inside one refresh tick. 0.4s inter-page sleep.
+Single async supervisor task per process. 5-min ticks (`_TICK_INTERVAL_S`).
+Sequential per-account inside one refresh tick. 0.4s inter-page sleep.
 
 Drops X-Priority entirely (the request-context priority does not propagate
 to a background task — see library/db_data/12_transaction_ingest_synthesis.md §2
@@ -17,11 +17,14 @@ row 3). The rate-limit posture is cadence + sequential walk, not a header.
           occurred_at +/- 300s, source='ws', provider_transaction_id IS NULL).
           Patches in place; promotes to source='ledger'.
   Step 3: fresh insert as source='ledger'.
+A page is planned by transaction_ingest_decide.plan_page and written in ONE
+write transaction — none at all for a quiet re-poll (every field equal).
 
-fans.lifetime_spend_cents rule (synthesis §5):
-  Bump on Step 3 only. Never on Step 1 update. Never on Step 2 (the WS path
-  already bumped at event_transcoder.py:378-381). On status->chargedback or
-  refunded, apply delta with max(0, current - prev_amount_cents) clamp.
+fans.lifetime_spend_cents rule (synthesis §5), in the row's own transaction:
+  Bump by the amount on a Step 3 revenue insert. Never on a Step 1 re-poll.
+  Step 2 only reconciles: the WS path already bumped by the WS amount
+  (event_transcoder), so the promote applies (ledger - WS amount). On
+  status->chargedback or refunded, apply -prev_amount_cents, clamped at 0.
 
 paidMessage convergence: when a ledger row arrives with kind='ppv_message'
 AND a plausible unpaid outbound message exists, in the SAME transaction
@@ -36,23 +39,24 @@ and server.py:2388 (`await asyncio.to_thread(...)`).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
-import re
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, NamedTuple
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.ext.asyncio import AsyncSession
 
 import account_health
 import accounts as account_registry
-from attribution_backfill import SETTLED_REVERSALS
 from cadence import boot_grace
 import client_pool
-from db.engine import engine, get_session
+from db import of_writer, write_telemetry
+from db.engine import get_session
 import fansly_backend
 import fansly_revenue
 from db.models import (
@@ -93,10 +97,6 @@ def _env_float(name: str, default: float) -> float:
 # ── Knobs ────────────────────────────────────────────────────────────
 _TICK_INTERVAL_S = 300                  # 5 minutes (was 600 — too slow vs the 30m green tier ceiling)
 _PAGE_SLEEP_S = 0.4
-_ROLLING_WINDOW_DAYS = 7
-_DEFAULT_BACKFILL_DAYS = 90
-_FAIL_BACKOFF_S = 600                   # auto-pause for 10 min after 3 real fails
-                                        # (a proxy CONNECT refusal never counts)
 _PAGE_LIMIT = 100                       # OF max per request
 _BACKFILL_CONCURRENCY = 4               # synthesis review §4
 # Minimum gap between cycles, ALWAYS honoured — the anti-spin floor.
@@ -127,7 +127,6 @@ _MIN_CYCLE_GAP_S = 5.0
 _BOOT_GRACE_S = _env_float("INGEST_BOOT_GRACE_S", 90.0)
 _FAST_BOOT_GRACE_S = _env_float("INGEST_FAST_BOOT_GRACE_S", 30.0)
 _PPV_LINK_LOOKBACK_DAYS = 30
-_FAILS_BEFORE_PAUSE = 3
 # Per-tick orphan-attribution sweep window (see attribution_backfill). Covers
 # a refresh scan's 7-day window plus slack for late-clearing pending rows.
 _ATTR_SWEEP_SINCE_DAYS = 14
@@ -137,10 +136,6 @@ _ATTR_SWEEP_SINCE_DAYS = 14
 # window above must not silently retune this safety gate.
 _POST_OWNERSHIP_SINCE_DAYS = 14
 _STALE_INFLIGHT_S = 900                 # 15 min — escape valve for crashed ticks (see _tick_locks comment)
-
-# Gated dead code. Flip to True when Planner B's WS dispatcher PR starts
-# writing kind='ppv_pending' rows on unlock events (synthesis §5 line 193).
-_ENABLE_PPV_FINGERPRINT = False
 
 # Re-entrant tick guard: if run_one_tick(aid) takes >600s the next supervisor
 # cycle would fire concurrently and double-write. Per-account asyncio.Lock.
@@ -154,7 +149,7 @@ _tick_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 _ONLINE_WINDOW_S = 600
 
 # A run_one_tick stamps current_status='refreshing'/'backfilling' at start
-# (line ~641) and overwrites it at end via _mark_success / _record_failure.
+# (scan_started) and overwrites it at end via _mark_success / _record_failure.
 # If the tick task is cancelled (uvicorn reload, deploy, SIGTERM) or the
 # process dies between those points, the stamp persists in the DB and the
 # /run endpoint's 409 guard locks the account out permanently. _STALE_INFLIGHT_S
@@ -162,153 +157,48 @@ _ONLINE_WINDOW_S = 600
 # as a tombstone from a crashed prior holder. 15min >> typical tick duration
 # (under 60s steady-state, a few min during a fresh 90d backfill).
 
-# ── Kind catalog (HTML-stripped description prefix -> kind) ─────────
-# Order matters — match top-to-bottom. Public so the admin
-# /unknown-kinds endpoint can render the prefix table.
-KIND_CATALOG: tuple[tuple[str, str], ...] = (
-    # OF's vocab: "Subscription from X" = first charge (new sub);
-    # "Recurring subscription from X" = monthly renewal. Verified
-    # against the data: of 57 fans with both labels, 56 had the plain
-    # "Subscription from" row strictly earlier than "Recurring".
-    # Mapping directly from the prefix beats the `_maybe_promote_to_rebill`
-    # heuristic — that heuristic depends on insertion order and quietly
-    # fails when historical backfill writes newest-first.
-    ("Recurring subscription from ", "rebill"),        # explicit renewal
-    ("Subscription from ",           "subscription"),  # first charge; promoted by safety net
-    ("Tip in chat from ",            "tip"),
-    ("Tip from ",                    "tip"),
-    ("Tip on post from ",            "tip_post"),
-    ("Tip on stream from ",          "tip_stream"),
-    ("Payment for message from ",    "ppv_message"),   # OF's actual prefix for PPV unlocks
-    ("Message from ",                "ppv_message"),
-    ("Post from ",                   "ppv_post"),
-    ("Post purchase by ",            "ppv_post"),       # OF's actual ledger prefix for feed-post unlocks
-    ("Stream from ",                 "ppv_stream"),
-    ("Custom request from ",         "custom"),
-    ("Custom from ",                 "custom"),
+# The pure half (kind catalog, row parsing, the page plan, the scan state
+# machine) lives in transaction_ingest_decide; every name stays importable
+# from here.
+from transaction_ingest_decide import (  # noqa: E402,F401
+    KIND_CATALOG,
+    PATCH_FIELDS,
+    IN_FLIGHT,
+    SCAN_FIELDS,
+    _DEFAULT_BACKFILL_DAYS,
+    _ENABLE_PPV_FINGERPRINT,
+    _FAIL_BACKOFF_S,
+    _FAILS_BEFORE_PAUSE,
+    _HTML_TAG,
+    _NON_REVENUE_STATUSES,
+    _REFUND_STATUSES,
+    _ROLLING_WINDOW_DAYS,
+    _STATUS_MAP,
+    Existing,
+    RowOp,
+    ScanState,
+    WsTip,
+    _classify_kind,
+    _normalize_status,
+    _parse_iso,
+    _parse_row,
+    _strip_html,
+    _to_cents,
+    decide_mode,
+    is_paused,
+    parse_page,
+    plan_page,
+    scan_after_failure,
+    scan_after_success,
+    scan_interrupted,
+    scan_started,
+    subscription_fans,
+    tip_window,
+    window_for,
 )
-
-# OF's status vocab differs from the original capture. Map to Phase F vocab.
-_STATUS_MAP = {
-    "done":           "cleared",
-    "loading":        "pending",
-    "undo":           "chargedback",
-    "pending_return": "refund_pending",
-}
-
-_HTML_TAG = re.compile(r"<[^>]+>")
-_REFUND_STATUSES = SETTLED_REVERSALS
-_NON_REVENUE_STATUSES = (*SETTLED_REVERSALS, "failed")
-
-
-def _normalize_status(raw_status: str | None) -> str:
-    if not raw_status:
-        return "cleared"
-    return _STATUS_MAP.get(raw_status, raw_status)
-
-
-# ── Parsing helpers ─────────────────────────────────────────────────
-
-def _strip_html(s: str | None) -> str:
-    if not s:
-        return ""
-    return _HTML_TAG.sub("", s).strip()
-
-
-def _classify_kind(description: str | None) -> str:
-    text_ = _strip_html(description) if description and "<" in description else (description or "").strip()
-    for prefix, kind in KIND_CATALOG:
-        if text_.startswith(prefix):
-            return kind
-    return "unknown"
-
-
-def _to_cents(v: Any) -> int | None:
-    if v is None or v == "":
-        return None
-    try:
-        return int(round(float(v) * 100))
-    except Exception:
-        return None
-
-
-def _parse_iso(s: str | None) -> datetime | None:
-    if not s:
-        return None
-    try:
-        return datetime.fromisoformat(s.replace("Z", "+00:00")).replace(tzinfo=None)
-    except Exception:
-        return None
-
-
-def _parse_row(raw: dict) -> dict:
-    """Map an OF /payouts/transactions row to the local-column dict. The row
-    itself is not kept — see `Transaction.raw_json`."""
-    user = raw.get("user") or {}
-    return {
-        "provider_id": raw.get("id"),
-        "fan_id": user.get("id"),
-        "amount_cents": _to_cents(raw.get("amount")) or 0,
-        "currency": raw.get("currency") or "USD",
-        "occurred_at": _parse_iso(raw.get("createdAt")) or datetime.utcnow(),
-        "status": _normalize_status(raw.get("status")),
-        "cleared_at": _parse_iso(raw.get("clearedAt")) if raw.get("clearedAt") else None,
-        "payout_pending_days": raw.get("payoutPendingDays"),
-        "net_cents": _to_cents(raw.get("net")),
-        "fee_cents": _to_cents(raw.get("fee")),
-        "vat_cents": _to_cents(raw.get("vatAmount")),
-        "description": _strip_html(raw.get("description") or ""),
-    }
 
 
 # ── Writer pieces ───────────────────────────────────────────────────
-
-async def _maybe_promote_to_rebill(s, account_id: str, fan_id: int | None, kind: str) -> str:
-    """First subscription stays 'subscription'; second+ becomes 'rebill'."""
-    if kind != "subscription" or not fan_id:
-        return kind
-    res = await s.execute(
-        select(Transaction.id).where(
-            Transaction.account_id == account_id,
-            Transaction.fan_id == fan_id,
-            Transaction.kind.in_(("subscription", "rebill")),
-        ).limit(1)
-    )
-    return "rebill" if res.scalar() is not None else "subscription"
-
-
-async def _fingerprint_lookup(s, account_id: str, parsed: dict) -> Transaction | None:
-    """WS-pump sibling lookup for the same logical tip event.
-
-    Loose tolerance: amount +/- max(10c, 1%) for OF fee rounding ($5.00 ->
-    $4.99 net); time +/- 300s for WS-vs-ledger clock drift. Restricted to
-    source='ws' AND provider_transaction_id IS NULL so we never collide with
-    another ledger row."""
-    fan_id = parsed["fan_id"]
-    amount = parsed["amount_cents"]
-    if not fan_id:
-        return None
-    tol = max(10, amount // 100)
-    lo, hi = amount - tol, amount + tol
-    t_lo = parsed["occurred_at"] - timedelta(seconds=300)
-    t_hi = parsed["occurred_at"] + timedelta(seconds=300)
-    res = await s.execute(
-        select(Transaction).where(
-            Transaction.account_id == account_id,
-            Transaction.fan_id == fan_id,
-            Transaction.kind == "tip",
-            Transaction.source == "ws",
-            Transaction.provider_transaction_id.is_(None),
-            Transaction.amount_cents >= lo,
-            Transaction.amount_cents <= hi,
-            Transaction.occurred_at >= t_lo,
-            Transaction.occurred_at <= t_hi,
-        )
-        .order_by(Transaction.occurred_at.desc())
-        .limit(1)
-    )
-    return res.scalar_one_or_none()
-
 
 # Pathological-case guard for the linker's candidate fetch. A fan's same-price
 # outbound messages in a 30-day window are normally a handful; if we ever see
@@ -537,10 +427,15 @@ async def relink_orphan_ppvs(
         oldest first, `stamp_paid=False` (attribution only, zero message-state
         side effects).
 
-    CONCURRENCY: each row gets its OWN session + immediate commit — write
-    locks stay short against the live WS pump/ticks and a failure loses one
-    row, not the batch. An IntegrityError (uq_tx_msg race with a live tick
-    claiming the same message) rolls back that row only → `conflict_skipped`.
+    CONCURRENCY: a read-only pass plans the batch; only the orphans of the
+    fans it would link something for are revisited (a link can free or take
+    a sibling orphan's candidate), in ONE write transaction (`_ledger_txn`,
+    BEGIN IMMEDIATE, labelled `ledger-relink`) — a tick whose orphans are all
+    ambiguous takes no write lock at all, and the lock is held for the
+    linkable few, not the whole batch. Each revisit re-checks
+    `message_id IS NULL` and re-picks its candidate, in a SAVEPOINT: an
+    IntegrityError (uq_tx_msg race with a claim of the same message) rolls
+    back that row only → `conflict_skipped`.
 
     DRY RUN is genuinely read-only: it runs the same candidate selector and
     reports what apply WOULD do, tracking would-be claims in memory so two
@@ -551,7 +446,6 @@ async def relink_orphan_ppvs(
     conflict_skipped, journal: [{tx_id, message_id}], next_after} —
     `next_after` is the keyset cursor for the next chunk (None = exhausted).
     """
-    from sqlalchemy.exc import IntegrityError
     from sqlalchemy import tuple_ as sa_tuple
 
     stats: dict[str, Any] = {
@@ -589,70 +483,87 @@ async def relink_orphan_ppvs(
 
     async with get_session() as s:
         rows = (await s.execute(q)).all()
-
-    dry_claimed: set[tuple[str, int, int]] = set()
-
-    for tx_id, aid, fid, cents, occ in rows:
-        stats["examined"] += 1
-        async with get_session() as s:
-            try:
-                tx = (await s.execute(
-                    select(Transaction).where(
-                        Transaction.id == tx_id,
-                        Transaction.message_id.is_(None),  # re-check: live tick may have won
-                    )
-                )).scalar_one_or_none()
-                if tx is None:
-                    stats["conflict_skipped"] += 1
-                    continue
-                msg, reason = await _select_ppv_link_candidate(
-                    s, account_id=aid, fan_id=int(fid),
-                    amount_cents=int(cents or 0), occurred_at=occ,
-                )
-                if msg is None:
-                    stats["ambiguous_skipped" if reason == "ambiguous"
-                          else "no_candidate"] += 1
-                    continue
-                claim_key = (str(aid), int(fid), int(msg.message_id))
-                if dry_run:
-                    if claim_key in dry_claimed:
-                        stats["conflict_skipped"] += 1
-                        continue
-                    dry_claimed.add(claim_key)
-                    stats["linked"] += 1
-                    stats["journal"].append(
-                        {"tx_id": int(tx_id), "message_id": int(msg.message_id)}
-                    )
-                    continue  # read-only: no mutation, session commits nothing
-                if stamp_paid:
-                    msg.is_paid = True
-                    msg.purchased_at = occ
-                tx.message_id = msg.message_id
-                await s.commit()
-                stats["linked"] += 1
-                stats["journal"].append(
-                    {"tx_id": int(tx_id), "message_id": int(msg.message_id)}
-                )
-                log.info(
-                    "relink_ppv_linked tx=%d account=%s fan=%s msg=%d cents=%d stamp_paid=%s",
-                    tx_id, aid, fid, int(msg.message_id), int(cents or 0), stamp_paid,
-                )
-                # Paid → owned. Only on stamp_paid runs: the attribution-only
-                # backfill promises zero downstream side effects. After the
-                # commit above, so no lock is held.
-                if stamp_paid:
-                    await ownership.try_stamp_message(
-                        str(aid), int(fid), int(msg.message_id),
-                        price_cents=int(cents or 0),
-                        context=f"relink tx={tx_id}")
-            except IntegrityError:
-                await s.rollback()
-                stats["conflict_skipped"] += 1
+        dry = await _relink_pass(s, rows, dry_run=True, stamp_paid=stamp_paid)
+    outcomes, journal = dry["outcomes"], dry["journal"]
+    if not dry_run and journal:
+        fans = {(str(r[1]), int(r[2])) for r in rows if outcomes[r[0]] == "linked"}
+        async with _ledger_txn("ledger-relink") as s:
+            real = await _relink_pass(s, [r for r in rows if (str(r[1]), int(r[2])) in fans],
+                                      dry_run=False, stamp_paid=stamp_paid)
+        outcomes, journal = {**outcomes, **real["outcomes"]}, real["journal"]
+        # Paid → owned. Only on stamp_paid runs: the attribution-only
+        # backfill promises zero downstream side effects. After the commit,
+        # so no lock is held.
+        for tx_id, aid, fid, msg_id, cents in real["stamps"]:
+            await ownership.try_stamp_message(
+                str(aid), int(fid), int(msg_id), price_cents=int(cents or 0),
+                context=f"relink tx={tx_id}")
+    counts = Counter(outcomes.values())
+    stats.update({k: counts[k] for k in _RELINK_OUTCOMES}, examined=len(rows), journal=journal)
 
     if len(rows) == limit and not newest_first and rows:
         last = rows[-1]
         stats["next_after"] = (last.occurred_at.isoformat(), int(last.id))
     return stats
+
+
+_RELINK_OUTCOMES = ("linked", "ambiguous_skipped", "no_candidate", "conflict_skipped")
+
+
+async def _relink_pass(s, rows, *, dry_run: bool, stamp_paid: bool) -> dict[str, Any]:
+    """relink_orphan_ppvs over `rows` in session `s`. dry_run: read-only,
+    would-be claims tracked in memory. Else links in `s` (the caller's
+    write transaction), one SAVEPOINT per row. Returns `outcomes` (tx id ->
+    one of _RELINK_OUTCOMES), `journal`, and `stamps`: the links whose
+    ownership stamp waits for the commit."""
+    from sqlalchemy.exc import IntegrityError
+
+    outcomes: dict[int, str] = {}
+    out: dict[str, Any] = {"outcomes": outcomes, "journal": [], "stamps": []}
+    dry_claimed: set[tuple[str, int, int]] = set()
+    for tx_id, aid, fid, cents, occ in rows:
+        tx = (await s.execute(
+            select(Transaction).where(
+                Transaction.id == tx_id,
+                Transaction.message_id.is_(None),  # re-check: live tick may have won
+            )
+        )).scalar_one_or_none()
+        if tx is None:
+            outcomes[tx_id] = "conflict_skipped"
+            continue
+        msg, reason = await _select_ppv_link_candidate(
+            s, account_id=aid, fan_id=int(fid),
+            amount_cents=int(cents or 0), occurred_at=occ,
+        )
+        if msg is None:
+            outcomes[tx_id] = "ambiguous_skipped" if reason == "ambiguous" else "no_candidate"
+            continue
+        if dry_run:
+            claim_key = (str(aid), int(fid), int(msg.message_id))
+            if claim_key in dry_claimed:
+                outcomes[tx_id] = "conflict_skipped"
+                continue
+            dry_claimed.add(claim_key)
+        else:
+            try:
+                async with s.begin_nested():
+                    if stamp_paid:
+                        msg.is_paid = True
+                        msg.purchased_at = occ
+                    tx.message_id = msg.message_id
+                    await s.flush()
+            except IntegrityError:
+                outcomes[tx_id] = "conflict_skipped"
+                continue
+            log.info(
+                "relink_ppv_linked tx=%d account=%s fan=%s msg=%d cents=%d stamp_paid=%s",
+                tx_id, aid, fid, int(msg.message_id), int(cents or 0), stamp_paid,
+            )
+            if stamp_paid:
+                out["stamps"].append((tx_id, aid, fid, int(msg.message_id), cents))
+        outcomes[tx_id] = "linked"
+        out["journal"].append({"tx_id": int(tx_id), "message_id": int(msg.message_id)})
+    return out
 
 
 async def _has_recent_post_txn(account_id: str, *, since: datetime) -> bool:
@@ -700,272 +611,304 @@ async def _bump_lifetime(s, account_id: str, fan_id: int, amount_cents: int) -> 
     fan.updated_at = datetime.utcnow()
 
 
-async def _apply_refund_delta(account_id: str, fan_id: int, prev_amount_cents: int) -> None:
-    """SELECT-then-UPDATE on fans.lifetime_spend_cents needs writer-lock
-    serialization. SQLite's busy_timeout does NOT cover SQLITE_BUSY_SNAPSHOT
-    (a snapshot conflict, not a lock-wait). Open a fresh connection in
-    AUTOCOMMIT mode and issue BEGIN IMMEDIATE upfront so the read-modify-write
-    pair is atomic against any concurrent writer."""
-    await _apply_lifetime_delta(account_id, fan_id, -prev_amount_cents)
-
-
-async def _apply_lifetime_delta(account_id: str, fan_id: int, delta_cents: int) -> None:
-    """Signed-delta sibling of _apply_refund_delta. Same BEGIN IMMEDIATE
-    serialization rationale."""
+async def _apply_lifetime_delta(s, account_id: str, fan_id: int, delta_cents: int) -> None:
+    """Signed change to an EXISTING fan's lifetime spend, clamped at 0 (a
+    chargeback takes the sale off; a promote reconciles the WS amount to the
+    ledger's). Runs inside the caller's `_ledger_txn`: BEGIN IMMEDIATE already
+    holds the write lock, so the read-modify-write cannot hit
+    SQLITE_BUSY_SNAPSHOT and commits with the row it belongs to — a failure
+    between the two can no longer leave the counter stale."""
     if delta_cents == 0:
         return
-    async with engine.connect() as conn:
-        conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
-        await conn.execute(text("BEGIN IMMEDIATE"))
-        try:
-            cur = await conn.execute(
-                text(
-                    "SELECT lifetime_spend_cents FROM fans "
-                    "WHERE account_id=:aid AND fan_id=:fid"
-                ),
-                {"aid": account_id, "fid": fan_id},
-            )
-            row = cur.first()
-            if row is None:
-                await conn.execute(text("COMMIT"))
-                return
-            new_val = max(0, (row[0] or 0) + delta_cents)
-            await conn.execute(
-                text(
-                    "UPDATE fans SET lifetime_spend_cents=:v, "
-                    "updated_at=CURRENT_TIMESTAMP "
-                    "WHERE account_id=:aid AND fan_id=:fid"
-                ),
-                {"v": new_val, "aid": account_id, "fid": fan_id},
-            )
-            await conn.execute(text("COMMIT"))
-        except Exception:
-            await conn.execute(text("ROLLBACK"))
-            raise
+    fan = await s.get(Fan, (account_id, fan_id))
+    if fan is None:
+        return
+    fan.lifetime_spend_cents = max(0, (fan.lifetime_spend_cents or 0) + delta_cents)
+    fan.updated_at = datetime.utcnow()
 
 
-async def _write_one(account_id: str, raw: dict) -> tuple[int, int]:
-    """Returns (inserted, patched). One transaction per row. See the module
-    docstring for the 3-step dedup contract."""
-    parsed = _parse_row(raw)
-    if not parsed["provider_id"]:
-        log.info("ingest_tx_skip no_provider_id account=%s", account_id)
-        return (0, 0)
+@contextlib.asynccontextmanager
+async def _ledger_txn(label: str = "ledger"):
+    """One ledger write transaction: `of_writer.immediate()` (BEGIN IMMEDIATE,
+    the lock up front) with an ORM session on its connection, its writes
+    labelled `label` in write_telemetry (`ledger`: the page writer;
+    `ledger-relink`: the relink sweep). Flushed on success; the COMMIT /
+    ROLLBACK is immediate()'s."""
+    with write_telemetry.writer(label):
+        async with of_writer.immediate() as conn:
+            s = AsyncSession(bind=conn, expire_on_commit=False)
+            try:
+                yield s
+                await s.flush()
+            finally:
+                await s.close()
 
-    raw_kind = _classify_kind(parsed["description"])
-    if raw_kind == "unknown":
-        log.info(
-            "ingest_tx_unknown_kind account=%s provider=%s description=%r",
-            account_id, parsed["provider_id"], parsed["description"][:120],
-        )
 
-    fingerprint_eligible = raw_kind == "tip" or (
-        _ENABLE_PPV_FINGERPRINT and raw_kind.startswith("ppv")
-    )
+class _PageRead(NamedTuple):
+    """A page read and planned: the ORM rows the apply writes over, and the
+    plan made from their snapshots."""
+    held: dict[str, Transaction]   # provider id (text) -> its row
+    ws: dict[int, Transaction]     # Transaction.id -> WS-pump tip row
+    ops: list[RowOp]
 
-    refund_flip_pending: tuple[int, int] | None = None  # (fan_id, prev_amount)
-    lifetime_delta_pending: tuple[int, int] | None = None  # (fan_id, delta_cents)
-    ownership_stamp_pending: tuple[int, int, int] | None = None  # (fan_id, message_id, cents)
-    broadcast_reason: str | None = None  # set when the row is news, not a re-poll
 
-    async with get_session() as s:
-        # Step 1: existing row by provider_id (re-poll, status flip).
-        prev = (await s.execute(
-            select(Transaction).where(
-                Transaction.account_id == account_id,
-                Transaction.provider_transaction_id == parsed["provider_id"],
-            ).limit(1)
-        )).scalar_one_or_none()
-        kind = await _maybe_promote_to_rebill(s, account_id, parsed["fan_id"], raw_kind)
+async def _read_plan(s, account_id: str, parsed: list[dict]) -> _PageRead:
+    """Read what `plan_page` needs — the rows already held by provider id,
+    the WS-pump tips a ledger tip may be the twin of, the fans that already
+    have a subscription row — and plan the page against it."""
+    pids = [p["provider_id"] for p in parsed if p["provider_id"]]   # keyed as text: the column's type
+    held: dict[str, Transaction] = {}
+    if pids:
+        for tx in (await s.execute(select(Transaction).where(
+            Transaction.account_id == account_id,
+            Transaction.provider_transaction_id.in_(pids),
+        ))).scalars():
+            held.setdefault(str(tx.provider_transaction_id), tx)
+    ws: dict[int, Transaction] = {}
+    window = tip_window(parsed, held)
+    if window is not None:
+        fans, lo, hi = window
+        for tx in (await s.execute(select(Transaction).where(
+            Transaction.account_id == account_id,
+            Transaction.fan_id.in_(fans),
+            Transaction.kind == "tip",
+            Transaction.source == "ws",
+            Transaction.provider_transaction_id.is_(None),
+            Transaction.occurred_at >= lo,
+            Transaction.occurred_at <= hi,
+        ))).scalars():
+            ws[tx.id] = tx
+    sub_fans = subscription_fans(parsed)
+    subscribed: set[int] = set()
+    if sub_fans:
+        subscribed = {r[0] for r in (await s.execute(select(Transaction.fan_id).where(
+            Transaction.account_id == account_id,
+            Transaction.fan_id.in_(sub_fans),
+            Transaction.kind.in_(("subscription", "rebill")),
+        ).distinct())).all()}
+    existing = {pid: Existing(*(getattr(tx, f) for f in PATCH_FIELDS)) for pid, tx in held.items()}
+    fingerprints = [WsTip(tx.id, tx.fan_id, tx.amount_cents, tx.occurred_at) for tx in ws.values()]
+    return _PageRead(held, ws, plan_page(parsed, existing, fingerprints, subscribed_fans=subscribed))
 
-        if prev is not None:
-            prev_status = prev.status
-            prev_amount = prev.amount_cents
-            prev.status = parsed["status"]
-            prev.cleared_at = parsed["cleared_at"]
-            prev.amount_cents = parsed["amount_cents"]
-            prev.net_cents = parsed["net_cents"]
-            prev.fee_cents = parsed["fee_cents"]
-            prev.vat_cents = parsed["vat_cents"]
-            prev.description = parsed["description"]
-            prev.payout_pending_days = parsed["payout_pending_days"]
-            if prev_status != parsed["status"]:
+
+async def _apply_ops(s, account_id: str, ops: list[RowOp], held: dict, ws: dict) -> dict[int, tuple]:
+    """Write `ops` in the open `_ledger_txn` session, rows and lifetime deltas
+    alike. `held` (provider id -> row) is the page's one row-identity tracker:
+    a patch writes the row it names, an insert / promote adds to it. Returns
+    {op index: (fan_id, message_id, cents)} for each PPV that linked: its
+    ownership stamp waits for the commit."""
+    stamps: dict[int, tuple] = {}
+    for i, op in enumerate(ops):
+        if not op.writes:
+            continue
+        p = op.parsed
+        if op.action == "patch":
+            tx = held[str(p["provider_id"])]
+            for f in PATCH_FIELDS:
+                setattr(tx, f, p[f])
+            if op.status_flip:
                 log.info(
                     "ingest_tx_status_flip provider=%s old=%s new=%s",
-                    parsed["provider_id"], prev_status, parsed["status"],
+                    p["provider_id"], *op.status_flip,
                 )
-                # loading→cleared makes the row appear in ppv-history (it
-                # filters status='cleared'); chargebacks remove it. Either
-                # way the drawer needs to hear about it. Plain re-polls
-                # (no flip) stay silent — they happen every 5-min tick.
-                broadcast_reason = "status_flip"
-            if (
-                parsed["status"] in _REFUND_STATUSES
-                and prev_status not in _REFUND_STATUSES
-                and parsed["fan_id"]
-            ):
+            if op.lifetime_delta:
                 log.info(
                     "ingest_tx_chargeback provider=%s amount=%d",
-                    parsed["provider_id"], prev_amount,
+                    p["provider_id"], -op.lifetime_delta,
                 )
-                # Defer the fan UPDATE to outside this session so the
-                # BEGIN IMMEDIATE in _apply_refund_delta is the only writer
-                # touching the fan row in its critical section.
-                refund_flip_pending = (parsed["fan_id"], prev_amount)
-            # session commits on context exit
-            after_session_kind = "patched"
-
-        elif fingerprint_eligible:
-            ws_row = await _fingerprint_lookup(s, account_id, parsed)
-            if ws_row is not None:
-                prev_ws_amount = ws_row.amount_cents or 0
-                ws_row.provider_transaction_id = parsed["provider_id"]
-                ws_row.source = "ledger"
-                ws_row.status = parsed["status"]
-                ws_row.cleared_at = parsed["cleared_at"]
-                ws_row.amount_cents = parsed["amount_cents"]
-                ws_row.net_cents = parsed["net_cents"]
-                ws_row.fee_cents = parsed["fee_cents"]
-                ws_row.vat_cents = parsed["vat_cents"]
-                ws_row.description = parsed["description"]
-                ws_row.payout_pending_days = parsed["payout_pending_days"]
-                log.info(
-                    "ingest_tx_fingerprint_match account=%s fan=%s "
-                    "provider=%s amount=%d kind=%s prev_amount=%d",
-                    account_id, parsed["fan_id"], parsed["provider_id"],
-                    parsed["amount_cents"], kind, prev_ws_amount,
-                )
-                # WS pump already bumped lifetime_spend_cents by prev_ws_amount
-                # at event_transcoder.py:378-381. Reconcile against the
-                # authoritative ledger amount. Skip if status went non-revenue
-                # (rare on first ledger sight of a tip — out of scope here).
-                if (
-                    parsed["fan_id"]
-                    and parsed["status"] not in _NON_REVENUE_STATUSES
-                    and parsed["amount_cents"] != prev_ws_amount
-                ):
-                    lifetime_delta_pending = (
-                        parsed["fan_id"],
-                        parsed["amount_cents"] - prev_ws_amount,
-                    )
-                broadcast_reason = "ledger_promote"
-                after_session_kind = "patched"
-            else:
-                after_session_kind = "inserted"
-        else:
-            after_session_kind = "inserted"
-
-        if prev is None and after_session_kind == "inserted":
-            new_tx = Transaction(
+        elif op.action == "promote":
+            tx = ws[op.target_id]
+            prev_ws_amount = tx.amount_cents
+            tx.provider_transaction_id = p["provider_id"]
+            tx.source = "ledger"
+            for f in PATCH_FIELDS:
+                setattr(tx, f, p[f])
+            held[str(p["provider_id"])] = tx
+            log.info(
+                "ingest_tx_fingerprint_match account=%s fan=%s "
+                "provider=%s amount=%d kind=%s prev_amount=%d",
+                account_id, p["fan_id"], p["provider_id"],
+                p["amount_cents"], op.kind, prev_ws_amount,
+            )
+        else:  # insert
+            tx = Transaction(
                 account_id=account_id,
-                fan_id=parsed["fan_id"],
-                kind=kind,
+                fan_id=p["fan_id"],
+                kind=op.kind,
                 message_id=None,
-                amount_cents=parsed["amount_cents"],
-                currency=parsed["currency"],
-                occurred_at=parsed["occurred_at"],
-                provider_transaction_id=parsed["provider_id"],
-                status=parsed["status"],
-                cleared_at=parsed["cleared_at"],
-                payout_pending_days=parsed["payout_pending_days"],
-                net_cents=parsed["net_cents"],
-                fee_cents=parsed["fee_cents"],
-                vat_cents=parsed["vat_cents"],
-                description=parsed["description"],
+                amount_cents=p["amount_cents"],
+                currency=p["currency"],
+                occurred_at=p["occurred_at"],
+                provider_transaction_id=p["provider_id"],
+                status=p["status"],
+                cleared_at=p["cleared_at"],
+                payout_pending_days=p["payout_pending_days"],
+                net_cents=p["net_cents"],
+                fee_cents=p["fee_cents"],
+                vat_cents=p["vat_cents"],
+                description=p["description"],
                 source="ledger",
             )
-            s.add(new_tx)
-            if kind == "ppv_message" and parsed["fan_id"]:
+            s.add(tx)
+            held[str(p["provider_id"])] = tx
+            if op.link_ppv:
                 await _link_ppv_message(
                     s,
                     account_id=account_id,
-                    fan_id=parsed["fan_id"],
-                    amount_cents=parsed["amount_cents"],
-                    occurred_at=parsed["occurred_at"],
-                    tx=new_tx,
+                    fan_id=p["fan_id"],
+                    amount_cents=p["amount_cents"],
+                    occurred_at=p["occurred_at"],
+                    tx=tx,
                 )
-                # The linked message is PAID → its media is OWNED. Deferred to
-                # after this session commits (ownership opens its own session;
-                # running it here would write-deadlock against ours). Covers
-                # every lane the linker reaches: catalog offers, priced
-                # teasers (VaultSend rows keyed by message id) and mass
-                # placeholders (media via the broadcast cache).
-                if new_tx.message_id is not None:
-                    ownership_stamp_pending = (
-                        int(parsed["fan_id"]), int(new_tx.message_id),
-                        int(parsed["amount_cents"] or 0),
-                    )
-            if (
-                parsed["fan_id"]
-                and parsed["status"] not in _NON_REVENUE_STATUSES
-            ):
-                await _bump_lifetime(
-                    s, account_id, parsed["fan_id"], parsed["amount_cents"]
+                # The linked message is PAID → its media is OWNED. Stamped
+                # after the commit (ownership opens its own session; running
+                # it here would write-deadlock against ours). Covers every
+                # lane the linker reaches: catalog offers, priced teasers
+                # (VaultSend rows keyed by message id) and mass placeholders
+                # (media via the broadcast cache).
+                if tx.message_id is not None:
+                    stamps[i] = (int(p["fan_id"]), int(tx.message_id), int(p["amount_cents"] or 0))
+            # A chat tip that only exists in the ledger (WS pump missed it)
+            # has NO chat_message row → it never shows in the thread, only in
+            # the revenue panel. Synthesize an inbound row so it appears
+            # inline. Chat tips only (kind=='tip'); tips on posts/streams
+            # (tip_post/tip_stream) don't ride a chat and are excluded.
+            if op.synth_tip:
+                await _synthesize_tip_message(
+                    s, account_id=account_id, fan_id=p["fan_id"],
+                    amount_cents=p["amount_cents"],
+                    occurred_at=p["occurred_at"], tx=tx,
                 )
-                # A chat tip that only exists in the ledger (WS pump missed it)
-                # has NO chat_message row → it never shows in the thread, only
-                # in the revenue panel. Synthesize an inbound row so it appears
-                # inline. Chat tips only (kind=='tip'); tips on posts/streams
-                # (tip_post/tip_stream) don't ride a chat and are excluded.
-                if kind == "tip":
-                    await _synthesize_tip_message(
-                        s, account_id=account_id, fan_id=parsed["fan_id"],
-                        amount_cents=parsed["amount_cents"],
-                        occurred_at=parsed["occurred_at"], tx=new_tx,
-                    )
-            broadcast_reason = "insert"
+        # The fan's lifetime spend, in this same transaction as the row: a
+        # revenue insert adds (creating the fan row); a refund / promote
+        # reconcile moves an existing fan's.
+        if op.lifetime_create:
+            await _bump_lifetime(s, account_id, p["fan_id"], op.lifetime_delta)
+        elif op.lifetime_delta:
+            await _apply_lifetime_delta(s, account_id, p["fan_id"], op.lifetime_delta)
+    return stamps
 
-    # Apply the chargeback delta after the row UPDATE committed. BEGIN
-    # IMMEDIATE inside _apply_refund_delta serializes against any other
-    # writer. Tradeoff: if this call fails between the two, the row stays
-    # marked chargedback but the fan counter is stale; the next tick won't
-    # re-fire (prev_status == new_status), so manual repair would be needed.
-    # Acceptable at our scale; surfaced via the chargeback log line above.
-    if refund_flip_pending is not None:
-        fan_id, prev_amount = refund_flip_pending
-        await _apply_refund_delta(account_id, fan_id, prev_amount)
 
-    # Same BEGIN IMMEDIATE rationale as the refund path. WS pump's original
-    # bump used the WS-observed amount; ledger arrived with the canonical
-    # amount and we patched the row above, so reconcile the counter too.
-    if lifetime_delta_pending is not None:
-        fan_id, delta = lifetime_delta_pending
-        await _apply_lifetime_delta(account_id, fan_id, delta)
+def _log_plan(account_id: str, ops: list[RowOp]) -> None:
+    for op in ops:
+        if op.action == "skip":
+            log.info("ingest_tx_skip no_provider_id account=%s", account_id)
+        elif op.raw_kind == "unknown":
+            log.info(
+                "ingest_tx_unknown_kind account=%s provider=%s description=%r",
+                account_id, op.parsed["provider_id"], op.parsed["description"][:120],
+            )
 
-    # Ownership stamp for the freshly-linked PPV buy (best-effort by contract —
-    # see ownership.try_stamp_message; the purchases-notification poll re-stamps
-    # the same message idempotently on its next sighting anyway).
-    if ownership_stamp_pending is not None:
-        fan_id, msg_id, cents = ownership_stamp_pending
+
+class _Ingested(NamedTuple):
+    ops: list[RowOp]
+    stamps: dict[int, tuple]   # op index -> (fan_id, message_id, cents): a PPV that linked
+    wrote: bool                # a write transaction was opened (and committed)
+
+
+async def _ingest_rows(account_id: str, rows: list[dict]) -> _Ingested:
+    """Plan `rows` and write them. A page whose plan writes nothing (a quiet
+    re-poll: every row held, every field equal; or no provider id at all) is
+    read in a plain session and takes no write lock; a page with news is
+    re-read and re-planned inside ONE write transaction (so the plan sees
+    exactly what it writes over) and written there."""
+    parsed = parse_page(rows, datetime.utcnow())
+    async with get_session() as s:
+        ops = (await _read_plan(s, account_id, parsed)).ops
+    _log_plan(account_id, ops)
+    if not any(op.writes for op in ops):
+        return _Ingested(ops, {}, False)
+    async with _ledger_txn() as s:
+        r = await _read_plan(s, account_id, parsed)
+        stamps = await _apply_ops(s, account_id, r.ops, r.held, r.ws)
+    return _Ingested(r.ops, stamps, True)
+
+
+async def _after_commit(account_id: str, ops: list[RowOp], stamps: dict[int, tuple]) -> None:
+    """Side effects that must see the committed rows, per op in page order.
+    Each op's are isolated: one that raises is logged and the rest still run
+    (the rows are committed; the tick is no failure)."""
+    for i, op in enumerate(ops):
+        try:
+            await _after_commit_op(account_id, op, stamps.get(i))
+        except Exception:
+            log.warning("ingest_tx_after_commit_failed account=%s provider=%s",
+                        account_id, op.parsed["provider_id"], exc_info=True)
+
+
+async def _after_commit_op(account_id: str, op: RowOp, stamp: tuple | None) -> None:
+    # Ownership stamp for the freshly-linked PPV buy (best-effort by
+    # contract — see ownership.try_stamp_message; the purchases-
+    # notification poll re-stamps the same message idempotently anyway).
+    if stamp is not None:
+        fan_id, msg_id, cents = stamp
         await ownership.try_stamp_message(
             account_id, fan_id, msg_id, price_cents=cents, context="ingest")
-
-    # Announce news (insert / promote / status flip) to SSE subscribers AFTER
-    # the commit, so the browser's refetch can't race the write. The frontend
-    # (useInboxRealtime) drops the fan drawer's revenue caches on this event —
-    # without it the chart/Sales panel sits on 5-30 min staleTimes after a
-    # sale.
+    # Announce news (insert / promote / status flip) to SSE subscribers
+    # AFTER the commit, so the browser's refetch can't race the write. The
+    # frontend (useInboxRealtime) drops the fan drawer's revenue caches on
+    # this event — without it the chart/Sales panel sits on 5-30 min
+    # staleTimes after a sale.
     #
-    # The 48h recency cap applies to INSERTS only: a 90-day cold backfill
-    # inserts hundreds of ancient rows and we don't want a drawer invalidation
-    # per row nobody is looking at. But status flips (a held PPV settling
-    # pending→cleared days after purchase) and ledger promotes only happen on
-    # rows we've already seen inside the 7-day refresh window — naturally
-    # bounded, AND they're exactly the update the drawer is waiting on. Gating
-    # those on `occurred_at >= now-48h` silently dropped every settle-flip for
-    # PPVs older than 2 days, so the drawer never heard about them.
-    if broadcast_reason is not None and parsed["fan_id"]:
+    # The 48h recency cap applies to INSERTS only (`capped`, applied by
+    # events.announce_transaction): a 90-day cold backfill inserts
+    # hundreds of ancient rows nobody is looking at. Status flips (a held
+    # PPV settling pending→cleared days after purchase) and ledger
+    # promotes only happen on rows already inside the 7-day refresh
+    # window — naturally bounded, AND exactly the update the drawer is
+    # waiting on. Plain re-polls (no flip) stay silent — they happen every
+    # 5-min tick.
+    if op.broadcast is not None and op.parsed["fan_id"]:
         from events import announce_transaction
         await announce_transaction(
-            account_id, parsed["fan_id"], occurred_at=parsed["occurred_at"],
-            capped=broadcast_reason == "insert", kind=kind,
-            status=parsed["status"], reason=broadcast_reason)
+            account_id, op.parsed["fan_id"], occurred_at=op.parsed["occurred_at"],
+            capped=op.broadcast == "insert", kind=op.kind,
+            status=op.parsed["status"], reason=op.broadcast)
 
-    if prev is not None:
-        return (0, 1)
-    if after_session_kind == "patched":
-        return (0, 1)
-    return (1, 0)
+
+async def _write_one(account_id: str, raw: dict) -> tuple[int, int]:
+    """Returns (inserted, patched). One row, its own transaction (none for a
+    row with nothing to write) — the page path's row-by-row fallback. See the
+    module docstring for the 3-step dedup contract."""
+    r = await _ingest_rows(account_id, [raw])
+    await _after_commit(account_id, r.ops, r.stamps)
+    return r.ops[0].result
+
+
+async def _write_page(account_id: str, rows: list[dict]) -> tuple[int, int]:
+    """Returns (inserted, patched) for one ledger page, written in ONE write
+    transaction, or with no write transaction for a quiet re-poll (a page used to cost a
+    transaction per row, plus up to two more per lifetime delta). If that
+    transaction fails for a row's sake, the page is retried row by row, each
+    row in its own transaction, so one bad row never blocks the rest; a row
+    that fails alone is logged and skipped (the OF ledger re-serves it next
+    tick). A lock timeout is re-raised instead: it would only repeat per row
+    (busy_timeout each), so the tick records the failure and the next tick
+    re-reads the page."""
+    try:
+        r = await _ingest_rows(account_id, rows)
+    except Exception as exc:
+        if of_writer._locked(exc):
+            raise
+        log.warning("ingest_tx_page_failed account=%s rows=%d (%s); retrying row by row",
+                    account_id, len(rows), exc)
+        inserted = patched = 0
+        for raw in rows:
+            try:
+                ins, pat = await _write_one(account_id, raw)
+            except Exception:
+                log.warning(
+                    "ingest_tx_write_failed account=%s provider=%s",
+                    account_id, raw.get("id"), exc_info=True,
+                )
+                continue
+            inserted += ins
+            patched += pat
+        return inserted, patched
+    if r.wrote:
+        log.info("ingest_tx_page_written account=%s rows=%d", account_id, len(rows))
+    await _after_commit(account_id, r.ops, r.stamps)
+    return sum(op.result[0] for op in r.ops), sum(op.result[1] for op in r.ops)
 
 
 # ── Supervisor / tick ───────────────────────────────────────────────
@@ -999,31 +942,35 @@ async def _scan_state(s, account_id: str) -> TransactionScanHistory:
     return row
 
 
+def _scan_facts(row: TransactionScanHistory) -> ScanState:
+    """The row's ScanState. A not-yet-flushed row's server-defaulted columns
+    read None: they take ScanState's defaults."""
+    default = ScanState()
+    vals = {f: getattr(row, f) for f in SCAN_FIELDS}
+    return ScanState(**{f: getattr(default, f) if v is None else v for f, v in vals.items()})
+
+
 async def _is_paused(account_id: str) -> bool:
     async with get_session() as s:
         row = await s.get(TransactionScanHistory, account_id)
-        if row is None or row.paused_until is None:
-            return False
-        return row.paused_until > datetime.utcnow()
+        return is_paused(_scan_facts(row) if row is not None else None, datetime.utcnow())
 
 
 async def _decide_mode(account_id: str) -> str:
     async with get_session() as s:
         row = await s.get(TransactionScanHistory, account_id)
-        if row is None or not row.fully_backfilled:
-            return "backfill"
-        return "refresh"
+        return decide_mode(_scan_facts(row) if row is not None else None)
 
 
 def _window_for(mode: str, state: TransactionScanHistory) -> tuple[datetime, datetime]:
-    """refresh: trailing 7d (5d pending + 2d safety).
-    backfill: walk from oldest_seen_occurred_at (or now) BACK to backfill_floor."""
-    now = datetime.utcnow()
-    if mode == "refresh":
-        return (now - timedelta(days=_ROLLING_WINDOW_DAYS), now)
-    floor = state.backfill_floor or (now - timedelta(days=_DEFAULT_BACKFILL_DAYS))
-    end = state.oldest_seen_occurred_at or now
-    return (floor, end)
+    """See transaction_ingest_decide.window_for."""
+    return window_for(mode, _scan_facts(state), datetime.utcnow())
+
+
+def _store_scan(row: TransactionScanHistory, state: ScanState) -> None:
+    for f in SCAN_FIELDS:
+        setattr(row, f, getattr(state, f))
+    row.updated_at = datetime.utcnow()
 
 
 async def _mark_interrupted(account_id: str) -> None:
@@ -1038,11 +985,9 @@ async def _mark_interrupted(account_id: str) -> None:
     try:
         async with get_session() as s:
             row = await _scan_state(s, account_id)
-            if row.current_status in ("refreshing", "backfilling"):
+            if row.current_status in IN_FLIGHT:
                 prior_status = row.current_status
-                row.current_status = "idle"
-                row.last_error = "interrupted_mid_tick"
-                row.updated_at = datetime.utcnow()
+                _store_scan(row, scan_interrupted(_scan_facts(row), "interrupted_mid_tick"))
                 log.warning(
                     "ingest_tx_interrupted_cleanup account=%s prior_status=%s",
                     account_id, prior_status,
@@ -1073,7 +1018,7 @@ async def _clear_stale_inflight() -> int:
     async with get_session() as s:
         rows = (await s.execute(
             select(TransactionScanHistory).where(
-                TransactionScanHistory.current_status.in_(("refreshing", "backfilling")),
+                TransactionScanHistory.current_status.in_(IN_FLIGHT),
                 # last_scan_at IS NULL would only happen on a row that
                 # somehow got status stamped without a timestamp — treat
                 # it as stale too (the OR catches NULL since SQL NULL
@@ -1088,9 +1033,7 @@ async def _clear_stale_inflight() -> int:
                 row.account_id, row.current_status,
                 row.last_scan_at.isoformat() if row.last_scan_at else None,
             )
-            row.current_status = "idle"
-            row.last_error = "interrupted_before_boot"
-            row.updated_at = datetime.utcnow()
+            _store_scan(row, scan_interrupted(_scan_facts(row), "interrupted_before_boot"))
         return len(rows)
 
 
@@ -1109,36 +1052,25 @@ def _is_proxy_refusal(exc: BaseException) -> bool:
 
 
 async def _record_failure(account_id: str, exc: Exception) -> None:
-    if _is_proxy_refusal(exc):
-        # Not counted toward the pause: the next tick retries for free.
-        # Leaves consecutive_failures as it was (a real failure streak
-        # still pauses; a success still resets it).
-        async with get_session() as s:
-            row = await _scan_state(s, account_id)
-            row.last_error = repr(exc)[:500]
-            row.updated_at = datetime.utcnow()
-            row.current_status = "idle"
-            log.info(
-                "ingest_tx_proxy_refused account=%s consecutive_failures=%d "
-                "(not counted) err=%s",
-                account_id, row.consecutive_failures or 0, str(exc)[:120],
-            )
-        return
+    refusal = _is_proxy_refusal(exc)
     async with get_session() as s:
         row = await _scan_state(s, account_id)
-        row.consecutive_failures = (row.consecutive_failures or 0) + 1
-        row.last_error = repr(exc)[:500]
-        row.updated_at = datetime.utcnow()
-        if row.consecutive_failures >= _FAILS_BEFORE_PAUSE:
-            row.paused_until = datetime.utcnow() + timedelta(seconds=_FAIL_BACKOFF_S)
-            row.current_status = "paused"
-            log.info(
-                "ingest_tx_account_paused account=%s consecutive_failures=%d "
-                "last_error=%s",
-                account_id, row.consecutive_failures, row.last_error,
-            )
-        else:
-            row.current_status = "error"
+        state = scan_after_failure(_scan_facts(row), refusal, datetime.utcnow(),
+                                   error=repr(exc)[:500])
+        _store_scan(row, state)
+    if refusal:
+        # Not counted toward the pause: the next tick retries for free.
+        log.info(
+            "ingest_tx_proxy_refused account=%s consecutive_failures=%d "
+            "(not counted) err=%s",
+            account_id, state.consecutive_failures, str(exc)[:120],
+        )
+    elif state.current_status == "paused":
+        log.info(
+            "ingest_tx_account_paused account=%s consecutive_failures=%d "
+            "last_error=%s",
+            account_id, state.consecutive_failures, state.last_error,
+        )
 
 
 async def _mark_success(
@@ -1148,47 +1080,21 @@ async def _mark_success(
     inserted: int,
     patched: int,
     last_marker: int | None,
-    pages: int,
     page_rows_min_occurred_at: datetime | None,
     page_rows_max_occurred_at: datetime | None,
     floor_reached: bool,
 ) -> None:
+    # 'ok' (not the start-of-tick 'refreshing') so the /run endpoint's
+    # collision check (status IN ('refreshing','backfilling')) only fires
+    # when a tick is genuinely in flight; a backfill short of its floor
+    # keeps 'backfilling' so the banner reads "still working".
     async with get_session() as s:
         row = await _scan_state(s, account_id)
-        row.last_scan_at = datetime.utcnow()
-        row.consecutive_failures = 0
-        row.last_error = None
-        if last_marker is not None:
-            row.last_marker = last_marker
-        if page_rows_min_occurred_at is not None and (
-            row.oldest_seen_occurred_at is None
-            or page_rows_min_occurred_at < row.oldest_seen_occurred_at
-        ):
-            row.oldest_seen_occurred_at = page_rows_min_occurred_at
-        if page_rows_max_occurred_at is not None and (
-            row.newest_seen_occurred_at is None
-            or page_rows_max_occurred_at > row.newest_seen_occurred_at
-        ):
-            row.newest_seen_occurred_at = page_rows_max_occurred_at
-        row.rows_inserted_total = (row.rows_inserted_total or 0) + inserted
-        row.rows_patched_total = (row.rows_patched_total or 0) + patched
-        # Distinguish "actively scanning" from "tick completed". The
-        # tick START stamps current_status='refreshing'/'backfilling';
-        # success stamps 'ok' so the /run endpoint's collision check
-        # (status IN ('refreshing','backfilling')) only fires when a
-        # tick is genuinely in flight. Before this, every successful
-        # refresh left status='refreshing' and locked out user
-        # re-syncs until the next supervisor tick.
-        if mode == "backfill" and floor_reached:
-            row.fully_backfilled = True
-            row.current_status = "ok"
-        elif mode == "backfill":
-            # Still walking history → keep the long-form label so the
-            # banner reflects "still working" rather than "done".
-            row.current_status = "backfilling"
-        else:
-            row.current_status = "ok"
-        row.updated_at = datetime.utcnow()
+        _store_scan(row, scan_after_success(
+            _scan_facts(row), mode=mode, inserted=inserted, patched=patched,
+            last_marker=last_marker, rows_min=page_rows_min_occurred_at,
+            rows_max=page_rows_max_occurred_at, floor_reached=floor_reached,
+            now=datetime.utcnow()))
 
 
 async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
@@ -1249,7 +1155,7 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
                 # finished. Serializing then re-reading current_status
                 # catches the case where an in-flight peer (or crashed
                 # prior holder) has already stamped the account.
-                if state.current_status in ("refreshing", "backfilling"):
+                if state.current_status in IN_FLIGHT:
                     # Stale-timestamp escape valve. A real in-flight tick
                     # holds the lock too, so it can't get here. Anything
                     # parked at this status is from a *prior* process or
@@ -1279,21 +1185,13 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
                         account_id, state.current_status, age_s,
                     )
                 start_dt, end_dt = _window_for(mode, state)
-                if mode == "backfill" and state.backfill_floor is None:
-                    state.backfill_floor = start_dt
-                # Stamp last_scan_at AND current_status at tick START.
-                # last_scan_at: dashboard tier reflects "actively scanning"
-                #   instead of the previous tick's completion stamp.
-                # current_status: admin /run endpoint pre-checks
-                #   current_status in ("refreshing","backfilling") to
-                #   return 409 on collision. Without the early write, the
-                #   schema default 'idle' makes the first tick of an
-                #   account invisible to the 409 check.
+                # Stamp last_scan_at AND current_status at tick START (see
+                # scan_started; without it the schema default 'idle' makes an
+                # account's first tick invisible to /run's 409 check).
                 # _mark_success / _record_failure both overwrite at end,
                 # AND the try/finally below catches CancelledError so the
                 # stamp can't stick across process restarts.
-                state.last_scan_at = datetime.utcnow()
-                state.current_status = "backfilling" if mode == "backfill" else "refreshing"
+                _store_scan(state, scan_started(_scan_facts(state), mode, start_dt, datetime.utcnow()))
 
             # Start stamp is committed. Every exit path below must
             # overwrite it.
@@ -1372,16 +1270,11 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
                                 rows_min_ts = occ
                             if rows_max_ts is None or occ > rows_max_ts:
                                 rows_max_ts = occ
-                        try:
-                            ins, pat = await _write_one(account_id, raw)
-                        except Exception:
-                            log.warning(
-                                "ingest_tx_write_failed account=%s provider=%s",
-                                account_id, raw.get("id"), exc_info=True,
-                            )
-                            continue
-                        inserted += ins
-                        patched += pat
+                    # One write transaction for the page; row by row only
+                    # if that fails (never raises for a row).
+                    ins, pat = await _write_page(account_id, rows)
+                    inserted += ins
+                    patched += pat
                     pages += 1
                     if not resp.get("hasMore"):
                         floor_reached = True
@@ -1406,7 +1299,6 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
                 inserted=inserted,
                 patched=patched,
                 last_marker=last_marker,
-                pages=pages,
                 page_rows_min_occurred_at=rows_min_ts,
                 page_rows_max_occurred_at=rows_max_ts,
                 floor_reached=floor_reached,

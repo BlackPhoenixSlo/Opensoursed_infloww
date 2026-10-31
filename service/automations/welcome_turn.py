@@ -12,8 +12,8 @@ Three things live here and nowhere else:
 
   • `newest_worded_inbound` — the ONE reply predicate. Words decide, not the
     message type (operator: "dont stop on single tip only on text"); the SQL
-    clauses are `_common.worded_inbound_where`, shared with the engines'
-    Python-side twin `_common.inbound_is_words`.
+    clauses are `_inbound.worded_inbound_where`, shared with the engines'
+    Python-side twin `_inbound.inbound_is_words`.
   • `handoff_engine` / `enqueue_turn_handoff` — which engine answers a rescued
     fan, and the one job that opens its turn gate (`turn_handoff_ids`).
   • `hand_back_turn` — the classification: his row against the last bubble of
@@ -32,7 +32,8 @@ from typing import NamedTuple
 from sqlalchemy import select
 
 import automation_executor as ax  # enqueue_job
-from ._common import is_hard_skipped, worded_inbound_where
+from ._inbound import worded_inbound_where
+from ._skiplist import is_hard_skipped
 from db.engine import get_session
 from db.models import Message
 

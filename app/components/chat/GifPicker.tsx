@@ -9,7 +9,7 @@
  * Verified live 2026-05-23.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 
 import { cn } from "@/lib/utils";
 import { TOOLBAR_ICON } from "./ComposerToolbar";
@@ -17,6 +17,7 @@ import {
   gifSearch, gifTrending,
   type GiphyItem, type GiphyResponse,
 } from "@/lib/relay";
+import { INITIAL_GIFS, PAGE_SIZE, gifReducer } from "./gifPickerState";
 
 export interface PickedGif {
   id: string;
@@ -42,8 +43,6 @@ function toPicked(g: GiphyItem): PickedGif {
   };
 }
 
-const PAGE_SIZE = 24;
-
 /**
  * Inline strip — rendered above the composer textarea when the user
  * clicks 🎬. Search input runs the row across the top; below is a
@@ -58,10 +57,7 @@ export function GifPickerStrip({
 }) {
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [items, setItems] = useState<GiphyItem[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [hasMore, setHasMore] = useState(false);
+  const [{ items, loading, error, hasMore }, dispatch] = useReducer(gifReducer, INITIAL_GIFS);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -76,62 +72,33 @@ export function GifPickerStrip({
     return () => abortRef.current?.abort();
   }, []);
 
-  // Fetch on mount + whenever the (debounced) query changes. AbortController
-  // cancels an in-flight request when the query changes before it returns,
-  // so a fast typer never sees stale results paint over fresh ones.
-  useEffect(() => {
+  // One page fetch, through one abortRef: a new fetch (a query change, or "more") aborts the one in flight, so a
+  // fast typer never sees stale results paint over fresh ones, and a stale "more" never appends the OLD query's
+  // page onto the NEW query's first page. Aborted fetches never dispatch.
+  const fetchPage = useCallback((offset: number) => {
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
-    setLoading(true);
-    setError(null);
+    dispatch({ type: "start" });
     const ctx = { accountId };
     const p: Promise<GiphyResponse> = debouncedSearch
-      ? gifSearch(debouncedSearch, PAGE_SIZE, 0, ctx, ctrl.signal)
-      : gifTrending(PAGE_SIZE, 0, ctx, ctrl.signal);
+      ? gifSearch(debouncedSearch, PAGE_SIZE, offset, ctx, ctrl.signal)
+      : gifTrending(PAGE_SIZE, offset, ctx, ctrl.signal);
     p.then((resp) => {
-      if (ctrl.signal.aborted) return;
-      setItems(resp.data || []);
-      const offset = resp.pagination?.offset ?? 0;
-      const total = resp.pagination?.total_count ?? 0;
-      setHasMore((resp.data?.length ?? 0) >= PAGE_SIZE && offset + PAGE_SIZE < total);
+      if (!ctrl.signal.aborted) dispatch({ type: "loaded", resp, offset });
     }).catch((e: unknown) => {
-      if (ctrl.signal.aborted) return;
-      setError(e instanceof Error ? e.message : String(e));
-      setItems([]);
-      setHasMore(false);
-    }).finally(() => {
-      if (!ctrl.signal.aborted) setLoading(false);
+      if (!ctrl.signal.aborted) dispatch({ type: "failed", message: e instanceof Error ? e.message : String(e), offset });
     });
-    return () => ctrl.abort();
+    return ctrl;
   }, [debouncedSearch, accountId]);
 
-  // Route loadMore through the same abortRef the main fetch effect uses, so a
-  // query change (which aborts abortRef.current) also cancels an in-flight
-  // loadMore. Otherwise the stale page resolves and appends the OLD query's
-  // results onto the NEW query's first page.
-  async function loadMore() {
-    abortRef.current?.abort();
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
-    const ctx = { accountId };
-    setLoading(true);
-    try {
-      const offset = items.length;
-      const resp: GiphyResponse = debouncedSearch
-        ? await gifSearch(debouncedSearch, PAGE_SIZE, offset, ctx, ctrl.signal)
-        : await gifTrending(PAGE_SIZE, offset, ctx, ctrl.signal);
-      if (ctrl.signal.aborted) return;
-      setItems((prev) => [...prev, ...(resp.data || [])]);
-      const total = resp.pagination?.total_count ?? 0;
-      setHasMore((resp.data?.length ?? 0) >= PAGE_SIZE && offset + PAGE_SIZE < total);
-    } catch (e) {
-      if (ctrl.signal.aborted) return;
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      if (!ctrl.signal.aborted) setLoading(false);
-    }
-  }
+  // Fetch the first page on mount + whenever the (debounced) query changes.
+  useEffect(() => {
+    const ctrl = fetchPage(0);
+    return () => ctrl.abort();
+  }, [fetchPage]);
+
+  const loadMore = () => fetchPage(items.length);
 
   const grid = useMemo(() => items.map(toPicked), [items]);
 

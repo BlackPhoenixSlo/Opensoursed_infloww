@@ -863,6 +863,45 @@ async def case_hand_typed_note_kept():
     assert fake.notes == [(fan, _EXPECTED_NOTE)], fake.notes
 
 
+# ── select_candidates: the pure filter half of _gather_candidates (no DB) ──
+
+def case_select_candidates_table():
+    def C(fid, msgs=0, spend=0, source="", muted=False):
+        c = gen_info._Candidate(fid)
+        c.fan_msg_n, c.spend_cents, c.source, c.is_muted = msgs, spend, source, muted
+        return c
+
+    mc = {"source": "creator_we_follow", "muted": True}
+    # (name, [(fid, msgs, spend, fans-row fields)], force, limit, promo, expected ids in order)
+    rows = [
+        ("empty", [], set(), 10, set(), []),
+        ("below both gates dropped", [(1, 0, 0, {})], set(), 10, set(), []),
+        ("one msg qualifies", [(1, 1, 0, {})], set(), 10, set(), [1]),
+        ("spend alone qualifies", [(1, 0, 1, {})], set(), 10, set(), [1]),
+        ("forced passes gate", [(1, 0, 0, {})], {1}, 10, set(), [1]),
+        ("muted creator dropped", [(1, 5, 900, mc)], set(), 10, set(), []),
+        ("muted creator forced kept", [(1, 5, 900, mc)], {1}, 10, set(), [1]),
+        ("muted but not creator kept", [(1, 5, 0, {"muted": True})], set(), 10, set(), [1]),
+        ("promo $0 dropped", [(1, 5, 0, {})], set(), 10, {1}, []),
+        ("promo payer rescued", [(1, 5, 100, {})], set(), 10, {1}, [1]),
+        ("promo $0 forced kept", [(1, 5, 0, {})], {1}, 10, {1}, [1]),
+        ("spend desc then msgs desc then id",
+         [(3, 2, 0, {}), (1, 9, 0, {}), (2, 1, 500, {}), (4, 9, 0, {})], set(), 10, set(),
+         [2, 1, 4, 3]),
+        ("limit caps", [(1, 1, 300, {}), (2, 1, 200, {}), (3, 1, 100, {})], set(), 2, set(),
+         [1, 2]),
+        ("forced first survives limit",
+         [(1, 1, 300, {}), (2, 1, 200, {}), (3, 1, 0, {})], {3}, 1, set(), [3]),
+        ("limit grows to #forced",
+         [(1, 1, 300, {}), (2, 0, 0, {}), (3, 0, 0, {})], {2, 3}, 1, set(), [2, 3]),
+    ]
+    for name, specs, force, limit, promo, want in rows:
+        counts = {fid: C(fid, m, sp, **kw) for fid, m, sp, kw in specs}
+        got = gen_info.select_candidates(
+            counts, force_ids=force, limit=limit, promo_spam=promo)
+        assert [c.fan_id for c in got] == want, (name, [c.fan_id for c in got], want)
+
+
 _harness.run(
     case_gen_info_acceptance,
     case_of_nickname_resynced,
@@ -876,6 +915,7 @@ _harness.run(
     case_rerun_gate,
     case_prompt_is_fan_only,
     case_w2h_helpers,
+    case_select_candidates_table,
     case_list_shaped_fields_are_coerced,
     case_spend_max_and_tier_fallback,
     case_lineless_profile_not_reprofiled,

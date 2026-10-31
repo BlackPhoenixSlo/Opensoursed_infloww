@@ -321,7 +321,7 @@ def case_vault_describe_with_a_rejected_key_is_424_and_leaves_the_item_alone():
 
 
 def case_describe_all_without_a_key_refuses_to_start():
-    import vault_ai_api
+    import vault_ai_vision
     _anon_admin(True)
     try:
         r = _harness.make_client().post("/admin/vault-ai/describe-all",
@@ -329,11 +329,11 @@ def case_describe_all_without_a_key_refuses_to_start():
     finally:
         _anon_admin(False)
     assert r.status_code == 424 and r.json()["detail"]["error"] == "api_key_missing", r.text
-    assert "keyerr_vault_nokey" not in vault_ai_api._describe_running
+    assert "keyerr_vault_nokey" not in vault_ai_vision._describe_running
 
 
 async def case_a_key_rejected_mid_sweep_stops_it_after_one_item():
-    import vault_ai_api
+    import vault_ai_vision
     calls: list[int] = []
 
     async def _rejected(aid, mid, **k):
@@ -341,14 +341,14 @@ async def case_a_key_rejected_mid_sweep_stops_it_after_one_item():
         raise LLMKeyError("invalid", "deepinfra", "describe_media", status=401,
                           detail=f"deepinfra HTTP 401: {SENTINEL}")
 
-    orig, conc = vault_ai_api._describe_one, vault_ai_api._DESCRIBE_CONCURRENCY
-    vault_ai_api._describe_one, vault_ai_api._DESCRIBE_CONCURRENCY = _rejected, 1
+    orig, conc = vault_ai_vision._describe_one, vault_ai_vision._DESCRIBE_CONCURRENCY
+    vault_ai_vision._describe_one, vault_ai_vision._DESCRIBE_CONCURRENCY = _rejected, 1
     try:
-        await vault_ai_api._run_describe_all("keyerr_vault_wrong", True, prompt_version="v2")
+        await vault_ai_vision._run_describe_all("keyerr_vault_wrong", "force", prompt_version="v2")
     finally:
-        vault_ai_api._describe_one, vault_ai_api._DESCRIBE_CONCURRENCY = orig, conc
+        vault_ai_vision._describe_one, vault_ai_vision._DESCRIBE_CONCURRENCY = orig, conc
     assert len(calls) == 1, f"the sweep kept paying for a dead key: {calls}"
-    prog = vault_ai_api._describe_progress["keyerr_vault_wrong"]
+    prog = vault_ai_vision._describe_progress["keyerr_vault_wrong"]
     assert prog["key_error"]["error"] == "api_key_invalid", prog
     assert prog["error"] == prog["key_error"]["message"], prog
     assert SENTINEL not in json.dumps(prog), "the sweep snapshot carried the key"

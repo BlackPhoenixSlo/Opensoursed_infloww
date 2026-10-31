@@ -832,6 +832,9 @@ class AdminUserRow(BaseModel):
 
 @admin_router.get("", response_model=list[AdminUserRow])
 async def admin_list_users() -> list[AdminUserRow]:
+    """Every user on the deployment (every Agency's username and model count):
+    a roster of other tenants, so master-only like llm-key-status beside it."""
+    require_master()
     async with get_session() as s:
         rows = (await s.execute(
             select(
@@ -957,9 +960,10 @@ class GrantOverview(BaseModel):
 async def admin_list_user_accounts(user_id: str) -> GrantOverview:
     """Founder UI populates its grant picker from this. `granted` is the
     friend's current set; `available` is every other OF account on the
-    relay (so the founder can click one to grant). Open to any session-
-    holder for symmetry with the existing /admin/users list — only the
-    POST/DELETE mutators carry the admin_password gate."""
+    relay (so the founder can click one to grant). Master-only, as the
+    /admin/users list: it names every OF account on the relay. The POST/DELETE
+    mutators carry the admin_password gate on top."""
+    require_master()
     # Import locally to avoid a hard module-level dep from auth into the
     # account registry (which imports plenty itself).
     from accounts import list_accounts

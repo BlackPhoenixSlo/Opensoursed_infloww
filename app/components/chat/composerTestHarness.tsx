@@ -30,6 +30,7 @@ import type { RelayContext, VaultMedia } from "@/lib/relay";
 import { resetSendGapForTests } from "@/lib/sendGuards";
 import { renderWithProviders } from "@/test-utils";
 import type { ComposerApi, ComposerProps, SendArgs } from "./Composer";
+import { clearRefusedOffers } from "./refusedOffers";
 
 /* ── relay, mocked by URL ───────────────────────────────────────────────── */
 
@@ -139,8 +140,8 @@ export function emitEvent(type: string, env: unknown) {
  *  The pick order is deliberately sorted by neither id nor price (9102/$10
  *  before 9101/$25), so a Composer that reorders attachments fails the pins. */
 export const FIXTURE_MEDIA: VaultMedia[] = [
-  { id: 9102, type: "photo", _ai: { suggested_price_cents: 1000 } } as VaultMedia,
-  { id: 9101, type: "video", _ai: { suggested_price_cents: 2500 } } as VaultMedia,
+  { id: 9102, type: "photo", _ai: { suggested_price_cents: 1000 } },
+  { id: 9101, type: "video", _ai: { suggested_price_cents: 2500 } },
 ];
 
 function VaultPickerStub({
@@ -173,6 +174,7 @@ export function resetComposerHarness() {
   localStorage.clear();
   sessionStorage.clear(); // a chat's composer draft (lib/chatDrafts)
   resetSendGapForTests(); // the send-rate guard: one clock per model, shared by its composers
+  clearRefusedOffers(); // refused schedules outlive a Composer (./refusedOffers)
 }
 
 /** Render the Composer as the chat surface does. Returns RTL utils, the

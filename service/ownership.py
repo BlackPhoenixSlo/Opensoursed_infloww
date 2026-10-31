@@ -202,8 +202,6 @@ async def resale_verdict(
     if not target or not fan_id:
         return ResaleVerdict("", [], [], 0)
     owned_all = await owned_or_seen_media(account_id, int(fan_id))
-    prev = {int(x) for x in (previews or []) if x} & target
-    payload = target - prev            # what the price is actually FOR
 
     async with get_session() as s:
         rows = (await s.execute(
@@ -217,13 +215,28 @@ async def resale_verdict(
         log.warning("resale_verdict: %d media unknown to the vault mirror "
                     "account=%s fan=%s ids=%s — counted toward no rule",
                     len(unknown), account_id, fan_id, unknown[:10])
+    return resale_verdict_of(owned_all, media_ids, kinds, previews)
+
+
+def resale_verdict_of(
+    owned: set[int],
+    item_media: list[int],
+    kinds: dict[int, str],
+    previews: list[int] | None = None,
+) -> ResaleVerdict:
+    """The pure half of `resale_verdict` (rules in its docstring): `owned` is
+    the fan's `owned_or_seen_media`, `kinds` the vault mirror's media_id→kind
+    (absent = unknown, counted toward no rule)."""
+    target = {int(x) for x in item_media if x}
+    prev = {int(x) for x in (previews or []) if x} & target
+    payload = target - prev            # what the price is actually FOR
 
     # Videos: the whole list, previews included (a video is never filler).
     owned_videos = sorted(m for m in target
-                          if kinds.get(m) == "video" and m in owned_all)
+                          if kinds.get(m) == "video" and m in owned)
     # Photos: the payload only — previews are the free tease slice.
     photos = {m for m in payload if kinds.get(m) == "photo"}
-    owned_photos = sorted(photos & owned_all)
+    owned_photos = sorted(photos & owned)
     fresh = len(photos) - len(owned_photos)
 
     # Only the REASON varies — decide it, then build the verdict once, so the

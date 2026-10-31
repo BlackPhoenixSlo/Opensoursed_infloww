@@ -158,11 +158,11 @@ import re
 import time
 from collections import Counter
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from random import Random
 from types import MappingProxyType
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, get_args
 
 from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -174,11 +174,12 @@ import smart_message_extras as extras
 from attribution import write_outbound_attribution
 from audiences import contact_guard_excludes, resolve_window_hours
 from automation_registry import register
-from ._common import (bool_knob, hold_with_typing,
-                      load_hard_skip_ids, load_strip_emojis,
-                      load_typing_indicator, load_typing_wpm, load_voice_blocks,
-                      send_dropping_bad_media,
-                      skip_unreachable_fan, test_mode, typing_delay_seconds)
+from ._knobs import bool_knob, test_mode
+from ._send_failure import send_dropping_bad_media, skip_unreachable_fan
+from ._skiplist import load_hard_skip_ids
+from ._style_flags import load_strip_emojis, load_voice_blocks
+from ._typing_hold import (hold_with_typing, load_typing_indicator, load_typing_wpm,
+                           typing_delay_seconds)
 # Welcome variants and follow-ups are the Smart Messages collection and
 # sequence (lifecycle_messages): the same seeded pick, the same follow-up jobs.
 from .lifecycle_messages import (MAX_VARIANTS, follow_ups_of, pick, run_follow_up,
@@ -209,6 +210,9 @@ from .welcome_compose import (_ADJS, _ADJS_HIM,
 # predicate. Referenced through the module so the suite has ONE seam to patch
 # for every read of the predicate — the anchor here and the checkpoints there.
 from . import welcome_turn
+# Who is welcomed this tick, as data; called through the module so a slop fault
+# can replace `partition` from outside service code.
+from . import send_welcome_decide
 from .welcome_turn import WELCOME_REST_S as _WELCOME_REST_S, Landed as _Landed
 from db.engine import get_session
 from db.models import WelcomeSent
@@ -290,7 +294,7 @@ _HOLD_OVERRUN_WARN_S = 2.0
 # no import between them is how a cosmetic edit to the writer turns every bare tip
 # into "he used words" over here — every burst aborting on a bare tip, the exact
 # behaviour the operator vetoed — with the suite still green. The engines ask the
-# same question through `_common.inbound_is_words`, which imports the same
+# same question through `_inbound.inbound_is_words`, which imports the same
 # constant for the same reason.
 #
 # It lives in the LEAF `service/tip_ledger.py` rather than in `transaction_ingest`
@@ -624,7 +628,6 @@ class _RunCtx:
     pace_open_quiet: Any       # raw [lo, hi] overrides; clamped in the sampler
     pace_gap_quiet: Any
     follow_ups: tuple[dict, ...]
-    after_of_welcome: bool     # OF's own welcome (checked on) is message 1: only follow-ups
 
     # ── Account-wide settings, read once.
     typing_wpm: float
@@ -721,6 +724,164 @@ async def _compose_plan(ctx: _RunCtx, sub: dict) -> list[_Bubble] | None:
     return plan
 
 
+def _burst_media(ctx: _RunCtx, fan_id: int) -> tuple[list[int], int]:
+    """(media for bubble 0, its price in cents) for this fan."""
+    # The burst's time-of-day image, or the operator's media on `message` (the
+    # two never meet: no image is resolved when `message` is set).
+    media_ids = ([ctx.bot_media_id] if ctx.bot_media_id is not None
+                 else list(ctx.media_ids))
+    # A paid `message` never re-sells media he already owns (ppv_send's
+    # ownership guard): he gets the text alone, free.
+    if fan_id in ctx.owners:
+        return [], 0
+    return media_ids, ctx.price_cents
+
+
+async def _hold_bubble(ctx: _RunCtx, fan_id: int, idx: int, part: str,
+                       gid: str | None, role: str, *, has_image: bool,
+                       anchor: tuple[datetime, int] | None,
+                       checking: bool) -> tuple[datetime, int] | None:
+    """Everything before one bubble's send: its hold(s), then the account's DM
+    rate turn. Returns his reply when one cut the bubble short, else None.
+    `run_slot.SlotLost` propagates to the caller."""
+    # A GIF is PICKED, not typed: no typing time and no "...is typing" frame.
+    typing_s = 0.0 if gid else typing_delay_seconds(part, ctx.typing_wpm)
+    # `Pace.total_s` is the ONLY number that moves a clock — the phase
+    # arguments just decide when the indicator is on inside that same total
+    # (pacing.py's INVARIANT). Seeded per (account, fan, bubble) so a burst
+    # replays. Unpaced ⇒ no sampler call at all, so nothing is drawn.
+    pace = welcome_burst_pace(
+        role=role, has_image=has_image,
+        typing_s=typing_s, text=part,
+        rng=Random(f"welcome_pace:{ctx.account_id}:{fan_id}:{idx}"),
+        open_quiet=ctx.pace_open_quiet,
+        gap_quiet=ctx.pace_gap_quiet) if ctx.paced else None
+    t0, w0 = time.monotonic(), run_slot.waited_s()
+    # ── THE HOLD, and CHECKPOINTS 2 (§C2.2, the quiet/typing boundary) and
+    # 3 (§C2.3, after the GIF's beat): `_hold_segments` is the one place
+    # that decides which parts of a bubble the fan may interrupt.
+    for seg in _hold_segments(pace=pace, typing_s=typing_s,
+                              is_gif=bool(gid), typing_on=ctx.typing_on,
+                              interruptible=checking):
+        await hold_with_typing(
+            ctx.account_id, fan_id, seg.seconds,
+            typing_indicator=seg.indicator, quiet_s=seg.quiet_s,
+            think_at_s=seg.think_at_s, think_for_s=seg.think_for_s)
+        if seg.check_after:
+            aborted = await welcome_turn.fan_replied_since(
+                ctx.account_id, fan_id, anchor)
+            if aborted is not None:
+                return aborted
+    # The account's DM rate (OF_DM_PER_MIN), waited like the hold;
+    # the send (send_dropping_bad_media's own turn) uses it.
+    # ── CHECKPOINT 4 (§C2): a wait for a place is a quiet stretch
+    # he can answer in (up to a minute, the slot lent): asked again.
+    waited = await dm_rate.turn(ctx.account_id, release_budget_s=INLINE_MAX_S)
+    if waited > 0 and checking:
+        aborted = await welcome_turn.fan_replied_since(ctx.account_id, fan_id, anchor)
+        if aborted is not None:
+            dm_rate.release(ctx.account_id)     # the bubble is dropped: its place goes back
+            return aborted
+    if pace is not None:
+        # INSTRUMENTATION ONLY (§A5): elapsed = requested + the un-metered
+        # emit overhead (`_emit_typing_for` does not subtract the awaited
+        # emit from its budget). See `_HOLD_OVERRUN_WARN_S`.
+        # The wait to take the run slot back (a hold may release it,
+        # run_slot; a paced child's own share of the run's lent slot) is
+        # queueing, not emit overhead: left out.
+        over = (time.monotonic() - t0) - (run_slot.waited_s() - w0) - pace.total_s
+        if over > ctx.tally.hold_overrun_max_s:
+            ctx.tally.hold_overrun_max_s = over
+        if over > _HOLD_OVERRUN_WARN_S:
+            log.warning("send_welcome hold overran by %.1fs account=%s "
+                        "fan=%s bubble=%d (requested %.1fs)",
+                        over, ctx.account_id, fan_id, idx, pace.total_s)
+    return None
+
+
+class _Sent(NamedTuple):
+    """One bubble on the wire."""
+    result: Any            # OF's answer to the send
+    media_landed: bool     # its vault media went out with it (never for the GIF)
+
+
+async def _send_bubble(ctx: _RunCtx, sub: dict, idx: int, part: str,
+                       gid: str | None, media_ids: list[int],
+                       price_cents: int) -> _Sent | None:
+    """Put one bubble on the wire, or None when it failed and the burst stops
+    (counted, logged, an undeliverable fan claimed)."""
+    fan_id = sub["id"]
+    try:
+        if gid:
+            result = await asyncio.to_thread(
+                lambda g=gid: ctx.client.send_message(fan_id, "", giphy_id=g))
+            return _Sent(result, False)
+        # A refused ATTACHMENT degrades to text-only rather than losing
+        # the greeting. Otherwise one dead vault id blocks EVERY welcome
+        # on the account: a failed bubble-0 leaves the welcome_sent
+        # claim unwritten, so the next sweep regenerates and re-fails.
+        outcome = await send_dropping_bad_media(
+            ctx.client, fan_id, part, media_ids,
+            log=log, send_purpose="gated", price_cents=price_cents)
+        return _Sent(outcome.result, outcome.media_landed)
+    except Exception as e:
+        if idx == 0:
+            ctx.tally.errors += 1
+            # Permanent (deleted/blocked) → quarantine AND claim
+            # welcome_sent — that claim is THIS sender's own gate, so the
+            # new-sub sweep never regenerates a welcome for a fan we can't
+            # deliver to. Transient errors leave the claim unwritten.
+            if await skip_unreachable_fan(ctx.account_id, fan_id, e, log=log):
+                await _mark_welcomed(ctx.account_id, fan_id, sub.get("username"))
+            log.warning("send_welcome send failed account=%s fan=%s",
+                        ctx.account_id, fan_id, exc_info=True)
+        else:
+            # The greeting already landed → the fan IS welcomed; losing the
+            # follow-up bubble is cosmetic. Stop the burst, still mark.
+            log.warning("send_welcome bubble %d failed account=%s fan=%s",
+                        idx + 1, ctx.account_id, fan_id, exc_info=True)
+        return None
+
+
+async def _record_landed(ctx: _RunCtx, fan_id: int, part: str, gid: str | None,
+                         sent: _Sent, price_cents: int) -> _Landed:
+    """Book one landed bubble: tallies and the outbound row. Returns the bubble
+    as OF stamped it."""
+    result = sent.result
+    if gid:
+        ctx.tally.gifs_sent += 1
+    elif sent.media_landed:
+        ctx.tally.image_attached += 1
+    # Persist each landed bubble (Automation employee). The WS pump skips
+    # outbound, so this is the only producer of the outbound `messages` rows.
+    msg_id = result.get("id") if isinstance(result, dict) else None
+    # OF's own stamp for the row we just put on the thread; the turn
+    # classification needs the same number. `provider_stamped` records
+    # whether it is OF's or ours — the attribution row still takes
+    # `utcnow()` as its fallback, but the classification does not pretend
+    # our clock is comparable to OF's. See `Landed`.
+    of_created = (ax._parse_iso(result.get("createdAt"))
+                  if isinstance(result, dict) else None)
+    landed_at = of_created or datetime.utcnow()
+    last_landed = _Landed(landed_at, int(msg_id or 0),
+                          of_created is not None and msg_id is not None)
+    if msg_id:
+        await write_outbound_attribution(
+            account_id=ctx.account_id,
+            fan_id=int(fan_id),
+            message_id=int(msg_id),
+            sent_by_employee_id=None,  # → system Automation employee
+            automation_kind="welcome",  # matches grok_calls.purpose
+            # `part` is "" for the GIF bubble, which is exactly the body a
+            # GIF-only row wants: its content is the giphyId.
+            body=str(result.get("text") or part),
+            price_cents=price_cents,
+            created_at=landed_at,
+            emit_live=True,  # WORKER→SSE bridge: surface the welcome live
+        )
+    return last_landed
+
+
 async def _send_burst(ctx: _RunCtx, sub: dict, plan: list[_Bubble],
                       anchor: tuple[datetime, int] | None,
                       check_reply: bool) -> _Burst:
@@ -731,15 +892,7 @@ async def _send_burst(ctx: _RunCtx, sub: dict, plan: list[_Bubble],
     ONE burst policy: bubble 0 failing is fatal, any later failure stops the
     burst, and every landed send is persisted the same way."""
     fan_id = sub["id"]
-    # The burst's time-of-day image, or the operator's media on `message` (the
-    # two never meet: no image is resolved when `message` is set).
-    media_ids = ([ctx.bot_media_id] if ctx.bot_media_id is not None
-                 else list(ctx.media_ids))
-    # A paid `message` never re-sells media he already owns (ppv_send's
-    # ownership guard): he gets the text alone, free.
-    sell_cents = ctx.price_cents
-    if fan_id in ctx.owners:
-        media_ids, sell_cents = [], 0
+    media_ids, sell_cents = _burst_media(ctx, fan_id)
     landed = 0
     marked = False
     last_landed: _Landed | None = None
@@ -749,6 +902,8 @@ async def _send_burst(ctx: _RunCtx, sub: dict, plan: list[_Bubble],
         # Bubble 0 is never interruptible — it IS the welcome, and there is
         # nothing yet for him to have replied to.
         checking = check_reply and idx >= 1
+        # The image (and its price) rides bubble 0 only.
+        bubble_media, bubble_sell = (media_ids, sell_cents) if idx == 0 else ([], 0)
         # ── CHECKPOINT 1 (§C2.1): the top of every TEXT bubble after the
         # greeting. The GIF is excluded: its whole hold is interruptible, so the
         # check after it is strictly stronger than this one.
@@ -756,45 +911,10 @@ async def _send_burst(ctx: _RunCtx, sub: dict, plan: list[_Bubble],
             aborted = await welcome_turn.fan_replied_since(ctx.account_id, fan_id, anchor)
             if aborted is not None:
                 break
-        # A GIF is PICKED, not typed: no typing time and no "...is typing" frame.
-        typing_s = 0.0 if gid else typing_delay_seconds(part, ctx.typing_wpm)
-        # `Pace.total_s` is the ONLY number that moves a clock — the phase
-        # arguments just decide when the indicator is on inside that same total
-        # (pacing.py's INVARIANT). Seeded per (account, fan, bubble) so a burst
-        # replays. Unpaced ⇒ no sampler call at all, so nothing is drawn.
-        pace = welcome_burst_pace(
-            role=role, has_image=bool(media_ids),
-            typing_s=typing_s, text=part,
-            rng=Random(f"welcome_pace:{ctx.account_id}:{fan_id}:{idx}"),
-            open_quiet=ctx.pace_open_quiet,
-            gap_quiet=ctx.pace_gap_quiet) if ctx.paced else None
-        t0, w0 = time.monotonic(), run_slot.waited_s()
-        # ── THE HOLD, and CHECKPOINTS 2 (§C2.2, the quiet/typing boundary) and
-        # 3 (§C2.3, after the GIF's beat): `_hold_segments` is the one place
-        # that decides which parts of a bubble the fan may interrupt.
         try:
-            for seg in _hold_segments(pace=pace, typing_s=typing_s,
-                                      is_gif=bool(gid), typing_on=ctx.typing_on,
-                                      interruptible=checking):
-                await hold_with_typing(
-                    ctx.account_id, fan_id, seg.seconds,
-                    typing_indicator=seg.indicator, quiet_s=seg.quiet_s,
-                    think_at_s=seg.think_at_s, think_for_s=seg.think_for_s)
-                if seg.check_after:
-                    aborted = await welcome_turn.fan_replied_since(
-                        ctx.account_id, fan_id, anchor)
-                    if aborted is not None:
-                        break
-            if aborted is None:
-                # The account's DM rate (OF_DM_PER_MIN), waited like the hold;
-                # the send below (send_dropping_bad_media's own turn) uses it.
-                # ── CHECKPOINT 4 (§C2): a wait for a place is a quiet stretch
-                # he can answer in (up to a minute, the slot lent): asked again.
-                waited = await dm_rate.turn(ctx.account_id, release_budget_s=INLINE_MAX_S)
-                if waited > 0 and checking:
-                    aborted = await welcome_turn.fan_replied_since(ctx.account_id, fan_id, anchor)
-                    if aborted is not None:
-                        dm_rate.release(ctx.account_id)     # the bubble is dropped: its place goes back
+            aborted = await _hold_bubble(ctx, fan_id, idx, part, gid, role,
+                                         has_image=bool(media_ids), anchor=anchor,
+                                         checking=checking)
         except run_slot.SlotLost as e:
             # The run lost its slot (a serial run's hold, or a paced child's on
             # the run's lent slot, run_slot.borrowed): send no more. The
@@ -805,102 +925,31 @@ async def _send_burst(ctx: _RunCtx, sub: dict, plan: list[_Bubble],
             break
         if aborted is not None:
             break
-        if pace is not None:
-            # INSTRUMENTATION ONLY (§A5): elapsed = requested + the un-metered
-            # emit overhead (`_emit_typing_for` does not subtract the awaited
-            # emit from its budget). See `_HOLD_OVERRUN_WARN_S`.
-            # The wait to take the run slot back (a hold may release it,
-            # run_slot; a paced child's own share of the run's lent slot) is
-            # queueing, not emit overhead: left out.
-            over = (time.monotonic() - t0) - (run_slot.waited_s() - w0) - pace.total_s
-            if over > ctx.tally.hold_overrun_max_s:
-                ctx.tally.hold_overrun_max_s = over
-            if over > _HOLD_OVERRUN_WARN_S:
-                log.warning("send_welcome hold overran by %.1fs account=%s "
-                            "fan=%s bubble=%d (requested %.1fs)",
-                            over, ctx.account_id, fan_id, idx, pace.total_s)
-        try:
-            if gid:
-                result = await asyncio.to_thread(
-                    lambda g=gid: ctx.client.send_message(fan_id, "", giphy_id=g))
-            else:
-                # A refused ATTACHMENT degrades to text-only rather than losing
-                # the greeting. Otherwise one dead vault id blocks EVERY welcome
-                # on the account: a failed bubble-0 leaves the welcome_sent
-                # claim unwritten, so the next sweep regenerates and re-fails.
-                outcome = await send_dropping_bad_media(
-                    ctx.client, fan_id, part, media_ids if idx == 0 else [],
-                    log=log, send_purpose="gated",
-                    price_cents=sell_cents if idx == 0 else 0)
-                result = outcome.result
-        except Exception as e:
-            if idx == 0:
-                ctx.tally.errors += 1
-                # Permanent (deleted/blocked) → quarantine AND claim
-                # welcome_sent — that claim is THIS sender's own gate, so the
-                # new-sub sweep never regenerates a welcome for a fan we can't
-                # deliver to. Transient errors leave the claim unwritten.
-                if await skip_unreachable_fan(ctx.account_id, fan_id, e, log=log):
-                    await _mark_welcomed(ctx.account_id, fan_id, sub.get("username"))
-                log.warning("send_welcome send failed account=%s fan=%s",
-                            ctx.account_id, fan_id, exc_info=True)
-            else:
-                # The greeting already landed → the fan IS welcomed; losing the
-                # follow-up bubble is cosmetic. Stop the burst, still mark.
-                log.warning("send_welcome bubble %d failed account=%s fan=%s",
-                            idx + 1, ctx.account_id, fan_id, exc_info=True)
+        sent = await _send_bubble(ctx, sub, idx, part, gid, bubble_media, bubble_sell)
+        if sent is None:
             break
         landed += 1
-        # Only a text bubble can carry the time-of-day image, so `outcome` is
-        # read only in the branch that defines it.
-        if gid:
-            ctx.tally.gifs_sent += 1
-        elif idx == 0 and outcome.media_landed:
-            ctx.tally.image_attached += 1
-        # Persist each landed bubble (Automation employee). The WS pump skips
-        # outbound, so this is the only producer of the outbound `messages` rows.
-        msg_id = result.get("id") if isinstance(result, dict) else None
-        # OF's own stamp for the row we just put on the thread; the turn
-        # classification needs the same number. `provider_stamped` records
-        # whether it is OF's or ours — the attribution row still takes
-        # `utcnow()` as its fallback, but the classification does not pretend
-        # our clock is comparable to OF's. See `Landed`.
-        of_created = (ax._parse_iso(result.get("createdAt"))
-                      if isinstance(result, dict) else None)
-        landed_at = of_created or datetime.utcnow()
-        last_landed = _Landed(landed_at, int(msg_id or 0),
-                              of_created is not None and msg_id is not None)
         # A price holds only when its media landed: text alone goes out free.
-        price_cents = sell_cents if (idx == 0 and not gid and outcome.media_landed) else 0
-        if msg_id:
-            await write_outbound_attribution(
-                account_id=ctx.account_id,
-                fan_id=int(fan_id),
-                message_id=int(msg_id),
-                sent_by_employee_id=None,  # → system Automation employee
-                automation_kind="welcome",  # matches grok_calls.purpose
-                # `part` is "" for the GIF bubble, which is exactly the body a
-                # GIF-only row wants: its content is the giphyId.
-                body=str(result.get("text") or part),
-                price_cents=price_cents,
-                created_at=landed_at,
-                emit_live=True,  # WORKER→SSE bridge: surface the welcome live
-            )
-        # THE CLAIM, as early as it can honestly be made (§C5): the greeting is
-        # on the wire and attributed, so this fan HAS been welcomed — whatever
-        # happens to bubbles 2-4. A burst can end early or run for minutes, and
-        # the one thing that must never happen is a second greeting next tick.
-        if idx == 0 and ctx.early_mark and not marked:
-            await _mark_welcomed(ctx.account_id, fan_id, sub.get("username"))
-            marked = True
-        # Auto-unsend of the operator's own message, after the early claim when
-        # there is one. Queuing it never raises (smart_message_extras.
-        # schedule_unsend logs and moves on), so it can never cost the fan his
-        # claim and earn him a second greeting.
-        if idx == 0 and ctx.message and msg_id:
-            await extras.schedule_unsend(
-                ctx.account_id, fan_id, int(msg_id),
-                minutes=ctx.unsend_minutes, price_cents=price_cents)
+        price_cents = bubble_sell if sent.media_landed else 0
+        last_landed = await _record_landed(ctx, fan_id, part, gid, sent, price_cents)
+        if idx == 0:
+            # THE CLAIM, as early as it can honestly be made (§C5): the greeting
+            # is on the wire and attributed, so this fan HAS been welcomed —
+            # whatever happens to bubbles 2-4. A burst can end early or run for
+            # minutes, and the one thing that must never happen is a second
+            # greeting next tick.
+            if ctx.early_mark:
+                await _mark_welcomed(ctx.account_id, fan_id, sub.get("username"))
+                marked = True
+            # Auto-unsend of the operator's own message, after the early claim
+            # when there is one. Queuing it never raises (smart_message_extras.
+            # schedule_unsend logs and moves on), so it can never cost the fan
+            # his claim and earn him a second greeting.
+            msg_id = sent.result.get("id") if isinstance(sent.result, dict) else None
+            if ctx.message and msg_id:
+                await extras.schedule_unsend(
+                    ctx.account_id, fan_id, int(msg_id),
+                    minutes=ctx.unsend_minutes, price_cents=price_cents)
     return _Burst(landed, last_landed, aborted, marked, lost)
 
 
@@ -996,18 +1045,20 @@ async def _after_of_welcome(ctx: _RunCtx, sub: dict) -> None:
         await _follow_back_one(ctx, fan_id)
 
 
-async def _welcome_one(ctx: _RunCtx, sub: dict) -> None:
+async def _welcome_one(ctx: _RunCtx, w: send_welcome_decide.Welcome) -> None:
     """One fan's whole welcome, as the phase list: cooldown + lease, the reply
     anchor, compose, the burst, follow-back, the turn, then rest + lease back.
 
-    Everything the RUN decided arrives in `ctx`; `sub` is the one thing that is
-    per-fan. With `human_pace` on, six of these are in flight at once (§A3);
-    with it off `run()` awaits them one at a time.
+    Everything the RUN decided arrives in `ctx`; `w` (partition's decision: the
+    sub, and whether OF's own welcome greets him) is the one thing per-fan.
+    With `human_pace` on, six of these are in flight at once (§A3); with it off
+    `run()` awaits them one at a time.
 
     ⚠️ It owns the fan LEASE from the moment it takes one, and the `finally` at
     the bottom is what hands it back — rest first, then the lease, because ORDER
     IS LOAD-BEARING. Nothing may return out of the middle of the `try` without
     going through it."""
+    sub = w.sub
     fan_id = sub["id"]
     # Another automation messaged this fan recently → rest it (W3 cooldown).
     if await ax.fan_on_cooldown(ctx.account_id, fan_id):
@@ -1019,7 +1070,7 @@ async def _welcome_one(ctx: _RunCtx, sub: dict) -> None:
         return
     sent_ok = False
     try:
-        if ctx.after_of_welcome:
+        if w.by_of:
             await _after_of_welcome(ctx, sub)
             return
         anchor, check_reply = await _reply_anchor(ctx, fan_id)
@@ -1086,85 +1137,86 @@ async def _welcome_one(ctx: _RunCtx, sub: dict) -> None:
 class _Candidates(NamedTuple):
     """Who gets welcomed this tick, and who was filtered out on the way."""
     seen: int                  # notifications that parsed as a subscriber
-    new_subs: list[dict]
-    skipped_existing: int
-    skipped_guard: int
-    skipped_restricted: int    # muted peer-creator / hand-restricted "no automations"
-    skipped_audience: int
-    skipped_before_start: int = 0   # subscribed before the Effective date
-    delayed: int = 0                # not yet past his random delay → a later tick
+    admitted: list[send_welcome_decide.Welcome]
+    skipped: Counter[send_welcome_decide.Reason]  # skip reason → count (see _SKIP_STATS)
 
 
-async def _candidates(account_id: str, client, payload: dict, *,
-                      limit: int) -> _Candidates:
-    """Source this tick's subscribers and run the pre-send filters, in order:
-    `welcome_sent` dedup, the NOT-NEW gate, the contact guard, the hard-skip
-    list, then the include-only audience. `test_fan` is an explicit force and
-    bypasses everything but the audience."""
-    # Source the candidate subscribers.
+async def _source_subs(client, payload: dict, *, limit: int,
+                       delay: list[int] | None) -> list[dict]:
+    """This tick's subscribers: the `test_fan` force, else OF's subscribe feed
+    (paged further back while a random delay could hide a due sub)."""
     test_fan = payload.get("test_fan")
     if test_fan:
         nm = payload.get("test_name") or ""
-        subs = [{"id": int(test_fan), "username": nm or None, "name": nm or None}]
-    else:
-        # Scope the fetch to the subscribe feed. `type=subscribed` (past tense,
-        # the value the OF web UI's /my/notifications/subscribed tab uses) is the
-        # ONLY working filter — `subscribes`/`subscriptions` 400 (verified live
-        # 2026-06). The untyped feed is unusable: a content-moderation event
-        # (`deactivated_media`) flood can bury every subscribe past offset 1000+,
-        # silently starving welcomes (this happened to Ava 2026-06-10 → 4 days of
-        # missed welcomes). _extract_new_subscribers still filters client-side as a
-        # belt-and-braces guard.
-        resp = await asyncio.to_thread(
-            client.notifications, limit=limit, offset=0, type="subscribed",
-        )
-        subs = _extract_new_subscribers(resp)
-        # A random delay holds a new sub back up to an hour, unclaimed; on a busy
-        # page he could slide out of the newest `limit` before he is due and
-        # never be welcomed. So with a delay set, page further back until the
-        # feed reaches past the longest delay (bounded by `_DELAY_PAGES_MAX`).
-        rng = extras.delay_range(payload)
-        if rng:
-            horizon = datetime.utcnow() - timedelta(minutes=rng[1] + _DELAY_SLACK_MIN)
-            seen_ids = {s["id"] for s in subs}
-            page = subs
-            for n in range(1, _DELAY_PAGES_MAX):
-                stamps = [s["at"] for s in page if s.get("at") is not None]
-                if (not isinstance(resp, dict) or resp.get("hasMore") is False
-                        or not stamps or min(stamps) < horizon):
-                    break
-                resp = await asyncio.to_thread(
-                    client.notifications, limit=limit, offset=n * limit, type="subscribed",
-                )
-                page = [s for s in _extract_new_subscribers(resp) if s["id"] not in seen_ids]
-                seen_ids.update(s["id"] for s in page)
-                subs.extend(page)
+        return [{"id": int(test_fan), "username": nm or None, "name": nm or None}]
+    # Scope the fetch to the subscribe feed. `type=subscribed` (past tense,
+    # the value the OF web UI's /my/notifications/subscribed tab uses) is the
+    # ONLY working filter — `subscribes`/`subscriptions` 400 (verified live
+    # 2026-06). The untyped feed is unusable: a content-moderation event
+    # (`deactivated_media`) flood can bury every subscribe past offset 1000+,
+    # silently starving welcomes (this happened to Ava 2026-06-10 → 4 days of
+    # missed welcomes). _extract_new_subscribers still filters client-side as a
+    # belt-and-braces guard.
+    resp = await asyncio.to_thread(
+        client.notifications, limit=limit, offset=0, type="subscribed",
+    )
+    subs = _extract_new_subscribers(resp)
+    # A random delay holds a new sub back up to an hour, unclaimed; on a busy
+    # page he could slide out of the newest `limit` before he is due and
+    # never be welcomed. So with a delay set, page further back until the
+    # feed reaches past the longest delay (bounded by `_DELAY_PAGES_MAX`).
+    if delay:
+        horizon = datetime.utcnow() - timedelta(minutes=delay[1] + _DELAY_SLACK_MIN)
+        seen_ids = {s["id"] for s in subs}
+        page = subs
+        for n in range(1, _DELAY_PAGES_MAX):
+            stamps = [s["at"] for s in page if s.get("at") is not None]
+            if (not isinstance(resp, dict) or resp.get("hasMore") is False
+                    or not stamps or min(stamps) < horizon):
+                break
+            resp = await asyncio.to_thread(
+                client.notifications, limit=limit, offset=n * limit, type="subscribed",
+            )
+            page = [s for s in _extract_new_subscribers(resp) if s["id"] not in seen_ids]
+            seen_ids.update(s["id"] for s in page)
+            subs.extend(page)
+    return subs
 
+
+async def _candidates(account_id: str, client, payload: dict, *,
+                      limit: int, of_welcome_on: bool | None) -> _Candidates:
+    """Source this tick's subscribers, take the reads the pre-send filters need,
+    and let `send_welcome_decide.partition` decide (its docstring has the
+    precedence): `welcome_sent` dedup, the Effective date / random delay, the
+    NOT-NEW gate, the contact guard, the hard-skip list, then the include-only
+    audience. `test_fan` is an explicit force and bypasses everything but the
+    dedup and the audience.
+
+    Each read is taken only for the fans still pending after the reads before
+    it (partition with the later reads left empty), so a tick whose feed is
+    all already-welcomed fans reads nothing more, as before."""
+    test_fan = bool(payload.get("test_fan"))
+    delay = extras.delay_range(payload)
+    subs = await _source_subs(client, payload, limit=limit, delay=delay)
+    starts_at = extras.window_start(payload)
+    now = datetime.utcnow()
     # Dedup against welcome_sent (survives restarts → exactly one welcome).
-    welcomed = await _load_welcomed(account_id)
-    new_subs = [s for s in subs if s["id"] not in welcomed]
+    reads = send_welcome_decide.Reads(welcomed=await _load_welcomed(account_id),
+                                      of_welcome_on=of_welcome_on)
 
-    # The Delayed welcome's Effective date and random delay, read off each
-    # subscribe's own stamp (a sub whose stamp is unreadable is neither).
-    skipped_before_start = delayed = 0
-    if not test_fan and new_subs:
-        start = extras.window_start(payload)
-        rng = extras.delay_range(payload)
-        now = datetime.utcnow()
-        kept = []
-        for s in new_subs:
-            at = s.get("at")
-            if at is not None and start is not None and at < start:
-                skipped_before_start += 1
-            elif at is not None and at + timedelta(seconds=extras.delay_seconds(
-                    rng, account_id, s["id"])) > now:
-                delayed += 1
-            else:
-                kept.append(s)
-        new_subs = kept
+    def decide(reads: send_welcome_decide.Reads) -> list[send_welcome_decide.Decision]:
+        return send_welcome_decide.partition(
+            subs, reads, account_id=account_id, now=now, test_fan=test_fan,
+            starts_at=starts_at, delay=delay)
 
+    def pending_ids(reads: send_welcome_decide.Reads) -> list[int]:
+        return [w.sub["id"] for w in send_welcome_decide.welcomes(decide(reads))]
+
+    pending = pending_ids(reads)
     # Auto-discovery hygiene — NOTIFICATION path only (`test_fan` is an explicit
-    # force, so the live drivers / UI "send test" bypass these). Two filters:
+    # force, so the live drivers / UI "send test" bypass these; partition already
+    # ignores them for it, so skipping the reads here only saves the I/O). Two
+    # filters:
     #   • NOT-NEW: the `type=subscribed` feed includes renewals / re-subs, and
     #     `welcome_sent` has no row for fans who pre-date this automation — so
     #     welcoming a fan we ALREADY have a real conversation with would re-welcome
@@ -1177,49 +1229,171 @@ async def _candidates(account_id: str, client, payload: dict, *,
     #     new sub has no prior outbound, so this never blocks a real first welcome).
     max_out = int(payload.get("new_max_outbound", 2))
     max_in = int(payload.get("new_max_inbound", 8))
-    skipped_existing = 0
-    skipped_guard = 0
-    skipped_restricted = 0   # muted peer-creator / hand-restricted "no automations"
-    if not test_fan and new_subs:
+    if not test_fan and pending:
         known = await _established_fan_ids(
-            account_id, [s["id"] for s in new_subs],
-            max_outbound=max_out, max_inbound=max_in)
+            account_id, pending, max_outbound=max_out, max_inbound=max_in)
         if known:
-            new_subs = [s for s in new_subs if s["id"] not in known]
-            skipped_existing = len(known)
+            reads = replace(reads, established=frozenset(known))
+            pending = pending_ids(reads)
             log.info("send_welcome skipped %d established fan(s) account=%s",
-                     skipped_existing, account_id)
+                     len(known), account_id)
         guard_h = resolve_window_hours(payload.get("guard_hours"), _GUARD_DEFAULT_H)
-        if new_subs and guard_h > 0:
+        if pending and guard_h > 0:
             guard_ids = await contact_guard_excludes(account_id, outbound_hours=guard_h)
             if guard_ids:
-                before = len(new_subs)
-                new_subs = [s for s in new_subs if s["id"] not in guard_ids]
-                skipped_guard = before - len(new_subs)
+                reads = replace(reads, guard=frozenset(guard_ids))
+                pending = pending_ids(reads)
         # Durably restricted (muted peer-creator / hand-restricted) never get welcomed.
-        if new_subs:
+        if pending:
             hard_skip = await load_hard_skip_ids(account_id)
             if hard_skip:
-                before = len(new_subs)
-                new_subs = [s for s in new_subs if s["id"] not in hard_skip]
-                skipped_restricted = before - len(new_subs)
+                reads = replace(reads, restricted=frozenset(hard_skip))
+                pending = pending_ids(reads)
 
     # Include-only audience: shadow logs, enforce skips.
-    skipped_audience = 0
-    if new_subs:
+    if pending:
         import audience_include as _audiences
         _pol = await _audiences.automation_audience(account_id)
         if _pol.mode != "off":
-            kept = set(await _audiences.filter_candidates(
-                account_id, [s["id"] for s in new_subs], kind="send_welcome",
-                policy=_pol))
-            before = len(new_subs)
-            new_subs = [s for s in new_subs if int(s["id"]) in kept]
-            skipped_audience = before - len(new_subs)
+            reads = replace(reads, audience=frozenset(await _audiences.filter_candidates(
+                account_id, pending, kind="send_welcome", policy=_pol)))
 
-    return _Candidates(len(subs), new_subs, skipped_existing, skipped_guard,
-                       skipped_restricted, skipped_audience,
-                       skipped_before_start, delayed)
+    decisions = decide(reads)
+    return _Candidates(len(subs), send_welcome_decide.welcomes(decisions),
+                       send_welcome_decide.skip_counts(decisions))
+
+
+async def _welcome_all(ctx: _RunCtx, admitted: list[send_welcome_decide.Welcome],
+                       run_started: float) -> None:
+    """Every admitted fan's `_welcome_one`: serially, or the paced pool."""
+    if not ctx.paced:
+        # TODAY'S SHAPE, byte-identical: one fan at a time, no jitter, no budget,
+        # no gather. The run pins its executor slot for the SUM of its bursts —
+        # deliberately not repaired here, because repairing it would move timing
+        # on every account with every flag off.
+        for w in admitted:
+            await _welcome_one(ctx, w)
+    else:
+        # ── The concurrent shape (§A3). Several fans at once turns an hour of
+        # pinned slot back into minutes without adding a new concurrency class:
+        # OF/Fansly clients are already shared across concurrent `to_thread`
+        # sends today (client_pool pins one client per account, curl_cffi keeps
+        # a handle PER THREAD, and of_client keeps every per-request value in
+        # locals for exactly this reason). The pool is `_run_pool.run_paced`;
+        # what is welcome-specific is the worker, the start jitter (its own
+        # seeded stream, so it cannot shift the burst's own draws) and what a
+        # deferred fan means — no `welcome_sent` claim, so the next tick
+        # re-serves him off the same feed.
+        pool = await run_paced(
+            admitted, lambda w: _welcome_one(ctx, w),
+            concurrency=_PACE_CONCURRENCY, wall_budget_s=_RUN_WALL_BUDGET_S,
+            started_at=run_started, clock=time.monotonic,
+            jitter_for=lambda w: Random(
+                f"wstart:{ctx.account_id}:{w.sub['id']}").uniform(*_PACE_START_JITTER_S))
+        ctx.tally.deferred_budget = pool.deferred
+        if pool.deferred:
+            log.warning("send_welcome wall budget spent account=%s — deferring "
+                        "%d fan(s) to the next tick", ctx.account_id, pool.deferred)
+        for exc in pool.errors:
+            # ⚠️ DELIBERATELY DIFFERENT FROM THE SERIAL PATH: there, a per-fan
+            # crash propagates out of run() and the executor requeues the job.
+            # Here it is counted and the run still finalises `ok` — one fan's
+            # escape must never kill five other bursts mid-flight (§A3), and the
+            # requeue is worth little now that `welcome_sent` is claimed at
+            # bubble 0: the next scheduled tick re-serves the crashed fan either
+            # way. `errors` is the signal.
+            ctx.tally.errors += 1
+            log.warning("send_welcome paced fan failed account=%s",
+                        ctx.account_id, exc_info=exc)
+
+
+# partition's skip reasons → their stats keys (`welcomed` is not reported).
+_SKIP_STATS: dict[send_welcome_decide.Reason, str] = {
+    "established": "skipped_existing", "guard": "skipped_guard",
+    "restricted": "skipped_restricted", "audience": "skipped_audience",
+    "before_start": "skipped_before_start", "delayed": "delayed"}
+# A renamed / added Reason must not silently read 0 in the stats.
+assert set(_SKIP_STATS) == set(get_args(send_welcome_decide.Reason)) - {"welcomed"}, \
+    "_SKIP_STATS out of sync with send_welcome_decide.Reason"
+
+
+def _run_stats(ctx: _RunCtx, cands: _Candidates, *, after_of_welcome: bool,
+               of_welcome: bool | None, batch_capped: bool,
+               run_started: float) -> dict:
+    """The run's stats dict → automation_runs.stats_json."""
+    t = ctx.tally
+    return {
+        "subscribers_seen": cands.seen,
+        "new_subscribers": len(cands.admitted),   # before the max_welcomes cap
+        "welcomes_sent": t.sent,
+        "image_attached": t.image_attached,
+        "pinned_used": t.pinned_used,
+        "gifs_sent": t.gifs_sent,
+        # ── Follow-back lane. The counters, and — like `human_pace` and
+        # `stop_on_reply` below — the two KNOBS AS THIS RUN RESOLVED THEM,
+        # because the counters alone cannot be read: `followed_back: 0` means
+        # "switched off", "everyone was already followed" or "silently did
+        # nothing", and `follow_back` separates the first from the other two.
+        #
+        # ⚠️ `follow_back_gate` is MONEY and it is the reason this is not
+        # optional: with it off, every number in `followed_back` is a follow
+        # fired without reading the fan's price first, and some of them BOUGHT
+        # a subscription. Nothing else in this bag can say that.
+        "follow_back": ctx.follow_back,
+        "follow_back_gate": ctx.follow_back_gate,
+        "followed_back": t.followed_back,
+        # `pinged` is reachable only with `unfollow_first=True`, which this lane
+        # never passes; booked beside `already_following` for totality.
+        "follow_back_already": (t.follow_back["already_following"]
+                                + t.follow_back["pinged"]),
+        "follow_back_paid_skipped": t.follow_back["paid_profile"],
+        "follow_back_no_price": t.follow_back["no_price"],
+        # Every non-follow outcome by `_classify`'s own label — so a label this
+        # lane has never named is visible here instead of booked as one it has.
+        "follow_back_outcomes": dict(t.follow_back),
+        "follow_back_errors": t.follow_back_errors,
+        "skipped_locked": t.skipped_locked,
+        "skipped_cooldown": t.skipped_cooldown,
+        **{key: cands.skipped[reason] for reason, key in _SKIP_STATS.items()},
+        "errors": t.errors,
+        "message_variants": len(ctx.message),
+        # The knob, what OF's welcome read said (None: not asked / unreadable),
+        # and the fans it greeted instead of us (never in `welcomes_sent`).
+        "after_of_welcome": after_of_welcome,
+        "of_welcome_on": of_welcome,
+        "after_of_welcome_fans": t.after_of_welcome,
+        "follow_ups_queued": t.follow_ups_queued,
+        "batch_capped": batch_capped,
+        "dry_run": ctx.dry_run,
+        # ── Pacing (§A3/§A5). Present on every run so a dashboard does not have
+        # to know which rules have the flag on; all three are inert with it off.
+        "human_pace": ctx.paced,
+        "run_wall_s": round(time.monotonic() - run_started, 1),
+        "deferred_budget": t.deferred_budget,
+        # An UPPER BOUND on `_emit_typing_for`'s un-metered emit, not a
+        # measurement of it: it also carries event-loop contention from the
+        # other concurrent bursts. See `_HOLD_OVERRUN_WARN_S` before deciding
+        # anything from this number.
+        "hold_overrun_max_s": round(t.hold_overrun_max_s, 2),
+        # ── stop_on_reply (§C). Also always present, also inert with the knob
+        # off. `aborted_on_reply` is the feature working; `handoff_enqueued` is
+        # the narrower case where a finishing bubble ate his reply and another
+        # engine was asked to answer him; `handoff_no_engine` is the same case
+        # on an account that runs no chat engine at all.
+        #
+        # ⚠️ Both `human_pace` above and `stop_on_reply` here report the knob AS
+        # THIS RUN RESOLVED IT at run level. What NEITHER can say is whether the
+        # guard actually ran for a given FAN, because a failed anchor read
+        # switches it off for that fan alone. `reply_guard_off` is that number,
+        # and it is the difference between "nobody replied" and "we never
+        # looked".
+        "stop_on_reply": ctx.stop_on_reply,
+        "reply_guard_off": t.reply_guard_off,
+        "aborted_on_reply": t.aborted_on_reply,
+        "handoff_enqueued": t.turn["handoff"],
+        "handoff_no_engine": t.turn["no_engine"],
+        "handoff_skipped_restricted": t.turn["restricted"],
+    }
 
 
 # ── The automation ───────────────────────────────────────────────────
@@ -1381,9 +1555,10 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         if bot_media_id is None:
             bot_media_id = await asyncio.to_thread(_bot_folder_media_id, client, hour)
 
-    cands = await _candidates(account_id, client, payload, limit=limit)
-    new_subs = cands.new_subs
-    new_total = len(new_subs)
+    cands = await _candidates(account_id, client, payload, limit=limit,
+                              of_welcome_on=of_welcome)
+    admitted = cands.admitted
+    new_total = len(admitted)
 
     batch_capped = new_total > max_welcomes
     if batch_capped:
@@ -1391,7 +1566,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             "send_welcome batch capped account=%s new=%d cap=%d (rest next tick)",
             account_id, new_total, max_welcomes,
         )
-        new_subs = new_subs[:max_welcomes]
+        admitted = admitted[:max_welcomes]
 
     t = _Tally()
 
@@ -1403,129 +1578,16 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         skip_time_bubble=skip_time_bubble, question=question, gif_id=gif_id,
         message=message, media_ids=tuple(media_ids), price_cents=price_cents,
         owners=frozenset(await extras.owners(
-            account_id, media_ids, price_cents, [s["id"] for s in new_subs])),
+            account_id, media_ids, price_cents, [w.sub["id"] for w in admitted])),
         unsend_minutes=unsend_minutes,
         follow_back=follow_back, follow_back_gate=follow_back_gate,
         paced=paced, stop_on_reply=stop_on_reply, early_mark=early_mark,
         pace_open_quiet=pace_open_quiet, pace_gap_quiet=pace_gap_quiet,
         typing_wpm=typing_wpm, typing_on=typing_on,
-        strip_emoji_on=strip_emoji_on, follow_ups=follow_ups,
-        after_of_welcome=of_welcome is True)
+        strip_emoji_on=strip_emoji_on, follow_ups=follow_ups)
 
-    if not paced:
-        # TODAY'S SHAPE, byte-identical: one fan at a time, no jitter, no budget,
-        # no gather. The run pins its executor slot for the SUM of its bursts —
-        # deliberately not repaired here, because repairing it would move timing
-        # on every account with every flag off.
-        for sub in new_subs:
-            await _welcome_one(ctx, sub)
-    else:
-        # ── The concurrent shape (§A3). Several fans at once turns an hour of
-        # pinned slot back into minutes without adding a new concurrency class:
-        # OF/Fansly clients are already shared across concurrent `to_thread`
-        # sends today (client_pool pins one client per account, curl_cffi keeps
-        # a handle PER THREAD, and of_client keeps every per-request value in
-        # locals for exactly this reason). The pool is `_run_pool.run_paced`;
-        # what is welcome-specific is the worker, the start jitter (its own
-        # seeded stream, so it cannot shift the burst's own draws) and what a
-        # deferred fan means — no `welcome_sent` claim, so the next tick
-        # re-serves him off the same feed.
-        pool = await run_paced(
-            new_subs, lambda sub: _welcome_one(ctx, sub),
-            concurrency=_PACE_CONCURRENCY, wall_budget_s=_RUN_WALL_BUDGET_S,
-            started_at=run_started, clock=time.monotonic,
-            jitter_for=lambda sub: Random(
-                f"wstart:{account_id}:{sub['id']}").uniform(*_PACE_START_JITTER_S))
-        t.deferred_budget = pool.deferred
-        if pool.deferred:
-            log.warning("send_welcome wall budget spent account=%s — deferring "
-                        "%d fan(s) to the next tick", account_id, pool.deferred)
-        for exc in pool.errors:
-            # ⚠️ DELIBERATELY DIFFERENT FROM THE SERIAL PATH: there, a per-fan
-            # crash propagates out of run() and the executor requeues the job.
-            # Here it is counted and the run still finalises `ok` — one fan's
-            # escape must never kill five other bursts mid-flight (§A3), and the
-            # requeue is worth little now that `welcome_sent` is claimed at
-            # bubble 0: the next scheduled tick re-serves the crashed fan either
-            # way. `errors` is the signal.
-            t.errors += 1
-            log.warning("send_welcome paced fan failed account=%s",
-                        account_id, exc_info=exc)
+    await _welcome_all(ctx, admitted, run_started)
 
-    return {
-        "subscribers_seen": cands.seen,
-        "new_subscribers": new_total,
-        "welcomes_sent": t.sent,
-        "image_attached": t.image_attached,
-        "pinned_used": t.pinned_used,
-        "gifs_sent": t.gifs_sent,
-        # ── Follow-back lane. The counters, and — like `human_pace` and
-        # `stop_on_reply` below — the two KNOBS AS THIS RUN RESOLVED THEM,
-        # because the counters alone cannot be read: `followed_back: 0` means
-        # "switched off", "everyone was already followed" or "silently did
-        # nothing", and `follow_back` separates the first from the other two.
-        #
-        # ⚠️ `follow_back_gate` is MONEY and it is the reason this is not
-        # optional: with it off, every number in `followed_back` is a follow
-        # fired without reading the fan's price first, and some of them BOUGHT
-        # a subscription. Nothing else in this bag can say that.
-        "follow_back": follow_back,
-        "follow_back_gate": follow_back_gate,
-        "followed_back": t.followed_back,
-        # `pinged` is reachable only with `unfollow_first=True`, which this lane
-        # never passes; booked beside `already_following` for totality.
-        "follow_back_already": (t.follow_back["already_following"]
-                                + t.follow_back["pinged"]),
-        "follow_back_paid_skipped": t.follow_back["paid_profile"],
-        "follow_back_no_price": t.follow_back["no_price"],
-        # Every non-follow outcome by `_classify`'s own label — so a label this
-        # lane has never named is visible here instead of booked as one it has.
-        "follow_back_outcomes": dict(t.follow_back),
-        "follow_back_errors": t.follow_back_errors,
-        "skipped_locked": t.skipped_locked,
-        "skipped_cooldown": t.skipped_cooldown,
-        "skipped_existing": cands.skipped_existing,
-        "skipped_guard": cands.skipped_guard,
-        "skipped_restricted": cands.skipped_restricted,
-        "skipped_audience": cands.skipped_audience,
-        "skipped_before_start": cands.skipped_before_start,
-        "delayed": cands.delayed,
-        "errors": t.errors,
-        "message_variants": len(message),
-        # The knob, what OF's welcome read said (None: not asked / unreadable),
-        # and the fans it greeted instead of us (never in `welcomes_sent`).
-        "after_of_welcome": after_of_welcome,
-        "of_welcome_on": of_welcome,
-        "after_of_welcome_fans": t.after_of_welcome,
-        "follow_ups_queued": t.follow_ups_queued,
-        "batch_capped": batch_capped,
-        "dry_run": dry_run,
-        # ── Pacing (§A3/§A5). Present on every run so a dashboard does not have
-        # to know which rules have the flag on; all three are inert with it off.
-        "human_pace": paced,
-        "run_wall_s": round(time.monotonic() - run_started, 1),
-        "deferred_budget": t.deferred_budget,
-        # An UPPER BOUND on `_emit_typing_for`'s un-metered emit, not a
-        # measurement of it: it also carries event-loop contention from the
-        # other concurrent bursts. See `_HOLD_OVERRUN_WARN_S` before deciding
-        # anything from this number.
-        "hold_overrun_max_s": round(t.hold_overrun_max_s, 2),
-        # ── stop_on_reply (§C). Also always present, also inert with the knob
-        # off. `aborted_on_reply` is the feature working; `handoff_enqueued` is
-        # the narrower case where a finishing bubble ate his reply and another
-        # engine was asked to answer him; `handoff_no_engine` is the same case
-        # on an account that runs no chat engine at all.
-        #
-        # ⚠️ Both `human_pace` above and `stop_on_reply` here report the knob AS
-        # THIS RUN RESOLVED IT at run level. What NEITHER can say is whether the
-        # guard actually ran for a given FAN, because a failed anchor read
-        # switches it off for that fan alone. `reply_guard_off` is that number,
-        # and it is the difference between "nobody replied" and "we never
-        # looked".
-        "stop_on_reply": stop_on_reply,
-        "reply_guard_off": t.reply_guard_off,
-        "aborted_on_reply": t.aborted_on_reply,
-        "handoff_enqueued": t.turn["handoff"],
-        "handoff_no_engine": t.turn["no_engine"],
-        "handoff_skipped_restricted": t.turn["restricted"],
-    }
+    return _run_stats(ctx, cands, after_of_welcome=after_of_welcome,
+                      of_welcome=of_welcome, batch_capped=batch_capped,
+                      run_started=run_started)

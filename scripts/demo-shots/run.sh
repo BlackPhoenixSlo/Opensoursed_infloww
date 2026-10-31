@@ -31,6 +31,7 @@ for bin in cwebp magick; do
 done
 
 TMP=""
+NEXT_ENV_ABSENT=0
 PIDS=()
 cleanup() {
   local code=$?
@@ -51,6 +52,9 @@ cleanup() {
       echo "demo-shots: restored app/$f (next dev had rewritten it)" >&2
     fi
   done
+  if [ "$NEXT_ENV_ABSENT" = 1 ] && [ -f "$ROOT/app/next-env.d.ts" ]; then
+    rm -f "$ROOT/app/next-env.d.ts"   # it was absent: leave it absent (as slop/lib/stack.py)
+  fi
   [ -n "$TMP" ] && rm -rf "$TMP"
   exit "$code"
 }
@@ -60,7 +64,8 @@ trap 'exit 143' TERM
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/demo-shots.XXXXXX")"
 cp "$ROOT/app/tsconfig.json" "$TMP/tsconfig.json.orig"
-cp "$ROOT/app/next-env.d.ts" "$TMP/next-env.d.ts.orig"
+# next-env.d.ts is gitignored (absent in a fresh worktree): cleanup then removes the one `next dev` writes.
+if [ -f "$ROOT/app/next-env.d.ts" ]; then cp "$ROOT/app/next-env.d.ts" "$TMP/next-env.d.ts.orig"; else NEXT_ENV_ABSENT=1; fi
 
 read -r RELAY_PORT APP_PORT CLOSED_PORT < <("$PY" -c '
 import socket

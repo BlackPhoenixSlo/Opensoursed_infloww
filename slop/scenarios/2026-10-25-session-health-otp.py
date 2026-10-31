@@ -33,7 +33,15 @@ pump supervisor passes; the window from the flip is at least WS_WINDOW_S, which
 the old reconnect loop (1, 2, 4, 8 s) fills with five /users/me. Phase C: OnlyFans
 takes the logins again and each owner re-captures each flagged Creator through the
 real `POST /admin/session/bootstrap` (paste-curl, a signed /users/me curl); the
-executor drains the parked sends.
+executor drains the parked sends. Phase D: OnlyFans asks one healthy Creator for a
+code and ends its socket, its pump exits flagged; then OnlyFans lets it back in with
+no re-capture, one executor tick's recovery probe clears the flag, and the supervisor
+pass after it must restart the exited pump (nothing else does). Phase E: a healthy
+Creator's session file vanishes from disk (no endpoint does that and leaves the pump
+up), so the next supervisor pass must Stop its running pump and its OF socket closes;
+then, its session back, its pump crash-loops (exits at once without parking,
+lib/pump_relay.py) under 1 s supervisor passes, and each restart must come its
+backoff (0, then 15 s) after the exit, no sooner and not much later.
 
 Invariants: account_health flags exactly the 2FA Creators (otp_required); one
 session_dead notification per (owner, 2FA Creator) though many callers met the 101
@@ -48,17 +56,26 @@ order, with its outbound message row (nothing dropped, counts match), Agencies 2
 untouched; /admin/accounts shows each owner its 2FA Creators paused (the UI's
 side-effect check). Recovery: the flags clear, every parked send reaches OF exactly
 once in fire-time order with its outbound row, no second notification, each pump
-reconnects. UI: the bell's 2FA row (trigger) opens Creators with Browserbase login
+reconnects; a probe-cleared Creator's pump is restarted by the next supervisor pass; a
+running pump whose Creator lost its session is stopped and its socket closed; a
+crash-looping pump's restarts respect the backoff and keep coming.
+UI: the bell's 2FA row (trigger) opens Creators with Browserbase login
 (settled), the row reads, and the Creator's row shows the "automations paused"
 badge naming Browserbase login. Budgets: route p95s and the tick's, vs the last
 green run.
 Bypasses, declared: lib/of_wire.py (OnlyFans' API and WebSocket on loopback, its
 own declared bypasses), the executor's 30 s and the pump supervisor's 15 s cadence
 (the hooks), the pump start re-pointed past _run_ui_safe's no-op (lib/relay.py);
+phase E's lost session is the harness moving the Creator's latest.json aside, and its
+crash-looping pump body is the harness's, and its crash switch stops a pump still
+running (lib/pump_relay.py);
 the reads' 502s go to their own recorder (they are this scenario's expected
 answer, checked below, not the stock no-5xx check's).
 Break-it-once: otp-state-not-session-dead (the classifier's 101 branch reverted);
 session-dead-claim-not-atomic (the read-then-write flip it replaced).
+reconcile-never-restarts, reconcile-ignores-parked (lib/pump_faults.py: the supervisor
+pass without its Restart, or blind to the dead-session flag); reconcile-never-stops (the
+pass without its Stop); supervisor-ignores-backoff (every Restart at once).
 Screenshots: trigger-bell-2fa-row, settled-browserbase-login, settled-creators-badge.
 """
 from __future__ import annotations
@@ -73,6 +90,8 @@ from slop.actors import ui
 from slop.actors.manager import SseListener
 from slop.lib.browserbase import paste_curl
 from slop.lib.client import Recorder
+from slop.lib.pump_faults import (BACKOFF_SLACK_S, BACKOFF_WANT_S, BACKOFF_WINDOW_S, PROBE_RESTART,
+                                  PUMP_BACKOFF, PUMP_STOP, WS_PARKED, WS_WINDOW_S)
 from slop.seed import of_sessions
 
 PROFILE = "multi_agency_big_models"
@@ -82,7 +101,6 @@ FAULT = "otp-state-not-session-dead"
 OTP_IDX = (3, 5, 9)  # Agency 0 (UI owner): Creator 3; Agency 1: Creators 5 and 9 (profile's owner layout)
 RELINK = "/creators?relink=browserbase"
 READS = 12  # concurrent inbox reads per OTP_IDX Creator at the flip, alongside its pump's reconnect
-WS_WINDOW_S = 20  # flip -> end of phase B, at least: the old reconnect loop's 0, 1, 3, 7, 15 s
 # The run that meets OF's 2FA demand logs its OFAPIError (automation_run_failed): expected (under the
 # fault; a green run's pump and reads flag first); the scenario's own checks count the runs.
 EXPECTED_TRACEBACKS = (("automation_run_failed", "otpState"),
@@ -110,9 +128,7 @@ C_WS_UP = "phase A: every Creator's WS pump connected through /users/me with the
 C_READS = "every concurrent inbox read of a 2FA Creator answered 502 with OF's 400 (upstream_status)"
 C_READER = ("a Creator with no automations is flagged by its owner's inbox read alone (via=proxy): "
             "otp_required, one notification")
-C_WS = (f"the WS pump met the 2FA demand once and parked: per 2FA Creator at most 2 /users/me over "
-        f">= {WS_WINDOW_S} s (the pump's reconnect, the probe's), no reconnect, the pump exited and "
-        "supervisor passes left it parked")
+C_WS = WS_PARKED
 C_REC_ROW = "recovery: a re-capture through POST /admin/session/bootstrap clears every flag"
 C_REC_SENDS = ("recovery: every parked send of a 2FA Creator reached OF exactly once, in fire-time order, "
                "with its outbound row")
@@ -518,6 +534,33 @@ async def run(ctx) -> None:
     ctx.check(C_REC_WS, resumed and all(pumps.get(a) == "running" for a in flagged_want),
               reconnected=sorted({c["account"] for c in fake.ws_connects if c["t"] >= rec_t} & set(flagged_want)),
               pumps={a: pumps.get(a) for a in flagged_want})
+
+    # ── Phase D: OnlyFans lets a 2FA Creator back in, no re-capture ───────────
+    # The recovery probe clears the flag and restarts nothing; only the next supervisor
+    # pass brings the exited pump back (service/pump_reconcile.reconcile's Restart).
+    probe_a = healthy[0]
+    fake.set_otp([probe_a])
+    await asyncio.to_thread(fake.drop_ws, [probe_a])
+
+    async def pump_state() -> str | None:
+        return (await ctx.owner.get("/__slop/pumps")).json()["pumps"].get(probe_a)
+
+    t_end, state_d = time.time() + 20, None
+    while time.time() < t_end and not (probe_a in flagged_now() and (state_d := await pump_state()) == "exited"):
+        await asyncio.sleep(0.25)
+    parked_d = probe_a in flagged_now() and state_d == "exited"
+    fake.set_otp([])
+    clear_t = time.time()
+    await tick()  # the executor's pass (its recovery probe), then one supervisor pass
+    cleared_d = probe_a not in flagged_now()
+    after_d = passes[-1]["pumps"].get(probe_a)
+    back_d = await wait_for(lambda: any(c["account"] == probe_a and c["t"] >= clear_t
+                                        for c in fake.ws_connects), 10)
+    ctx.check(PROBE_RESTART, parked_d and cleared_d and after_d == "running" and back_d,
+              creator=probe_a, flagged_and_exited=parked_d, cleared_by_probe=cleared_d,
+              pump_after_pass=after_d, socket_reconnected=back_d)
+    await _phase_e_stop(ctx, w, fake, healthy[1], supervise, wait_for)
+    await _phase_e_backoff(ctx, healthy[1], supervise)
     ctx.check("lib/of_wire.py saw only signed calls it models", fake.unsigned == 0 and not fake.unmodelled,
               unsigned=fake.unsigned, unmodelled=dict(fake.unmodelled))
 
@@ -542,6 +585,42 @@ async def run(ctx) -> None:
     ctx.metric("fake_of", fake.snapshot())
     (ctx.out / "of-wire-calls.json").write_text(json.dumps(fake.calls))
     (ctx.out / "of-ws-connects.json").write_text(json.dumps(fake.ws_connects))
+
+
+async def _phase_e_stop(ctx, w, fake, aid: str, supervise, wait_for) -> None:
+    """Supervisor Stop of a running pump whose Creator lost its session (module docstring)."""
+    latest = w.sessions / "accounts" / aid / "latest.json"
+    lost = latest.with_name("latest.json.slop-lost")
+    before = (await ctx.owner.get("/__slop/pumps")).json()["pumps"].get(aid)
+    live_before = aid in fake.ws_live()
+    latest.rename(lost)
+    try:
+        after = (await supervise()).get(aid)
+        closed = await wait_for(lambda: aid not in fake.ws_live(), 10)
+    finally:
+        lost.rename(latest)
+    ctx.check(PUMP_STOP, before == "running" and live_before and after is None and closed,
+              creator=aid, pump_before=before, socket_before=live_before, pump_after_pass=after,
+              socket_closed=closed)
+
+
+async def _phase_e_backoff(ctx, aid: str, supervise) -> None:
+    """A crash-looping pump's restart backoff (module docstring). The crash switch stops a pump
+    still running (lib/pump_relay.py), so this does not rest on _phase_e_stop's Stop."""
+    await ctx.owner.post("/__slop/pump-crash", json={"account_ids": [aid]})
+    try:
+        t_end = time.time() + BACKOFF_WINDOW_S
+        while time.time() < t_end:
+            await supervise()
+            await asyncio.sleep(1)
+        starts = (await ctx.owner.get("/__slop/pump-crash")).json()["starts"].get(aid, [])
+    finally:
+        await ctx.owner.post("/__slop/pump-crash", json={"account_ids": []})
+    # starts[0] is the Start (restart count 0); starts[k+1] is restart attempt k.
+    gaps = [round(b - a, 2) for a, b in zip(starts, starts[1:])]
+    off = [(k, g, d) for k, (g, d) in enumerate(zip(gaps, BACKOFF_WANT_S)) if not d - 0.5 <= g <= d + BACKOFF_SLACK_S]
+    ctx.check(PUMP_BACKOFF, len(gaps) == len(BACKOFF_WANT_S) and not off, creator=aid, starts=len(starts),
+              gaps_s=gaps[:30], want_s=BACKOFF_WANT_S, off=off[:10])
 
 
 async def _ui(ctx, otp, owner_of, me, by_id) -> None:

@@ -32,6 +32,7 @@ vi.mock("@/components/shell/PlatformSwitcher", () => ({
 vi.mock("@/components/shell/PlatformGate", () => ({ default: () => null, PlatformSync: () => null }));
 
 import AppShell from "@/components/shell/AppShell";
+import { settled } from "@/test-utils";
 
 beforeEach(() => {
   pathname = "/";
@@ -61,7 +62,9 @@ describe("AppShell drawer below lg", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("closes on a swipe left on the drawer or its backdrop, not on a swipe right", () => {
+  it("closes on a swipe left on the drawer or its backdrop, not on a swipe right", async () => {
+    // A 160px drawer (the test DOM has no layout): a 150px drag carries it past 75%.
+    const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(160);
     render(<AppShell>page</AppShell>);
     const pt = (x: number) => ({ clientX: x, clientY: 300 });
     const swipe = (el: Element, x0: number, x1: number) => {
@@ -72,15 +75,19 @@ describe("AppShell drawer below lg", () => {
     fireEvent.click(toggle());
     const dialog = screen.getByRole("dialog", { name: "Menu" });
     swipe(dialog, 100, 250);
+    await settled();
     expect(screen.getByRole("dialog", { name: "Menu" })).toBeInTheDocument();
     swipe(dialog, 250, 100);
+    await settled();
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(toggle()).toHaveAttribute("aria-expanded", "false");
 
     // The backdrop (the page beside the drawer) closes it too.
     fireEvent.click(toggle());
     swipe(document.querySelector("[data-state='open'].fixed.inset-0")!, 350, 200);
+    await settled();
     expect(screen.queryByRole("dialog")).toBeNull();
+    width.mockRestore();
   });
 
   it("opens on a swipe right from mid-screen; not from the OS edge zone, a scroll, a field, or over a dialog", () => {

@@ -124,12 +124,13 @@ export function PpvRow({
 /** The free previews stepper: how many leading tiles go out unlocked. Its
  *  buttons work only on a paid message (`enabled`); a free one has no split. */
 export function FreePreviews({
-  count, total, enabled, onChange,
+  count, total, enabled, onStep,
 }: {
   count: number;
   total: number;
   enabled: boolean;
-  onChange: (updater: (c: number) => number) => void;
+  /** One fewer / one more than `count` (the reducer clamps, `stepPreviews`). */
+  onStep: (by: 1 | -1) => void;
 }) {
   const step = "w-6 h-6 grid place-items-center rounded border border-border hover:bg-bg-elev-1 disabled:opacity-30";
   return (
@@ -144,7 +145,7 @@ export function FreePreviews({
       <span>free</span>
       <button
         type="button"
-        onClick={() => onChange((c) => Math.max(0, c - 1))}
+        onClick={() => onStep(-1)}
         disabled={!enabled || count === 0}
         className={step}
         aria-label="Fewer free previews"
@@ -152,7 +153,7 @@ export function FreePreviews({
       <span className="tabular-nums text-fg">{count}/{total}</span>
       <button
         type="button"
-        onClick={() => onChange((c) => Math.min(total, c + 1))}
+        onClick={() => onStep(1)}
         disabled={!enabled || count >= total}
         className={step}
         aria-label="More free previews"

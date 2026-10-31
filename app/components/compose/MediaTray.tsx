@@ -14,6 +14,7 @@ import { Fragment } from "react";
 import { Library } from "lucide-react";
 
 import { useReorder } from "@/hooks/useReorder";
+import { canBeFreePreview } from "@/lib/composeDraft";
 import { type VaultMedia } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
 import { cn } from "@/lib/utils";
@@ -86,7 +87,8 @@ export function MediaTray({
               m.files?.preview?.url ||
               null;
             const thumb = proxyImage(rawThumb, accountId);
-            const isFreeTile = idx < effectivePreviewCount;
+            // A fresh upload can't be a free teaser yet (lib/composeDraft canBeFreePreview).
+            const isFreeTile = idx < effectivePreviewCount && canBeFreePreview(m);
             const isDragging = reorder.draggingIndex === idx;
             const isDragOver = reorder.dragOverIndex === idx && !isDragging;
             return (

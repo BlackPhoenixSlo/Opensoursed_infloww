@@ -26,7 +26,7 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useReducer } from "react";
 import { Download } from "lucide-react";
 
 import { relay, type BootstrapResponse, type ProxyMeta, RelayError } from "@/lib/relay";
@@ -34,22 +34,14 @@ import { Badge, Button, Card, Input, Textarea } from "@/components/ui/primitives
 import { EXTENSION_ID } from "@/components/setup/useExtensionProbe";
 import { useInDesktopApp } from "@/hooks/useInDesktopApp";
 import { BRAND_NAME } from "@/lib/brand";
+import {
+  PASTE_PROXY, buildBootstrapBody, canSubmit, initialPasteCurl, pasteCurlReducer, submitError, type BootstrapBody,
+} from "@/components/setup/pasteCurl";
 
 const EXTENSION_URL = `https://chromewebstore.google.com/detail/chatterly-login-capture/${EXTENSION_ID}`;
 
-/** Select value for "Paste a new proxy…"; never a real label. */
-const PASTE_PROXY = "__paste__";
-
 interface ProxiesResp {
   proxies: ProxyMeta[];
-}
-
-interface BootstrapBody {
-  mode: "paste-curl";
-  curl: string;
-  nickname?: string;
-  make_active?: boolean;
-  static_param_override?: string;
 }
 
 /** `extInstalled` is the page-mount probe's answer (useExtensionProbe): null while checking. The card never probes.
@@ -66,16 +58,12 @@ export default function PasteCurlCard({ extInstalled, onLinked, initialNickname 
 }) {
   const qc = useQueryClient();
   const inApp = useInDesktopApp();
-  const [curl, setCurl] = useState("");
-  const [nickname, setNickname] = useState(initialNickname);
-  const [makeActive, setMakeActive] = useState(true);
-  const [proxyLabel, setProxyLabel] = useState(initialProxyLabel);
-  const [pastedProxy, setPastedProxy] = useState("");
-  const [staticOverride, setStaticOverride] = useState("");
-  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
-  // An account captured but whose attach failed: Retry re-runs the attach step, Continue goes on without it.
-  // `onLinked` waits for either, so the error stays readable.
-  const [pending, setPending] = useState<{ accountId: string; label: string } | null>(null);
+  const [state, dispatch] = useReducer(
+    pasteCurlReducer, { nickname: initialNickname, proxyLabel: initialProxyLabel }, initialPasteCurl,
+  );
+  // `pending`: an account captured but whose attach failed. `onLinked` waits for Retry or Continue, so the error
+  // stays readable.
+  const { curl, nickname, makeActive, proxyLabel, pastedProxy, staticOverride, result, pending } = state;
 
   const proxiesQ = useQuery<ProxiesResp>({
     queryKey: ["proxies", "list"],
@@ -98,17 +86,13 @@ export default function PasteCurlCard({ extInstalled, onLinked, initialNickname 
   });
 
   async function submit() {
-    setResult(null);
-    setPending(null);
-    if (!curl.trim().startsWith("curl")) {
-      setResult({ ok: false, text: "Must start with `curl ...`" });
+    dispatch({ type: "submitStart" });
+    const invalid = submitError(state);
+    if (invalid) {
+      dispatch({ type: "submitErr", text: invalid });
       return;
     }
     const pasting = proxyLabel === PASTE_PROXY;
-    if (pasting && !pastedProxy.trim()) {
-      setResult({ ok: false, text: "Paste a proxy line or pick another option." });
-      return;
-    }
     if (attach || proxyLabel) {
       const confirmed = window.confirm(
         `Attach ${attach ? "the chosen proxy" : pasting ? "proxy (the pasted one)" : `proxy "${proxyLabel}"`} to this account?\n\n` +
@@ -129,28 +113,19 @@ export default function PasteCurlCard({ extInstalled, onLinked, initialNickname 
           { text: pastedProxy.trim(), scheme: "http" },
         );
         if (!r.added[0]) {
-          setResult({ ok: false, text: `Proxy not added: ${r.errors[0]?.reason ?? "unrecognised format"}` });
+          dispatch({ type: "submitErr", text: `Proxy not added: ${r.errors[0]?.reason ?? "unrecognised format"}` });
           return;
         }
         label = r.added[0].label;
       } catch (err) {
-        setResult({ ok: false, text: `Proxy not added: ${(err as Error).message}` });
+        dispatch({ type: "submitErr", text: `Proxy not added: ${(err as Error).message}` });
         return;
       }
     }
 
-    const body: BootstrapBody = {
-      mode: "paste-curl",
-      curl,
-      make_active: makeActive,
-    };
-    if (nickname.trim()) body.nickname = nickname.trim();
-    if (staticOverride.trim()) body.static_param_override = staticOverride.trim();
-
     try {
-      const data = await bootstrapM.mutateAsync(body);
+      const data = await bootstrapM.mutateAsync(buildBootstrapBody(state));
       if (data.account_id && !(await attachStep(data.account_id, label))) return;
-      setCurl("");
       await finish(
         data.account_id || null,
         `✓ Bootstrapped account ${data.account_id} (user_id ${data.user_id})\n` +
@@ -159,8 +134,8 @@ export default function PasteCurlCard({ extInstalled, onLinked, initialNickname 
       );
     } catch (err) {
       const e = err as RelayError;
-      setResult({
-        ok: false,
+      dispatch({
+        type: "submitErr",
         text:
           `${e.status} FAILED\n\n` +
           (typeof e.body === "string" ? e.body : JSON.stringify(e.body, null, 2)),
@@ -188,8 +163,8 @@ export default function PasteCurlCard({ extInstalled, onLinked, initialNickname 
       return true;
     } catch (err) {
       const msg = (err as Error).message;
-      setResult({
-        ok: true,
+      dispatch({
+        type: "attachErr", accountId, label,
         text: bound
           ? `Session captured (account ${accountId}) and the proxy is attached, but reloading the session failed:\n` +
             `${msg}\n\nPress Retry to reload it.`
@@ -198,15 +173,13 @@ export default function PasteCurlCard({ extInstalled, onLinked, initialNickname 
       });
       // The account was created before the proxy step, so refresh even on the failure path.
       refreshCaches();
-      setPending({ accountId, label });
       return false;
     }
   }
 
-  /** After the attach step (or Continue past it): report, hand the account on. */
+  /** After the attach step (or Continue past it): clear the curl, report, hand the account on. */
   async function finish(accountId: string | null, headline: string) {
-    setPending(null);
-    setResult({ ok: true, text: headline });
+    dispatch({ type: "submitOk", text: headline });
     refreshCaches();
     if (accountId) onLinked?.(accountId);
   }
@@ -214,9 +187,8 @@ export default function PasteCurlCard({ extInstalled, onLinked, initialNickname 
   async function retry() {
     if (!pending) return;
     const { accountId, label } = pending;
-    setPending(null);
+    dispatch({ type: "retryStart" });
     if (await attachStep(accountId, label)) {
-      setCurl("");
       await finish(accountId, `✓ Proxy attached to account ${accountId}`);
     }
   }
@@ -270,7 +242,7 @@ export default function PasteCurlCard({ extInstalled, onLinked, initialNickname 
         rows={6}
         placeholder="curl 'https://onlyfans.com/api2/v2/...' -H 'sign: …' -H 'time: …' -H 'user-id: …' -H 'x-bc: …' -H 'x-of-rev: …' -H 'x-relay-static-param: …' -b 'auth_id=…; sess=…; …'"
         value={curl}
-        onChange={(e) => setCurl(e.target.value)}
+        onChange={(e) => dispatch({ type: "setField", field: "curl", value: e.target.value })}
       />
 
       {/* Optional fields */}
@@ -280,14 +252,14 @@ export default function PasteCurlCard({ extInstalled, onLinked, initialNickname 
           <Input
             placeholder="e.g. Bella, Mia, Test-burner"
             value={nickname}
-            onChange={(e) => setNickname(e.target.value)}
+            onChange={(e) => dispatch({ type: "setField", field: "nickname", value: e.target.value })}
           />
         </div>
         {!attach && <div>
           <label className="block text-xs text-fg-dim mb-1">Attach proxy (optional)</label>
           <select
             value={proxyLabel}
-            onChange={(e) => setProxyLabel(e.target.value)}
+            onChange={(e) => dispatch({ type: "setField", field: "proxyLabel", value: e.target.value })}
             className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-accent"
           >
             <option value="">— none (relay egresses on server WAN IP) —</option>
@@ -306,7 +278,7 @@ export default function PasteCurlCard({ extInstalled, onLinked, initialNickname 
               autoComplete="off"
               spellCheck={false}
               value={pastedProxy}
-              onChange={(e) => setPastedProxy(e.target.value)}
+              onChange={(e) => dispatch({ type: "setField", field: "pastedProxy", value: e.target.value })}
             />
           )}
         </div>}
@@ -316,7 +288,7 @@ export default function PasteCurlCard({ extInstalled, onLinked, initialNickname 
         <input
           type="checkbox"
           checked={makeActive}
-          onChange={(e) => setMakeActive(e.target.checked)}
+          onChange={(e) => dispatch({ type: "setField", field: "makeActive", value: e.target.checked })}
           className="accent-accent"
         />
         Flip this account to the relay&apos;s default after bootstrap
@@ -340,7 +312,7 @@ export default function PasteCurlCard({ extInstalled, onLinked, initialNickname 
         <Input
           placeholder="static_param (32 chars; usually leave blank)"
           value={staticOverride}
-          onChange={(e) => setStaticOverride(e.target.value)}
+          onChange={(e) => dispatch({ type: "setField", field: "staticOverride", value: e.target.value })}
           className="mt-2 font-mono"
         />
       </details>
@@ -348,7 +320,7 @@ export default function PasteCurlCard({ extInstalled, onLinked, initialNickname 
       <Button
         type="button"
         onClick={submit}
-        disabled={!curl.trim() || bootstrapM.isPending}
+        disabled={!canSubmit(state) || bootstrapM.isPending}
       >
         {bootstrapM.isPending ? "Bootstrapping…" : "Bootstrap from cURL"}
       </Button>
@@ -369,7 +341,7 @@ export default function PasteCurlCard({ extInstalled, onLinked, initialNickname 
           <Button type="button" onClick={() => void retry()}>Retry</Button>
           <Button
             type="button" variant="secondary"
-            onClick={() => { setCurl(""); void finish(pending.accountId, `✓ Bootstrapped account ${pending.accountId} without a proxy`); }}
+            onClick={() => void finish(pending.accountId, `✓ Bootstrapped account ${pending.accountId} without a proxy`)}
           >
             Continue
           </Button>

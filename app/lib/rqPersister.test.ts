@@ -4,7 +4,7 @@
  * Pins what callers rely on:
  *   • cache changes are saved once per throttle window, as the cache stands
  *     at the save (not one dehydrate per change),
- *   • a flush event (blur: a pop-out opening; pagehide) saves at once,
+ *   • a flush event (blur: a pop-out opening; pagehide) or flushPersistedCache saves at once,
  *   • clearPersistedCache cancels a save still waiting, so an identity wipe
  *     can't be re-stamped with the previous identity's cache,
  *   • a written snapshot restores as the same object.
@@ -16,7 +16,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { QueryClient } from "@tanstack/react-query";
 import type { PersistedClient } from "@tanstack/react-query-persist-client";
 
-import { clearPersistedCache, createIdbPersister, persistQueryClientLazily } from "@/lib/rqPersister";
+import {
+  clearPersistedCache, createIdbPersister, flushPersistedCache, persistQueryClientLazily,
+} from "@/lib/rqPersister";
 
 const data = new Map<string, unknown>();
 const puts: unknown[] = [];
@@ -106,6 +108,20 @@ describe("rqPersister", () => {
     await vi.advanceTimersByTimeAsync(10_000);
     expect(puts).toHaveLength(1);
     unsubscribe();
+  });
+
+  it("flushPersistedCache saves at once (a write the next page load must see), and is a no-op once unsubscribed", async () => {
+    const { queryClient, unsubscribe } = await lazilyPersisted();
+    queryClient.setQueryData(["a"], 1);
+    flushPersistedCache();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(savedKeys()).toEqual(["a"]);
+
+    unsubscribe();
+    queryClient.setQueryData(["b"], 2);
+    flushPersistedCache();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(puts).toHaveLength(1);
   });
 
   it("a clear cancels the save still waiting, and a later flush has nothing to write", async () => {

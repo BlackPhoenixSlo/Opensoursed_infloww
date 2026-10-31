@@ -67,7 +67,7 @@ from __future__ import annotations
 
 import json
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -80,72 +80,44 @@ from chatters import _account_restrictions_for, _filter_owner_accounts
 from db.engine import get_session
 from db.models import (
     Account, Action, ChatterAccountAccess, ChatterUser, ClockEvent, Employee, EmployeeGroup, Shift, ShiftAssignment,
-    UserAccount,
 )
-from employees import AgencyContext, json_object, owner_context
+from employees import AgencyContext
+from route_wire import parse_utc, wire
 from sales_attribution import event_sales
 from settings_api import applied_blob
 from shift_time import (
     OCCURRENCE_REACH, cancelled_dates, creator_spans, live_shifts, minutes_up, repeat_days, shift_occurrences,
 )
+from shifts_common import (
+    agency_account_ids, agency_employee_ids, json_body, own_agency_row, parse_range, shift_owner_context,
+)
+from shifts_timesheet import _overlap_s, timesheet_rows  # noqa: F401 — a kept alias, below
 
 
 router = APIRouter(prefix="/admin/shifts", tags=["shifts"])
 
-MAX_RANGE = timedelta(days=42)
 MAX_SHIFT = timedelta(hours=24)
-# Overlaps are looked for this far after the later of two series' starts:
-# both rules repeat weekly, and 53 weeks spans a whole DST cycle.
-OVERLAP_HORIZON = timedelta(weeks=53)
 # How far ahead a Shift may be scheduled (Infloww's shifts_scheduled_months).
 # ASSUMPTION: a year (366 days), counted from now to the Shift's start; a weekly
 # series is expanded at read time, so its later occurrences, "Never" and
 # `repeat_until` are not capped. Rung 5: Infloww's own figure is not in the
 # Inventory. Overturned by Infloww's value or an owner's.
 SCHEDULE_HORIZON = timedelta(days=366)
+# Overlaps are looked for this far after the later of two series' starts:
+# both rules repeat weekly, and 53 weeks spans a whole DST cycle.
+OVERLAP_HORIZON = timedelta(weeks=53)
 
-_OWNER_ONLY = "only the agency owner manages the Shift schedule"
-
-
-async def _owner_context(account_id: str | None = None) -> AgencyContext:
-    return await owner_context(account_id, _OWNER_ONLY)
-
-
-def _parse_utc(value: Any, field: str) -> datetime:
-    """An ISO-8601 time with a zone (Z or an offset) → naive UTC.
-
-    ASSUMPTION: any explicit offset is accepted and converted, not only a
-    literal Z; a time with no zone is 422. Rung 4: stricter later is a
-    narrowing the app never trips (it always sends toISOString()).
-    Overturned if the owner wants non-Z input refused.
-    """
-    if not isinstance(value, str) or not value:
-        raise HTTPException(status_code=422, detail=f"{field}: an ISO-8601 UTC time is required")
-    try:
-        dt = datetime.fromisoformat(value)
-    except ValueError:
-        raise HTTPException(status_code=422, detail=f"{field}: not an ISO-8601 time") from None
-    if dt.tzinfo is None:
-        raise HTTPException(status_code=422, detail=f"{field}: the time needs a zone (end it with Z)")
-    return dt.astimezone(timezone.utc).replace(tzinfo=None)
-
-
-def _wire(dt: datetime) -> str:
-    return dt.isoformat() + "Z"
-
-
-async def _agency_account_ids(s, agency_user_id: str) -> set[str]:
-    rows = (await s.execute(
-        select(UserAccount.account_id).where(UserAccount.user_id == agency_user_id)
-    )).scalars().all()
-    return set(rows)
-
-
-async def _agency_employee_ids(s, agency_user_id: str, ids: list[int]) -> set[int]:
-    rows = (await s.execute(
-        select(Employee.id).where(Employee.id.in_(ids), Employee.user_id == agency_user_id)
-    )).scalars().all()
-    return set(rows)
+# Kept for importers: s4s_schedule_api (_parse_range), sales_amend (_own_row),
+# older callers. The helpers live in service/shifts_common.py and
+# service/route_wire.py; `_overlap_s` (imported above) in shifts_timesheet.
+_owner_context = shift_owner_context
+_agency_account_ids = agency_account_ids
+_agency_employee_ids = agency_employee_ids
+_parse_range = parse_range
+_json_object = json_body
+_own_row = own_agency_row
+_parse_utc = parse_utc
+_wire = wire
 
 
 async def _shift_people(s, shift_ids: list[int]) -> dict[int, tuple[list[dict], list[dict]]]:
@@ -170,17 +142,6 @@ async def _shift_people(s, shift_ids: list[int]) -> dict[int, tuple[list[dict], 
     }
 
 
-def _parse_range(from_: str | None, to: str | None) -> tuple[datetime, datetime]:
-    """`from` and `to` → naive UTC, 422 unless from < to within 42 days."""
-    start = _parse_utc(from_, "from")
-    end = _parse_utc(to, "to")
-    if end <= start:
-        raise HTTPException(status_code=422, detail="to must be after from")
-    if end - start > MAX_RANGE:
-        raise HTTPException(status_code=422, detail="the range is at most 42 days")
-    return start, end
-
-
 @router.get("")
 async def list_occurrences(
     from_: str | None = Query(None, alias="from"),
@@ -199,8 +160,8 @@ async def list_occurrences(
     # `agency_context` would again via `assert_account_owned`
     # (service/employees.py:798). Rung 1, observed. One the session holds
     # outside this Agency (the Master) is 422 below.
-    ctx = await _owner_context(account_id)
-    start, end = _parse_range(from_, to)
+    ctx = await shift_owner_context(account_id)
+    start, end = parse_range(from_, to)
     emp_filter: int | None = None
     if employee_id:
         try:
@@ -209,9 +170,9 @@ async def list_occurrences(
             raise HTTPException(status_code=422, detail="employee_id must be an integer") from None
 
     async with get_session() as s:
-        if emp_filter is not None and not await _agency_employee_ids(s, ctx.agency_user_id, [emp_filter]):
+        if emp_filter is not None and not await agency_employee_ids(s, ctx.agency_user_id, [emp_filter]):
             raise HTTPException(status_code=422, detail=f"employee {emp_filter} is not in this agency")
-        if account_id and account_id not in await _agency_account_ids(s, ctx.agency_user_id):
+        if account_id and account_id not in await agency_account_ids(s, ctx.agency_user_id):
             raise HTTPException(status_code=422, detail=f"creator {account_id} is not in this agency")
 
         q = live_shifts(ctx.agency_user_id, start, end)
@@ -237,8 +198,8 @@ async def list_occurrences(
     return {"occurrences": [
         {
             **_shift_json(sh, *people.get(sh.id, ([], []))),
-            "occurrence_start": _wire(occ_start),
-            "occurrence_end": _wire(occ_end),
+            "occurrence_start": wire(occ_start),
+            "occurrence_end": wire(occ_end),
         }
         for occ_start, occ_end, sh in occurrences
     ]}
@@ -289,10 +250,6 @@ def _parse_repeat(body: dict, tz: str, start: datetime) -> tuple[list[int] | Non
     return sorted(set(days)), until_date
 
 
-async def _json_object(request: Request) -> dict[str, Any]:
-    return await json_object(request, 422)
-
-
 def _parse_replace(body: dict[str, Any]) -> bool:
     replace = body.get("replace", False)
     if not isinstance(replace, bool):
@@ -312,8 +269,8 @@ def _check_horizon(start: datetime, prior: datetime | None) -> None:
 def _shift_fields(body: dict[str, Any]) -> dict[str, Any]:
     """The create and edit body, validated (422s only; references are
     checked against the Agency separately)."""
-    start = _parse_utc(body.get("start_utc"), "start_utc")
-    end = _parse_utc(body.get("end_utc"), "end_utc")
+    start = parse_utc(body.get("start_utc"), "start_utc")
+    end = parse_utc(body.get("end_utc"), "end_utc")
     if end <= start:
         raise HTTPException(status_code=422, detail="end_utc must be after start_utc")
     if end - start > MAX_SHIFT:
@@ -347,7 +304,7 @@ def _parse_scope(body: dict[str, Any]) -> tuple[Scope, datetime | None]:
         raise HTTPException(status_code=422, detail="scope: all, this or following")
     if scope == "all":
         return "all", None
-    return scope, _parse_utc(body.get("occurrence_start"), "occurrence_start")
+    return scope, parse_utc(body.get("occurrence_start"), "occurrence_start")
 
 
 def _local_date(dt: datetime, tz: str) -> date:
@@ -411,11 +368,11 @@ async def _check_references(
     only the link and the allowlist are checked, as the spec names them.
     Rung 5. Overturned if assigning a deactivated chatter should be 422 too.
     """
-    own_emps = await _agency_employee_ids(s, agency_user_id, employee_ids)
+    own_emps = await agency_employee_ids(s, agency_user_id, employee_ids)
     foreign_emps = [e for e in employee_ids if e not in own_emps]
     if foreign_emps:
         raise HTTPException(status_code=422, detail=f"employees not in this agency: {foreign_emps}")
-    own_accounts = await _agency_account_ids(s, agency_user_id)
+    own_accounts = await agency_account_ids(s, agency_user_id)
     foreign_accounts = [a for a in account_ids if a not in own_accounts]
     if foreign_accounts:
         raise HTTPException(status_code=422, detail=f"creators not in this agency: {foreign_accounts}")
@@ -493,11 +450,10 @@ async def _check_overlaps(
 
     Two ways to clash: the Shift itself puts more than one Employee on a
     Creator, or one of its occurrences overlaps a non-cancelled occurrence
-    of another of the Agency's Shifts on the same Creator. Series are
-    compared from the later start for OVERLAP_HORIZON. `own_id` is the Shift
-    being edited, never compared with itself; `replaced`, an unsaved copy of
-    the series a "this" or "following" edit cuts, is compared in place of
-    its stored row.
+    of another of the Agency's Shifts on the same Creator (`find_overlaps`).
+    `own_id` is the Shift being edited, never compared with itself;
+    `replaced`, an unsaved copy of the series a "this" or "following" edit
+    cuts, is compared in place of its stored row.
 
     ASSUMPTION: the Shift's own double-staffing is reported once per Creator
     as `{shift_id: null, occurrence_start: <its first start>, account_id}`;
@@ -515,38 +471,8 @@ async def _check_overlaps(
     candidate = Shift()
     _apply(candidate, fields)
     accounts = fields["account_ids"]
-    clashes: list[dict[str, Any]] = []
-    if len(fields["employee_ids"]) > 1:
-        clashes += [{"shift_id": None, "occurrence_start": _wire(candidate.start_utc), "account_id": acc}
-                    for acc in accounts]
-
-    q = (select(Shift, ShiftAssignment.account_id)
-         .join(ShiftAssignment, ShiftAssignment.shift_id == Shift.id)
-         .where(Shift.agency_user_id == agency_user_id, Shift.status == "scheduled",
-                ShiftAssignment.account_id.in_(accounts))
-         .distinct())
-    if own_id is not None:
-        q = q.where(Shift.id != own_id)
-    others: dict[int, tuple[Shift, set[str]]] = {}
-    for other, acc in (await s.execute(q)).all():
-        if replaced is not None and other.id == replaced.id:
-            other = replaced
-        others.setdefault(other.id, (other, set()))[1].add(acc)
-
-    found: list[tuple[datetime, int, str]] = []
-    hits: dict[int, tuple[Shift, list[datetime]]] = {}
-    for other_id, (other, shared) in others.items():
-        lo = max(candidate.start_utc, other.start_utc)
-        hi = lo + OVERLAP_HORIZON
-        mine = shift_occurrences(candidate, lo, hi)
-        theirs = shift_occurrences(other, lo, hi)
-        clashing = [o_start for o_start, o_end in theirs
-                    if any(m_start < o_end and o_start < m_end for m_start, m_end in mine)]
-        if clashing:
-            found += [(clashing[0], other_id, acc) for acc in shared]
-            hits[other_id] = (other, clashing)
-    clashes += [{"shift_id": sid, "occurrence_start": _wire(start), "account_id": acc}
-                for start, sid, acc in sorted(found)]
+    others = await _overlap_candidates(s, agency_user_id, accounts, own_id, replaced)
+    clashes, hits = find_overlaps(candidate, fields["employee_ids"], accounts, others)
     if not clashes:
         return None
     if replace and all(c["shift_id"] is not None for c in clashes):
@@ -565,6 +491,64 @@ async def _check_overlaps(
     ]
     detail = "Multiple employees per shift is off; this Shift clashes: " + "; ".join(named)
     return JSONResponse(status_code=409, content={"detail": detail, "clashes": clashes})
+
+
+async def _overlap_candidates(
+    s, agency_user_id: str, accounts: list[str], own_id: int | None, replaced: Shift | None,
+) -> dict[int, tuple[Shift, set[str]]]:
+    """By id, each other live Shift of the Agency on one of `accounts`, with
+    the Creators it shares (`find_overlaps`' `existing`); `own_id` left out,
+    `replaced` in place of its stored row."""
+    q = (select(Shift, ShiftAssignment.account_id)
+         .join(ShiftAssignment, ShiftAssignment.shift_id == Shift.id)
+         .where(Shift.agency_user_id == agency_user_id, Shift.status == "scheduled",
+                ShiftAssignment.account_id.in_(accounts))
+         .distinct())
+    if own_id is not None:
+        q = q.where(Shift.id != own_id)
+    others: dict[int, tuple[Shift, set[str]]] = {}
+    for other, acc in (await s.execute(q)).all():
+        if replaced is not None and other.id == replaced.id:
+            other = replaced
+        others.setdefault(other.id, (other, set()))[1].add(acc)
+    return others
+
+
+def find_overlaps(
+    candidate: Shift, employee_ids: list[int], account_ids: list[str],
+    existing: dict[int, tuple[Shift, set[str]]],
+) -> tuple[list[dict[str, Any]], dict[int, tuple[Shift, list[datetime]]]]:
+    """The overlap rule over loaded Shifts, no DB: `(clashes, hits)`.
+
+    `candidate` is the Shift being written (unsaved), on `employee_ids` and
+    `account_ids`; `existing` is `_overlap_candidates`. `clashes` is the
+    409's list: the candidate's own double-staffing once per Creator
+    `{shift_id: None, occurrence_start: its first start, account_id}`, then
+    each other Shift once per shared Creator at its first clashing
+    occurrence, in (start, id, Creator) order; series are compared from the
+    later start for OVERLAP_HORIZON, occurrences as half-open spans, so
+    touching ends do not clash. `hits` is, by other Shift id, that Shift and
+    its clashing occurrence starts (`_replace`).
+    """
+    clashes: list[dict[str, Any]] = []
+    if len(employee_ids) > 1:
+        clashes += [{"shift_id": None, "occurrence_start": wire(candidate.start_utc), "account_id": acc}
+                    for acc in account_ids]
+    found: list[tuple[datetime, int, str]] = []
+    hits: dict[int, tuple[Shift, list[datetime]]] = {}
+    for other_id, (other, shared) in existing.items():
+        lo = max(candidate.start_utc, other.start_utc)
+        hi = lo + OVERLAP_HORIZON
+        mine = shift_occurrences(candidate, lo, hi)
+        theirs = shift_occurrences(other, lo, hi)
+        clashing = [o_start for o_start, o_end in theirs
+                    if any(m_start < o_end and o_start < m_end for m_start, m_end in mine)]
+        if clashing:
+            found += [(clashing[0], other_id, acc) for acc in shared]
+            hits[other_id] = (other, clashing)
+    clashes += [{"shift_id": sid, "occurrence_start": wire(start), "account_id": acc}
+                for start, sid, acc in sorted(found)]
+    return clashes, hits
 
 
 async def _replace(s, ctx: AgencyContext, hits: dict[int, tuple[Shift, list[datetime]]]) -> None:
@@ -604,8 +588,8 @@ def _shift_json(sh: Shift, emps: list, accs: list) -> dict[str, Any]:
     """The series fields of a Shift, shared by the week list and `_shift_out`."""
     return {
         "shift_id": sh.id,
-        "start_utc": _wire(sh.start_utc),
-        "end_utc": _wire(sh.end_utc),
+        "start_utc": wire(sh.start_utc),
+        "end_utc": wire(sh.end_utc),
         "tz": sh.tz,
         "repeat_days": repeat_days(sh.repeat_days),
         "repeat_until": sh.repeat_until.isoformat() if sh.repeat_until else None,
@@ -663,29 +647,12 @@ def _assign(s, shift_id: int, fields: dict[str, Any]) -> None:
             s.add(ShiftAssignment(shift_id=shift_id, employee_id=emp, account_id=acc))
 
 
-# The Agency-owned rows `_own_row` looks up by path id.
-_Owned = TypeVar("_Owned", Shift, ClockEvent)
-
-
-async def _own_row(s, ctx: AgencyContext, model: type[_Owned], raw_id: str, what: str) -> _Owned:
-    """This Agency's `model` row (a Shift or a Clock event) by its path id,
-    or 404 "<what> not found" (another Agency's, missing, or not an id)."""
-    try:
-        row_id = int(raw_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail=f"{what} not found") from None
-    row = await s.get(model, row_id)
-    if row is None or row.agency_user_id != ctx.agency_user_id:
-        raise HTTPException(status_code=404, detail=f"{what} not found")
-    return row
-
-
 # response_model=None: FastAPI cannot build a response model from a return
 # type that unions in JSONResponse (the overlap 409).
 @router.post("", response_model=None)
 async def create_shift(request: Request) -> dict[str, Any] | JSONResponse:
-    ctx = await _owner_context()
-    body = await _json_object(request)
+    ctx = await shift_owner_context()
+    body = await json_body(request)
     fields = _shift_fields(body)
     replace = _parse_replace(body)
     _check_horizon(fields["start"], None)
@@ -753,10 +720,10 @@ async def edit_shift(shift_id: str, request: Request) -> dict[str, Any] | JSONRe
     past_shifts_modified). Rung 1 (Infloww warns and saves). Overturned if
     past occurrences must be locked.
     """
-    ctx = await _owner_context()
+    ctx = await shift_owner_context()
     async with get_session() as s:
-        shift = await _own_row(s, ctx, Shift, shift_id, "shift")
-        body = await _json_object(request)
+        shift = await own_agency_row(s, ctx, Shift, shift_id, "shift")
+        body = await json_body(request)
         fields = _shift_fields(body)
         scope, at = _parse_scope(body)
         replace = _parse_replace(body)
@@ -821,10 +788,10 @@ async def cancel_shift(shift_id: str, request: Request) -> dict[str, Any]:
     Timesheet, while their Clock events stay. Rung 1. Overturned if past
     occurrences must be kept.
     """
-    ctx = await _owner_context()
+    ctx = await shift_owner_context()
     async with get_session() as s:
-        shift = await _own_row(s, ctx, Shift, shift_id, "shift")
-        scope, at = _parse_scope(await _json_object(request) if await request.body() else {})
+        shift = await own_agency_row(s, ctx, Shift, shift_id, "shift")
+        scope, at = _parse_scope(await json_body(request) if await request.body() else {})
         if shift.status == "cancelled":
             raise HTTPException(status_code=409, detail="the Shift is already cancelled")
         day = _occurrence_date(shift, at) if at else None
@@ -843,11 +810,6 @@ async def cancel_shift(shift_id: str, request: Request) -> dict[str, Any]:
 
 
 # ── The Timesheet (ticket 14) ───────────────────────────────────────
-
-
-def _overlap_s(a: datetime, b: datetime, lo: datetime, hi: datetime) -> float:
-    """Seconds of [a, b) inside [lo, hi)."""
-    return max(0.0, (min(b, hi) - max(a, lo)).total_seconds())
 
 
 @router.get("/timesheet")
@@ -955,8 +917,8 @@ async def timesheet(
     Overturned by a writer that stores `occurred_at` as raw text (a `T` or a
     zone suffix), which must then be normalised with `func.datetime`.
     """
-    ctx = await _owner_context()
-    start, end = _parse_range(from_, to)
+    ctx = await shift_owner_context()
+    start, end = parse_range(from_, to)
     by_employee = group == "employee"
     now = datetime.utcnow()
 
@@ -978,45 +940,10 @@ async def timesheet(
         # occurrences its Employee holds (`creator_spans`).
         on_creator = await creator_spans(s, events, now)
         # Recorded earnings: each event's sales (sales_attribution.event_sales, the
-        # one rule Shift records share) inside the range.
-        stop = min(end, now)
-        earnings: dict[int | str, int] = {}
-        for shares in (await event_sales(s, events, now, on_creator)).values():
-            for c in shares:
-                if start <= c.occurred_at < stop:
-                    key = c.employee_id if by_employee else c.account_id
-                    earnings[key] = earnings.get(key, 0) + c.amount_cents
-
-        rows: dict[int | str, dict[str, Any]] = {}
-
-        def _row(key: int | str) -> dict[str, Any]:
-            return rows.setdefault(key, {"scheduled_shifts": 0, "shifts_worked": 0, "scheduled_s": 0.0,
-                                         "worked_s": 0.0, "recorded_earnings_cents": 0, "open_now": False})
-
-        for sh in shifts:
-            for o_start, o_end in shift_occurrences(sh, start, end):
-                during = {(ev.employee_id, acc) for ev, acc, lo, hi in on_creator if lo < o_end and hi > o_start}
-                for key in {emp if by_employee else acc for emp, acc in assigned[sh.id]}:
-                    tally = _row(key)
-                    tally["scheduled_shifts"] += 1
-                    tally["scheduled_s"] += _overlap_s(o_start, o_end, start, end)
-                    if any((emp if by_employee else acc) == key and (emp, acc) in during
-                           for emp, acc in assigned[sh.id]):
-                        tally["shifts_worked"] += 1
-
-        # Worked time as (key, lo, hi, open) spans: per Employee each whole
-        # event, per Creator the event's time on that Creator.
-        spans = ([(ev.employee_id, ev.in_utc, ev.out_utc or now, ev.out_utc is None) for ev in events]
-                 if by_employee else [(acc, lo, hi, ev.out_utc is None) for ev, acc, lo, hi in on_creator])
-        for key, lo, hi, is_open in spans:
-            worked_s = _overlap_s(lo, hi, start, end)
-            if key is None or worked_s <= 0:
-                continue
-            tally = _row(key)
-            tally["worked_s"] += worked_s
-            tally["open_now"] = tally["open_now"] or is_open
-        for key, cents in earnings.items():
-            _row(key)["recorded_earnings_cents"] = int(cents)
+        # one rule Shift records share), counted inside the range by `timesheet_rows`.
+        sales = await event_sales(s, events, now, on_creator)
+        rows = timesheet_rows(shifts, assigned, events, on_creator, sales,
+                              lo=start, hi=end, now=now, by_employee=by_employee)
 
         groups: dict[Any, str | None] = {}
         if by_employee:

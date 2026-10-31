@@ -29,11 +29,18 @@
  * being owed because it fell out of a 30-day window.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import Link from "next/link";
 
 import { relay } from "@/lib/relay";
 import { fmtCents, fmtPrice } from "@/lib/format";
+
+import CustomsPane from "./CustomsPane";
+import {
+  customsPaneReducer, fanKey, handoffText, initialCustomsPane, initialReopenLedger, isFailed,
+  mayReopen, pullTicket, reopenLedger, rowKey,
+  type Brief, type ContextMsg, type Failed, type OrderLines, type Pane, type PaneRow,
+} from "./customsPaneReducer";
 
 /** An account taking custom-sized tips with no watcher on it. */
 interface UntrackedRow {
@@ -43,76 +50,13 @@ interface UntrackedRow {
   biggest_cents: number;
 }
 
-interface CustomRow {
-  /** true = tagged Custom and owed. false = a qualifying tip nobody watched;
-   *  a REVIEW row, which may equally have been plain generosity. */
-  marked?: boolean;
-  account_id: string;
-  account_name: string;
-  fan_id: number;
-  display_name: string;
-  /** The OnlyFans @handle. Kept SEPARATE from `display_name` (which falls back
-   *  to it) because the handoff below has to carry the exact string the
-   *  operator pastes into OF search — a display name finds nothing there. */
-  of_username?: string | null;
-  tip_cents: number | null;
+interface CustomRow extends PaneRow {
   /** How many SEPARATE orders make up `tip_cents`. Two $100 tips a day apart
    *  are two voice notes, and the queue used to show one. 0 on a row whose
    *  amount could not be reconstructed from transactions. */
   order_count?: number;
-  tipped_at: string | null;
   lifetime_spend_cents: number;
   chat_href: string;
-}
-
-/** The recording brief. Amounts come from the DB, never from the model —
- *  see `/admin/customs/brief`. */
-interface Brief {
-  ok: boolean;
-  reason?: string;
-  paid_cents?: number;
-  order_count?: number;
-  /** false = the model could not see him ask for anything in this excerpt.
-   *  Rendered as a warning, never as a work order. */
-  found_request?: boolean;
-  /** The concrete work order — what to make, how long, what to wear, what to
-   *  say, what to call him. This IS the handoff. */
-  summary?: string;
-  /** His own lines that are the request, verbatim — the receipt. */
-  his_words?: string[];
-  call_him?: string | null;
-}
-
-/** ONE line of the order span. Named rather than inline because both the pane
- *  and the clipboard render it, through `speaker`/`orderLine` below. */
-interface OrderMsg {
-  message_id: number;
-  from_fan: boolean;
-  is_tip: boolean;
-  text: string;
-  at: string | null;
-}
-
-/** The order's own span — see `/admin/customs/order`. NOT a window around the
- *  tip: on a layaway custom the ask is months behind the money. */
-interface OrderLines {
-  lines: OrderMsg[];
-  count: number;
-  opened_at?: string | null;
-  /** true = the span was too long to print whole, so only the lines mentioning
-   *  the order survived. Said out loud, because the operator is otherwise
-   *  reading an edit without being told it is one. */
-  truncated?: boolean;
-  reason?: string;
-}
-
-interface ContextMsg {
-  message_id: number;
-  from_fan: boolean;
-  text: string;
-  at: string | null;
-  is_tip: boolean;
-  price_cents: number;
 }
 
 function money(cents: number | null | undefined): string {
@@ -131,101 +75,22 @@ function waited(iso: string | null): { label: string; hours: number } {
   return { label: `${Math.round(h / 24)}d`, hours: h };
 }
 
-
-/** The fan's own words, most likely to BE the work order.
- *
- *  His longest inbound message in the pane. No model, no inference, no
- *  paraphrase — a summary that quietly rewrites "25 back 25 front" is worse
- *  than no summary at all, because the operator films against it. This is
- *  verbatim or nothing, and when it guesses wrong the raw thread is directly
- *  underneath it.
- *
- *  Tip rows carry no body of their own (the money is the content), so they are
- *  skipped; very short replies ("ok", "yes") never carry a brief. */
-function workOrderQuote(msgs: ContextMsg[]): string | null {
-  let best: string | null = null;
-  for (const m of msgs) {
-    if (!m.from_fan || m.is_tip) continue;
-    const t = (m.text || "").trim();
-    if (t.length < 25) continue;
-    if (best === null || t.length > best.length) best = t;
+/** GET a pane lookup; a failure is the `{ error }` stored in its field, so
+ *  this never rejects. */
+async function lookup<T>(path: string, q: URLSearchParams): Promise<T | Failed> {
+  try {
+    return await relay.get<T>(`${path}?${q}`);
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "lookup failed" };
   }
-  return best;
 }
 
-
-/** WHO SAID IT, for ONE order line — the single source for both surfaces.
- *
- *  The pane and the copy button render the same three-way conditional over the
- *  same rows, and the pane's own comment promises the clipboard carries "exactly"
- *  what is on screen. Written twice by hand that promise survives only until
- *  someone edits one of them, so it is written once here and both call it. */
-function speaker(m: OrderMsg): string {
-  return m.is_tip ? "💸" : m.from_fan ? "HIM" : "US";
+/** A clear in flight: the row clicked (its "…") and its fan (`fanKey`) — the
+ *  backend settles the fan, so Read / Pull go off on EVERY row of his. */
+interface Busy {
+  key: string;
+  fan: string;
 }
-
-/** ONE order line as the clipboard carries it: speaker, date, text.
- *
- *  Padded to the pane's column widths so a pasted handoff reads as the same
- *  three columns the operator was just looking at. */
-function orderLine(m: OrderMsg): string {
-  return `${speaker(m).padStart(4, " ")} ${(m.at || "").slice(0, 10)}  ${m.text}`;
-}
-
-/** THE HANDOFF, in the operator's own words (2026-09-05):
- *
- *      -username
- *      -account
- *      -copy and paste the request
- *
- *  ...where the request is *"scrape those 100 messages over the tips before
- *  and after and generate CONCRETE SUMMARY OF WHAT WE NEED TO DO"*. So the
- *  body is the model's work order from `/admin/customs/brief` (100 messages
- *  each side of the tip, plus the order's own lines from the whole thread),
- *  followed by his exact words as the receipt.
- *
- *  Until the brief lands, or when it fails, the raw order lines stand in so
- *  the button never copies an empty request.
- *
- *  The username is `of_username`, NOT `display_name`. `display_name` falls back
- *  to the handle, so on many rows they render identically and the difference is
- *  invisible right up until the row where it matters and OF search finds
- *  nothing. */
-function handoffText(
-  r: CustomRow,
-  brief: Brief | null | undefined,
-  order: OrderLines | null,
-): string {
-  const username = (r.of_username || "").trim();
-  const lines = [
-    `-username: ${username ? `@${username}` : `(not stored — fan #${r.fan_id}, "${r.display_name}")`}`,
-    `-account: ${r.account_name}`,
-  ];
-  // The total, from the DB. One number, nothing derived from it.
-  if (r.tip_cents != null) {
-    lines.push(`-total: ${money(r.tip_cents)}`);
-  }
-  if (brief?.call_him) lines.push(`-call him: ${brief.call_him}`);
-  lines.push("-request:");
-
-  if (brief?.ok && brief.found_request !== false && brief.summary) {
-    lines.push(`  ${brief.summary}`);
-    if ((brief.his_words || []).length > 0) {
-      lines.push("  His words:");
-      for (const w of brief.his_words || []) lines.push(`  "${w}"`);
-    }
-    return lines.join("\n");
-  }
-
-  const got = order?.lines || [];
-  if (got.length === 0) {
-    lines.push("  (no order talk found in this thread — open it in OnlyFans)");
-  } else {
-    for (const m of got) lines.push(orderLine(m));
-  }
-  return lines.join("\n");
-}
-
 
 function Section({
   title,
@@ -237,70 +102,77 @@ function Section({
   title: string;
   note: string;
   rows: CustomRow[];
-  busy: string | null;
-  onClear: (r: CustomRow) => void;
+  busy: Busy | null;
+  /** POST the clear; resolves false if it failed (the row stays listed). */
+  onClear: (r: CustomRow) => Promise<boolean>;
 }) {
-  const isReview = rows[0]?.marked === false;
+  const isReview = rows.length > 0 && !rows[0].marked;
   // Which row is expanded, and its thread. ONE at a time: this is a read-to-
   // decide surface, and two open threads is two things to hold in your head.
-  const [openKey, setOpenKey] = useState<string | null>(null);
-  const [ctx, setCtx] = useState<ContextMsg[] | null>(null);
-  // Which row is mid-pull. The re-scrape is synchronous (~1-2s) and the pane
-  // must not look merely slow while it runs.
-  const [pulling, setPulling] = useState<string | null>(null);
-  // The brief for the open row. `undefined` = never asked (the operator has to
-  // click), `null` = in flight.
-  const [brief, setBrief] = useState<Brief | null | undefined>(undefined);
-  // Which row was just copied, so the button can say it worked. A copy that
-  // silently succeeds is indistinguishable from a copy that silently failed,
-  // and the operator only finds out when he pastes an empty handoff.
-  const [copied, setCopied] = useState<string | null>(null);
-  // The order span for the open row. `null` = in flight. Loaded WITH the row,
-  // not on a second click: it is the answer to "what do I record", so making
-  // the operator ask for it separately is the extra step he objected to.
-  const [order, setOrder] = useState<OrderLines | null>(null);
+  // The pane's state — the open row's thread, brief and order span, and the
+  // Pull / Copy button states — is one reducer (customsPaneReducer): every
+  // reply carries the `seq` of the open it was asked for and is dropped once a
+  // newer open (another row, the same row reopened, or Pull) has replaced it,
+  // so a slow reply can never render in a pane it was not asked for.
+  //   pane — `null` = nothing open; inside it a `null` ctx / brief / order =
+  //     that request in flight. The order span loads WITH the row, not on a
+  //     second click: it is the answer to "what do I record", so making the
+  //     operator ask for it separately is the extra step he objected to. So
+  //     does the brief. `pane.copied` — the last copy and whether it worked. A
+  //     copy that silently succeeds is indistinguishable from one that
+  //     silently failed, and the operator only finds out when he pastes an
+  //     empty handoff.
+  //   pulls — which rows are mid-pull, or failed. The re-scrape is synchronous
+  //     (~1-2s) and the pane must not look merely slow while it runs.
+  const [state, dispatch] = useReducer(customsPaneReducer, initialCustomsPane);
+  const { pane, pulls } = state;
+  /** Pull's reopen ledger — the rule is `mayReopen` (customsPaneReducer). A
+   *  ref, not reducer state: a Pull reads it after its await, when the render
+   *  it closed over is stale. */
+  const ledger = useRef(initialReopenLedger);
+  /** Bumped once per copy, so an older copy's timer can't clear a newer note. */
+  const copySeq = useRef(0);
 
-  /** Load the thread around this row's anchor tip into the pane. */
-  const loadCtx = useCallback(async (r: CustomRow) => {
-    setCtx(null);
-    setBrief(null);
-    setOrder(null);
-    // The order span AND the work order, in parallel with the thread window
-    // below. Both fire on open — the operator ruled the extra click out. Each
-    // is best-effort: a failure leaves the handoff on its fallback, never
-    // blocks the pane.
-    //
-    // STARTED here and AWAITED at the bottom, rather than fired with `void`.
-    // Starting them first is what keeps all three requests in flight together;
-    // awaiting them at the end is what makes a rejection observable at all — as
-    // `void` IIFEs a throw from a `setState`, or from anything added to these
-    // blocks later, was an unhandled rejection nothing reported.
-    const orderPull = (async () => {
-      try {
-        const q = new URLSearchParams({
-          account_id: r.account_id,
-          fan_id: String(r.fan_id),
-        });
-        setOrder(await relay.get<OrderLines>(`/admin/customs/order?${q}`));
-      } catch {
-        setOrder({ lines: [], count: 0, reason: "lookup failed" });
-      }
-    })();
-    const briefPull = (async () => {
-      try {
-        setBrief(await relay.post<Brief>("/admin/customs/brief", {
-          account_id: r.account_id,
-          fan_id: r.fan_id,
-          at: r.tipped_at,
-        }));
-      } catch (e) {
-        setBrief({ ok: false, reason: e instanceof Error ? e.message : "failed" });
-      }
-    })();
+  /** Ask the model for this row's brief at tip time `at`, for the open `seq`.
+   *  Best-effort: a failure is stored as a failed brief (the pane offers a
+   *  retry). `at` is the pane's, not the row's: a Refresh may have moved the
+   *  row's `tipped_at` since, and the brief must read the span the pane did. */
+  const fetchBrief = useCallback(async (r: CustomRow, seq: number, at: string | null) => {
     try {
-      const q = new URLSearchParams({
+      const res = await relay.post<Brief>("/admin/customs/brief", {
         account_id: r.account_id,
-        fan_id: String(r.fan_id),
+        fan_id: r.fan_id,
+        at,
+      });
+      dispatch({ type: "brief", seq, brief: res });
+    } catch (e) {
+      dispatch({
+        type: "brief",
+        seq,
+        brief: { ok: false, reason: e instanceof Error ? e.message : "failed" },
+      });
+    }
+  }, []);
+
+  /** Open this row's pane: the thread around its anchor tip, its order span
+   *  and its brief, all three requested in parallel. Each request catches its
+   *  own failure and records it in the pane, so this never rejects; it
+   *  resolves once all three have settled (which is what Pull's spinner
+   *  waits for). */
+  const openRow = useCallback(async (r: CustomRow) => {
+    ledger.current = reopenLedger(ledger.current, { type: "paneMoved" });
+    const seq = ledger.current.seq;
+    const at = r.tipped_at;
+    dispatch({ type: "open", key: rowKey(r), fan: fanKey(r), seq, at });
+    const fan = { account_id: r.account_id, fan_id: String(r.fan_id) };
+    const orderPull = (async () => {
+      const res = await lookup<OrderLines>("/admin/customs/order", new URLSearchParams(fan));
+      dispatch({ type: "order", seq, order: res });
+    })();
+    const briefPull = fetchBrief(r, seq, at);
+    const ctxPull = (async () => {
+      const q = new URLSearchParams({
+        ...fan,
         // The endpoint accepts up to 60 either side and we were sending
         // neither, so every Read silently took the 18-before default. A fan
         // with two orders on different days needs to reach back past the
@@ -308,96 +180,100 @@ function Section({
         before: "50",
         after: "10",
       });
-      if (r.tipped_at) q.set("at", r.tipped_at);
-      const res = await relay.get<{ messages: ContextMsg[] }>(
-        `/admin/customs/context?${q.toString()}`,
-      );
-      setCtx(res.messages || []);
-    } catch {
-      setCtx([]);
-    }
-    // Both already set their own fallback state on failure, so this cannot
-    // reject in practice — which is exactly why it must not be silent if it ever
-    // does. The pane is fully rendered by the time we get here.
-    await Promise.all([orderPull, briefPull]);
-  }, []);
+      if (at) q.set("at", at);
+      const res = await lookup<{ messages: ContextMsg[] }>("/admin/customs/context", q);
+      dispatch({ type: "ctx", seq, ctx: isFailed(res) ? res : res.messages || [] });
+    })();
+    await Promise.all([orderPull, briefPull, ctxPull]);
+  }, [fetchBrief]);
 
   const toggle = useCallback(
-    async (r: CustomRow) => {
-      const key = `${r.account_id}:${r.fan_id}`;
-      if (openKey === key) {
-        setOpenKey(null);
+    (r: CustomRow) => {
+      if (pane?.key === rowKey(r)) {
+        ledger.current = reopenLedger(ledger.current, { type: "paneMoved" });
+        dispatch({ type: "close" });
         return;
       }
-      setOpenKey(key);
-      await loadCtx(r);
+      void openRow(r);
     },
-    [openKey, loadCtx],
+    [pane?.key, openRow],
   );
 
-  /** Re-ask the model. The brief loads with the row (see `loadCtx`); this is
+  /** Re-ask the model. The brief loads with the row (see `openRow`); this is
    *  the retry for when it failed or came back without the request. Per row,
-   *  never per queue load — rows nobody opens cost nothing. */
-  const askBrief = useCallback(async (r: CustomRow) => {
-    setBrief(null);
-    try {
-      const res = await relay.post<Brief>("/admin/customs/brief", {
-        account_id: r.account_id,
-        fan_id: r.fan_id,
-        at: r.tipped_at,
-      });
-      setBrief(res);
-    } catch (e) {
-      setBrief({ ok: false, reason: e instanceof Error ? e.message : "failed" });
-    }
-  }, []);
+   *  never per queue load — rows nobody opens cost nothing. `p` is the
+   *  rendered pane: its `seq`, so a reopen / Pull / other row before it
+   *  answers drops it, and its `at`, so the retry reads the same span. */
+  const askBrief = useCallback(
+    (r: CustomRow, p: Pane) => {
+      dispatch({ type: "briefRetry", seq: p.seq });
+      void fetchBrief(r, p.seq, p.at);
+    },
+    [fetchBrief],
+  );
 
   /** Put the three-line handoff on the clipboard — see `handoffText`.
    *
-   *  It copies what the pane has ALREADY loaded, which is why it lives inside
-   *  the expanded row: the request lines come from the thread, so there is
-   *  nothing honest to copy before it has been read. `writeText` rejects
-   *  outside a secure context, so a failure has to be visible rather than
-   *  leaving the operator to paste whatever was on the clipboard before. */
-  const copyHandoff = useCallback(
-    async (r: CustomRow) => {
-      const key = `${r.account_id}:${r.fan_id}`;
-      try {
-        await navigator.clipboard.writeText(handoffText(r, brief, order));
-        setCopied(key);
-        setTimeout(() => setCopied((c) => (c === key ? null : c)), 2000);
-      } catch {
-        setCopied(`${key}:failed`);
-      }
-    },
-    [brief, order],
-  );
+   *  It copies what the rendered pane `p` has ALREADY loaded, which is why it
+   *  lives inside the expanded row; the button is disabled until `canCopy(p)`
+   *  (brief and order settled). The result carries `p.seq`, so a write that
+   *  settles after its pane was replaced (even by a reopen of the same row)
+   *  notes nothing in the new one. `writeText` rejects outside a secure
+   *  context, so a failure has to be visible rather than leaving the operator
+   *  to paste whatever was on the clipboard before. */
+  const copyHandoff = useCallback(async (r: CustomRow, p: Pane) => {
+    const n = ++copySeq.current;
+    try {
+      await navigator.clipboard.writeText(handoffText(r, p));
+      dispatch({ type: "copyDone", seq: p.seq, n, ok: true });
+      setTimeout(() => dispatch({ type: "copyExpired", n }), 2000);
+    } catch {
+      dispatch({ type: "copyDone", seq: p.seq, n, ok: false });
+    }
+  }, []);
 
-  /** Re-scrape this fan's thread from OF, then re-read the pane.
+  /** Re-scrape this fan's thread from OF, then re-open the pane.
    *
    *  The context pane can only show what we have STORED, so on a thread the
    *  scraper never reached the work order simply is not there. This is the
    *  existing chat ↻ endpoint (`rescrape-now`) — synchronous, ~1-2s, and
-   *  best-effort: it returns ok=false rather than throwing, so a failed pull
-   *  leaves the pane exactly as it was instead of blanking it. */
+   *  best-effort: it answers ok=false rather than throwing. A failed pull
+   *  leaves the pane exactly as it was (no re-read, no second paid brief) and
+   *  says so on the row. An ok pull reopens the row only if `mayReopen`. */
   const pull = useCallback(
     async (r: CustomRow) => {
-      const key = `${r.account_id}:${r.fan_id}`;
-      setPulling(key);
+      const key = rowKey(r);
+      const ticket = pullTicket(ledger.current, fanKey(r));
+      dispatch({ type: "pullStart", key });
+      let error: string | undefined;
       try {
-        await relay.post(
+        const res = await relay.post<{ ok: boolean; error?: string }>(
           `/admin/messages/${r.account_id}/${r.fan_id}/rescrape-now`,
           {},
         );
-        setOpenKey(key);
-        await loadCtx(r);
-      } catch {
-        // Best-effort by design — keep whatever the pane already had.
-      } finally {
-        setPulling(null);
+        if (!res.ok) error = res.error || "pull failed";
+        else if (mayReopen(ledger.current, ticket)) await openRow(r);
+      } catch (e) {
+        error = e instanceof Error ? e.message : "pull failed";
       }
+      dispatch({ type: "pullDone", key, error });
     },
-    [loadCtx],
+    [openRow],
+  );
+
+  /** Sent / Dismiss: the backend settles the whole FAN (every row of his).
+   *  His running Pulls lose their reopen at the click (see `mayReopen`). His
+   *  open pane closes only once the POST succeeded: a failed clear leaves the
+   *  row listed and the pane as it was (re-reading it would pay for a second
+   *  brief). */
+  const clear = useCallback(
+    async (r: CustomRow) => {
+      const fan = fanKey(r);
+      ledger.current = reopenLedger(ledger.current, { type: "cleared", fan });
+      if (!(await onClear(r))) return;
+      dispatch({ type: "cleared", fan });
+    },
+    [onClear],
   );
 
   return (
@@ -426,8 +302,14 @@ function Section({
           <tbody>
             {rows.flatMap((r) => {
               const w = waited(r.tipped_at);
-              const key = `${r.account_id}:${r.fan_id}`;
-              const open = openKey === key;
+              const key = rowKey(r);
+              // The open row's pane, or null — so below, `p` is this row's.
+              const p = pane?.key === key ? pane : null;
+              const pullState = pulls[key];
+              const isPulling = pullState === "running";
+              // His clear is in flight (any row of his): he is leaving the
+              // queue, so Read / Pull would pay for a brief on a settled fan.
+              const fanBusy = busy?.fan === fanKey(r);
               const cells = (
                 <tr key={key} className="border-b last:border-0">
                   {/* ✓ = tagged owed by customs_watch. ? = a qualifying tip that
@@ -502,26 +384,32 @@ function Section({
                         man paid; the messages around it say what he paid FOR,
                         which is the whole decision on a review row. */}
                     <button
-                      onClick={() => void toggle(r)}
-                      className="mr-2 rounded border px-2 py-1 text-xs hover:bg-black/5"
+                      disabled={fanBusy}
+                      onClick={() => toggle(r)}
+                      className="mr-2 rounded border px-2 py-1 text-xs hover:bg-black/5 disabled:opacity-40"
                       title="Read the conversation around this tip"
                     >
-                      {openKey === key ? "Hide" : "Read"}
+                      {p ? "Hide" : "Read"}
                     </button>
+                    {isFailed(pullState) && (
+                      <span className="mr-2 text-xs text-err" title={pullState.error}>
+                        Pull failed
+                      </span>
+                    )}
                     {/* When the stored thread is thin (or the work order sits
                         further back than we ever scraped), pull it from OF and
                         re-read. Same endpoint the chat ↻ uses. */}
                     <button
-                      disabled={pulling === key}
+                      disabled={isPulling || fanBusy}
                       onClick={() => void pull(r)}
                       className="mr-2 rounded border px-2 py-1 text-xs hover:bg-black/5 disabled:opacity-40"
                       title="Re-fetch this chat from OnlyFans, then re-read it"
                     >
-                      {pulling === key ? "…" : "Pull"}
+                      {isPulling ? "…" : "Pull"}
                     </button>
                     <button
-                      disabled={busy === key}
-                      onClick={() => onClear(r)}
+                      disabled={fanBusy}
+                      onClick={() => void clear(r)}
                       className="rounded border px-3 py-1 text-xs hover:bg-black/5 disabled:opacity-40"
                       title={
                         isReview
@@ -537,220 +425,22 @@ function Section({
                             : "Mark delivered; also clears the Custom tag on OnlyFans"
                       }
                     >
-                      {busy === key ? "…" : isReview ? "Dismiss" : "Sent"}
+                      {busy?.key === key ? "…" : isReview ? "Dismiss" : "Sent"}
                     </button>
                   </td>
                 </tr>
               );
-              // The brief's four visible states, named once. `undefined` =
-              // never asked, `null` = in flight; deriving the phase here keeps
-              // that encoding out of the JSX below.
-              const briefPhase: "idle" | "loading" | "failed" | "not-found" | "ready" =
-                brief === undefined
-                  ? "idle"
-                  : brief === null
-                    ? "loading"
-                    : !brief.ok
-                      ? "failed"
-                      : brief.found_request === false
-                        ? "not-found"
-                        : "ready";
-              if (!open) return [cells];
+              if (!p) return [cells];
               return [
                 cells,
-                <tr key={`${key}:ctx`} className="border-b last:border-0">
-                  <td colSpan={7} className="bg-black/[0.03] px-3 py-3">
-                    {ctx === null && (
-                      <p className="text-xs opacity-60">Reading…</p>
-                    )}
-                    {ctx !== null && ctx.length === 0 && (
-                      <p className="text-xs opacity-60">
-                        No messages stored around this tip.
-                      </p>
-                    )}
-                    {/* THE HANDOFF, first and above the model brief, because
-                        this is what actually gets sent on: username, account,
-                        his words. The brief below is the optional read-it-for-me
-                        layer — it was the ONLY layer, which is the "too
-                        complicated" the operator named. */}
-                    {ctx !== null && (
-                      <div className="mb-3 flex items-center gap-2">
-                        <button
-                          onClick={() => void copyHandoff(r)}
-                          className="rounded border px-2 py-1 text-xs hover:bg-black/5"
-                          title="Copy username, account and his exact words"
-                        >
-                          Copy handoff
-                        </button>
-                        {copied === key && (
-                          <span className="text-xs text-ok">Copied</span>
-                        )}
-                        {copied === `${key}:failed` && (
-                          <span className="text-xs text-err">
-                            Copy blocked &mdash; select the text below instead
-                          </span>
-                        )}
-                        {order && order.lines.length === 0 && (
-                          <span className="text-xs opacity-60">
-                            no order talk found in this thread
-                          </span>
-                        )}
-                        {!r.of_username && (
-                          // The one case the handoff cannot fill in. Say it
-                          // where the copy happens, not after it is pasted.
-                          <span className="text-xs opacity-60">
-                            no @username stored &mdash; try &ldquo;Pull&rdquo;
-                          </span>
-                        )}
-                      </div>
-                    )}
-                    {/* THE ORDER, on screen exactly as the copy button emits it.
-                        Rendered ABOVE the raw thread because it IS the answer:
-                        the thread below is a window around the money, and on a
-                        layaway custom the money is months from the ask. */}
-                    {order && order.lines.length > 0 && (
-                      <div className="mb-3 rounded border border-ok/40 bg-ok/5 px-3 py-2">
-                        <p className="text-xs font-semibold">
-                          The order
-                          {order.opened_at && (
-                            <span className="ml-1 font-normal opacity-70">
-                              · since {order.opened_at.slice(0, 10)}
-                            </span>
-                          )}
-                        </p>
-                        <div className="mt-1 space-y-1">
-                          {order.lines.map((m) => (
-                            <div key={m.message_id} className="flex gap-2 text-xs">
-                              <span
-                                className={`w-8 shrink-0 font-medium ${
-                                  m.is_tip
-                                    ? ""
-                                    : m.from_fan
-                                      ? "text-ok"
-                                      : "opacity-50"
-                                }`}
-                              >
-                                {speaker(m)}
-                              </span>
-                              <span className="w-16 shrink-0 opacity-50">
-                                {(m.at || "").slice(0, 10)}
-                              </span>
-                              <span className="min-w-0">{m.text}</span>
-                            </div>
-                          ))}
-                        </div>
-                        {order.truncated && (
-                          // Never let an EDIT look like the whole thread.
-                          <p className="mt-1 text-[11px] opacity-50">
-                            Long thread &mdash; showing only the lines that
-                            mention the order.
-                          </p>
-                        )}
-                      </div>
-                    )}
-                    {/* WHAT TO DO. Loads with the row — this is the handoff
-                        body, so it is never behind a second click. */}
-                    <div className="mb-3">
-                      {briefPhase === "loading" && (
-                        <p className="text-xs opacity-60">Reading the thread…</p>
-                      )}
-                      {(briefPhase === "failed" || briefPhase === "idle") && (
-                        <p className="text-xs opacity-60">
-                          Couldn&rsquo;t summarise
-                          {brief?.reason ? ` (${brief.reason})` : ""} &mdash;{" "}
-                          <button
-                            onClick={() => void askBrief(r)}
-                            className="underline underline-offset-2 hover:opacity-70"
-                          >
-                            try again
-                          </button>
-                          . The copy button uses his raw lines meanwhile.
-                        </p>
-                      )}
-                      {briefPhase === "not-found" && brief && (
-                        <div className="rounded border border-warn/40 bg-warn/10 px-3 py-2">
-                          <p className="text-xs font-semibold">
-                            His ask isn&rsquo;t in this excerpt
-                          </p>
-                          <p className="mt-1 text-xs opacity-80">
-                            {brief.summary ||
-                              "He never says what he wants in the messages we have."}{" "}
-                            Try &ldquo;Pull&rdquo; to fetch more of the thread from
-                            OnlyFans, or read it below.
-                          </p>
-                        </div>
-                      )}
-                      {briefPhase === "ready" && brief && (
-                        <div className="rounded border border-ok/40 bg-ok/5 px-3 py-2">
-                          <p className="text-xs font-semibold">
-                            What to do
-                            {brief.call_him && (
-                              <span className="ml-1 font-normal opacity-70">
-                                · call him <strong>{brief.call_him}</strong>
-                              </span>
-                            )}
-                          </p>
-                          {brief.summary && (
-                            <p className="mt-1 text-xs">{brief.summary}</p>
-                          )}
-                          {(brief.his_words || []).length > 0 && (
-                            <div className="mt-1.5 text-xs opacity-80">
-                              <span className="font-medium">His words:</span>
-                              {(brief.his_words || []).map((w, i) => (
-                                <p key={i} className="italic">&ldquo;{w}&rdquo;</p>
-                              ))}
-                            </div>
-                          )}
-                          <p className="mt-1 text-[11px] opacity-50">
-                            Generated from 100 messages either side of the tip.
-                            Check them below.
-                          </p>
-                        </div>
-                      )}
-                    </div>
-                    {ctx !== null && workOrderQuote(ctx) && (
-                      <blockquote
-                        className="mb-3 border-l-2 border-ok/50 pl-3 text-xs italic opacity-90"
-                        title="His longest message here — verbatim, not summarised"
-                      >
-                        {workOrderQuote(ctx)}
-                      </blockquote>
-                    )}
-                    {ctx !== null && ctx.length > 0 && (
-                      <div className="space-y-1.5">
-                        {ctx.map((m) => (
-                          <div
-                            key={m.message_id}
-                            className={`flex gap-2 text-xs ${
-                              m.from_fan ? "" : "opacity-70"
-                            }`}
-                          >
-                            <span className="w-10 shrink-0 font-medium">
-                              {m.from_fan ? "fan" : "us"}
-                            </span>
-                            <span className="min-w-0">
-                              {/* A tip row has no body — show the money, which
-                                  is the thing being explained. */}
-                              {m.is_tip ? (
-                                <em className="not-italic font-semibold">
-                                  💸 tipped{" "}
-                                  {m.text.match(/\$[\d,.]+/)?.[0] ?? ""}
-                                </em>
-                              ) : (
-                                m.text || <span className="opacity-40">(media)</span>
-                              )}
-                              {m.price_cents > 0 && (
-                                <span className="ml-1 opacity-60">
-                                  [{m.price_cents == null ? "—" : fmtPrice(m.price_cents)} locked]
-                                </span>
-                              )}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </td>
-                </tr>,
+                <CustomsPane
+                  key={`${key}:ctx`}
+                  row={r}
+                  pane={p}
+                  onReadAgain={() => void openRow(r)}
+                  onCopy={() => void copyHandoff(r, p)}
+                  onRetryBrief={() => askBrief(r, p)}
+                />,
               ];
             })}
           </tbody>
@@ -764,7 +454,7 @@ export default function CustomsTab() {
   const [rows, setRows] = useState<CustomRow[] | null>(null);
   const [untracked, setUntracked] = useState<UntrackedRow[]>([]);
   const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
+  const [busy, setBusy] = useState<Busy | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -785,10 +475,11 @@ export default function CustomsTab() {
     void load();
   }, [load]);
 
+  /** POST the clear; true once it is settled (and dropped here), false if it
+   *  failed (the error shows, the rows stay). */
   const clear = useCallback(
-    async (r: CustomRow) => {
-      const key = `${r.account_id}:${r.fan_id}`;
-      setBusy(key);
+    async (r: CustomRow): Promise<boolean> => {
+      setBusy({ key: rowKey(r), fan: fanKey(r) });
       try {
         await relay.post("/admin/customs/clear", {
           account_id: r.account_id,
@@ -801,8 +492,10 @@ export default function CustomsTab() {
             (x) => !(x.account_id === r.account_id && x.fan_id === r.fan_id),
           ),
         );
+        return true;
       } catch (e) {
         setErr(e instanceof Error ? e.message : "failed to clear");
+        return false;
       } finally {
         setBusy(null);
       }
@@ -810,8 +503,8 @@ export default function CustomsTab() {
     [],
   );
 
-  const owed = (rows || []).filter((r) => r.marked !== false);
-  const review = (rows || []).filter((r) => r.marked === false);
+  const owed = (rows || []).filter((r) => r.marked);
+  const review = (rows || []).filter((r) => !r.marked);
   const owedTotal = owed.reduce((n, r) => n + (r.tip_cents || 0), 0);
 
   return (

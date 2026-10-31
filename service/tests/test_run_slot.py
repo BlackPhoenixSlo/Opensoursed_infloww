@@ -7,7 +7,10 @@ can run under `broadcast_lock`. These cases pin that the permit is really free
 during the wait, comes back after and ahead of fresh runs, within the run's budget or
 not at all (SlotLost), is never released by a task that does not own it, nor
 for a short hold, nor with the knob off, and that the
-pool count stays exact when a run is cancelled or raises mid-wait.
+pool count stays exact when a run is cancelled or raises mid-wait. The
+`case_the_pool_*` cases drive SlotPool alone: a permit granted to a waiter
+cancelled before it resumes passes on, a timeout leaves no waiter, a reserve
+permit goes to the next operator or back.
 
 Run: ./venv/bin/python service/tests/test_run_slot.py
 """
@@ -522,6 +525,97 @@ async def case_an_operator_cancelled_in_the_queue_keeps_both_counts():
     go.set()
     await a
     assert (pool.free, pool.reserve_free) == (1, 1), (pool.free, pool.reserve_free)
+
+
+async def _parked(pool: run_slot.SlotPool, **kw) -> asyncio.Task:
+    """A task parked in `pool.acquire(**kw)` (the pool is full)."""
+    t = asyncio.create_task(pool.acquire(**kw))
+    await asyncio.sleep(0)
+    assert not t.done()
+    return t
+
+
+async def case_the_pool_granted_then_cancelled_before_resuming_passes_it_on():
+    """SlotPool alone: a parked waiter is granted, then cancelled before its task
+    resumes. Its acquire hands the permit to the next waiter; none is lost."""
+    pool = run_slot.SlotPool(1)
+    assert await pool.acquire() is False
+    a, b = await _parked(pool), await _parked(pool)
+    pool.release()                       # a's future resolved, a has not resumed
+    a.cancel()
+    await asyncio.gather(a, return_exceptions=True)
+    assert a.cancelled()
+    assert await asyncio.wait_for(b, 1.0) is False      # b got a's permit
+    assert pool.queued() == (0, 0) and not pool._wait, (pool.queued(), pool._wait)
+    pool.release()
+    assert pool.free == 1, pool.free
+
+
+async def case_the_pool_cancelled_while_parked_then_released_serves_the_next():
+    """A parked waiter is cancelled, and a permit is released in the same turn,
+    before its handler runs: decide grants the dead waiter, the shell feeds the
+    permit straight back, and the next waiter gets it. Counts stay exact."""
+    pool = run_slot.SlotPool(1)
+    await pool.acquire()
+    a, b, c = await _parked(pool), await _parked(pool), await _parked(pool)
+    a.cancel()
+    pool.release()                       # a is still queued: its grant passes to b
+    await asyncio.gather(a, return_exceptions=True)
+    assert await asyncio.wait_for(b, 1.0) is False
+    assert not c.done() and pool.queued() == (0, 1), pool.queued()
+    pool.release()
+    assert await asyncio.wait_for(c, 1.0) is False
+    pool.release()
+    assert (pool.free, pool.queued(), len(pool._wait)) == (1, (0, 0), 0)
+
+
+async def case_the_pool_timeouts_leave_no_waiter():
+    """`wait_for(acquire(), 0)` and a short timeout on a full pool: no waiter is
+    left queued, and the permit count is untouched."""
+    pool = run_slot.SlotPool(1)
+    await pool.acquire()
+    for timeout in (0, 0.01):
+        try:
+            await asyncio.wait_for(pool.acquire(), timeout)
+            raise AssertionError("a full pool granted a permit")
+        except TimeoutError:
+            pass
+        assert (pool.free, pool.queued(), len(pool._wait)) == (0, (0, 0), 0), timeout
+    pool.release()
+    assert pool.free == 1
+    assert await asyncio.wait_for(pool.acquire(), 0.01) is False   # straight in
+    pool.release()
+
+
+async def case_the_pool_reserve_goes_to_the_next_operator_or_back():
+    """A reserve permit handed back goes to a queued operator (as a reserve one),
+    past a dead one granted it first, else back to the reserve."""
+    pool = run_slot.SlotPool(1, reserve=1)
+    await pool.acquire()                                  # the shared permit
+    assert await pool.acquire(operator=True) is True      # the reserve
+    fresh = await _parked(pool)
+    dead, op = await _parked(pool, operator=True), await _parked(pool, operator=True)
+    dead.cancel()
+    pool.release(reserve=True)
+    await asyncio.gather(dead, return_exceptions=True)
+    assert await asyncio.wait_for(op, 1.0) is True        # a reserve permit, not fresh's
+    assert not fresh.done() and pool.reserve_free == 0
+    pool.release(reserve=True)
+    assert pool.reserve_free == 1 and not fresh.done()   # automation never takes it
+    pool.release()
+    assert await asyncio.wait_for(fresh, 1.0) is False
+    pool.release()
+    assert (pool.free, pool.reserve_free, len(pool._wait)) == (1, 1, 0)
+
+
+async def case_a_double_release_is_a_no_op():
+    """A RunSlot released twice (and again at the hold's exit) returns ONE permit."""
+    pool = run_slot.SlotPool(2, reserve=1)
+    for operator in (False, True):
+        async with run_slot.hold(pool, operator=operator) as slot:
+            slot.release()
+            slot.release()
+        assert (pool.free, pool.reserve_free) == (2, 1), (operator, pool.free, pool.reserve_free)
 
 
 def case_auto_runs_follows_the_sweep():

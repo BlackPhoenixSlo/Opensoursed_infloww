@@ -18,13 +18,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from datetime import datetime
 from typing import Iterable, NamedTuple
 
 from sqlalchemy import func, select
 
-from audiences import _LIST_PAGE, _page_all, _page_all_checked, resolve_window_hours
+import of_paging
+from audiences import resolve_window_hours
 from db.engine import get_session
 from db.models import (
     AccountAiConfig, Fan, List as ListModel, ListMember, Message,
@@ -39,7 +39,7 @@ AUTOFENCE_LIST_NAME = "AUTOFENCE"
 # AUTHORIZING sends during grace (admissions may lag) — it never un-removes a
 # fan, because removals land on the mirror itself and take effect immediately.
 AUDIENCE_GRACE_HOURS_DEFAULT = 24.0
-# Fence scale bound: the sync crawl's _page_all backstop is 20k rows, so a
+# Fence scale bound: the sync crawl's of_paging backstop is 20k rows, so a
 # fence (or include list) at/above that bound cannot be verified complete.
 AUDIENCE_MAX_LIST_ROWS = 20_000
 
@@ -142,6 +142,40 @@ async def automation_audience(account_id: str) -> AudiencePolicy:
         reason=reason)
 
 
+class IncludeDecision(NamedTuple):
+    kept: list[int]          # the ids the engine may act on
+    stats: dict              # keys to merge into the caller's stats ({} when off)
+    dropped: list[int]       # skipped (enforce) / would-be skipped (shadow); all on a halt
+    halted: str | None       # enforce halt reason (kill_switch / unhealthy reason)
+    with_intent: int         # of `dropped`, the fans who showed intent
+
+
+def include_decide(
+    pol: AudiencePolicy, candidates: list[int], universe: set[int] | frozenset[int],
+    intent: set[int] | frozenset[int],
+) -> IncludeDecision:
+    """`filter_candidates`' pure half: `candidates` against the allowed `universe`
+    (include members ∪ caller-forced ids) under the policy mode. See there."""
+    ids = list(candidates)
+    if pol.mode == "off":
+        return IncludeDecision(ids, {}, [], None, 0)
+    stats: dict = {"audience_mode": pol.mode, "audience_before": len(ids)}
+    dropped = [f for f in ids if f not in universe]
+    with_intent = len([f for f in dropped if f in intent])
+    if pol.mode == "shadow":
+        stats.update(audience_skipped=len(dropped), audience_skipped_with_intent=with_intent)
+        return IncludeDecision(ids, stats, dropped, None, with_intent)
+    # enforce
+    if pol.paused or not pol.healthy:
+        why = "kill_switch" if pol.paused else (pol.reason or "unhealthy")
+        held_intent = len([f for f in ids if f in intent])
+        stats.update(audience_halted=why, audience_skipped=len(ids),
+                     audience_skipped_with_intent=held_intent)
+        return IncludeDecision([], stats, ids, why, held_intent)
+    stats.update(audience_skipped=len(dropped), audience_skipped_with_intent=with_intent)
+    return IncludeDecision([f for f in ids if f in universe], stats, dropped, None, with_intent)
+
+
 async def filter_candidates(
     account_id: str,
     fan_ids,
@@ -169,44 +203,22 @@ async def filter_candidates(
     """
     ids = [int(f) for f in (fan_ids or [])]
     pol = policy if policy is not None else await automation_audience(account_id)
-    if pol.mode == "off":
-        return ids          # pure no-op: no stats keys, byte-identical run output
-    if stats is not None:
-        stats["audience_mode"] = pol.mode
-        stats["audience_before"] = len(ids)
     allowed = pol.member_ids | {int(x) for x in (extra_allowed_ids or [])}
-    intent = {int(x) for x in (intent_ids or [])}
-    dropped = [f for f in ids if f not in allowed]
-    with_intent = len([f for f in dropped if f in intent])
-    if pol.mode == "shadow":
-        if stats is not None:
-            stats["audience_skipped"] = len(dropped)
-            stats["audience_skipped_with_intent"] = with_intent
-        if dropped:
-            log.info("audience_shadow account=%s kind=%s would_skip=%d of=%d "
-                     "(with_intent=%d, snapshot=%s)",
-                     account_id, kind, len(dropped), len(ids), with_intent,
-                     pol.synced_at)
-        return ids
-    # enforce
-    if pol.paused or not pol.healthy:
-        why = "kill_switch" if pol.paused else (pol.reason or "unhealthy")
-        if stats is not None:
-            stats["audience_halted"] = why
-            stats["audience_skipped"] = len(ids)
-            stats["audience_skipped_with_intent"] = len([f for f in ids if f in intent])
+    d = include_decide(pol, ids, allowed, {int(x) for x in (intent_ids or [])})
+    if stats is not None:
+        stats.update(d.stats)   # off → {}: no stats keys, byte-identical run output
+    if d.halted:
         log.error("audience_halt account=%s kind=%s reason=%s — %d candidate(s) "
                   "held, nothing sent (pause never unscopes)",
-                  account_id, kind, why, len(ids))
-        return []
-    kept = [f for f in ids if f in allowed]
-    if stats is not None:
-        stats["audience_skipped"] = len(dropped)
-        stats["audience_skipped_with_intent"] = with_intent
-    if dropped:
+                  account_id, kind, d.halted, len(ids))
+    elif d.dropped and len(d.kept) == len(ids):     # shadow: would-skip, all kept
+        log.info("audience_shadow account=%s kind=%s would_skip=%d of=%d "
+                 "(with_intent=%d, snapshot=%s)",
+                 account_id, kind, len(d.dropped), len(ids), d.with_intent, pol.synced_at)
+    elif d.dropped:
         log.info("audience_enforced account=%s kind=%s kept=%d skipped=%d of=%d",
-                 account_id, kind, len(kept), len(dropped), len(ids))
-    return kept
+                 account_id, kind, len(d.kept), len(d.dropped), len(ids))
+    return d.kept
 
 
 async def audience_allows_fan(
@@ -280,11 +292,10 @@ async def _audience_universe_ids(account_id: str) -> set[int]:
     return {int(r) for r in rows if r is not None}
 
 
-def _crawl_list_ids_blocking(client, of_list_id) -> tuple[set[int], bool]:
-    """(member ids, hit_backstop) for an OF custom list. Blocking."""
-    rows, truncated = _page_all_checked(
-        lambda off: client.list_users_in(of_list_id, limit=_LIST_PAGE, offset=off))
-    return {int(u["id"]) for u in rows if u.get("id") is not None}, truncated
+# (member ids, hit_backstop) for an OF custom list. Blocking. The old name stays
+# importable (automations/smart_list_sync, autoreply); calls here go through
+# `of_paging.` so a patch of `of_paging.page_all_checked` reaches them.
+_crawl_list_ids_blocking = of_paging.list_member_ids
 
 
 def _build_autofence_blocking(client, of_list_id, target: set[int]) -> dict:
@@ -298,7 +309,7 @@ def _build_autofence_blocking(client, of_list_id, target: set[int]) -> dict:
     REMOVED from the verification target and counted loudly, so the zero-diff
     invariant stays exact against the achievable fence instead of wedging
     forever on one deleted account."""
-    current, truncated = _crawl_list_ids_blocking(client, of_list_id)
+    current, truncated = of_paging.list_member_ids(client, of_list_id)
     if truncated:
         raise AudienceHalt("fence_crawl_truncated",
                            f"list {of_list_id} member crawl hit the 20k backstop")
@@ -318,7 +329,7 @@ def _build_autofence_blocking(client, of_list_id, target: set[int]) -> dict:
             log.warning("autofence remove failed list=%s uid=%s (%s)",
                         of_list_id, uid, str(e).splitlines()[0][:80])
     effective = target - unaddable
-    after, truncated = _crawl_list_ids_blocking(client, of_list_id)
+    after, truncated = of_paging.list_member_ids(client, of_list_id)
     if truncated:
         raise AudienceHalt("fence_verify_truncated",
                            f"list {of_list_id} verify crawl hit the 20k backstop")
@@ -338,7 +349,8 @@ def _find_or_create_fence_blocking(client) -> int:
     called when no local autofence row pins an id yet; after that the STORED id
     is authoritative for the account's lifetime (already-scheduled OF sends keep
     a valid excludedLists reference across rebuilds)."""
-    lists = _page_all(lambda off: client.get_lists(limit=_LIST_PAGE, offset=off))
+    lists = of_paging.page_all(
+        lambda off: client.get_lists(limit=of_paging.LIST_PAGE, offset=off))
     lid = next((it.get("id") for it in lists
                 if (it.get("name") or "") == AUTOFENCE_LIST_NAME), None)
     if lid is None:
@@ -482,7 +494,7 @@ def audit_send_purpose(purpose, *, where: str = "send") -> None:
     msg = (f"send_purpose missing/unknown ({purpose!r}) at {where} — every "
            f"automation-originated fan DM must declare one of "
            f"{AUDIENCE_SEND_PURPOSE_BASES}")
-    from automations._common import test_mode  # local: _common imports this module lazily
+    from automations._knobs import test_mode  # kept local as before; _knobs is dependency-free
     if test_mode():
         raise AssertionError(msg)
     log.error("send_purpose_untagged where=%s purpose=%r", where, purpose)
@@ -518,7 +530,8 @@ AUDIENCE_SENDER_CLASSIFICATION: dict[str, str] = {
     # exempt, named reason (printed in the Brain UI exemption register)
     "unsend_messages": "exempt:cleanup — removes messages, sends nothing new",
     "pacing": "exempt:infrastructure — paces writes, never originates a send",
-    "_common": "exempt:the shared send seam itself",
+    "_send_failure": "exempt:the shared send seam itself",
+    "_common": "exempt:re-export shim — no send code; the scan matches the re-exported name",
     # not a fan DM
     "auto_posts": "not_fan_dm",
     "auto_stories": "not_fan_dm",

@@ -29,7 +29,7 @@ import {
   type QueryKey,
 } from "@tanstack/react-query";
 
-import { useScope } from "@/contexts/ScopeContext";
+import { useScope, type Scope } from "@/contexts/ScopeContext";
 import { eventBus } from "@/lib/events";
 import { relay, type OFChatItem, type OFChatsResp, type OFUserMini } from "@/lib/relay";
 import { compareFanIds, fanIdFromParam, type FanId } from "@/lib/fanId";
@@ -524,8 +524,9 @@ function useHeadPagePoll(args: {
       if (state && state.fetchStatus !== "idle") return;
       if (!(state?.data as InfiniteData<ChatsPage> | undefined)?.pages?.length) {
         // No pages at all: this key is cold or its initial fetch errored (with
-        // `placeholderData: keepPreviousData` the list can still be rendering
-        // the PREVIOUS key's rows meanwhile). There is nothing to splice into,
+        // `placeholderData` the list can still be rendering the PREVIOUS
+        // key's rows meanwhile: same Creator, or All Models under any
+        // session set). There is nothing to splice into,
         // and a retry is exactly the job a refetch owns — including the error
         // state, which on a list with no rows is the right thing to show.
         void qc.refetchQueries({ queryKey: key, exact: true });
@@ -568,6 +569,13 @@ function useHeadPagePoll(args: {
   }, [enabled, keyHash, qc]);
 }
 
+/** The query key's account part: the Creator in model scope; in All Models
+ *  the sorted set of ids it fans out across (cache invalidation depends on
+ *  the set). FanList keys its paging budget and its All-filter read on it. */
+export function chatListAccountKey(scope: Scope, accounts: ReadonlyArray<{ id: string }>): string {
+  return scope.kind === "model" ? scope.accountId : accounts.map((a) => a.id).sort().join(",");
+}
+
 export function useChatList(params: ChatListParams = {}) {
   const { scope } = useScope();
   // "all" scope fans out across every session-bearing account.
@@ -575,15 +583,13 @@ export function useChatList(params: ChatListParams = {}) {
   const qc = useQueryClient();
   const { filter, listId, query, limit = PAGE_SIZE, order = "recent", enabled: wanted = true } = params;
 
-  // Stable query key: unified mode fans out across all session-bearing
-  // accounts, so cache invalidation depends on the *set* of ids.
-  const accountKey =
-    scope.kind === "model"
-      ? scope.accountId
-      : accounts.map((a) => a.id).sort().join(",");
+  const accountKey = chatListAccountKey(scope, accounts);
+
+  // The key's scope prefix; `placeholderData` compares against it.
+  const scopeKey = ["chats", scope.kind, accountKey] as const;
 
   const queryKey = [
-    "chats", scope.kind, accountKey,
+    ...scopeKey,
     filter ?? null, listId ?? null, query ?? null, limit,
     // Only a non-default order extends the key, so every existing key (and test) stays as it was.
     ...(order === "recent" ? [] : [order]),
@@ -604,7 +610,7 @@ export function useChatList(params: ChatListParams = {}) {
     initialPageParam: 0,
     getNextPageParam: (lastPage, allPages) =>
       lastPage.hasMore ? allPages.length * limit : undefined,
-    queryFn: ({ pageParam, signal }) => {
+    queryFn: (ctx) => {
       // Bypass is scoped to PAGE 0 of the refetch triggered by refresh() (the
       // flag lives until the refetch settles; queryFn no longer clears it on
       // first consumption). Page 0 forced-fresh rewarms the shared server
@@ -614,16 +620,20 @@ export function useChatList(params: ChatListParams = {}) {
       // actually changed, so a stale warm hit means "nothing happened", while
       // forcing every loaded page × every account through a live ~3-call OF
       // assemble turned one deep-scrolled unified Refresh into an OF storm.
-      const offset = (pageParam as number) ?? 0;
+      const offset = (ctx.pageParam as number) ?? 0;
       const bypass = refreshOnceRef.current && offset === 0;
       // A search hands React Query its signal: once the box holds another
       // search, nothing observes this key and React Query aborts its calls
       // (each a live OF search, seconds long) instead of letting them land in a
-      // cache nobody reads. A list without a search is not aborted: a chip or
-      // folder switched away from is often switched back to, and its pages stay.
+      // cache nobody reads. A list without a search is not aborted: a chip,
+      // folder or Creator switched away from is often switched back to, and its
+      // pages stay. Only a search may READ `ctx.signal`: React Query cancels and
+      // rolls back a fetch whose signal was read once its key loses its last
+      // observer, so a next page in flight across a switch would be dropped and
+      // the list come back one page short.
       return fetchPage(
         scope, accounts, offset, filter, listId, query, limit, qc,
-        { refresh: bypass, order, signal: query ? signal : undefined },
+        { refresh: bypass, order, signal: query ? ctx.signal : undefined },
       );
     },
     staleTime: 30_000,
@@ -631,7 +641,19 @@ export function useChatList(params: ChatListParams = {}) {
     // refresh is `useHeadPagePoll` below (90s foreground / 5min hidden, page 0
     // only); read its comment before reinstating anything here.
     refetchOnWindowFocus: false,
-    placeholderData: keepPreviousData,
+    // The previous key's rows stand in within one scope kind (a chip, folder
+    // or search switch, or an All Models session set changing as sessions
+    // drop and return — its paging still resets in fanListPaging). A new
+    // Creator shows none of the old one's rows: the list is pending (FanList
+    // draws its local seed).
+    placeholderData: (prev, prevQuery) => {
+      const prevKey = prevQuery?.queryKey;
+      const sameScope =
+        prevKey?.[0] === scopeKey[0] &&
+        prevKey[1] === scopeKey[1] &&
+        (scope.kind !== "model" || prevKey[2] === scopeKey[2]);
+      return sameScope ? keepPreviousData(prev) : undefined;
+    },
     structuralSharing: shareChatPages,
   });
 

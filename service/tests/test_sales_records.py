@@ -56,6 +56,7 @@ import _agency_fixtures as fx  # noqa: E402
 import accounts as account_registry  # noqa: E402
 import csv_export  # noqa: E402
 import employees  # noqa: E402
+import stats_sales_records  # noqa: E402
 from _clock_fixtures import IDS, employee as _employee, with_anonymous_admin  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Account, Action, Base, Fan, Message, Transaction, UserAccount  # noqa: E402
@@ -617,6 +618,31 @@ def case_an_override_set_outside_reassign_after_a_clear_reads_manual():
     asyncio.run(_backfill())
     assert _c3_row(t) == ("manual", E2, "Manual")
     assert [e["payload"]["after"] for e in _actions(t)[0]] == [{"employee_id": E2}, {"employee_id": None}]
+
+
+def _payload(actor: str, after: int | None) -> str:
+    return json.dumps({"actor": actor, "before": {"employee_id": None}, "after": {"employee_id": after}})
+
+
+# (rule, latest `sales.reassign` payload, override id) → "Assigned by"
+ASSIGNED_BY = [
+    ("converters", None, None, "Auto"),
+    ("message", _payload("owner:1", 5), 5, "Auto"),  # rule-based credit never reads the payload
+    ("unassigned", None, None, "Auto"),
+    ("manual", None, 5, "Manual"),  # an override with no reassign entry
+    ("manual", "", 5, "Manual"),
+    ("manual", _payload("owner:1", 5), 5, "Owner"),
+    ("manual", _payload("master:2", 5), 5, "Master"),
+    ("manual", _payload("owner:1", 5), 6, "Manual"),  # the entry no longer names the override
+    ("manual", _payload("owner:1", None), None, "Owner"),  # a "No one" override set by reassign
+    ("manual", _payload("owner:1", None), 5, "Manual"),  # cleared, then set outside reassign
+]
+
+
+def case_assigned_by_reads_rule_payload_and_override():
+    bad = [(rule, payload, override, got, want) for rule, payload, override, want in ASSIGNED_BY
+           if (got := stats_sales_records._assigned_by(rule, payload, override)) != want]
+    assert not bad, bad
 
 
 def case_another_agencys_sale_is_404_and_its_employee_400_and_nothing_changes():

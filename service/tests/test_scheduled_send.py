@@ -24,6 +24,30 @@ Cases (all drive the REAL run_once dispatcher → registry wiring exercised):
       a Fansly account's job routes through _make_client's platform branch to
       the shim (positional `text` included) and the job ends 'done' — the two
       bugs that left Fansly sends stuck on "sending now…".
+  case_attribution_raises_after_send_parks_not_resends:
+      send once: the DM went out, then the attribution write raised -> exactly
+      1 OF send, the job ends 'error' ("may have sent"), never pending; a
+      second run finds nothing to claim.
+  case_read_timeout_parks:
+      OF's answer never came (curl ReadTimeout: maybe sent) -> job 'error'
+      ("may have sent"), 1 attempt at OF, never requeued.
+  case_rate_limit_before_send_retries_as_today:
+      OF refused it (its rate-limit 400, both tries: nothing sent) -> back to
+      'pending' with the retry backoff, no "may have sent".
+  case_cancel_in_rate_limit_pause_retries:
+      OF's 400, then the run is cancelled during the async pause before the
+      retry: nothing was sent, so the job goes back to 'pending', not parked.
+  case_cancel_while_send_out_parks:
+      the run is cancelled while OF has the send and has not answered (the
+      worker thread runs on): job 'error' ("may have sent"), never requeued.
+  case_refused_write_then_unrelated_raise_retries:
+      a one-shot whose write the proxy refused (handled by the sender), then
+      an unrelated raise: nothing was sent -> 'pending', not parked.
+  case_may_have_sent_table:
+      of_write_paced's per-attempt classifier over the real exception classes:
+      OFDenied/OFDeactivated, curl ProxyError, ConnectTimeout, couldn't-connect
+      (7), any 4xx (OF's rate-limit 400 too) -> surely not sent; ReadTimeout,
+      other ConnectionError, 5xx, no response, a cancel, unknown -> may have.
 
 Run: ./venv/bin/python service/tests/test_scheduled_send.py   (exit 0 = pass)
 """
@@ -322,6 +346,244 @@ def case_fansly_account_fires_through_the_shim():
             sys.modules["fansly_backend"] = real_module
 
 
+class RaisingOF(FakeOF):
+    """send_message raises `exc` (after recording the attempt) instead of answering."""
+
+    def __init__(self, exc: Exception) -> None:
+        super().__init__()
+        self.exc, self.attempts = exc, 0
+
+    def send_message(self, chat_id, text, **kw) -> dict:
+        self.attempts += 1
+        raise self.exc
+
+
+async def _job_row(job_id: int) -> ScheduledJob:
+    async with get_session() as s:
+        return await s.get(ScheduledJob, job_id)
+
+
+def case_attribution_raises_after_send_parks_not_resends():
+    import asyncio
+    fake = _use_fake()
+    asyncio.run(_seed())
+    real = scheduled_send.write_outbound_attribution
+
+    async def boom(**_kw):
+        raise RuntimeError("attribution insert failed")
+    scheduled_send.write_outbound_attribution = boom
+    try:
+        job_id = asyncio.run(_enqueue_due({
+            "fan_id": 4141, "text": "sent then broke", "sent_by_employee_id": EMP_ID,
+            "send_purpose": "manual"}))
+        res = asyncio.run(run_once(OWN_ID, "scheduled_send"))
+        again = asyncio.run(run_once(OWN_ID, "scheduled_send"))
+    finally:
+        scheduled_send.write_outbound_attribution = real
+    assert res["status"] == "error", res
+    assert len(fake.sent) == 1, f"one OF send, got {len(fake.sent)}"
+    job = asyncio.run(_job_row(job_id))
+    assert job.status == "error", f"job {job.status}: a sent DM must not be retried"
+    assert "may have sent" in (job.last_error or ""), job.last_error
+    assert again.get("reason") == "no_job", again
+    assert len(fake.sent) == 1, "nothing resent"
+
+
+def case_read_timeout_parks():
+    import asyncio
+    from curl_cffi import requests as curl
+    fake = RaisingOF(curl.exceptions.ReadTimeout("Operation timed out after 30001 milliseconds"))
+    ax._make_client = lambda account_id: fake  # type: ignore[attr-defined]
+    asyncio.run(_seed())
+    job_id = asyncio.run(_enqueue_due({
+        "fan_id": 4242, "text": "no answer", "sent_by_employee_id": EMP_ID,
+        "send_purpose": "manual"}))
+    res = asyncio.run(run_once(OWN_ID, "scheduled_send"))
+    assert res["status"] == "error", res
+    assert fake.attempts == 1, fake.attempts
+    job = asyncio.run(_job_row(job_id))
+    assert job.status == "error", f"job {job.status}: OF may have taken it"
+    assert "may have sent" in (job.last_error or ""), job.last_error
+
+
+def _rate_limit_400(fan_id: int):
+    from types import SimpleNamespace
+    from of_client import OFAPIError
+    return OFAPIError(f'400 for https://onlyfans.com/api2/v2/chats/{fan_id}/messages\n'
+                      '{"error":{"code":0,"message":"Please allow 10 seconds"}}',
+                      response=SimpleNamespace(status_code=400))
+
+
+class _RateLimitPause:
+    """of_write_paced's rate-limit pause (11 s) as `pause_s`: of_write_with_retry,
+    which it calls by module name, wrapped (the retry logic itself unchanged)."""
+
+    def __init__(self, pause_s: float) -> None:
+        self.pause_s, self.real = pause_s, ax.of_write_with_retry
+
+    def __enter__(self):
+        real, pause_s = self.real, self.pause_s
+        ax.of_write_with_retry = lambda fn, *, tries, **_: real(  # type: ignore[assignment]
+            fn, tries=tries, pause_s=pause_s)
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        ax.of_write_with_retry = self.real
+
+
+def case_rate_limit_before_send_retries_as_today():
+    import asyncio
+    fake = RaisingOF(_rate_limit_400(4343))
+    ax._make_client = lambda account_id: fake  # type: ignore[attr-defined]
+    asyncio.run(_seed())
+    with _RateLimitPause(0.0):
+        job_id = asyncio.run(_enqueue_due({
+            "fan_id": 4343, "text": "rate limited", "sent_by_employee_id": EMP_ID,
+            "send_purpose": "manual"}))
+        res = asyncio.run(run_once(OWN_ID, "scheduled_send"))
+    assert res["status"] == "error", res
+    assert fake.attempts == 2, f"of_write_with_retry's two tries, got {fake.attempts}"
+    job = asyncio.run(_job_row(job_id))
+    assert job.status == "pending", f"job {job.status}: nothing was sent, retry as today"
+    assert job.run_at > datetime.utcnow(), "requeued with the backoff"
+    assert "may have sent" not in (job.last_error or ""), job.last_error
+    assert "allow 10 seconds" in (job.last_error or ""), job.last_error
+
+
+async def _cancel_once(pred, timeout_s: float = 30.0) -> None:
+    """Run the due scheduled_send, cancel it once `pred()` holds; it must re-raise."""
+    import asyncio
+    ax._write_gates.clear()   # no 11 s spacing behind the previous case's send
+    task = asyncio.create_task(run_once(OWN_ID, "scheduled_send"))
+    t0 = asyncio.get_running_loop().time()
+    while not pred():
+        assert not task.done(), task.result()
+        assert asyncio.get_running_loop().time() - t0 < timeout_s, "never got there"
+        await asyncio.sleep(0.02)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        return
+    raise AssertionError("run_once must re-raise the cancel")
+
+
+def case_cancel_in_rate_limit_pause_retries():
+    import asyncio
+    fake = RaisingOF(_rate_limit_400(4444))
+    ax._make_client = lambda account_id: fake  # type: ignore[attr-defined]
+    asyncio.run(_seed())
+    job_id = asyncio.run(_enqueue_due({
+        "fan_id": 4444, "text": "cancelled in the pause", "sent_by_employee_id": EMP_ID,
+        "send_purpose": "manual"}))
+    with _RateLimitPause(30.0):
+        asyncio.run(_cancel_once(lambda: fake.attempts == 1))
+    assert fake.attempts == 1, fake.attempts
+    job = asyncio.run(_job_row(job_id))
+    assert job.status == "pending", f"job {job.status}: OF refused it, nothing was sent"
+    assert "may have sent" not in (job.last_error or ""), job.last_error
+
+
+def case_cancel_while_send_out_parks():
+    import asyncio
+    import threading
+    release = threading.Event()
+
+    class HangingOF(FakeOF):
+        def __init__(self) -> None:
+            super().__init__()
+            self.out = threading.Event()
+
+        def send_message(self, chat_id, text, **kw) -> dict:
+            self.out.set()
+            release.wait(30)   # OF has it; its answer has not come back
+            return super().send_message(chat_id, text, **kw)
+
+    fake = HangingOF()
+    ax._make_client = lambda account_id: fake  # type: ignore[attr-defined]
+    asyncio.run(_seed())
+    job_id = asyncio.run(_enqueue_due({
+        "fan_id": 4545, "text": "cancelled while out", "sent_by_employee_id": EMP_ID,
+        "send_purpose": "manual"}))
+    try:
+        asyncio.run(_cancel_once(fake.out.is_set))
+    finally:
+        release.set()
+    job = asyncio.run(_job_row(job_id))
+    assert job.status == "error", f"job {job.status}: OF may have taken it"
+    assert "may have sent" in (job.last_error or ""), job.last_error
+
+
+def case_refused_write_then_unrelated_raise_retries():
+    import asyncio
+    from automation_registry import get_automation, register
+    from curl_cffi import requests as curl
+    fake = RaisingOF(curl.exceptions.ProxyError("CONNECT tunnel failed, response 403"))
+    ax._make_client = lambda account_id: fake  # type: ignore[attr-defined]
+    asyncio.run(_seed())
+    real = get_automation("scheduled_send")
+
+    async def sender(account_id, payload, *, run_id):
+        client = ax._make_client(account_id)
+        try:   # a sender that handles a refused write and goes on
+            await ax.of_write_paced(account_id, lambda: client.send_message(1, "x"),
+                                    send_purpose="manual")
+        except curl.exceptions.ProxyError:
+            pass
+        raise RuntimeError("database is locked")   # unrelated, after nothing was sent
+
+    register("scheduled_send")(sender)
+    ax._write_gates.clear()
+    try:
+        job_id = asyncio.run(_enqueue_due({"fan_id": 4646, "text": "refused then broke",
+                                           "send_purpose": "manual"}))
+        res = asyncio.run(run_once(OWN_ID, "scheduled_send"))
+    finally:
+        register("scheduled_send")(real)
+    assert res["status"] == "error", res
+    assert fake.attempts == 1, fake.attempts
+    job = asyncio.run(_job_row(job_id))
+    assert job.status == "pending", f"job {job.status}: nothing was sent, retry as today"
+    assert "may have sent" not in (job.last_error or ""), job.last_error
+
+
+def case_may_have_sent_table():
+    import asyncio
+    from types import SimpleNamespace
+    from curl_cffi import requests as curl
+    from of_client import OFAPIError, OFDeactivatedError, OFDeniedError
+
+    def http(status: int) -> OFAPIError:
+        return OFAPIError(f"{status} for https://onlyfans.com/api2/v2/chats/1/messages",
+                          response=SimpleNamespace(status_code=status))
+    couldnt = curl.exceptions.ConnectionError("Failed to connect to proxy")
+    couldnt.code = 7   # curl_cffi.const.CurlECode.COULDNT_CONNECT
+    rows = [
+        (OFDeniedError("refused: POST /api2/v2/users/logout"), False),
+        (OFDeactivatedError("refused: POST /chats/1/messages (Creator deactivated)"), False),
+        (curl.exceptions.ProxyError("CONNECT tunnel failed, response 403"), False),
+        (curl.exceptions.ConnectTimeout("Connection timed out after 10001 ms"), False),
+        (couldnt, False),
+        (_rate_limit_400(1), False),
+        (http(403), False),
+        (http(404), False),
+        (Exception("400 ... Please Allow 10 seconds before"), False),   # wrapped rate limit
+        (curl.exceptions.ReadTimeout("Operation timed out after 30000 ms"), True),
+        (curl.exceptions.Timeout("timed out"), True),
+        (curl.exceptions.ConnectionError("Connection reset by peer"), True),
+        (curl.exceptions.SSLError("SSL_read: unexpected eof"), True),
+        (ConnectionError("proxy timed out"), True),
+        (TimeoutError(), True),
+        (http(500), True),
+        (http(502), True),
+        (OFAPIError("no response"), True),
+        (asyncio.CancelledError(), True),
+        (RuntimeError("attribution insert failed"), True),   # unknown: conservative
+    ]
+    for e, want in rows:
+        assert ax._may_have_sent(e) is want, (repr(e), want)
+
+
 if __name__ == "__main__":
     _harness.run(
         case_fires_and_attributes,
@@ -331,4 +593,11 @@ if __name__ == "__main__":
         case_run_at_naive_utc,
         case_list_shows_only_human_sends,
         case_fansly_account_fires_through_the_shim,
+        case_attribution_raises_after_send_parks_not_resends,
+        case_read_timeout_parks,
+        case_rate_limit_before_send_retries_as_today,
+        case_cancel_in_rate_limit_pause_retries,
+        case_cancel_while_send_out_parks,
+        case_refused_write_then_unrelated_raise_retries,
+        case_may_have_sent_table,
     )

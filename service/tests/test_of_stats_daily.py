@@ -41,15 +41,12 @@ import of_stats_daily as osd  # noqa: E402
 import stats  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Account, SubscriberSnapshot, Transaction  # noqa: E402
+from test_of_stats_parse import chart, pts  # noqa: E402
 
 API = of_client.API_BASE
 FIX = json.loads((Path(__file__).parent / "fixtures" / "of_statistics_reads.json").read_text())
 A1, A2, A3, A4 = "7300001", "7300002", "7300003", "7300004"
 NOW = datetime(2026, 10, 3, 12, 0)  # yesterday = 2026-10-02, the fixture's last chart day
-
-
-def _series(days: dict[str, int]) -> list[dict]:
-    return [{"date": f"{d}T00:00:00+00:00", "count": n} for d, n in sorted(days.items())]
 
 
 def _fake(replies: dict[str, dict] | None = None):
@@ -117,23 +114,20 @@ def case_the_fetch_reads_three_charts_and_stores_each_day():
 
 
 def case_a_series_not_one_point_per_day_is_not_stored():
-    weekly = {"subscribes": _series({"2026-09-21": 4, "2026-09-28": 5}), "earnings": [], "subscribers": 9}
+    weekly = {"subscribes": pts({"2026-09-21": 4, "2026-09-28": 5}), "earnings": [], "subscribers": 9}
     c = _fake({"/subscriptions/subscribers/chart?by=new": weekly,
                "/users/me/profile/stats": {"chart": {"visitors": "n/a"}}})
     got = osd.fetch_blocking(c, datetime(2026, 9, 26).date(), datetime(2026, 10, 2).date(), pause_s=0)
-    assert set(got) == {"renewals"}, got
-    assert osd._points([{"date": "2026-10-01T00:00:00+00:00", "count": 1.5}], NOW.date(), NOW.date()) is None
-    assert osd._points([{"date": "2026-10-01T00:00:00+00:00", "count": -1}], NOW.date(), NOW.date()) is None
-    assert osd._points([{"day": "2026-10-01", "count": 1}], NOW.date(), NOW.date()) is None
+    assert set(got) == {"renewals"}, got  # each shape the parser drops: test_of_stats_parse.py
 
 
 def case_a_refetch_overwrites_its_series_and_keeps_the_roster_columns():
     _sql("UPDATE of_stats_daily SET active_fans = 40, renew_on = 10 WHERE account_id = :a AND day = '2026-10-02'",
          a=A1)
     week = {f"2026-09-{d}": d for d in range(26, 31)} | {"2026-10-01": 1, "2026-10-02": 2, "2026-10-03": 99}
-    c = _fake({"/users/me/profile/stats": {"chart": {"visitors": _series(week)}},
-               "/subscriptions/subscribers/chart?by=new": {"subscribes": _series({d: 1 for d in week})},
-               "/subscriptions/subscribers/chart?by=renew": {"subscribes": _series({d: 2 for d in week})}})
+    c = _fake({"/users/me/profile/stats": {"chart": {"visitors": pts(week)}},
+               "/subscriptions/subscribers/chart?by=new": {"subscribes": pts({d: 1 for d in week})},
+               "/subscriptions/subscribers/chart?by=renew": {"subscribes": pts({d: 2 for d in week})}})
     assert asyncio.run(osd.snapshot(A1, c, now=NOW, pause_s=0)) == 7, "today (10-03) is never stored"
     rows = _rows(A1)
     assert "2026-10-03" not in rows, rows
@@ -272,66 +266,6 @@ def case_per_model_carries_the_spender_and_of_columns():
     assert a3["of_visitors"] is None and a3["of_renew_on"] is None and a3["of_new_sub_conversion_pct"] is None, a3
 
 
-def _chart(cats: dict[str, dict[str, float]], counts: dict | None = None, gross: dict | None = None,
-           total: bool = True) -> dict:
-    """An /earnings/chart reply as OF answers Statements' filters: per category (under OF's reply key, messages as
-    `chat_messages`) its daily net amounts (dollars), counts, net total and gross, and OF's `total` of them."""
-    out = {}
-    for c, days in cats.items():
-        tot = sum(days.values())
-        out[osd.REPLY_KEY.get(c, c)] = {
-            "chartAmount": [{"date": f"{d}T00:00:00+00:00", "count": v} for d, v in sorted(days.items())],
-            "chartCount": [{"date": f"{d}T00:00:00+00:00", "count": (counts or {}).get(c, {}).get(d, 0)}
-                           for d in sorted(days)],
-            "total": tot, "gross": (gross or {}).get(c, round(tot / 0.8, 2)), "delta": 0}
-    if total:
-        days = sorted({d for v in cats.values() for d in v})
-        out["total"] = {"chartAmount": [{"date": f"{d}T00:00:00+00:00", "count": sum(v.get(d, 0) for v in cats.values())}
-                                        for d in days],
-                        "total": sum(sum(v.values()) for v in cats.values()), "gross": 0, "delta": 0}
-    return out
-
-
-def case_the_earnings_chart_is_read_per_day_and_category():
-    d1, d2 = datetime(2026, 10, 1).date(), datetime(2026, 10, 2).date()
-    reply = _chart({"tips": {"2026-10-01": 8, "2026-10-02": 12.8}, "messages": {"2026-10-02": 100}},
-                   counts={"tips": {"2026-10-01": 2, "2026-10-02": 3}}, gross={"tips": 26.0, "messages": 125})
-    assert "chat_messages" in reply and "messages" not in reply
-    got = osd._earnings(reply, d1, d2)
-    # tips: 20.80 net over 26.00 gross, so each day's gross is 1.25x its net; messages charted 10-02 only;
-    # subscribes, post and stream are not in the reply: zero.
-    assert got["2026-10-01"]["tips"] == (800, 1000, 2), got
-    assert got["2026-10-02"]["tips"] == (1280, 1600, 3), got
-    assert got["2026-10-01"]["messages"] == (0, 0, 0) and got["2026-10-02"]["messages"] == (10000, 12500, 0), got
-    assert got["2026-10-02"]["subscribes"] == (0, 0, 0), got
-    assert set(got["2026-10-02"]) == {*osd.EARNINGS, osd.TOTAL} and got["2026-10-02"][osd.TOTAL][0] == 11280, got
-    # The recorded reply to the job's own filters (2026-10-25's shape): a $14 PPV message is $11.20 net, not $0.
-    rec = osd._earnings(FIX["/earnings/chart?filter=statements"], d1, d2)
-    assert rec["2026-10-01"]["messages"] == (1120, 1400, 1), rec
-    assert rec["2026-10-02"]["tips"] == (800, 1000, 2) and rec["2026-10-02"]["subscribes"] == (400, 500, 1), rec
-    assert osd._earnings(_chart({"tips": {"2026-09-21": 1, "2026-09-28": 2}}), d1, d2) is None, "a weekly bucket"
-    assert osd._earnings([], d1, d2) is None, "OF's [] (no filter) is no chart"
-    assert osd._earnings({}, d1, d2) is None, "no total: nothing to check the categories against, not a known $0"
-    assert osd._earnings(_chart({"tips": {"2026-10-01": 8}}, total=False), d1, d1) is None, "no total"
-    # The bug of 2026-10-25: money under a key not read (messages answered as `chat_messages`, read as `messages`)
-    # does not add up to OF's total, so the days are not stored as $0.
-    wrong_key = _chart({"tips": {"2026-10-01": 8}, "messages": {"2026-10-01": 11.2}})
-    wrong_key["unread_messages"] = wrong_key.pop("chat_messages")
-    assert osd._earnings(wrong_key, d1, d1) is None, "a category we do not read"
-    # OF cuts its days at UTC midnight; a point cut at another zone's midnight would not line up with ours.
-    pacific = _chart({"tips": {"2026-10-01": 8}})
-    for b in pacific.values():
-        for pt in b["chartAmount"]:
-            pt["date"] = "2026-10-01T00:00:00-07:00"
-    assert osd._earnings(pacific, d1, d1) is None, "a day cut at UTC-7"
-    assert osd._earnings({"foo": 1}, d1, d2) is None, "no Statements category among other keys"
-    assert osd._earnings({"tips": {"chartAmount": "n/a"}, "total": {"chartAmount": []}}, d1, d2) is None
-    no_gross = _chart({"tips": {"2026-10-01": 8}}, gross={"tips": 0})
-    assert osd._earnings(no_gross, d1, d1)["2026-10-01"]["tips"] == (800, 1000, 0), "no gross: net / 0.8"
-    negative = osd._earnings(_chart({"tips": {"2026-10-01": -3.5}, "messages": {"2026-10-01": 2}}), d1, d1)
-    assert negative["2026-10-01"][osd.TOTAL][0] == -150, "a chargeback day adds up too"
-
-
 def case_days_stored_before_the_total_check_are_read_again():
     """Rows written by the reader of before 2026-10-25 (no `total`, PPV messages at $0) are not OF's days: the
     reports read the ledger for them, the job asks OF again and overwrites them, with no manual data fix."""
@@ -346,7 +280,7 @@ def case_days_stored_before_the_total_check_are_read_again():
         cells, _ = asyncio.run(osd.earnings_window([A4], datetime(2026, 9, 30), datetime(2026, 10, 2, 23, 59, 59),
                                                    now=now))
         assert cells == {}, "and is not read as OF's $0"
-        c = _fake({"/earnings/chart": _chart({"messages": {"2026-10-01": 11.2}, "tips": {"2026-10-02": 4}})})
+        c = _fake({"/earnings/chart": chart({"messages": {"2026-10-01": 11.2}, "tips": {"2026-10-02": 4}})})
         assert asyncio.run(osd.backfill_earnings(A4, c, now=now, pause_s=0)) == 3 and len(c.sent) == 1
         got = _sql("SELECT day, net_cents FROM of_earnings_daily WHERE account_id = :a AND category = 'messages' "
                    "ORDER BY day", a=A4)
@@ -366,7 +300,7 @@ def case_the_earnings_history_fills_its_newest_missing_days_back_to_the_horizon(
         asyncio.run(osd._upsert_earnings(A4, {d: {"tips": (100, 125, 1), osd.TOTAL: (100, 125, 1)}
                                               for d in ("2026-10-01", "2026-10-02")}, now))
         assert asyncio.run(osd.earnings_due(A4, now=now))
-        c = _fake({"/earnings/chart": _chart({"tips": {"2026-09-01": 5}})})
+        c = _fake({"/earnings/chart": chart({"tips": {"2026-09-01": 5}})})
         assert asyncio.run(osd.backfill_earnings(A4, c, now=now, pause_s=0, chunks=2)) == 60
         sent = [(p["startDate"], p["endDate"]) for _, p in c.sent]
         assert sent == [("2026-09-01 00:00:00", "2026-09-30 23:59:59"),

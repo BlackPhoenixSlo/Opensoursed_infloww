@@ -35,7 +35,7 @@ from db.models import (  # noqa: E402
     Account, Fan, LinkClaimer, LinkMeta, PromoCampaign, SubscriberSnapshot, Transaction, TrialLinkMirror,
     UserAccount,
 )
-from stats import FAN_REPORT_FIELDS  # noqa: E402
+from stats_fans import FAN_REPORT_FIELDS  # noqa: E402
 
 OWNER_A = fx.login_owner("agency_a_owner")
 

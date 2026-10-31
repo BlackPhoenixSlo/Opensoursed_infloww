@@ -31,6 +31,7 @@ import {
   type PromoCampaign,
 } from "@/hooks/useGrowth";
 import { NOT_WIRED, Unreachable } from "@/components/growth/LinksListFrame";
+import { usePagedFilters } from "@/hooks/pagedFilters";
 import PromoListRow from "@/components/growth/PromoListRow";
 import PromoReactivateCard from "@/components/growth/PromoReactivateCard";
 import SubscriptionBundles from "@/components/growth/SubscriptionBundles";
@@ -103,9 +104,8 @@ export default function PromotionTab({ accountId }: { accountId: string | null }
   const confirm = useIfConfirm();
 
   const [creating, setCreating] = useState(false);
-  const [showExpired, setShowExpired] = useState(false);
   const [details, setDetails] = useState<string | null>(null);
-  const [page, setPage] = useState(1);
+  const { showExpired, page, set, setPage } = usePagedFilters({ showExpired: false });
 
   const campaigns = promosQ.data?.campaigns ?? [];
   const shown = visibleOffers(campaigns, showExpired);
@@ -144,7 +144,7 @@ export default function PromotionTab({ accountId }: { accountId: string | null }
           <h2 className={TITLE}>Campaign insights</h2>
           <div className="flex items-center gap-4">
             <IfSwitch aria-label="Show expired" label="Show expired" checked={showExpired}
-              onChange={(on) => { setShowExpired(on); setPage(1); }} />
+              onChange={(on) => set({ showExpired: on })} />
             {/* Ours: read OnlyFans again now. */}
             <button type="button" aria-label="Refresh" title={`${EXTRA_LABEL}: read OnlyFans again`}
               onClick={() => void promosQ.refetch()} disabled={promosQ.isFetching}

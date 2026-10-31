@@ -1,73 +1,50 @@
 """
-SSE broadcaster + event_inbox writer.
+The relay's SSE fan-out (`GET /events`): the shell. Module map:
 
-This module sits BETWEEN the existing `_broadcast_event` in server.py and
-the new browser app. Two responsibilities:
-
-  1. Every event that flows through the OF-WS pump → write a row to
-     `event_inbox` (idempotent on `provider_event_id` when present). This
-     gives us a durable, queryable record of every OF event for replay,
-     debugging, and the phase B canonical-table writer.
-
-  2. Maintain a pool of SSE-style asyncio queues keyed by `scope`. When a
-     subscriber connects to `GET /events?scope=...`, they get a queue;
-     when an event arrives, it's pushed to every matching queue. Scopes:
-       • "all"               — every event of every account the session sees
-       • "model:<account_id>" — only that account's events
-     Each subscriber carries the session's Creators (`accounts`) and
-     Agencies; an event outside them never reaches it (see `_wants`).
-
-  3. Replay. Every pushed event gets an SSE `id:` (`<boot epoch>.<seq>`) and
-     a slot in a bounded per-account RAM ring. A reconnect that sends
-     `Last-Event-ID` gets what it missed from the rings; when the rings no
-     longer reach back that far (overflow, or a relay restart) it gets a
-     `resync` frame instead, and the browser refetches.
-
-The original `_broadcast_event` already handles browser WebSocket
-delivery via `_event_subscribers`. We add SSE in parallel because:
-  • SSE is one-way + native to fetch — simpler client code.
-  • SSE survives proxies/CDNs that mangle WebSocket upgrades.
-  • EventSource + Last-Event-ID gives reliable replay-on-reconnect that
-    we'd otherwise hand-roll on top of WS.
-
-Both transports stay live during the migration; phase B picks one to keep.
-
-API:
-    register_with(server_broadcast_fn):
-        Wire this module's `handle_event` into the relay's existing
-        broadcast pipeline. Called once at startup.
-
-    subscribe(scope) -> Queue:
-        Get an asyncio.Queue that yields every matching event.
-        Caller MUST also call `unsubscribe(scope, queue)` on disconnect.
-
-    sse_stream(request, scope, ...) -> AsyncIterator[bytes]:
-        Convenience generator for FastAPI's StreamingResponse. Handles
-        the queue lifecycle, replay, heartbeats, and graceful shutdown.
-
-    publish_state(type, ...) / on_commit(session, type, ...):
-        Push an account-state event (`STATE_TYPES`) from any thread, or
-        once a DB session commits.
+  events.py          this shell: the subscriber registry (`_subs`), the replay
+                     ring state (`_ring`), `handle_event` (server._broadcast_event's
+                     hook for every OF-WS frame), `broadcast` / `publish` /
+                     `publish_state` / `on_commit`, `sse_stream` (the
+                     StreamingResponse body) and typing's throttle state. It reads
+                     the clock, keeps state and performs effects; everything runs
+                     on the event loop's thread (other threads via `publish`).
+  events_decide.py   pure: routing (`sees` / `wants`), the type sets and feed /
+                     typing classifiers, the replay rings, load-adaptive batching,
+                     the persist plan. Called as `ed.<name>` at call time.
+  events_wire.py     pure: the SSE bytes (frames, batch frames, resync, head, ping).
+  events_persist.py  the event_inbox queue and its worker (enqueue, transcode).
 """
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
-import math
 import os
 import time
-from collections import deque
 from datetime import datetime, timedelta
 from typing import AsyncIterator, Awaitable, Callable
 
 from fastapi import Request
 
 import chatter_identity_cache
-from db import of_writer, write_telemetry
-from db.repo import insert_events
+import events_decide as ed
+import events_persist
+import events_wire as ew
+from db import write_telemetry
 
 log = logging.getLogger("of-relay.events")
+
+# Owner contract: old names kept for importers/tests; new code uses ed./ew.
+_Frame = ew.Frame
+STATE_TYPES = ed.STATE_TYPES
+SSE_TYPES = ed.SSE_TYPES
+_ENDS_STREAM = ed.ENDS_STREAM
+is_feed_noise = ed.is_feed_noise
+_frame_json = ew.frame_json
+_sse_frame = ew.sse_frame
+_sse_out = ew.sse_out
+_RESYNC = ew.RESYNC
 
 # Maximum queued events per subscriber. Tuned for "bursty inbound + slow
 # browser" — at 256, a 100 events/sec spike rides through without drops,
@@ -96,33 +73,21 @@ def _env_float(name: str, default: float) -> float:
 
 # ── Load-adaptive batching (relay → browser) ─────────────────────────
 #
-# A quiet tab gets every event as its own frame, at once, as always. A tab
-# whose own stream runs hotter than SSE_BATCH_MIN_RATE events/s (a decaying
-# average over ~1 s, per subscriber) gets them grouped: the first event opens a
-# window, everything the tab is sent until it closes rides in ONE `event:
-# batch` frame (data: [{id, type, data}, ...], oldest first; the frame's `id:`
-# is its last member's, so Last-Event-ID resumes after the whole batch), and
-# the browser applies it in one render pass. The window is
-# SSE_BATCH_WINDOW_MS, or SSE_BATCH_MAX_WINDOW_MS once the rate passes 10x the
-# threshold, so no event waits longer than one window; the stream drops back
-# to single frames as soon as the average falls under the threshold again.
-# Inside a batch only frames a newer one fully supersedes are dropped (see
-# _COALESCE); DMs, money, unread and state events never are. The subscriber
+# A tab whose stream runs hot gets its events grouped into `event: batch`
+# frames (`ew.sse_out`), which the browser applies in one render pass. The rules
+# (rate threshold, windows, batch size, coalescing) are `events_decide`'s
+# docstring and `decide_stream`, a pure function (tables:
+# tests/test_events_decide.py); `_deliver` is its shell. The subscriber
 # queue holds batches, not events, so `_QUEUE_MAX` bounds how many windows a
 # stalled tab may fall behind before it is sent `resync`.
 # SSE_BATCH_WINDOW_MS=0 turns batching off; SSE_BATCH_MIN_RATE=0 forces it on.
 SSE_BATCH_MIN_RATE = _env_float("SSE_BATCH_MIN_RATE", 5.0)
 SSE_BATCH_WINDOW_MS = _env_float("SSE_BATCH_WINDOW_MS", 100.0)
 SSE_BATCH_MAX_WINDOW_MS = _env_float("SSE_BATCH_MAX_WINDOW_MS", 250.0)
-# Most events one batch frame carries; a fuller window closes early.
-_BATCH_MAX = 200
-# Time constant of the per-subscriber rate average, seconds.
-_RATE_TAU_S = 1.0
-# Per type, the body field that names what a frame is about: within one batch
-# only the newest frame per (type, account, that field) is kept. `chat_typing`
-# is a "still typing" ping and `chat_queue_update` a mass message's progress,
-# so the newest says everything the older ones did.
-_COALESCE = {"chat_typing": "fan_id", "chat_queue_update": "id"}
+
+
+def _knobs() -> ed.Knobs:
+    return ed.Knobs(SSE_BATCH_MIN_RATE, SSE_BATCH_WINDOW_MS, SSE_BATCH_MAX_WINDOW_MS)
 
 
 class _Batch(list):
@@ -138,11 +103,11 @@ class _Sub:
     `agencies` are the owner user ids whose Agency-wide events it gets.
     `lost` is set when the queue overflowed, so the stream sends `resync`.
     `batching` is set for sse_stream's subscribers (a bare `subscribe()`
-    queue always gets single frames); `rate`/`rate_at` are its decaying
-    events/s, `open` the batch still taking events, `batches`/`coalesced`
+    queue always gets single frames); `st` is its decaying events/s
+    (ed.Stream), `open` the batch still taking events, `batches`/`coalesced`
     counters for /admin/events/stats."""
     __slots__ = ("q", "scope", "accounts", "agencies", "lost", "batching",
-                 "rate", "rate_at", "open", "batches", "coalesced")
+                 "st", "open", "batches", "coalesced")
 
     def __init__(self, scope: str, accounts: frozenset[str] | None,
                  agencies: frozenset[str]):
@@ -152,8 +117,7 @@ class _Sub:
         self.agencies = agencies
         self.lost = False
         self.batching = False
-        self.rate = 0.0
-        self.rate_at = time.monotonic()
+        self.st = ed.Stream(rate_at=time.monotonic())
         self.open: _Batch | None = None
         self.batches = 0
         self.coalesced = 0
@@ -168,104 +132,16 @@ _loop: asyncio.AbstractEventLoop | None = None
 
 # ── Replay ring (Last-Event-ID) ──────────────────────────────────────
 #
-# Every event that passes the allow-list gets the next `_seq` and a slot in
-# its account's ring ("" holds the Agency-wide ones). 256 per account covers
-# a laptop sleep or a dropped socket on a busy Creator; anything older is
-# answered with `resync` (the browser refetches), and so is an id from before
-# a relay restart (`_EPOCH` differs). RAM only: a deploy loses the rings,
-# which `resync` covers.
-_RING_MAX = 256
+# Ids, ring size, eviction and what a reconnect replays (or answers with
+# `resync`, the browser refetches) are `events_decide.decide_ring` / `replay`,
+# pure functions; `_ring` is their state, touched only on the event loop's
+# thread. RAM only: a deploy loses the rings, and a new `_EPOCH` makes every
+# old id resync.
 _EPOCH = format(int(time.time() * 1000), "x")
-_seq = 0
-_rings: dict[str, deque] = {}
-# Per ring, the highest seq it has dropped: a reconnect from below it missed
-# something the ring can no longer replay.
-_evicted: dict[str, int] = {}
+_ring = ed.Rings(_EPOCH)
 
 
-class _Frame(dict):
-    """An event as fanned out: the event dict itself (what the browser gets
-    as `data:`) plus its SSE id, so queue consumers still read a dict.
-    `json` caches its encoding: one encode however many tabs it goes to.
-    `t`: monotonic time of the fan-out (write_telemetry's SSE lag)."""
-    __slots__ = ("eid", "json", "t")
-
-
-# ── Persist worker (bounded backpressure) ────────────────────────────
-#
-# SQLite is single-writer, so spawning one `asyncio.create_task` per event
-# for the event_inbox insert AND the transcoder upserts means under a burst
-# the pending-task list can balloon faster than the WAL can drain. That's
-# the actual failure mode at high WS ingest rates — not the DB itself, but
-# unbounded create_task piling up.
-#
-# Solution: one bounded queue, one consumer task that drains it in order,
-# one event_inbox commit per batch of whatever is queued.
-# Producers (handle_event) push and never block; on overflow we drop the
-# oldest item so freshness wins over completeness. SSE fan-out stays inline
-# below so realtime UI is unaffected — only DB writes get queued.
-_PERSIST_QUEUE_MAX = 2000
-# Most event_inbox rows one commit may carry. The worker drains whatever is
-# already queued, up to this, so an idle relay still writes each event at once
-# and a busy one (20 feeds) amortizes one commit over everything that arrived
-# while the previous one was writing.
-_PERSIST_BATCH_MAX = 200
-# How long shutdown waits for the queue to be written before it gives up on it.
-_STOP_DRAIN_S = 5.0
-# OF frames worth delivering live but not worth a row: `typing` repeats every
-# ~2-3 s per typing fan and nothing reads it back from event_inbox.
-_UNPERSISTED_TYPES = frozenset({"typing"})
-_persist_queue: asyncio.Queue | None = None
-_persist_worker_task: asyncio.Task | None = None
-_persist_drops = 0
-_persist_inflight = 0   # events the worker has taken and not finished transcoding
-
-
-# ── What reaches a browser ───────────────────────────────────────────
-#
-# The SSE allow-list: the event types a browser tab listens for
-# (`eventBus.on(...)` in app/). Every other OF frame — `chat_messages`
-# counters, `stories`, `connected`, ... — is still persisted to event_inbox
-# but is not serialized and pushed to every open tab. Add a type here when a
-# UI listener for it lands. (`ping` is minted inside sse_stream, not here.)
-#
-# Account-state events (STATE_TYPES) are minted by the relay where the state
-# changes, through `publish_state` / `on_commit`:
-#   session_dead         {dead, reason}     account_health mark/clear
-#   account_active       {active}           account_health deactivate/activate
-#   proxy_switched       {proxied}          proxies.save, per account whose egress changed;
-#                        {proxied, down}    proxy_health, per account on a proxy gone down / back up
-#   rule_run_finished    {run_id, kind, status, rule_id}  automation_executor._finalize_run,
-#                                           after the run's job is written too
-#   scheduled_send_changed {job_id}         a scheduled send queued, cancelled,
-#                                           claimed or finished
-#   permissions_changed  {}  (Agency-wide)  a roles blob write
-#   assignment_changed   {}  (Agency-wide)  Creator grants of the Agency's
-#                                           owner or its chatters changed; the
-#                                           stream ends after it so the browser
-#                                           reconnects under fresh grants
-#   agency_notifications {unread}  (the owner's sessions only, `owner_audience`)
-#                                           an agency notification filed or read
-#                                           (notifications_api)
-#   sessions_revoked     {}  (one sign-in's sessions, `sessions_audience`)
-#                                           its cookies were revoked
-#                                           (account_security); the stream ends
-#                                           after it, so a revoked cookie's
-#                                           reconnect is refused
-STATE_TYPES = frozenset({
-    "session_dead",
-    "account_active",
-    "proxy_switched",
-    "rule_run_finished",
-    "scheduled_send_changed",
-    "permissions_changed",
-    "assignment_changed",
-    "agency_notifications",
-    "sessions_revoked",
-})
-# The state events a stream ends after: its browser reconnects, and the
-# reconnect reads the session afresh.
-_ENDS_STREAM = frozenset({"assignment_changed", "sessions_revoked"})
+# ── Shutdown ─────────────────────────────────────────────────────────
 
 # Set on SIGTERM (server._close_streams_on_term): every open stream ends within
 # one queue poll, so uvicorn's graceful wait finishes instead of cancelling each
@@ -277,40 +153,6 @@ _closing = False
 def close_streams() -> None:
     global _closing
     _closing = True
-SSE_TYPES = frozenset({
-    "api2_chat_message",
-    "toasts",
-    "transaction_recorded",
-    "purchase_notified",
-    "chat_typing",
-    # A mass message's OF queue progress, as OF sends it (`{id, total,
-    # pending, isDone, isCanceled, ...}`, id = the broadcast's queue id): the
-    # Mass messages list shows "Sending…" and refreshes on the finish frame.
-    # Only the finish frame's `total` is trustworthy (event_transcoder).
-    "chat_queue_update",
-    "chat_queue_finish",
-    "chat_responded",
-}) | STATE_TYPES
-
-# OF's home-feed frames. On a creator account that follows other creators
-# they are ~82% of all WS traffic (2 days, one account: 8,451 of 10,308
-# event_inbox rows), nothing reads them, and the expire/updated frames carry
-# only a bare post id. Dropped before persist and fan-out; a
-# `post_published` of the account's OWN post is kept.
-_FEED_POST_TYPES = frozenset({
-    "post_published", "post_expire", "post_updated", "post_fundraising_updated",
-})
-
-
-def is_feed_noise(event: object, account_id: object) -> bool:
-    event_type = _first_real_key(event)
-    if event_type not in _FEED_POST_TYPES:
-        return False
-    payload = event.get(event_type)  # type: ignore[union-attr]
-    if isinstance(payload, dict) and account_id is not None \
-            and str(payload.get("user_id")) == str(account_id):
-        return False
-    return True
 
 
 # Inbound "fan is typing" (OF frame `{"typing": {"id": <fan id>}}`), forwarded
@@ -322,20 +164,6 @@ _typing_last: dict[tuple[str, int], float] = {}
 _typing_shape_logged = False
 
 
-def _typing_fan_id(payload: object) -> int | None:
-    if not isinstance(payload, dict):
-        return None
-    for v in (payload.get("id"), payload.get("user_id"),
-              (payload.get("fromUser") or {}).get("id") if isinstance(payload.get("fromUser"), dict) else None,
-              (payload.get("user") or {}).get("id") if isinstance(payload.get("user"), dict) else None):
-        try:
-            if v is not None:
-                return int(v)
-        except (TypeError, ValueError):
-            continue
-    return None
-
-
 async def _forward_typing(account_id: object, payload: object) -> None:
     global _typing_shape_logged
     if not _typing_shape_logged:
@@ -343,12 +171,12 @@ async def _forward_typing(account_id: object, payload: object) -> None:
         # shape can be confirmed against a real frame.
         _typing_shape_logged = True
         log.info("first inbound typing frame: %s", json.dumps(payload, default=str)[:300])
-    fan_id = _typing_fan_id(payload)
+    fan_id = ed.typing_fan_id(payload)
     if account_id is None or fan_id is None:
         return
     key = (str(account_id), fan_id)
     now = time.monotonic()
-    if now - _typing_last.get(key, float("-inf")) < _TYPING_THROTTLE_S:
+    if not ed.typing_due(_typing_last.get(key), now, _TYPING_THROTTLE_S):
         return
     if len(_typing_last) > 10_000:
         _typing_last.clear()
@@ -395,49 +223,9 @@ def subscriber_count(scope: str | None = None) -> int:
     return sum(1 for s in list(_subs.values()) if scope is None or s.scope == scope)
 
 
-def _sees_account(sub: _Sub, account_id: str) -> bool:
-    if sub.scope != "all" and sub.scope != f"model:{account_id}":
-        return False
-    return sub.accounts is None or account_id in sub.accounts
-
-
 def _wants(sub: _Sub, event: dict) -> bool:
-    """Whether `event` may reach `sub`. An Agency-wide event (`__agency`)
-    goes to that Agency's sessions whatever their scope; an account event
-    to sessions that see the account in their scope; an event with neither
-    only to an unclamped "all" subscriber."""
-    agency = event.get("__agency")
-    if agency is not None:
-        return str(agency) in sub.agencies
-    account_id = event.get("__account_id")
-    if account_id is None:
-        return sub.scope == "all" and sub.accounts is None
-    return _sees_account(sub, str(account_id))
-
-
-def _replay_since(sub: _Sub, last_event_id: str | None) -> tuple[list[_Frame], bool]:
-    """What `sub` missed after `last_event_id`, oldest first, and whether
-    it must `resync` (the rings no longer reach back that far, or the id
-    is from another relay process). No id: a fresh connect, nothing."""
-    if not last_event_id:
-        return [], False
-    epoch, _, n = last_event_id.partition(".")
-    try:
-        since = int(n)
-    except ValueError:
-        return [], True
-    if epoch != _EPOCH or since > _seq:
-        return [], True
-    gap = False
-    missed: list[tuple[int, _Frame]] = []
-    for key, ring in _rings.items():
-        if key and not _sees_account(sub, key):
-            continue
-        if _evicted.get(key, 0) > since:
-            gap = True
-        missed.extend((seq, f) for seq, f in ring if seq > since and _wants(sub, f))
-    missed.sort(key=lambda t: t[0])
-    return [f for _, f in missed], gap
+    """Whether `event` may reach `sub` (events_decide "Routing")."""
+    return ed.wants(sub.scope, sub.accounts, sub.agencies, event)
 
 
 # ── Event ingest ────────────────────────────────────────────────────
@@ -459,14 +247,14 @@ async def handle_event(event: dict) -> None:
     account_id = event.get("__account_id") if isinstance(event, dict) else None
     # Pick the first non-sentinel key as the event_type (OF puts the type
     # at the top level — e.g. `{"newMessage": {...}}`).
-    event_type = _first_real_key(event)
+    event_type = ed.first_key(event)
     write_telemetry.frame(account_id, event_type, event)
 
-    if is_feed_noise(event, account_id):
+    if ed.is_feed_noise(event, account_id):
         return
     if event_type == "typing":
         # Forwarded as `chat_typing`, then down the normal path minus the
-        # event_inbox row (_UNPERSISTED_TYPES): the persist worker's transcode
+        # event_inbox row (events_decide.UNPERSISTED_TYPES): the persist worker's transcode
         # still touches the Fan row from the frame
         # (event_transcoder._touch_fan_from_event), and the raw `typing` frame
         # itself is not an SSE type, so broadcast() below drops it.
@@ -476,43 +264,9 @@ async def handle_event(event: dict) -> None:
     # from `account_id`, no need to duplicate.
     persistable = {k: v for k, v in event.items() if not k.startswith("__")} if isinstance(event, dict) else {}
 
-    # Enqueue for the persist worker. Bounded queue gives backpressure;
-    # on overflow we drop the oldest so a slow disk loses history, not
-    # the freshest events. Before the worker is started (race at startup
-    # between the first event and `start_persist_worker`), we fall back
-    # to the old fire-and-forget create_task path so we don't lose data.
-    global _persist_drops
-    if _persist_queue is not None:
-        item = (account_id, event_type, persistable, event)
-        try:
-            _persist_queue.put_nowait(item)
-        except asyncio.QueueFull:
-            _persist_drops += 1
-            write_telemetry.drop("queue_full")
-            with _suppress_queue_empty(_persist_queue):
-                _persist_queue.get_nowait()
-                write_telemetry.dequeued()
-            try:
-                _persist_queue.put_nowait(item)
-            except Exception:
-                pass
-            if _persist_drops % 100 == 1:
-                log.warning(
-                    "persist queue at capacity — %d events displaced so far "
-                    "(SQLite writer can't keep up; check disk / batch size)",
-                    _persist_drops,
-                )
-        write_telemetry.enqueued(_persist_queue.qsize())
-    else:
-        # Pre-startup path: keep the old behavior so no event is lost.
-        from event_transcoder import transcode as _transcode  # local import to avoid cycles
-        if event_type not in _UNPERSISTED_TYPES:
-            asyncio.create_task(_persist_event_safe(
-                account_id=account_id,
-                event_type=event_type or "unknown",
-                payload=persistable,
-            ))
-        asyncio.create_task(_transcode(event))
+    # Enqueue for the persist worker (events_persist: bounded, drops the
+    # oldest on overflow; before the worker starts, the old fire-and-forget path).
+    events_persist.enqueue(account_id, event_type, persistable, event)
 
     # Fan out to subscribers — scope "all" + scope-by-account.
     await broadcast(event)
@@ -574,85 +328,64 @@ async def announce_transaction(
 
 def _fanout(event: dict) -> int:
     """`broadcast`'s body, synchronous so `publish` can run it from another
-    thread through call_soon_threadsafe. Allow-list, id, ring, delivery."""
-    global _seq
-    if _first_real_key(event) not in SSE_TYPES:
+    thread through call_soon_threadsafe. Allow-list, id + ring
+    (ed.decide_ring), delivery."""
+    global _ring
+    if ed.first_key(event) not in ed.SSE_TYPES:
         return 0
-    _seq += 1
-    frame = _Frame(event)
-    frame.eid = f"{_EPOCH}.{_seq}"
+    frame = ew.Frame(event)
     frame.t = time.monotonic()
-    key = "" if event.get("__agency") is not None else str(event.get("__account_id") or "")
-    ring = _rings.get(key)
-    if ring is None:
-        ring = _rings[key] = deque(maxlen=_RING_MAX)
-    if len(ring) == _RING_MAX:
-        _evicted[key] = ring[0][0]
-    ring.append((_seq, frame))
+    _ring = ed.decide_ring(_ring, ed.Published(frame))
+    frame.eid = ed.head_id(_ring)
 
+    knobs = _knobs()
+    ends = ed.first_key(frame) in ed.ENDS_STREAM
     delivered = 0
     for sub in list(_subs.values()):
         if not _wants(sub, frame):
             continue
         delivered += 1
-        _deliver(sub, frame)
+        _deliver(sub, frame, ends, knobs)
     return delivered
 
 
-def _note_rate(sub: _Sub, now: float, n: int) -> float:
-    """`sub`'s events/s, decayed to `now`, after `n` more events."""
-    sub.rate = sub.rate * math.exp((sub.rate_at - now) / _RATE_TAU_S) + n / _RATE_TAU_S
-    sub.rate_at = now
-    return sub.rate
-
-
-def _window_s(rate: float) -> float:
-    """How long a batch opened at `rate` stays open; 0: send at once."""
-    if SSE_BATCH_WINDOW_MS <= 0 or rate <= SSE_BATCH_MIN_RATE:
-        return 0.0
-    if rate > 10 * SSE_BATCH_MIN_RATE:
-        return max(SSE_BATCH_WINDOW_MS, SSE_BATCH_MAX_WINDOW_MS) / 1000
-    return SSE_BATCH_WINDOW_MS / 1000
-
-
-def _deliver(sub: _Sub, frame: _Frame) -> None:
-    """Hand `frame` to `sub`: into its open batch, as a new batch when its
-    rate calls for one, else on its own (see "Load-adaptive batching")."""
+def _deliver(sub: _Sub, frame: ew.Frame, ends: bool, knobs: ed.Knobs) -> None:
+    """Hand `frame` to `sub` as ed.decide_stream says: into its open batch, as
+    a new batch when its rate calls for one, else on its own (see
+    "Load-adaptive batching"). The open batch is the queue item itself."""
     if not sub.batching:
         _put(sub, frame)
         return
-    now = time.monotonic()
-    rate = _note_rate(sub, now, 1)
-    ends = _first_real_key(frame) in _ENDS_STREAM
     b = sub.open
-    if b is not None and len(b) < _BATCH_MAX and now < b.deadline:
+    sub.st, e = ed.decide_stream(sub.st, ed.Deliver(
+        time.monotonic(), ends, len(b) if b is not None else 0, b.deadline if b is not None else 0.0, knobs))
+    if isinstance(e, ed.Append):
+        assert b is not None  # decide appends only to an open batch
         b.append(frame)
-        if ends:
-            # Nothing may follow it into this session's stream: close it now.
+        if e.close:
             b.deadline = 0.0
             sub.open = None
-        return
-    sub.open = None
-    window = _window_s(rate)
-    if window <= 0 or ends:
+    elif isinstance(e, ed.Send):
+        sub.open = None
         _put(sub, frame)
-        return
-    b = _Batch((frame,))
-    b.deadline = now + window
-    sub.open = b
-    _put(sub, b)
+    elif isinstance(e, ed.Open):
+        nb = _Batch((frame,))
+        nb.deadline = e.deadline
+        sub.open = nb
+        _put(sub, nb)
 
 
-def _put(sub: _Sub, item: _Frame | _Batch) -> None:
+def _put(sub: _Sub, item: ew.Frame | _Batch) -> None:
     try:
         sub.q.put_nowait(item)
     except asyncio.QueueFull:
         # Drop oldest, push new — slow tab loses history, not freshness;
-        # `lost` makes its stream send `resync` so it refetches.
+        # `lost` makes its stream send `resync` so it refetches. (What is
+        # dropped is never the open batch: `_deliver` lets that go or
+        # replaces it before every put.)
         sub.lost = True
-        with _suppress_queue_empty(sub.q):
-            if sub.q.get_nowait() is sub.open:
-                sub.open = None
+        with contextlib.suppress(asyncio.QueueEmpty):
+            sub.q.get_nowait()
         try:
             sub.q.put_nowait(item)
         except Exception:
@@ -695,7 +428,7 @@ def publish_state(
     """Push one account-state event (STATE_TYPES): for `account_id`'s
     sessions, or Agency-wide for `agency` (an owner user id). Best-effort:
     a fan-out hiccup must never fail the change it reports."""
-    if event_type in _ENDS_STREAM:
+    if event_type in ed.ENDS_STREAM:
         chatter_identity_cache.invalidate()  # before the event goes out: a reconnect reads the new grants
     event: dict = {event_type: fields}
     if account_id is not None:
@@ -802,247 +535,30 @@ async def publish_chat_responded(
         log.exception("publish_chat_responded failed (account=%s fan=%s)", account_id, fan_id)
 
 
-def _inbox_row(account_id: str | None, event_type: str | None, payload: dict) -> dict:
-    """One `insert_events` row for an OF frame."""
-    event_type = event_type or "unknown"
-    # OF events sometimes carry an `id` field at top level — use it as the
-    # dedup key when present so re-deliveries (reconnect replays) don't
-    # double-write.
-    provider_id = None
-    if isinstance(payload, dict):
-        for k in ("id", "messageId", "eventId"):
-            v = payload.get(k)
-            if v is not None:
-                provider_id = f"{event_type}:{v}"
-                break
-    return {"account_id": account_id, "source": "of_ws", "event_type": event_type,
-            "payload": payload, "provider_event_id": provider_id}
-
-
-async def _persist_batch(rows: list[dict]) -> None:
-    """Write `rows` to event_inbox in one transaction; if that fails, row by
-    row, so one bad payload costs only its own row. Never raises."""
-    if not rows:
-        return
-    try:
-        await insert_events(rows)
-        return
-    except Exception:
-        if len(rows) == 1:
-            log.exception("persist event failed (type=%s)", rows[0]["event_type"])
-            write_telemetry.drop("persist_error")
-            return
-        log.warning("persist batch of %d failed; retrying row by row", len(rows),
-                    exc_info=True)
-    for row in rows:
-        try:
-            await insert_events([row])
-        except Exception:
-            log.exception("persist event failed (type=%s)", row["event_type"])
-            write_telemetry.drop("persist_error")
-
-
-async def _persist_event_safe(
-    *, account_id: str | None, event_type: str, payload: dict,
-) -> None:
-    """One frame's event_inbox write (the pre-startup path). Never raises."""
-    await _persist_batch([_inbox_row(account_id, event_type, payload)])
-
-
-def _drain_batch(first: tuple) -> list[tuple]:
-    """`first` plus whatever is already queued, up to _PERSIST_BATCH_MAX, in
-    queue order. Never waits: an idle relay writes each event at once."""
-    batch = [first]
-    while len(batch) < _PERSIST_BATCH_MAX:
-        try:
-            batch.append(_persist_queue.get_nowait())
-        except asyncio.QueueEmpty:
-            break
-    write_telemetry.dequeued(len(batch))
-    write_telemetry.batch(len(batch))
-    return batch
-
-
-async def _persist_worker_loop() -> None:
-    """Singleton consumer that drains `_persist_queue`.
-
-    Takes everything already queued (up to _PERSIST_BATCH_MAX) and hands its
-    event_inbox rows, then each event's `transcode`, to the OF-cache writer
-    together (db/of_writer): the transcodes run concurrently, but each queues
-    its write before its first await, so the writer gets them in queue order,
-    inbox rows first, and commits them in one transaction. One consumer, FIFO,
-    so each account's events keep their order. SQLite is single-writer: the
-    writes go through the one writer instead of fighting over `busy_timeout`.
-    """
-    global _persist_inflight
-    assert _persist_queue is not None
-    from event_transcoder import transcode as _transcode  # local import to avoid cycles
-    while True:
-        try:
-            first = await _persist_queue.get()
-        except asyncio.CancelledError:
-            return
-        batch = _drain_batch(first)
-        # Taken off the queue, not yet transcoded: what a shutdown cancel loses.
-        _persist_inflight = len(batch)
-        rows = [_inbox_row(account_id, event_type, persistable)
-                for account_id, event_type, persistable, _event in batch
-                if event_type not in _UNPERSISTED_TYPES]
-
-        async def _one(event) -> None:
-            global _persist_inflight
-            try:
-                await _transcode(event)
-            except Exception:
-                log.exception("persist worker: transcode failed")
-                write_telemetry.drop("transcode_exception")
-            _persist_inflight -= 1
-
-        with write_telemetry.writer("persist"):
-            await asyncio.gather(_persist_batch(rows), *(_one(ev) for *_x, ev in batch))
-
-
 def start_persist_worker() -> None:
-    """Start the singleton persist worker. Idempotent.
+    """Start the singleton persist worker (events_persist). Idempotent.
 
     Must be called from inside the running event loop (e.g. FastAPI's
     `@app.on_event("startup")`), after `init_db()` but before any WS pump
     spawns — otherwise the first burst of events takes the pre-startup
-    fallback path in `handle_event`.
+    fallback path in `events_persist.enqueue`.
     """
-    global _persist_queue, _persist_worker_task, _loop
-    if _persist_worker_task is not None and not _persist_worker_task.done():
-        return
-    _loop = asyncio.get_running_loop()   # where `publish` hands other threads' events
-    _persist_queue = asyncio.Queue(maxsize=_PERSIST_QUEUE_MAX)
-    _persist_worker_task = asyncio.create_task(
-        _persist_worker_loop(), name="event-persist-worker",
-    )
-    log.info("persist worker started (queue maxsize=%d)", _PERSIST_QUEUE_MAX)
-    of_writer.start()
-    write_telemetry.start()
-
-
-async def stop_persist_worker() -> None:
-    """Drain, then cancel the worker — call from shutdown only, after the OF
-    pumps are cancelled (no live producer). Best-effort: what is queued gets
-    up to _STOP_DRAIN_S to be written (the OF-cache writer then flushes what
-    it holds); whatever is left after that is lost and counted."""
-    global _persist_worker_task
-    if _persist_worker_task is None:
-        return
-    deadline = time.monotonic() + _STOP_DRAIN_S
-    while ((_persist_queue is not None and _persist_queue.qsize()) or _persist_inflight) \
-            and not _persist_worker_task.done() and time.monotonic() < deadline:
-        await asyncio.sleep(0.01)
-    # Counted before the cancel: the queued events and the worker's batch in hand
-    # (its event_inbox rows may be written; their transcodes are not).
-    write_telemetry.drop("shutdown_queued", _persist_queue.qsize() if _persist_queue is not None else 0)
-    write_telemetry.drop("shutdown_inflight", _persist_inflight)
-    _persist_worker_task.cancel()
-    try:
-        await _persist_worker_task
-    except (asyncio.CancelledError, Exception):
-        pass
-    _persist_worker_task = None
-    await of_writer.stop()
-    await write_telemetry.stop()
-
-
-def _first_real_key(event: dict | object) -> str | None:
-    """Pick the first top-level key that isn't a `__`-prefixed sentinel."""
-    if not isinstance(event, dict):
-        return None
-    for k in event:
-        if not k.startswith("__"):
-            return k
-    return None
-
-
-class _suppress_queue_empty:
-    """Context manager: swallow asyncio.QueueEmpty. Tiny helper to keep
-    the producer side branch-free."""
-    def __init__(self, q: asyncio.Queue):
-        self.q = q
-    def __enter__(self): return self
-    def __exit__(self, exc_type, exc, tb):
-        return exc_type is asyncio.QueueEmpty
+    global _loop
+    if events_persist.start_persist_worker():
+        _loop = asyncio.get_running_loop()   # where `publish` hands other threads' events
 
 
 # ── SSE generator (FastAPI StreamingResponse body) ──────────────────
-
-def _frame_json(frame: dict, event_type: str) -> str:
-    """`frame`'s JSON, encoded once per _Frame however many tabs get it."""
-    data = getattr(frame, "json", None)
-    if data is not None:
-        return data
-    try:
-        data = json.dumps(frame, default=str)
-    except Exception:
-        data = json.dumps({"error": "serialize_failed", "type": event_type})
-    if isinstance(frame, _Frame):
-        frame.json = data
-    return data
-
-
-def _sse_frame(frame: dict) -> bytes:
-    event_type = _first_real_key(frame) or "event"
-    data = _frame_json(frame, event_type)
-    eid = getattr(frame, "eid", None)
-    head = f"id: {eid}\n" if eid else ""
-    return f"{head}event: {event_type}\ndata: {data}\n\n".encode("utf-8")
-
-
-def _coalesce_key(frame: dict) -> tuple | None:
-    event_type = _first_real_key(frame)
-    field = _COALESCE.get(event_type)  # type: ignore[arg-type]
-    body = frame.get(event_type) if field else None
-    if not isinstance(body, dict) or body.get(field) is None:
-        return None
-    return event_type, frame.get("__account_id"), body[field]
-
-
-def _coalesce(frames: list) -> list:
-    """`frames` minus every one a newer frame in it supersedes (_COALESCE),
-    order kept. The last frame is always kept, so the batch id is unchanged."""
-    seen: set = set()
-    kept = []
-    for f in reversed(frames):
-        key = _coalesce_key(f)
-        if key is not None:
-            if key in seen:
-                continue
-            seen.add(key)
-        kept.append(f)
-    kept.reverse()
-    return kept
-
-
-def _sse_out(frames: list) -> bytes:
-    """One frame as itself; several as one `event: batch` frame whose data is
-    `[{id, type, data}, ...]` and whose id is the last member's."""
-    if len(frames) == 1:
-        return _sse_frame(frames[0])
-    members = []
-    for f in frames:
-        # Both are plain tokens: the type is on the SSE_TYPES allow-list and
-        # the id is `<hex epoch>.<seq>` — no JSON escaping needed.
-        event_type = _first_real_key(f) or "event"
-        members.append(f'{{"id":"{f.eid}","type":"{event_type}",'
-                       f'"data":{_frame_json(f, event_type)}}}')
-    last = getattr(frames[-1], "eid", None)
-    head = f"id: {last}\n" if last else ""
-    return f"{head}event: batch\ndata: [{','.join(members)}]\n\n".encode("utf-8")
-
 
 def sse_stats() -> dict:
     """Per open stream: its mode right now, decayed rate, window, queue depth
     and counters — for /admin/events/stats. No scopes or account ids."""
     now = time.monotonic()
+    knobs = _knobs()
     streams = []
     for sub in list(_subs.values()):
-        rate = sub.rate * math.exp((sub.rate_at - now) / _RATE_TAU_S)
-        window = _window_s(rate) if sub.batching else 0.0
+        rate = ed.rate_now(sub.st, now)
+        window = ed.window_s(rate, knobs) if sub.batching else 0.0
         streams.append({
             "mode": "batch" if window else "immediate" if sub.batching else "queue",
             "rate": round(rate, 2),
@@ -1058,10 +574,6 @@ def sse_stats() -> dict:
         "batching": sum(1 for st in streams if st["mode"] == "batch"),
         "streams": streams,
     }
-
-
-# Tells the tab it may have missed events the rings cannot replay: refetch.
-_RESYNC = b"event: resync\ndata: {}\n\n"
 
 
 async def sse_stream(
@@ -1084,52 +596,38 @@ async def sse_stream(
         same after a `sessions_revoked`: a revoked cookie's reconnect is 401.
       • Graceful unsubscribe when the client disconnects.
 
-    `accounts` / `agencies`: see `subscribe`.
-
-    SSE wire format (one frame):
-        id: <epoch>.<seq>\\n
-        event: <event_type>\\n
-        data: <json>\\n
-        \\n
+    `accounts` / `agencies`: see `subscribe`. The bytes: events_wire.
     """
     # Register and read the rings in one synchronous step: every event up to
-    # `head` is in the rings, every later one lands in the queue.
+    # the head is in the rings, every later one lands in the queue.
     sub = _register(scope, accounts, agencies)
     sub.batching = True
-    head = f"{_EPOCH}.{_seq}"
-    missed, gap = _replay_since(sub, last_event_id)
+    # A replay is a burst by definition: batched whenever batching is on,
+    # so a tab waking from idle applies it in one pass, not hundreds.
+    replay = ed.replay(_ring, last_event_id, lambda key: ed.sees(sub.scope, sub.accounts, key),
+                       lambda f: _wants(sub, f), _knobs())
     q = sub.q
     try:
-        yield b": connected\n\n"
-        if gap:
-            yield _RESYNC
-        # A replay is a burst by definition: batched whenever batching is on,
-        # so a tab waking from idle applies it in one pass, not hundreds.
-        step = _BATCH_MAX if SSE_BATCH_WINDOW_MS > 0 else 1
-        for i in range(0, len(missed), step):
-            yield _sse_out(_coalesce(missed[i:i + step]))
-        yield f"id: {head}\n\n".encode("utf-8")
+        yield ew.CONNECTED
+        for e in replay:
+            if isinstance(e, ed.Resync):
+                yield ew.RESYNC
+            elif isinstance(e, ed.Emit):
+                yield ew.sse_out(e.frames)
+            elif isinstance(e, ed.Head):
+                yield ew.head(e.eid)
         last_beat = time.monotonic()
         while True:
             if _closing or await request.is_disconnected():
                 return
             if sub.lost:
                 sub.lost = False
-                yield _RESYNC
+                yield ew.RESYNC
             try:
                 event = await asyncio.wait_for(q.get(), timeout=1.0)
             except asyncio.TimeoutError:
                 if time.monotonic() - last_beat >= _HEARTBEAT_S:
-                    # `: ping` keeps proxies' idle timers warm; the named
-                    # `event: ping` lets the browser bump its lastEventAt
-                    # so isConnected() degrades when the OF-WS pump stalls
-                    # while the SSE socket itself stays open. Intentionally
-                    # not logged — fires every 20 s per subscriber.
-                    ts = json.dumps({"ts": time.time()})
-                    yield (
-                        b": ping\n\n"
-                        + f"event: ping\ndata: {ts}\n\n".encode("utf-8")
-                    )
+                    yield ew.ping(time.time())
                     last_beat = time.monotonic()
                 continue
 
@@ -1140,18 +638,18 @@ async def sse_stream(
                     await asyncio.sleep(delay)
                 if sub.open is event:
                     sub.open = None
-                frames = _coalesce(event)
+                frames = ed.coalesce(event)
                 sub.coalesced += len(event) - len(frames)
                 sub.batches += 1
             else:
                 frames = [event]
-            yield _sse_out(frames)
+            yield ew.sse_out(frames)
             last_beat = time.monotonic()
             if write_telemetry.ENABLED:
                 for f in frames:
                     if "api2_chat_message" in f:
                         write_telemetry.sse_sent((last_beat - getattr(f, "t", last_beat)) * 1000)
-            if _first_real_key(frames[-1]) in _ENDS_STREAM:
+            if ed.first_key(frames[-1]) in ed.ENDS_STREAM:
                 return
     finally:
         await unsubscribe(scope, q)
@@ -1163,8 +661,8 @@ def register_with(
     install: Callable[[Callable[[dict], Awaitable[None]]], None],
 ) -> None:
     """Called once at startup. Hands `handle_event` to the caller's
-    install hook so the relay's existing `_broadcast_event` can fan
-    events into us in addition to the legacy WS subscribers.
+    install hook so the relay's `_broadcast_event` fans every OF-WS
+    event into it.
 
     Decoupled like this so this module has zero imports from server.py
     — server.py wires the connection at startup.

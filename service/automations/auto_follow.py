@@ -120,7 +120,8 @@ import automation_executor as ax
 from automation_registry import register
 from db.engine import get_session
 from db.models import Fan, FollowLog, FollowPingState, Message
-from ._common import bool_knob, load_hard_skip_ids
+from ._knobs import bool_knob
+from ._skiplist import load_hard_skip_ids
 
 log = logging.getLogger("of-relay.automation.auto_follow")
 
@@ -847,6 +848,13 @@ async def _stamp_examined(account_id: str, fan_id: int) -> None:
 
 # ── Per-action runners (uniform signature, dispatched from run()) ─────
 
+def select_follow_pool(merged: list[int], *, hard_skip: set[int],
+                       headroom: int) -> list[int]:
+    """Pure: drop hard-skip ids from EVERY source (incl. the cooldown-exempt
+    `fan_ids`, hence not in `_merge_pools`), then cap at `headroom`; order kept."""
+    return [f for f in merged if f not in hard_skip][:headroom]
+
+
 async def _run_follow(account_id: str, payload: dict, *, cap: int, dry_run: bool,
                       targets: dict, hard_skip: set) -> dict:
     client = (await _client_or_none(account_id) if dry_run
@@ -890,7 +898,7 @@ async def _run_follow(account_id: str, payload: dict, *, cap: int, dry_run: bool
                               exclude=recently,
                               examined_before=examined_before)
     source = ",".join(sources)
-    pool = [f for f in pool if f not in hard_skip][:headroom]
+    pool = select_follow_pool(pool, hard_skip=hard_skip, headroom=headroom)
 
     # How many fans the backfill still has to reach, measured before this tick
     # touches anything.

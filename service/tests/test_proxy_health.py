@@ -13,7 +13,9 @@ counts as an error and an answer as a success. The Test route keeps the
 probe in `health`, /admin/proxies carries `health` and the pool's `bad`
 count, /admin/accounts carries `proxy_down`. The confirm waits CONFIRM_GAP_S
 after the streak's first error and is skipped when an answer reset the count
-meanwhile (a blip); a proxy gone from the registry ends its watcher. Only a
+meanwhile (a blip); a proxy gone from the registry ends its watcher. A
+proxy back up mid-recheck and at DOWN_AFTER again is confirmed by the same
+watcher; a streak right after a watcher's end starts the next. Only a
 full-policy failure counts (test_proxy_retry_interactive). The periodic probe is off
 unless PROXY_HEALTH_INTERVAL_S is set, and probes only proxies a Creator is on.
 
@@ -49,6 +51,7 @@ from curl_cffi import CurlInfo, requests as curl_requests  # noqa: E402
 import events  # noqa: E402
 import proxies  # noqa: E402
 import proxy_health  # noqa: E402
+import proxy_health_decide  # noqa: E402
 from of_client import OFClient, RetryPolicy  # noqa: E402
 
 _TRACE = "fl=1\nh=1.1.1.1\nip=203.0.113.7\nts=1\nvisit_scheme=https\nloc=HU\ncolo=BUD\nhttp=http/2\n"
@@ -124,7 +127,7 @@ class _Watch:
         proxy_health._spawn, proxy_health._sleep, proxies.probe, proxy_health._now = self._real
 
 
-def _fail(label: str, n: int = proxy_health.DOWN_AFTER) -> None:
+def _fail(label: str, n: int = proxy_health_decide.DOWN_AFTER) -> None:
     for _ in range(n):
         proxy_health.record(label, False, "CONNECT tunnel failed, response 403")
 
@@ -206,7 +209,7 @@ def case_down_after_consecutive_errors_confirmed_and_back_up():
     # The confirm fails; the first recheck "wait" is an answer through the proxy
     # (a Creator still on it), which ends the watcher.
     with _Events() as ev, _Watch(False) as w:
-        _fail("hu-1", proxy_health.DOWN_AFTER - 1)
+        _fail("hu-1", proxy_health_decide.DOWN_AFTER - 1)
         snap = proxy_health.snapshot("hu-1")
         assert not snap["down"] and snap["state"] == "suspect" and ev.seen == [] and w.probed == [], snap
         proxy_health._sleep = _then(None, lambda: proxy_health.record("hu-1", True))
@@ -362,7 +365,7 @@ def case_failover_of_an_empty_or_custom_proxy_probes_nothing():
 def case_no_standby_nobody_moves_still_surfaced():
     a, b, c = _pool()
     for label in (b, c):   # both standbys bad already
-        proxy_health._state[label] = {**proxy_health._blank(), "down": True}
+        proxy_health._state[label] = {**proxy_health_decide.blank(), "down": True}
     with _Events() as ev, _Watch(False, False, False, True):
         _fail(a)
     assert _on(a) == ["1", "4"], "nobody moved: no healthy pool proxy existed"
@@ -372,8 +375,8 @@ def case_no_standby_nobody_moves_still_surfaced():
 
 
 def _bad(label: str, due: bool = False) -> None:
-    proxy_health._state[label] = {**proxy_health._blank(), "down": True,
-                                  "rechecks_failed": proxy_health.FAILOVER_AFTER_RECHECKS if due else 0}
+    proxy_health._state[label] = {**proxy_health_decide.blank(), "down": True,
+                                  "rechecks_failed": proxy_health_decide.FAILOVER_AFTER_RECHECKS if due else 0}
 
 
 def case_assign_pool_skips_bad_and_moves_a_held_one_only_when_failover_is_due():
@@ -493,6 +496,75 @@ def case_assign_pool_loses_a_race_with_a_concurrent_failover():
     assert kept and p["label"] == b and proxies.get_for_account("7")["label"] == b
 
 
+def _through_during_the_confirm(then=lambda: None):
+    """A `proxies.probe` wrapper (inside `_Watch`): on the confirm probe, an OF call through the proxy
+    answers first, then `then()` runs, then the probe answers as scripted."""
+    inner = proxies.probe
+
+    def _probe(p, timeout_s=15):
+        proxy_health.record(p["label"], True)
+        then()
+        proxies.probe = inner   # once
+        return inner(p, timeout_s)
+    proxies.probe = _probe
+
+
+def _new_streak_confirmed_after_its_gap(w, ev) -> None:
+    """The first confirm's probe failed after a call got through and a whole new streak: not bad; the same
+    watcher waits a full CONFIRM_GAP_S from the new streak's first error, its confirm fails: bad. The
+    recheck then answers: back up."""
+    gap = proxy_health.confirm_gap_s()
+    assert w.probed == ["hu-1"] * 3, f"confirm, the new streak's confirm, one recheck: {w.probed}"
+    assert [round(s, 6) for s in w.slept[:3]] == [gap, 0.0, gap], \
+        f"a full gap before each confirm (0: the rejected confirm's Wait(0, ConfirmDue) back to the wait): {w.slept}"
+    assert [kw["down"] for _, kw in ev.seen] == [True, True, False, False], \
+        f"bad announced once (by the 2nd confirm), then back up: {ev.seen}"
+    snap = proxy_health.snapshot("hu-1")
+    assert not snap["down"] and snap["state"] == "healthy" and not proxy_health._watchers, snap
+
+
+def case_failed_confirm_after_a_call_got_through_is_not_bad():
+    """ADR 0030: a call that got through while the confirm probed means the proxy is not bad, even
+    though the probe itself failed. With a whole new streak since, the same watcher confirms that one
+    CONFIRM_GAP_S after its first error (nobody is left watching a proxy at DOWN_AFTER)."""
+    _registry()
+    with _Events() as ev, _Watch(False) as w:
+        _through_during_the_confirm()
+        _fail("hu-1")
+        assert w.probed == ["hu-1"] and ev.seen == [], f"probed once, nothing announced: {ev.seen}"
+        snap = proxy_health.snapshot("hu-1")
+        assert not snap["down"] and snap["state"] == "healthy" and not proxy_health._watchers, snap
+    _registry()
+    with _Events() as ev, _Watch(False, False) as w:
+        _through_during_the_confirm(lambda: _fail("hu-1"))   # a new streak lands during the probe
+        _fail("hu-1")
+        _new_streak_confirmed_after_its_gap(w, ev)
+
+
+def case_confirm_is_for_the_streak_it_waited_on():
+    """The streak a confirm probes for is the one its wait was decided on, in the same lock section: a
+    reset and a whole new streak landing after that decision, before the probe, make a failed probe
+    not bad, and the new streak gets its own full CONFIRM_GAP_S (no confirm sooner)."""
+    _registry()
+    real_step, injected = proxy_health._step, []
+
+    def _step(label, event):
+        nxt = real_step(label, event)
+        if isinstance(nxt, proxy_health_decide.Confirm) and not injected:
+            injected.append(nxt)
+            proxy_health.record(label, True)
+            _fail(label)
+        return nxt
+    try:
+        proxy_health._step = _step
+        with _Events() as ev, _Watch(False, False) as w:
+            _fail("hu-1")
+            assert injected == [proxy_health_decide.Confirm(1)], injected
+            _new_streak_confirmed_after_its_gap(w, ev)
+    finally:
+        proxy_health._step = real_step
+
+
 def case_confirm_waits_again_for_a_streak_that_restarted_in_the_wait():
     """N5: the streak ended and a new one began during the confirm's wait:
     the confirm waits CONFIRM_GAP_S from the new streak's first error."""
@@ -537,7 +609,7 @@ def case_proxies_list_counts_bad_pool():
     server._get_request_user = lambda: types.SimpleNamespace(id="o", account_ids={"1", "2", "3", "4", "5", "6"})
     server.account_registry.list_accounts = lambda: [{"id": str(i)} for i in range(1, 7)]
     try:
-        proxy_health._state[a] = {**proxy_health._blank(), "down": True}
+        proxy_health._state[a] = {**proxy_health_decide.blank(), "down": True}
         out = server.admin_proxies_list()
     finally:
         server._get_request_user, server.account_registry.list_accounts = real_user, real_list
@@ -557,7 +629,7 @@ def case_recheck_period_floor():
 
 def case_an_answer_resets_the_count():
     _registry()
-    for _ in range(proxy_health.DOWN_AFTER - 1):
+    for _ in range(proxy_health_decide.DOWN_AFTER - 1):
         proxy_health.record("hu-1", False, "boom")
     proxy_health.record("hu-1", True)
     proxy_health.record("hu-1", False, "boom")
@@ -595,7 +667,7 @@ def case_of_calls_feed_the_state():
     c = _bare_client(_refused)
     with _Events(), _Watch(False) as w:
         proxy_health._sleep = _then(None, lambda: proxy_health.record("hu-1", True))  # ends the watcher
-        for _ in range(proxy_health.DOWN_AFTER):
+        for _ in range(proxy_health_decide.DOWN_AFTER):
             try:
                 c._http_call("GET", "https://onlyfans.com/api2/v2/users/me")
             except curl_requests.exceptions.ProxyError:
@@ -603,7 +675,7 @@ def case_of_calls_feed_the_state():
             else:
                 raise AssertionError("the ProxyError must still reach the caller")
         assert w.probed == ["hu-1"], "three refused calls confirm with one probe"
-        _fail("hu-1", proxy_health.DOWN_AFTER - 1)
+        _fail("hu-1", proxy_health_decide.DOWN_AFTER - 1)
         proxy_health._state["hu-1"]["down"] = True   # as after a failed confirm
         ok = _bare_client(lambda url, **kw: types.SimpleNamespace(headers={}, ok=True))
         ok._http_call("GET", "https://onlyfans.com/api2/v2/users/me")
@@ -646,6 +718,144 @@ def case_watcher_ends_when_the_proxy_is_gone():
     assert "hu-1" not in proxy_health._state and not proxy_health._watchers
 
 
+def case_an_error_right_after_the_watchers_last_step_starts_a_new_watcher():
+    """N1: the watcher's last step releases its claim in its own lock section (Unwatch), so a streak's
+    DOWN_AFTER-th error landing right after that decide, before the watcher has returned, starts a new
+    watcher. A blip the confirm's wait outlasts (an answer resets the count: ConfirmDue ends the
+    watcher), then the proxy dies for good: DOWN_AFTER errors injected just after that ConfirmDue's
+    decide. Measured red with the claim released in `_watch`'s finally (the proxy left at DOWN_AFTER
+    errors, nobody watching)."""
+    _registry()
+    real_step, ends, spawned = proxy_health._step, [], []
+
+    def _step(label, event):
+        seen = []
+
+        def _seen():
+            seen.append(event())
+            return seen[-1]
+        nxt = real_step(label, _seen)
+        if not ends and nxt is None and isinstance(seen[0], proxy_health_decide.ConfirmDue):
+            ends.append(seen[0])
+            _fail(label)   # dead for good: the whole streak lands right at the watcher's end
+        return nxt
+    try:
+        proxy_health._step = _step
+        with _Events() as ev, _Watch(False, True) as w:
+            inline = proxy_health._spawn
+            proxy_health._spawn = lambda fn, name: (spawned.append(name), inline(fn, name))
+            proxy_health._sleep = _then(lambda: proxy_health.record("hu-1", True))   # the blip ends in the wait
+            _fail("hu-1")
+    finally:
+        proxy_health._step = real_step
+    assert len(ends) == 1, ends
+    assert spawned == ["proxy-watch-hu-1"] * 2, f"the streak after the watcher's end got its own: {spawned}"
+    assert w.probed == ["hu-1"] * 2, f"the new watcher's confirm (fails: bad), a recheck (answers): {w.probed}"
+    assert [kw["down"] for _, kw in ev.seen] == [True, True, False, False], ev.seen
+    assert proxy_health.snapshot("hu-1")["state"] == "healthy" and not proxy_health._watchers
+
+
+def case_back_at_the_bar_during_a_recheck_sleep_is_confirmed_by_the_same_watcher():
+    """F1: bad, the watcher sleeps before a recheck; a call answers (back up), then DOWN_AFTER errors land
+    with the claim still held (no new watcher). The waking watcher goes back to the confirm phase: the
+    confirm fails (bad again), the next recheck answers. Measured red with the recheck's not-down
+    branch ending the watcher (the proxy left at DOWN_AFTER errors, nobody watching)."""
+    _registry()
+    spawned: list[str] = []
+    with _Events() as ev, _Watch(False, False, True) as w:
+        inline = proxy_health._spawn
+        proxy_health._spawn = lambda fn, name: (spawned.append(name), inline(fn, name))
+        proxy_health._sleep = _then(None, lambda: (proxy_health.record("hu-1", True), _fail("hu-1")))
+        _fail("hu-1")
+    assert spawned == ["proxy-watch-hu-1"], f"one watcher throughout: {spawned}"
+    assert w.probed == ["hu-1"] * 3, f"confirm (bad), the new streak's confirm (bad), a recheck: {w.probed}"
+    assert [kw["down"] for _, kw in ev.seen] == [True, True, False, False, True, True, False, False], ev.seen
+    assert proxy_health.snapshot("hu-1")["state"] == "healthy" and not proxy_health._watchers
+
+
+def case_a_watcher_that_raises_releases_its_claim():
+    _registry()
+    spawned: list[str] = []
+    proxy_health.log.disabled = True   # its traceback, logged on purpose
+    try:
+        with _Watch() as w:
+            proxy_health._spawn = lambda fn, name: (spawned.append(name), fn())
+
+            def _boom(p, timeout_s=15):
+                raise RuntimeError("probe blew up")
+            proxies.probe = _boom
+            _fail("hu-1")
+            assert not proxy_health._watchers, "the dead watcher's claim is released"
+            _fail("hu-1", 1)
+    finally:
+        proxy_health.log.disabled = False
+    assert spawned == ["proxy-watch-hu-1"] * 2 and not w.probed, f"the next error starts another: {spawned}"
+
+
+def case_concurrent_errors_start_one_watcher_and_one_failover():
+    """Two errors at once at the DOWN_AFTER-th: `_step` claims the label under its lock, so exactly one
+    watcher is spawned; that watcher, run after the race with a probe that never answers, calls
+    failover_pool once at the first failover due point. The interleaving is forced, not hoped for: A's
+    claim (`_watchers.add`) starts B and holds until B is blocked on the lock (the claim is inside it: B
+    then sees the claim) or B's error is through (it is not: B decided before the claim and spawned a
+    second watcher). Measured red every run with `_watchers.add` moved out of the lock."""
+    import threading
+    real_lock, real_watchers, real_failover = proxy_health._lock, proxy_health._watchers, proxies.failover_pool
+    b_moved = threading.Event()   # B is blocked on the lock, or its whole error went through
+    racer: list[threading.Thread] = []
+
+    def _b():
+        proxy_health.record("hu-1", False, "CONNECT tunnel failed, response 403")
+        b_moved.set()
+
+    class _Lock:   # the real lock; tells A when B has to wait for it
+        def __enter__(self):
+            if not real_lock.acquire(blocking=False):
+                if racer and threading.current_thread() is racer[0]:
+                    b_moved.set()
+                real_lock.acquire()
+            return self
+
+        def __exit__(self, *_):
+            real_lock.release()
+
+    class _Claims(set):   # A's claim lets B race first
+        def add(self, label):
+            if not racer:
+                racer.append(threading.Thread(target=_b))
+                racer[0].start()
+                assert b_moved.wait(10), "B neither blocked on the lock nor got through"
+            super().add(label)
+
+    try:
+        _registry()
+        proxy_health._lock, proxy_health._watchers = _Lock(), _Claims()
+        spawned, failovers = [], []
+        proxies.failover_pool = lambda label, **_: failovers.append(label) or []
+        with _Events() as ev, _Watch(dead={"hu-1"}):
+            proxy_health._spawn = lambda fn, name: spawned.append((name, fn))
+            # the confirm's wait, two recheck waits (the 2nd failed recheck fails over), then it leaves
+            proxy_health._sleep = _then(None, None, None, lambda: proxies.remove("hu-1"))
+            _fail("hu-1", proxy_health_decide.DOWN_AFTER)   # A: its DOWN_AFTER-th error claims the label
+            assert racer, "A's claim did not go through _watchers.add under the lock: the race never ran"
+            racer[0].join(10)
+            assert not racer[0].is_alive()
+            assert [name for name, _ in spawned] == ["proxy-watch-hu-1"], f"one watcher for 2 racing errors: {spawned}"
+            assert proxy_health._state["hu-1"]["errors"] == proxy_health_decide.DOWN_AFTER + 1, \
+                "both racing errors counted"
+            assert proxy_health._watchers == {"hu-1"}
+            spawned[0][1]()
+        assert failovers == ["hu-1"], f"one failover: {failovers}"
+        assert ev.seen == [("proxy_switched", {"account_id": aid, "proxied": True, "down": True})
+                           for aid in ("101", "102")] + [
+            ("proxy_switched", {"account_id": aid, "proxied": False}) for aid in ("101", "102")
+        ], f"bad announced once, then the removal unbinds them; nothing else: {ev.seen}"
+        assert "hu-1" not in proxy_health._state and not proxy_health._watchers
+    finally:
+        proxy_health._lock, proxy_health._watchers = real_lock, real_watchers
+        proxies.failover_pool = real_failover
+
+
 def case_routes_carry_health():
     _registry()
     import server   # route functions called directly: no request user, the unauthed path
@@ -674,7 +884,7 @@ def case_accounts_list_flags_proxy_down():
     server._get_request_user = lambda: fake_user
     server.account_registry.list_accounts = lambda: [{"id": "101"}, {"id": "201"}]
     try:
-        proxy_health._state["hu-1"] = {**proxy_health._blank(), "down": True}
+        proxy_health._state["hu-1"] = {**proxy_health_decide.blank(), "down": True}
         out = asyncio.run(server.admin_accounts_list(Response()))
     finally:
         server._get_request_user, server.account_registry.list_accounts = real_user, real_list

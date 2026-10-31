@@ -6,6 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 
 import type { VaultMedia } from "@/lib/relay";
 import type { FanVaultHistoryResp } from "@/hooks/useFanVaultHistory";
@@ -356,6 +357,16 @@ const selectedText = () => screen.getByText(/items? selected$/).textContent;
 const confirmedIds = (onConfirm: ReturnType<typeof vi.fn>) =>
   onConfirm.mock.calls[0][0].map((m: VaultMedia) => m.id);
 
+/** The tiles preview on mouse/pen pointers, never touch (a touch tap is not a hover). */
+const hoverIn = (el: Element, pointerType = "mouse") => fireEvent.pointerEnter(el, { pointerType });
+const hoverOut = (el: Element) => fireEvent.pointerLeave(el, { pointerType: "mouse" });
+const scrubFrames = () => document.querySelectorAll('img[src^="/img/scrub?"]');
+const cancelSids = (f: ReturnType<typeof vi.fn>) =>
+  f.mock.calls
+    .map(([u]) => new URL(String(u), "http://x"))
+    .filter((u) => u.pathname === "/img/scrub/cancel")
+    .map((u) => u.searchParams.get("sid"));
+
 async function renderLoaded(onConfirm: (picked: VaultMedia[]) => void = () => {}) {
   renderPicker(null, onConfirm);
   await waitFor(() => expect(tiles()).toHaveLength(mediaReply.length));
@@ -367,14 +378,14 @@ describe("VaultPicker hover preview", () => {
     await renderLoaded();
     vi.useFakeTimers();
 
-    fireEvent.mouseEnter(tiles()[0]);
+    hoverIn(tiles()[0]);
     act(() => { vi.advanceTimersByTime(399); });
     expect(photoPreview()).toBeNull();
     act(() => { vi.advanceTimersByTime(1); });
     expect(photoPreview()).not.toBeNull();
     expect(photoPreview()!.getAttribute("src")).toContain(encodeURIComponent("https://cdn.example/7101-preview.jpg"));
 
-    fireEvent.mouseLeave(tiles()[0]);
+    hoverOut(tiles()[0]);
     expect(photoPreview()).toBeNull();
   });
 
@@ -383,7 +394,7 @@ describe("VaultPicker hover preview", () => {
     await renderLoaded();
     vi.useFakeTimers();
 
-    fireEvent.mouseEnter(tiles()[2]);
+    hoverIn(tiles()[2]);
     act(() => { vi.advanceTimersByTime(400); });
     expect(photoPreview()!.getAttribute("src")).toContain(encodeURIComponent("https://cdn.example/7103-thumb.jpg"));
     fireEvent.click(tiles()[2]);
@@ -392,8 +403,8 @@ describe("VaultPicker hover preview", () => {
     fireEvent.scroll(tiles()[2].closest(".overflow-y-auto")!);
     expect(photoPreview()).toBeNull();
 
-    fireEvent.mouseLeave(tiles()[2]);
-    fireEvent.mouseEnter(tiles()[0]);
+    hoverOut(tiles()[2]);
+    hoverIn(tiles()[0]);
     act(() => { vi.advanceTimersByTime(400); });
     expect(photoPreview()).not.toBeNull();
     fireEvent.keyDown(document, { key: "Escape" });
@@ -405,17 +416,144 @@ describe("VaultPicker hover preview", () => {
     mediaReply = HOVER_MEDIA;
     await renderLoaded();
     vi.useFakeTimers();
-    const scrubFrames = () => document.querySelectorAll('img[src^="/img/scrub?"]');
 
-    fireEvent.mouseEnter(tiles()[1]);
+    hoverIn(tiles()[1]);
     act(() => { vi.advanceTimersByTime(399); });
     expect(scrubFrames()).toHaveLength(0);
     act(() => { vi.advanceTimersByTime(1); });
     expect(scrubFrames()).toHaveLength(12);
     expect(photoPreview()).toBeNull();
 
-    fireEvent.mouseLeave(tiles()[1]);
+    hoverOut(tiles()[1]);
     expect(scrubFrames()).toHaveLength(0);
+  });
+
+  // The old frame-0 onError only cleared `hoverLoading`, which nothing read:
+  // a video with no OF posters kept the shimmer + countdown over its thumb
+  // for as long as the pointer stayed.
+  it("drops the build shimmer and falls back to the thumb when the storyboard's frame 0 fails", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response(null))));
+    mediaReply = HOVER_MEDIA;
+    await renderLoaded();
+    vi.useFakeTimers();
+    const shimmer = () => tiles()[1].querySelector(".scrub-shimmer");
+
+    hoverIn(tiles()[1]);
+    act(() => { vi.advanceTimersByTime(400); });
+    expect(shimmer()).not.toBeNull();
+    expect(within(tiles()[1]).getByText("7s")).toBeInTheDocument();
+
+    const frame0 = document.querySelector('img[src^="/img/scrub?"][src*="i=0"]')!;
+    fireEvent.error(frame0);
+    expect(shimmer()).toBeNull();
+    expect(within(tiles()[1]).queryByText(/^\d+s$|^…$/)).toBeNull();
+  });
+
+  // The picker stays mounted while closed, so no mouseleave ever ended the
+  // hover: no cancel, the slideshow kept beating, and a reopen replayed it.
+  it("closing the picker mid-hover cancels the build and a reopen starts clean", async () => {
+    const fetchMock = vi.fn((..._args: unknown[]) => Promise.resolve(new Response(null)));
+    vi.stubGlobal("fetch", fetchMock);
+    mediaReply = HOVER_MEDIA;
+    function Host() {
+      const [open, setOpen] = useState(true);
+      return (
+        <>
+          <button type="button" onClick={() => setOpen(true)}>reopen</button>
+          <VaultPicker open={open} onClose={() => setOpen(false)} accountId="acct-1" fanId={null}
+            initialSelectedIds={[]} onConfirm={() => {}} />
+        </>
+      );
+    }
+    renderWithProviders(<Host />);
+    await waitFor(() => expect(tiles()).toHaveLength(mediaReply.length));
+    vi.useFakeTimers();
+
+    hoverIn(tiles()[1]);
+    act(() => { vi.advanceTimersByTime(400); });
+    const sid = new URL(scrubFrames()[0].getAttribute("src")!, "http://x").searchParams.get("sid");
+    expect(sid).toBeTruthy();
+    expect(cancelSids(fetchMock)).toEqual([]);
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryAllByTitle(TILE_HINT)).toHaveLength(0);
+    expect(cancelSids(fetchMock)).toEqual([sid]);
+    act(() => { vi.advanceTimersByTime(2000); });
+    expect(cancelSids(fetchMock)).toEqual([sid]);
+
+    fireEvent.click(screen.getByRole("button", { name: "reopen" }));
+    expect(tiles()).toHaveLength(mediaReply.length);
+    expect(scrubFrames()).toHaveLength(0);
+  });
+
+  it("closing during the dwell never commits the preview", async () => {
+    const fetchMock = vi.fn((..._args: unknown[]) => Promise.resolve(new Response(null)));
+    vi.stubGlobal("fetch", fetchMock);
+    mediaReply = HOVER_MEDIA;
+    const view = renderPicker(null);
+    await waitFor(() => expect(tiles()).toHaveLength(mediaReply.length));
+    vi.useFakeTimers();
+
+    hoverIn(tiles()[1]);
+    act(() => { vi.advanceTimersByTime(200); });
+    view.rerender(<VaultPicker open={false} onClose={() => {}} accountId="acct-1" fanId={null} initialSelectedIds={[]} onConfirm={() => {}} />);
+    act(() => { vi.advanceTimersByTime(1000); });
+    view.rerender(<VaultPicker open onClose={() => {}} accountId="acct-1" fanId={null} initialSelectedIds={[]} onConfirm={() => {}} />);
+    expect(scrubFrames()).toHaveLength(0);
+    expect(cancelSids(fetchMock)).toEqual([]);
+  });
+
+  // Touch synthesises mouseenter on tap and no leave until the next tap
+  // elsewhere, so a tap used to commit a preview and a cold build.
+  it("a touch tap neither previews a video nor enlarges a photo", async () => {
+    mediaReply = HOVER_MEDIA;
+    await renderLoaded();
+    vi.useFakeTimers();
+
+    hoverIn(tiles()[1], "touch");
+    hoverIn(tiles()[0], "touch");
+    act(() => { vi.advanceTimersByTime(1000); });
+    expect(scrubFrames()).toHaveLength(0);
+    expect(photoPreview()).toBeNull();
+  });
+
+  // A DRM tile has no storyboard url: the poster decimal countdown must still
+  // tick (review N1) and stop once the first poster paints.
+  it("a DRM tile counts its poster ETA down until the first poster lands", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response(null))));
+    mediaReply = [{
+      id: 7104, type: "video", isReady: true, canView: true, duration: 30,
+      files: {
+        thumb: { url: "https://cdn.example/7104-thumb.jpg" },
+        preview: { url: "https://cdn.example/7104-p.jpg", options: [
+          { url: "https://cdn.example/7104-p0.jpg" }, { url: "https://cdn.example/7104-p1.jpg" },
+        ] },
+        drm: { manifest: { hls: "https://cdn.example/7104.m3u8" } },
+      },
+    } as VaultMedia];
+    await renderLoaded();
+    vi.useFakeTimers();
+
+    hoverIn(tiles()[0]);
+    act(() => { vi.advanceTimersByTime(400); });
+    expect(scrubFrames()).toHaveLength(0);
+    expect(within(tiles()[0]).getByText("2.5s")).toBeInTheDocument();
+    act(() => { vi.advanceTimersByTime(1000); });
+    expect(within(tiles()[0]).getByText("1.5s")).toBeInTheDocument();
+
+    fireEvent.load(document.querySelector('img[src*="/admin/vault-ai/poster?"]')!);
+    expect(within(tiles()[0]).queryByText(/^\d\.\ds$|^…$/)).toBeNull();
+  });
+
+  it("a pen hover previews a video like a mouse", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response(null))));
+    mediaReply = HOVER_MEDIA;
+    await renderLoaded();
+    vi.useFakeTimers();
+
+    hoverIn(tiles()[1], "pen");
+    act(() => { vi.advanceTimersByTime(400); });
+    expect(scrubFrames()).toHaveLength(12);
   });
 });
 

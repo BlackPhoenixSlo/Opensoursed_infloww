@@ -28,15 +28,19 @@ import { ConfirmDelete, EDITOR_MODAL, FieldLabel, SwitchRow, TABLE_EMPTY } from 
 import { cn } from "@/lib/utils";
 import { FunnelLaunchPanel } from "@/components/automations/FunnelLaunchPanel";
 import { FunnelMediaPane } from "@/components/automations/FunnelMediaPane";
+import { ImportCaptionsButton } from "@/components/compose/ImportCaptionsButton";
 import {
   useCreateFunnel,
   useDeleteFunnel,
   useFunnel,
   useFunnels,
   useUpdateFunnel,
-  type FunnelStep,
-  type PpvStep,
 } from "@/hooks/useFunnels";
+import {
+  editFunnel, EMPTY_FUNNEL, FUNNEL_RAW, funnelDraftOf, saveBody,
+  type DraftStep, type FunnelBody, type FunnelEdit,
+} from "@/lib/funnelDraft";
+import { canSubmit, useRawJson } from "@/lib/rawJsonReducer";
 import {
   useAutomationRules,
   useCreateRule,
@@ -49,139 +53,8 @@ import {
  *  disabled — so the tab surfaces & toggles it. Default cadence: every 2 min. */
 const WALKER_KIND = "reply_mass_funnel";
 const WALKER_EVERY_S = 120;
-
-// ── Local draft model (easy to edit; converted to/from wire FunnelStep) ──
-
-type StepKind = "reply" | "ppv";
-
-interface DraftStep {
-  kind: StepKind;
-  /** REPLY: poll cadence as a comma list of minutes (blank → executor default). */
-  intervals: string;
-  /** Message VARIANT pool (used when `generate` is off). */
-  messages: string[];
-  /** Generate the reply/copy with the AI instead of static messages. */
-  generate: boolean;
-  prompt: string;
-  // PPV only (media is per-account → FunnelMediaPane, not here):
-  price: string;
-  lockedText: boolean;
-  /** Step keys the typed form doesn't model (e.g. legacy in-step media, or a
-   *  field a raw-JSON edit added) — carried through toDraft→toWire so a
-   *  raw → typed → save round-trip never silently drops them. */
-  extra: Record<string, unknown>;
-}
-
-/** Step keys the typed editor owns (re-emitted by `toWire`) — everything else is
- *  stashed in `DraftStep.extra` and merged back on save. */
-const KNOWN_STEP_KEYS = new Set([
-  "type", "step", "messages", "generate", "prompt", "price",
-  "locked_text", "check_intervals_min",
-]);
-
-function blankStep(kind: StepKind): DraftStep {
-  return {
-    kind,
-    intervals: "",
-    messages: [""],
-    generate: false,
-    prompt: "",
-    price: kind === "ppv" ? "0" : "",
-    lockedText: false,
-    extra: {},
-  };
-}
-
-/** A wire step → editor draft. Keys the form doesn't model are preserved in
- *  `extra` so switching raw → typed → save is lossless. */
-function toDraft(step: FunnelStep): DraftStep {
-  const isPpv = step.type === "paid_ppv";
-  const msgs = Array.isArray(step.messages) ? step.messages.map(String) : [];
-  const hasStatic = msgs.some((m) => m.trim());
-  const generate = !hasStatic && Boolean(step.generate || (step.prompt && step.prompt.trim()));
-  const ivRaw = (step as { check_intervals_min?: number[] }).check_intervals_min;
-  const intervals = Array.isArray(ivRaw) ? ivRaw.join(", ") : "";
-  const ppv = step as PpvStep;
-  const extra: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(step)) {
-    if (!KNOWN_STEP_KEYS.has(k)) extra[k] = v;
-  }
-  return {
-    kind: isPpv ? "ppv" : "reply",
-    intervals,
-    messages: msgs.length ? msgs : [""],
-    generate,
-    prompt: step.prompt ?? "",
-    price: isPpv && typeof ppv.price === "number" ? String(ppv.price) : isPpv ? "0" : "",
-    lockedText: isPpv ? Boolean(ppv.locked_text) : false,
-    extra,
-  };
-}
-
-/** Parse a comma/space list of positive whole ints; throws on a bad token. */
-function parseIntervals(raw: string): number[] {
-  const parts = raw.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
-  const out: number[] = [];
-  for (const p of parts) {
-    const n = Number(p);
-    if (!Number.isInteger(n) || n <= 0) {
-      throw new Error(`interval "${p}" must be a positive whole number of minutes`);
-    }
-    out.push(n);
-  }
-  return out;
-}
-
-/** Draft → wire step (throws with a clear message on invalid input). */
-function toWire(d: DraftStep, idx: number): FunnelStep {
-  const label = `Step ${idx + 1}`;
-  const msgs = d.messages.map((m) => m.trim()).filter(Boolean);
-  const generated = d.generate;
-  if (!generated && msgs.length === 0) {
-    throw new Error(`${label} needs at least one message (or switch it to AI-generated).`);
-  }
-
-  if (d.kind === "ppv") {
-    // TEXT-ONLY: media is per-account (FunnelMediaPane), never written here.
-    const out: PpvStep = { step: idx + 1, type: "paid_ppv" };
-    const price = Number(d.price);
-    if (d.price.trim() !== "") {
-      if (!Number.isInteger(price) || price < 0) {
-        throw new Error(`${label} price must be a whole number ≥ 0.`);
-      }
-      out.price = price;
-    }
-    if (generated) {
-      out.generate = true;
-      if (d.prompt.trim()) out.prompt = d.prompt.trim();
-    } else {
-      out.messages = msgs;
-    }
-    if (d.lockedText) out.locked_text = true;
-    // Merge preserved unknown keys; the fields we set above win over `extra`.
-    return { ...d.extra, ...out } as FunnelStep;
-  }
-
-  // reply step
-  const out: ReplyWire = { step: idx + 1 };
-  const intervals = parseIntervals(d.intervals);
-  if (intervals.length) out.check_intervals_min = intervals;
-  if (generated) {
-    out.generate = true;
-    if (d.prompt.trim()) out.prompt = d.prompt.trim();
-  } else {
-    out.messages = msgs;
-  }
-  return { ...d.extra, ...out } as FunnelStep;
-}
-
-type ReplyWire = {
-  step: number;
-  check_intervals_min?: number[];
-  messages?: string[];
-  prompt?: string;
-  generate?: boolean;
-};
+/** reply_mass_funnel._step_texts: a static step sends its first 2 messages. */
+const FUNNEL_STEP_MSGS = 2;
 
 // ── Single-funnel editor ────────────────────────────────────────────────
 
@@ -199,151 +72,32 @@ export function FunnelEditor({
   const createM = useCreateFunnel();
   const updateM = useUpdateFunnel();
 
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [opening, setOpening] = useState("");
-  const [steps, setSteps] = useState<DraftStep[]>([]);
   const [seeded, setSeeded] = useState(!isEdit);
-  const [err, setErr] = useState<string | null>(null);
-  // Raw-JSON escape hatch: hand-edit the whole funnel body
-  // `{ name, opening_message, description, steps }` directly (paste steps, tweak
-  // a field the form doesn't expose). Server-side unknown keys pass through.
-  const [rawMode, setRawMode] = useState(false);
-  const [rawText, setRawText] = useState("");
+  // The draft + the raw-JSON escape hatch (lib/rawJsonReducer): hand-edit the
+  // whole funnel body `{ name, opening_message, description, steps }` (paste
+  // steps, tweak a field the form doesn't expose). Unknown step keys pass
+  // through; see lib/funnelDraft for how known keys and `step` numbers are kept.
+  const [draft, dispatch] = useRawJson(FUNNEL_RAW, () => EMPTY_FUNNEL);
+  const { name, description, opening, steps } = draft.value;
+  const edit = (e: FunnelEdit) => dispatch({ type: "update", fn: (d) => editFunnel(d, e) });
+  const fail = (error: string) => dispatch({ type: "fail", error });
 
   // Seed once from the loaded funnel (edit mode). Create mode starts blank.
   useEffect(() => {
     if (seeded || !fullQ.data) return;
-    setName(fullQ.data.name);
-    setDescription(fullQ.data.description ?? "");
-    setOpening(fullQ.data.opening_message);
-    setSteps((fullQ.data.steps ?? []).map(toDraft));
+    dispatch({ type: "set", value: funnelDraftOf(fullQ.data) });
     setSeeded(true);
-  }, [fullQ.data, seeded]);
+  }, [fullQ.data, seeded, dispatch]);
 
   const busy = createM.isPending || updateM.isPending;
 
-  function patchStep(i: number, patch: Partial<DraftStep>) {
-    setSteps((prev) => prev.map((s, idx) => (idx === i ? { ...s, ...patch } : s)));
-  }
-  function addStep(kind: StepKind) {
-    setSteps((prev) => [...prev, blankStep(kind)]);
-  }
-  function removeStep(i: number) {
-    setSteps((prev) => prev.filter((_, idx) => idx !== i));
-  }
-  function moveStep(i: number, dir: -1 | 1) {
-    setSteps((prev) => {
-      const j = i + dir;
-      if (j < 0 || j >= prev.length) return prev;
-      const next = prev.slice();
-      [next[i], next[j]] = [next[j], next[i]];
-      return next;
-    });
-  }
-  // Variant-pool helpers (mirrors PremadeForm's add/remove text-variant UX).
-  function patchMsg(i: number, mi: number, val: string) {
-    setSteps((prev) => prev.map((s, idx) =>
-      idx === i ? { ...s, messages: s.messages.map((m, k) => (k === mi ? val : m)) } : s));
-  }
-  function addMsg(i: number) {
-    setSteps((prev) => prev.map((s, idx) =>
-      idx === i ? { ...s, messages: [...s.messages, ""] } : s));
-  }
-  function removeMsg(i: number, mi: number) {
-    setSteps((prev) => prev.map((s, idx) =>
-      idx === i
-        ? { ...s, messages: s.messages.length <= 1 ? s.messages : s.messages.filter((_, k) => k !== mi) }
-        : s));
-  }
-
-  /** The funnel body from whichever mode is active (throws with a clear
-   *  message). Raw mode parses the textarea; typed mode wires the draft steps. */
-  function currentBody(): {
-    name: string;
-    opening_message: string;
-    description: string | null;
-    steps: FunnelStep[];
-  } {
-    if (rawMode) {
-      const t = rawText.trim();
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(t || "{}");
-      } catch (e) {
-        throw new Error(`Funnel is not valid JSON: ${(e as Error).message}`);
-      }
-      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-        throw new Error('Funnel must be a JSON object, e.g. { "name": "…", "opening_message": "…", "steps": [] }');
-      }
-      const o = parsed as Record<string, unknown>;
-      const nm = String(o.name ?? "").trim();
-      const op = String(o.opening_message ?? "").trim();
-      if (!nm) throw new Error("Name is required.");
-      if (!op) throw new Error("Opening message is required.");
-      const desc = o.description == null ? null : String(o.description).trim() || null;
-      const st = Array.isArray(o.steps) ? (o.steps as FunnelStep[]) : [];
-      return { name: nm, opening_message: op, description: desc, steps: st };
-    }
-    if (!name.trim()) throw new Error("Name is required.");
-    if (!opening.trim()) throw new Error("Opening message is required.");
-    const wireSteps = steps.map((s, i) => toWire(s, i));
-    return {
-      name: name.trim(),
-      opening_message: opening.trim(),
-      description: description.trim() || null,
-      steps: wireSteps,
-    };
-  }
-
-  /** Enter raw mode: seed the textarea from the current draft (wires steps). */
-  function enterRaw() {
-    let wireSteps: FunnelStep[];
-    try {
-      wireSteps = steps.map((s, i) => toWire(s, i));
-    } catch (e) {
-      setErr((e as Error).message);
-      return;
-    }
-    setRawText(
-      JSON.stringify(
-        {
-          name: name.trim(),
-          opening_message: opening.trim(),
-          description: description.trim() || null,
-          steps: wireSteps,
-        },
-        null,
-        2,
-      ),
-    );
-    setErr(null);
-    setRawMode(true);
-  }
-  /** Leave raw mode: parse the textarea back into the typed draft. */
-  function exitRaw() {
-    let body: ReturnType<typeof currentBody>;
-    try {
-      body = currentBody();
-    } catch (e) {
-      setErr((e as Error).message);
-      return;
-    }
-    setName(body.name);
-    setDescription(body.description ?? "");
-    setOpening(body.opening_message);
-    setSteps((body.steps ?? []).map(toDraft));
-    setRawMode(false);
-    setErr(null);
-  }
-
   async function save() {
-    setErr(null);
-    let body: ReturnType<typeof currentBody>;
+    if (!canSubmit(draft)) return; // the raw buffer's parse error is already shown
+    let body: FunnelBody;
     try {
-      body = currentBody();
+      body = saveBody(draft.value);
     } catch (e) {
-      return setErr((e as Error).message);
+      return fail((e as Error).message);
     }
     try {
       if (isEdit && funnelId != null) {
@@ -354,7 +108,7 @@ export function FunnelEditor({
       onSaved?.();
       onClose();
     } catch (e) {
-      setErr((e as Error)?.message || "Save failed");
+      fail((e as Error)?.message || "Save failed");
     }
   }
 
@@ -388,21 +142,18 @@ export function FunnelEditor({
       <div className="hidden justify-end md:flex">
         <button
           type="button"
-          onClick={() => (rawMode ? exitRaw() : enterRaw())}
+          onClick={() => dispatch({ type: draft.raw ? "close" : "open" })}
           className="text-[14px] text-accent hover:text-accent-hover"
         >
-          {rawMode ? "← Typed fields" : "Edit raw JSON →"}
+          {draft.raw ? "← Typed fields" : "Edit raw JSON →"}
         </button>
       </div>
 
-      {rawMode ? (
+      {draft.raw ? (
         <div className="space-y-2">
           <textarea
-            value={rawText}
-            onChange={(e) => {
-              setRawText(e.target.value);
-              if (err) setErr(null);
-            }}
+            value={draft.text}
+            onChange={(e) => dispatch({ type: "edit", text: e.target.value })}
             rows={16}
             spellCheck={false}
             className="w-full rounded-lg bg-bg border border-border text-[11px] font-mono px-2 py-1.5 text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
@@ -423,14 +174,14 @@ export function FunnelEditor({
       <div className="grid gap-4 sm:grid-cols-2">
         <div>
           <FieldLabel htmlFor="funnel-name">Name</FieldLabel>
-          <IfInput id="funnel-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. strokes" className="w-full" />
+          <IfInput id="funnel-name" value={name} onChange={(e) => edit({ type: "header", patch: { name: e.target.value } })} placeholder="e.g. strokes" className="w-full" />
         </div>
         <div>
           <FieldLabel htmlFor="funnel-description">Description (optional)</FieldLabel>
           <IfInput
             id="funnel-description"
             value={description}
-            onChange={(e) => setDescription(e.target.value)}
+            onChange={(e) => edit({ type: "header", patch: { description: e.target.value } })}
             placeholder="what this funnel is for"
             className="w-full"
           />
@@ -441,7 +192,7 @@ export function FunnelEditor({
         <textarea
           id="funnel-opening"
           value={opening}
-          onChange={(e) => setOpening(e.target.value)}
+          onChange={(e) => edit({ type: "header", patch: { opening: e.target.value } })}
           rows={3}
           placeholder="The first message sent to the audience (the funnel opener)…"
           className="w-full bg-bg border border-border rounded-md px-3 py-2 text-sm placeholder:text-muted focus:outline-none focus:border-accent resize-y"
@@ -465,20 +216,21 @@ export function FunnelEditor({
             index={i}
             total={steps.length}
             step={s}
-            onPatch={(patch) => patchStep(i, patch)}
-            onRemove={() => removeStep(i)}
-            onMove={(dir) => moveStep(i, dir)}
-            onMsgChange={(mi, v) => patchMsg(i, mi, v)}
-            onMsgAdd={() => addMsg(i)}
-            onMsgRemove={(mi) => removeMsg(i, mi)}
+            onPatch={(patch) => edit({ type: "patchStep", i, patch })}
+            onRemove={() => edit({ type: "removeStep", i })}
+            onMove={(dir) => edit({ type: "moveStep", i, dir })}
+            onMsgChange={(mi, text) => edit({ type: "patchMsg", i, mi, text })}
+            onMsgAdd={() => edit({ type: "addMsg", i })}
+            onMsgImport={(texts) => edit({ type: "addMsgs", i, texts })}
+            onMsgRemove={(mi) => edit({ type: "removeMsg", i, mi })}
           />
         ))}
 
         <div className="flex items-center gap-2">
-          <Button size="sm" variant="secondary" onClick={() => addStep("reply")}>
+          <Button size="sm" variant="secondary" onClick={() => edit({ type: "addStep", kind: "reply" })}>
             + Reply step
           </Button>
-          <Button size="sm" variant="secondary" onClick={() => addStep("ppv")}>
+          <Button size="sm" variant="secondary" onClick={() => edit({ type: "addStep", kind: "ppv" })}>
             + PPV step
           </Button>
         </div>
@@ -486,7 +238,7 @@ export function FunnelEditor({
       </>
       )}
 
-      {err && <div className="text-[12px] text-err whitespace-pre-wrap">{err}</div>}
+      {draft.error && <div className="text-[12px] text-err whitespace-pre-wrap">{draft.error}</div>}
 
       <p className="text-[12px] text-muted">
         PPV media is set per model — close this and use the{" "}
@@ -508,6 +260,7 @@ function StepCard({
   onMove,
   onMsgChange,
   onMsgAdd,
+  onMsgImport,
   onMsgRemove,
 }: {
   index: number;
@@ -518,6 +271,7 @@ function StepCard({
   onMove: (dir: -1 | 1) => void;
   onMsgChange: (mi: number, val: string) => void;
   onMsgAdd: () => void;
+  onMsgImport: (texts: string[]) => void;
   onMsgRemove: (mi: number) => void;
 }) {
   const isPpv = step.kind === "ppv";
@@ -557,19 +311,17 @@ function StepCard({
         <KindChip active={isPpv} onClick={() => onPatch({ kind: "ppv" })} label="Paid PPV" />
       </div>
 
-      {/* REPLY: poll intervals. */}
-      {!isPpv && (
-        <label className="block space-y-1">
-          <span className="text-[11px] text-fg-dim">
-            Check for a reply every <span className="opacity-60">(minutes, comma-separated; blank = default 2, 4, 10)</span>
-          </span>
-          <Input
-            value={step.intervals}
-            onChange={(e) => onPatch({ intervals: e.target.value })}
-            placeholder="2, 4, 10"
-          />
-        </label>
-      )}
+      {/* Poll intervals (the walker waits on a PPV step's cadence too). */}
+      <label className="block space-y-1">
+        <span className="text-[11px] text-fg-dim">
+          Check for a reply every <span className="opacity-60">(minutes, comma-separated; blank = default 2, 4, 10)</span>
+        </span>
+        <Input
+          value={step.intervals}
+          onChange={(e) => onPatch({ intervals: e.target.value })}
+          placeholder="2, 4, 10"
+        />
+      </label>
 
       {/* PPV: price + locked-text. MEDIA is per-model → set in the Media pane. */}
       {isPpv && (
@@ -581,7 +333,7 @@ function StepCard({
               min={0}
               value={step.price}
               onChange={(e) => onPatch({ price: e.target.value })}
-              placeholder="0"
+              placeholder="default $24"
             />
           </label>
           <div className="text-[11px] text-fg-dim italic">
@@ -647,13 +399,17 @@ function StepCard({
               )}
             </div>
           ))}
-          <button
-            type="button"
-            onClick={onMsgAdd}
-            className="text-[11px] text-accent hover:underline"
-          >
-            + add variant{step.messages.length > 1 ? ` (${step.messages.length})` : ""}
-          </button>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <button
+              type="button"
+              onClick={onMsgAdd}
+              className="text-[11px] text-accent hover:underline"
+            >
+              + add variant{step.messages.length > 1 ? ` (${step.messages.length})` : ""}
+            </button>
+            {/* reply_mass_funnel sends static messages[:2] only. */}
+            <ImportCaptionsButton current={step.messages} max={FUNNEL_STEP_MSGS} onImport={onMsgImport} />
+          </div>
         </div>
       )}
     </div>
@@ -855,7 +611,7 @@ export function MassFunnelsTab({ accountId, frame = inlineFrame }: {
                                   </IfButton>
                                 </div>
                               )}
-                              <FunnelLaunchPanel funnel={f} accountId={accountId} onClose={() => setLaunching(null)} />
+                              <FunnelLaunchPanel key={accountId ?? ""} funnel={f} accountId={accountId} onClose={() => setLaunching(null)} />
                             </>
                           )}
                           {mediaFor === f.id && (

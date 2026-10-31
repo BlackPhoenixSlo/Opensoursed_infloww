@@ -78,7 +78,7 @@ import asyncio
 import json
 import logging
 import random
-import re
+from collections import Counter
 from datetime import datetime, timedelta
 
 from sqlalchemy import select, update
@@ -100,31 +100,44 @@ from db.models import (
     MassRun, Message, ScheduledJob, SkipList,
 )
 from llm_client import LLMCapExceeded
-from ._common import (
-    BIO_CONSISTENCY_GUARDRAIL, nonempty,
+from ._prompt_rules import (
+    BIO_CONSISTENCY_GUARDRAIL,
     # PAINFUL_TEXTING / LIVE_PROOF_GUARDRAIL are NOT imported here: both vary by
     # creator voice, so this engine reads them off the `_voice.VoiceBlocks` bundle
-    # `load_voice_blocks` returns. `_common` still exports the female lane for the
-    # engines that have not been laned yet.
+    # `load_voice_blocks` returns. `_prompt_rules` still exports the female lane for
+    # the engines that have not been laned yet.
     NO_NARRATION_RULE, ONPLATFORM_GUARDRAIL,
-    load_voice_blocks,
     STYLE_3LINE, STYLE_BRIEF, STYLE_MAX_BUBBLES,
+)
+from ._textutil import is_substantive_msg, nonempty
+from ._style_flags import (
+    load_consistency_flags, load_factground_flag, load_nonnative_flags,
+    load_painful_texting_flag, load_spacing_flags, load_strip_emojis, load_style_flags,
+    load_typo_flags, load_voice_blocks,
+)
+from ._nonnative import (
     NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_spacing, apply_nonnative_style,
-    MSG_CLIP, TurnHandoff,                                # the welcome turn handoff, §C3
-    build_facts_note, build_structured_nickname, coerce_ids,
-    content_payer_fans,
-    facts_from_fan, hold_with_typing, apply_typo_throttle,
-    is_substantive_msg,
-    load_factground_flag, load_painful_texting_flag,
-    load_consistency_flags,
-    load_nonnative_flags, load_spacing_flags, load_strip_emojis, load_style_flags,
-    load_typing_indicator, load_typing_wpm, load_typo_flags, push_nick_and_notes,
-    quarantine_if_undeliverable, resolve_fan_name, resolve_model,
-    load_promo_spam_ids,
-    should_skip_muted_creator, skip_unreachable_fan,
-    typing_delay_seconds,
+)
+from ._inbound import (
+    TurnHandoff,                                          # the welcome turn handoff, §C3
     TURN_NEUTRAL_KINDS, _REACTION_TAG,
 )
+from ._fan_notes import build_facts_note, facts_from_fan, push_nick_and_notes
+from .names import build_structured_nickname, resolve_fan_name
+from ._knobs import coerce_ids
+from ._intent import content_payer_fans
+from ._typing_hold import (
+    hold_with_typing, load_typing_indicator, load_typing_wpm, typing_delay_seconds,
+)
+from ._typos import apply_typo_throttle
+from ._send_failure import quarantine_if_undeliverable, skip_unreachable_fan
+from ._model_pick import resolve_model
+from ._skiplist import load_promo_spam_ids, should_skip_muted_creator
+from ._bubbles import (  # the reply → bubbles splitter + history-line helpers (pure)
+    _TRAIL_EMOJI_RE, _dedupe_lead_reaction, _history_text, _looks_like_echo,
+    _strip_html, split_for_bubbles,
+)
+from . import wcfi_decide  # the per-fan eligibility verdict (pure); called as wcfi_decide.decide
 from ._wordfilter import (  # compliance word filter
     banned_hit_summary, filter_banned, load_banned_words,
 )
@@ -167,7 +180,6 @@ _HISTORY_TAIL = 20               # last N messages handed to the REPLY model. Th
 _EXTRACT_HISTORY_TAIL = 8        # the fact-extract call only needs to see what he
                                  # JUST said to catch a newly-stated fact — a short
                                  # tail keeps this second per-turn call cheap.
-_MSG_CLIP = MSG_CLIP             # clip each message body (shared with the handoff seam)
 _REPLY_MAX_CHARS = 600           # trim a runaway generation before sending
 # welcome_chatter_for_info is a LIVE chat — the generic 30-min W3 cooldown would make the bot
 # go silent and feel broken. Use a SHORT rest so back-and-forth stays snappy:
@@ -198,365 +210,6 @@ _BREATHER_VARIANTS = (
     "THIS MESSAGE: don't ask anything — tease him a lil, playful not mean.",
     "THIS MESSAGE: don't ask anything — react + a small thought of your own.",
 )
-
-# Emoji (with optional variation selector) + the LLM em-dash "tell".
-_EMOJI = "[\U0001F300-\U0001FAFF\U00002600-\U000027BF❤]️?"
-_EMOJI_RE = re.compile(_EMOJI)
-_TRAIL_EMOJI_RE = re.compile(_EMOJI + r"\s*$")
-_DASH_RE = re.compile(r"\s*[—–]\s*|\s*--\s*|\s+-\s+")  # em/en dash, --, spaced hyphen
-_DASH_CLEAN_RE = re.compile(r"\s*[—–]\s*")     # any residual em/en dash → ", "
-
-
-def _strip_dash(s: str) -> str:
-    """An em/en dash never belongs in a casual text (it's a dead LLM tell). Any
-    that survives a split is replaced with a comma so no bubble ever shows one."""
-    return _DASH_CLEAN_RE.sub(", ", s).strip().rstrip(",").strip()
-
-
-# Real texters break a thought into separate sends: a leading reaction, then the
-# statement, then the question. The model usually writes it as ONE line with
-# punctuation ("oof, restaurant life is brutal. how old are ya"), so in style mode
-# we split it ourselves on a leading interjection + sentence boundaries → up to 3
-# bubbles ("oof" / "restaurant life is brutal" / "how old are ya").
-_REACTIONS = (r"oo+f|lo+l|lma+o|omg|ha+ha+|hah|mm+|mhm+|ugh|hmm+|aw+|damn|stop|oh|yo|"
-              r"wait|bet|nice|fair|true|lowkey|ok|okay|yeah|yep|nah")
-# Peels a lead reaction that's FUSED into a longer line ("oof, restaurant..." →
-# "oof" + rest); requires trailing content, so it won't match a bare reaction.
-_LEAD_REACT_RE = re.compile(rf"^({_REACTIONS})\b[,!.]*\s+", re.I)
-# Matches the reaction word at the start whether or not anything follows — used to
-# fingerprint an opener (incl. a standalone "oof" bubble) for repeat-detection.
-_REACT_WORD_RE = re.compile(rf"^({_REACTIONS})\b", re.I)
-# Girl-style bubble breaks: a sentence boundary (the .?! is KEPT on the chunk), OR
-# a comma / dash-family marker where a real texter would hit send — the comma or
-# dash itself is CONSUMED so it never shows inside a bubble. Per the style spec
-# every comma is a bubble break ("no, i dont think so" → "no" / "i dont think so").
-_SENT_SPLIT_RE = re.compile(r"(?<=[.?!])\s+|\s*,\s*|\s*[—–]\s*|\s*--\s*|\s+-\s+")
-
-
-# When a chunk is STILL long after the comma/sentence split, break it further at a
-# mid emoji (the emoji is KEPT on the left bubble) or before a WH question word that
-# has enough lead-in. Short chunks pass through untouched (don't over-split a tiny
-# reply). "if the text is long, split at ? or emoji or when/who/what …"
-_WH_RE = re.compile(r"\b(what|whats|where|when|who|why|which|how)\b", re.I)
-_LONG_CHUNK = 40           # only emoji/WH-split a chunk longer than this many chars
-_WH_MIN_LEAD_WORDS = 4     # …and only before a WH-word with ≥ this many words before it
-
-
-def _split_emoji_wh(seg: str) -> list[str]:
-    """Break a LONG segment further: after a mid emoji (emoji KEPT on the left), or
-    before a WH question word with ≥ _WH_MIN_LEAD_WORDS words of lead-in. Recurses on
-    the remainder. A short segment — or one with no such break — passes through."""
-    seg = seg.strip()
-    if not seg:
-        return []
-    if len(seg) <= _LONG_CHUNK:
-        return [seg]
-    for m in _EMOJI_RE.finditer(seg):           # emoji with content after → split after it
-        before, after = seg[:m.end()].strip(), seg[m.end():].strip()
-        if before and after:
-            return [before] + _split_emoji_wh(after)
-    for m in _WH_RE.finditer(seg):              # a WH-word that opens a fresh clause
-        if m.start() == 0:
-            continue
-        before, after = seg[:m.start()].strip().rstrip(","), seg[m.start():].strip()
-        if before and after and len(before.split()) >= _WH_MIN_LEAD_WORDS:
-            return [before] + _split_emoji_wh(after)
-    return [seg]
-
-
-def _split_units(text: str) -> list[str]:
-    """Break ONE line into texting bubbles: split on every comma + sentence boundary
-    + dash (comma/dash CONSUMED, .?! KEPT), then break any still-LONG chunk further
-    at a mid emoji or WH word. A trailing '.' is dropped (casual). NO cap here — the
-    caller caps and merges overflow so nothing is ever dropped."""
-    out: list[str] = []
-    for chunk in _SENT_SPLIT_RE.split(text.strip()):
-        for sub in _split_emoji_wh(chunk):
-            if sub.endswith("."):
-                sub = sub[:-1].strip()
-            if sub:
-                out.append(sub)
-    return out
-
-
-def _cap_merge(parts: list[str], max_bubbles: int) -> list[str]:
-    """Cap the bubble count at max_bubbles WITHOUT dropping content — any overflow
-    merges into the last bubble."""
-    if len(parts) > max_bubbles:
-        return parts[:max_bubbles - 1] + [" ".join(parts[max_bubbles - 1:])]
-    return parts
-
-
-_HAS_WORD_RE = re.compile(r"[A-Za-z0-9]")
-
-
-def _merge_orphans(parts: list[str]) -> list[str]:
-    """A bubble with NO letters/digits (a stranded emoji or bare punctuation, e.g. a
-    trailing '😏' the sentence split peeled off after a '?') isn't a real text — glue
-    it onto the END of the previous bubble so we never send a lone '😏' bubble."""
-    out: list[str] = []
-    for p in parts:
-        if out and not _HAS_WORD_RE.search(p):
-            out[-1] = (out[-1] + " " + p).strip()
-        else:
-            out.append(p)
-    return out
-
-
-def _casual_join(parts: list[str]) -> str:
-    """Glue bubbles back into ONE casual line: a space after terminal punctuation
-    (so '...bbq? bold claim' not '...bbq?, bold claim'), a comma between plain
-    clauses (so a trailing vocative reads 'how old are you, jack')."""
-    out = (parts[0] or "").strip()
-    for p in parts[1:]:
-        p = (p or "").strip()
-        if not p:
-            continue
-        sep = " " if out.rstrip().endswith(("?", "!", ".", "…")) else ", "
-        out = out.rstrip() + sep + p
-    return out
-
-
-def _target_bubbles(words: int) -> int:
-    """How many bubbles a reply of `words` words SHOULD become — short stays on one
-    line, longer earns more, but it never explodes (13 words is 2-3 lines, NOT 5).
-    A real texter sends ~one short line per handful of words: 3 → 1, 5 → 2, 13 → 3."""
-    if words <= 4:
-        return 1
-    if words <= 9:
-        return 2
-    if words <= 15:
-        return 3
-    return 4
-
-
-def _group_to_target(units: list[str], target: int) -> list[str]:
-    """Merge the fine-grained `units` (every comma / clause break) down to `target`
-    bubbles by grouping CONTIGUOUS units into roughly equal runs — the extra units go
-    to the LAST groups, so a trailing vocative ('where are you from' + 'jack?') rejoins
-    instead of stranding. Joined casually (comma between clauses). Never drops content."""
-    n = len(units)
-    if target <= 1:
-        return [_casual_join(units)] if units else []
-    if target >= n:
-        return units
-    base, rem = divmod(n, target)
-    sizes = [base] * (target - rem) + [base + 1] * rem   # bigger groups at the end
-    out, i = [], 0
-    for s in sizes:
-        out.append(_casual_join(units[i:i + s]))
-        i += s
-    return out
-
-
-def _break_units(text: str) -> list[str]:
-    """Every candidate break in `text`, finest-grained: the model's own line breaks,
-    then commas / sentence boundaries / dash and (for a long chunk) emoji / WH-word,
-    with extra '?' de-marked.
-
-    ONE definition, because both callers need the identical decomposition and only
-    disagree about how far to re-merge it — style mode groups to a rolled target,
-    the one-bubble return joins all the way down to a single line. Written twice, a
-    later step added to one path would silently not exist in the other, and the path
-    that diverged would be the return-from-silence one: the hardest to spot in
-    production and the one this whole change exists to get right."""
-    units: list[str] = []
-    for line in text.split("\n"):
-        units.extend(_split_units(line))
-    return _cap_one_question(_merge_orphans(units))
-
-
-# Per-reply split STRATEGY — a randomiser so replies don't all chop the same way:
-#   length : bubble count tracks word count (the sweet spot; see _target_bubbles).
-#   clause : split at (nearly) every comma / clause — a rapid multi-text burst.
-#   terse  : one or two bubbles — a short, clipped reply.
-# Weighted toward `length`; `clause`/`terse` add variety. Seeded per reply (off the
-# text) so a given reply is stable, but different replies vary.
-_SPLIT_STRATEGIES = ("length", "clause", "terse")
-_SPLIT_WEIGHTS = (58, 22, 20)
-
-
-def _strategy_target(parts: list[str], max_bubbles: int, rng) -> int:
-    """Roll a split strategy and return the bubble-count target for it (clamped to
-    [1, min(max_bubbles, len(parts))] — never invents a break, never drops one)."""
-    n = max(1, len(parts))
-    strat = rng.choices(_SPLIT_STRATEGIES, weights=_SPLIT_WEIGHTS)[0]
-    if strat == "clause":                 # split at (nearly) every clause/comma
-        target = n
-    elif strat == "terse":                # a short, clipped reply
-        target = min(2, n)
-    else:                                 # length: count tracks word count (default)
-        target = _target_bubbles(sum(len(p.split()) for p in parts))
-    return max(1, min(target, max_bubbles, n))
-
-
-def _split_sentences(text: str, max_bubbles: int) -> list[str]:
-    """One line → bubbles (see _split_units), capped at max_bubbles (overflow merges
-    into the last; nothing dropped). The single-line entry point used in tests;
-    split_for_bubbles walks newline-separated lines through _split_units directly."""
-    return _cap_merge(_merge_orphans(_split_units(text)), max_bubbles)
-
-
-_QMARK_TAIL_RE = re.compile(r"\s*\?+\s*$")
-
-
-def _cap_one_question(parts: list[str]) -> list[str]:
-    """At most ONE question MARK across the bubbles — two '?' in a reply is a bot
-    tell ('whats ur job? u gonna spill?'). Keep the '?' on the LAST question bubble
-    (usually the real ask) and strip it from any earlier question bubble. NEVER drop
-    a bubble — that loses the message: 'oh yeah? ... how old r u?' keeps both bubbles,
-    only the last stays a question ('oh yeah' / '... how old r u?')."""
-    q_idx = [i for i, p in enumerate(parts) if p.rstrip().endswith("?")]
-    if len(q_idx) <= 1:
-        return parts
-    keep = q_idx[-1]
-    return [(_QMARK_TAIL_RE.sub("", p) if (i in q_idx and i != keep) else p)
-            for i, p in enumerate(parts)]
-
-
-def _react_token(s: str) -> str | None:
-    """The normalized leading reaction word of a bubble, or None if it doesn't open
-    with one. Repeated letters collapse so 'oof'/'oooof' and 'lol'/'lolll' map
-    together (so we catch the same opener even when the model stretches it)."""
-    m = _REACT_WORD_RE.match((s or "").strip())
-    if not m:
-        return None
-    return re.sub(r"(.)\1+", r"\1", m.group(1).lower())
-
-
-def _dedupe_lead_reaction(parts: list[str], recent_out: list[str]) -> list[str]:
-    """Kill the 'oof every message' tell: if this reply opens with the same reaction
-    word the bot just used in its last couple of sends, drop that lead — either the
-    standalone reaction bubble, or the leading word when it's fused into one line.
-    Never empties the reply (a lone reaction with nothing after is left alone)."""
-    if not parts:
-        return parts
-    recent = {t for b in recent_out[-3:] if (t := _react_token(b))}
-    if not recent:
-        return parts
-    tok = _react_token(parts[0])
-    if not tok or tok not in recent:
-        return parts
-    if len(parts) > 1:
-        return parts[1:]                              # drop the standalone "oof"
-    m = _LEAD_REACT_RE.match(parts[0].strip())        # fused → strip just the opener
-    rest = parts[0].strip()[m.end():].strip() if m else ""
-    return [rest] if rest else parts
-
-
-def split_for_bubbles(text: str, max_bubbles: int = 2, rng=None,
-                      force_single: bool = False) -> list[str]:
-    """Make one generated reply read like real texting, and NO em-dash ever survives
-    (every return path runs _strip_dash). Content is NEVER dropped:
-
-      • style mode (max_bubbles ≥ 3) → walk the model's OWN line breaks, then split
-        each line on commas + sentence boundaries + dash + (for a long chunk) emoji /
-        WH word. A per-reply STRATEGY randomiser (_strategy_target) then picks the
-        bubble count — length-based / split-every-clause / terse — so replies don't
-        all chop the same way.
-      • non-style (cap 2) → the model's two-line style, else a single dash / a
-        MID-LINE emoji break (2/3 of the time), else a trailing-emoji drop (1/3).
-
-    EVERY random draw on both paths goes through `rng`, so passing one seeded off
-    the reply (the senders use `Random(f"split:{fan_id}:{raw}")`) makes the split
-    stable — the same draft re-run after a retry bubbles the same way.
-    """
-    _rng = rng if rng is not None else random
-    text = text.strip()
-    # ── ONE BUBBLE, whatever the reply weighs. The caller sets this when she is
-    # answering after a real silence: measured against the same accounts' human
-    # chatters, a human returns single-bubble ~64% of the time at EVERY gap length
-    # from two minutes to two days — flat — while ours goes the other way, 31.9%
-    # single at <2min falling to 14.7% at 30min-2h. The longer we had been quiet the
-    # more we said on arrival, which is a compounding tell: the gap reads as a person
-    # and the wall of text that ends it reads as a queue being drained.
-    #
-    # Deliberately NOT `max_bubbles=1`: that would fall out of style mode into the
-    # non-style path, whose `[:max_bubbles]` TRUNCATES and would drop content. This
-    # merges instead — `_group_to_target(..., 1)` casually joins every unit, so a
-    # one-bubble reply says everything the multi-bubble one would have.
-    if force_single and text:
-        units = _break_units(text)
-        return [_strip_dash(_casual_join(units) if units else text)]
-    if max_bubbles >= 3:                         # STYLE MODE
-        parts = _break_units(text)
-        parts = _group_to_target(parts, _strategy_target(parts, max_bubbles, _rng))
-        if parts:
-            return [_strip_dash(p) for p in parts]
-    if "\n" in text:                            # non-style: the model's two-line style
-        parts = [p.strip() for p in text.split("\n") if p.strip()][:max_bubbles]
-        return [_strip_dash(p) for p in parts] or [_strip_dash(text)]
-    dm = _DASH_RE.search(text)
-    if dm:
-        before, after = text[:dm.start()].strip(), text[dm.end():].strip()
-        if before and after:
-            return [_strip_dash(before), _strip_dash(after)]
-    if _rng.random() < (2.0 / 3.0):
-        for m in _EMOJI_RE.finditer(text):
-            after = text[m.end():].strip()
-            if not after:                       # trailing emoji → not a mid-break
-                continue
-            before = text[:m.end()].strip()     # keep the emoji on bubble 1…
-            if _rng.random() < 0.5:
-                before = text[:m.start()].strip()   # …but drop it half the time
-            if before:
-                return [_strip_dash(before), _strip_dash(after)]
-    if _rng.random() < (1.0 / 3.0):
-        stripped = _TRAIL_EMOJI_RE.sub("", text).strip()
-        if stripped and stripped != text:
-            return [_strip_dash(stripped)]
-    return [_strip_dash(text)]
-
-
-_ECHO_NORM_RE = re.compile(r"[^a-z0-9]+")
-
-
-def _norm_echo(s: str) -> str:
-    return _ECHO_NORM_RE.sub("", (s or "").lower())
-
-
-def _looks_like_echo(part: str, last_in: str) -> bool:
-    """True if `part` just parrots the fan's last message (verbatim or near-so).
-    A small-model degeneracy the humanizer can trigger ('FAN: x' → 'YOU: x'). The
-    12-char floor keeps legit short reactions (lol / haha / u up) from tripping."""
-    a, b = _norm_echo(part), _norm_echo(last_in)
-    if len(a) < 12 or len(b) < 12:
-        return False
-    if a == b:
-        return True
-    lo, hi = (a, b) if len(a) <= len(b) else (b, a)
-    return lo in hi and len(lo) / len(hi) >= 0.7
-
-
-_HTML_OPEN = "<"
-_TAG_RE = re.compile(r"<[^>]+>")
-
-
-# ── Text helpers (local copies — house pattern) ──────────────────────
-
-def _strip_html(s: str | None) -> str:
-    if not s:
-        return ""
-    if _HTML_OPEN not in s:
-        return s.strip()
-    return _TAG_RE.sub("", s).strip()
-
-
-def _history_text(direction: str, body: str | None, image_desc: str | None) -> str:
-    """One message row → the history line the reply-LLM reads. Canonical for BOTH
-    _gather builders. Inbound media we described at ingest
-    rides in as "[he sent: …]" so the AI can rate / react to it — and so a media-only
-    DM (empty body) stops being an invisible blank turn.
-
-    The tag says "he sent", not "photo he sent": the same column also carries the
-    free Giphy read ("an animated gif: …"), and naming the medium twice is how the
-    bot ends up calling a reaction gif a nice pic. The description itself says what
-    the thing is."""
-    text = _strip_html(body)[:_MSG_CLIP]
-    if direction == "in" and image_desc:
-        tag = f"[he sent: {image_desc}]"
-        text = f"{text} {tag}" if text else tag
-    return text
 
 
 def _is_info_complete(f: Fan) -> bool:
@@ -633,7 +286,7 @@ class _Candidate:
         # send_welcome's turn handoff — his newest WORDED inbound (distinct from
         # `last_in_body`, his newest inbound of ANY kind) and whether anything
         # but a welcome bubble has answered him since. The whole seam is
-        # `_common.TurnHandoff`; this lane only feeds it rows and asks `admit`.
+        # `_inbound.TurnHandoff`; this lane only feeds it rows and asks `admit`.
         # Every non-welcome outbound narrows the window, blasts included — this
         # lane's turn gate is already blast-blind, so a handoff cancelled by a
         # mass send just degrades to today's behaviour (he waits for his own
@@ -1144,7 +797,7 @@ def _build_messages(persona: str, f: Fan, c: _Candidate,
         f"STYLE FOR THIS MESSAGE — {style}\n\n"
         # The age here is the VOICE (text young and casual), not a claim about
         # her — derived from the persona so a 49yo persona isn't told to text
-        # like a 22-year-old. See _common.persona_register_age.
+        # like a 22-year-old. See _persona.persona_register_age.
         f"HOW YOU TEXT (a real {persona_register_age(persona)}yo {v.texter_noun}, "
         "not an assistant):\n"
         "- short and casual: lowercase, u/ur/ya. react to what he said first.\n"
@@ -1694,7 +1347,7 @@ async def _maybe_refresh_profile(account_id: str, fan_id: int, fan_msg_n: int,
 
 async def _pause_fan(account_id: str, fan_id: int, until: datetime) -> None:
     """Set automation_paused_until so the no-id send isn't re-replied next tick
-    (the no-id send contract — see automations/_common.py).
+    (the no-id send contract — see automations/_send_failure.py).
 
     UPSERT, not UPDATE: candidates come from the messages table, so an eligible
     fan may have NO Fan row yet (gather builds a transient one) — a plain UPDATE
@@ -1712,6 +1365,30 @@ async def _pause_fan(account_id: str, fan_id: int, until: datetime) -> None:
                 set_={"automation_paused_until": until, "updated_at": datetime.utcnow()},
             )
         )
+
+
+def _snapshot_of(c: _Candidate, f: Fan | None, *, now: datetime, handoff: bool,
+                 listed: bool, mid_funnel: bool, forced: bool, promo_spam: bool,
+                 content_payer: bool, max_fan_messages: int,
+                 closing_set: bool) -> wcfi_decide.FanSnapshot:
+    """One fan's gate inputs for `wcfi_decide.decide`, pure (no I/O). No Fan row reads
+    as unpaused, not muted, gather not done, no closing PPV due — decide skips the
+    row gates for him anyway."""
+    paused = muted = gather_done = closing_due = False
+    if f is not None:
+        try:
+            asked = set(json.loads(f.questions_asked or "[]"))
+        except Exception:
+            asked = set()
+        paused = bool(f.automation_paused_until and f.automation_paused_until > now)
+        muted = should_skip_muted_creator(f)
+        gather_done = _gather_done(f, asked)
+        closing_due = closing_set and f.gather_close_at is None
+    return wcfi_decide.FanSnapshot(
+        listed=listed, mid_funnel=mid_funnel, forced=forced, his_turn=c.last_dir == "in",
+        handoff=handoff, has_fan_row=f is not None, paused=paused, muted_creator=muted,
+        promo_spam=promo_spam, content_payer=content_payer, gather_done=gather_done,
+        fan_msg_n=c.fan_msg_n, max_fan_messages=max_fan_messages, closing_due=closing_due)
 
 
 # ── The automation ───────────────────────────────────────────────────
@@ -1835,91 +1512,35 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
     now = datetime.utcnow()
     candidates: list[_Candidate] = []
-    skipped_listed = 0      # blacklist / skip_list / paused
-    skipped_not_turn = 0    # we (or nobody) spoke last
-    turn_handoffs = 0       # …admitted anyway: a welcome bubble ate his reply
-    skipped_spam = 0        # promo-spam: creator_we_follow + $0 + no exchange + blasted
-    skipped_muted_creator = 0  # muted creator we follow — HARD skip (durable)
-    newly_skiplisted = 0    # spent / too_long / info this tick
+    # turn_handoffs = a welcome bubble ate his reply; newly_skiplisted also counts
+    # the send loop's too_long / info.
+    skips: Counter[str] = Counter(dict.fromkeys(wcfi_decide.COUNTERS, 0))
 
     for fan_id, c in by_fan.items():
-        forced = fan_id in force_ids
-        if fan_id in blacklist or fan_id in skip_list:
-            skipped_listed += 1
-            continue
-        # W7: a fan mid-funnel is owned by reply_mass_funnel across its 2–10 min
-        # step waits — don't interleave it here (force_ids can still override).
-        if fan_id in mid_funnel_fans and not forced:
-            skipped_listed += 1
-            continue
-        # send_welcome's handoff (§C3): when its own welcome bubble is WHY we
-        # spoke last, the candidate is REWRITTEN to the truth the job asserts —
-        # he spoke last, and this is what he said. Asked regardless of
-        # `last_dir`: a newer wordless row already makes it his turn, but the
-        # prompt below reads `last_body` as his line and would be handed `''`
-        # or "[he sent: …]" instead of his words (`TurnHandoff.admit`).
+        # send_welcome's handoff (§C3): asked regardless of `last_dir` — the prompt
+        # reads `last_body` as his line (`TurnHandoff.admit`). The gates are
+        # wcfi_decide's (see its docstring for the WHY of each).
         his_words = c.turn.admit(fan_id, turn_handoff_ids)
-        if his_words is not None:
+        v = wcfi_decide.decide(_snapshot_of(
+            c, fans.get(fan_id), now=now, handoff=his_words is not None,
+            listed=fan_id in blacklist or fan_id in skip_list,
+            mid_funnel=fan_id in mid_funnel_fans, forced=fan_id in force_ids,
+            promo_spam=fan_id in promo_spam, content_payer=fan_id in content_payers,
+            max_fan_messages=max_fan_messages, closing_set=closing is not None))
+        if v.handoff_admitted:  # rewritten to the truth: he spoke last, these words
             c.last_dir, c.last_body = "in", his_words
-            turn_handoffs += 1
-        # Only answer when the fan spoke last (the "You: " sidebar skip).
-        elif c.last_dir != "in":
-            skipped_not_turn += 1
+            skips["turn_handoffs"] += 1
+        if isinstance(v, wcfi_decide.Skip):
+            if v.durable:   # spent / too_long — persisted so he stays out
+                await _skip_and_collect(account_id, fan_id, v.reason)
+            skips[wcfi_decide.STAT[v.reason]] += 1
             continue
-        f = fans.get(fan_id)
-        if f is not None and f.automation_paused_until and f.automation_paused_until > now:
-            skipped_listed += 1
-            continue
-        # Muted creator we follow — a HARD skip even when forced (the scrape also
-        # writes a durable skip_list('muted_creator'); this catches the window
-        # before that lands). Mutual-promo spam we never want to message.
-        if should_skip_muted_creator(f):
-            skipped_muted_creator += 1
-            continue
-
-        if not forced and f is not None:
-            # Promo-spam guard: peer creators who blast the inbox (mutual-promo
-            # spam — the founder problem). The old test was `creator_we_follow` + $0,
-            # on the belief that "real fans are NEVER this value". That was wrong —
-            # the flag only means OF says we're subscribed to THEM, which is true of
-            # any fan a free page followed back, and it silenced 71 real fans on one
-            # account for five weeks. load_promo_spam_ids() now demands actual promo
-            # evidence too. REVERSIBLE skip (no skip_list / gen_info write) — if they
-            # ever spend or we get a real exchange, the next tick reconsiders them.
-            if fan_id in promo_spam:
-                skipped_spam += 1
-                continue
-            # He bought CONTENT → he is a customer, the gather is over. A
-            # SUBSCRIPTION is not a purchase and no longer graduates him: paying to
-            # get in the door is what makes him ours to work, not what ends it.
-            if fan_id in content_payers:
-                await _skip_and_collect(account_id, fan_id, "spent")
-                newly_skiplisted += 1
-                continue
-            # Once every topic is either filled or asked to its cap, the GATHER is
-            # over and the fan moves on to the gen_info openers (the deepen phase,
-            # below in the send loop). Nothing is handed to another automation.
-            try:
-                asked_f = set(json.loads(f.questions_asked or "[]"))
-            except Exception:
-                asked_f = set()
-            # The runaway cutoff bounds the GATHER, not the conversation. A fan who
-            # has finished answering is not "too long" — he is exactly the fan the
-            # openers were mined for, and applying this to him is what kept the
-            # deepen phase unreachable (368 fans cut by too_long against 21 who ever
-            # completed the gather).
-            if not _gather_done(f, asked_f) and c.fan_msg_n >= max_fan_messages:
-                if closing is not None and f.gather_close_at is None:
-                    # The cut is DEFERRED to the send loop, under the fan lease,
-                    # so his last message from this lane can be the closing PPV.
-                    # The `too_long` row lands the tick he is processed; a fan the
-                    # reply budget postpones is simply re-marked next tick.
-                    c.closing_cut = True
-                    candidates.append(c)
-                    continue
-                await _skip_and_collect(account_id, fan_id, "too_long")
-                newly_skiplisted += 1
-                continue
+        if isinstance(v, wcfi_decide.ClosePpv):
+            # The cut is DEFERRED to the send loop, under the fan lease, so his
+            # last message from this lane can be the closing PPV. The `too_long`
+            # row lands the tick he is processed; a fan the reply budget
+            # postpones is simply re-marked next tick.
+            c.closing_cut = True
         candidates.append(c)
 
     # Deterministic order; most-recent-talkers first via inbound volume.
@@ -1992,7 +1613,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             if c.closing_cut:
                 if not await _close_with_ppv(fan_id):
                     await _skip_and_collect(account_id, fan_id, "too_long")
-                    newly_skiplisted += 1
+                    skips["newly_skiplisted"] += 1
                 continue  # finally releases the lease
             # Inline fact fill (V1): save the facts he just stated BEFORE replying,
             # so age/job/location land this turn. Cap → stop the run cleanly.
@@ -2040,7 +1661,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     if await _close_with_ppv(fan_id):
                         continue  # dry-run preview: he stays in the lane
                     await _graduate(client, account_id, fan_id, f)
-                    newly_skiplisted += 1
+                    skips["newly_skiplisted"] += 1
                     continue  # finally releases the lease
             # Per-fan language: a manual pin or gen_info detection on this fan
             # (fans.language) overrides the account default; unset → account default.
@@ -2352,12 +1973,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         "replies_sent": sent,
         "stickers_sent": stickers_sent,
         "closing_ppvs_sent": closing_ppvs_sent,
-        "skipped_listed": skipped_listed,
-        "skipped_not_turn": skipped_not_turn,
-        "turn_handoffs": turn_handoffs,
-        "skipped_spam": skipped_spam,
-        "skipped_muted_creator": skipped_muted_creator,
-        "newly_skiplisted": newly_skiplisted,
+        **skips,
         "skipped_locked": skipped_locked,
         "skipped_cooldown": skipped_cooldown,
         "skipped_banned": skipped_banned,

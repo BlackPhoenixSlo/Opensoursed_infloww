@@ -36,9 +36,8 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 
-import { wipeIdentityStorage } from "@/contexts/UserContext";
+import { clearIdentityMemory, wipeIdentityStorage } from "@/contexts/UserContext";
 import { chatterAccountsQuery } from "@/lib/chatterAccounts";
-import { clearSendStash } from "@/lib/sendStash";
 import { authError, isTwoFactorChallenge, TwoFactorRequired, type TwoFactorChallenge } from "@/lib/twoFactor";
 
 export interface ChatterOwnerAccountDTO {
@@ -86,6 +85,9 @@ interface ChatterContextValue {
   groupedAccounts: ChatterOwnerDTO[];
   /** True until the first /chatter/me fetch resolves — gate render with this. */
   loading: boolean;
+  /** Drop the cached answer and ask /chatter/me again; `loading` covers the
+   *  refetch (the gate's Retry: a cached null may be an outage's). */
+  reprobe: () => void;
   /** Sign in with a username/password. Throws Error on 4xx. */
   login: (username: string, password: string) => Promise<ChatterMeDTO>;
   /** Sign up + auto-link via an owner-issued invite token. */
@@ -143,8 +145,8 @@ function wipeNonChatterCaches(queryClient: ReturnType<typeof useQueryClient>) {
       },
     });
   } catch { /* ignore */ }
-  // Unsent messages (a send waiting on its files) are the previous identity's.
-  clearSendStash();
+  // Unsent messages and refused schedules are the previous identity's.
+  clearIdentityMemory();
   // Wipe identity-bound localStorage + sessionStorage. Shared helper with
   // UserContext so both principals get the same aggressive sweep.
   void wipeIdentityStorage();
@@ -183,6 +185,11 @@ export function ChatterProvider({ children }: { children: React.ReactNode }) {
   const accounts = accountsQ.data ?? [];
   const chatter = meQ.data ?? null;
   const groupedAccounts = chatter?.owners ?? [];
+
+  // A reset (not an invalidate): with no data left, `isLoading` holds until it answers.
+  const reprobe = useCallback(() => {
+    void queryClient.resetQueries({ queryKey: ["chatter", "self"], exact: true });
+  }, [queryClient]);
 
   const login = useCallback(async (username: string, password: string) => {
     const dto = await postJSON<ChatterMeDTO | TwoFactorChallenge>("/chatter/login", { username, password });
@@ -239,10 +246,11 @@ export function ChatterProvider({ children }: { children: React.ReactNode }) {
     accounts,
     groupedAccounts,
     loading: meQ.isLoading,
+    reprobe,
     login,
     register,
     logout,
-  }), [chatter, accounts, groupedAccounts, meQ.isLoading, login, register, logout]);
+  }), [chatter, accounts, groupedAccounts, meQ.isLoading, reprobe, login, register, logout]);
 
   return <ChatterContext.Provider value={value}>{children}</ChatterContext.Provider>;
 }

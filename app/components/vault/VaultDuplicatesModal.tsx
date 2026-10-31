@@ -21,7 +21,7 @@
  * a stale selection in this UI can never remove the keeper.
  */
 
-import { useMemo, useState } from "react";
+import { useMemo, useReducer } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import {
@@ -30,8 +30,16 @@ import {
   useDuplicates,
   type DupeCluster,
   type DupeMember,
-  type HideDupesResult,
 } from "@/hooks/useVaultCache";
+
+import {
+  allOff,
+  doneText,
+  duplicatesReducer,
+  hidePayload,
+  initialDupesState,
+  selectedIdsOf,
+} from "./duplicatesReducer";
 
 const BAND_STYLE: Record<string, string> = {
   identical: "border-ok/50 bg-ok/10 text-ok",
@@ -131,13 +139,11 @@ export default function VaultDuplicatesModal({
   onClose: () => void;
 }) {
   const qc = useQueryClient();
-  const [threshold, setThreshold] = useState(2);
-  const [deselected, setDeselected] = useState<Set<number>>(new Set());
-  const [confirming, setConfirming] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
-  const [error, setError] = useState<string>("");
-  const [result, setResult] = useState<HideDupesResult | null>(null);
+  const [state, dispatch] = useReducer(duplicatesReducer, undefined, initialDupesState);
+  const { threshold, deselected, phase } = state;
+  const busy = phase.kind === "hiding";
+  const done = phase.kind === "done" ? phase : null;
+  const error = phase.kind === "error" ? phase.msg : "";
 
   const scan = useDuplicates(accountId, threshold, true);
   const clusters: DupeCluster[] = useMemo(
@@ -148,66 +154,40 @@ export default function VaultDuplicatesModal({
   // Everything is a candidate unless the operator explicitly unticked it, so
   // the default action is the safe-by-measurement one and un-checking is the
   // deliberate act.
-  const selectedIds = useMemo(() => {
-    const out: number[] = [];
-    for (const c of clusters) {
-      for (const d of c.dupes) if (!deselected.has(d.media_id)) out.push(d.media_id);
-    }
-    return out;
-  }, [clusters, deselected]);
+  const selectedIds = useMemo(
+    () => selectedIdsOf(clusters, deselected),
+    [clusters, deselected],
+  );
 
-  const toggle = (id: number) =>
-    setDeselected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-
-  const toggleSet = (c: DupeCluster) => {
-    const ids = c.dupes.map((d) => d.media_id);
-    const allOff = ids.every((i) => deselected.has(i));
-    setDeselected((prev) => {
-      const next = new Set(prev);
-      for (const i of ids) {
-        if (allOff) next.delete(i);
-        else next.add(i);
-      }
-      return next;
-    });
-  };
-
+  // Sends the ids + threshold frozen at confirm — never the live selection.
   async function doHide() {
-    setBusy(true);
-    setError("");
-    setProgress({ done: 0, total: selectedIds.length });
+    const payload = hidePayload(state);
+    if (!payload) return;
+    dispatch({ type: "hideStart" });
     try {
-      const res = await hideDuplicates(accountId, selectedIds, {
-        threshold,
-        onProgress: (done, total) => setProgress({ done, total }),
+      const res = await hideDuplicates(accountId, payload.ids, {
+        threshold: payload.threshold,
+        onProgress: (done) => dispatch({ type: "progress", done }),
       });
-      setResult(res);
-      setConfirming(false);
-      if (res.of_error) setError(`OnlyFans rejected a batch: ${res.of_error}`);
-      // The mirror rows are gone — refresh the grid, the counts and the scan.
+      dispatch({ type: "hideOk", result: res });
+    } catch (e) {
+      dispatch({ type: "hideFail", msg: e instanceof Error ? e.message : String(e) });
+      // eslint-disable-next-line no-console
+      console.error("hide duplicates failed", e);
+    } finally {
+      // Refresh the grid, the counts and the scan — also after a failed later
+      // batch, since the earlier batches ARE gone from OF.
       qc.invalidateQueries({ queryKey: ["vault-duplicates"] });
       qc.invalidateQueries({ queryKey: ["vault-mirror-items"] });
       qc.invalidateQueries({ queryKey: ["vault-cache-summary"] });
       qc.invalidateQueries({ queryKey: ["vault-of-folders-mirror"] });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      // eslint-disable-next-line no-console
-      console.error("hide duplicates failed", e);
-    } finally {
-      setBusy(false);
-      setProgress(null);
     }
   }
 
   return (
     <div
       className="fixed inset-0 z-50 bg-black/50 md:grid md:place-items-center md:p-4"
-      onClick={onClose}
+      onClick={busy ? undefined : onClose}
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -223,8 +203,9 @@ export default function VaultDuplicatesModal({
           </div>
           <button
             type="button"
+            disabled={busy}
             onClick={onClose}
-            className="px-2 py-2.5 md:py-1 min-h-[44px] md:min-h-0 rounded-md text-xs text-fg-dim hover:text-fg"
+            className="px-2 py-2.5 md:py-1 min-h-[44px] md:min-h-0 rounded-md text-xs text-fg-dim hover:text-fg disabled:opacity-40"
           >
             Close
           </button>
@@ -235,12 +216,9 @@ export default function VaultDuplicatesModal({
             <span className="text-fg-dim">Match strictness</span>
             <select
               value={threshold}
-              onChange={(e) => {
-                setThreshold(Number(e.target.value));
-                setDeselected(new Set());
-                setResult(null);
-              }}
-              className="px-2 py-1 rounded-md bg-bg-elev-1 border border-border"
+              disabled={busy}
+              onChange={(e) => dispatch({ type: "threshold", v: Number(e.target.value) })}
+              className="px-2 py-1 rounded-md bg-bg-elev-1 border border-border disabled:opacity-40"
             >
               {THRESHOLDS.map((t) => (
                 <option key={t.v} value={t.v}>
@@ -263,18 +241,17 @@ export default function VaultDuplicatesModal({
           )}
         </div>
 
-        {result && (
-          <div className="mx-4 mt-3 px-3 py-2 rounded-lg border border-ok/40 bg-ok/10 text-xs text-ok">
-            Removed {result.hidden}{" "}
-            {result.hidden === 1 ? "copy" : "copies"} from the OnlyFans vault.
-            {Object.entries(result.refused).map(([why, ids]) => (
+        {done && (
+          <div className={`mx-4 mt-3 px-3 py-2 rounded-lg border text-xs ${done.result.of_error ? "border-warn/40 bg-warn/10 text-warn" : "border-ok/40 bg-ok/10 text-ok"}`}>
+            <span>{doneText(done.result, done.total)}</span>
+            {Object.entries(done.result.refused).map(([why, ids]) => (
               <span key={why} className="block text-warn">
                 refused ({why}): {ids.length}
               </span>
             ))}
-            {!!result.not_hidden?.length && (
+            {!!done.result.not_hidden?.length && (
               <span className="block text-warn">
-                {result.not_hidden.length} not removed — re-scan and try again.
+                {done.result.not_hidden.length} not removed — re-scan and try again.
               </span>
             )}
           </div>
@@ -295,7 +272,6 @@ export default function VaultDuplicatesModal({
           )}
           {clusters.map((c) => {
             const ids = c.dupes.map((d) => d.media_id);
-            const allOff = ids.every((i) => deselected.has(i));
             return (
               <section
                 key={c.original.media_id}
@@ -323,10 +299,10 @@ export default function VaultDuplicatesModal({
                   )}
                   <button
                     type="button"
-                    onClick={() => toggleSet(c)}
+                    onClick={() => dispatch({ type: "toggleSet", ids })}
                     className="ml-auto px-2 py-0.5 rounded-md border border-border hover:text-fg text-fg-dim"
                   >
-                    {allOff ? "Select set" : "Keep all"}
+                    {allOff(ids, deselected) ? "Select set" : "Keep all"}
                   </button>
                 </div>
                 <div className="flex gap-2 overflow-x-auto px-3 py-3">
@@ -339,7 +315,7 @@ export default function VaultDuplicatesModal({
                       m={d}
                       isOriginal={false}
                       checked={!deselected.has(d.media_id)}
-                      onToggle={() => toggle(d.media_id)}
+                      onToggle={() => dispatch({ type: "toggle", id: d.media_id })}
                     />
                   ))}
                 </div>
@@ -349,11 +325,11 @@ export default function VaultDuplicatesModal({
         </div>
 
         <footer className="px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:pb-3 border-t border-border flex flex-wrap items-center gap-3">
-          {!confirming ? (
+          {phase.kind !== "confirming" && phase.kind !== "hiding" ? (
             <button
               type="button"
-              disabled={selectedIds.length === 0 || busy}
-              onClick={() => setConfirming(true)}
+              disabled={selectedIds.length === 0}
+              onClick={() => dispatch({ type: "confirm", ids: selectedIds })}
               className="px-3 py-2.5 md:py-1.5 min-h-[44px] md:min-h-0 rounded-md text-xs font-medium border border-err/50 bg-err/10 text-err hover:bg-err/20 disabled:opacity-40"
             >
               Remove {selectedIds.length} {selectedIds.length === 1 ? "copy" : "copies"} from
@@ -362,7 +338,7 @@ export default function VaultDuplicatesModal({
           ) : (
             <>
               <span className="text-xs text-err">
-                Removes {selectedIds.length} from your real vault. Originals are kept
+                Removes {phase.frozenIds.length} from your real vault. Originals are kept
                 and sent PPVs keep working — but OnlyFans has no undo.
               </span>
               <button
@@ -371,16 +347,14 @@ export default function VaultDuplicatesModal({
                 onClick={doHide}
                 className="px-3 py-2.5 md:py-1.5 min-h-[44px] md:min-h-0 rounded-md text-xs font-semibold border border-err bg-err/20 text-err hover:bg-err/30 disabled:opacity-40"
               >
-                {busy
-                  ? progress
-                    ? `Removing ${progress.done}/${progress.total}…`
-                    : "Removing…"
+                {phase.kind === "hiding"
+                  ? `Removing ${phase.done}/${phase.frozenIds.length}…`
                   : "Yes, remove them"}
               </button>
               <button
                 type="button"
                 disabled={busy}
-                onClick={() => setConfirming(false)}
+                onClick={() => dispatch({ type: "cancel" })}
                 className="px-2 py-2.5 md:py-1 min-h-[44px] md:min-h-0 rounded-md text-xs text-fg-dim hover:text-fg"
               >
                 Cancel

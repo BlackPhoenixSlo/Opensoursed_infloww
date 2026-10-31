@@ -23,8 +23,8 @@ from db.models import Account, Fan, SkipList
 from automations._common import (
     classify_source, source_self_heal_set, MUTED_CREATOR_REASON,
 )
-import automation_executor  # noqa: E402
-from automation_executor import _upsert_fan_identity
+from automations import scrape_chats  # noqa: E402 — the scrape's calls look names up there
+from automations.scrape_chats import _upsert_fan_identity
 
 ACCT = "999000"
 OWN = "999000"  # the creator's own OF id (never matched as a fan)
@@ -162,8 +162,8 @@ async def case_unmute_clears_skip_on_fast_skip_scrape():
 
     async def _nothing_new(*a, **kw):
         return [], False
-    automation_executor._fetch_recent_end = _nothing_new
-    res = await automation_executor._scrape_one_chat(
+    scrape_chats._fetch_recent_end = _nothing_new
+    res = await scrape_chats._scrape_one_chat(
         ACCT, OWN, None, fid, {"id": fid}, page_size=10, max_pages=1,
         is_muted=False)
     assert res == (0, 0)
@@ -174,7 +174,7 @@ async def case_unmute_clears_skip_on_fast_skip_scrape():
     assert not muted, "fans.is_muted stayed 1"
 
     # An empty chat for a fan we have no row for must not mint one.
-    await automation_executor._scrape_one_chat(
+    await scrape_chats._scrape_one_chat(
         ACCT, OWN, None, 556, {"id": 556}, page_size=10, max_pages=1,
         is_muted=True)
     assert await _source_of(556) is None, "fast-skip minted a fans row"

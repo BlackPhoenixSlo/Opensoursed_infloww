@@ -89,8 +89,8 @@ def case_fan_spend_counts_pending():
 
 
 def case_orphan_tips_counts_pending():
-    import server
-    out = asyncio.run(server.admin_ingest_tx_orphan_tips(
+    import tx_ingest_admin_api
+    out = asyncio.run(tx_ingest_admin_api.admin_ingest_tx_orphan_tips(
         account_id=A, from_=FROM, to=TO, include_assigned=False, limit=100,
     ))
     amounts = sorted(r["amount_cents"] for r in out["rows"])

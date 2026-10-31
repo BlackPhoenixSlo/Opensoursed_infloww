@@ -19,182 +19,31 @@
  * the run's stats on the Automations page.
  */
 
-import { useMemo, useState } from "react";
+import { useMemo, useReducer, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 
 import { useEmployee } from "@/contexts/EmployeeContext";
 import { fanListsQuery, type FanList } from "@/components/audience/fanLists";
-import { relay, type VaultMedia } from "@/lib/relay";
-import { sanitizePriceInput } from "@/components/chat/Composer";
+import { relay } from "@/lib/relay";
+import { sanitizePriceInput } from "@/lib/priceInput";
 import { VaultPicker } from "@/components/chat/VaultPicker";
 import { usePlatformAccounts } from "@/hooks/useAccounts";
 import { useAllModelsInclude } from "@/hooks/useAllModelsInclude";
 import { useVaultLists } from "@/hooks/useVaultMedia";
 
 import { AccountPicker } from "./AccountPicker";
+import { ImportCaptionsButton } from "./ImportCaptionsButton";
+import { includedTargets, runFanOut, summarizeFanOut } from "./fanOut";
+import {
+  SYSTEM_AUDIENCES, buildPayload, numStr, payloadToRows, rowsReducer,
+  type Kind, type PremadePayload, type Row,
+} from "./premadeRows";
 import { fmtPrice } from "@/lib/format";
 
-type Kind = "auto_posts" | "mass_premade";
-
-/** One per-account result of an all-models fan-out enqueue. */
-interface FanOutResult {
-  accountId: string;
-  ok: boolean;
-  error?: string;
-}
-
-/** OF built-in audiences usable across any account (sent as `userLists`). Same
- *  pair the Mass Online composer exposes. */
-const SYSTEM_AUDIENCES: Array<{ id: string; label: string }> = [
-  { id: "fans",      label: "All fans"  },
-  { id: "following", label: "Following" },
-];
 const TOP_LIST_NAMES: string[] = ["fans", "following"];
 function topRank(name: string): number {
   const i = TOP_LIST_NAMES.indexOf(name.toLowerCase());
   return i === -1 ? TOP_LIST_NAMES.length : i;
-}
-
-
-interface Row {
-  // Text variant POOL — one is picked at random per fire. Always ≥1 entry.
-  texts: string[];
-  // Image POOL (pre-picked vault media) — mediaCount are sampled per fire.
-  media: VaultMedia[];
-  // Vault FOLDER pool — non-DRM photos from this folder join the pool at fire
-  // time (backend `media_folder_id`). "" = none. Combines with `media` above.
-  folderId: string;
-  mediaCount: string; // images per fire (default 1)
-  // Free-preview POOL (auto_posts, PAID posts only) — its picks are added to the
-  // attachment set and shown FREE as the teaser (`previews` ⊆ mediaFiles). Same
-  // pool shape as the image pool above. Ignored for free posts + mass_premade.
-  previewMedia: VaultMedia[];
-  previewFolderId: string;
-  previewCount: string; // free previews per fire (default 1)
-  // shared timer
-  delayMinutes: string;
-  // auto_posts
-  hoursToLive: string;
-  // PPV price in DOLLARS ("" / "0" = free; >0 = paywalled). Applies to BOTH
-  // kinds — auto_posts (→ create_post) and mass_premade (→ send_mass_message);
-  // a PPV post/message needs ≥1 image. Sent as `price`, stored as price_cents.
-  price: string;
-  // mass_premade
-  onlineOnly: boolean;
-  unsendAfterHours: string;
-  resendAfterHours: string;
-  resendCount: string;
-  // mass_premade audience (Mass Online parity). `includes`/`excludes` hold a mix
-  // of system-audience ids ('fans'/'following') and custom-list ids — they go to
-  // OF as `user_lists` / `excluded_user_lists`. The hour/limit knobs resolve
-  // server-side via audiences.resolve_mass_audience (DB-sourced fan ids).
-  includes: string[];
-  excludes: string[];
-  excludeRepliedHours: string; // → exclude_replied_hours (fans we replied to)
-  excludeInboundHours: string; // → exclude_inbound_hours (fans who messaged us)
-  unreadLimit: string;         // → unread_limit (fans with unread msgs)
-  recentChatHours: string;     // → recent_chat_hours (chatted-with → include)
-  recentChatLimit: string;     // → recent_chat_limit (cap the recent-chat add)
-}
-
-function blankRow(): Row {
-  return {
-    texts: [""],
-    media: [],
-    folderId: "",
-    mediaCount: "",
-    previewMedia: [],
-    previewFolderId: "",
-    previewCount: "",
-    delayMinutes: "",
-    hoursToLive: "",
-    price: "",
-    onlineOnly: true,
-    unsendAfterHours: "",
-    resendAfterHours: "",
-    resendCount: "",
-    // Default audience mirrors Mass Online: fans + following both included.
-    includes: ["fans", "following"],
-    excludes: [],
-    excludeRepliedHours: "",
-    excludeInboundHours: "",
-    unreadLimit: "",
-    recentChatHours: "",
-    recentChatLimit: "",
-  };
-}
-
-/** Number/anything → the string an input expects ("" when unset), the inverse
- *  of posNum/nonNegInt below — used to re-seed a row from a saved payload. */
-function numStr(v: unknown): string {
-  return v === undefined || v === null ? "" : String(v);
-}
-
-/** Reverse of `rowToItem` — turn one saved payload entry back into an editable
- *  Row so "Re-compose" opens pre-filled instead of blank. Media re-seeds as
- *  id-only stubs (no thumbnail until re-picked, but the ids round-trip exactly). */
-function itemToRow(it: Record<string, unknown>): Row {
-  const r = blankRow();
-  if (typeof it.text === "string") r.texts = [it.text];
-  else if (Array.isArray(it.texts) && it.texts.length) {
-    r.texts = (it.texts as unknown[]).map(String);
-  }
-  if (Array.isArray(it.media_files)) {
-    r.media = (it.media_files as unknown[])
-      .filter((id): id is number => typeof id === "number")
-      .map((id) => ({ id, type: "photo" }) as VaultMedia);
-  }
-  r.folderId = it.media_folder_id != null ? String(it.media_folder_id) : "";
-  r.mediaCount = numStr(it.media_count);
-  if (Array.isArray(it.preview_media_files)) {
-    r.previewMedia = (it.preview_media_files as unknown[])
-      .filter((id): id is number => typeof id === "number")
-      .map((id) => ({ id, type: "photo" }) as VaultMedia);
-  }
-  r.previewFolderId = it.preview_media_folder_id != null ? String(it.preview_media_folder_id) : "";
-  r.previewCount = numStr(it.preview_media_count);
-  r.delayMinutes = numStr(it.delay_minutes);
-  // auto_posts
-  r.hoursToLive = numStr(it.hours_to_live);
-  r.price = numStr(it.price);
-  // mass_premade — online_only is only persisted when true, so absence = off.
-  r.onlineOnly = Boolean(it.online_only);
-  r.unsendAfterHours = numStr(it.unsend_after_hours);
-  r.resendAfterHours = numStr(it.resend_after_hours);
-  r.resendCount = numStr(it.resend_count);
-  r.includes = Array.isArray(it.user_lists) ? (it.user_lists as unknown[]).map(String) : [];
-  r.excludes = Array.isArray(it.excluded_user_lists)
-    ? (it.excluded_user_lists as unknown[]).map(String)
-    : [];
-  r.excludeRepliedHours = numStr(it.exclude_replied_hours);
-  r.excludeInboundHours = numStr(it.exclude_inbound_hours);
-  r.unreadLimit = numStr(it.unread_limit);
-  r.recentChatHours = numStr(it.recent_chat_hours);
-  r.recentChatLimit = numStr(it.recent_chat_limit);
-  return r;
-}
-
-/** Seed the repeating rows from a saved `{posts|messages:[…]}` payload (the
- *  inverse of buildComposePayload). Empty/missing → one blank row. */
-function payloadToRows(
-  payload: Record<string, unknown> | undefined,
-  posts: boolean,
-): Row[] {
-  const arr = posts ? payload?.posts : payload?.messages;
-  if (!Array.isArray(arr) || arr.length === 0) return [blankRow()];
-  return arr.map((it) => itemToRow((it ?? {}) as Record<string, unknown>));
-}
-
-/** A blank/zero/garbage string → undefined; a positive number → the number.
- *  Keeps unset knobs out of the payload so the automation treats them as
- *  "not applied" (e.g. no hours_to_live = keep the post forever). */
-function posNum(s: string): number | undefined {
-  const n = Number(s);
-  return s.trim() !== "" && Number.isFinite(n) && n > 0 ? n : undefined;
-}
-function nonNegInt(s: string): number | undefined {
-  const n = Number(s);
-  return s.trim() !== "" && Number.isFinite(n) && n >= 0 ? Math.floor(n) : undefined;
 }
 
 /** Modal wrapper around the shared form — used from the legacy automations surfaces. */
@@ -271,7 +120,7 @@ export function PremadeForm({
   const composeMode = !!onComposePayload;
   const { current: currentEmployee } = useEmployee();
   const [accountId, setAccountId] = useState<string | null>(forcedAccountId ?? null);
-  const [rows, setRows] = useState<Row[]>(() => payloadToRows(initialPayload, posts));
+  const [rows, dispatch] = useReducer(rowsReducer, undefined, () => payloadToRows(initialPayload, kind));
   const [dryRun, setDryRun] = useState(false);
   // Auto Posts repost CYCLE (list-level, not per-row): re-post the whole list
   // after it finishes. Baked into the auto_posts payload, not the rule cadence.
@@ -292,10 +141,8 @@ export function PremadeForm({
   const [allModels, setAllModels] = useState(false);
   const activeAccounts = usePlatformAccounts();
   const { isIncluded, toggle: toggleAllModelsInclude } = useAllModelsInclude();
-  const broadcastAccounts = useMemo(
-    () => activeAccounts.filter((a) => isIncluded(a.id)),
-    [activeAccounts, isIncluded],
-  );
+  // No retry here (no results): every included model.
+  const { included: broadcastAccounts, targets: broadcastIds } = includedTargets(activeAccounts, isIncluded, null);
 
   // Custom lists for the mass_premade audience picker (same source + sort as the
   // Mass Online composer). Only fetched for broadcasts, once an account is set.
@@ -330,62 +177,12 @@ export function PremadeForm({
     [foldersQ.data],
   );
 
+  // Shorthand for the ~20 per-field inputs below.
   function patchRow(i: number, patch: Partial<Row>) {
-    setRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
-  }
-  // ── Per-row audience toggles (mass_premade). includes/excludes mix system
-  //    ids + custom-list ids, mutually exclusive per id (same UX as Mass Online).
-  function mutAudience(i: number, fn: (inc: Set<string>, exc: Set<string>) => void) {
-    setRows((prev) => prev.map((r, idx) => {
-      if (idx !== i) return r;
-      const inc = new Set(r.includes);
-      const exc = new Set(r.excludes);
-      fn(inc, exc);
-      return { ...r, includes: [...inc], excludes: [...exc] };
-    }));
-  }
-  /** System chip tri-state: off → +include → −exclude → off. */
-  function cycleSystem(i: number, id: string) {
-    mutAudience(i, (inc, exc) => {
-      if (inc.has(id)) { inc.delete(id); exc.add(id); }
-      else if (exc.has(id)) { exc.delete(id); }
-      else { inc.add(id); }
-    });
-  }
-  function toggleListInclude(i: number, id: string) {
-    mutAudience(i, (inc, exc) => {
-      if (inc.has(id)) inc.delete(id);
-      else { inc.add(id); exc.delete(id); }
-    });
-  }
-  function toggleListExclude(i: number, id: string) {
-    mutAudience(i, (inc, exc) => {
-      if (exc.has(id)) exc.delete(id);
-      else { exc.add(id); inc.delete(id); }
-    });
-  }
-  function addRow() {
-    setRows((prev) => [...prev, blankRow()]);
-  }
-  function removeRow(i: number) {
-    setRows((prev) => (prev.length <= 1 ? prev : prev.filter((_, idx) => idx !== i)));
-  }
-  // Text-variant pool helpers (one row → many text variants, random one sent).
-  function patchText(i: number, ti: number, val: string) {
-    setRows((prev) => prev.map((r, idx) =>
-      idx === i ? { ...r, texts: r.texts.map((t, k) => (k === ti ? val : t)) } : r));
-  }
-  function addText(i: number) {
-    setRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, texts: [...r.texts, ""] } : r)));
-  }
-  function removeText(i: number, ti: number) {
-    setRows((prev) => prev.map((r, idx) =>
-      idx === i
-        ? { ...r, texts: r.texts.length <= 1 ? r.texts : r.texts.filter((_, k) => k !== ti) }
-        : r));
+    dispatch({ type: "patch", i, patch });
   }
   function reset() {
-    setRows([blankRow()]);
+    dispatch({ type: "reset" });
     setDryRun(false);
     setPostsResendAfterHours("");
     setPostsResendCount("");
@@ -393,97 +190,10 @@ export function PremadeForm({
     setOkMsg(null);
   }
 
-  /** Build the per-item payload entry from a row, dropping unset knobs. The
-   *  text/image POOLS go to the backend, which randomises per fire. */
-  function rowToItem(r: Row): Record<string, unknown> {
-    const media = r.media.map((m) => m.id).filter((id): id is number => typeof id === "number");
-    const texts = r.texts.map((t) => t.trim()).filter(Boolean);
-    const item: Record<string, unknown> = {};
-    // One variant → a plain `text`; many → a `texts` pool (random per fire).
-    if (texts.length === 1) item.text = texts[0];
-    else if (texts.length > 1) item.texts = texts;
-    // Images are per-account vault ids — omit them entirely in all-models mode.
-    if (!allModels) {
-      const folderId = r.folderId ? Number(r.folderId) : null;
-      if (media.length) item.media_files = media;        // pre-picked pool
-      if (folderId) item.media_folder_id = folderId;     // whole-folder pool
-      if (media.length || folderId) {
-        const mc = posNum(r.mediaCount);
-        if (mc) item.media_count = Math.floor(mc);       // sampled per fire (default 1)
-      }
-    }
-    const delay = posNum(r.delayMinutes);
-    if (delay) item.delay_minutes = delay;
-    // PPV price (dollars) — BOTH kinds support it (auto_posts→create_post,
-    // mass_premade→send_mass_message both read `price`). Only emit when >0 so a
-    // free post/message drops the knob entirely (matches the backend's
-    // `price or 0` default).
-    const price = Number(r.price);
-    if (Number.isFinite(price) && price > 0) item.price = price;
-    // Free-preview pool (auto_posts + PAID only) — its picks become free teasers
-    // on the paywalled post. Backend unions them into media_files so previews are
-    // always a valid subset. Per-account vault ids, so off in all-models mode.
-    if (posts && !allModels && Number.isFinite(price) && price > 0) {
-      const pmedia = r.previewMedia
-        .map((m) => m.id)
-        .filter((id): id is number => typeof id === "number");
-      const pfolder = r.previewFolderId ? Number(r.previewFolderId) : null;
-      if (pmedia.length) item.preview_media_files = pmedia;
-      if (pfolder) item.preview_media_folder_id = pfolder;
-      if (pmedia.length || pfolder) {
-        const pc = posNum(r.previewCount);
-        if (pc) item.preview_media_count = Math.floor(pc);
-      }
-    }
-    if (posts) {
-      const htl = posNum(r.hoursToLive);
-      if (htl) item.hours_to_live = htl;
-    } else {
-      if (r.onlineOnly) item.online_only = true;
-      const uah = posNum(r.unsendAfterHours);
-      if (uah) item.unsend_after_hours = uah;
-      const rc = nonNegInt(r.resendCount);
-      const rah = posNum(r.resendAfterHours);
-      if (rc && rc > 0 && rah) {
-        item.resend_count = rc;
-        item.resend_after_hours = rah;
-      }
-      // Audience (Mass Online parity): system + custom list ids → user_lists /
-      // excluded_user_lists; the hour/limit knobs resolve server-side. In
-      // all-models mode custom-list ids don't map across accounts, so keep only
-      // the system audiences (fans/following).
-      const sysIds = new Set(SYSTEM_AUDIENCES.map((a) => a.id));
-      const inc = allModels ? r.includes.filter((id) => sysIds.has(id)) : r.includes;
-      const exc = allModels ? r.excludes.filter((id) => sysIds.has(id)) : r.excludes;
-      if (inc.length) item.user_lists = inc;
-      if (exc.length) item.excluded_user_lists = exc;
-      const erh = posNum(r.excludeRepliedHours);
-      if (erh) item.exclude_replied_hours = erh;
-      const eih = posNum(r.excludeInboundHours);
-      if (eih) item.exclude_inbound_hours = eih;
-      const ul = nonNegInt(r.unreadLimit);
-      if (ul && ul > 0) item.unread_limit = ul;
-      const rch = posNum(r.recentChatHours);
-      if (rch) item.recent_chat_hours = rch;
-      const rcl = nonNegInt(r.recentChatLimit);
-      if (rcl && rcl > 0) item.recent_chat_limit = rcl;
-    }
-    return item;
-  }
-
-  /** Auto Posts list-level repost cycle, dropped from the payload when unset. */
-  function postsCyclePayload(): Record<string, number> {
-    if (!posts) return {};
-    const rah = posNum(postsResendAfterHours);
-    const rc = nonNegInt(postsResendCount);
-    return rc && rc > 0 && rah ? { resend_count: rc, resend_after_hours: rah } : {};
-  }
+  const cycle = { resendCount: postsResendCount, resendAfterHours: postsResendAfterHours };
 
   /** Enqueue one job for one account; returns the new job id. */
-  async function enqueueFor(aid: string, items: Record<string, unknown>[]) {
-    const payload = posts
-      ? { posts: items, dry_run: dryRun, ...postsCyclePayload() }
-      : { messages: items, dry_run: dryRun };
+  async function enqueueFor(aid: string, payload: PremadePayload) {
     const resp = await relay.post<{ enqueued_job_id: number }>(
       "/admin/automation/enqueue",
       { account_id: aid, kind, payload },
@@ -494,51 +204,38 @@ export function PremadeForm({
 
   const submit = useMutation({
     mutationFn: async () => {
-      const items = rows
-        .map(rowToItem)
-        // In all-models mode media is stripped, so an item is valid on text alone.
-        .filter((it) => !!it.text || Array.isArray(it.texts)
-          || Array.isArray(it.media_files) || it.media_folder_id != null);
-      if (items.length === 0) {
+      const payload = buildPayload(rows, cycle, { kind, allModels }, dryRun);
+      if (!payload) {
         throw new Error(
           allModels ? "Add at least one post with text" : "Add at least one post with text or media",
         );
       }
+      const count = (payload.posts ?? payload.messages ?? []).length;
 
       if (allModels) {
-        const targets = broadcastAccounts.map((a) => a.id);
-        if (targets.length === 0) throw new Error("No active models to broadcast from");
-        const fan: FanOutResult[] = [];
-        for (const aid of targets) {
-          try {
-            await enqueueFor(aid, items);
-            fan.push({ accountId: aid, ok: true });
-          } catch (e) {
-            fan.push({ accountId: aid, ok: false, error: (e as Error).message });
-          }
-        }
-        return { fan, count: items.length };
+        if (broadcastIds.length === 0) throw new Error("No active models to broadcast from");
+        const fan = await runFanOut(broadcastIds, (aid) => enqueueFor(aid, payload));
+        return { fan, count };
       }
 
       if (!accountId) throw new Error("Pick an account");
-      const jobId = await enqueueFor(accountId, items);
-      return { jobId, count: items.length };
+      const jobId = await enqueueFor(accountId, payload);
+      return { jobId, count };
     },
     onSuccess: ({ jobId, fan, count }) => {
       setError(null);
       const noun = `${count} ${posts ? "post" : "message"}${count === 1 ? "" : "s"}`;
       const dry = dryRun ? " (dry run — plan only, nothing sent)" : "";
       if (fan) {
-        const okN = fan.filter((r) => r.ok).length;
         const failed = fan.filter((r) => !r.ok);
         setOkMsg(
-          `Enqueued ${noun} on ${okN}/${fan.length} models${dry}. The worker runs them within ~30s.` +
+          `Enqueued ${noun} on all models${dry}: ${summarizeFanOut(fan)}. The worker runs them within ~30s.` +
             (failed.length ? ` Failed: ${failed.map((f) => f.accountId).join(", ")}.` : ""),
         );
       } else {
         setOkMsg(`Enqueued job #${jobId} — ${noun}${dry}. The worker runs it within ~30s.`);
       }
-      setRows([blankRow()]);
+      dispatch({ type: "reset" });
     },
     onError: (err: Error) => {
       setOkMsg(null);
@@ -546,21 +243,11 @@ export function PremadeForm({
     },
   });
 
-  /** Build the same `{posts|messages:[…]}` payload the enqueue path sends, but
-   *  return it (return-payload mode) instead of POSTing — null if no usable row.
-   *  No `dry_run` here: that's a separate rule knob in the editor. */
-  function buildComposePayload(): Record<string, unknown> | null {
-    const items = rows
-      .map(rowToItem)
-      .filter((it) => !!it.text || Array.isArray(it.texts)
-        || Array.isArray(it.media_files) || it.media_folder_id != null);
-    if (items.length === 0) return null;
-    return posts ? { posts: items, ...postsCyclePayload() } : { messages: items };
-  }
-
+  /** Return-payload mode: the same payload the enqueue path sends, minus
+   *  `dry_run` (that's a separate rule knob in the editor). */
   function useInRule() {
     setError(null);
-    const payload = buildComposePayload();
+    const payload = buildPayload(rows, cycle, { kind, allModels });
     if (!payload) {
       setError(posts ? "Add at least one post with text or media"
                      : "Add at least one message with text or media");
@@ -641,7 +328,7 @@ export function PremadeForm({
                 {rows.length > 1 && (
                   <button
                     type="button"
-                    onClick={() => removeRow(i)}
+                    onClick={() => dispatch({ type: "remove", i })}
                     className="text-[11px] text-err hover:underline"
                   >remove</button>
                 )}
@@ -653,7 +340,7 @@ export function PremadeForm({
                   <div key={ti} className="flex items-start gap-1.5">
                     <textarea
                       value={t}
-                      onChange={(e) => patchText(i, ti, e.target.value)}
+                      onChange={(e) => dispatch({ type: "patchText", i, ti, val: e.target.value })}
                       placeholder={
                         r.texts.length > 1
                           ? `Variant ${ti + 1} (random one sent)`
@@ -665,20 +352,23 @@ export function PremadeForm({
                     {r.texts.length > 1 && (
                       <button
                         type="button"
-                        onClick={() => removeText(i, ti)}
+                        onClick={() => dispatch({ type: "removeText", i, ti })}
                         title="Remove this variant"
                         className="text-fg-dim hover:text-err text-sm leading-none mt-2"
                       >×</button>
                     )}
                   </div>
                 ))}
-                <button
-                  type="button"
-                  onClick={() => addText(i)}
-                  className="text-[11px] text-accent hover:underline"
-                >
-                  + add text variant{r.texts.length > 1 ? ` (${r.texts.length})` : ""}
-                </button>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                  <button
+                    type="button"
+                    onClick={() => dispatch({ type: "addText", i })}
+                    className="text-[11px] text-accent hover:underline"
+                  >
+                    + add text variant{r.texts.length > 1 ? ` (${r.texts.length})` : ""}
+                  </button>
+                  <ImportCaptionsButton current={r.texts} onImport={(vals) => dispatch({ type: "addTexts", i, vals })} />
+                </div>
               </div>
 
               {/* Image POOL — pre-picked vault media AND/OR a whole vault folder.
@@ -911,7 +601,7 @@ export function PremadeForm({
                         <SysChip
                           key={b.id}
                           state={state}
-                          onClick={() => cycleSystem(i, b.id)}
+                          onClick={() => dispatch({ type: "cycleSystem", i, id: b.id })}
                           label={b.label}
                         />
                       );
@@ -928,7 +618,7 @@ export function PremadeForm({
                           lists={customLists}
                           loading={listsQ.isLoading}
                           selected={new Set(r.includes)}
-                          onToggle={(id) => toggleListInclude(i, id)}
+                          onToggle={(id) => dispatch({ type: "toggleListInclude", i, id })}
                           emptyLabel={accountId ? "No custom lists." : "Pick an account."}
                         />
                       </div>
@@ -938,7 +628,7 @@ export function PremadeForm({
                           lists={customLists}
                           loading={listsQ.isLoading}
                           selected={new Set(r.excludes)}
-                          onToggle={(id) => toggleListExclude(i, id)}
+                          onToggle={(id) => dispatch({ type: "toggleListExclude", i, id })}
                           emptyLabel="—"
                         />
                       </div>
@@ -985,7 +675,7 @@ export function PremadeForm({
 
           <button
             type="button"
-            onClick={addRow}
+            onClick={() => dispatch({ type: "add" })}
             className="w-full text-xs py-2 rounded border border-dashed border-border text-fg-dim hover:text-fg hover:border-border-light"
           >
             + Add another {posts ? "post" : "message"}

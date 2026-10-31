@@ -21,6 +21,7 @@
 
 import { useState } from "react";
 
+import { ImportCaptionsButton } from "@/components/compose/ImportCaptionsButton";
 import { Button, Input, Textarea } from "@/components/ui/primitives";
 import {
   useLifecycleMessageBuyers, useLifecycleMessageConfig, useSaveLifecycleMessageConfig,
@@ -28,6 +29,7 @@ import {
 } from "@/hooks/useLifecycleMessageConfig";
 import { useFreePageRefusal } from "@/hooks/usePaidPage";
 import { fmtCents } from "@/lib/format";
+import { mergeCaptions } from "@/lib/parseCaptions";
 
 import { SmartMessageFields, collectExtras, extrasDraft, type ExtrasDraft } from "./SmartMessageFields";
 
@@ -132,12 +134,14 @@ export function VariantsField({ id, label, variants, placeholder, onChange }: {
           )}
         </div>
       ))}
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         {variants.length < MAX_VARIANTS && (
           <Button type="button" size="sm" variant="secondary" onClick={() => onChange([...variants, ""])}>
             Add variant
           </Button>
         )}
+        <ImportCaptionsButton current={variants} max={MAX_VARIANTS}
+          onImport={(items) => onChange(mergeCaptions(variants, items).pool)} />
         {variants.length > 1 && <span className="text-[11px] text-fg-dim">Each fan gets one of these at random.</span>}
       </div>
     </div>

@@ -73,6 +73,14 @@ const SAVE_IDLE_TIMEOUT_MS = 1_000;
 let dirty = false;
 /** Cancels the save scheduled for the dirty cache, if any. */
 let pendingSave: (() => void) | null = null;
+/** The live persister's flush (save now), while one is wired. */
+let flushNow: (() => void) | null = null;
+
+/** Save the snapshot now, not on the throttle: for a write the next page load must show (a reload a second
+ *  after it would otherwise restore the snapshot from before it). A no-op with no persister wired. */
+export function flushPersistedCache(): void {
+  flushNow?.();
+}
 
 /** Window events that write the snapshot now: the tab hiding or going away,
  *  and the window losing focus — which is what opening a pop-out or a new tab
@@ -130,8 +138,10 @@ export function persistQueryClientLazily({
     const unsubMutations = queryClient.getMutationCache().subscribe(onCacheEvent);
     document.addEventListener("visibilitychange", onVisibility);
     for (const e of FLUSH_EVENTS) window.addEventListener(e, flush);
+    flushNow = flush;
     unsubscribe = () => {
       stopped = true;
+      if (flushNow === flush) flushNow = null;
       unsubQueries();
       unsubMutations();
       document.removeEventListener("visibilitychange", onVisibility);

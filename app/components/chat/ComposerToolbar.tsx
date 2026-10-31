@@ -90,6 +90,9 @@ export interface ComposerToolbarProps {
   vaultOn: boolean;
   /** The PPV row is showing (the "PPV" pill's pressed state). */
   ppvOpen: boolean;
+  /** What the PPV row lists keeps it open: only its Clear closes it, so the
+   *  pill does nothing (aria-disabled) and its title says why. */
+  ppvHeld: boolean;
   vaultDisabled: boolean;
   scheduleOn: boolean;
   canSend: boolean;
@@ -115,7 +118,7 @@ export interface ComposerToolbarProps {
 
 export function ComposerToolbar({
   emoji, favourites, quick, input, ai, scripts, timed, gif, tag, children,
-  vaultOn, ppvOpen, vaultDisabled, scheduleOn, canSend, sendBlockedReason, sendLabel, inflight, disabled,
+  vaultOn, ppvOpen, ppvHeld, vaultDisabled, scheduleOn, canSend, sendBlockedReason, sendLabel, inflight, disabled,
   onTogglePpv, onUploadFiles, onVault, onCalendar, onSend, accountId, onToggleOutbound,
 }: ComposerToolbarProps) {
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -134,10 +137,14 @@ export function ComposerToolbar({
           {scripts}
           <button
             type="button"
-            onClick={onTogglePpv}
+            // aria-disabled, not disabled: hover and focus still show why.
+            onClick={ppvHeld ? undefined : onTogglePpv}
             disabled={disabled}
+            aria-disabled={ppvHeld || undefined}
             aria-pressed={ppvOpen}
-            title="Price, lock text, attachments and send time for this message"
+            title={ppvHeld
+              ? "The PPV row stays open while it holds something; Clear empties and closes it"
+              : "Price, lock text, attachments and send time for this message"}
             className={cn(PILL, "text-[var(--inf-accent-text,var(--color-accent))]", ppvOpen && "bg-accent/25")}
           >
             <CircleDollarSign {...PILL_ICON} /><span className={PILL_LABEL}>PPV</span>
@@ -260,10 +267,10 @@ export function usePopover() {
 /** A button-row popover, the Clone's `.pop` box (`MENU_PANEL`, MN1) opening
  *  upward from its trigger's right edge; its `.pop .phead` (MN3) and
  *  `.pop .prow` (MN2). Shared by the ⏱ Timed message and the Translator. */
-export const POP = cn(MENU_PANEL, MP.ours.ComposerToolbar.pop, "absolute bottom-full z-50");
+export const POP = cn(MENU_PANEL, MP.ours.ComposerToolbar.pop, "absolute bottom-full z-50 origin-bottom");
 /** The same box opening upward from its trigger's left edge (look-and-feel
  *  C13): the ⚙ favourites, at row 1's left end. */
-export const POP_START = cn(MENU_PANEL, MP.ours.ComposerToolbar.popStart, "absolute bottom-full z-50");
+export const POP_START = cn(MENU_PANEL, MP.ours.ComposerToolbar.popStart, "absolute bottom-full z-50 origin-bottom-left");
 export const POP_HEAD = cn(MP.menu.head, "uppercase text-fg-dim");
 export const POP_ROW = cn(MP.menu.row, "flex items-center");
 /** A `.pop`'s primary action (⏱ "Start", the ⚙ editor's "Save"). */

@@ -35,10 +35,10 @@ async def run(ctx, script: Path, payload) -> dict:
     if proc.returncode != 0:
         raise RuntimeError(f"app_ts {Path(script).name}: node exited {proc.returncode}: {err.decode()[-2000:]}")
     body = json.loads(out)
-    hits = ctx.__dict__.setdefault("browser_fault_hits", {})
+    hits = ctx.browser_fault_hits
     for rx, n in body["hits"].items():
         hits[rx] = hits.get(rx, 0) + n
-    files = ctx.__dict__.setdefault("app_ts_fault_files", {})
+    files = ctx.app_ts_fault_files
     for p, n in body["files"].items():
         files[p] = files.get(p, 0) + n
     return body["out"]

@@ -34,8 +34,9 @@
 import { useCallback, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
-import { relay, RelayError, type OFChatItem, type OFMedia, type OFMessage, type SendMessageBody, type VaultMedia } from "@/lib/relay";
+import { relay, RelayError, type OFMedia, type OFMessage, type SendMessageBody, type VaultMedia } from "@/lib/relay";
 import { type FanId } from "@/lib/fanId";
+import { bumpAfterSend, type ChatPages, type SentMessage } from "@/lib/chatsCache";
 import { parseSendFailure, type SendFailure } from "@/lib/sendFailure";
 import { useEmployee } from "@/contexts/EmployeeContext";
 import {
@@ -539,94 +540,20 @@ function recordVaultSends(
  *  Drives:
  *    • Yellow "read · awaiting your reply" dot → gone (lastFromFan now us).
  *    • Row jumps to the top of the inbox instantly.
- *  Walks all chats queries because Unified Inbox vs per-model produces
- *  different query keys, but the row to patch is the same. The full key is
- *    ["chats", scope.kind, accountKey, filter, listId, query, limit].
- *  We only lift-to-top in the UNFILTERED key (filter==null && listId==null
- *  && query==null) — reordering a filtered/folder/search view would shuffle
- *  rows the user didn't touch, and the lastMessage edit alone can't change
- *  whether a row still satisfies that filter. For filtered caches we only
- *  patch a row ALREADY present (update in place, no reorder), and never
- *  prepend a fresh one. */
+ *  Walks every chats cache (Unified Inbox vs per-model keys); the per-cache
+ *  rule (lift vs patch in place, never a new row) is lib/chatsCache
+ *  `bumpAfterSend`. */
 function patchChatListAfterSend(
   qc: ReturnType<typeof useQueryClient>,
   accountId: string,
   fanId: FanId,
-  msg: { fromUserId: number | string; fromUserName: string; text: string; mediaCount: number; price: number },
+  msg: SentMessage,
 ): void {
-  type Page = { rows: OFChatItem[]; hasMore: boolean };
-  type Infinite = { pages: Page[]; pageParams: unknown[] };
   const nowIso = new Date().toISOString();
-  const patchRow = (target: OFChatItem): OFChatItem => ({
-    ...target,
-    hasUnread: false,
-    unreadMessagesCount: 0,
-    lastMessage: {
-      ...(target.lastMessage ?? { id: 0 }),
-      id: target.lastMessage?.id ?? 0,
-      text: msg.text,
-      fromUser: { id: msg.fromUserId, name: msg.fromUserName },
-      createdAt: nowIso,
-      mediaCount: msg.mediaCount,
-      isFree: msg.price === 0,
-    },
-  });
   qc.getQueryCache().findAll({ queryKey: ["chats"] }).forEach((q) => {
-    const data = q.state.data as Infinite | undefined;
-    if (!data?.pages || data.pages.length === 0) return;
-    const filterKey = q.queryKey[3] ?? null;
-    const listIdKey = q.queryKey[4] ?? null;
-    const queryKeyText = q.queryKey[5] ?? null;
-    const isUnfiltered =
-      filterKey === null && listIdKey === null && queryKeyText === null;
-
-    if (!isUnfiltered) {
-      // Filtered/folder/search view: patch the row in place if it's already
-      // here, otherwise leave it untouched. No reorder, no fresh prepend.
-      let found = false;
-      const patched: Page[] = data.pages.map((p) => ({
-        ...p,
-        rows: p.rows.map((c) => {
-          if (
-            !found &&
-            (c.__accountId ?? "") === accountId &&
-            c.withUser.id === fanId
-          ) {
-            found = true;
-            return patchRow(c);
-          }
-          return c;
-        }),
-      }));
-      if (!found) return;
-      qc.setQueryData(q.queryKey, { ...data, pages: patched });
-      return;
-    }
-
-    // Unfiltered key: hunt for the row + lift it out. We rebuild pages
-    // without it, then prepend the patched version to page 0. Pages further
-    // down lose at most one row each — fine, the next refetch reconciles.
-    let target: OFChatItem | null = null;
-    const stripped: Page[] = data.pages.map((p) => {
-      const kept: OFChatItem[] = [];
-      for (const c of p.rows) {
-        if (
-          target === null &&
-          (c.__accountId ?? "") === accountId &&
-          c.withUser.id === fanId
-        ) {
-          target = c;
-          continue;
-        }
-        kept.push(c);
-      }
-      return { ...p, rows: kept };
-    });
-    if (!target) return;
-    const updated = patchRow(target as OFChatItem);
-    const reordered: Page[] = stripped.map((p, i) =>
-      i === 0 ? { ...p, rows: [updated, ...p.rows] } : p,
-    );
-    qc.setQueryData(q.queryKey, { ...data, pages: reordered });
+    const data = q.state.data as ChatPages | undefined;
+    if (!data?.pages?.length) return;
+    const next = bumpAfterSend(q.queryKey, data, accountId, fanId, msg, nowIso);
+    if (next !== data) qc.setQueryData(q.queryKey, next);
   });
 }

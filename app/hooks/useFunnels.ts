@@ -27,7 +27,7 @@ const BG_CTX: RelayContext = { priority: "background" };
 
 // ── Types (mirror funnels_api.py _validate_steps) ─────────────────────
 
-/** Optional branching map — reply_mass_funnel.resolve_next reads it to pick the
+/** Optional branching map — _funnel_routing.resolve_next reads it to pick the
  *  step AFTER this one from the fan's reply, turning the linear walker into a
  *  branching storyline. Every value is a STEP NUMBER that must reference an
  *  existing step (funnels_api rejects a dangling target with 422). ABSENT `next`
@@ -78,6 +78,8 @@ export interface PpvStep {
   generate?: boolean;
   /** When true, the fan must pay to even read the copy. */
   locked_text?: boolean;
+  /** Poll cadence after this step is sent; absent → executor default [2,4,10]. */
+  check_intervals_min?: number[];
   /** Optional branching route (e.g. `{bought: n}` to an upsell — see StepNext). */
   next?: StepNext;
 }

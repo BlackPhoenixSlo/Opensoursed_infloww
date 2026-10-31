@@ -54,7 +54,7 @@
  * Fan's messages, so the field is the one place the reply is retried.
  */
 
-import { Fragment, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useReducer, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useQueries } from "@tanstack/react-query";
 import Link from "next/link";
 import { Bell } from "lucide-react";
@@ -94,6 +94,7 @@ import {
 } from "@/lib/notifSettings";
 import { BRAND_NAME } from "@/lib/brand";
 import { Skeleton } from "@/components/ui/Skeleton";
+import { initialBellState, notificationBellReducer, ofListOnScreen } from "./notificationBellReducer";
 
 /** The bell's tabs, shared with the full Notifications page
  *  (`components/NotificationsPage.tsx`), which reads the same request. */
@@ -339,12 +340,17 @@ export function NotificationBell(props: NotificationBellProps = {}) {
   const proProps = props.variant === "messages-pro" ? props : null;
   const pro = proProps !== null;
   const agency = props.variant === "messages-pro" ? undefined : props.agency;
-  /** The open panel's tab: OnlyFans, or (owner, top bar) Agency. */
-  const [pane, setPane] = useState<"of" | "agency">("of");
-  const onAgency = !!agency && pane === "agency";
+  // The panel, its tab (OnlyFans, or the owner's Agency), the arrivals
+  // badge and the Fan-tabs-full note: notificationBellReducer.
+  const [bell, dispatch] = useReducer(notificationBellReducer, initialBellState);
+  // The Agency tab is the owner's; it goes away only when the viewer stops
+  // being owner (user not loaded yet, or a chatter): back to OnlyFans before
+  // this render draws the panel.
+  if (!agency && bell.pane === "agency") dispatch({ type: "pane", pane: "of" });
+  const { open, pane, tabsFull } = bell;
+  const onAgency = open && pane === "agency";
   const { accountId } = useScope();
   const activeAccounts = useActiveAccounts();
-  const [open, setOpen] = useState(false);
   // Restore the last-used filter chip. Safe against hydration mismatch:
   // the dropdown (the only place `filter` renders) is closed at SSR time.
   const [filter, setFilter] = useState<Filter>(() => {
@@ -357,28 +363,20 @@ export function NotificationBell(props: NotificationBellProps = {}) {
   };
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [osTestMsg, setOsTestMsg] = useState<string | null>(null);
-  const [badge, setBadge] = useState(0);
-  // Messages Pro: the Fan tab cap was hit by the last row opened.
-  const [tabsFull, setTabsFull] = useState(false);
   const openFan = proProps?.onOpenFan;
   const ref = useRef<HTMLDivElement | null>(null);
-  const openRef = useRef(open);
-  openRef.current = open;
   const { settings, setToast, setBubble, update } = useNotificationSettings();
 
   // List — fan-out, merged client-side. Enabled only when the panel is
   // open so we don't spam OF on idle pages.
-  const feed = useNotificationFeed(filter.type, open && !onAgency);
+  const feed = useNotificationFeed(filter.type, ofListOnScreen(bell));
   const targetAccountIds = feed.accountIds;
 
-  // Badge counter — bump on every arrival (unless the panel is open and the
-  // user is already looking at it), reset on every cleared event.
+  // Badge counter — bump on every arrival (unless the OnlyFans list is on
+  // screen), reset on every cleared event.
   useEffect(() => {
-    const onArrived = () => {
-      if (openRef.current) return;
-      setBadge((n) => Math.min(999, n + 1));
-    };
-    const onCleared = () => setBadge(0);
+    const onArrived = () => dispatch({ type: "arrived" });
+    const onCleared = () => dispatch({ type: "cleared" });
     window.addEventListener(NOTIF_ARRIVED_EVENT, onArrived);
     window.addEventListener(NOTIF_CLEARED_EVENT, onCleared);
     return () => {
@@ -390,35 +388,34 @@ export function NotificationBell(props: NotificationBellProps = {}) {
   // Messages Pro: the scoped Creator's OnlyFans count. Not read by the top
   // bar, nor under All Models (the count is per Creator).
   const countAccountId = pro ? accountId : null;
-  // Read the count again when the panel closes.
   const { count: proCount, refetch: refetchCount } = useOfNotifCount(countAccountId);
-  const wasOpenRef = useRef(false);
-  useEffect(() => {
-    if (wasOpenRef.current && !open && countAccountId) void refetchCount();
-    wasOpenRef.current = open;
-  }, [open, countAccountId, refetchCount]);
 
-  // Opening the bell counts as "seen everything".
-  useEffect(() => {
-    if (open) {
-      setBadge(0);
-      dispatchNotifCleared();
-    }
-  }, [open]);
+  // Opening the bell counts as "seen everything" (the reducer zeroes this
+  // bell; the event, any other one).
+  const openPanel = () => {
+    dispatch({ type: "open", agencyUnread: agency?.unread ?? 0 });
+    dispatchNotifCleared();
+  };
+  // Every close of an open panel: Messages Pro reads its count again.
+  const closePanel = useCallback(() => {
+    dispatch({ type: "close" });
+    if (countAccountId) void refetchCount();
+  }, [countAccountId, refetchCount]);
+  const togglePanel = () => (open ? closePanel() : openPanel());
 
   useEffect(() => {
     if (!open) return;
     const onClick = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+      if (!ref.current?.contains(e.target as Node)) closePanel();
     };
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") closePanel(); };
     document.addEventListener("pointerdown", onClick);
     document.addEventListener("keydown", onKey);
     return () => {
       document.removeEventListener("pointerdown", onClick);
       document.removeEventListener("keydown", onKey);
     };
-  }, [open]);
+  }, [open, closePanel]);
 
   // Re-render when localStorage toast history changes (SSE pushes new
   // entries to it; popouts share via the storage event).
@@ -475,7 +472,8 @@ export function NotificationBell(props: NotificationBellProps = {}) {
   const firstError = feed.error;
   const showAccountTag = targetAccountIds.length > 1;
   const accountLabel = useAccountLabelMap(activeAccounts);
-  const total = badge + (agency?.unread ?? 0);
+  // The top bar badge: unseen arrivals plus the owner's unread agency ones.
+  const total = bell.arrivals + (agency?.unread ?? 0);
 
   return (
     // Messages Pro: an equal share of the Fan List buttons row, whose
@@ -484,7 +482,7 @@ export function NotificationBell(props: NotificationBellProps = {}) {
       {proProps ? (
         <button
           type="button"
-          onClick={() => { setOpen((v) => !v); setTabsFull(false); }}
+          onClick={togglePanel}
           className={cn(proProps.classNames.button, "relative flex flex-1 items-center justify-center bg-[var(--inf-online,var(--color-ok))] text-white hover:opacity-90")}
         >
           <Bell aria-hidden className={proProps.classNames.icon} />
@@ -501,11 +499,8 @@ export function NotificationBell(props: NotificationBellProps = {}) {
       // the bell was last opened plus the owner's unread agency notifications.
       <button
         type="button"
-        onClick={() => {
-          // Open on Agency when only it has something new.
-          if (!open && agency) setPane(badge === 0 && agency.unread > 0 ? "agency" : "of");
-          setOpen((v) => !v);
-        }}
+        // Opens on Agency when only it has something new (the reducer).
+        onClick={togglePanel}
         className={cn(HEADER_TILE, "px-2")}
         title="Notifications"
         aria-label="Notifications"
@@ -534,7 +529,7 @@ export function NotificationBell(props: NotificationBellProps = {}) {
                   type="button"
                   role="tab"
                   aria-selected={pane === id}
-                  onClick={() => setPane(id)}
+                  onClick={() => dispatch({ type: "pane", pane: id })}
                   className={cn(
                     "h-7 px-3 inline-flex items-center gap-1.5 rounded-md text-xs font-medium",
                     pane === id ? "bg-nav-surface text-fg" : "text-fg-dim hover:text-fg",
@@ -549,7 +544,7 @@ export function NotificationBell(props: NotificationBellProps = {}) {
           {onAgency ? (
             // A row that links into the app (e.g. a 2FA row's Browserbase login) closes the panel.
             <div className="flex-1 overflow-y-auto"
-              onClick={(e) => { if ((e.target as Element).closest("a[href]")) setOpen(false); }}>{agency?.panel}</div>
+              onClick={(e) => { if ((e.target as Element).closest("a[href]")) closePanel(); }}>{agency?.panel}</div>
           ) : targetAccountIds.length === 0 ? (
             <NoSessionsNote />
           ) : (
@@ -601,7 +596,7 @@ export function NotificationBell(props: NotificationBellProps = {}) {
                         onClick={(e) => {
                           e.preventDefault();
                           e.stopPropagation();
-                          setBadge(0);
+                          dispatch({ type: "cleared" });
                           dispatchNotifCleared();
                         }}
                         className="px-2 py-0.5 text-[11px] rounded border border-border text-fg-dim hover:text-fg hover:bg-bg-elev-1"
@@ -786,7 +781,7 @@ export function NotificationBell(props: NotificationBellProps = {}) {
                     accountId={m.accountId}
                     accountLabel={showAccountTag ? (accountLabel.get(m.accountId) ?? null) : null}
                     reply={pro}
-                    onOpenFan={openFan && ((tab) => setTabsFull(openFan(tab) === "full"))}
+                    onOpenFan={openFan && ((tab) => dispatch({ type: "tabsFull", full: openFan(tab) === "full" }))}
                   />
                 ))}
               </div>
@@ -797,7 +792,7 @@ export function NotificationBell(props: NotificationBellProps = {}) {
           {!pro && !onAgency && (
             <Link
               href="/notifications"
-              onClick={() => setOpen(false)}
+              onClick={closePanel}
               className="block border-t border-border px-3 py-2 text-center text-xs font-semibold text-accent hover:bg-bg-elev-1/40"
             >
               See all

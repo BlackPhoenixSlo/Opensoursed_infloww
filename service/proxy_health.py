@@ -37,8 +37,13 @@ The states (`snapshot()["state"]`):
 
 The confirm waits out a blip: it probes no sooner than CONFIRM_GAP_S after
 the streak's first counted error, and not at all if an answer through the
-proxy reset the count meanwhile. After FAILOVER_AFTER_RECHECKS failed
-rechecks (`failover_due`), and again after every later failed recheck until
+proxy reset the count meanwhile; a failed probe marks nothing bad when an
+answer reset that streak while the probe ran (a new streak since gets its
+own wait and confirm, from the same watcher). A bad proxy that an answer
+brings back while its watcher waits to recheck, and that reaches DOWN_AFTER
+errors again before the recheck runs, is confirmed by that same watcher (the
+errors start none while it holds the claim). After FAILOVER_AFTER_RECHECKS
+failed rechecks (`failover_due`), and again after every later failed recheck until
 nobody is left on it, the Creators on a bad INFLOWWW POOL proxy are moved to
 pool proxies that answer a probe right then (`_failover`:
 `proxies.failover_pool`, one registry write, so the relay's `on_switch`
@@ -63,6 +68,13 @@ cadence (the confirm wait with it): at 2 s, ~7.7 + 3 + 2 + 4 = ~17 s.
 When a proxy goes down or comes back, each Creator on it gets the
 `proxy_switched` account-state event with `down`, so open tabs refetch the
 proxies and accounts lists, which carry `health` / `proxy_down`.
+
+Every rule above is `proxy_health_decide.decide(state, event) -> (state',
+effects, next)`, a pure function (tables: tests/test_proxy_health_decide.py).
+This module is its shell: the lock (`_step`: one decide per lock section, the
+watcher claim taken and released in it), the watcher thread (`_watch_inner`:
+one flat loop running each `next` decide names), the waits, the probes, the
+announce and the move.
 """
 
 from __future__ import annotations
@@ -76,23 +88,22 @@ import time
 from typing import Any, Callable
 
 import proxies
+import proxy_health_decide as ph
 
 log = logging.getLogger("of-relay.proxy-health")
 
-DOWN_AFTER = 3          # consecutive counted errors that start the confirm
 INTERVAL_ENV = "PROXY_HEALTH_INTERVAL_S"
 _MIN_INTERVAL_S = 600   # a periodic probe never runs more often than this
 RECHECK_ENV = "PROXY_RECHECK_S"
-RECHECK_S = 20.0        # first recheck of a bad proxy after this; doubled each time
-RECHECK_MAX_S = 600.0   # ... up to this (6 probes an hour for a proxy that stays dead)
+RECHECK_S = 20.0        # first recheck of a bad proxy after this; doubled each time up to ph.RECHECK_MAX_S
 _MIN_RECHECK_S = 1.0
-FAILOVER_AFTER_RECHECKS = 2   # failed rechecks in a row before a pool proxy's Creators move
 CONFIRM_GAP_S = 30.0    # the confirm probes no sooner than this after a streak's first error
                         # (> prod's longest blip, 32 s, minus a full chain's ~7.7 s)
 
 _lock = threading.Lock()
 _state: dict[str, dict[str, Any]] = {}
-_watchers: set[str] = set()   # labels with a watcher (claimed before its thread starts)
+_watchers: set[str] = set()   # labels with a watcher: claimed (Watch) before its thread starts, released
+                              # (Unwatch) in the lock section of its last step
 
 
 def _spawn_thread(fn: Callable[[], None], name: str) -> None:
@@ -107,11 +118,6 @@ _sleep: Callable[[float], None] = time.sleep
 
 def _now() -> float:
     return time.time()
-
-
-def _blank() -> dict[str, Any]:
-    return {"errors": 0, "first_error_at": None, "down": False, "last_error": None,
-            "last_error_at": None}
 
 
 def recheck_s() -> float:
@@ -136,27 +142,42 @@ def record(label: str | None, ok: bool, error: str | None = None) -> None:
         return
     st = _state.get(label)
     if ok and (st is None or (st["errors"] == 0 and not st["down"])):
-        return  # healthy and staying healthy: nothing to write
-    watch = False
+        return  # healthy and staying healthy: nothing to write (no entry made, the lock not taken)
+    _step(label, lambda: ph.CallOk(_now()) if ok else ph.CallErr(_now(), error, label in _watchers))
+
+
+def _step(label: str, event: Callable[[], ph.Event]) -> ph.Next:
+    """One lock section: the event built under the lock (its time read there), `decide`, its state
+    written (None: the entry dropped), and the claim: a Watch claims the label (before its thread
+    starts), an Unwatch releases it (with the watcher's last step: an error right after sees no
+    watcher and starts one). Then, outside the lock, a Watch's thread and the other effects in order.
+    Returns the watcher's next move."""
     with _lock:
-        st = _state.setdefault(label, _blank())
-        was_down = st["down"]
-        if ok:
-            _up(st)
+        st, effects, nxt = ph.decide(_state.get(label), event())
+        if st is None:
+            _state.pop(label, None)
         else:
-            if not st["errors"]:
-                st["first_error_at"] = _now()
-            st["errors"] += 1
-            st.update(last_error=(error or "error")[:200], last_error_at=_now())
-            if st["errors"] >= DOWN_AFTER and not st["down"] and label not in _watchers:
-                watch = True
+            _state[label] = st
+        rest = []
+        for e in effects:
+            if isinstance(e, ph.Watch):
                 _watchers.add(label)
-        changed = st["down"] != was_down
-    if changed:
-        log.warning("proxy %s is back up", label)
-        _announce(label, False)
-    if watch:
+            elif isinstance(e, ph.Unwatch):
+                _watchers.discard(label)
+            else:
+                rest.append(e)
+    if ph.Watch() in effects:
         _spawn(lambda: _watch(label), f"proxy-watch-{label}")
+    for e in rest:
+        if isinstance(e, ph.Log):
+            log.log(e.level, e.msg, label, *e.args)
+        elif isinstance(e, ph.Announce):
+            _announce(label, e.down)
+        elif isinstance(e, ph.Failover):
+            _failover(label)
+        else:
+            raise TypeError(f"unknown proxy health effect {e!r}")
+    return nxt
 
 
 def last_geo(p: dict[str, Any]) -> str | None:
@@ -181,8 +202,7 @@ def failover_due(label: str) -> bool:
     """Bad, and FAILOVER_AFTER_RECHECKS rechecks in a row failed: its pool
     Creators are to move. The one predicate `_failover` and `assign_pool` share."""
     with _lock:
-        st = _state.get(label)
-        return bool(st and st["down"] and st.get("rechecks_failed", 0) >= FAILOVER_AFTER_RECHECKS)
+        return ph.failover_due(_state.get(label))
 
 
 def _due_labels() -> set[str]:
@@ -215,7 +235,7 @@ def record_probe(label: str, result: dict[str, Any]) -> None:
 
 def _keep_probe(label: str, result: dict[str, Any]) -> None:
     with _lock:
-        st = _state.setdefault(label, _blank())
+        st = _state.setdefault(label, ph.blank())
         st["probe"] = {k: result.get(k) for k in ("ok", "ip", "geo", "colo", "ttfb_ms", "error")}
         st["probed_at"] = _now()
         if result.get("ok") and result.get("geo"):
@@ -227,9 +247,7 @@ def _probe(label: str) -> bool | None:
     gone from the registry (its state is dropped; the watcher ends)."""
     p = proxies.get_by_label(label)
     if p is None:
-        with _lock:
-            _state.pop(label, None)
-        log.info("proxy %s is gone from the registry; its watcher ends", label)
+        _step(label, ph.Gone)
         return None
     result = proxies.probe(p)
     _keep_probe(label, result)
@@ -238,92 +256,51 @@ def _probe(label: str) -> bool | None:
 
 def _watch(label: str) -> None:
     """The watcher: confirm, then recheck with backoff until the proxy answers.
-    One per label at a time; never raises."""
+    One claim per label at a time (`_step`); never raises. Its last step's
+    decide releases the claim (Unwatch), never this function: a release after
+    it returns would swallow the errors landing in between (no new watcher).
+    A watcher that raised has not reached that step (after it only logging
+    runs), so it still holds the claim and drops it here: a plain discard,
+    not a decide event, as decide would know nothing more than this."""
     try:
         _watch_inner(label)
     except Exception:
         log.warning("proxy watcher for %s failed", label, exc_info=True)
-    finally:
         with _lock:
             _watchers.discard(label)
 
 
+def _confirm_due(label: str) -> ph.Next:
+    return _step(label, lambda: ph.ConfirmDue(_now(), confirm_gap_s()))
+
+
 def _watch_inner(label: str) -> None:
-    # Wait out CONFIRM_GAP_S from the streak's first error; a blip ends
-    # meanwhile (an answer resets the count). A new streak that started
-    # during the sleep moved first_error_at: wait again from it.
-    while True:
-        with _lock:
-            st = _state.get(label)
-            if not st or st["down"] or st["errors"] < DOWN_AFTER:
-                return
-            wait = st["first_error_at"] + confirm_gap_s() - _now()
-        if wait <= 0:
-            break
-        _sleep(wait)
-    if _confirm(label):
-        _recheck_loop(label)
+    """One flat loop: each `next` from `decide` names the step to run (ConfirmDue first: the wait of
+    CONFIRM_GAP_S from the streak's first error); None ends it. Every rule is `decide`'s; this is the
+    waiting and the probing."""
+    nxt = _confirm_due(label)
+    while nxt is not None:
+        if isinstance(nxt, ph.Wait):
+            _sleep(nxt.s)
+            nxt = _confirm_due(label) if nxt.then is ph.ConfirmDue else _step(label, ph.RecheckDue)
+        elif isinstance(nxt, ph.Confirm):
+            streak, ok = nxt.streak, _probe(label)
+            nxt = None if ok is None else _step(label, lambda: ph.ConfirmResult(_now(), ok, streak))
+        elif isinstance(nxt, ph.Recheck):
+            ok = _probe(label)
+            nxt = None if ok is None else _step(label, lambda: ph.RecheckResult(ok))
+        elif isinstance(nxt, ph.ArmRecheck):
+            nxt = _arm_recheck(label)
+        else:
+            raise TypeError(f"unknown proxy watcher step {nxt!r}")
 
 
-def _up(st: dict[str, Any]) -> None:
-    st.update(errors=0, first_error_at=None, down=False, rechecks_failed=0, next_recheck_at=None,
-              rechecking=False)
-
-
-def _confirm(label: str) -> bool:
-    """DOWN_AFTER errors in a row, past the confirm's wait: one probe decides.
-    Answers → a blip, the count restarts (True = now bad, announced)."""
-    ok = _probe(label)
-    if ok is None:
-        return False
-    if ok:
-        with _lock:
-            _state[label].update(errors=0, first_error_at=None)
-        log.info("proxy %s: %d errors in a row but the probe answers; not marked bad", label, DOWN_AFTER)
-        return False
-    with _lock:
-        _state[label].update(down=True, bad_since=_now(), rechecks_failed=0)
-    log.warning("proxy %s is DOWN (confirmed by probe)", label)
-    _announce(label, True)
-    return True
-
-
-def _recheck_loop(label: str) -> None:
-    """Recheck a bad proxy after RECHECK_S, doubling up to RECHECK_MAX_S, until
-    it answers (or an answer through it brought it back meanwhile), or it is
-    gone from the registry. Its pool Creators move once `failover_due`, and
-    again after each later failed recheck (a move that found no answering
-    destination is retried)."""
-    delay = recheck_s()
-    while True:
-        with _lock:
-            st = _state.get(label) or _blank()
-            if not st["down"]:
-                return
-            st["next_recheck_at"] = _now() + delay
-        _sleep(delay)
-        with _lock:
-            st = _state.get(label) or _blank()
-            if not st["down"]:
-                return
-            st.update(rechecking=True, next_recheck_at=None)
-        ok = _probe(label)
-        if ok is None:
-            return
-        with _lock:
-            st = _state.get(label) or _blank()
-            st["rechecking"] = False
-            if ok:
-                _up(st)
-            else:
-                st["rechecks_failed"] = st.get("rechecks_failed", 0) + 1
-        if ok:
-            log.warning("proxy %s is back up (recheck)", label)
-            _announce(label, False)
-            return
-        if failover_due(label):
-            _failover(label)
-        delay = min(delay * 2, RECHECK_MAX_S)
+def _arm_recheck(label: str) -> ph.Next:
+    """Arm the next recheck of a bad proxy: RECHECK_S (`recheck_s()`), doubled per failed recheck up to
+    RECHECK_MAX_S. The rechecks run until it answers (or an answer through it brought it back meanwhile),
+    or it is gone from the registry; its pool Creators move once `failover_due`, and again after each
+    later failed recheck (a move that found no answering destination is retried)."""
+    return _step(label, lambda: ph.RecheckWait(_now(), recheck_s()))
 
 
 def _failover(label: str) -> list[str]:
@@ -337,13 +314,7 @@ def _failover(label: str) -> list[str]:
     moved = proxies.failover_pool(label, bad=down_labels(), geo=last_geo, verify=verify_pick)
     if moved is None:
         return []
-    with _lock:
-        st = _state.setdefault(label, _blank())
-        st.update(failed_over_at=_now(), failed_over=st.get("failed_over", 0) + len(moved))
-    if moved:
-        log.warning("proxy %s: %d Creator(s) moved to healthy pool proxies: %s", label, len(moved), moved)
-    else:
-        log.warning("proxy %s: nobody moved (no pool proxy answers); retried at the next failed recheck", label)
+    _step(label, lambda: ph.FailedOver(_now(), tuple(moved)))
     return moved
 
 
@@ -356,6 +327,7 @@ def snapshot(label: str) -> dict[str, Any]:
     st.setdefault("down", False)
     st.setdefault("errors", 0)
     st.pop("first_error_at", None)
+    st.pop("streak", None)
     if st["down"]:
         st["state"] = "rechecking" if st.pop("rechecking", False) else "bad"
     else:

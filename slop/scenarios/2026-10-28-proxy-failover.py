@@ -40,7 +40,25 @@ destination dead at the probe that precedes every move, so nobody moves, and eve
 Creator is surfaced once the last proxy is confirmed too. LOGIN_ALL_DEAD_AT_S into that outage
 the owner logs in one more Creator the same way: no pick answers its probe, and the attach
 must still bind it (the least-used proxy not bad) and keep the session, never throw a
-finished login away.
+finished login away. Last (re-watch), with the pool revived, a fourth pool proxy joins it
+(`POST /__slop/proxy-pool` again, the three kept with their bindings) and one more Creator
+is attached to it (least-used: it holds 0, every other one at least 1). It blips: dead for
+DOWN_AFTER sends of that Creator at once (DOWN_AFTER full-policy failures together start its
+watcher), then back, and a Fan List refresh answers through it inside the confirm's wait, so
+the watcher's ConfirmDue ends it (no probe, nothing surfaced). Then it dies for good and exactly
+DOWN_AFTER more sends fail through it (no more traffic). Their failures land ~7.7 s after the
+kill (inferred from the 5-try chain), well after that watcher's last step, so the clean run only
+proves a streak after a watcher's end is watched; the window right at the end (microseconds in
+the relay) is pinned by service/tests/test_proxy_health.py
+(case_an_error_right_after_the_watchers_last_step_starts_a_new_watcher), and only the fault
+below widens it enough for this traffic to land in. Last (recheck-gap), a custom proxy
+CUSTOM_LABEL (`POST /admin/proxies`, the owner's own; custom so its `health` is listed and it is
+never failed over) dies and the owner presses its Test button (`POST /admin/proxies/{label}/test`,
+a probe counted like a call) DOWN_AFTER times: its watcher confirms it bad and rechecks it
+(2 s, 4 s, 8 s). Once a recheck is armed at least WINDOW_S out (`health.next_recheck_at`), it
+revives and one Test answers (back up), then it dies again and DOWN_AFTER Tests fail, all before
+that recheck is due: the errors start no watcher (the sleeping one holds the claim), so only that
+watcher, waking to a proxy at DOWN_AFTER, can confirm it bad again.
 
 Invariants: the binding went through (4/4/4, each warm-up tunneled); the dead proxy's
 Creators are on a healthy pool proxy within FAILOVER_MS of the death and their reads and
@@ -52,8 +70,12 @@ proxies answered 200 throughout; the revived proxy is back within BACK_MS and th
 Creator lands on it (the least-used, judged from the bindings) while the moved ones stay put; with every proxy dead the bindings are
 byte-identical (but for the outage login) and all pool Creators read `proxy_down`; the
 outage login was saved and bound to a pool proxy, its attach answering within
-LOGIN_ASSIGN_MS (the probes are bounded); lib/of_wire.py saw only signed
-calls it models. p95 of the healthy reads vs the last green run.
+LOGIN_ASSIGN_MS (the probes are bounded); the re-watch proxy was not surfaced by its blip and
+is surfaced (its Creator proxy_down) within REWATCH_MS of dying for good, every
+send through it dead answering 502 and the refresh 200; the recheck-gap proxy, back up then at
+DOWN_AFTER inside a recheck's sleep (asserted against next_recheck_at), is bad again within
+REBAD_MS of its streak; lib/of_wire.py saw only signed calls it models. p95 of the healthy
+reads vs the last green run. DOWN_AFTER is read from service/proxy_health_decide.py's source.
 
 Bypasses, declared: the pool is synced by the hook, not the env (the fake proxies' ports
 exist only once the relay is up); `PROXY_RECHECK_S=2` (RELAY_ENV) compresses the whole
@@ -66,12 +88,27 @@ refuse each CONNECT after 0.33 s (lib/proxy_wire.py: curl 97, not prod's 56, bot
 pools on their own recorder (their reads of a dead Creator 502 on purpose; the stock no-5xx
 check covers the owner's calls, this scenario's checks cover theirs); the login is a
 re-capture of a seeded Creator (`account_id` given), the Add creator flow's relay calls
-without its browser.
+without its browser. The re-watch's window: in the relay it was microseconds (the claim
+dropped after the watcher returned), which no traffic can hit on purpose, so the fault widens
+it (below); a plain revert of the claim fix passes this scenario (the unit case above is its
+pin); the re-watch proxy's sends go through a recorder of their own (their 502s are on purpose).
+The recheck-gap's counted errors are Test-button probes, not Creator traffic (a pool proxy has
+no Test and is failed over at the 2nd failed recheck; the counting is the same `record`).
 
 Break-it-once: proxy-failover-never-moves (the move gone) turns only the failover check
 red; `--fault=proxy-recheck-never-runs` (no recheck, so no move either) turns the
 failover and the recheck checks red; `--fault=pool-assign-drops-unanswered-login` (the attach
 refuses a Creator on no pool proxy when no pick answers) turns only the outage-login check red.
+The rules are a pure `service/proxy_health_decide.decide`; `--fault=proxy-decide-recheck-answer-ignored`
+breaks it in the relay (an answering recheck read as failed) and turns only the revived-proxy check red.
+`--fault=proxy-watch-claim-released-late` puts the claim's release back after the watcher returns
+(every Unwatch dropped) and widens that window to 60 s: the re-watch proxy's streak finds the claim
+still held and is never watched, so the re-watch check goes red; so does the pool-wide outage's
+(the proxy revived just before it dies again inside its window: never confirmed bad), the same bug.
+`--fault=proxy-recheck-unwatches-at-threshold` puts back the recheck phase's old not-bad exit
+(Unwatch whatever the count): the recheck-gap proxy sits at DOWN_AFTER unwatched, so only the
+recheck-gap check goes red. `proxy-recheck-never-runs` also turns the recheck-gap check red (noise,
+not its target: with no recheck armed that stage cannot be set up).
 """
 from __future__ import annotations
 
@@ -81,6 +118,7 @@ import re
 import time
 from collections import Counter
 from contextlib import ExitStack
+from pathlib import Path
 
 from slop.lib.browserbase import paste_curl
 from slop.lib.client import Recorder
@@ -104,6 +142,11 @@ BACK_MS = 40_000       # revival -> pool reads 0 bad
 ALL_DEAD_S = 35.0      # every proxy dead: each is confirmed ~11 s in (sends' 5-try failures ~7.7 s + the 3 s confirm gap); the rest is margin
 LOGIN_ALL_DEAD_AT_S = 1.0   # the owner's login into the pool-wide outage, before any proxy is confirmed bad
 LOGIN_ASSIGN_MS = 12_000    # its attach: at most 2 probes of <= 5 s each (refused here in 0.33 s), plus margin
+REWATCH_MS = 25_000         # dead for good -> its Creators proxy_down: sends' 5-try failures ~7.7 s + the 3 s confirm gap
+RECHECK_ARMED_MS = 40_000   # recheck-gap: dead -> bad with a recheck armed >= WINDOW_S out (gap 3 s, rechecks 2, 4, 8 s)
+WINDOW_S = 3.0              # what the answer + the DOWN_AFTER Tests need inside that recheck's sleep (~1.5 s), plus margin
+REBAD_MS = 20_000           # the streak's end -> bad again: the rest of that sleep (<= 8 s) + the 3 s confirm gap + a probe
+CUSTOM_LABEL = "slop-recheck-gap"
 REV = "slop-of-rev-202610281200"
 
 READ = "/api/of/v2/users/me"                      # the warm-up and the new Creator's first read (cached 60 s after)
@@ -119,7 +162,20 @@ C_BACK = ("revived proxy: the recheck brings it back within budget and the next 
 C_NOSTANDBY = "every pool proxy dead: nobody moves (bindings identical) and every pool Creator reads proxy_down"
 C_LOGIN_ALL_DEAD = ("login during a pool-wide outage: no probe answers, yet the session is saved and bound to a pool "
                     "proxy within budget (a login is never lost; every-proxy-bad: test_proxy_health)")
+C_REWATCH = ("re-watch: a pool proxy that dies for good right after a blip ended its watcher is watched again and "
+             "surfaced within budget (its Creator reads proxy_down)")
+C_RECHECK_GAP = ("recheck-gap: a bad proxy an answer brings back while its watcher sleeps before a recheck, then "
+                 "DOWN_AFTER failed Tests before it wakes, is confirmed bad again by that watcher within budget")
 C_WIRE = "lib/of_wire.py saw only signed calls it models"
+
+
+def _service_int(module: str, name: str) -> int:
+    """A service constant, read from the source the relay runs (this harness never imports service/)."""
+    src = (Path(__file__).resolve().parents[2] / "service" / f"{module}.py").read_text()
+    return int(re.search(rf"^{name} = (\d+)", src, re.M).group(1))
+
+
+DOWN_AFTER = _service_int("proxy_health_decide", "DOWN_AFTER")   # counted failures in a row that start the watcher
 
 
 def _plain(html: str) -> str:
@@ -168,15 +224,129 @@ async def run(ctx) -> None:
     n_on = int(ctx.param("on_pool", ON_POOL))
     on_pool, login_aid, back_aid, late_aid = aids[:n_on], aids[n_on], aids[n_on + 1], aids[n_on + 2]
     refuse = float(ctx.param("refuse_ms", REFUSE_S * 1000)) / 1000
+    reg = _Registry(ctx.stack.sessions.parent / "proxies.json")
+    fake = ctx.of_wire
+    n0 = len(fake.calls)
     with ExitStack() as stack:
         wires = [stack.enter_context(ProxyWire(refuse)) for _ in range(POOL)]
-        await _run(ctx, w, wires, on_pool, login_aid, back_aid, late_aid)
+        spare = stack.enter_context(ProxyWire(refuse))    # joins the pool for the re-watch only
+        custom = stack.enter_context(ProxyWire(refuse))   # the recheck-gap's custom proxy
+        text = await _run(ctx, w, reg, wires, on_pool, login_aid, back_aid, late_aid)
+        await _rewatch(ctx, reg, text, spare, aids[n_on + 3], w.data["fans"])
+        await _recheck_gap(ctx, custom)
+    ctx.check(C_WIRE, fake.unsigned == 0 and not fake.unmodelled, unsigned=fake.unsigned,
+              unmodelled=dict(fake.unmodelled), of_calls=len(fake.calls) - n0)
 
 
-async def _run(ctx, w, wires: list[ProxyWire], on_pool: list[str], login_aid: str, back_aid: str,
-               late_aid: str) -> None:
+async def _rewatch(ctx, reg: _Registry, pool_text: str, spare: ProxyWire, aid: str, fans: dict) -> None:
+    """A fourth pool proxy, one Creator on it: a blip whose watcher the confirm's wait ends, then dead for
+    good with exactly DOWN_AFTER failures (its sends, together) landing just after that end (module docstring)."""
+    owner = ctx.owner
+    budget_ms = float(ctx.param("rewatch_ms", REWATCH_MS))
+    r = await owner.post("/__slop/proxy-pool", json={"text": f"{pool_text},socks5://127.0.0.1:{spare.port}"})
+    label = next((lb for lb, port in reg.pool_labels().items() if port == spare.port), None)
+    bound = (await owner.post("/admin/proxy-pool/assign", json={"account_id": aid})).status_code
+    on = reg.bindings().get(aid)   # least-used: the new proxy holds 0, every other pool proxy >= 1
+    http = owner.share(rec=Recorder(), limits=2 * DOWN_AFTER + 4)   # declared: its dead sends 502 on purpose
+    to = [f["id"] for f in fans[aid]]
+
+    async def sends(tag: str) -> list[dict]:   # DOWN_AFTER full-policy failures together, then nothing
+        return list(await asyncio.gather(*(
+            _call(http, "send", aid, f"/api/of/v2/chats/{to[i % len(to)]}/messages", "POST",
+                  {"text": f"slop rewatch {tag} {i} {aid}"}, f"slop rewatch {tag} {i} {aid}")
+            for i in range(DOWN_AFTER))))
+
+    async def down_now() -> bool | None:
+        ac = await owner.get("/admin/accounts")
+        return any(a["id"] == aid and a.get("proxy_down") for a in ac.json().get("accounts", [])) \
+            if ac.status_code == 200 else None
+
+    ctx.rec.stage = "rewatch"
+    spare.kill()
+    blip = await sends("blip")   # its watcher starts and waits the confirm gap
+    spare.revive()
+    answer = await _call(http, "read", aid, PEOPLE_READ)   # inside the gap: the count resets; ConfirmDue ends it
+    before = await down_now()
+    t_dead = time.perf_counter()
+    spare.kill()
+    dead = await sends("dead")   # dead for good: the streak lands right after the watcher ended
+    surfaced_at = None
+    while time.perf_counter() - t_dead < budget_ms / 1000:
+        if await down_now():
+            surfaced_at = time.perf_counter()
+            break
+        await asyncio.sleep(0.5)
+    ctx.rec.stage = None
+    spare.revive()
+    await http.aclose()
+    ctx.check(C_REWATCH, r.status_code == 200 and label is not None and bound == 200 and on == label
+              and all(x["status"] == 502 for x in blip + dead) and answer["status"] == 200 and before is False
+              and surfaced_at is not None, budget=True,
+              surfaced_ms=round((surfaced_at - t_dead) * 1000, 1) if surfaced_at else None, budget_ms=budget_ms,
+              sync=r.status_code, label=label, assign=bound, on=on, blip_sends=Counter(x["status"] for x in blip),
+              refresh=answer["status"], down_after_blip=before, dead_sends=Counter(x["status"] for x in dead))
+
+
+async def _recheck_gap(ctx, wire: ProxyWire) -> None:
+    """A custom proxy (Test button, listed `health`; never failed over) dies: DOWN_AFTER failed Tests make it
+    bad. While its watcher sleeps before a recheck at least WINDOW_S out, it answers a Test (back up), then
+    dies again and fails DOWN_AFTER Tests, all before that recheck is due: the waking watcher must confirm
+    it bad again (module docstring)."""
+    owner = ctx.owner
+    test = f"/admin/proxies/{CUSTOM_LABEL}/test"
+
+    async def health() -> dict:
+        pr = await owner.get("/admin/proxies")
+        rows = pr.json().get("proxies", []) if pr.status_code == 200 else []
+        return next((p.get("health") or {} for p in rows if p.get("label") == CUSTOM_LABEL), {})
+
+    async def until(pred, budget_ms: float) -> tuple[dict, float | None]:
+        t0 = time.perf_counter()
+        while time.perf_counter() - t0 < budget_ms / 1000:
+            h = await health()
+            if pred(h):
+                return h, time.perf_counter()
+            await asyncio.sleep(0.2)
+        return await health(), None
+
+    async def tests(n: int) -> list[int]:
+        return [(await owner.post(test)).status_code for _ in range(n)]
+
+    ctx.rec.stage = "recheck-gap"
+    made = (await owner.post("/admin/proxies", json={"label": CUSTOM_LABEL, "scheme": "socks5",
+                                                       "host": "127.0.0.1", "port": wire.port})).status_code
+    wire.kill()
+    first = await tests(DOWN_AFTER)   # dead: DOWN_AFTER counted errors start its watcher
+    armed, armed_at = await until(lambda h: h.get("state") == "bad" and h.get("next_recheck_at") is not None
+                                  and h["next_recheck_at"] - time.time() >= WINDOW_S,
+                                  float(ctx.param("recheck_armed_ms", RECHECK_ARMED_MS)))
+    due = armed.get("next_recheck_at")
+    lead_s = round(due - time.time(), 2) if armed_at else None   # how far out that recheck was
+    wire.revive()
+    answer = await owner.post(test)   # an answer through it: back up (its watcher sleeps on)
+    up = (await health()).get("state")
+    wire.kill()
+    streak = await tests(DOWN_AFTER)   # at DOWN_AFTER again; the watcher's claim is held, so none starts
+    t_streak, t0 = time.time(), time.perf_counter()
+    after = (await health()).get("state")
+    rebad_ms = float(ctx.param("rebad_ms", REBAD_MS))
+    bad, bad_at = await until(lambda h: h.get("state") in ("bad", "rechecking"), rebad_ms)
+    ctx.rec.stage = None
+    wire.revive()
+    in_window = due is not None and t_streak < due
+    ctx.check(C_RECHECK_GAP, made == 200 and all(c == 200 for c in first + streak) and armed_at is not None
+              and answer.status_code == 200 and answer.json().get("ok") is True and up == "healthy"
+              and after == "suspect" and in_window and bad_at is not None, budget=True,
+              rebad_ms=round((bad_at - t0) * 1000, 1) if bad_at else None, budget_ms=rebad_ms, create=made,
+              first_tests=Counter(first), armed=armed_at is not None, armed_lead_s=lead_s, answer=answer.status_code, up=up, streak_tests=Counter(streak), after_streak=after,
+              streak_before_recheck_s=round(due - t_streak, 2) if due else None, in_window=in_window,
+              final_state=bad.get("state"))
+
+
+async def _run(ctx, w, reg: _Registry, wires: list[ProxyWire], on_pool: list[str], login_aid: str, back_aid: str,
+               late_aid: str) -> str:
+    """The pool stages (bind, death and move, revival, pool-wide outage). Returns the pool's sync text."""
     owner, fake = ctx.owner, ctx.of_wire
-    reg = _Registry(ctx.stack.sessions.parent / "proxies.json")
     load_s = float(ctx.param("load_s", LOAD_S))
     failover_ms = float(ctx.param("failover_ms", FAILOVER_MS))
     back_ms = float(ctx.param("back_ms", BACK_MS))
@@ -210,7 +380,7 @@ async def _run(ctx, w, wires: list[ProxyWire], on_pool: list[str], login_aid: st
     fans = w.data["fans"]
     people_rec = Recorder()   # declared: their dead reads 502 on purpose
     http = owner.share(rec=people_rec, limits=4 * ctx.users + 16)
-    n0, c0 = len(fake.calls), len(dead_wire.connects)
+    c0 = len(dead_wire.connects)
     seen: list[dict] = []
     polls: list[dict] = []
     moved_at: list[float] = []
@@ -367,9 +537,6 @@ async def _run(ctx, w, wires: list[ProxyWire], on_pool: list[str], login_aid: st
         p.revive()
     await http.aclose()
 
-    ctx.check(C_WIRE, fake.unsigned == 0 and not fake.unmodelled, unsigned=fake.unsigned,
-              unmodelled=dict(fake.unmodelled), of_calls=len(fake.calls) - n0)
-
     lms = [x["ms"] for x in live if x["kind"] == "read"]
     dms = [x["ms"] for x in seen if x["aid"] in dead and x["kind"] == "read" and x["status"] != 200]
     ctx.metric("proxy_failover", {
@@ -388,3 +555,4 @@ async def _run(ctx, w, wires: list[ProxyWire], on_pool: list[str], login_aid: st
              f"{round((back_at - t_rev) * 1000, 1) if back_at else None} ms after revival",
              f"people {len(picks)}: healthy reads p95 {pct(lms, 0.95)} ms (n {len(lms)}); dead reads before the "
              f"move p95 {pct(dms, 0.95)} ms (n {len(dms)}); sends {dict(Counter(x['status'] for x in sends))}")
+    return text

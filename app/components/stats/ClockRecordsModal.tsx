@@ -23,9 +23,10 @@
 
 import * as Dialog from "@radix-ui/react-dialog";
 import { useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useReducer, useState } from "react";
 
 import { useActionAllowed } from "@/components/shell/useGrantedPages";
+import { initialRecordForm, recordFormReducer, validateRecord } from "@/components/stats/recordEditor";
 import { useAgencyTimeZone } from "@/lib/appliedSettings";
 import { zoneOffsetNow } from "@/lib/creatorClock";
 import { downloadCsv } from "@/lib/csv";
@@ -209,36 +210,24 @@ export function RecordEditor({ record: r, tz, closing, onDone }: {
   record: ClockRecord; tz: string; closing: boolean; onDone: () => void;
 }) {
   const queryClient = useQueryClient();
-  const startIn = toZonedInput(r.in_utc, tz);
-  const startOut = r.out_utc ? toZonedInput(r.out_utc, tz) : "";
-  const [inV, setInV] = useState(startIn);
-  const [outV, setOutV] = useState(closing ? toZonedInput(new Date().toISOString(), tz) : startOut);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [form, dispatch] = useReducer(recordFormReducer, null, () => initialRecordForm(r, tz, closing));
 
   const save = async () => {
-    const body: { in_utc?: string; out_utc?: string } = {};
-    if (!closing && inV !== startIn) {
-      const v = fromZonedInput(inV, tz);
-      if (!v) return setError("Enter a clock in time.");
-      body.in_utc = v;
+    const check = validateRecord(r, form, tz, closing);
+    switch (check.kind) {
+      case "unchanged": return onDone();
+      case "error": return dispatch({ type: "error", error: check.error });
     }
-    if (outV !== startOut || closing) {
-      const v = fromZonedInput(outV, tz);
-      if (!v) return setError("Enter a clock out time.");
-      body.out_utc = v;
-    }
-    if (!body.in_utc && !body.out_utc) return onDone();
-    setBusy(true);
-    setError(null);
+    dispatch({ type: "saving" });
     try {
-      await editClockEvent(r.clock_event_id, body);
+      await editClockEvent(r.clock_event_id, check.body);
       await queryClient.invalidateQueries({ queryKey: ["shifts"] });
       onDone();
     } catch (e) {
-      setError(e instanceof RelayError || e instanceof Error ? e.message : "Couldn't save the record.");
-    } finally {
-      setBusy(false);
+      dispatch({
+        type: "error",
+        error: e instanceof RelayError || e instanceof Error ? e.message : "Couldn't save the record.",
+      });
     }
   };
 
@@ -249,22 +238,22 @@ export function RecordEditor({ record: r, tz, closing, onDone }: {
           <label className="text-xs text-fg-dim flex flex-col gap-1">
             Clock in
             <input type="datetime-local" aria-label="Clock in" className={INPUT}
-              value={inV} onChange={(e) => setInV(e.target.value)} />
+              value={form.inV} onChange={(e) => dispatch({ type: "in", value: e.target.value })} />
           </label>
         )}
         {(closing || r.out_utc) && (
           <label className="text-xs text-fg-dim flex flex-col gap-1">
             Clock out
             <input type="datetime-local" aria-label="Clock out" className={INPUT}
-              value={outV} onChange={(e) => setOutV(e.target.value)} />
+              value={form.outV} onChange={(e) => dispatch({ type: "out", value: e.target.value })} />
           </label>
         )}
       </div>
-      {error && <p className="text-xs text-err" role="alert">{error}</p>}
+      {form.error && <p className="text-xs text-err" role="alert">{form.error}</p>}
       <div className="flex gap-2">
-        <button type="button" className={BUTTON} onClick={onDone} disabled={busy}>Cancel</button>
-        <button type="button" className={PRIMARY} onClick={() => void save()} disabled={busy}>
-          {busy ? "Saving…" : closing ? "Clock out" : "Save"}
+        <button type="button" className={BUTTON} onClick={onDone} disabled={form.busy}>Cancel</button>
+        <button type="button" className={PRIMARY} onClick={() => void save()} disabled={form.busy}>
+          {form.busy ? "Saving…" : closing ? "Clock out" : "Save"}
         </button>
       </div>
     </div>

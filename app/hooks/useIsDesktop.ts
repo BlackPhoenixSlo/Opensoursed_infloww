@@ -3,8 +3,9 @@
 import { useSyncExternalStore } from "react";
 
 /** Tailwind's `lg`: from here up the app docks its sidebar and Messages Pro
- *  shows its panes side by side. */
-const LG = "(min-width: 1024px)";
+ *  shows its panes side by side (and neither the nav drawer nor the phone's
+ *  swipes exist). */
+export const LG = "(min-width: 1024px)";
 
 function subscribe(cb: () => void) {
   const mq = window.matchMedia(LG);

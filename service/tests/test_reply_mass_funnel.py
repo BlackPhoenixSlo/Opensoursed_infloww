@@ -818,6 +818,8 @@ async def case_next_keyword_branch_on_reply():
     assert k is not None and k.current_step == 2, ("keyword→step3(index2)", k)
     d = await _state(mr, 53002)
     assert d is not None and d.current_step == 1, ("default→step2(index1)", d)
+    # The SENT step (index 0) is persisted: the reply-wait paces on it, not on c-1.
+    assert (k.last_sent_step, d.last_sent_step) == (0, 0), (k.last_sent_step, d.last_sent_step)
     # Both received step 1's copy before the branch.
     assert _strip((await _funnel_out_msgs(aid, 53001))[0].body) == "s1"
     assert _strip((await _funnel_out_msgs(aid, 53002))[0].body) == "s1"

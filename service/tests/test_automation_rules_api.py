@@ -14,6 +14,14 @@ account_id explicitly and exercise the real validation + persistence.
   case_run_now_enqueues_job:
       POST run-now inserts ONE pending scheduled_jobs row for (account, kind)
       carrying the rule's payload + rule_id — the executor's normal queue.
+  case_follow_up_step_is_not_queued:
+      only a fan's Smart Messages follow-up step pending (job_queue's
+      `_FOLLOW_UP_JOB`) -> the badge is not "queued", as the materializer's busy
+      gate does not see it; the rule's own due job still is.
+  case_next_due_clock_and_limits:
+      next_due_at is dispatch_plan.next_due: a daily_at rule shows its slot (it
+      used to be null), a bad tz_offset_minutes row shows none and never raises,
+      a rule at its max_runs shows none.
   case_delete:
       DELETE removes the row; a follow-up list no longer shows it.
   case_validation:
@@ -212,6 +220,68 @@ async def case_run_now_enqueues_job():
     listed = await list_rules(account_id=aid)
     row = next(r for r in listed["rules"] if r["id"] == rid)
     assert row["has_pending_job"] is True, row
+
+
+async def case_follow_up_step_is_not_queued():
+    import json
+    from datetime import datetime, timedelta
+    aid = "acc_ar_fu_queued"
+    await _seed_account(aid)
+    out = await create_rule(RuleCreate(account_id=aid, kind="gen_info", every_seconds=3600))
+    past = datetime.utcnow() - timedelta(minutes=1)
+    # One fan's due follow-up step, as lifecycle_messages.schedule_follow_ups queues it (the
+    # predicate reads the payload, not the kind).
+    async with get_session() as s:
+        s.add(ScheduledJob(account_id=aid, kind="gen_info", run_at=past, status="pending",
+                           rule_id=out["id"], payload_json=json.dumps(
+                               {"follow_up": {"fan_id": 7, "steps": [], "step": 1}, "_followup": True})))
+
+    async def badge() -> bool:
+        return next(r for r in (await list_rules(account_id=aid))["rules"]
+                    if r["id"] == out["id"])["has_pending_job"]
+
+    assert await badge() is False, "a follow-up step is not the rule queued"
+    async with get_session() as s:   # the rule's own due job: queued
+        s.add(ScheduledJob(account_id=aid, kind="gen_info", run_at=past, status="pending",
+                           rule_id=out["id"], payload_json="{}"))
+    assert await badge() is True
+
+
+async def case_next_due_clock_and_limits():
+    from datetime import datetime, timedelta
+    from db.models import AutomationRun
+    aid = "acc_ar_next_clock"
+    await _seed_account(aid)
+    from dispatch_plan import Clock, next_due
+    now = datetime.utcnow()
+    # 2 h on: later today, or (from 22:00 UTC) a slot already owed today; either way the
+    # route must show dispatch_plan.next_due at the moment it serialized (t0..t1).
+    slot = (now + timedelta(hours=2)).strftime("%H:%M")
+    t0 = datetime.utcnow()
+    clock = await create_rule(RuleCreate(account_id=aid, kind="auto_posts", payload={"dry_run": True},
+                                         trigger={"daily_at": [slot], "tz_offset_minutes": 0}))
+    t1 = datetime.utcnow()
+    got = datetime.fromisoformat(clock["next_due_at"])
+    want = {next_due(Clock((slot,), 0, None), None, t) for t in (t0, t1)}
+    assert got in want, (got, want)
+    assert clock["every_seconds"] is None, clock
+
+    async with get_session() as s:   # hand-edited / raw-SQL rows (the API 422s both)
+        bad = AutomationRule(account_id=aid, name="bad tz", kind="auto_posts", steps_json="{}",
+                             trigger_json='{"daily_at": ["09:00"], "tz_offset_minutes": "x"}')
+        s.add(bad)
+        await s.flush()
+        bad_id = bad.id
+    capped = await create_rule(RuleCreate(account_id=aid, kind="nudge_online",
+                                          trigger={"every_seconds": 600, "max_runs": 2}))
+    rows = {r["id"]: r for r in (await list_rules(account_id=aid))["rules"]}
+    assert rows[bad_id]["next_due_at"] is None, rows[bad_id]
+    assert rows[capped["id"]]["next_due_at"] is not None, "no runs yet: due"
+    async with get_session() as s:
+        for _ in range(2):
+            s.add(AutomationRun(account_id=aid, kind="nudge_online", status="ok", started_at=now))
+    rows = {r["id"]: r for r in (await list_rules(account_id=aid))["rules"]}
+    assert rows[capped["id"]]["next_due_at"] is None, rows[capped["id"]]
 
 
 # ── delete ────────────────────────────────────────────────────────────
@@ -1240,6 +1310,8 @@ _harness.run(
     case_list_counts_smart_message_sends,
     case_toggle_and_edit,
     case_run_now_enqueues_job,
+    case_follow_up_step_is_not_queued,
+    case_next_due_clock_and_limits,
     case_delete,
     case_validation,
     case_quiet_hours_default_off_set_clear,

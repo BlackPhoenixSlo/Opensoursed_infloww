@@ -21,6 +21,7 @@ from sqlalchemy import select  # noqa: E402
 
 import event_transcoder  # noqa: E402
 import events  # noqa: E402
+import events_persist  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import EventInbox  # noqa: E402
 from db.repo import insert_events  # noqa: E402
@@ -33,7 +34,7 @@ async def _run_worker(items, *, insert=None):
     and return (insert_events calls, transcoded events in order)."""
     calls: list[list[dict]] = []
     transcoded: list[dict] = []
-    real_insert = events.insert_events
+    real_insert = events_persist.insert_events
 
     async def _insert(rows):
         calls.append(list(rows))
@@ -43,22 +44,22 @@ async def _run_worker(items, *, insert=None):
         transcoded.append(ev)
 
     persisted: list[int] = []
-    real_persist = events._persist_batch
+    real_persist = events_persist._persist_batch
 
     async def _persist(rows):
         await real_persist(rows)
         persisted.append(len(rows))
 
     orig_t = event_transcoder.transcode
-    events.insert_events, event_transcoder.transcode = _insert, _transcode
-    events._persist_batch = _persist
-    events._persist_queue = asyncio.Queue()
+    events_persist.insert_events, event_transcoder.transcode = _insert, _transcode
+    events_persist._persist_batch = _persist
+    events_persist._persist_queue = asyncio.Queue()
     try:
         for ev in items:
-            events._persist_queue.put_nowait(
-                (ev["__account_id"], events._first_real_key(ev),
-                 {k: v for k, v in ev.items() if not k.startswith("__")}, ev))
-        task = asyncio.create_task(events._persist_worker_loop())
+            events_persist._persist_queue.put_nowait(events.ed.PersistItem(
+                ev["__account_id"], events.ed.first_key(ev),
+                {k: v for k, v in ev.items() if not k.startswith("__")}, ev))
+        task = asyncio.create_task(events_persist._persist_worker_loop())
         for _ in range(100):
             await asyncio.sleep(0.01)
             # The transcodes run alongside the batch's inbox write (both go to
@@ -71,9 +72,9 @@ async def _run_worker(items, *, insert=None):
         except asyncio.CancelledError:
             pass
     finally:
-        events.insert_events, event_transcoder.transcode = real_insert, orig_t
-        events._persist_batch = real_persist
-        events._persist_queue = None
+        events_persist.insert_events, event_transcoder.transcode = real_insert, orig_t
+        events_persist._persist_batch = real_persist
+        events_persist._persist_queue = None
     return calls, transcoded
 
 

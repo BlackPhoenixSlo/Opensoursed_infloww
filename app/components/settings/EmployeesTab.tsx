@@ -54,7 +54,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CircleAlert, Plus } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useReducer, useState, type ReactNode } from "react";
 
 import { Button } from "@/components/ui/primitives";
 import { EmptyState, IfButton, IfInput, IfPager, IfSelect, IF_TABLE, type IfOption } from "@/components/ui/infloww";
@@ -78,6 +78,9 @@ import { RECORDED_EARNINGS_TIP, useTimesheet, type TimesheetRow } from "@/lib/sh
 import { assignedRole, unknownRoleLabel, withBuiltIns, type RolesBlob } from "@/lib/roles";
 import { cn } from "@/lib/utils";
 import { SkeletonRows } from "@/components/ui/Skeleton";
+import {
+  BATCH_ACTIONS, employeesModalReducer, initialEmployeesModal, type BatchAction, type EmployeesModal,
+} from "@/components/settings/employeesModalReducer";
 
 /** The four filters; "" is each select's "All" option. "pending" is the invites not accepted yet. */
 type Filters = { name: string; creator: string; status: "" | "active" | "inactive" | "pending"; role: string };
@@ -244,15 +247,16 @@ export default function EmployeesTab() {
     return next;
   });
   const targets = shown.filter((e) => !isOwner(e) && selected.has(e.id));
-  const [batch, setBatch] = useState<BatchAction | null>(null);
-  const closeBatch = () => { setBatch(null); clearSelection(); };
 
-  // The modals: at most one open, on one row.
-  const [adding, setAdding] = useState(false);
-  const [editing, setEditing] = useState<Employee | null>(null);
-  const [roleFor, setRoleFor] = useState<Employee | null>(null);
-  const [passwordFor, setPasswordFor] = useState<Employee | null>(null);
-  const [accessFor, setAccessFor] = useState<Employee | null>(null);
+  // Every dialog (row and header modals, Batch dialogs, a resent invite's link): at most one open
+  // (employeesModalReducer.ts).
+  const [dialogs, dispatchDialog] = useReducer(employeesModalReducer, initialEmployeesModal);
+  const openModal = dialogs.modal;
+  const open = (modal: EmployeesModal) => dispatchDialog({ type: "open", modal });
+  // Closes that very dialog (the value it was opened with); a no-op once another is open.
+  const close = (modal: EmployeesModal) => dispatchDialog({ type: "close", modal });
+  // A Batch save's own success (mutate-level: a Cancel's reset drops it), closing only the Batch dialog it saved from.
+  const closeBatch = (modal: EmployeesModal) => { close(modal); clearSelection(); };
 
   const invitesQ = useQuery<PendingInvite[]>({
     queryKey: INVITES_KEY,
@@ -261,10 +265,12 @@ export default function EmployeesTab() {
   });
   const invites = (invitesQ.data ?? []).filter((i) => (groupId === null || i.group_id === groupId)
     && invitePasses(i, filters, roles));
-  const [resent, setResent] = useState<InviteResp | null>(null);
   const resendM = useMutation({
     mutationFn: (token: string) => relay.post<InviteResp>(`/admin/chatters/invites/${encodeURIComponent(token)}/resend`, {}),
-    onSuccess: (fresh) => { setResent(fresh); void qc.invalidateQueries({ queryKey: INVITES_KEY }); },
+    onSuccess: (fresh) => {
+      dispatchDialog({ type: "inviteResent", invite: fresh });
+      void qc.invalidateQueries({ queryKey: INVITES_KEY });
+    },
   });
   const revokeM = useMutation({
     mutationFn: (token: string) => relay.delete<unknown>(`/admin/chatters/invites/${encodeURIComponent(token)}`),
@@ -297,14 +303,13 @@ export default function EmployeesTab() {
   const assignM = useMutation({
     mutationFn: (args: { ids: number[]; accountIds: string[] }) => Promise.all(args.ids.map((id) =>
       relay.put<unknown>(`/admin/employees/${id}/access`, { account_ids: args.accountIds }))),
-    onSuccess: () => { closeBatch(); void invalidate(); },
+    onSuccess: () => invalidate(),
     onError: () => invalidate(),
   });
   const groupM = useMutation({
     mutationFn: (args: { groupId: number | null; ids: number[] }) =>
       relay.put<unknown>("/admin/employee-groups/members", { group_id: args.groupId, employee_ids: args.ids }),
     onSuccess: () => {
-      closeBatch();
       void invalidate();
       void qc.invalidateQueries({ queryKey: GROUPS_KEY });
     },
@@ -377,10 +382,11 @@ export default function EmployeesTab() {
         </td>
         <td className={IF_TABLE.td}>
           <LinkCell text={own ? "All Creators" : assignedCreators(e.account_ids, creators)} editable={editable}
-            onClick={() => setEditing(e)} title="Edit" />
+            onClick={() => open({ kind: "edit", e })} title="Edit" />
         </td>
         <td className={IF_TABLE.td}>
-          <LinkCell text={roleLabel(roleOf(e))} editable={editable} onClick={() => setRoleFor(e)} title="Set role" />
+          <LinkCell text={roleLabel(roleOf(e))} editable={editable} onClick={() => open({ kind: "role", e })}
+            title="Set role" />
         </td>
         <td className={IF_TABLE.td}>
           {e.is_active ? <span className="text-[#2ad4ac]">Activated</span> : <span className={GREY}>Deactivated</span>}
@@ -397,13 +403,13 @@ export default function EmployeesTab() {
         <td className={cn(IF_TABLE.td, "whitespace-nowrap")}>
           {own ? <span className={GREY}>Owner</span> : (
             <span className="inline-flex items-center gap-4">
-              <button type="button" onClick={() => setEditing(e)} className="text-[14px] text-muted hover:text-accent">
+              <button type="button" onClick={() => open({ kind: "edit", e })} className="text-[14px] text-muted hover:text-accent">
                 Edit
               </button>
               <RowMenu items={[
-                { label: "Reset password", onClick: () => setPasswordFor(e) },
+                { label: "Reset password", onClick: () => open({ kind: "password", e }) },
                 {
-                  label: "Access limits", onClick: () => setAccessFor(e), disabled: !e.is_active,
+                  label: "Access limits", onClick: () => open({ kind: "access", e }), disabled: !e.is_active,
                   title: e.is_active ? undefined : "activate this employee first",
                 },
                 e.is_active
@@ -478,8 +484,8 @@ export default function EmployeesTab() {
                 warn("Select at least one employee");
                 return false;
               }}
-              items={BATCH_ACTIONS.map((a) => ({ label: a, onClick: () => setBatch(a) }))} />
-            <IfButton variant="primary" onClick={() => setAdding(true)}>+ Add employee</IfButton>
+              items={BATCH_ACTIONS.map((a) => ({ label: a, onClick: () => open({ kind: "batch", action: a }) }))} />
+            <IfButton variant="primary" onClick={() => open({ kind: "add" })}>+ Add employee</IfButton>
           </div>
         </div>
 
@@ -567,15 +573,23 @@ export default function EmployeesTab() {
       </section>
       {warning}
 
-      <EmployeeFormModal open={adding} onOpenChange={setAdding} roles={roles} creators={creators} groups={groupList} />
-      <EmployeeFormModal open={editing !== null} onOpenChange={(o) => !o && setEditing(null)} employee={editing ?? undefined}
-        roleId={editing ? roleIdOf(editing) : ""} roles={roles} creators={creators} groups={groupList} />
-      <RoleModal employee={roleFor} roleId={roleFor ? roleIdOf(roleFor) : ""} roles={roles} onClose={() => setRoleFor(null)} />
-      <ResetPasswordModal employee={passwordFor} onClose={() => setPasswordFor(null)} />
-      <AccessLimitsModal employee={accessFor} onClose={() => setAccessFor(null)} />
-      <InviteLinkModal invite={resent} onClose={() => setResent(null)} />
+      {openModal?.kind === "add" && (
+        <EmployeeFormModal roles={roles} creators={creators} groups={groupList} onClose={() => close(openModal)} />
+      )}
+      {openModal?.kind === "edit" && (
+        <EmployeeFormModal employee={openModal.e} roleId={roleIdOf(openModal.e)} roles={roles} creators={creators}
+          groups={groupList} onClose={() => close(openModal)} />
+      )}
+      {openModal?.kind === "role" && (
+        <RoleModal employee={openModal.e} roleId={roleIdOf(openModal.e)} roles={roles} onClose={() => close(openModal)} />
+      )}
+      {openModal?.kind === "password" && <ResetPasswordModal employee={openModal.e} onClose={() => close(openModal)} />}
+      {openModal?.kind === "access" && <AccessLimitsModal employee={openModal.e} onClose={() => close(openModal)} />}
+      {openModal?.kind === "invite" && (
+        <InviteLinkModal key={openModal.invite.token} invite={openModal.invite} onClose={() => close(openModal)} />
+      )}
 
-      {batch === "Batch edit roles" && (
+      {openModal?.kind === "batch" && openModal.action === "Batch edit roles" && (
         <BatchRoles
           open
           roles={roles.filter((r) => r.id !== "owner")}
@@ -583,39 +597,40 @@ export default function EmployeesTab() {
           note={rolesBlob.save.gateNote ?? null}
           saving={rolesBlob.save.saving}
           error={rolesBlob.save.error ?? null}
-          onCancel={() => { rolesBlob.resetSave(); setBatch(null); }}
+          onCancel={() => { rolesBlob.resetSave(); close(openModal); }}
           onSave={(roleId) => rolesBlob.commit(
             { assignments: { ...assignments, ...Object.fromEntries(targets.map((e) => [String(e.id), roleId])) } },
-            closeBatch,
+            () => closeBatch(openModal),
           )}
         />
       )}
-      {batch === "Assign" && (
+      {openModal?.kind === "batch" && openModal.action === "Assign" && (
         <BatchAssign
           open
           creators={creators}
           saving={assignM.isPending}
           error={(assignM.error as Error | null)?.message ?? null}
-          onCancel={() => { assignM.reset(); setBatch(null); }}
-          onSave={(accountIds) => assignM.mutate({ ids: targets.map((e) => e.id), accountIds })}
+          onCancel={() => { assignM.reset(); close(openModal); }}
+          onSave={(accountIds) => assignM.mutate(
+            { ids: targets.map((e) => e.id), accountIds }, { onSuccess: () => closeBatch(openModal) },
+          )}
         />
       )}
-      {batch === "Batch edit group" && (
+      {openModal?.kind === "batch" && openModal.action === "Batch edit group" && (
         <BatchGroup
           open
           groups={groupList}
           saving={groupM.isPending}
           error={(groupM.error as Error | null)?.message ?? null}
-          onCancel={() => { groupM.reset(); setBatch(null); }}
-          onSave={(id) => groupM.mutate({ groupId: id, ids: targets.map((e) => e.id) })}
+          onCancel={() => { groupM.reset(); close(openModal); }}
+          onSave={(id) => groupM.mutate(
+            { groupId: id, ids: targets.map((e) => e.id) }, { onSuccess: () => closeBatch(openModal) },
+          )}
         />
       )}
     </div>
   );
 }
-
-const BATCH_ACTIONS = ["Batch edit roles", "Assign", "Batch edit group"] as const;
-type BatchAction = (typeof BATCH_ACTIONS)[number];
 
 interface BatchProps {
   open: boolean;

@@ -21,7 +21,8 @@ import { useChatMessages } from "@/hooks/useChatMessages";
 import { useInboxRealtime } from "@/hooks/useInboxRealtime";
 import { PREFETCH_IDLE_TIMEOUT_MS, PREFETCH_QUIET_MS } from "@/hooks/useUnreadMessagesPrefetch";
 import { emitEvent, observerStub, relayGet, relayPost, resetComposerHarness, routeRelay, tooltipOf } from "./composerTestHarness";
-import { FanList, ROW_RENDER_STEP, SEARCH_DEBOUNCE_MS, type FanListSelection } from "./FanList";
+import { FanList, SEARCH_DEBOUNCE_MS, type FanListSelection } from "./FanList";
+import { ROW_RENDER_STEP } from "./fanListPaging";
 
 vi.mock("@/lib/relay", async (orig) =>
   (await import("./composerTestHarness")).mockRelayModule(await orig()));
@@ -980,6 +981,107 @@ describe("FanList", () => {
     ]));
     expect(await rowOf("Fixture Fan Four")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Load more conversations" })).not.toBeInTheDocument();
+  });
+
+  it("a page of All still loading when Unread is picked never lands in Unread's list", async () => {
+    // Regression guard for useChatList's cache key (filter in the key): the
+    // late page lands in All's entry. Not the paging reducer's doing.
+    const user = userEvent.setup();
+    // All: page one is the three Fans and more exist; its page two (Fan Four)
+    // answers only when the case says. Unread: Fan One alone.
+    let answerPageTwo: (page: { list: OFChatItem[]; hasMore: boolean }) => void = () => {};
+    routeRelay("/api/of/v2/chats?", (path) => {
+      const params = new URLSearchParams(path.split("?")[1]);
+      if (params.get("filter") === "unread") return { list: [CHATS[0]], hasMore: false };
+      return params.get("offset") === "0"
+        ? { list: CHATS, hasMore: true }
+        : new Promise((resolve) => { answerPageTwo = resolve; });
+    });
+    renderFanList();
+    await rowOf("Fixture Fan Three");
+    await user.click(screen.getByRole("button", { name: "Load more conversations" }));
+    await vi.waitFor(() => expect(chatRequests().map(([p]) => p)).toContain(pageUrl(25)));
+
+    await user.click(screen.getByRole("button", { name: "Unread 2" }));
+    await vi.waitFor(() => expect(screen.queryByRole("button", { name: /Fixture Fan Three/ })).not.toBeInTheDocument());
+    await act(async () => answerPageTwo({ list: [answered(FAN_FOUR, 90)], hasMore: false }));
+    await act(() => new Promise((resolve) => setTimeout(resolve, 50)));
+    expect(shownFans()).toEqual(["Fixture Fan One"]);
+  });
+
+  it("a page of All still loading when Unread is picked is on All's list once All is picked again", async () => {
+    // A fetch whose signal the query fn read is cancelled and rolled back once nothing observes its key; the
+    // list reads it only for a search, so All's page two lands in All's entry.
+    const user = userEvent.setup();
+    let answerPageTwo: (page: { list: OFChatItem[]; hasMore: boolean }) => void = () => {};
+    routeRelay("/api/of/v2/chats?", (path) => {
+      const params = new URLSearchParams(path.split("?")[1]);
+      if (params.get("filter") === "unread") return { list: [CHATS[0]], hasMore: false };
+      return params.get("offset") === "0"
+        ? { list: CHATS, hasMore: true }
+        : new Promise((resolve) => { answerPageTwo = resolve; });
+    });
+    renderFanList();
+    await rowOf("Fixture Fan Three");
+    await user.click(screen.getByRole("button", { name: "Load more conversations" }));
+    await vi.waitFor(() => expect(chatRequests().map(([p]) => p)).toContain(pageUrl(25)));
+
+    await user.click(screen.getByRole("button", { name: "Unread 2" }));
+    await vi.waitFor(() => expect(screen.queryByRole("button", { name: /Fixture Fan Three/ })).not.toBeInTheDocument());
+    await act(async () => answerPageTwo({ list: [answered(FAN_FOUR, 90)], hasMore: false }));
+    await user.click(screen.getByRole("button", { name: "All" }));
+    expect(await rowOf("Fixture Fan Four")).toBeInTheDocument();
+  });
+
+  it("another Creator whose first page is still loading shows none of the Creator left behind's rows", async () => {
+    ACCOUNTS = [CREATOR_ACCOUNT, OTHER_ACCOUNT];
+    // The first Creator's page answers; the other Creator's never does.
+    routeRelay("/api/of/v2/chats?", (_path, ctx) => (ctx?.accountId === OTHER_ACCOUNT.id
+      ? new Promise(() => {})
+      : { list: CHATS, hasMore: false }));
+    const { rerender } = renderFanList();
+    await rowOf("Fixture Fan Three");
+
+    scopeCreator = OTHER_ACCOUNT.id;
+    rerender(<FanList selected={null} onSelect={vi.fn()} />);
+    await vi.waitFor(() => expect(relayGet.mock.calls.some(([p, c]) =>
+      p.startsWith("/api/of/v2/chats?") && c?.accountId === OTHER_ACCOUNT.id)).toBe(true));
+    await act(() => new Promise((resolve) => setTimeout(resolve, 50)));
+    expect(shownFans()).toEqual([]);
+  });
+
+  it("All Models: when the set of models changes, the new list waits for a scroll before paging, as any new list does", async () => {
+    scopeKind = "all";
+    // Every account: page one is the three Fans and more exist.
+    routeRelay("/api/of/v2/chats?", (path) => (new URLSearchParams(path.split("?")[1]).get("offset") === "0"
+      ? { list: CHATS, hasMore: true }
+      : { list: [], hasMore: true }));
+    const { rerender } = renderFanList();
+    await rowOf("Fixture Fan Three");
+    const reachEnd = () => {
+      const [cb] = observerStub.mock.calls.at(-1) as unknown as [IntersectionObserverCallback];
+      act(() => cb([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver));
+    };
+    const pagedOn = () => chatRequests().filter(([path]) => !String(path).includes("offset=0"));
+
+    // The Employee scrolls the list: its end coming into view pulls the next page.
+    const sentinel = (observerStub.mock.results.at(-1)!.value as { observe: { mock: { calls: unknown[][] } } })
+      .observe.mock.calls[0][0] as HTMLElement;
+    const scroller = sentinel.parentElement!;
+    Object.defineProperty(scroller, "scrollTop", { configurable: true, value: 40 });
+    fireEvent.scroll(scroller);
+    reachEnd();
+    await vi.waitFor(() => expect(pagedOn()).not.toEqual([]));
+
+    // A second model joins: All Models is a new list (useChatList keys on the set).
+    ACCOUNTS = [CREATOR_ACCOUNT, OTHER_ACCOUNT];
+    relayGet.mockClear();
+    rerender(<FanList selected={null} onSelect={vi.fn()} />);
+    await vi.waitFor(() => expect(chatRequests()).not.toEqual([]));
+    await act(() => new Promise((resolve) => setTimeout(resolve, 50)));
+    reachEnd();
+    await act(() => new Promise((resolve) => setTimeout(resolve, 100)));
+    expect(pagedOn()).toEqual([]);
   });
 
   it("rendering the fixture rows asks the relay for the same URLs as before the row restyle, and none naming a read row's Fan until a row is hovered or pressed", async () => {

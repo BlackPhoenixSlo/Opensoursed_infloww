@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stats guard (roadmap 2.15, 05 B8; service/stats.py `stats_guard`).
+"""Stats guard (roadmap 2.15, 05 B8; service/stats_window.py `stats_guard`).
 
 Pins: every /admin/stats route refuses, with a 413 whose detail carries a
 `message` hint (what relay.ts shows), a `from`..`to` window over 400 days

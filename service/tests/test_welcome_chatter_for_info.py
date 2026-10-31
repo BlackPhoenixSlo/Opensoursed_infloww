@@ -1009,7 +1009,7 @@ async def case_style_splits_line_into_three():
     by the content, NOT a dice roll that re-merges); a reply carries >1 question
     bubble at most once; overflow past the cap merges into the last (never dropped)."""
     import random as _r
-    from automations.welcome_chatter_for_info import (
+    from automations._bubbles import (
         split_for_bubbles, _split_sentences, _cap_one_question,
     )
     # Seeds chosen so the per-reply strategy randomiser lands on a known strategy.
@@ -1065,7 +1065,7 @@ async def case_length_drives_bubble_count():
     longer earns a couple, but it never explodes into a 5-line burst. Balanced grouping
     sends the extra units to the END so a trailing fragment rejoins."""
     import random as _r
-    from automations.welcome_chatter_for_info import (
+    from automations._bubbles import (
         split_for_bubbles, _target_bubbles, _group_to_target,
     )
     assert _target_bubbles(3) == 1
@@ -1089,7 +1089,7 @@ async def case_split_strategy_randomiser_varies():
     seeds for a multi-clause reply (length / clause / terse), but ALWAYS preserves
     every word and stays within the cap — so replies don't all chop the same way."""
     import random as _r
-    from automations.welcome_chatter_for_info import (
+    from automations._bubbles import (
         split_for_bubbles, _strategy_target, _split_units,
     )
     raw = "haha okay jack, i see how it is, where you from, what do you do"
@@ -1116,7 +1116,7 @@ async def case_seeded_split_never_touches_the_global_rng():
     bubbled differently on a retry, and a suite run leaked its randomness into the
     next test. Swap the module global for a tripwire: nothing may call it."""
     import random as _r
-    from automations import welcome_chatter_for_info as _oac
+    from automations import _bubbles as _oac
 
     class _Tripwire:
         def random(self):
@@ -1141,7 +1141,7 @@ async def case_two_questions_never_drops_content():
     loses the message). 'oh yeah? bet u could, but words are cheap jack 😏 how old
     are ya again?' used to collapse to just ['oh', 'yeah?']; now ALL content survives
     and only the LAST question keeps its '?'."""
-    from automations.welcome_chatter_for_info import (
+    from automations._bubbles import (
         split_for_bubbles, _split_sentences, _cap_one_question,
     )
     import random as _r
@@ -1167,7 +1167,7 @@ async def case_lead_reaction_dedup_stops_repeated_oof():
     """The 'oof every message' tell: if the reply opens with the same reaction word
     the bot just used, drop that lead — the standalone bubble, or the fused opener —
     but never empty the reply, and leave a DIFFERENT reaction alone."""
-    from automations.welcome_chatter_for_info import _dedupe_lead_reaction, _react_token
+    from automations._bubbles import _dedupe_lead_reaction, _react_token
     # normalized token collapses stretched letters
     assert _react_token("oof") == _react_token("ooof") == "of"
     assert _react_token("lol") == _react_token("looool") == "lol"
@@ -1367,7 +1367,7 @@ async def case_muted_creator_not_replied():
 # ── durable skip persists + is honored on re-run ───────────────────────────────
 
 async def case_muted_creator_skip_persisted_and_honored():
-    from automations._common import mark_muted_creator_skip, MUTED_CREATOR_REASON
+    from automations._skiplist import mark_muted_creator_skip, MUTED_CREATOR_REASON
     aid = "acc_muted2"
     await _seed_account(aid)
     await _seed_fan_source(aid, 7102, "creator_we_follow", spend_cents=50, is_muted=True)
@@ -1392,7 +1392,7 @@ async def case_muted_creator_skip_persisted_and_honored():
 
 async def case_scrape_mute_flip_reconciles_skip():
     from automation_executor import _upsert_fan_identity
-    from automations._common import MUTED_CREATOR_REASON
+    from automations._skiplist import MUTED_CREATOR_REASON
     aid = "acc_muted3"
     await _seed_account(aid)
     await _seed_fan_source(aid, 7103, "creator_we_follow")
@@ -1438,7 +1438,7 @@ async def case_muted_non_creator_not_skiplisted():
 # ── manual "restrict from automations" toggle: durable skip + honored + lift ──
 
 async def case_manual_restrict_blocks_and_lifts():
-    from automations._common import automation_restrict_status, MANUAL_RESTRICT_REASON
+    from automations._skiplist import automation_restrict_status, MANUAL_RESTRICT_REASON
     aid = "acc_restrict1"
     await _seed_account(aid)
     await _seed_fan_source(aid, 7105, "onlyfans")  # an ordinary fan
@@ -2007,7 +2007,7 @@ async def case_words_predicate_matches_the_sql():
     `last_body` to the model, and a blank fan line is the failure its own docstring
     names. The cost is a fan whose burst aborted on whitespace getting no rescue,
     which is silence in answer to nothing."""
-    from automations._common import inbound_is_words
+    from automations._inbound import inbound_is_words
     from automations import welcome_turn as wt
     from automations import welcome_chatter_for_info as wc
     from transaction_ingest import tip_ledger_body  # noqa: E402
@@ -2144,7 +2144,7 @@ def case_turn_handoff_seam_is_one_object():
     Both halves are pinned, because the REWRITE is not bookkeeping: downstream
     reads `last_body` gated on `last_dir`, so a candidate admitted without it
     hands the model our own welcome bubble as "what he said"."""
-    from automations._common import MSG_CLIP, TurnHandoff
+    from automations._inbound import MSG_CLIP, TurnHandoff
 
     # The engine's candidate carries the object.
     assert isinstance(_Candidate(61099).turn, TurnHandoff)

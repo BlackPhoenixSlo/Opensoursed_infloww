@@ -423,6 +423,9 @@ describe("HbPager", () => {
     expect(per).toHaveTextContent("10");
     await userEvent.click(per);
     expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual(["10", "20", "50"]);
+    // A page-foot menu opens upward, inside the viewport.
+    expect(screen.getByRole("listbox").parentElement).toHaveClass("bottom-full");
+    expect(screen.getByRole("listbox").parentElement).not.toHaveClass("top-full");
     await userEvent.click(screen.getByRole("option", { name: "20" }));
     expect(onSize).toHaveBeenCalledWith(20);
   });

@@ -18,6 +18,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { relay, type RelayContext } from "@/lib/relay";
+import { parseJsonObjectOr } from "@/lib/rawJsonReducer";
 
 const BG_CTX: RelayContext = { priority: "background" };
 
@@ -122,21 +123,7 @@ function JsonConfigModal({
     onError: (e: Error) => setErr(e.message || "Save failed"),
   });
 
-  function parseOrError(): Record<string, unknown> | null {
-    const t = text.trim();
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(t || "{}");
-    } catch (e) {
-      setErr(`Invalid JSON: ${(e as Error).message}`);
-      return null;
-    }
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      setErr('Config must be a JSON object, e.g. { "enabled": true }');
-      return null;
-    }
-    return parsed as Record<string, unknown>;
-  }
+  const parseOrError = () => parseJsonObjectOr(text, "Config", '{ "enabled": true }', setErr);
 
   function onSave() {
     setErr(null);

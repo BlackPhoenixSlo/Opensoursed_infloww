@@ -12,10 +12,10 @@
  * right-pane MessageList.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { chatRowKey, useChatList, listPaintKey } from "@/hooks/useChatList";
+import { chatListAccountKey, chatRowKey, useChatList, listPaintKey } from "@/hooks/useChatList";
 import { useUnreadMessagesPrefetch } from "@/hooks/useUnreadMessagesPrefetch";
 import { useTrailingDebounce } from "@/hooks/useTrailingDebounce";
 import { prefetchChatMessages } from "@/hooks/useChatMessages";
@@ -53,6 +53,9 @@ import { FanListFilters, type ActiveChip } from "./FanListFilters";
 import { FanListHeader } from "./FanListHeader";
 import { FanListEmpty, FanListSkeleton, LoadMoreConversations, ShowMoreRows } from "./FanListStates";
 import { FanRow, fanNameOf } from "./FanRow";
+import {
+  canAutofill, initialPaging, isCapped, pagingReducer, pagingView,
+} from "./fanListPaging";
 import { FolderPicker } from "./FolderPicker";
 import { SplitInbox } from "./SplitInbox";
 import { isFanOnline } from "./isFanOnline";
@@ -65,15 +68,6 @@ import { BRAND_NAME } from "@/lib/brand";
 const OWE_REPLY_TARGET = 8;       // stop early once we have this many on screen
 const OWE_REPLY_SCAN_CAP = 100;   // and never scan more than this many chats deep
 
-// Hard cap on background pagination. Search bypasses (otherwise typo'd
-// queries dead-end after 200 rows). "Load more" click extends by another step.
-const SCROLL_CAP_STEP = 200;
-// Rows rendered at most, per "Show more" step. Live messages insert rows for
-// Fans not yet in the list (useInboxRealtime), so under a DM flood the list
-// grows without bound (measured 209 -> 583 rows in 4 minutes on All Models);
-// the rest stay in the data (chip counts, Select all) and wait
-// behind a "Show N more" row at the end.
-export const ROW_RENDER_STEP = 200;
 // The search box is sent as OF's `query` once typing pauses this long: each
 // live search takes seconds (measured 6.8-8.3 s on a live deployment), so a name typed fast is
 // one search, not one per letter. 250 ms, as the PPV fan search, the GIF and
@@ -127,8 +121,14 @@ export function FanList({
   const [blurMode, setBlurMode] = useBlurMode();
   const [compactMedia, setCompactMedia] = useCompactMedia();
   const [sortMode, setSortMode] = useChatSortMode();
-  const [capRows, setCapRows] = useState(SCROLL_CAP_STEP);
-  const [renderCap, setRenderCap] = useState(ROW_RENDER_STEP);
+  // The list on screen; a new one gets a fresh paging budget (one action).
+  // `accountKey` is useChatList's: the Creator, or in All Models the set.
+  const accountKey = chatListAccountKey(scope, accounts);
+  const view = pagingView({ scopeKind: scope.kind, accountKey, active, query });
+  const [paging, dispatchPaging] = useReducer(pagingReducer, view, initialPaging);
+  // Reset during render, not in an effect: the new list's first render must
+  // not draw or page with the old list's budget. `view` is a string: settles.
+  if (paging.view !== view) dispatchPaging({ type: "resetFor", view });
   // Select mode (`FanListBulkBar`): the picked rows' keys, or null outside it.
   const [picks, setPicks] = useState<ReadonlySet<string> | null>(null);
 
@@ -393,10 +393,6 @@ export function FanList({
   // (useInboxRealtime patches EVERY ["chats", ...] cache, including the
   // active one we subscribe to), so reading qc.getQueryData at render
   // time picks up fresh values without an extra subscription.
-  const accountKey =
-    scope.kind === "model"
-      ? scope.accountId
-      : accounts.map((a) => a.id).sort().join(",");
   // 25 = useChatList's PAGE_SIZE default; mirror it so the cache key matches.
   const allFilterKey = useMemo(
     () => ["chats", scope.kind, accountKey, null, null, query || null, 25] as const,
@@ -564,7 +560,7 @@ export function FanList({
   // place of the rows and of "End of inbox.".
   const noneOnline = onlineOnly && rows.length > 0 && shownRows.length === 0;
   // The rows drawn: the first `renderCap` (ROW_RENDER_STEP).
-  const renderedRows = shownRows.length > renderCap ? shownRows.slice(0, renderCap) : shownRows;
+  const renderedRows = shownRows.length > paging.renderCap ? shownRows.slice(0, paging.renderCap) : shownRows;
   const hiddenRows = shownRows.length - renderedRows.length;
   const hiddenRowsRef = useRef(hiddenRows);
   hiddenRowsRef.current = hiddenRows;
@@ -693,13 +689,6 @@ export function FanList({
     }
   }
 
-  // Reset the scroll cap whenever the query context changes (new filter,
-  // folder, scope, or search). A fresh list should get a fresh 200-row budget.
-  useEffect(() => {
-    setCapRows(SCROLL_CAP_STEP);
-    setRenderCap(ROW_RENDER_STEP);
-  }, [active, query, scope.kind, scope.kind === "model" ? scope.accountId : null]);
-
   // Pre-warm the SW image cache for the top rows so the OF signed-URL
   // refresh round-trip happens once per fan-session rather than each time
   // a row's <img> mounts. `Image()` rides the browser's image pipeline,
@@ -722,11 +711,8 @@ export function FanList({
     }
   }, [sortedDisplayRows, qc]);
 
-  // True when we've paginated up to the cap with no active search. The
-  // budget is measured against the RAW scanned set (allRows), not the
-  // filter view — owe-reply only displays a handful of matches but each
-  // page still costs a roundtrip, so the cap has to bite either way.
-  const capped = !query && allRows.length >= capRows;
+  // True when we've paginated up to the cap with no active search.
+  const capped = isCapped(paging, allRows.length, query);
 
   // Owe-reply and a Split Inbox group: keep loading more pages until we
   // either fill the target (5–8 filtered rows on screen) or scan-cap hits
@@ -748,30 +734,23 @@ export function FanList({
   // Page 1 (~25 rows) loads automatically via useInfiniteQuery; further
   // pages only auto-load once the user starts scrolling.
   const sentinelRef = useRef<HTMLDivElement | null>(null);
-  const [userScrolled, setUserScrolled] = useState(false);
+  const { userScrolled } = paging;
   // Bounded auto-fill: if first paint doesn't overflow the scroller (small
   // inbox, or unified mode where one account returns few rows), the IO
   // sentinel sits inside the viewport forever but `userScrolled` never
-  // flips, so load-more never fires. Counter caps the burst at 10 pages
-  // (confirmed sufficient at 80% zoom; 100% zoom users need at least this
-  // many to reach overflow). Reset on query-key change.
-  const autofillBurstRef = useRef(0);
+  // flips, so load-more never fires. `canAutofill` caps the bursts per list
+  // (reset with the rest of the paging budget).
+  const autofillLeft = canAutofill(paging);
   useEffect(() => {
     const el = sentinelRef.current;
     const root = el?.parentElement;
     if (!root) return;
     const onScroll = () => {
-      if (root.scrollTop > 0) setUserScrolled(true);
+      if (root.scrollTop > 0) dispatchPaging({ type: "scrolled" });
     };
     root.addEventListener("scroll", onScroll, { passive: true });
     return () => root.removeEventListener("scroll", onScroll);
   }, []);
-  // Reset the "has scrolled" flag whenever query context changes so a
-  // fresh list doesn't inherit the prior scroll permission.
-  useEffect(() => {
-    setUserScrolled(false);
-  }, [active, query, scope.kind, scope.kind === "model" ? scope.accountId : null]);
-
   useEffect(() => {
     const el = sentinelRef.current;
     if (!el) return;
@@ -799,12 +778,6 @@ export function FanList({
     return () => io.disconnect();
   }, [loadMore, capped, fillExhausted, fillActive, userScrolled, query]);
 
-  // Reset the auto-fill burst counter when the query context changes so a
-  // fresh list (new scope, filter, folder, or search) gets a fresh budget.
-  useEffect(() => {
-    autofillBurstRef.current = 0;
-  }, [accountKey, serverFilter, serverListId, query]);
-
   // Auto-fill until the panel overflows. Pairs with the userScrolled gate
   // on the IO observer: once content is taller than the viewport, scroll
   // takes over and this effect stops firing. Hard-capped at 10 bursts so
@@ -819,6 +792,7 @@ export function FanList({
     if (!q.hasMore || q.isFetchingMore) return;
     if (capped) return;
     if (fillExhausted) return;
+    if (!autofillLeft) return;
     const scroller = sentinelRef.current?.parentElement;
     if (!scroller) return;
     // Tab not visible or panel not mounted yet — clientHeight will be 0
@@ -826,12 +800,11 @@ export function FanList({
     if (scroller.offsetParent === null || scroller.clientHeight === 0) return;
     const id = requestAnimationFrame(() => {
       if (scroller.scrollHeight > scroller.clientHeight + 80) return;
-      if (autofillBurstRef.current >= 10) return;
-      autofillBurstRef.current += 1;
+      dispatchPaging({ type: "autofilled" });
       loadMore();
     });
     return () => cancelAnimationFrame(id);
-  }, [rows.length, q.hasMore, q.isFetchingMore, q.isSuccess, isFromSeed, capped, fillExhausted, loadMore]);
+  }, [rows.length, q.hasMore, q.isFetchingMore, q.isSuccess, isFromSeed, capped, fillExhausted, autofillLeft, loadMore]);
 
   // The rows' time column is measured from this render, to the minute: the
   // column and the badges read no finer, and a clock that moved every render
@@ -860,7 +833,7 @@ export function FanList({
     oweReplyActive || q.isFetchingMore || (q.isFetching && rows.length > 0) || !q.hasMore
       ? null
       : capped
-        ? () => setCapRows(allRows.length + SCROLL_CAP_STEP)
+        ? () => dispatchPaging({ type: "extendCap", loaded: allRows.length })
         : () => q.loadMore();
 
   return (
@@ -985,7 +958,7 @@ export function FanList({
           className={cn(!loadMoreClick && hiddenRows === 0 && cn(MP.ours.FanList.sentinel, "flex items-center justify-center text-fg-dim text-center"))}
         >
           {hiddenRows > 0
-            ? <ShowMoreRows count={hiddenRows} onClick={() => setRenderCap((n) => n + ROW_RENDER_STEP)} />
+            ? <ShowMoreRows count={hiddenRows} onClick={() => dispatchPaging({ type: "showMore" })} />
             : loadMoreClick
             ? <LoadMoreConversations loaded={allRows.length} onClick={loadMoreClick} />
             : oweReplyActive

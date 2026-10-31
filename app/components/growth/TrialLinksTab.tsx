@@ -105,7 +105,7 @@ export default function TrialLinksTab({ accountId, onAccountChange, accountsLoad
 }) {
   const linksQ = useTrialLinks(accountId);
   const deleteM = useDeleteTrialLink(accountId);
-  const filters = useFrameFilters();
+  const filters = useFrameFilters({});
   const { reportTz } = filters;
   const sessionGone = useSessionGone(accountId);
 

@@ -9,7 +9,7 @@
  */
 
 import { useCallback, useEffect, useRef } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueryClient, type Query } from "@tanstack/react-query";
 
 import { prefetchModelChatList } from "@/hooks/useChatList";
 import { useRosterCountActions } from "@/hooks/useRosterCounts";
@@ -17,6 +17,14 @@ import { useRosterCountActions } from "@/hooks/useRosterCounts";
 /** Hover intent: only warm after the pointer settles, so sweeping the mouse
  *  across the Creators doesn't fire a live OF read per Creator it crosses. */
 export const HOVER_INTENT_MS = 250;
+
+/** Whether the warm-up's invalidation may refetch this chat list: not while it is loading its
+ *  next page (the refetch would cancel that page and the list would come back a page short).
+ *  `fetchMeta` keeps `fetchMore` after that page settles or fails, so only `fetchStatus` says it
+ *  is still loading; a settled list is refetched like any other. */
+export function warmUpMayRefetch(q: Query): boolean {
+  return !(q.state.fetchStatus !== "idle" && q.state.fetchMeta?.fetchMore);
+}
 
 export function useCreatorWarmUp() {
   const { refreshOne } = useRosterCountActions();
@@ -38,11 +46,12 @@ export function useCreatorWarmUp() {
   // a cooldown no-op means a bust ran <8s ago. If that bust FAILED (OF error —
   // refreshOne swallows it), the refetch just re-reads whatever the relay has;
   // badge and list still agree because both come from that same window.
+  // A list loading its next page is left alone (warmUpMayRefetch).
   const warm = useCallback(
     (accountId: string) => {
       void prefetchModelChatList(qc, accountId);
       void refreshOne(accountId).then(() =>
-        qc.invalidateQueries({ queryKey: ["chats", "model", accountId] }),
+        qc.invalidateQueries({ queryKey: ["chats", "model", accountId], predicate: warmUpMayRefetch }),
       );
     },
     [refreshOne, qc],

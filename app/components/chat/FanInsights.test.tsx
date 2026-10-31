@@ -15,6 +15,8 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
+import { settled } from "@/test-utils";
+
 const { relayGet, relayPut } = vi.hoisted(() => ({ relayGet: vi.fn(), relayPut: vi.fn() }));
 vi.mock("@/lib/relay", async (orig) => ({
   SALARY_FREQUENCIES: (await orig<typeof import("@/lib/relay")>()).SALARY_FREQUENCIES,
@@ -349,7 +351,9 @@ describe("Fan insights closing", () => {
     expect(onClose).toHaveBeenCalledTimes(2);
   });
 
-  it("a swipe right on the slide-over or its backdrop closes it; a swipe left, the pinned column and 1024px+ do not", () => {
+  it("a swipe right on the slide-over or its backdrop closes it; a swipe left, the pinned column and 1024px+ do not", async () => {
+    // A 160px sheet (the test DOM has no layout): each 150px+ drag carries it past 75%.
+    const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(160);
     const onClose = vi.fn();
     const swipe = (el: Element, x0: number, x1: number) => {
       fireEvent.touchStart(el, { touches: [{ clientX: x0, clientY: 300 }], changedTouches: [{ clientX: x0, clientY: 300 }] });
@@ -358,23 +362,30 @@ describe("Fan insights closing", () => {
     };
     const { unmount } = renderInsights({ layout: "slide-over", onClose });
     const dialog = screen.getByRole("dialog", { name: "Fan insights" });
+    // Each swipe settles before the next: one made while the last still slides off is not taken.
     swipe(dialog, 300, 150);
+    await settled();
     expect(onClose).not.toHaveBeenCalled();
     swipe(dialog, 150, 300);
+    await settled();
     expect(onClose).toHaveBeenCalledTimes(1);
     swipe(dialog.previousElementSibling!, 20, 200);            // the backdrop
+    await settled();
     expect(onClose).toHaveBeenCalledTimes(2);
     unmount();
 
     renderInsights({ layout: "pinned", onClose });
     swipe(screen.getByRole("complementary", { name: "Fan insights" }), 150, 300);
+    await settled();
     expect(onClose).toHaveBeenCalledTimes(2);
     cleanup();
 
     viewport.wide = true;
     renderInsights({ layout: "slide-over", onClose });
     swipe(screen.getByRole("dialog", { name: "Fan insights" }), 150, 300);
+    await settled();
     expect(onClose).toHaveBeenCalledTimes(2);
+    width.mockRestore();
   });
 
   it("the pinned column is the Fan insights landmark, not a dialog, and ignores Esc", async () => {

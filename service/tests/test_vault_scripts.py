@@ -1108,7 +1108,9 @@ def case_mirror_rerun_reuses_the_same_of_list() -> None:
 
 
 @_harness.xfail("picker cache does not carry OF list membership — "
-                "OF has 5, grid shows 0; never ran until the run() guard landed")
+                "OF has 5, grid shows 0; never ran until the run() guard landed; "
+                "flaps run-to-run (XPASS 2/6 serial runs 10-30)",
+                strict=False)
 def case_mirror_binds_membership_into_the_cache() -> None:
     """The picker resolves an OF folder by scanning each cached item's
     `of_folder_ids`, and that column is written ONLY by a full collect. So a

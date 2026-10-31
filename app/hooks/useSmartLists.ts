@@ -162,3 +162,11 @@ export async function resolveSmartList(id: number): Promise<number[]> {
   const r = await relay.get<{ fan_ids: number[] }>(`/admin/smart-lists/${id}/resolve`);
   return r.fan_ids ?? [];
 }
+
+/** Several picked lists as one de-duped fan-id array ([] for none, no call) —
+ *  the mass composer's include / exclude Smart Lists at send time. */
+export async function resolveSmartLists(ids: ReadonlySet<number>): Promise<number[]> {
+  if (ids.size === 0) return [];
+  const arrays = await Promise.all([...ids].map((id) => resolveSmartList(id)));
+  return Array.from(new Set(arrays.flat()));
+}

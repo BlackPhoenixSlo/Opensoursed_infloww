@@ -16,6 +16,9 @@ Covers the event-driven dispatch path and the manual-chatter HARD YIELD:
       gate ON but fan_on_cooldown → no enqueue (stands down for a human).
   case_dedup_single_pending:
       two inbounds for the same (account,kind) → exactly one pending job.
+  case_concurrent_same_fan_one_job / case_concurrent_two_fans_neither_waits:
+      DMs dispatched at once: one fan → one job (per-fan serial), two fans →
+      two jobs with neither waiting; the per-fan lock dict empties after.
   case_supervisor_wakes_on_event:
       wake_supervisor() makes the supervisor drain a due job well under 30s.
   case_hard_yield_human_send_sets_cooldown:
@@ -201,7 +204,7 @@ async def case_inbound_terminal_no_enqueue():
 
 
 async def case_inbound_on_cooldown_skips():
-    # A FAR cooldown (the 30-min welcome/followup rest, > _MAX_DEFER_S) is too
+    # A FAR cooldown (the 30-min welcome/followup rest, > decide.MAX_DEFER_S) is too
     # long to park a chat reply on → fall back to the periodic sweep, no enqueue.
     aid, fan = "w7_cooldown", 4005
     await _seed_account(aid, webhook_enabled=True)
@@ -242,6 +245,70 @@ async def case_dedup_single_pending():
     await wd.on_inbound_message(aid, fan, 2)  # second reply, same kind, imminent
     jobs = await _pending_jobs(aid, "welcome_chatter_for_info")
     assert len(jobs) == 1, f"dedup must keep exactly one pending job, got {len(jobs)}"
+
+
+def _stale_dup_read(hold):
+    """Wrap `_has_imminent_pending_job` so its answer comes back only after
+    `hold(fan_id)` returns: the read is taken first, then held, so without the
+    per-fan serial a second dispatch reads before the first one's insert.
+    Twin: slop/lib/w7_faults.py `_unserialized` (same wrapper, relay side)."""
+    real = wd._has_imminent_pending_job
+
+    async def held(account_id, kind, fan_id, within_s, *, s=None):
+        got = await real(account_id, kind, fan_id, within_s, s=s)
+        await hold(fan_id)
+        return got
+    return real, held
+
+
+async def case_concurrent_same_fan_one_job():
+    """Two (and five) DMs of one fan dispatched at once (the transcoder fires a
+    task per DM) → exactly one job: the 2nd dispatch reads after the 1st's insert.
+    The per-fan lock dict is empty once the burst is done (no leak)."""
+    aid, fan = "w7_burst_same", 4021
+    await _seed_account(aid, webhook_enabled=True)
+    real, held = _stale_dup_read(lambda _f: asyncio.sleep(0.05))
+    wd._has_imminent_pending_job = held
+    try:
+        await asyncio.gather(wd.on_inbound_message(aid, fan, 1), wd.on_inbound_message(aid, fan, 2))
+        assert len(await _pending_jobs(aid, "welcome_chatter_for_info")) == 1
+        await asyncio.gather(*(wd.on_inbound_message(aid, fan + 1, m) for m in range(5)))
+        jobs = await _pending_jobs(aid, "welcome_chatter_for_info")
+    finally:
+        wd._has_imminent_pending_job = real
+    per_fan = sorted(_knobs(j)["only_fan_ids"][0] for j in jobs)
+    assert per_fan == [fan, fan + 1], per_fan
+    assert len(wd._fan_locks) == 0, list(wd._fan_locks)
+
+
+async def case_concurrent_two_fans_neither_waits():
+    """Two fans at once → 2 jobs, and fan B's dispatch finishes while fan A's is
+    still held mid-dispatch: the serial is per fan, never a write cap."""
+    aid, a, b = "w7_burst_two", 4031, 4032
+    await _seed_account(aid, webhook_enabled=True)
+    release_a = asyncio.Event()
+
+    async def hold(fid):
+        if fid == a:
+            await release_a.wait()
+    real, held = _stale_dup_read(hold)
+    wd._has_imminent_pending_job = held
+    try:
+        ta = asyncio.create_task(wd.on_inbound_message(aid, a, 1))
+        await asyncio.sleep(0.05)
+        assert not ta.done()
+        await asyncio.wait_for(wd.on_inbound_message(aid, b, 1), timeout=5)
+        mid = sorted(_knobs(j)["only_fan_ids"][0] for j in await _pending_jobs(aid))
+        assert mid == [b], ("fan B waited on fan A", mid)
+        assert list(wd._fan_locks) == [(aid, a)], list(wd._fan_locks)
+        release_a.set()
+        await asyncio.wait_for(ta, timeout=5)
+    finally:
+        release_a.set()
+        wd._has_imminent_pending_job = real
+    got = sorted(_knobs(j)["only_fan_ids"][0] for j in await _pending_jobs(aid))
+    assert got == [a, b], got
+    assert len(wd._fan_locks) == 0, list(wd._fan_locks)
 
 
 async def case_inbound_delay_schedules_future_job():
@@ -596,4 +663,6 @@ _harness.run(
     case_inbound_after_a_blast_enqueues_a_one_fan_scrape,
     case_a_human_of_app_blast_triggers_the_scrape_too,
     case_the_scrape_runs_even_for_a_fan_nobody_will_answer,
+    case_concurrent_same_fan_one_job,
+    case_concurrent_two_fans_neither_waits,
 )

@@ -35,6 +35,7 @@ import json
 import os
 import random
 import time
+import weakref
 from datetime import datetime, timedelta
 
 from sqlalchemy import select
@@ -46,20 +47,24 @@ from db.models import (
     SkipList,
 )
 import automation_executor as ax
+import webhook_dispatch_decide as decide
 from automation_registry import kind_family
 
 log = logging.getLogger("of-relay.webhook_dispatch")
 
 
-# Window for the dedup check: skip enqueue if a pending job for (account, kind)
-# is already due within this many seconds (the imminent sweep covers this fan).
-_DEDUP_WINDOW_S = 5
+# One in-flight dispatch per (account, fan): two DMs of one fan ms apart each
+# get their own `on_inbound_message` task (the transcoder fires one per DM), and
+# without this both read "no pending job" before either inserts → 2 jobs. The
+# lock is per pair, so another fan never waits; weak values, so an entry goes
+# when its last holder/waiter drops the lock (no growth with the fan count).
+# Not a write cap: the DM is already persisted before we run.
+_fan_locks: weakref.WeakValueDictionary[tuple[str, int], asyncio.Lock] = weakref.WeakValueDictionary()
 
-# When a fan replies DURING their per-fan cooldown, we defer the reply to the
-# moment the cooldown ends instead of dropping it to the slow periodic sweep.
-# But a cooldown further out than this (the 30-min welcome/followup rest) is too
-# long to park a chat reply on — let the periodic sweep catch that rare case.
-_MAX_DEFER_S = 300
+
+def _fan_serial(account_id: str, fan_id: int) -> asyncio.Lock:
+    key = (str(account_id), int(fan_id))
+    return _fan_locks.get(key) or _fan_locks.setdefault(key, asyncio.Lock())
 
 # ── The inbound-after-a-blast scrape (plans/blast-splice Part C) ───────
 # A list-audience blast writes NO per-fan row, so the man who answers it has our
@@ -286,12 +291,7 @@ async def _imminent_pending_job(
             p = json.loads(pj or "{}")
         except Exception:
             continue
-        # The producers name the fan differently: the chat engines take a LIST
-        # (`only_fan_ids`), the funnel takes `test_fan`, and a single-fan job
-        # carries a bare `fan_id`.
-        if not (fid in (p.get("only_fan_ids") or [])
-                or p.get("test_fan") == fid
-                or p.get("fan_id") == fid):
+        if not decide.targets_fan(p, fid):
             continue
         at = run_at or datetime.utcnow()
         if best is None or at > best[0]:
@@ -352,16 +352,12 @@ async def _scrape_after_blast(account_id: str, fan_id: int, *, blasted: bool | N
             return
         # ⚠️ NO AWAIT BETWEEN THE CHECK AND THE SET. That is what makes two
         # concurrent inbound handlers produce one job instead of two.
-        key = (str(account_id), int(fan_id))
-        now_mono = time.monotonic()
-        claimed = _blast_scrape_claims.get(key)
-        if claimed is not None and now_mono - claimed < _BLAST_SCRAPE_DEDUP_S:
+        global _blast_scrape_claims
+        claimed, _blast_scrape_claims = decide.blast_claim(
+            _blast_scrape_claims, (str(account_id), int(fan_id)), time.monotonic(),
+            _BLAST_SCRAPE_DEDUP_S, _BLAST_SCRAPE_CLAIM_MAX)
+        if not claimed:
             return
-        _blast_scrape_claims[key] = now_mono
-        if len(_blast_scrape_claims) > _BLAST_SCRAPE_CLAIM_MAX:
-            stale = now_mono - _BLAST_SCRAPE_DEDUP_S
-            for k in [k for k, at in _blast_scrape_claims.items() if at < stale]:
-                _blast_scrape_claims.pop(k, None)
         await ax.enqueue_job(
             account_id, "scrape_chats",
             payload={"fan_ids": [int(fan_id)], "source": "blast_reply"},
@@ -373,6 +369,71 @@ async def _scrape_after_blast(account_id: str, fan_id: int, *, blasted: bool | N
                     account_id, fan_id, exc_info=True)
 
 
+async def _dispatch_inbound(account_id: str, fan_id: int, message_id: int) -> None:
+    """on_inbound_message's body, under its per-fan serial: load -> plan -> apply."""
+    # Every read below goes through ONE session (one pool checkout per DM,
+    # not one per question); the writes (enqueue_job) keep their own.
+    async with get_session() as s:
+        try:
+            blasted = await _blasted_recently(account_id, s=s)
+        except Exception:   # an inbox repair: must not cost the dispatch
+            log.warning("blast_reply_scrape_failed account=%s fan=%s",
+                        account_id, fan_id, exc_info=True)
+            blasted = False
+        cfg = await _load_config(account_id, s=s)
+        if cfg is not None:
+            kind, rule_id = await _classify(account_id, fan_id, s=s)
+            # Read fresh, right here — a sender that paused this fan earlier
+            # in the same tick must be visible (see _fan_paused_until).
+            paused_until = await _fan_paused_until(account_id, fan_id, s=s) if kind is not None else None
+            delay = _response_delay(cfg)
+            now = datetime.utcnow()
+            # Dedup over the FULL wait (cooldown remainder + delay) so a second
+            # message during the rest doesn't queue its own deferred job.
+            dup = kind is not None and await _has_imminent_pending_job(
+                account_id, kind, fan_id, decide.dedup_within_s(paused_until, delay, now), s=s)
+
+    # ── The blast this man may be answering (plans/blast-splice C.1) ──
+    # FIRST, and above every return below: the copy belongs in the inbox
+    # whether or not an automation would reply to him. Own try/except inside.
+    await _scrape_after_blast(account_id, fan_id, blasted=blasted)
+    if cfg is None:
+        return
+
+    # A fan a human is handling, or one the bot just replied to, is on a
+    # per-fan cooldown (W3's shared cross-tick guard, 45-90s for chat). Rather
+    # than DROP this reply to the slow periodic sweep — fans usually reply
+    # within ~30s, INSIDE the cooldown, so they'd always wait out the next
+    # sweep — we DEFER the reply to the moment the cooldown ends. The chat
+    # engines re-check the cooldown at run time, so if a human keeps the fan
+    # paused the deferred job simply skips: deferring is safe either way (too
+    # far out: decide.MAX_DEFER_S).
+    act = decide.plan(kind, rule_id, fan_id, paused_until, delay, dup, now)
+    if isinstance(act, decide.Skip):
+        # terminal: skip-listed, or a stage whose rule is off — a human owns this
+        # fan, don't wake a sweep for nothing. cooldown_far: the sweep catches it.
+        log.debug("w7_skip_%s account=%s fan=%s until=%s",
+                  act.reason, account_id, fan_id, paused_until)
+        return
+    if isinstance(act, decide.WakeOnly):
+        log.debug("w7_skip_dedup account=%s kind=%s fan=%s", account_id, kind, fan_id)
+        ax.wake_supervisor()  # still wake so the already-pending job drains
+        return
+
+    await ax.enqueue_job(account_id, kind, payload=act.payload, run_at=act.run_at)
+    # Wake now if due immediately; otherwise wake once the (possibly deferred)
+    # job is due so it doesn't wait for the next fallback tick.
+    if act.wait_s > 0:
+        _schedule_wake(act.wait_s)  # keeps a ref so the wake can't be GC'd
+    else:
+        ax.wake_supervisor()
+    log.info(
+        "w7_dispatch account=%s fan=%s kind=%s msg=%s wait=%.1fs%s",
+        account_id, fan_id, kind, message_id, act.wait_s,
+        " (deferred to cooldown end)" if act.deferred else "",
+    )
+
+
 @write_telemetry.labelled("webhook_dispatch")
 async def on_inbound_message(account_id: str, fan_id: int, message_id: int) -> None:
     """React to one inbound fan DM: enqueue + wake the owning sweep so the bot
@@ -380,86 +441,11 @@ async def on_inbound_message(account_id: str, fan_id: int, message_id: int) -> N
     try:
         if _global_kill_switch():
             return
-        # Every read below goes through ONE session (one pool checkout per DM,
-        # not one per question); the writes (enqueue_job) keep their own.
-        async with get_session() as s:
-            try:
-                blasted = await _blasted_recently(account_id, s=s)
-            except Exception:   # an inbox repair: must not cost the dispatch
-                log.warning("blast_reply_scrape_failed account=%s fan=%s",
-                            account_id, fan_id, exc_info=True)
-                blasted = False
-            cfg = await _load_config(account_id, s=s)
-            kind = rule_id = paused_until = None
-            if cfg is not None:
-                kind, rule_id = await _classify(account_id, fan_id, s=s)
-            if kind is not None:
-                # Read fresh, right here — a sender that paused this fan earlier
-                # in the same tick must be visible (see _fan_paused_until).
-                paused_until = await _fan_paused_until(account_id, fan_id, s=s)
-                delay = _response_delay(cfg)
-                now = datetime.utcnow()
-                deferred = paused_until is not None and paused_until > now
-                run_at = (paused_until if deferred else now) + timedelta(seconds=delay)
-                wait_s = max(0.0, (run_at - now).total_seconds())
-                # Dedup over the FULL wait (cooldown remainder + delay) so a second
-                # message during the rest doesn't queue its own deferred job.
-                dup = await _has_imminent_pending_job(
-                    account_id, kind, fan_id, wait_s + _DEDUP_WINDOW_S, s=s)
-
-        # ── The blast this man may be answering (plans/blast-splice C.1) ──
-        # FIRST, and above every return below: the copy belongs in the inbox
-        # whether or not an automation would reply to him. Own try/except inside.
-        await _scrape_after_blast(account_id, fan_id, blasted=blasted)
-        if cfg is None:
-            return
-        if kind is None:
-            # Terminal stage (skip-listed, or a stage whose rule is off): no automation
-            # should reply — a human owns this fan. Don't wake a sweep for nothing.
-            log.debug("w7_skip_terminal account=%s fan=%s", account_id, fan_id)
-            return
-
-        # A fan a human is handling, or one the bot just replied to, is on a
-        # per-fan cooldown (W3's shared cross-tick guard, 45-90s for chat). Rather
-        # than DROP this reply to the slow periodic sweep — fans usually reply
-        # within ~30s, INSIDE the cooldown, so they'd always wait out the next
-        # sweep — we DEFER the reply to the moment the cooldown ends (run_at
-        # above). The chat engines re-check the cooldown at run time, so if a
-        # human keeps the fan paused the deferred job simply skips: deferring is
-        # safe either way. A cooldown beyond _MAX_DEFER_S (the 30-min
-        # welcome/followup rest) is too long to park a chat reply — let the
-        # periodic sweep catch that rare case.
-        if deferred and (paused_until - now).total_seconds() > _MAX_DEFER_S:
-            log.debug("w7_skip_cooldown_far account=%s fan=%s until=%s",
-                      account_id, fan_id, paused_until)
-            return
-
-        if dup:
-            log.debug("w7_skip_dedup account=%s kind=%s fan=%s", account_id, kind, fan_id)
-            ax.wake_supervisor()  # still wake so the already-pending job drains
-            return
-
-        # Fan-scope the run so it reacts to ONLY this fan (no full-account sweep):
-        # reply_mass_funnel takes `test_fan`; the chat engines take
-        # `only_fan_ids` (gates still apply — see each automation's run()).
-        payload = (
-            {"test_fan": int(fan_id)} if kind == "reply_mass_funnel"
-            else {"only_fan_ids": [int(fan_id)]}
-        )
-        if rule_id is not None:
-            payload["_rule_id"] = int(rule_id)
-        await ax.enqueue_job(account_id, kind, payload=payload, run_at=run_at)
-        # Wake now if due immediately; otherwise wake once the (possibly deferred)
-        # job is due so it doesn't wait for the next fallback tick.
-        if wait_s > 0:
-            _schedule_wake(wait_s)  # keeps a ref so the wake can't be GC'd
-        else:
-            ax.wake_supervisor()
-        log.info(
-            "w7_dispatch account=%s fan=%s kind=%s msg=%s wait=%.1fs%s",
-            account_id, fan_id, kind, message_id, wait_s,
-            " (deferred to cooldown end)" if deferred else "",
-        )
+        # One dispatch per (account, fan) at a time: the second DM of a burst
+        # reads the pending jobs only after the first one's insert (_fan_serial).
+        # Taken before the read session so a waiter holds no pool connection.
+        async with _fan_serial(account_id, fan_id):
+            await _dispatch_inbound(account_id, fan_id, message_id)
     except Exception:
         log.warning(
             "w7_dispatch_failed account=%s fan=%s", account_id, fan_id, exc_info=True

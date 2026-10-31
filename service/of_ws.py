@@ -34,6 +34,7 @@ from typing import AsyncIterator, Callable
 
 import websockets
 
+import of_ws_decide
 from of_client import OFClient
 
 log = logging.getLogger("of-ws")
@@ -44,8 +45,7 @@ log = logging.getLogger("of-ws")
 PING_INTERVAL_S = 25         # OF sends `{"unread_tips":...}` style updates;
                               # no formal ping/pong needed, but a benign
                               # `get_onlines` keeps NATs happy.
-RECONNECT_MIN_S = 1
-RECONNECT_MAX_S = 30
+# The reconnect backoff (1 s doubling to 30 s) and the give-up rule: of_ws_decide.
 
 
 class SessionDead(Exception):
@@ -110,7 +110,8 @@ class OFWebSocket:
         """Async generator: yields each event dict as it arrives. Reconnects
         automatically on disconnect with exponential backoff. Caller can stop
         by calling `.stop()` (which causes the loop to exit on next iteration).
-        A failure `session_dead` classifies raises SessionDead instead.
+        A failure `session_dead` classifies raises SessionDead instead. Those
+        rules are of_ws_decide.decide(); this loop performs its effects.
 
         The WebSocket is tunneled through the same per-account proxy as the
         REST traffic (when one is assigned). Without this, REST would egress
@@ -118,7 +119,7 @@ class OFWebSocket:
         IP — OF would see "same user-id from two distinct IPs at once" and
         flag it as a shared-session anomaly.
         """
-        backoff = RECONNECT_MIN_S
+        state = of_ws_decide.Pump()
         while not self._stop.is_set():
             connected_at: float | None = None
             try:
@@ -193,27 +194,26 @@ class OFWebSocket:
                         # socket's close would end it unretrieved (a logged traceback).
                         if recv_task is not None and not recv_task.done():
                             recv_task.cancel()
-                # Clean disconnect — reset backoff
-                backoff = RECONNECT_MIN_S
+                # Reached only after .stop() broke the read loop: the while ends events().
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                reason = self._session_dead(e) if self._session_dead else None
-                if reason:
+                state, eff = of_ws_decide.decide(
+                    state, of_ws_decide.Failed(self._session_dead(e) if self._session_dead else None))
+                if isinstance(eff, of_ws_decide.GiveUp):
                     log.warning("ws session dead account=%s reason=%s — not reconnecting",
-                                self._account_id(), reason)
-                    raise SessionDead(reason) from e
-                # up=- : failed before the socket opened (proxy CONNECT, TLS, /users/me).
+                                self._account_id(), eff.reason)
+                    raise SessionDead(eff.reason) from e
+                # Wait. up=- : failed before the socket opened (proxy CONNECT, TLS, /users/me).
                 log.warning("ws error account=%s proxy=%s type=%s up=%s err=%s — reconnecting in %ds",
                             self._account_id(), self._proxy_desc(), type(e).__name__,
                             f"{time.monotonic() - connected_at:.0f}s" if connected_at else "-",
-                            self._scrub(str(e))[:200], backoff)
+                            self._scrub(str(e))[:200], eff.s)
                 try:
-                    await asyncio.wait_for(self._stop.wait(), timeout=backoff)
+                    await asyncio.wait_for(self._stop.wait(), timeout=eff.s)
                     return
                 except asyncio.TimeoutError:
                     pass
-                backoff = min(int(backoff * 2), RECONNECT_MAX_S)
 
     def _account_id(self) -> str:
         return str(getattr(self.client, "account_id", "?"))

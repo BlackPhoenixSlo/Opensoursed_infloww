@@ -14,7 +14,7 @@
  * only their ids in send-payload form.
  */
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Library } from "lucide-react";
 
@@ -24,218 +24,34 @@ import { cn } from "@/lib/utils";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { useChatterFolderAccess, useVaultLists, useVaultMedia } from "@/hooks/useVaultMedia";
-import { searchOf, useMirrorItems, useVaultCacheSummary, vaultTileThumb } from "@/hooks/useVaultCache";
-import { useFanVaultHistory, type FanVaultEntry } from "@/hooks/useFanVaultHistory";
+import { searchOf, useMirrorItems, useVaultCacheSummary } from "@/hooks/useVaultCache";
+import { useFanVaultHistory } from "@/hooks/useFanVaultHistory";
 import { useVaultMediaStats } from "@/hooks/useVaultMediaStats";
 import { useWallMedia } from "@/hooks/useWallMedia";
 import { useBlurMode, blurImageClass } from "@/hooks/useBlurMode";
-import { type VaultAiFields, type VaultList, type VaultMedia } from "@/lib/relay";
-import { proxyImage, proxyScrubFrame } from "@/lib/mediaUrl";
+import { type VaultMedia } from "@/lib/relay";
 import { type FanId } from "@/lib/fanId";
-import { fmtCents, fmtDuration, fmtPrice } from "@/lib/format";
 import { perfLog, perfOpId, perfPainted } from "@/lib/perfLog";
 import { useInflowwPalette } from "./InflowwPalette";
-import { cardAction, VaultMediaDetails } from "./VaultMediaDetails";
+import { VaultMediaDetails } from "./VaultMediaDetails";
 import { DURATION_RANGES, inDurationRange, type DurationRange } from "./vaultDurationFilter";
-import {
-  VAULT_CARD_CHECK, VAULT_CARD_CHECK_UNDER_INFO, VAULT_CARD_FOOT, VAULT_CARD_GIF, VAULT_CARD_GREYED, VAULT_CARD_INFO,
-  VAULT_CARD_TAG, VAULT_CARD_TAGS, VAULT_CARD_UNSEND, VAULT_SHEET, VAULT_TOOLBAR_SELECT,
-} from "./vaultPickerSheet";
-import { HOVER_DELAY_MS, KEYBOARD_HINT, PhotoHoverPanel, useGridSelection, usePhotoHover } from "./vaultPickerSelection";
-import { STATS_SORTS, isStatsSort, seenByFan, sortByStats, statsLabel, type StatsSort } from "./vaultPickerStats";
-import { notWiredTitle } from "./NotWired";
+import { VAULT_SHEET, VAULT_TOOLBAR_SELECT } from "./vaultPickerSheet";
+import { HOVER_DELAY_MS, useHoverPreview } from "@/hooks/useHoverPreview";
+import { KEYBOARD_HINT, PhotoHoverPanel, useGridSelection, usePhotoHover } from "./vaultPickerSelection";
+import { STATS_SORTS, isStatsSort, seenByFan, sortByStats } from "./vaultPickerStats";
+import { aiCaptionFor, useCaptionOverlay } from "./vaultAiCaption";
+import { TILE_HINT, VaultPickerTile } from "./VaultPickerTile";
+import { VaultVideoPreview } from "./VaultVideoPreview";
+import { resolveStatus } from "./vaultTileStatus";
+import { firstUsableFolderId, folderChips, folderSelectItems } from "./vaultPickerFolders";
+import { bumpAccountCount, loadAccountCounts, loadFanMru, loadFanState, MRU_CAP, nextMru, saveFanMru, saveFanState } from "./vaultPickerPersist";
+import { fetchSort, initialFilters, vaultFiltersReducer, type MediaType, type Sort } from "./vaultPickerFilters";
 
-// Hover-preview slideshow tuning. 12 evenly-spaced frames @ 600ms each
-// cycles a full video clip in 7.2 seconds — comfortable scrub speed and
-// long enough that a user actually paying attention can pick the moment
-// they want before clicking through.
-const TILE_HINT = "Click to select · double-click to attach";
-
-const SCRUB_FRAMES = 12;
-const SCRUB_INTERVAL_MS = 600;
-
-/** The progressive (downloadable/playable) mp4 source for a video, or null
- *  when OF only exposes a DRM (FairPlay) stream. NOTE: deliberately does NOT
- *  fall back to `files.preview.url` — that's a static poster JPEG, and
- *  resolving to it is exactly the bug that made `<video>` + /img/scrub fail
- *  on DRM items (the JPEG can't be played or sliced into frames).
- *  Prefer the CHEAPEST source (240p) first: these frames are only ever
- *  scaled down to a small storyboard width for ffmpeg scrubbing, so pulling
- *  the 720p mp4 is wasted bandwidth. Fall back to 720p, then files.full. */
-export function progressiveVideoSrc(m: VaultMedia): string | null {
-  if (m.type !== "video") return null;
-  return m.videoSources?.["240"] || m.videoSources?.["720"] || m.files?.full?.url || null;
-}
-
-/** OF's own pre-extracted poster frames for a video (`preview.options[]`).
- *  For DRM-only videos these are the sole renderable representation — the
- *  segments are SAMPLE-AES encrypted so ffmpeg/<video>/hls.js can't decode
- *  them. Returns [] when none are present. */
-export function videoPosterFrames(m: VaultMedia): string[] {
-  return (m.files?.preview?.options ?? [])
-    .map((o) => o?.url)
-    .filter((u): u is string => !!u);
-}
-
-/** Authoritative DRM signal: OF returns an HLS/DASH manifest under
- *  `files.drm` for files it delivers with content protection (FairPlay/
- *  Widevine). This is per-FILE — baked in when the file was uploaded under
- *  the creator's "content protection" setting — NOT a live account property,
- *  which is why one account has both playable and DRM videos and toggling
- *  the setting never changes existing files. We key off this, never the
- *  account setting. (Absence of a progressive mp4 is a *consequence* of DRM,
- *  not the cause, so we check the manifest directly.) */
-export function isDrmVideo(m: VaultMedia): boolean {
-  if (m.type !== "video") return false;
-  const man = m.files?.drm?.manifest;
-  return !!(man?.hls || man?.dash);
-}
-
-/** DRM video with no progressive fallback — the kind we genuinely cannot
- *  play or slice (segments are encrypted). Defensive: if OF ever ships BOTH
- *  a manifest and a progressive mp4, prefer playing the mp4. */
-export function isDrmOnlyVideo(m: VaultMedia): boolean {
-  return isDrmVideo(m) && !progressiveVideoSrc(m);
-}
-
-/** Map a slideshow beat (0..totalBeats-1) onto one of `frameCount` available
- *  frames, spread EVENLY. Used so the N (≤9) OF poster frames fill the same
- *  12-beat cursor the 12-frame ffmpeg storyboard uses — no `% N` repeat-jump,
- *  and never an out-of-range index (which would render a black/empty <img>).
- *  At frameCount === totalBeats it's the identity. */
-export function evenFrameIndex(beat: number, frameCount: number, totalBeats = SCRUB_FRAMES): number {
-  if (frameCount <= 1) return 0;
-  return Math.min(frameCount - 1, Math.floor((beat / totalBeats) * frameCount));
-}
-
-// ── AI description overlay (S9) ──────────────────────────────────────────
-// Renders the vault-AI mirror `description` / `video_description` (+ a short
-// `tags` list) as a blurred, gradient-backed caption across the BOTTOM HALF of
-// a thumb. Pure FE over the existing /items `_ai` overlay — no new endpoint.
-// Toggle default ON in the /vault manager, OFF in this chat picker (so it
-// doesn't fight the send flow).
-
-/** Pull the one-glance caption for a tile: the video description for videos
- *  (falling back to the still description), the image description otherwise,
- *  plus up to four tag chips. Returns null when the item has neither — the
- *  overlay then doesn't render at all. */
-export function aiCaptionFor(
-  m: VaultMedia & { _ai?: VaultAiFields },
-): { text: string; tags: string[] } | null {
-  const ai = m._ai;
-  if (!ai) return null;
-  const primary = m.type === "video" ? ai.video_description : ai.description;
-  const text = (primary || ai.description || ai.video_description || "").trim();
-  const tags = (Array.isArray(ai.tags) ? ai.tags : [])
-    .map((t) => String(t).trim())
-    .filter(Boolean)
-    .slice(0, 4);
-  if (!text && tags.length === 0) return null;
-  return { text, tags };
-}
-
-/** Blurred, gradient-backed caption across the BOTTOM HALF of a vault thumb.
- *  Absolutely positioned so it NEVER shifts the grid; pointer-events-none so
- *  it never intercepts tile selection. The linear mask fades both the dark
- *  gradient and the frosted backdrop-blur upward, leaving the top half of the
- *  media clear and the text readable at a glance. */
-export function VaultAiCaptionOverlay({
-  caption,
-}: {
-  caption: { text: string; tags: string[] };
-}) {
-  return (
-    <div
-      aria-hidden
-      className="absolute inset-x-0 bottom-0 h-1/2 pointer-events-none select-none"
-    >
-      {/* ONLY the frosted backdrop is masked, so it still fades upward and
-       *  leaves the top half of the media clear. The text layer below is
-       *  deliberately OUTSIDE this element: masking the copy too is what washed
-       *  the description out to an unreadable ghost — it sits above the tags,
-       *  i.e. exactly in the fade zone. */}
-      <div
-        className={cn(
-          "absolute inset-0",
-          "bg-gradient-to-t from-black/85 via-black/55 to-transparent",
-          "backdrop-blur-[2px]",
-          "[mask-image:linear-gradient(to_top,black_55%,transparent)]",
-          "[-webkit-mask-image:linear-gradient(to_top,black_55%,transparent)]",
-        )}
-      />
-      {/* Unmasked content — always fully opaque. Description first (clamped to
-       *  a short 2 lines so it reads at a glance), tag chips under it. */}
-      <div className="absolute inset-x-0 bottom-0 flex flex-col gap-1 p-1.5">
-        {caption.text && (
-          <p className="text-white text-[10px] leading-snug line-clamp-2 drop-shadow-[0_1px_2px_rgba(0,0,0,0.95)]">
-            {caption.text}
-          </p>
-        )}
-        {caption.tags.length > 0 && (
-          <div className="flex flex-wrap gap-0.5">
-            {caption.tags.map((t) => (
-              <span
-                key={t}
-                className="px-1 py-px rounded-full bg-white/20 text-white/95 text-[8px] leading-tight"
-              >
-                {t}
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-export type CaptionSurface = "manager" | "picker";
-
-const CAPTION_EVENT = "chatterly-vault-caption-change";
-
-function captionKey(surface: CaptionSurface): string {
-  return `chatterly:vault-ai-caption:${surface}`;
-}
-
-/** Default ON in the manager, OFF in the picker; only a stored value overrides. */
-function readCaptionOn(surface: CaptionSurface): boolean {
-  const dflt = surface === "manager";
-  if (typeof window === "undefined") return dflt;
-  const raw = window.localStorage.getItem(captionKey(surface));
-  if (raw === "1") return true;
-  if (raw === "0") return false;
-  return dflt;
-}
-
-/** Persisted, cross-instance caption toggle (mirrors useBlurMode's shape) so a
- *  flip from either surface's control updates every mounted tile at once. */
-export function useCaptionOverlay(
-  surface: CaptionSurface,
-): [boolean, (next: boolean) => void] {
-  const [on, setOn] = useState<boolean>(() => readCaptionOn(surface));
-  useEffect(() => {
-    const sync = () => setOn(readCaptionOn(surface));
-    window.addEventListener(CAPTION_EVENT, sync);
-    window.addEventListener("storage", sync);
-    return () => {
-      window.removeEventListener(CAPTION_EVENT, sync);
-      window.removeEventListener("storage", sync);
-    };
-  }, [surface]);
-  function update(next: boolean) {
-    setOn(next);
-    try {
-      window.localStorage.setItem(captionKey(surface), next ? "1" : "0");
-      window.dispatchEvent(new Event(CAPTION_EVENT));
-    } catch {
-      /* quota / private mode — silent */
-    }
-  }
-  return [on, update];
-}
-
-type MediaType = "all" | "photo" | "video" | "gif";
-/** "newest" / "oldest" are OF's order; the stats sorts reorder what's loaded. */
-type Sort = "newest" | "oldest" | StatsSort;
+// Moved out of this file; re-exported so every existing importer keeps working.
+export { progressiveVideoSrc, videoPosterFrames, isDrmVideo, isDrmOnlyVideo, VaultVideoPreview } from "./VaultVideoPreview";
+// Kept only for VaultTile + the drm test importers (review O1); delete when VaultTile moves to tilePreview.
+export { evenFrameIndex } from "./vaultTilePreview";
+export { aiCaptionFor, VaultAiCaptionOverlay, useCaptionOverlay, type CaptionSurface } from "./vaultAiCaption";
 
 const TYPE_CHIPS: Array<{ value: MediaType; label: string }> = [
   { value: "all",   label: "All"    },
@@ -243,109 +59,6 @@ const TYPE_CHIPS: Array<{ value: MediaType; label: string }> = [
   { value: "video", label: "Videos" },
   { value: "gif",   label: "GIFs"   },
 ];
-
-const MRU_CAP = 3;
-
-interface PickerFanState {
-  listId: FanId | null;
-  sort: Sort;
-  type: MediaType;
-}
-
-function fanStateKey(accountId: string | null, fanId: FanId | null): string | null {
-  if (!accountId || fanId == null) return null;
-  return `chatterly:vault-state:${accountId}:${fanId}`;
-}
-
-function fanMruKey(accountId: string | null, fanId: FanId | null): string | null {
-  if (!accountId || fanId == null) return null;
-  return `chatterly:vault-mru:${accountId}:${fanId}`;
-}
-
-function accountCountsKey(accountId: string | null): string | null {
-  if (!accountId) return null;
-  return `chatterly:vault-folder-counts:${accountId}`;
-}
-
-/** Full picker state for one fan — folder, sort order, media type. We
- *  persist all three so reopening the picker is byte-identical to where
- *  the chatter left it (no forced "pop to last folder" surprises). */
-function loadFanState(accountId: string | null, fanId: FanId | null): PickerFanState | null {
-  const k = fanStateKey(accountId, fanId);
-  if (!k || typeof window === "undefined") return null;
-  try {
-    const raw = window.localStorage.getItem(k);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<PickerFanState>;
-    return {
-      listId: (typeof parsed.listId === "number" || typeof parsed.listId === "string")
-        ? parsed.listId : null,
-      sort: parsed.sort === "oldest" || isStatsSort(parsed.sort) ? parsed.sort : "newest",
-      type:
-        parsed.type === "photo" || parsed.type === "video" || parsed.type === "gif"
-          ? parsed.type
-          : "all",
-    };
-  } catch {
-    return null;
-  }
-}
-
-function saveFanState(accountId: string | null, fanId: FanId | null, state: PickerFanState): void {
-  const k = fanStateKey(accountId, fanId);
-  if (!k || typeof window === "undefined") return;
-  try {
-    // EVICT-BY: created-at — see plan/17_cache_strategy.md §7
-    window.localStorage.setItem(k, JSON.stringify(state));
-  } catch { /* quota / private mode — ignore */ }
-}
-
-/** Per-fan folder MRU. Drives the quick-chip row when this specific fan
- *  has history. Most-recent first, capped at MRU_CAP. */
-function loadFanMru(accountId: string | null, fanId: FanId | null): FanId[] {
-  const k = fanMruKey(accountId, fanId);
-  if (!k || typeof window === "undefined") return [];
-  try {
-    const raw = window.localStorage.getItem(k);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((n): n is number => typeof n === "number").slice(0, MRU_CAP);
-  } catch { return []; }
-}
-
-function saveFanMru(accountId: string | null, fanId: FanId | null, mru: FanId[]): void {
-  const k = fanMruKey(accountId, fanId);
-  if (!k || typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(k, JSON.stringify(mru.slice(0, MRU_CAP)));
-  } catch { /* ignore */ }
-}
-
-/** Account-wide folder usage counters — sum of picks across every fan.
- *  Used as the fallback ranking when the current fan has no per-fan
- *  history yet, so the chip row still shows folders the chatter
- *  actually uses (not just the first three OF returns). */
-function loadAccountCounts(accountId: string | null): Record<string, number> {
-  const k = accountCountsKey(accountId);
-  if (!k || typeof window === "undefined") return {};
-  try {
-    const raw = window.localStorage.getItem(k);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? parsed as Record<string, number> : {};
-  } catch { return {}; }
-}
-
-function bumpAccountCount(accountId: string | null, folderId: FanId): void {
-  const k = accountCountsKey(accountId);
-  if (!k || typeof window === "undefined") return;
-  try {
-    const cur = loadAccountCounts(accountId);
-    cur[String(folderId)] = (cur[String(folderId)] || 0) + 1;
-    window.localStorage.setItem(k, JSON.stringify(cur));
-  } catch { /* ignore */ }
-}
 
 /** The Messages Pro sheet's Geometry, from its one caller (the Composer,
  *  which passes `MP.sheet`): the panel, and from md up the head row, the
@@ -389,20 +102,15 @@ export function VaultPicker(props: VaultPickerProps) {
   const messagesPro = sheet !== null;
   // The Infloww palette when opened from Messages Pro; nothing anywhere else.
   const palette = useInflowwPalette();
-  const [type, setType] = useState<MediaType>("all");
-  const [listId, setListId] = useState<FanId | null>(null);
-  const [sort, setSort] = useState<Sort>("newest");
+  // Filter bar: type, folder, sort, hide-seen, length, search (vaultPickerFilters).
+  const [filters, dispatch] = useReducer(vaultFiltersReducer, initialFilters);
+  const { type, listId, sort, hideSeen, lengthRange, queryInput, query } = filters;
   // The stats sorts reorder the newest-first pages OF serves.
-  const fetchSort = sort === "oldest" ? "oldest" : "newest";
-  // "Hide content viewed or unlocked by fan, or posted on Creator's feed".
-  const [hideSeen, setHideSeen] = useState(false);
-  const [lengthRange, setLengthRange] = useState<DurationRange>("any");
+  const ofSort = fetchSort(sort);
   // Vault search — OF-native (verified live: wire param `query`). Debounced
   // so we fire one OF fetch after the user pauses typing, not per keystroke.
-  const [queryInput, setQueryInput] = useState("");
-  const [query, setQuery] = useState("");
   useEffect(() => {
-    const t = setTimeout(() => setQuery(queryInput.trim()), 300);
+    const t = setTimeout(() => dispatch({ type: "commitQuery", value: queryInput }), 300);
     return () => clearTimeout(t);
   }, [queryInput]);
   // Per-fan folder MRU (last 3 used). Lives in localStorage so it
@@ -438,7 +146,7 @@ export function VaultPicker(props: VaultPickerProps) {
   const cachedCount = cacheSummary.data?.count ?? 0;
   const useLocalVault = open && !restricted && cachedCount > 0;
   const vaultLive = useVaultMedia({
-    accountId, type, listId, sort: fetchSort, query,
+    accountId, type, listId, sort: ofSort, query,
     // Fire the live OF path immediately whenever we're NOT on the cache path.
     // (Deliberately NOT gated on the summary call: under relay load a slow
     // summary would leave the live query disabled → items:[] → a false
@@ -448,7 +156,7 @@ export function VaultPicker(props: VaultPickerProps) {
     enabled: open && !useLocalVault,
   });
   const vaultMirror = useMirrorItems({
-    accountId, type, query, sort: fetchSort, ofFolderId: listId, enabled: useLocalVault,
+    accountId, type, query, sort: ofSort, ofFolderId: listId, enabled: useLocalVault,
   });
   const vault = useLocalVault
     ? ({
@@ -487,38 +195,12 @@ export function VaultPicker(props: VaultPickerProps) {
     () => new Set(allowedFolders.map((f) => f.folder_id)),
     [allowedFolders],
   );
-  // Folder dropdown source. Owners (and unrestricted chatters): OF's full
-  // folder list. Restricted chatters: the AUTHORITATIVE allowlist (DA-3),
-  // enriched with item counts from listsQ where present so the option still
-  // reads "Name (N)". Names come from the access endpoint, NOT vault/lists,
-  // so a folder past the paginated lists page still appears.
-  const folderSelectItems = useMemo<Array<{ id: FanId; name: string; label: string }>>(() => {
-    const lists = listsQ.data?.list ?? [];
-    // Infloww-style per-kind counts: "🖼 3 · 🎬 17". GIFs fold into the
-    // image bucket, audio gets its own segment; zero segments are hidden.
-    const countsOf = (l?: VaultList) => {
-      const parts: string[] = [];
-      const photos = (l?.photosCount ?? 0) + (l?.gifsCount ?? 0);
-      const videos = l?.videosCount ?? 0;
-      const audios = l?.audiosCount ?? 0;
-      if (photos) parts.push(`🖼 ${photos}`);
-      if (videos) parts.push(`🎬 ${videos}`);
-      if (audios) parts.push(`🎵 ${audios}`);
-      return parts.join(" · ");
-    };
-    if (restricted) {
-      const byId = new Map(lists.map((l) => [l.id, l] as const));
-      return allowedFolders.map((f) => {
-        const name = f.folder_name || byId.get(f.folder_id)?.name || `Folder ${f.folder_id}`;
-        const counts = countsOf(byId.get(f.folder_id));
-        return { id: f.folder_id, name, label: counts ? `${name} — ${counts}` : name };
-      });
-    }
-    return lists.map((l) => {
-      const counts = countsOf(l);
-      return { id: l.id, name: l.name, label: counts ? `${l.name} — ${counts}` : l.name };
-    });
-  }, [restricted, allowedFolders, listsQ.data]);
+  // Folder dropdown source (vaultPickerFolders): OF's full list, or a
+  // restricted chatter's authoritative allowlist (DA-3).
+  const folderItems = useMemo(
+    () => folderSelectItems(restricted, allowedFolders, listsQ.data?.list ?? []),
+    [restricted, allowedFolders, listsQ.data],
+  );
 
   // Log vault.open `delivered` the first time the initial fetch lands this
   // open-session. Subsequent loads (filter switch, infinite scroll) are
@@ -582,34 +264,10 @@ export function VaultPicker(props: VaultPickerProps) {
   // that with 12 small JPGs (~20KB each, served from a disk cache the
   // relay populates on first hit), so a hover is at most 12 lightweight
   // image GETs — no streams to stop on switch because there are no
-  // streams at all.
-  const [hoveredVideoId, setHoveredVideoId] = useState<number | null>(null);
-  // Tile-render closures capture `isHovering = hoveredVideoId === m.id` at
-  // render time; onLoad/onError handlers fire asynchronously and the user
-  // may have moved to another tile before they fire. Comparing m.id against
-  // the LATEST hoveredVideoId via ref avoids stale-closure scrubReady flips
-  // affecting the wrong tile.
-  //
-  // useLayoutEffect (NOT useEffect) is critical: when a storyboard is
-  // already cached, the browser fires <img>.onLoad synchronously after the
-  // commit, BEFORE the post-paint useEffect would update the ref. The guard
-  // then rejects (ref still holds prior value), scrubReady never flips,
-  // the visible img stays at opacity:0, and only frame 0 ever "shows"
-  // (it's actually invisible, but the static thumb beneath leaks through
-  // long enough to look like a stuck frame 0). useLayoutEffect runs after
-  // commit + before paint, so the ref is current by the time onLoad fires.
-  const hoveredVideoIdRef = useRef<number | null>(null);
-  useLayoutEffect(() => { hoveredVideoIdRef.current = hoveredVideoId; }, [hoveredVideoId]);
-  // Duration of the hovered video, captured at hover-commit time so the
-  // countdown effect can compute the wait estimate without needing to
-  // forward-reference visibleItems (which is declared after the effect).
-  const [hoveredVideoDuration, setHoveredVideoDuration] = useState<number>(0);
-  // Raw signed OF URL of the hovered video. Captured so the hover-end
-  // cleanup can POST /img/scrub/cancel for THIS specific video — the
-  // server-side build loop polls the cancel flag and aborts if the
-  // download hasn't crossed ~90%. Without this we'd waste bandwidth
-  // (and queue time) on videos the user has already moved past.
-  const [hoveredVideoUrl, setHoveredVideoUrl] = useState<string | null>(null);
+  // streams at all. Dwell, session id, slideshow cursor, countdowns and
+  // the cancel POST live in useHoverPreview; what a tile shows is
+  // tilePreview's read of it.
+  const hover = useHoverPreview(HOVER_DELAY_MS);
   // Click-to-open full preview. Storing the whole VaultMedia so the modal
   // has access to videoSources + thumb without re-finding it in the list.
   const [previewMedia, setPreviewMedia] = useState<VaultMedia | null>(null);
@@ -619,204 +277,24 @@ export function VaultPicker(props: VaultPickerProps) {
   // "Media details" (ⓘ, or the price pill at the price history). Opening and
   // closing it never touches the selection.
   const [details, setDetails] = useState<{ media: VaultMedia; atHistory: boolean } | null>(null);
-  // True while the OF thumb is still the only visible thing — flips to
-  // false the moment the first storyboard frame paints. We DON'T show a
-  // spinner anymore; the thumb itself is the "loading" state, and the
-  // slideshow fades in on top of it once frames are ready.
-  const [hoverLoading, setHoverLoading] = useState<boolean>(false);
-  // Slideshow cursor — increments mod SCRUB_FRAMES every SCRUB_INTERVAL_MS.
-  const [scrubFrameIdx, setScrubFrameIdx] = useState<number>(0);
-  // Gate for prefetching frames 1..11. Set true after frame 0 lands so
-  // we don't fire 12 parallel requests at once — they'd all pile up on
-  // the relay's per-video build lock and Next dev's HTTP proxy would
-  // time out on most of them (the ECONNRESET storm we saw).
-  const [scrubReady, setScrubReady] = useState<boolean>(false);
-  // Countdown shown over the shimmer while the relay extracts the
-  // storyboard for a cold video. Initial value is an estimate from the
-  // video's duration (relay's measured build time is ≈1s + ~4.5s/min of
-  // video). Ticks down 5×/sec so the number feels live. If the frame
-  // actually loads before the countdown finishes, the whole overlay is
-  // unmounted by `hoverLoading` → false; if the countdown hits 0 first
-  // we just show "…" until the frame lands.
-  const [scrubCountdownSec, setScrubCountdownSec] = useState<number>(0);
-  // Poster-frame load gate. The OF poster frames take a beat to arrive on a
-  // cold hover (~1 CDN GET each through the proxy). Until the FIRST one lands
-  // the tile shows the gray thumb base — so we paint a fine decimal countdown
-  // (2.3 → 2.2 → 2.1) over the gray to signal the first images are incoming.
-  // Flips true on the first poster <img> onLoad; the overlay then unmounts.
-  const [posterLoaded, setPosterLoaded] = useState<boolean>(false);
-  const [posterCountdownSec, setPosterCountdownSec] = useState<number>(0);
-  // We don't drop the countdown the instant the first image loads — the
-  // slideshow "spin" takes ~0.5s more to visibly get going, so we hold the
-  // timer for POSTER_COMMIT_MS after load, THEN commit (unmount the overlay).
-  const [posterCommitted, setPosterCommitted] = useState<boolean>(false);
-  const POSTER_COMMIT_MS = 500;
-  useEffect(() => {
-    if (!posterLoaded) { setPosterCommitted(false); return; }
-    const id = window.setTimeout(() => setPosterCommitted(true), POSTER_COMMIT_MS);
-    return () => window.clearTimeout(id);
-  }, [posterLoaded]);
-  // Per-hover session id. Recomputed synchronously each time the user
-  // commits to a new hovered video. The id is forwarded with both the
-  // /img/scrub frame requests AND the /img/scrub/cancel POST, so the
-  // server can scope cancellation to THIS hover session — a delayed
-  // cancel from a previous hover of the same video can't reach into a
-  // freshly-started build for the same hash. Empty string when no hover.
-  // Grace before falling back to OF poster frames — see showPosterPreview.
-  // A warm cached storyboard reveals in ~3ms (well under this), so posters
-  // never fetch; a cold one shows them after the grace to cover the build.
-  const [posterGrace, setPosterGrace] = useState(false);
-  useEffect(() => {
-    if (hoveredVideoId == null) {
-      setPosterGrace(false);
-      return;
-    }
-    setPosterGrace(false);
-    const id = window.setTimeout(() => setPosterGrace(true), 250);
-    return () => window.clearTimeout(id);
-  }, [hoveredVideoId]);
-  const hoverSessionId = useMemo<string>(() => {
-    if (hoveredVideoId == null) return "";
-    // crypto.randomUUID is available in every browser we target. Fall
-    // back to a Math.random concoction only if missing (super old WebView).
-    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-      return crypto.randomUUID();
-    }
-    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-  }, [hoveredVideoId]);
-  useEffect(() => {
-    if (hoveredVideoId == null) {
-      setHoverLoading(false);
-      setScrubReady(false);
-      setScrubFrameIdx(0);
-      setScrubCountdownSec(0);
-      setPosterLoaded(false);
-      setPosterCommitted(false);
-      setPosterCountdownSec(0);
-      return;
-    }
-    setHoverLoading(true);
-    setScrubReady(false);
-    setScrubFrameIdx(0);
-    setPosterLoaded(false);
-    setPosterCommitted(false);
-    // Short fixed ETA for the FIRST poster frame — it's a single CDN GET
-    // through the proxy (~1-2.5s cold), independent of video length.
-    const POSTER_ETA_SEC = 2.5;
-    setPosterCountdownSec(POSTER_ETA_SEC);
-    // Duration was captured at hover-commit (see startHoverIntent).
-    // Piecewise estimate, calibrated against real cold-build timings
-    // with +2s baseline padding across the board so the countdown
-    // rarely under-promises in practice:
-    //   • ≤ 60s: 4.5 + 0.5 × ceil(dur/15)
-    //       — 15s clip ≈ 5s, 30s ≈ 6s, 60s ≈ 7s
-    //   • > 60s: 6.5 + 7 × (dur − 60) / 60
-    //       — slope is 7s per minute past the 1-min mark, since the
-    //         proxy throughput dominates here and longer videos pay
-    //         linearly. 2 min ≈ 14s, 4 min ≈ 28s, 8 min ≈ 56s.
-    // Min 4s so the countdown still feels honest on tiny clips.
-    const dur = Math.max(1, hoveredVideoDuration);
-    // ×1.3 fudge: measured cold builds run materially longer than the old
-    // model predicted (e.g. a 34s clip took ~11.5s vs a ~6s estimate — the
-    // full-mp4 download through the proxy dominates), so pad the estimate so
-    // the countdown stops under-promising. The poster-frame preview shows
-    // instantly underneath regardless; this number is just the HD-upgrade ETA.
-    const SCRUB_ETA_FUDGE = 1.3;
-    const base = dur <= 60
-      ? 4.5 + 0.5 * Math.ceil(dur / 15)
-      : 6.5 + (7 * (dur - 60)) / 60;
-    const estimate = Math.max(4, Math.round(base * SCRUB_ETA_FUDGE));
-    setScrubCountdownSec(estimate);
-    const startedAt = Date.now();
-    const slideId = window.setInterval(() => {
-      setScrubFrameIdx((n) => (n + 1) % SCRUB_FRAMES);
-    }, SCRUB_INTERVAL_MS);
-    // 100ms tick. The HD pill shows whole seconds (6 5 4); the poster
-    // countdown reads as a smooth 0.1s decimal (2.3 → 2.2 → 2.1) until the
-    // first OF poster image lands.
-    const tickId = window.setInterval(() => {
-      const elapsed = (Date.now() - startedAt) / 1000;
-      setScrubCountdownSec(Math.max(0, estimate - elapsed));
-      setPosterCountdownSec(Math.max(0, POSTER_ETA_SEC - elapsed));
-    }, 100);
-    // Capture the URL + session id of the hover THIS effect is associated
-    // with — the cleanup needs both to cancel the right build. The
-    // session id makes the cancel race-safe: if the user re-hovers the
-    // same video quickly, the new build runs under a NEW session id, so
-    // a late-arriving cancel POST from this hover targets a stale session
-    // the server has already cleaned up.
-    const urlForCancel = hoveredVideoUrl;
-    const sidForCancel = hoverSessionId;
-    return () => {
-      window.clearInterval(slideId);
-      window.clearInterval(tickId);
-      // Fire-and-forget: tell the relay to abort the in-flight download
-      // for this hover session. Server ignores the cancel if it's already
-      // past the keep-threshold (~90% downloaded) or if no build is
-      // active for this session id. `keepalive: true` lets the request
-      // survive even if the user closes the picker immediately.
-      if (urlForCancel) {
-        const tok = typeof window !== "undefined"
-          ? new URLSearchParams(window.location.search).get("t")
-            ?? window.localStorage.getItem("chatterly:share_token")
-          : null;
-        const qs = new URLSearchParams();
-        qs.set("u", urlForCancel);
-        if (sidForCancel) qs.set("sid", sidForCancel);
-        if (tok) qs.set("t", tok);
-        fetch(`/img/scrub/cancel?${qs.toString()}`, {
-          method: "POST",
-          keepalive: true,
-        }).catch(() => { /* fire-and-forget */ });
-      }
-    };
-  }, [hoveredVideoId, hoveredVideoDuration, hoveredVideoUrl, hoverSessionId]);
-
-  // Hover-dwell debounce. We won't kick off a hover preview until the
-  // pointer has been over a tile for HOVER_DELAY_MS — kills "brush past
-  // 20 tiles in 200ms" thrash. The relay only pays the storyboard build
-  // cost (~1-3s of ffmpeg on first hit) when the user actually commits.
-  const hoverTimerRef = useRef<number | null>(null);
-  const startHoverIntent = (
-    id: number,
-    duration: number,
-    rawUrl: string | null,
-    posterUrls?: string[],
-  ) => {
-    // Kick the first poster frame(s) fetch IMMEDIATELY, in parallel with the
-    // dwell — so by the time the preview commits (HOVER_DELAY_MS later) the
-    // frame is already warm in the browser + relay /img cache instead of
-    // paying a ~0.85s cold OF fetch ON TOP of the dwell (the "2s wait").
-    if (posterUrls && typeof Image !== "undefined") {
-      for (const u of posterUrls.slice(0, 2)) {
-        const pre = new Image();
-        pre.decoding = "async";
-        pre.src = u;
-      }
-    }
-    if (hoverTimerRef.current != null) window.clearTimeout(hoverTimerRef.current);
-    hoverTimerRef.current = window.setTimeout(() => {
-      hoverTimerRef.current = null;
-      setHoveredVideoDuration(duration || 0);
-      setHoveredVideoUrl(rawUrl || null);
-      setHoveredVideoId(id);
-    }, HOVER_DELAY_MS);
-  };
-  const cancelHoverIntent = (id: number) => {
-    if (hoverTimerRef.current != null) {
-      window.clearTimeout(hoverTimerRef.current);
-      hoverTimerRef.current = null;
-    }
-    setHoveredVideoId((cur) => (cur === id ? null : cur));
-  };
 
   // Perf instrumentation. We mint a fresh open-op id every time the picker
   // transitions closed→open and stamp it onto the vault-media + vault-lists
   // hooks so their requested/delivered phases share the same id as the
   // user-visible "vault open" event. The first-tile painted milestone is
-  // logged from the tile <button> below via a render-once ref.
+  // logged from the first tile <button> below via a render-once ref.
   const openOpIdRef = useRef<string | null>(null);
   const paintedRef = useRef(false);
+  const markFirstTilePainted = (el: HTMLButtonElement | null, firstTileId: number) => {
+    if (!el || paintedRef.current) return;
+    const id = openOpIdRef.current;
+    if (!id) return;
+    paintedRef.current = true;
+    // Fires the moment the first tile <button> is mounted —
+    // this is "first tab open" in the user's terms: the
+    // picker has data on screen and is clickable.
+    perfPainted(id, "vault.open", { firstTileId });
+  };
 
   // Reset selection state when the picker transitions from closed → open.
   // Parent passes a fresh `initialSelectedIds` array on every render, so
@@ -836,12 +314,8 @@ export function VaultPicker(props: VaultPickerProps) {
       // fall back to All / Newest / All-types. Crucially we DON'T force
       // listId to the MRU head — that would override the user's last
       // explicit "All folders" choice every time.
-      const state = loadFanState(accountId, fanId);
-      setType(state?.type ?? "all");
-      setSort(state?.sort ?? "newest");
-      setListId(state?.listId ?? null);
-      setQueryInput("");   // search is transient — start each open clean
-      setQuery("");
+      // Search is transient — start each open clean.
+      dispatch({ type: "hydrate", saved: loadFanState(accountId, fanId) });
       setFolderMru(loadFanMru(accountId, fanId));
     }
     wasOpenRef.current = open;
@@ -855,21 +329,16 @@ export function VaultPicker(props: VaultPickerProps) {
   // allowed folder that OF still reports as having media (listsQ is
   // backend-filtered to the allowed set), which transparently falls
   // through past a folder that was deleted/emptied on OF (per DA-3).
-  const firstUsableFolderId = useMemo<FanId | null>(() => {
-    if (allowedFolders.length === 0) return null;
-    const liveIds = new Set((listsQ.data?.list ?? []).map((l) => l.id));
-    const live = allowedFolders.find((f) => liveIds.has(f.folder_id));
-    // Fall back to the first allowed folder even if listsQ hasn't loaded
-    // yet (or reports none with media) so we never default to the denied
-    // "All" view; an empty grid is a better floor than a soft-denied one.
-    return (live ?? allowedFolders[0]).folder_id;
-  }, [allowedFolders, listsQ.data]);
+  const firstUsable = useMemo<FanId | null>(
+    () => firstUsableFolderId(allowedFolders, listsQ.data?.list ?? []),
+    [allowedFolders, listsQ.data],
+  );
 
   useEffect(() => {
     if (!open || !restricted) return;
     if (listId != null && allowedFolderIds.has(listId)) return;
-    if (firstUsableFolderId != null) setListId(firstUsableFolderId);
-  }, [open, restricted, listId, allowedFolderIds, firstUsableFolderId]);
+    if (firstUsable != null) dispatch({ type: "setListId", value: firstUsable });
+  }, [open, restricted, listId, allowedFolderIds, firstUsable]);
 
   // Persist the full picker state on every change so reopening the
   // picker (same tab, popout, or restart) lands on the exact same view.
@@ -887,7 +356,7 @@ export function VaultPicker(props: VaultPickerProps) {
     if (!open || listId == null) return;
     bumpAccountCount(accountId, listId);
     setFolderMru((prev) => {
-      const next = [listId, ...prev.filter((id) => id !== listId)].slice(0, MRU_CAP);
+      const next = nextMru(prev, listId);
       saveFanMru(accountId, fanId, next);
       return next;
     });
@@ -1025,51 +494,26 @@ export function VaultPicker(props: VaultPickerProps) {
     }
     return isStatsSort(sort) && statsMap ? sortByStats(out, statsMap, sort) : out;
   }, [vault.items, lengthRange, hideSeen, fanId, historyByMedia, wall.set, sort, statsMap]);
+  // End the hover when no mouseleave will: the picker closes (Esc, attach;
+  // it stays mounted) or the hovered card drops out of the grid (a late
+  // hide-seen). Stops the slideshow, sends the cancel, and disarms the dwell.
+  const { stop: stopHover } = hover;
+  const hoveredId = hover.state.id;
+  useEffect(() => {
+    if (!open || (hoveredId != null && !visibleItems.some((m) => m.id === hoveredId))) stopHover();
+  }, [open, hoveredId, visibleItems, stopHover]);
   // Shift-click ranges and the grid keyboard run over the cards as displayed.
   const grid = useGridSelection({
     items: visibleItems, toggle, addMany,
     attach: (focused) => (selectedIds.size > 0 ? confirm() : focused && confirmWith(focused)),
   });
 
-  // Folder quick-chips: three-tier fallback so the row is always useful.
-  //   1. Per-fan MRU (last 3 folders the chatter used on this fan).
-  //      Marked with a ★ — "you used this for this fan recently".
-  //   2. Account-wide most-used folders (sum across all fans). Marked
-  //      with a • — "you use this folder a lot in general".
-  //   3. First few vault folders OF returned, as last-ditch defaults.
-  //  Capped at MRU_CAP total. Same id never appears twice.
-  type Chip = { id: FanId; name: string; source: "mru" | "global" | "default" };
-  const folderChips = useMemo<Chip[]>(() => {
-    const allFolders = listsQ.data?.list ?? [];
-    if (allFolders.length === 0) return [];
-    const byId = new Map(allFolders.map((l) => [l.id, l]));
-    const out: Chip[] = [];
-    const seen = new Set<FanId>();
-    const push = (id: FanId, source: Chip["source"]) => {
-      if (out.length >= MRU_CAP || seen.has(id)) return;
-      const l = byId.get(id);
-      if (!l) return; // folder deleted upstream — skip
-      seen.add(id);
-      out.push({ id: l.id, name: l.name, source });
-    };
-    // (1) Per-fan MRU.
-    for (const id of folderMru) push(id, "mru");
-    // (2) Account-wide most-used. Sort folderIds by count DESC.
-    if (out.length < MRU_CAP) {
-      const ranked = Object.entries(accountCounts)
-        // Keep the id a STRING: these keys are folder ids, and Number() on a
-        // Fansly snowflake (>2^53) lands on a different folder.
-        .map(([id, count]) => ({ id: id as FanId, count: Number(count) || 0 }))
-        .filter((e) => e.id !== "" && e.count > 0)
-        .sort((a, b) => b.count - a.count);
-      for (const e of ranked) push(e.id, "global");
-    }
-    // (3) First-three default fallback when neither MRU nor counts cover it.
-    if (out.length < MRU_CAP) {
-      for (const l of allFolders) push(l.id, "default");
-    }
-    return out;
-  }, [listsQ.data, folderMru, accountCounts]);
+  // Folder quick-chips: per-fan MRU ★, then account-wide most-used •, then
+  // OF's first folders; capped at MRU_CAP (vaultPickerFolders).
+  const quickChips = useMemo(
+    () => folderChips(listsQ.data?.list ?? [], folderMru, accountCounts, MRU_CAP),
+    [listsQ.data, folderMru, accountCounts],
+  );
 
   if (!open) return null;
   if (typeof document === "undefined") return null;
@@ -1142,7 +586,7 @@ export function VaultPicker(props: VaultPickerProps) {
             <button
               key={c.value}
               type="button"
-              onClick={() => setType(c.value)}
+              onClick={() => dispatch({ type: "setType", value: c.value })}
               className={cn(
                 "shrink-0 px-3 py-1 rounded-full text-xs border transition-colors",
                 type === c.value
@@ -1154,17 +598,17 @@ export function VaultPicker(props: VaultPickerProps) {
             </button>
           ))}
 
-          {folderSelectItems.length > 0 && (
+          {folderItems.length > 0 && (
             <select
               value={listId ?? ""}
-              onChange={(e) => setListId(e.target.value ? Number(e.target.value) : null)}
+              onChange={(e) => dispatch({ type: "setListId", value: e.target.value ? Number(e.target.value) : null })}
               className={cn(VAULT_TOOLBAR_SELECT, "max-w-[9rem] md:max-w-none")}
               title="Filter by folder"
             >
               {/* Restricted chatters have no "All folders" view — the
                *  backend soft-denies list_id=None for them (DA-2). */}
               {!restricted && <option value="">All folders</option>}
-              {folderSelectItems.map((f) => (
+              {folderItems.map((f) => (
                 <option key={f.id} value={f.id}>
                   {f.label}
                 </option>
@@ -1174,7 +618,7 @@ export function VaultPicker(props: VaultPickerProps) {
 
           <select
             value={sort}
-            onChange={(e) => setSort(e.target.value as Sort)}
+            onChange={(e) => dispatch({ type: "setSort", value: e.target.value as Sort })}
             className={VAULT_TOOLBAR_SELECT}
             title="Sort order. Newest / Oldest are OF's; the stats sorts rank the loaded media by our send records."
           >
@@ -1188,7 +632,7 @@ export function VaultPicker(props: VaultPickerProps) {
               className="shrink-0 ml-2 inline-flex items-center gap-1 text-[11px] text-fg-dim cursor-pointer select-none"
               title="Hide content viewed or unlocked by fan, or posted on Creator's feed"
             >
-              <input type="checkbox" checked={hideSeen} onChange={(e) => setHideSeen(e.target.checked)} />
+              <input type="checkbox" checked={hideSeen} onChange={(e) => dispatch({ type: "setHideSeen", value: e.target.checked })} />
               Hide seen
             </label>
           )}
@@ -1196,7 +640,7 @@ export function VaultPicker(props: VaultPickerProps) {
           {fanId != null && (
             <select
               value={lengthRange}
-              onChange={(e) => setLengthRange(e.target.value as DurationRange)}
+              onChange={(e) => dispatch({ type: "setLengthRange", value: e.target.value as DurationRange })}
               className={VAULT_TOOLBAR_SELECT}
               title="Filter by length"
             >
@@ -1210,7 +654,7 @@ export function VaultPicker(props: VaultPickerProps) {
             <input
               type="search"
               value={queryInput}
-              onChange={(e) => setQueryInput(e.target.value)}
+              onChange={(e) => dispatch({ type: "setQueryInput", value: e.target.value })}
               placeholder={fanId != null ? "Search hashtag, note or caption" : "Search vault…"}
               title="Search your vault (OnlineFans-native full-text search)"
               className="w-32 md:w-40 bg-bg border border-border rounded-md pl-2 pr-6 py-1 text-base md:text-xs focus:outline-none focus:border-accent"
@@ -1218,7 +662,7 @@ export function VaultPicker(props: VaultPickerProps) {
             {queryInput && (
               <button
                 type="button"
-                onClick={() => { setQueryInput(""); setQuery(""); }}
+                onClick={() => dispatch({ type: "clearQuery" })}
                 className="absolute right-1.5 top-1/2 -translate-y-1/2 text-fg-dim hover:text-fg leading-none"
                 aria-label="Clear search"
               >
@@ -1271,13 +715,13 @@ export function VaultPicker(props: VaultPickerProps) {
           </div>
         </div>
 
-        {folderChips.length > 0 && (
+        {quickChips.length > 0 && (
           <div className="flex items-center gap-1 px-4 py-1.5 border-b border-border bg-bg/30 flex-wrap text-[11px]">
             <span className="text-fg-dim mr-1">Folders:</span>
             {/* Restricted chatters have no "All" — soft-denied by the backend. */}
             {!restricted && <button
               type="button"
-              onClick={() => setListId(null)}
+              onClick={() => dispatch({ type: "setListId", value: null })}
               className={cn(
                 "px-2 py-0.5 rounded-full border transition-colors",
                 listId == null
@@ -1288,11 +732,11 @@ export function VaultPicker(props: VaultPickerProps) {
             >
               All
             </button>}
-            {folderChips.map((f) => (
+            {quickChips.map((f) => (
               <button
                 key={f.id}
                 type="button"
-                onClick={() => setListId(f.id)}
+                onClick={() => dispatch({ type: "setListId", value: f.id })}
                 title={
                   f.source === "mru"
                     ? `Switch to '${f.name}' · last-used for this fan`
@@ -1345,421 +789,30 @@ export function VaultPicker(props: VaultPickerProps) {
               vault.isFetching && vault.isPlaceholderData && "opacity-60",
             )}
           >
-            {visibleItems.map((m, tileIdx) => {
-              const selected = selectedIds.has(m.id);
-              // Permanent cached thumb on the mirror path, proxied OF url on the
-              // live one, "" for a media with no picture at all (a voice note) —
-              // in which case the `{m.type}` placeholder below renders.
-              const thumb = vaultTileThumb(m, accountId);
-              // The playable mp4 — null for DRM-only videos. We do NOT fall
-              // back to files.preview.url here: that's a static poster JPEG,
-              // and feeding it to <video>/`/img/scrub` is exactly what made
-              // DRM items fail ("Couldn't load" + 502 storyboard build).
-              const rawVideoSrc = progressiveVideoSrc(m);
-              // DRM (encrypted) videos have no progressive source; we slideshow
-              // OF's own poster frames instead of the impossible ffmpeg scrub.
-              // The 🔒 marker keys off the manifest (authoritative), so it
-              // shows even on the rare DRM file with no poster frames.
-              const drmOnly = isDrmOnlyVideo(m);
-              // OF's pre-extracted poster frames — available on MOST videos
-              // (up to ~9), not just DRM ones. We now use them as the instant
-              // hover preview for ALL videos: they're a single CDN GET each
-              // (~0.85s cold, instant warm) vs the ~11.5s cold ffmpeg build.
-              const posterFrames = m.type === "video" ? videoPosterFrames(m) : [];
-              const hasPosters = posterFrames.length > 0;
-              const isHovering = hoveredVideoId === m.id;
-              // Progressive videos can ALSO get the 12-frame ffmpeg storyboard
-              // (sharper, evenly spaced). New flow: show posters instantly,
-              // build ffmpeg in the background, swap up to 12 frames when ready
-              // (scrubReady). The ffmpeg subsystem is untouched — just deferred.
-              const canScrub =
-                m.type === "video" && isHovering && !!rawVideoSrc && !!accountId;
-              // Show poster frames while hovering and either: it's a DRM video
-              // (no ffmpeg possible — posters are the only preview) OR the cached
-              // storyboard hasn't revealed within a short GRACE window. A warm
-              // storyboard flips scrubReady in ~3ms (before the grace), so posters
-              // never fetch — the ~0.7s cold OF poster fetch that made hover feel
-              // like 2s is skipped entirely. A COLD storyboard (uncollected acct,
-              // ffmpeg still building) shows posters after the grace to cover the
-              // build. Decoupled from cache-path detection (that gate mis-fired).
-              const showPosterPreview =
-                isHovering && hasPosters && !!accountId &&
-                (drmOnly || (!scrubReady && posterGrace));
-              // Spread the N available poster frames EVENLY across the 12-slot
-              // cursor instead of `% N` (which repeats/stutters when N≠12 — e.g.
-              // 9 frames replay 0,1,2 on beats 9-11). Maps beat→frame so a
-              // 5-frame clip holds each frame ~2-3 beats and a 9-frame clip
-              // ~1-2, matching the eventual 12-frame ffmpeg pacing.
-              // Skip poster frame 0 — it's ~the static thumbnail already on the
-              // tile; start the preview on the SECOND frame so hover reveals
-              // something new immediately. Cursor maps into [posterStart..N-1].
-              const posterStart = posterFrames.length > 1 ? 1 : 0;
-              const posterIdx = hasPosters
-                ? posterStart + evenFrameIndex(scrubFrameIdx, posterFrames.length - posterStart)
-                : 0;
-              // DRM videos serve poster frames from the relay's PERMANENT on-disk
-              // cache (media-id keyed, signature-free). It self-heals: on a miss
-              // the relay resolves the media by id straight from OF for a freshly
-              // signed url, then stores the bytes — so hovering a DRM video caches
-              // its posters even on an UN-collected account (the cache fills as you
-              // browse; Collect just pre-warms everything). Not gated on cache-mode
-              // — works on any owned account.
-              //
-              // We deliberately do NOT pass the url we happen to be holding. The
-              // route used to take it as `u=`, which made a render endpoint fetch
-              // whatever host the client named, and it saved nothing: the by-id
-              // read is the same call the relay makes when a stored url has gone
-              // stale, and unlike our copy it cannot already be expired.
-              const useCachedPoster = drmOnly && !!accountId;
-              const posterSrcFor = (u: string, idx: number) =>
-                useCachedPoster
-                  ? `/admin/vault-ai/poster?account_id=${encodeURIComponent(accountId!)}&media_id=${m.id}&i=${idx}`
-                  : proxyImage(u, accountId);
-              // Mount the ffmpeg <img>s (hidden) as soon as we hover a
-              // progressive video so the background build kicks off — even
-              // while posters are the visible layer. The HD frames take over
-              // (become visible) only once frame 0 lands (scrubReady).
-              const buildScrub = canScrub;
-              const fanEntry = fanId != null ? historyMap[String(m.id)] : undefined;
-              const stat = statsMap?.[String(m.id)];
-              const onWall = wall.set.has(m.id);
-              const status = resolveStatus(fanEntry, onWall);
-              // The Fan already has it (bought, or last sent free). Advisory:
-              // the card stays selectable; the relay's 409 guards re-sales.
-              const greyed = status === "unlocked" || status === "free";
-              const cap = aiCaptionFor(m);
-              const onFirstTileRef = (el: HTMLButtonElement | null) => {
-                if (!el || tileIdx !== 0) return;
-                if (paintedRef.current) return;
-                const id = openOpIdRef.current;
-                if (!id) return;
-                paintedRef.current = true;
-                // Fires the moment the first tile <button> is mounted —
-                // this is "first tab open" in the user's terms: the
-                // picker has data on screen and is clickable.
-                perfPainted(id, "vault.open", { firstTileId: m.id });
-              };
-              return (
-                <button
-                  key={m.id}
-                  ref={onFirstTileRef}
-                  type="button"
-                  data-tile-id={m.id}
-                  onClick={(e) => grid.onTileClick(m, e)}
-                  onDoubleClick={() => confirmWith(m)}
-                  title={fanEntry ? `${describeTile(m, fanEntry, onWall)} · ${TILE_HINT}` : TILE_HINT}
-                  onMouseEnter={m.type === "video" ? () => startHoverIntent(m.id, m.duration ?? 0, rawVideoSrc, drmOnly ? posterFrames.map((u, idx) => posterSrcFor(u, idx)).slice(posterStart) : undefined)
-                    : m.type === "photo" ? (e) => photoHover.start(m, e.currentTarget) : undefined}
-                  onMouseLeave={m.type === "video" ? () => cancelHoverIntent(m.id) : m.type === "photo" ? closePhoto : undefined}
-                  className={cn(
-                    "relative aspect-square rounded-md overflow-hidden bg-bg-elev-1",
-                    sheet?.pickerTile,
-                    "border-2 transition-colors",
-                    "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
-                    // Status ring wins unless the tile is selected — once
-                    // the user picks it the accent ring takes over so
-                    // their selection state is unambiguous.
-                    selected
-                      ? "border-accent ring-2 ring-accent/40"
-                      : status
-                      ? STATUS_RING_CLASS[status]
-                      : "border-border hover:border-fg-dim/40",
-                  )}
-                >
-                  {(buildScrub || showPosterPreview) ? (
-                    <>
-                      {/* LAYER 0 — base thumb. Already loaded by the grid, so
-                       *  it paints instantly and fills any gap when the cursor
-                       *  lands on a poster/HD frame that hasn't finished
-                       *  loading yet — without it those beats flash black
-                       *  (empty <img> over the dark tile). Never animates;
-                       *  the frame layers sit on top at object-cover. */}
-                      {thumb && (
-                        <img
-                          src={thumb}
-                          alt=""
-                          aria-hidden
-                          // Cache path = permanent on-disk thumbs → load ALL at
-                          // once, paint as each arrives. Live path stays lazy so
-                          // we don't flood OF with off-screen fetches.
-                          loading={useLocalVault ? "eager" : "lazy"}
-                          decoding="async"
-                          className={cn(
-                            "absolute inset-0 w-full h-full object-cover",
-                            blurCls,
-                          )}
-                        />
-                      )}
-                      {/* LAYER 1 — OF poster frames (instant). The hover
-                       *  preview the user sees first: one CDN GET per frame
-                       *  (~0.85s cold, instant warm) vs the ~11.5s cold
-                       *  ffmpeg build. Shown for DRM videos (the only option)
-                       *  and for progressive videos UNTIL the HD storyboard
-                       *  is ready. Layered + opacity-toggled so ticking the
-                       *  cursor never cancels an in-flight load. */}
-                      {showPosterPreview && posterFrames.map((u, idx) => (
-                        // Don't render/fetch frame 0 (the thumbnail-like frame).
-                        idx < posterStart ? null : (
-                        <img
-                          key={`${m.id}-pf-${idx}`}
-                          src={posterSrcFor(u, idx)}
-                          alt=""
-                          aria-hidden={idx !== posterIdx}
-                          decoding="async"
-                          // First poster image to land clears the gray-state
-                          // decimal countdown. Guard against a stale load
-                          // firing for a tile the user already left.
-                          onLoad={() => {
-                            if (hoveredVideoIdRef.current === m.id) setPosterLoaded(true);
-                          }}
-                          onError={useCachedPoster ? (e) => {
-                            // If the cached-poster endpoint isn't up yet (relay
-                            // pre-restart) fall back once to the direct OF url so
-                            // DRM tiles never break — just aren't cached yet.
-                            const img = e.currentTarget;
-                            if (!img.dataset.fellback) {
-                              img.dataset.fellback = "1";
-                              img.src = proxyImage(u, accountId);
-                            }
-                          } : undefined}
-                          style={{ opacity: idx === posterIdx ? 1 : 0 }}
-                          className={cn(
-                            "absolute inset-0 w-full h-full object-cover transition-opacity duration-200",
-                            blurCls,
-                          )}
-                        />
-                        )
-                      ))}
-                      {/* Gray-state countdown — fine decimal (2.3 → 2.2 → 2.1)
-                       *  painted over the thumb base until OF's first poster
-                       *  image arrives. Held ~0.5s past load (POSTER_COMMIT_MS)
-                       *  so it stays up while the slideshow spin starts, then
-                       *  commits/unmounts. Distinct from the whole-second HD
-                       *  pill (the ffmpeg-upgrade ETA). */}
-                      {showPosterPreview && !posterLoaded && (
-                        // Only while the FIRST poster frame is genuinely still
-                        // loading — NOT held 500ms past load (posterCommitted),
-                        // which made an already-loaded/cached poster still show a
-                        // "2.5s" countdown for half a second and read as a 2s wait.
-                        <div
-                          aria-hidden
-                          className="absolute inset-0 grid place-items-center pointer-events-none"
-                        >
-                          <span className="text-white/85 text-base font-semibold drop-shadow-[0_1px_3px_rgba(0,0,0,0.7)] tabular-nums">
-                            {posterCountdownSec > 0 ? `${posterCountdownSec.toFixed(1)}s` : "…"}
-                          </span>
-                        </div>
-                      )}
-                      {/* LAYER 2 — HD ffmpeg storyboard (12 frames, sharper +
-                       *  evenly spaced). Mounted as soon as we hover a
-                       *  progressive video so the background build starts
-                       *  immediately; sits at opacity 0 UNDER the posters and
-                       *  takes over the moment frame 0 lands (scrubReady).
-                       *  Each <img> keeps its own src for the whole hover — no
-                       *  src swaps, so the browser never cancels an in-flight
-                       *  frame fetch. frame-0 carries onLoad/onError to flip
-                       *  scrubReady (the poster→HD handoff) and clear the
-                       *  loading state. */}
-                      {buildScrub && Array.from({ length: SCRUB_FRAMES }).map((_, idx) => (
-                        <img
-                          key={`${m.id}-frame-${idx}`}
-                          src={proxyScrubFrame(rawVideoSrc, accountId, idx, m.duration, hoverSessionId)}
-                          alt=""
-                          aria-hidden={idx !== scrubFrameIdx}
-                          decoding="async"
-                          onLoad={idx === 0 ? () => {
-                            if (hoveredVideoIdRef.current !== m.id) return;
-                            setHoverLoading(false);
-                            setScrubReady(true);
-                          } : undefined}
-                          onError={idx === 0 ? () => {
-                            if (hoveredVideoIdRef.current === m.id) setHoverLoading(false);
-                          } : undefined}
-                          style={{ opacity: idx === scrubFrameIdx && scrubReady ? 1 : 0 }}
-                          className={cn(
-                            "absolute inset-0 w-full h-full object-cover transition-opacity duration-200",
-                            blurCls,
-                          )}
-                        />
-                      ))}
-                      {/* LAYER 3 — HD-build affordance while ffmpeg runs. With
-                       *  posters visible we DON'T cover them with the shimmer;
-                       *  a small corner ETA pill ("HD 7s", ×1.3-padded) tells
-                       *  the user a sharper version is coming. No posters
-                       *  (rare) → keep the full-tile shimmer as before. */}
-                      {buildScrub && !scrubReady && (
-                        hasPosters ? (
-                          <span className="absolute top-1 right-1 bg-black/55 text-white/90 text-[9px] px-1.5 py-0.5 rounded-full pointer-events-none tabular-nums">
-                            HD {scrubCountdownSec > 0 ? `${Math.ceil(scrubCountdownSec)}s` : "…"}
-                          </span>
-                        ) : (
-                          <>
-                            <div aria-hidden className="scrub-shimmer pointer-events-none" />
-                            <div
-                              aria-hidden
-                              className="absolute inset-0 grid place-items-center pointer-events-none"
-                            >
-                              <span className="text-white/85 text-lg font-semibold drop-shadow-[0_1px_3px_rgba(0,0,0,0.7)] tabular-nums">
-                                {scrubCountdownSec > 0
-                                  ? `${Math.ceil(scrubCountdownSec)}s`
-                                  : "…"}
-                              </span>
-                            </div>
-                          </>
-                        )
-                      )}
-                    </>
-                  ) : thumb ? (
-                    <img
-                      src={thumb}
-                      alt=""
-                      loading={useLocalVault ? "eager" : "lazy"}
-                      decoding="async"
-                      className={cn("w-full h-full object-cover", blurCls)}
-                    />
-                  ) : (
-                    <div className="w-full h-full grid place-items-center text-[10px] text-fg-dim">
-                      {m.type}
-                    </div>
-                  )}
-                  {greyed && <span data-testid="vault-card-greyed" aria-hidden className={VAULT_CARD_GREYED} />}
-                  {captionOn && cap && <VaultAiCaptionOverlay caption={cap} />}
-                  {m.type === "video" && (
-                    // Repurposed as the preview-open affordance. Nested
-                    // <button> isn't legal HTML so we use a span with
-                    // role="button" + stopPropagation, which keeps tile
-                    // selection on the tile click and play-modal on the
-                    // pill click. Hover styling makes the interactivity
-                    // discoverable.
-                    <span
-                      role="button"
-                      tabIndex={0}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setPreviewMedia(m);
-                      }}
-                      onDoubleClick={(e) => e.stopPropagation()}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          setPreviewMedia(m);
-                        }
-                      }}
-                      // Phone: a real 40px tap pill (it is the only way to
-                      // open the video preview). The md: half restores the
-                      // original 10px/px-1.5/py-0.5 badge exactly; the box is
-                      // absolutely positioned, so grid vs block is inert.
-                      className={cn("absolute bottom-1 right-1 bg-black/60 hover:bg-black/85 text-white grid place-items-center md:block text-[12px] md:text-[10px] min-h-[40px] md:min-h-0 px-3 md:px-1.5 py-0 md:py-0.5 rounded cursor-pointer select-none", messagesPro && VAULT_SHEET.duration)}
-                      title="Preview video"
-                    >
-                      ▶ {fmtDuration(m.duration)}
-                    </span>
-                  )}
-                  {drmOnly && (
-                    // DRM (FairPlay) marker. These have no progressive mp4, so
-                    // hover + click show OF's poster frames, not real playback.
-                    <span
-                      className="absolute top-1 left-1 bg-black/60 text-white text-[10px] px-1 py-0.5 rounded leading-none select-none"
-                      title="DRM-protected video — preview shows OnlyFans' poster frames; full playback only after sending"
-                    >
-                      🔒
-                    </span>
-                  )}
-                  {(fanId != null || m.type === "gif" || stat) && (
-                    <div className={VAULT_CARD_FOOT}>
-                      {stat && (
-                        <span data-testid="vault-card-stats" className={VAULT_CARD_TAG}
-                          title="1:1 chat sends (mass sends not counted): fans sent to · fans who unlocked · unlock rate of priced sends">
-                          {statsLabel(stat)}
-                        </span>
-                      )}
-                      {fanId != null && (
-                        <>
-                          {/* The mirror's AI tags; live media carries none. */}
-                          {cap && cap.tags.length > 0 && (
-                            <ul aria-label="Tags" className={VAULT_CARD_TAGS}>
-                              {cap.tags.slice(0, 3).map((t) => <li key={t} className={VAULT_CARD_TAG}>{t}</li>)}
-                            </ul>
-                          )}
-                          {/* Notes: the relay stores none, and the AI description is not one. */}
-                          <span data-testid="vault-card-notes" />
-                        </>
-                      )}
-                      {m.type === "gif" && <span className={VAULT_CARD_GIF}>GIF</span>}
-                      {/* Not wired: fan-history returns no message id to unsend. */}
-                      {fanEntry && (
-                        <span
-                          {...cardAction(() => {})}
-                          aria-label="Unsend"
-                          aria-disabled="true"
-                          title={notWiredTitle("vaultUnsend")}
-                          className={VAULT_CARD_UNSEND}
-                        >
-                          ↶
-                        </span>
-                      )}
-                    </div>
-                  )}
-                  {/* Price/state corner: replaces the plain dot with a
-                   *  small pill that carries the price for locked/unlocked
-                   *  ($X), the word "FREE" for sent-free, and the wall
-                   *  marker. Still color-matches the ring so the state is
-                   *  legible at the smallest grid sizes. */}
-                  {status && (() => {
-                    const priceLabel = tilePriceLabel(fanEntry);
-                    // Paid wall posts carry the price OF was charging on the
-                    // wall, so the pill reads "WALL $6.99"; free wall posts
-                    // stay a plain "WALL".
-                    const wallCents = wall.priceById.get(m.id) ?? 0;
-                    const text =
-                      status === "unlocked"
-                        ? (priceLabel ?? "PAID")
-                        : status === "locked"
-                        ? (priceLabel ?? "PPV")
-                        : status === "free"
-                        ? "FREE"
-                        : wallCents > 0
-                        ? `WALL ${fmtPrice(wallCents)}`
-                        : "WALL";
-                    // With a Fan in scope the pill opens "Media details" at
-                    // the price history.
-                    return (
-                      <span
-                        {...(fanId != null
-                          ? { ...cardAction(() => setDetails({ media: m, atHistory: true })), title: "Price history" }
-                          : { "aria-hidden": true })}
-                        className={cn(
-                          "absolute top-1 left-1 px-1.5 h-4 rounded-full text-[9px] font-bold leading-4 shadow",
-                          STATUS_DOT_CLASS[status],
-                          // Yellow needs dark text for legibility; the
-                          // rest are bright-on-dark.
-                          status === "free" ? "text-bg" : "text-white",
-                          fanId != null && "cursor-pointer",
-                        )}
-                      >
-                        {text}
-                      </span>
-                    );
-                  })()}
-                  {fanId != null && (
-                    <span
-                      {...cardAction(() => setDetails({ media: m, atHistory: false }))}
-                      aria-label="Media details"
-                      title="Media details"
-                      className={VAULT_CARD_INFO}
-                    >
-                      ⓘ
-                    </span>
-                  )}
-                  {selected && (
-                    <span className={cn("absolute w-5 h-5 rounded-full bg-accent text-white grid place-items-center text-[11px] font-bold shadow", fanId != null ? VAULT_CARD_CHECK_UNDER_INFO : VAULT_CARD_CHECK)}>
-                      ✓
-                    </span>
-                  )}
-                </button>
-              );
-            })}
+            {visibleItems.map((m, tileIdx) => (
+              <VaultPickerTile
+                key={m.id}
+                m={m}
+                selected={selectedIds.has(m.id)}
+                accountId={accountId}
+                fanId={fanId}
+                sheetTile={sheet?.pickerTile}
+                useLocalVault={useLocalVault}
+                blurCls={blurCls}
+                captionOn={captionOn}
+                fanEntry={fanId != null ? historyMap[String(m.id)] : undefined}
+                stat={statsMap?.[String(m.id)]}
+                onWall={wall.set.has(m.id)}
+                wallCents={wall.priceById.get(m.id) ?? 0}
+                hover={hover}
+                photoHover={photoHover}
+                firstTileRef={tileIdx === 0 ? (el) => markFirstTilePainted(el, m.id) : undefined}
+                onTileClick={grid.onTileClick}
+                onAttach={confirmWith}
+                onPreview={setPreviewMedia}
+                onDetails={setDetails}
+              />
+            ))}
           </div>
 
           <div ref={sentinelRef} className="h-8 flex items-center justify-center text-[11px] text-fg-dim">
@@ -1808,222 +861,4 @@ export function VaultPicker(props: VaultPickerProps) {
     </div>,
     document.body,
   );
-}
-
-/** Full-screen modal video player. Sits above the picker's slide-over
- *  pane so backdrop click closes only the preview. The native <video>
- *  controls give scrub/volume/fullscreen; we don't reimplement them. */
-export function VaultVideoPreview({
-  media, accountId, onClose,
-}: { media: VaultMedia; accountId: string | null; onClose: () => void }) {
-  // Progressive mp4 only — NOT files.preview.url (a poster JPEG). Resolving
-  // to the poster is what made DRM previews mount a <video> on a still image
-  // and fail. DRM items get the poster-frame lightbox below instead.
-  const rawSrc = progressiveVideoSrc(media);
-  const drmOnly = isDrmOnlyVideo(media);
-  const drmFrames = videoPosterFrames(media);
-  // Show the poster-frame lightbox only when we actually have frames; a DRM
-  // file with none falls through to the friendly "can't preview" panel.
-  const drm = drmOnly && drmFrames.length > 0;
-  // Distinguish "no URL at all" (rawSrc null) from "URL was returned but
-  // upstream rejected it" (loadError set by the <video> onError). Both
-  // surface the same friendly hint about refresh + transcoding.
-  const [loadError, setLoadError] = useState(false);
-  useEffect(() => { setLoadError(false); }, [media.id]);
-  // Lock background scroll while open. The overlay is viewport-level (`fixed`),
-  // so without this the page behind it still scrolls under the backdrop.
-  useEffect(() => {
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => { document.body.style.overflow = prev; };
-  }, []);
-  // DRM poster-frame lightbox cursor. Auto-advances so the user sees the
-  // whole set; arrow keys / on-screen arrows let them step manually.
-  const [frameIdx, setFrameIdx] = useState(0);
-  useEffect(() => { setFrameIdx(0); }, [media.id]);
-  useEffect(() => {
-    if (!drm || drmFrames.length < 2) return;
-    const id = window.setInterval(
-      () => setFrameIdx((n) => (n + 1) % drmFrames.length),
-      900,
-    );
-    return () => window.clearInterval(id);
-  }, [drm, drmFrames.length]);
-  // Diagnostic for the "no source" case — logs the full vault item so we
-  // can see which fields OF actually populated for priced/PPV videos and
-  // extend the fallback list above. No-op when a source resolved fine.
-  useEffect(() => {
-    if (!rawSrc) {
-      console.warn("[vault-preview] no playable source", {
-        id: media.id,
-        type: media.type,
-        isReady: media.isReady,
-        canView: media.canView,
-        hasVideoSources: !!media.videoSources,
-        fileKeys: media.files ? Object.keys(media.files) : [],
-        media,
-      });
-    }
-  }, [rawSrc, media]);
-  const src = proxyImage(rawSrc, accountId);
-  const poster = proxyImage(
-    media.files?.preview?.url || media.files?.thumb?.url || null,
-    accountId,
-  );
-  const showError = !src || loadError;
-  return (
-    // `fixed`, not `absolute`: this is reused OUTSIDE the picker's own portal
-    // (e.g. the /vault manager), where an absolute overlay would size itself to
-    // whatever positioned ancestor it landed in — which rendered the video tiny
-    // and left the page behind it scrollable.
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <button
-        type="button"
-        aria-label="Close preview"
-        onClick={onClose}
-        className="absolute inset-0 bg-black/80"
-      />
-      <div className="relative max-w-[95vw] max-h-[95vh] flex flex-col items-center gap-3">
-        {drm ? (
-          <>
-            {/* DRM (FairPlay) video — segments are encrypted, so we can't
-             *  play it here. Show OF's pre-extracted poster frames as a
-             *  steppable slideshow; the user can still attach/send it. */}
-            <div className="relative">
-              <img
-                src={proxyImage(drmFrames[frameIdx], accountId)}
-                alt={`Frame ${frameIdx + 1} of ${drmFrames.length}`}
-                className="max-w-[92vw] max-h-[88vh] rounded-md shadow-2xl bg-black object-contain"
-              />
-              {drmFrames.length > 1 && (
-                <>
-                  <button
-                    type="button"
-                    aria-label="Previous frame"
-                    onClick={() => setFrameIdx((n) => (n - 1 + drmFrames.length) % drmFrames.length)}
-                    className="absolute left-1 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-black/55 hover:bg-black/80 text-white grid place-items-center"
-                  >
-                    ‹
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="Next frame"
-                    onClick={() => setFrameIdx((n) => (n + 1) % drmFrames.length)}
-                    className="absolute right-1 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-black/55 hover:bg-black/80 text-white grid place-items-center"
-                  >
-                    ›
-                  </button>
-                </>
-              )}
-              <span className="absolute top-2 left-2 bg-black/65 text-white text-[11px] px-2 py-0.5 rounded-full">
-                🔒 DRM · frame {frameIdx + 1}/{drmFrames.length}
-              </span>
-            </div>
-            <div className="text-[11px] text-fg-dim text-center max-w-md opacity-80">
-              OnlyFans protects this video with DRM, so it can&apos;t play in the
-              picker — these are OF&apos;s own preview frames. You can still attach
-              and send it; the fan sees full playback in OnlyFans.
-            </div>
-          </>
-        ) : !showError ? (
-          <video
-            src={src}
-            poster={poster || undefined}
-            autoPlay
-            controls
-            loop
-            playsInline
-            onError={() => {
-              setLoadError(true);
-              console.warn("[vault-preview] video element error", {
-                id: media.id, rawSrc, src,
-              });
-            }}
-            className="vault-video max-w-[92vw] max-h-[88vh] rounded-md shadow-2xl bg-black"
-          />
-        ) : (
-          <div className="px-6 py-12 bg-panel rounded-md text-sm text-fg-dim border border-border max-w-md text-center space-y-2">
-            <div>
-              {drmOnly
-                ? "🔒 DRM-protected video."
-                : rawSrc
-                ? "Couldn't load this video."
-                : "No playable source for this video."}
-            </div>
-            <div className="text-[11px] opacity-70">
-              {drmOnly
-                ? "OnlyFans protects this video with DRM, so it can't play in the picker (and OF didn't include preview frames for it). You can still attach and send it — the fan sees full playback in OnlyFans."
-                : rawSrc
-                ? "OF returned a URL but the upstream rejected it — usually a signed URL that expired in cache. Close this and click \"refresh\" at the top of the vault to pull fresh URLs."
-                : `OF didn't return a streamable URL for vault id ${media.id}. Freshly-uploaded videos sit without a source until OF finishes transcoding (a few minutes). Try refresh once it's done.`}
-            </div>
-          </div>
-        )}
-        <button
-          type="button"
-          onClick={onClose}
-          className="text-xs text-white/80 hover:text-white px-3 py-1 rounded-md bg-black/40 border border-white/15"
-        >
-          Close (Esc)
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/** Mutually-exclusive tile state. Order matches the desktop-app:
- *    unlocked (fan paid) > free (we sent free) > locked (sent paid, not
- *    bought) > on-wall (public feed only). Sent-anything beats wall-only
- *    because the per-fan signal is always more actionable than the
- *    public-post signal. Unlocked stays the dominant signal — chatter
- *    must know not to resell paid content. */
-type TileStatus = "unlocked" | "free" | "locked" | "on-wall";
-
-const STATUS_RING_CLASS: Record<TileStatus, string> = {
-  unlocked: "border-ok",      // green — fan paid
-  free:     "border-warn",    // yellow — we sent free
-  locked:   "border-err",     // red — sent paid, not bought yet
-  "on-wall":"border-info",    // blue — on the public feed
-};
-
-const STATUS_DOT_CLASS: Record<TileStatus, string> = {
-  unlocked: "bg-ok",
-  free:     "bg-warn",
-  locked:   "bg-err",
-  "on-wall":"bg-info",
-};
-
-function resolveStatus(entry: FanVaultEntry | undefined, onWall: boolean): TileStatus | null {
-  if (entry?.was_purchased) return "unlocked";
-  if (entry) {
-    return entry.last_price_cents > 0 ? "locked" : "free";
-  }
-  if (onWall) return "on-wall";
-  return null;
-}
-
-/** Tooltip text for each tile — combines media metadata with all known
- *  state so hover gives the full picture (including secondary states the
- *  one-color border can't carry). */
-function describeTile(m: VaultMedia, entry: FanVaultEntry, onWall: boolean): string {
-  const base = `${m.type} · ${m.id}`;
-  const wallNote = onWall ? " · also on wall" : "";
-  if (entry.was_purchased) {
-    const paid = entry.total_paid_cents > 0
-      ? ` (${fmtCents(entry.total_paid_cents)})`
-      : "";
-    return `${base} · UNLOCKED (fan paid)${paid}${wallNote}`;
-  }
-  const kind = entry.last_price_cents > 0
-    ? `locked · sent at ${fmtPrice(entry.last_price_cents)}`
-    : "sent free";
-  return `${base} · ${kind} (${entry.send_count}×)${wallNote}`;
-}
-
-/** Price string for the corner badge: the last send price (locked or
- *  unlocked); the cumulative total paid lives in `describeTile`, the
- *  tooltip. Free + wall-only return null. */
-function tilePriceLabel(entry: FanVaultEntry | undefined): string | null {
-  if (!entry || entry.last_price_cents <= 0) return null;
-  return `${fmtPrice(entry.last_price_cents)}`;
 }

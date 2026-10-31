@@ -13,7 +13,7 @@
  */
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 
 import { decodeHtmlEntities } from "@/lib/utils";
 import { proxyImage } from "@/lib/mediaUrl";
@@ -22,7 +22,7 @@ import { messagesPaintKey, useChatMessages } from "@/hooks/useChatMessages";
 import { fetchOlderSeed, mergeSeedIntoMessages, useChatMessagesLocal } from "@/hooks/useChatMessagesLocal";
 import { useChatAttribution } from "@/hooks/useChatAttribution";
 import { keepChatEntry } from "@/hooks/useChatBackEntry";
-import { OS_EDGE_PX, useSwipe } from "@/hooks/useSwipe";
+import { OPEN_DIALOG, OS_EDGE_PX, useSwipe } from "@/hooks/useSwipe";
 import { useSendMessage, type SendStatus } from "@/hooks/useSendMessage";
 import { useLikeMessage } from "@/hooks/useLikeMessage";
 import { useTogglePinMessage } from "@/hooks/useTogglePinMessage";
@@ -52,6 +52,7 @@ import { ChatHeader } from "./ChatHeader";
 import { PinnedBar, PinnedPopover } from "./PinnedPanel";
 import { quoteFromMessage, type QuotedReply } from "./ReplyStrip";
 import { useUnsendChoice } from "./UnsendChoice";
+import { chatDrawerReducer, initialChatDrawer } from "./chatDrawer";
 
 export type { QuotedReply };
 
@@ -165,26 +166,18 @@ export function ChatSurface({
   const { refreshOne: refreshRosterOne, patchLocal: patchRosterLocal } =
     useRosterCountActions();
 
-  const [drawerOpen, setDrawerOpen] = useState(
-    () => {
-      // Below lg Fan insights start closed: Messages Pro is one pane at a
-      // time there (list → thread → insights slide-over), and a deep-link
-      // would bury the thread under the drawer. The user opens the overlay
-      // from the header ("Fan insights").
-      if (typeof window !== "undefined"
-        && window.matchMedia("(max-width: 1023px)").matches) {
-        return false;
-      }
-      return insightsOpenAtStart;
-    },
+  // Fan insights, and the header's Notes / Edit name focus requests (chatDrawer).
+  const [drawer, dispatchDrawer] = useReducer(
+    chatDrawerReducer,
+    insightsOpenAtStart,
+    // Below lg Fan insights start closed: Messages Pro is one pane at a
+    // time there (list → thread → insights slide-over), and a deep-link
+    // would bury the thread under the drawer. The user opens the overlay
+    // from the header ("Fan insights").
+    (atStart) => initialChatDrawer(atStart && !(typeof window !== "undefined"
+      && window.matchMedia("(max-width: 1023px)").matches)),
   );
-  // The Chat header's "Notes" (spec F23) opens Fan insights and raises this
-  // count, which every Fan insights answers; 0 again once they close.
-  const [focusNotesRequest, setFocusNotesRequest] = useState(0);
-  if (!drawerOpen && focusNotesRequest) setFocusNotesRequest(0);
-  // Its twin for the header's "Edit name" pencil: Nickname (ticket 142).
-  const [focusNicknameRequest, setFocusNicknameRequest] = useState(0);
-  if (!drawerOpen && focusNicknameRequest) setFocusNicknameRequest(0);
+  const drawerOpen = drawer.open;
   const [quoted, setQuoted] = useState<QuotedReply | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [highlightId, setHighlightId] = useState<number | null>(null);
@@ -200,8 +193,8 @@ export function ChatSurface({
   // `<` is; never while Fan insights or a dialog is over it.
   const threadRef = useRef<HTMLDivElement>(null);
   useSwipe(threadRef, {
-    enabled: !!onBack && !drawerOpen, dir: "right", onSwipe: () => onBack?.(), follow: threadRef,
-    edgeGuard: OS_EDGE_PX, ignoreWhile: "[role='dialog'], [aria-modal='true']",
+    enabled: !!onBack && !drawerOpen, dir: "right", onSwipe: () => onBack?.(), sheet: { panel: threadRef },
+    edgeGuard: OS_EDGE_PX, ignoreWhile: OPEN_DIALOG,
   });
 
   // Resolve the model account's OF user id — needed to decide direction
@@ -780,9 +773,9 @@ export function ChatSurface({
         name={headerName} username={fanUsername}
         findOpen={searchOpen} onToggleFind={() => setSearchOpen((v) => !v)}
         refreshing={isRefreshing || handle.isFetching} onRefresh={handleRefresh}
-        onOpenNotes={() => { setDrawerOpen(true); setFocusNotesRequest((n) => n + 1); }}
-        onEditName={() => { setDrawerOpen(true); setFocusNicknameRequest((n) => n + 1); }}
-        insightsOpen={drawerOpen} onToggleInsights={() => setDrawerOpen((v) => !v)}
+        onOpenNotes={() => dispatchDrawer({ type: "openNotes" })}
+        onEditName={() => dispatchDrawer({ type: "editName" })}
+        insightsOpen={drawerOpen} onToggleInsights={() => dispatchDrawer({ type: "toggle" })}
       />
 
       {searchOpen && (
@@ -858,6 +851,7 @@ export function ChatSurface({
       <Composer
         accountId={accountId}
         fanId={fanId}
+        fanName={headerName}
         composerApiRef={composerApiRef}
         quoted={quoted}
         onClearQuoted={() => setQuoted(null)}
@@ -929,13 +923,13 @@ export function ChatSurface({
       {drawerOpen && (
         <FanDrawer
           open={drawerOpen}
-          onClose={() => setDrawerOpen(false)}
+          onClose={() => dispatchDrawer({ type: "close" })}
           accountId={accountId}
           fanId={fanId}
           chat={chat}
           onComposeWith={(t) => composerApiRef.current?.applyTemplate(t)}
-          focusNotesRequest={focusNotesRequest}
-          focusNicknameRequest={focusNicknameRequest}
+          focusNotesRequest={drawer.notesRequest}
+          focusNicknameRequest={drawer.nicknameRequest}
         />
       )}
       </div>
@@ -947,13 +941,13 @@ export function ChatSurface({
         <FanDrawer
           pinned
           open={drawerOpen}
-          onClose={() => setDrawerOpen(false)}
+          onClose={() => dispatchDrawer({ type: "close" })}
           accountId={accountId}
           fanId={fanId}
           chat={chat}
           onComposeWith={(t) => composerApiRef.current?.applyTemplate(t)}
-          focusNotesRequest={focusNotesRequest}
-          focusNicknameRequest={focusNicknameRequest}
+          focusNotesRequest={drawer.notesRequest}
+          focusNicknameRequest={drawer.nicknameRequest}
         />
       )}
     </div>

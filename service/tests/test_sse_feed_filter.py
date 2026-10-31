@@ -21,21 +21,21 @@ _harness.bootstrap()
 import asyncio  # noqa: E402
 
 import events  # noqa: E402
+import events_persist  # noqa: E402
 
 AID = "4242"
 
 
 async def _with_queues(fn):
     """Run `fn(sub, persisted)` with a live persist queue and one SSE subscriber."""
-    events._subs_lock = asyncio.Lock()   # bind to this case's loop
     persisted: asyncio.Queue = asyncio.Queue()
-    events._persist_queue = persisted
+    events_persist._persist_queue = persisted
     sub = await events.subscribe(f"model:{AID}")
     try:
         await fn(sub, persisted)
     finally:
         await events.unsubscribe(f"model:{AID}", sub)
-        events._persist_queue = None
+        events_persist._persist_queue = None
 
 
 def _drain(q: asyncio.Queue) -> list:
@@ -46,12 +46,8 @@ def _drain(q: asyncio.Queue) -> list:
 
 
 def case_is_feed_noise():
-    assert events.is_feed_noise({"post_published": {"id": 1, "user_id": 77}}, AID)
-    assert events.is_feed_noise({"post_expire": {"id": 1}}, AID)
-    assert events.is_feed_noise({"post_updated": {"id": 1}, "__account_id": AID}, AID)
-    assert not events.is_feed_noise({"post_published": {"id": 1, "user_id": int(AID)}}, AID), \
-        "the account's own post must be kept"
-    assert not events.is_feed_noise({"api2_chat_message": {"id": 1}}, AID)
+    # The table is test_events_decide's; this pins the re-export.
+    assert events.is_feed_noise is events.ed.is_feed_noise
 
 
 async def case_feed_noise_neither_persisted_nor_pushed():
@@ -72,7 +68,7 @@ async def case_sse_allow_list():
         assert _drain(sub) == [], "non-UI frames must not reach a tab"
         await events.handle_event({"__account_id": AID, "api2_chat_message": {"id": 5}})
         got = _drain(sub)
-        assert [events._first_real_key(e) for e in got] == ["api2_chat_message"], got
+        assert [events.ed.first_key(e) for e in got] == ["api2_chat_message"], got
         n = await events.broadcast({"__account_id": AID, "transaction_recorded": {"fan_id": 1}})
         assert n == 1, n
     await _with_queues(_go)
@@ -89,7 +85,7 @@ async def case_mass_queue_frames_reach_only_their_accounts_tabs():
         await events.handle_event(finish)
         assert len(_drain(persisted)) == 2, "queue frames still persist (and feed the transcoder's ring)"
         got = _drain(sub)
-        assert [events._first_real_key(e) for e in got] == ["chat_queue_update", "chat_queue_finish"], got
+        assert [events.ed.first_key(e) for e in got] == ["chat_queue_update", "chat_queue_finish"], got
         assert got[1]["chat_queue_finish"]["total"] == 23 and got[1]["__account_id"] == AID, got
         assert _drain(other) == [], "another Creator's tab must not see the queue"
     try:

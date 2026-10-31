@@ -30,6 +30,7 @@ import {
 import { AccountAvatarPicture } from "@/components/ui/AccountAvatarPicture";
 import { useOutsideClose } from "@/components/ui/Menu";
 import { EmptyArt, type EmptyKind } from "@/components/ui/emptyArt";
+import { useExitGhost } from "@/hooks/useExitGhost";
 import type { AccountMeta } from "@/lib/relay";
 import { utcOffsetLabel } from "@/lib/utcOffset";
 import { cn } from "@/lib/utils";
@@ -284,7 +285,7 @@ const optionText = (o: IfOption) => o.text ?? (typeof o.label === "string" ? o.l
  */
 function Listbox<T extends string>({
   value, options, onChange, renderValue, placeholder, searchable, disabled, id, ariaLabel, ariaDescribedby,
-  className, triggerClassName, menuClassName, chevronClassName,
+  className, triggerClassName, menuClassName, chevronClassName, openUp,
 }: {
   value: T | null | undefined;
   options: IfOption<T>[];
@@ -300,6 +301,8 @@ function Listbox<T extends string>({
   triggerClassName: string;
   menuClassName: string;
   chevronClassName?: string;
+  /** Open the menu above the trigger (a control at the page foot), not below. */
+  openUp?: boolean;
 }) {
   const { open, setOpen, ref } = useOutsideClose();
   const [active, setActive] = useState(0);
@@ -367,7 +370,8 @@ function Listbox<T extends string>({
         <ChevronDown aria-hidden className={cn("h-3 w-3 shrink-0 text-muted transition-transform", open && "rotate-180", chevronClassName)} />
       </button>
       {open && (
-        <div className={cn("absolute left-0 top-full z-50 mt-1 min-w-full overflow-hidden rounded-md py-1 shadow-lg", menuClassName)}>
+        <div className={cn("absolute left-0 z-50 min-w-full overflow-hidden rounded-md py-1 shadow-lg",
+          openUp ? "bottom-full mb-1" : "top-full mt-1", menuClassName)}>
           {searchable && (
             <div className="px-2 pb-1">
               <input
@@ -872,6 +876,8 @@ export function HbPager({ total, noun, page, size, sizes = [10, 20, 50], onPage,
           triggerClassName={cn("h-7 rounded-[4px] px-2 text-[14px]", HB_FILL_1, HB_TEXT)}
           chevronClassName={cn("h-4 w-4", HB_TEXT)}
           menuClassName={cn("border bg-panel", HB_HAIR)}
+          // The pager sits at the page foot, so its menu opens upward or it runs off the viewport.
+          openUp
         />
       </span>
     </div>
@@ -969,13 +975,25 @@ type ModalProps = {
 
 const widthStyle = (width: number) => ({ width: `min(${width}px, calc(100vw - 32px))` });
 
+/** Both modals' mask: it pops in (the mask fades, the box scales from 0.96, globals.css `pop-*`) and leaves on a copy
+ *  that takes no click (`useExitGhost`), so closing never holds up the page. */
+function ModalMask({ children }: { children: ReactNode }) {
+  const maskRef = useRef<HTMLDivElement>(null);
+  useExitGhost(true, maskRef);
+  return (
+    <div ref={maskRef} className="pop-backdrop fixed inset-0 z-50 grid place-items-center overflow-y-auto bg-black/70 p-4">
+      {children}
+    </div>
+  );
+}
+
 /** antd's modal: a 70% black mask; the box `colorBgElevated` #1f1f1f, radius 10, no border; header `22px 24px 0`
  *  (16 / 600 T1), body 24px, footer right with 8px between buttons; the 16px T3 × 16px in from the top right. */
 export function IfModal({ title, label, width = 520, footer, onClose, closable = true, children, className }: ModalProps) {
   const boxRef = useModalFocus(onClose, closable);
   const titleId = useId();
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center overflow-y-auto bg-black/70 p-4">
+    <ModalMask>
       <div
         ref={boxRef}
         role="dialog"
@@ -984,7 +1002,7 @@ export function IfModal({ title, label, width = 520, footer, onClose, closable =
         aria-label={title ? undefined : label}
         tabIndex={-1}
         style={widthStyle(width)}
-        className={cn("relative flex max-h-[calc(100vh-32px)] flex-col rounded-[10px] bg-[#1f1f1f] outline-none shadow-2xl",
+        className={cn("pop-modal relative flex max-h-[calc(100vh-32px)] flex-col rounded-[10px] bg-[#1f1f1f] outline-none shadow-2xl",
           "[html[data-theme=light]_&]:bg-white", className)}
       >
         {closable && (
@@ -999,7 +1017,7 @@ export function IfModal({ title, label, width = 520, footer, onClose, closable =
         <div className="min-h-0 flex-1 overflow-y-auto p-6 text-[14px] text-fg">{children}</div>
         {footer && <div className="flex items-center justify-end gap-2 px-6 pb-5">{footer}</div>}
       </div>
-    </div>
+    </ModalMask>
   );
 }
 
@@ -1010,7 +1028,7 @@ export function HbModal({ title, width = 600, footer, onClose, closable = true, 
   const boxRef = useModalFocus(onClose, closable);
   const titleId = useId();
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center overflow-y-auto bg-black/70 p-4">
+    <ModalMask>
       <div
         ref={boxRef}
         role="dialog"
@@ -1018,7 +1036,7 @@ export function HbModal({ title, width = 600, footer, onClose, closable = true, 
         aria-labelledby={title ? titleId : undefined}
         tabIndex={-1}
         style={{ ...widthStyle(width), minWidth: "min(480px, calc(100vw - 32px))" }}
-        className={cn("flex max-h-[80vh] flex-col rounded-[12px] border bg-panel px-4 py-3 outline-none shadow-2xl", HB_HAIR, className)}
+        className={cn("pop-modal flex max-h-[80vh] flex-col rounded-[12px] border bg-panel px-4 py-3 outline-none shadow-2xl", HB_HAIR, className)}
       >
         {(title || closable) && (
           <div className={cn("flex items-center justify-between gap-3 border-b px-4 pb-3", HB_HAIR)}>
@@ -1036,6 +1054,6 @@ export function HbModal({ title, width = 600, footer, onClose, closable = true, 
         </div>
         {footer && <div className={cn("flex items-center justify-end gap-3 border-t px-4 pt-3", HB_HAIR)}>{footer}</div>}
       </div>
-    </div>
+    </ModalMask>
   );
 }

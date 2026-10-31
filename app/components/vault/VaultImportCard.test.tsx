@@ -15,7 +15,8 @@ vi.mock("@/components/vault/VaultAccount", () => ({
   }),
 }));
 
-import VaultImportCard, { detailsNote, itemLabel, runSummary, showsError } from "./VaultImportCard";
+import VaultImportCard from "./VaultImportCard";
+import { detailsNote, itemLabel, runSummary, showsError } from "./importRunText";
 import { metaToWire } from "./VaultImportDetails";
 import { relay } from "@/lib/relay";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";

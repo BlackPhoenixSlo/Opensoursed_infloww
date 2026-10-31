@@ -109,11 +109,15 @@ from attribution import write_outbound_attribution
 from audiences import _page_all_checked
 from automation_registry import register
 from automations import welcome_turn
-from automations._common import (
-    apply_word_restriction, coerce_ids, is_hard_skipped, is_unreachable_fan_error,
-    load_hard_skip_ids, quarantine_if_undeliverable, send_dropping_bad_media_sync,
-    should_skip_muted_creator, skip_unreachable_fan, substitute_placeholders,
-    template_fan_name,
+from automations._fan_notes import substitute_placeholders, template_fan_name
+from automations._knobs import coerce_ids
+from automations._outbound_guard import apply_word_restriction
+from automations._send_failure import (
+    is_unreachable_fan_error, quarantine_if_undeliverable, send_dropping_bad_media_sync,
+    skip_unreachable_fan,
+)
+from automations._skiplist import (
+    is_hard_skipped, load_hard_skip_ids, should_skip_muted_creator,
 )
 from automations.auto_follow import _NOTIFY_OUTCOMES, gated_follow, stamp_ping
 from db.engine import get_session
@@ -655,6 +659,31 @@ async def _follow_first(client, account_id: str, fan_id: int) -> str:
 
 # ── The sweep ─────────────────────────────────────────────────────────
 
+def pick_targets(kind: str, account_id: str, events: dict[int, str], messages: list[dict], *,
+                 done: set[int], fans: dict, kept: set[int], hard_skip: set[int],
+                 blacklist: set[int], now: datetime) -> tuple[list[tuple[int, str, int, str]], int]:
+    """Pure: which of `events` ({fan_id: event_key}) this sweep messages, and
+    with what. Already-claimed fans (`done`) are dropped silently; a fan with no
+    row, outside the audience (`kept`), hard-skipped, blacklisted, paused past
+    `now` or muted-Creator-skipped counts as skipped. Returns
+    ([(fan, event, which message, which variant of it)], skipped), in `events` order."""
+    plans: list[tuple[int, str, int, str]] = []
+    skipped = 0
+    for fid, key in events.items():
+        if fid in done:
+            continue
+        fan = fans.get(fid)
+        paused = fan is not None and fan.automation_paused_until is not None \
+            and fan.automation_paused_until > now
+        if (fan is None or fid not in kept or fid in hard_skip or fid in blacklist
+                or paused or should_skip_muted_creator(fan)):
+            skipped += 1
+            continue
+        idx = pick(range(len(messages)), kind, account_id, fid, key, "message")
+        plans.append((fid, key, idx, pick(messages[idx]["variants"], kind, account_id, fid, key)))
+    return plans, skipped
+
+
 async def sweep(kind: str, account_id: str, payload: dict) -> dict:
     payload = payload or {}
     if isinstance(payload.get("follow_up"), dict):
@@ -712,22 +741,8 @@ async def sweep(kind: str, account_id: str, payload: dict) -> dict:
                               Fan.fan_id.in_(fan_ids)))).scalars().all()}
         s.expunge_all()
     done = await _claimed(account_id, kind, events, once=once)
-
-    # (fan, event, which message, which variant of it)
-    plans: list[tuple[int, str, int, str]] = []
-    skipped = 0
-    for fid, key in events.items():
-        if fid in done:
-            continue
-        fan = fans.get(fid)
-        paused = fan is not None and fan.automation_paused_until is not None \
-            and fan.automation_paused_until > now
-        if (fan is None or fid not in kept or fid in hard_skip or fid in blacklist
-                or paused or should_skip_muted_creator(fan)):
-            skipped += 1
-            continue
-        idx = pick(range(len(messages)), kind, account_id, fid, key, "message")
-        plans.append((fid, key, idx, pick(messages[idx]["variants"], kind, account_id, fid, key)))
+    plans, skipped = pick_targets(kind, account_id, events, messages, done=done, fans=fans,
+                                  kept=kept, hard_skip=hard_skip, blacklist=blacklist, now=now)
 
     if dry_run:
         return {"status": "ok", "dry_run": True, "would_send": min(len(plans), _LIMIT),

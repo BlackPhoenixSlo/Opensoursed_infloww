@@ -47,7 +47,13 @@ Checks (credit read through the real report routes; no SQL):
   Shift schedule with Time tracking off (the product falls back to Converters, with the
   fallback line), and a change saved effective now recredits nothing earlier; nothing dropped
   (one sale per payment), every reply stamped with its chatter's Employee (STAMP), ledger
-  scans settled; budgets: WS tip frame -> owner /events p95, report route p95s, send route p95.
+  scans settled; the ledger write path (LEDGER, lib/ledger_faults.py): the product's
+  write_telemetry `ledger` write transactions (relay.log, after a forced flush) == its
+  `ingest_tx_page_written` lines (one per page with news), at least one, and fewer than the
+  `ingest_tx_page_fetched` pages with rows (the settle's second scan re-polls quietly: no write
+  lock); the relink sweep is labelled `ledger-relink` and not counted; every fan's
+  lifetime_spend_cents == its seeded spend + its revenue transactions summed (status not in
+  the writer's `_NON_REVENUE_STATUSES`; read-only SQL on the temp DB: no route serves that sum); budgets: WS tip frame -> owner /events p95, report route p95s, send route p95.
   With UI: the Sales settings page shows the window as 1 h 0 min, saves 3 h 30 min, and
   GET /admin/settings/sales reads 12600 (screenshots `trigger-sales-converters-window`,
   `settled-sales-converters-window-saved`).
@@ -55,7 +61,8 @@ Checks (credit read through the real report routes; no SQL):
 Break-it-once: converters-first-chatter (the default; TIP_LEDGER, TIP_WS, PPV, TOTALS,
 WINDOW330 go red); `--fault=converters-window-ignored` (WINDOW330); `--fault=converters-
 counts-automation` (AUTO, TOTALS, WINDOW330); `--fault=chatter-send-unstamped` (STAMP, PPV,
-TIP_LEDGER, TIP_WS, TOTALS, WINDOW330, SENDER).
+TIP_LEDGER, TIP_WS, TOTALS, WINDOW330, SENDER); `--fault=ledger-per-row-txns` and
+`--fault=ledger-delta-separate-txn` (LEDGER).
 
 Declared bypasses:
   - OnlyFans' payouts ledger is a file (lib/attribution_relay.py, `of-ledger.jsonl`); the
@@ -77,15 +84,22 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
+import sys
 import time
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from slop.actors import fan_dm, focus, manager, ui
 from slop.lib.attribution_faults import (AUTO, PPV, SENDER, STAMP, TIP_AFTER, TIP_LEDGER, TIP_WS, TOTALS, WINDOW,
                                          WINDOW330)
+from slop.lib.ledger_faults import LEDGER
 from slop.seed import chatters as chatters_seed
 from slop.seed import sales_touches
+
+sys.path.append(str(Path(__file__).resolve().parents[2] / "service"))   # the writer's own pure module
+from transaction_ingest_decide import _NON_REVENUE_STATUSES  # noqa: E402
 
 PROFILE = "agency_inbox"
 UI = True
@@ -545,6 +559,7 @@ async def run(ctx) -> None:
     ctx.check(SCANS, settled["ok"] and settled["inserted"] == ledger_only and ws_promoted == ws_n,
               inserted=settled["inserted"], ledger_only=ledger_only, ws_tips=ws_n, ws_promoted=ws_promoted,
               errors=settled["errors"], waited_s=settled["seconds"])
+    await _ledger(ctx, w, creators)
 
     # Every reply: one outbound row, stamped with its own chatter's Employee (thread read).
     async def thread(key):
@@ -648,6 +663,55 @@ async def run(ctx) -> None:
     for c in chatters:
         await c.close()
     await asyncio.gather(pump.aclose(), reader.aclose())
+
+
+async def _ledger(ctx, w, creators: list[str]) -> None:
+    """LEDGER, after the scans settled: the `ledger` writer's write transactions against the
+    pages the product says it wrote, and against the pages that carried rows, as the product
+    logs them (relay.log, a write_telemetry line forced now); and each fan's lifetime spend
+    against its revenue transactions (read-only SQL)."""
+    flushed = (await ctx.owner.post("/__slop/telemetry-flush", json={})).json().get("line")
+    if flushed is None:
+        ctx.skip(LEDGER, "write_telemetry off (CHATTERLY_WRITE_TELEMETRY_S=0)")
+        return
+    want = json.dumps(flushed, separators=(",", ":"))
+    for _ in range(50):   # until the flushed line reached relay.log (5 s at most)
+        text = (ctx.out / "relay.log").read_text(errors="replace")
+        if want in text:
+            break
+        await asyncio.sleep(0.1)
+    else:
+        ctx.check(LEDGER, False, reason="the flushed write_telemetry line never reached relay.log in 5 s")
+        return
+    writers = Counter()
+    for line in text.splitlines():
+        i = line.find(" write_telemetry {")
+        if i >= 0:
+            for wn, wr in json.loads(line[i + len(" write_telemetry "):])["w"].items():
+                writers[wn] += wr["n"]
+    txns = writers.get("ledger", 0)
+    pages = len(re.findall(r"ingest_tx_page_fetched account=\S+ page=\d+ count=[1-9]", text))
+    written = text.count("ingest_tx_page_written account=")
+    seeded = {(aid, int(f["id"])): f["spend_cents"] or 0 for aid in creators for f in w.data["fans"][aid]}
+    marks = ",".join("?" * len(creators))
+    con = w.sql()
+    try:
+        life = {(str(a), int(f)): v or 0 for a, f, v in con.execute(
+            f"SELECT account_id, fan_id, lifetime_spend_cents FROM fans WHERE account_id IN ({marks})", creators)}
+        revenue = {(str(a), int(f)): v or 0 for a, f, v in con.execute(
+            f"SELECT account_id, fan_id, SUM(amount_cents) FROM transactions WHERE status NOT IN "
+            f"({','.join('?' * len(_NON_REVENUE_STATUSES))}) AND fan_id IS NOT NULL AND account_id IN ({marks}) "
+            "GROUP BY account_id, fan_id", (*_NON_REVENUE_STATUSES, *creators))}
+    finally:
+        con.close()
+    off = [{"fan": k[1], "lifetime": life.get(k, 0), "seeded": seeded.get(k, 0), "revenue": revenue.get(k, 0)}
+           for k in sorted(set(life) | set(revenue)) if life.get(k, 0) - seeded.get(k, 0) != revenue.get(k, 0)]
+    folded = txns == 0 and writers.get("other", 0) > 0
+    ctx.check(LEDGER, 0 < written < pages and txns == written and not off,
+              **({"reason": "`ledger` label folded into `other` (write_telemetry _WRITERS_MAX)"} if folded else {}),
+              ledger_txns=txns, pages_written=written, pages_fetched=pages, quiet_pages=pages - written,
+              other_writers={k: v for k, v in writers.items() if "ledger" in k or k == "other"},
+              fans=len(set(life) | set(revenue)), lifetime_off=len(off), sample=off[:6])
 
 
 async def _settle(owner, creators: list[str]) -> dict:

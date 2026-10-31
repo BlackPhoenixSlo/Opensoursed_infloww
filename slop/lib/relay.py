@@ -86,9 +86,17 @@ neuters that loop, so
        `claim: true` the claim is the product's (`run_once` with no payload
        claims the earliest due job of the kind and runs its payload; `no_job`
        when none): only the supervisor's cadence is bypassed.
+       Answers {result, ms, slot}: `slot` is the run's pool stamps, `ask` /
+       `got` / `done` on one counter in this process (no await between ask and
+       the pool's queue, nor between the grant and got), `wait_ms` and the
+       pool's `n`, so a scenario can check the pool's order and cap from outside.
   POST /__slop/automation-tick  one `automation_executor._drain_due_jobs_once()`
        pass, answered when every task it spawned (and the dead-session probe)
-       has finished: {spawned, ms}. Bypass, declared: the supervisor's 30 s
+       has finished: {spawned, tasks, ms}. `tasks`: [account, kind] per run task THIS
+       pass spawned (told apart from an overlapping pass's by a context variable the
+       tasks inherit, so the lists of overlapping passes never share a run; account
+       and kind read from the not-yet-started `_one(aid, kind, ...)` coroutine's
+       arguments: the drain's spawn loop is its last step, no await after it). Bypass, declared: the supervisor's 30 s
        cadence (the caller says when); the claim, run slots, `run_once` and
        the per-account write spacing are the product's.
 With `OF_API_ORIGIN` set (a scenario's `OF_WIRE`: lib/of_wire.py, the product's
@@ -632,6 +640,7 @@ def _wire(app) -> None:
     from fastapi import HTTPException, Request
 
     import events
+    import events_persist
     import event_transcoder
     import faults
     import server
@@ -659,36 +668,20 @@ def _wire(app) -> None:
     # "transcoded" counts calls where a writer returned and none raised.
     for name in WRITERS:
         _track(event_transcoder, name)
-    real_load = server._load_client
-
-    def load_client(account_id):
-        try:
-            return real_load(account_id)
-        except Exception as e:  # noqa: BLE001 — re-raised on first use, unchanged
-            return _OfflineOF(str(account_id), e)
-
-    server._load_client = load_client
     import automation_executor
-    real_make = automation_executor._make_client
-
-    def make_client(account_id):
-        try:
-            return real_make(account_id)
-        except Exception as e:  # noqa: BLE001 — re-raised on first use, unchanged
-            return _OfflineOF(str(account_id), e)
-
-    automation_executor._make_client = make_client
-    # The background jobs' seam (of_stats_daily reads through the pool): the same fallback.
     import client_pool
-    real_get = client_pool.get
 
-    def pool_get(account_id):
-        try:
-            return real_get(account_id)
-        except Exception as e:  # noqa: BLE001 — re-raised on first use, unchanged
-            return _OfflineOF(str(account_id), e)
+    def offline_fallback(real):
+        def build(account_id):
+            try:
+                return real(account_id)
+            except Exception as e:  # noqa: BLE001 — re-raised on first use, unchanged
+                return _OfflineOF(str(account_id), e)
+        return build
 
-    client_pool.get = pool_get
+    # The relay's, the automations' and the background jobs' (of_stats_daily reads through the pool) client seams.
+    for mod, attr in ((server, "_load_client"), (automation_executor, "_make_client"), (client_pool, "get")):
+        setattr(mod, attr, offline_fallback(getattr(mod, attr)))
     app.on_event("startup")(events.start_persist_worker)
 
     def _loopback(request: Request) -> None:
@@ -707,8 +700,8 @@ def _wire(app) -> None:
 
     async def stats(request: Request) -> dict:
         _loopback(request)
-        q = events._persist_queue
-        return {**_stats, "persist_drops": events._persist_drops,
+        q = events_persist._persist_queue
+        return {**_stats, "persist_drops": events_persist._persist_drops,
                 "queue_depth": q.qsize() if q is not None else None,
                 "fault": os.environ.get("SLOP_FAULT") or None}
 
@@ -823,24 +816,46 @@ def _wire(app) -> None:
 
         app.on_event("startup")(start_supervisor)
 
+    slot_seq = itertools.count()   # one clock for every run's slot stamps (ask < got < done, totally ordered)
+
     async def run_automation(request: Request) -> dict:
         _loopback(request)
         b = await request.json()
         if ax._run_sem is None:
             ax._run_sem = run_slot.SlotPool(ax._MAX_CONCURRENT_RUNS, reserve=ax._OPERATOR_RESERVED_RUNS)
         t = time.perf_counter()
+        # `slot`: when this run asked for its permit, got it and gave it back, on slot_seq (no
+        # await between `ask` and the pool's queue, nor between the grant and `got`), so a
+        # scenario can check the pool's order and cap from outside; `n` = the pool's size.
+        slot = {"ask": next(slot_seq), "n": ax._run_sem.n}
         async with run_slot.hold(ax._run_sem, operator=False):
+            slot["got"], slot["wait_ms"] = next(slot_seq), round((time.perf_counter() - t) * 1000, 1)
             # `claim`: no payload, so run_once claims the earliest due
             # scheduled job of the kind and runs ITS payload (the supervisor's
             # binding); otherwise the given payload, bypassing the queue.
             payload = None if b.get("claim") else (b.get("payload") or {})
-            res = await ax.run_once(str(b["account_id"]), b["kind"], payload=payload)
-        return {"result": res, "ms": round((time.perf_counter() - t) * 1000, 1)}
+            try:
+                res = await ax.run_once(str(b["account_id"]), b["kind"], payload=payload)
+            finally:
+                slot["done"] = next(slot_seq)
+        return {"result": res, "ms": round((time.perf_counter() - t) * 1000, 1), "slot": slot}
 
     async def fake_calls(request: Request) -> dict:
         _loopback(request)
         return {"live": live, "calls": dict(_fake_calls), "of_ppv": dict(_of_ppv),
                 "of_get_messages": dict(_of_get_messages)}
+
+    tick_ids = itertools.count(1)
+    tick_of = contextvars.ContextVar("slop_automation_tick", default=0)
+
+    def _run_pair(task) -> list:
+        """[account, kind] of a run task this pass spawned: its `_one(aid, kind, ...)` has
+        not started yet (the spawn loop ends the drain, no await after it)."""
+        frame = task.get_coro().cr_frame
+        args = frame.f_locals if frame is not None else {}
+        aid, kind = args.get("aid"), args.get("kind")
+        assert aid is not None and kind is not None, f"run task already started: {task!r}"
+        return [aid, kind]
 
     async def automation_tick(request: Request) -> dict:
         """One supervisor pass (`_drain_due_jobs_once`: due (account, kind) pairs, a
@@ -849,13 +864,16 @@ def _wire(app) -> None:
         cadence (the caller says when); the pass itself is the executor's."""
         _loopback(request)
         t = time.perf_counter()
+        me = next(tick_ids)
+        tick_of.set(me)   # this request's own context: the tasks the drain spawns copy it
         await ax._drain_due_jobs_once()
         spawned = len(ax._inflight_tasks)
+        mine = [_run_pair(x) for x in ax._inflight_tasks if x.get_context().get(tick_of) == me]
         while ax._inflight_tasks:
             await asyncio.gather(*list(ax._inflight_tasks), return_exceptions=True)
         if ax._session_probe_task is not None:
             await asyncio.gather(ax._session_probe_task, return_exceptions=True)
-        return {"spawned": spawned, "ms": round((time.perf_counter() - t) * 1000, 1)}
+        return {"spawned": spawned, "tasks": mine, "ms": round((time.perf_counter() - t) * 1000, 1)}
 
     app.add_api_route("/__slop/run-automation", run_automation, methods=["POST"])
     app.add_api_route("/__slop/automation-tick", automation_tick, methods=["POST"])

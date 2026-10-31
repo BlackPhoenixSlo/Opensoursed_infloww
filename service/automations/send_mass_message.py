@@ -53,8 +53,8 @@ response) so a caller can schedule a forever-window unsend of THIS broadcast.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
+from dataclasses import replace
 from datetime import datetime
 
 from sqlalchemy import select
@@ -67,6 +67,8 @@ from attribution import (
 )
 import automation_executor as ax  # shared _make_client seam (tests patch ax._make_client)
 from automation_registry import register
+from automations import send_mass_decide as smd
+from automations._pools import int_list
 from automations._wordfilter import (  # compliance word filter
     banned_hit_summary, filter_banned, load_banned_words,
 )
@@ -77,35 +79,17 @@ from event_transcoder import _parse_iso, _to_cents
 log = logging.getLogger("of-relay.automation.send_mass_message")
 
 
-def _int_list(raw) -> list[int]:
-    """Coerce a payload field to a list of ints, dropping anything non-numeric."""
-    if not isinstance(raw, (list, tuple)):
-        return []
-    out: list[int] = []
-    for v in raw:
-        try:
-            out.append(int(v))
-        except (TypeError, ValueError):
-            continue
-    return out
-
-
-async def _opener_media(funnel_id: int, account_id: str) -> tuple[list[int], list[int]]:
+async def _opener_media(funnel_id: int, account_id: str, s=None) -> tuple[list[int], list[int]]:
     """This model's opener vault media for the funnel (FunnelAccountMedia) →
     (media_files, previews). MEDIA is per-account because vault ids don't carry
     between models; the funnel only holds the shared opener TEXT. Returns ([], [])
-    when this account hasn't mapped opener media yet."""
-    async with get_session() as s:
-        row = await s.get(FunnelAccountMedia, (int(funnel_id), str(account_id)))
-    if row is None:
-        return [], []
-    try:
-        media = _int_list(json.loads(row.opening_media_ids or "[]"))
-    except Exception:
-        media = []
-    # The opener has no per-step preview slot of its own; previews ride the PPV
-    # steps. Keep the signature symmetric for any future opener-preview use.
-    return media, []
+    when this account hasn't mapped opener media yet. The opener has no preview
+    slot of its own (previews ride the PPV steps). Reads in `s` when given."""
+    if s is None:
+        async with get_session() as s:
+            return await _opener_media(funnel_id, account_id, s)
+    row = await s.get(FunnelAccountMedia, (int(funnel_id), str(account_id)))
+    return (smd.opener_media_of(row.opening_media_ids) if row is not None else []), []
 
 
 async def _resolve_funnel(s, payload: dict) -> MassMessageFunnel | None:
@@ -152,21 +136,23 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # caller's duplicate gate has a ledger that survives a mid-run cancel.
     attr_ref = payload.get("automation_ref")
 
-    # ── 1) Resolve text + audience (funnels / lists / fans) ──────────────
+    # ── 1) Read the funnel + DB-list members (explicit fans + list members →
+    # the KNOWN recipients we can write optimistic rows for; OF list NAMES go
+    # through untouched as userLists) + the opener media of a funnel send with
+    # no explicit media ────────────────────────────────────────────────────
+    list_ids, exclude_list_ids = smd.list_ids_of(payload)
     async with get_session() as s:
-        funnel = await _resolve_funnel(s, payload)
-        # Capture the id INSIDE the session (the object expires on close) — it's
-        # the dedup key for exclude_funnel_responders (R1/R2).
-        funnel_id_resolved = int(funnel.id) if funnel is not None else None
-
-        # Explicit fans + DB-list members → the KNOWN recipients we can write
-        # optimistic rows for. OF list NAMES go through untouched as userLists.
-        included = _int_list(payload.get("included_users") or payload.get("fan_ids"))
-        list_ids = _int_list(payload.get("list_ids"))
-        included += await _members_of_lists(s, list_ids)
-
-        excluded = _int_list(payload.get("excluded_users"))
-        excluded += await _members_of_lists(s, _int_list(payload.get("exclude_list_ids")))
+        funnel_row = await _resolve_funnel(s, payload)
+        # Capture INSIDE the session — the funnel id is the dedup key for
+        # exclude_funnel_responders (R1/R2).
+        funnel = (smd.Funnel(id=int(funnel_row.id), opening_message=funnel_row.opening_message)
+                  if funnel_row is not None else None)
+        list_members = await _members_of_lists(s, list_ids)
+        exclude_members = await _members_of_lists(s, exclude_list_ids)
+        opener_media: list[int] = []
+        if funnel is not None and not int_list(payload.get("media_files")):
+            opener_media, _ = await _opener_media(funnel.id, account_id, s)
+    included, excluded = smd.seed(payload, list_members, exclude_members)
 
     # ── 1b) DB/OF-sourced audience + DEFAULT-ON contact guard ────────────
     # recent-chat / unread ADD fans; exclude-replied / exclude-inbound DROP
@@ -199,41 +185,18 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         # Opt-in "last chatted (either direction) within N h" guard — absent →
         # off. Do-Not-Mass + pending-send excludes apply regardless.
         exclude_last_chat_hours=payload.get("exclude_last_chat_hours"),
-        exclude_funnel_responders=funnel_id_resolved,  # R1/R2 answered-once dedup
+        exclude_funnel_responders=funnel.id if funnel else None,  # R1/R2 answered-once dedup
         unread_limit=payload.get("unread_limit"),
         # Every broadcast, priced or not, skips the MASSdmEXCLUDE opt-out list.
         exclude_list_name=MASSDMEXCLUDE_LIST,
     )
-    included = resolved["included_users"]
-    excluded = resolved["excluded_users"]
-    skipped_answered = resolved.get("skipped_funnel_responders") or []
 
-    # Dedup while preserving order; drop excluded from the known set.
-    excl_set = set(excluded)
-    seen: set[int] = set()
-    recipients: list[int] = []
-    for fid in included:
-        if fid in excl_set or fid in seen:
-            continue
-        seen.add(fid)
-        recipients.append(fid)
-
-    user_lists = payload.get("user_lists") or []  # OF built-in names / list ids
-    # OF list names/ids to EXCLUDE server-side (e.g. 'Mass_Exclude') — passed
-    # straight through to OF's excludeUserLists, same as the relay's send path.
-    excluded_user_lists = payload.get("excluded_user_lists") or []
-    # Mass Online targeting: OF resolves
-    # the audience server-side, so online_only/filters count as a valid audience
-    # even with no explicit recipients/user_lists.
-    online_only = bool(payload.get("online_only"))
-    filters = payload.get("filters") if isinstance(payload.get("filters"), dict) else None
-    text = payload.get("text") or (funnel.opening_message if funnel else None)
-    if not text:
-        log.warning("send_mass_message: no text (funnel=%s) — skipping", funnel)
-        return {"status": "skipped", "reason": "no_text"}
-    if not recipients and not user_lists and not online_only and not filters:
-        log.warning("send_mass_message: empty audience — skipping")
-        return {"status": "skipped", "reason": "empty_audience"}
+    # ── 1c) The pure plan: dedupe, excludes win, text, audience, media ────
+    p = smd.plan(payload, funnel=funnel, resolved=resolved,
+                 list_ids=list_ids, opener_media=opener_media)
+    if isinstance(p, smd.Skip):
+        log.warning("send_mass_message: %s (funnel=%s) — skipping", p.reason, funnel)
+        return {"status": "skipped", "reason": p.reason}
 
     # ── Compliance word filter (operator-editable banned-word list) ──────
     # Scanned ONCE here, before the single OF broadcast call. filter_banned owns the
@@ -242,7 +205,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # dangling run. Automations that don't route through here scan at their own send
     # chokepoint with the same helper.
     _banned, _banned_mode = await load_banned_words(account_id)
-    _scanned, _hits = filter_banned([text], _banned, _banned_mode)
+    _scanned, _hits = filter_banned([p.text], _banned, _banned_mode)
     if _scanned is None:
         _uniq = banned_hit_summary(_hits)
         log.warning("send_mass_message: BLOCKED broadcast — banned word(s) %r "
@@ -252,17 +215,6 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         log.info("send_mass_message: masked banned word(s) %r account=%s",
                  banned_hit_summary(_hits), account_id)
     text = _scanned[0]
-
-    price = payload.get("price") or 0
-    media_files = _int_list(payload.get("media_files"))
-    previews = _int_list(payload.get("previews"))
-    # No explicit opener media in the payload but this IS a funnel send → use the
-    # model's per-account opener media (vault ids are per-account; the funnel only
-    # holds shared text). Falls back to nothing if this model hasn't mapped any.
-    if not media_files and funnel is not None:
-        media_files, opener_previews = await _opener_media(funnel.id, account_id)
-        if media_files and not previews:
-            previews = opener_previews
 
     # Attribution: a broadcast from the worker is the system Automation actor
     # (no X-Employee-Id in a background run). Best-effort — NULL is acceptable.
@@ -283,7 +235,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     from audiences import broadcast_lock, ensure_exclude_list
     import audience_include as _audiences
     client = await asyncio.to_thread(ax._make_client, account_id)
-    is_list_audience = bool(user_lists or online_only or filters)
+    is_list_audience = p.is_list_audience
 
     # ── Include-only audience (audience_mode) ────────────────────────────
     # Subtraction, never replacement: a list/online broadcast keeps its ORIGINAL
@@ -293,11 +245,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # delegating sender too (mass_premade) — it fires through this run.
     audience_stats: dict = {}
     audience_pol = await _audiences.automation_audience(account_id)
-    if audience_pol.mode != "off" and recipients:
-        recipients = await _audiences.filter_candidates(
-            account_id, recipients, kind="send_mass_message",
-            policy=audience_pol, stats=audience_stats)
-        if not recipients and not is_list_audience:
+    if audience_pol.mode != "off" and p.recipients:
+        p = replace(p, recipients=await _audiences.filter_candidates(
+            account_id, p.recipients, kind="send_mass_message",
+            policy=audience_pol, stats=audience_stats))
+        if not p.recipients and not is_list_audience:
             halted = audience_stats.get("audience_halted")
             log.warning("send_mass_message: audience fence left no explicit "
                         "recipients account=%s (%s)", account_id,
@@ -329,13 +281,13 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 return {"status": "error", "reason": f"audience_halt:{e.reason}",
                         **audience_stats}
             for _lid in fence_ids:
-                if _lid not in excluded_user_lists:
-                    excluded_user_lists = [*excluded_user_lists, _lid]
+                if _lid not in p.excluded_user_lists:
+                    p = replace(p, excluded_user_lists=[*p.excluded_user_lists, _lid])
                     fence_attached = True
-        if excl_set and is_list_audience:
+        if p.excl_set and is_list_audience:
             try:
                 auto_lid = await ensure_exclude_list(
-                    account_id, excl_set, client=client)
+                    account_id, set(p.excl_set), client=client)
             except Exception:
                 # Fail CLOSED — a broadcast without its guard is the over-send
                 # bug itself. Nothing minted yet, so no dangling 'running' row.
@@ -343,27 +295,15 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                             "skipping broadcast account=%s", account_id,
                             exc_info=True)
                 return {"status": "error", "reason": "exclude_list_sync_failed"}
-            if auto_lid is not None and auto_lid not in excluded_user_lists:
-                excluded_user_lists = [*excluded_user_lists, auto_lid]
+            if auto_lid is not None and auto_lid not in p.excluded_user_lists:
+                p = replace(p, excluded_user_lists=[*p.excluded_user_lists, auto_lid])
 
         # ── 2) The mass_runs row (the broadcast anchor), minted once this
         # write's turn at the account's gate comes, right before the POST
         # (`before_write` below): a run row means "handed to OF", never "still
         # waiting for the 11 s spacing", so a restart in that wait mints nothing.
-        audience_filter = json.dumps({
-            "user_lists": list(user_lists),
-            "included_users": recipients,
-            "excluded_users": sorted(excl_set),
-            "list_ids": list_ids,
-            "ref": str(attr_ref) if attr_ref else None,
-            # The audience we actually SEND is wider than the four keys above:
-            # OF has no per-user exclusion field for a list audience, so every
-            # `excluded_users` id rides in an OF list instead. Recorded for
-            # forensics only — the recipient set is read from OF's rosters and
-            # stamped on `recipients_json` at close (plans/blast-splice A.2).
-            "excluded_user_lists": list(excluded_user_lists),
-            "fence": fence_attached,
-        })
+        # Recorded for forensics only — see smd.audience_filter.
+        audience_filter = smd.audience_filter(p, ref=attr_ref, fence=fence_attached)
         mass_run_id = 0
 
         async def _mint() -> None:
@@ -371,11 +311,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             async with get_session() as s:
                 mr = MassRun(
                     account_id=str(account_id),
-                    funnel_id=funnel.id if funnel else None,
+                    funnel_id=p.funnel_id,
                     started_by_employee_id=employee_id,
                     automation_kind=attr_kind,
                     audience_filter=audience_filter,
-                    recipient_count=len(recipients),
+                    recipient_count=len(p.recipients),
                     status="running",
                 )
                 s.add(mr)
@@ -391,15 +331,15 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             account_id,
             lambda: client.send_mass_message(
                 text=text,
-                user_lists=list(user_lists),
-                included_users=recipients,
-                excluded_users=sorted(excl_set),
-                excluded_user_lists=list(excluded_user_lists),
-                price=price,
-                media_files=media_files,
-                previews=previews,
-                filters=filters,
-                online_only=online_only,
+                user_lists=list(p.user_lists),
+                included_users=p.recipients,
+                excluded_users=sorted(p.excl_set),
+                excluded_user_lists=list(p.excluded_user_lists),
+                price=p.price,
+                media_files=p.media_files,
+                previews=p.previews,
+                filters=p.filters,
+                online_only=p.online_only,
             ),
             send_purpose="fenced",
             before_write=_mint,
@@ -413,41 +353,30 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         (_parse_iso(result.get("createdAt")) if isinstance(result, dict) else None)
         or datetime.utcnow()
     )
-    price_cents = _to_cents(price)
+    price_cents = _to_cents(p.price)
 
     # 4a) Real rows for any per-fan ids OF echoed back.
     echoed_fans: set[int] = set()
-    msgs = result.get("messages") if isinstance(result, dict) else None
-    if isinstance(msgs, list):
-        for m in msgs:
-            if not isinstance(m, dict):
-                continue
-            fid_raw = m.get("userId") or m.get("toUserId") or m.get("recipientId")
-            mid_raw = m.get("id") or m.get("messageId")
-            try:
-                fan_id = int(fid_raw)
-                msg_id = int(mid_raw)
-            except (TypeError, ValueError):
-                continue
-            echoed_fans.add(fan_id)
-            await write_outbound_attribution(
-                account_id=account_id,
-                fan_id=fan_id,
-                message_id=msg_id,
-                sent_by_employee_id=employee_id,
-                body=text,
-                price_cents=price_cents,
-                created_at=created_at,
-                mass_run_id=mass_run_id,
-                automation_kind=attr_kind,
-                emit_live=True,  # WORKER→SSE bridge
-            )
-            await reconcile_mass_placeholder(
-                account_id=account_id, fan_id=fan_id, mass_run_id=mass_run_id,
-            )
+    for fan_id, msg_id in smd.echoed_of(result):
+        echoed_fans.add(fan_id)
+        await write_outbound_attribution(
+            account_id=account_id,
+            fan_id=fan_id,
+            message_id=msg_id,
+            sent_by_employee_id=employee_id,
+            body=text,
+            price_cents=price_cents,
+            created_at=created_at,
+            mass_run_id=mass_run_id,
+            automation_kind=attr_kind,
+            emit_live=True,  # WORKER→SSE bridge
+        )
+        await reconcile_mass_placeholder(
+            account_id=account_id, fan_id=fan_id, mass_run_id=mass_run_id,
+        )
 
     # 4b) Optimistic placeholders for the known recipients OF did NOT echo.
-    pending = [fid for fid in recipients if fid not in echoed_fans]
+    pending = [fid for fid in p.recipients if fid not in echoed_fans]
     optimistic = 0
     if pending:
         optimistic = await write_mass_optimistic_rows(
@@ -490,12 +419,12 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         from audiences import resolve_recipients_blocking
         recorded = await asyncio.to_thread(
             resolve_recipients_blocking, client,
-            user_lists=list(user_lists),
-            included_users=recipients,
-            excluded_users=sorted(excl_set),
-            excluded_user_lists=list(excluded_user_lists),
-            filters=filters,
-            online_only=online_only,
+            user_lists=list(p.user_lists),
+            included_users=p.recipients,
+            excluded_users=sorted(p.excl_set),
+            excluded_user_lists=list(p.excluded_user_lists),
+            filters=p.filters,
+            online_only=p.online_only,
         )
         await stamp_mass_recipients(mass_run_id, recorded)
     except Exception:
@@ -516,18 +445,18 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # could not write (plans/blast-splice A.3).
     log.info(
         "send_mass_message account=%s run=%s mass_run=%s recipients=%d echoed=%d optimistic=%d",
-        account_id, run_id, mass_run_id, len(recipients), len(echoed_fans), optimistic,
+        account_id, run_id, mass_run_id, len(p.recipients), len(echoed_fans), optimistic,
     )
     return {
         "mass_run_id": mass_run_id,
         "queue_id": int(queue_id) if queue_id is not None else None,
-        "funnel_id": funnel_id_resolved,
-        "recipients": len(recipients),
-        "user_lists": len(user_lists),
+        "funnel_id": p.funnel_id,
+        "recipients": len(p.recipients),
+        "user_lists": len(p.user_lists),
         "echoed_rows": len(echoed_fans),
         "optimistic_rows": optimistic,
         # R1/R2: fans dropped because they already answered this funnel.
-        "skipped_already_answered": len(skipped_answered),
-        "skipped_already_answered_ids": skipped_answered,
+        "skipped_already_answered": len(p.skipped_answered),
+        "skipped_already_answered_ids": p.skipped_answered,
         **audience_stats,
     }

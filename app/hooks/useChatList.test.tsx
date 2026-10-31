@@ -602,6 +602,24 @@ describe("useChatList fetchedLive: rows read from OF in this page load", () => {
   });
 });
 
+describe("useChatList placeholderData: which previous rows stand in", () => {
+  it("All Models keeps the previous rows while a session drops out of the set", async () => {
+    mockScope = { kind: "all" };
+    mockAccounts = [{ id: "acct-a" }, { id: "acct-b" }];
+    serve = (aid) => ({ list: aid === "acct-a" ? [row(1, "2026-08-25T10:00:00Z")] : [row(2, "2026-08-25T09:00:00Z")], hasMore: false });
+    const h = renderHook(() => useChatList(), { wrapper });
+    await until("both accounts' rows", () => h.result.current.data.length === 2);
+
+    // acct-b's session drops: a new key, whose fetch hangs.
+    serve = () => new Promise(() => {}) as unknown as ReturnType<typeof serve>;
+    mockAccounts = [{ id: "acct-a" }];
+    h.rerender();
+    await settle();
+    expect(h.result.current.isPlaceholderData).toBe(true);
+    expect(h.result.current.data.map((c) => c.withUser.id)).toEqual([1, 2]);
+  });
+});
+
 describe("shareChatPages: rows shared by (account, fan), not by index", () => {
   const row = (fanId: number, text = "hi") => ({
     __accountId: "1", withUser: { id: fanId }, lastMessage: { id: fanId, text },

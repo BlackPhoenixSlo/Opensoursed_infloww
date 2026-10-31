@@ -100,13 +100,12 @@ def _drain(q: asyncio.Queue) -> list:
 
 
 def _types(got: list) -> list:
-    return [(events._first_real_key(e), e.get("__account_id")) for e in got]
+    return [(events.ed.first_key(e), e.get("__account_id")) for e in got]
 
 
 def _reset() -> None:
     events._subs.clear()
-    events._rings.clear()
-    events._evicted.clear()
+    events._ring = events.ed.Rings(events._EPOCH)
 
 
 async def case_replay_after_reconnect():
@@ -143,8 +142,8 @@ async def case_replay_after_reconnect():
 
 async def case_ring_overflow_resyncs():
     _reset()
-    old = events._RING_MAX
-    events._RING_MAX = 3
+    old = events.ed.RING_MAX
+    events.ed.RING_MAX = 3
     try:
         gen = _stream()
         _, head = await _frames(gen, 2)
@@ -177,7 +176,7 @@ async def case_ring_overflow_resyncs():
             assert got[1]["event"] == "resync" and set(got[2]) == {"id"}, (stale, got)
             await gen.aclose()
     finally:
-        events._RING_MAX = old
+        events.ed.RING_MAX = old
 
 
 async def case_queue_overflow_resyncs():
@@ -388,7 +387,7 @@ async def case_run_finished_reads_the_written_job():
         await automation_executor.run_once(A, "scheduled_send")
         assert seen == [("scheduled_send_changed", "pending"), ("scheduled_send_changed", "running"),
                         ("scheduled_send_changed", "done"), ("rule_run_finished", "done")], seen
-        assert {events._first_real_key(e) for e in _drain(q)} == \
+        assert {events.ed.first_key(e) for e in _drain(q)} == \
             {"scheduled_send_changed", "rule_run_finished"}
 
         seen.clear()

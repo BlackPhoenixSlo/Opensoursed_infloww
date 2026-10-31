@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Relay concurrency</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0 auto; max-width: 880px; padding: 24px 16px 48px;
+         background: #101418; color: #dde3ea;
+         font: 14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: #8b96a5; margin: 0 0 20px; }
+  .banner { background: #3a2f10; border: 1px solid #8a6d1a; color: #ffd970;
+            border-radius: 8px; padding: 10px 14px; margin: 0 0 16px; display: none; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; color: #8b96a5; font-weight: 500; font-size: 12px;
+       text-transform: uppercase; letter-spacing: .04em; padding: 6px 8px; }
+  td { padding: 8px; border-top: 1px solid #232a33; vertical-align: middle; }
+  td.name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+  .badge { display: inline-block; border-radius: 999px; padding: 1px 8px;
+           font-size: 11px; margin-left: 6px; }
+  .b-env { background: #3d1f24; color: #ff9daa; }
+  .b-pending { background: #163a2b; color: #6fe0ae; }
+  .b-switch { background: #1d2a3d; color: #9dc4ff; }
+  input[type=number] { width: 76px; background: #0b0e12; color: #dde3ea;
+        border: 1px solid #2c3540; border-radius: 6px; padding: 5px 8px; }
+  input:disabled { opacity: .4; }
+  button { background: #1d2733; color: #dde3ea; border: 1px solid #2c3540;
+           border-radius: 6px; padding: 5px 12px; cursor: pointer; }
+  button:hover { background: #26313f; }
+  button.reset { background: transparent; border-color: transparent; color: #8b96a5; }
+  button.reset:hover { color: #dde3ea; }
+  .muted { color: #8b96a5; }
+  h2 { font-size: 15px; margin: 28px 0 8px; }
+  .hist td { font-size: 13px; }
+  .foot { margin-top: 24px; color: #5d6875; font-size: 12px; }
+  .err { color: #ff9daa; margin: 8px 0; display: none; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+         font-size: 12px; background: #0b0e12; border: 1px solid #232a33;
+         border-radius: 5px; padding: 2px 6px; }
+  code.cmd { display: block; padding: 10px 12px; overflow-x: auto;
+             white-space: pre; margin: 8px 0 0; color: #9be7c0; }
+  .note { background: #141a21; border: 1px solid #232a33; border-radius: 8px;
+          padding: 10px 14px; color: #8b96a5; margin: 0 0 14px; }
+  .pick { display: inline-flex; gap: 6px; }
+  .pick button.on { background: #1e3a2c; border-color: #2f6a4c; color: #9be7c0; }
+  button.danger { background: #3a1f24; border-color: #6a2f38; color: #ffb3bd; }
+  button.danger:hover { background: #4a262c; }
+  button.danger:disabled { opacity: .4; cursor: not-allowed; }
+  button.tiny { padding: 2px 8px; font-size: 12px; }
+  .why { color: #8b96a5; font-size: 12px; }
+</style>
+</head>
+<body>
+<h1>Relay concurrency</h1>
+<p class="sub">Anyone with this link can read and change these caps. Saved
+values apply on the next relay <b>restart</b>, never live.</p>
+<div class="banner" id="banner">Saved values differ from what is running —
+restart the relay to apply them.</div>
+<div class="err" id="err"></div>
+<table>
+  <thead><tr><th>knob</th><th>running now</th><th>next boot</th>
+  <th>default</th><th>set to</th><th></th></tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+<h2>Container limits</h2>
+<p class="note">CPU and memory belong to the <b>container</b>, not to this
+process. <code>/sys/fs/cgroup</code> is mounted read-only and there is no docker
+socket in this image, so the panel can show you what is enforced and write the
+command &mdash; it cannot apply it. Pick a value and run the line it gives you
+on the host; <code>docker&nbsp;update</code> takes effect immediately, with no
+restart.<br><br>⚠️ <b>It holds until the container is next recreated</b>, and
+then it is gone: <code>docker&nbsp;update</code> writes to the container, not to
+the compose file. Any <code>compose&nbsp;up&nbsp;-d</code> that sees changed
+config &mdash; and <code>scripts/prod-cpu-limits.sh&nbsp;apply</code> itself
+&mdash; replaces the container and takes the limit with it. For a value that
+survives, put it in the gitignored <code>docker-compose.override.yml</code>:
+that is the repo's one durable mechanism, and the reason this panel only writes
+you a command.</p>
+<table>
+  <thead><tr><th>limit</th><th>enforced now</th><th>set to</th></tr></thead>
+  <tbody id="climits"></tbody>
+</table>
+<div id="cmdwrap" style="display:none">
+  <code class="cmd" id="cpucmd"></code>
+  <button class="tiny" style="margin-top:8px" onclick="copyCmd()">copy</button>
+</div>
+
+<h2>Restart</h2>
+<p class="note" id="restartnote">Checking whether this relay can restart
+itself&hellip;</p>
+<button class="danger" id="restartbtn" onclick="restart()" disabled>Restart the relay</button>
+<span class="muted" id="restartbudget"></span>
+
+<h2>History</h2>
+<table><tbody id="hist"><tr><td class="muted">no changes yet</td></tr></tbody></table>
+
+<p class="foot" id="foot"></p>
+<script>
+const API = "/lanes-panel/config";
+const RESTART_API = "/lanes-panel/restart";
+const esc = s => String(s).replace(/[&<>"']/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+let last = null;
+let cpuPick = null;
+// `keepErr` is not a convenience flag — it is the difference between an
+// operator seeing why a restart was refused and seeing nothing at all.
+//
+// `load()` is async, so a bare clear at the top runs SYNCHRONOUSLY on call. Two
+// call sites invoke it immediately after showing an error (a 429 refusal, and
+// the 80s "it never came back"), and both were silently wiped in the same turn
+// — the 429 case leaving a destructive button that refuses without a word.
+// Clearing after the fetch would not fix it either: refreshing the budget is
+// the whole reason those sites call load() at all.
+async function load(keepErr) {
+  if (!keepErr) document.getElementById("err").style.display = "none";
+  let j;
+  try { j = await (await fetch(API)).json(); }
+  catch (e) {
+    // `renderRestart` before returning: this is the state the restart timeout
+    // hands us, and without it the button stays disabled from `restart()` and
+    // the label stays frozen on "restarting… 78s" — the exact dead end the
+    // timeout's `load()` was added to prevent.
+    showErr("could not reach the relay: " + e);
+    renderRestart();
+    return;
+  }
+  document.getElementById("banner").style.display =
+    j.restart_required ? "block" : "none";
+  // A per-row Save makes "edit several rows, save one" the natural flow —
+  // carry unsaved edits across the re-render instead of silently wiping them.
+  const dirty = {};
+  document.querySelectorAll("#rows input").forEach(i => {
+    // Numeric compare, not just lexical: a number input keeps "07"/"1e2"/"7.0"
+    // verbatim, and a saved value whose canonical render is "7" must not read
+    // as an unsaved edit — that phantom would be restored on every re-render
+    // and could mask (then silently revert) another session's later change.
+    if (i.value !== i.dataset.server && Number(i.value) !== Number(i.dataset.server))
+      dirty[i.id] = i.value;
+  });
+  const rows = j.knobs.map(k => {
+    const badges =
+      (k.env_locked ? '<span class="badge b-env" title="an environment variable pins this — the panel cannot change it">env-pinned</span>' : "") +
+      (k.pending ? '<span class="badge b-pending">on restart</span>' : "") +
+      (k.switch ? '<span class="badge b-switch" title="a switch: 1 = on, 0 = off; applies at once">on/off</span>' : "");
+    const nid = "in-" + k.name;
+    return `<tr>
+      <td class="name">${esc(k.name)}${badges}</td>
+      <td>${k.live ?? '<span class="muted">–</span>'}</td>
+      <td>${esc(k.value)}</td>
+      <td class="muted">${esc(k.default)}</td>
+      <td><input type="number" min="${k.switch ? 0 : 1}" ${k.switch ? 'max="1" data-switch="1"' : ""}
+           id="${nid}" value="${esc(k.value)}"
+           data-server="${esc(k.value)}" ${k.env_locked ? "disabled" : ""}></td>
+      <td><button onclick="save('${esc(k.name)}')" ${k.env_locked ? "disabled" : ""}>Save</button>
+          ${k.stored !== null && !k.env_locked
+            ? `<button class="reset" onclick="reset('${esc(k.name)}')"
+                 title="back to the default (${esc(k.default)})">reset</button>` : ""}</td>
+    </tr>`;
+  });
+  document.getElementById("rows").innerHTML = rows.join("");
+  Object.entries(dirty).forEach(([id, v]) => {
+    const el = document.getElementById(id);
+    if (el && !el.disabled) el.value = v;
+  });
+  const hist = (j.history || []).map(h => `<tr class="hist">
+    <td class="muted">${esc((h.ts || "").replace("T", " ").replace("+00:00", " UTC"))}</td>
+    ${h.event
+      ? `<td colspan="2" class="why">${esc(h.event)}</td>`
+      : `<td class="name">${esc(h.key)}</td>
+         <td>${h.old ?? '<span class="muted">default</span>'} &rarr;
+             ${h.new ?? '<span class="muted">default</span>'}</td>`}
+  </tr>`);
+  document.getElementById("hist").innerHTML = hist.length ? hist.join("")
+    : '<tr><td class="muted">no changes yet</td></tr>';
+  // ONE variable holds the whole payload. Three renderers each keeping their
+  // own slice is how one of them ends up reading a field another already
+  // replaced — and `pickCpu` needs to re-render outside a load, so at least one
+  // of them has to read module state anyway.
+  last = j;
+  renderContainer();
+  renderRestart();
+  document.getElementById("foot").textContent =
+    "store: " + j.path + "   ·   restarts: " + ((j.restart || {}).path || "?");
+}
+
+// ── Container limits ────────────────────────────────────────────────
+// Read-only by necessity, not by choice: the cgroup is mounted ro and there is
+// no docker socket in this image. The picker's whole job is to write a correct
+// command — it never claims to have applied one.
+function renderContainer() {
+  const c = (last && last.container) || {};
+  const cpuNow = !c.cpus_readable ? '<span class="muted">unknown &mdash; no cgroup here</span>'
+    : (c.cpus === null ? '<span class="muted">no limit</span>' : esc(c.cpus));
+  // Gated on ITS OWN readable flag. A container can have a perfectly readable
+  // cpu.max and an unparseable memory.max, and rendering that as "no limit"
+  // is the worse of the two wrong answers — exceeding a memory ceiling is an
+  // OOM-kill, not a slowdown.
+  const memNow = !c.mem_readable ? '<span class="muted">unknown</span>'
+    : (c.mem_bytes === null ? '<span class="muted">no limit</span>'
+       : (Math.round(c.mem_bytes / 1073741824 * 10) / 10) + " GiB");
+  const host = c.host_cpus;
+  // The picks are quarters of THIS host's cores, in half-core steps (4 cores:
+  // 1, 2, 3; 8 cores: 2, 4, 6), so the panel suggests for the machine it runs
+  // on rather than from a table per box. Three quarters is what
+  // docker-compose.yml ships for both of its profiles (3.0 of 4, 6.0 of 8),
+  // and is marked so — for ONE relay per host; a box running several fleet
+  // shards splits its cores between them. Unknown host: the 4-core picks.
+  const cores = host || 4;
+  const step = q => Math.max(0.5, Math.floor(cores * q * 2) / 2);
+  const suggested = step(0.75);
+  const picks = [...new Set([step(0.25), step(0.5), suggested])];
+  // Every pick sits under the host's count by construction, so none needs the
+  // "this box has only N cores" warning the fixed 1/2/3 row once carried.
+  const pick = (n, label) => `<button class="tiny ${cpuPick === n ? "on" : ""}"
+      onclick="pickCpu(${n})">${label}</button>`;
+  document.getElementById("climits").innerHTML = `
+    <tr><td class="name">cpus</td><td>${cpuNow}</td>
+        <td><span class="pick">${picks.map(n => pick(n, n === suggested
+          ? n + " (suggested)" : String(n))).join("")}${pick(0, "no limit")}</span></td></tr>
+    <tr><td class="name">memory</td><td>${memNow}</td>
+        <td class="why">not offered here on purpose &mdash; a memory ceiling
+        OOM-kills where a CPU one only throttles</td></tr>
+    <tr><td class="name">host cores</td><td>${esc(host ?? "?")}</td>
+        <td class="why">the ceiling any cpus value sits under</td></tr>`;
+}
+function pickCpu(n) {
+  cpuPick = n;
+  renderContainer();
+  const c = (last && last.container) || {};
+  // Gate on cpus_readable, NOT on container_id being truthy: outside a cgroup
+  // /etc/hostname is just the machine name, and we would print a confident
+  // `docker update --cpus=2 somedevbox` that targets nothing.
+  const id = c.cpus_readable && c.container_id ? c.container_id : "<container>";
+  document.getElementById("cpucmd").textContent =
+    "docker update --cpus=" + n + " " + id;   // --cpus=0 removes the limit
+  document.getElementById("cmdwrap").style.display = "block";
+}
+function copyCmd() {
+  const text = document.getElementById("cpucmd").textContent;
+  if (!navigator.clipboard) { showErr("no clipboard here — select the line and copy it"); return; }
+  navigator.clipboard.writeText(text)
+    .catch(() => showErr("could not copy — select the line and copy it by hand"));
+}
+
+
+// ── Restart ─────────────────────────────────────────────────────────
+function renderRestart() {
+  const btn = document.getElementById("restartbtn");
+  // NO PAYLOAD IS NOT A DIAGNOSIS. Falling through with `{}` rendered the
+  // bold, invented claim "this relay is not pid 1" and a budget of "0 of 0"
+  // whenever the first load simply failed — the same "unlimited vs could not
+  // tell" sin `container_limits` exists to avoid, one file over. Adding
+  // renderRestart() to load()'s error path is what exposed this; leave the
+  // static "Checking…" note in place instead.
+  if (!last || !last.restart) {
+    btn.disabled = true;
+    document.getElementById("restartbudget").textContent = "";
+    return;
+  }
+  const r = last.restart;
+  const b = r.budget || {};
+  const note = document.getElementById("restartnote");
+  if (!r.can_restart) {
+    note.innerHTML = "This relay is <b>not pid 1</b>, so ending it would stop " +
+      "it for good rather than cycle it. Restart it however it was started.";
+  } else {
+    note.innerHTML = "Applies every saved value above. <b>In-flight work is " +
+      "dropped</b> &mdash; automation runs mid-send and the open OF websocket " +
+      "pumps do not survive it. The relay comes back on its own, usually within " +
+      "a few seconds.";
+  }
+  btn.disabled = !r.can_restart || !(b.remaining > 0);
+  let text = (b.remaining ?? 0) + " of " + (b.limit ?? 0) + " left this hour";
+  if (!(b.remaining > 0) && b.retry_after_s)
+    text += " — next in " + Math.ceil(b.retry_after_s / 60) + " min";
+  document.getElementById("restartbudget").textContent = text;
+}
+async function restart() {
+  const b = ((last && last.restart) || {}).budget || {};
+  if (!confirm("Restart the relay now?\n\nIn-flight sends and the OF websocket " +
+               "pumps are dropped. Limited to " + (b.limit ?? "?") +
+               " restarts an hour.")) return;
+  document.getElementById("err").style.display = "none";
+  document.getElementById("restartbtn").disabled = true;
+  // Never poll with a null baseline. `waitForBoot` settles on the first 200 it
+  // sees when it has nothing to compare against, and uvicorn keeps answering
+  // for the whole graceful-shutdown window (25s) while it drains — so a blind
+  // poll reports "restarted" against the very process it asked to leave. The
+  // last id this page was told is always a better baseline than none.
+  const known = ((last && last.restart) || {}).boot_id || null;
+  let r;
+  try {
+    // The body is the CSRF guard, not a formality — see `RestartBody`.
+    r = await fetch(RESTART_API, { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: true }) });
+  } catch (e) {
+    // A POST that dies in flight is INDISTINGUISHABLE from success, because
+    // success is the process going away. Poll rather than calling it a failure.
+    waitForBoot(known);
+    return;
+  }
+  if (!r.ok) { await showApiErr("restart refused", r); load(true); return; }
+  // Prefer the id of the process that ACCEPTED it; fall back to the last known
+  // one rather than to null.
+  let before = known;
+  try { before = (await r.json()).boot_id || known; } catch (e) { /* keep known */ }
+  waitForBoot(before);
+}
+async function waitForBoot(before) {
+  const label = document.getElementById("restartbudget");
+  const started = Date.now();
+  const deadlineMs = 80000;
+  while (Date.now() - started < deadlineMs) {
+    const secs = Math.round((Date.now() - started) / 1000);
+    label.textContent = "restarting… " + secs + "s";
+    await new Promise(done => setTimeout(done, 2000));
+    try {
+      // Timed out per-poll: during a restart docker's port proxy can ACCEPT and
+      // then hold, so an untimed fetch hangs for the browser default and the
+      // elapsed time silently runs far past the deadline.
+      const opts = { cache: "no-store" };
+      // Guarded: on an engine without AbortSignal.timeout this throws, and the
+      // catch below would read it as "still down" — a guaranteed false 80s
+      // failure on the page you open when things are already wrong.
+      if (typeof AbortSignal !== "undefined" && AbortSignal.timeout)
+        opts.signal = AbortSignal.timeout(2500);
+      const res = await fetch(RESTART_API, opts);
+      if (res.ok) {
+        const fresh = await res.json();
+        // `before === null` means we could not learn the old id, so any answer
+        // is the best evidence available.
+        if (!before || (fresh.boot_id && fresh.boot_id !== before)) {
+          await load();
+          return;
+        }
+      }
+    } catch (e) { /* down, or the poll timed out — both mean keep waiting */ }
+  }
+  showErr("the relay has not come back after " +
+          Math.round((Date.now() - started) / 1000) + "s — check the container");
+  // Re-read so the button never stays dead — but KEEP the message that says
+  // why, which is the only thing telling the operator to go look at the
+  // container.
+  load(true);
+}
+function showErr(m) {
+  const e = document.getElementById("err");
+  e.textContent = m; e.style.display = "block";
+}
+// FastAPI answers with {"detail": "..."} — showing the raw JSON puts braces and
+// quotes in front of an operator who just wants the sentence.
+async function showApiErr(prefix, res) {
+  let detail = "";
+  try { detail = (await res.json()).detail; } catch (e) { /* not JSON */ }
+  showErr(prefix + ": " + (detail || res.status));
+}
+async function post(values) {
+  document.getElementById("err").style.display = "none";
+  let r;
+  try {
+    r = await fetch(API, { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ values }) });
+  } catch (e) { showErr("save failed — could not reach the relay: " + e); return; }
+  // On failure keep the page as it is: re-rendering would wipe the value the
+  // operator just typed, right when they need it to retry.
+  if (!r.ok) { await showApiErr("save failed", r); return; }
+  load();
+}
+function save(name) {
+  // Number(), not parseInt(): a number input legally holds "1e2" and "12.5",
+  // and parseInt would silently save 1 and 12 instead of erroring.
+  const el = document.getElementById("in-" + name);
+  const v = Number(el.value);
+  if (el.dataset.switch) {
+    if (v !== 0 && v !== 1) { showErr(name + " is a switch: 0 (off) or 1 (on)"); return; }
+  } else if (!Number.isInteger(v) || v < 1) { showErr(name + " must be an integer >= 1"); return; }
+  post({ [name]: v });
+}
+function reset(name) { post({ [name]: null }); }
+load();
+</script>
+</body>
+</html>

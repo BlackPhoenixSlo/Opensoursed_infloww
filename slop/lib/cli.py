@@ -71,6 +71,12 @@ class Ctx:
             self.world = World(db=stack.db, sessions=stack.sessions, seed=args.seed, scale=args.scale,
                                owner=self.owner)
         self.check, self.metric, self.note, self.skip = report.check, report.metric, report.note, report.skip
+        self.of_wire = None  # lib/of_wire.FakeOF when the scenario sets OF_WIRE
+        self.mon: ProcMon | None = None  # shard 0's: a scenario may read mon.intervals (per-second relay CPU)
+        # A client fault's matches (actors/ui.py, lib/app_ts.py), held to the fault by _client_fault_applied.
+        self.browser_fault_hits: dict[str, int] = {}
+        self.browser_fault_files: dict[str, int] = {}
+        self.app_ts_fault_files: dict[str, int] = {}
 
     def param(self, key: str, default):
         v = self.params.get(key, default)
@@ -118,10 +124,17 @@ def _same_knobs(have: dict, want: dict) -> dict:
     return diff
 
 
+def _world(metrics: dict) -> tuple:
+    """The seeded world a run's p95s depend on: its profile and Creator count (metric `seed`)."""
+    seed = metrics.get("seed") or {}
+    return seed.get("profile"), seed.get("creators")
+
+
 def _p95_vs_last_green(report: Report, out: Path, tol, min_n: int = 0) -> None:
     """Stock: each p95 the scenario put in metric `p95_vs_last_green` ({key: ms})
-    against the newest earlier run of the same scenario with the same knobs, no
-    fault, no infra and every check pass/skip. FAIL when cur > max(r * last,
+    against the newest earlier run of the same scenario with the same knobs and
+    world (metric `seed`'s profile and Creator count), no fault, no infra and every
+    check pass/skip. FAIL when cur > max(r * last,
     last + a) for `P95_VS_LAST = (r, a)` in the scenario. The first such run sets
     the baseline (SKIP). With `P95_VS_LAST_MIN_N = n` the scenario also records
     metric `p95_vs_last_green_n` ({key: samples}); a key is compared only when
@@ -134,6 +147,7 @@ def _p95_vs_last_green(report: Report, out: Path, tol, min_n: int = 0) -> None:
         report.skip(name, "scenario recorded no p95_vs_last_green metric")
         return
     want = {k: v for k, v in report.params.items() if k not in ("git_sha", "git_dirty")}
+    world = _world(report.metrics)
     last = None
     for d in sorted(EVIDENCE.glob(f"*-{report.scenario}-*"), reverse=True):
         if d == out or d.is_symlink() or not d.is_dir():
@@ -143,7 +157,8 @@ def _p95_vs_last_green(report: Report, out: Path, tol, min_n: int = 0) -> None:
             checks = json.loads((d / "invariants.json").read_text())
         except (OSError, ValueError):
             continue
-        if meta.get("infra") or _same_knobs(meta.get("params", {}), want) or not meta.get("p95_vs_last_green"):
+        if (meta.get("infra") or _same_knobs(meta.get("params", {}), want) or _world(meta) != world
+                or not meta.get("p95_vs_last_green")):
             continue
         if min_n and not meta.get("p95_vs_last_green_n"):
             continue
@@ -151,7 +166,7 @@ def _p95_vs_last_green(report: Report, out: Path, tol, min_n: int = 0) -> None:
             last = (d, meta["p95_vs_last_green"], meta.get("p95_vs_last_green_n") or {})
             break
     if last is None:
-        report.skip(name, "no earlier green run with these knobs: this run is the baseline")
+        report.skip(name, "no earlier green run with these knobs and world: this run is the baseline")
         return
     d, prev, prev_n = last
     cur_n = report.metrics.get("p95_vs_last_green_n") or {}
@@ -333,7 +348,7 @@ def run_one(name: str, path: Path, args, params, *, fault: str | None = None, ta
             stack = live.get("stack")
             if stack is not None and stack.tmp.exists():  # its teardown never finished: finish it
                 stack.__exit__(None, None, None)
-            report.infra = f"timed out after {args.timeout}s (slop/run --timeout); stack torn down, run moves on"
+            _infra_first(report, f"timed out after {args.timeout}s (slop/run --timeout); stack torn down, run moves on")
             report.check("scenario finished within --timeout", False, timeout_s=args.timeout)
     _stock_checks(report, rec, out, mod)
     report.metric("seconds", round(time.time() - t0, 1))
@@ -374,7 +389,7 @@ async def _run_stack(name, mod, out, report, rec, args, params, ui, shards, faul
             for sh in ctx.shards:
                 sh.mon = mons[sh.id]
             mon = next(iter(mons.values()))
-            ctx.mon = mon  # a scenario may read mon.intervals (per-second relay CPU) for a windowed check
+            ctx.mon = mon
             for m in mons.values():
                 m.start()
             try:
@@ -397,35 +412,51 @@ async def _run_stack(name, mod, out, report, rec, args, params, ui, shards, faul
                     await sh.owner.aclose()
                 await ctx.owner.aclose()
     except (SystemExit, Exception) as e:  # the stack did not come up (or died tearing down)
-        report.infra = f"stack: {e}"
+        _infra_first(report, f"stack: {e}")
         report.check("stack started", False, error=str(e))
+
+
+def _infra_first(report: Report, why: str) -> None:
+    """`why` leads report.infra; a reason already there (a client fault's, set in
+    _run_stack's finally) is kept after it."""
+    report.infra = "; ".join(filter(None, (why, report.infra)))
+
+
+def _mismatch(fault: str, what: str, files: dict, want: int) -> str | None:
+    """Why a client fault's matches landed in the wrong number of `files` ({path: matches}), or None."""
+    if len(files) in (0, want):
+        return None
+    return (f"client fault {fault}: its rewrites matched {len(files)} {what}, expected {want}: "
+            + ", ".join(f"{p} ({n} matches)" for p, n in sorted(files.items())))
 
 
 def _client_fault_applied(report: Report, ctx, fault: str | None) -> None:
     """A client fault (lib/faults.py `browser=`) ran as declared, else INFRA, never a verdict:
     every rewrite matched the JS the browser loaded or the app modules lib/app_ts.py ran in
     node (else a stale pattern, or a run with no UI and no such check), and in each of the two
-    that it hit the matches landed in exactly the fault's `browser_files` distinct files (else
+    that it hit the matches landed in exactly the fault's `browser_files` (node: `ts_files`) distinct files (else
     the pattern is not unique to the function it breaks: a red check could be another module's)."""
     f = FAULTS.get(fault or "")
     if not f or not f.browser:
         return
-    hits = getattr(ctx, "browser_fault_hits", {})
-    files = getattr(ctx, "browser_fault_files", {})
-    ts_files = getattr(ctx, "app_ts_fault_files", {})
+    hits, files, ts_files = ctx.browser_fault_hits, ctx.browser_fault_files, ctx.app_ts_fault_files
     report.metric("browser_fault_hits", {rx: hits.get(rx, 0) for rx, _ in f.browser})
     report.metric("browser_fault_files", files)
     if ts_files:
         report.metric("app_ts_fault_files", ts_files)
     missed = [rx for rx, _ in f.browser if not hits.get(rx)]
-    if report.infra:
+    ts_want = f.browser_files if f.ts_files is None else f.ts_files
+    # One line, so the run summary's `infra:` and the break verdict's `inconclusive:` name the files.
+    why = "; ".join(filter(None, (_mismatch(fault, "served JS files", files, f.browser_files),
+                                  _mismatch(fault, "node modules", ts_files, ts_want))))
+    if report.infra:  # a crash or timeout came first: keep it, and still say the rewrite hit the wrong files
+        if why:
+            report.infra += f"; {why}"
         return
     if missed:
         report.infra = f"client fault {fault}: its rewrite never matched the app's served JS: {missed}"
-    elif any(len(fs) not in (0, f.browser_files) for fs in (files, ts_files)):
-        report.infra = (f"client fault {fault}: its rewrites matched {len(files)} served files and "
-                        f"{len(ts_files)} node modules, expected {f.browser_files} each: "
-                        f"{sorted(files)} {sorted(ts_files)}")
+    elif why:
+        report.infra = why
 
 
 def _knobs(mod, args, params: dict | None = None) -> tuple[bool, int]:
@@ -507,8 +538,11 @@ def break_one(name: str, path: Path, args, params) -> str:
     lines += [f"  note: baseline already red on non-targeted: {base_red}"] if base_red else []
     print("slop: " + "\n".join(lines))
     if broken_dir:
-        with open(broken_dir / "summary.txt", "a") as f:
-            f.write("\n" + "\n".join(lines) + "\n")
+        # Line 1 is the fault run's own status, red by design: label it so it is not read as the verdict.
+        summary = broken_dir / "summary.txt"
+        head, _, rest = summary.read_text().partition("\n")
+        head += f"  (under injected fault {fault}: red expected; break verdict {verdict}, see the end / break.json)"
+        summary.write_text(f"{head}\n{rest}\n" + "\n".join(lines) + "\n")
         (broken_dir / "break.json").write_text(json.dumps({
             "fault": fault, "verdict": verdict, "targets": list(targets), "went_red": went_red,
             "noise": noise, "inconclusive": reasons, "baseline": str(base_dir)}, indent=2))
@@ -568,7 +602,7 @@ def main() -> int:
         return 3 if "INCONCLUSIVE" in vs else 1 if "NOT CAUGHT" in vs else 0
     reports = {n: run_one(n, p, args, params) for n, p in picked.items()}
     for n, r in reports.items():
-        print(f"slop: {'INFRA' if r.infra else 'OK  ' if r.ok else 'FAIL'} {n}")
+        print(f"slop: {'INFRA' if r.infra else 'OK  ' if r.ok else 'FAIL'} {n}" + (f": {r.infra}" if r.infra else ""))
     if any(r.infra for r in reports.values()):
         return 3
     return 0 if all(r.ok for r in reports.values()) else 1

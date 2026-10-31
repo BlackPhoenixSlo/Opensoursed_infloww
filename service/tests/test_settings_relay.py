@@ -23,6 +23,7 @@ import os  # noqa: E402
 
 import of_client  # noqa: E402
 import server  # noqa: E402
+import of_stats_api  # noqa: E402  # after server: its routes load with it
 from pydantic import ValidationError  # noqa: E402
 
 API = of_client.API_BASE
@@ -95,18 +96,18 @@ def case_trial_link_create_sends_ofs_expire_days():
 
 
 def case_qr_views():
-    assert _route(server.of_my_qr_views)[:2] == ("GET", f"{API}/users/me/profile/views/qr")
+    assert _route(of_stats_api.of_my_qr_views)[:2] == ("GET", f"{API}/users/me/profile/views/qr")
 
 
 def case_stream_blocked_users_params():
-    _, path, _, params = _route(server.of_stream_blocked_users, limit=10, offset=0, query="")
+    _, path, _, params = _route(of_stats_api.of_stream_blocked_users, limit=10, offset=0, query="")
     assert path == f"{API}/streams/users/blocked" and params == {"limit": 10}, (path, params)
-    _, _, _, params = _route(server.of_stream_blocked_users, limit=10, offset=20, query="fan")
+    _, _, _, params = _route(of_stats_api.of_stream_blocked_users, limit=10, offset=20, query="fan")
     assert params == {"limit": 10, "offset": 20, "query": "fan"}, params
 
 
 def case_sessions_read_only():
-    assert _route(server.of_sessions)[:2] == ("GET", f"{API}/sessions")
+    assert _route(of_stats_api.of_sessions)[:2] == ("GET", f"{API}/sessions")
 
 
 def case_routes_registered():

@@ -20,11 +20,11 @@
  * tab acts on add/focus.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import Link from "next/link";
 import { useQueries, useQueryClient, type QueryClient } from "@tanstack/react-query";
 
-import { FanList, type FanListSelection } from "@/components/chat/FanList";
+import { FanList } from "@/components/chat/FanList";
 import { GroupPane } from "@/components/group/GroupPane";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 import { useIsDesktop } from "@/hooks/useIsDesktop";
@@ -33,7 +33,7 @@ import { cachedOFUserQuery } from "@/hooks/useOFUser";
 import { cn } from "@/lib/utils";
 import { relay, type OFChatItem } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
-import { fanIdFromParam, sameUserId, type FanId } from "@/lib/fanId";
+import { fanIdFromParam, sameUserId } from "@/lib/fanId";
 import { onPopoutClick } from "@/lib/nav";
 import {
   GROUP_CHANNEL_NAME,
@@ -42,6 +42,7 @@ import {
   GROUP_REPLACE_EVENT,
   GROUP_SLOT_CAP,
   GROUP_WINDOW_NAME,
+  isGroupSlot,
   parseSlotsParam,
   readAllLiveGroupTabs,
   removeGroupTabRegistry,
@@ -50,35 +51,26 @@ import {
   type GroupSlot,
 } from "@/lib/groupChannel";
 import { BRAND_NAME } from "@/lib/brand";
+import { initialSlotsState, slotsReducer } from "./slotsReducer";
 
 const STORAGE_KEY = "chatterly:group-slots";
 const TAB_ID_KEY = "chatterly:group-tab-id";
 
-type Slot = GroupSlot;
-
-function readSlots(): Slot[] {
+/** The slots this tab held before a reload. Both fan id shapes: a
+ *  `typeof fan !== "number"` check here dropped every Fansly slot on reload. */
+function readSlots(): GroupSlot[] {
   if (typeof window === "undefined") return [];
   try {
     const raw = window.sessionStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    const out: Slot[] = [];
-    for (const item of parsed) {
-      if (!item || typeof item !== "object") continue;
-      const acct = (item as { accountId?: unknown }).accountId;
-      const fan = (item as { fanId?: unknown }).fanId;
-      if (typeof acct !== "string" || typeof fan !== "number") continue;
-      if (!Number.isFinite(fan)) continue;
-      out.push({ accountId: acct, fanId: fan });
-    }
-    return out.slice(0, GROUP_SLOT_CAP);
+    return Array.isArray(parsed) ? parsed.filter(isGroupSlot) : [];
   } catch {
     return [];
   }
 }
 
-function writeSlots(slots: Slot[]): void {
+function writeSlots(slots: readonly GroupSlot[]): void {
   try {
     window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(slots));
   } catch {
@@ -92,7 +84,7 @@ function writeSlots(slots: Slot[]): void {
  *    ?slots=<acctId>:<fanId>,...        — a whole list (money rail's last-8)
  *    ?spawn=<token>                     — pairs us with the source tab
  *  Returns the seeded slots (empty when this is a plain reload). */
-function takeSeedParams(): { seeds: Slot[]; spawnToken: string | null } {
+function takeSeedParams(): { seeds: GroupSlot[]; spawnToken: string | null } {
   if (typeof window === "undefined") return { seeds: [], spawnToken: null };
   const url = new URL(window.location.href);
   const rawAdd = url.searchParams.get("add");
@@ -137,7 +129,7 @@ function resolveTabId(): string {
 
 /** How many of `slots` have a cached chats row whose last message is the
  *  Fan's (the first cached copy of the row counts, as before). */
-function countUnresponded(qc: QueryClient, slots: Slot[]): number {
+function countUnresponded(qc: QueryClient, slots: readonly GroupSlot[]): number {
   const want = new Map(slots.map((s) => [`${s.accountId}:${s.fanId}`, s]));
   const found = new Map<string, OFChatItem>();
   const entries = qc.getQueriesData<{ pages: { rows: OFChatItem[] }[] }>({ queryKey: ["chats"] });
@@ -164,19 +156,16 @@ export default function GroupChatPage() {
   useInboxRealtime();
 
   // Hydration-gated: SSR renders nothing, the post-mount effect seeds
-  // from sessionStorage + ?add=. Avoids a flicker of empty grid.
-  const [slots, setSlots] = useState<Slot[]>([]);
-  const [hydrated, setHydrated] = useState(false);
+  // from sessionStorage + ?add=. Avoids a flicker of empty grid. Every
+  // write to the slots, the shown pane and the owed add-acks is an action
+  // of slotsReducer.
+  const [state, dispatch] = useReducer(slotsReducer, initialSlotsState);
+  const { hydrated, slots, active, acks } = state;
   const tabIdRef = useRef<string>("");
   const createdAtRef = useRef<number>(0);
   const spawnTokenRef = useRef<string | null>(null);
   const lastTickAtRef = useRef<number>(0);
-
-  // Keep a ref to current slots so the heartbeat interval can publish
-  // them without needing to re-bind every change. State drives React;
-  // the ref just exists for cross-effect reads.
-  const slotsRef = useRef<Slot[]>([]);
-  useEffect(() => { slotsRef.current = slots; }, [slots]);
+  const channelRef = useRef<BroadcastChannel | null>(null);
 
   useEffect(() => {
     tabIdRef.current = resolveTabId();
@@ -193,43 +182,24 @@ export default function GroupChatPage() {
     // Neither param means this is a reload of the SAME tab (or someone
     // typed /group manually) — restore the slot list from
     // sessionStorage so refresh keeps the layout.
-    let initial: Slot[] = seeds.length > 0 ? seeds : readSlots();
+    const initial = seeds.length > 0 ? seeds : readSlots();
+    // StrictMode (dev) runs this effect twice, and the second run finds the
+    // seed params already stripped from the URL: store the seeds now so it
+    // reads them back. The persist effect stores the reconciled list next.
+    writeSlots(initial);
     // Reconcile-on-mount: drop slots that an OLDER live tab already
     // holds. Handles the residual case where two source tabs raced
     // to spawn and we both ended up with the same fan. Older wins.
-    const others = readAllLiveGroupTabs().filter((t) => t.tabId !== tabIdRef.current);
-    if (others.length > 0) {
-      initial = initial.filter((s) => {
-        const olderOwner = others.find((t) =>
-          t.createdAt < createdAtRef.current &&
-          t.slots.some((x) => x.accountId === s.accountId && x.fanId === s.fanId),
-        );
-        return !olderOwner;
-      });
-    }
-    setSlots(initial);
-    writeSlots(initial);
-    setHydrated(true);
+    const older = readAllLiveGroupTabs().filter((t) =>
+      t.tabId !== tabIdRef.current && t.createdAt < createdAtRef.current);
+    dispatch({ type: "hydrate", slots: initial, heldElsewhere: older });
   }, []);
 
-  // Persist on every change. Also write the per-tab registry entry so
-  // source tabs see the updated slot list immediately (heartbeat tick
-  // also writes, but that has up to GROUP_HEARTBEAT_MS lag).
+  // Persist on every change so a refresh keeps the layout.
   useEffect(() => {
     if (!hydrated) return;
     writeSlots(slots);
-    if (tabIdRef.current) writeGroupTabRegistry(tabIdRef.current, createdAtRef.current, slots);
   }, [slots, hydrated]);
-
-  const addSlot = useCallback((sel: FanListSelection) => {
-    setSlots((cur) => {
-      if (cur.some((s) => s.accountId === sel.accountId && s.fanId === sel.fanId)) {
-        return cur;
-      }
-      if (cur.length >= GROUP_SLOT_CAP) return cur;
-      return [...cur, { accountId: sel.accountId, fanId: sel.fanId }];
-    });
-  }, []);
 
   // Same-tab re-seed. The money rail lives in the root layout, so it also
   // renders HERE — and a BroadcastChannel never delivers to its own sender,
@@ -237,18 +207,17 @@ export default function GroupChatPage() {
   // event instead of a `replace` message.
   useEffect(() => {
     const onReplace = (e: Event) => {
-      const next = (e as CustomEvent<{ slots?: Slot[] }>).detail?.slots;
-      if (!Array.isArray(next) || next.length === 0) return;
-      setSlots(next.slice(0, GROUP_SLOT_CAP));
+      const next = (e as CustomEvent<{ slots?: unknown }>).detail?.slots;
+      if (!Array.isArray(next)) return;
+      dispatch({ type: "replace", slots: next });
     };
     window.addEventListener(GROUP_REPLACE_EVENT, onReplace);
     return () => window.removeEventListener(GROUP_REPLACE_EVENT, onReplace);
   }, []);
 
-  // Heartbeat (registry refresh) + BroadcastChannel listener. The
-  // registry is keyed by this tab's id, so multiple group tabs each
-  // have their own entry — last-writer-wins doesn't apply, scanners
-  // see all of them.
+  // Tab lifetime: window.name stamp, the BroadcastChannel listener and the
+  // registry teardown. Keyed on `hydrated` only — a slot change must not
+  // close and reopen the channel (a message sent in between would be lost).
   useEffect(() => {
     if (!hydrated) return;
     // Stamp window.name so a same-BCG window.open(..., GROUP_WINDOW_NAME)
@@ -263,24 +232,17 @@ export default function GroupChatPage() {
     const tabId = tabIdRef.current;
     if (!tabId) return;
 
-    const tick = () => {
-      writeGroupTabRegistry(tabId, createdAtRef.current, slotsRef.current);
-      lastTickAtRef.current = Date.now();
-    };
-    tick();
-    const interval = window.setInterval(tick, GROUP_HEARTBEAT_MS);
-
     let channel: BroadcastChannel | null = null;
     try {
       channel = new BroadcastChannel(GROUP_CHANNEL_NAME);
-      const ch = channel;
+      channelRef.current = channel;
       // Announce ourselves so the source that spawned us can pair its
       // held Window ref with our tabId. No-op for the source(s) that
       // didn't spawn us (they ignore claims for tokens they don't hold).
       if (spawnTokenRef.current) {
-        try { ch.postMessage({ type: "claim", tabId, spawnToken: spawnTokenRef.current }); } catch {}
+        try { channel.postMessage({ type: "claim", tabId, spawnToken: spawnTokenRef.current }); } catch {}
       }
-      ch.onmessage = (e: MessageEvent<GroupChannelMessage>) => {
+      channel.onmessage = (e: MessageEvent<GroupChannelMessage>) => {
         const msg = e.data;
         if (!msg) return;
         // Address filter: ignore messages not meant for THIS tab.
@@ -288,37 +250,16 @@ export default function GroupChatPage() {
         // its actions to its own tabId.
         if (msg.type !== "add" && msg.type !== "focus" && msg.type !== "replace") return;
         if (msg.tabId !== tabId) return;
+        // add / replace: the reducer decides the ack against the state it
+        // applies the message to and queues it; the ack effect posts it.
+        // The source spawns an overflow tab on ok:false.
         if (msg.type === "replace") {
-          // Destructive re-seed from the money rail: this tab becomes the
-          // requested list (newest 8 buyers), dropping whatever it held.
-          const next = Array.isArray(msg.slots) ? msg.slots.slice(0, GROUP_SLOT_CAP) : [];
-          if (next.length > 0) setSlots(next);
-          try { ch.postMessage({ type: "add-ack", tabId, reqId: msg.reqId, ok: next.length > 0 }); } catch {}
+          dispatch({ type: "replace", slots: Array.isArray(msg.slots) ? msg.slots : [], reqId: msg.reqId });
         }
         if (msg.type === "add") {
-          // Accept BOTH id shapes: `!== "number"` silently dropped every
-          // Fansly `add` broadcast (string snowflakes), so the slot was lost
-          // with no error — the same bug the localStorage filter had.
-          if (typeof msg.accountId !== "string"
-              || (typeof msg.fanId !== "number" && typeof msg.fanId !== "string")) return;
-          let accepted = false;
-          setSlots((cur) => {
-            if (cur.some((s) => s.accountId === msg.accountId && s.fanId === msg.fanId)) {
-              accepted = true;
-              return cur;
-            }
-            if (cur.length >= GROUP_SLOT_CAP) {
-              accepted = false;
-              return cur;
-            }
-            accepted = true;
-            return [...cur, { accountId: msg.accountId, fanId: msg.fanId }];
-          });
-          // ACK lets the source decide whether to spawn an overflow tab
-          // when we couldn't actually accept (full since the snapshot).
-          try { ch.postMessage({ type: "add-ack", tabId, reqId: msg.reqId, ok: accepted }); } catch {}
+          dispatch({ type: "add", slot: { accountId: msg.accountId, fanId: msg.fanId }, reqId: msg.reqId });
         }
-        // For both add and focus: try to bring this tab forward.
+        // For every addressed message: try to bring this tab forward.
         // Browsers vary on whether window.focus() from a
         // BroadcastChannel handler is honored. When it works the click
         // on the source tab feels like "switched to group". When
@@ -330,6 +271,42 @@ export default function GroupChatPage() {
          fallback path (window.open with ?add=) still works. */
     }
 
+    // pagehide is the reliable cross-browser teardown signal (fires on
+    // bfcache eviction and iOS where beforeunload is unreliable).
+    const onPagehide = () => { removeGroupTabRegistry(tabId); };
+    window.addEventListener("pagehide", onPagehide);
+
+    return () => {
+      window.removeEventListener("pagehide", onPagehide);
+      removeGroupTabRegistry(tabId);
+      channelRef.current = null;
+      if (channel) { try { channel.close(); } catch {} }
+      try { if (window.name === GROUP_WINDOW_NAME) window.name = ""; } catch {}
+    };
+  }, [hydrated]);
+
+  // Post the add-acks the reducer queued, then drain exactly those.
+  useEffect(() => {
+    if (acks.length === 0) return;
+    const tabId = tabIdRef.current;
+    for (const a of acks) {
+      try { channelRef.current?.postMessage({ type: "add-ack", tabId, reqId: a.reqId, ok: a.ok }); } catch {}
+    }
+    dispatch({ type: "acksSent", reqIds: acks.map((a) => a.reqId) });
+  }, [acks]);
+
+  // Heartbeat: write this tab's registry entry now (so source tabs see a
+  // slot change at once) and every GROUP_HEARTBEAT_MS. The registry is
+  // keyed by this tab's id, so multiple group tabs each have their own
+  // entry — scanners see all of them.
+  useEffect(() => {
+    if (!hydrated) return;
+    const tabId = tabIdRef.current;
+    if (!tabId) return;
+    const tick = () => {
+      writeGroupTabRegistry(tabId, createdAtRef.current, slots);
+      lastTickAtRef.current = Date.now();
+    };
     // Frozen-tab reconcile: if this tab was background-throttled for
     // longer than the registry TTL, another tab may have spawned and
     // taken on our fans assuming we were dead. On wake, drop any of
@@ -342,34 +319,16 @@ export default function GroupChatPage() {
       // from treating us as dead during the reconcile pass.
       tick();
       if (!stale) return;
-      const others = readAllLiveGroupTabs().filter((t) => t.tabId !== tabId);
-      if (others.length === 0) return;
-      setSlots((cur) => cur.filter((s) => !others.some((t) =>
-        t.slots.some((x) => x.accountId === s.accountId && x.fanId === s.fanId),
-      )));
+      dispatch({ type: "dropHeldBy", others: readAllLiveGroupTabs().filter((t) => t.tabId !== tabId) });
     };
+    tick();
+    const interval = window.setInterval(tick, GROUP_HEARTBEAT_MS);
     document.addEventListener("visibilitychange", onVisibility);
-
-    // pagehide is the reliable cross-browser teardown signal (fires on
-    // bfcache eviction and iOS where beforeunload is unreliable).
-    const onPagehide = () => { removeGroupTabRegistry(tabId); };
-    window.addEventListener("pagehide", onPagehide);
-
     return () => {
       window.clearInterval(interval);
-      window.removeEventListener("pagehide", onPagehide);
       document.removeEventListener("visibilitychange", onVisibility);
-      removeGroupTabRegistry(tabId);
-      if (channel) { try { channel.close(); } catch {} }
-      try { if (window.name === GROUP_WINDOW_NAME) window.name = ""; } catch {}
     };
-  }, [hydrated]);
-
-  const removeSlot = useCallback((accountId: string, fanId: FanId) => {
-    setSlots((cur) =>
-      cur.filter((s) => !(s.accountId === accountId && sameUserId(s.fanId, fanId))),
-    );
-  }, []);
+  }, [hydrated, slots]);
 
   // Unresponded count among loaded panes: derived from whatever chats
   // data is already in the React Query cache (no extra fetches). SSE
@@ -427,26 +386,10 @@ export default function GroupChatPage() {
   // strip. Reason: 8 simultaneous `useChatMessages` + SSE subscriptions
   // on a phone is brutal — at 360px wide there's no parallel-visibility
   // win to justify the CPU. Tabs let only the active pane stay hot;
-  // others unmount via the React key=, freeing their hooks.
-  const [activeSlotIdx, setActiveSlotIdx] = useState(0);
-  const prevSlotCountRef = useRef(0);
-  useEffect(() => {
-    const prev = prevSlotCountRef.current;
-    prevSlotCountRef.current = slots.length;
-    if (slots.length === 0) {
-      if (activeSlotIdx !== 0) setActiveSlotIdx(0);
-      return;
-    }
-    if (slots.length > prev) {
-      // A slot was just added — jump to it. Matches the user intent of
-      // "I clicked this fan in the rail, I want to see them now."
-      setActiveSlotIdx(slots.length - 1);
-    } else if (activeSlotIdx >= slots.length) {
-      // Active slot was removed — clamp to the new last slot.
-      setActiveSlotIdx(slots.length - 1);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [slots]);
+  // others unmount via the React key=, freeing their hooks. `active` is
+  // the reducer's: an added fan is shown, a removed one hands over to
+  // whoever takes its place.
+  const shown = slots[active];
 
   // Observe-only cache reads for tab labels — FanList's enrichWithUsers
   // has already populated `["of-user", aid, fid]` for any slot that came
@@ -496,10 +439,7 @@ export default function GroupChatPage() {
           <div className="flex-1 min-h-0 overflow-hidden border-r border-border">
             <FanList
               selected={null}
-              onSelect={(sel) => {
-                if (full) return;
-                addSlot(sel);
-              }}
+              onSelect={(sel) => dispatch({ type: "add", slot: { accountId: sel.accountId, fanId: sel.fanId } })}
               setTabTitle={false}
             />
           </div>
@@ -532,10 +472,7 @@ export default function GroupChatPage() {
         <div className="flex-1 min-h-0 overflow-hidden border-r border-border">
           <FanList
             selected={null}
-            onSelect={(sel) => {
-              if (full) return;
-              addSlot(sel);
-            }}
+            onSelect={(sel) => dispatch({ type: "add", slot: { accountId: sel.accountId, fanId: sel.fanId } })}
             setTabTitle={false}
           />
         </div>
@@ -554,10 +491,10 @@ export default function GroupChatPage() {
               <button
                 key={`${s.accountId}:${s.fanId}`}
                 type="button"
-                onClick={() => setActiveSlotIdx(i)}
+                onClick={() => dispatch({ type: "select", index: i })}
                 className={cn(
                   "px-3 py-2 text-xs whitespace-nowrap border-r border-border shrink-0 max-w-[140px] truncate",
-                  i === activeSlotIdx
+                  i === active
                     ? "bg-bg text-fg font-medium"
                     : "text-fg-dim hover:text-fg",
                 )}
@@ -588,12 +525,12 @@ export default function GroupChatPage() {
                *  remounts via React key=, which also tears down the
                *  inactive pane's useChatMessages + SSE merge. */}
               {!desktop && <div className="lg:hidden h-full">
-                {slots[activeSlotIdx] && (
+                {shown && (
                   <GroupPane
-                    key={`m:${slots[activeSlotIdx].accountId}:${slots[activeSlotIdx].fanId}`}
-                    accountId={slots[activeSlotIdx].accountId}
-                    fanId={slots[activeSlotIdx].fanId}
-                    onClose={() => removeSlot(slots[activeSlotIdx].accountId, slots[activeSlotIdx].fanId)}
+                    key={`m:${shown.accountId}:${shown.fanId}`}
+                    accountId={shown.accountId}
+                    fanId={shown.fanId}
+                    onClose={() => dispatch({ type: "remove", slot: shown })}
                   />
                 )}
               </div>}
@@ -604,7 +541,7 @@ export default function GroupChatPage() {
                     key={`${s.accountId}:${s.fanId}`}
                     accountId={s.accountId}
                     fanId={s.fanId}
-                    onClose={() => removeSlot(s.accountId, s.fanId)}
+                    onClose={() => dispatch({ type: "remove", slot: s })}
                   />
                 ))}
               </div>}

@@ -12,8 +12,8 @@
  * `files.full`, which across a 6,388-item mirror is the sole variant for audio
  * and for nothing else. Nothing resolves, so nothing is requested.
  */
-import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import VaultTile from "@/components/vault/VaultTile";
 import type { VaultMedia } from "@/lib/relay";
@@ -87,5 +87,88 @@ describe("VaultTile", () => {
     const imgs = container.querySelectorAll("img");
     expect(imgs).toHaveLength(1);
     expect(imgs[0].getAttribute("src")).toContain("/img?");
+  });
+});
+
+/**
+ * The hover glue: the tile drives the shared useHoverPreview (mouse only, after
+ * the dwell) and every storyboard GET and the one cancel POST carry the same
+ * session id.
+ */
+describe("VaultTile hover preview", () => {
+  const MP4 = "https://cdn.example/v-240.mp4";
+  const VIDEO: VaultMedia = { id: 7, type: "video", duration: 34, files: { full: { url: MP4 } }, _thumb: CACHED };
+
+  const fetchMock = vi.fn((..._args: unknown[]) => Promise.resolve(new Response(null)));
+  const cancelSids = () =>
+    fetchMock.mock.calls
+      .map(([u]) => new URL(String(u), "http://x"))
+      .filter((u) => u.pathname === "/img/scrub/cancel")
+      .map((u) => u.searchParams.get("sid"));
+  const frames = () => document.querySelectorAll<HTMLImageElement>('img[src^="/img/scrub?"]');
+  const sidsOf = () => new Set([...frames()].map((f) => new URL(f.src, "http://x").searchParams.get("sid")));
+  const tileEl = () => screen.getByTitle(/^#7 · video/);
+
+  function hover(accountId: string | null = ACCT, pointerType = "mouse") {
+    const view = render(<VaultTile media={VIDEO} accountId={accountId} />);
+    fireEvent.pointerEnter(tileEl(), { pointerType });
+    act(() => { vi.advanceTimersByTime(400); });
+    return view;
+  }
+
+  beforeEach(() => {
+    fetchMock.mockClear();
+    vi.stubGlobal("fetch", fetchMock);
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("a mouse dwell mounts the storyboard under one session", () => {
+    hover();
+    expect(frames()).toHaveLength(12);
+    const sids = sidsOf();
+    expect(sids.size).toBe(1);
+    expect([...sids][0]).toBeTruthy();
+  });
+
+  it("no frames before the dwell", () => {
+    render(<VaultTile media={VIDEO} accountId={ACCT} />);
+    fireEvent.pointerEnter(tileEl(), { pointerType: "mouse" });
+    act(() => { vi.advanceTimersByTime(399); });
+    expect(frames()).toHaveLength(0);
+  });
+
+  it("leave unmounts the frames and posts exactly one cancel for that session", () => {
+    hover();
+    const [sid] = sidsOf();
+    fireEvent.pointerLeave(tileEl(), { pointerType: "mouse" });
+    expect(frames()).toHaveLength(0);
+    expect(cancelSids()).toEqual([sid]);
+  });
+
+  it("unmount mid-hover posts exactly one cancel for that session", () => {
+    const { unmount } = hover();
+    const [sid] = sidsOf();
+    unmount();
+    expect(cancelSids()).toEqual([sid]);
+  });
+
+  it("no account: no session (no slideshow timers), no storyboard, no fetch", () => {
+    const { unmount } = hover(null);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(frames()).toHaveLength(0);
+    unmount();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["touch", "pen"])("a %s pointer starts nothing", (pointerType) => {
+    const { unmount } = hover(ACCT, pointerType);
+    expect(frames()).toHaveLength(0);
+    unmount();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

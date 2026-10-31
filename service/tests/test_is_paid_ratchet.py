@@ -12,7 +12,7 @@ this" on it — so a flipped-back row under-reports income AND re-offers content
 the fan already bought.
 
 TWO writers upsert this column (a third would silently reintroduce the bug):
-  - automation_executor — the scrape/backfill upsert
+  - automations.scrape_chats — the scrape/backfill upsert
   - event_transcoder    — the live WebSocket frame upsert
 Both must go through db.models.is_paid_ratchet, and both are asserted here.
 
@@ -84,9 +84,9 @@ def main() -> int:
     # Both writers must route through the helper, or the invariant is one
     # forgetful edit away from gone. Assert on source, since a behavioural test
     # of the WS path would need a full frame fixture to say the same thing.
-    import automation_executor
+    import automations.scrape_chats as scrape_chats
     import event_transcoder
-    for mod in (automation_executor, event_transcoder):
+    for mod in (scrape_chats, event_transcoder):
         src = inspect.getsource(mod)
         check('"is_paid": is_paid_ratchet(' in src,
               f"{mod.__name__} writes is_paid through the ratchet")

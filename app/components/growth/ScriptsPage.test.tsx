@@ -823,6 +823,98 @@ describe("tags and sequences are stored on the scripts", () => {
     expect(post.mock.calls[1]).toEqual([RELABEL, { kind: "tag", from: "VIP" }]);
   });
 
+  type Relabel = { kind: "tag" | "sequence"; from?: string; to?: string; ids?: number[] };
+  type Live = { id: number; tags?: string[]; script_id?: string | null; [k: string]: unknown };
+  /** The list GET answers the relabels POSTed so far, as the relay applies them. */
+  async function mountLive(extra: Live[] = []) {
+    let data = structuredClone([...TAGGED, ...extra]) as Live[];
+    const reads = get.getMockImplementation()!;
+    get.mockImplementation((path: string, ctx?: { accountId?: string }) =>
+      path === LIST_A ? Promise.resolve({ list: data }) : reads(path, ctx));
+    post.mockImplementation((path: string, b: Relabel) => {
+      if (path !== RELABEL) return Promise.resolve({});
+      data = data.map((r) => {
+        if (b.ids && !b.ids.includes(r.id)) return r;
+        if (b.kind === "sequence") return r.script_id === b.from ? { ...r, script_id: b.to ?? null } : r;
+        const tags = r.tags ?? [];
+        if (b.from) return tags.includes(b.from) ? { ...r, tags: [...tags.filter((t) => t !== b.from), ...(b.to ? [b.to] : [])] } : r;
+        return tags.includes(b.to!) ? r : { ...r, tags: [...tags, b.to!] };
+      });
+      return Promise.resolve({ updated: 1 });
+    });
+    renderWithProviders(<ScriptsPage />);
+    await screen.findByText("Hey there");
+  }
+  const openRow = (side: string) => sidebar(side).querySelector("[aria-current='true'] span")?.textContent;
+  const box = (title: string) => screen.getByRole("checkbox", { name: `Select ${title}` });
+  function rowMenu(side: string, name: string, item: "Rename" | "Delete") {
+    fireEvent.click(within(sidebar(side)).getByRole("button", { name: `${name} menu` }));
+    fireEvent.click(screen.getByRole("menuitem", { name: item }));
+  }
+  function rename(title: string, label: RegExp, to: string) {
+    const dialog = screen.getByRole("dialog", { name: title });
+    fireEvent.change(within(dialog).getByLabelText(label), { target: { value: to } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "OK" }));
+  }
+
+  it("keeps the open tag and checks through other tags' renames and deletes; deleting the open one opens the next", async () => {
+    await mountLive();
+    fireEvent.click(within(sidebar("Tags")).getByText("VIP"));
+    fireEvent.click(box("Greeting"));
+    rowMenu("Tags", "Opener", "Rename");
+    rename("Modify tag name", /Tag name/, "Openers");
+    await within(sidebar("Tags")).findByText("Openers");
+    expect(openRow("Tags")).toBe("VIP");
+    expect(box("Greeting")).toBeChecked();
+    rowMenu("Tags", "VIP", "Rename");
+    rename("Modify tag name", /Tag name/, "VIPs");
+    await waitFor(() => expect(openRow("Tags")).toBe("VIPs"));
+    expect(box("Greeting")).toBeChecked();
+    rowMenu("Tags", "Openers", "Delete");
+    await waitFor(() => expect(within(sidebar("Tags")).queryByText("Openers")).toBeNull());
+    expect(openRow("Tags")).toBe("VIPs");
+    expect(box("Greeting")).toBeChecked();
+    // The open tag, last of the tags: the next row drawn is Uncategorized, where Greeting now is, unchecked.
+    rowMenu("Tags", "VIPs", "Delete");
+    await waitFor(() => expect(openRow("Tags")).toBe("Uncategorized"));
+    expect(box("Greeting")).not.toBeChecked();
+  });
+
+  it("deleting the open sequence opens the next once the server agrees; a failed delete keeps it and its checks", async () => {
+    await mountLive([{ ...TAGGED[3], id: 6, title: "alpha one", script_id: "Alpha", script_step: 1 }]);
+    fireEvent.click(screen.getByRole("tab", { name: "Sequence" }));
+    expect(openRow("Sequences")).toBe("Alpha");
+    fireEvent.click(box("alpha one"));
+    post.mockRejectedValueOnce(new Error("relay down"));
+    rowMenu("Sequences", "Alpha", "Delete");
+    expect(await screen.findByText("relay down")).toBeInTheDocument();
+    expect(openRow("Sequences")).toBe("Alpha");
+    expect(box("alpha one")).toBeChecked();
+    rowMenu("Sequences", "Alpha", "Delete");
+    await waitFor(() => expect(openRow("Sequences")).toBe("New Sub"));
+    expect(screen.getByRole("heading", { name: "New Sub" })).toBeInTheDocument();
+  });
+
+  it("renames a new tag on the server once a script has taken it", async () => {
+    await mountLive();
+    openMore();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Add tag" }));
+    rename("Add tag name", /Tag name/, "Night");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(openRow("Tags")).toBe("Night");
+    fireEvent.click(within(sidebar("Tags")).getByText("All scripts"));
+    fireEvent.click(box("Greeting"));
+    fireEvent.click(within(screen.getByRole("toolbar", { name: "Selection" })).getByRole("button", { name: /Add to tag/ }));
+    rename("Add tag name", /Tag name/, "Night");
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(within(sidebar("Tags")).getByText("Night").closest("[role='button']")).toHaveTextContent("1 script"));
+    rowMenu("Tags", "Night", "Rename");
+    rename("Modify tag name", /Tag name/, "Late");
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(2));
+    expect(post.mock.calls[1]).toEqual([RELABEL, { kind: "tag", from: "Night", to: "Late" }]);
+    await waitFor(() => expect(openRow("Tags")).toBe("Late"));
+  });
+
   it("closes a sidebar row's menu on Escape and puts focus back on its trigger", async () => {
     await mountTagged();
     const trigger = within(sidebar("Tags")).getByRole("button", { name: "Opener menu" });

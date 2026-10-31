@@ -44,7 +44,8 @@ from db.models import (
     SkipList, Transaction, WelcomeSent,
 )
 from . import welcome_compose  # reuse _slot_key / _resolve_welcome_name / _model_hour
-from ._common import bool_knob, substitute_placeholders
+from ._fan_notes import substitute_placeholders
+from ._knobs import bool_knob
 
 log = logging.getLogger("of-relay.automation.nudge_online")
 

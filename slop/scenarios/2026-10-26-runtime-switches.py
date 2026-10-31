@@ -25,6 +25,19 @@ does; there is no API for it):
    Screenshots: switches-before, switch-w7-on (the trigger, settled),
    switch-w7-cleared.
 
+3. W7 same-fan burst (W7 on): each of N fans sends 2 DMs back to back (the pump's
+   shape, `fan_dm.say`: a few ms apart, so their two dispatches overlap), plus fans
+   on a short per-fan cooldown (fans.automation_paused_until = now + 30 s, SQL, as
+   a sender writes it) and fans on a far one (past webhook_dispatch_decide's
+   MAX_DEFER_S) doing the same. Invariants: every burst and short-cooldown fan
+   has exactly one dispatch job (lib/w7_faults.BURST); each short-cooldown fan's
+   job is due at its cooldown end, a far-cooldown fan gets none. Precondition (else
+   INFRA): the same-fan DM gap p50 is under the fault's hold, so the two dispatches
+   of a fan really overlap and a green burst says something about the serial.
+   Faults (lib/w7_faults.py, `--break --fault=`): `w7-dispatch-unserialized` (the
+   per-fan serial bypassed, its race made deterministic), `w7-dedup-ignored` (the
+   pending-job read ignored); each targets the burst check only.
+
 Fault `runtime-switch-env-bypass`: `_global_kill_switch` reads the env var
 directly, as before this change, so the UI's override never reaches the
 consumer. Only the "no dispatch while on" check goes red.
@@ -33,9 +46,15 @@ Budget: PUT p95 under the storm.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
+import sys
+
+from datetime import datetime, timedelta
+from pathlib import Path
 
 from slop.actors import fan_dm, manager, ui
+from slop.lib import w7_faults
 
 PROFILE = "agency_inbox"
 UI = True
@@ -58,6 +77,23 @@ CK_THREAD = "every DM of both phases landed in its thread (messages rows)"
 CK_UI_ON = "UI: after the toggle the W7 row shows source override, effective on, the toggle on"
 CK_UI_CLEAR = ("UI: toggling W7 back off clears the override: the row shows source default, effective off,"
                " the toggle off, and no runtime_switches row is left")
+CK_BURST = w7_faults.BURST
+CK_DEFER = ("W7 cooldown burst: a fan on a short cooldown has its one job due at the cooldown end;"
+            " one past MAX_DEFER_S has none")
+
+
+def _decide():
+    """The product's pure W7 decisions (stdlib only), read from the repo so the far
+    cooldown follows its MAX_DEFER_S (registered first: its dataclasses look it up)."""
+    path = Path(__file__).resolve().parents[2] / "service/webhook_dispatch_decide.py"
+    spec = importlib.util.spec_from_file_location("slop_w7_decide", path)
+    mod = sys.modules[spec.name] = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+COOLDOWN_S, FAR_S = 30, _decide().MAX_DEFER_S + 600
+GAP_MAX_MS = w7_faults.HOLD_S * 1000   # same-fan DMs closer than the fault's hold race without the serial
 UI_CHECKS = (CK_UI_ON, CK_UI_CLEAR, "no 5xx in the browser session")
 
 
@@ -86,16 +122,33 @@ def _free_fans(w, aid: str) -> list[dict]:
     return [f for f in w.data["fans"][aid] if f["id"] not in skip]
 
 
-def _jobs(w, aid: str, fan_ids: set[int]) -> dict[int, int]:
-    """Pending W7 dispatch jobs per fan (payload only_fan_ids)."""
+def _jobs(w, aid: str, fan_ids: set[int]) -> dict[int, list[str]]:
+    """W7 dispatch jobs per fan (payload only_fan_ids): their run_at, as stored."""
     con = w.sql()
-    out: dict[int, int] = {}
-    for (payload,) in con.execute("SELECT payload_json FROM scheduled_jobs WHERE account_id=? AND kind=?",
-                                  (aid, KIND)):
+    out: dict[int, list[str]] = {}
+    for payload, run_at in con.execute("SELECT payload_json, run_at FROM scheduled_jobs"
+                                       " WHERE account_id=? AND kind=?", (aid, KIND)):
         for f in (json.loads(payload or "{}").get("only_fan_ids") or []):
             if f in fan_ids:
-                out[f] = out.get(f, 0) + 1
+                out.setdefault(f, []).append(run_at)
     con.close()
+    return out
+
+
+def _counts(jobs: dict[int, list[str]]) -> dict[int, int]:
+    return {f: len(ats) for f, ats in jobs.items()}
+
+
+def _groups(ctx, fans: list[dict], sizes: list[int]) -> list[list[dict]] | None:
+    """`fans` cut into consecutive groups of `sizes`; too few fans is INFRA (None),
+    never a silently shrunk group."""
+    if len(fans) < sum(sizes):
+        ctx.report.infra = ctx.report.infra or f"{len(fans)} free fans, the fan groups need {sum(sizes)}"
+        return None
+    out, i = [], 0
+    for n in sizes:
+        out.append(fans[i:i + n])
+        i += n
     return out
 
 
@@ -196,7 +249,7 @@ async def _dms(ctx, fans: list[dict], ids, text: str) -> list[dict]:
     return [r for r in recs if r["status"] < 300]
 
 
-async def _wait_jobs(w, aid: str, fan_ids: set[int], want: int | None, timeout: float) -> dict[int, int]:
+async def _wait_jobs(w, aid: str, fan_ids: set[int], want: int | None, timeout: float) -> dict[int, list[str]]:
     """Poll until `want` fans have a job (None: wait the whole `timeout`, for a negative check)."""
     t0 = asyncio.get_running_loop().time()
     while True:
@@ -207,6 +260,55 @@ async def _wait_jobs(w, aid: str, fan_ids: set[int], want: int | None, timeout: 
         if asyncio.get_running_loop().time() - t0 > timeout:
             return got
         await asyncio.sleep(0.25)
+
+
+def _pause(w, aid: str, fans: list[dict], until: datetime) -> str:
+    """A per-fan cooldown as a sender writes it (fans.automation_paused_until, naive UTC)."""
+    at = until.strftime("%Y-%m-%d %H:%M:%S.%f")
+    con = w.sql()
+    with con:
+        con.executemany("UPDATE fans SET automation_paused_until=? WHERE account_id=? AND fan_id=?",
+                        [(at, aid, f["id"]) for f in fans])
+    con.close()
+    return at
+
+
+async def _burst(ctx, w, aid: str, burst: list[dict], short: list[dict], far: list[dict]) -> None:
+    """Phase 3: every fan sends 2 DMs back to back (fan_dm.say, serial per Creator)."""
+    now = datetime.utcnow()
+    short_at = _pause(w, aid, short, now + timedelta(seconds=COOLDOWN_S))
+    _pause(w, aid, far, now + timedelta(seconds=FAR_S))
+    fans = burst + short + far
+    recs = await fan_dm.say(ctx.owner, [(f, f"w7 burst {i}/2") for f in fans for i in (1, 2)])
+    await manager.quiesce(ctx.owner)
+    ok = [r for r in recs if r.get("status", 599) < 300]
+    t0 = {}
+    gaps = []
+    for r in recs:
+        if r["fan_id"] in t0:
+            gaps.append(r["t0"] - t0[r["fan_id"]])
+        t0[r["fan_id"]] = r["t0"]
+    gaps.sort()
+    p50 = gaps[len(gaps) // 2] if gaps else None
+    if p50 is None or p50 >= GAP_MAX_MS:
+        ctx.report.infra = ctx.report.infra or (
+            f"W7 burst precondition: same-fan DM gap p50 {p50} ms not under {GAP_MAX_MS} ms,"
+            " the two dispatches of a fan do not overlap")
+    want = {f["id"] for f in burst + short}
+    rows = await _wait_jobs(w, aid, want | {f["id"] for f in far}, len(want), timeout=15.0)
+    ctx.metric("w7_burst", {"fans": len(burst), "short": len(short), "far": len(far), "dms_ok": len(ok),
+                            "same_fan_gap_ms": {"p50": p50, "max": gaps[-1] if gaps else None}})
+    counts = {f: n for f, n in _counts(rows).items() if f in want}
+    ctx.check(CK_BURST, len(ok) == 2 * len(fans) and len(counts) == len(want) and set(counts.values()) == {1},
+              fans=len(want), dms_ok=len(ok), dms=2 * len(fans), with_job=len(counts),
+              doubled=sorted(f for f, n in counts.items() if n > 1)[:10],
+              missing=sorted(want - set(counts))[:10])
+    short_ids = {f["id"] for f in short}
+    off_due = sorted(f for f in short_ids if any(at != short_at for at in rows.get(f, [])) or f not in rows)
+    far_jobs = sorted(f["id"] for f in far if rows.get(f["id"]))
+    ctx.check(CK_DEFER, len(short) > 0 and len(far) > 0 and not off_due and not far_jobs,
+              short=len(short), far=len(far), due_at=short_at, not_at_cooldown_end=off_due[:10],
+              far_with_job=far_jobs[:10], sample={f: rows.get(f) for f in sorted(short_ids)[:2]})
 
 
 async def _source_shows(row, text: str) -> None:
@@ -241,8 +343,11 @@ async def run(ctx) -> None:
     aid = w.data["creators"][0]["id"]
     _seed(w, aid)
     k = ctx.param("dm_fans", {"small": 5, "medium": 20, "huge": 40}[ctx.scale])
-    fans = _free_fans(w, aid)
-    off_fans, on_fans = fans[:k], fans[k:2 * k]
+    nb = ctx.param("burst_fans", {"small": 10, "medium": 40, "huge": 80}[ctx.scale])
+    groups = _groups(ctx, _free_fans(w, aid), [k, k, nb, 4, 2])
+    if groups is None:
+        return
+    off_fans, on_fans, burst_fans, short_fans, far_fans = groups
     ctx.metric("w7_phase", {"account": aid, "fans_off": len(off_fans), "fans_on": len(on_fans)})
 
     await _storm(ctx, w, aid)
@@ -272,7 +377,7 @@ async def run(ctx) -> None:
             r.raise_for_status()
 
         sent += await _dms(ctx, off_fans, ids, "w7 off phase")
-        off_jobs = await _wait_jobs(w, aid, {f["id"] for f in off_fans}, None, timeout=3.0)
+        off_jobs = _counts(await _wait_jobs(w, aid, {f["id"] for f in off_fans}, None, timeout=3.0))
 
         if page:
             row = page.get_by_test_id(f"switch-{W7}")
@@ -294,7 +399,8 @@ async def run(ctx) -> None:
             r.raise_for_status()
 
         sent += await _dms(ctx, on_fans, ids, "w7 on phase")
-        on_jobs = await _wait_jobs(w, aid, {f["id"] for f in on_fans}, len(on_fans), timeout=15.0)
+        on_jobs = _counts(await _wait_jobs(w, aid, {f["id"] for f in on_fans}, len(on_fans), timeout=15.0))
+        await _burst(ctx, w, aid, burst_fans, short_fans, far_fans)
     finally:
         if page_cm:
             await page_cm.__aexit__(None, None, None)

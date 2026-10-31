@@ -3,31 +3,26 @@
 /**
  * VaultTile — one media tile with hover preview + select/describe/order affordances.
  *
- * Hover: video cycles OF poster frames → HD storyboard (via /img/scrub), cancel
- * on leave. Optional selection checkbox, a describe-status dot, and a per-folder
+ * Hover: the vault picker's preview (useHoverPreview + tilePreview): OF poster
+ * frames → HD storyboard (via /img/scrub), cancel on leave. Optional selection checkbox, a describe-status dot, and a per-folder
  * manual-order input (0,1,2,3 / -1,-2,-3) shown only in a folder view.
  */
-
-import { useEffect, useRef, useState } from "react";
 
 import {
   progressiveVideoSrc,
   videoPosterFrames,
   isDrmOnlyVideo,
-  evenFrameIndex,
   aiCaptionFor,
   useCaptionOverlay,
   VaultAiCaptionOverlay,
 } from "@/components/chat/VaultPicker";
+import { tilePreview } from "@/components/chat/vaultTilePreview";
+import { HOVER_DELAY_MS, SCRUB_FRAMES, useHoverPreview } from "@/hooks/useHoverPreview";
 import { vaultTileThumb } from "@/hooks/useVaultCache";
 import { type VaultMedia } from "@/lib/relay";
 import { proxyImage, proxyScrubFrame } from "@/lib/mediaUrl";
 import { fmtDuration } from "@/lib/format";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
-
-const SCRUB_FRAMES = 12;
-const SCRUB_INTERVAL_MS = 450;
-const HOVER_DELAY_MS = 400;
 
 interface AiMeta {
   describe_status?: string | null;
@@ -71,14 +66,9 @@ export default function VaultTile({
   const [managerCaptionOn] = useCaptionOverlay("manager");
   const captionOn = aiCaption ?? managerCaptionOn;
   const caption = captionOn ? aiCaptionFor(m) : null;
-  const [hovering, setHovering] = useState(false);
-  const [scrubIdx, setScrubIdx] = useState(0);
-  const [scrubReady, setScrubReady] = useState(false);
-  const [sessionId, setSessionId] = useState<string>("");
-
-  const dwellRef = useRef<number | null>(null);
-  const slideRef = useRef<number | null>(null);
-  const hoveringRef = useRef(false);
+  // Dwell, session id, slideshow cursor and the cancel POST live in the hook;
+  // what the tile shows is tilePreview's read of it, as in the picker.
+  const hover = useHoverPreview(HOVER_DELAY_MS);
 
   // "" for a media with no picture (a voice note) — the placeholder renders.
   const thumb = vaultTileThumb(m, accountId);
@@ -87,70 +77,18 @@ export default function VaultTile({
   const rawVideoSrc = isVideo ? progressiveVideoSrc(m) : null;
   const posterFrames = isVideo ? videoPosterFrames(m) : [];
   const drmOnly = isVideo && isDrmOnlyVideo(m);
-  const canScrub = isVideo && !!rawVideoSrc;
+  // The storyboard needs an account to proxy through; without one there is no build to start or cancel.
+  const canScrub = isVideo && !!rawVideoSrc && !!accountId;
+  // Posters proxy through the account too.
+  const posterCount = accountId ? posterFrames.length : 0;
   const described = m._ai?.describe_status === "described";
 
-  function startHover() {
-    if (!isVideo) return;
-    if (dwellRef.current != null) window.clearTimeout(dwellRef.current);
-    dwellRef.current = window.setTimeout(() => {
-      dwellRef.current = null;
-      const sid =
-        typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-          ? crypto.randomUUID()
-          : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-      setSessionId(sid);
-      setScrubIdx(0);
-      setScrubReady(false);
-      hoveringRef.current = true;
-      setHovering(true);
-    }, HOVER_DELAY_MS);
-  }
-
-  function endHover() {
-    if (dwellRef.current != null) {
-      window.clearTimeout(dwellRef.current);
-      dwellRef.current = null;
-    }
-    if (!hoveringRef.current) return;
-    hoveringRef.current = false;
-    setHovering(false);
-    if (rawVideoSrc && accountId) {
-      const tok =
-        typeof window !== "undefined"
-          ? new URLSearchParams(window.location.search).get("t") ||
-            window.localStorage.getItem("chatterly:share_token")
-          : null;
-      const qs = new URLSearchParams();
-      qs.set("u", rawVideoSrc);
-      if (sessionId) qs.set("sid", sessionId);
-      if (tok) qs.set("t", tok);
-      fetch(`/img/scrub/cancel?${qs.toString()}`, { method: "POST", keepalive: true }).catch(
-        () => {},
-      );
-    }
-  }
-
-  useEffect(() => {
-    if (!hovering) return;
-    slideRef.current = window.setInterval(() => {
-      setScrubIdx((n) => (n + 1) % SCRUB_FRAMES);
-    }, SCRUB_INTERVAL_MS);
-    return () => {
-      if (slideRef.current != null) window.clearInterval(slideRef.current);
-    };
-  }, [hovering]);
-
-  useEffect(() => {
-    return () => {
-      if (dwellRef.current != null) window.clearTimeout(dwellRef.current);
-      if (slideRef.current != null) window.clearInterval(slideRef.current);
-    };
-  }, []);
-
-  const showPoster = hovering && posterFrames.length > 0;
-  const posterIdx = showPoster ? evenFrameIndex(scrubIdx, posterFrames.length) : 0;
-  const showScrub = hovering && canScrub;
+  const pv = tilePreview(hover.state, {
+    id: m.id,
+    posterCount,
+    drmOnly,
+    canBuild: canScrub,
+  });
 
   function handleClick() {
     if (selectMode) onCheck?.(m);
@@ -160,10 +98,13 @@ export default function VaultTile({
   return (
     <div
       onPointerEnter={(e) => {
-        if (e.pointerType === "mouse") startHover();
+        // Nothing to show (no account, or no source and no posters): no session to start.
+        if (e.pointerType === "mouse" && (canScrub || posterCount > 0)) {
+          hover.start(m.id, m.duration ?? 0, canScrub ? rawVideoSrc : null);
+        }
       }}
       onPointerLeave={(e) => {
-        if (e.pointerType === "mouse") endHover();
+        if (e.pointerType === "mouse") hover.stop();
       }}
       onClick={handleClick}
       title={`#${m.id} · ${m.type}${dur ? ` · ${dur}` : ""}`}
@@ -185,8 +126,8 @@ export default function VaultTile({
         <div className="absolute inset-0 grid place-items-center text-[10px] text-fg-dim">{m.type}</div>
       )}
 
-      {showPoster &&
-        posterFrames.map((u, idx) => (
+      {pv.showPosters &&
+        posterFrames.map((u, idx) => idx < pv.posterStart ? null : (
           // eslint-disable-next-line @next/next/no-img-element
           <img
             key={`pf-${idx}`}
@@ -194,22 +135,23 @@ export default function VaultTile({
             alt=""
             aria-hidden
             decoding="async"
-            style={{ opacity: idx === posterIdx ? 1 : 0 }}
+            onLoad={hover.onPosterLoad}
+            style={{ opacity: idx === pv.posterIdx ? 1 : 0 }}
             className="absolute inset-0 w-full h-full object-cover transition-opacity duration-200"
           />
         ))}
 
-      {showScrub &&
+      {pv.showScrub &&
         Array.from({ length: SCRUB_FRAMES }).map((_, idx) => (
           // eslint-disable-next-line @next/next/no-img-element
           <img
             key={`sf-${idx}`}
-            src={proxyScrubFrame(rawVideoSrc, accountId, idx, m.duration, sessionId)}
+            src={proxyScrubFrame(rawVideoSrc, accountId, idx, m.duration, hover.state.sid)}
             alt=""
             aria-hidden
             decoding="async"
-            onLoad={idx === 0 ? () => setScrubReady(true) : undefined}
-            style={{ opacity: idx === scrubIdx && scrubReady ? 1 : 0 }}
+            {...hover.frameProps(idx)}
+            style={{ opacity: idx === pv.scrubVisibleIdx ? 1 : 0 }}
             className="absolute inset-0 w-full h-full object-cover transition-opacity duration-200"
           />
         ))}

@@ -15,7 +15,7 @@
  * (the deleted row disappears).
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
-import { cleanup, render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -316,5 +316,43 @@ describe("AccountsTable — deactivate / activate a creator", () => {
     expect(screen.getAllByText("Offie").length).toBeGreaterThan(0);
     fireEvent.change(status, { target: { value: "Activated" } });
     expect(screen.queryAllByText("Offie")).toHaveLength(0);
+  });
+});
+
+/** The footer pages the rows on the client; a filter or per-page change goes back to page 1. */
+describe("AccountsTable — paging", () => {
+  const ACCOUNTS = Array.from({ length: 25 }, (_, i) => ({
+    id: `acct-${i + 1}`, nickname: `Model ${String(i + 1).padStart(2, "0")}`, has_session: true, is_active: true,
+  }));
+  const currentPage = () =>
+    within(screen.getByRole("navigation", { name: "Pagination" }))
+      .getAllByRole("button").find((b) => b.getAttribute("aria-current") === "page")?.textContent;
+  const toPage2 = () => {
+    fireEvent.click(screen.getByRole("button", { name: "Page 2" }));
+    expect(currentPage()).toBe("2");
+  };
+
+  it("goes back to page 1 when a filter or the page size changes", async () => {
+    relayGet.mockImplementation((path: string) => {
+      if (path === "/admin/accounts") return Promise.resolve({ accounts: ACCOUNTS, active_account_id: "acct-1" });
+      if (path.startsWith("/health")) return Promise.resolve({ ok: true, accounts: [] });
+      return Promise.resolve({});
+    });
+    render(<AccountsTable />, { wrapper });
+    await screen.findAllByText("Model 01");
+
+    toPage2();
+    expect(screen.getAllByText("Model 11").length).toBeGreaterThan(0);
+    // Every row is active, so the filter keeps all 25 — only the page moves.
+    fireEvent.change(screen.getByRole("combobox", { name: "Account status" }), { target: { value: "Activated" } });
+    expect(currentPage()).toBe("1");
+    expect(screen.getAllByText("Model 01").length).toBeGreaterThan(0);
+
+    toPage2();
+    // 20 per page still leaves 2 pages.
+    fireEvent.click(screen.getByRole("combobox", { name: "Per page" }));
+    fireEvent.click(screen.getByRole("option", { name: "20" }));
+    expect(currentPage()).toBe("1");
+    expect(screen.getAllByText("Model 20").length).toBeGreaterThan(0);
   });
 });

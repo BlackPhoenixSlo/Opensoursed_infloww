@@ -1,6 +1,53 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { GROUP_SLOT_CAP, parseSlotsParam } from "./groupChannel";
+import {
+  GROUP_SLOT_CAP, GROUP_TAB_KEY_PREFIX, isGroupSlot, openGroupTab, parseSlotsParam, readAllLiveGroupTabs,
+} from "./groupChannel";
+
+const SNOW = "900234567890123456";
+
+describe("isGroupSlot", () => {
+  it.each<[unknown, boolean]>([
+    [{ accountId: "a", fanId: 1 }, true],
+    [{ accountId: "a", fanId: "123" }, true],
+    [{ accountId: "a", fanId: SNOW }, true],
+    [{ accountId: "a", fanId: "" }, false],
+    [{ accountId: "a", fanId: "abc" }, false],
+    [{ accountId: "a", fanId: 0 }, false],
+    [{ accountId: "a", fanId: -5 }, false],
+    [{ accountId: "a", fanId: 1.5 }, false],
+    [{ accountId: "", fanId: 1 }, false],
+    [{ accountId: 7, fanId: 1 }, false],
+    [{ fanId: 1 }, false],
+    [null, false],
+    ["a:1", false],
+  ])("%j -> %s", (x, want) => {
+    expect(isGroupSlot(x)).toBe(want);
+  });
+});
+
+describe("live group tab registry", () => {
+  afterEach(() => { localStorage.clear(); vi.restoreAllMocks(); });
+  const register = (tabId: string, slots: unknown[]) => localStorage.setItem(GROUP_TAB_KEY_PREFIX + tabId,
+    JSON.stringify({ tabId, createdAt: 1, heartbeat: Date.now(), slots }));
+
+  it("keeps Fansly string slots and drops malformed ones", () => {
+    register("t1", [{ accountId: "a", fanId: SNOW }, { accountId: "a", fanId: "abc" }, { accountId: "a", fanId: 5 }]);
+    expect(readAllLiveGroupTabs()[0].slots).toEqual([{ accountId: "a", fanId: SNOW }, { accountId: "a", fanId: 5 }]);
+  });
+
+  // The fan is in a live tab under the other id shape: focus that tab, never
+  // add him to a second one.
+  it.each<[string, number | string, number | string]>([
+    ["held as a string, clicked as a number", "123", 123],
+    ["held as a number, clicked as a string", 123, "123"],
+  ])("finds the owner tab across id shapes: %s", async (_name, held, clicked) => {
+    register("owner", [{ accountId: "a", fanId: held }]);
+    vi.spyOn(window, "open").mockReturnValue(null);
+    expect(await openGroupTab("a", clicked)).toEqual({ kind: "focused" });
+    expect(window.open).not.toHaveBeenCalled();
+  });
+});
 
 describe("parseSlotsParam", () => {
   it("parses acct:fan pairs in order", () => {

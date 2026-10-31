@@ -83,6 +83,7 @@ import LinksListFrame, {
   DEFAULT_PAGE_SIZE, type PageSize,
 } from "@/components/growth/LinksListFrame";
 import { DASH, costPer, linkAverages, money, profitCents, roi } from "@/components/growth/linkMetrics";
+import { usePagedFilters } from "@/hooks/pagedFilters";
 import {
   useOfTrackingLinks, useOfTrackingEarnings, useOfTrackingFans, useCreateOfTrackingLink, useDeleteOfTrackingLink,
   useTrackingLinks, useCreateTrackingLink, useDeleteTrackingLink, useTrackingAnalytics,
@@ -312,12 +313,10 @@ type TabProps = { accountId: string | null; onAccountChange: (id: string) => voi
 function LinksList({ accountId, onAccountChange, net, onNet, accountsLoading = false }: TabProps & { accountsLoading?: boolean }) {
   const { q, links } = useLinks(accountId, net);
   const deleteM = useDeleteOfTrackingLink(accountId);
-  const filters = useFrameFilters();
+  const filters = useFrameFilters({ showDeactivated: false });
   const { reportTz } = filters;
 
   const [creating, setCreating] = useState(false);
-  // #24: off by default, as the bundle's.
-  const [showDeactivated, setShowDeactivated] = useState(false);
   // Details (#82): the link whose fan list replaces the list, as the bundle's overlay does.
   const [details, setDetails] = useState<OfTrackingLink | null>(null);
   const [editing, setEditing] = useState<OfTrackingLink | null>(null);
@@ -326,7 +325,7 @@ function LinksList({ accountId, onAccountChange, net, onNet, accountsLoading = f
   const sessionGone = useSessionGone(accountId);
 
   const ofAvailable = q.data?.of_available ?? false;
-  const matched = links.filter((l) => (!l.is_deleted || showDeactivated) && filters.keep(l));
+  const matched = links.filter((l) => (!l.is_deleted || filters.showDeactivated) && filters.keep(l));
   // Every link the read returned decides the columns, so they hold still across pages and filters.
   const cols = visibleCols(links, reportTz);
   const rowKey = (l: OfTrackingLink) => String(l.id ?? l.code);
@@ -352,8 +351,8 @@ function LinksList({ accountId, onAccountChange, net, onNet, accountsLoading = f
                 default, as the bundle's) is drawn only once a net-aware column has data (`hasNetCols`). */}
             <Switch
               label="Show deactivated links"
-              on={showDeactivated}
-              onChange={(on) => { setShowDeactivated(on); filters.setPage(1); }}
+              on={filters.showDeactivated}
+              onChange={(showDeactivated) => filters.set({ showDeactivated })}
             />
             {hasNetCols(links, reportTz) && <Switch label="Show net earnings" on={net} onChange={onNet} />}
           </>
@@ -563,9 +562,9 @@ function LinkDetails({ accountId, link, net, onBack }: {
   const q = useOfTrackingFans(accountId, link.id);
   const { reportTz } = useReportTz();
   const exportAllowed = useActionAllowed("export");
-  const [search, setSearch] = useState("");
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState<PageSize>(DEFAULT_PAGE_SIZE);
+  const { search, page, pageSize, set, setPage } = usePagedFilters<{ search: string; pageSize: PageSize }>(
+    { search: "", pageSize: DEFAULT_PAGE_SIZE },
+  );
 
   const fans = q.data?.fans ?? [];
   const cols = FAN_COLS.filter((c) => c.key !== "other" || fans.some((f) => f.other_cents !== 0));
@@ -595,7 +594,7 @@ function LinkDetails({ accountId, link, net, onBack }: {
             aria-label="Search fan name"
             placeholder="Search fan name"
             value={search}
-            onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+            onChange={(e) => set({ search: e.target.value })}
           />
         </span>
         {/* Infloww's export-link-fans (it emails one); ours downloads the fans matched, as the table shows them. */}
@@ -669,7 +668,7 @@ function LinkDetails({ accountId, link, net, onBack }: {
           total={matched.length}
           size={pageSize}
           onPage={setPage}
-          onSize={(s) => { setPageSize(s); setPage(1); }}
+          onSize={(s) => set({ pageSize: s })}
         />
       )}
     </section>

@@ -15,11 +15,13 @@
 
 import { infiniteQueryOptions, useInfiniteQuery, useQuery, type QueryClient } from "@tanstack/react-query";
 
+import { folderSortAfter, loadFolderSort, saveFolderSort, type FolderSortState } from "@/components/vault/vaultFolderSort";
 import { useSweepStatus } from "@/hooks/useVaultSweep";
 import { vaultListsKey, vaultMediaKey } from "@/hooks/useVaultMedia";
 import { relay, type VaultMedia } from "@/lib/relay";
 import { type FanId } from "@/lib/fanId";
 import { proxyImage } from "@/lib/mediaUrl";
+import { flushPersistedCache } from "@/lib/rqPersister";
 
 // Lazy-load in small chunks on scroll (not all at once — 244 images loading
 // simultaneously is what made the grid slow). Infinite-scroll fetches the next
@@ -151,16 +153,20 @@ export async function deleteOfFolder(accountId: string, listId: FanId) {
   );
 }
 
-/** Set OF folder-list order: {sort,order} or a manual {customOrder:[ids]}. */
+/** Set OF folder-list order: {sort,order} or a manual {customOrder:[ids]}. Once OF took it, the folder sort label
+ *  (vaultFolderSort.ts `folderSortAfter`) is saved and returned: the one label, whichever page sorted. */
 export async function sortOfFolders(
   accountId: string,
-  opts: { sort?: string; order?: string; customOrder?: FanId[] },
-) {
-  return relay.post(
+  opts: { sort?: string; order?: string; customOrder?: readonly FanId[] },
+): Promise<FolderSortState> {
+  await relay.post(
     `/admin/vault-ai/of-folders/sort`,
     { account_id: accountId, sort: opts.sort, order: opts.order, custom_order: opts.customOrder },
     { accountId },
   );
+  const saved = folderSortAfter(loadFolderSort(accountId), opts);
+  saveFolderSort(accountId, saved);
+  return saved;
 }
 
 export interface OfFolderMirror {
@@ -819,11 +825,14 @@ const HIDE_BATCH = 250;
 /** Remove confirmed copies from the REAL OF vault. The relay re-clusters and
  *  refuses anything that is an original / not a duplicate / already sent.
  *  Batches transparently and aggregates; `onProgress` reports ids completed.
- *  Stops early if a batch reports a partial OF failure so the caller can
- *  re-offer the remainder rather than pushing on blindly. */
+ *  Stops early if a batch reports a partial OF failure, or fails outright
+ *  after an earlier one went through (`of_error` = its error, `not_hidden` =
+ *  the rest: the earlier batches ARE gone from OF), so the caller can re-offer
+ *  the remainder rather than pushing on blindly. A first batch that fails
+ *  throws. */
 export async function hideDuplicates(
   accountId: string,
-  mediaIds: number[],
+  mediaIds: readonly number[],
   opts: {
     threshold?: number;
     allowSent?: boolean;
@@ -833,22 +842,30 @@ export async function hideDuplicates(
   const agg: HideDupesResult = { hidden: 0, hidden_ids: [], refused: {} };
   for (let i = 0; i < mediaIds.length; i += HIDE_BATCH) {
     const batch = mediaIds.slice(i, i + HIDE_BATCH);
-    const res: HideDupesResult = await relay.post(
-      `/admin/vault-ai/duplicates/hide`,
-      {
-        account_id: accountId,
-        media_ids: batch,
-        threshold: opts.threshold ?? 2,
-        allow_sent: !!opts.allowSent,
-      },
-      { accountId },
-    );
+    let res: HideDupesResult;
+    try {
+      res = await relay.post(
+        `/admin/vault-ai/duplicates/hide`,
+        {
+          account_id: accountId,
+          media_ids: batch,
+          threshold: opts.threshold ?? 2,
+          allow_sent: !!opts.allowSent,
+        },
+        { accountId },
+      );
+    } catch (e) {
+      if (i === 0) throw e;
+      // A later batch that fails stops as one OF half refused does (below): none of it hidden.
+      res = { hidden: 0, hidden_ids: [], refused: {}, of_error: e instanceof Error ? e.message : String(e), not_hidden: batch };
+    }
     agg.hidden += res.hidden ?? 0;
     agg.hidden_ids.push(...(res.hidden_ids ?? []));
     for (const [why, ids] of Object.entries(res.refused ?? {})) {
       agg.refused[why] = [...(agg.refused[why] ?? []), ...ids];
     }
-    opts.onProgress?.(Math.min(i + batch.length, mediaIds.length), mediaIds.length);
+    // A batch that stopped counts only what it hid.
+    opts.onProgress?.(res.of_error ? i + (res.hidden ?? 0) : Math.min(i + batch.length, mediaIds.length), mediaIds.length);
     if (res.of_error) {
       agg.of_error = res.of_error;
       agg.not_hidden = [...(res.not_hidden ?? []), ...mediaIds.slice(i + batch.length)];
@@ -958,9 +975,13 @@ export function vaultGridKeys(accountId: string | null): readonly (readonly unkn
   ];
 }
 
-/** Invalidate all of them. One call, so a caller cannot refresh four of five. */
+/** Invalidate all of them. One call, so a caller cannot refresh four of five.
+ *
+ *  Then the query snapshot (rqPersister) is saved now, not on its throttle: a reload right after a vault write
+ *  restores this cache (any edit made before the call, the lists marked stale), not the one from before the write. */
 export function invalidateVaultGrid(qc: QueryClient, accountId: string | null): void {
   for (const queryKey of vaultGridKeys(accountId)) {
     void qc.invalidateQueries({ queryKey });
   }
+  flushPersistedCache();
 }

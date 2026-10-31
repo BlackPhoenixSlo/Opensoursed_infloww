@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef } from "react";
 
+import { LG } from "@/hooks/useIsDesktop";
+
 /**
  * Below lg Messages Pro shows the Fan List or one Thread, swapped by React state
  * with the URL unchanged. Without a history entry for the open Thread, the
@@ -31,7 +33,7 @@ export const CHAT_ENTRY = "__mpChat";
 
 /** Live, not `useIsDesktop`'s value: that reads false during hydration, and a
  *  desktop Deep link must not get an entry from that first commit. */
-const narrow = () => !window.matchMedia("(min-width: 1024px)").matches;
+const narrow = () => !window.matchMedia(LG).matches;
 const marked = () => (window.history.state as Record<string, unknown> | null)?.[CHAT_ENTRY] === true;
 
 /** State for a `history.replaceState` that keeps the current entry's mark. */

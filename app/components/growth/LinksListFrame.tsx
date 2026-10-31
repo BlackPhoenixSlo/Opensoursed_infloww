@@ -34,6 +34,7 @@ import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { utcOffsetLabel } from "@/lib/utcOffset";
 import { cn } from "@/lib/utils";
 import { SkeletonRows } from "@/components/ui/Skeleton";
+import { usePagedFilters } from "@/hooks/pagedFilters";
 
 export const NOT_WIRED = "not wired";
 
@@ -214,8 +215,11 @@ type MetaRow = { link_source?: string | null; tags?: string[] | null };
 export function useMetaFilter() {
   const [source, setSource] = useState("");
   const [tag, setTag] = useState("");
-  const keep = (l: MetaRow) => (!source || l.link_source === source) && (!tag || (l.tags ?? []).includes(tag));
-  return { source, setSource, tag, setTag, keep };
+  return { source, setSource, tag, setTag, keep: (l: MetaRow) => metaKeep(l, source, tag) };
+}
+
+function metaKeep(l: MetaRow, source: string, tag: string): boolean {
+  return (!source || l.link_source === source) && (!tag || (l.tags ?? []).includes(tag));
 }
 
 /** The creator filter (#17, #80): it picks the Creator every read and write on the page is for. */
@@ -595,35 +599,29 @@ export type FrameCol<T> = {
 /** The rows a frame filters: the name search, Source, Tag and the day created. */
 type FrameRow = MetaRow & { name: string; created_at: string | null };
 
-/** The frame's filter and page state: the name search, Source and Tag, Date created, the page and its size. Every
- *  filter change goes back to page 1; `keep` tests a row against all of them in the report time zone. */
-export function useFrameFilters() {
+/** The frame's filter and page state (pagedFilters): the name search, Source and Tag, Date created and the page size,
+ *  plus a tab's own fields `extra` (their initial values). Every filter change is one action that also goes back to
+ *  page 1; `keep` tests a row against the row filters in the report time zone. */
+export function useFrameFilters<X extends object>(extra: X) {
   const { reportTz } = useReportTz();
-  const mf = useMetaFilter();
-  const [search, setSearchRaw] = useState("");
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState<PageSize>(DEFAULT_PAGE_SIZE);
-  const needle = search.trim().toLowerCase();
+  const f = usePagedFilters<FrameFields & X>({
+    search: "", source: "", tag: "", from: "", to: "", pageSize: DEFAULT_PAGE_SIZE, ...extra,
+  });
+  const needle = f.search.trim().toLowerCase();
   return {
+    ...f,
     reportTz,
-    search, setSearch: (v: string) => { setSearchRaw(v); setPage(1); },
-    source: mf.source, setSource: (v: string) => { mf.setSource(v); setPage(1); },
-    tag: mf.tag, setTag: (v: string) => { mf.setTag(v); setPage(1); },
-    from, to, setRange: (f: string, t: string) => { setFrom(f); setTo(t); setPage(1); },
-    page, setPage,
-    pageSize, setPageSize: (s: PageSize) => { setPageSize(s); setPage(1); },
     keep: (l: FrameRow) => {
-      if (!mf.keep(l)) return false;
-      if (from || to) {
+      if (!metaKeep(l, f.source, f.tag)) return false;
+      if (f.from || f.to) {
         const day = createdDay(l, reportTz);
-        if (!day || (from && day < from) || (to && day > to)) return false;
+        if (!day || (f.from && day < f.from) || (f.to && day > f.to)) return false;
       }
       return !needle || l.name.toLowerCase().includes(needle);
     },
   };
 }
+type FrameFields = { search: string; source: string; tag: string; from: string; to: string; pageSize: PageSize };
 export type FrameFilters = ReturnType<typeof useFrameFilters>;
 
 /**
@@ -700,13 +698,13 @@ export default function LinksListFrame<T>({
               placeholder={text.search}
               maxLength={100}
               value={f.search}
-              onChange={(e) => f.setSearch(e.target.value)}
+              onChange={(e) => f.set({ search: e.target.value })}
             />
           </span>
           {/* #19, #20: the Edit dialog's Source and Tag. */}
-          <FilterSelect label="Source" icon={GitMerge} options={sources} value={f.source} onChange={f.setSource} />
-          <FilterSelect label="Tag" icon={Tag} options={tags} value={f.tag} onChange={f.setTag} />
-          <DateCreated from={f.from} to={f.to} onRange={f.setRange} tz={f.reportTz} />
+          <FilterSelect label="Source" icon={GitMerge} options={sources} value={f.source} onChange={(source) => f.set({ source })} />
+          <FilterSelect label="Tag" icon={Tag} options={tags} value={f.tag} onChange={(tag) => f.set({ tag })} />
+          <DateCreated from={f.from} to={f.to} onRange={(from, to) => f.set({ from, to })} tz={f.reportTz} />
           {switches}
           {/* #27 to #29: right-aligned, 16px apart, 36px tall. Create opens the editor pop-up (#69). */}
           <div className="mb-4 ml-auto flex flex-wrap items-center gap-4">
@@ -797,7 +795,7 @@ export default function LinksListFrame<T>({
           </table>
         </div>
         {shown.length > 0 && (
-          <Pager page={current} total={rows.length} size={f.pageSize} onPage={f.setPage} onSize={f.setPageSize} />
+          <Pager page={current} total={rows.length} size={f.pageSize} onPage={f.setPage} onSize={(pageSize) => f.set({ pageSize })} />
         )}
       </div>
     </div>

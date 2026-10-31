@@ -85,8 +85,13 @@ async def case_bounded_concurrent_and_staggered():
     assert sorted(a for a, _ in started) == sorted(ACCOUNTS), "every account once per cycle"
     assert peak == ti._FAST_POLL_CONCURRENCY, f"peak in flight {peak}"
     first_wave = sorted(t for _, t in started)[:ti._FAST_POLL_CONCURRENCY]
-    gaps = [b - a for a, b in zip(first_wave, first_wave[1:])]
-    assert min(gaps) >= 0.008, f"starts not staggered: {gaps}"
+    # Span, not pairwise gaps: start i sleeps i*stagger from one base, and a
+    # loaded loop only ever wakes LATE, so one late start next to an on-time
+    # one shrinks a single gap (6 ms seen at load ~40) while the wave's span
+    # cannot fall below (n-1)*stagger. All-at-once would read ~0 here.
+    spread = first_wave[-1] - first_wave[0]
+    want = 0.8 * (ti._FAST_POLL_CONCURRENCY - 1) * 0.01
+    assert spread >= want, f"starts not staggered: first wave spans {spread:.4f}s < {want}s"
     span = max(t for _, t in started) - min(t for _, t in started)
     assert span < len(ACCOUNTS) * TICK_S / 2, f"walk still ~sequential: {span:.2f}s"
     assert not failures

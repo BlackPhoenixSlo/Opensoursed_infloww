@@ -23,6 +23,14 @@ Plus the harness primitives every P4 automation depends on:
   case_unknown_kind_consumes_ghost_job:
       a leftover pending job for a retired kind errors ONCE and stops —
       never a re-dispatch-every-tick loop.
+  case_a_failed_run_retries_unless_its_rule_went_off_mid_run:
+      a rule's failed run requeues its job with the backoff; switched off
+      mid-run, the job ends cancelled (RULE_OFF_REASON), never requeued.
+  case_orphaned_one_shot_parks_sweep_requeues:
+      the boot heal: orphaned running one-shots (scheduled_send, mass_premade,
+      send_mass_message) end 'error' ("interrupted, may have sent"), an
+      orphaned auto-reply goes back to pending, their runs end interrupted; a
+      second pass changes nothing.
   case_supervisor_drain_runs_due_job:
       _drain_due_jobs_once() (one supervisor tick, no infinite loop) consumes a
       due job end-to-end.
@@ -778,6 +786,92 @@ async def case_unknown_kind_consumes_ghost_job():
     assert not pending, pending
 
 
+async def case_a_failed_run_retries_unless_its_rule_went_off_mid_run():
+    """A rule's run that raises parks its job (job_queue._park_failed_job ->
+    run_decide.park): back to pending with the backoff while the rule is on,
+    `cancelled` (RULE_OFF_REASON, the error kept) when the operator switched the
+    rule off while the attempt ran — the rules API leaves a running job alone."""
+    from automation_registry import register
+    from run_decide import JOB_RETRY_BACKOFF_S
+    aid, kind = "acc_park_rule_off", "park_probe_kind"
+    await _seed_account(aid)
+    switch_off: dict[str, int | None] = {"rule": None}
+
+    @register(kind)
+    async def _failing(account_id, payload, *, run_id):
+        if switch_off["rule"] is not None:   # the operator's PATCH lands mid-run
+            async with get_session() as s:
+                (await s.get(AutomationRule, switch_off["rule"])).is_enabled = False
+        raise RuntimeError("OF refused the write")
+
+    async def _rule(name: str) -> int:
+        async with get_session() as s:
+            rule = AutomationRule(account_id=aid, name=name, kind=kind,
+                                  trigger_json=json.dumps({"every_seconds": 3600}),
+                                  steps_json="{}", is_enabled=True)
+            s.add(rule)
+            await s.flush()
+            return rule.id
+
+    # Rule stays on: the job is requeued with the backoff.
+    job_id = await enqueue_job(aid, kind, payload={}, rule_id=await _rule("on"))
+    t0 = datetime.utcnow()
+    res = await run_once(aid, kind)
+    assert res["status"] == "error" and res["job_id"] == job_id, res
+    async with get_session() as s:
+        job = await s.get(ScheduledJob, job_id)
+        assert job.attempts == 1, job.attempts
+        assert job.status == "pending", job.status
+        assert job.run_at >= t0 + timedelta(seconds=JOB_RETRY_BACKOFF_S - 1), job.run_at
+        assert "OF refused the write" in job.last_error, job.last_error
+        job.status = "done"   # out of the next claim's way
+
+    # Rule switched off mid-run: the job ends cancelled, never requeued.
+    switch_off["rule"] = await _rule("off")
+    job_id = await enqueue_job(aid, kind, payload={}, rule_id=switch_off["rule"])
+    res = await run_once(aid, kind)
+    assert res["status"] == "error" and res["job_id"] == job_id, res
+    async with get_session() as s:
+        job = await s.get(ScheduledJob, job_id)
+        assert job.attempts == 1, job.attempts
+        assert job.status == "cancelled", job.status
+        assert job.last_error.startswith(f"{ax.RULE_OFF_REASON} ("), job.last_error
+        assert "OF refused the write" in job.last_error, job.last_error
+
+
+async def case_orphaned_one_shot_parks_sweep_requeues():
+    """_reconcile_orphans (boot heal), run_decide.one_shot_family: a one-shot send a
+    dead process left running may already be on OF, so it is parked, never
+    requeued; a sweep is requeued as before. Runs end interrupted. Idempotent."""
+    aid = "acc_orphans"
+    await _seed_account(aid)
+    send_id = await enqueue_job(aid, "scheduled_send", payload={"fan_id": 1, "text": "hi"})
+    others = [await enqueue_job(aid, k, payload={}) for k in ("mass_premade", "send_mass_message")]
+    reply_id = await enqueue_job(aid, "auto_reply", payload={})
+    async with get_session() as s:
+        for jid in (send_id, reply_id, *others):
+            (await s.get(ScheduledJob, jid)).status = "running"
+        run = AutomationRun(account_id=aid, kind="scheduled_send",
+                            started_at=datetime.utcnow(), status="running")
+        s.add(run)
+        await s.flush()
+        run_id = run.id
+    for _ in range(2):   # idempotent: a second pass changes nothing
+        await ax._reconcile_orphans()
+        async with get_session() as s:
+            send = await s.get(ScheduledJob, send_id)
+            reply = await s.get(ScheduledJob, reply_id)
+            run = await s.get(AutomationRun, run_id)
+            assert send.status == "error", f"orphaned scheduled_send {send.status}: may have sent"
+            assert send.last_error == "interrupted, may have sent", send.last_error
+            assert reply.status == "pending", f"orphaned sweep {reply.status}"
+            for jid in others:
+                job = await s.get(ScheduledJob, jid)
+                assert job.status == "error" and job.last_error == "interrupted, may have sent", (
+                    job.kind, job.status, job.last_error)
+            assert run.status == "error" and "interrupted" in (run.error_text or ""), run.status
+
+
 # ── Supervisor tick consumes a due job (no infinite loop) ────────────
 
 async def case_supervisor_drain_runs_due_job():
@@ -1111,6 +1205,70 @@ async def case_quiet_hours_never_run_on_the_server_clock():
     assert jobs == [], "the band around the OFFSET's hour must hold the job"
 
 
+async def case_quiet_band_clock_read_only_for_due_free_rules():
+    """The account clock is read only for a rule that passed busy / run limit / due and has
+    a band (dispatch_plan.CheckQuiet): a busy or not-yet-due banded rule never reads it (so
+    a bad-zone account is not re-resolved, and re-warned by the resolver, every pass). A
+    clockless account with two due banded rules warns once."""
+    import logging
+    now = datetime.utcnow()
+    band = json.dumps([0, 23])
+    busy, notdue, noclk = "acc_clk_busy", "acc_clk_notdue", "acc_clk_noclock"
+    for aid in (busy, notdue, noclk):
+        await _seed_account(aid)
+    hourly = json.dumps({"every_seconds": 3600})
+    async with get_session() as s:
+        s.add(ScheduledJob(account_id=busy, kind="scrape_chats", payload_json="{}",
+                           run_at=now - timedelta(seconds=5), status="pending"))
+        s.add(AutomationRule(account_id=busy, name="busy", kind="scrape_chats",
+                             trigger_json=hourly, steps_json="{}",
+                             quiet_hours_json=band, is_enabled=True))
+        nd = AutomationRule(account_id=notdue, name="not due", kind="scrape_chats",
+                            trigger_json=hourly, steps_json="{}",
+                            quiet_hours_json=band, is_enabled=True)
+        s.add(nd)
+        for kind in ("scrape_chats", "send_welcome"):
+            s.add(AutomationRule(account_id=noclk, name=f"noclock {kind}", kind=kind,
+                                 trigger_json=hourly, steps_json="{}",
+                                 quiet_hours_json=band, is_enabled=True))
+        await s.flush()
+        s.add(ScheduledJob(account_id=notdue, kind="scrape_chats", payload_json="{}",
+                           run_at=now, status="done", rule_id=nd.id, created_at=now))
+
+    reads: list[str] = []
+    real = ax._account_clock
+
+    async def counting(s, account_id, offsets, now):
+        reads.append(account_id)
+        return await real(s, account_id, offsets, now)
+
+    warned: list[str] = []
+
+    class _H(logging.Handler):
+        def emit(self, rec):
+            if "quiet_hours_no_clock" in rec.getMessage():
+                warned.append(rec.getMessage())
+
+    h = _H()
+    ax.log.addHandler(h)
+    ax._account_clock = counting
+    try:
+        await ax._materialize_due_rules()
+    finally:
+        ax._account_clock = real
+        ax.log.removeHandler(h)
+    assert busy not in reads and notdue not in reads, reads
+    assert reads.count(noclk) == 2, reads      # both due rules ask; the pass cache answers the 2nd
+    assert len([w for w in warned if noclk in w]) == 1, warned
+    async with get_session() as s:
+        jobs = (await s.execute(select(ScheduledJob).where(
+            ScheduledJob.account_id == noclk, ScheduledJob.status == "pending"))).scalars().all()
+        assert len(jobs) == 2, "clockless: the band cannot apply, both rules fire"
+        for r in (await s.execute(select(AutomationRule).where(
+                AutomationRule.account_id.in_((busy, notdue, noclk))))).scalars():
+            r.is_enabled = False
+
+
 async def case_oneshot_runs_dont_reset_rule_cadence():
     """Regression: frequent one-shot RUNS of the same (account, kind) — manual
     "Unsend this" clicks, auto_stories cleanups, test drivers — must NOT keep a
@@ -1243,6 +1401,8 @@ _harness.run(
     case_client_pool_reuses_and_evicts,
     case_unknown_kind_errors,
     case_unknown_kind_consumes_ghost_job,
+    case_a_failed_run_retries_unless_its_rule_went_off_mid_run,
+    case_orphaned_one_shot_parks_sweep_requeues,
     case_supervisor_drain_runs_due_job,
     case_rule_materializes_job,
     case_rule_with_unregistered_kind_stays_inert,
@@ -1252,6 +1412,7 @@ _harness.run(
     case_rule_quiet_hours_holds_job,
     case_rule_quiet_hours_outside_band_materializes,
     case_quiet_hours_never_run_on_the_server_clock,
+    case_quiet_band_clock_read_only_for_due_free_rules,
     case_drain_waits_for_a_run_that_claimed_a_send_then_refuses_new_claims,
     case_drain_stops_waiting_once_the_send_is_settled,
     case_drain_is_bounded_by_its_timeout,

@@ -211,10 +211,21 @@ describe("ClockRecordsModal", () => {
     await render();
     await screen.findByText(/^Clock in at Oct 14, 2026/);
     fireEvent.click(within(record(3)).getByRole("button", { name: "Edit" }));
-    fireEvent.change(within(record(3)).getByLabelText("Clock out"), { target: { value: "2026-10-14T08:00" } });
+    fireEvent.change(within(record(3)).getByLabelText("Clock out"), { target: { value: "2026-10-14T12:00" } });
     fireEvent.click(within(record(3)).getByRole("button", { name: "Save" }));
     expect(await within(record(3)).findByRole("alert")).toHaveTextContent(detail);
     expect(within(record(3)).getByLabelText("Clock out")).toBeInTheDocument();
+    expect(within(record(3)).getByRole("button", { name: "Save" })).toBeEnabled();
+  });
+
+  it("a clock out at or before the clock in is refused inline, nothing sent", async () => {
+    await render();
+    await screen.findByText(/^Clock in at Oct 14, 2026/);
+    fireEvent.click(within(record(3)).getByRole("button", { name: "Edit" }));
+    fireEvent.change(within(record(3)).getByLabelText("Clock out"), { target: { value: "2026-10-14T08:00" } });
+    fireEvent.click(within(record(3)).getByRole("button", { name: "Save" }));
+    expect(await within(record(3)).findByRole("alert")).toHaveTextContent("Clock out must be after clock in.");
+    expect(patches()).toEqual([]);
   });
 
   it("shows a loading line, then an error with Retry, and an empty line", async () => {

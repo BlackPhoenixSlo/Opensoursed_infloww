@@ -59,7 +59,7 @@ export default function CreateMessage({
       )}
       {composer === "priority" && <PriorityMassComposer open initialAccountId={accountId} onClose={() => setComposer(null)} />}
       {composer && composer !== "priority" && (
-        <LazyMassMessageComposer open mode={composer} labelExtras onClose={() => setComposer(null)} />
+        <LazyMassMessageComposer mode={composer} labelExtras onClose={() => setComposer(null)} />
       )}
     </>
   );

@@ -11,12 +11,13 @@
  * relay routes; a partial config is fine (the automation merges over defaults).
  */
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useMutationState, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { relay, type RelayContext } from "@/lib/relay";
 import { type FanId } from "@/lib/fanId";
 
 const KEY = "nudge-config";
+const SAVE_KEY = [KEY, "save"];
 const BG_CTX: RelayContext = { priority: "background" };
 
 export interface NudgeSlotEntry {
@@ -53,9 +54,13 @@ export interface NudgeConfig {
   slots?: NudgeSlots;
 }
 
-interface NudgeConfigResponse {
+/** One account's stored config — the PUT's body and its echo. */
+export interface NudgeConfigWrite {
   account_id: string;
   config: NudgeConfig;
+}
+
+interface NudgeConfigResponse extends NudgeConfigWrite {
   defaults: NudgeConfig;
 }
 
@@ -73,21 +78,32 @@ export function useNudgeConfig(accountId: string | null) {
   });
 }
 
-export function useSaveNudgeConfig(accountId: string | null) {
+/** The account rides in the variables, not the hook: a save that lands after
+ *  the tab switched account must refresh the account it wrote. Refreshed on
+ *  error too: every save, landed or failed, is followed by a config fetched
+ *  after it settled — a caller may treat anything older as pre-save. */
+export function useSaveNudgeConfig() {
   const qc = useQueryClient();
-  return useMutation<
-    { account_id: string; config: NudgeConfig },
-    Error,
-    NudgeConfig
-  >({
-    mutationFn: (config) =>
-      relay.put(`/admin/nudge-config`, { account_id: accountId, config }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: [KEY, accountId] });
+  return useMutation<NudgeConfigWrite, Error, NudgeConfigWrite>({
+    mutationKey: SAVE_KEY,
+    mutationFn: (vars) => relay.put(`/admin/nudge-config`, vars),
+    onSettled: (_r, _e, vars) => {
+      qc.invalidateQueries({ queryKey: [KEY, vars.account_id] });
       // The PUT also syncs the nudge_online rule (server-side) — refresh it.
-      qc.invalidateQueries({ queryKey: ["automation-rules", accountId] });
+      qc.invalidateQueries({ queryKey: ["automation-rules", vars.account_id] });
     },
   });
+}
+
+/** A save PUT is in flight for `accountId` — read per account, so a tab that
+ *  left mid-save and came back still sees its write pending (and another
+ *  account's write is not its own). */
+export function useNudgeSavePending(accountId: string | null): boolean {
+  const pending = useMutationState({
+    filters: { mutationKey: SAVE_KEY, status: "pending" },
+    select: (m) => (m.state.variables as NudgeConfigWrite).account_id,
+  });
+  return !!accountId && pending.includes(accountId);
 }
 
 export interface BulkApplyResult {
@@ -115,7 +131,7 @@ export function useNudgePreview() {
   return useMutation<
     NudgePreviewResult,
     Error,
-    { account_id: string; config: NudgeConfig; fan_id?: FanId | null; hour?: number | null }
+    NudgeConfigWrite & { fan_id?: FanId | null; hour?: number | null }
   >({
     mutationFn: (vars) => relay.post(`/admin/nudge-config/preview`, vars),
   });

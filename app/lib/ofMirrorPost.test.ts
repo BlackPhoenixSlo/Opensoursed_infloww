@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { applyLabelRows, applyTagRows, bindPost, RECORD_TEXT, POSTED_TOAST, SAVED_TOAST, clearDraft, collectPost, collectSchedule, draftKey, labelsOf, loadDraft, mergeSendWith, postLabelsOf, postPriceLimits, readPrice, renderCalendar, saveDraft, vaultStoryBody, type PostDraft, type PostLabelsResp } from "./ofMirrorPost";
 import type { OfMe } from "./ofMirrorIdentity";
 import { standInModel } from "./ofMirrorProfile";
@@ -1844,6 +1844,10 @@ describe("Edit post (the Queue's row menu): New post saves the queued post in pl
 
   it("a Relay without the edit route (404, as one on main answers): the composer says the save failed, makes no new post and stays", async () => {
     const s = memoryStorage();
+    // Pin the clock before posted_at: collectPost refuses a past date (TOO_SOON) and never calls editPost.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-20T12:00:00+02:00"));
+    onTestFinished(() => { vi.useRealTimers(); });
     saveDraft(s, "1", { ...empty(), text: "Synthetic scheduled post 1", posted_at: "2026-10-27T12:00:00+01:00", edit_id: "2827742023" });
     const h = { ...edited(), editPost: vi.fn((_id: string, _body: unknown) => Promise.reject(new RelayError(404, { detail: "Not Found" }, "Not Found"))) };
     const { d, unbind } = bindBoth("index", s, h, { zone: "Europe/Ljubljana" });

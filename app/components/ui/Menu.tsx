@@ -4,14 +4,17 @@
 
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
+import { useExitGhost } from "@/hooks/useExitGhost";
+
 import { Button } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
 
 export type MenuItem = { label: string; onClick?: () => void; disabled?: boolean; title?: string };
 
 /** The popover box and an item's base classes, shared with popovers that need more than `Menu`'s items (the Vault
- *  folder rail's sort popover, with radio items and separators). */
-export const MENU_PANEL = "absolute z-10 mt-1 rounded-md border border-border bg-bg py-1 shadow-lg";
+ *  folder rail's sort popover, with radio items and separators). It pops in from its top edge (`pop-menu`,
+ *  globals.css); a popover anchored in a corner sets that corner's `origin-*`. */
+export const MENU_PANEL = "pop-menu origin-top absolute z-10 mt-1 rounded-md border border-border bg-bg py-1 shadow-lg";
 export const MENU_ITEM = "block w-full px-3 py-1.5 text-left text-xs";
 
 /** An open flag that closes on a mousedown outside the returned ref's element. */
@@ -31,7 +34,8 @@ export function useOutsideClose<T extends HTMLElement = HTMLDivElement>() {
 
 /** A trigger and its popover menu: Manage employees' row "More" (`link`, right-aligned) and "Batch actions", and
  *  the Organization Chart's ⋮ (`ariaLabel` names a trigger whose `label` is only a glyph). Closes on an outside
- *  click, on picking an item, and when the trigger turns off. */
+ *  click, on picking an item, and when the trigger turns off. It pops from the trigger's corner and fades out on
+ *  a copy that takes no click (`useExitGhost`). */
 export function Menu({ label, ariaLabel, items, disabled = false, link = false }: {
   /** Text, or an icon (the Vault rail's 20px row menu) with `ariaLabel` naming it. */
   label: ReactNode;
@@ -42,6 +46,8 @@ export function Menu({ label, ariaLabel, items, disabled = false, link = false }
 }) {
   const { open, setOpen, ref } = useOutsideClose();
   if (open && disabled) setOpen(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+  useExitGhost(open, panelRef);
 
   const toggle = () => setOpen((o) => !o);
   return (
@@ -59,7 +65,7 @@ export function Menu({ label, ariaLabel, items, disabled = false, link = false }
         </Button>
       )}
       {open && (
-        <div role="menu" className={cn(MENU_PANEL, link ? "right-0 w-32" : "left-0 w-40")}>
+        <div ref={panelRef} role="menu" className={cn(MENU_PANEL, link ? "right-0 w-32 origin-top-right" : "left-0 w-40 origin-top-left")}>
           {items.map((item) => (
             <button
               key={item.label}

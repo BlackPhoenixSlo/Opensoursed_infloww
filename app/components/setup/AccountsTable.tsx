@@ -40,7 +40,8 @@ import { useAccountAvatar } from "@/hooks/useAccountAvatar";
 import { fetchAccounts } from "@/hooks/useAccounts";
 import { useOutsideClose } from "@/components/ui/Menu";
 // The capture's row title, `creators0174` (creators-manage#46, #56), shared with the modal it opens.
-import { ROW_LINK_TITLE as ROW_LINK, type Platform, type SectionKey } from "@/components/setup/AddCreatorModal";
+import { ROW_LINK_TITLE as ROW_LINK, type SectionKey } from "@/components/setup/AddCreatorModal";
+import type { Platform } from "@/components/setup/addCreatorWizard";
 import { EditAccountModal, EditDraftModal } from "@/components/setup/EditCreatorModal";
 import { FANSLY_T } from "@/components/setup/FanslyPasteSessionCard";
 import {
@@ -49,6 +50,8 @@ import {
 } from "@/components/setup/creatorFlow";
 import { useCreatorProfiles, type CreatorDetails, type CreatorProfile, type DraftCreator } from "@/lib/creatorProfiles";
 import CreatorFilterBar, { NO_FILTERS, type CreatorFilters } from "@/components/setup/CreatorFilterBar";
+import { usePagedFilters, usePagedRows } from "@/hooks/pagedFilters";
+import { keepAccount, keepDraft } from "@/components/setup/creatorRowFilter";
 import TagSettings from "@/components/setup/TagSettings";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { cn, describeDeadSession, fmtRelTime } from "@/lib/utils";
@@ -242,10 +245,9 @@ export default function AccountsTable({ onLink, onAdd, children }: {
   const [toggling, setToggling] = useState<{ id: string; creator: string; active: boolean } | null>(null);
   // The edit modal's subject (UpdateCreator / EditCreators); null: closed.
   const [editing, setEditing] = useState<{ account: AccountMeta; conn: string } | { draft: DraftCreator } | null>(null);
-  const [pageSize, setPageSize] = useState<number>(PAGE_SIZES[0]);
-  const [page, setPage] = useState(1);
-  const [filters, setFiltersState] = useState<CreatorFilters>(NO_FILTERS);
-  const setFilters = (next: CreatorFilters) => { setFiltersState(next); setPage(1); };
+  // A filter or page-size change goes back to page 1 (usePagedFilters).
+  const { page, pageSize, set, setPage, clamp, ...filters } =
+    usePagedFilters<CreatorFilters & { pageSize: number }>({ ...NO_FILTERS, pageSize: PAGE_SIZES[0] });
 
   const accountsQ = useQuery<AccountsResp>({
     queryKey: ["accounts"],
@@ -356,34 +358,26 @@ export default function AccountsTable({ onLink, onAdd, children }: {
     return <span title={names.join(", ")} className="line-clamp-2">{names.join(", ")}</span>;
   };
   const connWired = !healthQ.error;
-  const q = filters.q.trim().toLowerCase();
-  const picked = roster?.find((e) => String(e.id) === filters.employee);
-  const has = (...xs: Array<string | null | undefined>) => xs.some((x) => (x ?? "").toLowerCase().includes(q));
-  const accounts = (accountsQ.data?.accounts || []).filter((a) =>
-    (!q || has(a.nickname, a.id, profiles.profiles[a.id]?.name))
-    && (!filters.platform || (a.platform ?? "onlyfans") === filters.platform)
-    && (!filters.tag || profiles.profiles[a.id]?.tag === filters.tag)
-    && (!filters.conn || !connWired || connectivity(a, healthByAid.get(a.id), healthRead).label === filters.conn)
-    && (!filters.status || a.is_active === (filters.status === "Activated"))
-    // Creator access: null grants every Creator (`_creator_access`, service/employees.py).
-    && (!picked || picked.account_ids == null || picked.account_ids.includes(a.id)),
-  );
-  // The Creators saved with Done: no platform, Tag or Employee, "Pending connection" (Infloww's Creator row with no
-  // account), first, newest first, as Infloww lists a new Creator at the top.
-  const drafts = accountsQ.data
-    ? [...profiles.drafts].reverse().filter((d) =>
-      (!q || has(d.name)) && !filters.platform && !filters.tag && !picked && filters.status !== "Deactivated"
-      && (!filters.conn || filters.conn === "Pending connection"))
-    : [];
+  const rowFilter = { filters, connWired, picked: roster?.find((e) => String(e.id) === filters.employee) };
+  const accounts = (accountsQ.data?.accounts || []).filter((a) => keepAccount({
+    id: a.id,
+    names: [a.nickname, a.id, profiles.profiles[a.id]?.name],
+    platform: a.platform,
+    tag: profiles.profiles[a.id]?.tag,
+    isActive: a.is_active,
+    conn: () => connectivity(a, healthByAid.get(a.id), healthRead).label,
+  }, rowFilter));
+  // The Creators saved with Done (creatorRowFilter's keepDraft), first, newest first, as Infloww lists a new Creator
+  // at the top.
+  const drafts = accountsQ.data ? [...profiles.drafts].reverse().filter((d) => keepDraft(d.name, rowFilter)) : [];
   type Item = { kind: "draft"; d: DraftCreator } | { kind: "account"; a: AccountMeta };
   const all: Item[] = [
     ...drafts.map((d) => ({ kind: "draft" as const, d })),
     ...accounts.map((a) => ({ kind: "account" as const, a })),
   ];
   const total = all.length;
-  const pageCount = Math.max(1, Math.ceil(total / pageSize));
-  const current = Math.min(page, pageCount);
-  const shown = all.slice((current - 1) * pageSize, current * pageSize);
+  // A list that shrinks under the page lands on its last page and stays there when it grows again (usePagedRows).
+  const { current, shown } = usePagedRows(all, pageSize, { page, clamp });
 
   // The columns take their widths only while there are rows (`scroll:Cn?.items?.length>0?{x:1100}:null`,
   // creators-manage#27): empty, loading or failed, the table is no wider than its heads need, and the message row sits
@@ -403,7 +397,7 @@ export default function AccountsTable({ onLink, onAdd, children }: {
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="min-h-0 flex-1 px-4 pt-4 md:overflow-y-auto">
         <CreatorFilterBar
-          value={filters} onChange={setFilters} employees={roster} connWired={connWired}
+          value={filters} onChange={set} employees={roster} connWired={connWired}
           tags={profiles.wired ? profiles.tags : null}
         />
         {/* 24px below the filters (creators-manage#28). The wrapper scrolls sideways at every row count, so an empty
@@ -539,7 +533,7 @@ export default function AccountsTable({ onLink, onAdd, children }: {
         <HbPager
           className="mx-4 shrink-0"
           total={total} noun="creators" page={current} size={pageSize} sizes={[...PAGE_SIZES]}
-          onPage={setPage} onSize={(n) => { setPageSize(n); setPage(1); }}
+          onPage={setPage} onSize={(pageSize) => set({ pageSize })}
         />
       )}
     </div>

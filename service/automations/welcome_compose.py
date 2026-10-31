@@ -30,8 +30,10 @@ from datetime import datetime, timedelta
 from sqlalchemy import select
 
 from . import rhythm  # tz_hours_for — THE clock (fixed offset first, zone as fallback)
-from ._common import (apply_word_restriction, name_token, resolve_fan_name,
-                      strip_emojis, substitute_placeholders)
+from ._fan_notes import substitute_placeholders
+from ._outbound_guard import apply_word_restriction
+from ._textutil import strip_emojis
+from .names import name_token, resolve_fan_name
 from .pacing import (ROLE_GAP as _ROLE_GAP, ROLE_OPENER as _ROLE_OPENER,
                      ROLE_TAIL as _ROLE_TAIL)
 from db.engine import get_session
@@ -253,7 +255,7 @@ def _model_weekday(utc_offset) -> str:
     return (datetime.utcnow() + timedelta(hours=off)).strftime("%A")
 
 
-# Canonical name parser now lives in _common.name_token (shared by every sender so
+# Canonical name parser now lives in names.name_token (shared by every sender so
 # they all derive greet-names identically); kept as a module-local alias so the
 # existing call sites below read unchanged.
 _name_token = name_token

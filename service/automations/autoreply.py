@@ -73,31 +73,38 @@ from db.models import (
     AccountAiConfig, AutoreplyState, Blacklist, Fan, Message, SkipList, Transaction,
 )
 from llm_client import LLMCapExceeded, LLMConfigError
-from ._common import (
+from ._prompt_rules import (
     BIO_CONSISTENCY_GUARDRAIL,
     # PAINFUL_TEXTING / LIVE_PROOF_GUARDRAIL are NOT imported here: both vary by
     # creator voice, so this engine reads them off `_voice.blocks(...)` instead.
-    # `_common` still exports the female lane for the engines that don't.
+    # `_prompt_rules` still exports the female lane for the engines that don't.
     NO_NARRATION_RULE, ONPLATFORM_GUARDRAIL,
     STYLE_3LINE, STYLE_MAX_BUBBLES,
-    NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_spacing, apply_nonnative_style, apply_word_restriction,
-    hold_with_typing, apply_typo_throttle,
-    load_nonnative_flags, load_spacing_flags, load_voice_blocks,
-    load_painful_texting_flag,
-    load_strip_emojis, load_style_flags,
-    load_typing_indicator, load_typing_wpm, load_typo_flags, load_hard_skip_ids,
-    load_promo_spam_ids,
-    resolve_fan_name, resolve_model, should_skip_muted_creator,
-    skip_unreachable_fan, typing_delay_seconds,
 )
+from ._nonnative import (
+    NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_spacing, apply_nonnative_style,
+)
+from ._outbound_guard import apply_word_restriction
+from ._typing_hold import (
+    hold_with_typing, load_typing_indicator, load_typing_wpm, typing_delay_seconds,
+)
+from ._typos import apply_typo_throttle
+from ._style_flags import (
+    load_nonnative_flags, load_painful_texting_flag, load_spacing_flags,
+    load_strip_emojis, load_style_flags, load_typo_flags, load_voice_blocks,
+)
+from ._skiplist import load_hard_skip_ids, load_promo_spam_ids, should_skip_muted_creator
+from .names import resolve_fan_name
+from ._model_pick import resolve_model
+from ._send_failure import skip_unreachable_fan
 from ._wordfilter import (  # compliance word filter
     banned_hit_summary, filter_banned, load_banned_words,
 )
 from ._clock import clock_block, clock_line, load_clock_tz
 from automations._outbound import finalize_draft
 from automations.rhythm import INLINE_MAX_S
-from .welcome_chatter_for_info import (_history_text, _is_info_complete, _strip_html,
-                         split_for_bubbles, _dedupe_lead_reaction)
+from ._bubbles import _dedupe_lead_reaction, _history_text, _strip_html, split_for_bubbles
+from .welcome_chatter_for_info import _is_info_complete
 
 log = logging.getLogger("of-relay.automation.autoreply")
 
@@ -818,7 +825,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             # The shared send chokepoint (_outbound): off-platform guard, then the
             # account-wide emoji strip, before the split. No PHASE 2 consistency check
             # — autoreply does not implement it, which is why there is no
-            # `consistency_autoreply` flag to switch on (see _common.CONSISTENCY_AUTOMATIONS).
+            # `consistency_autoreply` flag to switch on (see _style_flags.CONSISTENCY_AUTOMATIONS).
             raw, _leak = await finalize_draft(
                 raw, account_id=account_id, fan_id=fid, purpose=_PURPOSE,
                 strip_emoji=strip_emoji_on, v=voice_blocks)

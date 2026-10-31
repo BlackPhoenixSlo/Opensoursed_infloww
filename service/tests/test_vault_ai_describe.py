@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Vault-AI describe — the `vault_ai_api._describe_one` / `_flags_one` state
+Vault-AI describe — the `vault_ai_vision._describe_one` / `_flags_one` state
 machine and the "Describe all" sweep (`_run_describe_all`). Durable regression
 suite (plain-assert, no pytest — repo convention). The recurring
 `describe_media` automation that used to share this file was deleted (cleanup
@@ -16,6 +16,9 @@ Cases (selected):
   case_refusal_state:
       `_describe_one` whose vision model refuses on both the base + escalation
       model ⇒ describe_status="refused" (never a partial/blank description).
+  case_escalation_failure_still_reports_the_paid_refusal:
+      30b refuses (paid), 235b is capped / errors ⇒ the return still carries
+      the 30b cost; capped still writes nothing.
   case_fetch_failure_is_not_blocked_drm:
       a frame-collection failure that was TRANSIENT ⇒ describe_status =
       "fetch_failed" and the next default sweep retries it at once. Recording it
@@ -62,7 +65,9 @@ from sqlalchemy import update  # noqa: E402
 
 import llm_client  # noqa: E402
 import llm_providers  # noqa: E402
-import vault_ai_api  # noqa: E402 — _describe_one / _flags_one under test
+import vault_ai_api  # noqa: E402 — collect status (_run_status / _running)
+import vault_ai_vision  # noqa: E402 — _describe_one / _flags_one under test
+import vault_ai_vision_decide  # noqa: E402 — the frame ladder
 import vault_frames  # noqa: E402 — the frame-collection seam both of them call
 from db.engine import get_session  # noqa: E402
 from db.models import (Account, AccountAiConfig, GrokDailyCost,  # noqa: E402
@@ -135,7 +140,7 @@ async def case_drm_state():
     orig = vault_frames.collect
     vault_frames.collect = _no_frames
     try:
-        out = await vault_ai_api._describe_one(aid, 50)
+        out = await vault_ai_vision._describe_one(aid, 50)
     finally:
         vault_frames.collect = orig
     assert out["ok"] is False and out["status"] == "blocked_drm", out
@@ -157,7 +162,7 @@ async def case_refusal_state():
     vault_frames.collect = _one_frame
     llm_client.chat = _refuse
     try:
-        out = await vault_ai_api._describe_one(aid, 60)
+        out = await vault_ai_vision._describe_one(aid, 60)
     finally:
         vault_frames.collect = orig_imgs
         llm_client.chat = orig_chat
@@ -177,15 +182,11 @@ async def case_frame_ladder_by_duration() -> None:
     run-to-run noise, 9→12 buys the beats a long clip needs. 12 is the ceiling
     (`server._STORYBOARD_FRAMES`).
     """
-    f = vault_ai_api._frames_for_duration
-    assert f(None) == 6 and f(0) == 6, (f(None), f(0))     # photos: 1 image anyway
-    assert f(29) == 6 and f(30) == 9, (f(29), f(30))
-    assert f(179) == 9 and f(180) == 12, (f(179), f(180))
-    assert f(10_000) == vault_ai_api._FRAME_LADDER_MAX
+    # The ladder itself is table-tested in test_vault_ai_vision_decide.
     # Never ask for more than the storyboard actually holds.
     import server as srv
-    assert vault_ai_api._FRAME_LADDER_MAX <= srv._STORYBOARD_FRAMES, \
-        (vault_ai_api._FRAME_LADDER_MAX, srv._STORYBOARD_FRAMES)
+    assert vault_ai_vision_decide._FRAME_LADDER_MAX <= srv._STORYBOARD_FRAMES, \
+        (vault_ai_vision_decide._FRAME_LADDER_MAX, srv._STORYBOARD_FRAMES)
 
     # …and the ladder is what _describe_one actually asks _collect_images for.
     aid = _fresh_account()
@@ -205,7 +206,7 @@ async def case_frame_ladder_by_duration() -> None:
     orig = vault_frames.collect
     vault_frames.collect = _spy
     try:
-        await vault_ai_api._describe_one(aid, 70)
+        await vault_ai_vision._describe_one(aid, 70)
     finally:
         vault_frames.collect = orig
     assert seen["want"] == 12, seen        # 15-minute clip → the ceiling
@@ -236,15 +237,15 @@ async def case_prompt_version_selects_variant() -> None:
     vault_frames.collect = _one_frame
     llm_client.chat = _capture
     try:
-        await vault_ai_api._describe_one(aid, 80, prompt_version="v1")
-        await vault_ai_api._describe_one(aid, 81, prompt_version="v2")
+        await vault_ai_vision._describe_one(aid, 80, prompt_version="v1")
+        await vault_ai_vision._describe_one(aid, 81, prompt_version="v2")
     finally:
         vault_frames.collect = orig_imgs
         llm_client.chat = orig_chat
 
     assert len(sent) == 2, sent
-    assert sent[0] == vault_ai_api._DESCRIBE_PROMPT, "v1 did not send the V1 prompt"
-    assert sent[1] == vault_ai_api._DESCRIBE_PROMPT_V2, "v2 did not send the V2 prompt"
+    assert sent[0] == vault_ai_vision._DESCRIBE_PROMPT, "v1 did not send the V1 prompt"
+    assert sent[1] == vault_ai_vision._DESCRIBE_PROMPT_V2, "v2 did not send the V2 prompt"
     assert "one literal sentence" in sent[0]
     assert "pulled_aside" in sent[1]
 
@@ -278,13 +279,12 @@ async def case_restage_selects_only_stale_rows() -> None:
         described.append(int(mid))
         return {"media_id": mid, "ok": True, "status": "described"}
 
-    orig = vault_ai_api._describe_one
-    vault_ai_api._describe_one = _spy
+    orig = vault_ai_vision._describe_one
+    vault_ai_vision._describe_one = _spy
     try:
-        await vault_ai_api._run_describe_all(aid, False, prompt_version="v2",
-                                             restage=True)
+        await vault_ai_vision._run_describe_all(aid, "restage", prompt_version="v2")
     finally:
-        vault_ai_api._describe_one = orig
+        vault_ai_vision._describe_one = orig
     assert sorted(described) == [90, 92], described
 
 
@@ -305,7 +305,7 @@ async def case_describe_also_flags():
 
     flagged: list[int] = []
     described: list[int] = []
-    o_desc, o_flags = vault_ai_api._describe_one, vault_ai_api._flags_one
+    o_desc, o_flags = vault_ai_vision._describe_one, vault_ai_vision._flags_one
 
     async def _desc(_aid, mid, **_k):
         described.append(int(mid))
@@ -315,10 +315,10 @@ async def case_describe_also_flags():
         flagged.append(int(mid))
         return {"media_id": mid, "ok": True, "status": "flagged"}
 
-    vault_ai_api._describe_one = _desc
-    vault_ai_api._flags_one = _flags
+    vault_ai_vision._describe_one = _desc
+    vault_ai_vision._flags_one = _flags
     try:
-        await vault_ai_api._run_describe_all(aid, True, prompt_version="v2")
+        await vault_ai_vision._run_describe_all(aid, "force", prompt_version="v2")
         assert described == [9001], described
         assert flagged == [9001], f"describe did not flag what it described: {flagged}"
 
@@ -330,13 +330,13 @@ async def case_describe_also_flags():
             flagged.append(int(mid))
             raise RuntimeError("provider down")
 
-        vault_ai_api._flags_one = _boom
-        await vault_ai_api._run_describe_all(aid, True, prompt_version="v2")
+        vault_ai_vision._flags_one = _boom
+        await vault_ai_vision._run_describe_all(aid, "force", prompt_version="v2")
         assert flagged == [9001], "the flags call was skipped"
         assert described == [9001], (
             "a cheap flags failure stopped the expensive describe sweep")
     finally:
-        vault_ai_api._describe_one, vault_ai_api._flags_one = o_desc, o_flags
+        vault_ai_vision._describe_one, vault_ai_vision._flags_one = o_desc, o_flags
 
 
 async def case_one_exploding_item_does_not_end_the_sweep():
@@ -363,7 +363,7 @@ async def case_one_exploding_item_does_not_end_the_sweep():
     await _seed_items(aid, [1, 2, 3, 4, 5])
 
     seen: list[int] = []
-    o_desc, o_flags = vault_ai_api._describe_one, vault_ai_api._flags_one
+    o_desc, o_flags = vault_ai_vision._describe_one, vault_ai_vision._flags_one
 
     async def _desc(_aid, mid, **_k):
         seen.append(int(mid))
@@ -374,16 +374,16 @@ async def case_one_exploding_item_does_not_end_the_sweep():
     async def _flags(_aid, mid, **_k):
         return {"media_id": mid, "ok": True, "status": "flagged"}
 
-    vault_ai_api._describe_one = _desc
-    vault_ai_api._flags_one = _flags
+    vault_ai_vision._describe_one = _desc
+    vault_ai_vision._flags_one = _flags
     try:
-        await vault_ai_api._run_describe_all(aid, True, prompt_version="v2")
+        await vault_ai_vision._run_describe_all(aid, "force", prompt_version="v2")
     finally:
-        vault_ai_api._describe_one, vault_ai_api._flags_one = o_desc, o_flags
+        vault_ai_vision._describe_one, vault_ai_vision._flags_one = o_desc, o_flags
 
     assert sorted(seen) == [1, 2, 3, 4, 5], (
         f"one raising item ended the sweep — only {sorted(seen)} were attempted")
-    prog = vault_ai_api._describe_progress.get(aid) or {}
+    prog = vault_ai_vision._describe_progress.get(aid) or {}
     assert not prog.get("aborted"), f"a survivable item aborted the sweep: {prog}"
     assert prog.get("done") == 5, prog
     assert prog.get("failed") == 1, f"the raise was not counted as a failure: {prog}"
@@ -452,7 +452,7 @@ async def case_redescribe_keeps_flags_and_operator_fixes():
     vault_frames.collect = _one_frame
     llm_client.chat = _vision
     try:
-        out = await vault_ai_api._describe_one(aid, 70)
+        out = await vault_ai_vision._describe_one(aid, 70)
     finally:
         vault_frames.collect = orig_imgs
         llm_client.chat = orig_chat
@@ -480,7 +480,7 @@ async def case_describing_one_item_flags_it_too():
     await _seed_items(aid, [80])
 
     flagged: list[int] = []
-    o_desc, o_flags = vault_ai_api._describe_one, vault_ai_api._flags_one
+    o_desc, o_flags = vault_ai_vision._describe_one, vault_ai_vision._flags_one
 
     async def _desc(_aid, mid, **_k):
         return {"media_id": mid, "ok": True, "status": "described"}
@@ -489,10 +489,10 @@ async def case_describing_one_item_flags_it_too():
         flagged.append(int(mid))
         return {"media_id": mid, "ok": True, "status": "flagged"}
 
-    vault_ai_api._describe_one = _desc
-    vault_ai_api._flags_one = _flags
+    vault_ai_vision._describe_one = _desc
+    vault_ai_vision._flags_one = _flags
     try:
-        out = await vault_ai_api.describe_one({"account_id": aid, "media_id": 80})
+        out = await vault_ai_vision.describe_one({"account_id": aid, "media_id": 80})
         assert out["ok"], out
         assert flagged == [80], f"the single-item describe did not flag it: {flagged}"
 
@@ -500,11 +500,11 @@ async def case_describing_one_item_flags_it_too():
         async def _boom(_aid, mid, **_k):
             raise RuntimeError("provider down")
 
-        vault_ai_api._flags_one = _boom
-        out2 = await vault_ai_api.describe_one({"account_id": aid, "media_id": 80})
+        vault_ai_vision._flags_one = _boom
+        out2 = await vault_ai_vision.describe_one({"account_id": aid, "media_id": 80})
         assert out2["ok"], "a cheap flags failure sank an expensive describe"
     finally:
-        vault_ai_api._describe_one, vault_ai_api._flags_one = o_desc, o_flags
+        vault_ai_vision._describe_one, vault_ai_vision._flags_one = o_desc, o_flags
 
 
 async def case_describe_all_attempts_every_undescribed_item() -> None:
@@ -535,16 +535,16 @@ async def case_describe_all_attempts_every_undescribed_item() -> None:
         seen.append(int(mid))
         return {"media_id": mid, "ok": True, "status": "described"}
 
-    orig = vault_ai_api._describe_one
-    vault_ai_api._describe_one = _spy
+    orig = vault_ai_vision._describe_one
+    vault_ai_vision._describe_one = _spy
     try:
-        await vault_ai_api._run_describe_all(aid, False, prompt_version="v2")
+        await vault_ai_vision._run_describe_all(aid, "undescribed", prompt_version="v2")
         assert sorted(seen) == [10, 11], (
             f"the button skipped work it counted: {seen}")
         # …and it is still the count the UI showed: `described` stays untouched.
         assert 12 not in seen, "a finished item was re-billed"
     finally:
-        vault_ai_api._describe_one = orig
+        vault_ai_vision._describe_one = orig
 
 
 async def case_fetch_failure_is_not_blocked_drm() -> None:
@@ -562,7 +562,7 @@ async def case_fetch_failure_is_not_blocked_drm() -> None:
     orig = vault_frames.collect
     vault_frames.collect = _cold
     try:
-        out = await vault_ai_api._describe_one(aid, 60)
+        out = await vault_ai_vision._describe_one(aid, 60)
     finally:
         vault_frames.collect = orig
     assert out["status"] == "fetch_failed", out
@@ -581,7 +581,7 @@ async def case_fetch_failure_is_not_blocked_drm() -> None:
 
     vault_frames.collect = _blew_up
     try:
-        out = await vault_ai_api._describe_one(aid, 60)
+        out = await vault_ai_vision._describe_one(aid, 60)
     finally:
         vault_frames.collect = orig
     assert "TypeError" in out["detail"], out
@@ -593,12 +593,12 @@ async def case_fetch_failure_is_not_blocked_drm() -> None:
         seen.append(int(mid))
         return {"media_id": mid, "ok": True, "status": "described"}
 
-    orig_one = vault_ai_api._describe_one
-    vault_ai_api._describe_one = _spy
+    orig_one = vault_ai_vision._describe_one
+    vault_ai_vision._describe_one = _spy
     try:
-        await vault_ai_api._run_describe_all(aid, False, prompt_version="v2")
+        await vault_ai_vision._run_describe_all(aid, "undescribed", prompt_version="v2")
     finally:
-        vault_ai_api._describe_one = orig_one
+        vault_ai_vision._describe_one = orig_one
     assert seen == [60], f"a transient failure must be retried at once, got {seen}"
 
 
@@ -622,15 +622,15 @@ async def case_audio_is_never_a_describe_candidate() -> None:
         seen.append(int(mid))
         return {"media_id": mid, "ok": True, "status": "described"}
 
-    orig = vault_ai_api._describe_one
-    vault_ai_api._describe_one = _spy
+    orig = vault_ai_vision._describe_one
+    vault_ai_vision._describe_one = _spy
     try:
-        await vault_ai_api._run_describe_all(aid, True, prompt_version="v2")
+        await vault_ai_vision._run_describe_all(aid, "force", prompt_version="v2")
     finally:
-        vault_ai_api._describe_one = orig
+        vault_ai_vision._describe_one = orig
     assert seen == [80], f"audio must not be swept, got {seen}"
 
-    plan = await vault_ai_api.describe_all_plan(account_id=aid, prompt_version="v2")
+    plan = await vault_ai_vision.describe_all_plan(account_id=aid, prompt_version="v2")
     assert plan["total"] == 1, f"plan counted the audio row: {plan}"
 
 
@@ -649,7 +649,7 @@ async def case_flags_failure_is_written_down() -> None:
     orig = vault_frames.collect
     vault_frames.collect = _cold
     try:
-        out = await vault_ai_api._flags_one(aid, 90)
+        out = await vault_ai_vision._flags_one(aid, 90)
     finally:
         vault_frames.collect = orig
     assert out["ok"] is False and out["status"] == "fetch_failed", out
@@ -657,7 +657,7 @@ async def case_flags_failure_is_written_down() -> None:
     fields = json.loads((await _get(aid, 90)).ai_fields_json or "{}")
     assert fields.get("_flags_status") == "fetch_failed", fields
     assert "_flags_v" not in fields, "a failure must not mark flags current"
-    assert 90 in await vault_ai_api._flags_todo(aid), "failed item dropped out of todo"
+    assert 90 in await vault_ai_vision._flags_todo(aid), "failed item dropped out of todo"
 
 
 async def case_a_dead_collect_stops_claiming_it_is_running() -> None:
@@ -714,15 +714,15 @@ async def case_describe_all_refuses_to_start_over_the_cap() -> None:
     await _spend_today(aid, 10_000)
 
     started: list[str] = []
-    orig = vault_ai_api._run_describe_all
+    orig = vault_ai_vision._run_describe_all
 
     async def _spy(account_id, *a, **k):
         started.append(account_id)
 
-    vault_ai_api._run_describe_all = _spy
+    vault_ai_vision._run_describe_all = _spy
     try:
         try:
-            await vault_ai_api.describe_all({"account_id": aid})
+            await vault_ai_vision.describe_all({"account_id": aid})
             raise AssertionError("the sweep started with no budget to run on")
         except HTTPException as e:
             assert e.status_code == 429, e.status_code
@@ -733,11 +733,11 @@ async def case_describe_all_refuses_to_start_over_the_cap() -> None:
             assert e.detail["cap_millicents"] == 10_000, e.detail
             assert "$1.00" in e.detail["blocked_reason"], e.detail["blocked_reason"]
         assert started == [], f"a refused start still ran a sweep: {started}"
-        assert aid not in vault_ai_api._describe_running, (
+        assert aid not in vault_ai_vision._describe_running, (
             "the refusal left the account marked as running — nothing would "
             "ever clear it, and every later start would 409")
     finally:
-        vault_ai_api._run_describe_all = orig
+        vault_ai_vision._run_describe_all = orig
 
 
 async def case_one_item_describe_over_the_cap_fetches_nothing() -> None:
@@ -759,7 +759,7 @@ async def case_one_item_describe_over_the_cap_fetches_nothing() -> None:
 
     vault_frames.collect = _spy
     try:
-        out = await vault_ai_api.describe_one({"account_id": aid, "media_id": 92})
+        out = await vault_ai_vision.describe_one({"account_id": aid, "media_id": 92})
         assert out["status"] == "capped" and out["ok"] is False, out
         assert collected == [], f"it fetched frames anyway: {collected}"
 
@@ -778,7 +778,7 @@ async def case_one_item_describe_over_the_cap_fetches_nothing() -> None:
         prev_key = os.environ.get(key_env)
         os.environ[key_env] = "test-deepinfra-key"
         try:
-            live = await vault_ai_api._describe_one(aid, 92)
+            live = await vault_ai_vision._describe_one(aid, 92)
         finally:
             if prev_key is None:
                 os.environ.pop(key_env, None)
@@ -805,7 +805,7 @@ async def case_cap_state_reads_the_money_not_the_sticky_flag() -> None:
     await _seed_items(aid, [93])
     await _spend_today(aid, 10_000, flagged=True)
 
-    plan = await vault_ai_api.describe_all_plan(account_id=aid)
+    plan = await vault_ai_vision.describe_all_plan(account_id=aid)
     assert plan["cap"]["capped"] is True and plan["cap"]["flagged"] is True, plan["cap"]
     assert plan["cap"]["remaining_millicents"] == 0, plan["cap"]
 
@@ -864,10 +864,79 @@ async def case_capped_means_no_call_on_the_model_fits() -> None:
 
     vault_frames.collect = _spy
     try:
-        out = await vault_ai_api.describe_one({"account_id": aid, "media_id": 94})
+        out = await vault_ai_vision.describe_one({"account_id": aid, "media_id": 94})
     finally:
         vault_frames.collect = orig
     assert out["status"] == "capped" and collected == [], (out, collected)
+
+
+async def case_escalation_cost_is_the_sum_of_both_attempts() -> None:
+    """A 30b refusal is paid for too. The sweep sums `cost_millicents`, so
+    returning only the 235b call's cost under-reported every escalated item."""
+    aid = _fresh_account()
+    await _seed_account(aid)
+    await _seed_items(aid, [95])
+    models: list[str] = []
+
+    async def _one_frame(*_a, **_k):
+        return vault_frames.Collected(["data:image/jpeg;base64,AAAA"], "ok")
+
+    async def _refuse_then_answer(**kw):
+        models.append(kw["model"])
+        if len(models) == 1:
+            return _FakeVisionResult(content="I can't help with that.", cost=7, call_id=1)
+        return _FakeVisionResult(
+            content=json.dumps({"description": "a selfie", "tags": ["selfie"]}),
+            cost=11, call_id=2)
+
+    orig_imgs, orig_chat = vault_frames.collect, llm_client.chat
+    vault_frames.collect, llm_client.chat = _one_frame, _refuse_then_answer
+    try:
+        out = await vault_ai_vision._describe_one(aid, 95)
+    finally:
+        vault_frames.collect, llm_client.chat = orig_imgs, orig_chat
+    assert models == ["qwen3-vl-30b", "qwen3-vl-235b"], models
+    assert out["ok"] is True and out["describe_model"] == "qwen3-vl-235b", out
+    assert out["cost_millicents"] == 7 + 11, out["cost_millicents"]
+    assert (await _get(aid, 95)).describe_call_id == 2
+
+
+async def case_escalation_failure_still_reports_the_paid_refusal() -> None:
+    """A 30b refusal is paid for even when the 235b retry never answers: the
+    cap trips (`capped`, and still NO row write — capped means try later) or
+    the provider errors (`error`). Both must carry the 30b cost, or the sweep's
+    sum under-reports exactly the items that escalated."""
+    async def _one_frame(*_a, **_k):
+        return vault_frames.Collected(["data:image/jpeg;base64,AAAA"], "ok")
+
+    for status, boom in (("capped", llm_client.LLMCapExceeded("x", 100, 200)),
+                         ("error", llm_client.LLMError("provider 502"))):
+        aid = _fresh_account()
+        await _seed_account(aid)
+        await _seed_items(aid, [96])
+        models: list[str] = []
+
+        async def _refuse_then_raise(**kw):
+            models.append(kw["model"])
+            if len(models) == 1:
+                return _FakeVisionResult(content="I can't help with that.", cost=7)
+            raise boom
+
+        orig_imgs, orig_chat = vault_frames.collect, llm_client.chat
+        vault_frames.collect, llm_client.chat = _one_frame, _refuse_then_raise
+        try:
+            out = await vault_ai_vision._describe_one(aid, 96)
+        finally:
+            vault_frames.collect, llm_client.chat = orig_imgs, orig_chat
+        assert models == ["qwen3-vl-30b", "qwen3-vl-235b"], (status, models)
+        assert out["status"] == status and out["ok"] is False, out
+        assert out.get("cost_millicents") == 7, (status, out)
+        row = await _get(aid, 96)
+        if status == "capped":
+            assert row.describe_status is None and row.describe_model is None, (
+                "capped wrote the row — the retry sweep would skip it")
+        else:
+            assert row.describe_status == "failed", row.describe_status
 
 
 _harness.run(
@@ -879,6 +948,8 @@ _harness.run(
     case_describing_one_item_flags_it_too,
     case_drm_state,
     case_refusal_state,
+    case_escalation_cost_is_the_sum_of_both_attempts,
+    case_escalation_failure_still_reports_the_paid_refusal,
     case_frame_ladder_by_duration,
     case_prompt_version_selects_variant,
     case_restage_selects_only_stale_rows,

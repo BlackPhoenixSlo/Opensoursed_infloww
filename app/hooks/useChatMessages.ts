@@ -31,7 +31,7 @@ import { relay, type OFMessage, type OFMessagesResp } from "@/lib/relay";
 import { type FanId } from "@/lib/fanId";
 import type { SendFailure } from "@/lib/sendFailure";
 import { eventBus } from "@/lib/events";
-import { toUtcIso } from "@/hooks/useInboxRealtime";
+import { appendMsg, dropMsg, failMsg, reconcileMsg, toUtcIso } from "@/lib/threadCache";
 import { perfDelivered, perfError, perfLog, perfOpId, perfPaintPending } from "@/lib/perfLog";
 
 // 30 matches OF's own chat-list page size — enough that most chats need
@@ -389,39 +389,15 @@ export function useChatMessages({
 
   /** Append a message locally (used by optimistic send + SSE handlers). */
   const appendLocal = useCallback(
-    (msg: OFMessage) => {
-      qc.setQueryData<OFMessage[]>(queryKey, (prev = []) => {
-        const incoming = String(msg.id);
-        if (prev.some((m) => String(m.id) === incoming)) return prev;
-        return [...prev, msg];
-      });
-    },
+    (msg: OFMessage) => { qc.setQueryData<OFMessage[]>(queryKey, (prev = []) => appendMsg(prev, msg)); },
     [qc, queryKey],
   );
 
-  /** Replace a message by tempId (reconcile optimistic → server). */
+  /** Replace a message by tempId (reconcile optimistic → server; an SSE echo
+   *  that landed first keeps its row, see `reconcileMsg`). */
   const reconcileLocal = useCallback(
     (tempId: number, serverMsg: OFMessage) => {
-      qc.setQueryData<OFMessage[]>(queryKey, (prev = []) => {
-        const opt = prev.find((m) => m._tempId === tempId);
-        const serverId = String(serverMsg.id);
-        // SSE can echo the outbound message (real id) before this HTTP
-        // reconcile resolves. If that row already exists, stamping the
-        // same id onto the optimistic row would create two rows with the
-        // same React key. Instead, fold the optimistic media fallback
-        // onto the existing real row and drop the placeholder.
-        const existingReal = prev.find(
-          (m) => m._tempId !== tempId && String(m.id) === serverId,
-        );
-        if (existingReal) {
-          return prev
-            .filter((m) => m._tempId !== tempId)
-            .map((m) =>
-              m === existingReal && opt ? mergeMedia(opt, m) : m,
-            );
-        }
-        return prev.map((m) => (m._tempId === tempId ? mergeMedia(m, serverMsg) : m));
-      });
+      qc.setQueryData<OFMessage[]>(queryKey, (prev = []) => reconcileMsg(prev, tempId, serverMsg));
     },
     [qc, queryKey],
   );
@@ -435,30 +411,14 @@ export function useChatMessages({
    *  500), which is why the bubble tests it rather than the reason text. */
   const failLocal = useCallback(
     (tempId: number, failure?: SendFailure) => {
-      qc.setQueryData<OFMessage[]>(queryKey, (prev = []) => {
-        return prev.map((m) =>
-          m._tempId === tempId
-            ? {
-                ...m,
-                _failed: true,
-                _pending: false,
-                _failedReason: failure?.reason,
-                _failedMediaIds: failure?.refusedMediaIds,
-              }
-            : m,
-        );
-      });
+      qc.setQueryData<OFMessage[]>(queryKey, (prev = []) => failMsg(prev, tempId, failure));
     },
     [qc, queryKey],
   );
 
   /** Remove an optimistic message (used before retry). */
   const dropLocal = useCallback(
-    (tempId: number) => {
-      qc.setQueryData<OFMessage[]>(queryKey, (prev = []) => {
-        return prev.filter((m) => m._tempId !== tempId);
-      });
-    },
+    (tempId: number) => { qc.setQueryData<OFMessage[]>(queryKey, (prev = []) => dropMsg(prev, tempId)); },
     [qc, queryKey],
   );
 
@@ -694,21 +654,4 @@ export function mergeOlderPage(prev: OFMessage[], older: OFMessage[]): OFMessage
   const have = new Set(prev.map((m) => String(m.id)));
   const added = older.filter((m) => !have.has(String(m.id)));
   return orderThread([...upgraded, ...added]);
-}
-
-/** Merge optimistic media's `files` into a server response — OF's CDN
- *  takes ~2-3s to populate `files.{thumb,source}.url`, so the server
- *  response often comes back with media but no playable URLs. We swap
- *  the optimistic file urls in until the next refresh catches them. */
-function mergeMedia(opt: OFMessage, server: OFMessage): OFMessage {
-  if (!opt?.media?.length || !server?.media?.length) return { ...server, _pending: false, _tempId: opt._tempId };
-  const byId = new Map<number, OFMessage["media"][number]>();
-  for (const om of opt.media) if (typeof om.id === "number") byId.set(om.id, om);
-  const mergedMedia = server.media.map((sm, i) => {
-    if (sm.files?.thumb?.url || sm.files?.source?.url) return sm;
-    const fallback =
-      (typeof sm.id === "number" ? byId.get(sm.id) : undefined) || opt.media[i];
-    return fallback?.files ? { ...sm, files: fallback.files } : sm;
-  });
-  return { ...server, media: mergedMedia, _pending: false, _tempId: opt._tempId };
 }

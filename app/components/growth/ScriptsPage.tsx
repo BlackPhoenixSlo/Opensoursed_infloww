@@ -28,7 +28,7 @@
  * (`useSavedReplyEditor`); renames, deletes and bulk tagging go through `POST /admin/saved-replies/relabel`.
  */
 
-import { useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { useMemo, useReducer, useRef, useState, type ComponentProps, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import {
   ArrowLeft, ArrowRight, AtSign, BookOpen, ChevronDown, LayoutTemplate, List, MinusCircle, MoreHorizontal, Pencil,
   Plus, PlusSquare, Search, Share2, StickyNote, Tags, Trash2, Workflow, X, type LucideIcon,
@@ -48,14 +48,11 @@ import { fmtPrice } from "@/lib/format";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import type { SavedReply } from "@/lib/relay";
 import { cn } from "@/lib/utils";
+import {
+  ALL, INITIAL, UNCATEGORIZED, activeEntry, kindOf, livePending, scriptsPageReducer, type EntryKind,
+} from "@/components/growth/scriptsPageState";
 
 const NOT_WIRED = "not wired";
-
-/** The Tag sidebar's two fixed entries (the bundle's `UncategorizedCommon`): every script, and the untagged ones. */
-const ALL = "\u0000all";
-const UNCATEGORIZED = "\u0000uncategorized";
-
-type View = "tags" | "sequences" | "manage";
 
 /** The Learn and Share boxes (#9, #10): 75px wide, 0 8px padding, 14px weight 500 T1, an 18px icon 4px from the
  *  text, at full ink, as the bundle shot draws them (#d9d9d9 dark). Learn is Not wired (disabled and titled). */
@@ -566,14 +563,12 @@ function ScriptEditModal({ title, saving, onClose, children }: {
   );
 }
 
-type NamePrompt = {
-  title: string;
-  label: string;
-  initial?: string;
-  maxLength: number;
-  options?: string[];
-  onOk: (name: string) => Promise<void> | void;
-};
+/** The open name modal, as data: its props (and `onOk`) are built each render, so OK acts on the page as it is
+ *  then, not as it was when the modal opened (a refetch in between may have given a new tag its first script). */
+type NamePrompt =
+  | { kind: "sequence" }
+  | { kind: "tag"; ids?: number[] }
+  | { kind: "rename"; entry: EntryKind; from: string };
 
 export default function ScriptsPage() {
   const accounts = useActiveAccounts();
@@ -585,42 +580,36 @@ export default function ScriptsPage() {
   const deleteM = useDeleteSavedReply(accountId);
   const relabelM = useRelabelSavedReplies(accountId);
 
-  const [view, setView] = useState<View>("tags");
-  const [tagSel, setTagSel] = useState<string>(ALL);
-  const [seqSel, setSeqSel] = useState<string | null>(null);
+  // The view, the open tag and sequence, the checked scripts and the page's new tags: `scriptsPageState.ts`.
+  const [page, dispatch] = useReducer(scriptsPageReducer, INITIAL);
+  const { view, checked } = page;
   const [expanded, setExpanded] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [q, setQ] = useState("");
   const [sortBy, setSortBy] = useState<"recent" | "name">("recent");
   const [order, setOrder] = useState<"asc" | "desc">("desc");
-  const [selected, setSelected] = useState<Set<number>>(new Set());
   const [busyIds, setBusyIds] = useState<Set<number>>(new Set());
   const [actionErr, setActionErr] = useState<string | null>(null);
   const [namePrompt, setNamePrompt] = useState<NamePrompt | null>(null);
   const [dialog, setDialog] = useState<
     { kind: "excel" } | { kind: "import" } | { kind: "share"; ids?: number[] } | null
   >(null);
-  // A tag added from the More menu with nothing selected: shown until a script takes it or the page reloads.
-  const [pendingTags, setPendingTags] = useState<string[]>([]);
-
-  const clearSelection = () => setSelected(new Set());
+  const clearSelection = () => dispatch({ type: "setChecked", ids: [] });
   // Another Creator: nothing of this one's (draft, selection, new tags, open tag or sequence) carries over.
   const pickCreator = (id: string) => {
     setAccountId(id);
     setDraft(null);
-    clearSelection();
-    setPendingTags([]);
-    setTagSel(ALL);
-    setSeqSel(null);
+    dispatch({ type: "reset" });
   };
 
   // ── derived: tags and sequences ──
+  const pending = useMemo(() => livePending(page.pendingTags, replies), [page.pendingTags, replies]);
   const tagCounts = useMemo(() => {
     const m = new Map<string, number>();
-    for (const t of pendingTags) m.set(t, 0);
+    for (const t of pending) m.set(t, 0);
     for (const r of replies) for (const t of r.tags ?? []) m.set(t, (m.get(t) ?? 0) + 1);
     return m;
-  }, [replies, pendingTags]);
+  }, [replies, pending]);
   const tagNames = useMemo(() => [...tagCounts.keys()].sort(byName), [tagCounts]);
   const sequences = useMemo(() => {
     const m = new Map<string, SavedReply[]>();
@@ -628,8 +617,11 @@ export default function ScriptsPage() {
     return m;
   }, [replies]);
   const seqNames = useMemo(() => [...sequences.keys()].sort(byName), [sequences]);
-  const activeSeq = seqSel && sequences.has(seqSel) ? seqSel : (seqNames[0] ?? null);
-  const activeTag = tagSel === ALL || tagSel === UNCATEGORIZED || tagCounts.has(tagSel) ? tagSel : ALL;
+  // The sidebars' order, as drawn: deleting the open entry opens its neighbour in it.
+  const tagOrder = useMemo(() => [ALL, ...tagNames, UNCATEGORIZED], [tagNames]);
+  const orderOf = (kind: EntryKind) => (kind === "tag" ? tagOrder : seqNames);
+  const activeSeq = activeEntry(page.open.sequence, seqNames);
+  const activeTag = activeEntry(page.open.tag, tagOrder) ?? ALL;
 
   // ── the list for the open view ──
   const matches = (r: SavedReply) => {
@@ -664,8 +656,10 @@ export default function ScriptsPage() {
   const removeLabel = inTag ? "Remove from tag" : inSeq ? "Remove from sequence" : undefined;
 
   const listIds = rows.map(({ r }) => r.id);
-  const selectedInList = listIds.filter((id) => selected.has(id));
-  const allChecked = listIds.length > 0 && selectedInList.length === listIds.length;
+  const checkedInList = listIds.filter((id) => checked.has(id));
+  const allChecked = listIds.length > 0 && checkedInList.length === listIds.length;
+  /** A checked script still being removed / deleted: the selection bar waits for its answer (no second POST). */
+  const selBusy = checkedInList.some((id) => busyIds.has(id));
 
   // ── actions ──
   async function run(ids: number[], fn: () => Promise<unknown>) {
@@ -685,30 +679,22 @@ export default function ScriptsPage() {
     if (!confirm(`${one ? "Delete script?" : `Delete ${ids.length} scripts?`}\n\nThis script will also be deleted from sequences that utilized this script.`)) return;
     void run(ids, async () => {
       for (const id of ids) await deleteM.mutateAsync(id);
-      setSelected((s) => new Set([...s].filter((id) => !ids.includes(id))));
+      dispatch({ type: "check", ids, on: false });
     });
   }
 
   function removeScripts(ids: number[]) {
-    if (inTag) {
-      if (!confirm("Remove this script?\n\nThe script will be removed from this tag.")) return;
-      void run(ids, () => relabelM.mutateAsync({ kind: "tag", from: inTag, ids }));
-    } else if (inSeq) {
-      if (!confirm("Remove this script?\n\nRemove this script from this sequence. You can add the script back any time you want.")) return;
-      void run(ids, () => relabelM.mutateAsync({ kind: "sequence", from: inSeq, ids }));
-    }
-    setSelected((s) => new Set([...s].filter((id) => !ids.includes(id))));
-  }
-
-  function openChip(kind: "tag" | "sequence", name: string) {
-    clearSelection();
-    if (kind === "tag") {
-      setView("tags");
-      setTagSel(name);
-    } else {
-      setView("sequences");
-      setSeqSel(name);
-    }
+    const from = inTag ?? inSeq;
+    if (!from) return;
+    const kind = inTag ? "tag" : "sequence";
+    if (!confirm(kind === "tag"
+      ? "Remove this script?\n\nThe script will be removed from this tag."
+      : "Remove this script?\n\nRemove this script from this sequence. You can add the script back any time you want.")) return;
+    // Unchecked once the server took it; a failed remove keeps the ticks for a retry.
+    void run(ids, async () => {
+      await relabelM.mutateAsync({ kind, from, ids });
+      dispatch({ type: "check", ids, on: false });
+    });
   }
 
   function nextStep(name: string): number {
@@ -722,75 +708,58 @@ export default function ScriptsPage() {
     else startNewReply();
   }
 
-  function createSequence() {
-    setNamePrompt({
-      title: "Add sequence",
-      label: "Sequence name",
-      maxLength: SCRIPT_NAME_MAX,
-      onOk: (name) => {
-        if (sequences.has(name)) throw new Error("Sequence name already exists. Please rename sequence.");
-        setView("sequences");
-        setSeqSel(name);
-        startNewReply({ scriptId: name, scriptStep: "1" });
-      },
-    });
-  }
+  /** A tag no script carries lives on this page only: renamed and deleted here, never on the server. */
+  const pageOnly = (kind: EntryKind, name: string) => kind === "tag" && pending.includes(name);
 
-  function addTag(ids?: number[]) {
-    setNamePrompt({
-      title: "Add tag name",
-      label: "Tag name",
-      maxLength: SCRIPT_TAG_MAX,
-      options: ids ? tagNames : undefined,
-      onOk: async (name) => {
-        if (ids?.length) {
-          await relabelM.mutateAsync({ kind: "tag", to: name, ids });
-          clearSelection();
-        } else if (!tagCounts.has(name)) {
-          setPendingTags((p) => [...p, name]);
-        }
-        setView("tags");
-        setTagSel(name);
-      },
-    });
-  }
-
-  function renameEntry(kind: "tag" | "sequence", from: string) {
-    setNamePrompt({
+  /** The open name modal's props, from the page as it is this render (see `NamePrompt`). */
+  function promptProps(p: NamePrompt): Omit<ComponentProps<typeof NameModal>, "onClose"> {
+    if (p.kind === "sequence") {
+      return {
+        title: "Add sequence", label: "Sequence name", maxLength: SCRIPT_NAME_MAX,
+        onOk: (name) => {
+          if (sequences.has(name)) throw new Error("Sequence name already exists. Please rename sequence.");
+          dispatch({ type: "open", kind: "sequence", name });
+          startNewReply({ scriptId: name, scriptStep: "1" });
+        },
+      };
+    }
+    if (p.kind === "tag") {
+      const { ids } = p;
+      return {
+        title: "Add tag name", label: "Tag name", maxLength: SCRIPT_TAG_MAX,
+        options: ids ? tagNames : undefined,
+        onOk: async (name) => {
+          if (ids?.length) await relabelM.mutateAsync({ kind: "tag", to: name, ids });
+          dispatch({ type: "addTag", name, pending: !ids?.length && !tagCounts.has(name) });
+        },
+      };
+    }
+    const { entry: kind, from } = p;
+    return {
       title: kind === "tag" ? "Modify tag name" : "Modify sequence name",
       label: kind === "tag" ? "Tag name" : "Sequence name",
       initial: from,
       maxLength: kind === "tag" ? SCRIPT_TAG_MAX : SCRIPT_NAME_MAX,
       onOk: async (to) => {
         if (to === from) return;
-        if (kind === "tag" && pendingTags.includes(from)) {
-          setPendingTags((p) => p.map((t) => (t === from ? to : t)));
-        } else {
-          await relabelM.mutateAsync({ kind, from, to });
-        }
-        if (kind === "tag") setTagSel(to);
-        else setSeqSel(to);
+        if (!pageOnly(kind, from)) await relabelM.mutateAsync({ kind, from, to });
+        dispatch({ type: "renameEntry", kind, from, to, order: orderOf(kind) });
       },
-    });
+    };
   }
 
-  function deleteEntry(kind: "tag" | "sequence", name: string) {
-    if (kind === "tag") {
-      if (!confirm("Delete tag?\n\nThis tag will be permanently removed from the script library. Its scripts stay.")) return;
-      setPendingTags((p) => p.filter((t) => t !== name));
-      if (tagCounts.get(name)) void run([], () => relabelM.mutateAsync({ kind: "tag", from: name }));
-      setTagSel(ALL);
-    } else {
-      if (!confirm("Delete the Sequence?\n\nAre you sure you want to delete this sequence? Its scripts stay in the library.")) return;
-      void run([], () => relabelM.mutateAsync({ kind: "sequence", from: name }));
-      setSeqSel(null);
-    }
+  function deleteEntry(kind: EntryKind, name: string) {
+    const ok = kind === "tag"
+      ? confirm("Delete tag?\n\nThis tag will be permanently removed from the script library. Its scripts stay.")
+      : confirm("Delete the Sequence?\n\nAre you sure you want to delete this sequence? Its scripts stay in the library.");
+    if (!ok) return;
+    const done = () => dispatch({ type: "deleteEntry", kind, name, order: orderOf(kind) });
+    // A page-only tag moves on at once; anything else once the server has dropped it.
+    if (pageOnly(kind, name)) done();
+    else void run([], async () => { await relabelM.mutateAsync({ kind, from: name }); done(); });
   }
 
-  const switchView = (v: View) => {
-    setView(v);
-    clearSelection();
-  };
+  const sideKind = kindOf(view);
 
   // ── render ──
   const tagItems: SidebarItem[] = [
@@ -845,7 +814,7 @@ export default function ScriptsPage() {
           aria-label="Select all"
           checked={allChecked}
           disabled={listIds.length === 0}
-          onChange={(e) => setSelected(e.target.checked ? new Set(listIds) : new Set())}
+          onChange={(e) => dispatch({ type: "setChecked", ids: e.target.checked ? listIds : [] })}
           className="accent-accent"
         />
         <button
@@ -877,27 +846,30 @@ export default function ScriptsPage() {
       </div>
 
       {/* #51: the selection bar. */}
-      {selectedInList.length > 0 && (
+      {checkedInList.length > 0 && (
         <div
           role="toolbar"
           aria-label="Selection"
           className="mx-4 mb-2 min-h-10 px-3 py-1 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg bg-accent text-white text-sm whitespace-nowrap"
         >
           <span>Selected</span>
-          <span className="font-semibold">{selectedInList.length}</span>
+          <span className="font-semibold">{checkedInList.length}</span>
           <button type="button" aria-label="Clear selection" onClick={clearSelection} className="rounded bg-black/20 p-0.5">
             <X size={16} aria-hidden />
           </button>
           <div className="ml-auto flex flex-wrap items-center gap-x-4 gap-y-1">
-            <button type="button" onClick={() => addTag(selectedInList)} className="inline-flex items-center gap-1">
+            <button type="button" onClick={() => setNamePrompt({ kind: "tag", ids: checkedInList })} disabled={selBusy}
+              className="inline-flex items-center gap-1 disabled:opacity-50">
               <List size={16} aria-hidden /> Add to tag
             </button>
             {removeLabel ? (
-              <button type="button" onClick={() => removeScripts(selectedInList)} className="inline-flex items-center gap-1">
+              <button type="button" onClick={() => removeScripts(checkedInList)} disabled={selBusy}
+              className="inline-flex items-center gap-1 disabled:opacity-50">
                 <MinusCircle size={16} aria-hidden /> {removeLabel}
               </button>
             ) : (
-              <button type="button" onClick={() => deleteScripts(selectedInList)} className="inline-flex items-center gap-1">
+              <button type="button" onClick={() => deleteScripts(checkedInList)} disabled={selBusy}
+              className="inline-flex items-center gap-1 disabled:opacity-50">
                 <Trash2 size={16} aria-hidden /> Delete
               </button>
             )}
@@ -927,20 +899,13 @@ export default function ScriptsPage() {
             stepLabel={stepLabel}
             accountId={accountId}
             expanded={expanded}
-            checked={selected.has(r.id)}
-            onCheck={(on) =>
-              setSelected((s) => {
-                const n = new Set(s);
-                if (on) n.add(r.id);
-                else n.delete(r.id);
-                return n;
-              })
-            }
+            checked={checked.has(r.id)}
+            onCheck={(on) => dispatch({ type: "check", ids: [r.id], on })}
             onEdit={() => startEditReply(r)}
             onShare={() => setDialog({ kind: "share", ids: [r.id] })}
             onDelete={() => (removeLabel ? removeScripts([r.id]) : deleteScripts([r.id]))}
             removeLabel={removeLabel}
-            onOpenChip={openChip}
+            onOpenChip={(kind, name) => dispatch({ type: "open", kind, name })}
             busy={busyIds.has(r.id)}
           />
         ))}
@@ -968,7 +933,7 @@ export default function ScriptsPage() {
             <button
               type="button"
               disabled={replies.length === 0}
-              onClick={() => setDialog({ kind: "share", ids: selectedInList.length ? selectedInList : undefined })}
+              onClick={() => setDialog({ kind: "share", ids: checkedInList.length ? checkedInList : undefined })}
               className={HEADER_BOX}
             >
               <Share2 size={18} className="mr-1" aria-hidden />
@@ -976,8 +941,8 @@ export default function ScriptsPage() {
             </button>
             <MoreMenu
               onAddScript={addScript}
-              onAddSequence={createSequence}
-              onAddTag={() => addTag()}
+              onAddSequence={() => setNamePrompt({ kind: "sequence" })}
+              onAddTag={() => setNamePrompt({ kind: "tag" })}
               onImportExcel={() => setDialog({ kind: "excel" })}
               onImportCreators={() => setDialog({ kind: "import" })}
             />
@@ -991,7 +956,7 @@ export default function ScriptsPage() {
           {view === "manage" ? (
             // #31, #32: Manage scripts swaps the tabs for a back arrow and its title.
             <div className="flex items-center gap-4">
-              <button type="button" aria-label="Back" onClick={() => switchView("tags")} className="text-fg-dim hover:text-fg">
+              <button type="button" aria-label="Back" onClick={() => dispatch({ type: "view", view: "tags" })} className="text-fg-dim hover:text-fg">
                 <ArrowLeft size={20} aria-hidden />
               </button>
               <h2 className="text-base font-semibold">Manage scripts</h2>
@@ -1010,7 +975,7 @@ export default function ScriptsPage() {
                   type="button"
                   role="tab"
                   aria-selected={view === key}
-                  onClick={() => switchView(key)}
+                  onClick={() => dispatch({ type: "view", view: key })}
                   className={cn(
                     "h-14 flex items-center gap-2 text-sm font-bold border-b-2",
                     view === key ? "text-fg border-accent" : "text-fg border-transparent",
@@ -1052,7 +1017,7 @@ export default function ScriptsPage() {
             <button
               type="button"
               aria-pressed={view === "manage"}
-              onClick={() => switchView(view === "manage" ? "tags" : "manage")}
+              onClick={() => dispatch({ type: "view", view: view === "manage" ? "tags" : "manage" })}
               className="h-7 px-2 whitespace-nowrap rounded text-sm font-normal text-accent bg-bg-elev-2 [html[data-theme=light]_&]:bg-[#eff4ff]"
             >
               Manage scripts
@@ -1061,22 +1026,18 @@ export default function ScriptsPage() {
         </div>
 
         {showEmptyPanel ? (
-          <SequenceEmpty onCreate={createSequence} />
-        ) : view === "manage" ? (
+          <SequenceEmpty onCreate={() => setNamePrompt({ kind: "sequence" })} />
+        ) : sideKind === null ? (
           list
         ) : (
           <div className="flex flex-1 flex-col md:flex-row">
             <Sidebar
-              kind={view === "tags" ? "tag" : "sequence"}
-              items={view === "tags" ? tagItems : seqItems}
-              selected={view === "tags" ? activeTag : activeSeq}
-              onSelect={(id) => {
-                clearSelection();
-                if (view === "tags") setTagSel(id);
-                else setSeqSel(id);
-              }}
-              onRename={(i) => renameEntry(view === "tags" ? "tag" : "sequence", i.name)}
-              onDelete={(i) => deleteEntry(view === "tags" ? "tag" : "sequence", i.name)}
+              kind={sideKind}
+              items={sideKind === "tag" ? tagItems : seqItems}
+              selected={sideKind === "tag" ? activeTag : activeSeq}
+              onSelect={(id) => dispatch({ type: "open", kind: sideKind, name: id })}
+              onRename={(i) => setNamePrompt({ kind: "rename", entry: sideKind, from: i.name })}
+              onDelete={(i) => deleteEntry(sideKind, i.name)}
             />
             {list}
           </div>
@@ -1103,7 +1064,7 @@ export default function ScriptsPage() {
         </ScriptEditModal>
       )}
 
-      {namePrompt && <NameModal {...namePrompt} onClose={() => setNamePrompt(null)} />}
+      {namePrompt && <NameModal {...promptProps(namePrompt)} onClose={() => setNamePrompt(null)} />}
       {dialog?.kind === "excel" && <ExcelImportDialog accountId={accountId} onClose={() => setDialog(null)} />}
       {(dialog?.kind === "import" || dialog?.kind === "share") && (
         <CopyScriptsDialog

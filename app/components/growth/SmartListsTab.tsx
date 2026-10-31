@@ -13,7 +13,7 @@
  * preview, the active-list quota line and the preset cards that pre-fill the builder.
  */
 
-import { useMemo, useRef, useState, type ReactNode } from "react";
+import { useReducer, useRef, useState, type ReactNode } from "react";
 import { Plus, PlusCircle, X } from "lucide-react";
 
 import { Badge, ExtraTag } from "@/components/ui/primitives";
@@ -25,6 +25,9 @@ import {
   type SmartField, type SmartOp, type SmartRule, type SmartRules, type SmartList,
   type SmartScope, type SmartTimeframe,
 } from "@/hooks/useSmartLists";
+import {
+  ENUM_VALUES, FIELD_DEFS, buildRules, defOf, initEditor, opsFor, rulesReducer, rulesValid, saveRefusal, validateRule,
+} from "@/components/growth/smartListEditorState";
 import { cn } from "@/lib/utils";
 import { GrowthRailFrame } from "@/components/growth/GrowthFrame";
 import { useGrowthCreator } from "@/hooks/useAccounts";
@@ -39,45 +42,8 @@ export const SMART_LISTS_ABOUT =
 const SELECT_CLS =
   "h-8 rounded-md border border-border bg-transparent px-2 text-[14px] text-fg focus:outline-none focus:border-accent";
 
-type Kind = "money" | "days" | "date" | "enum" | "tag";
-
-interface FieldDef {
-  field: SmartField;
-  label: string;
-  group: string;
-  kind: Kind;
-  scoped?: boolean;     // creator | org
-  timeframe?: boolean;  // all | today | … | 90d
-}
-
-const FIELD_DEFS: FieldDef[] = [
-  { field: "lifetime_spend",       group: "Spend", label: "Lifetime spend (OnlyFans total)", kind: "money" },
-  { field: "total_spend",          group: "Spend", label: "Total spend",              kind: "money", scoped: true, timeframe: true },
-  { field: "ppv_spend",            group: "Spend", label: "Messages / PPV spend",     kind: "money", scoped: true, timeframe: true },
-  { field: "tips_spend",           group: "Spend", label: "Tips spend",               kind: "money", scoped: true, timeframe: true },
-  { field: "subscription_spend",   group: "Spend", label: "Subscription spend",       kind: "money", scoped: true, timeframe: true },
-  { field: "highest_spend",        group: "Spend", label: "Highest single purchase",  kind: "money", scoped: true, timeframe: true },
-  { field: "last_spend_amount",    group: "Spend", label: "Last purchase amount",     kind: "money", scoped: true },
-  { field: "recent_spend",         group: "Spend", label: "Spend in the last N days", kind: "money" },
-  { field: "last_purchase_at",     group: "Activity", label: "Last purchase",         kind: "date", scoped: true },
-  { field: "last_message_sent_at", group: "Activity", label: "Last message sent",     kind: "date" },
-  { field: "last_active_days",     group: "Activity", label: "Days since active",     kind: "days" },
-  { field: "idle_days",            group: "Activity", label: "Last purchase, message or subscribe", kind: "date" },
-  { field: "status",               group: "Subscription", label: "Subscription status", kind: "enum" },
-  { field: "renew",                group: "Subscription", label: "Auto-renew",        kind: "enum" },
-  { field: "sub_start",            group: "Subscription", label: "Subscribed",        kind: "date" },
-  { field: "expires_at",           group: "Subscription", label: "Subscription expires", kind: "date" },
-  { field: "resubscribed_at",      group: "Subscription", label: "Resubscribed",      kind: "date" },
-  { field: "tag",                  group: "Tags", label: "Tag",                      kind: "tag" },
-];
 const GROUPS = ["Spend", "Activity", "Subscription", "Tags"];
 
-const ENUM_VALUES: Partial<Record<SmartField, string[]>> = {
-  status: ["active", "expired"],
-  renew: ["on", "off"],
-};
-
-const NUMERIC_OPS: SmartOp[] = [">=", "<=", ">", "<", "==", "!=", "between"];
 const OP_LABEL: Partial<Record<SmartOp, string>> = {
   within_last: "in the last",
   more_than: "more than",
@@ -90,70 +56,6 @@ const TIMEFRAME_LABEL: Record<SmartTimeframe, string> = {
   all: "all time", today: "today", yesterday: "yesterday", this_week: "this week",
   "7d": "last 7 days", "30d": "last 30 days", "90d": "last 90 days",
 };
-
-function defOf(field: SmartField): FieldDef {
-  return FIELD_DEFS.find((f) => f.field === field) ?? FIELD_DEFS[0];
-}
-
-function opsFor(field: SmartField): SmartOp[] {
-  const k = defOf(field).kind;
-  if (k === "money" || k === "days") return NUMERIC_OPS;
-  if (k === "date") {
-    return field === "expires_at"
-      ? ["within_next", "within_last", "more_than", "between"]
-      : ["within_last", "more_than", "between"];
-  }
-  if (k === "enum") return ["==", "!="];
-  return ["has", "not_has"];
-}
-
-/** UI rule row — values kept as strings (dollars for money, days for dates); converted to the wire shape (cents /
- *  days) on save. */
-interface RuleUI {
-  field: SmartField; op: SmartOp; value: string; value2: string; days: string;
-  scope: SmartScope; timeframe: SmartTimeframe;
-}
-
-const EMPTY_RULE: RuleUI = {
-  field: "lifetime_spend", op: ">=", value: "100", value2: "", days: "30",
-  scope: "creator", timeframe: "all",
-};
-
-function defaultValue(field: SmartField): string {
-  const k = defOf(field).kind;
-  if (k === "enum") return ENUM_VALUES[field]![0];
-  if (k === "tag") return "";
-  return k === "money" ? "100" : "30";
-}
-
-function toUI(r: SmartRule): RuleUI {
-  const money = defOf(r.field).kind === "money";
-  const show = (v: unknown) => String(money ? Number(v) / 100 : v ?? "");
-  const pair = Array.isArray(r.value) ? r.value : null;
-  return {
-    field: r.field, op: r.op,
-    value: pair ? show(pair[0]) : show(r.value),
-    value2: pair ? show(pair[1]) : "",
-    days: String(r.days ?? 30),
-    scope: r.scope ?? "creator",
-    timeframe: r.timeframe ?? "all",
-  };
-}
-
-function fromUI(r: RuleUI): SmartRule {
-  const d = defOf(r.field);
-  if (d.kind === "enum" || d.kind === "tag") return { field: r.field, op: r.op, value: r.value };
-  const num = (s: string) =>
-    d.kind === "money" ? Math.round(Number(s || 0) * 100) : Number(s || 0);
-  const out: SmartRule = {
-    field: r.field, op: r.op,
-    value: r.op === "between" ? [num(r.value), num(r.value2)] : num(r.value),
-  };
-  if (d.scoped) out.scope = r.scope;
-  if (d.timeframe) out.timeframe = r.timeframe;
-  if (r.field === "recent_spend") out.days = Math.max(1, Math.round(Number(r.days || 30)));
-  return out;
-}
 
 function describe(r: SmartRule): string {
   const d = defOf(r.field);
@@ -434,37 +336,29 @@ function SmartListEditor({
   onClose: () => void;
   onSave: (name: string, rules: SmartRules) => Promise<void>;
 }) {
-  const preview = usePreviewSmartList(accountId);
-  const [name, setName] = useState(initialName);
-  const [match, setMatch] = useState<"all" | "any">(initialRules?.match ?? "all");
-  const [rows, setRows] = useState<RuleUI[]>(
-    initialRules?.rules?.length ? initialRules.rules.map(toUI) : [{ ...EMPTY_RULE }],
-  );
-  const [err, setErr] = useState<string | null>(null);
-  const [nameErr, setNameErr] = useState(false);
+  const previewM = usePreviewSmartList(accountId);
+  const [st, dispatch] = useReducer(rulesReducer, null, () => initEditor(initialName, initialRules));
+  const { name, nameErr, match, rows, err } = st;
   const [busy, setBusy] = useState(false);
-
-  const rules: SmartRules = useMemo(
-    () => ({ match, rules: rows.map(fromUI) }), [match, rows],
-  );
-
-  const setRow = (i: number, patch: Partial<RuleUI>) =>
-    setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
-  const addRow = () => setRows((rs) => [...rs, { ...EMPTY_RULE }]);
-  const removeRow = (i: number) => setRows((rs) => rs.filter((_, j) => j !== i));
+  const valid = rulesValid(st);
 
   async function doPreview() {
-    setErr(null);
-    try { await preview.mutateAsync(rules); }
-    catch (e) { setErr(errMsg(e, "Preview failed")); }
+    const rev = st.rev;
+    dispatch({ type: "start" });
+    try { dispatch({ type: "previewed", rev, data: await previewM.mutateAsync(buildRules(st)) }); }
+    catch (e) { dispatch({ type: "previewFailed", rev, message: errMsg(e, "Preview failed") }); }
   }
 
   async function save() {
-    setErr(null);
-    if (!name.trim()) { setNameErr(true); return; }
+    const reason = saveRefusal(st);
+    if (reason) { dispatch({ type: "saveRefused", reason }); return; }
+    dispatch({ type: "start" });
     setBusy(true);
-    try { await onSave(name.trim(), rules); }
-    catch (e) { setErr(errMsg(e, editing ? "Unable to save smart list. Try again" : "Unable to create smart list. Try again")); }
+    try { await onSave(name.trim(), buildRules(st)); }
+    catch (e) {
+      dispatch({ type: "saveFailed",
+        message: errMsg(e, editing ? "Unable to save smart list. Try again" : "Unable to create smart list. Try again") });
+    }
     finally { setBusy(false); }
   }
 
@@ -476,7 +370,7 @@ function SmartListEditor({
       footer={(
         <>
           <IfButton onClick={onClose}>Cancel</IfButton>
-          <IfButton variant="primary" onClick={() => void save()} disabled={busy}>
+          <IfButton variant="primary" onClick={() => void save()} disabled={busy || !valid}>
             {busy ? "Saving…" : editing ? "Save changes" : "Create smart list"}
           </IfButton>
         </>
@@ -486,7 +380,7 @@ function SmartListEditor({
         <div className="space-y-2">
           <label className="block text-[14px] text-fg" htmlFor="smart-list-name">Smart list name</label>
           <IfInput id="smart-list-name" value={name} placeholder="e.g. Active whales" className="w-full"
-            onChange={(e) => { setName(e.target.value); setNameErr(false); }} />
+            onChange={(e) => dispatch({ type: "name", name: e.target.value })} />
           {nameErr && <span role="alert" className="block text-[12px] text-err">This is a required field</span>}
         </div>
 
@@ -500,7 +394,7 @@ function SmartListEditor({
             </p>
           </div>
           <label className="flex items-center gap-2 text-[14px] text-fg">
-            <input type="checkbox" checked={match === "any"} onChange={(e) => setMatch(e.target.checked ? "any" : "all")}
+            <input type="checkbox" checked={match === "any"} onChange={(e) => dispatch({ type: "match", match: e.target.checked ? "any" : "all" })}
               className="h-4 w-4 accent-accent" />
             Match any condition <ExtraTag />
           </label>
@@ -508,16 +402,14 @@ function SmartListEditor({
           {rows.map((r, i) => {
             const d = defOf(r.field);
             const unit = d.kind === "money" ? "$" : d.kind === "tag" ? "tag" : "days";
+            const rowErr = validateRule(r);
             return (
               <div key={i} className="flex flex-wrap items-center gap-2">
                 <select
                   aria-label="Condition"
                   className={SELECT_CLS}
                   value={r.field}
-                  onChange={(e) => {
-                    const field = e.target.value as SmartField;
-                    setRow(i, { field, op: opsFor(field)[0], value: defaultValue(field), value2: "" });
-                  }}
+                  onChange={(e) => dispatch({ type: "field", i, field: e.target.value as SmartField })}
                 >
                   {GROUPS.map((g) => (
                     <optgroup key={g} label={g}>
@@ -527,11 +419,11 @@ function SmartListEditor({
                     </optgroup>
                   ))}
                 </select>
-                <select aria-label="Operator" className={SELECT_CLS} value={r.op} onChange={(e) => setRow(i, { op: e.target.value as SmartOp })}>
+                <select aria-label="Operator" className={SELECT_CLS} value={r.op} onChange={(e) => dispatch({ type: "row", i, patch: { op: e.target.value as SmartOp } })}>
                   {opsFor(r.field).map((op) => <option key={op} value={op}>{OP_LABEL[op] ?? op}</option>)}
                 </select>
                 {d.kind === "enum" ? (
-                  <select aria-label="Value" className={SELECT_CLS} value={r.value} onChange={(e) => setRow(i, { value: e.target.value })}>
+                  <select aria-label="Value" className={SELECT_CLS} value={r.value} onChange={(e) => dispatch({ type: "row", i, patch: { value: e.target.value } })}>
                     {ENUM_VALUES[r.field]!.map((v) => <option key={v} value={v}>{v}</option>)}
                   </select>
                 ) : (
@@ -539,7 +431,7 @@ function SmartListEditor({
                     aria-label="Value"
                     className="w-24"
                     value={r.value}
-                    onChange={(e) => setRow(i, { value: e.target.value })}
+                    onChange={(e) => dispatch({ type: "row", i, patch: { value: e.target.value } })}
                     placeholder={unit}
                   />
                 )}
@@ -547,7 +439,7 @@ function SmartListEditor({
                   <>
                     <span className="text-[12px] text-fg-dim">and</span>
                     <IfInput aria-label="Upper value" className="w-24" value={r.value2}
-                      onChange={(e) => setRow(i, { value2: e.target.value })} placeholder={unit} />
+                      onChange={(e) => dispatch({ type: "row", i, patch: { value2: e.target.value } })} placeholder={unit} />
                   </>
                 )}
                 {d.kind === "date" && (
@@ -558,13 +450,13 @@ function SmartListEditor({
                 {r.field === "recent_spend" && (
                   <span className="flex items-center gap-1 text-[12px] text-fg-dim">
                     in last
-                    <IfInput aria-label="Days" className="w-16" value={r.days} onChange={(e) => setRow(i, { days: e.target.value })} />
+                    <IfInput aria-label="Days" className="w-16" value={r.days} onChange={(e) => dispatch({ type: "row", i, patch: { days: e.target.value } })} />
                     days
                   </span>
                 )}
                 {d.timeframe && (
                   <select aria-label="Timeframe" className={SELECT_CLS} value={r.timeframe}
-                    onChange={(e) => setRow(i, { timeframe: e.target.value as SmartTimeframe })}>
+                    onChange={(e) => dispatch({ type: "row", i, patch: { timeframe: e.target.value as SmartTimeframe } })}>
                     {(Object.keys(TIMEFRAME_LABEL) as SmartTimeframe[]).map((t) => (
                       <option key={t} value={t}>{TIMEFRAME_LABEL[t]}</option>
                     ))}
@@ -572,38 +464,39 @@ function SmartListEditor({
                 )}
                 {d.scoped && (
                   <select aria-label="Scope" className={SELECT_CLS} value={r.scope}
-                    onChange={(e) => setRow(i, { scope: e.target.value as SmartScope })}>
+                    onChange={(e) => dispatch({ type: "row", i, patch: { scope: e.target.value as SmartScope } })}>
                     <option value="creator">this creator</option>
                     <option value="org">whole agency</option>
                   </select>
                 )}
+                {rowErr && <span role="alert" className="text-[12px] text-err">{rowErr}</span>}
                 {rows.length > 1 && (
-                  <button type="button" className="grid h-6 w-6 place-items-center text-muted hover:text-err" onClick={() => removeRow(i)} aria-label="Remove condition">
+                  <button type="button" className="grid h-6 w-6 place-items-center text-muted hover:text-err" onClick={() => dispatch({ type: "remove", i })} aria-label="Remove condition">
                     <X className="h-4 w-4" aria-hidden />
                   </button>
                 )}
               </div>
             );
           })}
-          <IfButton variant="link" icon={Plus} onClick={addRow}>Add condition</IfButton>
+          <IfButton variant="link" icon={Plus} onClick={() => dispatch({ type: "add" })}>Add condition</IfButton>
         </div>
 
         <div className="flex flex-wrap items-center gap-3 border-t border-border pt-4">
-          <IfButton onClick={() => void doPreview()} disabled={preview.isPending}>
-            {preview.isPending ? "Counting…" : "Preview count"}
+          <IfButton onClick={() => void doPreview()} disabled={previewM.isPending || !valid}>
+            {previewM.isPending ? "Counting…" : "Preview count"}
           </IfButton>
           <ExtraTag />
-          {preview.data && (
+          {st.preview && (
             <span className="text-[14px] text-fg">
-              <b>{preview.data.count}</b>
-              <span className="text-fg-dim"> / {preview.data.total_fans} fans match</span>
+              <b>{st.preview.count}</b>
+              <span className="text-fg-dim"> / {st.preview.total_fans} fans match</span>
             </span>
           )}
         </div>
-        {preview.data && preview.data.sample.length > 0 && (
+        {st.preview && st.preview.sample.length > 0 && (
           <div className="text-[12px] text-fg-dim">
-            Sample: {preview.data.sample.slice(0, 8).map((s) => s.name).join(", ")}
-            {preview.data.count > 8 && " …"}
+            Sample: {st.preview.sample.slice(0, 8).map((s) => s.name).join(", ")}
+            {st.preview.count > 8 && " …"}
           </div>
         )}
         {err && <div role="alert" className="text-[12px] text-err">{err}</div>}

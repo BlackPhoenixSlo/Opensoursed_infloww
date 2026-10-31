@@ -16,32 +16,27 @@
  * paid PPV lives in a later funnel step).
  */
 
-import { useEffect, useMemo, useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useEffect, useReducer, useState } from "react";
+import { useMutation } from "@tanstack/react-query";
 import { Megaphone, X } from "lucide-react";
 
 import { Button, Card, Input } from "@/components/ui/primitives";
-import { fanListsQuery, type FanList } from "@/components/audience/fanLists";
+import { SYSTEM_AUDIENCES, useFanLists } from "@/components/audience/fanLists";
+import {
+  MASS_EXCLUDE_LIST_NAME, audienceError, audienceReducer, buildAudiencePayload, initAudience, massExcludeListId,
+} from "@/components/audience/audienceReducer";
 import { relay } from "@/lib/relay";
 import { useEmployee } from "@/contexts/EmployeeContext";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import type { FunnelSummary } from "@/hooks/useFunnels";
 
-
-// OF virtual audiences (not returned by /lists) — same two we expose elsewhere.
-const SYSTEM_AUDIENCES: Array<{ id: string; label: string }> = [
-  { id: "fans", label: "All fans" },
-  { id: "following", label: "Following" },
-];
-
-// The standing "never mass send" exclude list, kept per account with this exact
-// name (MASSppvEXCLUDE merged into it 2026-10-21). Auto-selected in the Exclude
-// set on open so every funnel start skips it by default; the operator can untick
-// it for a one-off. Matched case-insensitively.
-export const MASS_EXCLUDE_LIST_NAME = "MASSDMEXCLUDE";
+// What a funnel opener sends to on open: all fans (Following is one click).
+const OPENER_INCLUDES = ["fans"];
 // Default auto-unsend window for a funnel opener (hours). Pre-fills the field.
 const DEFAULT_UNSEND_HOURS = "4";
 
+/** One account's panel: the caller keys it by `accountId` (list ids are per
+ *  account), so a Creator switch mounts a fresh audience. */
 export function FunnelLaunchPanel({
   funnel,
   accountId,
@@ -55,70 +50,46 @@ export function FunnelLaunchPanel({
   const accounts = useActiveAccounts();
   const accountName = accounts.find((a) => a.id === accountId)?.nickname ?? accountId ?? "";
 
-  const [includes, setIncludes] = useState<Set<string>>(() => new Set(["fans"]));
-  const [excludes, setExcludes] = useState<Set<string>>(() => new Set());
+  const [aud, dispatch] = useReducer(audienceReducer, accountId, (id) => initAudience(id, OPENER_INCLUDES));
+  const { includes, excludes } = aud;
   const [onlineOnly, setOnlineOnly] = useState(false);
   const [skipMessagedHours, setSkipMessagedHours] = useState("");
   // Auto-unsend the opener N hours after it sends. When it's unsent we also STOP
   // enrolling NEW repliers off this mass (the walker keeps going until a buy).
   // Pre-filled with the default; blank → no per-send auto-unsend.
   const [unsendHours, setUnsendHours] = useState(DEFAULT_UNSEND_HOURS);
-  const [excludesSeeded, setExcludesSeeded] = useState(false);
   const [done, setDone] = useState<string | null>(null);
 
-  // The shared fan-lists cache: every list, not the first page.
-  const listsQ = useQuery<FanList[]>({ ...fanListsQuery(accountId), enabled: !!accountId });
-  const customLists = useMemo(
-    () => (listsQ.data ?? []).filter((l) => l.type !== "build-in" && l.type !== "built-in"),
-    [listsQ.data],
-  );
+  const { customLists, data: lists, isFetching } = useFanLists(accountId);
 
   // Default the standing MASSDMEXCLUDE list into the exclude set once the
-  // account's lists load (only if it exists; operator can untick it). Seeded
-  // once per open so a manual untick isn't re-added on the next render.
+  // account's lists settle (not a stale cache mid-refetch); seeded once, so the
+  // operator's untick for a one-off sticks.
   useEffect(() => {
-    if (excludesSeeded || !listsQ.data) return;
-    const match = (listsQ.data ?? []).find(
-      (l) => String(l.name ?? "").trim().toUpperCase() === MASS_EXCLUDE_LIST_NAME,
-    );
-    if (match) setExcludes((prev) => new Set(prev).add(String(match.id)));
-    setExcludesSeeded(true);
-  }, [excludesSeeded, listsQ.data]);
+    if (!accountId || !lists || isFetching) return;
+    dispatch({ type: "seedExclude", accountId, listId: massExcludeListId(lists) });
+  }, [accountId, lists, isFetching]);
 
-  // Toggle `id` in `set`. When adding it, drop it from the opposite set so an
-  // audience can't be both included and excluded (a contradictory queue body).
-  function toggle(
-    set: Set<string>,
-    setter: (s: Set<string>) => void,
-    other: Set<string>,
-    otherSetter: (s: Set<string>) => void,
-    id: string,
-  ) {
+  // Start waits for that seed, so the opener never goes out before MASSDMEXCLUDE
+  // is excluded (the copy below promises it).
+  const seeded = aud.seededFor === accountId;
+
+  // An audience can't be both included and excluded (audienceReducer).
+  function toggle(side: "in" | "out", id: string) {
     setDone(null);
-    const next = new Set(set);
-    if (next.has(id)) {
-      next.delete(id);
-    } else {
-      next.add(id);
-      if (other.has(id)) {
-        const otherNext = new Set(other);
-        otherNext.delete(id);
-        otherSetter(otherNext);
-      }
-    }
-    setter(next);
+    dispatch({ type: side === "in" ? "toggleInclude" : "toggleExclude", id });
   }
 
   const send = useMutation({
     mutationFn: async () => {
       if (!accountId) throw new Error("Pick a model (account) above first");
-      if (includes.size === 0) throw new Error("Pick at least one audience to include");
+      const audErr = audienceError(aud);
+      if (audErr) throw new Error(audErr);
       const body: Record<string, unknown> = {
         text: funnel.opening_message,
-        user_lists: Array.from(includes),
+        ...buildAudiencePayload(aud),
         user_ids: [],
         excluded_users: [],
-        excluded_user_lists: Array.from(excludes),
         price: 0,
         locked_text: false,
         media_files: [],
@@ -157,22 +128,20 @@ export function FunnelLaunchPanel({
   }
 
   const ChipRow = ({
-    items, set, setter, other, otherSetter,
+    items, side,
   }: {
     items: Array<{ id: string; label: string }>;
-    set: Set<string>;
-    setter: (s: Set<string>) => void;
-    other: Set<string>;
-    otherSetter: (s: Set<string>) => void;
+    side: "in" | "out";
   }) => (
     <div className="flex flex-wrap gap-1.5">
       {items.map((it) => {
-        const on = set.has(it.id);
+        const on = (side === "in" ? includes : excludes).has(it.id);
         return (
           <button
             key={it.id}
             type="button"
-            onClick={() => toggle(set, setter, other, otherSetter, it.id)}
+            aria-pressed={on}
+            onClick={() => toggle(side, it.id)}
             className={
               "px-2.5 py-1 rounded-full text-xs border transition-colors " +
               (on
@@ -187,14 +156,7 @@ export function FunnelLaunchPanel({
     </div>
   );
 
-  // OF sometimes tags the built-in "fans"/"following" lists with a type the
-  // filter above misses, so they leak through and collide with SYSTEM_AUDIENCES
-  // (duplicate React keys + duplicate chips). Drop any list whose id already
-  // names a system audience.
-  const systemIds = new Set(SYSTEM_AUDIENCES.map((a) => a.id));
-  const listItems = customLists
-    .map((l) => ({ id: String(l.id), label: l.name ?? `List ${l.id}` }))
-    .filter((it) => !systemIds.has(it.id));
+  const listItems = customLists.map((l) => ({ id: String(l.id), label: l.name ?? `List ${l.id}` }));
 
   return (
     <Card className="p-4 space-y-4 border-accent/40">
@@ -222,17 +184,20 @@ export function FunnelLaunchPanel({
       {/* Include */}
       <div className="space-y-1.5">
         <div className="text-xs text-fg-dim">Send to (include)</div>
-        <ChipRow items={SYSTEM_AUDIENCES} set={includes} setter={setIncludes} other={excludes} otherSetter={setExcludes} />
+        <ChipRow items={SYSTEM_AUDIENCES} side="in" />
         {listItems.length > 0 && (
-          <ChipRow items={listItems} set={includes} setter={setIncludes} other={excludes} otherSetter={setExcludes} />
+          <ChipRow items={listItems} side="in" />
         )}
       </div>
 
-      {/* Exclude */}
-      <div className="space-y-1.5">
-        <div className="text-xs text-fg-dim">Exclude</div>
-        <ChipRow items={[...SYSTEM_AUDIENCES, ...listItems]} set={excludes} setter={setExcludes} other={includes} otherSetter={setIncludes} />
-      </div>
+      {/* Exclude: custom lists only — OF silently drops built-in names in
+          excludedLists (fanLists.tsx), so an "All fans" exclude would over-send. */}
+      {listItems.length > 0 && (
+        <div className="space-y-1.5">
+          <div className="text-xs text-fg-dim">Exclude</div>
+          <ChipRow items={listItems} side="out" />
+        </div>
+      )}
 
       {/* Online + skip-recent */}
       <div className="flex flex-wrap items-end gap-4">
@@ -276,7 +241,7 @@ export function FunnelLaunchPanel({
       </p>
 
       <div className="flex items-center gap-3 pt-1">
-        <Button variant="primary" onClick={confirmAndSend} disabled={send.isPending || !accountId}>
+        <Button variant="primary" onClick={confirmAndSend} disabled={send.isPending || !accountId || !seeded}>
           {send.isPending ? "Sending…" : "▶ Start funnel"}
         </Button>
         {done && <span className="text-xs text-ok">{done}</span>}

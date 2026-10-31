@@ -31,6 +31,7 @@ import atexit
 import contextlib
 import functools
 from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi import Path as PathParam
@@ -47,6 +48,7 @@ import accounts as account_registry  # noqa: E402
 import admission  # noqa: E402  # bounded-concurrency lanes (see service/admission.py)
 import lane_config  # noqa: E402  # durable store behind the Concurrency panel
 import account_health  # noqa: E402  # dead-session pause (see service/account_health.py)
+import pump_reconcile  # noqa: E402  # the pump supervisor's pass, pure (see service/pump_reconcile.py)
 import account_page  # noqa: E402  # free-vs-paid page (see service/account_page.py)
 import ownership  # noqa: E402  # owned-media semantics (see service/ownership.py)
 import proxies as proxy_registry  # noqa: E402
@@ -71,8 +73,8 @@ from events import (  # noqa: E402
     sse_stats as _sse_stats,
     sse_stream,
     start_persist_worker as _start_persist_worker,
-    stop_persist_worker as _stop_persist_worker,
 )
+from events_persist import stop_persist_worker as _stop_persist_worker  # noqa: E402
 from employees import router as _employees_router, audit_middleware as _audit_middleware  # noqa: E402
 from permissions import role_enforcement_middleware  # noqa: E402
 from http_hooks import HookChain  # noqa: E402
@@ -965,6 +967,21 @@ async def _broadcast_event(event: dict) -> None:
 # `__account_name` before broadcast so subscribers (the UI) can route
 # or filter by account. The pumps dict is mutated only by the helpers below.
 _account_pumps: dict[str, asyncio.Task] = {}
+
+
+@dataclass
+class _PumpRun:
+    """One account's pump bookkeeping for the supervisor's Restart backoff
+    (pump_reconcile.restart_due): when its current pump started (monotonic), its
+    restarts since its last healthy run or park, and, once that pump exited, when
+    a Restart may run (None while it runs). Kept while the account has a pump
+    entry: `_do_stop_account_pump` drops both."""
+    started: float
+    restarts: int = 0
+    due: float | None = None
+
+
+_pump_runs: dict[str, _PumpRun] = {}
 _supervisor_task: asyncio.Task | None = None
 _tx_ingest_task: asyncio.Task | None = None
 _tx_fast_task: asyncio.Task | None = None
@@ -1041,11 +1058,12 @@ async def _periodic(
             log.warning("%s cycle failed", label, exc_info=True)
 
 
-async def _ws_pump_for_account(account_id: str) -> None:
+async def _ws_pump_for_account(account_id: str) -> bool:
     """Run the realtime WS pump for one account until cancelled. Both the OF
     and Fansly sockets carry their own reconnect-with-backoff loop, so this
     task is only torn down when the account is removed or the server is
-    shutting down."""
+    shutting down. Returns True when it parked on a dead session (the
+    supervisor's backoff reads it, `_on_pump_exit`)."""
     from of_ws import OFWebSocket, SessionDead, register_pump, unregister_pump
     # A deactivated Creator gets no socket, whichever path spawned this
     # (`_restart_account_pump` after a re-capture, the startup spawn, or a
@@ -1054,7 +1072,7 @@ async def _ws_pump_for_account(account_id: str) -> None:
     # deactivate endpoint itself; the supervisor reaps any stragglers.
     if await account_health.is_deactivated(account_id):
         log.info("ws-pump[%s]: not started, the Creator is deactivated", account_id)
-        return
+        return False
     while True:
         try:
             client = _load_client(account_id)
@@ -1104,7 +1122,7 @@ async def _ws_pump_for_account(account_id: str) -> None:
                 log.warning("account_session_dead account=%s via=ws-pump reason=%s — automations "
                             "paused until the session recovers", account_id, e.reason)
             log.info("ws-pump[%s]: parked, the session is dead (%s)", account_id, e.reason)
-            return
+            return True
         except HTTPException as e:
             log.warning("ws-pump[%s]: %s — retry in 30s", account_id, e.detail)
             await asyncio.sleep(30)
@@ -1139,9 +1157,29 @@ def _do_start_account_pump(account_id: str) -> None:
     task = _account_pumps.get(account_id)
     if task and not task.done():
         return
-    _account_pumps[account_id] = asyncio.create_task(
+    task = _account_pumps[account_id] = asyncio.create_task(
         _ws_pump_for_account(account_id), name=f"ws-pump-{account_id}",
     )
+    old = _pump_runs.get(account_id)
+    _pump_runs[account_id] = _PumpRun(_time_mod.monotonic(), old.restarts if old else 0)
+    task.add_done_callback(functools.partial(_on_pump_exit, account_id))
+
+
+def _on_pump_exit(account_id: str, task: asyncio.Task) -> None:
+    """When the account's current pump ended (a replaced or stopped one is not
+    it): when its Restart is due, logged once if that is not at once."""
+    if _account_pumps.get(account_id) is not task:
+        return
+    run = _pump_runs[account_id]
+    exc = None if task.cancelled() else task.exception()
+    if exc is not None:   # retrieved here, so asyncio no longer logs it
+        log.error("ws-pump[%s] crashed", account_id, exc_info=exc)
+    parked = not task.cancelled() and exc is None and task.result() is True
+    now = _time_mod.monotonic()
+    run.restarts, run.due = pump_reconcile.restart_due(run.restarts, run.started, now, parked)
+    if run.due > now:
+        log.info("ws-pump[%s] exited — restart in %.0fs (backoff, attempt %d)",
+                 account_id, run.due - now, run.restarts)
 
 
 def _stop_account_pump(account_id: str) -> None:
@@ -1158,6 +1196,9 @@ def _stop_account_pump(account_id: str) -> None:
 
 
 def _do_stop_account_pump(account_id: str) -> None:
+    """Every stop (the supervisor's, remove, deactivate, a restart) ends here: the
+    backoff record goes with the pump, so a re-added Creator starts from 0."""
+    _pump_runs.pop(account_id, None)
     task = _account_pumps.pop(account_id, None)
     if task and not task.done():
         task.cancel()
@@ -1217,28 +1258,31 @@ async def _pump_supervisor() -> None:
 
 
 async def _reconcile_pumps() -> None:
-    """One supervisor pass. Picks up newly-bootstrapped accounts without needing
-    an explicit 'start pump' call from the bootstrap endpoint, and reaps pumps
-    for deleted and deactivated accounts. Also restarts any pump that crashed
-    unexpectedly. A session-dead account is parked: no pump is started or
-    restarted for it (its pump exits on the dead session, see
-    _ws_pump_for_account) until the flag clears."""
+    """One supervisor pass: gather the roster, the deactivated and dead-session
+    sets and whether each pump is done, then perform `pump_reconcile.reconcile`'s
+    actions in its order (the rules live there). A parked pump exits on the dead
+    session, see _ws_pump_for_account."""
     off = await account_health.deactivated_ids()
-    current_ids = {a["id"] for a in account_registry.list_accounts()
-                   if a.get("has_session") and a["id"] not in off}
+    with_session = [a["id"] for a in account_registry.list_accounts() if a.get("has_session")]
     parked = set(await account_health.dead_session_map())
-    # Start missing
-    for aid in current_ids - parked:
-        _start_account_pump(aid)
-    # Stop pumps whose account vanished or was deactivated
-    for aid in list(_account_pumps.keys()):
-        if aid not in current_ids:
+    done = {aid: t.done() for aid, t in _account_pumps.items()}
+    now = _time_mod.monotonic()
+    for act in pump_reconcile.reconcile(with_session, off, parked, done):
+        aid = act.account_id
+        if isinstance(act, pump_reconcile.Start):
+            _start_account_pump(aid)
+        elif isinstance(act, pump_reconcile.Stop):
             _stop_account_pump(aid)
-            continue
-        task = _account_pumps[aid]
-        if task.done() and not task.cancelled() and aid not in parked:
-            log.warning("ws-pump[%s] task exited — restarting", aid)
-            _restart_account_pump(aid)
+        elif isinstance(act, pump_reconcile.Restart):
+            run = _pump_runs[aid]
+            if run.due is None or now < run.due:
+                continue   # backoff (or its exit callback not run yet)
+            log.info("ws-pump[%s] not running (exited, or resumed after park) — restarting (attempt %d)",
+                     aid, run.restarts)
+            run.restarts += 1
+            _start_account_pump(aid)   # replaces the done task, keeps the count
+        else:
+            raise TypeError(f"unknown pump action {act!r}")
 
 
 # Background tasks the relay owns for its own lifetime. CPython keeps only a
@@ -1595,6 +1639,7 @@ async def _stop_event_pumps() -> None:
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await task
     _account_pumps.clear()
+    _pump_runs.clear()
 
     # Drain the persist worker last — pumps are already cancelled above, so
     # no new events are arriving. Anything still in the queue is dropped.
@@ -3043,275 +3088,11 @@ def admin_streams() -> dict:
     }
 
 
-# ── /admin/errors ───────────────────────────────────────────────────
-# Persisted error log. The frontend POSTs unhandled errors here via
-# useErrorReporter; the server's exception middleware writes 500s
-# here too. GET returns recent rows for the badge + admin viewer.
-
-_APP_ERROR_CONTEXT_MAX = 16384
-
-
-def _app_error_context_json(text: str) -> str:
-    """The stored context, always valid JSON: one too long to keep whole is kept
-    as its first characters under `truncated` (a raw slice of the JSON text
-    would not parse, and GET /admin/errors would 500 on it)."""
-    if len(text) <= _APP_ERROR_CONTEXT_MAX:
-        return text
-    return json.dumps({"truncated": text[:_APP_ERROR_CONTEXT_MAX - 64]})
-
-
-def _app_error_context(raw: str | None) -> Any:
-    """A row's context for GET /admin/errors; a row stored before
-    _app_error_context_json (a cut-off JSON text) comes back as that text."""
-    if not raw:
-        return None
-    try:
-        return json.loads(raw)
-    except ValueError:
-        return {"unparsed": raw}
-
-
-class _AppErrorBody(BaseModel):
-    source: str = "browser"             # "browser" | "server" (clients should send "browser")
-    kind: str = "error"                 # short category — "unhandledrejection", "react-render", …
-    message: str
-    stack: str | None = None
-    url: str | None = None
-    account_id: str | None = None
-    employee_id: int | None = None
-    user_agent: str | None = None
-    # Free-form bag of extra fields the client wants persisted. Stored
-    # as a JSON blob; we don't enforce a schema.
-    context: dict[str, Any] | None = None
-
-
-@app.post("/admin/errors")
-async def admin_errors_create(body: _AppErrorBody = Body(...)) -> dict[str, Any]:
-    """Persist a single error report. Never raises — if we can't write
-    we still 200 so the reporter loop doesn't error-on-error."""
-    from db.engine import get_session
-    from db.models import AppError
-    # The list is served to every caller (not tenant-filtered): no pool proxy secrets in it.
-    scrub = proxy_registry.scrub_pool_secrets
-    try:
-        async with get_session() as s:
-            row = AppError(
-                source=(body.source or "browser")[:32],
-                kind=(body.kind or "error")[:64],
-                message=scrub(body.message or "")[:4096],
-                stack=scrub(body.stack)[:16384] if body.stack else None,
-                url=scrub(body.url)[:1024] if body.url else None,
-                account_id=body.account_id[:64] if body.account_id else None,
-                employee_id=body.employee_id,
-                user_agent=body.user_agent[:512] if body.user_agent else None,
-                context_json=_app_error_context_json(scrub(json.dumps(body.context))) if body.context else None,
-            )
-            s.add(row)
-            await s.commit()
-            return {"ok": True, "id": row.id}
-    except Exception:
-        log.exception("failed to persist app_error")
-        return {"ok": False}
-
-
-@app.delete("/admin/errors")
-async def admin_errors_clear(
-    since_hours: int | None = Query(None, ge=1, le=720, description="Only clear rows within this window; omit to clear all"),
-    source: str | None = Query(None, description="Filter by 'browser' or 'server'"),
-) -> dict[str, Any]:
-    """Dismiss errors — used by the TopNav badge's Clear button. Deletes
-    rows matching the same filter the GET uses so the badge count drops
-    to zero immediately."""
-    from db.engine import get_session
-    from db.models import AppError
-    from sqlalchemy import delete as sa_delete
-    async with get_session() as s:
-        stmt = sa_delete(AppError)
-        if since_hours is not None:
-            cutoff = datetime.utcnow() - timedelta(hours=since_hours)
-            stmt = stmt.where(AppError.occurred_at >= cutoff)
-        if source:
-            stmt = stmt.where(AppError.source == source)
-        result = await s.execute(stmt)
-        await s.commit()
-        return {"ok": True, "deleted": result.rowcount or 0}
-
-
-@app.get("/admin/errors")
-async def admin_errors_list(
-    limit: int = Query(50, ge=1, le=500),
-    since_hours: int = Query(24, ge=1, le=720),
-    source: str | None = Query(None, description="Filter by 'browser' or 'server'"),
-) -> dict[str, Any]:
-    """Recent errors, newest first. `since_hours` defaults to 24h so the
-    TopNav badge can count today's errors cheaply."""
-    from db.engine import get_session
-    from db.models import AppError
-    from sqlalchemy import select, and_
-    cutoff = datetime.utcnow() - timedelta(hours=since_hours)
-    async with get_session() as s:
-        stmt = select(AppError).where(AppError.occurred_at >= cutoff)
-        if source:
-            stmt = stmt.where(AppError.source == source)
-        stmt = stmt.order_by(AppError.occurred_at.desc()).limit(limit)
-        rows = (await s.execute(stmt)).scalars().all()
-        return {
-            "count": len(rows),
-            "since_hours": since_hours,
-            "list": [
-                {
-                    "id": r.id,
-                    "occurred_at": r.occurred_at.isoformat() + "Z",
-                    "source": r.source,
-                    "kind": r.kind,
-                    "message": r.message,
-                    "stack": r.stack,
-                    "url": r.url,
-                    "account_id": r.account_id,
-                    "employee_id": r.employee_id,
-                    "user_agent": r.user_agent,
-                    "context": _app_error_context(r.context_json),
-                }
-                for r in rows
-            ],
-        }
-
-
-# ── /admin/perflog — client-side timing log ingest ────────────────
-# Frontend `app/lib/perfLog.ts` batches PerfEvents and POSTs them here so
-# we can aggregate "tab open → call asked → call delivered" timing across
-# all chatters. Append-only. Pruned every `_PERFLOG_EVICT_INTERVAL_S` by
-# `_perflog_evictor_loop()` so the table stays bounded.
-
-_PERFLOG_RETAIN_S = int(os.environ.get("PERFLOG_RETAIN_S", str(7 * 24 * 60 * 60)))
-_PERFLOG_EVICT_INTERVAL_S = 60 * 60
-_PERFLOG_BATCH_MAX = 500
-_PERFLOG_META_MAX_BYTES = 4 * 1024
-
-
-class _PerfLogEventBody(BaseModel):
-    opId: str
-    kind: str
-    phase: str
-    ts: float  # client epoch ms (may be sub-ms float from performance.timeOrigin)
-    tabId: str | None = None
-    meta: dict[str, Any] | None = None
-
-
-class _PerfLogIngestBody(BaseModel):
-    tabId: str
-    parentTabId: str | None = None
-    employeeId: int | None = None
-    accountId: str | None = None
-    events: list[_PerfLogEventBody]
-
-
-@app.post("/admin/perflog/ingest")
-async def admin_perflog_ingest(request: Request, body: _PerfLogIngestBody = Body(...)) -> dict[str, Any]:
-    """Persist a batch of client-side perf events. Never raises — if we
-    can't write we still 200 so the client's flush loop doesn't error-on-
-    error. Sent via `navigator.sendBeacon` on page unload, plain
-    `fetch(..., keepalive: true)` otherwise.
-
-    Soft-tags rows with the requesting employee + account from headers
-    when the body didn't carry them, so analytics queries can filter on
-    "who's been seeing slow loads"."""
-    from db.engine import get_session
-    from db.models import PerfEventRow
-
-    if not body.events:
-        return {"ok": True, "inserted": 0}
-    events = body.events[:_PERFLOG_BATCH_MAX]
-
-    # Best-effort identity backfill from headers (employee picker writes
-    # X-Employee-Id on every relayed call; X-Account-Id rides scope).
-    hdr_employee_raw = request.headers.get("x-employee-id")
-    try:
-        hdr_employee_id: int | None = int(hdr_employee_raw) if hdr_employee_raw else None
-    except ValueError:
-        hdr_employee_id = None
-    hdr_account_id = request.headers.get("x-account-id") or None
-
-    employee_id = body.employeeId if body.employeeId is not None else hdr_employee_id
-    account_id = body.accountId if body.accountId else hdr_account_id
-
-    try:
-        async with get_session() as s:
-            for e in events:
-                meta_str: str | None = None
-                if e.meta is not None:
-                    try:
-                        meta_str = json.dumps(e.meta, default=str)[:_PERFLOG_META_MAX_BYTES]
-                    except (TypeError, ValueError):
-                        meta_str = None
-                # The body tabId is per-batch; fall back to per-event if a
-                # client ever wants to ship cross-tab batches (today they
-                # don't — but keeping the schema honest).
-                tab_id = (e.tabId or body.tabId)[:64]
-                s.add(PerfEventRow(
-                    tab_id=tab_id,
-                    parent_tab_id=body.parentTabId[:64] if body.parentTabId else None,
-                    op_id=(e.opId or "")[:128],
-                    kind=(e.kind or "")[:64],
-                    phase=(e.phase or "")[:32],
-                    client_ts_ms=int(e.ts),
-                    employee_id=employee_id,
-                    account_id=account_id[:64] if account_id else None,
-                    meta_json=meta_str,
-                ))
-            await s.commit()
-        return {"ok": True, "inserted": len(events)}
-    except Exception:
-        log.exception("perflog ingest failed")
-        return {"ok": False}
-
-
-@app.get("/admin/perflog/recent")
-async def admin_perflog_recent(
-    limit: int = Query(200, ge=1, le=2000),
-    since_minutes: int = Query(60, ge=1, le=24 * 60 * 7),
-    kind: str | None = Query(None, description="Filter by event kind (exact match)"),
-    tab_id: str | None = Query(None, description="Filter to a single tab session"),
-    op_id: str | None = Query(None, description="Filter to a single op id (all phases)"),
-) -> dict[str, Any]:
-    """Recent perfLog events, newest first. Powers ad-hoc inspection of
-    timing across chatters — e.g. histogram of `vault.media` request→
-    delivered deltas, or per-tab "open → first useful paint" times."""
-    from db.engine import get_session
-    from db.models import PerfEventRow
-    from sqlalchemy import select
-
-    cutoff = datetime.utcnow() - timedelta(minutes=since_minutes)
-    async with get_session() as s:
-        stmt = select(PerfEventRow).where(PerfEventRow.received_at >= cutoff)
-        if kind:
-            stmt = stmt.where(PerfEventRow.kind == kind)
-        if tab_id:
-            stmt = stmt.where(PerfEventRow.tab_id == tab_id)
-        if op_id:
-            stmt = stmt.where(PerfEventRow.op_id == op_id)
-        stmt = stmt.order_by(PerfEventRow.received_at.desc()).limit(limit)
-        rows = (await s.execute(stmt)).scalars().all()
-        return {
-            "count": len(rows),
-            "since_minutes": since_minutes,
-            "list": [
-                {
-                    "id": r.id,
-                    "tab_id": r.tab_id,
-                    "parent_tab_id": r.parent_tab_id,
-                    "op_id": r.op_id,
-                    "kind": r.kind,
-                    "phase": r.phase,
-                    "client_ts_ms": r.client_ts_ms,
-                    "received_at": r.received_at.isoformat() + "Z",
-                    "employee_id": r.employee_id,
-                    "account_id": r.account_id,
-                    "meta": json.loads(r.meta_json) if r.meta_json else None,
-                }
-                for r in rows
-            ],
-        }
+# ── /admin/errors + /admin/perflog ──────────────────────────────
+# Live in diag_api.py; included HERE (not top-of-file) to keep route order.
+import diag_api  # noqa: E402
+from diag_api import _perflog_evictor_loop  # noqa: E402
+app.include_router(diag_api.router)
 
 
 # ── messages.raw_json retention ───────────────────────────────────────
@@ -3363,26 +3144,6 @@ async def _raw_json_evictor_loop() -> None:
         # still holding payloads past a 60-day window when this was measured.
         first_after_s=_EVICT_BOOT_GRACE_S,
     )
-
-
-async def _perflog_sweep() -> None:
-    from db.engine import get_session
-    from db.models import PerfEventRow
-    from sqlalchemy import delete as sa_delete
-    cutoff = datetime.utcnow() - timedelta(seconds=_PERFLOG_RETAIN_S)
-    async with get_session() as s:
-        res = await s.execute(
-            sa_delete(PerfEventRow).where(PerfEventRow.received_at < cutoff)
-        )
-        await s.commit()
-        if (res.rowcount or 0) > 0:
-            log.info("perflog evictor pruned %d rows (retain=%ds)", res.rowcount, _PERFLOG_RETAIN_S)
-
-
-async def _perflog_evictor_loop() -> None:
-    """Periodic prune of perf_events older than _PERFLOG_RETAIN_S. Cheap —
-    indexed on received_at. Runs hourly by default; tune via env."""
-    await _periodic("perflog evictor", _PERFLOG_EVICT_INTERVAL_S, _perflog_sweep)
 
 
 # ── audit / log table retention ──────────────────────────────────────
@@ -7340,469 +7101,10 @@ def of_patch_story_settings(body: _StorySettingsBody = Body(...)):
     """Story replies switch: `{allowReplyFrom: "subscribers" | "nobody"}`."""
     return _settings_write(lambda: _get_client().patch_story_settings(body.allowReplyFrom))
 
-# ── Analytics (Statistics > Earnings/Engagement/Reach tabs) ────────
-# All accept startDate/endDate as ISO with space (OF spec). Default = 30d window.
-
-_CHART_FILTER_KEY = re.compile(r"^[a-z][a-z_]{0,40}$")
-
-def _chart_filter(filter: str | None) -> list[str] | None:
-    """Comma-separated series names → OF's filter[k]=k keys (422 on junk)."""
-    if not filter:
-        return None
-    keys = [k.strip() for k in filter.split(",") if k.strip()]
-    if not keys or not all(_CHART_FILTER_KEY.match(k) for k in keys):
-        raise HTTPException(status_code=422, detail="filter: comma-separated series names")
-    return keys
-
-@app.get("/api/of/v2/earnings/chart")
-@_account_ttl("earnings_chart", 120)
-def of_earnings_chart(
-    start: str | None = Query(None), end: str | None = Query(None),
-    filter: str | None = Query(None, description="Comma-separated series, e.g. "
-                               "'tips_count,tips_amount' (Statements) or "
-                               "'total_amount,subscribes_amount,…' (Overview)"),
-    monthlyTotal: int = Query(0, ge=0, le=1, description="1 = Overview's monthly bars (dates ignored)"),
-):
-    """Earnings series for Statistics (Overview chart, Statements sidebar and
-    category radios). OF only returns the series named in `filter` — with none
-    it answers [], which is why these charts were blank."""
-    keys = _chart_filter(filter)
-    return _proxy(lambda: _get_client().earnings_chart(
-        start=start, end=end, filter=keys, monthly_total=bool(monthlyTotal)))
-
-# /posts/chart and /posts/top declared above /posts/{post_id} in the file
-# (see "Posts shortcuts" section) so they don't get shadowed by the int-typed
-# dynamic route. Routes themselves live there; nothing here.
-
-@app.get("/api/of/v2/users/me/stats/overview")
-@_account_ttl("me_stats", 120)
-def of_my_stats_overview(start: str | None = Query(None), end: str | None = Query(None),
-                          by: str = Query("visitors")):
-    """My stats overview (visitors/engagement)."""
-    return _proxy(lambda: _get_client().my_stats_overview(start=start, end=end, by=by))
-
-@app.get("/api/of/v2/users/me/stats/top/post")
-@_account_ttl("me_stats", 120)
-def of_my_stats_top_posts(start: str | None = Query(None), end: str | None = Query(None),
-                          limit: int = Query(10, ge=1, le=50)):
-    """My best-performing posts across types."""
-    return _proxy(lambda: _get_client().my_stats_top_posts(start=start, end=end, limit=limit))
-
-_PROFILE_STATS_BLOCKS = {"chart", "topDomains", "topCountries"}
-
-@app.get("/api/of/v2/users/me/profile/stats")
-def of_my_profile_stats(start: str | None = Query(None), end: str | None = Query(None),
-                         limit: int = Query(10, ge=0, le=50),
-                         by: str | None = Query(None, pattern="^(total|guests|users)$",
-                                                description="Reach's All / Guests / Users chips"),
-                         filter: str | None = Query(None, description="Comma-separated blocks: "
-                                                    "chart, topDomains, topCountries (OF's filter[])")):
-    """Visitor source breakdown (Statistics → Reach)."""
-    blocks = [b.strip() for b in filter.split(",") if b.strip()] if filter else None
-    if blocks is not None and (not blocks or not set(blocks) <= _PROFILE_STATS_BLOCKS):
-        raise HTTPException(status_code=422, detail="filter: chart, topDomains and/or topCountries")
-    return _proxy(lambda: _get_client().my_profile_stats(
-        start=start, end=end, limit=limit, by=by, filter=blocks))
-
-@app.get("/api/of/v2/users/me/profile/views/qr")
-def of_my_qr_views():
-    """Settings > QR code's scan count: OF's GET /users/me/profile/views/qr ({count})."""
-    return _proxy(lambda: _get_client().qr_views())
-
-@app.get("/api/of/v2/sessions")
-def of_sessions():
-    """Settings > Account > Login sessions, read-only: OF's GET /sessions (a list). Ending
-    sessions (OF's DELETE /sessions) has no relay route."""
-    return _proxy(lambda: _get_client().sessions())
-
-@app.get("/api/of/v2/streams/users/blocked")
-def of_stream_blocked_users(limit: int = Query(10, ge=1, le=50), offset: int = Query(0, ge=0),
-                            query: str = Query("", max_length=64)):
-    """Settings > Streaming > Blocked users, read-only: OF's GET /streams/users/blocked
-    ({list, hasMore}). Blocking and unblocking have no relay route."""
-    return _proxy(lambda: _get_client().stream_blocked_users(limit=limit, offset=offset, query=query))
-
-@app.get("/api/of/v2/users/me/start-date-model")
-def of_my_start_date():
-    """When I became a creator — used to range-cap charts."""
-    return _proxy(lambda: _get_client().my_start_date())
-
-@app.get("/api/of/v2/payouts/chargebacks/ratio")
-@_account_ttl("payouts", 60)
-def of_chargebacks_ratio(start: str | None = Query(None), end: str | None = Query(None)):
-    """Chargeback-rate risk metric."""
-    return _proxy(lambda: _get_client().chargebacks_ratio(start=start, end=end))
-
-# ── Statistics pages: lists, tops, streaks (OF app.js module 977600) ──
-# Read-only GETs, one per call OF's own Statistics pages make; paths and query
-# params copied from OF's client. `start`/`end` are 'YYYY-MM-DD HH:MM:SS' and
-# default to the last 30 days, like every other analytics route here.
-
-@app.get("/api/of/v2/payouts/chargebacks")
-@_account_ttl("payouts", 60)
-def of_chargebacks(start: str | None = Query(None), end: str | None = Query(None),
-                   limit: int = Query(10, ge=1, le=50), offset: int = Query(0, ge=0),
-                   marker: str | None = Query(None, max_length=64)):
-    """Statements › Chargebacks list: {list, marker} (no hasMore; a full page means more)."""
-    return _proxy(lambda: _get_client().chargebacks(
-        start=start, end=end, limit=limit, offset=offset, marker=marker))
-
-@app.get("/api/of/v2/users/me/stats/top/{kind}")
-@_account_ttl("me_stats", 120)
-def of_my_stats_top(kind: str, start: str | None = Query(None), end: str | None = Query(None)):
-    """Overview › Top highlights: top message / stream / story, or top fan per
-    category (an object keyed by category). /top/post is its own route above."""
-    if kind not in ("message", "stream", "story", "fan"):
-        raise HTTPException(status_code=404, detail="unknown top kind")
-    return _proxy(lambda: _get_client().stats_top(kind, start=start, end=end))
-
-@app.get("/api/of/v2/streaks")
-def of_streaks(start: str | None = Query(None), end: str | None = Query(None)):
-    """Overview › Streaks calendar: {list:[streak]}."""
-    return _proxy(lambda: _get_client().streaks(start=start, end=end))
-
-@app.get("/api/of/v2/streaks/top")
-def of_streaks_top():
-    """Overview › Streaks: the longest streak (`days`)."""
-    return _proxy(lambda: _get_client().streaks_top())
-
-@app.get("/api/of/v2/users/me/stats/today-activity")
-@_account_ttl("me_stats", 120)
-def of_today_activity():
-    """Overview › Streaks: whether today already counts toward the streak."""
-    return _proxy(lambda: _get_client().today_activity())
-
-@app.get("/api/of/v2/users/me/stats/messages/direct")
-@_account_ttl("me_stats", 120)
-def of_direct_message_stats(startDate: str = Query(..., description="YYYY-MM-DD HH:MM:SS"),
-                            endDate: str = Query(..., description="YYYY-MM-DD HH:MM:SS"),
-                            limit: int = Query(50, ge=1, le=100),
-                            offset: int = Query(0, ge=0),
-                            query: str | None = Query(None, max_length=200)):
-    """Engagement › Messages › Direct messages tab (and its search box):
-    {hasMore, items:[message]}. Same params as the mass-messages route."""
-    return _proxy(lambda: _get_client().engagement_messages(
-        "direct", start_date=startDate, end_date=endDate, limit=limit, offset=offset, query=query))
-
-@app.get("/api/of/v2/messages/queue/chart")
-def of_messages_chart(type: str = Query("group", pattern="^(group|direct)$"),
-                      start: str | None = Query(None), end: str | None = Query(None)):
-    """Engagement › Messages chart + totals for one tab: OF's
-    filter[{type}_messages] and filter[{type}_messages_purchases], withTotal."""
-    return _proxy(lambda: _get_client().messages_chart(type, start=start, end=end))
-
-# The queue id rides in the query, not the path, so the permission map can give
-# this read to Statistics alone: a `/messages/queue/{id}/...` path could only be
-# mapped through the `/messages/queue` prefix, which also carries the queue's writes.
-@app.get("/api/of/v2/messages/queue/buyers")
-def of_mass_message_buyers(queue_id: int = Query(..., ge=1, description="The mass message's queue id"),
-                           limit: int = Query(10, ge=1, le=50),
-                           offset: int = Query(0, ge=0),
-                           marker: str | None = Query(None, max_length=64),
-                           skip_users: str | None = Query(None, pattern="^(all|none)$")):
-    """Who bought one mass message (the row's buyers list) — OF's
-    /messages/queue/{queue_id}/buyers."""
-    return _proxy(lambda: _get_client().mass_message_buyers(
-        queue_id, limit=limit, offset=offset, marker=marker, skip_users=skip_users))
-
-@app.get("/api/of/v2/subscriptions/subscribers/latest")
-def of_subscribers_latest(by: str = Query("total", pattern="^(total|renew|new)$"),
-                          start: str | None = Query(None), end: str | None = Query(None),
-                          offset: int = Query(0, ge=0)):
-    """Fans › Subscriptions table, tab All (total) / Renews (renew) / New (new):
-    {users, hasMore}, 10 a page."""
-    return _proxy(lambda: _get_client().subscribers_latest(by=by, start=start, end=end, offset=offset))
-
-@app.get("/api/of/v2/subscriptions/subscribers/top")
-def of_subscribers_top(by: str = Query("total", pattern="^(total|subscribes|tips|messages|post|streams)$"),
-                       start: str | None = Query(None), end: str | None = Query(None),
-                       offset: int = Query(0, ge=0)):
-    """Fans › Top fans by total / subscriptions / tips / messages / posts /
-    streams: {users, hasMore}, 10 a page."""
-    return _proxy(lambda: _get_client().subscribers_top(by=by, start=start, end=end, offset=offset))
-
-@app.get("/api/of/v2/fans-activity/list")
-def of_fans_activity(format: str = Query("table", pattern="^(table|hours)$"),
-                     start: str | None = Query(None), end: str | None = Query(None),
-                     timeZone: str = Query("UTC", pattern=r"^[A-Za-z0-9_+\-]+(/[A-Za-z0-9_+\-]+)*$")):
-    """Fans › Fans activity: weekday table or hourly bars in the owner's timezone."""
-    return _proxy(lambda: _get_client().fans_activity(
-        format=format, start=start, end=end, time_zone=timeZone))
-
-@app.get("/api/of/v2/streams/top")
-def of_streams_top(by: str = Query("purchases", pattern="^(purchases|tips|views|likes|comments)$"),
-                   start: str | None = Query(None), end: str | None = Query(None),
-                   limit: int = Query(10, ge=1, le=50), offset: int = Query(0, ge=0)):
-    """Engagement › Streaming list: {items, hasMore}."""
-    return _proxy(lambda: _get_client().streams_top(
-        by=by, start=start, end=end, limit=limit, offset=offset))
-
-@app.get("/api/of/v2/stories/top")
-def of_stories_top(by: str = Query("tips", pattern="^(tips|views|likes|comments)$"),
-                   start: str | None = Query(None), end: str | None = Query(None),
-                   limit: int = Query(4, ge=1, le=50), offset: int = Query(0, ge=0)):
-    """Engagement › Stories list: {items, hasMore}."""
-    return _proxy(lambda: _get_client().stories_top(
-        by=by, start=start, end=end, limit=limit, offset=offset))
-
-@app.get("/api/of/v2/promotions/stats")
-def of_promotions_stats(start: str | None = Query(None), end: str | None = Query(None),
-                        limit: int = Query(10, ge=1, le=100), offset: int = Query(0, ge=0)):
-    """Reach › Promotions table: OF's dated /promotions?offset&startDate&endDate&limit,
-    {items, hasMore}. Its own path (not /promotions) so the permission map can give
-    this read to Statistics without the promotion writes."""
-    return _proxy(lambda: _get_client().promotions_stats(
-        start=start, end=end, limit=limit, offset=offset))
-
-@app.get("/api/of/v2/campaigns/stats")
-def of_campaigns_stats(start: str | None = Query(None), end: str | None = Query(None),
-                       limit: int = Query(10, ge=1, le=100), offset: int = Query(0, ge=0),
-                       field: str | None = Query(None, pattern="^[A-Za-z_]{1,40}$"),
-                       sort: str | None = Query(None, pattern="^(asc|desc)$")):
-    """Reach › Tracking links table: OF's /campaigns?limit&offset&pagination=1&dates
-    &with_deleted=1&sorting_deleted=0&stats=true (+field/sort), {list, hasMore}.
-    Its own path (not /campaigns) so the permission map can give this read to
-    Statistics without the tracking-link writes."""
-    return _proxy(lambda: _get_client().campaigns_stats(
-        start=start, end=end, limit=limit, offset=offset, field=field, sort=sort))
-
-@app.get("/api/of/v2/trials/stats")
-def of_trials_stats(start: str | None = Query(None), end: str | None = Query(None),
-                    limit: int = Query(10, ge=1, le=100), offset: int = Query(0, ge=0)):
-    """Reach › Free trial links table: {items, hasMore}."""
-    return _proxy(lambda: _get_client().trials_stats(
-        start=start, end=end, limit=limit, offset=offset))
-
-# Reach's "claimed" / subscribers lists, one per row, paged by 10 like OF's
-# user-list modal. The row id rides in the query: `/promotions/{id}`,
-# `/trials/{id}` and `/campaigns/{id}` are OF settings' writes.
-@app.get("/api/of/v2/promotions/claims")
-def of_promotion_claims(promo_id: int = Query(..., ge=1), limit: int = Query(10, ge=1, le=50),
-                        offset: int = Query(0, ge=0)):
-    """Reach › Promotions › claimed: OF's /subscriptions/subscribers
-    ?filter[promoId]=<promo_id>&format=infinite, {list:[user], hasMore}."""
-    return _proxy(lambda: _get_client().offer_claims(promo_id, "promo", limit=limit, offset=offset))
-
-@app.get("/api/of/v2/trials/claims")
-def of_trial_claims(trial_id: int = Query(..., ge=1), limit: int = Query(10, ge=1, le=50),
-                    offset: int = Query(0, ge=0)):
-    """Reach › Free trial links › claimed: OF's /subscriptions/subscribers
-    ?filter[trial_id]=<trial_id>&format=infinite, {list:[user], hasMore}."""
-    return _proxy(lambda: _get_client().offer_claims(trial_id, "trial", limit=limit, offset=offset))
-
-@app.get("/api/of/v2/campaigns/claimers")
-def of_campaign_claimers(campaign_id: int = Query(..., ge=1), limit: int = Query(10, ge=1, le=50),
-                         offset: int = Query(0, ge=0),
-                         query: str | None = Query(None, max_length=100, description="the modal's search box")):
-    """Reach › Tracking links › subscribers: OF's /campaigns/{campaign_id}/claimers,
-    {list:[user], hasMore}."""
-    return _proxy(lambda: _get_client().campaign_claimers(
-        campaign_id, limit=limit, offset=offset, query=query))
-
-# Charts OF's Statistics pages draw (module 977600; campaigns via 616150).
-@app.get("/api/of/v2/payouts/chart")
-@_account_ttl("payouts", 60)
-def of_payouts_chart(start: str | None = Query(None), end: str | None = Query(None)):
-    """Statements › Payout requests chart: {total, delta, chartAmount, chartCount}."""
-    return _proxy(lambda: _get_client().payouts_chart(start=start, end=end))
-
-@app.get("/api/of/v2/payouts/referrals/chart")
-@_account_ttl("payouts", 60)
-def of_referrals_chart(start: str | None = Query(None), end: str | None = Query(None)):
-    """Statements › Referrals chart: {total, delta, chartAmount, chartCount}."""
-    return _proxy(lambda: _get_client().referrals_chart(start=start, end=end))
-
-
-# The referrals fan-out's overall budget: a Creator OF has not answered for by
-# then is listed `unavailable` and the rest return. Its read keeps running
-# (parked below, not cancelled) and lands in the cache for the next ask.
-_REFERRALS_BUDGET_S = max(1.0, float(os.environ.get("REFERRALS_BUDGET_S", "10")))
-_referrals_running: set[asyncio.Task] = set()
-# Creators with a referrals read in flight, one at a time each: a miss for
-# another window while one runs is `unavailable` rather than a second read, so
-# flipping through date ranges cannot stack OF reads up behind the slots.
-_referrals_reading: set[str] = set()
-
-
-@app.get("/admin/stats/referrals", dependencies=[Depends(_stats_guard)])
-async def admin_stats_referrals(
-    account_id: str | None = Query(None, description="One id or several comma-separated; omit for every Creator"),
-    from_: str = Query(..., alias="from", pattern=r"^\d{4}-\d{2}-\d{2}$"),
-    to: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$"),
-) -> dict[str, Any]:
-    """Referral earnings per Creator over `from`..`to` (whole days), for the
-    Dashboard's Referrals tile and Creator reports' Referrals channel.
-
-    No transaction carries them, so this is OF's Statements › Referrals
-    chart, ONE read per Creator (`referrals_chart`), at background priority,
-    cached 5 minutes in the `payouts` namespace like the proxy above. The
-    fan-out holds `admission.REFERRALS_READ` slots and answers within
-    `_REFERRALS_BUDGET_S`. Read-only. OF buckets the days in its own time
-    zone, not the report zone, so `by_day` and the window's edges can sit a
-    few hours off the ledger's days. Scoped like the stats reads (the
-    caller's Creators, 403 on a foreign id), then narrowed to Creators with a
-    session; Fansly has no referral program, so its Creators are skipped. A
-    Creator whose read fails, runs past the budget, is still reading another
-    window, or is deactivated (it gets no OF call) is listed in `unavailable`
-    rather than failing the rest. Rows `{account_id, total_cents, by_day:
-    [{day, cents}]}`; OF's amounts are dollars."""
-    scoped, _ = _stats_scope_ids(account_id)
-    metas = account_registry.list_accounts()
-    live = {m["id"] for m in metas if m.get("has_session")}
-    ids = [a for a in (scoped if scoped is not None else [m["id"] for m in metas])
-           if a in live and account_registry.get_platform(a) != "fansly"]
-    off = await account_health.deactivated_ids()
-    start, end = f"{from_} 00:00:00", f"{to} 23:59:59"
-
-    async def one(aid: str) -> dict[str, Any]:
-        def read():
-            with _priority_lane_background(aid):
-                return _load_client(aid).referrals_chart(start=start, end=end)
-
-        async def fetch():
-            # Only a cache miss takes a slot: a hit never queues behind OF reads.
-            if aid in _referrals_reading:
-                raise RuntimeError("a read for another window is still running")
-            _referrals_reading.add(aid)
-            try:
-                async with admission.REFERRALS_READ:
-                    return await asyncio.to_thread(read)
-            finally:
-                _referrals_reading.discard(aid)
-        data = await relay_cache.get_or_fetch("payouts", aid, ("referrals", start, end), 300.0, fetch) or {}
-        by_day = [{"day": str(p.get("date") or "")[:10], "cents": of_promos.to_cents(p.get("count"))}
-                  for p in data.get("chartAmount") or [] if p.get("date")]
-        return {"account_id": aid, "total_cents": of_promos.to_cents(data.get("total")), "by_day": by_day}
-
-    tasks = {asyncio.create_task(one(a)): a for a in ids if a not in off}
-    done, late = await asyncio.wait(set(tasks), timeout=_REFERRALS_BUDGET_S) if tasks else (set(), set())
-    rows: list[dict[str, Any]] = []
-    unavailable: list[str] = [a for a in ids if a in off]
-    for t, aid in tasks.items():
-        if t in late:
-            _referrals_running.add(t)  # deliberately NOT cancelled
-            t.add_done_callback(_referrals_running.discard)
-            unavailable.append(aid)
-        elif t.exception() is not None:
-            log.warning("referrals read failed for %s: %r", aid, t.exception())
-            unavailable.append(aid)
-        else:
-            rows.append(t.result())
-    return {"rows": rows, "unavailable": unavailable}
-
-@app.get("/api/of/v2/payouts/chargebacks/chart")
-@_account_ttl("payouts", 60)
-def of_chargebacks_chart(start: str | None = Query(None), end: str | None = Query(None)):
-    """Statements › Chargebacks chart: {total, delta, chartAmount, chartCount}."""
-    return _proxy(lambda: _get_client().chargebacks_chart(start=start, end=end))
-
-
-@app.get("/api/of/v2/promotions/chart")
-def of_promotions_chart(start: str | None = Query(None), end: str | None = Query(None)):
-    """Reach › Promotions chart: {<series>: {chart, total, delta}}."""
-    return _proxy(lambda: _get_client().promotions_chart(start=start, end=end))
-
-@app.get("/api/of/v2/trials/chart")
-def of_trials_chart(start: str | None = Query(None), end: str | None = Query(None)):
-    """Reach › Free trial links chart: {<series>: {chart, total, delta}}."""
-    return _proxy(lambda: _get_client().trials_chart(start=start, end=end))
-
-@app.get("/api/of/v2/campaigns/chart")
-def of_campaigns_chart(start: str | None = Query(None), end: str | None = Query(None)):
-    """Reach › Tracking links chart: {clicks: {chart, total, delta}, claims: {...}}."""
-    return _proxy(lambda: _get_client().campaigns_chart(start=start, end=end))
-
-@app.get("/api/of/v2/stories/chart")
-def of_stories_chart(by: str = Query("tips", pattern="^(tips|views|likes|comments)$"),
-                     start: str | None = Query(None), end: str | None = Query(None)):
-    """Engagement › Stories chart for one tab: {<by>|stories: {chart, total, delta}}."""
-    return _proxy(lambda: _get_client().stories_chart(by=by, start=start, end=end))
-
-@app.get("/api/of/v2/streams/chart")
-def of_streams_chart(by: str = Query("purchases", pattern="^(purchases|tips|views|likes|comments)$"),
-                     start: str | None = Query(None), end: str | None = Query(None)):
-    """Engagement › Streaming chart for one tab: {<by>|duration: {chart, total, delta}}."""
-    return _proxy(lambda: _get_client().streams_chart(by=by, start=start, end=end))
-
-# The stream / story stats popup's Viewers and Tippers lists. The id rides in the
-# query (as on /messages/queue/buyers) so the permission map can give these reads
-# to Statistics: `/streams/{id}/...` and `/stories/{id}/...` could only be mapped
-# through `/streams` and `/stories`, which are Go live's and Home's / New post's.
-@app.get("/api/of/v2/streams/viewers")
-def of_stream_viewers(stream_id: int = Query(..., ge=1), limit: int = Query(10, ge=1, le=50),
-                      offset: int = Query(0, ge=0),
-                      tips_only: int = Query(0, ge=0, le=1, description="1 = the Tippers tab")):
-    """OF's /streams/{stream_id}/viewers: {list:[user], hasMore?}."""
-    return _proxy(lambda: _get_client().stream_viewers(
-        stream_id, limit=limit, offset=offset, tips_only=bool(tips_only)))
-
-@app.get("/api/of/v2/stories/viewers")
-def of_story_viewers(story_id: int = Query(..., ge=1), limit: int = Query(10, ge=1, le=50),
-                     offset: int = Query(0, ge=0),
-                     tips_only: int = Query(0, ge=0, le=1, description="1 = the Tippers tab")):
-    """OF's /stories/{story_id}/viewers: {list:[user], hasMore?}."""
-    return _proxy(lambda: _get_client().story_viewers(
-        story_id, limit=limit, offset=offset, tips_only=bool(tips_only)))
-
-
-@app.get("/api/of/v2/payouts/download-approved-invoice")
-def of_payout_invoice(invoiceId: int = Query(..., ge=1),
-                      isRefbonus: int = Query(0, ge=0, le=1, description="1 = a referral payout")):
-    """An approved payout request's invoice, as OF's Download invoice link
-    fetches it. OF answers 200 application/pdf with an attachment
-    Content-Disposition (confirmed live); that PDF and OF's file name come back
-    as sent. Anything else is a 502 carrying only OF's status code: the upstream
-    URL is never logged nor returned."""
-    r = _proxy(lambda: _get_client().payout_invoice(invoiceId, referral=bool(isRefbonus)))
-    if not r.ok or "application/pdf" not in (r.headers.get("content-type") or "").lower():
-        log.warning("payout invoice download failed: upstream %s, not a PDF", r.status_code)
-        raise HTTPException(status_code=502, detail={"upstream_status": r.status_code})
-    return Response(content=r.content, media_type="application/pdf", headers={
-        "Cache-Control": "no-store",
-        "Content-Disposition": r.headers.get("content-disposition") or "attachment"})
-
-@app.get("/api/of/v2/users/me/referrals")
-def of_my_referrals(onlyPerformers: int = Query(0, ge=0, le=1,
-                                                description="1 = Referred creators, 0 = Referred users"),
-                    start: str | None = Query(None), end: str | None = Query(None),
-                    offset: int = Query(0, ge=0), marker: str | None = Query(None, max_length=64)):
-    """Statements › Referrals › Referred creators / Referred users: {list, hasMore}."""
-    return _proxy(lambda: _get_client().referrals(
-        start=start, end=end, offset=offset, marker=marker, only_performers=bool(onlyPerformers)))
-
-# ── Bookmarks (Collections → Bookmarks tab) ────────────────────────
-
-@app.get("/api/of/v2/posts/bookmarks/all")
-def of_bookmarks_all(limit: int = Query(10, ge=1, le=50), offset: int = Query(0, ge=0)):
-    """Paginated bookmarks feed (the OF UI tab)."""
-    return _proxy(lambda: _get_client().bookmarks_all(limit=limit, offset=offset))
-
-
-# ── Referrals ──────────────────────────────────────────────────────
-
-@app.get("/api/of/v2/payments/referrals/balance")
-def of_referrals_balance():
-    """Referral earnings balance."""
-    return _proxy(lambda: _get_client().referrals_balance())
-
-@app.get("/api/of/v2/payouts/requests/referral")
-@_account_ttl("payouts", 60)
-def of_referral_payouts(limit: int = Query(10, ge=1, le=50), offset: int = Query(0, ge=0),
-                        start: str | None = Query(None, max_length=32), end: str | None = Query(None, max_length=32),
-                        marker: str | None = Query(None, max_length=64)):
-    """Referral payout history, paged as /payouts/requests (start, end, marker)."""
-    return _proxy(lambda: _get_client().referral_payouts(
-        limit=limit, offset=offset, start=start, end=end, marker=marker))
-
-# ── Stories with map param + notification transports ──────────────
-
-
-@app.get("/api/of/v2/users/settings/notifications/{transport}")
-def of_notification_settings(transport: str, group: int | None = Query(None)):
-    """One transport's notification toggles (read-only); `group=1` passes through."""
-    if transport not in ("email", "message", "toast", "webpush", "sms", "telegram"):
-        raise HTTPException(status_code=404, detail="unknown notification transport")
-    return _proxy(lambda: _get_client().notification_settings(transport, group=group))
+# ── Statistics + Settings reads (Earnings/Engagement/Reach, Statements, referrals, bookmarks) ──
+# Live in of_stats_api.py; included HERE (not top-of-file) to keep route order.
+import of_stats_api  # noqa: E402
+app.include_router(of_stats_api.router)
 
 
 # Scheduled / mass --------------------------------------------------
@@ -11149,489 +10451,9 @@ async def admin_vault_fan_history(
 
 
 # ── /admin/ingest/transactions/* — Phase F supervisor admin surface ─
-# Read/write surface over `transaction_scan_history` (the per-account
-# watermark for the OF payouts/transactions ingest job) plus a few
-# observability queries on `transactions`. Sits next to the other
-# /admin/* routes; share-token gate fires via middleware so no
-# per-route auth dep is needed.
-
-def _tx_ingest_tier(minutes_since_scan: float | None, current_status: str) -> str:
-    """Health tier per synthesis §7.
-    green:  scanned within 30m AND status in {idle, ok, refreshing, backfilling}
-    yellow: 30 < minutes_since_scan <= 360
-    red:    minutes_since_scan > 360 OR status in {paused, error, never_scanned}
-
-    Note: 'refreshing'/'backfilling' here are the in-flight steady states
-    (tick START stamps them, _mark_success then stamps 'ok'). A row
-    sitting in those states still counts as green if the timestamp is
-    fresh — it means a scan is actively running.
-    """
-    if current_status in ("paused", "error", "never_scanned"):
-        return "red"
-    if minutes_since_scan is None:
-        return "red"
-    if minutes_since_scan <= 30 and current_status in (
-        "idle", "ok", "refreshing", "backfilling",
-    ):
-        return "green"
-    if minutes_since_scan <= 360:
-        return "yellow"
-    return "red"
-
-
-_TIER_RANK = {"green": 0, "yellow": 1, "red": 2}
-
-
-@app.get("/admin/ingest/transactions/health")
-async def admin_ingest_tx_health() -> dict[str, Any]:
-    from db.engine import get_session
-    from db.models import Account, TransactionScanHistory
-    from sqlalchemy import select
-    now = datetime.utcnow()
-    # Scope to the signed-in principal's account_ids union (same rule as
-    # /admin/accounts and the picker). Unauthed callers (internal curl /
-    # cron) still see every row. Without this filter the Ingest health
-    # banner would list models the chatter has no permission to act on.
-    user = _get_request_user()
-    chatter = _get_request_chatter() if user is None else None
-    if user is not None:
-        allowed_ids: frozenset[str] | None = user.account_ids
-    elif chatter is not None:
-        allowed_ids = chatter.account_ids
-    else:
-        allowed_ids = None
-    async with get_session() as s:
-        acct_rows = (await s.execute(select(Account.id, Account.nickname))).all()
-        hist_rows = (await s.execute(select(TransactionScanHistory))).scalars().all()
-
-    if allowed_ids is not None:
-        acct_rows = [r for r in acct_rows if r[0] in allowed_ids]
-
-    hist_by_acct = {h.account_id: h for h in hist_rows}
-    accounts_out: list[dict[str, Any]] = []
-    worst = "green"
-    for aid, nick in acct_rows:
-        h = hist_by_acct.get(aid)
-        if h is None:
-            entry = {
-                "account_id": aid,
-                "display_name": nick,
-                "last_scan_at": None,
-                "current_status": "never_scanned",
-                "last_error": None,
-                "consecutive_failures": 0,
-                "paused_until": None,
-                "rows_inserted_total": 0,
-                "rows_patched_total": 0,
-                "fully_backfilled": False,
-                "minutes_since_scan": None,
-                "tier": "red",
-            }
-        else:
-            mins = (
-                (now - h.last_scan_at).total_seconds() / 60.0
-                if h.last_scan_at is not None else None
-            )
-            tier = _tx_ingest_tier(mins, h.current_status or "idle")
-            entry = {
-                "account_id": aid,
-                "display_name": nick,
-                "last_scan_at": h.last_scan_at.isoformat() if h.last_scan_at else None,
-                "current_status": h.current_status,
-                "last_error": h.last_error,
-                "consecutive_failures": int(h.consecutive_failures or 0),
-                "paused_until": h.paused_until.isoformat() if h.paused_until else None,
-                "rows_inserted_total": int(h.rows_inserted_total or 0),
-                "rows_patched_total": int(h.rows_patched_total or 0),
-                "fully_backfilled": bool(h.fully_backfilled),
-                "minutes_since_scan": round(mins, 2) if mins is not None else None,
-                "tier": tier,
-            }
-        accounts_out.append(entry)
-        if _TIER_RANK[entry["tier"]] > _TIER_RANK[worst]:
-            worst = entry["tier"]
-
-    return {
-        "overall_status": worst,
-        "as_of": now.isoformat(),
-        "accounts": accounts_out,
-    }
-
-
-class _TxRunBody(BaseModel):
-    mode: str = Field("refresh", pattern="^(refresh|backfill)$")
-
-
-@app.post("/admin/ingest/transactions/{account_id}/run", status_code=202)
-async def admin_ingest_tx_run(
-    account_id: str,
-    body: _TxRunBody | None = Body(None),
-) -> dict[str, Any]:
-    from db.engine import get_session
-    from db.models import Account, TransactionScanHistory
-    from sqlalchemy import select
-    mode = (body.mode if body else "refresh") or "refresh"
-    async with get_session() as s:
-        acct = (await s.execute(
-            select(Account.id).where(Account.id == account_id)
-        )).first()
-        if acct is None:
-            raise HTTPException(status_code=404, detail="account not found")
-        h = (await s.execute(
-            select(TransactionScanHistory)
-            .where(TransactionScanHistory.account_id == account_id)
-        )).scalar_one_or_none()
-        if h is not None and h.current_status in ("backfilling", "refreshing"):
-            # Stale-age escape valve. last_scan_at is stamped at tick
-            # START (transaction_ingest.run_one_tick), so its age ==
-            # how long the row has been parked at this status. A real
-            # in-flight tick holds an asyncio.Lock + finishes well under
-            # _STALE_INFLIGHT_S; anything older is a tombstone from a
-            # process restart or cancelled task that escaped both the
-            # try/finally and the boot sweep — we must NOT keep locking
-            # the user's manual Refresh out forever.
-            from transaction_ingest import _STALE_INFLIGHT_S  # type: ignore[import-not-found]
-            age_s = (
-                (datetime.utcnow() - h.last_scan_at).total_seconds()
-                if h.last_scan_at is not None
-                else _STALE_INFLIGHT_S + 1
-            )
-            if age_s < _STALE_INFLIGHT_S:
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"already in-flight: {h.current_status}",
-                )
-            log.warning(
-                "admin_ingest_tx_run_proceed_after_stale account=%s status=%s age_s=%.0f",
-                account_id, h.current_status, age_s,
-            )
-
-    # Lock peek removed: run_one_tick now stamps current_status to
-    # "refreshing"/"backfilling" at the START of the tick (inside the
-    # session that took the lock), so the upstream current_status check
-    # at line 4714 catches in-flight scans without needing to import
-    # supervisor internals here. See library/db_data/17_round2_synthesis.md.
-    queued_at = datetime.utcnow()
-
-    async def _trigger() -> None:
-        try:
-            from transaction_ingest import run_one_tick  # type: ignore[import-not-found]
-        except ImportError:
-            log.info("admin_ingest_tx_run: transaction_ingest not yet available; no-op")
-            return
-        try:
-            await run_one_tick(account_id, mode=mode)
-        except Exception:
-            log.warning("run_one_tick failed for %s", account_id, exc_info=True)
-
-    asyncio.create_task(_trigger(), name=f"tx-ingest-trigger-{account_id}")
-
-    return {"accepted": True, "mode": mode, "queued_at": queued_at.isoformat()}
-
-
-@app.post("/admin/roster/{account_id}/crawl")
-async def admin_roster_crawl(account_id: str) -> dict[str, Any]:
-    """One subscriber-roster crawl NOW, past its 25-minute TTL
-    (`lifecycle_messages._CRAWL_TTL_S`): the on-demand trigger for
-    `subscriber_snapshot`, as /admin/ingest/transactions/{id}/run is for the
-    ledger. Same code path as the lifecycle sweep and smart_list_sync, under
-    the same per-account lock; answers that run's stats ({roster: crawled |
-    truncated | empty, listed, returned}). A seam in ADR 0024."""
-    from db.engine import get_session
-    from db.models import Account
-    from sqlalchemy import select
-    assert_account_owned(account_id)
-    async with get_session() as s:
-        if (await s.execute(select(Account.id).where(Account.id == account_id))).first() is None:
-            raise HTTPException(status_code=404, detail="account not found")
-    import automation_executor as ax
-    from automations.lifecycle_messages import refresh_roster
-    client = await asyncio.to_thread(ax._make_client, account_id)
-    return await refresh_roster(account_id, client, now=datetime.utcnow(), force=True)
-
-
-class _TxPauseBody(BaseModel):
-    duration_hours: int = Field(1, ge=1, le=24 * 30)
-
-
-@app.post("/admin/ingest/transactions/{account_id}/pause", status_code=202)
-async def admin_ingest_tx_pause(
-    account_id: str,
-    body: _TxPauseBody = Body(...),
-) -> dict[str, Any]:
-    from db.engine import get_session
-    from db.models import Account, TransactionScanHistory
-    from sqlalchemy import select
-    paused_until = datetime.utcnow() + timedelta(hours=body.duration_hours)
-    async with get_session() as s:
-        acct = (await s.execute(
-            select(Account.id).where(Account.id == account_id)
-        )).first()
-        if acct is None:
-            raise HTTPException(status_code=404, detail="account not found")
-        h = (await s.execute(
-            select(TransactionScanHistory)
-            .where(TransactionScanHistory.account_id == account_id)
-        )).scalar_one_or_none()
-        if h is None:
-            h = TransactionScanHistory(account_id=account_id)
-            s.add(h)
-        h.paused_until = paused_until
-        await s.commit()
-    return {"accepted": True, "paused_until": paused_until.isoformat()}
-
-
-@app.post("/admin/ingest/transactions/{account_id}/resume", status_code=202)
-async def admin_ingest_tx_resume(account_id: str) -> dict[str, Any]:
-    """Clear `paused_until` so the supervisor picks this account back up
-    on the next tick. Idempotent — calling on an already-unpaused row
-    is a no-op."""
-    from db.engine import get_session
-    from db.models import Account, TransactionScanHistory
-    from sqlalchemy import select
-    async with get_session() as s:
-        acct = (await s.execute(
-            select(Account.id).where(Account.id == account_id)
-        )).first()
-        if acct is None:
-            raise HTTPException(status_code=404, detail="account not found")
-        h = (await s.execute(
-            select(TransactionScanHistory)
-            .where(TransactionScanHistory.account_id == account_id)
-        )).scalar_one_or_none()
-        if h is not None:
-            h.paused_until = None
-            if h.current_status == "paused":
-                h.current_status = "ok"
-            await s.commit()
-    return {"accepted": True}
-
-
-@app.get("/admin/ingest/transactions/orphan-tips")
-async def admin_ingest_tx_orphan_tips(
-    account_id: str | None = Query(None),
-    from_: str | None = Query(None, alias="from"),
-    to: str | None = Query(None),
-    include_assigned: bool = Query(False),
-    limit: int = Query(100, ge=1, le=500),
-) -> dict[str, Any]:
-    """Tip transactions that fall into the 'Unattributed' bucket in the
-    per-employee view: kind in tip family, status cleared or pending (the
-    view's own statuses, so this list matches the Unattributed total), and no
-    chatter-attributed outbound message within the 7-day lookback. With
-    `include_assigned=true` ALSO returns tips that already have a
-    manual `attributed_employee_id` set (so the UI can offer reassign
-    / clear). Each row's `attributed_employee_id` is null for true
-    orphans, populated for previously-assigned tips.
-
-    Optional `from` / `to` (ISO date) scope to the dashboard's window."""
-    from db.engine import get_session
-    from sqlalchemy import text as sql_text
-    # LEFT JOIN employees so we return the chatter's display_name with the
-    # row — the UI used to look this up against the current owner's roster
-    # and fell back to "Employee {id}" when the employee was scoped out
-    # (e.g. transferred). The DB has the canonical name; surface it here.
-    sql = """
-      SELECT t.id, t.account_id, t.fan_id, t.amount_cents, t.occurred_at,
-             t.description, t.kind, t.attributed_employee_id,
-             e.display_name AS attributed_employee_name
-        FROM transactions t
-        LEFT JOIN employees e ON e.id = t.attributed_employee_id
-       WHERE t.kind IN ('tip', 'tip_post', 'tip_stream')
-         AND t.status IN ('cleared', 'pending')
-         AND t.message_id IS NULL
-         AND NOT EXISTS (
-           SELECT 1 FROM messages m
-            WHERE m.account_id = t.account_id
-              AND m.fan_id = t.fan_id
-              AND m.direction = 'out'
-              AND m.sent_by_employee_id IS NOT NULL
-              AND m.created_at <= t.occurred_at
-              AND m.created_at > datetime(t.occurred_at, '-7 days')
-         )
-    """
-    params: dict[str, Any] = {"lim": limit}
-    if not include_assigned:
-        sql += " AND t.attributed_employee_id IS NULL"
-    if account_id:
-        sql += " AND t.account_id = :aid"
-        params["aid"] = account_id
-    if from_:
-        sql += " AND t.occurred_at >= :start"
-        params["start"] = from_
-    if to:
-        # End-of-day for bare ISO dates so "to=YYYY-MM-DD" includes that day.
-        sql += " AND t.occurred_at <= :end"
-        params["end"] = f"{to} 23:59:59" if len(to) == 10 else to
-    sql += " ORDER BY t.occurred_at DESC LIMIT :lim"
-
-    async with get_session() as s:
-        rows = (await s.execute(sql_text(sql), params)).all()
-    return {
-        "rows": [
-            {
-                "id": int(r.id),
-                "account_id": r.account_id,
-                "fan_id": int(r.fan_id) if r.fan_id is not None else None,
-                "kind": r.kind,
-                "amount_cents": int(r.amount_cents or 0),
-                "occurred_at": r.occurred_at if isinstance(r.occurred_at, str)
-                                else (r.occurred_at.isoformat() if r.occurred_at else None),
-                "description": r.description,
-                "attributed_employee_id": (
-                    int(r.attributed_employee_id)
-                    if r.attributed_employee_id is not None else None
-                ),
-                # "No one" (sales_attribution.NO_ONE) names no Employee row.
-                "attributed_employee_name": ("No one" if r.attributed_employee_id == 0
-                                             else r.attributed_employee_name),
-            }
-            for r in rows
-        ]
-    }
-
-
-@app.get("/admin/ingest/transactions/sales-needing-attribution")
-async def admin_sales_needing_attribution(
-    account_id: str | None = Query(None),
-    from_: str | None = Query(None, alias="from"),
-    to: str | None = Query(None),
-    include_assigned: bool = Query(False),
-    lookback_days: int = Query(7, ge=1, le=90),
-    limit: int = Query(200, ge=1, le=500),
-) -> dict[str, Any]:
-    """Confirmed sales (`cleared`+`pending`) currently in the per-employee view's
-    'Unattributed' bucket — standalone-tip orphans, message-linked orphans (a
-    PPV whose scraped message carries no sender, e.g. duplicate-price PPVs the
-    auto-rule leaves ambiguous), AND unlinked PPV/custom orphans (`message_id`
-    NULL — the relinker found no unambiguous message; per ops' manual-only rule
-    these are never auto-credited, so THIS panel is their only path to a
-    chatter). Each row ships the CANDIDATE chatters (distinct NON-MASS 1:1
-    senders to that fan within `lookback_days` before the sale) so the operator
-    can assign the right one via
-    POST /admin/ingest/transactions/{id}/attribute. `include_assigned=true` also
-    returns sales that already carry a manual override (to reassign / clear).
-
-    Mirrors attribution_backfill's orphan predicates; the 7-day NOT-EXISTS on the
-    standalone-tip branch matches the live view's own lookup so the two agree.
-    The unlinked-PPV branch has NO toucher exclusion — the view gives PPVs no
-    lookback, so every unlinked one is an orphan regardless of recent chat."""
-    from db.engine import get_session
-    from sqlalchemy import text as sql_text
-
-    orphan_cte = """
-      WITH orphans AS (
-        SELECT t.id, t.account_id, t.fan_id, t.amount_cents, t.occurred_at,
-               t.description, t.kind, t.status, t.attributed_employee_id
-          FROM transactions t
-          JOIN messages m ON m.account_id = t.account_id AND m.fan_id = t.fan_id
-                         AND m.message_id = t.message_id
-         WHERE t.message_id IS NOT NULL
-           AND t.kind IN ('ppv','ppv_message','ppv_post','ppv_stream',
-                          'tip','tip_post','tip_stream','custom')
-           AND t.status IN ('cleared','pending')
-           AND m.sent_by_employee_id IS NULL
-        UNION ALL
-        SELECT t.id, t.account_id, t.fan_id, t.amount_cents, t.occurred_at,
-               t.description, t.kind, t.status, t.attributed_employee_id
-          FROM transactions t
-         WHERE t.kind IN ('tip','tip_post','tip_stream')
-           AND t.message_id IS NULL
-           AND t.status IN ('cleared','pending')
-           AND t.fan_id IS NOT NULL
-           AND NOT EXISTS (
-             SELECT 1 FROM messages m
-              WHERE m.account_id = t.account_id AND m.fan_id = t.fan_id
-                AND m.direction = 'out' AND m.sent_by_employee_id IS NOT NULL
-                AND m.created_at <= t.occurred_at
-                AND m.created_at > datetime(t.occurred_at, '-7 days'))
-        UNION ALL
-        SELECT t.id, t.account_id, t.fan_id, t.amount_cents, t.occurred_at,
-               t.description, t.kind, t.status, t.attributed_employee_id
-          FROM transactions t
-         WHERE t.kind IN ('ppv','ppv_message','ppv_post','ppv_stream','custom')
-           AND t.message_id IS NULL
-           AND t.status IN ('cleared','pending')
-           AND t.fan_id IS NOT NULL
-      )
-      SELECT o.id, o.account_id, o.fan_id, o.amount_cents, o.occurred_at,
-             o.description, o.kind, o.status, o.attributed_employee_id,
-             e.display_name AS attributed_employee_name
-        FROM orphans o
-        LEFT JOIN employees e ON e.id = o.attributed_employee_id
-       WHERE 1=1
-    """
-    params: dict[str, Any] = {"lim": limit}
-    if not include_assigned:
-        orphan_cte += " AND o.attributed_employee_id IS NULL"
-    if account_id:
-        orphan_cte += " AND o.account_id = :aid"
-        params["aid"] = account_id
-    if from_:
-        orphan_cte += " AND o.occurred_at >= :start"
-        params["start"] = from_
-    if to:
-        orphan_cte += " AND o.occurred_at <= :end"
-        params["end"] = f"{to} 23:59:59" if len(to) == 10 else to
-    orphan_cte += " ORDER BY o.occurred_at DESC LIMIT :lim"
-
-    # Distinct non-mass 1:1 senders to (account, fan) in the window before the
-    # sale — the assignment candidates. `mass_run_id IS NULL` keeps blasts out.
-    # lookback_days is a validated int (Query ge=1 le=90), safe to inline.
-    cand_sql = sql_text(
-        f"""
-        SELECT m.sent_by_employee_id AS eid, e.display_name AS name,
-               MAX(m.created_at) AS last_at
-          FROM messages m
-          LEFT JOIN employees e ON e.id = m.sent_by_employee_id
-         WHERE m.account_id = :aid AND m.fan_id = :fid AND m.direction = 'out'
-           AND m.sent_by_employee_id IS NOT NULL
-           AND m.mass_run_id IS NULL
-           AND m.created_at <= :occ
-           AND m.created_at > datetime(:occ, '-{int(lookback_days)} days')
-         GROUP BY m.sent_by_employee_id, e.display_name
-         ORDER BY last_at DESC
-        """
-    )
-
-    def _iso(v: Any) -> str | None:
-        if v is None:
-            return None
-        return v if isinstance(v, str) else (v.isoformat() if hasattr(v, "isoformat") else str(v))
-
-    async with get_session() as s:
-        rows = (await s.execute(sql_text(orphan_cte), params)).all()
-        out: list[dict[str, Any]] = []
-        for r in rows:
-            occ = _iso(r.occurred_at)
-            cands: list[dict[str, Any]] = []
-            if r.fan_id is not None and occ is not None:
-                crows = (await s.execute(cand_sql, {
-                    "aid": r.account_id, "fid": r.fan_id, "occ": occ,
-                })).all()
-                cands = [
-                    {"employee_id": int(c.eid), "name": c.name, "last_at": _iso(c.last_at)}
-                    for c in crows if c.eid is not None
-                ]
-            out.append({
-                "id": int(r.id),
-                "account_id": r.account_id,
-                "fan_id": int(r.fan_id) if r.fan_id is not None else None,
-                "kind": r.kind,
-                "status": r.status,
-                "amount_cents": int(r.amount_cents or 0),
-                "occurred_at": occ,
-                "description": r.description,
-                "attributed_employee_id": (
-                    int(r.attributed_employee_id)
-                    if r.attributed_employee_id is not None else None
-                ),
-                # "No one" (sales_attribution.NO_ONE) names no Employee row.
-                "attributed_employee_name": ("No one" if r.attributed_employee_id == 0
-                                             else r.attributed_employee_name),
-                "candidate_chatters": cands,
-            })
-    return {"rows": out}
+# Lives in tx_ingest_admin_api.py; included HERE (not top-of-file) to keep route order.
+import tx_ingest_admin_api  # noqa: E402
+app.include_router(tx_ingest_admin_api.router)
 
 
 # ── Relay root ─────────────────────────────────────────────────

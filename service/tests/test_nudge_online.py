@@ -50,7 +50,7 @@ from sqlalchemy import select  # noqa: E402
 import automation_executor as ax  # noqa: E402
 from automation_executor import run_once  # noqa: E402
 from automations import nudge_online, nudge_online_fire  # noqa: E402
-from automations._common import substitute_placeholders  # noqa: E402
+from automations._fan_notes import substitute_placeholders  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import (  # noqa: E402
     Account, AccountAiConfig, AutomationRule, Fan, Message, NudgeState, ScheduledJob,

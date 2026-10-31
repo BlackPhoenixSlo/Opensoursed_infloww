@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
@@ -24,6 +25,7 @@ from db.models import (
     Blacklist, Fan, FunnelResponder, FunnelState, List as ListModel, ListMember,
     MassRun, Message, NudgeState, ScheduledJob, SubscriberSnapshot, Transaction,
 )
+import of_paging
 from fans import _NON_REVENUE_STATUSES
 
 log = logging.getLogger("of-relay.audiences")
@@ -592,6 +594,7 @@ async def resolve_mass_audience(
             subscribed_over_days=subscribed_over_days, roster=roster, now=now,
         ))
 
+    excludes: list[Iterable] = [excluded]
     if exclude_replied_hours or exclude_inbound_hours or exclude_last_chat_hours:
         guard = await contact_guard_excludes(
             account_id,
@@ -599,14 +602,14 @@ async def resolve_mass_audience(
             inbound_hours=exclude_inbound_hours,
             either_hours=exclude_last_chat_hours,
         )
-        excluded += sorted(guard)
+        excludes.append(sorted(guard))
 
     # Opt-out: subtract the mass-exclude list's members (MASSDMEXCLUDE, for
     # every send). Added to `excluded` so they drop from the explicit userIds set
     # below AND feed `ensure_exclude_list` for list/online audiences. None → no
     # list applied.
     if exclude_list_name:
-        excluded += sorted(await exclude_list_fan_ids(account_id, exclude_list_name))
+        excludes.append(sorted(await exclude_list_fan_ids(account_id, exclude_list_name)))
 
     # Pending/queued sends the messages-based guards can't see yet: a ≤15-min
     # scheduled 1:1 or a drip/queued broadcast writes no `messages` row until it
@@ -614,125 +617,112 @@ async def resolve_mass_audience(
     # reached. Exclude their queued targets. Always-on; pass
     # exclude_pending_sends=False to skip. See `pending_send_fan_ids`.
     if exclude_pending_sends:
-        excluded += sorted(await pending_send_fan_ids(account_id))
+        excludes.append(sorted(await pending_send_fan_ids(account_id)))
 
-    # ── Funnel-responder dedup (R1/R2): drop fans who already answered THIS
-    #    funnel. `skipped_funnel_responders` = the ones actually about to be sent
-    #    (in the resolved include set) — that's the count the UI prints. The full
-    #    responder set is added to `excluded` so the caller's list-exclude path
-    #    (Auto_Exclude) also drops them for a list/online audience. For a list
-    #    send the caller materializes members into `included` first (D6), so the
-    #    intersection below reflects the real skipped recipients.
-    skipped_responders: list[int] = []
-    responders_total = 0
+    # Funnel-responder dedup (R1/R2): drop fans who already answered THIS funnel
+    # (see `final_audience` for the skipped/total split). For a list send the
+    # caller materializes members into `included` first (D6), so the skipped
+    # count reflects the real recipients.
+    resp: set[int] = set()
     if exclude_funnel_responders:
         resp = await funnel_responder_ids(account_id, int(exclude_funnel_responders))
-        if resp:
-            responders_total = len(resp)
-            inc_set = {int(i) for i in included}
-            skipped_responders = sorted(inc_set & resp)
-            excluded += sorted(resp)
-    excluded = list(dict.fromkeys(excluded))
 
-    # Subtract excludes from the explicit include set HERE — OF's queue body
-    # has no per-user exclusion field (`excludedUsers` is silently dropped;
-    # verified live 2026-06-12), so excluded ids left inside `userIds` WOULD
-    # receive the blast. List/online audiences need `ensure_exclude_list`.
-    excl_set = {int(x) for x in excluded}
-    included = [i for i in included if int(i) not in excl_set]
-
+    out = final_audience(included, excludes, responders=resp)   # no crawl here: never Fail
     return {
-        "included_users": included,
-        "excluded_users": excluded,
+        "included_users": out.included,
+        "excluded_users": out.excluded,
         # Precise "removed from THIS send" (responders ∩ explicit includes).
-        "skipped_funnel_responders": skipped_responders,
+        "skipped_funnel_responders": out.skipped_responders,
         # All known answerers for the funnel (ALL are excluded, incl. via the
         # Auto_Exclude list for OF-native audiences we can't enumerate locally) —
         # the honest "N already answered" number for a list/online funnel launch.
-        "funnel_responders_total": responders_total,
+        "funnel_responders_total": out.responders_total,
     }
+
+
+@dataclass(frozen=True)
+class Fail:
+    """A refused audience: the caller sends / records NOTHING."""
+    reason: str
+
+
+@dataclass(frozen=True)
+class Audience:
+    included: list            # base order kept, excludes removed
+    skipped_responders: list[int]
+    responders_total: int
+    sources: tuple = ()       # the exclude sources, responders last; see `excluded`
+
+    @property
+    def excluded(self) -> list:
+        """Every exclude source, first-seen order, deduped. Built on read: only
+        `resolve_mass_audience` needs it, `resolve_recipients_blocking` never does."""
+        return list(dict.fromkeys(x for src in self.sources for x in src))
+
+
+def final_audience(
+    base: Iterable,
+    excludes: Iterable[Iterable] = (),
+    *,
+    responders: Iterable[int] = (),
+    truncated: Iterable[str] = (),
+) -> Audience | Fail:
+    """THE set algebra `resolve_mass_audience` and `resolve_recipients_blocking`
+    share. Pure.
+
+      • `truncated` — labels of crawls that hit the paging backstop. ANY → Fail:
+        a truncated crawl is a FAILED sync, never a partial audience (a short
+        read would silently drop everyone past the ceiling).
+      • `base` — the include ids in send order, kept verbatim (order and any
+        duplicates; ids may arrive as str) minus every excluded id.
+      • `excludes` — id sources (re-iterable: lists / sets), merged in order,
+        first-seen dedupe.
+      • `responders` — a funnel's answerers: ALL appended to the excludes (so the
+        caller's list-exclude path, Auto_Exclude, drops them for a list/online
+        audience too); the ones in `base` are reported as `skipped_responders`
+        (the count the UI prints), all of them as `responders_total`.
+
+    Subtracting HERE matters: OF's queue body has no per-user exclusion field
+    (`excludedUsers` is silently dropped; verified live 2026-06-12), so excluded
+    ids left inside `userIds` WOULD receive the blast. List/online audiences need
+    `ensure_exclude_list`."""
+    cut = [str(t) for t in truncated]
+    if cut:
+        return Fail("truncated:" + ",".join(cut))
+    base = list(base)
+    resp = {int(r) for r in responders}
+    skipped = sorted({int(i) for i in base} & resp) if resp else []
+    sources = (*excludes, sorted(resp))
+    excl = {int(x) for src in sources for x in src}
+    return Audience(included=[i for i in base if int(i) not in excl],
+                    skipped_responders=skipped, responders_total=len(resp), sources=sources)
 
 
 AUTO_EXCLUDE_LIST_NAME = "Auto_Exclude"
 
 
-_LIST_PAGE = 100
+# Paging moved to the leaf `of_paging`; the old private names stay importable
+# from here as the SAME objects (automations/*, lists.py, …). Calls in THIS
+# module go through `of_paging.<name>` at call time so a patch of
+# `of_paging.page_all_checked` reaches them.
+_LIST_PAGE = of_paging.LIST_PAGE
+_ROSTER_PAGE = of_paging.ROSTER_PAGE
+_page_all_checked = of_paging.page_all_checked
+_page_all = of_paging.page_all
+_ids_from_pages = of_paging.ids_from_pages
 
 
-def _page_all_checked(fetch) -> tuple[list[dict], bool]:
-    """`_page_all` plus an explicit truncation flag: (rows, hit_backstop).
-    The audience-fence / include-mirror paths must treat a truncated crawl as a
-    FAILED sync (loud), never as a complete snapshot — a silently short read
-    would drop every member past the ceiling and un-fence / un-admit them."""
-    out: list[dict] = []
-    seen_ids: set = set()
-    offset = 0
-    for _ in range(200):                              # backstop: 200 × 100 = 20k rows
-        r = fetch(offset)
-        items = (r.get("list") or []) if isinstance(r, dict) else (r or [])
-        added = 0
-        for it in items:
-            if not isinstance(it, dict):
-                continue
-            iid = it.get("id")
-            if iid is not None:
-                if iid in seen_ids:
-                    continue
-                seen_ids.add(iid)
-            out.append(it)
-            added += 1
-        if not items or added == 0:                   # exhausted / repeated page
-            break
-        if isinstance(r, dict) and not r.get("hasMore"):
-            break
-        offset += len(items)
-    else:
-        log.warning("_page_all hit the 200-page backstop (%d rows) — repeated-page "
-                    "guard never fired; result may be truncated", len(out))
-        return out, True
-    return out, False
-
-
-def _page_all(fetch):
-    """Page an OF list endpoint to exhaustion, CAP-AGNOSTIC. `fetch(offset)`
-    returns one page. Two shapes (both verified live 2026-06-12):
-      • `/lists?format=infinite` → `{list, hasMore}` envelope — trust hasMore
-        (OF honours limit=100 but may page; never guess from page length).
-      • `/lists/{id}/users` → a BARE list with NO hasMore — page until an EMPTY
-        page, so it's correct whatever page size OF actually honours (a short-
-        page stop would under-read if OF ever caps below our requested limit).
-    Without exhaustive paging, an exclude list with >1 page of members would
-    only read page 1 and wrongly drop everyone past it as 'stale'.
-
-    Guards (2026-07-04): some OF endpoints IGNORE `offset` and report
-    hasMore=true forever (verified live on /users/me/stats/messages/group) —
-    an unguarded exhaustion loop then spins forever inside a to_thread worker
-    on the mass-broadcast hot path. Dedup by item id and stop on a page that
-    adds nothing new, plus a hard page ceiling as the backstop."""
-    return _page_all_checked(fetch)[0]
-
-
-_ROSTER_PAGE = 50            # OF caps subscriber pages low; offset math is len-based
-
-
-def _ids_from_pages(fetch) -> tuple[set[int], bool]:
-    """(user ids, hit_backstop) for any paged OF user list. Blocking.
-
-    The same two lines `audience_include._crawl_list_ids_blocking` carries for
-    its own endpoint — kept local rather than imported because that module
-    lives ABOVE this one in the import order (audience_include imports
-    audiences, never the reverse)."""
-    rows, truncated = _page_all_checked(fetch)
-    ids: set[int] = set()
-    for u in rows:
-        uid = u.get("id")
-        if uid is None:
-            continue
-        try:
-            ids.add(int(uid))
-        except (TypeError, ValueError):
-            continue
-    return ids, truncated
+def _crawl_until_cut(crawls) -> tuple[list[set[int]], list[str]]:
+    """Run `(label, crawl)` pairs in order, `crawl()` -> (ids, hit_backstop).
+    Returns (the id sets read, [label of the cut crawl] or []). Stops loading at
+    the first cut — `final_audience` decides what a cut means."""
+    got: list[set[int]] = []
+    for label, crawl in crawls:
+        ids, cut = crawl()
+        if cut:
+            return got, [label]
+        got.append(ids)
+    return got, []
 
 
 def resolve_recipients_blocking(
@@ -765,7 +755,7 @@ def resolve_recipients_blocking(
         by the time we could page it the set has moved,
       • a `user_lists` entry that is neither `fans`/`following` nor a numeric OF
         list id — we do not know what OF resolved it to,
-      • ANY crawl that reports truncation (`_page_all_checked`'s flag) or raises —
+      • ANY crawl that reports truncation (`of_paging.page_all_checked`'s flag) or raises —
         a short read would silently drop everyone past the ceiling and mark them
         non-recipients.
     A refusal returns None, the caller leaves `recipients_json` NULL, and the run is
@@ -784,48 +774,43 @@ def resolve_recipients_blocking(
                  "— leaving the run unrecorded")
         return None
     try:
-        ids: set[int] = {int(x) for x in (included_users or []) if x is not None}
+        def roster(page):          # fans / following: OF's active rosters
+            return lambda: of_paging.ids_from_pages(
+                lambda off: page(type="active", limit=of_paging.ROSTER_PAGE, offset=off))
+
+        def custom(lid):           # a custom OF list id
+            return lambda: of_paging.list_member_ids(client, lid)
+
+        crawls = []
         for raw in (user_lists or []):
             name = str(raw).strip().lower()
             if name == "fans":
-                got, truncated = _ids_from_pages(
-                    lambda off: client.subscribers(
-                        type="active", limit=_ROSTER_PAGE, offset=off))
+                crawls.append((repr(raw), roster(client.subscribers)))
             elif name == "following":
-                got, truncated = _ids_from_pages(
-                    lambda off: client.following(
-                        type="active", limit=_ROSTER_PAGE, offset=off))
+                crawls.append((repr(raw), roster(client.following)))
             elif name.isdigit():
                 # A custom OF list id passed straight through to `userLists`.
-                got, truncated = _ids_from_pages(
-                    lambda off, _lid=int(name): client.list_users_in(
-                        _lid, limit=_LIST_PAGE, offset=off))
+                crawls.append((repr(raw), custom(int(name))))
             else:
                 log.warning("resolve_recipients: unknown user_list %r — audience "
                             "not recorded", raw)
                 return None
-            if truncated:
-                log.warning("resolve_recipients: %r crawl hit the paging backstop "
-                            "— audience not recorded", raw)
-                return None
-            ids |= got
-
+        n_inc = len(crawls)
         # Every exclusion WE sent, crawled rather than assumed — `excluded_user_lists`
         # holds the AUTOFENCE list and Auto_Exclude (which is where the per-fan
         # `excluded_users` of a list audience actually land: OF's queue body has no
         # per-user exclusion field, see `ensure_exclude_list`).
-        excl: set[int] = {int(x) for x in (excluded_users or []) if x is not None}
-        for lid in (excluded_user_lists or []):
-            got, truncated = _ids_from_pages(
-                lambda off, _lid=lid: client.list_users_in(
-                    _lid, limit=_LIST_PAGE, offset=off))
-            if truncated:
-                log.warning("resolve_recipients: exclude list %r crawl hit the "
-                            "paging backstop — audience not recorded", lid)
-                return None
-            excl |= got
+        crawls += [(f"exclude list {lid!r}", custom(lid)) for lid in (excluded_user_lists or [])]
+        sets, cut = _crawl_until_cut(crawls)
 
-        return sorted(ids - excl)
+        ids = {int(x) for x in (included_users or []) if x is not None}.union(*sets[:n_inc])
+        excl = {int(x) for x in (excluded_users or []) if x is not None}
+        out = final_audience(sorted(ids), [excl, *sets[n_inc:]], truncated=cut)
+        if isinstance(out, Fail):
+            log.warning("resolve_recipients: crawl hit the paging backstop (%s) "
+                        "— audience not recorded", out.reason)
+            return None
+        return out.included
     except Exception:
         # The send already succeeded by the time we are called. A roster we could
         # not read costs a splice and nothing else, so it is a WARNING and a None.
@@ -837,15 +822,21 @@ def resolve_recipients_blocking(
 def _sync_exclude_list_blocking(client, ids: set[int]) -> int:
     """Reconcile the account's Auto_Exclude OF custom list to exactly `ids`.
     Blocking (sync OF client) — call via asyncio.to_thread. Returns list id."""
-    lists = _page_all(lambda off: client.get_lists(limit=_LIST_PAGE, offset=off))
+    lists = of_paging.page_all(
+        lambda off: client.get_lists(limit=of_paging.LIST_PAGE, offset=off))
     list_id = next((it.get("id") for it in lists
                     if (it.get("name") or "") == AUTO_EXCLUDE_LIST_NAME), None)
     if list_id is None:
         list_id = client.create_list(AUTO_EXCLUDE_LIST_NAME).get("id")
 
-    member_rows = _page_all(
-        lambda off: client.list_users_in(list_id, limit=_LIST_PAGE, offset=off))
-    members = {int(u["id"]) for u in member_rows if u.get("id") is not None}
+    members, truncated = of_paging.list_member_ids(client, list_id)
+    if truncated:
+        # Past the backstop: members beyond it are unread, so a stale one there is
+        # never removed (an over-exclude). Not raised: the callers fail the send
+        # closed on a raise, which would change who gets the blast — loud instead.
+        log.error("auto_exclude: Auto_Exclude list=%s crawl hit the paging backstop "
+                  "(%d members read) — stale members past it are NOT removed",
+                  list_id, len(members))
 
     # Stale members are REMOVED, not just superseded — a fan left behind from
     # a previous tick would be excluded from every future broadcast forever.

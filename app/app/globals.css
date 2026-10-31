@@ -258,6 +258,46 @@ html, body {
 }
 .animate-toast-in { animation: toast-in 180ms ease-out both; }
 
+/* iOS-feel motion. Sheets (the nav drawer, Fan insights, the Extras drawer)
+ * slide in on `--ease-sheet`, a fixed fast-out bezier (iOS's sheet curve; the
+ * swipe's own settle is a spring in `useSwipe`, not this); menus pop from their
+ * trigger's corner (set `origin-*` where used) and modals from their centre,
+ * with a whisker of overshoot. Exits are quicker than entries and run on a
+ * copy (`useExitGhost`) that never takes a click, so the next open never waits
+ * and the page is usable at once: a modal shrinks as it fades, a menu only fades. Transform/opacity only; `scale` composes with
+ * Tailwind's `translate` utilities, so a centred menu keeps its place. Enter
+ * fills `backwards` only: a finished entry never pins the transform a swipe sets. */
+:root {
+  --ease-sheet: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-pop: cubic-bezier(0.2, 0.9, 0.3, 1.1);
+}
+@keyframes fade-in   { from { opacity: 0; } }
+@keyframes fade-out  { to   { opacity: 0; } }
+@keyframes sheet-in-left   { from { transform: translateX(-100%); } }
+/* The 40px over-travel mirrors swipeGesture.ts `OUT_PX` (a swiped sheet's settle target): keep them equal. */
+@keyframes sheet-out-left  { to   { transform: translateX(calc(-100% - 40px)); } }
+@keyframes sheet-in-right  { from { transform: translateX(100%); } }
+@keyframes sheet-out-right { to   { transform: translateX(calc(100% + 40px)); } }
+@keyframes pop-modal-in { from { opacity: 0; scale: 0.96; } }
+@keyframes pop-menu-in  { from { opacity: 0; scale: 0.9; } }
+@keyframes pop-out      { to   { opacity: 0; scale: 0.96; } }
+.pop-backdrop { animation: fade-in 200ms ease-out backwards; }
+.sheet-left   { animation: sheet-in-left 300ms var(--ease-sheet) backwards; }
+.sheet-right  { animation: sheet-in-right 300ms var(--ease-sheet) backwards; }
+.pop-modal    { animation: pop-modal-in 220ms var(--ease-pop) backwards; }
+.pop-menu     { animation: pop-menu-in 180ms var(--ease-pop) backwards; }
+/* Exits: the longest (`.sheet-*`, 200ms) must stay under useExitGhost.ts `GHOST_MS` (260ms), when the copy is
+ * dropped. Only ui/Menu leaves on a copy; the chat's menus (MenuParts, ComposerToolbar) pop in but close at once. */
+.exit-ghost, .exit-ghost * { pointer-events: none !important; }
+.exit-ghost.pop-backdrop, .exit-ghost .pop-backdrop { animation: fade-out 150ms ease-in forwards; }
+.exit-ghost.sheet-left,   .exit-ghost .sheet-left   { animation: sheet-out-left 200ms var(--ease-sheet) forwards; }
+.exit-ghost.sheet-right,  .exit-ghost .sheet-right  { animation: sheet-out-right 200ms var(--ease-sheet) forwards; }
+.exit-ghost.pop-modal,    .exit-ghost .pop-modal    { animation: pop-out 130ms ease-in forwards; }
+.exit-ghost.pop-menu,     .exit-ghost .pop-menu     { animation: fade-out 120ms ease-in forwards; }
+@media (prefers-reduced-motion: reduce) {
+  .pop-backdrop, .sheet-left, .sheet-right, .pop-modal, .pop-menu { animation: none !important; }
+}
+
 /* Skeleton shimmer — diagonal light bar sliding across a placeholder
  * tile so the user sees motion while video storyboards are being
  * extracted on the relay. Pairs with .scrub-shimmer below; the keyframe

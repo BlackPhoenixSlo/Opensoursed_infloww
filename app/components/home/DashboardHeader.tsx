@@ -78,6 +78,7 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import {
   control, DEFAULT_BASIS, DEFAULT_PERIOD, isPeriod, PERIOD_TABS, type Basis, type DashboardControlKey,
 } from "@/components/home/dashboardControls";
+import { netMissingNote } from "@/components/home/reportsMath";
 
 /** Referrals' tile title when OnlyFans' referrals read failed for some Creators, or all. */
 export const REFERRALS_UNAVAILABLE = "OnlyFans referrals are unavailable for some creators, counted as $0.00";
@@ -134,13 +135,6 @@ const money = (c: number): string =>
 
 /** A row's money in the chosen basis: OnlyFans's `net_cents` in Net, `total_cents` in Gross. */
 const cents = (r: RevenueRow, basis: Basis) => (basis === "Net" ? r.net_cents ?? 0 : r.total_cents);
-
-/** "1 sale … has … it" / "3 sales … have … them": the missing-net note under the tiles. */
-function netMissingNote(n: number): string {
-  return n === 1
-    ? "1 sale in this period has no net figure from OnlyFans yet, so Net leaves it out."
-    : `${n} sales in this period have no net figure from OnlyFans yet, so Net leaves them out.`;
-}
 
 const label = (key: DashboardControlKey) => control(key).labels[0];
 
@@ -492,7 +486,7 @@ export default function DashboardHeader() {
       )}
       {netMissing > 0 && (
         <p data-net-missing title={EXTRA_LABEL} className="mt-3 pl-6 text-[12px] leading-[17px] text-muted">
-          {netMissingNote(netMissing)}
+          {netMissingNote(netMissing, "Net")}
         </p>
       )}
     </IfCard>

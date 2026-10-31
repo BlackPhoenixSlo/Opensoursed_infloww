@@ -154,7 +154,6 @@ export function FanListHeader({
        *  all-models switch and schedule field stay either way. */}
       {composer && (
         <LazyMassMessageComposer
-          open
           mode={composer}
           forcedAccountId={creatorId ?? undefined}
           onClose={() => setComposer(null)}

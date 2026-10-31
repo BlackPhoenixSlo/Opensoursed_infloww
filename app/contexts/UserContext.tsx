@@ -3,11 +3,13 @@
 /**
  * UserContext — "is anyone signed in" state for the friend-auth layer.
  *
- * Fetches /auth/me on mount. While `loading` is true the app shell
- * shows nothing (avoids a flash of the picker or app surface). When the
+ * Fetches /auth/me on mount, painting the last confirmed user meanwhile
+ * (lib/authSnapshot.ts). While `loading` is true (no snapshot to paint) the
+ * gate shows no shell (avoids a flash of the picker or app surface). When the
  * fetch returns:
  *   - user object → render children
  *   - null → redirect to /login (handled by the gate component)
+ *   - unreachable (boot only) → a retry screen, not the sign-in form
  *
  * Login + logout are routed through here so consumers (TopNav, landing
  * form) don't have to know about the session cookie or refetch flow.
@@ -23,14 +25,20 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
-import { clearAuthSnapshot, readAuthSnapshot, writeAuthSnapshot } from "@/lib/authSnapshot";
+import { readAuthSnapshot, writeAuthSnapshot } from "@/lib/authSnapshot";
 import { clearSendStash } from "@/lib/sendStash";
+import { clearRefusedOffers } from "@/components/chat/refusedOffers";
 import { clearPersistedCache } from "@/lib/rqPersister";
 import { authError, isTwoFactorChallenge, TwoFactorRequired, type TwoFactorChallenge } from "@/lib/twoFactor";
+
+import {
+  decideUserSession, initialUserSession, probeAction, type BootStatus, type MeOutcome, type UserSessionAction,
+} from "./userSessionReducer";
 
 // localStorage / sessionStorage keys to PRESERVE across identity switches.
 // Anything else under the `chatterly:` or `chatterly-` prefix is wiped on
@@ -77,7 +85,13 @@ export interface AuthedUserDTO {
 
 interface UserContextValue {
   user: AuthedUserDTO | null;
+  /** Where the boot /auth/me is (userSessionReducer.ts); `unreachable` is the
+   *  gate's retry screen, not the sign-in form. */
+  boot: BootStatus;
+  /** The boot probe is in flight and no warm-boot snapshot is painted. */
   loading: boolean;
+  /** From `unreachable`: run the boot again; a no-op otherwise. */
+  retry: () => void;
   /** Sign in with a known username/password. Throws RelayError on 4xx, and
    *  TwoFactorRequired when the account has 2FA on (lib/twoFactor.ts). */
   login: (username: string, password: string) => Promise<AuthedUserDTO>;
@@ -111,6 +125,14 @@ async function postJSON<T>(path: string, body: unknown): Promise<T> {
   try { parsed = text ? JSON.parse(text) : null; } catch { /* keep text */ }
   if (!r.ok) throw authError(r.status, parsed);
   return parsed as T;
+}
+
+/** Drop the previous identity's in-memory stores: unsent messages (a send
+ *  waiting on its files) and refused schedules' drafts. Shared between
+ *  UserContext + ChatterContext, as `wipeIdentityStorage` is. */
+export function clearIdentityMemory(): void {
+  clearSendStash();
+  clearRefusedOffers();
 }
 
 /** Wipe every chatterly storage key not on the preserve allowlist, and the
@@ -153,8 +175,8 @@ function wipeIdentityCaches(queryClient: ReturnType<typeof useQueryClient>): Pro
   // keys — a stale chat list from the previous user is just as wrong as
   // a stale account list).
   try { queryClient.clear(); } catch { /* ignore */ }
-  // Unsent messages (a send waiting on its files) are the previous identity's.
-  clearSendStash();
+  // Unsent messages and refused schedules are the previous identity's.
+  clearIdentityMemory();
   // Wipe identity-bound localStorage + sessionStorage. Anything under the
   // `chatterly:` / `chatterly-` namespace that isn't a preserved UI
   // preference dies here — vault picker state, scope selection,
@@ -175,22 +197,58 @@ function wipeIdentityCaches(queryClient: ReturnType<typeof useQueryClient>): Pro
   return wiped;
 }
 
+/** How long a GET /auth/me may hang before it counts as unreachable: a hung
+ *  boot probe would otherwise hold the gate shut (and every revalidation off). */
+const ME_TIMEOUT_MS = 15_000;
+
+/** One GET /auth/me, as what it ended in. Never rejects. */
+async function readMe(): Promise<MeOutcome> {
+  try {
+    const r = await fetch("/auth/me", {
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(ME_TIMEOUT_MS),
+    });
+    if (!r.ok) return { type: "refused", status: r.status };
+    const body = (await r.json()) as AuthedUserDTO | null;
+    return { type: "answered", user: body && body.user_id ? body : null };
+  } catch (error) {
+    return { type: "netError", error };
+  }
+}
+
 export function UserProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<AuthedUserDTO | null>(null);
-  const [loading, setLoading] = useState(true);
+  // The session's rules live in userSessionReducer.ts; this is the shell. The
+  // state is mirrored in a ref so two events in one tick (two focus events)
+  // see each other — the in-flight guard depends on it.
+  const [session, setSession] = useState(initialUserSession);
+  const sessionRef = useRef(initialUserSession);
+  /** Bumped on `dropProbes`; a probe from an older generation is dropped. */
+  const probeGen = useRef(0);
   const queryClient = useQueryClient();
 
-  /** Commit a SERVER-CONFIRMED principal and keep the warm-boot snapshot
-   *  in step with it. Every /auth/me answer and every login/register
-   *  result goes through here so the two can't drift; synthesized stubs
-   *  must not (see startImpersonating). */
-  const applyAuthedUser = useCallback((next: AuthedUserDTO | null) => {
-    setUser(next);
-    writeAuthSnapshot(next);
-  }, []);
+  const send = useCallback(function send(action: UserSessionAction) {
+    const { state, effects } = decideUserSession(sessionRef.current, action);
+    sessionRef.current = state;
+    for (const fx of effects) {
+      switch (fx.type) {
+        case "wipeCaches": void wipeIdentityCaches(queryClient); break;
+        case "snapshot": writeAuthSnapshot(fx.user); break;
+        case "dropProbes": probeGen.current += 1; break;
+        case "fetchMe": {
+          const gen = probeGen.current;
+          const phase = fx.phase;
+          void readMe().then((o) => {
+            if (gen === probeGen.current) send(probeAction(phase, o));
+          });
+          break;
+        }
+      }
+    }
+    setSession(state);
+  }, [queryClient]);
 
   useEffect(() => {
-    let cancelled = false;
     // Optimistic open. The gate below us renders nothing while `loading`
     // is true, which held back every persisted query cache in the app for
     // one full /auth/me round-trip on EVERY reload. A snapshot of the last
@@ -201,72 +259,20 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     // server renders with no localStorage, so seeding first render from a
     // snapshot would be a hydration mismatch. This costs one frame after
     // hydration instead of a network round-trip.
-    const snapshot = readAuthSnapshot();
-    if (snapshot) {
-      setUser(snapshot);
-      setLoading(false);
-    }
-    (async () => {
-      try {
-        const r = await fetch("/auth/me", {
-          credentials: "same-origin",
-          headers: { Accept: "application/json" },
-        });
-        if (cancelled) return;
-        if (!r.ok) { applyAuthedUser(null); return; }
-        const body = (await r.json()) as AuthedUserDTO | null;
-        const live = body && body.user_id ? body : null;
-        // The snapshot painted someone else (cookie swapped in another
-        // tab, session expired into a different principal). Components
-        // have already mounted and read that identity's persisted caches
-        // — wipe before flipping, exactly as a login would.
-        if (snapshot && live && live.user_id !== snapshot.user_id) {
-          void wipeIdentityCaches(queryClient);
-        }
-        applyAuthedUser(live);
-      } catch {
-        // Unchanged from the pre-snapshot behaviour: a boot-time probe
-        // failure resolves to signed-out. The snapshot must not turn a
-        // network hiccup into a session that outlives its cookie.
-        if (!cancelled) applyAuthedUser(null);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [applyAuthedUser, queryClient]);
+    // A re-run (StrictMode) re-probes while the boot is in flight; once settled it is a no-op.
+    send({ type: "bootStart", snapshot: readAuthSnapshot() });
+  }, [send]);
 
   // Re-validate /auth/me when the tab regains focus / becomes visible so a
   // stale impersonation overlay (e.g. another tab stopped impersonating, or
-  // the cookie expired) self-corrects without a full reload. This never
-  // touches `loading` (so it can't reflash the picker) and never re-fetches
-  // on its own result, so there's no refetch loop — it only fires on real
-  // user focus/visibility events. The initial load stays owned by the mount
-  // effect above.
+  // the cookie expired) self-corrects without a full reload. It only fires
+  // on real user focus/visibility events; the initial load stays owned by
+  // the boot effect above.
   useEffect(() => {
-    let inFlight = false;
-    const revalidate = async () => {
-      if (inFlight) return;
-      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
-      inFlight = true;
-      try {
-        const r = await fetch("/auth/me", {
-          credentials: "same-origin",
-          headers: { Accept: "application/json" },
-        });
-        if (!r.ok) { applyAuthedUser(null); return; }
-        const body = (await r.json()) as AuthedUserDTO | null;
-        applyAuthedUser(body && body.user_id ? body : null);
-      } catch {
-        /* transient network hiccup — keep the current user, retry next focus */
-      } finally {
-        inFlight = false;
-      }
-    };
+    const hidden = () => typeof document !== "undefined" && document.visibilityState === "hidden";
+    const revalidate = () => send({ type: "revalidateStart", hidden: hidden() });
     const onVisibility = () => {
-      if (typeof document !== "undefined" && document.visibilityState === "visible") {
-        void revalidate();
-      }
+      if (typeof document !== "undefined" && document.visibilityState === "visible") revalidate();
     };
     window.addEventListener("focus", revalidate);
     document.addEventListener("visibilitychange", onVisibility);
@@ -274,7 +280,17 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
       window.removeEventListener("focus", revalidate);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [applyAuthedUser]);
+  }, [send]);
+
+  // The retry screen's button: the boot again, without the snapshot (the gate
+  // waits on the answer). A no-op once the boot settled.
+  const retry = useCallback(() => send({ type: "bootStart", snapshot: null }), [send]);
+
+  /** What a flow's /auth/me answered: that user, or nobody signed in. */
+  const adoptAnswer = useCallback(
+    (u: AuthedUserDTO | null) => send(u ? { type: "confirmed", user: u } : { type: "logout" }),
+    [send],
+  );
 
   const login = useCallback(async (username: string, password: string) => {
     const dto = await postJSON<AuthedUserDTO | TwoFactorChallenge>("/auth/login", { username, password });
@@ -284,9 +300,9 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     // state — otherwise the in-flight render reads the previous user's
     // data through the next paint.
     void wipeIdentityCaches(queryClient);
-    applyAuthedUser(dto);
+    send({ type: "confirmed", user: dto });
     return dto;
-  }, [queryClient, applyAuthedUser]);
+  }, [queryClient, send]);
 
   /** Raw cache wipe + setUser(null). Used by the chatter-login flow when
    *  it needs to flip identities without going through the network logout
@@ -295,20 +311,20 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
    *  rendering as the owner). */
   const clearUserLocally = useCallback(() => {
     void wipeIdentityCaches(queryClient);
-    applyAuthedUser(null);
-  }, [queryClient, applyAuthedUser]);
+    send({ type: "logout" });
+  }, [queryClient, send]);
 
   const register = useCallback(async (username: string, password: string) => {
     const dto = await postJSON<AuthedUserDTO>("/auth/register", { username, password });
     void wipeIdentityCaches(queryClient);
-    applyAuthedUser(dto);
+    send({ type: "confirmed", user: dto });
     return dto;
-  }, [queryClient, applyAuthedUser]);
+  }, [queryClient, send]);
 
   const logout = useCallback(async () => {
     try { await postJSON<unknown>("/auth/logout", {}); } catch { /* best effort */ }
     const wiped = wipeIdentityCaches(queryClient);
-    applyAuthedUser(null);
+    send({ type: "logout" });
     // The snapshot delete must commit before the navigation tears the page down.
     await wiped;
     // Hard navigate so AuthGate evaluates from scratch. /auth/logout
@@ -320,7 +336,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     if (typeof window !== "undefined") {
       window.location.replace("/");
     }
-  }, [queryClient, applyAuthedUser]);
+  }, [queryClient, send]);
 
   const startImpersonating = useCallback(
     async (userId: string, adminPassword: string) => {
@@ -334,28 +350,25 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
       );
       void wipeIdentityCaches(queryClient);
       // Re-fetch /auth/me so `user.impersonating` flips on for the banner
-      // without waiting for the next reload.
-      const r = await fetch("/auth/me", {
-        credentials: "same-origin",
-        headers: { Accept: "application/json" },
-      });
-      if (r.ok) {
-        const body = (await r.json()) as AuthedUserDTO | null;
-        applyAuthedUser(body && body.user_id ? body : null);
+      // without waiting for the next reload. Unreachable: the caller shows
+      // the error (the overlay cookie is already set; the next reload shows it).
+      const me = await readMe();
+      if (me.type === "netError") throw me.error;
+      if (me.type === "answered") {
+        adoptAnswer(me.user);
       } else {
         // /auth/me hiccup is benign — UI will resync on next route change.
         // Fall back to a synthesized stub so the banner still renders.
-        // NOT via applyAuthedUser: this identity was never confirmed by
+        // NOT `confirmed`: this identity was never confirmed by
         // the server, and a snapshot of it would paint an overlay that
         // may already be gone on the next boot.
-        clearAuthSnapshot();
-        setUser({
-          user_id: dto.impersonating.user_id,
-          username: dto.impersonating.username,
+        send({
+          type: "unconfirmed",
+          user: { user_id: dto.impersonating.user_id, username: dto.impersonating.username },
         });
       }
     },
-    [queryClient, applyAuthedUser],
+    [queryClient, send, adoptAnswer],
   );
 
   const stopImpersonating = useCallback(async () => {
@@ -367,22 +380,19 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
       });
     } catch { /* best-effort */ }
     void wipeIdentityCaches(queryClient);
-    // Re-fetch /auth/me so the founder's real identity is back in `user`.
-    try {
-      const r = await fetch("/auth/me", {
-        credentials: "same-origin",
-        headers: { Accept: "application/json" },
-      });
-      if (r.ok) {
-        const body = (await r.json()) as AuthedUserDTO | null;
-        applyAuthedUser(body && body.user_id ? body : null);
-      }
-    } catch { /* swallow */ }
-  }, [queryClient, applyAuthedUser]);
+    // Re-fetch /auth/me so the founder's real identity is back in `user`;
+    // a refusal or an unreachable relay keeps the current one.
+    const me = await readMe();
+    if (me.type === "answered") adoptAnswer(me.user);
+  }, [queryClient, adoptAnswer]);
 
+  const { user, boot } = session;
   const value = useMemo<UserContextValue>(
-    () => ({ user, loading, login, register, logout, startImpersonating, stopImpersonating, clearUserLocally }),
-    [user, loading, login, register, logout, startImpersonating, stopImpersonating, clearUserLocally],
+    () => ({
+      user, boot, loading: boot === "probing" && !user, retry,
+      login, register, logout, startImpersonating, stopImpersonating, clearUserLocally,
+    }),
+    [user, boot, retry, login, register, logout, startImpersonating, stopImpersonating, clearUserLocally],
   );
 
   return <UserContext.Provider value={value}>{children}</UserContext.Provider>;

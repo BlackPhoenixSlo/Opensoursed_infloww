@@ -37,7 +37,7 @@
  * run.
  */
 
-import { useEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
+import { useEffect, useReducer, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Info, Plus, SquarePen, Trash2, X } from "lucide-react";
 
@@ -48,77 +48,24 @@ import { relay, type VaultList } from "@/lib/relay";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { sendVaultBatch, type ResolvedFan } from "@/lib/vaultImport";
 import { VaultTour, markVaultTourSeen, vaultTourSeen, type VaultTourStep } from "@/components/vault/VaultTour";
-import { BatchEditModal, MetaField, STEP3_FIELDS, metaToWire, type RowMeta } from "@/components/vault/VaultImportDetails";
+import { BatchEditModal, MetaField, STEP3_FIELDS, metaToWire } from "@/components/vault/VaultImportDetails";
 import VaultImportDrive from "@/components/vault/VaultImportDrive";
+import { chosenOf, importPickReducer, initialPickState } from "@/components/vault/importPickReducer";
+import {
+  detailsNote,
+  fmtSize,
+  itemLabel,
+  runSummary,
+  showsError,
+  startLabel,
+  type RunStatus,
+} from "@/components/vault/importRunText";
 import { cn } from "@/lib/utils";
 
 const POLL_MS = 2500;
 /** How long to keep polling after a start even if the server has not yet said
  *  `running` — the worker begins on a thread and the first poll can beat it. */
 const FORCE_POLL_MS = 20_000;
-/** Past this, a finished run's error message is history, not news. */
-const ERROR_FRESH_MS = 24 * 60 * 60 * 1000;
-
-type ItemStatus = "pending" | "uploading" | "done" | "failed" | "skipped";
-/** The run's phases — `vault_upload.RUN_PHASES` on the wire. A union rather
- *  than `string`, because `runSummary` branches on two of these literals: with
- *  `phase?: string` a rename on the relay type-checks here and quietly turns
- *  the "caching previews" line back into "uploading", which is the one label
- *  whose entire job is to stop a real wait reading as a stall. */
-type RunPhase = "collecting" | "uploading" | "mirroring" | "finished";
-
-interface RunItem {
-  name: string;
-  source: "local" | "gdrive";
-  size: number | null;
-  status: ItemStatus;
-  error: string | null;
-  vault_id: number | null;
-  deduped: boolean | null;
-  hidden?: boolean | null;
-  /** The vault id is real and permanent, but OnlyFans had not finished the
-   *  encode when the carrier went away. It finishes on its own. */
-  still_transcoding?: boolean | null;
-  compressed_from?: number | null;
-}
-
-interface RunStatus {
-  running: boolean;
-  run_id?: string;
-  status?: "running" | "done" | "failed" | "interrupted";
-  phase?: RunPhase;
-  error?: string | null;
-  /** Foldering failed but the media IS in the vault — a warning, not a failure. */
-  filing_error?: string | null;
-  /** What became of the per-file details once the files landed. */
-  details_saved?: { applied: number; skipped: number; why: string | null } | null;
-  /** Whether this account's vault is mirrored here, which the details are
-   *  saved onto. False: Tag Creators, Hashtags, Notes and price go nowhere. */
-  details_saved_here?: boolean;
-  /** The run's linked fan, if any: that path costs one write per file. */
-  fan_id?: number | null;
-  finished_at?: string | null;
-  total?: number;
-  done?: number;
-  failed?: number;
-  skipped?: number;
-  /** Carriers we know the id of that could NOT be deleted — the relay's own
-   *  name for them, so the wire and the module say the same word. */
-  carriers_undeletable?: number;
-  /** Carriers that may exist but were never recorded — the create call's
-   *  response was lost. The sweep hunts these by their marker. */
-  carriers_unrecorded?: number;
-  items?: RunItem[];
-  /** Whether this server's GOOGLE_DRIVE_API_KEY is set (the key's own reader:
-   *  Settings → AI keys, then the environment). Only `true` shows the Drive section;
-   *  false or absent (an older relay) shows nothing. */
-  drive_import_configured?: boolean;
-  /** This server's own upload limits, the ones the batch route enforces
-   *  (`VAULT_UPLOAD_MAX_MB`, `VAULT_UPLOAD_MAX_FILES`), for the rules row. */
-  upload_limits?: { max_file_mb: number; max_files: number };
-}
-
-const MB = 1024 * 1024;
 
 /** The picker's `accept` (images, video, audio). A drop bypasses `accept`, so
  *  dropped files are held to the same three kinds. */
@@ -140,54 +87,6 @@ const FAN_TIP =
   "Infloww will automatically send media to this account so that it appears in your Creator’s vault.\n" +
   "NOTE: You must be subscribed to this fan account, or the account must be subscribed to you.\n" +
   "Leave it empty and each file is attached to a scheduled post that is deleted again at once — nothing reaches a fan.";
-function fmtSize(bytes: number | null | undefined): string {
-  if (!bytes) return "";
-  return bytes >= MB ? `${(bytes / MB).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
-}
-
-/** Plain-language state for one row. Exported for tests. */
-export function itemLabel(it: RunItem): string {
-  if (it.status === "done" && it.deduped) return "already in vault";
-  if (it.status === "done" && it.still_transcoding)
-    return `in vault · ${it.vault_id ?? ""} · still processing`;
-  if (it.status === "done") return `in vault · ${it.vault_id ?? ""}`;
-  if (it.status === "uploading") return "uploading…";
-  if (it.status === "pending") return "waiting";
-  if (it.status === "skipped") return it.error || "skipped";
-  return it.error || "failed";
-}
-
-/** One line summarising a run, in the words an operator would use. */
-export function runSummary(s: RunStatus): string {
-  if (!s.run_id) return "No import has run yet.";
-  const done = s.done ?? 0;
-  const total = s.total ?? 0;
-  if (s.running) {
-    // `mirroring` is the tail of the run: every file is in the vault and the
-    // relay is reading them back one by one to fill the local mirror. It is
-    // deliberately still `running` — the grid refreshes on the finish edge, and
-    // refreshing before the mirror is written is what made a large import look
-    // like it uploaded nothing. Naming it stops that wait reading as a stall.
-    if (s.phase === "mirroring") return `${done} in vault — caching previews`;
-    const phase = s.phase === "collecting" ? "fetching files" : "uploading";
-    return `${phase} — ${done} of ${total} done`;
-  }
-  if (s.status === "interrupted") return "Interrupted — the relay restarted mid-run. Re-run to finish.";
-  const bits = [`${done} in vault`];
-  if (s.failed) bits.push(`${s.failed} failed`);
-  if (s.skipped) bits.push(`${s.skipped} skipped`);
-  return bits.join(" · ");
-}
-
-/** Is this run's error still worth showing? A failed run's message used to sit
- *  on the panel on every page load until somebody happened to import again. */
-export function showsError(s: RunStatus, now: number = Date.now()): boolean {
-  if (!s.error) return false;
-  if (s.status !== "failed" && s.status !== "interrupted") return false;
-  if (!s.finished_at) return true;
-  const at = Date.parse(s.finished_at);
-  return Number.isNaN(at) || now - at < ERROR_FRESH_MS;
-}
 
 /** One upload step, as growth-vault-pro.md draws it: a 15px marker with a 9px
  *  dot, a 3px line down to the next step (#81), a body padded 0 0 65px 16px
@@ -226,28 +125,6 @@ function Step({
 /** The details columns that are written onto the mirror row, not to OnlyFans. */
 const MIRROR_ONLY: ReadonlySet<string> = new Set(["tag", "hashtags", "notes", "price"]);
 
-/** The Start button's words, most pressing state first. */
-function startLabel(p: {
-  sending: { sent: number; total: number } | null;
-  running: boolean;
-  sessionLost: boolean;
-  pending: boolean;
-  modelName: string;
-}): string {
-  if (p.sending) return `Sending ${p.sending.sent} of ${p.sending.total}…`;
-  if (p.running) return "Importing…";
-  if (p.sessionLost) return "Session dropped";
-  if (p.pending) return "Starting…";
-  return `Start import → ${p.modelName}`;
-}
-
-/** The run's word on the per-file details, when some were not saved. */
-export function detailsNote(s: Pick<RunStatus, "details_saved">): string | null {
-  const d = s.details_saved;
-  if (!d?.skipped) return null;
-  return `Details for ${d.skipped} file${d.skipped === 1 ? "" : "s"} were not saved${d.why ? `: ${d.why}` : ""}.`;
-}
-
 export default function VaultImportCard() {
   const qc = useQueryClient();
   // The account every call on this card is scoped to — the PAGE's model, from
@@ -266,13 +143,11 @@ export default function VaultImportCard() {
   const { account, sessionLost } = useVaultAccount();
   const ctx = { accountId };
   const fileRef = useRef<HTMLInputElement>(null);
-  const [picked, setPicked] = useState<File[]>([]);
-  // Step 3's row selection. Picked files start selected, as the bundle's do
-  // (`selected:true`), and only the selected ones are sent.
-  const [selected, setSelected] = useState<ReadonlySet<File>>(new Set());
+  // The picked files, step 3's row selection and each file's details, as one
+  // state (importPickReducer). Only the selected files are sent.
+  const [pickState, dispatch] = useReducer(importPickReducer, initialPickState);
+  const { picked, selected, details } = pickState;
   const [batchOpen, setBatchOpen] = useState(false);
-  // Each picked file's details, keyed by the File itself (as `selected` is).
-  const [details, setDetails] = useState<ReadonlyMap<File, RowMeta>>(new Map());
   // Step 1: the fan account each new file is sent to. Empty is the carrier path.
   // A typed name sends nothing until the relay has said who it is (`fanFound`,
   // for exactly the text it was checked for).
@@ -346,32 +221,12 @@ export default function VaultImportCard() {
     }
   }, [running, qc, accountId]);
 
-  /** Replace the picked list (the picker and a drop both do), all selected. */
-  const pick = (files: File[]) => {
-    setPicked(files);
-    setSelected(new Set(files));
-  };
   /** Take files off the list; nothing has been sent, so nothing is lost. */
-  const remove = (gone: ReadonlySet<File>) => {
-    setPicked((p) => p.filter((f) => !gone.has(f)));
-    setSelected((sel) => new Set([...sel].filter((f) => !gone.has(f))));
-    setDetails((d) => new Map([...d].filter(([f]) => !gone.has(f))));
+  const remove = (files: readonly File[]) => {
+    dispatch({ type: "remove", files });
     if (fileRef.current) fileRef.current.value = "";
   };
-  /** Write `values` onto each of `files`' details (a cell edit, or Batch edit's Save). */
-  const editRows = (files: readonly File[], values: RowMeta) =>
-    setDetails((d) => {
-      const next = new Map(d);
-      for (const f of files) next.set(f, { ...next.get(f), ...values });
-      return next;
-    });
-  const toggle = (f: File) =>
-    setSelected((sel) => {
-      const next = new Set(sel);
-      if (!next.delete(f)) next.add(f);
-      return next;
-    });
-  const chosen = picked.filter((f) => selected.has(f));
+  const chosen = chosenOf(pickState);
 
   // The selection bar's tour (index.9f50f370.js @12947586, `useMultipleSelectionOperationOnboarding`): each time the
   // bar appears, its first unseen step shows and is marked seen; "Got it" moves on, and Batch edit or Bulk upload
@@ -413,7 +268,7 @@ export default function VaultImportCard() {
             if (id) setRunId(id);
             else void status.refetch();
           }
-          if (f) remove(new Set([f]));
+          if (f) remove([f]);
           if (files.length > 1) setSending({ sent: taken, total: files.length });
         },
       );
@@ -460,7 +315,7 @@ export default function VaultImportCard() {
     if (locked) return;
     const media = files.filter((f) => MEDIA_TYPE.test(f.type));
     if (media.length === 0) return;
-    pick(media);
+    dispatch({ type: "pick", files: media });
     if (fileRef.current) fileRef.current.value = "";
   };
 
@@ -597,7 +452,7 @@ export default function VaultImportCard() {
                   multiple
                   accept="image/*,video/*,audio/*"
                   disabled={locked}
-                  onChange={(e) => pick(Array.from(e.target.files ?? []))}
+                  onChange={(e) => dispatch({ type: "pick", files: Array.from(e.target.files ?? []) })}
                   className="sr-only"
                 />
                 <Plus size={picked.length > 0 ? 16 : 24} aria-hidden className="text-accent" />
@@ -644,7 +499,7 @@ export default function VaultImportCard() {
                           aria-label="Select all media"
                           checked={chosen.length === picked.length}
                           disabled={locked}
-                          onChange={(e) => setSelected(new Set(e.target.checked ? picked : []))}
+                          onChange={(e) => dispatch({ type: "selectAll", on: e.target.checked })}
                         />
                       </th>
                       <th className="py-2 pr-3 font-medium">Media</th>
@@ -678,7 +533,7 @@ export default function VaultImportCard() {
                             aria-label={`Select ${f.name}`}
                             checked={selected.has(f)}
                             disabled={locked}
-                            onChange={() => toggle(f)}
+                            onChange={() => dispatch({ type: "toggle", file: f })}
                           />
                         </td>
                         <td className="max-w-[220px] py-2 pr-3">
@@ -691,7 +546,7 @@ export default function VaultImportCard() {
                               field={key}
                               label={`${h} for ${f.name}`}
                               value={details.get(f)?.[key] ?? ""}
-                              onChange={(v) => editRows([f], { [key]: v })}
+                              onChange={(v) => dispatch({ type: "edit", files: [f], values: { [key]: v } })}
                               folders={folders.data ?? []}
                               disabled={locked}
                               className={cn(
@@ -706,7 +561,7 @@ export default function VaultImportCard() {
                             type="button"
                             aria-label={`Delete ${f.name}`}
                             disabled={locked}
-                            onClick={() => remove(new Set([f]))}
+                            onClick={() => remove([f])}
                             className="text-fg-dim hover:text-err disabled:opacity-50"
                           >
                             <Trash2 size={16} aria-hidden />
@@ -733,7 +588,7 @@ export default function VaultImportCard() {
                   <button
                     type="button"
                     aria-label="Clear selection"
-                    onClick={() => setSelected(new Set())}
+                    onClick={() => dispatch({ type: "selectAll", on: false })}
                     className="text-fg-dim hover:text-fg"
                   >
                     <X size={16} aria-hidden />
@@ -759,7 +614,7 @@ export default function VaultImportCard() {
                     aria-label="Delete selected"
                     title="Delete"
                     disabled={locked}
-                    onClick={() => remove(new Set(chosen))}
+                    onClick={() => remove(chosen)}
                     className="text-fg-dim hover:text-err disabled:opacity-50"
                   >
                     <Trash2 size={20} aria-hidden />
@@ -922,7 +777,7 @@ export default function VaultImportCard() {
           folders={folders.data ?? []}
           onClose={() => setBatchOpen(false)}
           onSave={(values) => {
-            editRows(chosen, values);
+            dispatch({ type: "edit", files: chosen, values });
             setBatchOpen(false);
           }}
         />

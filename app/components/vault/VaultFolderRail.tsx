@@ -10,7 +10,8 @@
  * owns the folder list and the selected folder, and is told to refresh after a write.
  */
 
-import { type DragEvent as ReactDragEvent, type ReactNode, useState } from "react";
+import { type DragEvent as ReactDragEvent, type ReactNode, useEffect, useReducer, useState } from "react";
+import { useIsRestoring, useQueryClient } from "@tanstack/react-query";
 import {
   AudioLines, Check, Coins, Ellipsis, Image as ImageIcon, ImagePlay, ListFilter, LockOpen, Plus, Search, Send, Video, X,
 } from "lucide-react";
@@ -18,9 +19,14 @@ import {
 import { MENU_ITEM, MENU_PANEL, Menu, useOutsideClose } from "@/components/ui/Menu";
 import { EmptyState, IfButton, IfModal } from "@/components/ui/infloww";
 import { useVaultAccountId } from "@/components/vault/VaultAccount";
+import { applyCustomOrder, customizeReducer } from "@/components/vault/vaultFolderOrder";
+import {
+  FOLDER_ORDERS, FOLDER_SORTS, loadFolderSort, type FolderSortState,
+} from "@/components/vault/vaultFolderSort";
 import { createOfFolder, deleteOfFolder, renameOfFolder, sortOfFolders } from "@/hooks/useVaultCache";
+import { vaultListsKey } from "@/hooks/useVaultMedia";
 import { type FanId } from "@/lib/fanId";
-import { type VaultList } from "@/lib/relay";
+import { type VaultList, type VaultListsResp } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/Skeleton";
 
@@ -46,23 +52,8 @@ export const RAIL_ROW_INNER = "py-[14px] pl-[10px] pr-1 border-b border-border f
 export const RAIL_ICON_BOX =
   "w-[30px] min-w-[30px] h-[30px] grid place-items-center rounded-[20px] text-fg-dim hover:text-accent hover:bg-accent/10 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-fg-dim";
 
-/** The rail's folder sort (Layout capture growth-vault-pro#20, #22): the OF folder-list sort the relay's
- *  `/admin/vault-ai/of-folders/sort` sets. "Default" ascending until one is picked: no read reports OF's current
- *  folder sort, so the label is the last sort set from this page. */
-type FolderSort = "default" | "name" | "recent" | "media" | "custom";
-type FolderOrder = "asc" | "desc";
-const FOLDER_SORTS: { value: FolderSort; label: string }[] = [
-  { value: "default", label: "Default" },
-  { value: "name", label: "Name" },
-  { value: "recent", label: "Recent" },
-  { value: "media", label: "Media" },
-  { value: "custom", label: "Custom" },
-];
+/** The rail's folder sort label (vaultFolderSort.ts): the sort last set here, kept per Creator. */
 const SORT_READ_NOT_WIRED = "The sort last set here. Reading back the sort OnlyFans has stored: not wired";
-const FOLDER_ORDERS:{ value: FolderOrder; label: string }[] = [
-  { value: "asc", label: "Ascending" },
-  { value: "desc", label: "Descending" },
-];
 
 /** A folder's counts (#30, #31): photo, video, audio and GIF, each behind its icon (20px, audio 16px), split by
  *  "·" with a 2px gap; "empty" when all are 0. Also the "Add to category" modal's rows (`MoveModalItem`). */
@@ -221,19 +212,23 @@ export default function VaultFolderRail({ folders, loading, error, onRetry, sele
   /** The folder the grid shows; `null` is "All media". */
   selectedId: FanId | null;
   onSelect: (id: FanId | null) => void;
-  /** Called after every folder write, so the parent refetches. */
+  /** Called after every folder write, taken by OF or not: the folders may have changed. */
   onChanged: () => void;
 }) {
   const accountId = useVaultAccountId();
-  const [customizeOrder, setCustomizeOrder] = useState(false);
-  // Folder ids (the drag reorders FOLDERS), so FanId.
-  const [localOrder, setLocalOrder] = useState<FanId[] | null>(null);
-  const [draggedId, setDraggedId] = useState<FanId | null>(null);
+  const qc = useQueryClient();
+  // Customize order: folder ids (the drag reorders FOLDERS), so FanId; the mode is on while `customize` is set.
+  const [customize, dispatchCustomize] = useReducer(customizeReducer, null);
+  const customizeOrder = customize !== null;
   // The rail's header (#19 to #25): the folder sort and its popover, the folder search, the add icon.
-  const [folderSort, setFolderSort] = useState<{ sort: FolderSort; order: FolderOrder }>({
-    sort: "default",
-    order: "asc",
-  });
+  // The panel is keyed per Creator, so the rail mounts per Creator: its last sort is read once, then is what
+  // `sortOfFolders` returns. At mount, once the query snapshot is restored, the folder list is read again: a sort
+  // set elsewhere may have reordered it (the relay serves it from its cache, which a sort drops).
+  const [folderSort, setFolderSort] = useState<FolderSortState>(() => loadFolderSort(accountId));
+  const restoring = useIsRestoring();
+  useEffect(() => {
+    if (!restoring) void qc.invalidateQueries({ queryKey: vaultListsKey(accountId) }, { cancelRefetch: false });
+  }, [qc, accountId, restoring]);
   const { open: sortOpen, setOpen: setSortOpen, ref: sortRef } = useOutsideClose();
   const [railSearching, setRailSearching] = useState(false);
   const [railSearch, setRailSearch] = useState("");
@@ -254,11 +249,10 @@ export default function VaultFolderRail({ folders, loading, error, onRetry, sele
     onChanged();
   }
   /** Set OF's folder-list sort; the label follows only once OF has taken it. */
-  async function onSortFolders(next: { sort: FolderSort; order: FolderOrder }) {
+  async function onSortFolders(next: FolderSortState) {
     setSortOpen(false);
     try {
-      await sortOfFolders(accountId, next);
-      setFolderSort(next);
+      setFolderSort(await sortOfFolders(accountId, next));
     } catch {
       /* the label stays on the sort OF still has */
     }
@@ -267,49 +261,33 @@ export default function VaultFolderRail({ folders, loading, error, onRetry, sele
   // ── Customize (drag) folder order → OF customOrder ──────────────
   function startCustomize() {
     setSortOpen(false);
-    setLocalOrder(folders.map((f) => f.id));
-    setCustomizeOrder(true);
-  }
-  /** Leave the mode with nothing written: the bundle's close icon (`customize-close`). */
-  function cancelCustomize() {
-    setCustomizeOrder(false);
-    setLocalOrder(null);
-    setDraggedId(null);
+    dispatchCustomize({ type: "start", ids: folders.map((f) => f.id) });
   }
   /** The bundle's check (`customize-ok`, index.9f50f370.js @6820751): writes the dragged order as OF's custom order
    *  once (`customOrder`, @5094572), and the sort label then reads "Custom". */
   async function doneCustomize() {
-    const order = localOrder;
-    cancelCustomize();
+    const order = customize?.order;
+    dispatchCustomize({ type: "cancel" });
     if (!order) return;
     try {
-      await sortOfFolders(accountId, { customOrder: order });
-      setFolderSort((s) => ({ ...s, sort: "custom" }));
+      const saved = await sortOfFolders(accountId, { customOrder: order });
+      // The new order in the cached list at once (no old-order flash before the refetch).
+      qc.setQueryData<VaultListsResp>(vaultListsKey(accountId), (d) => d && { ...d, list: applyCustomOrder(d.list ?? [], order) });
+      setFolderSort(saved);
     } catch {
-      /* OF kept its own order, and the refresh below shows it */
+      /* OF kept its own order, and the refresh shows it */
     }
     onChanged();
   }
   function onDragOverFolder(e: ReactDragEvent, overId: FanId) {
     e.preventDefault();
-    if (draggedId == null || draggedId === overId || !localOrder) return;
-    const arr = [...localOrder];
-    const from = arr.indexOf(draggedId);
-    const to = arr.indexOf(overId);
-    if (from < 0 || to < 0) return;
-    arr.splice(from, 1);
-    arr.splice(to, 0, draggedId);
-    setLocalOrder(arr);
-  }
-  /** A drop only moves the row on screen; the order is written by the check (`doneCustomize`). */
-  function onDropFolder() {
-    setDraggedId(null);
+    dispatchCustomize({ type: "over", id: overId });
   }
 
   const railQuery = railSearch.trim().toLowerCase();
   const displayFolders =
-    customizeOrder && localOrder
-      ? (localOrder.map((id) => folders.find((f) => f.id === id)).filter(Boolean) as VaultList[])
+    customize
+      ? (customize.order.map((id) => folders.find((f) => f.id === id)).filter(Boolean) as VaultList[])
       : railQuery
         ? folders.filter((f) => f.name.toLowerCase().includes(railQuery))
         : folders;
@@ -351,7 +329,8 @@ export default function VaultFolderRail({ folders, loading, error, onRetry, sele
               <button
                 type="button"
                 aria-label="Cancel"
-                onClick={cancelCustomize}
+                // Leave the mode with nothing written: the bundle's close icon (`customize-close`).
+                onClick={() => dispatchCustomize({ type: "cancel" })}
                 className={RAIL_ICON_BOX}
               >
                 <X size={20} aria-hidden />
@@ -490,16 +469,17 @@ export default function VaultFolderRail({ folders, loading, error, onRetry, sele
                 role="button"
                 tabIndex={0}
                 draggable={customizeOrder}
-                onDragStart={customizeOrder ? () => setDraggedId(f.id) : undefined}
+                onDragStart={customizeOrder ? () => dispatchCustomize({ type: "drag", id: f.id }) : undefined}
                 onDragOver={customizeOrder ? (e) => onDragOverFolder(e, f.id) : undefined}
-                onDrop={customizeOrder ? onDropFolder : undefined}
+                // A drop only moves the row on screen; the order is written by the check (`doneCustomize`).
+                onDrop={customizeOrder ? () => dispatchCustomize({ type: "drop" }) : undefined}
                 onClick={() => {
                   if (!customizeOrder) onSelect(f.id);
                 }}
                 className={cn(
                   railRowClass(selectedId === f.id && !customizeOrder),
                   customizeOrder ? "cursor-grab active:cursor-grabbing" : "cursor-pointer",
-                  draggedId === f.id ? "opacity-50" : "",
+                  customize?.dragged === f.id ? "opacity-50" : "",
                 )}
               >
                 <div className={RAIL_ROW_INNER}>

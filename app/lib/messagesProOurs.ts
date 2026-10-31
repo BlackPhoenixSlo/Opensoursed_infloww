@@ -381,6 +381,21 @@ export const OURS = {
      *  apart, 6px left inset, 20px right for the ✕, 11px. */
     uploadFailed: "max-w-56 gap-1.5 pl-1.5 pr-5 text-[11px]",
   },
+  CopilotPicker: {
+    /** The AI Copilot panel: from the AI pill's right edge, 8px above it,
+     *  320px wide, to 384px tall, 8px inset, 12px. */
+    panel: "right-0 mb-2 w-80 max-h-96 p-2 text-xs",
+    /** Regenerate's icon: 12px. */
+    regenerateIcon: "size-3",
+  },
+  EmojiFavourites: {
+    /** ⚙'s icon: 20px. */
+    gearIcon: "size-5",
+    /** The editor's emoji grid: 4px apart, 10px side and 4px top/bottom inset. */
+    grid: "gap-1 px-[10px] py-1",
+    /** The editor's "Cancel": radius 7px, padding 7px 12px, 12.5px. */
+    cancel: "rounded-[7px] px-3 py-[7px] text-[12.5px]",
+  },
   ComposerToolbar: {
     /** A button-row pill's line height (CP5 sets none). */
     pill: "leading-tight",
@@ -420,6 +435,9 @@ export const OURS = {
      *  content's minimum width (look-and-feel C14), so at 390 it fills x
      *  56-390 beside the 56px tap-to-close gutter. */
     slideOver: "w-full min-w-0 max-w-[420px] sm:w-[360px] sm:max-w-[360px] border-l",
+    /** The slide-over's own colour carried past its right edge (the panel is
+     *  `relative`), so a rubber-band pull left (`useSwipe`) shows no gap. */
+    pullFill: "relative after:absolute after:inset-y-0 after:left-full after:w-32",
     /** The head's title, "+" and ×: 4px apart (FI1 holds its padding and
      *  type). */
     head: "gap-1",

@@ -35,7 +35,8 @@ const fault = {
     let out = code;
     for (const [key, rx, rep] of rewrites) {
       let n = 0;
-      out = out.replace(rx, () => { n += 1; return rep; });
+      // The replacement is Python's (lib/faults.py, as actors/ui.py applies it): `\1` is a group.
+      out = out.replace(rx, (...m) => { n += 1; return rep.replace(/\\(\d+)/g, (_, i) => m[+i] ?? ""); });
       if (n) {
         hits[key] += n;
         const rel = path.relative(appDir, file);

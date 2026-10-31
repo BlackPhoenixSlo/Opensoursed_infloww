@@ -36,6 +36,7 @@ import json  # noqa: E402
 from datetime import datetime  # noqa: E402
 
 import vault_ai_api as api  # noqa: E402
+import vault_ai_vision  # noqa: E402
 import vault_frames  # noqa: E402 — module under test (the PATCH route)
 import llm_client  # noqa: E402
 from db.engine import get_session  # noqa: E402
@@ -178,7 +179,7 @@ async def case_rerun_respects_lock() -> None:
     vault_frames.collect = _fake_images        # type: ignore[assignment]
     llm_client.chat = _fake_chat              # type: ignore[assignment]
     try:
-        res = await api._describe_one(aid, 2)
+        res = await vault_ai_vision._describe_one(aid, 2)
     finally:
         vault_frames.collect = orig_images     # type: ignore[assignment]
         llm_client.chat = orig_chat           # type: ignore[assignment]

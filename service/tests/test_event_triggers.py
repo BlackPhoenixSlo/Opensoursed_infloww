@@ -35,6 +35,7 @@ from datetime import datetime, timedelta, timezone  # noqa: E402
 from sqlalchemy import select, update  # noqa: E402
 
 import automation_executor as ax  # noqa: E402
+import dispatch_plan  # noqa: E402
 import event_transcoder  # noqa: E402
 import ownership  # noqa: E402
 import purchase_notifications as pn  # noqa: E402
@@ -92,7 +93,7 @@ async def _fired_once(aid: str, kind: str) -> None:
     await ax._materialize_due_rules()
     assert len(await _jobs(aid, kind)) == 1
     await _set_status(aid, "done")
-    await _age(aid, ax._POKE_FLOOR_S + 1)
+    await _age(aid, dispatch_plan.POKE_FLOOR_S + 1)
 
 
 # ── The materializer ────────────────────────────────────────────────────────
@@ -143,7 +144,7 @@ async def case_a_poke_during_a_run_fires_once_after_it_never_during():
         await ax._materialize_due_rules()
         assert len(await _jobs(aid, FOLLOWUP)) == 1, "a job stacked on a running one"
     await _set_status(aid, "done")
-    await _age(aid, ax._POKE_FLOOR_S + 1)   # a sweep long enough to outlast the floor
+    await _age(aid, dispatch_plan.POKE_FLOOR_S + 1)   # a sweep long enough to outlast the floor
     await ax._materialize_due_rules()
     await ax._materialize_due_rules()
     jobs = await _jobs(aid, FOLLOWUP)
@@ -159,7 +160,7 @@ async def case_a_poke_under_the_floor_is_spent_and_the_cadence_covers_it():
     await ax._materialize_due_rules()
     assert len(await _jobs(aid, WELCOME)) == 1, "a poke under the floor fired the rule"
     assert ax._poked == set(), "the floored poke was kept"
-    await _age(aid, ax._POKE_FLOOR_S + 1)
+    await _age(aid, dispatch_plan.POKE_FLOOR_S + 1)
     await ax._materialize_due_rules()
     assert len(await _jobs(aid, WELCOME)) == 1, "the spent poke fired later"
     await _age(aid, 301)                       # the cadence backstop

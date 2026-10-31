@@ -12,7 +12,7 @@ import _harness  # MUST be first — binds a throwaway temp DB + TEST_MODE
 import asyncio
 
 import of_ws
-from automations import _common
+from automations import _common, _typing_hold
 
 _harness.bootstrap()
 
@@ -32,7 +32,7 @@ class FakePump:
 
 def _fast_reemit():
     """Shrink the re-emit gap so the test doesn't actually wait seconds."""
-    _common._TYPING_REEMIT_S = 0.01
+    _typing_hold._TYPING_REEMIT_S = 0.01
 
 
 async def case_emits_through_registered_pump():

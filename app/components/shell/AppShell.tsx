@@ -9,7 +9,15 @@
  * Radix dialog: focus trap, Escape, backdrop click) opened from that same
  * button, or by a swipe right that starts anywhere on the page but the OS's
  * edge zones, outside any open dialog (`useSwipe`). The drawer closes on any
- * route change, or on a swipe left on it or its backdrop.
+ * route change, or on a swipe left on it or its backdrop. That closing swipe
+ * is an iOS sheet gesture: the drawer follows the finger and its backdrop
+ * fades with it, and it closes when the release would carry it 75% out (or on
+ * a flick); once that release lets it go its Radix layer is closed, so its
+ * focus trap lets go (a tap on a field in the page during the slide keeps its
+ * focus), while the drawer stays mounted to slide off (`drawerState`). Its
+ * other holds (the page `aria-hidden`, scroll lock) go when it unmounts. The opening swipe does not
+ * track the finger: on release the drawer slides in (CSS). Closed any other
+ * way it leaves on a non-blocking copy (`useExitGhost`).
  *
  * Messages Pro (`isPopoutRoute`) is a window of its own, as in Infloww: the
  * sidebar opens it with `openPopout`, and on its routes the shell renders
@@ -40,18 +48,20 @@
  */
 
 import { usePathname } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 
 import DeniedPageGate from "@/components/shell/DeniedPage";
 import { DesktopUpdateBanner } from "@/components/shell/DesktopUpdateBanner";
+import { DRAWER_CLOSED, drawerOn, drawerReducer } from "@/components/shell/drawerState";
 import { FreeTrialExpiredModal } from "@/components/shell/FreeTrial";
 import PlatformGate, { PlatformSync } from "@/components/shell/PlatformGate";
 import Sidebar from "@/components/shell/Sidebar";
 import TopBar from "@/components/shell/TopBar";
 import { ClockHeartbeat } from "@/components/shifts/ClockButton";
 import { useIsDesktop } from "@/hooks/useIsDesktop";
-import { OS_EDGE_PX, useSwipe } from "@/hooks/useSwipe";
+import { useExitGhost } from "@/hooks/useExitGhost";
+import { OPEN_DIALOG, OS_EDGE_PX, useSwipe } from "@/hooks/useSwipe";
 import { hasCreatorColumn, isPopoutRoute, openPopout, POPOUT_WINDOW } from "@/lib/nav";
 
 const SIDEBAR_ID = "app-sidebar";
@@ -64,19 +74,24 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const ofRail = hasCreatorColumn(pathname) || pathname === "/settings" || pathname.startsWith("/settings/");
   const locked = docked && ofRail;
   const [collapsed, setCollapsed] = useState(false);
-  // The path the drawer was opened on. Any navigation (link, back/forward)
-  // changes the path and so closes it; widening past lg closes it too.
-  const [drawerPath, setDrawerPath] = useState<string | null>(null);
-  const drawerOpen = !docked && drawerPath === pathname;
-  const setDrawerOpen = (open: boolean) => setDrawerPath(open ? pathname : null);
+  // Any navigation (link, back/forward) changes the path and so closes it; widening past lg closes it too.
+  const [drawer, dispatchDrawer] = useReducer(drawerReducer, DRAWER_CLOSED);
+  const drawerIs = docked ? "closed" : drawerOn(drawer, pathname);
+  const drawerShown = drawerIs !== "closed";
+  const drawerOpen = drawerIs === "open";
   const drawerRef = useRef<HTMLDivElement>(null);
+  const backdropRef = useRef<HTMLDivElement>(null);
   const popout = isPopoutRoute(pathname);
   useSwipe(null, {
-    enabled: !docked && !popout && !drawerOpen, dir: "right", onSwipe: () => setDrawerPath(pathname),
-    edgeGuard: OS_EDGE_PX, ignoreWhile: "[role='dialog'], [aria-modal='true']",
+    enabled: !docked && !popout && !drawerShown, dir: "right", onSwipe: () => dispatchDrawer({ type: "open", path: pathname }),
+    edgeGuard: OS_EDGE_PX, ignoreWhile: OPEN_DIALOG,
   });
   // The drawer and its backdrop cover the page, so the whole document listens while it is open.
-  useSwipe(null, { enabled: drawerOpen, dir: "left", onSwipe: () => setDrawerPath(null), follow: drawerRef });
+  useSwipe(null, {
+    enabled: drawerShown, dir: "left", onSwipe: () => dispatchDrawer({ type: "slid" }),
+    sheet: { panel: drawerRef, backdrop: backdropRef, onLetGo: () => dispatchDrawer({ type: "letGo" }) },
+  });
+  useExitGhost(drawerShown, backdropRef, drawerRef);
 
   // Messages Pro has no top bar, so the shell offset `.h-chat` subtracts
   // (`--shell-top`, globals.css) is 0 and the panes fill the window.
@@ -97,7 +112,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         onToggleSidebar={() => {
           if (locked) return;
           if (docked) setCollapsed((c) => !c);
-          else setDrawerOpen(!drawerOpen);
+          else dispatchDrawer({ type: "toggle", path: pathname });
         }}
         sidebarExpanded={locked ? false : docked ? !collapsed : drawerOpen}
         sidebarId={docked ? SIDEBAR_ID : DRAWER_ID}
@@ -109,22 +124,28 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           collapsed={ofRail || collapsed}
           className="hidden lg:flex sticky top-[var(--chrome-top)] h-[calc(100dvh-var(--chrome-top))]"
         />
-        <Dialog.Root open={drawerOpen} onOpenChange={setDrawerOpen}>
-          <Dialog.Portal>
-            <Dialog.Overlay className="lg:hidden fixed inset-0 z-40 bg-black/50" />
+        {/* Mounted while it slides off after a swipe let it go (`leaving`), its Radix layer already closed. */}
+        <Dialog.Root
+          open={drawerOpen}
+          // No Dialog.Trigger: Radix only ever asks to close (Esc, an outside click).
+          onOpenChange={(open) => { if (!open) dispatchDrawer({ type: "close" }); }}
+        >
+          {drawerShown && <Dialog.Portal forceMount>
+            <Dialog.Overlay ref={backdropRef} className="pop-backdrop lg:hidden fixed inset-0 z-40 bg-black/50" />
             <Dialog.Content
               ref={drawerRef}
               id={DRAWER_ID}
               aria-describedby={undefined}
-              className="lg:hidden fixed inset-y-0 left-0 z-50 flex max-w-[85vw] outline-none"
+              // `before:` paints the chrome left of it, so a rubber-band pull past open shows no gap.
+              className="sheet-left lg:hidden fixed inset-y-0 left-0 z-50 flex max-w-[85vw] outline-none before:absolute before:inset-y-0 before:right-full before:w-32 before:bg-chrome"
             >
               <Dialog.Title className="sr-only">Menu</Dialog.Title>
               <Sidebar
                 className="flex h-dvh pb-[max(1rem,env(safe-area-inset-bottom))]"
-                onNavigate={() => setDrawerOpen(false)}
+                onNavigate={() => dispatchDrawer({ type: "close" })}
               />
             </Dialog.Content>
-          </Dialog.Portal>
+          </Dialog.Portal>}
         </Dialog.Root>
         {/* `overflow-clip`, not hidden: the window still scrolls, so sticky headers in the page hold. */}
         <main className="flex-1 min-w-0 bg-bg rounded-tl-xl overflow-clip">

@@ -28,6 +28,7 @@ import _harness  # MUST be first — sets sys.path / binds a throwaway temp DB
 import asyncio  # noqa: E402
 
 import server  # noqa: E402
+import diag_api  # noqa: E402
 
 
 class _StopLoop(BaseException):
@@ -161,23 +162,25 @@ def case_the_real_sweepers_ask_for_the_right_first_delay() -> None:
     `evict_audit_logs_once` directly.
     """
     grace = server._EVICT_BOOT_GRACE_S
-    expectations = {
-        "_raw_json_evictor_loop": (grace, "_raw_json_sweep"),
-        "_audit_retention_evictor_loop": (grace, "_audit_retention_sweep"),
-        "_img_cache_evictor_loop": (server._IMG_CACHE_EVICT_INTERVAL_S, "_img_cache_sweep"),
-        "_perflog_evictor_loop": (server._PERFLOG_EVICT_INTERVAL_S, "_perflog_sweep"),
-    }
+    # (module, loop, first delay, sweep): the stub goes on the module whose
+    # globals the loop reads at call time.
+    expectations = [
+        (server, "_raw_json_evictor_loop", grace, "_raw_json_sweep"),
+        (server, "_audit_retention_evictor_loop", grace, "_audit_retention_sweep"),
+        (server, "_img_cache_evictor_loop", server._IMG_CACHE_EVICT_INTERVAL_S, "_img_cache_sweep"),
+        (diag_api, "_perflog_evictor_loop", diag_api._PERFLOG_EVICT_INTERVAL_S, "_perflog_sweep"),
+    ]
 
     async def _noop() -> None:
         return None
 
-    for name, (want_first, sweep_attr) in expectations.items():
-        original = getattr(server, sweep_attr)
-        setattr(server, sweep_attr, _noop)
+    for mod, name, want_first, sweep_attr in expectations:
+        original = getattr(mod, sweep_attr)
+        setattr(mod, sweep_attr, _noop)
         try:
-            slept = asyncio.run(_drive(getattr(server, name), ticks=1))
+            slept = asyncio.run(_drive(getattr(mod, name), ticks=1))
         finally:
-            setattr(server, sweep_attr, original)
+            setattr(mod, sweep_attr, original)
         assert slept[0] == want_first, (
             f"{name} waits {slept[0]}s before its first sweep, expected "
             f"{want_first}s. A daily sweeper that opens with its full interval "

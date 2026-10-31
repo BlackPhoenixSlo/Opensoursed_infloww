@@ -1200,6 +1200,41 @@ def case_every_text_is_cut_to_the_cap_on_save():
     _sandboxed(go)
 
 
+def case_pick_targets_table_claimed_and_gated_fans_drop_out_per_kind():
+    """The sweep's pure selection: per kind, an already-claimed fan drops out
+    silently; no row / outside the audience / hard-skipped / blacklisted /
+    paused / muted-creator counts as skipped; the rest are planned in event order,
+    each with a variant of its picked message, deterministically."""
+    from types import SimpleNamespace as NS
+    now = datetime(2026, 6, 1, 12, 0, 0)
+    msgs = [{"variants": ["a", "b"]}, {"variants": ["c"]}]
+    fan = lambda **kw: NS(**{"automation_paused_until": None, "is_muted": False, "source": "", **kw})  # noqa: E731
+    fans = {1: fan(), 2: fan(), 3: fan(), 4: fan(), 5: fan(),
+            6: fan(automation_paused_until=now + timedelta(minutes=1)),
+            7: fan(is_muted=True, source="creator_we_follow"),
+            8: fan(automation_paused_until=now - timedelta(minutes=1))}
+    events = {i: f"ev{i}" for i in range(1, 10)}          # 9 has no Fan row
+    rows = [  # (name, done, kept, hard_skip, blacklist, want planned, want skipped)
+        ("all clear", set(), set(events), set(), set(), [1, 2, 3, 4, 5, 8], 3),
+        ("already claimed dropped, not skipped", {1, 2}, set(events), set(), set(),
+         [3, 4, 5, 8], 3),
+        ("outside audience", set(), set(events) - {3}, set(), set(), [1, 2, 4, 5, 8], 4),
+        ("hard skip + blacklist", set(), set(events), {4}, {5}, [1, 2, 3, 8], 5),
+        ("claimed beats gated", {6, 7, 9}, set(events), set(), set(), [1, 2, 3, 4, 5, 8], 0),
+    ]
+    for kind in (lm.EXPIRY, lm.EXPIRED, lm.RESUBSCRIBE, lm.BIRTHDAY):
+        for name, done, kept, hard, black, want, want_skipped in rows:
+            args = (kind, "acc", events, msgs)
+            kw = dict(done=done, fans=fans, kept=kept, hard_skip=hard, blacklist=black, now=now)
+            plans, skipped = lm.pick_targets(*args, **kw)
+            assert [p[0] for p in plans] == want and skipped == want_skipped, (kind, name, plans, skipped)
+            assert lm.pick_targets(*args, **kw) == (plans, skipped), "not deterministic"
+            for fid, key, idx, text in plans:
+                assert key == events[fid] and text in msgs[idx]["variants"], (fid, key, idx, text)
+    assert lm.pick_targets(lm.EXPIRY, "acc", {}, msgs, done=set(), fans={}, kept=set(),
+                           hard_skip=set(), blacklist=set(), now=now) == ([], 0)
+
+
 _harness.run(
     case_off_by_default_nothing_is_read_or_sent,
     case_a_free_page_cannot_switch_on_the_paid_only_triggers,
@@ -1235,4 +1270,5 @@ _harness.run(
     case_a_discount_above_what_onlyfans_grants_for_the_price_is_refused,
     case_a_backlog_of_due_follow_ups_never_holds_back_the_rules_own_run,
     case_every_text_is_cut_to_the_cap_on_save,
+    case_pick_targets_table_claimed_and_gated_fans_drop_out_per_kind,
 )

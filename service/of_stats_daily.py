@@ -19,7 +19,8 @@ so a restart does not reset them.
 Response shapes: service/tests/fixtures/of_statistics_reads.json.
 ASSUMPTION: `by=new` / `by=renew` answer the same shape as the recorded reply
 without `by` (OF's own Fans > Subscriptions tabs send them and read it so,
-of_client.subscribers_chart); the shape check below drops a series that does not.
+of_client.subscribers_chart); the shape check (of_stats_parse.points) drops a
+series that does not.
 Rung 4. Overturned by a live capture of either.
 
 Each fetch re-reads the last `_DAYS` days, so a missed day heals on the next
@@ -68,9 +69,9 @@ asked again the next tick, as is one whose categories do not add up to OF's
 own total (a category under a key we do not read). A day is stored with OF's
 TOTAL row; a day without one (stored before 2026-10-25, its PPV messages read
 as $0) counts as not stored: read again and overwritten, and the reports read
-the ledger's for it meanwhile. Gross per day is derived (`_earnings`): OF sends
-gross only as the period's total. `earnings_window` is the read stats.py takes
-OF's days from.
+the ledger's for it meanwhile. Gross per day is derived
+(`of_stats_parse.earnings`): OF sends gross only as the period's total.
+`earnings_window` is the read stats.py takes OF's days from.
 """
 from __future__ import annotations
 
@@ -87,6 +88,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 import account_health
 import accounts as account_registry
 import client_pool
+import of_stats_parse
 import tx_rollup
 from cadence import boot_grace
 from db.engine import get_session
@@ -106,18 +108,12 @@ SERIES = ("visitors", "new_subs", "renewals")
 _EARNINGS_HISTORY_DAYS = 400
 _EARNINGS_CHUNK_DAYS = 30      # one /earnings/chart read; OF's "Last 30 days" charts daily
 _EARNINGS_CHUNKS_PER_TICK = 4  # 120 days of history an hour per Creator
-# OF's Statements categories (its sidebar's, without the total) and the ledger
-# kind each counts as, so every report's channel mapping reads them unchanged.
-EARNINGS = ("subscribes", "tips", "messages", "post", "stream")
-EARNINGS_KIND = {"subscribes": "subscription", "tips": "tip", "messages": "ppv_message",
-                 "post": "ppv_post", "stream": "ppv_stream"}
-# The key OF answers a category under when it differs from the filter's name
-# (measured on two live accounts 2026-10-25: filter[messages_*] -> "chat_messages").
-REPLY_KEY = {"messages": "chat_messages"}
-# OF's own total of every category, stored as its own row: the day's check, and
-# the mark that a day was read by a parser that reads every category (`_earnings_days`).
-TOTAL = "total"
-_OF_FEE = 0.2  # OF keeps 20% of gross: gross = net / 0.8 when a reply has no gross
+# Categories live in of_stats_parse; same objects here, read off this module by of_top_up.py,
+# faults and tests. _points/_amounts/_earnings: compat aliases only; fetch_* call
+# of_stats_parse.*, so patch there.
+EARNINGS, EARNINGS_KIND, REPLY_KEY, TOTAL = (
+    of_stats_parse.EARNINGS, of_stats_parse.EARNINGS_KIND, of_stats_parse.REPLY_KEY, of_stats_parse.TOTAL)
+_points, _amounts, _earnings = of_stats_parse.points, of_stats_parse.amounts, of_stats_parse.earnings
 # earnings_window's answers, until the next write: every report read asks for
 # the same few windows, and only this job writes the table (one relay process).
 _WINDOW_CACHE_MAX = 256
@@ -139,29 +135,6 @@ def _unchanged_since(key: tuple, version: int) -> bool:
     return not any(v > version and _hits(key, a, f, l) for v, a, f, l in _earnings_writes)
 
 
-def _points(series: Any, first: date, last: date) -> dict[str, int] | None:
-    """`[{date, count}]` as {UTC day: count} for the days in [first, last], or
-    None when it is not one point per consecutive day with a whole count."""
-    if not isinstance(series, list):
-        return None
-    days: list[date] = []
-    out: dict[str, int] = {}
-    for p in series:
-        try:
-            at = datetime.fromisoformat(str(p["date"]).replace("Z", "+00:00"))
-            n = p["count"]
-        except (KeyError, TypeError, ValueError):
-            return None
-        if isinstance(n, bool) or not isinstance(n, (int, float)) or n != int(n) or n < 0:
-            return None
-        days.append(at.date())
-        if first <= at.date() <= last:
-            out[at.date().isoformat()] = int(n)
-    if any((b - a).days != 1 for a, b in zip(days, days[1:])):
-        return None
-    return out
-
-
 def fetch_blocking(client, first: date, last: date, *, pause_s: float = _CALL_PAUSE_S) -> dict[str, dict[str, int]]:
     """The three charts over [first, last] as {series: {day: count}}, without the
     series that answered in an unexpected shape. Blocking: run in a thread.
@@ -173,12 +146,14 @@ def fetch_blocking(client, first: date, last: date, *, pause_s: float = _CALL_PA
     out: dict[str, dict[str, int]] = {}
     visitors = client.my_profile_stats(start=start, end=end)
     chart = visitors.get("chart") if isinstance(visitors, dict) else None
-    if (pts := _points(chart.get("visitors") if isinstance(chart, dict) else None, first, last)) is not None:
+    pts = of_stats_parse.points(chart.get("visitors") if isinstance(chart, dict) else None, first, last)
+    if pts is not None:
         out["visitors"] = pts
     for col, by in (("new_subs", "new"), ("renewals", "renew")):
         time.sleep(pause_s)
         reply = client.subscribers_chart(start=start, end=end, by=by)
-        if (pts := _points(reply.get("subscribes") if isinstance(reply, dict) else None, first, last)) is not None:
+        pts = of_stats_parse.points(reply.get("subscribes") if isinstance(reply, dict) else None, first, last)
+        if pts is not None:
             out[col] = pts
     for col in SERIES:
         if col not in out:
@@ -201,86 +176,14 @@ async def _upsert(account_id: str, cols: dict[str, dict[str, int]], now: datetim
     return len(days)
 
 
-def _amounts(series: Any) -> dict[date, float] | None:
-    """`[{date, count}]` as {UTC day: amount}, or None when it is not one point
-    per consecutive UTC day with a number. An amount may be negative (a day of
-    chargebacks). A point must be stamped at a UTC midnight (OF's are, e.g.
-    `2026-10-21T00:00:00+00:00`, measured 2026-10-25): a day cut at another
-    zone's midnight would not line up with the ledger's UTC days."""
-    if not isinstance(series, list):
-        return None
-    out: dict[date, float] = {}
-    for p in series:
-        try:
-            at = datetime.fromisoformat(str(p["date"]).replace("Z", "+00:00"))
-            n = p["count"]
-        except (KeyError, TypeError, ValueError):
-            return None
-        if isinstance(n, bool) or not isinstance(n, (int, float)):
-            return None
-        if at.utcoffset() not in (None, timedelta(0)) or at.time() != datetime.min.time():
-            return None
-        out[at.date()] = float(n)
-    days = list(out)
-    if len(days) != len(series) or any((b - a).days != 1 for a, b in zip(days, days[1:])):
-        return None
-    return out
-
-
-def _earnings(reply: Any, first: date, last: date) -> dict[str, dict[str, tuple[int, int, int]]] | None:
-    """OF's `/earnings/chart` reply as {day: {category: (net, gross, sales)}} in
-    cents for every day in [first, last], plus `TOTAL`, or None when it is not
-    that chart or does not add up. Each category is read under OF's reply key
-    (`REPLY_KEY`: messages answer as `chat_messages`). A day it has no point
-    for is zero. A day's gross is its net at the category's gross/net over the
-    reply (OF sends gross only as the period total), or net / 0.8 when that
-    total is zero. The check: OF's own `total` series must be there and each
-    day's categories must sum to it (within a cent each); a reply that names
-    money under a key we do not read, or no total, is not stored (the bug of
-    2026-10-25: every PPV message read as $0 for want of `chat_messages`)."""
-    if not isinstance(reply, dict) or not isinstance(reply.get(TOTAL), dict):
-        return None
-    per: dict[str, tuple[dict[date, float], dict[date, float], float]] = {}
-    for c in (*EARNINGS, TOTAL):
-        block = reply.get(REPLY_KEY.get(c, c))
-        if block is None:
-            continue
-        if not isinstance(block, dict):
-            return None
-        amount = _amounts(block.get("chartAmount"))
-        count = _amounts(block["chartCount"]) if "chartCount" in block else {}
-        if amount is None or count is None:
-            return None
-        try:
-            net_total, gross_total = float(block.get("total") or 0), float(block.get("gross") or 0)
-        except (TypeError, ValueError):
-            return None
-        ratio = gross_total / net_total if net_total > 0 and gross_total > 0 else 1 / (1 - _OF_FEE)
-        per[c] = (amount, count, ratio)
-    out: dict[str, dict[str, tuple[int, int, int]]] = {}
-    day = first
-    while day <= last:
-        row = out[day.isoformat()] = {}
-        for c in EARNINGS:
-            amount, count, ratio = per.get(c, ({}, {}, 1.0))
-            net = round(amount.get(day, 0.0) * 100)
-            row[c] = (net, round(net * ratio), int(count.get(day, 0)))
-        total = round(per[TOTAL][0].get(day, 0.0) * 100)
-        if abs(total - sum(net for net, _g, _n in row.values())) > len(EARNINGS):
-            return None
-        row[TOTAL] = (total, sum(g for _n, g, _s in row.values()), int(per[TOTAL][1].get(day, 0)))
-        day += timedelta(days=1)
-    return out
-
-
 def fetch_earnings_blocking(client, first: date, last: date) -> dict[str, dict[str, tuple[int, int, int]]] | None:
-    """OF's own earnings over [first, last] UTC days (`_earnings`), None when it
-    answered in another shape. Blocking: run in a thread. Raises what the client
-    raises."""
+    """OF's own earnings over [first, last] UTC days (`of_stats_parse.earnings`),
+    None when it answered in another shape. Blocking: run in a thread. Raises
+    what the client raises."""
     # The same read as Statistics › Statements' sidebar (ofMirrorStatsSources `earningsSide`), with its total.
     reply = client.earnings_chart(start=f"{first.isoformat()} 00:00:00", end=f"{last.isoformat()} 23:59:59",
                                   filter=[f"{c}_{m}" for c in (*EARNINGS, TOTAL) for m in ("count", "amount")])
-    got = _earnings(reply, first, last)
+    got = of_stats_parse.earnings(reply, first, last)
     if got is None:
         log.warning("of_stats_daily: earnings %s..%s answered in an unexpected shape or not adding up to its "
                     "total (keys %s); not stored", first, last,
@@ -289,7 +192,7 @@ def fetch_earnings_blocking(client, first: date, last: date) -> dict[str, dict[s
 
 
 async def _upsert_earnings(account_id: str, days: dict[str, dict[str, tuple[int, int, int]]], now: datetime) -> int:
-    """Write each day's categories (`_earnings`). Returns the days written."""
+    """Write each day's categories (`of_stats_parse.earnings`). Returns the days written."""
     if not days:
         return 0
     rows = [{"account_id": account_id, "day": d, "category": c, "net_cents": net, "gross_cents": gross,

@@ -13,36 +13,31 @@
  *   • Polls — no captured curl yet; would be guesswork.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useReducer, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { usePlatformAccounts } from "@/hooks/useAccounts";
 import { useAllModelsInclude } from "@/hooks/useAllModelsInclude";
 import { usePaidPage, PAID_PAGE_NOTE } from "@/hooks/usePaidPage";
-import { relay, type VaultMedia } from "@/lib/relay";
+import { relay } from "@/lib/relay";
 import { VaultPicker } from "@/components/chat/VaultPicker";
 import { EmojiPickerButton, EmojiQuickRow, insertAtCursor } from "@/components/chat/EmojiBar";
-import { TemplatePicker, templateMediaToVault, type PickedTemplate } from "@/components/chat/TemplatePicker";
-import { TagCreatorsPicker, TaggedCreatorChips, type TaggedCreatorChoice } from "@/components/chat/TagCreatorsPicker";
-import { localDatetimeToIso, recordSchedule } from "@/lib/scheduleHistory";
+import { TemplatePicker, type PickedTemplate } from "@/components/chat/TemplatePicker";
+import { TagCreatorsPicker, TaggedCreatorChips } from "@/components/chat/TagCreatorsPicker";
+import { recordSchedule } from "@/lib/scheduleHistory";
 
-import { sanitizePriceInput } from "@/components/chat/Composer";
+import { sanitizePriceInput } from "@/lib/priceInput";
 
 import { AccountPicker } from "./AccountPicker";
 import { MediaTray } from "./MediaTray";
 import { ScheduleField } from "./ScheduleField";
+import { FanOutResults, FanOutStatus } from "./FanOutResults";
+import { fanOutLocked, includedTargets, runFanOut } from "./fanOut";
+import {
+  buildPostBody, initPostForm, postComposerReducer, postFieldAction, postPrice, sendAccount, validatePost,
+  type PostField, type PostForm,
+} from "./postComposerReducer";
 import { fmtPrice } from "@/lib/format";
-
-interface FanOutResult {
-  accountId: string;
-  ok: boolean;
-  error?: string;
-}
-
-function summarizeFanOut(results: FanOutResult[]): string {
-  const ok = results.filter((r) => r.ok).length;
-  return `${ok}/${results.length} succeeded`;
-}
 
 interface CreatePostResp {
   id?: number;
@@ -58,8 +53,10 @@ export function PostComposer({
 }: {
   open: boolean;
   onClose: () => void;
-  /** Fired after a successful create (before the modal closes) so a caller
-   *  surface — e.g. the feed tab — can refetch its own list. */
+  /** Fired whenever a post went live — a single create, a full fan-out (before
+   *  the modal closes) or a partial one's posted models (the modal stays open
+   *  for the retry) — so a caller surface, e.g. the feed tab, can refetch its
+   *  own list. */
   onSuccess?: () => void;
 }) {
   const qc = useQueryClient();
@@ -67,199 +64,102 @@ export function PostComposer({
   // The composers' shared include set (useAllModelsInclude) — a model
   // un-checked in any composer's chip strip is omitted from a broadcast here.
   const { isIncluded, toggle: toggleAllModelsInclude } = useAllModelsInclude();
-  const [allModels, setAllModels] = useState(false);
-  const [accountId, setAccountId] = useState<string | null>(null);
-  const [text, setText] = useState("");
-  const [attached, setAttached] = useState<VaultMedia[]>([]);
-  const [price, setPrice] = useState<string>("");
-  // Leading N tiles are FREE previews on a paid post; the rest are PPV-locked.
-  // Only applied when price > 0 (MediaTray shows the FREE/PAID badges then).
-  const [previewCount, setPreviewCount] = useState<number>(0);
-  const [schedule, setSchedule] = useState<string>("");
+  // The whole form (postComposerReducer).
+  const [form, dispatch] = useReducer(postComposerReducer, null, initPostForm);
+  const { allModels, text, attached, price, previewCount, schedule, progress, results, taggedCreators } = form;
+  // The account a one-account post goes to; null while all-models is on
+  // (postComposerReducer `sendAccount`).
+  const accountId = sendAccount(form);
+  // A round in flight, or a model took this post: the content is locked (compose/fanOut).
+  const locked = fanOutLocked(form);
+  const set = <K extends PostField>(k: K) => (v: PostForm[K]) => dispatch(postFieldAction(k, v));
+  // Stable: AccountPicker's auto-seed effect depends on it.
+  const setAccountId = useCallback((id: string) => dispatch({ type: "setAccount", id }), []);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [progress, setProgress] = useState<string | null>(null);
-  const [results, setResults] = useState<FanOutResult[] | null>(null);
-  const [taggedCreators, setTaggedCreators] = useState<TaggedCreatorChoice[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   // A subscription page has no paid-post lane on OF, so the price field is not
-  // an option there. The relay refuses a priced post for one anyway (409) —
-  // this just stops the operator typing a price that can never post.
+  // an option there and its price reads as 0 (postComposerReducer `postPrice`)
+  // — a typed or template price can't block or ride into the post. The relay
+  // refuses a priced post for one anyway (409).
   const { isPaidPage } = usePaidPage(accountId);
 
-  // Selected a paid page with a price already typed → clear it, so a stale
-  // number can't ride into an all-models switch or a later free-page pick.
-  useEffect(() => {
-    if (isPaidPage) {
-      setPrice("");
-      setPreviewCount(0);
-    }
-  }, [isPaidPage]);
+  // Honour the shared include set: models the user unchecked in a
+  // composer's chip strip are dropped from the broadcast fan-out; a model
+  // that already took this post (a partial fan-out's success) is not re-posted.
+  const { included: broadcastAccounts, targets } = includedTargets(activeAccounts, isIncluded, results);
 
-  // All-models mode is text-only for now (upload-from-computer is paused
-  // pending a producer-pipeline fix). Drop vault attachments when entering
-  // it — vault ids don't roundtrip across accounts. Also force no tags:
-  // per-model tag lists differ on OF, so a tag that's only valid on one
-  // creator's friend-list 400s on the rest.
-  useEffect(() => {
-    if (allModels) {
-      setAccountId(null);
-      setAttached([]);
-      setTaggedCreators([]);
-    }
-  }, [allModels]);
+  // The one validity check — the Post button, its reason line and the
+  // mutation all read it.
+  const invalid = validatePost(form, { broadcastCount: targets.length, paidPage: isPaidPage });
 
-  async function postOne(
-    forAccountId: string,
-    mediaFiles: Array<number | Record<string, unknown>>,
-    scheduledIso: string | null,
-  ) {
-    const priceNum = price ? Number(price) : 0;
-    // Leading `previewCount` numeric vault ids ride unlocked as the free teaser
-    // on a paid post — a subset of media_files, in the same order. Fresh-upload
-    // claim dicts have no id until OF resolves them, so they can't be previews.
-    const previewIds: number[] = priceNum > 0 && previewCount > 0
-      ? mediaFiles
-          .slice(0, previewCount)
-          .filter((m): m is number => typeof m === "number" && m > 0)
-      : [];
-    const body: Record<string, unknown> = {
-      text: text.trim(),
-      media_files: mediaFiles,
-      price: priceNum,
-      posted_at: scheduledIso,
-    };
-    if (previewIds.length > 0) body.previews = previewIds;
-    if (taggedCreators.length > 0) {
-      body.tagged_users = taggedCreators.map((c) => c.id);
-    }
-    const resp = await relay.post<CreatePostResp>(
-      "/api/of/v2/posts",
-      body,
-      { accountId: forAccountId },
-    );
-    if (schedule) recordSchedule(forAccountId, schedule);
-    return resp;
+  // The created post is visible: the wall-media query backs the vault
+  // picker's blue ring (nuking it flips freshly-posted media on next open),
+  // and the caller (the feed tab) refetches its list.
+  function posted() {
+    qc.invalidateQueries({ queryKey: ["wall-media"] });
+    onSuccess?.();
   }
 
-  // Honour the shared include set: models the user unchecked in a
-  // composer's chip strip are dropped from the broadcast fan-out.
-  const broadcastAccounts = useMemo(
-    () => activeAccounts.filter((a) => isIncluded(a.id)),
-    [activeAccounts, isIncluded],
-  );
-
+  // Resolves to whether the modal may close (every model took it); only a
+  // refused form or a one-account failure throws (the footer shows
+  // `create.error`).
   const create = useMutation({
-    mutationFn: async () => {
-      const trimmed = text.trim();
-      if (allModels) {
-        if (broadcastAccounts.length === 0) throw new Error("No models picked for broadcast");
-      } else {
-        if (!accountId) throw new Error("Pick an account");
+    mutationFn: async (): Promise<boolean> => {
+      if (invalid) throw new Error(invalid);
+      const body = buildPostBody(form, isPaidPage);
+      const postTo = async (aid: string) => {
+        const resp = await relay.post<CreatePostResp>("/api/of/v2/posts", body, { accountId: aid });
+        if (schedule) recordSchedule(aid, schedule);
+        return resp;
+      };
+      if (!allModels) {
+        await postTo(accountId!);
+        posted();
+        return true;
       }
-      const totalMedia = allModels ? 0 : attached.length;
-      const priceNum = price ? Number(price) : 0;
-      if (!Number.isFinite(priceNum) || priceNum < 0) throw new Error("Invalid price");
-      // A paid/PPV post must carry media — OF rejects a priced text-only post, so
-      // require an image only when there IS a price and no media. A free post is
-      // fine on text alone. (Mirrored server-side in auto_posts: "paid_no_media".)
-      if (priceNum > 0 && totalMedia === 0) throw new Error("A paid post needs at least one image");
-      if (!trimmed && totalMedia === 0) throw new Error("Add text or media");
-      const scheduledIso = schedule ? localDatetimeToIso(schedule) : null;
-      if (schedule && !scheduledIso) throw new Error("Invalid schedule date");
-
-      if (allModels) {
-        const accountIds = broadcastAccounts.map((a) => a.id);
-        setProgress(`Posting to 0 / ${accountIds.length}…`);
-        const fanResults: FanOutResult[] = [];
-        for (let i = 0; i < accountIds.length; i++) {
-          const aid = accountIds[i];
-          try {
-            await postOne(aid, [], scheduledIso);
-            fanResults.push({ accountId: aid, ok: true });
-          } catch (e) {
-            fanResults.push({ accountId: aid, ok: false, error: (e as Error).message });
-          }
-          setProgress(`Posting to ${i + 1} / ${accountIds.length}…`);
-        }
-        setResults(fanResults);
-        setProgress(null);
-        if (fanResults.every((r) => r.ok)) return fanResults;
-        throw new Error(summarizeFanOut(fanResults));
-      }
-
-      const mediaFiles: Array<number | Record<string, unknown>> = attached.map(
-        (m) => m._claim ?? m.id,
-      );
-      return postOne(accountId!, mediaFiles, scheduledIso);
+      const round = await runFanOut(targets, postTo, (p) => dispatch({ type: "progress", ...p }));
+      dispatch({ type: "results", v: round });
+      // A partial round: the models that took it show it now; the composer
+      // stays open, locked, so the retry posts the same post to the failed ones.
+      if (round.some((r) => r.ok)) posted();
+      return round.every((r) => r.ok);
     },
-    onSuccess: () => {
-      // The wall-media query backs the vault picker's blue ring; nuking
-      // it ensures the freshly-posted media flips state on next open.
-      qc.invalidateQueries({ queryKey: ["wall-media"] });
-      onSuccess?.();
-      reset();
-      onClose();
-    },
-    onError: (err: Error) => {
-      setProgress(null);
-      setError(err.message);
+    onSuccess: (mayClose) => {
+      if (mayClose) onClose();
     },
   });
 
-  function reset() {
-    setText("");
-    setAttached([]);
-    setPrice("");
-    setPreviewCount(0);
-    setSchedule("");
-    setError(null);
-    setProgress(null);
-    setResults(null);
-    setAllModels(false);
-    setTaggedCreators([]);
+  // Mounted only while open (MyFeedTab), so closing drops the form.
+  function close() {
+    if (!create.isPending) onClose();
   }
 
   function onEmoji(em: string) {
     const ta = textareaRef.current;
     if (!ta) {
-      setText((t) => t + em);
+      dispatch({ type: "appendText", v: em });
       return;
     }
-    insertAtCursor(ta, text, em, setText);
+    insertAtCursor(ta, text, em, set("text"));
   }
 
   function onPickTemplate(t: PickedTemplate) {
-    // Snapshot semantics — replace attachments wholesale so the saved
-    // ordering survives the pick.
-    setText(t.text);
-    setAttached(templateMediaToVault(t));
-    if (t.price > 0) {
-      setPrice(String(t.price));
-    }
-    setPreviewCount(Array.isArray(t.previews) ? t.previews.length : 0);
-    if (t.taggedUsers.length > 0) {
-      setTaggedCreators((prev) => {
-        const have = new Set(prev.map((c) => c.id));
-        const additions: TaggedCreatorChoice[] = t.taggedUsers
-          .filter((id) => !have.has(id))
-          .map((id) => ({ id, name: `user${id}`, username: "", avatar: null }));
-        return [...prev, ...additions];
-      });
-    }
+    // Snapshot semantics (lib/composeDraft applyTemplate): text, media,
+    // preview count and price are replaced wholesale.
+    dispatch({ type: "pickTemplate", t });
     setTimeout(() => textareaRef.current?.focus(), 0);
   }
 
   if (!open) return null;
 
-  const priceNum = price ? Number(price) : 0;
+  const priceNum = postPrice(form, isPaidPage);
   const isPPV = priceNum > 0;
   const isScheduled = !!schedule;
 
   return (
     <div
       className="fixed inset-0 z-50 bg-black/50 grid place-items-center p-0 sm:p-4"
-      onClick={() => { if (!create.isPending) { reset(); onClose(); } }}
+      onClick={close}
     >
       {/* min-h-0 / min-w-0: a grid item's auto minimum is its content, so on a
        *  phone (h-full, no max-h) the panel grew past the screen and the body
@@ -272,7 +172,7 @@ export function PostComposer({
           <h2 className="text-sm font-semibold">New post</h2>
           <button
             type="button"
-            onClick={() => { if (!create.isPending) { reset(); onClose(); } }}
+            onClick={close}
             className="text-fg-dim hover:text-fg text-lg leading-none w-11 h-11 -mr-2 -my-2 grid place-items-center shrink-0 md:w-auto md:h-auto md:mr-0 md:my-0 md:inline"
             title="Close"
           >×</button>
@@ -283,7 +183,8 @@ export function PostComposer({
             <input
               type="checkbox"
               checked={allModels}
-              onChange={(e) => setAllModels(e.target.checked)}
+              disabled={locked}
+              onChange={(e) => dispatch({ type: "setAllModels", on: e.target.checked })}
             />
             <span className="font-medium">Post from ALL models</span>
             <span className="text-fg-dim">
@@ -333,11 +234,13 @@ export function PostComposer({
             <AccountPicker value={accountId} onChange={setAccountId} />
           )}
 
+          {/* The content — locked (disabled) once a model took the post. */}
+          <fieldset disabled={locked} className="min-w-0 space-y-3 disabled:opacity-60">
           <div className="space-y-1.5">
             <textarea
               ref={textareaRef}
               value={text}
-              onChange={(e) => setText(e.target.value)}
+              onChange={(e) => set("text")(e.target.value)}
               placeholder="What's on your feed today?"
               rows={5}
               className="w-full bg-bg border border-border rounded-md px-3 py-2 text-base md:text-sm placeholder:text-muted focus:outline-none focus:border-accent resize-y"
@@ -354,12 +257,12 @@ export function PostComposer({
                 <TagCreatorsPicker
                   accountId={accountId}
                   selected={taggedCreators}
-                  onChange={setTaggedCreators}
+                  onChange={set("taggedCreators")}
                 />
               )}
             </div>
             {!allModels && taggedCreators.length > 0 && (
-              <TaggedCreatorChips selected={taggedCreators} onChange={setTaggedCreators} />
+              <TaggedCreatorChips selected={taggedCreators} onChange={set("taggedCreators")} />
             )}
           </div>
 
@@ -367,58 +270,60 @@ export function PostComposer({
             <MediaTray
               accountId={accountId}
               attached={attached}
-              onChange={setAttached}
+              onChange={set("attached")}
               onOpenVaultPicker={() => setPickerOpen(true)}
-              price={price ? Number(price) || 0 : 0}
+              price={priceNum}
               previewCount={previewCount}
-              onPreviewCountChange={setPreviewCount}
+              onPreviewCountChange={set("previewCount")}
             />
           )}
 
-          <div className="flex items-center gap-2">
-            <label className="text-xs text-fg-dim shrink-0">Price (USD):</label>
-            <input
-              type="text"
-              inputMode="decimal"
-              value={isPaidPage ? "" : price}
-              disabled={isPaidPage}
-              onChange={(e) => setPrice(sanitizePriceInput(e.target.value))}
-              placeholder={isPaidPage ? "free only" : "0 (free)"}
-              className="flex-1 bg-bg border border-border rounded-md px-2 py-1.5 text-base md:text-xs focus:outline-none focus:border-accent disabled:opacity-40"
-            />
-            <span className={isPPV ? "text-warn text-[11px]" : "text-fg-dim text-[11px]"}>
-              {isPPV ? `🔒 PPV ${fmtPrice(Math.round(priceNum * 100))}` : "free"}
-            </span>
-          </div>
-          {isPaidPage && (
-            <div className="text-[11px] text-fg-dim">{PAID_PAGE_NOTE}</div>
+          {/* All-models posts are text-only: no price (postComposerReducer). */}
+          {!allModels && (
+            <>
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-fg-dim shrink-0">Price (USD):</label>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={isPaidPage ? "" : price}
+                  disabled={isPaidPage}
+                  onChange={(e) => set("price")(sanitizePriceInput(e.target.value))}
+                  placeholder={isPaidPage ? "free only" : "0 (free)"}
+                  className="flex-1 bg-bg border border-border rounded-md px-2 py-1.5 text-base md:text-xs focus:outline-none focus:border-accent disabled:opacity-40"
+                />
+                <span className={isPPV ? "text-warn text-[11px]" : "text-fg-dim text-[11px]"}>
+                  {isPPV ? `🔒 PPV ${fmtPrice(Math.round(priceNum * 100))}` : "free"}
+                </span>
+              </div>
+              {isPaidPage && (
+                <div className="text-[11px] text-fg-dim">{PAID_PAGE_NOTE}</div>
+              )}
+            </>
           )}
 
           <ScheduleField
             scope={allModels ? "all-models" : accountId}
             value={schedule}
-            onChange={setSchedule}
+            onChange={set("schedule")}
           />
+          </fieldset>
 
           {results && (
-            <div className="border border-border rounded-md p-3 space-y-1 text-[11px]">
-              <div className="font-medium">Fan-out results — {summarizeFanOut(results)}</div>
-              {results.map((r) => (
-                <div key={r.accountId} className={r.ok ? "text-ok" : "text-err"}>
-                  {r.ok ? "✓" : "✗"} {r.accountId}
-                  {r.error ? ` — ${r.error}` : ""}
-                </div>
-              ))}
-            </div>
+            <FanOutResults
+              results={results} noun="post" locked={locked} busy={create.isPending}
+              onStartOver={() => dispatch({ type: "discardResults" })}
+            />
           )}
         </div>
 
         <footer className="px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pb-3 border-t border-border flex items-center justify-end gap-2">
-          {progress && <span className="text-fg-dim text-[11px] mr-auto">{progress}</span>}
-          {error && !progress && <span className="text-err text-[11px] mr-auto">{error}</span>}
+          <FanOutStatus
+            progress={progress} verb="Posting" invalid={invalid} error={create.error?.message ?? null} results={results}
+          />
           <button
             type="button"
-            onClick={() => { reset(); onClose(); }}
+            onClick={close}
             disabled={create.isPending}
             className="text-xs px-3 py-1.5 rounded border border-border hover:border-border-light text-fg-dim hover:text-fg disabled:opacity-50"
           >
@@ -427,17 +332,13 @@ export function PostComposer({
           <button
             type="button"
             onClick={() => {
-              setError(null);
-              setResults(null);
               if (allModels && !confirm(
-                `Post from ${broadcastAccounts.length} model${broadcastAccounts.length === 1 ? "" : "s"}?`,
+                `Post from ${targets.length} model${targets.length === 1 ? "" : "s"}?`,
               )) return;
               create.mutate();
             }}
-            disabled={
-              create.isPending ||
-              (allModels ? broadcastAccounts.length === 0 : !accountId)
-            }
+            disabled={create.isPending || invalid !== null}
+            title={invalid ?? undefined}
             className="text-xs px-4 py-1.5 rounded bg-accent text-white font-medium hover:bg-accent-hover disabled:opacity-50"
           >
             {create.isPending
@@ -454,7 +355,7 @@ export function PostComposer({
         fanId={null}
         initialSelectedIds={attached.map((m) => m.id)}
         onConfirm={(picked) => {
-          setAttached(picked);
+          set("attached")(picked);
           setPickerOpen(false);
         }}
       />

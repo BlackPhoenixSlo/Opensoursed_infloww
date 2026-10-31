@@ -16,6 +16,10 @@ every few seconds cannot succeed, so:
       a supervisor pass starts no pump for a session-dead account and does not
       restart its exited pump; once the flag clears (a re-login, the probe) the
       next pass starts it again, and the new pump loads a fresh client.
+  case_restart_backoff_holds_and_a_stop_resets_it:
+      a crashing pump's 1st Restart goes at once, the 2nd is held 15 s; a stop
+      (remove / deactivate) drops the backoff record, so a re-added Creator
+      starts from attempt 0.
 
 No network: the registry, the OF client and pump starts are stubbed.
 
@@ -48,6 +52,7 @@ OTP_BODY = ('{"error":{"code":101,"message":"Confirm it is you","payload":{"otpS
 OTP_ERR = f"400 for https://onlyfans.com/api2/v2/users/me\n{OTP_BODY}"
 
 STARTED: list[str] = []
+_REAL_START = server._start_account_pump
 server._start_account_pump = STARTED.append
 
 
@@ -99,9 +104,10 @@ async def case_the_pump_flags_the_account_and_exits() -> None:
     orig = server._load_client
     server._load_client = lambda aid: clients.append(_Client(aid, OFAPIError(OTP_ERR))) or clients[-1]
     try:
-        await asyncio.wait_for(server._ws_pump_for_account(DEAD), timeout=3)
+        parked = await asyncio.wait_for(server._ws_pump_for_account(DEAD), timeout=3)
     finally:
         server._load_client = orig
+    assert parked is True, "a parked exit tells the supervisor's backoff it parked"
     assert [c.me_calls for c in clients] == [1], [c.me_calls for c in clients]
     stamp = (await account_health.dead_session_map()).get(DEAD)
     assert stamp is not None and stamp.reason == "otp_required", stamp
@@ -114,6 +120,7 @@ async def case_the_supervisor_parks_a_dead_account_until_it_recovers() -> None:
     exited = loop.create_future()
     exited.set_result(None)  # its pump returned after flagging the account
     server._account_pumps[DEAD] = exited
+    server._pump_runs[DEAD] = server._PumpRun(0.0, due=0.0)  # its exit was handled
     STARTED.clear()
     try:
         await server._reconcile_pumps()
@@ -125,8 +132,53 @@ async def case_the_supervisor_parks_a_dead_account_until_it_recovers() -> None:
         await server._reconcile_pumps()
         assert DEAD in STARTED, f"the recovered account's pump did not start: {STARTED}"
     finally:
-        server._account_pumps.pop(DEAD, None)
+        for aid in (DEAD, LIVE):
+            server._account_pumps.pop(aid, None)
+            server._pump_runs.pop(aid, None)
+
+
+async def case_restart_backoff_holds_and_a_stop_resets_it() -> None:
+    # The supervisor's bookkeeping around pump_reconcile.restart_due (its table is
+    # test_pump_reconcile.py): a crashing pump's 1st Restart goes at once, the 2nd
+    # is held (15 s); a stop (remove / deactivate / the supervisor's) drops the
+    # record, so the Creator's next pump starts again from attempt 0.
+    async def crash(_aid: str) -> bool:
+        return False   # exits at once, not parked
+
+    async def exited() -> asyncio.Task:
+        task = server._account_pumps[LIVE]
+        await task
+        await asyncio.sleep(0)   # its done callback (_on_pump_exit) has run
+        return task
+
+    real_pump, real_list = server._ws_pump_for_account, account_registry.list_accounts
+    server._ws_pump_for_account, server._start_account_pump = crash, _REAL_START
+    account_registry.list_accounts = lambda: [{"id": LIVE, "has_session": True}]
+    try:
+        server._do_start_account_pump(LIVE)
+        await exited()
+        assert server._pump_runs[LIVE].restarts == 0, server._pump_runs[LIVE]
+
+        await server._reconcile_pumps()                 # attempt 0: at once
+        second = await exited()
+        assert server._pump_runs[LIVE].restarts == 1, server._pump_runs[LIVE]
+        run = server._pump_runs[LIVE]
+        assert run.due - time.monotonic() > 14, run   # attempt 1: 15 s after its exit
+
+        await server._reconcile_pumps()                 # held: no new pump
+        assert server._account_pumps[LIVE] is second, "the held Restart ran"
+
+        server._do_stop_account_pump(LIVE)              # remove / deactivate
+        assert LIVE not in server._pump_runs, "the stop kept the backoff record"
+        server._do_start_account_pump(LIVE)             # re-added
+        await exited()
+        run = server._pump_runs[LIVE]
+        assert run.restarts == 0 and run.due <= time.monotonic(), run
+    finally:
+        server._ws_pump_for_account, account_registry.list_accounts = real_pump, real_list
+        server._start_account_pump = STARTED.append
         server._account_pumps.pop(LIVE, None)
+        server._pump_runs.pop(LIVE, None)
 
 
 async def case_a_cancelled_pump_leaves_no_orphaned_read() -> None:

@@ -143,7 +143,9 @@ def case_bucket_shapes():
     # 5 → 6 on 2026-09-06: `image_reply` split out of tip_reward as its own KIND.
     # 6 → 3: tip_reward, image_reply and make_right were REMOVED outright — the
     # senders no longer exist to classify.
-    assert len(buckets["exempt"]) == 3, buckets["exempt"]
+    # 3 → 4 on 2026-10-30: the send seam moved out of _common into _send_failure;
+    # _common stays as its re-export shim.
+    assert len(buckets["exempt"]) == 4, buckets["exempt"]
 
 
 def case_mass_premade_delegates():

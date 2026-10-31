@@ -24,16 +24,19 @@ import { clearPersistedCache } from "@/lib/rqPersister";
 vi.mock("@/lib/rqPersister", () => ({ clearPersistedCache: vi.fn(async () => {}) }));
 
 type Body = { user_id?: string; username?: string } | null;
-function jsonRes(body: Body, ok = true) {
-  return { ok, json: () => Promise.resolve(body) } as unknown as Response;
+function jsonRes(body: Body, ok = true, status = ok ? 200 : 500) {
+  return { ok, status, json: () => Promise.resolve(body) } as unknown as Response;
 }
 
 function Probe() {
-  const { user, loading } = useUser();
+  const { user, loading, boot, retry, clearUserLocally } = useUser();
   return (
     <div>
       <span data-testid="loading">{loading ? "loading" : "ready"}</span>
       <span data-testid="user">{user ? user.username : "none"}</span>
+      <span data-testid="boot">{boot}</span>
+      <button onClick={retry}>Retry</button>
+      <button onClick={clearUserLocally}>Clear</button>
     </div>
   );
 }
@@ -167,5 +170,117 @@ describe("UserContext logout", () => {
     } finally {
       Object.defineProperty(window, "location", { configurable: true, value: realLocation });
     }
+  });
+});
+
+describe("UserContext boot against an unreachable relay", () => {
+  it.each<[string, () => Promise<Response>]>([
+    ["the fetch throws", () => Promise.reject(new TypeError("Failed to fetch"))],
+    ["the proxy answers 500 (relay down behind the Next rewrite)", () => Promise.resolve(jsonRes(null, false, 500))],
+  ])("%s: the retry state, not signed out; Retry signs in once it answers", async (_name, down) => {
+    fetchMock.mockImplementationOnce(down).mockResolvedValue(jsonRes(ALICE));
+    renderProvider();
+    expect(await screen.findByText("unreachable")).toBeInTheDocument();
+    expect(screen.getByTestId("user")).toHaveTextContent("none");
+    expect(screen.getByTestId("loading")).toHaveTextContent("ready");
+
+    act(() => { screen.getByRole("button", { name: "Retry" }).click(); });
+    expect(await screen.findByText("alice")).toBeInTheDocument();
+    expect(screen.getByTestId("boot")).toHaveTextContent("settled");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("a focus on the retry state probes nothing: only Retry re-runs the boot", async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch")).mockResolvedValue(jsonRes(ALICE));
+    renderProvider();
+    expect(await screen.findByText("unreachable")).toBeInTheDocument();
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("boot")).toHaveTextContent("unreachable");
+  });
+
+  it("a hung boot probe times out into the retry state", async () => {
+    // AbortSignal.timeout's timer, made firable by hand.
+    const timeout = new AbortController();
+    const spy = vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeout.signal);
+    try {
+      fetchMock.mockImplementation((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+      }));
+      renderProvider();
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(screen.getByTestId("boot")).toHaveTextContent("probing");
+      expect(spy).toHaveBeenCalledWith(expect.any(Number));
+      act(() => { timeout.abort(new DOMException("timed out", "TimeoutError")); });
+      expect(await screen.findByText("unreachable")).toBeInTheDocument();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("a 401 at boot is the sign-in form, not the retry state", async () => {
+    fetchMock.mockResolvedValue(jsonRes(null, false, 401));
+    renderProvider();
+    expect(await screen.findByText("ready")).toBeInTheDocument();
+    expect(screen.getByTestId("boot")).toHaveTextContent("settled");
+    expect(screen.getByTestId("user")).toHaveTextContent("none");
+  });
+
+  it("a network error on a focus revalidation keeps the user", async () => {
+    fetchMock.mockResolvedValueOnce(jsonRes(ALICE)).mockRejectedValue(new TypeError("Failed to fetch"));
+    renderProvider();
+    expect(await screen.findByText("alice")).toBeInTheDocument();
+    act(() => { window.dispatchEvent(new Event("focus")); });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // A focus only probes once the previous one settled, so a third fetch
+    // proves the rejection landed — and the user survived it.
+    await vi.waitFor(() => {
+      act(() => { window.dispatchEvent(new Event("focus")); });
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+    expect(screen.getByTestId("user")).toHaveTextContent("alice");
+    expect(screen.getByTestId("boot")).toHaveTextContent("settled");
+  });
+
+  it("a revalidate answer landing after a local sign-out is dropped", async () => {
+    let release!: () => void;
+    const pending = new Promise<Response>((resolve) => { release = () => resolve(jsonRes(ALICE)); });
+    fetchMock.mockResolvedValueOnce(jsonRes(ALICE)).mockReturnValueOnce(pending).mockResolvedValue(jsonRes(null));
+    renderProvider();
+    expect(await screen.findByText("alice")).toBeInTheDocument();
+    act(() => { window.dispatchEvent(new Event("focus")); });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    act(() => { screen.getByRole("button", { name: "Clear" }).click(); });
+    expect(screen.getByTestId("user")).toHaveTextContent("none");
+    // A macrotask: every microtask of the late answer has run by then.
+    await act(async () => { release(); await new Promise((r) => setTimeout(r, 0)); });
+    expect(screen.getByTestId("user")).toHaveTextContent("none");
+    // The dropped probe no longer blocks the next focus.
+    act(() => { window.dispatchEvent(new Event("focus")); });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("the boot effect re-running mid-revalidation neither drops the answer nor blocks the next focus", async () => {
+    let release!: () => void;
+    const pending = new Promise<Response>((resolve) => { release = () => resolve(jsonRes(BOB)); });
+    fetchMock.mockResolvedValueOnce(jsonRes(ALICE)).mockReturnValueOnce(pending).mockResolvedValue(jsonRes(BOB));
+    const tree = (qc: QueryClient) => (
+      <QueryClientProvider client={qc}><UserProvider><Probe /></UserProvider></QueryClientProvider>
+    );
+    const { rerender } = render(tree(new QueryClient()));
+    expect(await screen.findByText("alice")).toBeInTheDocument();
+    act(() => { window.dispatchEvent(new Event("focus")); });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    // A new QueryClient re-creates `send`, so the boot effect re-runs.
+    rerender(tree(new QueryClient()));
+    await act(async () => { release(); await pending; });
+    expect(await screen.findByText("bob")).toBeInTheDocument();
+    act(() => { window.dispatchEvent(new Event("focus")); });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 });

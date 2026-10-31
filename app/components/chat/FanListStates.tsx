@@ -60,7 +60,7 @@ export function LoadMoreConversations({ loaded, onClick }: { loaded: number; onC
 }
 
 /** The end of a Fan List drawn up to its render cap: "Show N more" draws the
- *  next step of rows already loaded (FanList's ROW_RENDER_STEP). */
+ *  next step of rows already loaded (fanListPaging's ROW_RENDER_STEP). */
 export function ShowMoreRows({ count, onClick }: { count: number; onClick: () => void }) {
   return (
     <button

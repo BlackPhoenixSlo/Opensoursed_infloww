@@ -17,13 +17,14 @@
  * figures come from the Relay's list answer once loaded.
  */
 
-import { useState } from "react";
+import { useReducer, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { AccountPicker } from "@/components/compose/AccountPicker";
 import { MediaTray } from "@/components/compose/MediaTray";
-import { ListColumn, DEFAULT_BROADCAST_LISTS, SYSTEM_AUDIENCES, SysChip, useFanLists } from "@/components/audience/fanLists";
-import { sanitizePriceInput } from "@/components/chat/Composer";
+import { audienceError, audienceReducer, buildAudiencePayload, initAudience } from "@/components/audience/audienceReducer";
+import { ListColumn, SYSTEM_AUDIENCES, SysChip, useFanLists } from "@/components/audience/fanLists";
+import { sanitizePriceInput } from "@/lib/priceInput";
 import { SensitiveWordWarning } from "@/components/chat/SensitiveWordWarning";
 import { VaultPicker } from "@/components/chat/VaultPicker";
 import { Button } from "@/components/ui/primitives";
@@ -69,35 +70,19 @@ export function PriorityMassComposer({ open, onClose, initialAccountId = null }:
   initialAccountId?: string | null;
 }) {
   const qc = useQueryClient();
-  const [accountId, setAccountId] = useState<string | null>(initialAccountId);
+  // The account and its audience (list ids are per account) — one reducer.
+  const [aud, dispatch] = useReducer(audienceReducer, initialAccountId, (id) => initAudience(id));
+  const { accountId, includes, excludes } = aud;
   const [text, setText] = useState("");
   const [attached, setAttached] = useState<VaultMedia[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [price, setPrice] = useState("");
   const [previewCount, setPreviewCount] = useState(0);
   const [lockedText, setLockedText] = useState(false);
-  const [includes, setIncludes] = useState<Set<string>>(() => new Set(DEFAULT_BROADCAST_LISTS));
-  const [excludes, setExcludes] = useState<Set<string>>(() => new Set());
   const [error, setError] = useState<string | null>(null);
   const { customLists, isLoading } = useFanLists(accountId);
   const sensitiveHits = useSensitiveHits(text, accountId);
   const numericPrice = Number(price) || 0;
-
-  // A list is never both included and excluded.
-  const toggle = (id: string, into: "in" | "out") => {
-    const flip = (s: Set<string>, on: boolean) => {
-      const n = new Set(s);
-      if (on) n.add(id); else n.delete(id);
-      return n;
-    };
-    if (into === "in") {
-      setIncludes((s) => flip(s, !s.has(id)));
-      setExcludes((s) => flip(s, false));
-    } else {
-      setExcludes((s) => flip(s, !s.has(id)));
-      setIncludes((s) => flip(s, false));
-    }
-  };
 
   const send = useMutation({
     mutationFn: () => relay.post<PriorityMassRun>(ROUTE, {
@@ -107,8 +92,7 @@ export function PriorityMassComposer({ open, onClose, initialAccountId = null }:
       previews: numericPrice > 0 ? attached.slice(0, previewCount).map((m) => m.id) : [],
       price: numericPrice,
       locked_text: numericPrice > 0 && lockedText,
-      user_lists: [...includes],
-      excluded_user_lists: [...excludes],
+      ...buildAudiencePayload(aud),
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: runsKey(accountId) });
@@ -122,7 +106,8 @@ export function PriorityMassComposer({ open, onClose, initialAccountId = null }:
     if (sensitiveHits.length > 0) return setError(SENSITIVE_BLOCK_MESSAGE);
     if (!accountId) return setError("Pick a Creator.");
     if (!text.trim() && attached.length === 0) return setError("Add a text or media.");
-    if (includes.size === 0) return setError("Pick at least one list to include.");
+    const audErr = audienceError(aud);
+    if (audErr) return setError(audErr);
     if (numericPrice > 0 && attached.length === 0) return setError("A priced message needs media.");
     send.mutate();
   }
@@ -144,7 +129,7 @@ export function PriorityMassComposer({ open, onClose, initialAccountId = null }:
           </p>
         </header>
         <div className="flex-1 overflow-y-auto p-4 space-y-3">
-          <AccountPicker value={accountId} onChange={setAccountId} />
+          <AccountPicker value={accountId} onChange={(id) => dispatch({ type: "setAccount", id })} />
           <div className="space-y-1.5">
             <textarea
               aria-label="Message"
@@ -188,19 +173,19 @@ export function PriorityMassComposer({ open, onClose, initialAccountId = null }:
             <div className="text-[11px] uppercase tracking-wide text-fg-dim">Audience</div>
             <div className="flex flex-wrap gap-1.5">
               {SYSTEM_AUDIENCES.map((b) => (
-                <SysChip key={b.id} state={includes.has(b.id) ? "in" : "off"} onClick={() => toggle(b.id, "in")} label={b.label} />
+                <SysChip key={b.id} state={includes.has(b.id) ? "in" : "off"} onClick={() => dispatch({ type: "toggleInclude", id: b.id })} label={b.label} />
               ))}
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-border/60">
               <div>
                 <div className="text-[11px] text-fg-dim mb-1.5">Custom lists — include</div>
                 <ListColumn lists={customLists} loading={isLoading} selected={includes}
-                  onToggle={(id) => toggle(id, "in")} emptyLabel="No custom lists." />
+                  onToggle={(id) => dispatch({ type: "toggleInclude", id })} emptyLabel="No custom lists." />
               </div>
               <div>
                 <div className="text-[11px] text-fg-dim mb-1.5">Custom lists — exclude</div>
                 <ListColumn lists={customLists} loading={isLoading} selected={excludes}
-                  onToggle={(id) => toggle(id, "out")} emptyLabel="—" />
+                  onToggle={(id) => dispatch({ type: "toggleExclude", id })} emptyLabel="—" />
               </div>
             </div>
           </div>

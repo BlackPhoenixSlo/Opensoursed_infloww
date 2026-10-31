@@ -59,6 +59,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 
 from sqlalchemy import and_, func, or_, select, update
@@ -192,7 +193,76 @@ def _pos_hours(raw: object, default: float | None) -> float | None:
     return default
 
 
-async def _sweep_targets(account_id: str, policy: dict) -> list[dict]:
+@dataclass(frozen=True)
+class SweepPlan:
+    """Which policy sweeps run and each class's age gate in hours (None = off)."""
+    per_chat: bool
+    mass: bool
+    text_hours: float
+    media_hours: float | None
+    mass_text_hours: float | None
+    mass_media_hours: float | None
+    mass_price_hours: float | None
+    price_floored_from: float | None  # the asked price hours when floored, for the log
+
+
+def sweep_policy(policy: dict) -> SweepPlan:
+    """Pure: a payload `policy` → `SweepPlan`.
+
+    The per-chat sweep and the MASS sweep are independent. A rule that asks ONLY
+    for the mass cleanup (mass_text / mass_*_hours, with no text_hours/media_hours)
+    must NOT also unsend per-chat bubbles — otherwise an "8h mass cleanup" schedule
+    would silently nuke every 9-24h-old per-chat message too. The bare/legacy policy
+    ({} or text/media keys) still sweeps per-chat. `mass_text` with no hours uses the
+    8h default; mass_media_hours / mass_price_hours unsend image and PPV broadcasts
+    (the /settings Auto-unsend panel sets these).
+
+    PRICED PPV broadcasts get a HARD `_MIN_MASS_PRICE_HOURS` floor, whatever the
+    operator set. Measured on prod: 44% of mass-PPV PURCHASES and 47% of the REVENUE
+    land >4h after send, and 68% of that late revenue is the fan's FIRST-ever purchase
+    to the account — new money, not whale re-buys. The revenue curve knees at 24h
+    (4h captures 53%, 24h captures 90%, 48h adds ~1pp). A sub-24h price-unsend deletes
+    new-fan conversion; the floor makes that impossible even by misconfiguration."""
+    m_text = _pos_hours(policy.get("mass_text_hours"),
+                        _DEFAULT_MASS_TEXT_HOURS if policy.get("mass_text") else None)
+    m_media = _pos_hours(policy.get("mass_media_hours"), None)
+    m_price = _pos_hours(policy.get("mass_price_hours"), None)
+    floored_from = None
+    if m_price is not None and m_price < _MIN_MASS_PRICE_HOURS:
+        floored_from, m_price = m_price, float(_MIN_MASS_PRICE_HOURS)
+    mass = any(h is not None for h in (m_text, m_media, m_price))
+    return SweepPlan(
+        per_chat=("text_hours" in policy or "media_hours" in policy) or not mass,
+        mass=mass,
+        text_hours=_pos_hours(policy.get("text_hours"), _DEFAULT_TEXT_HOURS),
+        media_hours=_pos_hours(policy.get("media_hours"), None),
+        mass_text_hours=m_text,
+        mass_media_hours=m_media,
+        mass_price_hours=m_price,
+        price_floored_from=floored_from,
+    )
+
+
+def mass_targets(rows) -> list[dict]:
+    """Pure: `(queue_id, run_id)` rows (oldest first) → mass targets, deduped by
+    queue_id first-wins (dup runs on one queue — one OF unsend is enough), each
+    carrying `from_cache` so the run also flips the cache row."""
+    out: list[dict] = []
+    seen_q: set[int] = set()
+    for qid_raw, run_id in rows:
+        qid = int(qid_raw)
+        if qid in seen_q:
+            continue  # dup runs on one queue_id — one OF unsend is enough
+        seen_q.add(qid)
+        out.append({
+            "kind": "mass", "queue_id": qid,
+            "mass_run_id": int(run_id) if run_id is not None else None,
+            "from_cache": True,
+        })
+    return out
+
+
+async def _sweep_targets(account_id: str, plan: SweepPlan) -> list[dict]:
     """Policy sweep over our OWN `messages`: outbound bubbles inside the 24h edit
     window → per-chat unsend targets.
 
@@ -207,8 +277,8 @@ async def _sweep_targets(account_id: str, policy: dict) -> list[dict]:
     bubbles carry synthetic optimistic ids (the 5e15-band placeholders) that 400 on
     the per-chat endpoint, and a real mass blast must be unsent via the forever-window
     queue endpoint (the `_sweep_mass_targets` path), not one recipient at a time."""
-    text_hours = _pos_hours(policy.get("text_hours"), _DEFAULT_TEXT_HOURS)
-    media_hours = _pos_hours(policy.get("media_hours"), None)  # None ⇒ skip media
+    text_hours = plan.text_hours
+    media_hours = plan.media_hours  # None ⇒ skip media
     now = datetime.utcnow()
     window_floor = now - timedelta(hours=_PER_CHAT_WINDOW_H)  # must still be unsendable
 
@@ -247,18 +317,13 @@ async def _sweep_targets(account_id: str, policy: dict) -> list[dict]:
     ]
 
 
-async def _sweep_mass_targets(
-    account_id: str, *,
-    text_hours: float | None = None,
-    media_hours: float | None = None,
-    price_hours: float | None = None,
-) -> list[dict]:
+async def _sweep_mass_targets(account_id: str, plan: SweepPlan) -> list[dict]:
     """Policy sweep over `mass_broadcast_cache` (OF's own /stats/messages/group list)
     for broadcasts OF still lets us unsend, by CLASS — each with its own age gate:
 
-      • text  (free + image-less)  older than `text_hours`   — plain engagement blasts
-      • image (has media)          older than `media_hours`  — photo/video sets
-      • price (PPV, not free)       older than `price_hours`  — paid content
+      • text  (free + image-less)  older than `mass_text_hours`   — plain engagement blasts
+      • image (has media)          older than `mass_media_hours`  — photo/video sets
+      • price (PPV, not free)       older than `mass_price_hours`  — paid content
 
     A class is swept only when its hours are given; the classes OR together (a paid
     image matches both `image` and `price`, so it goes once either threshold passes —
@@ -267,6 +332,9 @@ async def _sweep_mass_targets(
     Returns mass targets carrying the OF `queue_id` (+ `from_cache` so the run also
     flips the cache row); mass_run_id is unknown from the cache, so the local
     `messages` mirror is best-effort (the OF unsend still hits every recipient)."""
+    text_hours = plan.mass_text_hours
+    media_hours = plan.mass_media_hours
+    price_hours = plan.mass_price_hours
     now = datetime.utcnow()
     classes = []
     if text_hours is not None:
@@ -314,19 +382,7 @@ async def _sweep_mass_targets(
                 .limit(_MAX_SWEEP)
             )
         ).all()
-    out: list[dict] = []
-    seen_q: set[int] = set()
-    for qid_raw, run_id in rows:
-        qid = int(qid_raw)
-        if qid in seen_q:
-            continue  # dup runs on one queue_id — one OF unsend is enough
-        seen_q.add(qid)
-        out.append({
-            "kind": "mass", "queue_id": qid,
-            "mass_run_id": int(run_id) if run_id is not None else None,
-            "from_cache": True,
-        })
-    return out
+    return mass_targets(rows)
 
 
 def _parse_item_date(raw: object) -> datetime | None:
@@ -340,6 +396,60 @@ def _parse_item_date(raw: object) -> datetime | None:
     if d.tzinfo is not None:
         d = (d - d.utcoffset()).replace(tzinfo=None)
     return d
+
+
+@dataclass(frozen=True)
+class _PageCursor:
+    """Where the broadcast-history pager stands (see `_refresh_mass_cache`)."""
+    end_cursor: datetime
+    offset: int = 0            # advance by ROWS RETURNED, not page index — OF may cap a
+    #                            page below the requested limit, and striding by the
+    #                            limit would skip the un-returned rows of a short page.
+    date_mode: bool = False    # flips on the first repeated page → offset is ignored
+    fruitless: int = 0         # consecutive pages that yielded zero NEW rows
+    seen_qids: frozenset[int] = frozenset()
+
+
+def next_history_page(cur: _PageCursor, resp: object,
+                      start: datetime) -> tuple[list[dict], _PageCursor | None]:
+    """Pure pager step: (this page's NEW items to write, the next cursor or None to
+    stop). Strides by offset while pages yield new queue ids; the first repeated page
+    switches for good to date-window stepping (endDate ← oldest seen − 1s, offset 0).
+    Stops on two fruitless pages, OF's last page, an un-dateable page, the window's
+    start, or a cursor that would not strictly shrink."""
+    items = (resp.get("items") if isinstance(resp, dict) else None) or []
+    seen = set(cur.seen_qids)
+    fresh: list[dict] = []
+    for it in items:
+        try:
+            qid = int(it.get("id"))
+        except (TypeError, ValueError):
+            continue
+        if qid not in seen:
+            seen.add(qid)
+            fresh.append(it)
+    fruitless = 0 if fresh else cur.fruitless + 1
+    if fruitless >= 2:
+        return fresh, None  # two dead pages — no cursor makes progress anymore
+    # Stop at the last page (no more / empty); only keep paging while OF says
+    # there's more AND this page actually returned rows.
+    if not (isinstance(resp, dict) and resp.get("hasMore") and items):
+        return fresh, None
+    nxt = replace(cur, fruitless=fruitless, seen_qids=frozenset(seen))
+    if fresh and not cur.date_mode:
+        return fresh, replace(nxt, offset=cur.offset + len(items))
+    # Date-window step (entered on the first repeated page, then always).
+    oldest = None
+    for it in items:
+        d = _parse_item_date(it.get("date"))
+        if d is not None and (oldest is None or d < oldest):
+            oldest = d
+    if oldest is None or oldest <= start:
+        return fresh, None  # un-dateable page / window exhausted — nothing older to pull
+    step = oldest - timedelta(seconds=1)
+    if step >= cur.end_cursor:
+        return fresh, None  # cursor must strictly shrink or we'd loop on one window
+    return fresh, replace(nxt, date_mode=True, end_cursor=step, offset=0)
 
 
 async def _refresh_mass_cache(account_id: str, client) -> bool:
@@ -389,58 +499,20 @@ async def _refresh_mass_cache(account_id: str, client) -> bool:
     start = end - lookback
     fmt = "%Y-%m-%d %H:%M:%S"
     written = 0
-    offset = 0  # advance by ROWS RETURNED, not page index — OF may cap a page
-    #             below the requested limit, and striding by the limit would skip
-    #             the un-returned rows of a short page.
-    end_cursor = end
-    seen_qids: set[int] = set()
-    date_mode = False  # flips on the first repeated page → offset is ignored
-    fruitless = 0      # consecutive pages that yielded zero NEW rows
+    cur = _PageCursor(end_cursor=end)
     try:
         for _ in range(_MASS_REFRESH_MAX_PAGES):
             resp = await asyncio.to_thread(
                 fetch, start_date=start.strftime(fmt),
-                end_date=end_cursor.strftime(fmt),
-                limit=_MASS_REFRESH_PAGE, offset=offset,
+                end_date=cur.end_cursor.strftime(fmt),
+                limit=_MASS_REFRESH_PAGE, offset=cur.offset,
             )
-            items = (resp.get("items") if isinstance(resp, dict) else None) or []
-            fresh: list[dict] = []
-            for it in items:
-                try:
-                    qid = int(it.get("id"))
-                except (TypeError, ValueError):
-                    continue
-                if qid not in seen_qids:
-                    seen_qids.add(qid)
-                    fresh.append(it)
+            fresh, nxt = next_history_page(cur, resp, start)
             if fresh:
                 written += await cache.upsert_many(str(account_id), fresh)
-                fruitless = 0
-            else:
-                fruitless += 1
-                if fruitless >= 2:
-                    break  # two dead pages — no cursor makes progress anymore
-            # Stop at the last page (no more / empty); only keep paging while OF
-            # says there's more AND this page actually returned rows.
-            if not (isinstance(resp, dict) and resp.get("hasMore") and items):
+            if nxt is None:
                 break
-            if fresh and not date_mode:
-                offset += len(items)
-                continue
-            # Date-window step (entered on the first repeated page, then always).
-            date_mode = True
-            oldest = None
-            for it in items:
-                d = _parse_item_date(it.get("date"))
-                if d is not None and (oldest is None or d < oldest):
-                    oldest = d
-            if oldest is None or oldest <= start:
-                break  # un-dateable page / window exhausted — nothing older to pull
-            nxt = oldest - timedelta(seconds=1)
-            if nxt >= end_cursor:
-                break  # cursor must strictly shrink or we'd loop on one window
-            end_cursor = nxt
-            offset = 0
+            cur = nxt
         else:
             # Loop ran the full page cap without OF saying "no more" — flag the
             # truncation rather than silently leaving the oldest blasts un-swept.
@@ -611,33 +683,15 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     wants_mass = any(t.get("kind") == "mass" for t in targets)
     if not targets:
         policy = payload.get("policy") or {}
-        # The per-chat sweep and the MASS free-text sweep are independent. A rule
-        # that asks ONLY for the mass cleanup (mass_text / mass_text_hours, with no
-        # text_hours/media_hours) must NOT also unsend per-chat bubbles — otherwise
-        # an "8h mass cleanup" schedule would silently nuke every 9-24h-old per-chat
-        # message too. The bare/legacy policy ({} or text/media keys) still sweeps
-        # per-chat as before.
-        # MASS thresholds by class (None = that class is off). `mass_text` with no
-        # hours uses the 8h default. mass_media_hours / mass_price_hours unsend image
-        # and PPV broadcasts respectively (the /settings Auto-unsend panel sets these).
-        m_text = _pos_hours(policy.get("mass_text_hours"),
-                            _DEFAULT_MASS_TEXT_HOURS if policy.get("mass_text") else None)
-        m_media = _pos_hours(policy.get("mass_media_hours"), None)
-        # PRICED PPV broadcasts get a HARD 24h floor, whatever the operator set. Measured
-        # on prod: 44% of mass-PPV PURCHASES and 47% of the REVENUE land >4h after send,
-        # and 68% of that late revenue is the fan's FIRST-ever purchase to the account —
-        # new money, not whale re-buys. The revenue curve knees at 24h (4h captures 53%,
-        # 24h captures 90%, 48h adds ~1pp). A sub-24h price-unsend deletes new-fan
-        # conversion; this floor makes that impossible even by misconfiguration.
-        m_price = _pos_hours(policy.get("mass_price_hours"), None)
-        if m_price is not None and m_price < _MIN_MASS_PRICE_HOURS:
+        # Which sweeps run, each class's age, and the 24h price floor: `sweep_policy`.
+        plan = sweep_policy(policy)
+        if plan.price_floored_from is not None:
             log.info("unsend mass_price_hours=%.1f floored to %d (a priced PPV lands 47%% "
-                     "of its revenue >4h after send)", m_price, _MIN_MASS_PRICE_HOURS)
-            m_price = float(_MIN_MASS_PRICE_HOURS)
-        wants_mass = any(h is not None for h in (m_text, m_media, m_price))
-        wants_per_chat = ("text_hours" in policy or "media_hours" in policy) or not wants_mass
-        if wants_per_chat:
-            targets += await _sweep_targets(account_id, policy)
+                     "of its revenue >4h after send)", plan.price_floored_from,
+                     _MIN_MASS_PRICE_HOURS)
+        wants_mass = plan.mass
+        if plan.per_chat:
+            targets += await _sweep_targets(account_id, plan)
         if wants_mass:
             # A real run pulls fresh broadcast history into the cache first; dry_run
             # is a no-OF-write preview, so it reads the cache as the UI last warmed it.
@@ -647,8 +701,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             if not payload.get("dry_run"):
                 client = await asyncio.to_thread(ax._make_client, account_id)
                 mass_refresh_failed = not await _refresh_mass_cache(account_id, client)
-            targets += await _sweep_mass_targets(
-                account_id, text_hours=m_text, media_hours=m_media, price_hours=m_price)
+            targets += await _sweep_mass_targets(account_id, plan)
 
     # Preview seam: resolve targets, then return WITHOUT touching OF or our rows.
     if payload.get("dry_run"):

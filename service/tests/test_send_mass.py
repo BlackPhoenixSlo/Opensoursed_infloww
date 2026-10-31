@@ -811,6 +811,105 @@ def case_init_db_heals_the_four_columns_and_the_index():
     assert "ix_mass_runs_account_sent" in idx, sorted(idx)
 
 
+# ── House cases (automation-test-writer): dry_run / no-id / cap / list members ──
+
+async def case_mass_premade_dry_run_never_reaches_this_sender():
+    """Covers mass_premade's preview path, not send_mass_message (which has no
+    dry run of its own): the delegate's dry_run must stop before this sender —
+    no OF call, no mass_runs row, no messages row."""
+    import automations.mass_premade  # noqa: F401 — registers the delegate
+    aid = "acc_mass_dry"
+    await _seed_account(aid)
+    fake = FakeClient()
+    _use_fake(fake)
+    res = await run_once(aid, "mass_premade", payload={
+        "dry_run": True, "messages": [{"text": "a", "included_users": [9101]}],
+    })
+    assert res.get("dry_run") is True and res.get("sent") == 0, res
+    assert fake.sent == [], fake.sent
+    async with get_session() as s:
+        assert (await s.execute(select(MassRun).where(MassRun.account_id == aid))
+                ).scalars().all() == []
+        assert (await s.execute(select(Message).where(Message.account_id == aid))
+                ).scalars().all() == []
+
+
+async def case_no_id_response_still_persists():
+    """OF answers 200 with no queue id / createdAt / echo (`{"success": true}`):
+    the broadcast went out, so the run closes ok with queue_id NULL and every
+    known recipient still gets its optimistic row (else the next blast re-touches
+    them blind)."""
+    aid = "acc_mass_noid"
+    await _seed_account(aid)
+    fake = FakeClient(response={"success": True})
+    _use_fake(fake)
+    await enqueue_job(aid, "send_mass_message", payload={
+        "text": "no id", "included_users": [9201, 9202],
+    })
+    res = await run_once(aid, "send_mass_message")
+    assert res["status"] == "ok", res
+    assert res["queue_id"] is None and res["echoed_rows"] == 0, res
+    assert res["optimistic_rows"] == 2, res
+    async with get_session() as s:
+        mr = (await s.execute(select(MassRun).where(MassRun.account_id == aid))
+              ).scalars().one()
+        assert mr.status == "ok" and mr.queue_id is None, (mr.status, mr.queue_id)
+        assert mr.body == "no id" and mr.sent_at is not None, (mr.body, mr.sent_at)
+        fans = sorted((await s.execute(
+            select(Message.fan_id).where(Message.account_id == aid))).scalars().all())
+    assert fans == [9201, 9202], fans
+
+
+async def case_recent_chat_limit_caps_the_audience():
+    """`recent_chat_limit` is the audience cap: only the N most recent chatters
+    join; explicit fans are never capped."""
+    aid = "acc_mass_cap"
+    await _seed_account(aid)
+    now = datetime.utcnow()
+    async with get_session() as s:
+        for i, fid in enumerate((9301, 9302, 9303)):     # 9303 newest
+            s.add(Message(account_id=aid, fan_id=fid, message_id=93000 + i,
+                          direction="in", body="hi",
+                          created_at=now - timedelta(minutes=30 - i)))
+    fake = FakeClient()
+    _use_fake(fake)
+    await enqueue_job(aid, "send_mass_message", payload={
+        "text": "capped", "included_users": [9309],
+        "recent_chat_hours": 2, "recent_chat_limit": 2,
+        "exclude_replied_hours": 0, "exclude_inbound_hours": 0,
+    })
+    res = await run_once(aid, "send_mass_message")
+    assert res["status"] == "ok", res
+    assert res["recipients"] == 3, res
+    assert sorted(fake.sent[0]["included_users"]) == [9302, 9303, 9309], fake.sent[0]
+
+
+async def case_list_members_union_minus_exclude_lists():
+    """DB list members join the explicit fans (deduped, explicit first); an
+    exclude list's members are dropped even when also listed explicitly."""
+    aid = "acc_mass_lists"
+    await _seed_account(aid)
+    inc = await _seed_list(aid, "Mass_In", [9402, 9403, 9404])
+    exc = await _seed_list(aid, "Mass_Out", [9401, 9404])
+    fake = FakeClient()
+    _use_fake(fake)
+    await enqueue_job(aid, "send_mass_message", payload={
+        "text": "lists", "included_users": [9401, 9402],
+        "list_ids": [inc], "exclude_list_ids": [exc],
+        "exclude_replied_hours": 0, "exclude_inbound_hours": 0,
+    })
+    res = await run_once(aid, "send_mass_message")
+    assert res["status"] == "ok" and res["recipients"] == 2, res
+    assert fake.sent[0]["included_users"] == [9402, 9403], fake.sent[0]
+    assert fake.sent[0]["excluded_users"] == [9401, 9404], fake.sent[0]
+    async with get_session() as s:
+        mr = (await s.execute(select(MassRun).where(MassRun.account_id == aid))
+              ).scalars().one()
+    af = json.loads(mr.audience_filter)
+    assert af["list_ids"] == [inc] and af["included_users"] == [9402, 9403], af
+    assert mr.recipient_count == 2, mr.recipient_count
+
+
 _harness.run(
     case_run,
     case_echoed_real_rows,
@@ -829,4 +928,8 @@ _harness.run(
     case_an_unreadable_roster_leaves_the_run_unrecorded,
     case_close_mass_run_skips_a_scheduled_send,
     case_init_db_heals_the_four_columns_and_the_index,
+    case_mass_premade_dry_run_never_reaches_this_sender,
+    case_no_id_response_still_persists,
+    case_recent_chat_limit_caps_the_audience,
+    case_list_members_union_minus_exclude_lists,
 )

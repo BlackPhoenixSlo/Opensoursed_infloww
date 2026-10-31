@@ -14,9 +14,12 @@ the inbox tab got every DM of its 5 models with no `resync`; unread counts per
 thread match (exact for threads no chatter touched, bounded for the rest); tips
 and PPV purchases each one ledger row; every chatter reply one outbound row;
 every marker DM renders in the tabs that show its thread; no browser tab crashed;
-no 5xx anywhere. Whether each marker also became an All Models list row is a
-budget (list-upd), not an invariant: the list's pages come from OnlyFans' /chats,
-held in a slop run, so only an app build that inserts live rows can show it.
+no 5xx anywhere; a manual send's chat-list bump (lib/chatsCache in node, on the
+owner's real head pages and a real send per model) heads the sent fan's row in its
+Creator's caches, fan id string or number, other Creators' untouched. Whether each
+marker also became an All Models list row is a budget (list-upd), not an invariant:
+the list's pages come from OnlyFans' /chats, held in a slop run, so only an app
+build that inserts live rows can show it.
 
 Budgets (FAIL is red but marked [budget]; never loosened): per stage, p95 per
 relay route, SSE lag (injection -> stream receipt) for the direct listener and
@@ -35,11 +38,15 @@ import itertools
 import json
 import os
 import time
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 from slop.actors import chatter, fan_dm, manager, ui
+from slop.lib import app_ts
+from slop.lib.chats_cache_faults import SEND_BUMP
+from slop.lib.events_faults import BUS_BACKOFF, BUS_NOTHING_DROPPED, BUS_ORDER
 
 PROFILE = "multi_agency_big_models"
 UI = True
@@ -94,6 +101,14 @@ TELEMETRY_S = float(os.environ.get("CHATTERLY_WRITE_TELEMETRY_S", "60") or 0)
 TELEMETRY_SLACK_S = 5          # a line's span may be off its interval by this (loop lag, the 2 s stall)
 MARKER_ID_BASE = 9_690_000_000_000
 TABS = ("inbox", "popout-a", "popout-b", "group")
+# The app's EventBus in node (lib/events_ts.mjs) on Agency 0's real /events while the load
+# runs: a socket drop with 6 refused connects (the browser's own reconnect + 5 bus retries,
+# so the backoff reaches its cap), one with 2 (it starts again at the minimum), then a pause.
+EVENTS_TS = Path(__file__).resolve().parents[1] / "lib" / "events_ts.mjs"
+CHATS_CACHE_TS = Path(__file__).resolve().parents[1] / "lib" / "chats_cache_ts.mjs"
+SEND_BUMP_LIMIT, SEND_BUMP_PAGE = 100, 20  # head page read, rows per cache page
+BUS_PLAN = {"scope": "all", "warm_ms": 2000, "outages": [6, 2], "pause_ms": 3000, "tail_ms": 3000,
+            "reconnect_ms": 3000, "scale": 100, "timeout_ms": 30000}
 
 
 def pct(xs, q=0.95):
@@ -188,6 +203,8 @@ async def run(ctx) -> None:
     ui_read_calls = [0]   # the tabs' own mark-read POSTs (2xx), for the txns-per-call check
     ui_reloads: list[str] = []
 
+    bus_task: asyncio.Task | None = None
+    bus_out: dict = {"error": "the load never started"}
     cm = ui.owner_tabs(ctx, len(TABS)) if ctx.app else None
     pages = await cm.__aenter__() if cm else None
     try:
@@ -236,6 +253,7 @@ async def run(ctx) -> None:
         paced.rates = {c["id"]: normal_dpm for c in creators if not c["big"]}
         paced.start()
         chatters.start(ctx.users)
+        bus_task = asyncio.create_task(event_bus_run(ctx, agencies[0]))
         for i, rate in enumerate(rates):
             st = {"name": f"s{i + 1}-{rate}pm", "rate": rate, "t0": time.time() * 1000}
             ctx.rec.stage = paced.stage = st["name"]
@@ -275,6 +293,7 @@ async def run(ctx) -> None:
                                f"{st['name']}-all-models-inbox")
             stages.append(st)
         ctx.rec.stage = None
+        bus_out = await bus_task
         await chatters.stop()
         await paced.stop()
         quiet = await manager.quiesce(ctx.owner, timeout=300)
@@ -309,6 +328,8 @@ async def run(ctx) -> None:
             ctx.metric("ui", {"held_of_reads": len(pages[0].slop["held_of_reads"]),
                               "offhost_aborted": len(pages[0].slop["offhost_aborted"])})
     finally:
+        if bus_task is not None and not bus_task.done():
+            bus_task.cancel()
         await chatters.stop()  # idempotent; on a crash, stop the load before its clients close
         if hasattr(paced, "_runners"):
             await paced.stop()
@@ -323,11 +344,97 @@ async def run(ctx) -> None:
             await h.aclose()
 
     ctx.metric("markers", markers)
+    assess_event_bus(ctx, bus_out, listeners[agencies[0]["user_id"]])
     await assess(ctx, w, paced, chatters, listeners, markers, stages, tab_takes, final_rx, quiet,
                  seeded_unread, owner_of, ui_models, big, lag_samples, ui_read, tab)
     assess_stall(ctx, stall)
     await assess_telemetry(ctx, paced.sent + [m for m in markers if m["status"] < 300], quiet,
                            chatters.actions, ui_read_calls[0])
+    await assess_send_bump(ctx, ui_models)
+
+
+async def assess_send_bump(ctx, models: list[str]) -> None:
+    """The send path's chat-list bump (lib/chats_cache_ts.mjs, the app's lib/chatsCache in node) on
+    the owner's real head pages after the load, and one real send per model to its last row's fan.
+    Last of all: the sends add outbound rows the reply and telemetry checks would otherwise count."""
+    rows, sends = {}, []
+    try:
+        for aid in models:
+            rows[aid] = await manager.recent_chats(ctx.owner, aid, SEND_BUMP_LIMIT)
+            if len(rows[aid]) < 2:
+                continue
+            fan = rows[aid][-1]["withUser"]["id"]
+            text = f"slop send bump {aid[-4:]}"
+            r = await ctx.owner.post(f"/api/of/v2/chats/{fan}/messages", headers={"X-Account-Id": aid},
+                                     json={"text": text})
+            sends.append({"accountId": aid, "fanId": fan, "text": text, "status": r.status_code,
+                          "echo": r.json() if r.status_code < 300 else None})
+        res = await app_ts.run(ctx, CHATS_CACHE_TS, {"limit": SEND_BUMP_LIMIT, "page": SEND_BUMP_PAGE,
+                                                     "models": rows, "sends": sends})
+        ways, out = res["ways"], res["cases"]
+    except Exception as e:  # noqa: BLE001
+        ctx.check(SEND_BUMP, False, error=f"{type(e).__name__}: {e}"[:1500])
+        return
+    sent_text = {s["accountId"]: s["text"] for s in sends}
+
+    def bumped(r, v) -> bool:  # the fan's one row heads the cache with the sent text, nothing else moved
+        return (v["head"] == [r["accountId"], r["fanId"]] and v["copies"] == 1 and v["untouched"]
+                and v["text"] == sent_text[r["accountId"]] and v["before"] == v["after"])
+
+    bad = [r for r in out if not (bumped(r, r["own"]) and bumped(r, r["all"]) and not r["others"])]
+    failed = [s for s in sends if s["status"] >= 300]
+    ctx.check(SEND_BUMP, bool(sends) and bool(ways) and not failed and len(out) == len(ways) * len(sends)
+              and not bad,
+              sends=len(sends), cases=len(out), failed_sends=[(s["accountId"], s["status"]) for s in failed],
+              wrong=len(bad), sample=bad[:3])
+
+
+async def event_bus_run(ctx, agency: dict) -> dict:
+    """lib/events_ts.mjs on the Agency's session: the app's real EventBus through BUS_PLAN.
+    A harness failure comes back as {"error"} (the bus checks fail on it), never a crashed run."""
+    cookie = "; ".join(f"{k}={v}" for k, v in agency["http"].c.cookies.items())
+    try:
+        return await app_ts.run(ctx, EVENTS_TS, {**BUS_PLAN, "base": ctx.relay, "cookie": cookie})
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"{type(e).__name__}: {e}"[:1500]}
+
+
+def assess_event_bus(ctx, out: dict, listener) -> None:
+    """The bus's listeners against the relay's own order: the Agency's direct /events listener
+    (no reconnects) got every DM in relay order. The bus's DMs must be exactly the span of that
+    order from its first DM to its last (nothing dropped, none twice, no resync), in the same
+    order; and the retry delays it armed must be RETRY_MIN doubling to the RETRY_MAX cap through
+    the first outage, then RETRY_MIN again after a socket opened."""
+    ctx.metric("event_bus", {k: v for k, v in out.items() if k != "got"} | {"got": len(out.get("got", []))})
+    if "error" in out:
+        for name in (BUS_NOTHING_DROPPED, BUS_ORDER, BUS_BACKOFF):
+            ctx.check(name, False, error=out["error"])
+        return
+    got, relay = out["got"], listener.message_ids
+    pos = {m: i for i, m in enumerate(relay)}
+    seen = [m for m in got if m in pos]
+    span = relay[min(pos[m] for m in seen):max(pos[m] for m in seen) + 1] if seen else []
+    missing = sorted(set(span) - set(got))
+    resumed = sum("last_event_id=" in u for u in out["opens"])
+    ctx.check(BUS_NOTHING_DROPPED,
+              bool(span) and not missing and len(got) == len(set(got)) and len(seen) == len(got)
+              and not out["resync"] and out["refused"] == sum(BUS_PLAN["outages"])
+              and resumed == sum(BUS_PLAN["outages"]) + 1,
+              got=len(got), span=len(span), missing=len(missing), sample=missing[:5],
+              duplicates=len(got) - len(set(got)), not_on_relay_stream=len(got) - len(seen),
+              resync=out["resync"], refused=out["refused"], reopened_from_last_id=resumed)
+    bad = next((i for i in range(1, len(seen)) if pos[seen[i]] < pos[seen[i - 1]]), None)
+    ctx.check(BUS_ORDER, bool(seen) and bad is None, compared=len(seen),
+              first_out_of_order=None if bad is None else {"at": bad, "got": seen[bad], "after": seen[bad - 1]})
+    lo, hi = out["consts"]["retry_min_ms"], out["consts"]["retry_max_ms"]
+    want: list[int] = []
+    for n in BUS_PLAN["outages"]:
+        ms = lo
+        for _ in range(n):
+            want.append(ms)
+            ms = min(ms * 2, hi)
+    ctx.check(BUS_BACKOFF, out["retries"] == want and max(out["retries"], default=0) <= hi,
+              armed=out["retries"], want=want, cap_ms=hi)
 
 
 def telemetry_lines(path) -> list[dict]:

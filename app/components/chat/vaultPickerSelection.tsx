@@ -10,10 +10,8 @@ import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type Mous
 import type { VaultMedia } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
 import { vaultTileThumb } from "@/hooks/useVaultCache";
-
-/** Hover dwell before any tile preview (video storyboard or photo enlarge)
- *  commits — kills "brush past 20 tiles in 200ms" thrash. */
-export const HOVER_DELAY_MS = 400;
+// The photo enlarge waits the video preview's dwell.
+import { HOVER_DELAY_MS } from "@/hooks/useHoverPreview";
 
 export const KEYBOARD_HINT = "Shift-click for a range · arrows to move";
 

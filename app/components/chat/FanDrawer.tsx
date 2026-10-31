@@ -30,6 +30,7 @@ import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } fr
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useFan } from "@/hooks/useFan";
+import { useExitGhost } from "@/hooks/useExitGhost";
 import { useSwipe } from "@/hooks/useSwipe";
 import { useAccountLabel } from "@/hooks/useAccounts";
 import { OF_USER_STALE_MS, ofUserNameKey, useOFUser } from "@/hooks/useOFUser";
@@ -44,6 +45,7 @@ import { stripOFHtml } from "@/lib/ofHtml";
 import { relay, SALARY_FREQUENCIES, type FanRecord, type OFChatItem, type VaultMedia } from "@/lib/relay";
 import { vaultFilesFromChat } from "@/lib/vaultFiles";
 import { proxyImage, proxyScrubFrame } from "@/lib/mediaUrl";
+import { HOVER_DELAY_MS, scrubCountdownSec, SCRUB_FRAMES, useHoverPreview } from "@/hooks/useHoverPreview";
 import { type FanId } from "@/lib/fanId";
 import { MP } from "@/lib/messagesPro";
 import { extraTitle } from "@/lib/openinflowwwwExtras";
@@ -363,10 +365,17 @@ export function FanDrawer({
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose, pinned, lightbox]);
   // A swipe right on the slide-over or its backdrop closes it, as Esc does: not
-  // the pinned column, and not while the lightbox is up.
+  // the pinned column, and not while the lightbox is up. It slides as an iOS
+  // sheet (`useSwipe`: follows the finger, the backdrop fades with it, closes
+  // when the release would carry it 75% out); closed any other way it leaves
+  // on a non-blocking copy (`useExitGhost`).
   const overlayRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLElement>(null);
-  useSwipe(overlayRef, { enabled: open && !pinned && !lightbox, dir: "right", onSwipe: onClose, follow: panelRef });
+  const backdropRef = useRef<HTMLDivElement>(null);
+  useSwipe(overlayRef, {
+    enabled: open && !pinned && !lightbox, dir: "right", onSwipe: onClose, sheet: { panel: panelRef, backdrop: backdropRef },
+  });
+  useExitGhost(open && !pinned, overlayRef);
 
   if (!open) return null;
 
@@ -819,7 +828,7 @@ export function FanDrawer({
       className={
         pinned
           ? cn(MP.panes.insights, "hidden lg:flex shrink-0 bg-[var(--inf-insights,var(--color-panel))] border-[var(--inf-rule,var(--color-border))] flex-col h-full")
-          : cn(MP.ours.FanDrawer.slideOver, "bg-[var(--inf-insights,var(--color-panel))] border-[var(--inf-rule,var(--color-border))] shadow-2xl pointer-events-auto flex flex-col")
+          : cn(MP.ours.FanDrawer.slideOver, MP.ours.FanDrawer.pullFill, "sheet-right bg-[var(--inf-insights,var(--color-panel))] border-[var(--inf-rule,var(--color-border))] shadow-2xl pointer-events-auto flex flex-col after:bg-[var(--inf-insights,var(--color-panel))]")
       }
     >
         {/* The head is the title only (16px/700, padding 16/16/10, no rule),
@@ -1005,7 +1014,7 @@ export function FanDrawer({
   // column, and below lg this slide-over is the only branch.
   return (
     <div ref={overlayRef} className="absolute inset-0 z-30 flex pointer-events-none lg:hidden">
-      <div className="flex-1 min-w-14 sm:min-w-0 bg-black/40 pointer-events-auto" onClick={onClose} />
+      <div ref={backdropRef} className="pop-backdrop flex-1 min-w-14 sm:min-w-0 bg-black/40 pointer-events-auto" onClick={onClose} />
       {panel}
     </div>
   );
@@ -1868,43 +1877,29 @@ function PpvSaleRow({
   );
 }
 
-// Scrub-frame slideshow constants — match VaultPicker so the relay's
-// /img/scrub disk cache is reused across surfaces (the relay keys cache
-// entries by mp4 hash + frame index, not by caller).
-const SCRUB_FRAMES = 12;
-const SCRUB_INTERVAL_MS = 600;
-const HOVER_DELAY_MS = 400;
-
 /** Video thumb with vault-style hover scrub. Hover-intent debounce
  *  (HOVER_DELAY_MS) kills brush-past thrash; once committed we render
  *  all 12 storyboard frames as overlayed <img> with opacity toggled,
- *  cycling every SCRUB_INTERVAL_MS. Frame fetches go through the
- *  relay's /img/scrub endpoint which builds the storyboard once and
- *  serves cached JPGs on subsequent hovers — so a re-hover is free.
- *  On mouseleave we fire-and-forget a /img/scrub/cancel POST so the
- *  relay can abort the build if it's still mid-download. */
-function VideoScrubThumb({
+ *  cycling every SCRUB_INTERVAL_MS. Dwell, frame count and pace come from
+ *  useHoverPreview, shared with VaultPicker so the relay's /img/scrub disk
+ *  cache (keyed by mp4 hash + frame index, not by caller) serves every
+ *  surface — so a re-hover is free.
+ *  On mouseleave (or unmount) we fire-and-forget a /img/scrub/cancel POST
+ *  so the relay can abort the build if it's still mid-download. */
+export function VideoScrubThumb({
   thumb, accountId, onClick,
 }: {
   thumb: PpvSaleThumb;
   accountId: string;
   onClick: () => void;
 }) {
-  const [hovered, setHovered] = useState(false);
-  const [scrubFrameIdx, setScrubFrameIdx] = useState(0);
-  const [firstFrameReady, setFirstFrameReady] = useState(false);
-  // Countdown shown over the shimmer while the relay extracts the
-  // storyboard for a cold video — copied formula from VaultPicker
-  // (calibrated against real cold-build timings). Estimate ticks
-  // down 5×/sec; if the frame arrives before zero, the whole overlay
-  // unmounts via `firstFrameReady`; if zero hits first we show "…".
-  const [countdownSec, setCountdownSec] = useState<number>(0);
-  // Per-hover session id — forwarded to BOTH the /img/scrub frame
-  // requests AND the cancel POST so the relay can scope cancellation
-  // to this exact hover session. A delayed cancel from a previous
-  // hover of the same video can't reach into a freshly-started build.
-  const [sessionId, setSessionId] = useState<string>("");
-  const hoverTimerRef = useRef<number | null>(null);
+  // Dwell, per-hover session id, slideshow cursor, the cold-build countdown
+  // (same ETA as VaultPicker) and the cancel POST all live in the hook.
+  const hover = useHoverPreview(HOVER_DELAY_MS);
+  const { sid, frame } = hover.state;
+  const hovered = hover.state.id !== null;
+  const frameReady = hover.state.scrub === "ready";
+  const countdownSec = scrubCountdownSec(hover.state);
   // Touch devices synthesise mouseenter on tap, so every tap on this thumb
   // would commit a 12-frame relay ffmpeg storyboard build (and the cancel
   // POST rides on mouseleave, which may never fire) while the click opens
@@ -1916,86 +1911,13 @@ function VideoScrubThumb({
       window.matchMedia("(hover: hover) and (pointer: fine)").matches,
   );
 
-  const start = () => {
-    if (hoverTimerRef.current != null) window.clearTimeout(hoverTimerRef.current);
-    hoverTimerRef.current = window.setTimeout(() => {
-      hoverTimerRef.current = null;
-      const sid =
-        typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-          ? crypto.randomUUID()
-          : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-      setSessionId(sid);
-      setScrubFrameIdx(0);
-      setFirstFrameReady(false);
-      setHovered(true);
-    }, HOVER_DELAY_MS);
-  };
-  const stop = () => {
-    if (hoverTimerRef.current != null) {
-      window.clearTimeout(hoverTimerRef.current);
-      hoverTimerRef.current = null;
-    }
-    setHovered(false);
-  };
-
-  // Initialize the countdown estimate the moment hover commits. Same
-  // piecewise formula VaultPicker uses (≤60s clips: ~5-7s; >60s clips:
-  // 6.5s + 7s per minute past the first). Tick 5×/sec so the number
-  // feels live.
-  useEffect(() => {
-    if (!hovered) {
-      setCountdownSec(0);
-      return;
-    }
-    const dur = Math.max(1, thumb.durationSec || 0);
-    const estimate = dur <= 60
-      ? Math.max(4, Math.round(4.5 + 0.5 * Math.ceil(dur / 15)))
-      : Math.max(4, Math.round(6.5 + (7 * (dur - 60)) / 60));
-    setCountdownSec(estimate);
-    const startedAt = Date.now();
-    const tickId = window.setInterval(() => {
-      const elapsed = (Date.now() - startedAt) / 1000;
-      setCountdownSec(Math.max(0, estimate - elapsed));
-    }, 200);
-    return () => window.clearInterval(tickId);
-  }, [hovered, thumb.durationSec]);
-
-  // Slideshow cursor — only ticks while hovered AND the first frame
-  // has actually painted (so we don't show invisible frames over the
-  // thumb during the cold-build wait).
-  useEffect(() => {
-    if (!hovered || !firstFrameReady) return;
-    const id = window.setInterval(() => {
-      setScrubFrameIdx((n) => (n + 1) % SCRUB_FRAMES);
-    }, SCRUB_INTERVAL_MS);
-    return () => window.clearInterval(id);
-  }, [hovered, firstFrameReady]);
-
-  // Cancel the relay-side build when the user moves on before the
-  // first frame is ready. `keepalive: true` lets the request survive
-  // an immediate unmount (e.g. clicked away from the drawer).
-  useEffect(() => {
-    if (hovered || !sessionId || !thumb.rawVideoUrl) return;
-    const tok = typeof window !== "undefined"
-      ? new URLSearchParams(window.location.search).get("t")
-        ?? window.localStorage.getItem("chatterly:share_token")
-      : null;
-    const qs = new URLSearchParams();
-    qs.set("u", thumb.rawVideoUrl);
-    qs.set("sid", sessionId);
-    if (tok) qs.set("t", tok);
-    fetch(`/img/scrub/cancel?${qs.toString()}`, {
-      method: "POST",
-      keepalive: true,
-    }).catch(() => { /* fire-and-forget */ });
-  }, [hovered, sessionId, thumb.rawVideoUrl]);
-
   return (
     <button
       type="button"
       onClick={(e) => { e.stopPropagation(); onClick(); }}
-      onMouseEnter={canHover ? start : undefined}
-      onMouseLeave={canHover ? stop : undefined}
+      // One tile per hook here, so the tile id `start` keys on is a constant 0.
+      onMouseEnter={canHover ? () => hover.start(0, thumb.durationSec, thumb.rawVideoUrl) : undefined}
+      onMouseLeave={canHover ? () => hover.stop() : undefined}
       className="relative shrink-0 w-20 h-20 rounded-md bg-bg-elev-2 border border-border overflow-hidden group"
       title={canHover ? "Hover to scrub, click to play" : "Tap to play"}
     >
@@ -2012,42 +1934,39 @@ function VideoScrubThumb({
       ) : (
         <div className={cn(MP.ours.FanDrawer.scrubEmpty, "absolute grid place-items-center text-fg-dim")}>—</div>
       )}
-      {hovered && sessionId &&
+      {hovered && sid &&
         Array.from({ length: SCRUB_FRAMES }).map((_, idx) => (
           <img
             // Per-frame key bound to the session id so re-hovers force
             // fresh elements — prevents a stale paint from the previous
             // hover bleeding into the new session.
-            key={`${sessionId}-${idx}`}
+            key={`${sid}-${idx}`}
             src={proxyScrubFrame(
               thumb.rawVideoUrl,
               accountId,
               idx,
               thumb.durationSec,
-              sessionId,
+              sid,
             )}
             alt=""
-            aria-hidden={idx !== scrubFrameIdx}
+            aria-hidden={idx !== frame}
             decoding="async"
-            // Clear the shimmer on the first frame that paints — keying off
-            // ANY frame (not just frame 0) means a single failed frame-0
-            // fetch can't pin the shimmer forever. The setter is idempotent.
-            onLoad={() => setFirstFrameReady(true)}
-            // Belt-and-suspenders: if frame 0 itself errors, drop the shimmer
-            // so we fall back to the static thumb instead of hanging on it.
-            onError={idx === 0 ? () => setFirstFrameReady(true) : undefined}
+            // The first frame that paints clears the shimmer (any frame, so a
+            // failed frame-0 fetch can't pin it); a frame-0 error drops the
+            // shimmer so we fall back to the static thumb.
+            {...hover.frameProps(idx)}
             style={{
-              opacity: idx === scrubFrameIdx && firstFrameReady ? 1 : 0,
+              opacity: idx === frame && frameReady ? 1 : 0,
             }}
             className="absolute inset-0 w-full h-full object-cover transition-opacity duration-200"
           />
         ))}
       {/* Cold-build shimmer + countdown — covers the thumb while the
-       *  relay is extracting the storyboard. Unmounts as soon as the
-       *  first frame paints (firstFrameReady → slideshow takes over).
-       *  Cached videos go straight to firstFrameReady on the first
-       *  frame's onLoad so the shimmer is invisible there. */}
-      {hovered && !firstFrameReady && (
+       *  relay is extracting the storyboard. Unmounts as soon as a frame
+       *  paints (the slideshow takes over) or frame 0 fails. Cached videos
+       *  go straight to ready on the first frame's onLoad so the shimmer
+       *  is invisible there. */}
+      {hovered && hover.state.scrub === "loading" && (
         <>
           <div aria-hidden className="scrub-shimmer pointer-events-none" />
           <div

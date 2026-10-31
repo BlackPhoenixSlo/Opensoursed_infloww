@@ -15,7 +15,7 @@ import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 
 import { Button, Input } from "@/components/ui/primitives";
-import { sanitizePriceInput } from "@/components/chat/Composer";
+import { sanitizePriceInput } from "@/lib/priceInput";
 import { postPlainText, type OFPost } from "@/hooks/usePosts";
 import { relay } from "@/lib/relay";
 

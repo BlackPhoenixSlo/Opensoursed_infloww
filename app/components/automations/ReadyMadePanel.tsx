@@ -47,6 +47,8 @@ import {
 } from "@/hooks/useAutomations";
 import { useAutomationRuns, type AutomationRunRow } from "@/hooks/useStats";
 import { PremadeForm } from "@/components/compose/PremadeComposer";
+import { canSubmit, useRawJson } from "@/lib/rawJsonReducer";
+import { PAYLOAD_RAW, withoutDryRun } from "@/lib/rulePayload";
 
 /** The two automation_rules kinds the panel can be pinned to. */
 type RuleKind = "auto_posts" | "mass_premade";
@@ -488,89 +490,31 @@ function ReadyMadeRuleEditor({
     Boolean((editing?.payload as Record<string, unknown> | undefined)?.dry_run),
   );
 
-  // The composed payload — seeded from the rule being edited so saving WITHOUT
-  // re-composing preserves it. The composer only overwrites it on "Use in rule".
-  const [composed, setComposed] = useState<Record<string, unknown>>(() => {
-    const p = { ...((editing?.payload as Record<string, unknown>) ?? {}) };
-    delete p.dry_run; // tracked by the toggle, re-merged on save
-    return p;
-  });
   const [composerOpen, setComposerOpen] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  // Raw-JSON escape hatch: hand-edit / paste the whole
-  // `{posts|messages:[…]}` payload directly — the composer forces you to PICK
-  // every media id, so this is the only way to paste a big media_files pool or
-  // tweak a field the form doesn't expose. `dry_run` stays owned by the toggle.
-  const [rawMode, setRawMode] = useState(false);
-  const [rawText, setRawText] = useState("");
+  // The composed payload + the raw-JSON escape hatch (lib/rawJsonReducer):
+  // hand-edit / paste the whole `{posts|messages:[…]}` payload directly — the
+  // composer forces you to PICK every media id, so this is the only way to
+  // paste a big media_files pool or tweak a field the form doesn't expose.
+  // Seeded from the rule being edited so saving WITHOUT re-composing preserves
+  // it; the composer only overwrites it on "Use in rule". `dry_run` stays owned
+  // by the toggle (stripped here, re-merged on save).
+  const [raw, dispatch] = useRawJson(PAYLOAD_RAW, () => withoutDryRun(editing?.payload));
+  const composed = raw.value;
 
   const everySeconds = Math.round(intervalValue * UNIT_S[intervalUnit]);
   const busy = createM.isPending || updateM.isPending;
   const summary = summarize(composed);
 
-  /** The composed payload from whichever mode is active — raw text is parsed and
-   *  required to be an object; `dry_run` is stripped (the toggle re-merges it on
-   *  save). Throws with a clear message on bad JSON. */
-  function currentComposed(): Record<string, unknown> {
-    if (!rawMode) return composed;
-    const t = rawText.trim();
-    if (!t) return {};
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(t);
-    } catch (e) {
-      throw new Error(`Payload is not valid JSON: ${(e as Error).message}`);
-    }
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      throw new Error(
-        `Payload must be a JSON object, e.g. { "${kind === "auto_posts" ? "posts" : "messages"}": [ … ] }`,
-      );
-    }
-    const p = { ...(parsed as Record<string, unknown>) };
-    delete p.dry_run; // owned by the Dry-run toggle; re-merged on save
-    return p;
-  }
-
-  /** Enter raw mode: seed the textarea from the current composed payload. */
-  function enterRaw() {
-    setRawText(JSON.stringify(composed, null, 2));
-    setErr(null);
-    setRawMode(true);
-  }
-  /** Leave raw mode: parse the textarea back into `composed` (keeps the two
-   *  views in sync so "Re-compose" opens pre-filled with the hand edits). */
-  function exitRaw() {
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = currentComposed();
-    } catch (e) {
-      setErr((e as Error).message);
-      return;
-    }
-    setComposed(parsed);
-    setRawMode(false);
-    setErr(null);
-  }
+  const fail = (error: string) => dispatch({ type: "fail", error });
 
   async function save() {
-    setErr(null);
-    if (everySeconds < 30) {
-      setErr("Interval must be at least 30 seconds.");
-      return;
-    }
-    let base: Record<string, unknown>;
-    try {
-      base = currentComposed();
-    } catch (e) {
-      setErr((e as Error).message);
-      return;
-    }
-    const arr = kind === "auto_posts" ? base.posts : base.messages;
+    if (!canSubmit(raw)) return; // the raw buffer's parse error is already shown
+    if (everySeconds < 30) return fail("Interval must be at least 30 seconds.");
+    const arr = kind === "auto_posts" ? composed.posts : composed.messages;
     if (!Array.isArray(arr) || arr.length === 0) {
-      setErr(`Compose at least one ${KIND_COPY[kind].item} first.`);
-      return;
+      return fail(`Compose at least one ${KIND_COPY[kind].item} first.`);
     }
-    const payload: Record<string, unknown> = { ...base };
+    const payload: Record<string, unknown> = { ...composed };
     if (dryRun) payload.dry_run = true;
     try {
       if (isEdit && editing) {
@@ -593,7 +537,7 @@ function ReadyMadeRuleEditor({
       }
       onClose();
     } catch (e) {
-      setErr((e as Error)?.message || "Save failed");
+      fail((e as Error)?.message || "Save failed");
     }
   }
 
@@ -663,21 +607,18 @@ function ReadyMadeRuleEditor({
             <span className="text-[14px] text-fg">{KIND_COPY[kind].items}:</span>
             <button
               type="button"
-              onClick={() => (rawMode ? exitRaw() : enterRaw())}
+              onClick={() => dispatch({ type: raw.raw ? "close" : "open" })}
               className="hidden text-[14px] text-accent hover:text-accent-hover md:inline"
             >
-              {rawMode ? "← Composer" : "Edit raw JSON →"}
+              {raw.raw ? "← Composer" : "Edit raw JSON →"}
             </button>
           </div>
 
-          {rawMode ? (
+          {raw.raw ? (
             <>
               <textarea
-                value={rawText}
-                onChange={(e) => {
-                  setRawText(e.target.value);
-                  if (err) setErr(null);
-                }}
+                value={raw.text}
+                onChange={(e) => dispatch({ type: "edit", text: e.target.value })}
                 rows={12}
                 spellCheck={false}
                 className="w-full rounded-md bg-bg border border-border text-[12px] font-mono px-2 py-1.5 text-fg focus:outline-none focus:border-accent"
@@ -714,7 +655,7 @@ function ReadyMadeRuleEditor({
           )}
         </div>
 
-        {err && <div className="text-[12px] text-err whitespace-pre-wrap">{err}</div>}
+        {raw.error && <div className="text-[12px] text-err whitespace-pre-wrap">{raw.error}</div>}
       </div>
 
       {composerOpen && (
@@ -724,9 +665,8 @@ function ReadyMadeRuleEditor({
           initialPayload={composed}
           onClose={() => setComposerOpen(false)}
           onComposePayload={(p) => {
-            setComposed(p);
+            dispatch({ type: "set", value: p });
             setComposerOpen(false);
-            setErr(null);
           }}
         />
       )}

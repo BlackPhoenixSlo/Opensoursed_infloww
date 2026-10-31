@@ -18,6 +18,9 @@ fake OFClient + a patched llm_client.chat — no network.
       a fan whose latest message is inbound → reply_cooldown, no send.
   case_dry_run_sends_nothing:
       dry_run generates but neither sends nor advances state.
+  case_reply_mid_tick_is_not_nudged:
+      the fan writes back AFTER the run's message-time snapshot (here: while his
+      nudge is being generated) → no send, reply_cooldown, lease released.
   case_lease_blocks_followup:
       a live lease held by another automation skips that fan this cycle.
   case_contact_guard_holds_due_step:
@@ -368,6 +371,7 @@ async def case_dry_run_sends_nothing():
 
     res = await run_once(aid, "send_followup", payload={"dry_run": True})
     assert res["followups_sent"] == 1, res  # would-send counted
+    assert res["state_advanced"] == 0, res  # nothing saved for a would-send
     assert fake.sent == [], "dry run must not send"
 
     async with get_session() as s:
@@ -375,6 +379,34 @@ async def case_dry_run_sends_nothing():
         # No nudge recorded (silence anchor may be set, but no step sent).
         sent_map = json.loads(st.messages_sent) if st else {}
         assert sent_map == {}, sent_map
+
+
+# ── a reply that lands after the snapshot stops the nudge ─────────────
+
+async def case_reply_mid_tick_is_not_nudged():
+    aid = "acc_f5b"
+    await _seed_account(aid)
+    await _seed_fan(aid, 5101)
+    await _seed_msg(aid, 5101, 1, "out", age_hours=48)
+    fake = _use_fake()
+
+    async def _chat_then_fan_replies(**kw):
+        # run() took its msg_times snapshot before the loop; the reply lands now.
+        await _seed_msg(aid, 5101, 2, "in", age_hours=0)
+        return SimpleNamespace(content="hey you 💕")
+    llm_client.chat = _chat_then_fan_replies  # type: ignore[attr-defined]
+
+    res = await run_once(aid, "send_followup", payload={"with_image": False})
+    assert fake.sent == [], "nudged over a reply that arrived mid-tick"
+    assert res["followups_sent"] == 0, res
+    assert res["skipped_unread"] == 1, res
+
+    async with get_session() as s:
+        st = await s.get(FollowupState, (aid, 5101))
+        assert st is not None and st.phase == "reply_cooldown", st
+        assert json.loads(st.messages_sent or "{}") == {}, st.messages_sent
+    # Nothing went out → the lease is released for a human / other automation.
+    assert await acquire_fan_lease(aid, 5101, "probe", ttl_s=1) is True
 
 
 # ── A live fan-lease blocks the followup this cycle ───────────────────
@@ -632,8 +664,8 @@ async def case_completed_fan_rearms_on_inbound():
 async def case_final_step_fires_under_silence_cap():
     """Step 3's threshold was 256h while the cap retires a fan at 168h, so the
     final nudge could never fire. It must now land inside the cap."""
-    assert send_followup._STEP_THRESHOLDS_H[3] < send_followup._MAX_SILENCE_H, \
-        "step 3 above the cap is dead code"
+    from automations import send_followup_decide as drip
+    assert drip._STEP_THRESHOLDS_H[3] < drip._MAX_SILENCE_H, "step 3 above the cap is dead code"
     # ...and the Brain panel can't re-break it: an over-cap override is invalid.
     assert send_followup._resolve_step_thresholds({"step_hours": [26, 64, 256]}) == \
         send_followup._STEP_THRESHOLDS_H, "over-cap override must fall back"
@@ -642,6 +674,8 @@ async def case_final_step_fires_under_silence_cap():
     await _seed_account(aid)
     await _seed_fan(aid, 11001)
     await _seed_msg(aid, 11001, 1, "out", age_hours=130)   # past step 3, under cap
+    await _seed_fan(aid, 11002)
+    await _seed_msg(aid, 11002, 2, "out", age_hours=200)   # over the cap: retired
     async with get_session() as s:
         s.add(FollowupState(
             account_id=aid, fan_id=11001, phase="tracking", cycle=1,
@@ -656,6 +690,7 @@ async def case_final_step_fires_under_silence_cap():
 
     res = await run_once(aid, "send_followup", payload={"with_image": False})
     assert res["followups_sent"] == 1, res
+    assert res["completed"] == 1, res
     assert len(fake.sent) == 1 and fake.sent[0][0] == 11001, fake.sent
     async with get_session() as s:
         st = await s.get(FollowupState, (aid, 11001))
@@ -764,6 +799,7 @@ _harness.run(
     case_ineligible_fan_skipped,
     case_fan_reply_pauses_drip,
     case_dry_run_sends_nothing,
+    case_reply_mid_tick_is_not_nudged,
     case_lease_blocks_followup,
     case_cooldown_skips_followup,
     case_contact_guard_holds_due_step,

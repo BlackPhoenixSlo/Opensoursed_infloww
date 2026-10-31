@@ -62,19 +62,12 @@ from db.engine import get_session
 from db.models import AccountAiConfig, Fan, FanProfile, Message, ScrapeHistory, Transaction
 import llm_client
 from llm_client import LLMCapExceeded, LLMError
-from ._common import (
-    build_facts_note,
-    build_structured_nickname,
-    coerce_ids,
-    facts_from_fan,
-    is_greetable_name,
-    is_substantive_msg,
-    load_promo_spam_ids,
-    push_nick_and_notes,
-    resolve_model,
-    should_skip_muted_creator,
-)
-from .names import strip_spend_tier
+from ._fan_notes import build_facts_note, facts_from_fan, push_nick_and_notes
+from ._knobs import coerce_ids
+from ._model_pick import resolve_model
+from ._skiplist import load_promo_spam_ids, should_skip_muted_creator
+from ._textutil import is_substantive_msg
+from .names import build_structured_nickname, is_greetable_name, strip_spend_tier
 
 log = logging.getLogger("of-relay.automation.gen_info")
 
@@ -492,9 +485,8 @@ async def _gather_candidates(
             c.messages.append((direction, text))
 
         # Lift display name + username + prior extracted facts (ground truth, W2h)
-        # for the fans we care about — ONE DB read, no OF call (proxy-safe).
-        prior: dict[int, dict] = {}
-        subdates: dict[int, "datetime | None"] = {}   # fan_id → subscribed_at (tiering)
+        # + subscribed_at (tiering) onto the fans we care about — ONE DB read, no OF
+        # call (proxy-safe). A fan with no fans row keeps the _Candidate defaults.
         if counts:
             frows = (await s.execute(
                 select(
@@ -511,8 +503,10 @@ async def _gather_candidates(
                 )
             )).all()
             for r in frows:
-                subdates[int(r.fan_id)] = r.subscribed_at
-                prior[int(r.fan_id)] = {
+                c = counts.get(int(r.fan_id))
+                if c is None:
+                    continue
+                c.known = {
                     "of_display_name": r.of_display_name or "",
                     "of_username": r.of_username or "",
                     "real_name": r.real_name or "",
@@ -532,6 +526,11 @@ async def _gather_candidates(
                     "source": r.source or "",
                     "is_muted": bool(r.is_muted),
                 }
+                c.of_name = c.known["of_display_name"]
+                c.of_username = c.known["of_username"]
+                c.source = c.known["source"]
+                c.is_muted = c.known["is_muted"]
+                c.subscribed_at = r.subscribed_at
 
         # Lifetime spend from the transactions ledger (cleared, fan-attributed) is
         # more accurate than the message-derived PPV/tips sum, so take the HIGHER of
@@ -568,15 +567,18 @@ async def _gather_candidates(
                     c.recent_spend_cents = int(total or 0)
 
     promo_spam = await load_promo_spam_ids(account_id)
+    return select_candidates(counts, force_ids=force_ids, limit=limit,
+                             promo_spam=promo_spam)
+
+
+def select_candidates(
+    counts: dict[int, _Candidate], *,
+    force_ids: set[int], limit: int, promo_spam: set[int],
+) -> list[_Candidate]:
+    """Pure, read-only half of _gather_candidates: the spam guard + qualification
+    gate, then the forced-first, spend-desc order capped at max(limit, #forced)."""
     qualifying: list[_Candidate] = []
     for fan_id, c in counts.items():
-        info = prior.get(fan_id) or {}
-        c.of_name = info.get("of_display_name") or ""
-        c.of_username = info.get("of_username") or ""
-        c.source = info.get("source") or ""
-        c.is_muted = bool(info.get("is_muted"))
-        c.subscribed_at = subdates.get(fan_id)
-        c.known = info
         forced = fan_id in force_ids
         # Promo-spam guard (shares welcome_chatter_for_info's rule): don't waste an LLM profile
         # on peer creators who blast the inbox. Either we've MUTED their chat (a

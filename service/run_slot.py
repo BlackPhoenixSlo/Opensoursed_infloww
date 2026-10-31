@@ -78,11 +78,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import itertools
 import logging
-from collections import deque
 from typing import AsyncIterator
 
 import lane_config
+import run_slot_decide as rsd
 
 log = logging.getLogger("of-relay.run_slot")
 
@@ -139,77 +140,64 @@ class SlotPool:
     (a run an operator started) first, then `acquire(back=True)` (a run taking
     its slot back), then `acquire()` (a fresh run). Each queue is FIFO.
     `reserve` more permits serve operator runs only. `acquire` returns whether
-    the permit came from the reserve; `release(reserve=...)` returns it there."""
+    the permit came from the reserve; `release(reserve=...)` returns it there.
+
+    The shell of `run_slot_decide.decide` (who goes next, the counts, the
+    reserve): each entry point is one event; this class only numbers the
+    waiters, keeps their futures and resolves each Grant in order."""
 
     def __init__(self, n: int, reserve: int = 0) -> None:
-        self.n = n
-        self.free = n
-        self.reserve = reserve
-        self.reserve_free = reserve
-        self._op: deque[asyncio.Future] = deque()
-        self._back: deque[asyncio.Future] = deque()
-        self._fresh: deque[asyncio.Future] = deque()
+        self._p = rsd.new_pool(n, reserve)
+        self._wait: dict[int, asyncio.Future] = {}     # parked waiters' futures
+        self._ids = itertools.count()
+
+    n = property(lambda self: self._p.n)
+    free = property(lambda self: self._p.free)
+    reserve = property(lambda self: self._p.reserve)    # soak/timing's Pool reads it
+    reserve_free = property(lambda self: self._p.reserve_free)
+
+    def _step(self, ev: rsd.Event) -> None:
+        evs = [ev]
+        while evs:
+            self._p, grants = rsd.decide(self._p, evs.pop(0))
+            for g in grants:
+                fut = self._wait.pop(g.waiter)
+                if fut.done():      # cancelled, its handler not run yet: pass the permit on
+                    evs.append(rsd.Release(g.reserve))
+                else:
+                    fut.set_result(g.reserve)
 
     def queued(self) -> tuple[int, int]:
-        """(re-acquirers, fresh acquirers) queued."""
-        return (sum(not f.done() for f in self._back), sum(not f.done() for f in self._fresh))
+        """(re-acquirers, fresh acquirers) queued (a cancelled one counts until its
+        task runs its handler)."""
+        return len(self._p.back), len(self._p.fresh)
 
     def queued_operator(self) -> int:
-        return sum(not f.done() for f in self._op)
+        return len(self._p.op)
 
     async def acquire(self, *, back: bool = False, operator: bool = False) -> bool:
-        if operator:
-            if self.reserve_free > 0:
-                self.reserve_free -= 1
-                return True
-            if self.free > 0 and not self.queued_operator():
-                self.free -= 1
-                return False
-            q = self._op
-        else:
-            if (self.free > 0 and not self.queued_operator() and not self.queued()[0]
-                    and (back or not self.queued()[1])):
-                self.free -= 1
-                return False
-            q = self._back if back else self._fresh
-        fut = asyncio.get_running_loop().create_future()
-        q.append(fut)
+        w = next(self._ids)
+        tier = rsd.OP if operator else rsd.BACK if back else rsd.FRESH
+        fut = self._wait[w] = asyncio.get_running_loop().create_future()
+        self._step(rsd.Acquire(w, tier))
         try:
-            return await fut
+            return await fut                            # done already when it went straight in
         except BaseException:
+            self._wait.pop(w, None)
             if fut.done() and not fut.cancelled():
-                self.release(reserve=fut.result())   # granted as we were cancelled: pass it on
+                self.release(reserve=fut.result())      # granted as we were cancelled: pass it on
             else:
-                with contextlib.suppress(ValueError):
-                    q.remove(fut)
+                self._step(rsd.Cancelled(w, tier))
             raise
 
     def resize(self, n: int) -> None:
         """Change the shared permits to `n`, live. Growing serves waiters now;
         shrinking takes effect as runs end (`free` may dip below 0 meanwhile:
         nobody is granted until it is above 0 again). The reserve is unchanged."""
-        self.free += n - self.n
-        self.n = n
-        self._grant()
+        self._step(rsd.Resize(n))
 
     def release(self, *, reserve: bool = False) -> None:
-        if reserve:
-            while self._op:              # a reserve permit goes to an operator run, or back
-                fut = self._op.popleft()
-                if not fut.done():
-                    fut.set_result(True)
-                    return
-            self.reserve_free += 1
-            return
-        self.free += 1
-        self._grant()
-
-    def _grant(self) -> None:
-        while self.free > 0 and (self._op or self._back or self._fresh):
-            fut = (self._op or self._back or self._fresh).popleft()
-            if not fut.done():
-                self.free -= 1
-                fut.set_result(False)
+        self._step(rsd.Release(reserve))
 
 
 class RunSlot:

@@ -33,16 +33,17 @@
  */
 
 import { ExternalLink, UserPlus } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useReducer, useState, type ReactNode } from "react";
 
 import PasteCurlCard from "@/components/setup/PasteCurlCard";
+import { buildAccountPayload, canNext, initialWizard, wizardReducer, type Platform } from "@/components/setup/addCreatorWizard";
 import BrowserbaseLoginCard from "@/components/setup/BrowserbaseLoginCard";
 import FanslyPasteSessionCard, { FANSLY_FORM_ID, FANSLY_T } from "@/components/setup/FanslyPasteSessionCard";
 import {
   CreatorsDetailsForm, EditCreatorForm, FlowButton, FlowModal, HB_DIM, LinkedLine, RADIO, RADIO_GROUP, RADIO_ITEM,
   STEP_TITLE, SelectProxyUI, StepIndicator, T,
-  assignedIds, bindPoolProxy, creatorDetailsError, currentProxy, proxyChoiceReady, proxyText, toast, useProxyList,
-  useRoster, useSaveAccountDetails, type AccountDetails, type ProxyChoice,
+  assignedIds, bindPoolProxy, currentProxy, proxyText, toast, useProxyList,
+  useRoster, useSaveAccountDetails, type ProxyChoice,
 } from "@/components/setup/creatorFlow";
 import { PlatformLogo } from "@/components/shell/PlatformSwitcher";
 import { HbButton } from "@/components/ui/infloww";
@@ -61,13 +62,12 @@ export const MOBILE_FANSLY_LINE = "The Fansly paste session is desktop-only.";
 
 /** Our sign-in sections. */
 const SECTIONS = {
-  paste: { id: "add-creator-paste-curl", name: "Paste cURL" },
-  browserbase: { id: "add-creator-browserbase", name: "Browserbase login" },
-  fansly: { id: "add-creator-fansly", name: "Fansly paste session" },
+  paste: { id: "add-creator-paste-curl", name: "Paste cURL", platform: "onlyfans" },
+  browserbase: { id: "add-creator-browserbase", name: "Browserbase login", platform: "onlyfans" },
+  fansly: { id: "add-creator-fansly", name: "Fansly paste session", platform: "fansly" },
 } as const;
 export type SectionKey = keyof typeof SECTIONS;
 
-export type Platform = "onlyfans" | "fansly";
 export const PLATFORM_LABEL: Record<Platform, string> = { onlyfans: "OnlyFans", fansly: "Fansly" };
 
 function Section({ k, children }: { k: SectionKey; children: ReactNode }) {
@@ -84,8 +84,6 @@ function Section({ k, children }: { k: SectionKey; children: ReactNode }) {
 /** Every step after the first, and a row's entry points, read `creators0174`. */
 export const ROW_LINK_TITLE = T.linkCreatorAccount;
 
-type Step = "creators-details" | "select-platform" | "select-proxy" | "login" | "role" | "alt" | "linked" | "creator-details" | "success";
-
 export default function AddCreatorModal({ extInstalled, onClose, at, draft, linkAnother }: {
   extInstalled: boolean | null;
   onClose: () => void;
@@ -99,19 +97,14 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
   const profiles = useCreatorProfiles();
   const roster = useRoster();
   const save = useSaveAccountDetails(profiles);
-  const [step, setStep] = useState<Step>(at ? "login" : draft || linkAnother ? "select-platform" : "creators-details");
-  const [details, setDetails] = useState<CreatorDetails>(draft ?? linkAnother?.creator ?? { name: "", gender: "" });
-  const [draftId, setDraftId] = useState<string | undefined>(draft?.id);
-  const taken = linkAnother?.linked ?? [];
-  const [platform, setPlatform] = useState<Platform>(at === "fansly" ? "fansly" : taken.includes("onlyfans") ? "fansly" : "onlyfans");
+  const [state, dispatch] = useReducer(wizardReducer, { recovery: at && SECTIONS[at].platform, draft, linkAnother }, initialWizard);
+  const { step, details, draftId, taken, platform, picked } = state;
   // The Proxy selection: the Inflowwww proxy by default when the relay has a pool, else No proxy. A row's recovery
   // (`at`) skips the step and binds nothing, so the account keeps the proxy it is on.
   const proxiesQ = useProxyList();
-  const [picked, setProxy] = useState<ProxyChoice | null>(at ? { type: "none" } : null);
   const proxy: ProxyChoice = picked ?? (proxiesQ.data?.pool?.size ? { type: "infloww" } : { type: "none" });
-  const [accountId, setAccountId] = useState<string | null>(null);
-  const [account, setAccount] = useState<AccountDetails | null>(null);
-  const [busy, setBusy] = useState(false);
+  const next = () => dispatch({ type: "next" });
+  const back = () => dispatch({ type: "back" });
   const of = platform === "onlyfans";
   const count = of ? 3 : 2;
 
@@ -122,48 +115,50 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
     el?.focus();
   }, [at]);
 
-  // Done / Next on step 1 (`addCreators`): the Creator is saved before any account.
-  const saveDetails = async (then: () => void) => {
-    setBusy(true);
+  // Done / Next on step 1 (`addCreators`): the Creator is saved before any account; saved, the flow moves on
+  // (submitOk). True when it saved.
+  const saveDetails = async () => {
+    if (!canNext(state)) return false;
+    dispatch({ type: "submitStart" });
     try {
+      let id: string | undefined;
       if (draftId) await profiles.updateDraft(draftId, details);
-      else setDraftId((await profiles.addDraft(details)).id);
+      else id = (await profiles.addDraft(details)).id;
       toast(T.newCreatorAdded);
-      then();
+      dispatch({ type: "submitOk", draftId: id });
+      return true;
     } catch (e) {
       toast((e as Error).message, "err");
-    } finally {
-      setBusy(false);
+      dispatch({ type: "submitErr" });
+      return false;
     }
   };
 
-  const linked = (id: string) => {
-    setAccountId(id);
-    setAccount({ nickname: details.name, tag: profiles.profiles[id]?.tag ?? "", employeeIds: assignedIds(roster, id), notes: profiles.profiles[id]?.notes ?? "" });
-    setStep("linked");
-  };
+  const linked = (id: string) => dispatch({
+    type: "linked", accountId: id,
+    account: { nickname: details.name, tag: profiles.profiles[id]?.tag ?? "", employeeIds: assignedIds(roster, id), notes: profiles.profiles[id]?.notes ?? "" },
+  });
 
-  const detailsErr = creatorDetailsError(details);
-  const title = step === "creators-details" ? T.addCreator : ROW_LINK_TITLE;
+  const title = step.kind === "creators-details" ? T.addCreator : ROW_LINK_TITLE;
   const proxyLabel = proxy.type === "custom" ? proxy.label : "";
 
   let body: ReactNode;
   let footer: ReactNode;
-  switch (step) {
+  switch (step.kind) {
     case "creators-details":
-      body = <CreatorsDetailsForm value={details} onChange={setDetails} showTitle />;
+      body = <CreatorsDetailsForm value={details} onChange={(value) => dispatch({ type: "setField", field: "details", value })} showTitle />;
       footer = (
         <>
           <FlowButton
-            disabled={!!detailsErr || busy || !profiles.wired} title={!profiles.wired ? "not wired" : undefined}
-            onClick={() => void saveDetails(onClose)}
+            disabled={!canNext(state) || !profiles.wired} title={!profiles.wired ? "not wired" : undefined}
+            onClick={async () => { if (await saveDetails()) onClose(); }}
           >
             {T.done}
           </FlowButton>
           <FlowButton
-            primary disabled={!!detailsErr || busy}
+            primary disabled={!canNext(state)}
             // A chatter cannot save a Creator; the flow still links the account.
-            onClick={() => (profiles.wired ? void saveDetails(() => setStep("select-platform")) : setStep("select-platform"))}
+            onClick={() => (profiles.wired ? void saveDetails() : next())}
           >
             {T.nextLink}
           </FlowButton>
@@ -182,7 +177,7 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
                   key={p} title={off ? T.onePerPlatform(PLATFORM_LABEL[p]) : undefined}
                   className={cn(RADIO_ITEM, "items-center")}
                 >
-                  <input type="radio" name="platform" checked={platform === p} disabled={off} onChange={() => setPlatform(p)} className={cn(RADIO, "mt-0")} />
+                  <input type="radio" name="platform" checked={platform === p} disabled={off} onChange={() => dispatch({ type: "setField", field: "platform", value: p })} className={cn(RADIO, "mt-0")} />
                   {/* `HBIconWrapper size:"intermediate"` with the platform's mark, the label 4px after it (#63). */}
                   <span className="flex items-center gap-1"><PlatformLogo platform={p} />{PLATFORM_LABEL[p]}</span>
                 </label>
@@ -192,16 +187,16 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
         </div>
       );
       footer = (
-        <FlowButton primary disabled={taken.includes(platform)} onClick={() => setStep(of ? "select-proxy" : "login")}>
+        <FlowButton primary disabled={!canNext(state)} onClick={next}>
           {T.next}
         </FlowButton>
       );
       break;
     case "select-proxy":
-      body = <SelectProxyUI value={proxy} onChange={setProxy} />;
+      body = <SelectProxyUI value={proxy} onChange={(value) => dispatch({ type: "setField", field: "proxy", value })} />;
       footer = (
         <StepIndicator active={0} count={3}>
-          <FlowButton primary disabled={!proxyChoiceReady(proxy)} onClick={() => setStep("login")}>{T.connectOnlyFans}</FlowButton>
+          <FlowButton primary disabled={!canNext(state)} onClick={next}>{T.connectOnlyFans}</FlowButton>
         </StepIndicator>
       );
       break;
@@ -224,7 +219,7 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
                 <BrowserbaseLoginCard onLinked={linked} initialNickname={at ? "" : details.name} proxy={at ? undefined : proxy} />
               </Section>
               <p className="md:hidden text-sm text-fg-dim" title={EXTRA_LABEL}>{MOBILE_PASTE_LINE}</p>
-              <button type="button" onClick={() => setStep("role")} className="text-sm text-cta hover:underline">
+              <button type="button" onClick={next} className="text-sm text-cta hover:underline">
                 {T.stillUnable}
               </button>
             </div>
@@ -239,7 +234,7 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
         </div>
       );
       footer = at ? <FlowButton onClick={onClose}>{T.cancel}</FlowButton> : (
-        <FlowButton onClick={() => setStep(of ? "select-proxy" : "select-platform")}>{T.cancel}</FlowButton>
+        <FlowButton onClick={back}>{T.cancel}</FlowButton>
       );
       // OnlyFans: the sign-in is step 1's second half (the proxy's "Connect OnlyFans" opens it, #68), so it keeps the
       // proxy step's dots. Fansly counts from linked (`dotCount:2`); its sign-in comes before step 1 and has none.
@@ -248,18 +243,18 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
       if (!of) footer = <>{footer}<FlowButton primary type="submit" form={FANSLY_FORM_ID}>{T.done}</FlowButton></>;
       break;
     case "role":
-      body = <SelectRole onAdmin={() => setStep("alt")} onCreator={() => setStep("login")} onCancel={() => setStep("login")} />;
+      body = <SelectRole onAdmin={next} onCreator={back} onCancel={back} />;
       footer = null;
       break;
     case "alt":
       body = <AlternativeMethod />;
-      footer = <FlowButton onClick={() => setStep("login")}>{T.back}</FlowButton>;
+      footer = <FlowButton onClick={back}>{T.back}</FlowButton>;
       break;
     case "linked":
-      body = <LinkedAccount accountId={accountId!} platform={platform} />;
+      body = <LinkedAccount accountId={step.accountId} platform={platform} />;
       footer = at ? <FlowButton primary onClick={onClose}>{T.done}</FlowButton> : (
         <StepIndicator active={of ? 1 : 0} count={count}>
-          <FlowButton primary onClick={() => setStep("creator-details")}>{T.next}</FlowButton>
+          <FlowButton primary disabled={!canNext(state)} onClick={next}>{T.next}</FlowButton>
         </StepIndicator>
       );
       break;
@@ -267,20 +262,20 @@ export default function AddCreatorModal({ extInstalled, onClose, at, draft, link
       body = (
         <div className="space-y-4">
           <p className={STEP_TITLE}>{T.accountDetails}</p>
-          <EditCreatorForm value={account!} onChange={setAccount} tags={profiles.tags} roster={roster} />
+          <EditCreatorForm value={step.account} onChange={(value) => dispatch({ type: "setField", field: "account", value })} tags={profiles.tags} roster={roster} />
         </div>
       );
       footer = (
         <StepIndicator active={of ? 2 : 1} count={count}>
           <FlowButton
-            primary disabled={!account?.nickname.trim() || save.isPending}
-            onClick={() => save.mutate(
-              { accountId: accountId!, before: "", roster, details: account!, creator: details, draftId },
-              {
-                onSuccess: () => { toast(T.updateSuccess); setStep("success"); },
-                onError: (e) => toast((e as Error).message, "err"),
-              },
-            )}
+            primary disabled={!canNext(state)}
+            onClick={() => {
+              dispatch({ type: "submitStart" });
+              save.mutate(buildAccountPayload(state, step, roster), {
+                onSuccess: () => { toast(T.updateSuccess); dispatch({ type: "submitOk" }); },
+                onError: (e) => { toast((e as Error).message, "err"); dispatch({ type: "submitErr" }); },
+              });
+            }}
           >
             {T.next}
           </FlowButton>
