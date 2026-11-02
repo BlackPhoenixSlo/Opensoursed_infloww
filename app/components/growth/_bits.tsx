@@ -12,6 +12,7 @@
 import { useState, type ReactNode } from "react";
 import { Button, Input } from "@/components/ui/primitives";
 import { IfButton, IfModal } from "@/components/ui/infloww";
+import { errText } from "@/lib/errText";
 
 /** antd's `Modal.confirm` as an awaited `IfModal` (416px): `ask(title, body, ok)` resolves true on the primary
  *  button, false on Cancel, ×, or Escape. Render `modal` once in the component. */
@@ -43,11 +44,8 @@ export function fmtUsd(cents: number): string {
 }
 
 
-/** Message off a thrown value, with a fallback — collapses the
- *  `(e as Error)?.message || "…"` cast every Growth create/save catch repeated. */
-export function errMsg(e: unknown, fallback: string): string {
-  return (e as Error)?.message || fallback;
-}
+/** Message off a thrown value, with a fallback — `errText` under the name the Growth catches import. */
+export const errMsg = (e: unknown, fallback: string) => errText(e, fallback);
 
 export function Field({
   label, children,

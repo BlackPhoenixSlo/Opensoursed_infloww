@@ -43,17 +43,17 @@ The plan's fields (Messages Basic widget, C[H262111]) mapped to what `FanDrawer`
 | Plan field | Our source field | Rendered as |
 |---|---|---|
 | Creator notes | — | Notes tab › "Creator notes": — |
-| Fan notes | `OFUser.notice`, falling back to `FanRecord.notes` (`useOFUser.ts:83`, `relay.ts:559`; merged at `FanDrawer.tsx:233`) | Insights › Notes › "Fan notes" textarea |
-| Country/Region | `FanRecord.home_city`, `FanRecord.home_country` (`relay.ts:553-554`) | Profile › Location box |
-| Auto-renew Status | `subscribedOnData.status` or else `FanRecord.subscription_status`, with `expiredAt`, through `interpretSubStatus` (`useOFUser.ts:50`, `relay.ts:563`, `utils.ts:91`) | Subscription › "Auto-renewal": On / Off / — |
+| Fan notes | `OFUser.notice`, falling back to `FanRecord.notes` (`useOFUser.ts:83`, `relayTypes.ts`; merged at `FanDrawer.tsx:233`) | Insights › Notes › "Fan notes" textarea |
+| Country/Region | `FanRecord.home_city`, `FanRecord.home_country` (`relayTypes.ts`) | Profile › Location box |
+| Auto-renew Status | `subscribedOnData.status` or else `FanRecord.subscription_status`, with `expiredAt`, through `interpretSubStatus` (`useOFUser.ts:50`, `relayTypes.ts`, `utils.ts:91`) | Subscription › "Auto-renewal": On / Off / — |
 | Last paid | `useFanActivity().lastPurchase` (`FanDrawer.tsx:153`) | Spending behavior › "Last spend" |
 | Buy rate | — (`PpvHistorySummary` has no sent count, `useFanPpvHistory.ts:42-53`) | Sales tab › "Buy rate": — |
 | Spending habits | — (no field by that name) | The Spending behavior block as a whole |
 | Purchasing trends | `useFanPpvHistory().items` (`FanDrawer.tsx:157`) | "Purchases over time" bars |
 | PPV timeline | `useFanPpvHistory().items` plus `useFanChatMedia({purchased: true})` (`FanDrawer.tsx:157-168`) | Sales tab › Sales table and purchased-media rows |
-| Source | — (`FanRecord.source`, `relay.ts:566`, is a relationship class such as "fan" or "creator_we_follow", per `service/automations/_common.py:440`. It does not record how the Fan was acquired) | Profile › "Source": — |
+| Source | — (`FanRecord.source`, `relayTypes.ts`, is a relationship class such as "fan" or "creator_we_follow", per `service/automations/_skiplist.py` `classify_source`. It does not record how the Fan was acquired) | Profile › "Source": — |
 | Birthdate | — | Profile › "Birthday": — |
-| Infloww name | `OFUser.displayName`, falling back to `FanRecord.custom_nickname` (`useOFUser.ts:80`, `relay.ts:549`; merged at `FanDrawer.tsx:232`) | Profile › "Nickname" input |
+| Infloww name | `OFUser.displayName`, falling back to `FanRecord.custom_nickname` (`useOFUser.ts:80`, `relayTypes.ts`; merged at `FanDrawer.tsx:232`) | Profile › "Nickname" input |
 | Fan lists | `OFUser.listsStates[].name` where `hasUser` (`useOFUser.ts:62-70`, `:85`) | Lists block chips |
 
 Clone rows that are not plan fields read existing values. Total spend is the `spendCents` max (`FanDrawer.tsx:517`). PPV Total is `messagesSumm` or else `summary.messages_cents`. PPV Avg is `summary.avg_cents`. Tip Total is `tipsSumm` or else `summary.tips_cents`. Tip Avg is "—". Highest spend is `summary.max_cents`. Spending power and Chargeback risk are "—". Status is `interpretSubStatus().short`. Cost is `subscribedOnData.price`. Duration is `subscribedOnData.duration` (`useOFUser.ts:53`). Tags is `FanRecord.tags`, and Language is `FanRecord.language`.
@@ -154,7 +154,7 @@ ASSUMPTION: mounting the extras lazily, which delays the mass-exclude read until
 - **Automation extras.** The AI seller chip, AI profile and Persona claims render only when `useLegacyAutomations()` is true (ADR 0003). Each has the tooltip "Inflowwww extra". The chip goes after the Notes block in the Insights tab, and the other two go in the Notes tab.
 ASSUMPTION: the AI profile (gen_info output) and Persona claims count as automations; overturned if Phase 7 classifies them as non-automation extras, in which case they move into the Extras overflow.
 - **Responsive.** From `lg` up, the pinned column is 280px (G1). Below `lg`, the overlay sheet keeps its width, backdrop, `aria-modal`, Esc and the lightbox's Esc precedence unchanged (`docs/routes.md:42`). The mobile `order-*` overrides are dropped, so one block order holds at every width. The below-`md` hiding of the chart (`FanDrawer.tsx:707`) is removed, so Purchasing trends shows its bars or its empty text at every width.
-- **Esc with two instances.** On desktop with keep-open on, `ChatSurface` mounts the overlay (hidden only by `lg:hidden`) and the pinned column together (`ChatSurface.tsx:1175-1202`), and the hidden overlay's window Esc listener closes both (`FanDrawer.tsx:301-306`, `:619-620`), even while the pinned column's lightbox is open. The overlay instance given `overlayHideOnDesktopWhenPinned` therefore registers no Esc listener while `window.matchMedia("(min-width: 1024px)")` matches. Below 1024px Esc still closes the sheet, and the lightbox still owns Esc while it is open.
+- **Esc with two instances.** On desktop with keep-open on, `ChatSurface` mounts the overlay (hidden only by `lg:hidden`) and the pinned column together (`ChatSurface.tsx`), and the hidden overlay's window Esc listener closes both (`FanDrawer.tsx:301-306`, `:619-620`), even while the pinned column's lightbox is open. The overlay instance given `overlayHideOnDesktopWhenPinned` therefore registers no Esc listener while `window.matchMedia("(min-width: 1024px)")` matches. Below 1024px Esc still closes the sheet, and the lightbox still owns Esc while it is open.
 ASSUMPTION: the guard lives in `FanDrawer`, which this Phase owns, rather than in `ChatSurface`, which Phase 0 owns; overturned if Phase 0 stops mounting the overlay at lg+, in which case the guard is dead and is removed.
 ASSUMPTION: dropping the phone-only reorder is fine, because the Clone's order is the parity target at every width; overturned if the phone shot review wants recency first.
 - **Clone values.** Where the Clone shows a placeholder for data we lack ("Insufficient data", "Unknown", "Select date"), we render "—" (binding, plan Phase 5).
@@ -267,7 +267,7 @@ codex · 2026-10-12. Blind call (B) without the spec, then draft call (D) with i
 - B19 (an empty OF nickname or note brings the local mirror's text back, `FanDrawer.tsx:232-233`) — **partial**: confirmed. Recorded in Out of Scope as a defect in the frozen wiring, not fixed here.
 - B20 (the PATCH response lacks `profile`, so the AI profile blanks after an edit) — **partial**: confirmed (`service/fans.py:1062`, `useFan.ts:39-40`). Recorded in Out of Scope, not fixed here.
 - B21 (Acceptance cannot run: no node_modules, no `scripts/ui-shots.sh`) — **reject**: node_modules is missing only from the sparse review worktree. `ui-shots.sh` is a declared Phase 0 deliverable (Depends on).
-- D1 (Esc on the hidden overlay twin closes the pinned column, even with the lightbox open) — **accept**: confirmed (`ChatSurface.tsx:1175-1202`, `FanDrawer.tsx:301-306`, `:619-620`). Added the "Esc with two instances" decision (a `matchMedia` guard in `FanDrawer`) and a two-instance test.
+- D1 (Esc on the hidden overlay twin closes the pinned column, even with the lightbox open) — **accept**: confirmed (`ChatSurface.tsx`, `FanDrawer.tsx:301-306`, `:619-620`). Added the "Esc with two instances" decision (a `matchMedia` guard in `FanDrawer`) and a two-instance test.
 - D2 (the unlabelled pinned column breaks Phase 0's landmark contract; US29 contradicts ADR 0002) — **accept**: confirmed in the Phase 0 spec (Implementation Decisions › `ChatSurface` and › `FanDrawer`, Contracts › Fan insights). The pinned column is now a complementary landmark named "Fan insights". US29 is now prop compatibility, and Depends on lists both Phase 0 contracts.
 - D3 (all four editors could stop saving and the tests would still pass) — **accept**: tests now assert the `update.mutate` payloads, `relay.put`, and the "OnlyFans rejected…" message.
 - D4 (US32's "no live OnlyFans read" is false; gallery reads run on open) — **accept**: US32 is narrowed to the cached `/users/` read.

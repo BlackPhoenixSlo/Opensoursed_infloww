@@ -28,13 +28,25 @@ Shift schedule and clock decisions — table tests over the pure cores the
                                push the deadline; none open → nothing.
   case_time_tracking_of:       clock_api.time_tracking_of: defaults (off, 10
                                minutes, no role list), literal `true` only.
+  case_write_txn_table:        shifts_api._write_txn (the create / edit write
+                               transaction): N concurrent check-then-insert
+                               writers on one slot store exactly one row, its
+                               after-commit hook runs once, after the COMMIT;
+                               a raise stores nothing and runs no hook (a
+                               scratch table of its own).
+  case_create_race_one_lands:  8 concurrent POST /admin/shifts on one Creator
+                               and slot through the real handler, the overlap
+                               check slowed 50 ms: one 200, seven 409, one Shift
+                               row (red if the check leaves the write's
+                               transaction).
 
 Run: ./venv/bin/python service/tests/test_shifts_decide.py   (exit 0 = pass)
 """
 from __future__ import annotations
 
-import _harness  # MUST be first (binds a temp DB; this file never touches it)
+import _harness  # MUST be first (binds a temp DB; only the last two cases touch it)
 
+import asyncio  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
 
@@ -43,7 +55,7 @@ from clock_api import (  # noqa: E402
     time_tracking_of,
 )
 from db.models import ClockEvent, Employee, Shift  # noqa: E402
-from shifts_api import find_overlaps  # noqa: E402
+from shifts_api import _write_txn, find_overlaps  # noqa: E402
 from shifts_timesheet import _overlap_s, timesheet_rows  # noqa: E402
 
 H = timedelta(hours=1)
@@ -257,4 +269,81 @@ def case_time_tracking_of():
         TimeTracking(True, True, 25, frozenset({"chatter", "owner"}))
 
 
+async def case_write_txn_table():
+    from sqlalchemy import event as sa_event, text
+
+    from db.engine import engine
+
+    async with engine.begin() as conn:
+        await conn.execute(text("CREATE TABLE IF NOT EXISTS slot_probe (slot TEXT NOT NULL)"))
+
+    async def writer(slot: str, hooks: list, fail: bool) -> None:
+        async with _write_txn() as s:
+            held = (await s.execute(text("SELECT COUNT(*) FROM slot_probe WHERE slot = :s"), {"s": slot})).scalar()
+            await asyncio.sleep(0.01)  # the overlap check's own awaits: let the others read too
+            if held == 0:
+                await s.execute(text("INSERT INTO slot_probe (slot) VALUES (:s)"), {"s": slot})
+                sa_event.listen(s.sync_session, "after_commit", lambda _s: hooks.append(slot), once=True)
+            if fail:
+                raise RuntimeError("refused")
+
+    async def stored(slot: str) -> int:
+        async with engine.connect() as conn:
+            return (await conn.execute(text("SELECT COUNT(*) FROM slot_probe WHERE slot = :s"), {"s": slot})).scalar()
+
+    table = [
+        # (writers, fail) → rows stored, hooks run
+        (2, False, 1, 1),
+        (8, False, 1, 1),
+        (1, True, 0, 0),
+    ]
+    for i, (n, fail, want_rows, want_hooks) in enumerate(table):
+        slot, hooks = f"slot-{i}", []
+        await asyncio.gather(*(writer(slot, hooks, fail) for _ in range(n)), return_exceptions=fail)
+        got = (await stored(slot), len(hooks))
+        assert got == (want_rows, want_hooks), (n, fail, got)
+
+
+def case_create_race_one_lands():
+    import httpx
+    from sqlalchemy import func, select
+
+    import _agency_fixtures as fx
+    import server
+    import shifts_api
+    from db.engine import get_session
+
+    ids = fx.seed_two_agencies()  # Agency B: no `sales` blob, so the overlap rule is on
+    real_check = shifts_api._check_overlaps
+
+    async def slow_check(*a, **kw):  # a slow check: the other writers reach theirs before this one writes
+        refused = await real_check(*a, **kw)
+        await asyncio.sleep(0.05)
+        return refused
+
+    async def race() -> tuple[list[int], int]:
+        async with get_session() as s:
+            emp = Employee(display_name="race", is_active=True, created_at=datetime.utcnow(),
+                           user_id=ids["agency_b_owner"])
+            s.add(emp)
+            await s.flush()
+            emp_id = emp.id
+        body = {"start_utc": "2026-11-15T19:00:00Z", "end_utc": "2026-11-15T23:00:00Z", "tz": "UTC",
+                "employee_ids": [emp_id], "account_ids": [ids["creator_b"]]}
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app), base_url="http://testserver",
+                                     cookies=dict(fx.login_owner("agency_b_owner").cookies)) as c:
+            shifts_api._check_overlaps = slow_check
+            try:
+                got = await asyncio.gather(*(c.post("/admin/shifts", json=body) for _ in range(8)))
+            finally:
+                shifts_api._check_overlaps = real_check
+        async with get_session() as s:
+            rows = (await s.execute(select(func.count()).select_from(Shift)
+                                    .where(Shift.start_utc == datetime(2026, 11, 15, 19)))).scalar()
+        return sorted(r.status_code for r in got), rows
+
+    assert asyncio.run(race()) == ([200] + [409] * 7, 1)
+
+
+_harness.bootstrap()
 _harness.run()

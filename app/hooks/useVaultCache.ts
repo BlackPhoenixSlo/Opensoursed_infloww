@@ -22,6 +22,7 @@ import { relay, type VaultMedia } from "@/lib/relay";
 import { type FanId } from "@/lib/fanId";
 import { proxyImage } from "@/lib/mediaUrl";
 import { flushPersistedCache } from "@/lib/rqPersister";
+import { errText } from "@/lib/errText";
 
 // Lazy-load in small chunks on scroll (not all at once — 244 images loading
 // simultaneously is what made the grid slow). Infinite-scroll fetches the next
@@ -857,7 +858,7 @@ export async function hideDuplicates(
     } catch (e) {
       if (i === 0) throw e;
       // A later batch that fails stops as one OF half refused does (below): none of it hidden.
-      res = { hidden: 0, hidden_ids: [], refused: {}, of_error: e instanceof Error ? e.message : String(e), not_hidden: batch };
+      res = { hidden: 0, hidden_ids: [], refused: {}, of_error: errText(e), not_hidden: batch };
     }
     agg.hidden += res.hidden ?? 0;
     agg.hidden_ids.push(...(res.hidden_ids ?? []));

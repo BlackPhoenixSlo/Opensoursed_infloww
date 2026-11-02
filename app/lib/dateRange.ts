@@ -47,8 +47,8 @@ export function presetRange(p: FixedRangePreset, timeZone?: string | null): [str
   return [daysAgoISO(PRESET_DAYS[p] - 1, timeZone), todayISO(timeZone)];
 }
 
-/** The day `n` days after YYYY-MM-DD `day`. */
-function shiftDay(day: string, n: number): string {
+/** The YYYY-MM-DD day `n` days after `day` (negative `n` = before), in UTC so no DST shift moves it. */
+export function addDayStr(day: string, n: number): string {
   const [y, m, d] = day.split("-").map(Number);
   return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
 }
@@ -65,7 +65,7 @@ export function shiftYears(day: string, n: number): string {
  *  report time zone; the browser's when null or absent). */
 export function dateBounds(timeZone?: string | null): [string, string] {
   const today = todayISO(timeZone);
-  return [shiftYears(today, -1), shiftDay(today, 2)];
+  return [shiftYears(today, -1), addDayStr(today, 2)];
 }
 
 /** How far `timeZone`'s wall clock (the browser's when null or absent) is

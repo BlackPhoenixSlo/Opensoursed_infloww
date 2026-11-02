@@ -15,8 +15,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Sizes per --scale. Seeders read only the keys they own; add keys as you need them.
-SCALES: dict[str, dict[str, float]] = {
+# Sizes per --scale. Seeders read the base keys; a flow's scenario reads its own FLOW_SIZES keys.
+SCALES: dict[str, dict[str, int | float]] = {
     "small":  {"creators": 3,  "fans_per_creator": 50,   "thread_frac": 0.6, "history_msgs": 4,
                "big_fans_per_creator": 2_000, "fm_walkers_per_creator": 6,
                "paid_captions_per_owner": 4, "of_chats_per_creator": 50,
@@ -30,6 +30,56 @@ SCALES: dict[str, dict[str, float]] = {
                "paid_captions_per_owner": 8, "of_chats_per_creator": 300,
                "caption_import_rows": 5_000},
 }
+
+# A flow's own sizes, key: (small, medium, huge). Read by that scenario; its CLI knob overrides.
+# Key prefix rule: slop/README.md "Scales".
+FLOW_SIZES: dict[str, tuple[int, int, int]] = {
+    # priority-mass-5k
+    "priority_mass_roster_a": (400, 7_000, 7_000),
+    # welcome-burst
+    "welcome_burst_new": (8, 20, 40), "welcome_burst_welcomed": (4, 8, 12),
+    "welcome_burst_established": (4, 8, 12),
+    # smart-lists-50k
+    "smart_lists_storm_extra": (5, 20, 20), "smart_lists_whale_fans": (20, 100, 500),
+    # inbox-unread-fan-burst
+    "inbox_unread_per_fan": (3, 5, 10),
+    # dm-flood-relay-crash
+    "dm_flood_per_fan": (10, 10, 20),
+    # shifts-clock-crowd
+    "shifts_clock_employees": (50, 200, 400), "shifts_clock_series": (40, 200, 400),
+    "shifts_clock_open_n": (3, 10, 20), "shifts_clock_race_rounds": (4, 8, 12),
+    "shifts_clock_race_n": (8, 16, 16), "shifts_clock_storm": (4, 4, 4),
+    "shifts_clock_readers": (3, 6, 8), "shifts_clock_edits": (8, 16, 16),
+    # vault-pro-20k; huge 20_000 = seed/vault_items.COLLECT_CAP (a literal: importing it is circular)
+    "vault_pro_items": (2_000, 20_000, 20_000),
+    # s4s-requests-race
+    "s4s_requests_agencies": (5, 10, 10), "s4s_requests_creators_per_agency": (3, 5, 8),
+    "s4s_requests_blocks": (4, 12, 20), "s4s_requests_race_groups": (16, 80, 150),
+    "s4s_requests_racers": (4, 5, 6), "s4s_requests_limit_targets": (4, 12, 20),
+    "s4s_requests_bookings": (6, 20, 30), "s4s_requests_burst": (8, 12, 12),
+    "s4s_requests_read_rounds": (3, 4, 5),
+    # notifications-feed-volume
+    "notifications_feed_rows": (1_000, 10_000, 50_000),
+    # mass-placeholder-echo
+    "mass_placeholder_per_run": (10, 60, 150), "mass_placeholder_stale": (4, 20, 40),
+    "mass_placeholder_both": (2, 10, 20),
+    # tracking-links-clicks
+    "tracking_links_links": (4, 10, 20), "tracking_links_campaigns": (6, 12, 24),
+    "tracking_links_claimed": (30, 150, 1_000), "tracking_links_clicks": (600, 8_000, 30_000),
+    # sales-attribution-tips-ppv
+    "sales_attribution_episodes": (30, 120, 300),
+    # vault-describe-sweep
+    "vault_describe_items": (200, 2_000, 20_000),
+    # runtime-switches
+    "runtime_switches_dm_fans": (5, 20, 40), "runtime_switches_burst_fans": (10, 40, 80),
+    # ledger-reports-volume
+    "ledger_reports_rows": (10_000, 200_000, 1_000_000), "ledger_reports_runs": (4, 8, 12),
+    "ledger_reports_recipients": (40, 300, 1_000),
+    # state-reducers
+    "state_reducers_unsend_copies": (3, 8, 8),
+}
+for _i, _scale in enumerate(("small", "medium", "huge")):
+    SCALES[_scale].update({k: v[_i] for k, v in FLOW_SIZES.items()})
 
 
 @dataclass
@@ -46,7 +96,7 @@ class World:
     user_prefix: str = "slop"         # usernames seed/agency.py registers
 
     @property
-    def size(self) -> dict[str, float]:
+    def size(self) -> dict[str, int | float]:
         return SCALES[self.scale]
 
     def rng(self, name: str) -> random.Random:

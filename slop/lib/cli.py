@@ -230,11 +230,14 @@ async def _fleet_resources(report: Report, mons: dict[str, ProcMon], mod, out: P
     stages = sorted({s for m in mons.values() for s in m.stages()}) or ["run"]
     budget = getattr(mod, "CPU_BUDGET_PCT", None)
     if budget is not None:
+        name = f"relay process CPU mean <= {budget}% of one core in every stage"
         per = {f"{sid} {s}": summs[sid][s]["cpu_mean_pct"] for sid in mons for s in stages if s in summs[sid]}
-        report.check(f"relay process CPU mean <= {budget}% of one core in every stage",
-                     bool(per) and all(v is not None and v <= budget for v in per.values()), budget=True,
-                     budget_pct=budget, max_per_stage={s: max((summs[sid][s]["cpu_mean_pct"] or 0)
-                                                             for sid in mons if s in summs[sid]) for s in stages})
+        if not per:
+            report.skip(name, "no relay CPU samples (the scenario ended before procmon's first interval)")
+        else:
+            report.check(name, all(v is not None and v <= budget for v in per.values()), budget=True,
+                         budget_pct=budget, max_per_stage={s: max((summs[sid][s]["cpu_mean_pct"] or 0)
+                                                                 for sid in mons if s in summs[sid]) for s in stages})
     gate = getattr(mod, "POOL_GATE", None)
     if gate is not None:
         name = (f"DB pool gate (decision 5): {gate['spills']} spills and pool-wait p95 < {gate['wait_p95_ms']}ms, "
@@ -274,12 +277,15 @@ async def _resources(report: Report, mon: ProcMon, mod, out: Path) -> None:
     if budget is not None:
         # The stage mean, not 1 s peaks: executor threads run SQLite outside the GIL,
         # so single seconds pass 100% in a healthy run. The loop thread rides along.
+        name = f"relay process CPU mean <= {budget}% of one core in every stage"
         per = {s: summ[s]["cpu_mean_pct"] for s in stages if s in summ}
-        report.check(f"relay process CPU mean <= {budget}% of one core in every stage",
-                     bool(per) and all(v is not None and v <= budget for v in per.values()), budget=True,
-                     budget_pct=budget, per_stage=per,
-                     p95_pct={s: summ[s]["cpu_p95_pct"] for s in stages if s in summ},
-                     loop_mean_pct={s: summ[s]["loop_mean_pct"] for s in stages if s in summ})
+        if not per:
+            report.skip(name, "no relay CPU samples (the scenario ended before procmon's first interval)")
+        else:
+            report.check(name, all(v is not None and v <= budget for v in per.values()), budget=True,
+                         budget_pct=budget, per_stage=per,
+                         p95_pct={s: summ[s]["cpu_p95_pct"] for s in stages if s in summ},
+                         loop_mean_pct={s: summ[s]["loop_mean_pct"] for s in stages if s in summ})
     prof = await mon.fetch_profile(out)
     if mon.profile_errors:
         report.metric("profile_errors", mon.profile_errors)

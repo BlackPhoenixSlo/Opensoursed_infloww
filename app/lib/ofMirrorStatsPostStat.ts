@@ -16,6 +16,7 @@ import { at, elOf, isObj, num } from "@/lib/ofMirrorStatsDom";
 import { openUsers, readsCtx, usersLink, type UserListKind } from "@/lib/ofMirrorStatsKit";
 import { NOT_YET, openModal } from "@/lib/ofMirrorWrites";
 import { relay, RelayError } from "@/lib/relay";
+import { errText } from "@/lib/errText";
 
 export const POST_STATS_PROBE = "/api/of/v2/posts/stats";
 /**
@@ -187,7 +188,7 @@ export function openPostStats(doc: Document, postId: unknown, tz: string | null,
       if (modal.isConnected) fillPostStats(doc, body, postId, stats, tz, isStream);
     })
     .catch((e: unknown) => {
-      body.replaceChildren(elOf(doc)("div", "empty-message", `Couldn't load the statistics: ${e instanceof Error ? e.message : String(e)}`));
+      body.replaceChildren(elOf(doc)("div", "empty-message", `Couldn't load the statistics: ${errText(e)}`));
     });
 }
 

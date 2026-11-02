@@ -60,7 +60,6 @@ DM_PER_MIN = 600
 EVERY_S = 300
 AGE_S = 120   # the rules' last job moved this far back: past the 60 s poke floor, inside EVERY_S
 TAB_RAMP_S = 10.0
-SIZES = {"small": (8, 4, 4), "medium": (20, 8, 8), "huge": (40, 12, 12)}   # new, welcomed, established
 BURST = (False, True)   # the composed burst, per bubble "is the question": the seeded brain has no
                         # activity line and the rule no GIF, so one greeting, then the question
 
@@ -113,9 +112,9 @@ def _max_run(con) -> int:
 
 async def run(ctx) -> None:
     w = await ctx.build(PROFILE)
-    new_n, wel_n, est_n = SIZES.get(ctx.scale, SIZES["small"])
-    seed = welcome_burst.seed(w, w.data["fans"], w.data["threads"], new=ctx.param("new", new_n),
-                              welcomed=ctx.param("welcomed", wel_n), established=ctx.param("established", est_n),
+    seed = welcome_burst.seed(w, w.data["fans"], w.data["threads"], new=ctx.param("new", w.size["welcome_burst_new"]),
+                              welcomed=ctx.param("welcomed", w.size["welcome_burst_welcomed"]),
+                              established=ctx.param("established", w.size["welcome_burst_established"]),
                               of_on_frac=ctx.param("of_on_frac", 0.3))
     aids = [c["id"] for c in w.data["creators"]]
     of_on = set(seed["of_welcome_on"])

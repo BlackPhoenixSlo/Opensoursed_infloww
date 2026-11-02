@@ -27,6 +27,7 @@ import { useRoster } from "@/hooks/useRoster";
 import { IfButton, IfInput, IfSelect, type IfOption } from "@/components/ui/infloww";
 import type { MessageKind, PaidStatus, SenderType, UsePaidMessagesParams } from "@/hooks/usePaidMessages";
 import type { FanId } from "@/lib/fanId";
+import { dollarsToCents as toCents } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 /** What Search hands up: the paid-messages params the form owns. */
@@ -77,12 +78,6 @@ const SCRIPT: IfOption<"all" | "with" | "without">[] = [
   { value: "with", label: "With Script" },
   { value: "without", label: "No Script" },
 ];
-
-/** A typed dollar amount as cents; blank or not a non-negative number = no bound. */
-function toCents(raw: string): number | null {
-  const n = Number(raw);
-  return raw.trim() === "" || !Number.isFinite(n) || n < 0 ? null : Math.round(n * 100);
-}
 
 /** The Sent to box's initial text for a `?fan_id=` deep link. */
 export function sentToFor(fanId: FanId | null | undefined): string {

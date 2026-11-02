@@ -17,6 +17,7 @@ import {
   gifSearch, gifTrending,
   type GiphyItem, type GiphyResponse,
 } from "@/lib/relay";
+import { errText } from "@/lib/errText";
 import { INITIAL_GIFS, PAGE_SIZE, gifReducer } from "./gifPickerState";
 
 export interface PickedGif {
@@ -87,7 +88,7 @@ export function GifPickerStrip({
     p.then((resp) => {
       if (!ctrl.signal.aborted) dispatch({ type: "loaded", resp, offset });
     }).catch((e: unknown) => {
-      if (!ctrl.signal.aborted) dispatch({ type: "failed", message: e instanceof Error ? e.message : String(e), offset });
+      if (!ctrl.signal.aborted) dispatch({ type: "failed", message: errText(e), offset });
     });
     return ctrl;
   }, [debouncedSearch, accountId]);

@@ -6,6 +6,7 @@ import { relay } from "@/lib/relay";
 import { useKeyDraft } from "@/hooks/useKeyDraft";
 import { LABELS, HELP, wrongFieldWarning } from "@/components/setup/providerFields";
 import { Skeleton } from "@/components/ui/Skeleton";
+import { errText } from "@/lib/errText";
 
 /**
  * AgencyKeysForm — set an agency's LLM keys FOR them.
@@ -41,7 +42,7 @@ export function AgencyKeysForm(
       );
       setProviders(data.providers);
     } catch (err) {
-      setLoadError(err instanceof Error ? err.message : String(err));
+      setLoadError(errText(err));
     }
   }, [user.id]);
 

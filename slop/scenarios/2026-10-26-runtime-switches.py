@@ -342,8 +342,8 @@ async def run(ctx) -> None:
     w = await ctx.build(PROFILE)
     aid = w.data["creators"][0]["id"]
     _seed(w, aid)
-    k = ctx.param("dm_fans", {"small": 5, "medium": 20, "huge": 40}[ctx.scale])
-    nb = ctx.param("burst_fans", {"small": 10, "medium": 40, "huge": 80}[ctx.scale])
+    k = ctx.param("dm_fans", w.size["runtime_switches_dm_fans"])
+    nb = ctx.param("burst_fans", w.size["runtime_switches_burst_fans"])
     groups = _groups(ctx, _free_fans(w, aid), [k, k, nb, 4, 2])
     if groups is None:
         return

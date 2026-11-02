@@ -11,6 +11,7 @@ and its rules are in `README.md`; this file is only what this flow adds. Its fil
 | Path | Role |
 |---|---|
 | `lib/attribution_relay` | OF's `/payouts/transactions` (what `transaction_ingest.run_one_tick` pages) read from `<tmp>/of-ledger.jsonl`, appended while the run goes on; `GET /__slop/ledger` counts the pages served. No file: the read fails as before |
+| `lib/ledger_faults` | The ledger ingest's check `LEDGER` (one write transaction per ledger page with news, none for a quiet re-poll; each fan's `lifetime_spend_cents` == seeded spend + its revenue rows) and its faults `ledger-per-row-txns` (`_write_page` one row per transaction) and `ledger-delta-separate-txn` (the first lifetime delta lost), both patching `transaction_ingest` and targeting `LEDGER` |
 | `seed/sales_touches` | `seed()`: outbound rows in the past as the product writes them (a human 1:1 send, an Automation send, a mass send with its `mass_runs` row); `employees()`: each chatter's mirror Employee (read, or written when missing) and the Automation sentinel (written as migration 0011 does when the DB lacks it) |
 
 ## Scenarios

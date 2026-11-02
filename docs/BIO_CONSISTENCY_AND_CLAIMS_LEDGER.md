@@ -60,7 +60,7 @@ persona keeps new threads right; the ledger keeps existing threads coherent.
 
 No new schema, no new LLM calls, no per-fan state.
 
-1. **`BIO_CONSISTENCY_GUARDRAIL`** (`_common.py`), wired unconditionally into all
+1. **`BIO_CONSISTENCY_GUARDRAIL`** (`automations/_prompt_rules.py`), wired unconditionally into all
    five chat builders (`of_ai_chat`, `ai_chatter`, `autoreply`, `deep_convo` ×2)
    beside the two existing guardrails. Note what it does **not** say: it does not
    forbid inventing. A persona can never cover every question, so improvising is
@@ -192,7 +192,7 @@ layer most likely to actually move the number.
 
 **Do not run an LLM check on every reply.** Most replies say nothing about her.
 Gate it on a deterministic prefilter — a new `mentions_self_claim(text)` in
-`_common.py`, matching first-person + biographical keywords (age / born / grew up /
+`automations/_persona.py`, matching first-person + biographical keywords (age / born / grew up /
 live / from / job / work / boyfriend / family / city / years old, plus the Spanish
 equivalents, reusing the `norm_text` discipline). Expected fire rate: low single-digit
 percent of replies, since bio-interrogation is 10% of threads and only some turns

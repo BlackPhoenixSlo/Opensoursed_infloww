@@ -31,6 +31,7 @@ import {
   type DupeCluster,
   type DupeMember,
 } from "@/hooks/useVaultCache";
+import { errText } from "@/lib/errText";
 
 import {
   allOff,
@@ -171,7 +172,7 @@ export default function VaultDuplicatesModal({
       });
       dispatch({ type: "hideOk", result: res });
     } catch (e) {
-      dispatch({ type: "hideFail", msg: e instanceof Error ? e.message : String(e) });
+      dispatch({ type: "hideFail", msg: errText(e) });
       // eslint-disable-next-line no-console
       console.error("hide duplicates failed", e);
     } finally {

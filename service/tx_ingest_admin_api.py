@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -26,6 +26,11 @@ from pydantic import BaseModel, Field
 from auth import assert_account_owned
 from auth import get_request_user as _get_request_user
 from chatters import get_request_chatter as _get_request_chatter
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from db.models import TransactionScanHistory
 
 log = logging.getLogger("of-relay.tx_ingest_admin_api")
 
@@ -146,25 +151,33 @@ class _TxRunBody(BaseModel):
     mode: str = Field("refresh", pattern="^(refresh|backfill)$")
 
 
+async def _scan_history_or_404(
+    s: AsyncSession, account_id: str,
+) -> TransactionScanHistory | None:
+    """404 unless `account_id` is a known account; else its
+    `transaction_scan_history` row (None if it has none yet)."""
+    from db.models import Account, TransactionScanHistory
+    from sqlalchemy import select
+    acct = (await s.execute(
+        select(Account.id).where(Account.id == account_id)
+    )).first()
+    if acct is None:
+        raise HTTPException(status_code=404, detail="account not found")
+    return (await s.execute(
+        select(TransactionScanHistory)
+        .where(TransactionScanHistory.account_id == account_id)
+    )).scalar_one_or_none()
+
+
 @router.post("/admin/ingest/transactions/{account_id}/run", status_code=202)
 async def admin_ingest_tx_run(
     account_id: str,
     body: _TxRunBody | None = Body(None),
 ) -> dict[str, Any]:
     from db.engine import get_session
-    from db.models import Account, TransactionScanHistory
-    from sqlalchemy import select
     mode = (body.mode if body else "refresh") or "refresh"
     async with get_session() as s:
-        acct = (await s.execute(
-            select(Account.id).where(Account.id == account_id)
-        )).first()
-        if acct is None:
-            raise HTTPException(status_code=404, detail="account not found")
-        h = (await s.execute(
-            select(TransactionScanHistory)
-            .where(TransactionScanHistory.account_id == account_id)
-        )).scalar_one_or_none()
+        h = await _scan_history_or_404(s, account_id)
         if h is not None and h.current_status in ("backfilling", "refreshing"):
             # Stale-age escape valve. last_scan_at is stamped at tick
             # START (transaction_ingest.run_one_tick), so its age ==
@@ -244,19 +257,10 @@ async def admin_ingest_tx_pause(
     body: _TxPauseBody = Body(...),
 ) -> dict[str, Any]:
     from db.engine import get_session
-    from db.models import Account, TransactionScanHistory
-    from sqlalchemy import select
+    from db.models import TransactionScanHistory
     paused_until = datetime.utcnow() + timedelta(hours=body.duration_hours)
     async with get_session() as s:
-        acct = (await s.execute(
-            select(Account.id).where(Account.id == account_id)
-        )).first()
-        if acct is None:
-            raise HTTPException(status_code=404, detail="account not found")
-        h = (await s.execute(
-            select(TransactionScanHistory)
-            .where(TransactionScanHistory.account_id == account_id)
-        )).scalar_one_or_none()
+        h = await _scan_history_or_404(s, account_id)
         if h is None:
             h = TransactionScanHistory(account_id=account_id)
             s.add(h)
@@ -271,18 +275,8 @@ async def admin_ingest_tx_resume(account_id: str) -> dict[str, Any]:
     on the next tick. Idempotent — calling on an already-unpaused row
     is a no-op."""
     from db.engine import get_session
-    from db.models import Account, TransactionScanHistory
-    from sqlalchemy import select
     async with get_session() as s:
-        acct = (await s.execute(
-            select(Account.id).where(Account.id == account_id)
-        )).first()
-        if acct is None:
-            raise HTTPException(status_code=404, detail="account not found")
-        h = (await s.execute(
-            select(TransactionScanHistory)
-            .where(TransactionScanHistory.account_id == account_id)
-        )).scalar_one_or_none()
+        h = await _scan_history_or_404(s, account_id)
         if h is not None:
             h.paused_until = None
             if h.current_status == "paused":

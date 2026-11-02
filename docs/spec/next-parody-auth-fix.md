@@ -57,7 +57,7 @@ Two complaints:
 - Chatters sign up only through an owner invite at `/chatter-login?token=…`; they can sign in at
   `/chatter-login`, and `/login` also falls back to chatter login.
 - Owner username: 3-32 chars, `[a-zA-Z0-9_.-]`, lowercased; reserved admin, root, system, chatterly,
-  founder (`service/auth.py:71`). Password 6+. No email, no reset flow.
+  founder (`service/auth.py` `RESERVED_USERNAMES`). Password 6+. No email, no reset flow.
 - Before writing any copy about "models are not shared", confirm it in code (how creators/OF accounts
   are scoped to an owner) and in README.md / docs/routes.md. The voice guide only allows Inflowwww
   claims that README.md or docs/routes.md back; add a line to docs/routes.md if needed.

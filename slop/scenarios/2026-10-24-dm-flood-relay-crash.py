@@ -49,7 +49,7 @@ P95_MS = {"POST /admin/messages/:id/:id/rescrape-now": 2000}
 
 async def run(ctx) -> None:
     w = await ctx.build(PROFILE)
-    per_fan = ctx.param("per_fan", {"small": 10, "medium": 10, "huge": 20}[ctx.scale])
+    per_fan = ctx.param("per_fan", w.size["dm_flood_per_fan"])
     rate = ctx.param("rate", 5.0)  # frames/s per Creator
     creators, fans = w.data["creators"], w.data["fans"]
     k = min(RECENT_MAX, math.ceil(ctx.users / len(creators)))

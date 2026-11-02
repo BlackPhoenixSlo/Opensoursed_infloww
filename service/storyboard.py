@@ -459,6 +459,17 @@ def _ensure_storyboard_frame(
         lock.release()
 
 
+def _check_cdn_url(u: str) -> None:
+    """400 unless `u` is an http(s) URL on an allowed OF CDN host."""
+    from urllib.parse import urlparse as _urlparse
+    parsed = _urlparse(u)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail="bad scheme")
+    host = (parsed.hostname or "").lower()
+    if not any(host.endswith(s) for s in _ALLOWED_CDN_SUFFIXES):
+        raise HTTPException(status_code=400, detail="host not allowed")
+
+
 @router.get("/img/scrub")
 def proxy_image_scrub(
     request: Request,
@@ -469,13 +480,7 @@ def proxy_image_scrub(
 ):
     """Returns the i-th frame of the 12-frame storyboard for video `u`.
     First call builds; subsequent calls serve from disk."""
-    from urllib.parse import urlparse as _urlparse
-    parsed = _urlparse(u)
-    if parsed.scheme not in ("http", "https"):
-        raise HTTPException(status_code=400, detail="bad scheme")
-    host = (parsed.hostname or "").lower()
-    if not any(host.endswith(s) for s in _ALLOWED_CDN_SUFFIXES):
-        raise HTTPException(status_code=400, detail="host not allowed")
+    _check_cdn_url(u)
 
     h = _video_path_hash(u)
     ok = _ensure_storyboard_frame(request, u, h, i, hint_duration=dur, session_id=sid)
@@ -521,13 +526,7 @@ def cancel_storyboard_build(
 
     Browser fires this on hover end (useEffect cleanup in VaultPicker).
     Fire-and-forget; the browser doesn't wait for or read the response."""
-    from urllib.parse import urlparse as _urlparse
-    parsed = _urlparse(u)
-    if parsed.scheme not in ("http", "https"):
-        raise HTTPException(status_code=400, detail="bad scheme")
-    host = (parsed.hostname or "").lower()
-    if not any(host.endswith(s) for s in _ALLOWED_CDN_SUFFIXES):
-        raise HTTPException(status_code=400, detail="host not allowed")
+    _check_cdn_url(u)
     if not sid:
         return {"ok": True, "ignored": "no-sid"}
     found = _storyboard_signal_cancel(sid)

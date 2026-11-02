@@ -35,6 +35,12 @@ export function fmtCentsBlankZero(c: number | null | undefined): string {
   return fmtCents(c);
 }
 
+/** A typed dollar amount as cents; blank or not a non-negative number = null. */
+export function dollarsToCents(raw: string): number | null {
+  const n = Number(raw);
+  return raw.trim() === "" || !Number.isFinite(n) || n < 0 ? null : Math.round(n * 100);
+}
+
 /** Cents → a Fan's Total spend at a glance (docs/spec/phase-02-fan-list-pane.md,
  *  Rows): whole dollars with commas, "$45" / "$9,999", and above $9,999 shortened
  *  to "k" with at most one decimal, "$10k" / "$12.5k". */

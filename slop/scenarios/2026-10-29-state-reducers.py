@@ -112,7 +112,8 @@ clock-out on Creator 0, as `/clock-in` + `/clock-out` would leave it).
    hold them with the other knobs kept (autoreply-get.json). Screenshots autoreply-edited-trigger,
    autoreply-reloaded-settled. Then Delay typed while the settings PUT (of another Delay) is held: once that
    save settled (its response, the GET its onSuccess refetches, Save enabled again: slop/lib/hold.py) the field keeps the edit
-   and "Saved" is off; the next Save shows it and stores the Delay. Screenshots autoreply-delay-during-save,
+   and "Saved" is off (the Save row reads Save, enabled, no note beside it; after the next Save the same probe reads
+   "Saved"); the next Save shows it and stores the Delay. Screenshots autoreply-delay-during-save,
    autoreply-delay-after-save. Then a box (Human style) toggled while another's style PUT is held stays
    toggled once that save settled (a wipe would be its onSuccess, `dropSaved`), "Saved" stays off, and the
    next Save PUTs and stores it. Screenshots autoreply-style-during-save, autoreply-style-landed,
@@ -219,9 +220,11 @@ clock-out on Creator 0, as `/clock-in` + `/clock-out` would leave it).
    "slop Night"; on All scripts the seeded FREE template's Delete is held at the browser's wire, Night's Rename opens,
    the Delete goes on to the relay and its refetch lands under the open prompt (Night: 1 script); OK "slop Late" ->
    one relabel POST {tag, from Night, to Late} 200, A carries Late, not Night (route, saved_replies row). On "slop
-   Keep": B ticked, Remove from tag -> one relabel POST 200, B leaves the tag; the owner's client puts B back; A
-   ticked, Remove from tag answered 500 at the browser's wire -> A stays listed, ticked, "Selected 1", the error
-   shown, its row keeps Keep; C's row Remove (200) refetches: B is back, unticked. `scripts-relabels.json`.
+   Keep": B ticked, Remove from tag -> its relabel POST held at the browser's wire: the bar stays at "Selected 1",
+   Add to tag and Remove from tag disabled, one POST (screenshot scripts-remove-busy); released -> 200, B leaves the
+   tag; the owner's client puts B back; A ticked, Remove from tag answered 500 at the browser's wire -> A stays
+   listed, ticked, "Selected 1", the error shown, its row keeps Keep; C's row Remove (200) refetches: B is back,
+   unticked. `scripts-relabels.json`.
    Screenshots scripts-rename-prompt-refetched (trigger), scripts-renamed, scripts-remove-failed,
    scripts-remove-settled.
 20. Session (app/contexts/userSessionReducer.ts), last since it signs the page out: on Smart
@@ -386,7 +389,8 @@ checks), `premade-remove-drops-wrong-row` (remove drops the next row: the rows, 
 `redescribe-overwrites-edit` (the describe replaces typed text), `picker-shimmer-stuck` (a failed frame 0
 keeps the shimmer),
 `scripts-remove-unchecks-on-failure` (a failed
-Remove from tag drops the ticks), `scripts-rename-stale-prompt` (the rename prompt acts on the page as it was when
+Remove from tag drops the ticks, and the selection bar is gone while a remove is in flight: the failed-remove and
+bar-busy checks), `scripts-rename-stale-prompt` (the rename prompt acts on the page as it was when
 it opened),
 `vault-order-not-saved-for-reload` (a rail write
 does not save the query snapshot at once: only the 1 s reload check),
@@ -429,9 +433,9 @@ from slop.lib.reducers_faults import (ADMIN_EMPTY, ADMIN_GATE, ADMIN_ROSTER_FAIL
                                         MASS_PARTIAL, MASS_RETRY, MASS_VOLUME, NUDGE_KEEP, NUDGE_STALE, NUDGE_STORED,
                                         NUDGE_SWITCH, PM_ROW, PM_SWITCH, POST_ALL, POST_BODIES, POST_LOCKED,
                                         POST_PRICED, POST_RETRY, PREMADE_PAYLOAD, PREMADE_ROWS, PREMADE_STORED,
-                                        SCRIPTS_REMOVE_FAIL, SCRIPTS_REMOVE_OK, SCRIPTS_RENAME, SESSION_401_OUT,
-                                        SESSION_BOOT_OUT, SESSION_NET_KEEP, SMARTLIST_GATE, SMARTLIST_SAVED,
-                                        SMARTLIST_STALE, VAULT_CANCEL, VAULT_DRAG, VAULT_QUICK_RELOAD,
+                                        SCRIPTS_BAR_BUSY, SCRIPTS_REMOVE_FAIL, SCRIPTS_REMOVE_OK, SCRIPTS_RENAME,
+                                        SESSION_401_OUT, SESSION_BOOT_OUT, SESSION_NET_KEEP, SMARTLIST_GATE,
+                                        SMARTLIST_SAVED, SMARTLIST_STALE, VAULT_CANCEL, VAULT_DRAG, VAULT_QUICK_RELOAD,
                                         VAULT_RELOAD, VAULT_SORT, VAULT_SORT_LABEL, VAULT_MIRROR_SORT_LABEL, PICKER_SHIMMER,
                                         REDESCRIBE_KEEPS, REDESCRIBE_SHOWS, VM_PRICE, VM_TICKS)
 from slop.lib.nudge_faults import NUDGE_ABA
@@ -484,7 +488,7 @@ SECTIONS = {
     "vaultmanage": (VM_TICKS, VM_PRICE),
     "redescribe": (REDESCRIBE_SHOWS, REDESCRIBE_KEEPS),
     "shimmer": (PICKER_SHIMMER,),
-    "scripts": (SCRIPTS_RENAME, SCRIPTS_REMOVE_OK, SCRIPTS_REMOVE_FAIL),
+    "scripts": (SCRIPTS_RENAME, SCRIPTS_BAR_BUSY, SCRIPTS_REMOVE_OK, SCRIPTS_REMOVE_FAIL),
     "session": (SESSION_NET_KEEP, SESSION_401_OUT, SESSION_BOOT_OUT),
 }
 # Reducer fixes this scenario cannot drive on the real path; each reports SKIP with why.
@@ -721,6 +725,18 @@ async def _wait_value(loc, want: str, timeout_ms: int = 5_000, attr: str | None 
         await asyncio.sleep(0.1)
         v = await read()
     return v
+
+
+# A form's SaveRow (automationPage.tsx) as drawn: whether Save is disabled, and the notes beside it ("Saved", a warn,
+# the failed save's message). Unsaved edits after a landed save: Save enabled, no note at all; the broken state is the
+# same row with "Saved" beside it.
+SAVE_ROW_UNSAVED = {"disabled": False, "notes": []}
+SAVE_ROW_SAVED = {"disabled": False, "notes": ["Saved"]}
+
+
+async def _save_row(save) -> dict:
+    return await save.evaluate("(b) => ({ disabled: b.disabled, notes: [...b.parentElement.children]"
+                               ".filter((x) => x !== b).map((x) => x.textContent.trim()) })")
 
 
 async def _painted(page) -> None:
@@ -988,7 +1004,7 @@ async def _mass_unsend(ctx, page, chk) -> None:
     creators = [c["id"] for c in ctx.world.data["creators"]]
     picked, other = creators[0], creators[1]
     nick = ctx.world.data["creators"][0]["nickname"]
-    copies = 3 if ctx.scale == "small" else 8
+    copies = ctx.param("unsend_copies", ctx.world.size["state_reducers_unsend_copies"])
     seeded = mass_broadcast_cache.seed(ctx.world, [picked, other], copies)
     # The spec (massUnsendRules.ts `isFreeTextOld` + `isActionable`, in the chip's scope), from the seed.
     want = sorted([a, q] for (a, q), r in seeded.items()
@@ -2781,9 +2797,24 @@ async def _bell(ctx, page, chk) -> None:
 SCRIPT_KEEP, SCRIPT_NIGHT, SCRIPT_LATE = "slop Keep", "slop Night", "slop Late"
 SCRIPT_TITLES = ("slop scr A", "slop scr B", "slop scr C")
 RELABEL = "/admin/saved-replies/relabel"
-SELECTION_SETTLED = """() => { const bar = document.querySelector('[role=toolbar][aria-label=Selection]');
-  const b = bar && [...bar.querySelectorAll('button')].find((x) => x.textContent.includes('Remove from tag'));
-  return !bar || (b && !b.disabled); }"""
+# The selection bar as drawn: its count and each action button's disabled flag (null: no bar). The one probe of
+# the bar; the predicates below judge its result.
+SELECTION_BAR = """() => { const bar = document.querySelector('[role=toolbar][aria-label=Selection]');
+  if (!bar) return null;
+  const btns = [...bar.querySelectorAll('button')].filter((x) => x.getAttribute('aria-label') !== 'Clear selection');
+  return { selected: (bar.textContent.match(/Selected\\s*(\\d+)/) || [])[1] || null,
+           disabled: Object.fromEntries(btns.map((x) => [x.textContent.trim(), x.disabled])) }; }"""
+BAR_BUSY = "(bar) => !!bar && Object.values(bar.disabled).some(Boolean)"
+BAR_SETTLED = "(bar) => !bar || bar.disabled['Remove from tag'] === false"  # remove no longer busy, or no bar left
+
+
+async def _selection_bar(page, until: str, timeout_ms: int) -> dict | None:
+    """SELECTION_BAR once `until(bar)` holds (or the wait ran out: the caller judges what it reads)."""
+    try:
+        await page.wait_for_function(f"() => ({until})(({SELECTION_BAR})())", timeout=timeout_ms)
+    except PwTimeout:
+        pass
+    return await page.evaluate(SELECTION_BAR)
 
 
 def _script_tags(ctx, ids: list[int]) -> dict[int, list[str]]:
@@ -2913,8 +2944,19 @@ async def _scripts_steps(ctx, page, chk, aid: str, ids: tuple, relabels: list, h
     toolbar = page.get_by_role("toolbar", name="Selection")
     await box(b_t).check()
     n1 = len(relabels)
-    await toolbar.get_by_role("button", name="Remove from tag").click(timeout=10_000)  # confirm accepted
-    await row(b_t).first.wait_for(state="detached", timeout=15_000)
+    # B's relabel POST held at the browser's wire: while it is out the bar must stay, every action disabled.
+    async with held(page, lambda u: urlsplit(u).path == RELABEL, "POST") as rm_hold:
+        await toolbar.get_by_role("button", name="Remove from tag").click(timeout=10_000)  # confirm accepted
+        await asyncio.wait_for(rm_hold.seen.wait(), 15)
+        # the busy render lands a beat after the fetch left; the POST is held, so busy cannot end meanwhile
+        busy_bar = await _selection_bar(page, BAR_BUSY, 5_000)
+        await _painted(page)
+        await ui.shot(ctx, page, "scripts-remove-busy")
+        rm_hold.release.set()
+        await row(b_t).first.wait_for(state="detached", timeout=15_000)
+    chk(SCRIPTS_BAR_BUSY, busy_bar == {"selected": "1", "disabled": {"Add to tag": True, "Remove from tag": True}}
+        and len(rm_hold.bodies) == 1,
+        bar_while_held=busy_bar, relabel_bodies=rm_hold.bodies)
     ok_sent = [{"body": x["body"], "status": x["status"]} for x in relabels[n1:]]
     ok_route = (await _route_tags(ctx, aid)).get(b_id)
     ok_db = _script_tags(ctx, [b_id]).get(b_id)
@@ -2929,20 +2971,16 @@ async def _scripts_steps(ctx, page, chk, aid: str, ids: tuple, relabels: list, h
     err = page.get_by_text(re.compile(r"^HTTP 500"))
     await err.first.wait_for(timeout=15_000)
     await _until(lambda: relabels[n2:] and all(x["status"] is not None for x in relabels[n2:]), 10)
-    try:  # settled: the remove no longer busy (its bar button enabled again), or no bar left at all
-        await page.wait_for_function(SELECTION_SETTLED, timeout=10_000)
-    except PwTimeout:  # judged below
-        pass
+    fail_bar = await _selection_bar(page, BAR_SETTLED, 10_000)
     await _painted(page)
     failed = {"listed": await row(a_t).count(), "ticked": await box(a_t).is_checked() if await box(a_t).count() else None,
-              "bar": await toolbar.inner_text() if await toolbar.count() else None,
-              "error": await err.first.inner_text()}
+              "bar": fail_bar, "error": await err.first.inner_text()}
     fail_sent = [{"body": x["body"], "status": x["status"]} for x in relabels[n2:]]
     await ui.shot(ctx, page, "scripts-remove-failed")
     fail_route = (await _route_tags(ctx, aid)).get(a_id)
     fail_db = _script_tags(ctx, [a_id]).get(a_id)
-    bar = re.match(r"\s*Selected\s*(\d+)", failed["bar"] or "")
-    chk(SCRIPTS_REMOVE_FAIL, failed["listed"] == 1 and failed["ticked"] is True and bar is not None and bar.group(1) == "1"
+    chk(SCRIPTS_REMOVE_FAIL, failed["listed"] == 1 and failed["ticked"] is True
+        and (fail_bar or {}).get("selected") == "1"
         and fail_sent == [{"body": {"kind": "tag", "from": SCRIPT_KEEP, "ids": [a_id]}, "status": 500}]
         and SCRIPT_KEEP in (a_before or []) and fail_route == a_before and fail_db == a_before,
         shown=failed, relabel_posts=fail_sent, route=fail_route, db=fail_db, want=a_before)
@@ -3163,18 +3201,20 @@ async def _autoreply(ctx, page, chk) -> None:
         await _painted(page)
         await ui.shot(ctx, page, "autoreply-delay-during-save")
         d_status = await release_settled(page, cfg_hold, refetch="/admin/autoreply-config", save=save)
-        d_kept, d_saved = await delay.input_value(), await saved_label.is_visible()
+        d_kept, d_row = await delay.input_value(), await _save_row(save)
         await save.scroll_into_view_if_needed()  # the Save row (no "Saved") in the picture
         await _painted(page)
         await ui.shot(ctx, page, "autoreply-delay-after-save")
         await save.click()
         await saved_label.wait_for(timeout=30_000)
+        d_row_resaved = await _save_row(save)  # the probe sees "Saved" when it is there
     d_sent = [((b or {}).get("config") or {}).get("silence_min_minutes") for b in cfg_hold.bodies]
     d_stored = ((await ctx.owner.get(f"/admin/autoreply-config?account_id={aid}")).json()["config"] or {}).get(
         "silence_min_minutes")
-    chk(AUTOREPLY_DRAFT_INFLIGHT, d_status == 200 and d_kept == "13" and not d_saved and d_sent == [11, 13]
-        and d_stored == 13,
-        held_status=d_status, kept_delay=d_kept, saved_label_while_unsaved=d_saved, sent_delays=d_sent,
+    chk(AUTOREPLY_DRAFT_INFLIGHT, d_status == 200 and d_kept == "13" and d_row == SAVE_ROW_UNSAVED
+        and d_row_resaved == SAVE_ROW_SAVED and d_sent == [11, 13] and d_stored == 13,
+        held_status=d_status, kept_delay=d_kept, save_row_after_held=d_row,
+        save_row_after_resave=d_row_resaved, sent_delays=d_sent,
         stored_delay=d_stored, account=aid)
 
     # A Human style box toggled while the style PUT is held.
@@ -3188,21 +3228,24 @@ async def _autoreply(ctx, page, chk) -> None:
         await _painted(page)
         await ui.shot(ctx, page, "autoreply-style-during-save")
         held_status = await release_settled(page, hold, refetch="/admin/style-config", save=save)
-        kept, saved_shown = await sw("Human style").get_attribute("aria-checked"), await saved_label.is_visible()
+        kept, style_row = await sw("Human style").get_attribute("aria-checked"), await _save_row(save)
         await save.scroll_into_view_if_needed()
         await _painted(page)
         await ui.shot(ctx, page, "autoreply-style-landed")
         await save.click()  # a wiped edit sends no style PUT at all, so wait on the label, not a response
         await saved_label.wait_for(timeout=30_000)
+        style_row_resaved = await _save_row(save)
     resave = [(b or {}).get("config") for b in hold.bodies[1:]]
     await _painted(page)
     await ui.shot(ctx, page, "autoreply-style-after-save")
     style2 = (await ctx.owner.get(f"/admin/style-config?account_id={aid}")).json().get("config") or {}
     pick = {k: style2.get(k) for k in ("autoreply", "nonnative_autoreply")}
-    chk(AUTOREPLY_INFLIGHT, held_status == 200 and kept == "false" and not saved_shown
+    chk(AUTOREPLY_INFLIGHT, held_status == 200 and kept == "false"
+        and style_row == SAVE_ROW_UNSAVED and style_row_resaved == SAVE_ROW_SAVED
         and resave == [{"autoreply": False}]
         and pick == {"autoreply": False, "nonnative_autoreply": False},
-        held_status=held_status, kept_aria_checked=kept, saved_label_while_unsaved=saved_shown, resave=resave,
+        held_status=held_status, kept_aria_checked=kept,
+        save_row_after_held=style_row, save_row_after_resave=style_row_resaved, resave=resave,
         stored=pick, account=aid)
     await page.unroute(is_lists)
 
@@ -3243,12 +3286,13 @@ async def _gtkf(ctx, page, chk) -> None:
         await ui.shot(ctx, page, "gtkf-edit-during-save")
         status = await release_settled(page, hold, refetch="/admin/automation-rules", save=save)
         kept = [await cutoff.input_value(), await caption.input_value(), await price.input_value()]
-        saved_shown = await saved_label.is_visible()
+        g_row = await _save_row(save)
         await save.scroll_into_view_if_needed()
         await _painted(page)
         await ui.shot(ctx, page, "gtkf-after-save")
         await save.click()
         await saved_label.wait_for(timeout=30_000)
+        g_row_resaved = await _save_row(save)
     await _painted(page)
     await save.scroll_into_view_if_needed()
     await ui.shot(ctx, page, "gtkf-resaved")
@@ -3257,9 +3301,11 @@ async def _gtkf(ctx, page, chk) -> None:
     rules = (await ctx.owner.get(f"/admin/automation-rules?account_id={aid}")).json()["rules"]
     stored = [pick(x["payload"] or {}) for x in rules if x["kind"] == GTKF_KIND]
     want = [14, GTKF_CAPTION, 1500]
-    chk(GTKF_INFLIGHT, start == "false" and status == 200 and kept == ["14", GTKF_CAPTION, "15"] and not saved_shown
+    chk(GTKF_INFLIGHT, start == "false" and status == 200 and kept == ["14", GTKF_CAPTION, "15"]
+        and g_row == SAVE_ROW_UNSAVED and g_row_resaved == SAVE_ROW_SAVED
         and len(sent) == 2 and sent[0][0] == 12 and sent[1] == want and stored == [want],
-        switch_before=start, held_status=status, kept=kept, saved_label_while_unsaved=saved_shown, sent=sent,
+        switch_before=start, held_status=status, kept=kept,
+        save_row_after_held=g_row, save_row_after_resave=g_row_resaved, sent=sent,
         stored=stored, account=aid)
 
 

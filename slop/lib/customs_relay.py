@@ -9,7 +9,7 @@ after LATENCY_S with JSON in the brief's schema read off the transcript the prod
 `summary` names the fan's first HIM line, `his_words` are his HIM lines that mention a
 custom (copied whole, so `_whole_messages` keeps them), `call_him` is the name after
 "call me". Every other prompt is forwarded unchanged to the provider this replaced when that
-one is on loopback (another flow's fake), else answered 503: no
+one is on loopback (another flow's fake, e.g. lib/automation_relay.py's), else answered 503: no
 other purpose becomes reachable. Counted as `deepseek:customs_brief` at GET
 /__slop/fake/calls. With SLOP_LIVE=1 nothing is installed.
 """
@@ -24,7 +24,7 @@ import urllib.request
 from urllib.parse import urlsplit
 
 BRIEF_OPENER = "You read one OnlyFans fan's chat with the creator and write the WORK ORDER"
-LATENCY_S = 0.4  # a guess, as fm_fakes.DEEPSEEK_LATENCY_S
+LATENCY_S = 0.4  # a guess, as automation_relay.DEEPSEEK_LATENCY_S
 
 
 def _brief(user: str) -> dict:
@@ -88,6 +88,7 @@ def wire(app, _loopback, relay) -> None:
     import dataclasses
 
     import llm_providers
+    # Load order: forwards to automation_relay's fake only because its wire (automation_ < customs_) re-pointed it first.
     p = llm_providers.PROVIDERS["deepseek"]
     llm_providers.PROVIDERS["deepseek"] = dataclasses.replace(
         p, base_url=f"http://127.0.0.1:{_serve(p.base_url, relay._fake_calls)}")

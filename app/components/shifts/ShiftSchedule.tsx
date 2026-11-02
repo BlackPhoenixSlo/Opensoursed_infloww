@@ -50,6 +50,7 @@ import ShiftRecords, { recordCells, recordHeads, type RecordNames } from "@/comp
 import ShiftsWindow, { type ShiftPreset } from "@/components/shifts/ShiftsWindow";
 import { useShiftDelete } from "@/components/shifts/ShiftScopeDialog";
 import ShiftSettingsDialog from "@/components/shifts/ShiftSettingsDialog";
+import { errText } from "@/lib/errText";
 
 type Tab = "scheduling" | "history";
 const isHistory = (v: string): v is "history" => v === "history";
@@ -195,7 +196,7 @@ function WeekCalendar({ tz }: { tz: string }) {
   const del = useShiftDelete({
     onDone: () => void queryClient.invalidateQueries({ queryKey: ["shifts"] }),
     onError: (e, o) => pushNotice({
-      id: `shift-cancel:${o.shift_id}`, text: e instanceof Error ? e.message : String(e), label: "Shift schedule",
+      id: `shift-cancel:${o.shift_id}`, text: errText(e), label: "Shift schedule",
     }),
   });
 

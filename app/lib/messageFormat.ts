@@ -16,3 +16,19 @@ export { fmtCents, fmtPrice } from "@/lib/format";
 export function stripHtml(s: string): string {
   return s.replace(/<\/?p[^>]*>/gi, "").replace(/<br\s*\/?>/gi, " ").trim();
 }
+
+/** OF HTML body → plain text keeping its line breaks (<br> and </p> → "\n"), tags dropped, the common entities
+ *  decoded, trimmed. Whitespace inside is kept as is (`stripHtmlPreview` collapses it). */
+export function htmlToText(s: string): string {
+  return s
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p\s*>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'")
+    .trim();
+}

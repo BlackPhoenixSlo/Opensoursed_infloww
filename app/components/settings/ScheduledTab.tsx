@@ -18,6 +18,7 @@ import { useCancelScheduled, useScheduledMessages } from "@/hooks/useScheduledMe
 import type { OFScheduledMessage } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 import { fmtPrice } from "@/lib/format";
+import { htmlToText } from "@/lib/messageFormat";
 
 export default function ScheduledTab() {
   const accounts = useActiveAccounts();
@@ -138,7 +139,7 @@ function ScheduledRow({
           )}
         </div>
         <div className="text-sm whitespace-pre-wrap break-words line-clamp-3">
-          {stripHtml(m.text || "")}
+          {htmlToText(m.text || "")}
         </div>
       </div>
       <Button size="sm" variant="danger" onClick={onCancel} disabled={busy}>
@@ -146,18 +147,4 @@ function ScheduledRow({
       </Button>
     </div>
   );
-}
-
-function stripHtml(s: string): string {
-  return s
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/p\s*>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, "\"")
-    .replace(/&#39;/g, "'")
-    .trim();
 }

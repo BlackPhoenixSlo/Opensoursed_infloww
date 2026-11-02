@@ -77,9 +77,7 @@ export function plotFrame(W: number, H: number) {
 
 /** Cents as the house `fmtCents` prints money, whole dollars with commas as on the dashboard ("$1,235", "$8"), a
  *  loss as "-$12": a report figure's, a point's and a tooltip's money. */
-export function fmtUsd(cents: number): string {
-  return fmtCents(cents);
-}
+export const fmtUsd = fmtCents;
 
 /** Cents as whole dollars, "$930" / "$1,235": a report's earnings total (as the dashboard's earnings overview prints
  *  them) and the axes' default. */

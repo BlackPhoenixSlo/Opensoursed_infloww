@@ -32,6 +32,7 @@ import { Badge, Card } from "@/components/ui/primitives";
 import { AgencyKeyBadges, needsKey } from "@/components/setup/AgencyKeyBadges";
 import { useUser } from "@/contexts/UserContext";
 import { AgencyKeysForm } from "@/components/setup/AgencyKeysForm";
+import { errText } from "@/lib/errText";
 
 interface AgencyKeyStatus {
   user_id: string;
@@ -72,7 +73,7 @@ export default function ManagedAgencyKeysCard() {
         setForbidden(true);
         return;
       }
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errText(err));
     }
   }, []);
 

@@ -286,7 +286,7 @@ Reviewer: codex (blind call, then draft call), 2026-10-13. Plus one finding from
 
 Blind call:
 - B1 partial — "the as-written sign-off supports only a bounded claim; no real Settings screenshot exists": the plan's sign-off shape is binding (plan:296-309), so the alternatives are not taken, but the parity doc now states its evidence basis in a sentence with "no Settings screenshot" (Interfaces; step 12 greps it).
-- B2 reject — "auth cases (Chatter, impersonation) missing": Phase 0 owns `test_settings_api.py` and covers a Chatter session → 401 and records impersonation as refused by the session middleware (`auth.py:144-151`; Phase 0 spec, Review B5); Phase 6 re-runs it (G5).
+- B2 reject — "auth cases (Chatter, impersonation) missing": Phase 0 owns `test_settings_api.py` and covers a Chatter session → 401 and records impersonation as refused by the session middleware (`auth.py` `session_middleware`; Phase 0 spec, Review B5); Phase 6 re-runs it (G5).
 - B3 reject — "load/save/retry error contract missing": Phase 0's `settingsBlob.test.ts` asserts the failed load, the sparse-PUT block and the failed refetch; Phase 6 re-runs it inside vitest (G4).
 - B4 reject — "no keyboard/assistive-tech acceptance": the plan asks for none (plan:111-129, 296-309); YAGNI. Phase 0 already sets `aria-current` on the active row.
 - B5 reject — "a wrong token value passes token-equality checks": Phase 0's walk has a light pass asserting the measured literals (rgb(52, 103, 255) etc.), which step 9 re-runs.

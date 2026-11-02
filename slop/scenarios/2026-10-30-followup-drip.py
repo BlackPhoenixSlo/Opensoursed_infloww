@@ -31,7 +31,7 @@ and a second tick that nudges nobody, its just-nudged fans held by the drip's ga
 (`automation_runs` started -> completed, so not the wait for one of the executor's run
 slots), p95 over the Creators, vs TICK_PER_NUDGE_P95_MS and the last green run.
 
-Faked or bypassed, declared: DeepSeek at its HTTP boundary (a loopback fake: one fixed
+Faked or bypassed, declared: DeepSeek at its HTTP boundary (lib/automation_relay.py: one fixed
 line for the nudge, 0.4 s); OF's send (lib/relay.py `_OfflineOF.send_message`); the
 supervisor's cadence (the scenario ticks; payload `with_image: false`, so the vault is
 never read, and `limit` = fans per Creator, so the 200-fan sweep ceiling never thins a

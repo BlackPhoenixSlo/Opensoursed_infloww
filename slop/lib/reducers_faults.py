@@ -153,6 +153,8 @@ SCRIPTS_REMOVE_OK = ("scripts: Remove from tag on a ticked script: one relabel P
                      "(route, row and list); when another session puts it back, the refetched row shows it unticked")
 SCRIPTS_REMOVE_FAIL = ("scripts: a Remove from tag answered 500 keeps the script in the tag (route and row), in the "
                        "list, its box ticked and the selection bar at 'Selected 1', with the error shown")
+SCRIPTS_BAR_BUSY = ("scripts: while a Remove from tag is in flight the selection bar stays at 'Selected 1' with "
+                    "Add to tag / Remove from tag disabled, one relabel POST")
 
 # Tier 2, batch 2 (docs/reducer-scan.md): VaultManagePanel editor/browse, the shared useHoverPreview
 VM_TICKS = ("vault manage: switching the media type clears the ticked files (no Selected bar on the new view, "
@@ -533,9 +535,10 @@ def register(Fault) -> dict:
         ), browser_files=9),
         # slop/run 2026-10-29-state-reducers --break --fault=scripts-remove-unchecks-on-failure
         # app/components/growth/ScriptsPage.tsx `removeScripts`: the uncheck runs before the relabel POST is
-        # answered (the pre-fix uncheck at click), so a failed remove loses the ticks. Only the failed-remove check
-        # goes red: a successful remove unchecks either way.
-        "scripts-remove-unchecks-on-failure": Fault(None, (SCRIPTS_REMOVE_FAIL,), browser=(
+        # answered (the pre-fix uncheck at click), so a failed remove loses the ticks, and the selection bar is gone
+        # while the remove is in flight. The failed-remove and bar-busy checks go red: a successful remove unchecks
+        # either way.
+        "scripts-remove-unchecks-on-failure": Fault(None, (SCRIPTS_REMOVE_FAIL, SCRIPTS_BAR_BUSY), browser=(
             (r"(await relabelM\.mutateAsync\(\{(?:\\n|\s)*kind,(?:\\n|\s)*from,(?:\\n|\s)*ids(?:\\n|\s)*\}\);)"
              r'((?:\\n|\s)*)(dispatch\(\{(?:\\n|\s)*type: \\?"check\\?",(?:\\n|\s)*ids,(?:\\n|\s)*on: false(?:\\n|\s)*\}\);)',
              r"\3\2\1"),

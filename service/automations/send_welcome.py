@@ -773,7 +773,8 @@ async def _hold_bubble(ctx: _RunCtx, fan_id: int, idx: int, part: str,
             if aborted is not None:
                 return aborted
     # The account's DM rate (OF_DM_PER_MIN), waited like the hold;
-    # the send (send_dropping_bad_media's own turn) uses it.
+    # the send's own turn (send_dropping_bad_media's, or the GIF's in
+    # `_send_bubble`) uses it.
     # ── CHECKPOINT 4 (§C2): a wait for a place is a quiet stretch
     # he can answer in (up to a minute, the slot lent): asked again.
     waited = await dm_rate.turn(ctx.account_id, release_budget_s=INLINE_MAX_S)
@@ -813,6 +814,9 @@ async def _send_bubble(ctx: _RunCtx, sub: dict, idx: int, part: str,
     fan_id = sub["id"]
     try:
         if gid:
+            # Its turn was taken in `_hold_bubble` (where SlotLost is handled):
+            # this one passes at once, like send_dropping_bad_media's own.
+            await dm_rate.turn(ctx.account_id)
             result = await asyncio.to_thread(
                 lambda g=gid: ctx.client.send_message(fan_id, "", giphy_id=g))
             return _Sent(result, False)

@@ -8,7 +8,7 @@ After the merge (Phase 0), shifts (Phase 2) and applied Settings (Phase 4), an a
 
 - Manage employees is a bare table. It has no All / Activated / Deactivated views, no "By Creator" or "By role" filter, no groups, no batch actions and no shift history, although `Employee.is_active`, Creator access (`EmployeeAccountAccess`) and the Phase 2 Timesheet all exist.
 - Employee reports does not show the "Clocked hours" that Phase 2 now records, and has no way to export them.
-- There is no Sales records page, although every sale and its attribution sits in `transactions` and the `per_employee_revenue_with_attribution` view, and a manual reassign path exists. That path checks neither the sale's Agency nor the Employee's Agency (`service/server.py:10338-10380`).
+- There is no Sales records page, although every sale and its attribution sits in `transactions` and the `per_employee_revenue_with_attribution` view, and a manual reassign path exists. That path checks neither the sale's Agency nor the Employee's Agency (the pre-Phase-5 `server.py` route, since replaced by `sales_amend.reassign_one`).
 - No Employee groups or Organization Chart exist, so Phase 4's "Self and subordinates" Data scope has nothing to read.
 - The Notifications bell has no full page.
 - The Dashboard and Fan reports show Inflowwww-only blocks that are not labelled as such, so a reviewer cannot tell an improvement from a mismatch.
@@ -133,12 +133,12 @@ Creators tenancy check (item 9)
   - `GET /admin/stats/sales-records`:
     - Query: `from`, `to`, `account_id*`, `employee_id*`, `group_id`, `kind*`, `unassigned_only`, `before_id`, `limit` (default 50) and `format=csv`.
     - Returns `{rows:[{tx_id, occurred_at, employee_id|null, employee_name, account_id, fan_id|null, fan_label, earnings_cents, gross_cents, net_cents|null, kind, rule, assigned_by, status}], next_before_id}`.
-    - With `format=csv` it streams `text/csv` with the 50k-row cap and an `X-Row-Count` header (house precedent: `/admin/paid-messages`, `service/messages.py:835`).
+    - With `format=csv` it streams `text/csv` with the 50k-row cap and an `X-Row-Count` header (house precedent: `/admin/paid-messages`, `service/messages.py` `list_paid_messages`).
   - `POST /admin/ingest/transactions/{tx_id}/attribute` keeps its body `{employee_id|null}` and response. It now:
     - requires an owner session or the Master (otherwise 403);
     - checks the sale's Creator with `assert_account_owned`, answering 404 for another Agency's sale;
     - rejects an Employee outside that Creator's Agency with 400;
-    - writes one `actions` row: `action="sales.reassign"`, `target_type="transaction"`, `target_id=<tx_id>`, and a payload holding the old and new `employee_id`. The audit middleware's generic row for the POST (`service/employees.py:789-831`, mounted at `service/server.py:64`) is still written, as for every POST; the route is not added to `_AUDIT_SKIP_PREFIXES`. "Assigned by" reads only `sales.reassign` rows, so the generic row never counts twice.
+    - writes one `actions` row: `action="sales.reassign"`, `target_type="transaction"`, `target_id=<tx_id>`, and a payload holding the old and new `employee_id`. The audit middleware's generic row for the POST (`service/audit_log.py` (`audit_middleware`), mounted in `service/server.py`) is still written, as for every POST; the route is not added to `_AUDIT_SKIP_PREFIXES`. "Assigned by" reads only `sales.reassign` rows, so the generic row never counts twice.
   - No new Relay endpoint is added for Clocked hours or Notifications. Clocked hours reads Phase 2's Timesheet rollup, and Notifications reads `GET /api/of/v2/users/notifications`.
 - **Schema.**
   - Migration A, item 4: a new table plus one column. Its `downgrade()` drops both.
@@ -173,7 +173,7 @@ ASSUMPTION: Delete in the More menu is Not wired and the existing soft-disable s
 
 ASSUMPTION: Batch actions are built even though the plan's item 1 does not list them, because the plan's Baseline row names "no … batch actions" as part of the gap and they are confirmed C[H262104]. Rung 5: they reuse existing writes and add no endpoint. Overturned if the owner cuts them.
 
-ASSUMPTION: item 9, the Creators tenancy check, is folded into this Phase as one matrix row and one negative Relay test, although the plan's ranked list leaves it out. The roadmap asks to "verify that account linking and sensitive proxy data respect tenancy" (`nestStepsInflowCopy.txt:233-234`), the six-hats review found no Phase covering it, and the check is cheap: `/admin/proxies` already filters by `user_id` (`service/server.py:8826-8850`), and Phase 1's fixture supplies both Agencies. Rung 5. It lands last, after item 8, and touches no other item's module. Overturned if the owner wants the Creators surface specced whole in a later plan, in which case the test stays as that plan's first case.
+ASSUMPTION: item 9, the Creators tenancy check, is folded into this Phase as one matrix row and one negative Relay test, although the plan's ranked list leaves it out. The roadmap asks to "verify that account linking and sensitive proxy data respect tenancy" (`nestStepsInflowCopy.txt:233-234`), the six-hats review found no Phase covering it, and the check is cheap: `/admin/proxies` already filters by `user_id` (`service/proxies_admin_api.py` `admin_proxies_list`), and Phase 1's fixture supplies both Agencies. Rung 5. It lands last, after item 8, and touches no other item's module. Overturned if the owner wants the Creators surface specced whole in a later plan, in which case the test stays as that plan's first case.
 
 ASSUMPTION: the shift history columns cover the current calendar month in the Agency's timezone (Phase 4 preferences). Rung 6: Infloww's range is not in the Inventory. Overturned by evidence of Infloww's range.
 
@@ -197,7 +197,7 @@ ASSUMPTION: `/notifications` is a page reached from a "See all" link in the top 
 
 ASSUMPTION: the Notifications page reuses the bell's fetch (20 per type, 50 merged; `app/components/NotificationBell.tsx:83`, `:230`) and its error and empty states. A single-type tab adds "Load more" by advancing the `offset` the bell already sends (`:83`); "All" stays the merged 50. Rung 3: the bell's own request shape. Overturned if the feed ignores `offset`, in which case "Load more" is Not wired.
 
-ASSUMPTION: the Notifications page's "Mark all read" and gear are Not wired, because the Relay has no mark-read endpoint (`service/server.py:5364-5430` holds only GETs). Rung 1. Overturned when a known body exists.
+ASSUMPTION: the Notifications page's "Mark all read" and gear are Not wired, because the Relay has no mark-read endpoint (`service/server.py` `of_notifications`, `of_notifications_count` hold only GETs). Rung 1. Overturned when a known body exists.
 
 ## Testing Decisions
 
@@ -216,7 +216,7 @@ Behaviour is tested at the highest seams that exist: the Relay over HTTP with th
   - reassign and clear, each writing exactly one `sales.reassign` action, with "Assigned by" reflecting it and the middleware's generic row not counted;
   - reassign refused across Agencies (another Agency's sale is 404, another Agency's Employee is 400) and for a chatter (403);
   - Data scope narrowing with Role enforcement on and off.
-- **Relay, `service/tests/test_creators_tenancy.py`** (item 9). Uses `_harness` and Phase 1's two-Agency fixture. Owner B's `GET /admin/proxies` holds none of Agency A's proxies (the `user_id` filter, `service/server.py:8826-8850`) and none of A's Creator nicknames in `accounts` or `assigned_accounts`. Owner B's `POST /admin/proxies/assign` naming A's Creator is refused (403 or 404) and writes nothing. The proxy registry file is pointed at a temp path, as `test_proxy_paste.py` does.
+- **Relay, `service/tests/test_creators_tenancy.py`** (item 9). Uses `_harness` and Phase 1's two-Agency fixture. Owner B's `GET /admin/proxies` holds none of Agency A's proxies (the `user_id` filter, `service/proxies_admin_api.py` `admin_proxies_list`) and none of A's Creator nicknames in `accounts` or `assigned_accounts`. Owner B's `POST /admin/proxies/assign` naming A's Creator is refused (403 or 404) and writes nothing. The proxy registry file is pointed at a temp path, as `test_proxy_paste.py` does.
 - **Migrations.** An upgrade → downgrade → upgrade round trip of both migrations against a throwaway SQLite file. The path is passed with `-x url=`; the default URL is never used. The downgrade target is the `down_revision` of item 3's view migration (the older of the two, rank order), read from its file, never `-N`. That makes the check hold whatever lands on top later, Phase 3's S4S migration included.
 - **App, vitest:**
   - `ManageEmployees.test.tsx`: the views, the filters, the Role column read from the roles blob, Deactivate and re-activate, Delete Not wired, Batch edit roles sending one whole-blob PUT that keeps the other keys, Assign, and the shift history columns from a mocked Timesheet.
@@ -230,7 +230,7 @@ Behaviour is tested at the highest seams that exist: the Relay over HTTP with th
 - **Phase 2's rollup.** `test_shifts_api.py` runs in this Phase's Acceptance, because Clocked hours and the shift history columns read its Timesheet; the card tests mock it.
 - **Item 8 and the parked rows** are documentation. Their check is the matrix rows themselves, plus the existing `test_smart_lists.py` and `test_auto_follow.py` staying green.
 
-Prior art: `service/tests/test_settings_api.py` (the harness, owner/chatter seeding and the 401/403 ladder), `test_account_isolation_gate.py` and `test_chatter_access.py` (cross-Agency denials), `test_smart_lists.py`, `test_auto_follow.py`; `app/components/settings/RoleSettingsTab.test.tsx` (whole-blob PUT assertions), `app/components/chat/FanInsights.test.tsx` (Inflowwww extra titles), `app/lib/nav.test.ts`; the CSV precedents in `service/messages.py:835` and `app/components/home/CompetitorReports.tsx:992`.
+Prior art: `service/tests/test_settings_api.py` (the harness, owner/chatter seeding and the 401/403 ladder), `test_account_isolation_gate.py` and `test_chatter_access.py` (cross-Agency denials), `test_smart_lists.py`, `test_auto_follow.py`; `app/components/settings/RoleSettingsTab.test.tsx` (whole-blob PUT assertions), `app/components/chat/FanInsights.test.tsx` (Inflowwww extra titles), `app/lib/nav.test.ts`; the CSV precedents in `service/messages.py` `list_paid_messages` and `app/components/home/CompetitorReports.tsx`.
 
 ## Acceptance
 
@@ -336,14 +336,14 @@ Blind call:
 - B9 replace the Dashboard's joke report block — **reject**: plan item 6 says nothing is removed.
 - B10 retention metric needs a definition — **reject**: the table is not built (Out of Scope, no per-Fan history).
 - B11 Growth changes only where a gap is documented — **reject**: item 8 already builds nothing.
-- B12 binding requirements (reversible migrations, indexes, audit) not carried into acceptance — **partial**: added the `init_db()` catch-up for the new table and column (deploys do not run alembic, Phase 2 spec Schema) and its test; audit of group writes comes from the existing middleware on every POST/PUT/DELETE (`service/employees.py:789`).
+- B12 binding requirements (reversible migrations, indexes, audit) not carried into acceptance — **partial**: added the `init_db()` catch-up for the new table and column (deploys do not run alembic, Phase 2 spec Schema) and its test; audit of group writes comes from the existing middleware on every POST/PUT/DELETE (`service/audit_log.py` `audit_middleware`).
 - B13 Organization Chart placement is disputed in the inventory (`docs/infloww-screens.md:67`) — **accept**: new ASSUMPTION; the matrix records it "unverified".
 - B14 Relay as the primary seam — **reject**: Testing Decisions already put every permission and write at the Relay over HTTP.
 - B15 the ranking has no comparative scores — **reject**: the rank is the plan's, not this spec's.
 
 Draft call:
 
-- D1 the audit middleware also writes a generic row for the attribute POST (`service/employees.py:789-831`, `service/server.py:64`), so "writes one `actions` row" is false — **accept**: Interfaces now say both rows exist, the route is not skipped (rung 4, no change to existing audit), and "Assigned by" reads only `sales.reassign`; the test asserts exactly one such row.
+- D1 the audit middleware also writes a generic row for the attribute POST (`service/audit_log.py` (`audit_middleware`), `service/server.py`), so "writes one `actions` row" is false — **accept**: Interfaces now say both rows exist, the route is not skipped (rung 4, no change to existing audit), and "Assigned by" reads only `sales.reassign`; the test asserts exactly one such row.
 - D2 the cycle story has no operation that can cause a cycle — **accept**: story 37 replaced by a same-Agency parent check; the cycle test is dropped and the Org Chart ASSUMPTION says why.
 - D3 item 7 labels only Fan data, but the plan names cohorts and spend distribution too (plan:273) — **partial**: those panels do not exist (grep finds none), so item 7 now records them as absent in the matrix instead of labelling nothing.
 - D4 Clocked hours tests pass with Phase 2 broken — **accept**: `test_shifts_api.py` added to Acceptance and the card test asserts the Timesheet request. While checking, Phase 2's Timesheet groups only by `employee` or `account`, so "Total by creator by employee" was unbuildable; it is now Not wired with the other two views (story 15, ASSUMPTION).
@@ -361,4 +361,4 @@ Six-hats report, 2026-10-16 (`.scratch/infloww-parity-next-steps/review/six-hats
 - Black (phase-05:307), `downgrade -2` assumes no newer migration while Phase 3 can land in any order: **accept**. Acceptance now downgrades to the `down_revision` of item 3's view migration, read from its file. The ASSUMPTION is rewritten, and the migration file slugs are fixed in Implementation Decisions.
 - Green (phase-05), drop the Batch actions (phase-05:168): **reject**. Rung 2: the plan's Baseline row for Employees reads "no groups, batch actions or deactivate view" (plan:69), and Phase 5's Goal is to close the gaps the Baseline marks. The existing ASSUMPTION flags it. It reuses existing writes and adds no endpoint.
 - Green (phase-05), drop the view-revision migration (phase-05:145): **reject**. Plan item 3 needs a per-sale Reassign, which needs a transaction id on every attribution row. `service/attribution.py` exposes no per-transaction read (`grep -n '^def \|^async def ' service/attribution.py`). The view is the house's single definition of attribution and has been revised by migration three times before (rung 3). Its `downgrade()` restores the predecessor (rung 4).
-- Green / White (Set gaps), add a small Creators/proxy tenancy check (one matrix row plus a negative test) to Phase 5: **accept**, rung 5. It becomes item 9, with stories 56–57, `test_creators_tenancy.py`, an Acceptance line and an ASSUMPTION. It is cheap because `GET /admin/proxies` already filters by `user_id` (`service/server.py:8826-8850`) and Phase 1's fixture supplies both Agencies. Churn/LTV is not folded in: it needs per-Fan subscription history this spec already finds missing. It goes to the plan review's Not yet specified.
+- Green / White (Set gaps), add a small Creators/proxy tenancy check (one matrix row plus a negative test) to Phase 5: **accept**, rung 5. It becomes item 9, with stories 56–57, `test_creators_tenancy.py`, an Acceptance line and an ASSUMPTION. It is cheap because `GET /admin/proxies` already filters by `user_id` (`service/proxies_admin_api.py` `admin_proxies_list`) and Phase 1's fixture supplies both Agencies. Churn/LTV is not folded in: it needs per-Fan subscription history this spec already finds missing. It goes to the plan review's Not yet specified.

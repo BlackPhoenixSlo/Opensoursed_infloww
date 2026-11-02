@@ -8,6 +8,7 @@ import { ChevronLeft, ChevronRight, Image as ImageIcon, ImageOff, Play, Video } 
 
 import { cn } from "@/lib/utils";
 import { s4sMediaUrl, type S4SMedia, type S4SProjection } from "@/lib/s4s";
+import { errText } from "@/lib/errText";
 
 export const UTC_NOTE = "Date/Time shown in UTC time zone";
 
@@ -33,7 +34,7 @@ export function utcTime(iso: string): string {
 /** The UTC day key "YYYY-MM-DD". */
 export const utcDay = (d: Date) => `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
 
-export const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+export const message = (e: unknown) => errText(e);
 
 /** A Creator's avatar as the projection stored it: `px` square, round or with `rounded` corners; the initial when
  *  there is no URL. */

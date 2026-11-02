@@ -11,7 +11,7 @@ Settings, through the real route (PUT /admin/settings/sales and /time-tracking, 
 the epoch so they rule every sale): Converters for Messages and for Posts and tips, the
 Converters window 1 h (`attribution.converters_window_seconds` 3600), Time tracking off.
 
-Load: `--set episodes=` per Creator (small 30, medium 120), at most `--users` at once. An
+Load: `--set episodes=` per Creator (SCALES `sales_attribution_episodes`), at most `--users` at once. An
 episode is one fan: 1-3 replies by the Creator's chatters (the real send route, each chatter
 one send at a time), then the fan pays, then half the time another reply ("thanks"):
   - ledger_tip: a chat tip only OnlyFans' ledger has ("Tip from ...", no message);
@@ -110,7 +110,6 @@ E2E_P95_MS = 500           # a WS tip frame handed to the relay -> on the owner'
 # which owns the realistic 750 ms gate; dense sends are what make the credit races likely.
 P95_MS = {"GET /admin/stats/per-employee": 1000, "GET /admin/stats/sales-records": 1000,
           "POST /api/of/v2/chats/:id/messages": 1500}
-EPISODES = {"small": 30, "medium": 120, "huge": 300}   # per Creator
 WINDOW_S = 3600             # the Converters window this run saves first (the product's default)
 WINDOW_330_S = 3 * 3600 + 30 * 60
 TICK_S, READ_S = 1.0, 0.5
@@ -236,7 +235,7 @@ async def run(ctx) -> None:
     creators = [c["id"] for c in w.data["creators"]]
     fans = w.data["fans"]
     C = len(creators)
-    n_ep = ctx.param("episodes", EPISODES[ctx.scale])
+    n_ep = ctx.param("episodes", w.size["sales_attribution_episodes"])
     owner = ctx.owner
 
     async def put(tab: str, blob: dict, effective_from: str | None = EPOCH) -> None:

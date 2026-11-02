@@ -1,0 +1,83 @@
+"""Tracking links' break-it-once faults (scenarios/2026-11-01-tracking-links-clicks.py): lib/faults.py merges
+`register(Fault)` into FAULTS. Each patches a real product function inside the throwaway relay (lib/relay.py
+applies it in `_wire`, after the routes were mounted, so a fault patches what a route looks up at call time).
+The check names live here and the scenario imports them, so a target can never name a check that does not exist.
+"""
+from __future__ import annotations
+
+CLICKS = ("tracking links: every /t/ click sent is stored once per link (tracking_clicks rows, click_count "
+          "and the list route all == seeded + the 302s answered)")
+REDIRECT = "tracking links: every /t/<slug> answer is a 302 to that link's own target"
+BY_DAY = ("tracking links: each link's analytics by-day series == its seeded clicks per UTC day + the storm's 302s "
+          "on theirs, and its total == their sum")
+EARNINGS = ("OF tracking links: every link of each Creator listed, per link earnings (gross and net), fans counted "
+            "and fans who spent == the oracle (latest claiming link opened at or before each sale, still open, "
+            "cleared / pending only; each of those branches seeded), and each link's /fans rows sum to it")
+CLAIMERS = ("OF tracking links: claimers single-flight: one claimers walk per link with subscribers (every page "
+            "once) under concurrent owners and across a recompute, none for a zero-subscriber or created link")
+CREATED = "OF tracking links: the Create dialog's POST answers 200 with OF's new link, for every Creator"
+
+
+def _click_lost_1_in_20() -> None:
+    """Every 20th click write is lost (bug class: the best-effort click write fails and is swallowed, so the fan
+    still gets the redirect and the stat is gone). `follow_tracking_link` builds its counter bump with the module's
+    `update` (sqlalchemy's, looked up at call time, used nowhere else in the module): every 20th raises inside the
+    click session, which rolls back the TrackingClick insert with it, and the route's own except swallows it.
+    BY_DAY goes red with CLICKS (the lost clicks were 302'd), and so does the stock `relay logged no unexpected
+    Traceback`: the route's swallow is `log.warning(..., exc_info=True)` (tracking_links_api.py)."""
+    import itertools
+
+    import tracking_links_api as tla
+
+    real = tla.update
+    n = itertools.count(1)
+
+    def lossy(*a, **k):
+        if next(n) % 20 == 0:
+            raise RuntimeError("slop fault: click write lost")
+        return real(*a, **k)
+
+    tla.update = lossy
+
+
+def _claimers_no_memo() -> None:
+    """The claimers cache is never read (bug class: the per-link memo dropped): every earnings computation walks
+    every link's claimers on OF again. `of_tracking_api._claimers_cached` keeps its zero-subscriber shortcut and
+    its failure back-off; only the cache hit is gone (`_gather` looks it up at call time)."""
+    import of_tracking_api as ota
+
+    real = ota._claimers_cached
+
+    def no_memo(client, account_id, c):
+        ota._CLAIMERS_CACHE.pop((account_id, ota.safe_int(c.get("id"))), None)
+        return real(client, account_id, c)
+
+    ota._claimers_cached = no_memo
+
+
+def _spend_first_link() -> None:
+    """A fan's sale goes to the FIRST link they claimed that opened before it, not the latest (bug class: the
+    claims' sort flipped). `of_tracking_api._spend` is compiled again from its own source with `lst.sort(
+    reverse=True)` as `lst.sort()`, in the module's namespace (`_compute` looks it up at call time)."""
+    import inspect
+    import textwrap
+
+    import of_tracking_api as ota
+
+    src = textwrap.dedent(inspect.getsource(ota._spend))
+    old = "lst.sort(reverse=True)"
+    if src.count(old) != 1:
+        raise SystemExit("slop: of-tracking-spend-first-link: of_tracking_api._spend's sort changed")
+    ns: dict = {}
+    exec(compile(src.replace(old, "lst.sort()"), ota.__file__, "exec"), ota.__dict__, ns)
+    ota._spend = ns["_spend"]
+
+
+def register(Fault) -> dict:
+    return {
+        # slop/run tracking-links-clicks --break (the scenario's FAULT)
+        "tracking-click-lost-1-in-20": Fault(_click_lost_1_in_20, (CLICKS, BY_DAY)),
+        # slop/run tracking-links-clicks --break --fault=<name>
+        "of-tracking-claimers-no-memo": Fault(_claimers_no_memo, (CLAIMERS,)),
+        "of-tracking-spend-first-link": Fault(_spend_first_link, (EARNINGS,)),
+    }

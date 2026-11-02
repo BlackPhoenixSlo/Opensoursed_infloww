@@ -71,7 +71,7 @@ Nothing else is rebuilt here. A mismatch bigger than a label string or a test pa
     - the Matrix status and Remaining gap of the §3.7 container row, whose only children are the two regraded §3.7 rows. It reads the worst of their grades, by the header's container rule for §3.5 and §3.9;
     - `## Sign-off`;
     - the round-2 paragraph and block at the top of `## Baseline run`, copied from `.scratch/infloww-parity-round-2/baseline.md`, with its round-2 suite block replaced by this run's step-1 output of that suite (the earlier entries stay below);
-    - `## Labelled improvements`, including a recheck of each existing entry that cites a file on the eight pages (for example "Earnings by channel (§3.1)", `components/home/CompetitorReports.tsx:447`). An entry whose file or line no longer renders the label is corrected or removed as a doc fix.
+    - `## Labelled improvements`, including a recheck of each existing entry that cites a file on the eight pages (for example "Earnings by channel (§3.1)", `components/home/CompetitorReports.tsx`). An entry whose file or line no longer renders the label is corrected or removed as a doc fix.
 
     Other cells and other rows change only when the walk contradicts them (a label fix).
   - **The Route walk** (`/tmp/route-walk-src/walk.py`, never committed). Only its mock table changes, and only for routes that need a populated mock to render. Its output contract is unchanged.
@@ -320,7 +320,7 @@ Draft pass (where the spec is wrong):
 - **accept.** The "nothing changed since" diff excluded all of `.scratch/infloww-parity-round-2/`, so an edit to the gate itself (`suite.sh`) after sign-off would pass. `suite.sh` is now diffed on its own.
 - **accept.** The suites run on the working tree, but the clean check skipped the inputs the run reads: `.scratch/*/suite.sh`, `docs/infloww-layouts/` and `docs/infloww-screens.md`. Run order step 0 and the Acceptance now check them.
 - **partial.** Story 21's scan skipped `app/app/**` and any file that renders the label only through a wrapper. `app/app` is added. The wrapper case is left to the eye-regrade (ASSUMPTION, rung 5), because a grep for wrappers would be guesswork.
-- **accept.** Existing Labelled improvements entries on rebuilt pages could go stale. For example, "Earnings by channel (§3.1)" cites `components/home/CompetitorReports.tsx:447`, and Phase 1 rebuilds `/`. This Phase now owns rechecking those entries (Owns).
+- **accept.** Existing Labelled improvements entries on rebuilt pages could go stale. For example, "Earnings by channel (§3.1)" cites `components/home/CompetitorReports.tsx`, and Phase 1 rebuilds `/`. This Phase now owns rechecking those entries (Owns).
 - **partial.** The walk never empties `ROUTE_WALK_OUT` (`os.makedirs(OUT, exist_ok=True)`, `/tmp/route-walk-src/walk.py:252`), so a 2026-10-16 PNG can be cited by mistake. The grader now cites only shots in this run's `report.json`. No deletion is added, because floor 2 forbids it.
 - **partial.** Both images are viewport-only (the REA schema; `page.screenshot` without `full_page`, walk.py:293, :314), so content below the fold is graded from the capture's text. A note is added under the screenshot steps. No full-page capture is added (YAGNI).
 - **accept.** The precondition "and the diff isn't this effort's" can't be decided. It is now the same `git status --short docs/infloww-parity-matrix.md` test that Phase 0 (`phase-00-baseline-layout-capture.md:268`) and Phase 2b use.

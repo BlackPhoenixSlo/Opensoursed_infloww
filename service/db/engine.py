@@ -448,7 +448,7 @@ async def init_db() -> None:
         # them (no sqlite_stat1 existed on any DB we checked) the planner guesses
         # between our 160+ indexes. 0x10002 = analyze every table whose stats are
         # missing or stale; the analysis_limit keeps a first run on a big table
-        # to a sample. The periodic pass is server._db_optimize_loop (optimize()).
+        # to a sample. The periodic pass is db_retention._db_optimize_loop (optimize()).
         if _is_sqlite:
             try:
                 with sync_engine.connect() as conn:

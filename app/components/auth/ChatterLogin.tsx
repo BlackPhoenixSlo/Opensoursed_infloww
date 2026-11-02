@@ -35,6 +35,7 @@ import { TwoFactorRequired, type TwoFactorChallenge } from "@/lib/twoFactor";
 import TwoFactorStep from "@/components/auth/TwoFactorStep";
 import { Bang, EyeIcon, EyeOffIcon, HINT, INPUT, Logo, Notice, PINK, WRAP } from "@/components/auth/SiteLook";
 import { BRAND_NAME } from "@/lib/brand";
+import { errText } from "@/lib/errText";
 
 interface InvitePreview {
   username: string;        // owner who issued the invite
@@ -114,7 +115,7 @@ export default function ChatterLogin() {
     } catch (err) {
       // 2FA on, or the Agency requires it (an invite sign-up sets it up here): the code step.
       if (err instanceof TwoFactorRequired) setChallenge(err.challenge);
-      else setError(err instanceof Error ? err.message : String(err));
+      else setError(errText(err));
       setBusy(false);
     }
     // Note: no finally clearing busy — on success we hard-navigate so

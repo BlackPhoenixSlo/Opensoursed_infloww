@@ -45,8 +45,8 @@ In Single-Creator scope, clicking "Add media" opens the system file picker (imag
   - The upload uses the existing `relay.uploadFile("/api/of/v2/upload", file, "file", { accountId })` typed with the existing `VaultUploadResp` (`ready`, `send_with`, `note`). No new relay method or type.
 - **Schema.** None — the Post draft (Phase 0's `sessionStorage` key `oi:new-post:<accountId>`) already holds `media_files` and thumbs; uploaded entries are stored there like vault picks.
 - **Contracts.**
-  - Upload: `POST /api/of/v2/upload`, multipart, one part named `file` carrying the file with its own name and type; header `X-Account-Id: <accountId>` (from `relay.uploadFile`'s context). Relay route and `of_client.upload_media` exist and are not touched.
-  - Response read: `ready` (boolean), `send_with` (array of vault ids and/or claim dicts `{processId, host, name, ...}`, read only when `ready === true`; on refusal the Relay sends `send_with: null` (`of_client.py:2973`) although `VaultUploadResp` types it as an array, so the code never touches it then), `note` (string, on refusal). Nothing else is read; a dedupe hit's `hidden` flag (`of_client.py:2742`) is ignored and the vault id attached like any other.
+  - Upload: `POST /api/of/v2/upload`, multipart, one part named `file` carrying the file with its own name and type; header `X-Account-Id: <accountId>` (from `relay.uploadFile`'s context). Relay route and `of_upload.upload_media` exist and are not touched.
+  - Response read: `ready` (boolean), `send_with` (array of vault ids and/or claim dicts `{processId, host, name, ...}`, read only when `ready === true`; on refusal the Relay sends `send_with: null` (`of_upload.py` `upload_media`) although `VaultUploadResp` types it as an array, so the code never touches it then), `note` (string, on refusal). Nothing else is read; a dedupe hit's `hidden` flag (`of_upload.py` `upload_media`) is ignored and the vault id attached like any other.
   - Post: unchanged Phase 0 body; `media_files` now may hold claim dicts, which `_CreatePostBody.media_files: list[int | dict]` accepts.
 - **The control.** OnlyFans's `button.attach_file[aria-label='Add media']` in `.b-make-post__actions__btns` on `new-post` (index). The capture has no `type=file` input, so `bindPost` creates one hidden `<input type=file accept="image/*,video/*">` (no `multiple`) in the frame document and marks the button `data-oi-wired`. A click on the button, in Single-Creator scope, clicks the hidden input; in All-Creators scope it shows `SELECT_MODEL` via `note` and does nothing else.
 - **On change.** One file is taken; the input's value is cleared at once (so the same file can be picked again). An in-flight counter goes up and Post is disabled; Post's enablement rule is Phase 0's (non-empty text) AND counter is 0. When the request settles the counter goes down and Post's state is recomputed.
@@ -121,8 +121,8 @@ git diff --quiet -- app/public/of-mirror service
 
 ## Further Notes
 
-- Ground truth check: `relay.ts:762` holds only an orphaned doc comment for the upload response; the type itself is `VaultUploadResp` at `app/lib/relay.ts:851` (`ready`, `deduped`, `vault_id`, `send_with`, `note`). All other cited lines verified: `relay.uploadFile` :171, `proxyImage` `blob:` pass-through `mediaUrl.ts:22-23`, `_CreatePostBody.media_files: list[int | dict]` `server.py:6161-6165`, `POST /api/of/v2/upload` `server.py:7661`, `upload_media` `of_client.py:2679` (dedupe hit `send_with: [vault_id]` :2747-2748, claim `send_with: [claim]` :2987-2988, `ready:false` + `note` :2967-2980). No app code calls `/api/of/v2/upload` today (grep over `app/`).
-- Errors from the Relay arrive as HTTP 502 via `_proxy` (`server.py:1823`) and throw in `relay.ts`; a `ready:false` reply is HTTP 200, hence the two paths.
+- Ground truth check: the upload response's doc comment in `relayTypes.ts` is orphaned; the type itself is `VaultUploadResp` in `app/lib/relayTypes.ts` (`ready`, `deduped`, `vault_id`, `send_with`, `note`). All other cited lines verified: `relay.uploadFile` (`relay.ts`), `proxyImage` `blob:` pass-through `mediaUrl.ts:22-23`, `_CreatePostBody.media_files: list[int | dict]` `server.py`, `POST /api/of/v2/upload` `server.py` `of_upload_media`, `upload_media` `of_upload.py` (dedupe hit `send_with: [vault_id]`, claim `send_with: [claim]`, `ready:false` + `note`). No app code calls `/api/of/v2/upload` today (grep over `app/`).
+- Errors from the Relay arrive as HTTP 502 via `_proxy` (`server.py`) and throw in `relay.ts`; a `ready:false` reply is HTTP 200, hence the two paths.
 
 ASSUMPTION: the refusal note reads `Could not upload: <note>`, following Phase 0's `Could not post: <message>` wording (rung 3); overturned if the human wants the Relay's note verbatim.
 
@@ -141,19 +141,19 @@ ASSUMPTION: Post stays disabled while any upload is in flight via a counter, and
 codex, 2026-10-12 (blind call + draft call, `model_reasoning_effort=high`, read-only sparse workspace).
 
 Blind call:
-- B1 upload call lacks Creator context (`plan:165-167` two-arg call; `relay.ts:54-64,171-175`) — **accept**; already decided in Interfaces/Contracts (`{ accountId }` ctx), asserted by check 3.
+- B1 upload call lacks Creator context (`plan:165-167` two-arg call; `relay.ts` `buildHeaders`, `relay.uploadFile`) — **accept**; already decided in Interfaces/Contracts (`{ accountId }` ctx), asserted by check 3.
 - B2 Phase 0 `ofMirrorPost`/`bindPost` absent in this checkout — **accept**; already in Depends on (Phase 0, Phase 1).
 - B3 Phase acceptance omits Check-loop items (exact headers, all-models pass, screenshots, README/routes) — **accept**; already covered by checks 3, 4, 7, the screenshots and the Acceptance greps.
 - B4 thumbnail lifecycle across State pages unspecified — **accept**; already decided (top-window `blob:` URL, grey-square fallback); now tested by checks 10 and 11.
 - B5 dedupe-hit and hidden-hit outcomes undefined; browser check only covers a fresh claim — **accept**; dedupe now tested (check 9); hidden hit decided as attach-without-warning, flagged ASSUMPTION and listed in Out of Scope.
 - B6 `accept` is not server validation; test an upload exception, not only `ready:false` — **partial**; check 6 already covers the thrown (502) path; type validation stays with the Relay, which this Phase does not touch (plan Constraints: no new endpoint or body).
 - B7 test seam is the browser-to-relay Playwright check — **accept**; that is the spec's Mirror check.
-- B8 also test that claim dicts reach `create_post` unchanged (`of_client.py:2368` annotates `list[int]`) — **reject**; Relay and `of_client` are untouched and `_CreatePostBody.media_files: list[int | dict]` (`server.py:6161-6165`) already accepts dicts; a service test is scope the plan never asked for.
+- B8 also test that claim dicts reach `create_post` unchanged (`of_sends.py` annotates `list[int]`) — **reject**; Relay and `of_client` are untouched and `_CreatePostBody.media_files: list[int | dict]` (`server.py`) already accepts dicts; a service test is scope the plan never asked for.
 
 Draft call:
 - D1 check 5 clicks Post after a refusal and expects a post, contradicting plan "a `ready:false` reply shows its note and sends no post" (`plan:171-176`) — **accept**; check 5 rewritten to assert no post request; Refuse/fail now says no post is sent.
-- D2 refusal fixture's `send_with: null` contradicts the array contract (`of_client.py:2965-2980`, `relay.ts:851-859`) — **accept**; Contracts now say `send_with` is read only when `ready === true` and is null on refusal.
-- D3 skipping an already-attached vault id contradicts the plan's "appended" and Story 19's "unchanged" (`plan:165-167`, `of_client.py:2744-2749`) — **accept**; `mergeSendWith` is now a plain append (plan constraint, rung 2); Story 9, the vitest list and the old ASSUMPTION rewritten; OnlyFans's handling of duplicate ids recorded as an open risk in Further Notes.
+- D2 refusal fixture's `send_with: null` contradicts the array contract (`of_upload.py` `upload_media`, `relayTypes.ts` `VaultUploadResp`) — **accept**; Contracts now say `send_with` is read only when `ready === true` and is null on refusal.
+- D3 skipping an already-attached vault id contradicts the plan's "appended" and Story 19's "unchanged" (`plan:165-167`, `of_upload.py` `upload_media`) — **accept**; `mergeSendWith` is now a plain append (plan constraint, rung 2); Story 9, the vitest list and the old ASSUMPTION rewritten; OnlyFans's handling of duplicate ids recorded as an open risk in Further Notes.
 - D4 refusal check cannot prove the draft is preserved — **accept**; check 5 now seeds text and an attached upload and asserts both survive.
 - D5 Stories 17, 13, 8, 12 have no seam assertion — **accept**; check 6 (retry same file), 10 (State round trip), 9 (dedupe hit), 11 (dead thumb) added.
 - D6 docs greps only prove strings exist (`plan:100-101`) — **partial**; the routes grep now requires the upload row to mention "Add media"; the remaining prose stays with Check loop step 3 (implementer writes and Reads it), since grep cannot judge prose.

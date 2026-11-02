@@ -39,6 +39,12 @@ Cases:
       removed from the rung stays on OF; `stale_on_of` must surface it.
   case_publish_surfaces_an_of_failure  — an OF error is a 502 that leaves the
       internal folder and its membership untouched.
+  case_category_lookup_table           — pure: name lookup is case/space-blind;
+      None/""/unknown raise UnknownCategory.
+  case_normalise_verdicts_table        — pure: rung normalising, REJECT_VALUES ->
+      None, media_id coercion/skips, last-wins dupes.
+  case_normalise_verdicts_unknown_rung — pure: a rung not in the category's
+      rungs (incl. another category's) raises UnknownRung.
 
 Run: cd service/tests && \
   PYTHONPATH=$(cd .. && pwd) ../../venv/bin/python test_vault_pack_picker.py
@@ -60,6 +66,7 @@ from sqlalchemy import select  # noqa: E402
 import accounts as account_registry  # noqa: E402
 import automation_executor as ax  # noqa: E402 — patch the OF-client seam
 import server  # noqa: E402
+import vault_pack_picker  # noqa: E402 — pure helpers under test
 import vault_scripts  # noqa: E402 — the reaper predicate under test
 from db.engine import get_session  # noqa: E402
 from db.models import (  # noqa: E402
@@ -519,6 +526,93 @@ async def case_publish_surfaces_an_of_failure():
         assert (await s.get(VaultFolder, fid)).of_list_id is None
 
 
+# ── Pure cases (no DB, no client) ───────────────────────────────────
+
+def case_category_lookup_table():
+    feet = vault_pack_picker.CATEGORIES["feet"]
+    known = [(name, vault_pack_picker.CATEGORIES[name])
+             for name in vault_pack_picker.CATEGORIES]
+    rows = known + [
+        ("FEET", feet),
+        ("FeEt", feet),
+        ("  feet  ", feet),
+        ("\tFeet\n", feet),
+    ]
+    for raw, want in rows:
+        got = vault_pack_picker.category(raw)
+        assert got is want, f"category({raw!r}) -> {got!r}, want {want!r}"
+
+    # "elbows" is pinned at the HTTP level in case_unknown_rung_and_category_400.
+    for raw in (None, "", "   ", "foot", "feet-tease", "fe et", "hands"):
+        try:
+            got = vault_pack_picker.category(raw)
+        except vault_pack_picker.UnknownCategory as e:
+            assert e.args == (raw,), f"category({raw!r}) carried {e.args!r}"
+        else:
+            raise AssertionError(f"category({raw!r}) -> {got!r}, want UnknownCategory")
+
+
+def case_normalise_verdicts_table():
+    feet = vault_pack_picker.CATEGORIES["feet"]
+    rows = [
+        ([{"media_id": 1, "rung": "tease"}], {1: "tease"}),
+        ([{"media_id": 1, "rung": "nude-body"}], {1: "nude-body"}),
+        # Rung case/whitespace normalised.
+        ([{"media_id": 1, "rung": "  NUDE "}], {1: "nude"}),
+        ([{"media_id": 1, "rung": "Nude-Body"}], {1: "nude-body"}),
+        # Every REJECT_VALUES member, plus None / missing / casing → None.
+        *[([{"media_id": 1, "rung": v}], {1: None})
+          for v in sorted(vault_pack_picker.REJECT_VALUES)],
+        ([{"media_id": 1, "rung": None}], {1: None}),
+        ([{"media_id": 1, "rung": " REJECT "}], {1: None}),
+        ([{"media_id": 1, "rung": "None"}], {1: None}),
+        ([{"media_id": 1}], {1: None}),  # missing rung -> "" -> reject
+        # media_id coercion.
+        ([{"media_id": "12", "rung": "tease"}], {12: "tease"}),
+        # BUG: see PR — int() truncates a float and takes a bool, so the
+        # verdict silently lands on item 1 (the wrong item) instead of refusing.
+        ([{"media_id": 1.9, "rung": "nude"}], {1: "nude"}),
+        ([{"media_id": True, "rung": "nude"}], {1: "nude"}),
+        # BUG: see PR — a verdict with a bad/missing media_id is silently
+        # dropped, which the docstring says this module must never do.
+        ([{"rung": "nude"}], {}),
+        ([{"media_id": None, "rung": "nude"}], {}),
+        ([{"media_id": "abc", "rung": "nude"}], {}),
+        ([{"media_id": [], "rung": "nude"}], {}),
+        ([None, {"media_id": 2, "rung": "tease"}], {2: "tease"}),
+        # Duplicate media_id: last wins.
+        ([{"media_id": 1, "rung": "tease"}, {"media_id": 1, "rung": "nude"}], {1: "nude"}),
+        ([{"media_id": 1, "rung": "nude"}, {"media_id": "1", "rung": "reject"}], {1: None}),
+        # Empty input.
+        ([], {}),
+        (None, {}),
+    ]
+    for given, want in rows:
+        got = vault_pack_picker.normalise_verdicts(feet, given)
+        assert got == want, f"normalise_verdicts(feet, {given!r}) -> {got!r}, want {want!r}"
+
+
+def case_normalise_verdicts_unknown_rung():
+    feet = vault_pack_picker.CATEGORIES["feet"]
+    # A rung valid for ANOTHER category is refused here. ("soles" is pinned at
+    # the HTTP level in case_unknown_rung_and_category_400.)
+    other = vault_pack_picker.Category(name="hands", term="hands", rungs=("closeup",))
+    bad = [
+        (feet, [{"media_id": 1, "rung": "closeup"}], "closeup"),
+        (other, [{"media_id": 1, "rung": "nude"}], "nude"),
+        (other, [{"media_id": 1, "rung": " TEASE "}], "tease"),
+        (feet, [{"media_id": 1, "rung": "tease"}, {"media_id": 2, "rung": "nude body"}],
+         "nude body"),
+    ]
+    for cat, given, rung in bad:
+        try:
+            got = vault_pack_picker.normalise_verdicts(cat, given)
+        except vault_pack_picker.UnknownRung as e:
+            assert e.args == (rung,), f"{cat.name} {given!r}: UnknownRung{e.args!r}"
+        else:
+            raise AssertionError(f"{cat.name} {given!r} -> {got!r}, want UnknownRung")
+
+
 async def _seed_fixtures():
     owner_uid = await _seed_user(_OWNER_USER)
     stranger_uid = await _seed_user(_STRANGER_USER)
@@ -553,4 +647,7 @@ _harness.run(
     case_publish_binds_then_adds_and_reuses_the_list,
     case_publish_reports_what_of_still_holds,
     case_publish_surfaces_an_of_failure,
+    case_category_lookup_table,
+    case_normalise_verdicts_table,
+    case_normalise_verdicts_unknown_rung,
 )

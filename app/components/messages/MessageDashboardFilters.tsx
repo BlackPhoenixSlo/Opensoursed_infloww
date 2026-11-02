@@ -20,6 +20,7 @@ import { useEffect, useState } from "react";
 import { Input } from "@/components/ui/primitives";
 
 import type { SenderType } from "@/hooks/usePaidMessages";
+import { dollarsToCents as toCents } from "@/lib/format";
 
 export interface DashboardFilterValue {
   q: string;
@@ -36,11 +37,6 @@ export const EMPTY_DASHBOARD_FILTERS: DashboardFilterValue = {
   senderType: "any",
   unsentOnly: false,
 };
-
-function toCents(raw: string): number | null {
-  const n = Number(raw);
-  return raw.trim() === "" || !Number.isFinite(n) || n < 0 ? null : Math.round(n * 100);
-}
 
 export default function MessageDashboardFilters({
   value,

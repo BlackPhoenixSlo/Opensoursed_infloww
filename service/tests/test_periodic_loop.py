@@ -28,6 +28,7 @@ import _harness  # MUST be first — sets sys.path / binds a throwaway temp DB
 import asyncio  # noqa: E402
 
 import server  # noqa: E402
+import db_retention  # noqa: E402
 import diag_api  # noqa: E402
 import img_api  # noqa: E402
 
@@ -162,12 +163,12 @@ def case_the_real_sweepers_ask_for_the_right_first_delay() -> None:
     output. The sweeps have their own tests — test_audit_retention.py covers
     `evict_audit_logs_once` directly.
     """
-    grace = server._EVICT_BOOT_GRACE_S
+    grace = db_retention._EVICT_BOOT_GRACE_S
     # (module, loop, first delay, sweep): the stub goes on the module whose
     # globals the loop reads at call time.
     expectations = [
-        (server, "_raw_json_evictor_loop", grace, "_raw_json_sweep"),
-        (server, "_audit_retention_evictor_loop", grace, "_audit_retention_sweep"),
+        (db_retention, "_raw_json_evictor_loop", grace, "_raw_json_sweep"),
+        (db_retention, "_audit_retention_evictor_loop", grace, "_audit_retention_sweep"),
         (img_api, "_img_cache_evictor_loop", img_api._IMG_CACHE_EVICT_INTERVAL_S, "_img_cache_sweep"),
         (diag_api, "_perflog_evictor_loop", diag_api._PERFLOG_EVICT_INTERVAL_S, "_perflog_sweep"),
     ]
@@ -187,7 +188,7 @@ def case_the_real_sweepers_ask_for_the_right_first_delay() -> None:
             f"{want_first}s. A daily sweeper that opens with its full interval "
             f"never runs at all on a relay that restarts more often than that."
         )
-    assert grace < server._AUDIT_EVICT_INTERVAL_S, (
+    assert grace < db_retention._AUDIT_EVICT_INTERVAL_S, (
         "the boot grace must be shorter than the interval it front-runs, or it "
         "is not a grace"
     )

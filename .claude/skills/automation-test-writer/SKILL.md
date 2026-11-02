@@ -7,8 +7,8 @@ description: Scaffold a house-style service/tests/test_*.py for an automation in
 
 Writes a runnable test that matches the repo's conventions exactly. These tests
 are **standalone scripts**, not pytest: `./venv/bin/python service/tests/test_X.py`,
-exit 0 = pass. Study an existing sibling (`tests/test_of_ai_chat.py`,
-`tests/test_deep_convo.py`, `tests/test_unreachable_skip.py`) before writing — copy
+exit 0 = pass. Study an existing sibling (`tests/test_send_followup.py`,
+`tests/test_send_welcome.py`, `tests/test_unreachable_skip.py`) before writing — copy
 its seams, don't invent new ones.
 
 ## The five non-negotiables (each one is a footgun if skipped)
@@ -18,8 +18,8 @@ its seams, don't invent new ones.
    project footgun. Every `db.*`/`server`/`automations.*` import must come AFTER it
    (mark them `# noqa: E402`).
 2. **Inject a `FakeOF`, never hit the network.** Senders build their OF client via
-   `<module>._make_client(account_id)`. Override it:
-   `import automations.<name> as ax; ax._make_client = lambda account_id: fake`.
+   the executor's shared seam, `automation_executor._make_client(account_id)`.
+   Override it there: `import automation_executor as ax; ax._make_client = lambda account_id: fake`.
    FakeOF records `.sent` and echoes `{"id": <next>, "text": "<p>…</p>", "createdAt": …}`.
 3. **Patch `llm_client.chat`** to an async stub returning
    `SimpleNamespace(content="…", call_id=1)` — no real DeepSeek call. For the cap
@@ -49,7 +49,8 @@ from sqlalchemy import select  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Account, Fan, Message  # noqa: E402
 import llm_client  # noqa: E402
-import automations.<NAME> as ax  # noqa: E402
+import automation_executor as ax  # noqa: E402  (the _make_client seam)
+from automation_executor import run_once  # noqa: E402
 
 _T0 = datetime(2026, 6, 1, 12, 0, 0)
 
@@ -92,7 +93,7 @@ def case_happy_path_sends():
         fake = _use_fake(); _patch_llm()
         await _seed_account("acc1"); await _seed_fan("acc1", 111)
         await _add_msgs("acc1", 111, [("in", "hey")])
-        await ax.run("acc1", force_ids=[111])        # force_ids bypasses eligibility GATES…
+        await run_once("acc1", "<NAME>", payload={"force_ids": [111]})  # force_ids bypasses eligibility GATES…
         assert fake.sent, "expected a send"
     asyncio.run(go())
 
@@ -114,8 +115,8 @@ _harness.run(case_happy_path_sends)
 - `force_ids` **bypasses eligibility gates** but does NOT whitelist senders — it
   doesn't scope WHO gets messaged beyond the gate logic; to scope a real run to one
   fan, seed only that fan (see `force_ids_does_not_scope_senders` memory).
-- Confirm the sender's actual client factory name — most are `_make_client`, but
-  verify with `grep -n "_make_client\|def run(" service/automations/<NAME>.py`.
+- Confirm the sender's actual client factory — most call `ax._make_client`
+  (`automation_executor`), but verify with `grep -n "_make_client\|def run(" service/automations/<NAME>.py`.
 - Confirm a gate you assert on is actually backed by a mutated column (e.g. a
   `turn_counter` cap is dead unless the run increments it).
 - After writing, RUN it: `cd service && ../venv/bin/python tests/test_<NAME>.py`.

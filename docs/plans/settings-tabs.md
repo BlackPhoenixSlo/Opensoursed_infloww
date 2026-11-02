@@ -49,18 +49,17 @@ Make the 11 Settings tabs under `/settings/[tab]` real pages. Each one should lo
    shell (Messages Pro, OF Manager) and no Settings page. They confirm the dark theme and nothing
    more. They contain the user's real handle and fan names: read them, never copy a name.
 5. Backend today (verified; corrects the draft in `docs/NEXT_SESSION_SETTINGS_UI.md` §3):
-   - `GET /auth/me` (`service/auth.py:564`; `AuthResp` at `:489` = user_id, username, impersonating)
-     and `POST /auth/logout` (`:555`). There is no rename, password, sessions-list or 2FA route.
-     One cookie session slides on `users.last_seen_at` (`:543-545`).
-   - `GET /admin/employees` (`service/employees.py:95`): id, display_name, color, is_active,
+   - `GET /auth/me` (`service/auth.py` `me`; `AuthResp` = user_id, username, impersonating)
+     and `POST /auth/logout` (`logout`). There is no rename, password, sessions-list or 2FA route.
+     One cookie session slides on `users.last_seen_at`.
+   - `GET /admin/employees` (`service/employees.py` `list_employees`): id, display_name, color, is_active,
      chatter_id, created_at. **No role field** (the draft's "roles" is wrong).
-   - `GET/PATCH /api/of/v2/users/me` (`server.py:2044,6859`) is the OF model's profile, **not** the
+   - `GET/PATCH /api/of/v2/users/me` (`server.py` `users_me`, `of_update_profile`) is the OF model's profile, **not** the
      agency account (the draft's Your Account wiring is wrong).
-   - Referral `GET …/payments/referrals/balance` (`server.py:6926`) and
-     `GET …/payouts/requests/referral` (`:6931`). Both are per selected model.
+   - Referral `GET …/payments/referrals/balance` (`of_stats_api.py` `of_referrals_balance`) and
+     `GET …/payouts/requests/referral` (`of_referral_payouts`). Both are per selected model.
    - Translate: only `POST /admin/translate` (`service/translate_api.py:222`), Google gtx, with no
-     prompt and no config. Attribution: no config route (`/admin/lanes`, `server.py:3593`, is
-     concurrency). Version: `app/package.json:3`, shown by `Sidebar.tsx:32,158`.
+     prompt and no config. Attribution: no config route. Version: `app/package.json:3`, shown by `Sidebar.tsx:32,158`.
 6. House pattern for stored config, which `user_settings` follows:
    - Table `UserLlmKey` (`service/db/models.py:2669-2707`): `user_id` FK CASCADE + a second key as
      PK, `updated_at`. Migration `service/db/migrations/versions/20260820_0100_user_llm_keys.py`.
@@ -68,9 +67,9 @@ Make the 11 Settings tabs under `/settings/[tab]` real pages. Each one should lo
    - Route `service/tenant_keys_api.py`: prefix router (`:32`), `_require_user()` returns 401
      (`:35-42`), GET/PUT (`:45,61`).
    - JSON-as-Text upsert in `webhook_config_api.py:98-115`, returning `{config}` (`:80-91`).
-     Registration: `server.py:89` (import) and `:230` (`include_router`).
-   - Not the pattern: `/admin/secrets` (`server.py:550,558`) is a master-only file store;
-     `/admin/webhooks` (`:9174-9192`) is an unrelated list.
+     Registration: `server.py` (import and `include_router`).
+   - Not the pattern: `/admin/secrets` (`server.py` `admin_secrets_status`, `admin_secrets_set`) is a master-only file store;
+     `/admin/webhooks` is an unrelated list.
 
 ## Constraints (binding)
 
@@ -149,7 +148,7 @@ Decisions:
   - `ToggleRow`: 72px
   - `NotWired`: a disabled control with the "not wired" tooltip
 - New `app/lib/settingsBlob.ts`: `useSettingsBlob(tab)`, a TanStack Query wrapper over
-  `relay.get/put` (`relay.ts:160,194`). Save goes through `SaveRow` with the `configLoaded` gate, and
+  `relay.get/put` (`relay.ts`). Save goes through `SaveRow` with the `configLoaded` gate, and
   a PUT always sends the full object.
 - `[tab]/page.tsx` maps each href to its panel in one `SETTINGS_PANELS` record. Unmapped tabs keep
   `NotBuiltYet` until their Phase lands.

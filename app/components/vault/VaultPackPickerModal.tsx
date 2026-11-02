@@ -44,6 +44,7 @@ import {
   type PackCandidate,
 } from "@/hooks/useVaultCache";
 import { makeSlotGate } from "@/components/vault/slotGate";
+import { errText } from "@/lib/errText";
 
 /** Strictly below the relay's own VAULT_STILL_CONCURRENCY (6) so the pane can
  *  never be the thing that exhausts it, with headroom for the rest of the app. */
@@ -321,7 +322,7 @@ export default function VaultPackPickerModal({
       setNote(describe(await publishFolderToOf(accountId, folderId)));
       await qc.invalidateQueries({ queryKey: ["vault-pack-candidates", accountId, category] });
     } catch (e) {
-      setNote(`publish failed: ${e instanceof Error ? e.message : String(e)}`);
+      setNote(`publish failed: ${errText(e)}`);
     } finally {
       setBusy("");
     }
@@ -349,7 +350,7 @@ export default function VaultPackPickerModal({
     } catch (e) {
       setNote(
         `${done.length} of ${stocked.length} published, then FAILED: ` +
-          `${e instanceof Error ? e.message : String(e)}` +
+          `${errText(e)}` +
           (done.length ? ` — landed: ${done.join(" · ")}` : ""),
       );
     } finally {

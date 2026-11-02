@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Retention sweep for the append-only audit/log tables (server.evict_audit_logs_once).
+"""Retention sweep for the append-only audit/log tables (db_retention.evict_audit_logs_once).
 
 automation_runs / grok_calls / scheduled_jobs(terminal) / actions had NO prune
 and grew unbounded — creeping the DB back up after the raw-payload columns were
@@ -21,7 +21,7 @@ from datetime import datetime, timedelta  # noqa: E402
 
 from sqlalchemy import func, select  # noqa: E402
 
-import server  # noqa: E402 — provides evict_audit_logs_once
+import db_retention  # noqa: E402 — provides evict_audit_logs_once
 from db.engine import get_session  # noqa: E402
 from db.models import (  # noqa: E402
     Account, Action, AutomationRun, GrokCall, ScheduledJob,
@@ -63,16 +63,16 @@ async def _count(model, *where) -> int:
 
 
 def _set_windows(seconds: int) -> None:
-    server._AUTOMATION_RUNS_RETAIN_S = seconds
-    server._GROK_CALLS_RETAIN_S = seconds
-    server._SCHEDULED_JOBS_RETAIN_S = seconds
-    server._ACTIONS_RETAIN_S = seconds
+    db_retention._AUTOMATION_RUNS_RETAIN_S = seconds
+    db_retention._GROK_CALLS_RETAIN_S = seconds
+    db_retention._SCHEDULED_JOBS_RETAIN_S = seconds
+    db_retention._ACTIONS_RETAIN_S = seconds
 
 
 async def case_sweep_deletes_old_keeps_recent_and_terminal_only():
     await _reset_and_seed()
     _set_windows(7 * 24 * 60 * 60)  # OLD(30d) out, RECENT(1h) in
-    res = await server.evict_audit_logs_once()
+    res = await db_retention.evict_audit_logs_once()
 
     # plain time-based tables: 1 old gone, 1 recent kept.
     assert res["automation_runs"] == 1, res
@@ -94,8 +94,8 @@ async def case_sweep_deletes_old_keeps_recent_and_terminal_only():
 async def case_zero_window_disables_a_table():
     await _reset_and_seed()
     _set_windows(7 * 24 * 60 * 60)
-    server._ACTIONS_RETAIN_S = 0  # disable actions only
-    res = await server.evict_audit_logs_once()
+    db_retention._ACTIONS_RETAIN_S = 0  # disable actions only
+    res = await db_retention.evict_audit_logs_once()
     assert "actions" not in res, res          # skipped entirely
     assert await _count(Action) == 2          # both rows survive
     assert res["automation_runs"] == 1, res   # the others still swept

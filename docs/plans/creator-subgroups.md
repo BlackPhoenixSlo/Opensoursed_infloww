@@ -13,7 +13,7 @@ every Creator.
   request in `service/auth.py` (`clamp_account_filter`). A chatter's All inbox
   already equals their allowed Creators.
 - Creator grouping: only a UI "Tag" (`app/lib/creatorProfiles.ts`), not enforced.
-- Dashboard: owner stats total all Creators (`service/stats.py`); sales accept `group_id`.
+- Dashboard: owner stats total all Creators (`service/stats.py`); sales accept `group_id` (`service/stats_sales_records.py`).
 - Boxes: one relay = one DB = one whole agency (`deploy/fleet/README.md`). Only
   cross-shard call is fleet `whois` (`service/fleet_api.py`, `FLEET_SECRET`).
 
@@ -22,7 +22,7 @@ every Creator.
    one group per Creator. `PUT /admin/employee-groups/creators {group_id|null, account_ids[]}`
    next to `set_members`; Creators column + batch action mirroring the employee one.
    Fold Tags into this.
-2. Derive access in `_load_identity_from_db` (`service/chatters.py` ~312):
+2. Derive access in `_load_identity` (`service/chatters.py`):
    intersect allowed Creators with the chatter's group's Creators. One point feeds
    `/chatter/me/accounts`, inbox, request gate. Empty group = today's behaviour.
    Emit `assignment_changed` on writes.

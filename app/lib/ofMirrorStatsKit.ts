@@ -14,6 +14,7 @@ import { openModal } from "@/lib/ofMirrorWrites";
 import { showMenu, type MenuGroup } from "@/lib/ofMirrorMenu";
 import { relay } from "@/lib/relay";
 import { avatarOf, type Fan } from "@/lib/ofMirrorAvatar";
+import { errText } from "@/lib/errText";
 
 /** A chart's points (`{date, count}`, OF's chart lists), else null. */
 export const points = (list: unknown): { date?: string; count?: unknown }[] | null => (Array.isArray(list) ? (list as { date?: string; count?: unknown }[]) : null);
@@ -323,7 +324,7 @@ export function openUsers(doc: Document, mark: string, opener?: Element) {
           io.observe(tb.lastElementChild);
         })
         .catch((e: unknown) => {
-          wait.textContent = `Couldn't load the list: ${e instanceof Error ? e.message : String(e)}`;
+          wait.textContent = `Couldn't load the list: ${errText(e)}`;
         });
     };
     page();

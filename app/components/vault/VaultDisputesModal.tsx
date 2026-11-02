@@ -35,6 +35,7 @@ import {
   type VaultDispute,
 } from "@/hooks/useVaultCache";
 import ImageLightbox from "@/components/vault/ImageLightbox";
+import { errText } from "@/lib/errText";
 
 const REGION_LABEL: Record<string, string> = {
   vulva_vis: "vulva",
@@ -150,7 +151,7 @@ function DisputeCard({
       await resolveDispute(accountId, d.media_id, d.propose[side]);
       onDone();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(errText(e));
     } finally {
       setBusy(null);
     }
@@ -292,7 +293,7 @@ export default function VaultDisputesModal({
           {isLoading && <p className="text-[12px] text-fg-dim">Checking…</p>}
           {error && (
             <p className="text-[12px] text-err">
-              {error instanceof Error ? error.message : String(error)}
+              {errText(error)}
             </p>
           )}
           {data && (

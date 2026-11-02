@@ -19,6 +19,8 @@ import ClockRecordsModal from "@/components/stats/ClockRecordsModal";
 /** Midnight 1 Oct to the end of 15 Oct, New York: the report's range. */
 const FROM = "2026-10-01T04:00:00.000Z";
 const TO = "2026-10-16T03:59:59.999Z";
+/** Now, pinned inside the range (EDT) where a test reads the clock or the zone label. */
+const NOW = new Date("2026-10-15T14:07:42Z");
 
 /** Newest first, as the Relay lists them: one open, one auto-closed, one edited. */
 const RECORDS = [
@@ -93,6 +95,9 @@ const record = (id: number) => screen.getAllByRole("listitem")
 
 describe("ClockRecordsModal", () => {
   it("asks for the report's range at hour precision, its end hour included, and shows Infloww's lines in the zone", async () => {
+    // The label shows the zone's offset now; pin now inside the range's DST (UTC-4).
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
     await render();
     const dialog = await screen.findByRole("dialog", { name: "Clocked hours" });
     await screen.findByText(/^Clock in at Oct 15, 2026/);
@@ -191,7 +196,7 @@ describe("ClockRecordsModal", () => {
 
   it("\"Clock out now…\" on an open record sends only out_utc, this minute", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(new Date("2026-10-15T14:07:42Z"));
+    vi.setSystemTime(NOW);
     await render();
     await screen.findByText(/^Clock in at Oct 15, 2026/);
     expect(within(record(3)).queryByRole("button", { name: "Clock out now…" })).toBeNull();

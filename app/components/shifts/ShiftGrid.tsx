@@ -31,18 +31,18 @@ const HOVER_MS = 600;
 // #1a1a1a is `--tc-B-th` (dark); light falls back to the card fill.
 const B_TH = "bg-[#1a1a1a] [html[data-theme=light]_&]:bg-bg-elev-1";
 
-const dayLabel = (d: ZonedDay) => `${d.ddd} ${Number(d.dd)} ${MONTHS[Number(d.date.slice(5, 7)) - 1]}`;
-const employeeLine = (o: ShiftOccurrence) =>
+export const dayLabel = (d: ZonedDay) => `${d.ddd} ${Number(d.dd)} ${MONTHS[Number(d.date.slice(5, 7)) - 1]}`;
+export const employeeLine = (o: ShiftOccurrence) =>
   o.employees.length === 0 ? "No employee" : `${o.employees[0].display_name}${o.employees.length > 1 ? ` +${o.employees.length - 1}` : ""}`;
 const timeLine = (o: ShiftOccurrence, tz: string) =>
   `${fmtShiftTime(o.occurrence_start, tz)} - ${fmtShiftTime(o.occurrence_end, tz)}`;
 
 /** "Thursday, October 15, 2026" in `tz`. */
-const longDate = (iso: string, tz: string) =>
+export const longDate = (iso: string, tz: string) =>
   new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "long", month: "long", day: "2-digit", year: "numeric" })
     .format(new Date(iso));
 /** "Dec. 31, 2026" (Infloww's `MMM. D, YYYY`) from a YYYY-MM-DD date. */
-const untilDate = (date: string) => {
+export const untilDate = (date: string) => {
   const [y, m, d] = date.split("-").map(Number);
   return `${MONTHS[m - 1]}. ${d}, ${y}`;
 };

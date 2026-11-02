@@ -43,7 +43,7 @@ export interface MessageDetailsInfo {
   unlocked: boolean;
 }
 
-function fmtSent(iso?: string): string {
+export function fmtSent(iso?: string): string {
   const d = iso ? new Date(iso) : null;
   return d && !Number.isNaN(d.getTime())
     ? d.toLocaleString([], { dateStyle: "medium", timeStyle: "short" })

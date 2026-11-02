@@ -35,6 +35,7 @@ import {
   Badges, Bang, EyeIcon, EyeOffIcon, HINT, INPUT, INPUT_LOGIN, Logo, Notice, PINK, PINK_TEXT, UNDERLINE, WRAP,
 } from "@/components/auth/SiteLook";
 import { BRAND_NAME } from "@/lib/brand";
+import { errText } from "@/lib/errText";
 
 type Mode = "login" | "register";
 
@@ -78,7 +79,7 @@ export default function Landing() {
     } catch (err) {
       if (err instanceof TwoFactorRequired) setChallenge(err.challenge);
       else if (errorCode(err) === "account_deactivated") setDeactivated((err as Error).message);
-      else setError(err instanceof Error ? err.message : String(err));
+      else setError(errText(err));
     } finally {
       setBusy(false);
     }

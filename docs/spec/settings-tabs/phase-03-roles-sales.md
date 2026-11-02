@@ -165,7 +165,7 @@ Existing code (not Phase 0): `SaveRow` (`app/components/settings/StickySaveBar.t
 ## Further Notes
 - Every ASSUMPTION: above is decided. Nothing is open.
 - Built-ins stay listed even if a stored blob omits them, so a corrupted blob cannot lose them (rung 4).
-- The existing manual sale attribution (`service/server.py:10394`, `GET /admin/ingest/transactions/sales-needing-attribution`, and the assign endpoint after it) is untouched and does not read the `sales` blob; Sales Settings stays Not applied yet (ADR-0008).
+- The existing manual sale attribution (`service/tx_ingest_admin_api.py` `admin_sales_needing_attribution`, `GET /admin/ingest/transactions/sales-needing-attribution`, and the assign endpoint after it) is untouched and does not read the `sales` blob; Sales Settings stays Not applied yet (ADR-0008).
 
 ## Review
 Reviewer: codex (blind call, then draft call), 2026-10-13. The workspace lacked `app/hooks/`, so claims about `useRoster` were checked against this tree.
@@ -176,7 +176,7 @@ Blind call:
 - B3 Role lifecycle is undefined: editable built-ins, deletion, duplicates, which Employees can be assigned. **reject**: already covered by stories 4, 6, 9, 17 and 20 and the Built-ins decision. Deletion was then removed (see D3).
 - B4 The Sales fields have no defined meaning, defaults or opt-in key. **partial**: defaults and the key `subscriptions_chatter_opt_in` are already in Schema and "Defaults when `sales` is `{}`". Under ADR-0008 the meaning belongs to a future consumer, and that ASSUMPTION already says so.
 - B5 Test the Panel ↔ blob round trip, because a mock alone proves no persistence. **accept**: the walk's roles scenario now reloads `/settings/roles` and requires "Synthetic Role" from the mock's stored body. `test_settings_api.py` (round trip, user isolation) is already in Acceptance.
-- B6 The premise "no sales attribution" is too broad, since manual attribution exists (`service/server.py:10394`). **partial**: the spec never claimed there was none. Further Notes now records that the endpoint is untouched and does not read the `sales` blob (grep: no reader of `settings/roles|sales` in `service/*.py`).
+- B6 The premise "no sales attribution" is too broad, since manual attribution exists (`service/tx_ingest_admin_api.py` `admin_sales_needing_attribution`). **partial**: the spec never claimed there was none. Further Notes now records that the endpoint is untouched and does not read the `sales` blob (grep: no reader of `settings/roles|sales` in `service/*.py`).
 
 Draft call:
 - D1 The "not applied yet" sentence has no acceptance check. **accept**: both component tests and both walk scenarios now require it. The Panel also uses Phase 0's `NotAppliedYet` part (`phase-00-shell-tokens-blob.md:77,100`) instead of coining `NotAppliedNote`.

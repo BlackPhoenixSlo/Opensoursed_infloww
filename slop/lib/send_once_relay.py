@@ -4,7 +4,7 @@
 Only when a scenario writes `$DEMO_SHOTS_TMP/of-send-once.json` ({"fans": {"<account>:<fan>":
 "stall" | "hang" | "refuse_once"}, "stall_s": s, "hang_s": s}; read on every send, so a
 scenario rewrites it between phases), `_OfflineOF.send_message` (POST
-/api2/v2/chats/{fan}/messages, every flow's offline client inherits it)
+/api2/v2/chats/{fan}/messages, every flow's offline client and automation_relay's walker inherit it)
 answers per fan, the FIRST time OF sees that text (a resend of it answers as OF does):
   stall        OF takes the message, then the answer never comes: after `stall_s` (the client's
                30 s read timeout, compressed) the call raises curl_cffi's ReadTimeout, what

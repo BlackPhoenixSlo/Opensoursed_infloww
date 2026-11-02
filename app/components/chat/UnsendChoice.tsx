@@ -21,6 +21,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { useActionAllowed } from "@/components/shell/useGrantedPages";
 import type { OFMessage } from "@/lib/relay";
 import type { useUnsendMessage } from "@/hooks/useUnsendMessage";
+import { errText } from "@/lib/errText";
 
 export type UnsendScope = "chat" | "all";
 type Unsender = Pick<ReturnType<typeof useUnsendMessage>, "unsendOne" | "unsendQueue">;
@@ -41,7 +42,7 @@ export function useUnsendChoice(unsender: Unsender): { onUnsend: ((msg: OFMessag
     try {
       resp = await unsender.unsendOne(msg);
     } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
+      const reason = errText(err);
       window.alert(`Couldn't unsend: ${reason}`);
       return;
     }
@@ -73,7 +74,7 @@ export function useUnsendChoice(unsender: Unsender): { onUnsend: ((msg: OFMessag
     try {
       await unsender.unsendQueue(queue.id);
     } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
+      const reason = errText(err);
       window.alert(`Mass-unsend failed: ${reason}`);
     }
   }, [unsender, queueAllowed]);

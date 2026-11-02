@@ -25,6 +25,7 @@ import { AtSign } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { relay, toChoice, type TaggedCreatorChoice, type TaggedFriendUsersResp } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
+import { anchorPanel, type PopoverCoords } from "@/lib/anchorPanel";
 import { useInflowwPalette } from "./InflowwPalette";
 import { POP_HEAD, POP_PRIMARY, POP_ROW, TOOLBAR_ICON } from "./ComposerToolbar";
 import { notWiredTitle } from "./NotWired";
@@ -64,12 +65,7 @@ export function TagCreatorsPicker({
   // Portal+fixed coords so the popover escapes the host modal's overflow
   // clip (post/mass composers were chopping off the bottom and side of
   // the panel). Auto-picks up vs. down based on which side has room.
-  const [coords, setCoords] = useState<{
-    top?: number;
-    bottom?: number;
-    left: number;
-    maxHeight: number;
-  } | null>(null);
+  const [coords, setCoords] = useState<PopoverCoords | null>(null);
 
   useEffect(() => {
     const id = window.setTimeout(() => setDebounced(rawSearch.trim()), DEBOUNCE_MS);
@@ -93,18 +89,7 @@ export function TagCreatorsPicker({
     const update = () => {
       const r = buttonRef.current?.getBoundingClientRect();
       if (!r) return;
-      const PANEL_W = 320;
-      const PANEL_H_PREF = 384;
-      const margin = 8;
-      const wantLeft = r.left;
-      const maxLeft = window.innerWidth - PANEL_W - margin;
-      const left = Math.max(margin, Math.min(wantLeft, maxLeft));
-      const spaceAbove = r.top - margin;
-      const spaceBelow = window.innerHeight - r.bottom - margin;
-      const openDown = spaceBelow >= PANEL_H_PREF || spaceBelow > spaceAbove;
-      setCoords(openDown
-        ? { top: r.bottom + 8, left, maxHeight: Math.min(PANEL_H_PREF, spaceBelow) }
-        : { bottom: window.innerHeight - r.top + 8, left, maxHeight: Math.min(PANEL_H_PREF, spaceAbove) });
+      setCoords(anchorPanel(r, { width: 320, height: 384 }, { width: window.innerWidth, height: window.innerHeight }));
     };
     update();
     window.addEventListener("resize", update);

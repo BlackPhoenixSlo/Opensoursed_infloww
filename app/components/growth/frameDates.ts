@@ -18,12 +18,8 @@ export function createdDay(l: { created_at: string | null }, tz: string | null):
   return d ? dayKey(d, tz) : null;
 }
 
-/** A YYYY-MM-DD day moved by `n` days. */
-export function addDays(day: string, n: number): string {
-  const d = new Date(`${day}T00:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + n);
-  return d.toISOString().slice(0, 10);
-}
+/** A YYYY-MM-DD day moved by `n` days; re-exported from lib/dateRange. */
+export { addDayStr as addDays } from "@/lib/dateRange";
 
 /** The first of the month `m` months before a YYYY-MM-DD day (dayjs `subtract(m,"month").startOf("month")`). */
 export function monthStartBefore(day: string, m: number): string {

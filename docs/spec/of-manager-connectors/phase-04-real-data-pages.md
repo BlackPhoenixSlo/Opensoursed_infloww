@@ -38,7 +38,7 @@ With one Creator selected, each of these pages loads the Creator's rows through 
 24. As an Employee, I want every picture on these pages to load through the Relay's `/img` proxy, so that OnlyFans's IP-bound CDN links load and no request leaves for OnlyFans directly.
 25. As an Employee, I want a post's "More" button and the collections page's "Create new list" button to show the Read-only note, so that a click is never silent and never fakes success.
 26. As an Employee in All-Creators scope, I want every one of these pages to keep its Example rows and make no Relay call for these Data parts, so that no Creator's data is mixed in.
-27. As an Employee, I want a Relay error (no data) to leave the Example rows in place, and an empty Relay list to hide the Example rows and show the page's captured empty state, so that a broken feed never blanks the page and an empty feed is never shown as examples (precedent: `fill` hides examples with zero clones, ofMirrorData.ts:111-123; a missing Part keeps them, ofMirrorData.test.ts:155-160).
+27. As an Employee, I want a Relay error (no data) to leave the Example rows in place, and an empty Relay list to hide the Example rows and show the page's captured empty state, so that a broken feed never blanks the page and an empty feed is never shown as examples (precedent: `fill` hides examples with zero clones, ofMirrorData.ts; a missing Part keeps them, ofMirrorData.test.ts:155-160).
 28. As an Employee switching from one Creator to another or to All Creators, I want the page to drop the previous rows and show the new ones (or the examples), so that nothing stale lingers.
 29. As a maintainer, I want each Data part's field mapping written as a measured table (capture selector to Relay field), so that a recapture or a Relay shape change can be checked line by line.
 30. As a maintainer, I want a Mirror check (`feeds.py`) and vitest cases per Data part, so that a recapture that changes a selector fails loudly.
@@ -57,27 +57,27 @@ With one Creator selected, each of these pages loads the Creator's rows through 
 
   | Part | Page | Request |
   |---|---|---|
-  | posts | profile/index, profile/state-more-menu | `GET /api/of/v2/users/{id}/posts?limit=20` (server.py:5555 -> of_client.py:875); `{id}` from `GET /api/of/v2/users/me` (server.py:2044) `id` |
-  | profileMedia | profile/media | `GET /api/of/v2/users/{id}/posts/photos?limit=24` (server.py:5584) and `/posts/videos?limit=24` (server.py:5589) |
-  | queue | queue/index, queue/state-list-view | `GET /api/of/v2/schedules?publish_date=<start>&publish_date_end=<end>&time_zone=<browser IANA zone>&limit=50` (server.py:5883) |
-  | queue | queue/state-tab-messages | `GET /api/of/v2/messages/queue?limit=50` (server.py:5992), kept to items whose `scheduledDate` falls in `<start>..<end>` |
-  | queue | queue/saved-for-later-posts | `GET /api/of/v2/schedules/later/post?limit=50` (server.py:5878) |
-  | queue | queue/saved-for-later-messages | `GET /api/of/v2/schedules/later/chat?limit=50` (server.py:5873) |
-  | bookmarks | collections/bookmarks/all | `GET /api/of/v2/posts/bookmarks/all?limit=20` (server.py:6914) |
-  | notifications | notifications/index | `GET /api/of/v2/users/notifications?limit=20` (no `type`) (server.py:5359) |
-  | notifications | notifications/tip, subscribed, commented, mentioned | same, plus `&type=`: tip -> `tipped`, subscribed -> `subscribed`, commented -> `commented`, mentioned -> `mentioned` (of_client.py:748-752, "verified live 2026-06") |
-  | transactions | statements/earnings | `GET /api/of/v2/payouts/transactions?limit=20` (server.py:5907) |
-  | payouts | statements/payouts | `GET /api/of/v2/payouts/requests?limit=20` (server.py:5478) |
-  | referrals | statements/referrals | `GET /api/of/v2/payouts/requests/referral?limit=20` (server.py:6931) |
+  | posts | profile/index, profile/state-more-menu | `GET /api/of/v2/users/{id}/posts?limit=20` (server.py `of_user_posts` -> of_reads.py `user_posts`); `{id}` from `GET /api/of/v2/users/me` (server.py `users_me`) `id` |
+  | profileMedia | profile/media | `GET /api/of/v2/users/{id}/posts/photos?limit=24` (server.py `of_user_photos`) and `/posts/videos?limit=24` (server.py `of_user_videos`) |
+  | queue | queue/index, queue/state-list-view | `GET /api/of/v2/schedules?publish_date=<start>&publish_date_end=<end>&time_zone=<browser IANA zone>&limit=50` (server.py `of_schedules`) |
+  | queue | queue/state-tab-messages | `GET /api/of/v2/messages/queue?limit=50` (server.py `of_scheduled_messages`), kept to items whose `scheduledDate` falls in `<start>..<end>` |
+  | queue | queue/saved-for-later-posts | `GET /api/of/v2/schedules/later/post?limit=50` (server.py `of_schedules_later_post`) |
+  | queue | queue/saved-for-later-messages | `GET /api/of/v2/schedules/later/chat?limit=50` (server.py `of_schedules_later_chat`) |
+  | bookmarks | collections/bookmarks/all | `GET /api/of/v2/posts/bookmarks/all?limit=20` (of_stats_api.py `of_bookmarks_all`) |
+  | notifications | notifications/index | `GET /api/of/v2/users/notifications?limit=20` (no `type`) (server.py `of_notifications`) |
+  | notifications | notifications/tip, subscribed, commented, mentioned | same, plus `&type=`: tip -> `tipped`, subscribed -> `subscribed`, commented -> `commented`, mentioned -> `mentioned` (of_reads.py `notifications`, "verified live 2026-06") |
+  | transactions | statements/earnings | `GET /api/of/v2/payouts/transactions?limit=20` (server.py `of_transactions`) |
+  | payouts | statements/payouts | `GET /api/of/v2/payouts/requests?limit=20` (server.py `of_payout_requests`) |
+  | referrals | statements/referrals | `GET /api/of/v2/payouts/requests/referral?limit=20` (of_stats_api.py `of_referral_payouts`) |
 
   `<start>`/`<end>` come from `queueMonth` on the loaded frame; the queue request waits until the frame has loaded once. The browser time zone is `Intl.DateTimeFormat().resolvedOptions().timeZone`, as `useScheduledMessages` does.
 
-- **Method (all Parts).** Same as the existing Parts: hide the Example rows with `display:none` (`fill`), clone a template per real row with `make` (drops `data-oi-*` markers, marks `data-oi-data`), append, and register every change to a captured node with `track` so `restore` undoes it. Absent Relay field -> its element is removed or its text emptied (precedent: `applyChats` removes the unread dot, `applyVaultMedia` removes the date label). Text from OnlyFans HTML goes through `plain` (ofMirrorData.ts:130); dates through `valid`, `dayOf`, `clock`, `stamp`; pictures through `img` (= `proxyImage(url, accountId)`), still picked with `stillUrl` (ofMedia.ts:55). An empty Relay list counts as data: the examples hide and the captured empty state, where the page has one, stays visible.
+- **Method (all Parts).** Same as the existing Parts: hide the Example rows with `display:none` (`fill`), clone a template per real row with `make` (drops `data-oi-*` markers, marks `data-oi-data`), append, and register every change to a captured node with `track` so `restore` undoes it. Absent Relay field -> its element is removed or its text emptied (precedent: `applyChats` removes the unread dot, `applyVaultMedia` removes the date label). Text from OnlyFans HTML goes through `plain` (ofMirrorData.ts); dates through `valid`, `dayOf`, `clock`, `stamp`; pictures through `img` (= `proxyImage(url, accountId)`), still picked with `stillUrl` (ofMedia.ts:55). An empty Relay list counts as data: the examples hide and the captured empty state, where the page has one, stays visible.
 - **Templates.** Three pages capture no row of their own (measured: `queue/*` have no `.b-agenda__area-events__item` anywhere in `app/public/of-mirror/pages/`; `collections/bookmarks/all` has no `.b-post`; `statements/referrals` has only the `.empty-message` row). Their template is taken from another captured page: `useOfData` fetches the static page same-origin (`/of-mirror/pages/<page>.html`, a plain GET of a committed file, never the Relay), parses it inertly with `DOMParser` (scripts do not run), and passes the element in `MirrorData.templates`; `applyData` adopts it with `doc.importNode`. Fetched once per session (query key `["of-mirror-template", page]`, `staleTime: Infinity`), only in Single-Creator scope and only on a page that needs it.
   - `post` = the first `.vue-recycle-scroller__item-view` containing `div.b-post` in `profile/index.html` (used by bookmarks; profile itself clones its own).
   - `agenda` = `.b-queue-scroll-wrapper` in `queue/state-list-view.html`, with its `.empty-message` removed (used by the month pages, which have no list block).
   - `payoutRow` = the first `.b-table tbody tr` with `.b-table__date` and `span.approved` in `statements/payouts.html` (used by referrals; its table has the same four columns, measured: Date & Time | Invoice | Amount | Status).
-  - Queue items have no captured markup at all, so each item is built from the classes OnlyFans's own stylesheet defines for them (`queue-page-4c120c8f.css`: `.b-agenda__section`, `.b-agenda__section-date`, `.b-agenda__area-events`, `.b-agenda__area-events__item` with `post-indicator` / `chat-indicator` / `sfl-post-indicator` / `sfl-chat-indicator`, `.b-agenda__area-events__item-content`, `.b-agenda__area-events__item-details`, `.b-agenda__area-events__item-inward`), each element carrying the `data-v-*` scope attributes of the page's `.b-agenda` (the way `setAvatar` copies scope attributes, ofMirrorData.ts:154-156).
+  - Queue items have no captured markup at all, so each item is built from the classes OnlyFans's own stylesheet defines for them (`queue-page-4c120c8f.css`: `.b-agenda__section`, `.b-agenda__section-date`, `.b-agenda__area-events`, `.b-agenda__area-events__item` with `post-indicator` / `chat-indicator` / `sfl-post-indicator` / `sfl-chat-indicator`, `.b-agenda__area-events__item-content`, `.b-agenda__area-events__item-details`, `.b-agenda__area-events__item-inward`), each element carrying the `data-v-*` scope attributes of the page's `.b-agenda` (the way `setAvatar` copies scope attributes, ofMirrorData.ts).
 - **Row actions.** A post's `.b-post__tools__more button[aria-label='More']` (profile and bookmarks rows) and `collections/index`'s `button[aria-label='Create new list']` get a click handler that calls `note(doc, button, READ_ONLY)` (both exported from `ofMirrorWrites` by Phase 0) and carries no `data-oi-wired`: it sends nothing, so it is not a Wired control, and Phase 6's `dead.py` fails a marked control that shows the Read-only note. When Phase 6's click fallback lands, Phase 6 removes this handler if the fallback gives the same note. The handler is bound by `useOfData` on every frame load in both scopes (no Known body exists in either). "Request withdrawal" is captured `disabled` on both statements pages and stays so; queue items are built without a kebab (none captured), so "queue delete" has no control to bind.
 - **Ordering.** `useOfData` stays mounted after `useOfIdentity` and `useOfRow` (OfMirrorFrame.tsx:17-22), so a cloned profile post already carries the identity hook's name, handle and avatar, and the real rows win over `useOfRow`'s.
 
@@ -116,7 +116,7 @@ Container: `queue/state-list-view` -> its own `.b-agenda.m-main-block` (its `.em
 | `.b-agenda__section` | one per local calendar day of the item's time | sorted soonest first; saved-for-later items (no time) go in one section with no date |
 | `.b-agenda__section-date` text | day | `dayOf` ("Oct 12") |
 | `a.b-agenda__area-events__item` class | source | `/schedules` item `type: "post"` -> `post-indicator`, `type: "chat"` -> `chat-indicator`; `/messages/queue` -> `chat-indicator`; `/schedules/later/post` -> `sfl-post-indicator`; `/schedules/later/chat` -> `sfl-chat-indicator` |
-| `.b-agenda__area-events__item-details` text | time: `/schedules` `publishDateTime` (useScheduledMessages.ts:11); `/messages/queue` `scheduledDate` (relay.ts:831-835) | `clock`; empty when absent |
+| `.b-agenda__area-events__item-details` text | time: `/schedules` `publishDateTime` (useScheduledMessages.ts:11); `/messages/queue` `scheduledDate` (relayTypes.ts `OFScheduledMessage`) | `clock`; empty when absent |
 | `.b-agenda__area-events__item-inward` text | `/schedules` `entity.text`; other sources `text` | `plain(text)`, else "Media" when `mediaCount > 0` (precedent `applyChats`), else empty |
 
 The month calendar's day cells (`.b-month-day-cell`) are not changed: no captured markup marks a day with items.
@@ -129,7 +129,7 @@ Same as `posts`, plus:
 |---|---|---|
 | `.b-username .g-user-name` (text node before the verified icon) | `author.name` | empty when absent |
 | `.g-user-username` | `author.username` | `@<username>`; empty when absent |
-| `.b-post__avatar .g-avatar` | `author` | `setAvatar(el, author, img)`; when `author.avatar` is absent the cloned `img` (with its `.g-avatar__img-wrapper`) is removed, since `setAvatar` returns early and would keep the template's picture (ofMirrorData.ts:148); the placeholder letter is set where the template has one |
+| `.b-post__avatar .g-avatar` | `author` | `setAvatar(el, author, img)`; when `author.avatar` is absent the cloned `img` (with its `.g-avatar__img-wrapper`) is removed, since `setAvatar` returns early and would keep the template's picture (ofMirrorData.ts); the placeholder letter is set where the template has one |
 | `.b-post__avatar a`, `a.b-username` href | none | `#` (another creator's profile is not mirrored) |
 
 The sidebar "Recent" list (`.b-bookmarks__list`) keeps its captured empty state.
@@ -149,7 +149,7 @@ The sidebar "Recent" list (`.b-bookmarks__list`) keeps its captured empty state.
 
 ### Field mapping — `transactions` (statements/earnings; templates: a captured `tbody tr` whose `.b-table__status svg` is `icon-done`, and one whose is `icon-loading`; rows inserted before the `.infinite-loading-container` row)
 
-| Capture selector | Relay field (`/payouts/transactions` item; field names as `transaction_ingest._parse_row`, transaction_ingest.py:241-258) | Rule |
+| Capture selector | Relay field (`/payouts/transactions` item; field names as `transaction_ingest_decide._parse_row`) | Rule |
 |---|---|---|
 | `.b-table__date__date > span` | `createdAt` | `Mon D, YYYY` |
 | `.b-table__date__time > span` | `createdAt` | `clock` |
@@ -219,10 +219,10 @@ grep -q "feeds.py" docs/routes.md
 
 ## Further Notes
 
-- The notification `type` values follow the capture and the observed code, not the plan's literal list. The plan says index=`all`, tip=`tips`, subscribed=`subscribes`, commented=`comments`, mentioned=`mentions` (from the server.py:5363 docstring). But of_client.py:748-752 says plural forms return 400 and the working filters are past-tense singular ("verified live 2026-06"). The captured tab hrefs are `tip`, `subscribed`, `commented`, `mentioned`, and `NotificationBell` already sends exactly these with no `type` for All (NotificationBell.tsx:52-62). The Relay passes `type` through unchecked (server.py:5359-5394).
-  ASSUMPTION: rung 1 over the plan's literal values (the observation shows those values would 400, which would leave every tab on examples). The Tips tab sends `tipped`, the only value of_client.py:750 records as verified live, although NotificationBell.tsx:57 sends `tip` (unverified). Overturned if a live check shows `tipped` fails or `tips`/`all` work.
+- The notification `type` values follow the capture and the observed code, not the plan's literal list. The plan says index=`all`, tip=`tips`, subscribed=`subscribes`, commented=`comments`, mentioned=`mentions` (from the server.py `of_notifications` docstring). But of_reads.py `notifications` says plural forms return 400 and the working filters are past-tense singular ("verified live 2026-06"). The captured tab hrefs are `tip`, `subscribed`, `commented`, `mentioned`, and `NotificationBell` already sends exactly these with no `type` for All (NotificationBell.tsx:52-62). The Relay passes `type` through unchecked (server.py `of_notifications`).
+  ASSUMPTION: rung 1 over the plan's literal values (the observation shows those values would 400, which would leave every tab on examples). The Tips tab sends `tipped`, the only value of_reads.py `notifications` records as verified live, although NotificationBell.tsx:57 sends `tip` (unverified). Overturned if a live check shows `tipped` fails or `tips`/`all` work.
 - The plan's "same clone-template-row method" cannot hold on four pages that capture no row (queue/*, bookmarks, referrals, the month view's list). Those pages take a template from another captured page fetched same-origin, and queue items are built from OnlyFans's own stylesheet classes.
-  ASSUMPTION: rung 5 (it reuses captured markup and adds no dependency; the alternative of leaving these pages on their empty state would shrink the plan's goal). Overturned if review prefers building bare elements from OnlyFans classes for every page (the `chatMediaTemplate` fallback, ofMirrorData.ts:214-237), or dropping these pages.
+  ASSUMPTION: rung 5 (it reuses captured markup and adds no dependency; the alternative of leaving these pages on their empty state would shrink the plan's goal). Overturned if review prefers building bare elements from OnlyFans classes for every page (the `chatMediaTemplate` fallback, ofMirrorData.ts), or dropping these pages.
 - The month view has no captured list block, so the month's items show in a copy of the list view's agenda block placed under the calendar.
   ASSUMPTION: rung 4 (additive, removed by `restore`); overturned by a capture of OnlyFans's month view with events.
 - `queue/state-list-view` is not named in the plan; it is the only queue page with a captured agenda container, so it is wired to the same `/schedules` month as `queue/index`.
@@ -244,22 +244,22 @@ codex, 2026-10-12 (blind call + draft call, `model_reasoning_effort=high`, both 
 
 Blind call:
 - **reject** — Plural notification filters (`tips`, `subscribes`...) would 400: already decided in Further Notes against the plan's literals; the `tip` sub-point is handled under draft finding 1.
-- **reject** — Queue streams have no Part: the plan's queue list names no stream source (plan:204-206) and `/schedules` returns chats and posts only (of_client.py:1214-1219); `queue/state-tab-streams` stays captured (Story 13, Out of Scope).
-- **partial** — `state-tab-messages` source: of_client.py:1234-1236 calls `/schedules/later/chat` what OF's Queue tab shows and `/messages/queue` the older API. The plan names `/messages/queue` (plan:205), a binding constraint; the risk was already flagged in Further Notes and the claim is now cited there by this line.
+- **reject** — Queue streams have no Part: the plan's queue list names no stream source (plan:204-206) and `/schedules` returns chats and posts only (of_reads.py `schedules`); `queue/state-tab-streams` stays captured (Story 13, Out of Scope).
+- **partial** — `state-tab-messages` source: of_reads.py `schedules_later_chat` calls `/schedules/later/chat` what OF's Queue tab shows and `/messages/queue` the older API. The plan names `/messages/queue` (plan:205), a binding constraint; the risk was already flagged in Further Notes and the claim is now cited there by this line.
 - **partial** — Pagination and date window not asserted: paging stays Out of Scope (plan asks for the shown rows); `feeds.py` now also asserts `time_zone` on the queue request and each route's `limit`.
-- **reject** — Statements scope ambiguous: Out of Scope already names the statements index, stats and chargebacks tabs; of_client.py:1278's note is about a statements-history path this spec does not call.
+- **reject** — Statements scope ambiguous: Out of Scope already names the statements index, stats and chargebacks tabs; of_reads.py's note above `transactions` is about a statements-history path this spec does not call.
 - **accept** — Single-Creator error vs empty result unclear: merged with draft finding 4; Story 27 rewritten (error keeps examples, empty list shows the captured empty state).
-- **reject** — Alternative: page-specific hooks: house precedent is one Part pipeline in `ofMirrorData` (ofMirrorData.ts:489-506) and the plan says "new `Part`s in `ofMirrorData.ts`" (plan:202).
-- **reject** — Alternative: `/users/me/posts` (server.py:5562 accepts `me`): the plan fixes `id` from the `["of-me"]` query (plan:203); kept as a constraint, already flagged in Further Notes.
+- **reject** — Alternative: page-specific hooks: house precedent is one Part pipeline in `ofMirrorData` (`applyData`, ofMirrorData.ts) and the plan says "new `Part`s in `ofMirrorData.ts`" (plan:202).
+- **reject** — Alternative: `/users/me/posts` (server.py `of_user_posts` accepts `me`): the plan fixes `id` from the `["of-me"]` query (plan:203); kept as a constraint, already flagged in Further Notes.
 - **reject** — Alternative: `posts?type=` instead of photos + videos merged: the plan fixes "photos + videos merged newest first" (plan:204).
 - **partial** — Keep examples until each field contract is measured: the plan wants real rows now; unmeasured fields render empty, never examples, and are now labelled guessed (draft finding 3).
 - **reject** — Test at the iframe runtime boundary: that is Seam 2 (`feeds.py`, the `data.py` seam) already; no change.
 
 Draft call:
-- **needs-human** — Tips tab `type`. Codex: of_client.py:748-752 records `tipped` as the live-verified filter, so `tip` may 400 and a mocked `feeds.py` would still pass. Spec before review: `tip`, as NotificationBell.tsx:57 ships it. Decision for now: `tipped` (the only value with a recorded live check), ASSUMPTION in Further Notes. Settles it: one live `GET /api/of/v2/users/notifications?type=tipped` and `?type=tip` for a Creator with tips; whichever returns tip rows wins, and NotificationBell should follow.
-- **accept** — Fallbacks leave example pictures: `profileMedia` now removes the `img` when no still; bookmarks and notifications remove the cloned `img` when the author has no avatar (`setAvatar` returns early, ofMirrorData.ts:148); vitest asserts both.
+- **needs-human** — Tips tab `type`. Codex: of_reads.py `notifications` records `tipped` as the live-verified filter, so `tip` may 400 and a mocked `feeds.py` would still pass. Spec before review: `tip`, as NotificationBell.tsx:57 ships it. Decision for now: `tipped` (the only value with a recorded live check), ASSUMPTION in Further Notes. Settles it: one live `GET /api/of/v2/users/notifications?type=tipped` and `?type=tip` for a Creator with tips; whichever returns tip rows wins, and NotificationBell should follow.
+- **accept** — Fallbacks leave example pictures: `profileMedia` now removes the `img` when no still; bookmarks and notifications remove the cloned `img` when the author has no avatar (`setAvatar` returns early, ofMirrorData.ts); vitest asserts both.
 - **partial** — Mapping called measured while names are guessed: true for the fields listed in Further Notes, but live OnlyFans is out of bounds (floor 2); those rows are now labelled guessed, not measured, and render empty when wrong.
-- **accept** — Story 27 contradicted the Method on an empty list: Story 27 rewritten to the house behaviour (`fill` with zero clones hides examples, ofMirrorData.ts:111-123; missing Part keeps them, ofMirrorData.test.ts:155-160).
+- **accept** — Story 27 contradicted the Method on an empty list: Story 27 rewritten to the house behaviour (`fill` with zero clones hides examples, ofMirrorData.ts; missing Part keeps them, ofMirrorData.test.ts:155-160).
 - **accept** — "Create new list" Read-only note untested: added to the vitest and `feeds.py` cases.
 - **accept** — Creator-to-Creator switch untested: vitest A-then-B case and a `feeds.py` switch pass (account 1 -> 2 -> All Creators) added.
 

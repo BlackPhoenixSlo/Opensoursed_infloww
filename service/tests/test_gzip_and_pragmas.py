@@ -23,6 +23,7 @@ from db.engine import engine as db_async_engine, optimize as db_optimize  # noqa
 client = _harness.make_client()
 
 import server  # noqa: E402  — already imported by make_client
+import db_retention  # noqa: E402
 
 
 def _probe_routes() -> None:
@@ -129,8 +130,8 @@ async def case_init_db_optimizes_once_not_per_connection():
 
 def case_optimize_runs_on_its_own_loop():
     import inspect
-    assert "optimize" not in inspect.getsource(server._audit_retention_sweep)
-    assert server._DB_OPTIMIZE_INTERVAL_S == 6 * 60 * 60
+    assert "optimize" not in inspect.getsource(db_retention._audit_retention_sweep)
+    assert db_retention._DB_OPTIMIZE_INTERVAL_S == 6 * 60 * 60
 
 
 _harness.run()

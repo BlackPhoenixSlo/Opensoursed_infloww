@@ -13,7 +13,7 @@ BOTH fans, carrying run 0's caption.
 
 Load: per Creator (all at once, each Creator's sends in turn) RUNS broadcasts through the
 real `POST /api/of/v2/messages/queue` (owner session, X-Account-Id, `user_ids`), each a
-multi-line caption to its own PER_RUN fans (run 0's include the BOTH fans). Then OF's chat
+multi-line caption to its own `--per_run` fans (run 0's include the BOTH fans). Then OF's chat
 list (`FakeOF.chats`) shows every recipient's copy of its run as the last message, its text
 as OF echoes it (`\\n` -> `<br />\\n`, created a second after the send), and every STALE fan a
 Creator's own OF-web send of run 0's caption, now. `--users` open inboxes, as the app's
@@ -55,9 +55,6 @@ UI = False
 OF_WIRE = True
 FAULT = "placeholder-pair-ignores-window"
 RUNS = 3
-PER_RUN = {"small": 10, "medium": 60, "huge": 150}   # fresh recipients per run, per Creator
-STALE = {"small": 4, "medium": 20, "huge": 40}       # 2-day-old stub, OF-web send of its caption now
-BOTH = {"small": 2, "medium": 10, "huge": 20}        # 2-day-old stub AND in run 0
 STALE_AGE = timedelta(days=2)
 PAGE = 50                                            # the relay's /chats limit cap
 # useHeadPagePoll's 90 s, 2x compressed with jitter (declared). Not `refresh=1` on every page
@@ -95,7 +92,7 @@ async def run(ctx) -> None:
     w = await ctx.build(PROFILE)
     of_sessions.seed(w, w.data["creators"])
     aids = [c["id"] for c in w.data["creators"]]
-    n_run, n_stale, n_both = PER_RUN[ctx.scale], STALE[ctx.scale], BOTH[ctx.scale]
+    n_run, n_stale, n_both = (ctx.param(k, w.size[f"mass_placeholder_{k}"]) for k in ("per_run", "stale", "both"))
     rng = w.rng("scenario:mass-placeholder-echo")
 
     # Who gets what, per Creator: runs[k] (fresh recipients), stale, both (also in runs[0]).

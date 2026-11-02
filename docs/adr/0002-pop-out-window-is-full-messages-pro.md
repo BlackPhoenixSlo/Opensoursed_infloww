@@ -8,7 +8,7 @@ Infloww's Multi-Window opens a complete Messages Pro in another window (`docs/in
 
 ## Consequences
 
-- `PinnedSidePanel` is retired. It is the one-Fan page's left column of Pinned messages, not a list of Fans (`app/components/chat/PinnedPanel.tsx:235`, `ChatSurface.tsx:871`). Pinned messages stay reachable through `PinnedBar` and `PinnedPopover` in the same file.
+- `PinnedSidePanel` is retired. It is the one-Fan page's left column of Pinned messages, not a list of Fans (`app/components/chat/PinnedPanel.tsx:235`, `ChatSurface.tsx`). Pinned messages stay reachable through `PinnedBar` and `PinnedPopover` in the same file.
 - ASSUMPTION: by house precedent (the one-Fan page header comment, `[fanId]/page.tsx:5`), the Chat header's pop-out opens a Pop-out window at the Fan's Deep link. Under that assumption it does not open a Fan tab, even though the Clone's "Pop out" pins a tab (`messages.html:707`, `#tbOpen` title). This is overturned if the Phase 3 spec finds Infloww's "Open new" opens a Fan tab.
 
 ## Amended 2026-10-12

@@ -52,6 +52,7 @@ import {
   WEEKDAYS, createShift, editShift, fromZonedInput, occurrenceLabel, shiftClashes, shiftGrantable, toZonedInput,
   type CommonPeriod, type ShiftGrantable, type ShiftInput, type ShiftOccurrence, type ShiftScopeAt,
 } from "@/lib/shifts";
+import { errText } from "@/lib/errText";
 
 /** The antd field box (`IF_FIELD` in ui/infloww.tsx) on a native input. */
 const FIELD =
@@ -153,7 +154,7 @@ function errorText(e: unknown, creatorName: (id: string) => string, tz: string):
     }`);
     return `Not saved: "Multiple employees per shift" is off (Shift Settings). ${named.join("; ")}.`;
   }
-  return e instanceof Error ? e.message : String(e);
+  return errText(e);
 }
 
 function toggle<T>(list: T[], value: T): T[] {

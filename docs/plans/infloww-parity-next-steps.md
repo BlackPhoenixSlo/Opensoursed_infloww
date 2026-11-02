@@ -37,7 +37,7 @@ Copied from `nestStepsInflowCopy.txt`. They bind every Phase.
 YAGNI: the plan adds no new service, no new runtime dependency and no new scheduler.
 
 - Relay (FastAPI, `service/server.py`) with per-feature routers like `service/settings_api.py`. Tables are in `service/db/models.py`, and migrations are Alembic under `service/db/migrations/versions/`; the latest is `20261014_0100_split_inbox.py`.
-- Tenancy: `service/auth.py` `require_user` (`:142`), `assert_account_owned` (`:289`) and `require_master` (`:854`), plus `_account_isolation_middleware` in `service/server.py`. Chatter sessions use `service/chatters.py` `get_request_chatter` (`owner_user_ids`). The Employee mirror is `service/employees.py` `resolve_outbound_employee_id` / `resolve_chatter_employee_id` (`:549-620`).
+- Tenancy: `service/auth.py` `require_user`, `assert_account_owned` and `require_master`, plus `_account_isolation_middleware` in `service/server.py`. Chatter sessions use `service/chatters.py` `get_request_chatter` (`owner_user_ids`). The Employee mirror is `service/employees.py` `resolve_outbound_employee_id` / `resolve_chatter_employee_id`.
 - Settings blobs: the `user_settings` table, `GET`/`PUT /admin/settings/{tab}` for `account`, `preferences`, `roles`, `sales`, `time-tracking` and `messaging` (`service/settings_api.py:34`), and `useSettingsBlob` in the app. ADR-0007 and ADR-0008 are on the branch.
 - App: Next.js under `app/` with `app/lib/nav.ts` (the single route tree, `nb()` stubs), `app/lib/relay.ts`, `components/NotBuiltYet` and the shared Settings Panel parts (`SettingsTable`, `ToggleRow`, `Switch`, `Card`, `SubTabs`).
 - Tests: `pnpm -C app typecheck`, `pnpm -C app lint` and `pnpm -C app test:run` (vitest; `app/package.json` scripts). Relay tests are plain-assert scripts run as `./venv/bin/python service/tests/test_<x>.py` (228 files; for example `test_account_isolation_gate.py`, `test_chatter_access.py` and `test_settings_api.py`). Effort suites follow `.scratch/<effort>/suite.sh` (house precedent: `.scratch/settings-tabs/suite.sh`). The visual check loops are `scripts/ui-shots.sh` (Messages Pro), `scripts/settings-check/walk.py` and `scripts/of-mirror-check/*.py`.
@@ -75,7 +75,7 @@ Status values: done / partly / missing / intentionally different / blocked. "Bra
 | Settings: stored values applied (§3.10) | missing | ADR-0008: "Settings store what Infloww stores and apply none of it" |
 | Settings: 2FA, password, sessions, billing, wallet (§3.10) | blocked | Not wired by design (settings-tabs RUN.md "Cut"); no auth or billing backend |
 | Role permissions enforced server-side | missing | roles blob `{roles, assignments}` (`RoleSettingsTab.tsx:27`) is read by nothing |
-| Employee identity source | partly | owner sessions send client-picked `X-Employee-Id`, validated against ownership (`service/employees.py:569-583`); chatter sessions resolve server-side |
+| Employee identity source | partly | owner sessions send client-picked `X-Employee-Id`, validated against ownership (`service/employees.py` `resolve_outbound_employee_id`); chatter sessions resolve server-side |
 | Automations: Auto Post, Auto Story (§4.1) | done | `service/automations/auto_posts.py`, `auto_stories.py` |
 | Help center | intentionally different | `app/app/help-center/page.tsx` stub |
 | Phone layouts (§5) | intentionally different | Inflowwww improvement, `docs/routes.md` "Responsive behaviour" |
@@ -124,10 +124,10 @@ ASSUMPTION: the matrix goes in a new doc `docs/infloww-parity-matrix.md` rather 
 - Roadmap gate: "Agency tenancy enforced at every read/write; tests include cross-agency negative cases."
 - `docs/routes.md` (main): "Each owner account is an agency … the master role (`users.is_admin`) … sees every account."
 
-**Current state (observation).** Tenancy exists for account-scoped resources (`assert_account_owned`, the isolation middleware, `test_account_isolation_gate.py`), and agency-wide rows are keyed on the session user id (`settings_api.py`: "the user id comes from the session and never from the request"). Employee identity has three paths (`service/employees.py:549-590`):
+**Current state (observation).** Tenancy exists for account-scoped resources (`assert_account_owned`, the isolation middleware, `test_account_isolation_gate.py`), and agency-wide rows are keyed on the session user id (`settings_api.py`: "the user id comes from the session and never from the request"). Employee identity has three paths (`service/employees.py` `resolve_outbound_employee_id`):
 - A chatter session resolves server-side to a mirror Employee.
 - An owner session trusts a client-picked `X-Employee-Id` after an ownership check.
-- An unauthenticated caller's header is taken as-is (`:587-589`).
+- An unauthenticated caller's header is taken as-is.
 
 Shifts and S4S rows are agency-scoped but not account-scoped, and no helper returns the agency id for a chatter session, whose `owner_user_ids` can hold more than one owner.
 
@@ -198,7 +198,7 @@ ASSUMPTION: repeat rules are weekly by weekday with "Never" or an end date, expa
 - "Spec S4S as a consent-based, database-bounded network; implement tenancy before discovery UI."
 - Inventory §3.6 (help article H262108, local source): Create Post has a caption of up to 5000 characters and up to 10 media from the Vault, up to 20 posts per creator, and "Set as Primary Post". "Limit" is 1/2/3 per day, with "Discovery Page Visibility". The schedule is a monthly calendar with statuses "In progress" / "Will be posted shortly" / "Completed" / "Canceled". Requests are "Accept" / "Skip" / "Decline" with "Received" / "Sent" tabs. Posts are removed after 24h.
 
-**Current state.** Missing. `/share-for-share/[section]` is `NotBuiltYetRoute`, and the relay 403s any account outside the caller's agency (`_account_isolation_middleware`), which S4S discovery must cross on purpose. Reusable pieces: `Account` / `user_accounts` (creator to agency), `of_client.create_post` / `delete_post` with relay routes `POST /api/of/v2/posts` and `DELETE /api/of/v2/posts/{post_id}` (`server.py:7524,7541`), the Auto Post scheduler (`service/automations/auto_posts.py`) and the Vault picker.
+**Current state.** Missing. `/share-for-share/[section]` is `NotBuiltYetRoute`, and the relay 403s any account outside the caller's agency (`_account_isolation_middleware`), which S4S discovery must cross on purpose. Reusable pieces: `Account` / `user_accounts` (creator to agency), `of_sends.create_post` / `delete_post` with relay routes `POST /api/of/v2/posts` and `DELETE /api/of/v2/posts/{post_id}` (`server.py` `of_create_post`, `of_delete_post`), the Auto Post scheduler (`service/automations/auto_posts.py`) and the Vault picker.
 
 **Work.**
 - An ADR records the one deliberate exception to account isolation: a single discovery read returns only an allow-listed S4S projection of other agencies' opted-in Creators. Every other S4S write is checked with `assert_account_owned` on the caller's own Creator.

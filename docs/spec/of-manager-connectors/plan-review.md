@@ -54,7 +54,7 @@ Bullets about the set as a whole:
 
 ## Cut (YAGNI)
 
-- **Price control, paid posts and `previews`** (Phases 0, 1, 2): the capture has no price control, and a paid page refuses priced posts (server.py:7506).
+- **Price control, paid posts and `previews`** (Phases 0, 1, 2): the capture has no price control, and a paid page refuses priced posts (server.py `_refuse_paid_post_on_paid_page`).
 - **Labels, Save for Later, poll, quiz, expiration, target, format, voice and video writes** (Phase 0): no Known body (ADR-0005). They are read-only.
 - **The tag dialog's search, Sort, "Release form" tab, "Invite new user", row "More" menus and `search=` paging** (Phase 0): no Known body and not named. The first 50 rows match the capture's 50.
 - **Tag-row avatars through `/img`** (Phase 0): the rows keep the grey placeholder.
@@ -160,7 +160,7 @@ Every ASSUMPTION in the specs, sharpest first:
 ## Needs the human
 
 - **Phase 0:** the live check of one immediate post and one scheduled post with a Co-tag (unverified live, floor 2). Also the double-post risk: whether ambiguous failures on `POST /posts` are common enough to justify a Relay dedupe key.
-- **Phase 1:** whether real vault CDN URLs pass `proxy_image`'s host allowlist (server.py:3287-3297). This is unverified live.
+- **Phase 1:** whether real vault CDN URLs pass `proxy_image`'s host allowlist (img_api.py `_ALLOWED_CDN_SUFFIXES`). This is unverified live.
 - **Phase 2:** whether OnlyFans accepts a post with a duplicate `mediaFiles` id (a dedupe hit appends one). Also whether a `hidden` dedupe hit posts visibly. Both need one live post.
 - **Phase 3:** one live image story upload. The route is unverified live from this run.
 - **Phase 4 (needs-human, codex):** the Tips tab `type`. Run one live `GET /api/of/v2/users/notifications?type=tipped` and one `?type=tip` for a Creator with tips; the one that returns tip rows wins, and NotificationBell follows. Also recorded Relay responses for the guessed fields (payout `invoice`/`state`/`reason`, notifications `isRead`, bookmark `author`, saved-for-later `text`/`mediaCount`).

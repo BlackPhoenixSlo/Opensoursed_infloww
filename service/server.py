@@ -61,8 +61,8 @@ from of_client import DEFAULT_TIMEOUT_S, IMPERSONATE, INTERACTIVE_READ, OF_CDN_S
 import client_pool  # noqa: E402 — the relay's one OFClient pool
 from curl_cffi import requests as curl_requests  # noqa: E402  # proxy/network error types
 
-# Phase A — SQL persistence + SSE broadcaster. Both are additive: the
-# legacy WS subscribers in `_event_subscribers` keep working alongside.
+# Phase A — SQL persistence + SSE broadcaster: every pump event fans into
+# `events.handle_event` (see `_broadcast_event`).
 from db import init_db as db_init  # noqa: E402
 from db.repo import ensure_user_account_link, sync_from_disk as _sync_db_from_disk  # noqa: E402
 from events import (  # noqa: E402
@@ -97,6 +97,7 @@ import relay_cache  # noqa: E402  # in-process TTL cache for hot-path OF endpoin
 import of_promos  # noqa: E402  # `to_cents`, OF's dollars to our cents
 import relay_coalesce  # noqa: E402  # in-flight dedup for idempotent OF GETs (Stage B-2)
 import chats_page  # noqa: E402  # one logical page of OF /chats (inbox, badge)
+import db_retention  # noqa: E402  # DB retention loops (raw_json, audit, optimize, payload cap)
 from lists import router as _lists_router  # noqa: E402
 from automation_rules_api import router as _automation_rules_router  # noqa: E402
 from translate_api import router as _translate_router  # noqa: E402
@@ -176,16 +177,15 @@ def _kick_db_sync(reason: str) -> None:
     Wrapped in try/except + logged because a sync failure must NEVER bubble
     out of an admin response — the user's actual mutation already succeeded
     against the JSON write path."""
-    import asyncio as _aio
     try:
-        loop = _aio.get_running_loop()
+        loop = asyncio.get_running_loop()
     except RuntimeError:
         # Sync FastAPI handlers run in the threadpool; trampoline to the
         # main loop captured at startup.
         if _main_loop is None:
             return
         _main_loop.call_soon_threadsafe(
-            lambda: _aio.create_task(_sync_db_from_disk(), name=f"db-sync-{reason}")
+            lambda: asyncio.create_task(_sync_db_from_disk(), name=f"db-sync-{reason}")
         )
         return
     loop.create_task(_sync_db_from_disk(), name=f"db-sync-{reason}")
@@ -195,8 +195,7 @@ def _redact(s: str) -> str:
     """Mask user:password in a connection URL before logging.
     Turns 'postgresql://user:pass@host/db' into 'postgresql://***@host/db'.
     No-op for SQLite paths and any URL without credentials."""
-    import re as _re
-    return _re.sub(r"://[^/@]+@", "://***@", s)
+    return re.sub(r"://[^/@]+@", "://***@", s)
 
 log = logging.getLogger("of-relay")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -910,25 +909,21 @@ async def _persist_unhandled_errors(request: Request, call_next):
 
 # ── Realtime event bus ─────────────────────────────────────────
 # We connect ONCE to OF's WebSocket (wss://ws2.onlyfans.com/ws3/N) at startup
-# and fan every event out to (a) browser clients on /events (SSE) and (b) any
-# local subscribers (CLI tailer, future plugins).
-# Subscribers are asyncio.Queue instances; if a queue is full, we drop the
-# oldest message rather than block the producer.
+# and fan every event out to browser clients on /events (SSE), via the events
+# module (which also persists to event_inbox).
 
-_event_subscribers: set[asyncio.Queue] = set()
 _event_stats: dict[str, Any] = {
     "received": 0,
     "by_type": {},
     "by_account": {},
     "started_at": None,
     "last_event_ts": None,
-    "subscribers": 0,
 }
 
 async def _broadcast_event(event: dict) -> None:
-    """Push an event to every subscriber queue and the SSE module."""
+    """Tally an event in `_event_stats` and hand it to the SSE module."""
     _event_stats["received"] += 1
-    _event_stats["last_event_ts"] = __import__("time").time()
+    _event_stats["last_event_ts"] = _time_mod.time()
     if isinstance(event, dict):
         for k in event:
             if k.startswith("__"):  # don't tally our own meta-keys
@@ -937,26 +932,9 @@ async def _broadcast_event(event: dict) -> None:
         aid = event.get("__account_id")
         if aid:
             _event_stats["by_account"][aid] = _event_stats["by_account"].get(aid, 0) + 1
-    _event_stats["subscribers"] = len(_event_subscribers)
 
-    dead: list[asyncio.Queue] = []
-    for q in _event_subscribers:
-        try:
-            q.put_nowait(event)
-        except asyncio.QueueFull:
-            # Drop oldest, push new — better than blocking the OF pump
-            with contextlib.suppress(asyncio.QueueEmpty):
-                q.get_nowait()
-            try:
-                q.put_nowait(event)
-            except Exception:
-                dead.append(q)
-    for q in dead:
-        _event_subscribers.discard(q)
-
-    # Phase A: also fan into the SSE module + persist to event_inbox. Wrapped
-    # in try/except because we never want a SQL hiccup to break the legacy
-    # WS broadcast — those subscribers were already served above.
+    # Fan into the SSE module + persist to event_inbox. Wrapped in try/except
+    # so a SQL hiccup never propagates into the OF pump that called us.
     try:
         await _sse_handle_event(event)
     except Exception:
@@ -1332,7 +1310,7 @@ async def _close_streams_on_term() -> None:
 async def _start_event_pumps() -> None:
     global _supervisor_task, _tx_ingest_task, _tx_fast_task, _automation_exec_task, _main_loop
     _main_loop = asyncio.get_running_loop()
-    _event_stats["started_at"] = __import__("time").time()
+    _event_stats["started_at"] = _time_mod.time()
 
     # Inflowwww proxy pool, before anything below (vault sweep, pumps, the
     # automation lane) can load an OFClient, so every client is built with the
@@ -1499,27 +1477,12 @@ async def _start_event_pumps() -> None:
     # stays bounded. Retain window via PERFLOG_RETAIN_S (default 7d).
     asyncio.create_task(_perflog_evictor_loop(), name="perflog-evictor")
 
-    # Cap DB growth: NULL out messages.raw_json older than _RAW_JSON_RETAIN_S
-    # (default 60d). The payloads are a write-only migration buffer; left
-    # unbounded they grew the DB to ~1.9 GB. Daily ticks.
-    asyncio.create_task(_raw_json_evictor_loop(), name="raw-json-evictor")
-
-    # Hard SIZE ceiling on the two raw-OF-payload columns (event_inbox +
-    # messages.raw_json) so the SQLite file stays well under ~2 GB even when
-    # VOLUME, not age, is the problem. Drives off logical SUM(LENGTH(...)),
-    # evicts oldest-first down to PAYLOAD_BUDGET_BYTES (never breaching the
-    # EVENT_INBOX_RETAIN_FLOOR_S floor), then returns freed pages to the OS.
-    # Touches no fan rows. Hourly ticks. See _payload_size_cap_loop.
-    asyncio.create_task(_payload_size_cap_loop(), name="payload-size-cap")
-
-    # Retention sweep for the append-only audit/log tables (automation_runs,
-    # grok_calls, scheduled_jobs terminal rows, actions) — none had any prune,
-    # so they grew unbounded and crept the DB back up after the raw-payload
-    # columns were capped. Daily ticks; per-table windows via *_RETAIN_S env.
-    asyncio.create_task(_audit_retention_evictor_loop(), name="audit-retention-evictor")
-
-    # Planner statistics stay current as tables grow (see _db_optimize_loop).
-    asyncio.create_task(_db_optimize_loop(), name="sqlite-optimize")
+    # DB retention loops (raw_json age, payload size cap, audit/log tables,
+    # sqlite optimize) — see service/db_retention.py section headers.
+    asyncio.create_task(db_retention._raw_json_evictor_loop(), name="raw-json-evictor")
+    asyncio.create_task(db_retention._payload_size_cap_loop(), name="payload-size-cap")
+    asyncio.create_task(db_retention._audit_retention_evictor_loop(), name="audit-retention-evictor")
+    asyncio.create_task(db_retention._db_optimize_loop(), name="sqlite-optimize")
 
     # Opt-in periodic proxy probe (PROXY_HEALTH_INTERVAL_S; off by default).
     # Returns at once when unset.
@@ -1773,6 +1736,11 @@ def _resolve_account_id(request: Request | None) -> str:
     return aid
 
 
+def _current_aid() -> str:
+    """`_resolve_account_id` for the request in flight (`_request_ctx`)."""
+    return _resolve_account_id(_request_ctx.get())
+
+
 def _get_client(request: Request | None = None) -> OFClient:
     """Resolve the account for `request` (or — if not passed — the request
     captured by the middleware contextvar, falling back to the active
@@ -1824,13 +1792,12 @@ def _kick_mark_session_dead(account_id: str, reason: str, via: str) -> None:
 def _on_main_loop(make_coro, name: str) -> None:
     """Run `make_coro()` as a task on the relay's loop, from the loop itself or
     from a threadpool thread (sync handlers); dropped before startup."""
-    import asyncio as _aio
     try:
-        loop = _aio.get_running_loop()
+        loop = asyncio.get_running_loop()
     except RuntimeError:
         if _main_loop is None:
             return
-        _main_loop.call_soon_threadsafe(lambda: _aio.create_task(make_coro(), name=name))
+        _main_loop.call_soon_threadsafe(lambda: asyncio.create_task(make_coro(), name=name))
         return
     loop.create_task(make_coro(), name=name)
 
@@ -1863,8 +1830,7 @@ def _sync_and_link_after_bootstrap(account_id: str) -> None:
     loop = _main_loop
     if loop is None:
         return
-    import asyncio as _asyncio
-    fut = _asyncio.run_coroutine_threadsafe(_run(), loop)
+    fut = asyncio.run_coroutine_threadsafe(_run(), loop)
     try:
         # Wait so the row is visible by the time we answer, capped so a slow
         # import can't hang the response. On timeout the coroutine keeps
@@ -2424,7 +2390,7 @@ def _account_ttl(namespace: str, ttl_seconds: float):
         @functools.wraps(fn)   # FastAPI reads the route's parameters through __wrapped__
         async def cached(**params):
             try:
-                aid = _resolve_account_id(_request_ctx.get())
+                aid = _current_aid()
             except HTTPException:
                 return await asyncio.to_thread(fn, **params)
             key = (fn.__name__, *sorted(params.items()))
@@ -2645,7 +2611,7 @@ def users_me() -> dict[str, Any]:
     me = _proxy(lambda: _get_client().me())
     # Free-vs-paid page rides on `subscribePrice` here; hand it to account_page
     # so the feed-post gate gets its answer without a second OF round-trip.
-    account_page.prime(_resolve_account_id(_request_ctx.get()), me)
+    account_page.prime(_current_aid(), me)
     return me
 
 
@@ -2676,460 +2642,6 @@ app.include_router(img_api.streams_router)
 import diag_api  # noqa: E402
 from diag_api import _perflog_evictor_loop  # noqa: E402
 app.include_router(diag_api.router)
-
-
-# ── messages.raw_json retention ───────────────────────────────────────
-#
-# `raw_json` stores the full OF message payload per row (avg ~8 KB, mostly
-# the media[] array nobody reads back — it's only a migration safety-net).
-# Left unbounded it grew the DB to ~1.9 GB. We keep a recent window so a
-# future backfill still has fresh payloads to read, and NULL anything older.
-#
-# This is a NULL-out, not a row delete — message rows stay intact, only the
-# heavy column is cleared. auto_vacuum is off, so freed pages return to the
-# freelist and are reused by new inserts; the file plateaus rather than
-# growing. To actually shrink the file on disk, run VACUUM manually.
-_RAW_JSON_RETAIN_S = int(os.environ.get("RAW_JSON_RETAIN_S", str(60 * 24 * 60 * 60)))
-_RAW_JSON_EVICT_INTERVAL_S = int(os.environ.get("RAW_JSON_EVICT_INTERVAL_S", str(24 * 60 * 60)))
-
-# How long after startup a DAILY sweeper takes its first pass (see `_periodic`
-# for why the daily ones need one at all). Long enough to stay out of startup's
-# way — index creation, the pumps connecting, the first ingest walk — and short
-# enough that a relay restarted twice a day still prunes twice a day. A restart
-# loop therefore re-sweeps, which is harmless: after the first pass these
-# deletes match nothing and cost only their scan.
-_EVICT_BOOT_GRACE_S = int(os.environ.get("EVICT_BOOT_GRACE_S", str(5 * 60)))
-
-
-async def _raw_json_sweep() -> None:
-    from db.engine import get_session
-    from db.models import Message
-    from sqlalchemy import update as sa_update
-    cutoff = datetime.utcnow() - timedelta(seconds=_RAW_JSON_RETAIN_S)
-    async with get_session() as s:
-        res = await s.execute(
-            sa_update(Message)
-            .where(Message.created_at < cutoff, Message.raw_json.isnot(None))
-            .values(raw_json=None)
-        )
-        await s.commit()
-        if (res.rowcount or 0) > 0:
-            log.info("raw_json evictor cleared %d rows (retain=%ds)", res.rowcount, _RAW_JSON_RETAIN_S)
-
-
-async def _raw_json_evictor_loop() -> None:
-    """Periodic NULL-out of messages.raw_json older than _RAW_JSON_RETAIN_S.
-    Caps DB growth (the payloads are a write-only migration buffer). Runs
-    daily by default; tune via RAW_JSON_RETAIN_S / RAW_JSON_EVICT_INTERVAL_S."""
-    await _periodic(
-        "raw_json evictor", _RAW_JSON_EVICT_INTERVAL_S, _raw_json_sweep,
-        # Daily interval, sub-daily uptime — see _periodic. 3,668 rows were
-        # still holding payloads past a 60-day window when this was measured.
-        first_after_s=_EVICT_BOOT_GRACE_S,
-    )
-
-
-# ── audit / log table retention ──────────────────────────────────────
-#
-# Four append-only tables had NO prune and grew unbounded — so the DB crept
-# back toward bloat from the audit side even after the raw-payload columns were
-# capped. Each gets a retention window; one daily sweep DELETEs rows past it.
-# These are ROW-deletes only. ⚠️ Prod is auto_vacuum=NONE (measured 2026-08-04:
-# `PRAGMA auto_vacuum` → 0, freelist 97782 pages), so deleted pages go to the
-# freelist and the FILE NEVER SHRINKS — `_reclaim_freelist()` early-returns
-# until the DB is converted to INCREMENTAL. This comment previously claimed the
-# opposite, which is precisely why grok_calls was allowed to reach 1.3 GB while
-# looking self-healing. Reclaiming disk needs a deliberate offline VACUUM.
-# Set any window to 0 to disable that table.
-_AUTOMATION_RUNS_RETAIN_S = int(os.environ.get("AUTOMATION_RUNS_RETAIN_S", str(14 * 24 * 60 * 60)))
-_GROK_CALLS_RETAIN_S = int(os.environ.get("GROK_CALLS_RETAIN_S", str(30 * 24 * 60 * 60)))
-_SCHEDULED_JOBS_RETAIN_S = int(os.environ.get("SCHEDULED_JOBS_RETAIN_S", str(7 * 24 * 60 * 60)))
-_ACTIONS_RETAIN_S = int(os.environ.get("ACTIONS_RETAIN_S", str(90 * 24 * 60 * 60)))
-_AUDIT_EVICT_INTERVAL_S = int(os.environ.get("AUDIT_EVICT_INTERVAL_S", str(24 * 60 * 60)))
-
-
-async def evict_audit_logs_once() -> dict[str, int]:
-    """One retention sweep of the append-only audit/log tables that otherwise
-    grow unbounded: automation_runs (run audit), grok_calls (LLM-call audit),
-    scheduled_jobs (only the TERMINAL done/error rows), actions (mutation audit).
-    Deletes rows older than each table's own window. grok_daily_cost (the cap
-    rollup) is a SEPARATE, tiny, un-pruned table, so spend/cap history survives
-    the grok_calls per-call prune. Returns {tablename: deleted_count}."""
-    from db.engine import get_session
-    from db.models import Action, AutomationRun, GrokCall, ScheduledJob
-    from sqlalchemy import delete as sa_delete
-
-    now = datetime.utcnow()
-    plan = [
-        (AutomationRun, AutomationRun.started_at, _AUTOMATION_RUNS_RETAIN_S, None),
-        (GrokCall, GrokCall.called_at, _GROK_CALLS_RETAIN_S, None),
-        (ScheduledJob, ScheduledJob.created_at, _SCHEDULED_JOBS_RETAIN_S,
-         ScheduledJob.status.in_(("done", "error"))),
-        (Action, Action.at, _ACTIONS_RETAIN_S, None),
-    ]
-    out: dict[str, int] = {}
-    for model, col, retain_s, extra in plan:
-        if retain_s <= 0:
-            continue
-        cutoff = now - timedelta(seconds=retain_s)
-        stmt = sa_delete(model).where(col < cutoff)
-        if extra is not None:
-            stmt = stmt.where(extra)
-        async with get_session() as s:
-            res = await s.execute(stmt)
-            await s.commit()
-            out[model.__tablename__] = int(res.rowcount or 0)
-    return out
-
-
-async def _audit_retention_sweep() -> None:
-    pruned = {k: v for k, v in (await evict_audit_logs_once()).items() if v}
-    if pruned:
-        log.info("audit-retention evictor pruned %s", pruned)
-
-
-async def _audit_retention_evictor_loop() -> None:
-    """Daily retention sweep of the unbounded audit/log tables. Tune each window
-    via AUTOMATION_RUNS_RETAIN_S / GROK_CALLS_RETAIN_S / SCHEDULED_JOBS_RETAIN_S
-    / ACTIONS_RETAIN_S (0 disables a table). See evict_audit_logs_once.
-
-    Sweeps after a boot grace rather than after a full day — this loop's own
-    interval used to exceed the process's typical uptime, so it had never run.
-    See _periodic for the measurements. The delete is one statement per table on
-    purpose: measured on a snapshot of the live DB, the two big ones clear 137k
-    and 133k rows in 798ms and 931ms, so the write lock is held for about a
-    second, once a day. Batching that would be machinery bought against a cost
-    nobody is paying."""
-    await _periodic(
-        "audit-retention evictor", _AUDIT_EVICT_INTERVAL_S, _audit_retention_sweep,
-        first_after_s=_EVICT_BOOT_GRACE_S,
-    )
-
-
-# SQLite's advice for long-lived connections: `PRAGMA optimize` every few hours
-# (init_db runs it once at boot). Refreshes planner stats only for tables whose
-# row counts moved, sampled (analysis_limit), so a pass is milliseconds.
-_DB_OPTIMIZE_INTERVAL_S = 6 * 60 * 60
-
-
-async def _db_optimize_loop() -> None:
-    from db.engine import optimize as _db_optimize
-    await _periodic("sqlite optimize", _DB_OPTIMIZE_INTERVAL_S, _db_optimize)
-
-
-# ── raw-OF-payload SIZE cap (event_inbox + messages.raw_json) ─────────
-#
-# Two columns hoard raw OnlyFans payloads we receive but read back only for
-# a short window:
-#   • event_inbox.payload_json — the raw WS/SSE event firehose. Every event
-#     is already transcoded into permanent tables (DMs → messages, subs →
-#     fans, tips → transactions); the envelope is re-read ONLY for SSE
-#     Last-Event-ID reconnect replay (minutes–hours) and provider_event_id
-#     idempotency. It was NEVER pruned → the real leak.
-#   • messages.raw_json — the full OF message JSON (mostly the media[] array
-#     nobody reads back). The real message lives in its own columns. The
-#     time-based _raw_json_evictor_loop (60d) already trims it; this size
-#     cap is the hard ceiling on top, for when volume — not age — is the
-#     problem.
-#
-# The time-based evictors above bound the trailing window; THIS bounds the
-# absolute footprint so the SQLite file stays well under ~2 GB.
-#
-# Two facts shape the design:
-#   1. auto_vacuum is OFF on the prod DB, so DELETE / NULL only moves pages
-#      to the freelist — the FILE plateaus at its high-water mark, it does
-#      not shrink. So a "if file > 2 GB, delete" cap would never shrink
-#      anything. We therefore drive the cap off LOGICAL content bytes
-#      (SUM(LENGTH(...))), and reclaim disk separately via incremental_vacuum
-#      once the DB has been converted to auto_vacuum=INCREMENTAL (a one-time
-#      full VACUUM — gated behind PAYLOAD_VACUUM_ON_START so it only runs on
-#      a deliberately-scheduled off-peak restart).
-#   2. We must lose ZERO fan data. The cap NEVER deletes messages/fans/
-#      transactions ROWS — it deletes spent event_inbox envelopes and NULLs
-#      the duplicate raw_json column, and NEVER touches anything newer than
-#      the retention floor (the last EVENT_INBOX_RETAIN_FLOOR_S stays intact
-#      for debugging + SSE replay).
-#
-# Default budget 1.5 GB of payload bytes keeps total DB < 2 GB (the rest —
-# message columns, fans, txns, indexes — is ~0.4 GB and grows slowly).
-_PAYLOAD_BUDGET_BYTES = int(os.environ.get("PAYLOAD_BUDGET_BYTES", str(1_500_000_000)))
-_PAYLOAD_RETAIN_FLOOR_S = int(os.environ.get("EVENT_INBOX_RETAIN_FLOOR_S", str(2 * 24 * 60 * 60)))
-_PAYLOAD_CAP_INTERVAL_S = int(os.environ.get("PAYLOAD_CAP_INTERVAL_S", str(60 * 60)))
-_PAYLOAD_EVICT_BATCH = int(os.environ.get("PAYLOAD_EVICT_BATCH", "2000"))
-# Unconditional age cap on the event_inbox landing table — runs EVERY tick,
-# independent of the byte budget above. event_inbox is a spent-envelope log:
-# the WS transcoder writes the real message/chat/transaction rows synchronously,
-# so nothing reads an envelope older than a couple days. The budget-driven cap
-# only trims event_inbox once LOGICAL payload exceeds PAYLOAD_BUDGET_BYTES
-# (1.5 GB) — which the envelope + raw_json bytes can sit under for a month while
-# the table still accretes hundreds of thousands of rows (the exact failure we
-# saw: 360k rows / 421 MB with the budget cap never firing). This hard age floor
-# holds event_inbox at a fixed ~2-day window no matter what the budget is doing.
-# Set to 0 to disable (fall back to budget-only behavior).
-_EVENT_INBOX_MAX_AGE_S = int(os.environ.get("EVENT_INBOX_MAX_AGE_S", str(2 * 24 * 60 * 60)))
-# One-time conversion of an existing auto_vacuum=NONE DB to INCREMENTAL +
-# the heavy full VACUUM that makes it take effect. Off by default; flip on
-# for a single off-peak restart (via a deploy), then unset. After conversion,
-# incremental_vacuum each tick returns freed pages to the OS for free.
-_PAYLOAD_VACUUM_ON_START = os.environ.get("PAYLOAD_VACUUM_ON_START", "0") == "1"
-# Pages reclaimed per tick once auto_vacuum=INCREMENTAL. Bounded so each tick
-# holds the write lock only briefly (default ~80 MB at 4 KiB pages).
-_PAYLOAD_INCR_VACUUM_PAGES = int(os.environ.get("PAYLOAD_INCR_VACUUM_PAGES", "20000"))
-
-# VACUUM / incremental_vacuum are whole-DB write locks; never let two run at
-# once, and never overlap a full VACUUM with an eviction pass.
-_payload_vacuum_lock = asyncio.Lock()
-
-
-def _floor_cutoff_str(floor_s: int) -> str:
-    """Retention-floor cutoff as the fixed-width string SQLAlchemy stores
-    DateTime in ('YYYY-MM-DD HH:MM:SS.ffffff'), so a raw `received_at < ?`
-    comparison sorts chronologically. Rows newer than this are never touched."""
-    return (datetime.utcnow() - timedelta(seconds=floor_s)).strftime("%Y-%m-%d %H:%M:%S.%f")
-
-
-async def _payload_bytes(conn) -> tuple[int, int]:
-    """(event_inbox.payload_json bytes, messages.raw_json bytes) via SUM(LENGTH).
-    This is the LOGICAL content size the cap is driven off — not file size."""
-    ev = (await conn.exec_driver_sql(
-        "SELECT COALESCE(SUM(LENGTH(payload_json)), 0) FROM event_inbox"
-    )).scalar() or 0
-    rj = (await conn.exec_driver_sql(
-        "SELECT COALESCE(SUM(LENGTH(raw_json)), 0) FROM messages"
-    )).scalar() or 0
-    return int(ev), int(rj)
-
-
-async def evict_payloads_once(
-    *,
-    budget_bytes: int | None = None,
-    floor_s: int | None = None,
-    batch: int | None = None,
-) -> dict[str, int]:
-    """Size-driven eviction of raw OF payloads. SQLite only (no-op elsewhere —
-    Postgres autovacuums and has no rowid).
-
-    Frees logical payload bytes until
-        SUM(LENGTH(event_inbox.payload_json)) + SUM(LENGTH(messages.raw_json))
-    is under `budget_bytes`, deleting the OLDEST event_inbox rows first (the
-    real leak, lowest value — a spent envelope), then NULLing the OLDEST
-    messages.raw_json — but NEVER touching any row whose timestamp is within
-    `floor_s` of now. Eviction happens in autocommit batches so the write
-    lock is released between batches and the WS pump keeps flowing.
-
-    Touches ONLY the two raw envelope columns; messages / fans / transactions
-    ROWS are left fully intact. Idempotent: a no-op once under budget, and a
-    no-op once everything older than the floor is gone (it will not breach the
-    floor to reach budget — it logs that it's floor-bound instead).
-
-    Returns a summary dict (also used by the test to assert before/after)."""
-    from db.engine import engine, _is_sqlite
-    budget = _PAYLOAD_BUDGET_BYTES if budget_bytes is None else budget_bytes
-    floor = _PAYLOAD_RETAIN_FLOOR_S if floor_s is None else floor_s
-    bsize = _PAYLOAD_EVICT_BATCH if batch is None else batch
-    if not _is_sqlite:
-        return {"skipped": 1}
-
-    cutoff = _floor_cutoff_str(floor)
-    deleted_events = nulled_messages = freed = 0
-
-    async with engine.connect() as conn:
-        await conn.execution_options(isolation_level="AUTOCOMMIT")
-        ev0, rj0 = await _payload_bytes(conn)
-        before = ev0 + rj0
-        over = before - budget
-
-        if over > 0:
-            # 1) event_inbox — delete oldest spent envelopes older than floor.
-            while freed < over:
-                row = (await conn.exec_driver_sql(
-                    "SELECT COALESCE(SUM(LENGTH(payload_json)), 0), COUNT(*) FROM "
-                    "(SELECT payload_json FROM event_inbox "
-                    " WHERE received_at < ? ORDER BY rowid ASC LIMIT ?)",
-                    (cutoff, bsize),
-                )).first()
-                nbytes, cnt = int(row[0] or 0), int(row[1] or 0)
-                if cnt == 0:
-                    break  # nothing left older than the floor
-                await conn.exec_driver_sql(
-                    "DELETE FROM event_inbox WHERE rowid IN "
-                    "(SELECT rowid FROM event_inbox WHERE received_at < ? "
-                    " ORDER BY rowid ASC LIMIT ?)",
-                    (cutoff, bsize),
-                )
-                deleted_events += cnt
-                freed += nbytes
-                await asyncio.sleep(0)  # yield between batches
-
-            # 2) messages.raw_json — NULL oldest duplicates older than floor.
-            while freed < over:
-                row = (await conn.exec_driver_sql(
-                    "SELECT COALESCE(SUM(LENGTH(raw_json)), 0), COUNT(*) FROM "
-                    "(SELECT raw_json FROM messages "
-                    " WHERE raw_json IS NOT NULL AND created_at < ? "
-                    " ORDER BY rowid ASC LIMIT ?)",
-                    (cutoff, bsize),
-                )).first()
-                nbytes, cnt = int(row[0] or 0), int(row[1] or 0)
-                if cnt == 0:
-                    break
-                await conn.exec_driver_sql(
-                    "UPDATE messages SET raw_json = NULL WHERE rowid IN "
-                    "(SELECT rowid FROM messages WHERE raw_json IS NOT NULL "
-                    " AND created_at < ? ORDER BY rowid ASC LIMIT ?)",
-                    (cutoff, bsize),
-                )
-                nulled_messages += cnt
-                freed += nbytes
-                await asyncio.sleep(0)
-
-        ev1, rj1 = await _payload_bytes(conn)
-
-    after = ev1 + rj1
-    summary = {
-        "before_bytes": before,
-        "after_bytes": after,
-        "budget_bytes": budget,
-        "freed_bytes": freed,
-        "deleted_events": deleted_events,
-        "nulled_messages": nulled_messages,
-        "event_bytes_after": ev1,
-        "raw_json_bytes_after": rj1,
-        "floor_bound": int(after > budget),  # 1 = floor stopped us short of budget
-    }
-    return summary
-
-
-async def prune_event_inbox_once(
-    *,
-    max_age_s: int | None = None,
-    batch: int | None = None,
-) -> dict[str, int]:
-    """Unconditional age-based prune of the event_inbox landing table. Deletes
-    EVERY row older than `max_age_s` (default _EVENT_INBOX_MAX_AGE_S = 2 days),
-    regardless of the size budget — unlike evict_payloads_once, which only trims
-    event_inbox when total LOGICAL payload exceeds PAYLOAD_BUDGET_BYTES.
-
-    event_inbox is a spent-envelope log: by the time a row lands here the WS
-    transcoder has already written the real message/chat/transaction rows, so an
-    envelope older than a couple days is dead weight (kept only for short-window
-    debugging + SSE replay). Touches ONLY event_inbox — messages / fans /
-    transactions are never referenced. Batched autocommit deletes so the WS
-    pump's write lock is released between batches and the firehose keeps flowing.
-    SQLite only (no-op elsewhere — Postgres has no rowid and autovacuums).
-
-    Returns {"deleted_events": N} (0 = nothing older than the cutoff)."""
-    from db.engine import engine, _is_sqlite
-    age = _EVENT_INBOX_MAX_AGE_S if max_age_s is None else max_age_s
-    bsize = _PAYLOAD_EVICT_BATCH if batch is None else batch
-    if not _is_sqlite or age <= 0:
-        return {"deleted_events": 0, "skipped": int(age <= 0)}
-
-    cutoff = _floor_cutoff_str(age)
-    deleted = 0
-    async with engine.connect() as conn:
-        await conn.execution_options(isolation_level="AUTOCOMMIT")
-        while True:
-            res = await conn.exec_driver_sql(
-                "DELETE FROM event_inbox WHERE rowid IN "
-                "(SELECT rowid FROM event_inbox WHERE received_at < ? "
-                " ORDER BY rowid ASC LIMIT ?)",
-                (cutoff, bsize),
-            )
-            n = int(res.rowcount or 0)
-            deleted += n
-            if n < bsize:
-                break
-            await asyncio.sleep(0)  # yield between batches — let the pump write
-    return {"deleted_events": deleted, "cutoff": cutoff}
-
-
-async def _maybe_convert_to_incremental_autovacuum() -> None:
-    """One-time: convert an existing auto_vacuum=NONE DB to INCREMENTAL so the
-    freelist can be returned to the OS. The conversion itself requires a full
-    VACUUM (rewrites the whole file — a heavy, whole-DB write lock), so it is
-    gated behind PAYLOAD_VACUUM_ON_START and runs at most once per boot. No-op
-    if already INCREMENTAL or not SQLite."""
-    from db.engine import engine, _is_sqlite
-    if not _is_sqlite or not _PAYLOAD_VACUUM_ON_START:
-        return
-    async with _payload_vacuum_lock:
-        try:
-            async with engine.connect() as conn:
-                await conn.execution_options(isolation_level="AUTOCOMMIT")
-                mode = (await conn.exec_driver_sql("PRAGMA auto_vacuum")).scalar()
-                if int(mode or 0) == 2:
-                    log.info("payload-cap: auto_vacuum already INCREMENTAL")
-                    return
-                log.warning("payload-cap: converting auto_vacuum→INCREMENTAL via full VACUUM "
-                            "(heavy, whole-DB lock) — this runs once")
-                await conn.exec_driver_sql("PRAGMA auto_vacuum=INCREMENTAL")
-                await conn.exec_driver_sql("VACUUM")
-                mode2 = (await conn.exec_driver_sql("PRAGMA auto_vacuum")).scalar()
-                log.warning("payload-cap: auto_vacuum now=%s (2=INCREMENTAL)", mode2)
-        except Exception:
-            log.warning("payload-cap: auto_vacuum conversion failed", exc_info=True)
-
-
-async def _reclaim_freelist() -> None:
-    """Return up to _PAYLOAD_INCR_VACUUM_PAGES freelist pages to the OS. Cheap
-    and bounded (unlike full VACUUM); only does anything once the DB is in
-    auto_vacuum=INCREMENTAL mode — otherwise it is a silent no-op. Guarded by
-    the vacuum lock so it never overlaps the one-time full VACUUM."""
-    from db.engine import engine, _is_sqlite
-    if not _is_sqlite:
-        return
-    async with _payload_vacuum_lock:
-        try:
-            async with engine.connect() as conn:
-                await conn.execution_options(isolation_level="AUTOCOMMIT")
-                if int((await conn.exec_driver_sql("PRAGMA auto_vacuum")).scalar() or 0) != 2:
-                    return  # NONE/FULL mode: incremental_vacuum is a no-op
-                free0 = int((await conn.exec_driver_sql("PRAGMA freelist_count")).scalar() or 0)
-                if free0 <= 0:
-                    return
-                await conn.exec_driver_sql(f"PRAGMA incremental_vacuum({_PAYLOAD_INCR_VACUUM_PAGES})")
-                free1 = int((await conn.exec_driver_sql("PRAGMA freelist_count")).scalar() or 0)
-                if free0 != free1:
-                    log.info("payload-cap: reclaimed %d freelist pages (%d→%d)",
-                             free0 - free1, free0, free1)
-        except Exception:
-            log.warning("payload-cap: incremental_vacuum failed", exc_info=True)
-
-
-async def _payload_size_cap_sweep() -> None:
-    pruned = await prune_event_inbox_once()
-    if pruned.get("deleted_events"):
-        log.info("event-inbox prune: deleted %d rows older than %ds",
-                 pruned["deleted_events"], _EVENT_INBOX_MAX_AGE_S)
-    summary = await evict_payloads_once()
-    if summary.get("freed_bytes"):
-        log.info(
-            "payload-cap: %d→%d MB (budget %d MB) — deleted %d events, "
-            "nulled %d raw_json%s",
-            summary["before_bytes"] // 1_000_000,
-            summary["after_bytes"] // 1_000_000,
-            summary["budget_bytes"] // 1_000_000,
-            summary["deleted_events"],
-            summary["nulled_messages"],
-            " (floor-bound)" if summary.get("floor_bound") else "",
-        )
-    await _reclaim_freelist()
-
-
-async def _payload_size_cap_loop() -> None:
-    """Periodic size cap on the raw OF payload columns. Each tick:
-      1. prune event_inbox to a hard ~2-day age window (unconditional — this is
-         what keeps the landing table from accreting a month-long backlog while
-         the byte budget sits idle);
-      2. evict raw payloads down to PAYLOAD_BUDGET_BYTES (honoring the floor);
-      3. return freed pages to the OS (once auto_vacuum=INCREMENTAL).
-    Hourly by default; tune via EVENT_INBOX_MAX_AGE_S / PAYLOAD_* env vars.
-
-    The autovacuum conversion runs ONCE, before the cadence starts — it is a
-    one-time migration of the DB's page layout, not part of the sweep."""
-    await _maybe_convert_to_incremental_autovacuum()
-    await _periodic("payload-cap", _PAYLOAD_CAP_INTERVAL_S, _payload_size_cap_sweep)
 
 
 # ── /admin/chats/recent — instant-load seed for the inbox ──────────
@@ -3350,7 +2862,7 @@ async def list_chats(
     # api2_chat_message (event_transcoder._inbox_patcher); an expired window is
     # served stale while one background read refreshes it (_LIST_CHATS_SWR).
     # ?refresh=1 bypasses the cache but still warms it for the next caller.
-    aid = _resolve_account_id(_request_ctx.get())
+    aid = _current_aid()
     q = query or search
     coalesce_key = ("list_chats", aid, limit, offset, order, filter, list_id, q)
     # The badge folds its counts from the plain recent page-0 window — when
@@ -3489,7 +3001,7 @@ async def chat_folders(
     blocking OF read moves into `asyncio.to_thread` exactly as `list_chats`
     does. `to_thread` copies the context, so `_get_client()` still resolves the
     same account inside the worker."""
-    aid = _resolve_account_id(_request_ctx.get())
+    aid = _current_aid()
     coalesce_key = ("chat_folders", aid, limit, offset)
 
     async def _fetch():
@@ -3510,7 +3022,7 @@ def _invalidate_chat_folders() -> None:
     call it inline. Never raises: an invalidation miss costs one stale minute,
     but a raise here would fail a write that already succeeded upstream."""
     try:
-        relay_cache.invalidate("chat_folders", _resolve_account_id(_request_ctx.get()))
+        relay_cache.invalidate("chat_folders", _current_aid())
     except Exception:  # noqa: BLE001
         log.debug("chat_folders invalidation skipped", exc_info=True)
 
@@ -3542,7 +3054,7 @@ async def get_messages(
     # (before_id=None) is where new messages land — we have no
     # per-message WS invalidator, so head MUST go through to OF every
     # time. Coalescing still applies on both paths.
-    aid = _resolve_account_id(_request_ctx.get())
+    aid = _current_aid()
     coalesce_key = ("get_messages", aid, chat_id, before_id, limit, order)
     async def _fetch():
         return await relay_coalesce.coalesce(coalesce_key, lambda: asyncio.to_thread(
@@ -3642,7 +3154,7 @@ async def list_users(
     event loop stays responsive while the upstream request is in flight.
     Direct `_proxy(...)` from this `async def` would freeze SSE, webhooks,
     and concurrent requests for the duration of the upstream call."""
-    aid = _resolve_account_id(_request_ctx.get())
+    aid = _current_aid()
     # IDs must be sorted in the key — two requests with [1,2,3] vs [3,2,1]
     # should coalesce. The OF response is keyed by user-id string anyway,
     # so per-waiter slicing is order-insensitive.
@@ -4220,8 +3732,7 @@ async def _record_fan_send(account_id: str, fan_id: int, result: Any, *,
     # drop, preview text). The WS echo of our own send also busts these, but it
     # can lag the response or be missed outright (pump down) — bust here so the
     # sender's own next list/badge read reflects the reply immediately.
-    relay_cache.invalidate("list_chats", account_id)
-    relay_cache.invalidate("roster_count", account_id)
+    _bust_chat_list_and_badges(account_id)
 
 
 # ── Dashboard / init ───────────────────────────────────────────
@@ -4230,7 +3741,7 @@ async def _record_fan_send(account_id: str, fan_id: int, result: Any, *,
 @app.get("/api/of/v2/labels")
 async def of_labels() -> dict[str, Any]:
     """Post labels (New post's ADD LABELS)."""
-    aid = _resolve_account_id(_request_ctx.get())
+    aid = _current_aid()
     key = ("labels", aid)
     async def _fetch():
         return await asyncio.to_thread(_proxy, lambda: _get_client().labels())
@@ -4262,7 +3773,7 @@ async def of_notifications(
     not per-employee (OF serves this off the session, and nothing on this
     path reads X-Employee-Id), so it satisfies relay_coalesce's rules.
     """
-    aid = _resolve_account_id(_request_ctx.get())
+    aid = _current_aid()
     # `type or ""` collapses absent and empty to ONE entry, matching
     # of_client.notifications, which forwards `type` only when truthy.
     extras = (limit, offset, type or "") + ((related_user,) if related_user is not None else ())
@@ -4287,7 +3798,7 @@ async def of_notifications_count(
     BC4: 30s TTL relay_cache (kept short — this is a badge the user is
     staring at). Invalidated by the same event set as BC3.
     """
-    aid = _resolve_account_id(_request_ctx.get())
+    aid = _current_aid()
     coalesce_key = ("notifications_count", aid)
     async def _fetch():
         return await relay_coalesce.coalesce(coalesce_key, lambda: asyncio.to_thread(
@@ -4320,7 +3831,7 @@ async def of_my_settings(
     this app) won't trigger invalidation. **5 minutes is the upper bound on
     staleness** in that case; callers can force a fresh fetch via ?refresh=1.
     """
-    aid = _resolve_account_id(_request_ctx.get())
+    aid = _current_aid()
     coalesce_key = ("my_settings", aid)
     async def _fetch():
         return await relay_coalesce.coalesce(coalesce_key, lambda: asyncio.to_thread(
@@ -4458,7 +3969,7 @@ async def of_tagged_friend_users(
     user typing "abc" then "abcd" intentionally produces two cache
     entries — OF's response shape differs per substring.
     """
-    aid = _resolve_account_id(_request_ctx.get())
+    aid = _current_aid()
     coalesce_key = ("tagged_friend_users", aid, search, limit, offset, filter, sort, skip_users)
     async def _fetch():
         return await relay_coalesce.coalesce(coalesce_key, lambda: asyncio.to_thread(
@@ -4654,7 +4165,7 @@ async def of_vault_media(
     share the cache, so the second open is instant. Cache is invalidated
     on uploads/deletes and ages out by TTL for external edits.
     """
-    aid = _resolve_account_id(_request_ctx.get())
+    aid = _current_aid()
     # Chatter Access (step 4): folder-visibility gate. Evaluate the deny
     # BEFORE touching vault_cache — a cached list_id=None "All" entry must
     # never reach a restricted chatter. SOFT deny (empty payload matching
@@ -4700,7 +4211,7 @@ async def of_vault_media_by_id(media_id: int) -> dict[str, Any]:
     can't be folder-scoped, so we require ownership instead). Cached server-side
     via vault_cache like the list route, so repeat loads are instant and shared.
     """
-    aid = _resolve_account_id(_request_ctx.get())
+    aid = _current_aid()
     assert_account_owned(aid)
     key = f"media-by-id:{media_id}"
     cached = await vault_cache.get(aid, key)
@@ -4764,7 +4275,7 @@ async def admin_vault_cache_invalidate() -> dict[str, Any]:
     """Drop every cached vault response for the current account. The picker's
     Refresh button calls this so both vault-media AND vault-lists go upstream
     on the next fetch (the `?refresh=1` flag only covers a single endpoint)."""
-    aid = _resolve_account_id(_request_ctx.get())
+    aid = _current_aid()
     deleted = await vault_cache.invalidate(aid)
     return {"ok": True, "account_id": aid, "deleted": deleted}
 
@@ -4777,7 +4288,7 @@ async def of_vault_lists(view: str = Query("main"), limit: int = Query(10, ge=1,
     """Vault folders. Note OF's required `view` param value is `main`.
     Cached server-side via vault_cache (same invalidation semantics as
     /api/of/v2/vault/media)."""
-    aid = _resolve_account_id(_request_ctx.get())
+    aid = _current_aid()
     # Chatter Access (step 4): compute the folder gate BEFORE the cache read
     # so a cached unfiltered payload is never handed straight to a restricted
     # chatter. None ⇒ no restriction (owner, or unrestricted chatter).
@@ -4904,7 +4415,7 @@ async def get_user(user_id_or_username: str) -> dict[str, Any]:
     /`Fan.notes` to match. Without this, the chat-list rail keeps
     showing the stale value because enrichWithUsers short-circuits to
     the local `by-ids` lookup for any fan we already know."""
-    aid = _resolve_account_id(_request_ctx.get())
+    aid = _current_aid()
     key = ("get_user", aid, user_id_or_username)
 
     async def _fetch():
@@ -5167,8 +4678,7 @@ async def of_unsend_message(request: Request, message_id: int):
     try:
         raw = await request.body()
         if raw:
-            import json as _json
-            parsed = _json.loads(raw)
+            parsed = json.loads(raw)
             if isinstance(parsed, dict) and parsed.get("withUserId") is not None:
                 with_user_id = int(parsed["withUserId"])
     except Exception:
@@ -5259,17 +4769,16 @@ async def _set_local_unread(account_id: str, *, fan_id: int | None, value: int) 
 
 def _bust_chat_list_and_badges(aid: str) -> None:
     """Drop the account's cached chat window AND its roster badge counts, after
-    an OF write that changes what both derive from: a read-state flip (mark
-    read/unread changes `unreadMessagesCount`) or a deleted chat (its row and
-    its count leave). Neither is a message, so the WS pump never busts these,
-    and without this both would serve the pre-write snapshot for their TTL."""
+    any OF write that changes the cached chat window or roster-badge counts.
+    A WS-driven bust may lag the response or never come, and without this
+    both would serve the pre-write snapshot for their TTL."""
     relay_cache.invalidate("list_chats", aid)
     relay_cache.invalidate("roster_count", aid)
 
 @app.post("/api/of/v2/chats/mark-as-read")
 async def of_mark_all_chats_read():
     """Mark EVERY chat as read (bulk no-arg endpoint)."""
-    aid = _resolve_account_id(_request_ctx.get())
+    aid = _current_aid()
     await _set_local_unread(aid, fan_id=None, value=0)
     result = await asyncio.to_thread(_proxy, lambda: _get_client().mark_all_chats_read())
     _bust_chat_list_and_badges(aid)
@@ -5292,7 +4801,7 @@ async def of_mark_chat_read(chat_id: int):
     Unpaced, bulk loops included: a read flip reaches no fan, and pacing it
     would reserve an 11 s write slot per chat ahead of the automations' fan
     sends."""
-    aid = _resolve_account_id(_request_ctx.get())
+    aid = _current_aid()
     await _set_local_unread(aid, fan_id=chat_id, value=0)
     result = await asyncio.to_thread(_proxy, lambda: _get_client().mark_chat_read(chat_id))
     _bust_chat_list_and_badges(aid)
@@ -5301,7 +4810,7 @@ async def of_mark_chat_read(chat_id: int):
 @app.delete("/api/of/v2/chats/{chat_id}/mark-as-read")
 async def of_mark_chat_unread(chat_id: int):
     """Mark chat as unread (same path as mark-read but DELETE)."""
-    aid = _resolve_account_id(_request_ctx.get())
+    aid = _current_aid()
     await _set_local_unread(aid, fan_id=chat_id, value=1)
     result = await asyncio.to_thread(_proxy, lambda: _get_client().mark_chat_unread(chat_id))
     _bust_chat_list_and_badges(aid)
@@ -5339,7 +4848,7 @@ async def of_delete_chat(chat_id: int):
     reversible. Paced (`_paced_of_write`); one chat per call (OF web's bulk form
     joins ids with commas, but no live capture vouches for it). Busts the cached
     chat list and the roster badge so the row and its count go on the next read."""
-    aid = _resolve_account_id(_request_ctx.get())
+    aid = _current_aid()
     r = await _paced_of_write(aid, lambda: _get_client().delete_chat(chat_id))
     _bust_chat_list_and_badges(aid)
     return r
@@ -5487,8 +4996,7 @@ async def of_restrict_user(user_id: int, request: Request, ack: bool = Query(Tru
     # The counts derive from the cached window + this registry — drop both
     # folds so the next badge/list read reflects the exclusion (and the hidden
     # row's disappearance) immediately.
-    relay_cache.invalidate("list_chats", account_id)
-    relay_cache.invalidate("roster_count", account_id)
+    _bust_chat_list_and_badges(account_id)
     return {"ok": True, "restricted": True, "acked": acked, "hidden": hidden, "of": result}
 
 @app.delete("/api/of/v2/users/{user_id}/restrict")
@@ -5509,8 +5017,7 @@ async def of_unrestrict_user(user_id: int, request: Request, unhide: bool = Quer
         except Exception:
             log.warning("unrestrict unhide-chat failed (account=%s fan=%s)",
                         account_id, user_id, exc_info=True)
-    relay_cache.invalidate("list_chats", account_id)
-    relay_cache.invalidate("roster_count", account_id)
+    _bust_chat_list_and_badges(account_id)
     return {"ok": True, "restricted": False, "of": result}
 
 @app.get("/api/of/v2/stories")
@@ -5563,7 +5070,7 @@ def of_set_reply_on_subscribe(body: _ReplyOnSubscribeBody = Body(...)):
     """Toggle the master `replyOnSubscribe` flag on /users/me."""
     result = _proxy(lambda: _get_client().set_reply_on_subscribe(body.enabled))
     # BC5 invalidation: this write changes /users/me/settings.replyOnSubscribe.
-    aid = _resolve_account_id(_request_ctx.get())
+    aid = _current_aid()
     relay_cache.invalidate("my_settings", aid)
     return result
 
@@ -5755,7 +5262,7 @@ def of_update_profile(body: dict = Body(...)):
     result = _proxy(lambda: _get_client().update_profile(**body))
     # BC5 invalidation: many /users/me fields are mirrored under
     # /users/me/settings, so any profile patch may change the cached blob.
-    aid = _resolve_account_id(_request_ctx.get())
+    aid = _current_aid()
     relay_cache.invalidate("my_settings", aid)
     # A profile PATCH can move `subscribePrice` — re-read the page tier next ask.
     account_page.invalidate(aid)
@@ -5769,7 +5276,7 @@ class _StorySettingsBody(BaseModel):
 def _settings_write(call: Callable[[], Any]) -> Any:
     """Proxy a settings write, then drop the cached /users/me/settings blob."""
     result = _proxy(call)
-    relay_cache.invalidate("my_settings", _resolve_account_id(_request_ctx.get()))
+    relay_cache.invalidate("my_settings", _current_aid())
     return result
 
 @app.patch("/api/of/v2/users/me/settings/security")
@@ -6634,7 +6141,7 @@ def _bust_chat_list_cache() -> None:
     rendering the old name (the "<name>/Whale" drawers stayed stale after a gen_info
     rewrite). The drawer's own read (get_user) is live + coalesced, so it needs no bust."""
     try:
-        aid = _resolve_account_id(_request_ctx.get())
+        aid = _current_aid()
         relay_cache.invalidate("list_chats", aid)
     except Exception as e:  # noqa: BLE001 — cache bust must never break the write response
         log.warning("relay_cache: chat-list invalidate after subscription write failed: %s", e)
@@ -6697,8 +6204,6 @@ def _upload_basename(raw: str | None) -> str:
     kept; a name with no stem left is `upload` plus that extension, else
     `upload.bin`. ASCII only, because the key goes into URLs we build without
     encoding (`of_client`: `s3_location`) and keys used to be plain temp names."""
-    import os
-    import re
     name = (raw or "").replace("\\", "/").rsplit("/", 1)[-1]
     stem, ext = os.path.splitext(name)
     if not re.fullmatch(r"\.[A-Za-z0-9]{1,15}", ext):
@@ -6715,7 +6220,7 @@ async def of_upload_media(file: UploadFile = File(...)):
     Returns {media_id, deduped, size, filename, ...}.
     The returned `media_id` is usable as mediaFiles=[id] in send/post calls
     after OF's transcoder finishes (typically 5-30s for images)."""
-    import tempfile, os, shutil
+    import tempfile, shutil
     # Spool to `<tempdir>/<the name, as safe ASCII>`: both clients name the
     # upload after `path.name` (S3 key, convert claim `name`, Fansly
     # `fileName`), so a bare NamedTemporaryFile landed every Composer upload in
@@ -6732,7 +6237,7 @@ async def of_upload_media(file: UploadFile = File(...)):
         # New vault item — every cached page is now potentially stale.
         # Drop the whole account's cache so the next picker open re-fetches.
         try:
-            aid = _resolve_account_id(_request_ctx.get())
+            aid = _current_aid()
             await vault_cache.invalidate(aid)
         except Exception as e:  # noqa: BLE001 — cache invalidation must never block the upload response
             log.warning("vault_cache: invalidate-on-upload failed: %s", e)
@@ -6931,7 +6436,7 @@ async def of_vault_upload_fan(username: str):
     read. The card shows the answer and sends its `id` and `username` back
     with the import, which re-checks them, so a typo can never quietly pick a
     different fan."""
-    aid = _resolve_account_id(_request_ctx.get())
+    aid = _current_aid()
     assert_account_owned(aid)
     client = _get_client()
     fan = await asyncio.to_thread(_vault_resolve_fan, client, username)
@@ -6975,13 +6480,13 @@ async def of_vault_upload_batch(
     other account from this same loop. Poll
     `/api/of/v2/vault/upload/status?run_id=…`.
     """
-    import asyncio, re, shutil, tempfile, time
+    import shutil, tempfile, time
     from concurrent.futures import TimeoutError as FuturesTimeout
     # Local import, matching every other automation_executor callsite here —
     # importing it at module scope reintroduces the load cycle its own docstring
     # warns about.
     from automation_executor import of_write_paced
-    aid = _resolve_account_id(_request_ctx.get())
+    aid = _current_aid()
     assert_account_owned(aid)
     # BEFORE `begin`, because it can raise. `_get_client` answers 503 for an
     # account whose OnlyFans session is dead — a first-class state here, with
@@ -7272,7 +6777,7 @@ async def of_vault_upload_batch_append(
     """Hand a run opened with `keep_open` its next file(s). `last` says that
     was everything (it may come with no file). 409 once the run has stopped
     taking files — it finished, failed, or sat idle past `OPEN_IDLE_S`."""
-    aid = _resolve_account_id(_request_ctx.get())
+    aid = _current_aid()
     assert_account_owned(aid)
     state = (vault_upload.read_state(run_id)
              if re.fullmatch(r"[\w.-]+", run_id or "") else None)
@@ -7314,7 +6819,7 @@ async def of_vault_drive_list(link: str):
     it: each file's name, size, whether it can be imported, and the hashtags
     its folder path gives it. Read-only — it lists, it downloads nothing.
     `max_files` is how many of them one import takes."""
-    aid = _resolve_account_id(_request_ctx.get())
+    aid = _current_aid()
     assert_account_owned(aid)
     limits = vault_upload.Limits(pace_s=0).checked()
     try:
@@ -7347,7 +6852,7 @@ async def of_vault_upload_status(run_id: str | None = None):
     suppressing its carrier warnings in the same breath BECAUSE the account was
     busy.
     """
-    aid = _resolve_account_id(_request_ctx.get())
+    aid = _current_aid()
     assert_account_owned(aid)
     # Whether the Drive import is on, for the card's Drive section: the key's
     # own reader answers (store first, then environment), so a paste in
@@ -7468,7 +6973,7 @@ async def of_create_story(body: _CreateStoryBody = Body(...)):
 @app.post("/api/of/v2/stories/upload")
 async def of_create_story_upload(file: UploadFile = File(...)):
     """Publish a directly-uploaded file as a story. Multipart field: `file`."""
-    import tempfile, os, shutil
+    import tempfile, shutil
     suffix = os.path.splitext(file.filename or "story.jpg")[1] or ".jpg"
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         shutil.copyfileobj(file.file, tmp)
@@ -7544,7 +7049,6 @@ def event_stats() -> dict[str, Any]:
     }
     return {
         **_event_stats,
-        "subscribers": len(_event_subscribers),
         "pumps": pumps,
         "pumps_running": sum(1 for p in pumps.values() if p["running"]),
         "supervisor_running": (_supervisor_task is not None and not _supervisor_task.done()),

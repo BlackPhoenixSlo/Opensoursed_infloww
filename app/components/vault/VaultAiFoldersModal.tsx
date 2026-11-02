@@ -39,6 +39,7 @@ import {
   type AiFolder,
   type ApplyAiFoldersResult,
 } from "@/hooks/useVaultCache";
+import { errText } from "@/lib/errText";
 
 const TIER_STYLE: Record<string, string> = {
   sfw: "border-muted/50 bg-muted/10 text-fg-dim",
@@ -180,7 +181,7 @@ export default function VaultAiFoldersModal({
       qc.invalidateQueries({ queryKey: ["vault-lists", accountId] });
       qc.invalidateQueries({ queryKey: ["vault-mirror-items"] });
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errText(e));
       console.error("apply AI folders failed", e);
     } finally {
       setBusy(false);
@@ -227,7 +228,7 @@ export default function VaultAiFoldersModal({
       await runVaultFlags(accountId);
       setSince(Date.now());
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errText(e));
     }
   }
 

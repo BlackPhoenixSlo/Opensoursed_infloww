@@ -16,8 +16,9 @@ error as before:
   follow_user(id)      POST /api2/v2/users/{id}/subscribe (the follow-back): recorded, `{ok}`.
   get_user(id)         GET /api2/v2/users/{id} for a fan in the Creator's feed: `{id, username,
                        name, subscribePrice: 0}` (a free profile, not followed yet: the
-                       follow-back's money gate passes). Wrapped in `wire` (lib/focus_relay.py's
-                       `OF.get_user` comes first in the bases); any other id: as before.
+                       follow-back's money gate passes). Wrapped in `wire`; any other id: as
+                       before (another part's `OF.get_user` if one is in the bases, else
+                       `_OfflineOF.__getattr__`: the client build's error).
   send_message         (wrapped in `wire`) answered by `_OfflineOF` as before, recorded per
                        Creator: {fan, id, text, giphy}.
 
@@ -91,13 +92,15 @@ class OF:
 def wire(app, loopback, relay) -> None:
     from fastapi import Request
 
-    real_get_user = relay._OfflineOF.get_user
+    real_get_user = getattr(relay._OfflineOF, "get_user", None)   # another part's `OF.get_user`, if any
     real_send = relay._OfflineOF.send_message
 
     def get_user(self, user_id, *a, **kw) -> dict:
         cfg = _cfg()
         u = _feed_user(cfg, self.account_id, user_id) if cfg is not None and str(user_id).isdigit() else None
         if u is None:
+            if real_get_user is None:   # as before this wrap: `_OfflineOF.__getattr__` answers
+                return relay._OfflineOF.__getattr__(self, "get_user")(user_id, *a, **kw)
             return real_get_user(self, user_id, *a, **kw)
         return {**u, "subscribePrice": 0}
 

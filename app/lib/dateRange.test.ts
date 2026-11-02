@@ -6,7 +6,7 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { PRESET_DAYS, dateBounds, presetRange, priorRange, shiftYears, toLocalIso } from "@/lib/dateRange";
+import { PRESET_DAYS, addDayStr, dateBounds, presetRange, priorRange, shiftYears, toLocalIso } from "@/lib/dateRange";
 
 describe("presetRange", () => {
   afterEach(() => vi.useRealTimers());
@@ -80,5 +80,30 @@ describe("priorRange", () => {
   it("has none without both ends or with the end first", () => {
     expect(priorRange(null, "2026-10-14")).toBeNull();
     expect(priorRange("2026-10-14", "2026-10-13")).toBeNull();
+  });
+});
+
+describe("addDayStr (FanReportsCard's and frameDates' `addDays`, moved)", () => {
+  /** frameDates' copy before the move, verbatim. */
+  function legacyFrameDates(day: string, n: number): string {
+    const d = new Date(`${day}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + n);
+    return d.toISOString().slice(0, 10);
+  }
+  it.each([
+    ["2026-01-31", 1, "2026-02-01"],
+    ["2026-12-31", 1, "2027-01-01"],
+    ["2028-02-28", 1, "2028-02-29"],
+    ["2027-02-28", 1, "2027-03-01"],
+    ["2026-03-08", 1, "2026-03-09"],
+    ["2026-03-08", -1, "2026-03-07"],
+    ["2026-11-01", 1, "2026-11-02"],
+    ["2026-03-01", -1, "2026-02-28"],
+    ["2026-01-01", -1, "2025-12-31"],
+    ["2026-05-15", 0, "2026-05-15"],
+    ["2026-03-15", -30, "2026-02-13"],
+  ])("addDayStr(%s, %i) is %s", (day, n, want) => {
+    expect(addDayStr(day, n)).toBe(want);
+    expect(addDayStr(day, n)).toBe(legacyFrameDates(day, n));
   });
 });

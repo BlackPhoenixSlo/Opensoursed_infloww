@@ -93,7 +93,7 @@ Only the site's front doors to the app are listed here; the site's other pages a
 
 ## Relay: OF Manager Statistics reads and Fans writes
 
-Relay routes (`service/server.py`) the Statistics pages can call. Each one is mapped to Statistics in `service/permissions.py` `PAGE_MAP`, so a role that holds only Statistics may call it and any other role gets a 403. Item ids go in the query or body, never the path: a path such as `/posts/{id}` is owned by other pages' routes. Paths and params come from OF's web bundle (`app.js` module ids below). OF's response body is returned unchanged. Tests: `service/tests/test_statistics_reads.py`, `test_statistics_writes.py`, `test_role_enforcement.py`.
+Relay routes (`service/server.py`, `service/of_stats_api.py`) the Statistics pages can call. Each one is mapped to Statistics in `service/permissions.py` `PAGE_MAP`, so a role that holds only Statistics may call it and any other role gets a 403. Item ids go in the query or body, never the path: a path such as `/posts/{id}` is owned by other pages' routes. Paths and params come from OF's web bundle (`app.js` module ids below). OF's response body is returned unchanged. Tests: `service/tests/test_statistics_reads.py`, `test_statistics_writes.py`, `test_role_enforcement.py`.
 
 | Method, path | Params / body | OF request (bundle module) |
 |---|---|---|

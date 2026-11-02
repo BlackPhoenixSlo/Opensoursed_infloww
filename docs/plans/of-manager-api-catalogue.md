@@ -63,7 +63,7 @@ Source: `app.js` module `458723`, unless the row says otherwise. Body built by `
 
 | Action | Method | Path | Body / query (types) | Response key fields | Source | Status |
 |---|---|---|---|---|---|---|
-| Create post (text, media, price/PPV, preview, poll, quiz, fundraising target, expiry, schedule, save-for-later, labels, tags) | POST | `/posts` | `text?: str`; `mediaFiles?: mediaFile[]`; `price?: number`; `preview: (id\|processId\|"poll")[]` (free teasers on a priced post; `"poll"` makes the poll free); `labelIds?: int[]`; `isScheduled?: 1` + `scheduledDate?: str` (date-picker value); Save-for-later: `isScheduled: 1, isPublishedWithPeriod: 1`, with no date; `expireDays?: int` (expiry period, days); poll: `votingType: 1` poll, `2` quiz; `votingOptions: str[]`; `votingDue?: int` (days, default 7); `votingCorrectIndex?: int` (quiz only); fundraising: `fundRaisingTargetAmount: number`, `fundRaisingTipsPresets: number[]`; `lockedText?: bool` (priced post); `rfTag/rfGuest/rfPartner: int[]`; `mediaEditorFiles?: {[processId]: {baseFile, stickers}}`; `saveUploads?: bool`; `tweetSend?: bool`; `isConsentAccepted?: bool` | post: `id`, `labelStates[]`, `postedAt`, `expiredAt`, `voting{options[{id,name,isCorrect}],finishedAt}`, `fundRaising{target,presets}`; errors `error.message`, `errors.text[0]` | `458723.S` (export `pD`); body `MakeFeedPost-72b1f13f.js getDataObject` | WIRED for `{text, mediaFiles, price:0, tags}` (`ofMirrorPost.ts:701` → relay `POST /posts`). DRIFT: relay `create_post` (`of_client.py:2368`) sends `postedAt`, `expirePeriod`, `fundRaisingTarget` and `votingDueDate`, but OF's client sends `isScheduled+scheduledDate`, `expireDays`, `fundRaisingTargetAmount+fundRaisingTipsPresets` and `votingDue`. Poll, quiz, labels and save-for-later are MISSING from `_CreatePostBody` |
+| Create post (text, media, price/PPV, preview, poll, quiz, fundraising target, expiry, schedule, save-for-later, labels, tags) | POST | `/posts` | `text?: str`; `mediaFiles?: mediaFile[]`; `price?: number`; `preview: (id\|processId\|"poll")[]` (free teasers on a priced post; `"poll"` makes the poll free); `labelIds?: int[]`; `isScheduled?: 1` + `scheduledDate?: str` (date-picker value); Save-for-later: `isScheduled: 1, isPublishedWithPeriod: 1`, with no date; `expireDays?: int` (expiry period, days); poll: `votingType: 1` poll, `2` quiz; `votingOptions: str[]`; `votingDue?: int` (days, default 7); `votingCorrectIndex?: int` (quiz only); fundraising: `fundRaisingTargetAmount: number`, `fundRaisingTipsPresets: number[]`; `lockedText?: bool` (priced post); `rfTag/rfGuest/rfPartner: int[]`; `mediaEditorFiles?: {[processId]: {baseFile, stickers}}`; `saveUploads?: bool`; `tweetSend?: bool`; `isConsentAccepted?: bool` | post: `id`, `labelStates[]`, `postedAt`, `expiredAt`, `voting{options[{id,name,isCorrect}],finishedAt}`, `fundRaising{target,presets}`; errors `error.message`, `errors.text[0]` | `458723.S` (export `pD`); body `MakeFeedPost-72b1f13f.js getDataObject` | WIRED for `{text, mediaFiles, price:0, tags}` (`ofMirrorPost.ts` `useOfPost` → relay `POST /posts`). DRIFT: relay `create_post` (`of_sends.py`) sends `postedAt`, `expirePeriod`, `fundRaisingTarget` and `votingDueDate`, but OF's client sends `isScheduled+scheduledDate`, `expireDays`, `fundRaisingTargetAmount+fundRaisingTipsPresets` and `votingDue`. Poll, quiz, labels and save-for-later are MISSING from `_CreatePostBody` |
 | Edit post | PUT | `/posts/{id}` | same body as create | post object | `458723.m` (`px`) | RELAY (text, price, mediaFiles only) |
 | Delete post | DELETE | `/posts/{id}` | none | `success`, `counters` | `458723.y` (`ys`) | APP |
 | Pin / unpin post (toggle) | POST | `/posts/{id}/pin?format=status` | none | `success` | `458723.h` (`c8`) | RELAY. DRIFT: relay unpins with `DELETE /posts/{id}/pin`, but OF's client toggles with the same POST |
@@ -79,7 +79,7 @@ Source: `app.js` module `458723`, unless the row says otherwise. Body built by `
 | List comments | GET | `/posts/{id}/comments` | `limit, offset, sort=desc, skip_users=all, format=infinite` | `{list, hasMore, nextOffset}` | `692492.n` (`rq`) | RELAY |
 | Post a comment | POST | `/posts/{id}/comments` | `{text: str, answerTo?: commentId, giphyId?: str}` | comment `id` | `692492.a` (`tP`); body from `comments/sendComment` in `notifications-b80f15b3.js` | RELAY (text only) |
 | Bookmark / unbookmark | POST / DELETE | `/posts/{id}/bookmarks` | `{chat_group_id?}` (DELETE: `data.chat_group_id`) | `success` | `458723.T/P/C/w` | MISSING |
-| Taggable creators | GET | `/posts/tagged-friend-users` | query object | `{list}` | `783434.p` | WIRED (`ofMirrorPost.ts:19`) |
+| Taggable creators | GET | `/posts/tagged-friend-users` | query object | `{list}` | `783434.p` | WIRED (`ofMirrorPostTags.ts` `tagsRoute`) |
 | Tag search / release forms | GET | `/release-forms`, `/release-forms/mentions` | query | `{list}` | `783434.f`, `.I` | MISSING |
 | Publish a save-for-later post now | PUT | `/schedules/{id}/publish` | none | `success` | `409363.u` (`V9`) | MISSING |
 | Posts by label / type (profile feed) | GET | `/users/{id}/posts[/photos\|videos]` | `limit, order=publish_date_desc, skip_users=all, format=infinite, label?, pinned?` | `{list, hasMore}` | `202600.h`, `.f` | WIRED (data) |
@@ -98,16 +98,16 @@ These are post labels. OF web uses `/labels` for posts, not for fans.
 | Sort labels | POST | `/labels/sort` | order object | `success` | `91019._` | MISSING |
 | Labels on a user | GET | `/users/{id}/labels` | `limit, offset, non-empty=1` | `{list}` | `91019.T` | RELAY |
 
-Note: the relay's `POST/DELETE /labels/{id}/users/{uid}` (`of_client.py:2464`) has no call site in this OF build.
+Note: the relay's `POST/DELETE /labels/{id}/users/{uid}` has no call site in this OF build.
 
 ## 2. Upload (composer "Add media", vault upload, story)
 
 | Action | Method | Path | Body | Response | Source | Status |
 |---|---|---|---|---|---|---|
-| Presigned multipart create | POST | `/upload/signed/create` | create payload (file meta) | presigned target(s) | `511627._s`, in `MakeFeedPost-017397ff.js`, `8532.js`, `85610.js` | CLIENT (`of_client.py:2534`, used inside relay upload) |
+| Presigned multipart create | POST | `/upload/signed/create` | create payload (file meta) | presigned target(s) | `511627._s`, in `MakeFeedPost-017397ff.js`, `8532.js`, `85610.js` | CLIENT (`of_upload.py` `request_signed_upload`, used inside relay upload) |
 | Presigned PUT part | PUT | (presigned URL, not api2) | file bytes, `Content-Type` | ETag | `511627.Rq` | CLIENT |
 | Presigned finish | POST | `/upload/signed/finish` | finish payload | `{processId, ...}` | `511627.dd` | CLIENT |
-| Convert-host upload (gives `processId/host/name/extra`) | POST | convert host from init config (`uploadPath` / `reUploadPath`), not api2 | multipart | claim | `21914.js` uploader | WIRED (relay `POST /upload`, `ofMirrorPost.ts:30`) |
+| Convert-host upload (gives `processId/host/name/extra`) | POST | convert host from init config (`uploadPath` / `reUploadPath`), not api2 | multipart | claim | `21914.js` uploader | WIRED (relay `POST /upload`, `ofMirrorPost.ts` `useOfPost`) |
 | Upload dedupe | GET | `/vault/media/hash` | query | match | `551564.i` | CLIENT |
 
 ## 3. Messages (single PPV, mass message, scheduled, save-for-later)
@@ -154,9 +154,9 @@ Source: `app.js` module `551564`.
 |---|---|---|---|---|---|---|
 | List media | GET | `/vault/media` | `limit, offset, list_id?, sort?, order?, type?, query?` | `{list[{id,type,files,listStates}], hasMore}` | `551564.n` | WIRED |
 | Media item / its posts / buyers | GET | `/vault/media/{id}`, `/{id}/posts`, `/{id}/buyers` | query | item / `{list}` | `551564.y/a/T` | RELAY (item) / MISSING |
-| Remove from vault | PUT | `/vault/media/hidden` | `{mediaIds: int[]}` | `success` | `551564.o` | CLIENT (`of_client.py:1107`) |
+| Remove from vault | PUT | `/vault/media/hidden` | `{mediaIds: int[]}` | `success` | `551564.o` | CLIENT (`of_sends.py` `hide_vault_media`) |
 | Folders list / one | GET | `/vault/lists`, `/vault/lists/{id}` | `view=main, limit, offset` | `{list[{id,name,type,videosCount,photosCount}]}` | `551564.c/d` | WIRED (list) |
-| Create folder | POST | `/vault/lists` | `{name: str}` | list `id`, `name` | `551564.l` (`Rt`) | CLIENT (`of_client.py:1137`) |
+| Create folder | POST | `/vault/lists` | `{name: str}` | list `id`, `name` | `551564.l` (`Rt`) | CLIENT (`of_sends.py` `create_vault_list`) |
 | Rename folder | PATCH | `/vault/lists/{id}` | `{name}` | list `id` | `551564.u` | CLIENT |
 | Delete folder | DELETE | `/vault/lists/{id}` | `data: {clearMedia: bool}` | `success` | `551564.m` | CLIENT |
 | Add media to folder (move = add to target + remove from source) | POST | `/vault/lists/{id}/media` | `{mediaIds: int[]}` | updated list (`id`) | `551564.p` (`F8`) | CLIENT |
@@ -211,7 +211,7 @@ Source: `app.js` module `502365`. Body built in `24785.js` (`uploadFinishHandler
 | Action | Method | Path | Body | Response | Source | Status |
 |---|---|---|---|---|---|---|
 | Publish story (upload or from vault) | POST | `/stories` | `mediaFiles: [vaultId \| {processId, name, host, extra}]`; `canvasHeight?`, `canvasWidth?`; `question?: {...}`; `answer?: {...}`; `texts?: {...}`; `post?: {...}` (share a post); `rfTag/rfGuest/rfPartner`; `mediaEditorFiles?`; `saveUploads?`; `isConsentAccepted?`. From vault the body is just `{mediaFiles: [vaultId]}` | story `id`, `media`, `isReady` | `502365.n` (`ko`), vuex `stories/createStory` | RELAY (`POST /stories`, `media_files`); image upload WIRED (`/stories/upload`); from-vault MISSING in UI |
-| Delete story | DELETE | `/stories/{id}` | none | `success`, `highlights[]` | `502365.m` (`Cn`) | CLIENT (`of_client.py:3449`) |
+| Delete story | DELETE | `/stories/{id}` | none | `success`, `highlights[]` | `502365.m` (`Cn`) | CLIENT (`of_sends.py` `delete_story`) |
 | Archive | GET | `/stories/archive` | `limit, marker` | `{list, hasMore}` | `502365.d` | RELAY |
 | Create / update highlight | POST / PUT | `/stories/highlights`, `/stories/highlights/{id}` | `{title: str, storyIds: int[], coverStoryId? \| thumbSourceId?, id?}` | highlight `id` | `502365.S` (`F1`) / `.I` (`oP`); `52715.js`, `90403.js` | MISSING |
 | Add story to highlight / remove / delete | PATCH / DELETE / DELETE | `/stories/highlights/{id}`, `/stories/highlights/{hid}/{storyId}`, `/stories/highlights/{id}` | patch body | `success` | `502365.v/A/y` | MISSING |

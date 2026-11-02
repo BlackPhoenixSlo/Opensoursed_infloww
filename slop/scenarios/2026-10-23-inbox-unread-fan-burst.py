@@ -36,7 +36,7 @@ RECENT_MAX = 100  # /admin/chats/recent limit cap: per-creator targets stay with
 
 async def run(ctx) -> None:
     w = await ctx.build(PROFILE)
-    per_fan = ctx.param("per_fan", {"small": 3, "medium": 5, "huge": 10}[ctx.scale])
+    per_fan = ctx.param("per_fan", w.size["inbox_unread_per_fan"])
     rate = ctx.param("rate", 0.0)  # frames/s per Creator; 0 = closed loop (next frame when the last returns)
     creators, fans = w.data["creators"], w.data["fans"]
     k = min(RECENT_MAX, math.ceil(ctx.users / len(creators)))

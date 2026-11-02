@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SIZE cap on the raw-OF-payload bloat (server.evict_payloads_once).
+"""SIZE cap on the raw-OF-payload bloat (db_retention.evict_payloads_once).
 
 Two columns hoard raw OnlyFans payloads we receive but read back only briefly:
 event_inbox.payload_json (the WS/SSE firehose — every event is already
@@ -29,7 +29,7 @@ from datetime import datetime, timedelta  # noqa: E402
 
 from sqlalchemy import func, select  # noqa: E402
 
-import server  # noqa: E402 — provides evict_payloads_once
+import db_retention  # noqa: E402 — provides evict_payloads_once
 from db.engine import get_session  # noqa: E402
 from db.models import Account, EventInbox, Fan, Message, Transaction  # noqa: E402
 
@@ -113,7 +113,7 @@ async def case_evicts_under_budget_keeps_floor_and_rows():
     assert before["messages"] == seeded_total, before
     assert before["event_bytes"] + before["raw_bytes"] > BUDGET, "seed not over budget"
 
-    summary = await server.evict_payloads_once(
+    summary = await db_retention.evict_payloads_once(
         budget_bytes=BUDGET, floor_s=FLOOR_S, batch=16)
 
     after = await _counts()
@@ -142,7 +142,7 @@ async def case_evicts_under_budget_keeps_floor_and_rows():
 async def case_second_pass_is_idempotent_noop():
     # Continues from the prior case's already-under-budget state.
     before = await _counts()
-    summary = await server.evict_payloads_once(
+    summary = await db_retention.evict_payloads_once(
         budget_bytes=BUDGET, floor_s=FLOOR_S, batch=16)
     after = await _counts()
     assert summary["freed_bytes"] == 0, summary
@@ -155,7 +155,7 @@ async def case_zero_budget_still_honors_floor():
     before = await _counts()
     # An impossible budget: evict EVERYTHING you're allowed to — but the floor
     # is a hard wall, so the recent window must survive regardless.
-    summary = await server.evict_payloads_once(budget_bytes=0, floor_s=FLOOR_S, batch=16)
+    summary = await db_retention.evict_payloads_once(budget_bytes=0, floor_s=FLOOR_S, batch=16)
     after = await _counts()
 
     # all OLD payloads gone, all RECENT payloads kept.
@@ -180,7 +180,7 @@ async def case_prune_event_inbox_is_unconditional_age_delete():
     before = await _counts()
     assert before["events"] == N_OLD + N_RECENT, before
 
-    summary = await server.prune_event_inbox_once(max_age_s=FLOOR_S, batch=16)
+    summary = await db_retention.prune_event_inbox_once(max_age_s=FLOOR_S, batch=16)
 
     after = await _counts()
     # every OLD envelope gone, every RECENT one kept — no budget consulted.
@@ -192,7 +192,7 @@ async def case_prune_event_inbox_is_unconditional_age_delete():
     assert after["msg_raw_present"] == before["msg_raw_present"], (after, before)
     assert after["fans"] == 3 and after["txns"] == 1, after
     # second pass is a no-op (idempotent).
-    again = await server.prune_event_inbox_once(max_age_s=FLOOR_S, batch=16)
+    again = await db_retention.prune_event_inbox_once(max_age_s=FLOOR_S, batch=16)
     assert again["deleted_events"] == 0, again
 
 

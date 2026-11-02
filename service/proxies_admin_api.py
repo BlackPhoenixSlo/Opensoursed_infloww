@@ -129,6 +129,14 @@ def admin_proxies_list() -> dict[str, Any]:
     }
 
 
+def _get_listed_proxy(label: str) -> dict[str, Any]:
+    """The proxy with `label`; 404 if none or it is the read-only pool entry."""
+    p = proxy_registry.get_by_label(label)
+    if p is None or proxy_registry.is_pool(p):
+        raise HTTPException(status_code=404, detail=f"no proxy with label {label!r}")
+    return p
+
+
 def _assert_proxy_owned_or_mine(label: str) -> dict[str, Any]:
     """Look up a proxy by label and verify the signed-in user may mutate it.
 
@@ -137,9 +145,7 @@ def _assert_proxy_owned_or_mine(label: str) -> dict[str, Any]:
     Friend-owned proxies (`user_id == me`) are freely mutable by that
     friend. Unauthed requests (cron, share-token bootstrap) bypass.
     """
-    p = proxy_registry.get_by_label(label)
-    if p is None or proxy_registry.is_pool(p):
-        raise HTTPException(status_code=404, detail=f"no proxy with label {label!r}")
+    p = _get_listed_proxy(label)
     user = _get_request_user()
     if user is None:
         return p
@@ -163,9 +169,7 @@ def _assert_proxy_assignable(label: str) -> dict[str, Any]:
     proxy (they can't see it, so they can't bind to it by guessing a label).
     Unauthed requests (cron, share-token bootstrap) bypass.
     """
-    p = proxy_registry.get_by_label(label)
-    if p is None or proxy_registry.is_pool(p):
-        raise HTTPException(status_code=404, detail=f"no proxy with label {label!r}")
+    p = _get_listed_proxy(label)
     user = _get_request_user()
     if user is None:
         return p
@@ -360,9 +364,7 @@ def admin_proxies_test(label: str) -> dict[str, Any]:
     # (own + shared defaults). Just blocks "test some other friend's
     # proxy by label" since they can't see it in the first place.
     user = _get_request_user()
-    p = proxy_registry.get_by_label(label)
-    if p is None or proxy_registry.is_pool(p):
-        raise HTTPException(status_code=404, detail=f"no proxy with label {label!r}")
+    p = _get_listed_proxy(label)
     if user is not None:
         pu = p.get("user_id")
         if pu is not None and pu != user.id:

@@ -10,7 +10,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { fmtAgo, fmtCents, fmtDuration, fmtPrice, parseUtc } from "./format";
+import { dollarsToCents, fmtAgo, fmtCents, fmtDuration, fmtPrice, parseUtc } from "./format";
 
 describe("fmtDuration", () => {
   it("renders m:ss", () => {
@@ -95,5 +95,33 @@ describe("money: fmtCents (aggregates) and fmtPrice (unit prices)", () => {
     expect(fmtPrice(null)).toBe("—");
     expect(fmtPrice(undefined)).toBe("—");
     expect(fmtPrice(Number.NaN)).toBe("—");
+  });
+});
+
+describe("dollarsToCents (MessageDashboardFilters' and MessageDashboardForm's `toCents`, moved)", () => {
+  /** Their copy before the move, verbatim. */
+  function legacyToCents(raw: string): number | null {
+    const n = Number(raw);
+    return raw.trim() === "" || !Number.isFinite(n) || n < 0 ? null : Math.round(n * 100);
+  }
+  const rows: [string, number | null][] = [
+    ["9.99", 999], ["", null], ["  ", null], ["abc", null], ["0.005", 1], ["1,000", null], ["-5", null], ["0", 0],
+    ["10", 1000],
+  ];
+  it.each(rows)("%j → %j", (raw, want) => {
+    expect(dollarsToCents(raw)).toBe(want);
+    expect(dollarsToCents(raw)).toBe(legacyToCents(raw));
+  });
+});
+
+describe("fmtCents stands in for CustomsTab's `money`", () => {
+  /** CustomsTab's `money` before the move, verbatim. */
+  function legacyMoney(cents: number | null | undefined): string {
+    if (cents == null) return "—";
+    return fmtCents(cents);
+  }
+  const rows: (number | null | undefined)[] = [null, undefined, Number.NaN, 0, -1, -49, -51, -1250, 49, 50, 150, 123456, 0.4];
+  it.each(rows)("%s", (c) => {
+    expect(fmtCents(c)).toBe(legacyMoney(c));
   });
 });

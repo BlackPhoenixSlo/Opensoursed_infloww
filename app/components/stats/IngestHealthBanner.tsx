@@ -27,20 +27,20 @@ import {
   type IngestTier,
 } from "@/hooks/useStats";
 
-function tier(t: IngestTier): { text: string; dot: string; label: string } {
+export function tier(t: IngestTier): { text: string; dot: string; label: string } {
   if (t === "green") return { text: "text-ok",   dot: "bg-ok",   label: "Healthy" };
   if (t === "yellow") return { text: "text-warn", dot: "bg-warn", label: "Watching" };
   return                       { text: "text-err",  dot: "bg-err",  label: "Action needed" };
 }
 
-function overallLabel(t: IngestTier, count: number): string {
+export function overallLabel(t: IngestTier, count: number): string {
   if (count === 0) return "No accounts bound";
   if (t === "green") return "All accounts up to date.";
   if (t === "yellow") return "One or more accounts behind.";
   return "Ingest paused or erroring.";
 }
 
-function relTime(mins: number | null, lastScanAt: string | null): string {
+export function relTime(mins: number | null, lastScanAt: string | null): string {
   if (lastScanAt == null) return "Never scanned";
   if (mins == null) return "—";
   if (mins < 1) return "just now";
@@ -51,7 +51,7 @@ function relTime(mins: number | null, lastScanAt: string | null): string {
   return `${d}d ago`;
 }
 
-function truncate(s: string, n: number = 120): string {
+export function truncate(s: string, n: number = 120): string {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
 }
 

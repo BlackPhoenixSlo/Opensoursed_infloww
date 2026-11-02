@@ -15,9 +15,9 @@ Ground truth is the plan's table (Dashboard bundle, CSS module `rxwf7`), re-read
 | `._disabled-input_rxwf7_242`: 448px, border `--tc-L1`, bg `--tc-B-th`, text `--tc-T1` | none | — | the username renders as a read-only 448px input |
 | `._translation-item_rxwf7_369`: 1px `--tc-L1`, radius 8px, margin 24px, padding 24px; title 14px/600; tip 12px/20px `--tc-T2` | none | no card | Current session card takes this geometry (ASSUMPTION A3) |
 | Colours `--tc-*` (light) / §1.4 [PAL] (dark) | Phase 0 `--if-*` block | — | both Panels read only `--if-*` tokens (ADR-0009) |
-| Employee roster: `GET /admin/employees` (`service/employees.py:95`) id, display_name, is_active, no 2FA, no last login | `app/hooks/useRoster.ts:44` (same cache as `EmployeeContext.tsx:80`) | no table | Employee table: Name / 2FA status / Last login / Operations |
+| Employee roster: `GET /admin/employees` (`service/employees.py` `list_employees`) id, display_name, is_active, no 2FA, no last login | `app/hooks/useRoster.ts:44` (same cache as `EmployeeContext.tsx:80`) | no table | Employee table: Name / 2FA status / Last login / Operations |
 | Disabled Employee greyed | `app/components/settings/EmployeesTab.tsx:140` `opacity-60` | — | same treatment (ASSUMPTION A5) |
-| `POST /auth/logout` clears every principal cookie (`service/auth.py:555-560`) | `app/contexts/UserContext.tsx:308-320` `logout()` posts `{}`, wipes caches, `location.replace("/")`; used by `app/components/shell/TopBar.tsx:102` | no Settings caller | "Sign out" calls `useUser().logout` |
+| `POST /auth/logout` clears every principal cookie (`service/auth.py` `logout`) | `app/contexts/UserContext.tsx:308-320` `logout()` posts `{}`, wipes caches, `location.replace("/")`; used by `app/components/shell/TopBar.tsx:102` | no Settings caller | "Sign out" calls `useUser().logout` |
 | Font `RobotoRegular` / Suisse Int'l | `--font-sans` | licensed font | VISUAL GAP: font (plan Constraints) |
 
 ## Problem Statement
@@ -54,7 +54,7 @@ Security (organization) shows Infloww's "Two-factor authentication" switch, disa
 - **Contracts.** Reads: `GET /auth/me`, `GET /admin/employees?include_disabled=true`. One write: `POST /auth/logout` with body `{}` (`UserContext.tsx:309`), response ignored (best effort), then `location.replace("/")`. No other non-GET request from either Panel.
 - Org Panel: `Section` (no title) holding the `ToggleRow` "Two-factor authentication" with description "Require every employee in your organization to use two-factor authentication" (A2); its switch shows off, is wrapped in `NotWired`, and has no state or handler. Then `Section` "Employees" with the four-column table: Name = color dot + `display_name`; 2FA status "—"; Last login "—"; Operations = `NotWired` "Reset". Rows follow the roster order (`created_at`).
 - Personal Panel: `Section` "Current session" holding the bordered card (A3): `Field` "Username" (read-only input, value `username`, "—" if absent) and a "Sign out" button (house `Button`, A4) that disables itself while the POST is in flight. Then `Section` "Password" with `NotWired` "Change password", and `Section` "Two-factor authentication" with `NotWired` "Enable 2FA".
-- Under impersonation `/auth/me` returns the impersonated user (`auth.py:567-572`) and the card shows that name; "Sign out" clears every principal cookie, the same as the avatar menu (rung 2/1: plan + `auth.py:557-560`).
+- Under impersonation `/auth/me` returns the impersonated user (`auth.py` `me`) and the card shows that name; "Sign out" clears every principal cookie, the same as the avatar menu (rung 2/1: plan + `auth.py` `logout`).
 - No `SaveRow`, no `useSettingsBlob`, no "Saved for your organization; not applied yet." note: these Panels store nothing (ADR-0008 applies the note to Blob tabs only).
 - The Employees table sits in an `overflow-x-auto` box; the Panels add no fixed width beyond Phase 0's parts.
 
@@ -125,12 +125,12 @@ Reviewer: codex (blind call + draft call, `model_reasoning_effort=high`), 2026-1
 Blind call:
 - B1 reject (no defect claimed) — Alternative "parity shell, unsupported controls disabled" is the plan's Phase 2 Decisions and ADR-0008; the spec already takes it.
 - B2 reject — Alternative "make 2FA/password/sessions functional": plan Constraints say no 2FA and no new auth surface (plan Phase 2 Decisions; `service/db/models.py` has no Employee credential fields); stays in Out of Scope.
-- B3 reject — "Who may use the org toggle (Owner/Admin)": already Out of Scope; Employees have no role column, `is_admin` is the founder flag (`service/auth.py:489-505`), and the toggle is `NotWired` for everyone so no one can change it.
+- B3 reject — "Who may use the org toggle (Owner/Admin)": already Out of Scope; Employees have no role column, `is_admin` is the founder flag (`service/auth.py` `AuthResp`), and the toggle is `NotWired` for everyone so no one can change it.
 - B4 reject — "Current session under impersonation / must use `UserContext.logout`": already decided (impersonation bullet in Implementation Decisions; A4 uses `useUser().logout`).
 - B5 reject — "Which roster rows: chatter mirrors, disabled": already decided by A5 (`useRoster` defaults: disabled included, mirrors excluded, `app/hooks/useRoster.ts:44-71`).
 - B6 reject — "Say the Last-login dash means not tracked": plan fixes "—" and Out of Scope records why (`users.last_seen_at` is the Agency's); explanatory copy is scope the plan did not ask for.
 - B7 accept — Loading/empty/error states need tests: merged with D2 below.
-- B8 partial — "Test logout against the real contract (cache wipe, navigation)": Seam 2 now asserts the query cache is emptied, proving the `useUser().logout` path; a separate impersonation test is rejected, the logout path is the same code for both principals (`service/auth.py:555-560`).
+- B8 partial — "Test logout against the real contract (cache wipe, navigation)": Seam 2 now asserts the query cache is emptied, proving the `useUser().logout` path; a separate impersonation test is rejected, the logout path is the same code for both principals (`service/auth.py` `logout`).
 - B9 reject (no defect claimed) — Falsifiers (an Employee session model, a real Infloww security capture) are the overturn conditions already written into Out of Scope and A2/A3.
 
 Draft call:

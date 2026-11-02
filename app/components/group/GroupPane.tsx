@@ -24,6 +24,7 @@ import { useChatMessages } from "@/hooks/useChatMessages";
 import { ofUserNameQuery } from "@/hooks/useOFUser";
 import { useSendMessage } from "@/hooks/useSendMessage";
 import { describeLoadError, relay, type OFChatItem, type OFMessage } from "@/lib/relay";
+import { stripHtmlPreview } from "@/lib/htmlPreview";
 import { proxyImage } from "@/lib/mediaUrl";
 import { type FanId } from "@/lib/fanId";
 import { cn, decodeHtmlEntities, fmtRelTime } from "@/lib/utils";
@@ -339,24 +340,4 @@ function GroupMessageRow({
       </div>
     </div>
   );
-}
-
-/** OF returns message bodies as HTML (anchor tags, images). Group panes
- *  render text-only — strip tags + decode entities for a fast preview.
- *  Lossy by design; the full chat surface (popout link in the header)
- *  is one click away for the fidelity case. */
-function stripHtmlPreview(s: string, max: number): string {
-  const plain = s
-    .replace(/<br\s*\/?>/gi, " ")
-    .replace(/<\/p\s*>/gi, " ")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, "\"")
-    .replace(/&#39;/g, "'")
-    .replace(/\s+/g, " ")
-    .trim();
-  return plain.length > max ? plain.slice(0, max - 1) + "…" : plain;
 }

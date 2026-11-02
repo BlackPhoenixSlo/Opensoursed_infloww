@@ -58,8 +58,9 @@ def load_client(account_id: str):
     return live_server()._load_client(account_id)
 
 
-def periodic(label: str, interval_s: float, work: Callable[[], Awaitable[None]]):
-    return live_server()._periodic(label, interval_s, work)
+def periodic(label: str, interval_s: float, work: Callable[[], Awaitable[None]],
+             *, first_after_s: float | None = None):
+    return live_server()._periodic(label, interval_s, work, first_after_s=first_after_s)
 
 
 def account_ttl(namespace: str, ttl_seconds: float):

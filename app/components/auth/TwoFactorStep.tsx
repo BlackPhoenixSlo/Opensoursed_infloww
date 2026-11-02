@@ -15,6 +15,7 @@
 
 import { useEffect, useState } from "react";
 
+import { errText } from "@/lib/errText";
 import { relay } from "@/lib/relay";
 import type { SignedInKind, TwoFactorChallenge } from "@/lib/twoFactor";
 import { cn } from "@/lib/utils";
@@ -22,8 +23,6 @@ import { cn } from "@/lib/utils";
 
 interface InitReply { secret: string; otpauth_uri: string; enrol_token: string }
 interface ActivateReply { recovery_codes: string[]; kind: SignedInKind }
-
-const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
 /** The setup key in fours, as authenticator apps print it. */
 const grouped = (secret: string) => secret.replace(/(.{4})/g, "$1 ").trim();
@@ -70,7 +69,7 @@ export function TwoFactorSetup({ ticket, inputClass, buttonClass, onDone }: {
     let cancelled = false;
     relay.post<InitReply>("/auth/2fa/init", ticket ? { ticket } : {}).then(
       (r) => { if (!cancelled) setInit(r); },
-      (err) => { if (!cancelled) setError(message(err)); },
+      (err) => { if (!cancelled) setError(errText(err)); },
     );
     return () => { cancelled = true; };
   }, [ticket]);
@@ -85,7 +84,7 @@ export function TwoFactorSetup({ ticket, inputClass, buttonClass, onDone }: {
         enrol_token: init.enrol_token, code: code.trim(), ...(ticket ? { ticket } : {}),
       }));
     } catch (err) {
-      setError(message(err));
+      setError(errText(err));
     } finally {
       setBusy(false);
     }
@@ -159,7 +158,7 @@ export default function TwoFactorStep({ challenge, inputClass, buttonClass, onSi
       const r = await relay.post<{ kind: SignedInKind }>("/auth/2fa/login", { ticket: challenge.ticket, code: code.trim() });
       onSignedIn(r.kind);
     } catch (err) {
-      setError(message(err));
+      setError(errText(err));
       setBusy(false);
     }
   }

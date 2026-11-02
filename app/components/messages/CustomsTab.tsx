@@ -33,7 +33,7 @@ import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import Link from "next/link";
 
 import { relay } from "@/lib/relay";
-import { fmtCents, fmtPrice } from "@/lib/format";
+import { fmtCents as money, fmtPrice } from "@/lib/format";
 
 import CustomsPane from "./CustomsPane";
 import {
@@ -57,11 +57,6 @@ interface CustomRow extends PaneRow {
   order_count?: number;
   lifetime_spend_cents: number;
   chat_href: string;
-}
-
-function money(cents: number | null | undefined): string {
-  if (cents == null) return "—";
-  return fmtCents(cents);
 }
 
 /** How long he has been waiting. The number that should make someone move. */

@@ -419,8 +419,9 @@ def case_sign_in_with_2fa_asks_for_a_code_and_each_code_works_once():
                 r = nxt.post("/auth/2fa/login", json={"ticket": t2, "code": _code(secret)})
                 assert r.status_code == 200, r.text
                 assert nxt.get("/auth/me").json()["username"] == "agency_b_owner"
-            # A tampered ticket is refused.
-            r = _harness.make_client().post("/auth/2fa/login", json={"ticket": t2[:-1] + "0", "code": "123456"})
+            # A tampered ticket is refused (last char flipped: a fixed "0" is no change 1 in 16).
+            tampered = t2[:-1] + ("1" if t2[-1] == "0" else "0")
+            r = _harness.make_client().post("/auth/2fa/login", json={"ticket": tampered, "code": "123456"})
             assert r.status_code == 401 and r.json()["detail"]["code"] == "ticket_expired", r.text
             # New backup codes, then off: each needs a code.
             with _StepAhead(2):

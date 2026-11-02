@@ -14,6 +14,7 @@ import { useCallback, useState } from "react";
 
 import { pushNotice } from "@/lib/notices";
 import { relay, RelayError } from "@/lib/relay";
+import { errText } from "@/lib/errText";
 import {
   clockAction, clockRecordsPath, shiftWeekPath, timesheetPath,
   type ShiftWeekFilter, type TimesheetGroup,
@@ -335,7 +336,7 @@ export const CLOCK_TEXT = {
  *  as `time_tracking_off`), whose message it shows. */
 function clockError(e: unknown, already: string): string {
   if (e instanceof RelayError && e.status === 409 && !refusalReason(e)) return already;
-  return e instanceof Error ? e.message : String(e);
+  return errText(e);
 }
 
 /** The typed reason of a refused clock write (ClockStatus' `reason` words), or null. */

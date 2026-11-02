@@ -103,7 +103,7 @@ Tenancy, audit and safety
 
   The plan's index on `(employee_id, out_utc IS NULL)` is folded into the partial unique index, which serves the same lookup. The migration's `downgrade()` drops the three tables in reverse order. Recovery path: downgrade loses only shift and clock data, and nothing else reads it.
 
-  ASSUMPTION: Shifts and Clock events are kept until their Agency is deleted. Their audit rows in `actions` follow the existing 90-day `ACTIONS_RETAIN_S` sweep (`service/server.py`). Rung 3. Overturned if the owner wants the edit history kept longer than other audit rows.
+  ASSUMPTION: Shifts and Clock events are kept until their Agency is deleted. Their audit rows in `actions` follow the existing 90-day `ACTIONS_RETAIN_S` sweep (`service/db_retention.py`). Rung 3. Overturned if the owner wants the edit history kept longer than other audit rows.
 
 - **Interfaces: the Relay router, prefix `/admin/shifts`.**
   - Every handler starts from Phase 1's `agency_context`, called inline as `await agency_context(account_id=...)` with the request's `account_id` where the endpoint takes one (clock-in, `?account_id` filters), else `await agency_context()`. It takes no `request` (Phase 1 Contracts and its signature ASSUMPTION; settled by the six-hats review).
@@ -209,7 +209,7 @@ Tenancy, audit and safety
 
   ASSUMPTION: `ClockedInCard` is shown to owners and the Master only, and the endpoint is 403 for chatters. Rung 4: it exposes the least, and showing it more widely is additive. The same holds for the Timesheet. Phase 4 keeps both owner and Master only: it does not open them to chatters, so its Data scope never applies to them (settled by the six-hats review, both specs). Overturned by the owner wanting chatters to see either one, or by evidence that Infloww shows it to every Employee. Opening them would be a later additive change that applies Data scope at the same time.
 
-  - Assignment access: a create or edit that pairs a Mirror Employee with a Creator its chatter cannot access gets 422 naming the pair. Access is the same per-owner allowlist that feeds the chatter's `account_ids` and `assert_account_owned` (`service/chatters.py:214-229`), so every assigned pair can be clocked. An Employee with no chatter login may be assigned; it cannot clock in, and its occurrences count as scheduled, not worked.
+  - Assignment access: a create or edit that pairs a Mirror Employee with a Creator its chatter cannot access gets 422 naming the pair. Access is the same per-owner allowlist that feeds the chatter's `account_ids` and `assert_account_owned` (`service/chatters.py` `_filter_owner_accounts`), so every assigned pair can be clocked. An Employee with no chatter login may be assigned; it cannot clock in, and its occurrences count as scheduled, not worked.
 
   ASSUMPTION: refusing an assignment the chatter cannot clock, rather than allowing it. Rung 4: loosening the check later is additive, while allowing it now creates Shifts that reminders and "Shifts worked" can never satisfy. Overturned by Phase 4's Data scope, if it decouples clocking from Creator access.
 
@@ -370,7 +370,7 @@ Blind call (before the spec was shown):
 - B6 Clock-to-shift matching underspecified — **partial**: clock-in outside a Shift and the Employee-and-Creator match were already decided. Accepted the gap of choosing between several matching occurrences: the earliest start wins, then the lowest id (Clock rules), with a test.
 - B7 Effect of edits on open or past Clock events — **partial**: cancel and the recomputed link were already decided. Accepted that PATCH never rewrites Clock events, now stated in the endpoint table.
 - B8 ADR-0012 schema validation — **partial**, same as D2.
-- B9 Recorded earnings source unnamed — **reject**: the spec names `per_employee_revenue_with_attribution` (`service/stats.py:49`) and the join columns, and leaves attribution rules to Phase 4.
+- B9 Recorded earnings source unnamed — **reject**: the spec names `per_employee_revenue_with_attribution` (`service/stats.py`) and the join columns, and leaves attribution rules to Phase 4.
 - B10 Timezone of week navigation and rollup bounds — **partial**: the calendar was already the browser timezone. Accepted that the Timesheet range is the viewed browser week in UTC, with edge-crossing items clipped.
 - B11 Avatar menu placement, card loading and error states — **accept**: `AvatarMenu` now names `components/shell/TopBar.tsx`, because `components/chat/AvatarMenu.tsx` is the Fan menu (its header comment). The cards get loading and error-with-Retry lines.
 - B12 Test at the Relay HTTP seam, with a separate migration check — **reject** as a finding: the Testing Decisions already do both.
@@ -379,7 +379,7 @@ Blind call (before the spec was shown):
 Draft call (spec shown):
 - D1 `GET /me` across every Agency breaks the Agency boundary — **partial**: a single `time_tracking` object merged across Agencies was wrong, and is now per account. The union stays, limited to the caller's own Mirror Employee rows. It moves no Agency's data to another Agency, so ADR-0011 is not touched. Flagged as an ASSUMPTION with its overturn (a required `account_id`), and tested.
 - D2 ADR-0012 write validation missing — **partial**: the plan assigns server-side blob validation to Phase 4 (plan, Phase 4 › Work). Phase 2 states this and reads leniently, which is ADR-0012's "applied as stored".
-- D3 An assigned Creator can be unclockable — **accept**: `chatters.py:214-229` applies per-owner allowlists, so a restricted chatter could be assigned a Creator it cannot clock. Assignment now refuses such pairs with 422. The old rung-4 ASSUMPTION is replaced, and the case is tested.
+- D3 An assigned Creator can be unclockable — **accept**: `chatters.py` `_filter_owner_accounts` applies per-owner allowlists, so a restricted chatter could be assigned a Creator it cannot clock. Assignment now refuses such pairs with 422. The old rung-4 ASSUMPTION is replaced, and the case is tested.
 - D4 Behaviours with no named test — **accept**: added auto-attach and tie-break, the clock audit rows, the reminder's "Clock in" action and the owner card's text and link.
 - D5 Acceptance passes with a broken route — **accept**: added `grep -q 'ShiftSchedule'` on the page and a route-level `app/employees/shifts/page.test.tsx` (precedent: `app/app/messages-pro/page.render.test.tsx`).
 - D6 `docs/infloww-parity-matrix.md` is absent — **reject**: Phase 0 creates it (plan, Phase 0 › Work item 3), and Phase 0 is a listed dependency. Its absence before Phase 0 lands is expected.

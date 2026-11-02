@@ -25,6 +25,7 @@ import { type ChartLine, type Gran, LineChart, granAllowed, granShown, rangeDays
 import { EmptyState, IF_TABLE, IfCard, IfSelect, type IfOption } from "@/components/ui/infloww";
 import { fanReportQuery, useFanReport, type FanGrowthRow, type FanReportSort } from "@/hooks/useStats";
 import { useWeekStart } from "@/lib/appliedSettings";
+import { addDayStr as addDays } from "@/lib/dateRange";
 import { fmtCentsBlankZero, fmtInt } from "@/lib/format";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { utcOffsetLabel } from "@/lib/utcOffset";
@@ -62,12 +63,6 @@ function subDays(iso: string | null): string {
   if (Number.isNaN(at)) return "—";
   const days = Math.max(0, Math.floor((Date.now() - at) / 86_400_000));
   return `${days} ${days === 1 ? "day" : "days"}`;
-}
-
-/** The day `n` days after YYYY-MM-DD `day`. */
-function addDays(day: string, n: number): string {
-  const [y, m, d] = day.split("-").map(Number);
-  return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
 }
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];

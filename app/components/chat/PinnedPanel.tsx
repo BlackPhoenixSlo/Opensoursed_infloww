@@ -232,7 +232,7 @@ export function PinnedPopover({
   );
 }
 
-function stripPreview(html: string, max: number): string {
+export function stripPreview(html: string, max: number): string {
   const plain = html.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
   if (plain.length <= max) return plain;
   return plain.slice(0, max - 1) + "…";
@@ -243,7 +243,7 @@ function stripPreview(html: string, max: number): string {
 // panel stayed open; an absolute stamp needs no re-render to stay correct.
 // Same-day pins show the time; older pins also show a short date so a pin
 // from last week isn't an undated bare time.
-function fmtTime(iso?: string): string {
+export function fmtTime(iso?: string): string {
   if (!iso) return "";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";

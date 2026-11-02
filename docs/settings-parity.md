@@ -6,12 +6,12 @@ Inflowwww's eleven Settings tabs graded against Infloww 5.7.20's Settings. The o
 
 These replace §3 of the deleted draft runbook `docs/NEXT_SESSION_SETTINGS_UI.md` (removed in `b07a433d`, not recreated). They are Ground truth 5 of `docs/plans/settings-tabs.md`, checked against the Relay on this tree; the draft's wiring must not come back.
 
-- No role field on `/admin/employees`: `GET /admin/employees` (`service/employees.py:95`) returns id, display_name, color, is_active, chatter_id and created_at. Roles and their Employee assignments live in the `roles` Settings blob, not in an Employee column.
-- `/api/of/v2/users/me` (`GET` `service/server.py:2047`, `PATCH` `:6862`) is the OF model's (Creator's) profile, not the Agency account. Your Account never calls it; the Agency Name is the `account` Settings blob.
-- No rename, `password`, sessions-list or `2FA` route: `service/auth.py` has only `/auth/register`, `/auth/login`, `/auth/logout` (`:565`) and `/auth/me` (`:574`, `AuthResp` = user_id, username, is_admin, impersonating). Username Edit, Change password, Enable 2FA, the organization 2FA switch and Reset are therefore Not wired.
-- `referrals/balance` and payouts are per Creator: `GET /api/of/v2/payments/referrals/balance` (`service/server.py:6929`) and `GET /api/of/v2/payouts/requests/referral` (`:6934`) answer for the selected model (`X-Account-Id`), so Your Balance fetches nothing in all-Creators scope.
+- No role field on `/admin/employees`: `GET /admin/employees` (`service/employees.py` `list_employees`) returns id, display_name, color, is_active, chatter_id and created_at. Roles and their Employee assignments live in the `roles` Settings blob, not in an Employee column.
+- `/api/of/v2/users/me` (`GET` `service/server.py` `users_me`, `PATCH` `of_update_profile`) is the OF model's (Creator's) profile, not the Agency account. Your Account never calls it; the Agency Name is the `account` Settings blob.
+- No rename, `password`, sessions-list or `2FA` route: `service/auth.py` has only `/auth/register`, `/auth/login`, `/auth/logout` (`logout`) and `/auth/me` (`me`, `AuthResp` = user_id, username, is_admin, impersonating). Username Edit, Change password, Enable 2FA, the organization 2FA switch and Reset are therefore Not wired.
+- `referrals/balance` and payouts are per Creator: `GET /api/of/v2/payments/referrals/balance` (`service/of_stats_api.py` `of_referrals_balance`) and `GET /api/of/v2/payouts/requests/referral` (`of_referral_payouts`) answer for the selected model (`X-Account-Id`), so Your Balance fetches nothing in all-Creators scope.
 - `/admin/translate` (`service/translate_api.py:253`) has no prompt: it is the Google gtx batch translator. Of the `messaging` blob it reads only `ai_translation`, and refuses a chatter 403 while that is off (ADR-0012).
-- No attribution config route: `/admin/lanes` (`service/server.py:3596`) is send concurrency, not sales attribution. Sales attribution rules live in the `sales` Settings blob.
+- No attribution config route: sales attribution rules live in the `sales` Settings blob.
 - The version shown on About comes from `app/package.json` (`version`), the same value the Sidebar footer shows; there is no build hash.
 
 The one store this effort added is `user_settings` behind `GET/PUT /admin/settings/{tab}` (`service/settings_api.py`, allow-list `account`, `preferences`, `roles`, `sales`, `time-tracking`, `messaging`; ADR-0007).

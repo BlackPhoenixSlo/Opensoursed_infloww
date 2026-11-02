@@ -89,7 +89,7 @@ In All-Creators scope nothing is sent. Post, Next and the tag rows show "Select 
     - All-Creators scope: the `SELECT_MODEL` note.
     - Invalid: the red validation note.
     - Otherwise Post is disabled, `createPost` is called, and on success the draft is cleared and the browser navigates to `QUEUE` if `posted_at` is set, else to `/of-manager/profile`.
-    - On error: Post is enabled again, a red `Could not post: <message>` note shows, and the draft is kept. The message is the Relay's own text, so OnlyFans's `Please allow 10 seconds` throttle (service/of_client.py:80-84) reaches the operator verbatim.
+    - On error: Post is enabled again, a red `Could not post: <message>` note shows, and the draft is kept. The message is the Relay's own text, so OnlyFans's `Please allow 10 seconds` throttle (service/of_upload.py `_CARRIER_MIN_GAP_S`) reaches the operator verbatim.
     - No idempotency key exists on the route (service/server.py `_CreatePostBody`), so a failure after OnlyFans accepted the post cannot be told apart from a real failure; a retry may post twice.
 ASSUMPTION: rung 5. No new Relay field (ADR-0005, plan YAGNI). Overturned if live use shows ambiguous failures are common, in which case the Relay grows a dedupe key in its own Phase.
   - With `posted_at` or Co-tags in the draft, a one-line summary shows under the editor:
@@ -193,7 +193,7 @@ ASSUMPTION: rung 5. Nothing can be sent there, so a draft key with no account bu
 ASSUMPTION: rung 5 against the plan's wording. Overturned if a recapture shows typed date and time inputs, in which case `parseDate` is used on them.
 The plan's line 118 ("date and time fields are parsed with `parseDate`/`parseTime`") still says otherwise; the coordinator reconciles the plan's wording to this decision, since the plan named fields the capture does not have (rung 1 beats the plan's premise, not its goal).
 
-**A mocked Relay proves the request, not that OnlyFans publishes or queues the post.** Live verification of one immediate and one scheduled post with a Co-tag is parked for the human (floor 2); `of_client.create_post` maps `posted_at` and tags upstream (service/of_client.py:2368-2399).
+**A mocked Relay proves the request, not that OnlyFans publishes or queues the post.** Live verification of one immediate and one scheduled post with a Co-tag is parked for the human (floor 2); `of_sends.create_post` maps `posted_at` and tags upstream.
 
 **The calendar is re-rendered at runtime for the current month.** The captured grid is a fixed October 2026, with days before the 12th disabled.
 ASSUMPTION: rung 5 (runtime DOM per ADR-0006, cloned from the captured day cell). Overturned if the human wants the captured month kept and only its days wired.

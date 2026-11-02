@@ -43,17 +43,10 @@ import { Globe04Line, InfoCircleLine, SidebarLine, SidebarSolid } from "@/compon
 import { HEADER_TILE, HEADER_TILE_ICON } from "@/components/shell/headerTile";
 import { useAgencyTimeZone } from "@/lib/appliedSettings";
 import { zoneOffsetNow } from "@/lib/creatorClock";
+import { utcOffsetFromMinutes } from "@/lib/utcOffset";
 import { cn } from "@/lib/utils";
 import { BRAND_NAME } from "@/lib/brand";
 
-/** "UTC+02:00" for an offset in minutes east of UTC. */
-function utcOffsetLabel(mins: number): string {
-  const sign = mins < 0 ? "-" : "+";
-  const abs = Math.abs(mins);
-  const hh = String(Math.floor(abs / 60)).padStart(2, "0");
-  const mm = String(abs % 60).padStart(2, "0");
-  return `UTC${sign}${hh}:${mm}`;
-}
 const noSubscribe = () => () => {};
 
 export default function TopBar({
@@ -196,7 +189,7 @@ export function TimeZoneLabel() {
   const hydrated = useSyncExternalStore(noSubscribe, () => true, () => false);
   const zone = hydrated ? zoneOffsetNow(agency) : null;
   if (!zone) return null;
-  const tz = utcOffsetLabel(zone.minutes);
+  const tz = utcOffsetFromMinutes(zone.minutes);
   // Infloww's `UTCRender`: a tile with `Globe04Line`, the offset and an
   // `InfoCircleLine` 4px after it carrying the tip; a click opens Your Preferences.
   return (

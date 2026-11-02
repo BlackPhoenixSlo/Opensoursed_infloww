@@ -33,7 +33,7 @@ quiet and must reschedule on step 1's (the SENT step's) intervals[1], not step 4
 Creator's run time per due fan (`automation_runs` started -> completed, so not the wait
 for a run slot), p95 over the Creators, vs TICK_PER_FAN_P95_MS and the last green run.
 
-Faked or bypassed, declared: OF's send (the offline walker client);
+Faked or bypassed, declared: OF's send (lib/automation_relay.py's offline walker client);
 the step's 4 s line gap to 0.2 s (lib/funnel_relay.py); the supervisor's cadence (the
 scenario ticks); the buyer's unlock is seeded as the two rows purchase_notifications'
 `_flip_paid` leaves (the PPV flipped paid, its `purchase_notices` row;

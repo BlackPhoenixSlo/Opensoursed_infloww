@@ -42,6 +42,7 @@ import { relay, type OFChatItem, type OFMessage } from "@/lib/relay";
 import { sameUserId } from "@/lib/fanId";
 import { perfPaintOnce } from "@/lib/perfLog";
 import { patchQueryData } from "@/lib/cacheWrite";
+import { errText } from "@/lib/errText";
 
 import { MessageList, newestReadPointer } from "./MessageList";
 import { Composer, type ComposerApi } from "./Composer";
@@ -391,7 +392,7 @@ export function ChatSurface({
     try {
       await createScript({ ...draft, title: title.trim() || null });
     } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
+      const reason = errText(err);
       window.alert(`Couldn't save the script: ${reason}`);
     }
   }, [createScript]);

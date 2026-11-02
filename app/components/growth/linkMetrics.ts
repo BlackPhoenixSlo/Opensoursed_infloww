@@ -43,9 +43,7 @@ export const TRIAL_TIPS = {
 /** A total (earnings, profit) as the house `fmtCents` prints it, whole dollars with commas as on the dashboard
  *  ("$1,235", where Infloww prints "$1,234.56"), a loss as "-$12"; a loss under a dollar is "$0", never "-$0".
  *  A per-click / per-subscriber figure and a promo cost keep their cents (`fmtPrice`), as Infloww's do. */
-export function money(cents: number): string {
-  return fmtCents(cents);
-}
+export const money = fmtCents;
 
 /** A count with the bundle's thousands commas (its `numberFormat`, index.9f50f370.js @13927845). */
 export const count = (n: number) => n.toLocaleString("en-US");

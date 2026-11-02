@@ -46,6 +46,7 @@ import {
   type FlagsReviewItem,
 } from "@/hooks/useVaultCache";
 import ImageLightbox from "@/components/vault/ImageLightbox";
+import { errText } from "@/lib/errText";
 
 const REGIONS = ["breasts_vis", "vulva_vis", "anus_vis"] as const;
 const STATES = ["bare", "covered", "not_in_frame"] as const;
@@ -96,7 +97,7 @@ function Card({
       await gradeFlags(accountId, item.media_id, Object.fromEntries(changed), note);
       onSaved(item.media_id, changed.length);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(errText(e));
     } finally {
       setBusy(false);
     }
@@ -300,7 +301,7 @@ export default function VaultFlagsReviewModal({
           {isLoading && <p className="text-[12px] text-fg-dim">Loading…</p>}
           {error && (
             <p className="text-[12px] text-err">
-              {error instanceof Error ? error.message : String(error)}
+              {errText(error)}
             </p>
           )}
           {data && open.length === 0 && (

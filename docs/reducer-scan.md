@@ -1,4 +1,5 @@
 # Reducer scan — 2026-10-29 (closed 2026-10-30)
+Programme status: [`docs/thermo-pass-2026-11.md`](thermo-pass-2026-11.md).
 
 Rule: `CLAUDE.md` "State logic".
 Baseline: no test calls a reducer directly.

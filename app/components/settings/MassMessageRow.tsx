@@ -12,7 +12,7 @@ import type { MassMessageRow } from "@/hooks/useMassMessages";
 import { SM, SM_MASS_ACTIONS } from "@/components/growth/smartMessagesControls";
 import { MENU_ITEM, MENU_PANEL } from "@/components/ui/Menu";
 import { proxyImage } from "@/lib/mediaUrl";
-import { fmtCents } from "@/lib/messageFormat";
+import { fmtCents, htmlToText } from "@/lib/messageFormat";
 import { cn } from "@/lib/utils";
 
 // Friendly labels for the automation_kind tokens that produce broadcasts.
@@ -64,7 +64,7 @@ export function MassMessageRowItem({
     firstMedia?.files?.thumb?.url ||
     firstMedia?.files?.preview?.url ||
     null;
-  const text = stripHtml(m.text || m.rawText || "");
+  const text = htmlToText(m.text || m.rawText || "");
   const dash = <span className="text-fg-dim">--</span>;
 
   return (
@@ -226,18 +226,4 @@ function RowActionsMenu({ items }: { items: RowAction[] }) {
       )}
     </>
   );
-}
-
-function stripHtml(s: string): string {
-  return s
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/p\s*>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, "\"")
-    .replace(/&#39;/g, "'")
-    .trim();
 }

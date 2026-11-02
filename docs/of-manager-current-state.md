@@ -231,7 +231,7 @@ Three separate streams.
    - `ofMirrorCollections.ts`: the list More menu on the Posts tab too.
    - `ofMirrorChat.ts`: mass-send "Users" tab partners named through batched `/users/list` (20 ids a read) instead
      of bare ids.
-   - Relay: `service/of_client.py` `list_posts_in()` and `service/server.py`
+   - Relay: `service/of_reads.py` `list_posts_in()` and `service/server.py`
      `GET /api/of/v2/lists/{list_id}/posts`.
    - Tests: `service/tests/test_collections_lists.py` (+2 cases) and the vitest specs. The mirror page
      `collections/user-lists/list/posts.html` was already committed.

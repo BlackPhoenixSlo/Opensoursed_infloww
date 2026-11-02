@@ -19,11 +19,11 @@ pages change. Nothing else in the app changes except what a Phase below names.
 2. Generator and guard: `scripts/of-mirror.mjs` (`SECTIONS` :172, `--check` :1411-1451). Checks:
    `scripts/of-mirror-check/*.py` and its `README.md` (Playwright route mocks, `PORT` env default
    3091, screenshots to `/tmp/of-mirror-shots`; `writes.py` records non-GET `/api/**` bodies).
-3. Relay: `service/server.py` routes under `/api/of/v2/`; `service/of_client.py` methods. An
-   existing caller of the post route: `app/components/compose/PostComposer.tsx:127-135`
-   (`media_files`, `price`, `posted_at`, `tagged_users`); `relay.uploadFile` `app/lib/relay.ts:171`;
-   upload response type `relay.ts:762`; `proxyImage` `app/lib/mediaUrl.ts:20` (`blob:` passes
-   through :22-23) over relay `GET /img` `server.py:3287`.
+3. Relay: `service/server.py` routes under `/api/of/v2/`; `service/of_client.py` `OFClient` methods (`of_reads.py`, `of_sends.py`, `of_upload.py`). An
+   existing caller of the post route: `app/components/compose/postComposerReducer.ts` `buildPostBody`
+   (`media_files`, `price`, `posted_at`, `tagged_users`); `relay.uploadFile` `app/lib/relay.ts`;
+   upload response type `relayTypes.ts` `VaultUploadResp`; `proxyImage` `app/lib/mediaUrl.ts:20` (`blob:` passes
+   through :22-23) over relay `GET /img` `img_api.py` `proxy_image`.
 4. `docs/infloww-screens.md` §3.2 (New post composes "on behalf of the Creator"; Queue shows
    scheduled posts, messages, streams); `docs/routes.md` :13-14. Infloww's My profile (reference
    screenshots outside the repo, never copied) shows the real posts feed and the story strip.
@@ -44,30 +44,30 @@ pages change. Nothing else in the app changes except what a Phase below names.
 
 | Mirror page | Dead control | Relay route / of_client method | Verdict |
 |---|---|---|---|
-| new-post | editor + Post | `POST /api/of/v2/posts` server.py:7519, body `_CreatePostBody` :6161; `create_post` of_client.py:2368-2398 | wire |
-| new-post | price | `price` field server.py:6166; relay refuses priced posts on a paid page server.py:7506; capture has no price control | no control to wire; send `price: 0` |
-| new-post/state-schedule | Next (date, time) | `posted_at` server.py:6169 -> `postedAt` of_client.py:2392 | wire |
-| new-post/state-schedule | Save for Later | only `GET /schedules/later/post` server.py:5878; no write method | read-only |
-| new-post/state-tag-people | user rows | `GET /posts/tagged-friend-users` server.py:5522 (of_client.py:846); `tagged_users` server.py:6171 -> `_apply_cotags` of_client.py:1427 | wire |
-| new-post/state-labels | label rows | `create_post` has no labels field (of_client.py:2368-2398); only `GET /users/{id}/labels` server.py:5594 | read-only |
-| new-post/state-vault, "Add media from vault" | tiles, search | `GET /vault/media` server.py:5691; ids into `media_files` server.py:6165; thumbs `/img` server.py:3287 | wire |
-| new-post | "Add media" (disk) | `POST /api/of/v2/upload` server.py:7661 -> `upload_media` of_client.py:2679 (`send_with`); dict claims accepted server.py:6163-6165 | wire |
-| new-post | poll, quiz, expiration, target, format, voice, video | `expirePeriod`, `fundRaisingTarget`, `votingDueDate` exist in of_client.py:2373-2375 but not in `_CreatePostBody`; poll/quiz bodies unknown | read-only (YAGNI) |
-| home, new-post | Add to story | `POST /api/of/v2/stories/upload` server.py:8169 -> `post_story` of_client.py:3454 | wire |
+| new-post | editor + Post | `POST /api/of/v2/posts` server.py `of_create_post`, body `_CreatePostBody`; of_sends.py `create_post` | wire |
+| new-post | price | `price` field of server.py `_CreatePostBody`; relay refuses priced posts on a paid page server.py `_refuse_paid_post_on_paid_page`; capture has no price control | no control to wire; send `price: 0` |
+| new-post/state-schedule | Next (date, time) | `posted_at` (server.py `_CreatePostBody`) -> `postedAt` (of_sends.py `create_post`) | wire |
+| new-post/state-schedule | Save for Later | only `GET /schedules/later/post` server.py `of_schedules_later_post`; no write method | read-only |
+| new-post/state-tag-people | user rows | `GET /posts/tagged-friend-users` server.py `of_tagged_friend_users` (of_reads.py `tagged_friend_users`); `tagged_users` (server.py `_CreatePostBody`) -> of_sends.py `_apply_cotags` | wire |
+| new-post/state-labels | label rows | of_sends.py `create_post` has no labels field; only `GET /users/{id}/labels` | read-only |
+| new-post/state-vault, "Add media from vault" | tiles, search | `GET /vault/media` server.py `of_vault_media`; ids into `media_files` (server.py `_CreatePostBody`); thumbs `/img` img_api.py `proxy_image` | wire |
+| new-post | "Add media" (disk) | `POST /api/of/v2/upload` server.py `of_upload_media` -> of_upload.py `upload_media` (`send_with`); dict claims accepted by server.py `_CreatePostBody` | wire |
+| new-post | poll, quiz, expiration, target, format, voice, video | `expirePeriod`, `fundRaisingTarget`, `votingDueDate` exist but not in `_CreatePostBody`; poll/quiz bodies unknown | read-only (YAGNI) |
+| home, new-post | Add to story | `POST /api/of/v2/stories/upload` server.py `of_create_story_upload` -> of_sends.py `post_story` | wire |
 | home, new-post | other story items (Create highlight) | no highlight write method | read-only |
-| profile/index | posts feed | `GET /users/{id}/posts` server.py:5555 (of_client.py:875); id from `GET /users/me` server.py:2044 | wire (data) |
-| profile/media | media grid | `GET /users/{id}/posts/photos` server.py:5584, `/videos` :5589 | wire (data) |
-| queue/* | calendar, tabs, saved-for-later | `GET /schedules` server.py:5883, `/messages/queue` :5992, `/schedules/later/post` :5878, `/schedules/later/chat` :5873 | wire (data) |
-| collections/bookmarks/all | posts | `GET /posts/bookmarks/all` server.py:6914 | wire (data) |
-| collections/index | Create new list | `POST /lists` server.py:7562 (of_client.py:2440) known, but OF's dialog is not captured | read-only |
-| notifications/* | list per tab | `GET /users/notifications?type=` server.py:5359, types all/tips/subscribes/comments/mentions :5363 | wire (data) for those tabs |
-| statements/earnings, payouts, referrals | rows | `/payouts/transactions` server.py:5907, `/payouts/requests` :5478, `/payouts/requests/referral` :6931 | wire (data) |
-| settings/subscription/tracking-links | Create Link | `POST /campaigns` server.py:6823, `{name}` verified live of_client.py:2135-2145 | wire |
-| settings/subscription/trial-links | Create link | `POST /trials` server.py:6846, `_TrialLinkBody` :6835; of_client.py:2166 | wire |
-| settings/subscription/promotion-campaign | Start campaign | `POST /promotions` server.py:6800, `_PromoBody` :6792; verified live of_client.py:2099-2120 | wire |
-| settings/subscription/promotion-campaign | bundle Save | `_BundleBody` requires `price` server.py:6772; modal has no price | read-only |
+| profile/index | posts feed | `GET /users/{id}/posts` server.py `of_user_posts` (of_reads.py `user_posts`); id from `GET /users/me` server.py `users_me` | wire (data) |
+| profile/media | media grid | `GET /users/{id}/posts/photos` server.py `of_user_photos`, `/videos` `of_user_videos` | wire (data) |
+| queue/* | calendar, tabs, saved-for-later | `GET /schedules` server.py `of_schedules`, `/messages/queue` `of_scheduled_messages`, `/schedules/later/post` `of_schedules_later_post`, `/schedules/later/chat` `of_schedules_later_chat` | wire (data) |
+| collections/bookmarks/all | posts | `GET /posts/bookmarks/all` of_stats_api.py `of_bookmarks_all` | wire (data) |
+| collections/index | Create new list | `POST /lists` server.py `of_create_list` (of_sends.py `create_list`) known, but OF's dialog is not captured | read-only |
+| notifications/* | list per tab | `GET /users/notifications?type=` server.py `of_notifications`, types all/tips/subscribes/comments/mentions | wire (data) for those tabs |
+| statements/earnings, payouts, referrals | rows | `/payouts/transactions` server.py `of_transactions`, `/payouts/requests` `of_payout_requests`, `/payouts/requests/referral` of_stats_api.py `of_referral_payouts` | wire (data) |
+| settings/subscription/tracking-links | Create Link | `POST /campaigns` server.py `of_create_tracking_link`, `{name}` verified live of_sends.py `create_tracking_link` | wire |
+| settings/subscription/trial-links | Create link | `POST /trials` server.py `of_create_trial_link`, `_TrialLinkBody`; of_sends.py `create_trial_link` | wire |
+| settings/subscription/promotion-campaign | Start campaign | `POST /promotions` server.py `of_create_promo`, `_PromoBody`; verified live of_sends.py `create_promo` | wire |
+| settings/subscription/promotion-campaign | bundle Save | server.py `_BundleBody` requires `price`; modal has no price | read-only |
 | settings/subscription | price Save, row kebab deletes | no price write method; deletes need real row ids, rows are examples | read-only |
-| settings/* other toggles and fields | `/users/me/settings`, notifications, security, story, streaming | no write method; `update_profile` verifies `about` only, other keys "likely" of_client.py:2189-2199 | read-only (as today) |
+| settings/* other toggles and fields | `/users/me/settings`, notifications, security, story, streaming | no write method; `update_profile` verifies `about` only, other keys "likely" of_sends.py `update_profile` | read-only (as today) |
 
 ## Constraints (binding)
 
@@ -80,7 +80,7 @@ pages change. Nothing else in the app changes except what a Phase below names.
   sends nothing and shows "Read-only in Inflowwww for now" (`READ_ONLY`, a toggle flips back).
 - Writes only in single-model scope (existing rule, ofMirrorWrites.ts:14-16): in all-models scope a
   wired control sends nothing and shows "Select a model to save changes"; data pages keep the
-  examples (ofMirrorData.ts:15-16).
+  examples (ofMirrorData.ts).
 - Every ticket ships a `python3 -I scripts/of-mirror-check/<name>.py` headless check against a
   mocked relay (Playwright routes in the style of `writes.py`), and vitest for any new or changed
   TS lib (`app/lib/*.test.ts`); `pnpm -C app typecheck`, `pnpm -C app lint` (0 errors) and
@@ -111,10 +111,10 @@ Decisions:
 - The state dialogs are separate pages, so the draft (text, `posted_at`, `tagged_users`,
   `media_files`, thumbs) lives in `sessionStorage` key `oi:new-post:<accountId>` and is restored
   into the editor on every `new-post/*` load; cleared after a successful post.
-- Body is the relay's `_CreatePostBody` shape, same as PostComposer.tsx:127-133: `{text,
+- Body is the relay's `_CreatePostBody` shape, same as postComposerReducer.ts `buildPostBody`: `{text,
   media_files, price: 0, posted_at?, tagged_users?}`; `text` is the editor's paragraphs joined
   with `\n` (`textOf`, ofMirrorWrites.ts:71). No price control is added (capture has none; a paid
-  page refuses priced posts, server.py:7506).
+  page refuses priced posts, server.py `_refuse_paid_post_on_paid_page`).
 - Schedule: `state-schedule`'s date and time fields are parsed with `parseDate`/`parseTime`; Next
   stores `localIso(at)` (at least one minute ahead, else the validation note) and links back.
 - Tag people: `state-tag-people` rows are filled from `GET /posts/tagged-friend-users` (template
@@ -140,8 +140,8 @@ thumbnails; picked tiles attach to the post and show as thumbs in the composer.
 
 Decisions:
 - `DATA_PAGES` gains `"new-post/state-vault": ["vaultMedia"]`; the grid reuses `applyVaultMedia`
-  and `tileThumb` (ofMirrorData.ts:388-393) with `proxyImage(url, accountId)`, so every `<img>`
-  src is `/img?u=...&account_id=...` (server.py:3287), never an OF CDN URL.
+  and `tileThumb` (ofMirrorData.ts) with `proxyImage(url, accountId)`, so every `<img>`
+  src is `/img?u=...&account_id=...` (img_api.py `proxy_image`), never an OF CDN URL.
 - A tile click toggles OF's selected mark and the media id in the draft's `media_files`;
   `media_vault_search` filters the loaded tiles client-side (no new query param).
 - ASSUMPTION: OF's attached-media strip was not captured; the composer shows picked media as a
@@ -159,11 +159,11 @@ Acceptance:
 Target: "Add media" opens a file picker; the file uploads through the relay and attaches.
 
 Decisions:
-- `of_client.upload_media` exists (of_client.py:2679) and the relay already exposes it as `POST
-  /api/of/v2/upload` (server.py:7661), whose `send_with` the post body accepts (server.py:6163-6165).
+- `of_upload.upload_media` exists and the relay already exposes it as `POST
+  /api/of/v2/upload` (server.py `of_upload_media`), whose `send_with` the post body accepts (`_CreatePostBody`).
   So this is wired, not read-only; the stories/upload pattern is not reused for posts.
 - A hidden `<input type=file accept="image/*,video/*">` is created by `bindPost`; one file per
-  pick; `relay.uploadFile("/api/of/v2/upload", file)` (relay.ts:171); `send_with` entries are
+  pick; `relay.uploadFile("/api/of/v2/upload", file)` (relay.ts); `send_with` entries are
   appended to `media_files`; the thumb is a `blob:` URL (proxyImage passes it through).
 - `ready:false` or an error shows the red note with the relay's `note`; Post stays disabled while
   an upload is in flight.
@@ -181,8 +181,8 @@ Target: "Add to story" on `home` and `new-post` publishes an image as a story.
 
 Decisions:
 - Click opens a hidden `<input type=file accept="image/*">` (the relay documents image stories,
-  server.py:8148); `relay.uploadFile("/api/of/v2/stories/upload", file)` (server.py:8169 ->
-  `post_story` of_client.py:3454). No caption, mention or question (YAGNI), no story from vault.
+  server.py `of_create_story`); `relay.uploadFile("/api/of/v2/stories/upload", file)` (server.py `of_create_story_upload` ->
+  of_sends.py `post_story`). No caption, mention or question (YAGNI), no story from vault.
 - Success: grey "Added to story" note at the story strip; error: red `Could not add: <message>`.
 - Other story-strip buttons with no write method (Create highlight): `READ_ONLY`.
 
@@ -196,7 +196,7 @@ Acceptance:
 ## Phase 4 — real data on profile, queue, collections, notifications, statements
 
 Target: with a single model, these pages show that model's rows instead of the captured examples,
-as messages, vault and lists already do (ofMirrorData.ts:32-41).
+as messages, vault and lists already do (ofMirrorData.ts `DATA_PAGES`).
 
 Decisions:
 - New `Part`s in `ofMirrorData.ts`, same clone-template-row method and `restore` undo:

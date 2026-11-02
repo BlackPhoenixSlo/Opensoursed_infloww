@@ -26,11 +26,13 @@ import { MessageCircle } from "lucide-react";
 import { useSavedReplies } from "@/hooks/useSavedReplies";
 import { useTemplates } from "@/hooks/useTemplates";
 import { isImeComposing } from "@/lib/ime";
+import { anchorPanel, type PopoverCoords } from "@/lib/anchorPanel";
 import { cn } from "@/lib/utils";
 import type { OFMessageTemplate, SavedReply, VaultMedia } from "@/lib/relay";
 import { useInflowwPalette } from "./InflowwPalette";
 import { PILL, PILL_ICON, PILL_LABEL } from "./ComposerToolbar";
 import { fmtPrice } from "@/lib/format";
+import { htmlToText } from "@/lib/messageFormat";
 
 /** Unified shape so Composer doesn't care where the row came from. */
 export interface PickedTemplate {
@@ -69,7 +71,7 @@ export interface PickedTemplate {
 function fromOF(t: OFMessageTemplate): PickedTemplate {
   return {
     source: "of",
-    text: stripHtml(t.displayText || t.text),
+    text: htmlToText(t.displayText || t.text),
     displayText: t.displayText || t.text,
     mediaCount: t.mediaCount ?? (t.media?.length ?? 0),
     price: t.price ?? 0,
@@ -169,12 +171,7 @@ export function TemplatePicker({
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const popRef = useRef<HTMLDivElement | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
-  const [coords, setCoords] = useState<{
-    top?: number;
-    bottom?: number;
-    left: number;
-    maxHeight: number;
-  } | null>(null);
+  const [coords, setCoords] = useState<PopoverCoords | null>(null);
   const tplQ = useTemplates(open ? accountId : null);
   const replyQ = useSavedReplies(open ? accountId : null);
 
@@ -214,18 +211,7 @@ export function TemplatePicker({
     const update = () => {
       const r = buttonRef.current?.getBoundingClientRect();
       if (!r) return;
-      const PANEL_W = 320;
-      const PANEL_H_PREF = 384;
-      const margin = 8;
-      const wantLeft = r.left;
-      const maxLeft = window.innerWidth - PANEL_W - margin;
-      const left = Math.max(margin, Math.min(wantLeft, maxLeft));
-      const spaceAbove = r.top - margin;
-      const spaceBelow = window.innerHeight - r.bottom - margin;
-      const openDown = spaceBelow >= PANEL_H_PREF || spaceBelow > spaceAbove;
-      setCoords(openDown
-        ? { top: r.bottom + 8, left, maxHeight: Math.min(PANEL_H_PREF, spaceBelow) }
-        : { bottom: window.innerHeight - r.top + 8, left, maxHeight: Math.min(PANEL_H_PREF, spaceAbove) });
+      setCoords(anchorPanel(r, { width: 320, height: 384 }, { width: window.innerWidth, height: window.innerHeight }));
     };
     update();
     window.addEventListener("resize", update);
@@ -425,18 +411,4 @@ export function TemplatePicker({
 /** Back-compat: composer calls this with the picked item's media. */
 export function templateMediaToVault(t: PickedTemplate): VaultMedia[] {
   return t.media;
-}
-
-function stripHtml(s: string): string {
-  return s
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/p\s*>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, "\"")
-    .replace(/&#39;/g, "'")
-    .trim();
 }

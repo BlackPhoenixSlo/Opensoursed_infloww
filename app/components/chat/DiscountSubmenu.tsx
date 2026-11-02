@@ -21,6 +21,7 @@ import { ofUserFullKey } from "@/hooks/useOFUser";
 import {
   DISCOUNT_PERIODS, discountPercents, discountSummary, MIN_DISCOUNT, months, offListDiscount, putFanDiscount,
 } from "@/lib/fanDiscount";
+import { errText } from "@/lib/errText";
 import { MENU_ROW } from "./MenuParts";
 
 const SELECT = "ml-auto bg-bg border border-border rounded text-fg";
@@ -53,7 +54,7 @@ export function DiscountSubmenu({
       onFlash(true, discount ? "Discount applied" : "Discount cleared");
       onBack();
     } catch (e) {
-      onFlash(false, `Could not save the discount: ${e instanceof Error ? e.message : String(e)}`);
+      onFlash(false, `Could not save the discount: ${errText(e)}`);
       setBusy(false);
     }
   }

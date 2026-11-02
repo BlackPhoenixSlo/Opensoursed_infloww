@@ -191,7 +191,7 @@ Things that stay as they are
   - `exclude_of_fee` uses `net_cents` where it is present, else `amount_cents × 0.8` rounded down.
   - Nothing is written.
 
-- **Report time zone.** `stats._parse_date` turns a date-only bound into the UTC instant of that midnight in the caller's Agency's `report_tz`. A chatter with no single Agency, or an Agency with no `report_tz`, keeps today's UTC midnight. Day buckets use that zone's UTC offset at the window's end.
+- **Report time zone.** `stats_window.parse_date` turns a date-only bound into the UTC instant of that midnight in the caller's Agency's `report_tz`. A chatter with no single Agency, or an Agency with no `report_tz`, keeps today's UTC midnight. Day buckets use that zone's UTC offset at the window's end.
 
 - **Translation.**
   - The gate reads the named Agency's `messaging.ai_translation`. A never-stored blob or key counts as `true`, and the Messaging Panel's default becomes `true` to match.
@@ -312,7 +312,7 @@ ASSUMPTION: "Converters" means the Relay's existing attribution (linked message 
 
 ASSUMPTION: "Shift schedule" credits the Employees with an open Clock event on that Creator, split evenly in whole cents when "Multiple employees per shift" allows several. It falls back to Converters while time tracking is off. Rung 4: since the stored and default rule is "shift" and no Agency has Clock events on upgrade day, applying it literally would empty every Employee's figures. Overturned by Infloww evidence of a different split, or by the owner accepting empty figures.
 
-ASSUMPTION: the revenue kinds map to the three rule groups as listed above, and the welcome kinds are `send_welcome`, `welcome` and `welcome_chatter_for_info`. Rung 1 for the kind and automation names (`stats._kind_bucket`, `messages.automation_kind` values in `service/automations/`) and rung 6 for the grouping. Overturned by Infloww's calculation rules.
+ASSUMPTION: the revenue kinds map to the three rule groups as listed above, and the welcome kinds are `send_welcome`, `welcome` and `welcome_chatter_for_info`. Rung 1 for the kind and automation names (`stats_per_model._kind_bucket`, `messages.automation_kind` values in `service/automations/`) and rung 6 for the grouping. Overturned by Infloww's calculation rules.
 
 ASSUMPTION: "Exclude the 20% OnlyFans fee" uses `net_cents` where OnlyFans reported it, else 80% of gross. Rung 1 (`transactions.net_cents` exists) plus the label's 20%. Overturned if the owner wants a flat 80% always.
 
@@ -343,7 +343,7 @@ Blind call (before the spec was shown):
 - B7 Schema compatibility and rollback undefined: **reject**. Same as B3. Rollback for enforcement is the switch, and for attribution it is the read-only path (story 52).
 - B8 Permission matrix completeness (unassigned, stale role ids, route coverage): **partial**. Unassigned and stale ids were already decided. Route coverage beyond the editor's pages is now closed by the route classification (`UNMAPPED` table plus test), see D4.
 - B9 Sales semantics per radio, subscriptions, multiple qualifying Employees: **reject**. The Sales attribution rules section defines each rule, the kind map and the even split.
-- B10 Settings PUT has no audit call: **partial**. The PUT needs none, because `audit_middleware` (`service/employees.py:789-806`) already records every 2xx PUT outside `_AUDIT_SKIP_PREFIXES`, which excludes `/admin/settings`. Story 39 was untested, so a test asserting the `actions` row is added (see D7).
+- B10 Settings PUT has no audit call: **partial**. The PUT needs none, because `audit_middleware` (`service/audit_log.py`) already records every 2xx PUT outside `_AUDIT_SKIP_PREFIXES`, which excludes `/admin/settings`. Story 39 was untested, so a test asserting the `actions` row is added (see D7).
 - B11 Test at the Relay boundary with the authenticated principal, menus separately: **reject** (agreement). That is already the spec's first seam.
 - B12 Legacy stored blobs that fail the schema would falsify "safe to apply as stored", and production cannot be sampled: **reject**. Floor 2 forbids sampling. Story 8 (invalid stored field means its default applies) makes the premise hold for any stored data, and a test for it is now added.
 

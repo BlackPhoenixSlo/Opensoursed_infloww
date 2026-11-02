@@ -113,13 +113,13 @@ ASSUMPTION: the check's single-Creator scope is `chatterly:scope` = `model:1` so
 codex — 2026-10-12 (blind call, then draft call; both exit 0)
 
 Blind call:
-- B1 Alternatives (two-call `/upload` + `/stories`, story from vault, keep read-only): **reject** — the plan fixes the one-call `stories/upload` route and excludes vault (plan:182-187); codex itself notes `post_story` needs a fresh non-deduped claim (of_client.py:3461-3475), which only the one-call route guarantees.
+- B1 Alternatives (two-call `/upload` + `/stories`, story from vault, keep read-only): **reject** — the plan fixes the one-call `stories/upload` route and excludes vault (plan:182-187); codex itself notes `post_story` needs a fresh non-deduped claim (of_sends.py), which only the one-call route guarantees.
 - B2 Enforce image-only; empty or missing MIME type: **partial** — client refusal was already decided; Input change now states an empty `type` is refused too. No Relay-side check added (Relay is out of this Phase's ownership).
 - B3 No size policy or in-flight behaviour: **partial** — in-flight disable already in the spec (User Story 5); a size cap is rejected (YAGNI, rung 5): an oversize upload fails upstream and surfaces as `Could not add: <message>`.
 - B4 Vault side effect of the fresh upload undefined: **reject** — already decided in Out of Scope (vault copy left as-is, route does not expose `return_upload`).
 - B5 READ_ONLY on Create highlight must be tested, not just "nothing sent": **reject** — already in both seams (vitest and `story.py` assert the `READ_ONLY` note).
 - B6 All-models file pick must show SELECT_MODEL: **reject** — already decided: in All-Creators scope no picker opens, so there is no file to pick; both seams assert `SELECT_MODEL`.
-- B7 Cancel, `ready:false`, retry untested: **accept** — vitest now covers cancel and same-file retry (see D4); `ready:false` raises `OFAPIError` in `post_story` (of_client.py:3476-3477) and reaches the client as a non-2xx, already covered by the 500 error case.
+- B7 Cancel, `ready:false`, retry untested: **accept** — vitest now covers cancel and same-file retry (see D4); `ready:false` raises `OFAPIError` in `post_story` (of_sends.py) and reaches the client as a non-2xx, already covered by the 500 error case.
 - B8 Test at the iframe/Relay boundary: **accept** — already the spec's highest seam (`story.py`); unchanged.
 - B9 Premise unverified (captures absent from the workspace; upstream may reject images): **reject** — captures were measured in this worktree (rung 1, Further Notes; every own/other tile is a plain `<button>` outside any `a[href]`, HTMLParser scan of home/new-post/profile index); a live upstream test is barred by floor 2 and the route choice is a plan constraint.
 

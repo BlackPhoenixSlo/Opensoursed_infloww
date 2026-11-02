@@ -21,6 +21,7 @@
  */
 
 import { useMemo, useReducer } from "react";
+import { errText } from "@/lib/errText";
 
 export interface RawJsonCodec<T> {
   /** Text → value; throws an Error with a user-facing message. */
@@ -50,8 +51,6 @@ export type RawJsonAction<T> =
   | { type: "update"; fn: (value: T) => T }
   | { type: "fail"; error: string };
 
-const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
-
 export function initialRawJson<T>(value: T): RawJsonState<T> {
   return { raw: false, text: "", value, invalid: false, error: null };
 }
@@ -62,7 +61,7 @@ export function rawJsonReducer<T>(codec: RawJsonCodec<T>) {
     try {
       return { ...state, value, text: codec.format(value), invalid: false, error: null };
     } catch (e) {
-      return { ...state, raw: false, value, invalid: false, error: message(e) };
+      return { ...state, raw: false, value, invalid: false, error: errText(e) };
     }
   };
   return (state: RawJsonState<T>, action: RawJsonAction<T>): RawJsonState<T> => {
@@ -72,14 +71,14 @@ export function rawJsonReducer<T>(codec: RawJsonCodec<T>) {
         try {
           return { ...state, raw: true, text: codec.format(state.value), invalid: false, error: null };
         } catch (e) {
-          return { ...state, error: message(e) };
+          return { ...state, error: errText(e) };
         }
       }
       case "edit": {
         try {
           return { ...state, text: action.text, value: codec.parse(action.text), invalid: false, error: null };
         } catch (e) {
-          return { ...state, text: action.text, invalid: true, error: message(e) };
+          return { ...state, text: action.text, invalid: true, error: errText(e) };
         }
       }
       case "close":
@@ -107,7 +106,7 @@ export function parseJsonObject(text: string, label: string, example: string): R
   try {
     parsed = JSON.parse(text.trim() || "{}");
   } catch (e) {
-    throw new Error(`${label} is not valid JSON: ${message(e)}`);
+    throw new Error(`${label} is not valid JSON: ${errText(e)}`);
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw new Error(`${label} must be a JSON object, e.g. ${example}`);
@@ -122,7 +121,7 @@ export function parseJsonObjectOr(
   try {
     return parseJsonObject(text, label, example);
   } catch (e) {
-    onError(message(e));
+    onError(errText(e));
     return null;
   }
 }
