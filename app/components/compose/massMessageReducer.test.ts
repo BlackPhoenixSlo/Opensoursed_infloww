@@ -160,9 +160,9 @@ describe("massMessageReducer — text, template, gifs, fan-out", () => {
   it("appendText appends to the text as it is now", () => {
     expect(run(form({ text: "a" }), { type: "appendText", v: "😀" }, { type: "appendText", v: "!" }).text).toBe("a😀!");
   });
-  it("a non-GIF template clears picked GIFs; a GIF template seeds its GIF", () => {
+  it("a non-GIF template keeps picked GIFs; a GIF template replaces them with its GIF", () => {
     const s = form({ pickedGifs: [gif("old")] });
-    expect(massMessageReducer(s, { type: "pickTemplate", t: tpl() }).pickedGifs).toEqual([]);
+    expect(massMessageReducer(s, { type: "pickTemplate", t: tpl() }).pickedGifs).toEqual([gif("old")]);
     expect(massMessageReducer(s, { type: "pickTemplate", t: tpl({ gifId: "g" }) }).pickedGifs.map((g) => g.id)).toEqual(["g"]);
   });
   it("addGif dedupes by id and closes the picker; removeGif drops one", () => {

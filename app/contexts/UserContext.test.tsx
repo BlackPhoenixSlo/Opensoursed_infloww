@@ -29,12 +29,13 @@ function jsonRes(body: Body, ok = true, status = ok ? 200 : 500) {
 }
 
 function Probe() {
-  const { user, loading, boot, retry, clearUserLocally } = useUser();
+  const { user, loading, boot, banner, retry, clearUserLocally } = useUser();
   return (
     <div>
       <span data-testid="loading">{loading ? "loading" : "ready"}</span>
       <span data-testid="user">{user ? user.username : "none"}</span>
       <span data-testid="boot">{boot}</span>
+      <span data-testid="banner">{banner ?? "no-banner"}</span>
       <button onClick={retry}>Retry</button>
       <button onClick={clearUserLocally}>Clear</button>
     </div>
@@ -282,5 +283,64 @@ describe("UserContext boot against an unreachable relay", () => {
     expect(await screen.findByText("bob")).toBeInTheDocument();
     act(() => { window.dispatchEvent(new Event("focus")); });
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("UserContext boot behind a blocking proxy or a silent relay", () => {
+  // A signed-in answer writes the auth snapshot; the next mount would paint it (a warm boot, no banner).
+  beforeEach(() => { localStorage.clear(); });
+
+  it("a 403 at boot is the blocked banner at once; Retry re-probes and signs in once it answers", async () => {
+    fetchMock.mockResolvedValueOnce(jsonRes(null, false, 403)).mockResolvedValue(jsonRes(ALICE));
+    renderProvider();
+    expect(await screen.findByText("blocked")).toBeInTheDocument();
+    expect(screen.getByTestId("user")).toHaveTextContent("none");
+    act(() => { screen.getByRole("button", { name: "Retry" }).click(); });
+    expect(await screen.findByText("alice")).toBeInTheDocument();
+    expect(screen.getByTestId("banner")).toHaveTextContent("no-banner");
+    expect(screen.getByTestId("boot")).toHaveTextContent("settled");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it.each<[string, () => Response | Error, string, string]>([
+    ["200 with the user: signed in", () => jsonRes(ALICE), "alice", "no-banner"],
+    ["401: signed out, plain form", () => jsonRes(null, false, 401), "none", "no-banner"],
+    ["the fetch throws (the 15 s abort): the banner stays", () => new DOMException("timed out", "TimeoutError"),
+      "none", "slow"],
+  ])("no answer after ME_SLOW_MS: the slow banner, the probe keeps running; late %s", async (_n, late, user, banner) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      let settle!: () => void;
+      fetchMock.mockReturnValueOnce(new Promise<Response>((resolve, reject) => {
+        settle = () => { const r = late(); if (r instanceof Error) reject(r); else resolve(r); };
+      }));
+      renderProvider();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      act(() => { vi.advanceTimersByTime(2_999); });
+      expect(screen.getByTestId("banner")).toHaveTextContent("no-banner");
+      act(() => { vi.advanceTimersByTime(1); });
+      expect(screen.getByTestId("banner")).toHaveTextContent("slow");
+      expect(screen.getByTestId("boot")).toHaveTextContent("probing");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await act(async () => { settle(); await Promise.resolve(); await Promise.resolve(); });
+      expect(screen.getByTestId("user")).toHaveTextContent(user);
+      expect(screen.getByTestId("banner")).toHaveTextContent(banner);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("an answer before ME_SLOW_MS clears the slow timer: no banner later", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      fetchMock.mockResolvedValue(jsonRes(null, false, 401));
+      renderProvider();
+      await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+      act(() => { vi.advanceTimersByTime(10_000); });
+      expect(screen.getByTestId("banner")).toHaveTextContent("no-banner");
+      expect(screen.getByTestId("boot")).toHaveTextContent("settled");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

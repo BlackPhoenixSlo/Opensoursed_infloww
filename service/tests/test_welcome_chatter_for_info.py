@@ -1191,7 +1191,7 @@ async def case_echo_guard_drops_parroted_bubbles():
     """A small model (esp. under the humanizer) sometimes parrots the fan's last
     message back. `_looks_like_echo` catches verbatim + near-verbatim echoes while
     leaving genuine short reactions and real replies alone."""
-    from automations.welcome_chatter_for_info import _looks_like_echo
+    from automations._bubbles import _looks_like_echo
     last_in = "long shift too? at least the coffee here is solid"
     # verbatim echo (the guard runs BEFORE the typo pass, so it sees the clean echo)
     assert _looks_like_echo(last_in, last_in)

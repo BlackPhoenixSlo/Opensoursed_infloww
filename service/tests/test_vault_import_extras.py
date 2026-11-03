@@ -558,19 +558,20 @@ class _Part:
 
 
 def case_same_name_files_stage_apart():
-    import server
+    import server  # noqa: F401 — loads vault_import_api the way the relay does
+    import vault_import_api
     from fastapi import HTTPException
     limits = vault_upload.Limits(pace_s=0)
     stage = tempfile.mkdtemp(dir=_SPOOL)
     try:
-        a = asyncio.run(server._vault_stage_file(_Part("IMG_0001.jpg", b"first"), stage, limits))
-        b = asyncio.run(server._vault_stage_file(_Part("IMG_0001.jpg", b"second"), stage, limits))
+        a = asyncio.run(vault_import_api._vault_stage_file(_Part("IMG_0001.jpg", b"first"), stage, limits))
+        b = asyncio.run(vault_import_api._vault_stage_file(_Part("IMG_0001.jpg", b"second"), stage, limits))
         assert a != b, "two same-named files were staged onto one path"
         assert Path(a).name == Path(b).name == "IMG_0001.jpg"
         assert Path(a).read_bytes() == b"first" and Path(b).read_bytes() == b"second"
         # An over-cap part removes ITS partial, and nothing of anyone else's.
         try:
-            asyncio.run(server._vault_stage_file(
+            asyncio.run(vault_import_api._vault_stage_file(
                 _Part("IMG_0001.jpg", b"x" * 64), stage,
                 vault_upload.Limits(pace_s=0, max_bytes=8, max_download_bytes=8)))
             assert False, "an over-cap file was staged"

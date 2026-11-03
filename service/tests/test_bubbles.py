@@ -3,8 +3,8 @@
 automations/_bubbles.py — the reply → texting-bubbles splitter + history-line
 helpers (moved out of welcome_chatter_for_info, shared with autoreply) as tables.
 
-  case_module_is_pure                  stdlib imports only (no DB), and the two lanes
-                                       re-export the very same objects
+  case_module_is_pure                  stdlib imports only (no DB), and the two lanes /
+                                       _reply_shape import the very same objects
   case_split_for_bubbles_table         max_bubbles cap, one '?', emoji split, orphan
                                        emoji merged, dash never survives, force_single
   case_seeded_rng_is_deterministic     the same seed → the same split, every call
@@ -31,12 +31,14 @@ def case_module_is_pure() -> None:
     mods = {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
     mods |= {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
     assert mods <= {"__future__", "re", "random"}, mods
+    from automations import _reply_shape as rs
     from automations import autoreply as ar
     from automations import welcome_chatter_for_info as wc
-    for name in ("split_for_bubbles", "_strip_html", "_history_text", "_dedupe_lead_reaction"):
+    for name in ("_strip_html", "_history_text"):
         assert getattr(wc, name) is getattr(b, name), name
         assert getattr(ar, name) is getattr(b, name), name
-    assert wc._looks_like_echo is b._looks_like_echo
+    for name in ("split_for_bubbles", "_dedupe_lead_reaction", "_looks_like_echo"):
+        assert getattr(rs, name) is getattr(b, name), name
 
 
 def case_split_for_bubbles_table() -> None:

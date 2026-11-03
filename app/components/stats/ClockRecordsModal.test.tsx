@@ -3,7 +3,7 @@
  * `ClockInModal` timeline in the Agency's zone, its CSV Export, and our Owner edit.
  *
  * Rendered with the relay mocked at `fetch` by URL (`/admin/shifts/clock-events`, the PATCH, and the Applied
- * settings answering America/New_York), so the times below are worked by hand in EDT (UTC-4). Every name is fake.
+ * settings answering America/New_York), so the default range's times are worked by hand in EDT (UTC-4). Every name is fake.
  */
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
@@ -19,8 +19,10 @@ import ClockRecordsModal from "@/components/stats/ClockRecordsModal";
 /** Midnight 1 Oct to the end of 15 Oct, New York: the report's range. */
 const FROM = "2026-10-01T04:00:00.000Z";
 const TO = "2026-10-16T03:59:59.999Z";
-/** Now, pinned inside the range (EDT) where a test reads the clock or the zone label. */
+/** Now, pinned inside the range (EDT) where a test reads the clock. */
 const NOW = new Date("2026-10-15T14:07:42Z");
+/** Now in winter (EST, UTC-5), past the range's DST. */
+const WINTER = new Date("2026-12-01T17:00:00Z");
 
 /** Newest first, as the Relay lists them: one open, one auto-closed, one edited. */
 const RECORDS = [
@@ -95,9 +97,6 @@ const record = (id: number) => screen.getAllByRole("listitem")
 
 describe("ClockRecordsModal", () => {
   it("asks for the report's range at hour precision, its end hour included, and shows Infloww's lines in the zone", async () => {
-    // The label shows the zone's offset now; pin now inside the range's DST (UTC-4).
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(NOW);
     await render();
     const dialog = await screen.findByRole("dialog", { name: "Clocked hours" });
     await screen.findByText(/^Clock in at Oct 15, 2026/);
@@ -108,13 +107,43 @@ describe("ClockRecordsModal", () => {
     expect((within(dialog).getByLabelText("From") as HTMLInputElement).value).toBe("2026-10-01T00:00");
     expect((within(dialog).getByLabelText("To") as HTMLInputElement).value).toBe("2026-10-15T23:00");
     expect(within(dialog).getByLabelText("From")).toHaveAttribute("step", "3600");
-    expect(within(dialog).getByText(/^Times in /)).toHaveTextContent("Times in America/New_York (UTC-4)");
     expect(lines()).toEqual([
       ["Clock in at Oct 15, 2026 8:00:00 AM"],
       ["Clock out at Oct 14, 2026 11:05:30 AM (2h 6min) (auto clock out)", "Clock in at Oct 14, 2026 9:00:00 AM"],
       ["Clock out at Oct 13, 2026 7:00:00 PM (1h) (edited)", "Clock in at Oct 13, 2026 6:00:00 PM"],
     ]);
     expect(within(dialog).getByRole("button", { name: "Close" })).toBeInTheDocument();
+  });
+
+  it.each([
+    ["the report's range reads its own offset, not now's", FROM, TO, "UTC-4"],
+    ["a range crossing DST end reads both offsets", "2026-10-20T04:00:00.000Z", "2026-11-11T04:59:59.999Z", "UTC-4 → UTC-5"],
+  ])("viewed in winter, %s", async (_, from, to, offset) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(WINTER);
+    await render(from, to);
+    expect(await screen.findByText(/^Times in /)).toHaveTextContent(`Times in America/New_York (${offset})`);
+  });
+
+  it("a picked end the hour before DST start reads only EST", async () => {
+    // To 01:00 EST asks up to 07:00Z, the DST start instant itself; no stamp in the range is EDT. Now in EDT,
+    // so now's offset would read UTC-4.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+    await render();
+    fireEvent.change(screen.getByLabelText("From"), { target: { value: "2026-03-01T00:00" } });
+    fireEvent.change(screen.getByLabelText("To"), { target: { value: "2026-03-08T01:00" } });
+    await waitFor(() => expect(listCalls().at(-1)?.searchParams.get("to")).toBe("2026-03-08T07:00:00.000Z"));
+    expect(screen.getByText(/^Times in /)).toHaveTextContent("Times in America/New_York (UTC-5)");
+  });
+
+  it("while the range is invalid the label reads now's offset", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(WINTER);
+    await render();
+    fireEvent.change(screen.getByLabelText("To"), { target: { value: "2026-09-01T00:00" } });
+    await screen.findByText("Choose a range that ends after it starts.");
+    expect(screen.getByText(/^Times in /)).toHaveTextContent("Times in America/New_York (UTC-5)");
   });
 
   it("in a zone a half hour off the report's, the default still reads the report's exact range", async () => {

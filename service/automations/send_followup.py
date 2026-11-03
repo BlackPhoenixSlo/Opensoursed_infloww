@@ -38,6 +38,12 @@ Scheduling: SCHEDULED via an `automation_rules` row with
 `trigger_json = {"every_seconds": 3300}` (55 min); the executor materializes a
 job each cycle. NO edit to automation_executor.py.
 
+Send once (send_marker_decide): the marker (`sending_at`, {"step": n}) is upserted
+after the DM-rate turn, right before the send; the Sent save clears it; a
+may-have-sent raise → `unconfirmed_at`, never auto-resent (decide holds a marked
+entry); surely not → cleared. Each non-dry tick first settles UNCONFIRMED rows
+whose nudge landed (`settle_landed`); the user retries the rest.
+
 Payload knobs (all optional): `model` (LLM override), `dry_run` (generate but
 don't send / advance), `with_image` (attach bot-folder vault image, default
 True), `limit` (eligible-fan sweep ceiling).
@@ -50,15 +56,20 @@ import asyncio
 import json
 import logging
 from collections import Counter
+from dataclasses import replace
 from datetime import datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax  # _make_client / _parse_iso / fan-lease seams
+import dm_rate
 import llm_client                  # call .chat at runtime so tests can patch it
+import of_write                    # _may_have_sent, read at call time
 from . import rhythm  # tz_hours_for — THE clock (fixed offset first, zone as fallback)
 from . import _voice  # whose voice this account writes in (NULL → 'her')
+from . import send_marker_decide as smd  # the send-once marker's rules (pure)
+from . import send_marker_store as smst  # ...and its SQL (looked up per call)
 from .send_followup_decide import (  # the drip's phase machine (pure)
     _STEP_THRESHOLDS_H, Complete, Cooldown, Effect, Entry, Resume, Save, Seen, Send, Sent, Tick,
     Wait, _resolve_step_thresholds, decide,
@@ -431,11 +442,9 @@ async def _load_bios(account_id: str, fan_ids: list[int]) -> dict[int, str]:
     return out
 
 
-async def _save_entry(account_id: str, fan_id: int, e: Entry, now: datetime) -> None:
-    """Upsert one followup_state row from the in-memory entry."""
-    values = dict(
-        account_id=str(account_id),
-        fan_id=int(fan_id),
+def _entry_values(e: Entry, now: datetime) -> dict:
+    """The followup_state columns of one entry (its send-once marker too)."""
+    return dict(
         phase=e.phase,
         cycle=e.cycle,
         silence_started_at=e.silence_started_at,
@@ -443,18 +452,78 @@ async def _save_entry(account_id: str, fan_id: int, e: Entry, now: datetime) -> 
         cooldown_until=e.cooldown_until,
         messages_sent=json.dumps(e.messages_sent, default=str),
         completed=(e.phase == "completed"),
+        sending_at=e.sending_at,
+        sending_ctx=json.dumps(e.sending_ctx) if e.sending_ctx is not None else None,
+        unconfirmed_at=e.unconfirmed_at,
         updated_at=now,
     )
-    update = {k: v for k, v in values.items()
-              if k not in ("account_id", "fan_id")}
+
+
+async def _save_entry(account_id: str, fan_id: int, e: Entry, now: datetime) -> None:
+    """Upsert one followup_state row from the in-memory entry."""
+    update = _entry_values(e, now)
     async with get_session() as s:
         await s.execute(
             sqlite_insert(FollowupState)
-            .values(**values)
+            .values(account_id=str(account_id), fan_id=int(fan_id), **update)
             .on_conflict_do_update(
                 index_elements=["account_id", "fan_id"], set_=update
             )
         )
+
+
+# ── Send-once marker (send_marker_decide / send_marker_store) ─────────
+
+def _keys(account_id: str, fan_id: int) -> dict:
+    return {"account_id": str(account_id), "fan_id": int(fan_id)}
+
+
+async def _replay_landed(account_id: str, r: FollowupState, now: datetime) -> None:
+    """One UNCONFIRMED row: his nudge landed ('followup' messages row) → saved
+    Sent(step, sending_at), marker cleared, nothing re-sent; else a miss."""
+    e = Entry.from_row(r)
+    step = (e.sending_ctx or {}).get("step")
+    if step not in _STEP_THRESHOLDS_H:
+        return  # nothing to replay: stays listed for the user's Retry
+    if not await smst.landed(account_id, r.fan_id, smd.lookup_since(e.sending_at), _PURPOSE):
+        return
+    e2, _fx = decide(e, Sent(int(step), e.sending_at), _STEP_THRESHOLDS_H)
+    await smst.clear(FollowupState, _keys(account_id, r.fan_id), if_sending_at=e.sending_at,
+                     **_entry_values(e2, now))
+
+
+async def settle_landed(account_id: str, boot_ts: datetime, now: datetime) -> None:
+    """Settle the account's UNCONFIRMED rows whose nudge landed (IN_FLIGHT ones may
+    still be writing: untouched). Idempotent; one bad row never stops the tick."""
+    await smst.settle(
+        await smst.marked_rows(FollowupState, FollowupState.account_id == str(account_id)),
+        lambda r: _replay_landed(account_id, r, now), boot_ts, now)
+
+
+# The unconfirmed-sends API's entries (it guards, then calls these).
+
+async def marked_sends(account_id: str) -> list[dict]:
+    """The account's marked rows: fan, the step his marker names, the marker."""
+    out = []
+    for r in await smst.marked_rows(FollowupState, FollowupState.account_id == str(account_id)):
+        step = (Entry.from_row(r).sending_ctx or {}).get("step")
+        out.append({"fan_id": int(r.fan_id), "mass_run_id": None,
+                    "step": step if isinstance(step, int) else 0, "sending_at": r.sending_at,
+                    "unconfirmed_at": r.unconfirmed_at, "last_error": None})
+    return out
+
+
+async def read_marker(account_id: str, fan_id: int, mass_run_id: int | None = None):
+    """(sending_at, unconfirmed_at) of his row, None when there is none."""
+    return await smst.read(FollowupState, _keys(account_id, fan_id))
+
+
+async def retry_clear(account_id: str, fan_id: int, mass_run_id: int | None,
+                      sending_at: datetime, now: datetime) -> bool:
+    """The user's Retry: marker off (the next tick nudges him once), only while the
+    row still carries `sending_at`."""
+    return await smst.clear(FollowupState, _keys(account_id, fan_id), if_sending_at=sending_at,
+                            updated_at=now)
 
 
 # ── Vault image (network-rewrite of the DOM "bot" folder click) ───────
@@ -587,6 +656,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     clock = _model_clock(cfg.get("tz_hours"))
 
     now = datetime.utcnow()
+    if not dry_run:
+        # Send once: a nudge a dead attempt landed is saved as sent, never re-sent.
+        await settle_landed(account_id, smd.BOOT_TS, now)
     state = await _load_state(account_id)
 
     fx: Counter = Counter()  # every effect performed, by value (the run's stats read it)
@@ -752,6 +824,19 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
 
             client = await asyncio.to_thread(ax._make_client, account_id)
             try:
+                # The DM-rate turn first (its wait stays outside the marker; the
+                # send's own turn then passes at once), then the send-once
+                # marker — an upsert, so a first-cycle fan with no row is marked
+                # too — committed before OF can take anything.
+                await dm_rate.turn(account_id)
+                e = replace(e, sending_at=datetime.utcnow(), sending_ctx={"step": due.step})
+                await _save_entry(account_id, fid, e, now)
+            except Exception as exc:
+                _note_error(f"mark: {exc}")   # nothing reached OF: no probe, no marker
+                log.warning("send_followup mark failed account=%s fan=%s",
+                            account_id, fid, exc_info=True)
+                continue
+            try:
                 # A refused ATTACHMENT falls back to text-only in here. One dead
                 # vault id used to strand the whole automation: state advances
                 # only on a returned send, so the same fans stayed eligible and
@@ -768,8 +853,19 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                 # send, so it re-fires the same nudge every tick forever (the
                 # paying-but-lapsed loop). Probe WHY and quarantine the undeliverable
                 # ones (1-week rest); a genuine transient just retries next tick.
-                if not await skip_unreachable_fan(account_id, fid, exc, log=log):
+                unreachable = await skip_unreachable_fan(account_id, fid, exc, log=log)
+                if not unreachable:
                     await quarantine_if_undeliverable(client, account_id, fid)
+                # Send once: may have sent → unconfirmed, never re-sent by a tick
+                # (the user retries); surely not (or OF refused the fan) → the
+                # marker goes. Either write only while this attempt's mark stands.
+                keys = _keys(account_id, fid)
+                match smd.failure_outcome(0, 0, True, of_write._may_have_sent(exc),
+                                          unreachable=unreachable):
+                    case smd.UNCONFIRMED:
+                        await smst.unconfirm(FollowupState, keys, e.sending_at)
+                    case smd.CLEAR:
+                        await smst.clear(FollowupState, keys, if_sending_at=e.sending_at)
                 log.warning("send_followup send failed account=%s fan=%s",
                             account_id, fid, exc_info=True)
                 continue

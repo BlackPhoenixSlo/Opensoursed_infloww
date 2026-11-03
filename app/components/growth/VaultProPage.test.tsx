@@ -203,8 +203,8 @@ describe("Vault Pro header and rail, in the capture's order", () => {
     await mount();
     const r = rail();
     const sort = within(r).getByRole("button", { name: "Default" });
-    // "Default" at first, as the capture has it; reading back OF's stored sort is Not wired, and the title says so.
-    expect(sort.getAttribute("title")).toMatch(/not wired$/);
+    // "Default" at first, as the capture has it; OF's stored sort is not read back, and the title says so.
+    expect(sort.getAttribute("title")).toMatch(/not read back\)$/);
     const all = within(r).getByText("All media");
     const one = within(r).getByText("Folder one");
     const two = within(r).getByText("Folder two");

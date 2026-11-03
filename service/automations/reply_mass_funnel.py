@@ -94,6 +94,15 @@ branches, blocked, unreachable, the post-send advance, the loop guard) is the pu
 `funnel_decide.decide(entry, event, script) -> (entry', effects)`; run() below
 gathers the facts, builds the event and performs the effects in order (I/O only).
 
+Send once (send_marker_decide, owner decision Q1): a step's marker (`sending_at`
++ the facts) is committed right before its first OF call; a Sent save clears it.
+A raised attempt: a bubble that landed with an id → Sent (the PPV is bubble 0, a
+later bubble never requeues it); an id-less return or a may-have-sent raise →
+`unconfirmed_at`, never auto-resent (listed by unconfirmed_sends_api for the
+user's Retry); surely not sent → cleared. Each non-dry tick first settles the
+account's UNCONFIRMED rows whose step landed (`settle_landed`). Status stays
+'pending' throughout (webhook_dispatch / wcfi read it).
+
 Payload knobs (all optional): `mass_run_id` (process one broadcast only),
 `model` (LLM override), `dry_run` (resolve text but neither send nor advance),
 `max_chats` (per-run send cap), `test_fan` (process only this fan id).
@@ -108,14 +117,16 @@ import logging
 import random
 import re
 from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import NamedTuple
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax  # _make_client / _parse_iso / _to_cents / lease seams
 import dm_rate
+import of_write                    # _may_have_sent, read at call time
 import run_slot
 import llm_client                  # call .chat at runtime so tests can patch it
 from attribution import write_outbound_attribution
@@ -133,6 +144,8 @@ from ._wordfilter import (  # compliance word filter
 )
 from ._funnel_routing import step_number_index, strip_html
 from . import funnel_decide as fd  # the per-fan status machine (pure)
+from . import send_marker_decide as smd  # the send-once marker's rules (pure)
+from . import send_marker_store as smst  # ...and its SQL (looked up per call)
 from ._funnel_signals import (
     has_fan_paid_ppv, last_funnel_out_at, last_inbound_at, latest_reply,
     replied_recipient_fans,
@@ -483,12 +496,15 @@ async def _tracked_fans(mass_run_id: int) -> set[int]:
 
 
 async def _due_states(mass_run_id: int, now: datetime, only_fan: int | None) -> list[FunnelState]:
-    """Detached `funnel_state` rows ready to process: pending + due."""
+    """Detached `funnel_state` rows ready to process: pending + due, unmarked (a
+    send-once marker is never auto-sent: only a settle or the user's Retry clears it)."""
     async with get_session() as s:
         q = select(FunnelState).where(
             FunnelState.mass_run_id == int(mass_run_id),
             FunnelState.status == "pending",
             (FunnelState.next_check_at.is_(None)) | (FunnelState.next_check_at <= now),
+            FunnelState.sending_at.is_(None),
+            FunnelState.unconfirmed_at.is_(None),
         )
         if only_fan is not None:
             q = q.where(FunnelState.fan_id == int(only_fan))
@@ -522,21 +538,107 @@ async def _ensure_state(mass_run_id: int, fan_id: int, now: datetime) -> bool:
     return (res.rowcount or 0) > 0
 
 
+def _state_values(e: fd.Entry, now: datetime) -> dict:
+    """The state machine columns of one save (_save_state and the settle)."""
+    return {**vars(e), "updated_at": now}
+
+
 async def _save_state(cs: FunnelState, now: datetime) -> None:
-    """Persist the mutated state machine fields for one (mass_run, fan)."""
+    """Persist the mutated state machine fields for one (mass_run, fan). The same
+    write drops the send-once marker: every save is on a row this tick read
+    unmarked (_due_states) or ends its own marked attempt (Sent / Unreachable)."""
     async with get_session() as s:
-        row = await s.get(FunnelState, (int(cs.mass_run_id), int(cs.fan_id)))
-        if row is None:  # pragma: no cover — defensive (discovery just inserted it)
-            return
-        row.current_step = cs.current_step
-        row.last_sent_step = cs.last_sent_step
-        row.next_check_at = cs.next_check_at
-        row.check_count = cs.check_count
-        row.status = cs.status
-        row.last_error = cs.last_error
-        row.last_ppv_sent_at = cs.last_ppv_sent_at
-        row.hops = cs.hops
-        row.updated_at = now
+        await s.execute(
+            update(FunnelState)
+            .where(FunnelState.mass_run_id == int(cs.mass_run_id),
+                   FunnelState.fan_id == int(cs.fan_id))
+            .values(**_state_values(fd.Entry.from_row(cs), now), **smst.CLEARED)
+        )
+
+
+# ── Send-once marker (send_marker_decide / send_marker_store) ────────
+# House-funnel rows only: a funnel_state row whose `mass_runs.funnel_id` is
+# NULL is not a house funnel's — never read or written here.
+
+_HOUSE_JOIN = (MassRun, MassRun.id == FunnelState.mass_run_id)
+
+
+def _house(account_id: str) -> tuple:
+    return (MassRun.account_id == str(account_id), MassRun.funnel_id.is_not(None))
+
+
+def _keys(mass_run_id: int, fan_id: int) -> dict:
+    return {"mass_run_id": int(mass_run_id), "fan_id": int(fan_id)}
+
+
+async def _run_steps(mass_run_id: int) -> list[dict]:
+    async with get_session() as s:
+        funnel_id = (await s.execute(
+            select(MassRun.funnel_id).where(MassRun.id == int(mass_run_id)))).scalar()
+    return await _load_funnel_steps(int(funnel_id)) if funnel_id is not None else []
+
+
+async def _replay_landed(account_id: str, cs: FunnelState, now: datetime) -> None:
+    """One UNCONFIRMED row: its step landed → saved as Sent at `sending_at` (never
+    `now`: it is the next "offer taken" baseline), marker cleared, nothing re-sent.
+    A row it cannot replay (no steps, a shortened funnel, a bad ctx) is a miss."""
+    steps = await _run_steps(cs.mass_run_id)
+    if not 0 <= int(cs.current_step) < len(steps):
+        return
+    try:
+        ctx = json.loads(cs.sending_ctx or "null")
+    except ValueError:
+        return
+    if not isinstance(ctx, dict) or set(ctx) != set(vars(fd.Facts())):
+        return
+    if not await smst.landed(account_id, cs.fan_id, smd.lookup_since(cs.sending_at), _PURPOSE,
+                             mass_run_id=int(cs.mass_run_id),
+                             funnel_step=fd.step_number(steps[int(cs.current_step)])):
+        return
+    script = fd.Script(steps=steps, num_to_idx=step_number_index(steps), max_hops=_MAX_HOPS)
+    e, _fx = fd.decide(fd.Entry.from_row(cs), fd.Sent(cs.sending_at, fd.Facts(**ctx)), script)
+    await smst.clear(FunnelState, _keys(cs.mass_run_id, cs.fan_id), if_sending_at=cs.sending_at,
+                     **{**_state_values(e, now), "last_error": None})
+
+
+async def settle_landed(account_id: str, boot_ts: datetime, now: datetime) -> None:
+    """Settle the account's UNCONFIRMED rows whose step landed (IN_FLIGHT ones may
+    still be writing: untouched). Idempotent; one bad row never stops the tick."""
+    await smst.settle(await smst.marked_rows(FunnelState, *_house(account_id), join=_HOUSE_JOIN),
+                      lambda cs: _replay_landed(account_id, cs, now), boot_ts, now)
+
+
+# The unconfirmed-sends API's entries (it guards, then calls these).
+
+async def marked_sends(account_id: str) -> list[dict]:
+    """The account's marked rows: fan, run, the step NUMBER it is on (its index + 1
+    when the funnel no longer has it), the marker, last_error."""
+    out, steps_of = [], {}
+    for cs in await smst.marked_rows(FunnelState, *_house(account_id), join=_HOUSE_JOIN):
+        if cs.mass_run_id not in steps_of:
+            steps_of[cs.mass_run_id] = await _run_steps(cs.mass_run_id)
+        steps, c = steps_of[cs.mass_run_id], int(cs.current_step)
+        n = fd.step_number(steps[c]) if 0 <= c < len(steps) else None
+        out.append({"fan_id": int(cs.fan_id), "mass_run_id": int(cs.mass_run_id),
+                    "step": n if n is not None else c + 1, "sending_at": cs.sending_at,
+                    "unconfirmed_at": cs.unconfirmed_at, "last_error": cs.last_error})
+    return out
+
+
+async def read_marker(account_id: str, fan_id: int, mass_run_id: int | None):
+    """(sending_at, unconfirmed_at) of this Creator's row, None when there is none."""
+    if mass_run_id is None:
+        return None
+    return await smst.read(FunnelState, _keys(mass_run_id, fan_id), *_house(account_id),
+                           join=_HOUSE_JOIN)
+
+
+async def retry_clear(account_id: str, fan_id: int, mass_run_id: int | None,
+                      sending_at: datetime, now: datetime) -> bool:
+    """The user's Retry: marker off, pending + due now (the next tick sends it once),
+    only while the row still carries `sending_at`."""
+    return await smst.clear(FunnelState, _keys(mass_run_id, fan_id), if_sending_at=sending_at,
+                            status="pending", next_check_at=now, last_error=None, updated_at=now)
 
 
 # ── Step text (static verbatim, or generate via llm_client) ──────────
@@ -610,16 +712,28 @@ async def _step_texts(
 
 # ── Sending one step (of_client + optimistic persistence) ────────────
 
+@dataclass
+class _Attempt:
+    """One step's send attempt, owned by the caller and filled in by _send_step as
+    it goes, so a return and any raise read the same: `sent` = bubbles OF returned
+    with an id, `returned` = every bubble OF returned (id-less too), `marked_at` =
+    the send-once mark (written right before the first OF call; None = no call)."""
+    facts: fd.Facts
+    sent: int = 0
+    returned: int = 0
+    marked_at: datetime | None = None
+
+
 async def _send_step(
     client, account_id: str, fan_id: int, mass_run_id: int, step: dict,
     texts: list[str], is_ppv: bool,
-    *, media: list[int] | None = None, previews: list[int] | None = None,
+    *, attempt: _Attempt, media: list[int] | None = None, previews: list[int] | None = None,
     typing_wpm: float = 0.0, typing_indicator: bool = False,
     strip_emoji_on: bool = False,
-) -> int:
+) -> None:
     """Send the step's message(s) and persist each outbound row (tagged
-    mass_run_id + funnel_step, emit_live for the WORKER→SSE bridge). Returns the
-    count of messages actually sent. PPV: price (from the shared step) + the
+    mass_run_id + funnel_step, emit_live for the WORKER→SSE bridge), counting into
+    `attempt`. PPV: price (from the shared step) + the
     caller-resolved per-account `media`/`previews` on the FIRST (only) message —
     vault ids are per-account, so the run loop resolves them via
     FunnelAccountMedia before calling here."""
@@ -627,7 +741,6 @@ async def _send_step(
     previews = list(previews or [])   # clamped to `media` by fd.ppv_send_kwargs
     step_num = fd.step_number(step)
 
-    sent = 0
     for i, text in enumerate(texts):
         # PPV: price + the caller-resolved per-account vault ids on the FIRST
         # (only) line; the text stays readable, only the media is paywalled.
@@ -648,26 +761,28 @@ async def _send_step(
         # Subsequent bubbles get a human pause first, then EVERY bubble holds for
         # the time it'd take to TYPE it — both waits show the live "...is typing"
         # bubble to the fan when the indicator is enabled.
-        try:
-            if i > 0 and _STEP_GAP_S:
-                await hold_with_typing(account_id, fan_id, _jittered_gap(),
-                                       typing_indicator=typing_indicator)
-            await hold_with_typing(account_id, fan_id,
-                                   typing_delay_seconds(text, typing_wpm),
+        if i > 0 and _STEP_GAP_S:
+            await hold_with_typing(account_id, fan_id, _jittered_gap(),
                                    typing_indicator=typing_indicator)
-            # The account's DM rate (OF_DM_PER_MIN): a full window waits like
-            # a typing hold, the slot handed back (dm_rate).
-            await dm_rate.turn(account_id, release_budget_s=INLINE_MAX_S)
-        except run_slot.SlotLost as e:
-            e.sent = sent       # the run lost its slot: the caller records what landed
-            raise
+        await hold_with_typing(account_id, fan_id,
+                               typing_delay_seconds(text, typing_wpm),
+                               typing_indicator=typing_indicator)
+        # The account's DM rate (OF_DM_PER_MIN): a full window waits like
+        # a typing hold, the slot handed back (dm_rate).
+        await dm_rate.turn(account_id, release_budget_s=INLINE_MAX_S)
 
+        if attempt.marked_at is None:
+            # Send once: the marker is committed before OF can take anything.
+            attempt.marked_at = await smst.mark(FunnelState, _keys(mass_run_id, fan_id),
+                                                vars(attempt.facts))
         result = await asyncio.to_thread(client.send_message, fan_id, text, **kwargs)
+        attempt.returned += 1
         msg_id = result.get("id") if isinstance(result, dict) else None
         if not msg_id:
             log.warning("reply_mass_funnel send returned no id account=%s fan=%s step=%s",
                         account_id, fan_id, step_num)
             continue
+        attempt.sent += 1   # OF took it with an id: it landed, whatever follows
         await write_outbound_attribution(
             account_id=account_id,
             fan_id=int(fan_id),
@@ -681,8 +796,6 @@ async def _send_step(
             funnel_step=step_num,
             emit_live=True,  # WORKER→SSE bridge: surface the funnel step live
         )
-        sent += 1
-    return sent
 
 
 # ── The automation ───────────────────────────────────────────────────
@@ -705,6 +818,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     persona = await _load_persona(account_id)
 
     now = datetime.utcnow()
+    if not dry_run:
+        # Send once: a step a dead attempt landed is saved as sent, never re-sent.
+        await settle_landed(account_id, smd.BOOT_TS, now)
     runs = await _active_mass_runs(account_id, only_run, now)
     if not runs:
         return {"status": "skipped", "reason": "no_active_funnel_runs",
@@ -949,44 +1065,60 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     log.warning("reply_mass_funnel BLOCKED send account=%s fan=%s step=%s "
                                 "reasons=%s", account_id, fan_id, c, problems)
                     continue
-                lost = None
+                lost = err = None
+                attempt = _Attempt(facts)
                 try:
-                    n = await _send_step(client, account_id, fan_id, mass_run_id,
-                                         step, texts, is_ppv,
-                                         media=step_media, previews=step_previews,
-                                         typing_wpm=typing_wpm,
-                                         typing_indicator=typing_indicator,
-                                         strip_emoji_on=strip_emoji_on)
+                    await _send_step(client, account_id, fan_id, mass_run_id,
+                                     step, texts, is_ppv, attempt=attempt,
+                                     media=step_media, previews=step_previews,
+                                     typing_wpm=typing_wpm,
+                                     typing_indicator=typing_indicator,
+                                     strip_emoji_on=strip_emoji_on)
                 except run_slot.SlotLost as e:
-                    # The run lost its slot: not this fan's failure, stop the run.
-                    # Part of the step landed → it counts as sent (advance, cooldown)
-                    # first, so the next run does not send it again.
-                    if not e.sent:
-                        raise
-                    lost, n = e, e.sent
+                    # The run lost its slot: not this fan's failure, stop the run
+                    # (re-raised below, after what landed is recorded).
+                    lost = err = e
                 except Exception as e:
                     errors += 1
-                    # Permanent (deleted/blocked) → quarantine fleet-wide AND end
-                    # THIS funnel state — it stays due forever otherwise, regenerating
-                    # the step texts (an LLM call) every tick. Transients stay
-                    # pending and retry when next due.
-                    if await skip_unreachable_fan(account_id, fan_id, e, log=log):
-                        entry, _fx = fd.decide(entry, fd.Unreachable(now), script)
-                        await _perform(cs, entry, _fx)
+                    err = e
                     log.warning("reply_mass_funnel send failed account=%s fan=%s step=%s",
                                 account_id, fan_id, c, exc_info=True)
-                    continue
-                if n == 0:
-                    errors += 1
-                    continue
-
-                # Advance the state machine + schedule the next reply-check: the
-                # step just sent picks the next one (a reply keyword, a purchase,
-                # `default`, else +1); a routeless PPV hands off (done).
-                entry, _fx = fd.decide(entry, fd.Sent(now, facts), script)
-                await _perform(cs, entry, _fx)
-                advanced += 1
-                sent_ok = True
+                # Permanent (deleted/blocked) → quarantine fleet-wide AND end THIS
+                # funnel state — it stays due forever otherwise, regenerating the
+                # step texts (an LLM call) every tick. Transients stay pending.
+                unreachable = (err is not None and lost is None
+                               and await skip_unreachable_fan(account_id, fan_id, err, log=log))
+                keys = _keys(mass_run_id, fan_id)
+                # Send once (send_marker_decide): part of the step landed → it
+                # counts as sent (advance, cooldown), so it is never sent again —
+                # the PPV is bubble 0, a later bubble's failure never requeues
+                # it; may have sent → unconfirmed, left for the user's Retry;
+                # surely not → the marker goes and the step retries when due.
+                match smd.failure_outcome(
+                        attempt.sent, attempt.returned, attempt.marked_at is not None,
+                        err is not None and of_write._may_have_sent(err),
+                        unreachable=unreachable):
+                    case smd.SENT:
+                        # Advance the state machine + schedule the next reply-check:
+                        # the step just sent picks the next one (a reply keyword, a
+                        # purchase, `default`, else +1); a routeless PPV hands off.
+                        entry, _fx = fd.decide(entry, fd.Sent(now, facts), script)
+                        await _perform(cs, entry, _fx)
+                        advanced += 1
+                        sent_ok = True
+                    case smd.UNCONFIRMED:
+                        why = ((" ".join(str(err).split())[:200] or type(err).__name__)
+                               if err is not None else "send returned no id")
+                        await smst.unconfirm(FunnelState, keys, attempt.marked_at,
+                                             last_error=f"may not have sent: {why}"[:500],
+                                             updated_at=datetime.utcnow())
+                    case smd.CLEAR if attempt.marked_at is not None and not unreachable:
+                        await smst.clear(FunnelState, keys, if_sending_at=attempt.marked_at)
+                if unreachable:   # its save drops any marker too
+                    entry, _fx = fd.decide(entry, fd.Unreachable(now), script)
+                    await _perform(cs, entry, _fx)
+                if err is None and not sent_ok:
+                    errors += 1     # nothing went out (id-less / all emptied)
                 if lost is not None:
                     raise lost
             finally:

@@ -869,9 +869,9 @@ FAULTS: dict[str, Fault] = {
         "each affected owner's /events carried the notification and the pause; no other owner's did",
         "a Creator with no automations is flagged by its owner's inbox read alone (via=proxy): "
         "otp_required, one notification",
-        "the WS pump met the 2FA demand once and parked: per 2FA Creator at most 2 /users/me over "
-        ">= 20 s (the pump's reconnect, the probe's), no reconnect, the pump exited and "
-        "supervisor passes left it parked",
+        "the WS pump met the 2FA demand and parked: per 2FA Creator at most 5 /users/me over >= 25 s "
+        "(the pump's 1 + 3 retries, the probe's), all 400, no reconnect, the pump exited within 2 s of "
+        "its last /users/me and supervisor passes left it parked",
         "after detection a 2FA Creator runs nothing: no run row, no OF call but the probe's /users/me "
         "(101: still paused), its sends stay pending",
         "/admin/accounts shows each owner its 2FA Creators paused (session_dead_reason otp_required)",

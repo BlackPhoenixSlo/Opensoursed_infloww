@@ -8,6 +8,10 @@ Per Creator in `sizes` ({creator id: roster size}; `priced`: the Creators whose 
              cooldown upsert creates theirs.
   OF lists   `include` (2 lists, 70% and 50% of the pool) and `exclude` (1 list, 2%): OF's side,
              returned only (the scenario writes them to of-rosters.json, lib/priority_mass_relay.py).
+             Plus OF's `MASSDMEXCLUDE` list (the composer pre-ticks it in Exclude): MASSDM_OF_FRAC of
+             the pool (at least MASSDM_OF_MIN), all `include[0]` members on no local exclusion or
+             guard row below, drawn from w.rng("priority_mass_audience:massdm_of") (the other
+             draws unchanged).
   local      members of the Creator's MASSdmEXCLUDE list (kind 'exclude', system, no OF id, as
              service/lists.py makes it), 1.5% of the pool; global blacklist rows, 0.5%; for a `priced`
              Creator, fans who bought MEDIA_ID (a purchased `vault_sends` row), 1.5%.
@@ -16,8 +20,8 @@ Per Creator in `sizes` ({creator id: roster size}; `priced`: the Creators whose 
              excluded: out 6 h / in 2 h), 3% out 7-30 h or in 2.5-12 h ago (not excluded). Plus
              seed/threads.py's own history.
 Returns (and puts in w.data["priority_mass_audience"]) per Creator: `pool`, `no_row`, `lists`,
-`include`, `exclude` (list ids); the local rows are read back from the DB. Randomness only from
-w.rng("priority_mass_audience").
+`include`, `exclude` (list ids), `massdm_of` (OF's MASSDMEXCLUDE list id); the local rows are read
+back from the DB. Randomness only from w.rng("priority_mass_audience") and its ":massdm_of" stream.
 """
 from __future__ import annotations
 
@@ -30,11 +34,13 @@ EXTRA_OFFSET = 100_000
 OF_LIST_BASE = 7_700_000          # OF list ids (automation_relay mints from 6_600_001 up)
 MEDIA_ID = 7_100_000_001          # the priced run's vault media
 NO_ROW_FRAC = 0.2
+MASSDM_OF_FRAC, MASSDM_OF_MIN = 0.05, 5
 MSG_ID_BASE = 9_500_000_000_000   # past threads.py's 9e12 history ids, below the fake OF's 9.7e12 sends
 
 
 def seed(w: World, sizes: dict[str, int], priced: frozenset[str] | set[str] = frozenset()) -> dict[str, dict]:
     rng = w.rng("priority_mass_audience")
+    rng_of = w.rng("priority_mass_audience:massdm_of")
     index = {c["id"]: ci for ci, c in enumerate(w.data["creators"])}
     out: dict[str, dict] = {}
     fan_rows, massdm_rows, black_rows, vault_rows, msg_rows = [], [], [], [], []
@@ -80,11 +86,15 @@ def seed(w: World, sizes: dict[str, int], priced: frozenset[str] | set[str] = fr
                 d, at = "in", w.now - timedelta(minutes=rng.randint(150, 12 * 60))
             msg_rows.append((aid, f, seq, d, aid if d == "out" else f"u{f}", "hey you", "[]", 0, 0, None, None, None,
                              ts(at), ts(at)))
+        taken = set(massdm) | set(black) | set(owners) | set(guard)
+        free = [f for f in lists[0]["members"] if f not in taken]
+        lists.append({"id": OF_LIST_BASE + ci * 10 + 4, "name": "MASSDMEXCLUDE", "members": sorted(
+            rng_of.sample(free, min(len(free), max(MASSDM_OF_MIN, round(k * MASSDM_OF_FRAC)))))})
         massdm_rows.append((aid, massdm, ts(w.now - timedelta(days=30))))
         black_rows += [(f, "slop: abusive", ts(w.now - timedelta(days=3))) for f in black]
         vault_rows += [(aid, f, MEDIA_ID, 500, ts(w.now - timedelta(days=rng.randint(1, 60)))) for f in owners]
         out[aid] = {"pool": pool, "no_row": no_row, "lists": lists, "include": [x["id"] for x in lists[:2]],
-                    "exclude": [lists[2]["id"]]}
+                    "exclude": [lists[2]["id"]], "massdm_of": lists[3]["id"]}
     con = w.sql()
     with con:
         if fan_rows:

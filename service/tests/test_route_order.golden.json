@@ -1,4 +1,4 @@
-{"openapi_sha1": "64bd53efbdedf2231fb7dcde450ab663c06453e1",
+{"openapi_sha1": "cd3079a84cb60fabb78f369b51704ae281e3e490",
  "routes": [
   ["GET,HEAD", "/openapi.json", "openapi"],
   ["GET,HEAD", "/docs", "swagger_ui_html"],
@@ -65,6 +65,8 @@
   ["GET", "/admin/funnels/{funnel_id}/media/{account_id}", "get_funnel_media"],
   ["PUT", "/admin/funnels/{funnel_id}/media/{account_id}", "put_funnel_media"],
   ["DELETE", "/admin/funnels/{funnel_id}/media/{account_id}", "delete_funnel_media"],
+  ["GET", "/admin/unconfirmed-sends", "list_unconfirmed_sends"],
+  ["POST", "/admin/unconfirmed-sends/retry", "retry_unconfirmed_send"],
   ["GET", "/admin/nudge-config", "get_nudge_config"],
   ["PUT", "/admin/nudge-config", "put_nudge_config"],
   ["POST", "/admin/nudge-config/preview", "preview_nudge"],

@@ -13,8 +13,10 @@ BOTH fans, carrying run 0's caption.
 
 Load: per Creator (all at once, each Creator's sends in turn) RUNS broadcasts through the
 real `POST /api/of/v2/messages/queue` (owner session, X-Account-Id, `user_ids`), each a
-multi-line caption to its own `--per_run` fans (run 0's include the BOTH fans). Then OF's chat
-list (`FakeOF.chats`) shows every recipient's copy of its run as the last message, its text
+multi-line caption to its own `--per_run` fans (run 0's include the BOTH fans), the last
+`--set excluded=` (FLOW_SIZES, 2) of them also named in the body's `excluded_users` (so each run
+SENDS to per_run - excluded). Then OF's chat list (`FakeOF.chats`) shows every sent recipient's
+copy of its run as the last message, its text
 as OF echoes it (`\\n` -> `<br />\\n`, created a second after the send), and every STALE fan a
 Creator's own OF-web send of run 0's caption, now. `--users` open inboxes, as the app's
 `useChatList` drives them: each has scrolled to one (Creator, page) and loads it once
@@ -22,8 +24,12 @@ Creator's own OF-web send of run 0's caption, now. `--users` open inboxes, as th
 reconcile), then head-polls page 0 every POLL_S without `refresh` (`useHeadPagePoll`: 90 s,
 `refresh=false`, rides the relay cache), until every fresh stub is gone or SETTLE_S passes.
 
-Checks: every send answered 200 and left one stub per recipient (SENT); PH_ONCE
-(lib/attribution_pair_faults.py): per recipient its stub is gone, OF's row carries its run,
+Checks: every send answered 200 and left one stub per sent recipient and none on any other
+non-excluded fan (SENT); EXCL (skipped at `--set excluded=0`)
+(lib/mass_queue_faults.py), right after the sends: per excluded fan no row of its run and no out row
+with its caption (stub or real), no OF wire `userIds` naming it (RUNS wire bodies per Creator, so
+the read is never blind), and each run's `mass_runs.recipient_count` == its sent ids; PH_ONCE
+(lib/attribution_pair_faults.py): per sent recipient its stub is gone, OF's row carries its run,
 one out row and one thread bubble (`GET /admin/messages/{aid}/{fan}`) hold that caption; per
 BOTH fan the 2-day-old stub is still there; per STALE fan the 2-day-old stub is still there
 and OF's row carries no run. Budgets: echo visible -> every stub adopted (E2E_SETTLE_MS),
@@ -34,7 +40,8 @@ Bypasses (declared): lib/of_wire.py is OnlyFans (its own declared bypasses; the 
 broadcast throttle); OF's chat list is set by the scenario, one item per recipient, its
 `<br />` echo shape the one test_placeholder_adopt pins; the inbox clients are httpx pools, not
 browsers, and model only the page-load + head poll (no SSE, no manual Refresh); the stale run is SQL in the product's shape (no actor can send 2 days ago).
-Break-it-once: placeholder-pair-ignores-window (the 6 h bound dropped: only PH_ONCE).
+Break-it-once: placeholder-pair-ignores-window (the 6 h bound dropped: only PH_ONCE);
+`--fault=mass-queue-excluded-kept` (only EXCL).
 """
 from __future__ import annotations
 
@@ -45,6 +52,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from slop.lib.attribution_pair_faults import PH_ONCE
+from slop.lib.mass_queue_faults import EXCL
 from slop.seed import mass_placeholders, of_sessions
 
 sys.path.append(str(Path(__file__).resolve().parents[2] / "service"))   # the pairing key, pure
@@ -92,7 +100,9 @@ async def run(ctx) -> None:
     w = await ctx.build(PROFILE)
     of_sessions.seed(w, w.data["creators"])
     aids = [c["id"] for c in w.data["creators"]]
-    n_run, n_stale, n_both = (ctx.param(k, w.size[f"mass_placeholder_{k}"]) for k in ("per_run", "stale", "both"))
+    n_run, n_stale, n_both, n_excl = (ctx.param(k, w.size[f"mass_placeholder_{k}"])
+                                      for k in ("per_run", "stale", "both", "excluded"))
+    assert 0 <= n_excl and n_run - n_excl >= max(n_both, 1), (n_run, n_excl, n_both)
     rng = w.rng("scenario:mass-placeholder-echo")
 
     # Who gets what, per Creator: runs[k] (fresh recipients), stale, both (also in runs[0]).
@@ -104,7 +114,8 @@ async def run(ctx) -> None:
         assert len(fans) >= need, (aid, len(fans), need)
         runs = [fans[k * n_run:(k + 1) * n_run] for k in range(RUNS)]
         stale = fans[RUNS * n_run:need]
-        plan[aid] = {"runs": runs, "stale": stale, "both": runs[0][:n_both], "run_ids": [None] * RUNS}
+        plan[aid] = {"runs": runs, "stale": stale, "both": runs[0][:n_both], "run_ids": [None] * RUNS,
+                     "sent": [r[:n_run - n_excl] for r in runs], "excl": [r[n_run - n_excl:] for r in runs]}
     old = w.now - STALE_AGE
     stale_runs = mass_placeholders.seed(w, {aid: plan[aid]["stale"] + plan[aid]["both"] for aid in aids},
                                         lambda aid: caption(aid, 0), old)
@@ -116,7 +127,8 @@ async def run(ctx) -> None:
     async def creator_sends(aid: str) -> None:
         for k, fans in enumerate(plan[aid]["runs"]):
             r = await owner.post("/api/of/v2/messages/queue", headers={"X-Account-Id": aid},
-                                 json={"text": caption(aid, k), "user_ids": fans})
+                                 json={"text": caption(aid, k), "user_ids": fans,
+                                       "excluded_users": plan[aid]["excl"][k]})
             body = r.json() if r.status_code == 200 else {}
             plan[aid]["run_ids"][k] = body.get("_mass_run_id")
             if r.status_code != 200 or body.get("_mass_run_id") is None:
@@ -126,19 +138,83 @@ async def run(ctx) -> None:
     await asyncio.gather(*(creator_sends(a) for a in aids))
     send_s = time.perf_counter() - t_send
 
-    def stub_counts() -> dict[tuple[str, int], int]:
+    excl_of = {(aid, int(rid)): set(plan[aid]["excl"][k]) for aid in aids
+               for k, rid in enumerate(plan[aid]["run_ids"]) if rid is not None}
+
+    def stub_fans() -> dict[tuple[str, int], list[int]]:
+        """Per (Creator, fresh run) the fans of ALL its stubs but that run's excluded fans (theirs are
+        EXCL's): a phantom stub on any other fan, or a second one, still shows."""
         con = w.sql()
         try:
-            return {(str(a), int(r)): n for a, r, n in con.execute(
-                "SELECT account_id, mass_run_id, COUNT(*) FROM messages WHERE message_id >= ? AND message_id < ? "
-                "GROUP BY account_id, mass_run_id", (mass_placeholders.PLACEHOLDER_BASE, mass_placeholders.PLACEHOLDER_CEIL))}
+            out: dict[tuple[str, int], list[int]] = {}
+            for a, r, f in con.execute(
+                    "SELECT account_id, mass_run_id, fan_id FROM messages WHERE message_id >= ? AND message_id < ?",
+                    (mass_placeholders.PLACEHOLDER_BASE, mass_placeholders.PLACEHOLDER_CEIL)):
+                key = (str(a), int(r))
+                if key in excl_of and int(f) not in excl_of[key]:
+                    out.setdefault(key, []).append(int(f))
+            return out
         finally:
             con.close()
 
-    stubs = stub_counts()
-    got = {f"{aid}:{k}": stubs.get((aid, int(rid)), 0) for aid in aids
-           for k, rid in enumerate(plan[aid]["run_ids"]) if rid is not None}
-    short = {k: v for k, v in got.items() if v != n_run}
+    # EXCL: what the excluded fans got from the sends (the DB rows and OF's wire), and the runs' counts.
+    con = w.sql()
+    try:
+        rids = [rid for aid in aids for rid in plan[aid]["run_ids"] if rid is not None]
+        counts_db = dict(con.execute("SELECT id, recipient_count FROM mass_runs WHERE id IN (%s)"
+                                     % ",".join("?" * len(rids)), rids).fetchall()) if rids else {}
+        excl_bad: dict[str, list] = {"row_of_run": [], "out_row": [], "wire_user_id": [], "wire_blind": [],
+                                     "recipient_count": []}
+        for aid in aids:
+            p = plan[aid]
+            fans = sorted({f for ex in p["excl"] for f in ex})
+            if not fans:
+                continue
+            got_rows = con.execute(
+                "SELECT fan_id, message_id, body, mass_run_id FROM messages WHERE direction = 'out' "
+                "AND account_id = ? AND fan_id IN (%s)" % ",".join("?" * len(fans)), [aid, *fans]).fetchall()
+            for k, ex in enumerate(p["excl"]):
+                rid, key = p["run_ids"][k], _norm_body(caption(aid, k))
+                for fid, mid, body, run in got_rows:
+                    if int(fid) not in ex:
+                        continue
+                    if rid is not None and run == int(rid):
+                        excl_bad["row_of_run"].append((aid, fid, k, mid))
+                    elif _norm_body(body) == key:
+                        excl_bad["out_row"].append((aid, fid, k, mid))
+        for aid in aids:
+            ex_all = {f for ex in plan[aid]["excl"] for f in ex}
+            with ctx.of_wire.lock:
+                wire = [list(b.get("userIds") or []) for b in ctx.of_wire.queue.get(aid, [])]
+            if len(wire) != RUNS:
+                excl_bad["wire_blind"].append((aid, len(wire)))
+            for i, ids in enumerate(wire):
+                hit = sorted(ex_all & {int(u) for u in ids})
+                if hit:
+                    excl_bad["wire_user_id"].append((aid, i, hit[:5]))
+            for k, rid in enumerate(plan[aid]["run_ids"]):
+                if rid is not None and counts_db.get(int(rid)) != len(plan[aid]["sent"][k]):
+                    excl_bad["recipient_count"].append((aid, k, counts_db.get(int(rid)), len(plan[aid]["sent"][k])))
+    finally:
+        con.close()
+    n_excluded = sum(len(ex) for a in aids for ex in plan[a]["excl"])
+    if n_excluded:
+        ctx.check(EXCL, not any(excl_bad.values()), counts={k: len(v) for k, v in excl_bad.items()},
+                  excluded=n_excluded, wire_bodies=sum(len(ctx.of_wire.queue.get(a, [])) for a in aids),
+                  sample={k: v[:3] for k, v in excl_bad.items() if v})
+    else:
+        ctx.skip(EXCL, "no excluded fans (--set excluded=0)")
+
+    stubs = stub_fans()
+    short = {}
+    for aid in aids:
+        for k, rid in enumerate(plan[aid]["run_ids"]):
+            if rid is None:
+                continue
+            got = sorted(stubs.get((aid, int(rid)), []))
+            if got != sorted(plan[aid]["sent"][k]):   # n_run - n_excl stubs, one per sent fan, no other fan
+                short[f"{aid}:{k}"] = {"n": len(got), "want": n_run - n_excl,
+                                       "off": sorted(set(got) ^ set(plan[aid]["sent"][k]))[:5]}
     ctx.check(SENT, not send_bad and not short, sends=RUNS * len(aids), bad=send_bad[:5], stubs_off=short,
               seconds=round(send_s, 2))
     if send_bad or short:
@@ -152,7 +228,7 @@ async def run(ctx) -> None:
     n = 0
     for aid in aids:
         items = []
-        groups = [(k, f) for k, fans in enumerate(plan[aid]["runs"]) for f in fans] + \
+        groups = [(k, f) for k, fans in enumerate(plan[aid]["sent"]) for f in fans] + \
                  [(None, f) for f in plan[aid]["stale"]]
         for k, fid in groups:
             n += 1
@@ -172,7 +248,7 @@ async def run(ctx) -> None:
     def settled() -> bool:
         con = w.sql()
         try:
-            left = sum(stub_counts().get(k, 0) for k in fresh_ids)
+            left = sum(len(v) for k, v in stub_fans().items() if k in fresh_ids)
             have = con.execute(f"SELECT COUNT(*) FROM messages WHERE message_id BETWEEN {ECHO_ID_BASE + 1} "
                                f"AND {ECHO_ID_BASE + n}").fetchone()[0]
         finally:
@@ -235,7 +311,7 @@ async def run(ctx) -> None:
         return [_norm_body(m.get("text") or m.get("body")) for m in r.json().get("messages", [])] \
             if r.status_code == 200 else ["<http %d>" % r.status_code]
 
-    keys = [(aid, fid) for aid in aids for fid in [f for fans in plan[aid]["runs"] for f in fans]]
+    keys = [(aid, fid) for aid in aids for fid in [f for fans in plan[aid]["sent"] for f in fans]]
     seen = dict(zip(keys, await asyncio.gather(*(bubbles(a, f) for a, f in keys))))
     await reader.aclose()
 
@@ -243,7 +319,7 @@ async def run(ctx) -> None:
                             "old_stub_adopted": [], "stale_send_stamped": []}
     for aid in aids:
         p, old_ph = plan[aid], mass_placeholders.PLACEHOLDER_BASE + stale_runs[aid]
-        for k, fans in enumerate(p["runs"]):
+        for k, fans in enumerate(p["sent"]):
             rid, key = int(p["run_ids"][k]), _norm_body(caption(aid, k))
             for fid in fans:
                 t = thread.get((aid, fid), [])
@@ -285,7 +361,8 @@ async def run(ctx) -> None:
                       p95=routes[route]["p95_ms"], n=routes[route]["n"])
         else:
             ctx.skip(f"p95 {route} < {budget}ms", "no samples")
-    ctx.metric("load", {"creators": len(aids), "runs": RUNS, "per_run": n_run, "stale": n_stale, "both": n_both,
+    ctx.metric("load", {"creators": len(aids), "runs": RUNS, "per_run": n_run, "excluded": n_excl,
+                        "stale": n_stale, "both": n_both,
                         "inbox_clients": len(clients), "chat_reads": reads[0], "send_s": round(send_s, 2),
                         "settle_ms": round(settle_ms) if settle_ms is not None else None})
     ctx.metric("p95_vs_last_green", {**{r: routes[r]["p95_ms"] for r in P95_MS if r in routes},

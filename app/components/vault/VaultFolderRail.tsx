@@ -52,8 +52,9 @@ export const RAIL_ROW_INNER = "py-[14px] pl-[10px] pr-1 border-b border-border f
 export const RAIL_ICON_BOX =
   "w-[30px] min-w-[30px] h-[30px] grid place-items-center rounded-[20px] text-fg-dim hover:text-accent hover:bg-accent/10 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-fg-dim";
 
-/** The rail's folder sort label (vaultFolderSort.ts): the sort last set here, kept per Creator. */
-const SORT_READ_NOT_WIRED = "The sort last set here. Reading back the sort OnlyFans has stored: not wired";
+/** The sort button's tooltip: the sort name shown is kept per Creator in this browser (vaultFolderSort.ts);
+ *  OF's own sort is not read back. */
+const SORT_TITLE = "Sort — the name shown is saved in this browser, per Creator (OnlyFans' own sort is not read back)";
 
 /** A folder's counts (#30, #31): photo, video, audio and GIF, each behind its icon (20px, audio 16px), split by
  *  "·" with a 2px gap; "empty" when all are 0. Also the "Add to category" modal's rows (`MoveModalItem`). */
@@ -349,11 +350,12 @@ export default function VaultFolderRail({ folders, loading, error, onRetry, sele
             <>
               {/* #20 to #22: the current sort's name and its icon open the sort popover. "Default" at first, as
                   in the capture; the bundle then shows the sort OnlyFans has stored, from its list read
-                  (`jn.sort||Lt`, index.9f50f370.js @5087418), which ours does not carry, so the title says so. */}
+                  (`jn.sort||Lt`, index.9f50f370.js @5087418), which our list read does not carry:
+                  only the shown sort name is kept, in this browser, by owner decision. */}
               <div ref={sortRef} className="relative flex-1 flex items-center">
                 <button
                   type="button"
-                  title={SORT_READ_NOT_WIRED}
+                  title={SORT_TITLE}
                   aria-haspopup="menu"
                   aria-expanded={sortOpen}
                   onClick={() => setSortOpen((o) => !o)}

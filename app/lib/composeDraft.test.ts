@@ -36,7 +36,7 @@ describe("applyTemplate", () => {
   });
 
   it.each([
-    ["a template without a GIF clears picked GIFs", tpl(), []],
+    ["a template without a GIF keeps the picked GIFs", tpl(), dirty.pickedGifs],
     ["a GIF template seeds its GIF", tpl({ gifId: "g1", gifUrl: "http://g", title: "T" }),
       [{ id: "g1", thumbUrl: "http://g", fullUrl: "http://g", title: "T" }]],
   ])("%s", (_name, t, gifs) => {

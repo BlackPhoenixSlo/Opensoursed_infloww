@@ -128,3 +128,29 @@ def list_chats_ttl() -> float:
 
 def roster_window_max_age_s() -> float:
     return live_server()._ROSTER_WINDOW_MAX_AGE_S
+
+
+def resolve_account_id(request):
+    return live_server()._resolve_account_id(request)
+
+
+def current_aid() -> str:
+    return live_server()._current_aid()
+
+
+def spawn_bg(coro, name: str):
+    return live_server()._spawn_bg(coro, name)
+
+
+def send_message_body(**kw):
+    return live_server().SendMessageBody(**kw)
+
+
+async def reject_if_resale(account_id: str, fan_id: int, body) -> None:
+    return await live_server()._reject_if_resale(account_id, fan_id, body)
+
+
+async def record_fan_send(account_id: str, fan_id: int, result, *,
+                          employee_id: int | None, price: float) -> None:
+    return await live_server()._record_fan_send(
+        account_id, fan_id, result, employee_id=employee_id, price=price)

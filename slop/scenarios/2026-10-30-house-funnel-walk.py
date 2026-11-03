@@ -47,6 +47,32 @@ Break-it-once: house-funnel-offer-taken-ignored (decide() never sees a purchase)
 OFFER goes red (the buyer is walked on to step 2, consistently, so COUNTS holds).
 house-funnel-jump-waits-prev-step (the pre-F1 c - 1 rule): only JUMP_WAIT goes red (a
 linear walk's sent step is c - 1, so the main walk's checks cannot see it).
+
+KILL, last (send once, service/automations/send_marker_decide.py: a step killed mid-send is
+never auto-resent; listed "may not have sent", the user retries). KILL Creators = the first
+min(KILL_CREATORS, Creators) (KILL_CREATORS = the 4 run slots: every hung run holds one), each
+with seed/house_funnel.py `seed_kill`'s third funnel and broadcast: three walking fans on its
+PPV step (bubble 0 the PPV) with their answer in, one `control` fan with none. OF's side is
+lib/send_once_relay.py (`first_key: fan_text`): `partial` OF takes the PPV and refuses bubble 1
+with a 400; `partial_noid` the same, the PPV answered without its id; `kill` OF takes the PPV and
+never answers (`hang`), but on the last KILL Creator takes the PPV, answers it, and hangs on
+bubble 1 (`hang_after_first`: the landed fan). One tick per KILL Creator scoped to its run (own
+Recorder: they die with the relay) until each `kill` fan's text is taken and unanswered, the same
+set for KILL_STABLE_S; SIGKILL (`crash_relay`); OF answers every fan normally from then on; restart
+on the same DB. Then one DM through the pump per `kill`, `partial_noid` and `control` fan, one welcome
+chatter run per KILL Creator scoped to them (`only_fan_ids`), two funnel ticks (each settles
+first), the owner's `GET /admin/unconfirmed-sends`, one `POST /admin/unconfirmed-sends/retry`
+per hung (not landed) fan, one more tick. Checks (lib/send_marker_faults.py): FUNNEL_ONCE,
+FUNNEL_MARKED, FUNNEL_SETTLED, FUNNEL_RETRY, FUNNEL_PARTIAL, FUNNEL_PARTIAL_NOID,
+FUNNEL_PARKED_QUIET, and the scenario's own KILLED. Faked, declared: the agency's (fake)
+DeepSeek key through the real `PUT /admin/my-llm-keys` and lib/wcfi_relay.py's DeepSeek answer
+(the KILL Creators carry its persona). Bypasses, declared: the KILL fans' `fan_lease` rows (the
+dead holder's 900 s TTL) expired by SQL right after the restart, as if 15 min had passed; the
+retried fans' send rest (`fans.automation_paused_until`) nulled by SQL before the last tick.
+Expected tracebacks, declared (EXPECTED_TRACEBACKS): the walker's `reply_mass_funnel send
+failed` on the slop 400s, and the welcome chatter's nick push / mark-read on the offline OF.
+Faults (each must turn only its targets red): funnel-partial-requeued, funnel-noid-not-counted,
+funnel-marker-sets-status, funnel-sending-marker-ignored, funnel-settle-skips-lookup.
 """
 from __future__ import annotations
 
@@ -59,6 +85,10 @@ from datetime import datetime, timedelta
 from slop.actors import fan_dm
 from slop.lib.funnel_faults import ADVANCE, AGAIN, COUNTS, DISCOVER, END, OFFER, PPV
 from slop.lib.funnel_jump_faults import JUMP_WAIT
+from slop.lib.send_marker_faults import (FUNNEL_MARKED, FUNNEL_ONCE, FUNNEL_PARKED_QUIET, FUNNEL_PARTIAL,
+                                         FUNNEL_PARTIAL_NOID, FUNNEL_RETRY, FUNNEL_SETTLED)
+from slop.lib.send_marker_kill import Kill
+from slop.lib.send_once_relay import SLOP_MARK
 from slop.seed import house_funnel as hf
 
 PROFILE = "agency_inbox"
@@ -69,6 +99,14 @@ P95_VS_LAST = (1.5, 100)
 DM_PER_MIN = 600
 OF_SEND_ID_BASE = 9_700_000_000_000   # lib/relay.py: the fake OF's message ids (this run's sends)
 LIVE_WAIT_S = 60
+EXPECTED_TRACEBACKS = (("reply_mass_funnel send failed", SLOP_MARK),
+                       ("push_nick_failed", "slop: OF is offline"),
+                       ("mark_chat_read failed", "slop: OF is offline"))
+KILL_CREATORS = 4      # the run slots (run_slot): one hung run per Creator, every slot busy
+KILL_HANG_S = 300.0    # the kill comes long before
+KILL_TIMEOUT_S = 120
+KILL_STABLE_S = 3.0
+KILLED = "house funnel kill: SIGKILL landed with each KILL Creator's kill fan's step taken by OF and unanswered"
 
 
 def _dt(v) -> datetime | None:
@@ -281,6 +319,7 @@ async def run(ctx) -> None:
              f"{len(aids)} Creators; tick 2: {rows2 - rows}; per-due-fan p95 {p95:.0f} ms")
 
     await _jump_wait(ctx, w, seeded["jump_fans"], fan_by)
+    await _kill_phase(ctx, w, fan_by)
 
 
 async def _jump_wait(ctx, w, held: dict, fan_by: dict) -> None:
@@ -337,3 +376,149 @@ async def _jump_wait(ctx, w, held: dict, fan_by: dict) -> None:
     ctx.metric("jump", {"fans": len(jfans), "tick1": [{k: (t["res"] or {}).get(k) for k in (
         "discovered", "advanced", "errors")} for t in t1], "tick2": [{k: (t["res"] or {}).get(k) for k in (
             "advanced", "waiting", "skipped_cooldown", "errors")} for t in t2]})
+
+
+async def _tick_on(http, aid: str, run: int) -> dict:
+    """_tick on `http` (the KILL phase's own pools), scoped to the KILL run."""
+    r = await http.post("/__slop/run-automation", timeout=900, json={
+        "account_id": aid, "kind": "reply_mass_funnel", "payload": {"max_chats": 10, "mass_run_id": run}})
+    body = r.json() if r.status_code < 300 else {"error": r.text[:300]}
+    return {"aid": aid, "status": r.status_code,
+            "res": body.get("result") if isinstance(body.get("result"), dict) else body}
+
+
+async def _kill_phase(ctx, w, fan_by: dict) -> None:
+    """KILL (module docstring): a step killed after OF took it is listed, never re-sent by
+    a tick, sent once more only on the user's Retry; a step that surely landed advances."""
+    kaids = sorted(w.data["fans"])[:min(KILL_CREATORS, len(w.data["fans"]))]
+    seeded = hf.seed_kill(w, w.data["threads"], kaids)
+    kruns, roles = seeded["runs"], seeded["fans"]
+    kaids = sorted(kruns)
+    if not kaids:
+        ctx.check(KILLED, False, reason="no Creator with four threaded fans (pool too small)")
+        return
+    landed_aid = kaids[-1]
+    mode = {"kill": "hang", "partial": "4xx_after_first", "partial_noid": "noid_4xx_after_first"}
+    hang = {(a, r["kill"]) for a, r in roles.items()}
+    keys = {(a, f) for a, r in roles.items() for f in r.values()}
+    walking = {(a, r[x]) for a, r in roles.items() for x in hf.KILL_ROLES}
+    fans_cfg = {f"{a}:{r[x]}": ("hang_after_first" if x == "kill" and a == landed_aid else mode[x])
+                for a, r in roles.items() for x in hf.KILL_ROLES}
+    ppv, b1 = hf.KILL_STEPS[hf.KILL_PPV_STEP]["messages"]
+    funnel_texts = {m for st in hf.KILL_STEPS for m in st["messages"]}
+    ppv_step = hf.KILL_STEPS[hf.KILL_PPV_STEP]["step"]
+    r = await ctx.owner.put("/admin/my-llm-keys", json={"deepseek": "slop-fake-deepseek"})
+    ctx.metric("kill_deepseek_key", {"status": r.status_code})
+
+    ctx.rec.stage = "kill"
+    kill = Kill(ctx, keys, {a: roles[a]["kill"] for a in kaids}, lambda http, a: _tick_on(http, a, kruns[a]),
+             KILL_HANG_S)
+    hit, hung_text, waited = await kill.crash(fans_cfg, KILL_TIMEOUT_S, KILL_STABLE_S)
+    t_kill = kill.t_kill
+    want_hung = {k: (b1 if k[0] == landed_aid else ppv) for k in hang}
+    ctx.check(KILLED, hit and hung_text == want_hung, kill_creators=len(kaids), hung_at_kill=len(hung_text),
+              waited_s=waited, hung={f"{a}/{f}": t[:24] for (a, f), t in sorted(hung_text.items())})
+    con = w.sql()
+    kill.expire_leases(con)
+
+    owner = kill.owner
+    quiet = [(a, roles[a][x]) for a in kaids for x in ("kill", "partial_noid", "control")]
+    recs = await fan_dm.say(owner, [(fan_by[k], "you there? 😘") for k in quiet])
+    _ids, dm_landed = await _await_landed(con, recs)
+    wcfi = []
+    for a in kaids:
+        r = await owner.post("/__slop/run-automation", timeout=900, json={
+            "account_id": a, "kind": "welcome_chatter_for_info",
+            "payload": {"only_fan_ids": [f for (x, f) in quiet if x == a]}})
+        wcfi.append({"aid": a, "status": r.status_code,
+                     "res": {k: v for k, v in ((r.json().get("result") or {}) if r.status_code == 200 else {}).items()
+                             if not isinstance(v, (list, dict))}})
+    ticks = [await kill.tick_all()]
+    settled = _snapshot(con, kruns)
+    ticks.append(await kill.tick_all())
+    listed, get_status = await kill.unconfirmed()
+    retry_fans = sorted(k for k in hang if k[0] != landed_aid)
+    retried = await kill.retry(con, {(a, f): {"kind": "funnel", "fan_id": f, "mass_run_id": kruns[a]}
+                                  for a, f in retry_fans})
+    t_retry = kill.t_retry
+    ticks.append(await kill.tick_all())
+    rid = {r_: a for a, r_ in kruns.items()}
+    marker = {(rid[r_], int(f)): (sa, ua) for r_, f, sa, ua in con.execute(
+        f"SELECT mass_run_id, fan_id, sending_at, unconfirmed_at FROM funnel_state "
+        f"WHERE mass_run_id IN ({','.join('?' * len(rid))})", list(rid))}
+    final = _snapshot(con, kruns)
+    con.close()
+    await kill.close()
+    ctx.rec.stage = None
+
+    rows = kill.journal()
+    took, pre = kill.took(), kill.pre_retry()
+    ops = Counter((x["account_id"], int(x["fan_id"]), x["op"], x.get("id") is None) for x in rows)
+
+    def st(snap, k) -> dict:
+        return snap.get(k, {}).get("state") or {}
+
+    def eg(ks) -> dict:
+        return {f"{a}/{f}": {"settled": str(st(settled, (a, f))), "final": str(st(final, (a, f))),
+                             "marker": str(marker.get((a, f))), "listed": listed.get((a, f)),
+                             "of": {t[:20]: n for (x, y, t), n in took.items() if (x, y) == (a, f)}}
+                for a, f in ks[:2]}
+
+    def once(k) -> bool:
+        mine = {t: n for (a, f, t), n in took.items() if (a, f) == k and t in funnel_texts}
+        if any(n > 1 for (a, f, t), n in pre.items() if (a, f) == k and t in funnel_texts):
+            return False
+        if k in retry_fans:
+            return all(n == (2 if t == hung_text.get(k) else 1) for t, n in mine.items())
+        return all(n <= 1 for n in mine.values())
+    bad = [k for k in sorted(walking) if not once(k)]
+    ctx.check(FUNNEL_ONCE, not bad, fans=len(walking), wrong=len(bad), e_g=eg(bad))
+
+    def marked(k) -> bool:
+        row = listed.get(k) or {}
+        return (row.get("kind") == "funnel" and row.get("mass_run_id") == kruns[k[0]]
+                and row.get("state") == "UNCONFIRMED" and row.get("step") == ppv_step)
+    bad = [k for k in retry_fans if not marked(k)]
+    ctx.check(FUNNEL_MARKED, bool(retry_fans) and not bad and all(x == 200 for x in get_status),
+              fans=len(retry_fans), wrong=len(bad), get_status=get_status, e_g=eg(bad))
+
+    lk = (landed_aid, roles[landed_aid]["kill"])
+    s1 = st(settled, lk)
+    settled_ok = (s1.get("status") == "done" and marker.get(lk) == (None, None) and lk not in listed
+                  and s1.get("ppv_at") is not None and s1["ppv_at"] <= datetime.utcfromtimestamp(t_kill)
+                  and took[(*lk, ppv)] == 1)
+    ctx.check(FUNNEL_SETTLED, settled_ok, e_g=eg([lk]))
+
+    def retry_ok(k) -> bool:
+        after = Counter(x["text"] for x in rows if (x["account_id"], int(x["fan_id"])) == k
+                        and x["op"] == "accepted" and x["t"] >= t_retry)
+        return (retried.get(k) == (200, "retried") and after[ppv] == 1 and st(final, k).get("status") == "done"
+                and marker.get(k) == (None, None))
+    bad = [k for k in retry_fans if not retry_ok(k)]
+    ctx.check(FUNNEL_RETRY, bool(retry_fans) and not bad, fans=len(retry_fans), wrong=len(bad),
+              retry={f"{a}/{f}": v for (a, f), v in sorted(retried.items())}, e_g=eg(bad))
+
+    parts = [(a, r["partial"]) for a, r in sorted(roles.items())]
+    bad = [k for k in parts if not (ops[(*k, "rejected", True)] >= 1 and took[(*k, ppv)] == 1
+                                    and st(final, k).get("status") == "done")]
+    ctx.check(FUNNEL_PARTIAL, bool(parts) and not bad, fans=len(parts), wrong=len(bad), e_g=eg(bad))
+
+    noids = [(a, r["partial_noid"]) for a, r in sorted(roles.items())]
+    bad = [k for k in noids if not (ops[(*k, "returned", True)] >= 1 and ops[(*k, "rejected", True)] >= 1
+                                    and took[(*k, ppv)] == 1 and (marker.get(k) or (None, None))[1] is not None
+                                    and (listed.get(k) or {}).get("state") == "UNCONFIRMED")]
+    ctx.check(FUNNEL_PARTIAL_NOID, bool(noids) and not bad, fans=len(noids), wrong=len(bad), e_g=eg(bad))
+
+    chat = Counter((x["account_id"], int(x["fan_id"])) for x in rows
+                   if x["op"] == "accepted" and x["t"] >= t_kill and x["text"] not in funnel_texts)
+    parked = [k for k in quiet if roles[k[0]]["control"] != k[1]]
+    controls = [(a, r["control"]) for a, r in sorted(roles.items())]
+    bad = [k for k in parked if chat[k]] + [k for k in controls if not chat[k]]
+    ctx.check(FUNNEL_PARKED_QUIET, bool(controls) and not bad and len(dm_landed) == len(quiet)
+              and all(x["status"] == 200 for x in wcfi), parked=len(parked), controls=len(controls),
+              dms_landed=len(dm_landed), wrong=[f"{a}/{f}" for a, f in bad[:5]],
+              chat_lines={f"{a}/{f}": chat[(a, f)] for a, f in quiet}, wcfi=wcfi)
+    ctx.metric("kill", {"creators": len(kaids), "t_kill": t_kill, "ticks": [
+        [{k: (t["res"] or {}).get(k) for k in ("advanced", "completed", "skipped_locked",
+                                                "skipped_cooldown", "errors")} | {"status": t["status"]}
+         for t in tk] for tk in ticks], "kill_ticks_http": kill.rec.summary()})

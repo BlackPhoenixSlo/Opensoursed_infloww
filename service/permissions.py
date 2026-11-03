@@ -435,7 +435,7 @@ PAGE_MAP: dict[str, tuple[str, tuple[str, ...]]] = {
     # mass to an OF list) and 🖼 Media (the vault picker).
     "/growth/auto-funnel": ("Auto Funnel", (
         "/admin/funnels", "/admin/automation-rules", "/api/of/v2/lists",
-        "/api/of/v2/messages/queue", *_PICKER)),
+        "/api/of/v2/messages/queue", "/admin/unconfirmed-sends", *_PICKER)),
     # Not opt-in (nav.ts `notOptIn`): its Model info is the account's, editable by whoever may PUT the
     # account config (Messages Pro's and Auto Post's route too). Its automation switch and settings ride the
     # rule routes other pages grant, so this page alone opens no rule write.

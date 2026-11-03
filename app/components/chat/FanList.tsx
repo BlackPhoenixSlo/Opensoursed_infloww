@@ -29,13 +29,7 @@ import { useFanSpend } from "@/hooks/useFanSpend";
 import { useFanDrawerDefault } from "@/hooks/useFanDrawerDefault";
 import { useBlurMode } from "@/hooks/useBlurMode";
 import { useCompactMedia } from "@/hooks/useCompactMedia";
-import {
-  useChatSortMode,
-  hybridScore,
-  HALF_LIFE_IDLE,
-  HALF_LIFE_UNRESPONDED,
-  HALF_LIFE_UNREAD,
-} from "@/hooks/useChatSortMode";
+import { useChatSortMode } from "@/hooks/useChatSortMode";
 import { useDeferredMount } from "@/hooks/useDeferredMount";
 import { useFanActivity } from "@/hooks/useLastPurchases";
 import { useAllChatFolders, useChatFolders } from "@/hooks/useChatFolders";
@@ -46,7 +40,7 @@ import { ofMeQuery } from "@/lib/ofMe";
 import { cn } from "@/lib/utils";
 import { describeLoadError, relay, type OFChatItem } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
-import { type FanId, lastMessageFromFan, sameUserId } from "@/lib/fanId";
+import { type FanId, lastMessageFromFan } from "@/lib/fanId";
 import { isUnreadChat } from "@/lib/chatUnread";
 import { FanListBulkBar } from "./FanListBulkBar";
 import { FanListFilters, type ActiveChip } from "./FanListFilters";
@@ -56,10 +50,12 @@ import { FanRow, fanNameOf } from "./FanRow";
 import {
   canAutofill, initialPaging, isCapped, pagingReducer, pagingView,
 } from "./fanListPaging";
+import { attentionCount, chipCounts, notRestricted, sortFanRows } from "./fanListSort";
 import { FolderPicker } from "./FolderPicker";
 import { SplitInbox } from "./SplitInbox";
 import { isFanOnline } from "./isFanOnline";
 import { totalSpendOf } from "./totalSpend";
+import { useFanListMarkRead } from "./useFanListMarkRead";
 import { useInboxGroup } from "./useInboxGroup";
 import { BRAND_NAME } from "@/lib/brand";
 
@@ -113,7 +109,6 @@ export function FanList({
   // trimmed once it rests SEARCH_DEBOUNCE_MS. Clearing the box applies at once.
   const [typed, setTyped] = useState("");
   const query = useTrailingDebounce(typed.trim(), SEARCH_DEBOUNCE_MS, (q) => !q);
-  const [markingAll, setMarkingAll] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [splitInboxOpen, setSplitInboxOpen] = useState(false);
   const chatterOnly = useIsChatterOnly();
@@ -336,13 +331,12 @@ export function FanList({
   // Creators WE restricted on OF (relay stamps withUser.isRestricted off its
   // durable of_restricted registry) never count as unread/owe-reply — we cut
   // them off on purpose, their threads aren't backlog. Mirrors the server-side
-  // roster-badge fold exactly, so chips and badges can't disagree over them.
-  const notRestricted = useCallback(
-    (c: OFChatItem) => !c.withUser?.isRestricted, []);
+  // roster-badge fold exactly, so chips and badges can't disagree over them
+  // (`notRestricted`, fanListSort.ts).
   const chipRows = useMemo(() => {
     if (!oweReplyActive) return allRows;
     return allRows.filter((c) => isUnresponded(c) && notRestricted(c));
-  }, [allRows, oweReplyActive, isUnresponded, notRestricted]);
+  }, [allRows, oweReplyActive, isUnresponded]);
   // The Split Inbox group ANDs with the chip or folder and the search; chip
   // counts are not narrowed by it (spec, Split Inbox).
   const rows = useMemo(
@@ -413,18 +407,15 @@ export function FanList({
     }
     return out;
   }, [active, allRows, qc, allFilterKey]);
+  // The active chip's count is All's rule over the chip's own rows.
   const activeCount = useMemo(
-    () => chipRows.filter((c) => notRestricted(c) && (c.hasUnread || isUnresponded(c))).length,
-    [chipRows, isUnresponded, notRestricted],
+    () => attentionCount(chipRows, isUnresponded),
+    [chipRows, isUnresponded],
   );
-  const { allCount, unreadCount, oweReplyCount } = useMemo(() => {
-    const counted = allChipBase.filter(notRestricted);
-    return {
-      allCount: counted.filter((c) => c.hasUnread || isUnresponded(c)).length,
-      unreadCount: counted.filter((c) => c.hasUnread).length,
-      oweReplyCount: counted.filter((c) => isUnresponded(c)).length,
-    };
-  }, [allChipBase, isUnresponded, notRestricted]);
+  const { allCount, unreadCount, oweReplyCount } = useMemo(
+    () => chipCounts(allChipBase, { isOwed: isUnresponded }),
+    [allChipBase, isUnresponded],
+  );
 
   const inboxTabTitle = allCount > 0
     ? `(${allCount}) Inbox · ${BRAND_NAME}`
@@ -453,14 +444,9 @@ export function FanList({
   const lastPurchaseMap = activity.lastPurchase;
   const recentSpendMap = activity.recentSpend;
 
-  // Apply sort mode. "recent" returns the server order untouched. "spend"
-  // and "hybrid" both rely on the deferred spendMap — until it lands the
-  // sort no-ops, then re-orders in place once data arrives. We sort the
-  // *display* set rather than the raw paginated `rows` so chip counts
-  // and pagination math stay anchored to the canonical OF order; only
-  // visual placement reflects the user's choice. Stable sort is required
-  // because Array.prototype.sort is stable in all modern engines, so
-  // ties (e.g. two $0 fans) preserve OF's lastActivity ordering.
+  // Apply sort mode (`sortFanRows`). We sort the *display* set rather than
+  // the raw paginated `rows` so chip counts and pagination math stay anchored
+  // to the canonical OF order; only visual placement reflects the user's choice.
   // A Fan with no spend-batch entry is unknown to the row, but the sort
   // still ranks them by their ledger sum, as it did before; otherwise an
   // unknown spend sorts with the zeros.
@@ -468,63 +454,10 @@ export function FanList({
     const key = `${c.__accountId ?? ""}:${c.withUser.id}`;
     return totalSpendOf(spendMap.get(key), recentSpendMap.get(key)) ?? recentSpendMap.get(key) ?? 0;
   }, [spendMap, recentSpendMap]);
-  const sortKey = `${sortMode}|${spendMap.size}|${recentSpendMap.size}`;
-  const sortedDisplayRows = useMemo<OFChatItem[]>(() => {
-    if (sortMode === "recent") return displayRows;
-    const arr = displayRows.slice();
-    if (sortMode === "spend") {
-      arr.sort((a, b) => spendForRow(b) - spendForRow(a));
-      return arr;
-    }
-    if (sortMode === "spend-unread") {
-      // Three-tier bucket, then spend desc within each:
-      //   2 = unread (blue badge)
-      //   1 = read but fan sent last (yellow dot — owe reply)
-      //   0 = idle (we sent last, or no messages yet)
-      const tierOf = (c: OFChatItem): number => {
-        if (isUnreadChat(c)) return 2;
-        if (isUnresponded(c)) return 1;
-        return 0;
-      };
-      arr.sort((a, b) => {
-        const ta = tierOf(a);
-        const tb = tierOf(b);
-        if (ta !== tb) return tb - ta;
-        return spendForRow(b) - spendForRow(a);
-      });
-      return arr;
-    }
-    // hybrid — threshold applies to the DECAYED score, not raw spend.
-    // So a $48 fan starts well above the $3 cutoff, but after ~5h of
-    // silence their score halves down past it and unread rows start
-    // winning. Tiered half-lives keep attention-needing chats up
-    // longer: idle 1h, owe-reply 2h, unread 3h. Within the low-value
-    // bucket, ties between unread rows fall through to raw spend.
-    const LOW_SCORE_CENTS = 300;
-    const halfLifeFor = (c: OFChatItem): number => {
-      if (isUnreadChat(c)) return HALF_LIFE_UNREAD;
-      if (isUnresponded(c)) return HALF_LIFE_UNRESPONDED;
-      return HALF_LIFE_IDLE;
-    };
-    arr.sort((a, b) => {
-      const aSpend = spendForRow(a);
-      const bSpend = spendForRow(b);
-      const aLast = a.lastMessage?.createdAt ?? null;
-      const bLast = b.lastMessage?.createdAt ?? null;
-      const aScore = hybridScore(aSpend, aLast, halfLifeFor(a));
-      const bScore = hybridScore(bSpend, bLast, halfLifeFor(b));
-      if (aScore < LOW_SCORE_CENTS && bScore < LOW_SCORE_CENTS) {
-        const ua = isUnreadChat(a) ? 1 : 0;
-        const ub = isUnreadChat(b) ? 1 : 0;
-        if (ua !== ub) return ub - ua;
-        // Both unread (or both read) at low value: raw spend desc.
-        if (aSpend !== bSpend) return bSpend - aSpend;
-      }
-      return bScore - aScore;
-    });
-    return arr;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [displayRows, sortMode, sortKey, spendForRow, isUnresponded]);
+  const sortedDisplayRows = useMemo<OFChatItem[]>(
+    () => sortFanRows(displayRows, sortMode, { spendOf: spendForRow, isOwed: isUnresponded }),
+    [displayRows, sortMode, spendForRow, isUnresponded],
+  );
 
   // Per-fan profile cache, keyed "<accountId>:<fanId>". `enrichWithUsers`
   // writes each fan's {name, username, avatar, customNickname} to
@@ -570,31 +503,6 @@ export function FanList({
     [picks, shownRows],
   );
 
-  // Per-success optimistic patch: clear the unread badge on this fan's row
-  // across every cached ["chats"] view so the UI only shows "read" for chats
-  // that actually got marked. Mirrors useInboxRealtime's cache-shape walk
-  // (InfiniteData { pages: [{ rows, hasMore }] }); skips caches that don't
-  // hold the row. The trailing invalidate reconciles against OF either way.
-  const markRowRead = useCallback((accountId: string, fanId: FanId) => {
-    type Page = { rows: OFChatItem[]; hasMore: boolean };
-    type Infinite = { pages: Page[]; pageParams: unknown[] };
-    qc.getQueryCache().findAll({ queryKey: ["chats"] }).forEach((cq) => {
-      const data = cq.state.data as Infinite | undefined;
-      if (!data?.pages?.length) return;
-      let touched = false;
-      const newPages: Page[] = data.pages.map((p) => ({
-        ...p,
-        rows: p.rows.map((c) => {
-          if ((c.__accountId ?? "") !== accountId || !sameUserId(c.withUser.id, fanId)) return c;
-          if (!isUnreadChat(c)) return c;
-          touched = true;
-          return { ...c, hasUnread: false, unreadMessagesCount: 0 };
-        }),
-      }));
-      if (touched) qc.setQueryData(cq.queryKey, { ...data, pages: newPages });
-    });
-  }, [qc]);
-
   // "Mark all as read" acts on the chosen group's loaded chats, or on every
   // loaded chat in "All inboxes" (rung 4; NEEDS HUMAN in ticket 103).
   const markable = inbox.inGroup ? allRows.filter(inbox.inGroup) : allRows;
@@ -614,37 +522,6 @@ export function FanList({
     q.refresh();
   }
 
-  /** Mark `rows` read on OF, one at a time. Unpaced: a read flip reaches no
-   *  fan, so it must not hold the account's write slot ahead of fan sends.
-   *  Callers pass the unread rows (`isUnreadChat`). Each success clears that
-   *  row's badge at once; the trailing refetch reconciles the rest. Returns
-   *  the rows that failed, a row with no Creator among them. "Mark all as
-   *  read" and the select bar both mark through here. */
-  async function markChatsRead(rows: OFChatItem[]): Promise<OFChatItem[]> {
-    const failed: OFChatItem[] = [];
-    for (const c of rows) {
-      try {
-        if (!c.__accountId) throw new Error("row has no Creator");
-        await relay.post(
-          `/api/of/v2/chats/${c.withUser.id}/mark-as-read`,
-          undefined,
-          { accountId: c.__accountId },
-        );
-        markRowRead(c.__accountId, c.withUser.id);
-      } catch (err) {
-        failed.push(c);
-        console.warn("[mark-read] failed for", c.withUser.id, err);
-      }
-    }
-    invalidateReadState();
-    return failed;
-  }
-
-  function invalidateReadState() {
-    qc.invalidateQueries({ queryKey: ["chats"] });
-    qc.invalidateQueries({ queryKey: ["roster-counts"] });
-  }
-
   // The Creator whose every unread chat is loaded: one Creator in scope, no
   // group, search or list narrowing the rows, the All or Unread filter, and
   // no page left. Marking all of them is then OF's one "mark every chat
@@ -655,39 +532,7 @@ export function FanList({
       ? scope.accountId
       : null;
 
-  /** POST /chats/mark-as-read for `accountId`; `rows` are its unread chats.
-   *  Returns how many failed (all or none). */
-  async function markCreatorRead(accountId: string, rows: OFChatItem[]): Promise<number> {
-    try {
-      await relay.post("/api/of/v2/chats/mark-as-read", undefined, { accountId });
-      for (const c of rows) markRowRead(accountId, c.withUser.id);
-      return 0;
-    } catch (err) {
-      console.warn("[mark-read] mark all failed for", accountId, err);
-      return rows.length;
-    } finally {
-      invalidateReadState();
-    }
-  }
-
-  async function markAllRead() {
-    if (markingAll) return;
-    const targets = markable.filter(isUnreadChat);
-    if (targets.length === 0) return;
-    if (!confirm(`Mark ${targets.length} chat${targets.length === 1 ? "" : "s"} as read?`)) return;
-    setMarkingAll(true);
-    let failed = 0;
-    try {
-      failed = wholeCreator
-        ? await markCreatorRead(wholeCreator, targets)
-        : (await markChatsRead(targets)).length;
-    } finally {
-      setMarkingAll(false);
-    }
-    if (failed > 0) {
-      alert(`Marked ${targets.length - failed} of ${targets.length}; ${failed} failed.`);
-    }
-  }
+  const { markChatsRead, markAllRead, markingAll } = useFanListMarkRead({ markable, wholeCreator });
 
   // Pre-warm the SW image cache for the top rows so the OF signed-URL
   // refresh round-trip happens once per fan-session rather than each time

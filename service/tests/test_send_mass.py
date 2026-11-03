@@ -699,12 +699,13 @@ async def case_an_unreadable_roster_leaves_the_run_unrecorded():
 
 
 async def case_close_mass_run_skips_a_scheduled_send():
-    """`server._close_mass_run` is the composer's + the legacy route's close step.
+    """`mass_queue_api._close_mass_run` is the composer's + the legacy route's close step.
     An IMMEDIATE send records the body, the stamp and the recipients; a SCHEDULED
     one records none of them, because OF has not sent it — a `sent_at` in the future
     would splice a line onto threads it never reached. The legacy route closes a
     scheduled send immediately, which is exactly why the flag exists."""
     import server  # noqa: E402
+    import mass_queue_api  # noqa: E402
     aid = "acc_mass_close"
     await _seed_account(aid)
     fake = FakeRosterClient(fans=[8201, 8202])
@@ -720,7 +721,7 @@ async def case_close_mass_run_skips_a_scheduled_send():
             return int(mr.id)
 
     immediate = await _mint()
-    await server._close_mass_run(
+    await mass_queue_api._close_mass_run(
         account_id=aid, employee_id=None, mass_run_id=immediate,
         text="just say please", price=0,
         result={"id": 990001, "createdAt": "2026-06-04T10:00:00+00:00"},
@@ -730,7 +731,7 @@ async def case_close_mass_run_skips_a_scheduled_send():
     await asyncio.gather(*list(server._bg_tasks))
 
     later = await _mint()
-    await server._close_mass_run(
+    await mass_queue_api._close_mass_run(
         account_id=aid, employee_id=None, mass_run_id=later,
         text="tomorrow's blast", price=0,
         result={"id": 990002, "createdAt": "2026-06-04T10:00:01+00:00"},

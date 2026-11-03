@@ -583,7 +583,7 @@ describe("/creators — Add creator, Infloww's steps", () => {
     return within(dialog()).findByRole("region", { name: "Paste cURL" });
   };
   const bootstrap = (paste: HTMLElement) => {
-    fireEvent.change(within(paste).getByPlaceholderText(/^curl /), { target: { value: "curl 'https://onlyfans.com/api2/v2/x'" } });
+    fireEvent.change(within(paste).getByPlaceholderText(/^curl /), { target: { value: "curl 'https://onlyfans.com/api2/v2/x' -b 'sess=1' -A 'UA'" } });
     fireEvent.click(within(paste).getByRole("button", { name: "Bootstrap from cURL" }));
   };
 
@@ -770,7 +770,7 @@ describe("/creators — Add creator, Infloww's steps", () => {
     renderWithProviders(<Page />);
     await toLogin();
     const paste = within(dialog()).getByRole("region", { name: "Paste cURL" });
-    fireEvent.change(within(paste).getByPlaceholderText(/^curl /), { target: { value: "curl 'https://onlyfans.com/api2/v2/x'" } });
+    fireEvent.change(within(paste).getByPlaceholderText(/^curl /), { target: { value: "curl 'https://onlyfans.com/api2/v2/x' -b 'sess=1' -A 'UA'" } });
     fireEvent.click(within(paste).getByRole("button", { name: "Bootstrap from cURL" }));
 
     await within(dialog()).findByText("Creator account is linked to Inflowwww");
@@ -1316,7 +1316,7 @@ describe("/creators — the row's ⋮ menu", () => {
     // A re-login keeps the account's proxy: Browserbase login binds nothing either.
     const bb = within(d).getByRole("region", { name: "Browserbase login" });
     expect(within(bb).getByText("Proxy for this account:").parentElement).toHaveTextContent("unchanged");
-    fireEvent.change(within(paste).getByPlaceholderText(/^curl /), { target: { value: "curl 'https://onlyfans.com/api2/v2/x'" } });
+    fireEvent.change(within(paste).getByPlaceholderText(/^curl /), { target: { value: "curl 'https://onlyfans.com/api2/v2/x' -b 'sess=1' -A 'UA'" } });
     fireEvent.click(within(paste).getByRole("button", { name: "Bootstrap from cURL" }));
     await within(d).findByText("Creator account is linked to Inflowwww");
     expect(await within(d).findByText("Inflowwww proxy")).toBeInTheDocument();

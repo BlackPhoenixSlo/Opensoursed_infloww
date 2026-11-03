@@ -19,7 +19,10 @@
  * principals; otherwise render <Landing> in place so the URL stays
  * stable and the post-login redirect target is whatever the user asked.
  * If the user probe could not reach the relay at boot (and no chatter is
- * signed in), a retry screen instead of <Landing>.
+ * signed in), a retry screen instead of <Landing>. If the proxy in front of
+ * the relay answered 403, or the probe has not answered for ME_SLOW_MS, the
+ * <Landing> at once with a banner over it (`[data-auth-blocked]`) whose Retry
+ * re-probes /auth/me while the form stays mounted (what was typed is kept).
  *
  * While the probes run, a browser that holds a session cookie (`signedIn`, read by the root layout on the server)
  * sees the route's BootSkeleton, from the server's HTML on, instead of a blank page; one without sees nothing until
@@ -36,9 +39,15 @@ import ChatterLogin from "@/components/auth/ChatterLogin";
 import ShareReport from "@/components/growth/ShareReport";
 import BootSkeleton from "@/components/shell/BootSkeleton";
 import { EmptyState } from "@/components/ui/infloww";
+import type { AuthBanner } from "@/contexts/userSessionReducer";
+
+const BANNER_TEXT: Record<AuthBanner, string> = {
+  blocked: "Proxy blocked (403)",
+  slow: "Relay not answering",
+};
 
 export default function AuthGate({ children, signedIn = false }: { children: React.ReactNode; signedIn?: boolean }) {
-  const { user, boot, retry } = useUser();
+  const { user, boot, banner, formUp, retry } = useUser();
   const { chatter, loading: chatterLoading, reprobe } = useChatter();
   const pathname = usePathname();
 
@@ -51,8 +60,8 @@ export default function AuthGate({ children, signedIn = false }: { children: Rea
   // A share link's report is public: no sign-in, no shell.
   if (pathname?.startsWith("/share/")) return <ShareReport />;
   // Wait for BOTH probes to settle so we don't flash <Landing> before
-  // chatter detection completes (or vice versa).
-  switch (gateScreen({ user, boot }, { present: !!chatter, loading: chatterLoading })) {
+  // chatter detection completes (or vice versa) — unless a banner put the form up (`formUp`).
+  switch (gateScreen({ user, boot, formUp }, { present: !!chatter, loading: chatterLoading })) {
     case "loading": return signedIn ? <BootSkeleton pathname={pathname ?? "/"} /> : null;
     case "signed-in": return <>{children}</>;
     // The boot probe never reached the relay: nobody is known signed out, so no sign-in form.
@@ -65,6 +74,33 @@ export default function AuthGate({ children, signedIn = false }: { children: Rea
         </div>
       );
     }
-    case "login": return <Landing />;
+    // A banner's Retry re-runs the user boot only (the form under it signs a chatter in too); off while its probe
+    // still runs (that answer is applied when it comes). One shape with or without the banner, so <Landing> stays
+    // mounted as it comes and goes.
+    case "login":
+      return (
+        <>
+          {banner && (
+            <div
+              role="status"
+              data-auth-blocked={banner}
+              data-look="site"
+              className="sticky top-0 z-10 flex flex-wrap items-center justify-center gap-x-2 gap-y-1 border-b border-accent/40 bg-[#2a1a12] px-4 py-2 text-center text-sm text-white/90"
+            >
+              <span>{BANNER_TEXT[banner]}</span>
+              <span aria-hidden="true">—</span>
+              <button
+                type="button"
+                onClick={retry}
+                disabled={boot === "probing"}
+                className="font-medium text-accent hover:underline hover:underline-offset-4 focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-default disabled:opacity-50 disabled:no-underline"
+              >
+                Retry
+              </button>
+            </div>
+          )}
+          <Landing />
+        </>
+      );
   }
 }

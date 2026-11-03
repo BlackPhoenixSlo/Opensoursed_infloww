@@ -1,19 +1,30 @@
 """The pump supervisor's break-it-once faults (scenarios/2026-10-25-session-health-otp.py): lib/faults.py
 merges `register(Fault)` into FAULTS. Each patches `service/pump_reconcile` (`reconcile`, the pure pass
 server.py's `_reconcile_pumps` performs, or `restart_backoff`, the Restart's delay) inside the relay. PROBE_RESTART lives here and the scenario
-imports it, so the target can never name a check that does not exist. WS_PARKED (the scenario's WS pump
-check) and the window it names live here for the same reason; lib/faults.py's otp-state-not-session-dead
-still spells that name out.
+imports it, so the target can never name a check that does not exist. WS_PARKED and WS_RETRIES (the
+scenario's WS pump checks) and the windows they name live here for the same reason; lib/faults.py's
+otp-state-not-session-dead still spells WS_PARKED out.
 """
 from __future__ import annotations
 
 PROBE_RESTART = ("probe recovery: a 2FA Creator OnlyFans lets back in without a re-capture is unflagged by "
                  "the recovery probe, and the next supervisor pass restarts its exited pump (running, socket "
                  "reconnected)")
-WS_WINDOW_S = 20  # flip -> end of phase B, at least: the old reconnect loop's 0, 1, 3, 7, 15 s
-WS_PARKED = (f"the WS pump met the 2FA demand once and parked: per 2FA Creator at most 2 /users/me over "
-             f">= {WS_WINDOW_S} s (the pump's reconnect, the probe's), no reconnect, the pump exited and "
-             "supervisor passes left it parked")
+# The pump on a 2FA Creator (of_ws_decide, owner Q2): OF ends its socket (a transient: 1 s), then each
+# /users/me answers 101: three retries on the same doubling backoff, the 4th answer parks it.
+WS_RETRY_GAPS_S = (2.0, 4.0, 8.0)  # /users/me -> next /users/me: the backoff after the drop's 1 s
+WS_RETRY_SLACK_S = 0.5
+WS_EXIT_SLACK_S = 2.0  # the pump's last /users/me -> the first supervisor pass that must see it exited
+WS_ME_MAX = 2 + len(WS_RETRY_GAPS_S)  # the pump's first /users/me, its retries, the probe's
+WS_WINDOW_S = 25  # flip -> end of phase B, at least: holds the pump's 4th /users/me (~15 s) and >= 2
+                  # supervisor passes after its exit
+WS_PARKED = (f"the WS pump met the 2FA demand and parked: per 2FA Creator at most {WS_ME_MAX} /users/me over "
+             f">= {WS_WINDOW_S} s (the pump's 1 + {len(WS_RETRY_GAPS_S)} retries, the probe's), all 400, no "
+             f"reconnect, the pump exited within {WS_EXIT_SLACK_S:.0f} s of its last /users/me and supervisor "
+             f"passes left it parked")
+WS_RETRIES = (f"the WS pump retried the 2FA demand: per 2FA Creator, after its first /users/me (400), "
+              f"{len(WS_RETRY_GAPS_S)} more, each >= "
+              f"{', '.join(f'{g - WS_RETRY_SLACK_S:.1f}' for g in WS_RETRY_GAPS_S)} s after the last")
 PUMP_STOP = ("supervisor Stop: a running pump whose Creator lost its session is stopped by the next "
              "supervisor pass (no pump left) and its OF socket closed")
 BACKOFF_WINDOW_S = 25  # Start, the at-once restart, the 15 s one; the 30 s one falls outside

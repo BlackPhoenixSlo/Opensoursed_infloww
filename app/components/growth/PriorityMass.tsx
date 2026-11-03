@@ -17,12 +17,14 @@
  * figures come from the Relay's list answer once loaded.
  */
 
-import { useReducer, useState } from "react";
+import { useEffect, useReducer, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { AccountPicker } from "@/components/compose/AccountPicker";
 import { MediaTray } from "@/components/compose/MediaTray";
-import { audienceError, audienceReducer, buildAudiencePayload, initAudience } from "@/components/audience/audienceReducer";
+import {
+  audienceError, audienceReducer, buildAudiencePayload, initAudience, massExcludeListId,
+} from "@/components/audience/audienceReducer";
 import { ListColumn, SYSTEM_AUDIENCES, SysChip, useFanLists } from "@/components/audience/fanLists";
 import { sanitizePriceInput } from "@/lib/priceInput";
 import { SensitiveWordWarning } from "@/components/chat/SensitiveWordWarning";
@@ -80,9 +82,22 @@ export function PriorityMassComposer({ open, onClose, initialAccountId = null }:
   const [previewCount, setPreviewCount] = useState(0);
   const [lockedText, setLockedText] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { customLists, isLoading } = useFanLists(accountId);
+  const { customLists, isLoading, data: lists, isFetching } = useFanLists(accountId);
   const sensitiveHits = useSensitiveHits(text, accountId);
   const numericPrice = Number(price) || 0;
+
+  // Pre-tick the standing MASSDMEXCLUDE list in Exclude once the account's lists
+  // settle (not a stale cache mid-refetch); seeded once per account, so an untick sticks.
+  useEffect(() => {
+    if (!accountId || !lists || isFetching) return;
+    dispatch({ type: "seedExclude", accountId, listId: massExcludeListId(lists) });
+  }, [accountId, lists, isFetching]);
+
+  // Send waits for that seed, so a run never goes out before MASSDMEXCLUDE is excluded.
+  const seeded = !accountId || aud.seededFor === accountId;
+  // The read failed (no data, nothing in flight): Send stays shut — a missing
+  // exclusion would reach excluded fans. Reopening remounts and refetches.
+  const listsFailed = !!accountId && !lists && !isFetching;
 
   const send = useMutation({
     mutationFn: () => relay.post<PriorityMassRun>(ROUTE, {
@@ -193,7 +208,10 @@ export function PriorityMassComposer({ open, onClose, initialAccountId = null }:
         </div>
         <footer className="px-4 py-3 border-t border-border flex justify-end gap-4">
           <Button variant="secondary" size="sm" onClick={onClose} disabled={send.isPending}>Cancel</Button>
-          <Button variant="primary" size="sm" onClick={launch} disabled={send.isPending}>
+          <Button variant="primary" size="sm" onClick={launch} disabled={send.isPending || !seeded}
+            title={seeded ? undefined : listsFailed
+              ? "Couldn't load the Creator's lists — reopen to retry"
+              : "Loading the Creator's lists…"}>
             {send.isPending ? "Starting…" : "Send"}
           </Button>
         </footer>

@@ -26,106 +26,42 @@
  * for the Chat header's "Edit name" pencil: the Profile block and Nickname.
  */
 
-import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Fragment, useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 
 import { useFan } from "@/hooks/useFan";
 import { useExitGhost } from "@/hooks/useExitGhost";
 import { useSwipe } from "@/hooks/useSwipe";
 import { useAccountLabel } from "@/hooks/useAccounts";
 import { OF_USER_STALE_MS, ofUserNameKey, useOFUser } from "@/hooks/useOFUser";
-import { useMassExclude } from "@/hooks/useMassExclude";
 import { useFanActivity } from "@/hooks/useLastPurchases";
-import { useFanPpvHistory, type PpvHistoryItem, type PpvHistoryResp } from "@/hooks/useFanPpvHistory";
-import { useFanChatMedia, type FanChatMediaItem } from "@/hooks/useFanChatMedia";
+import { useFanPpvHistory } from "@/hooks/useFanPpvHistory";
+import { useFanChatMedia } from "@/hooks/useFanChatMedia";
 import { useFanInsights } from "@/hooks/useFanInsights";
 import { fmtCents } from "@/lib/messageFormat";
 import { fmtPrice } from "@/lib/format";
-import { stripOFHtml } from "@/lib/ofHtml";
-import { relay, SALARY_FREQUENCIES, type FanRecord, type OFChatItem, type VaultMedia } from "@/lib/relay";
-import { vaultFilesFromChat } from "@/lib/vaultFiles";
-import { proxyImage, proxyScrubFrame } from "@/lib/mediaUrl";
-import { HOVER_DELAY_MS, scrubCountdownSec, SCRUB_FRAMES, useHoverPreview } from "@/hooks/useHoverPreview";
+import { relay, SALARY_FREQUENCIES, type OFChatItem } from "@/lib/relay";
+import { proxyImage } from "@/lib/mediaUrl";
 import { type FanId } from "@/lib/fanId";
 import { MP } from "@/lib/messagesPro";
 import { extraTitle } from "@/lib/openinflowwwwExtras";
 import { useReorder } from "@/hooks/useReorder";
 import { useOutsideClose } from "@/components/ui/Menu";
-import { cn, fmtRelTime, interpretSubStatus, type SubStatusDisplay } from "@/lib/utils";
-import { MENU, MENU_ITEM, MENU_ROW } from "./MenuParts";
+import { cn, fmtRelTime, interpretSubStatus } from "@/lib/utils";
 import { PersonaClaims } from "./PersonaClaims";
 import { useInsightsBlocks, type InsightsBlockId } from "./useInsightsBlocks";
 import { type PickedTemplate } from "./TemplatePicker";
+import { effectiveFields, fanDrawerFormReducer, INITIAL_FORM, nickPatch, notesPatch, tagsPatch } from "./fanDrawerForm";
+import { fmtSummDollars, pageFigure, unsoldOf, type LightboxMedia } from "./fanDrawerSales";
+import { MediaLightbox, PpvSalesSection, PurchasesOverTime, SalesTable, UnsoldPpvsSection } from "./FanDrawerSalesView";
+import {
+  autoRenewal, Badge, BLOCK_TITLE, BlurEdit, InfoIcon, INLINE_EDIT, INSIGHTS_TABS, InsightsBlock, InsightsRow, LANGUAGE_OPTIONS,
+  languageHint, LocalTime,
+  InsightsHead, MassExcludeToggle, MM_DD, NickEdit, ProfileCard, RULE, TAB_ICON, TAB_LABEL, toneClass, useFocusRequest,
+  type BlockCard, type InsightsTab,
+} from "./FanDrawerParts";
 
-/** 🚫 Mass-exclude toggle — flags a fan onto MASSdmEXCLUDE so every mass send,
- *  priced or not (mass DM / mass PPV / online blast / nudge), skips them. It
- *  mirrors a server-side List(kind='exclude') to a same-named pinned OF list.
- *  Excluded fans STILL get welcomes / AI replies / manual 1:1s. Shares its query
- *  key with the chat-header ⋯ menu toggle so both stay in sync. Optimistic. */
-function MassExcludeToggle({
-  accountId, fanId, title, hint,
-}: {
-  accountId: string; fanId: FanId; title: string; hint: string;
-}) {
-  const { isOn, isLoading, toggle } = useMassExclude(accountId, fanId);
-  return (
-    <div title={extraTitle("Mass exclude")} className="flex items-center justify-between gap-3 rounded-md border border-border bg-bg px-2.5 py-2">
-      <div className="min-w-0">
-        <div className="text-xs font-medium text-fg flex items-center gap-1.5">
-          <span>🚫</span> {title}
-        </div>
-        <div className={cn(MP.ours.FanDrawer.excludeHint, "hidden md:block text-fg-dim")}>{hint}</div>
-      </div>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={isOn}
-        disabled={isLoading || toggle.isPending}
-        onClick={() => toggle.mutate(!isOn)}
-        title={isOn ? `Remove from ${title}` : `Add to ${title}`}
-        className={cn(
-          "relative shrink-0 w-12 h-7 md:w-10 md:h-6 rounded-full transition-colors disabled:opacity-50",
-          isOn ? "bg-accent" : "bg-bg-elev-1 border border-border",
-        )}
-      >
-        <span
-          className={cn(
-            "absolute top-0.5 left-0.5 w-6 h-6 md:w-5 md:h-5 rounded-full bg-white shadow transition-transform",
-            isOn ? "translate-x-5 md:translate-x-4" : "translate-x-0",
-          )}
-        />
-      </button>
-    </div>
-  );
-}
-
-/**
- * A Chat header focus request (Notes, spec F23; Nickname, ticket 142). A count
- * higher than this instance has answered calls `onAsk` during this render (the
- * switch to Insights) and becomes `asked`, which keys the field's block so it
- * remounts expanded (its one collapse rule); the effect then scrolls to and
- * focuses the field once it exists. It starts at 0, so an instance the click
- * itself mounts answers too. The hidden twin's field is `display: none` and
- * cannot take focus, so only the visible instance does. No field yet (the Fan
- * is still loading): `ready` re-runs the effect when it lands.
- */
-function useFocusRequest<T extends HTMLElement>(request: number | undefined, onAsk: () => void, ready: unknown) {
-  const ref = useRef<T>(null);
-  const focusedRef = useRef(0);
-  const [asked, setAsked] = useState(0);
-  if ((request ?? 0) > asked) {
-    setAsked(request ?? 0);
-    onAsk();
-  }
-  useEffect(() => {
-    const field = ref.current;
-    if (asked <= focusedRef.current || !field) return;
-    focusedRef.current = asked;
-    field.scrollIntoView?.({ block: "nearest" });
-    field.focus({ preventScroll: true });
-  }, [asked, ready]);
-  return { ref, asked };
-}
+export { VideoScrubThumb } from "./FanDrawerSalesView";
 
 export function FanDrawer({
   open, onClose, accountId, fanId, chat,
@@ -187,33 +123,21 @@ export function FanDrawer({
   );
 
   // Unsold PPVs — same OF endpoint, drop `purchased=1`. We still pin
-  // to `from_user=<accountId>` so we get creator-sent items only.
-  // Filter for paid + not-yet-opened items; show the latest 2 in the
-  // Unsold PPVs block. A page is every creator-sent media message, free
-  // ones and bought PPVs included, so a Fan sent a lot since his last
-  // unsold PPV has none on the first page: page on until 2 are found, at
-  // most UNSOLD_MAX_PAGES pages. Another Fan's page kept as placeholder
-  // while this one loads counts as loading, not as this Fan's.
+  // to `from_user=<accountId>` so we get creator-sent items only; `unsoldOf`
+  // picks the latest 2 and says when to page on. Another Fan's page kept as
+  // placeholder while this one loads counts as loading, not as this Fan's.
   const unsoldChatMediaQ = useFanChatMedia(accountId, fanId, {
     purchased: false,
     limit: 20,
     enabled: open,
   });
   const unsoldPages = unsoldChatMediaQ.isPlaceholderData ? undefined : unsoldChatMediaQ.data?.pages;
-  const unsoldPpvs = useMemo<FanChatMediaItem[]>(() => {
-    const all = unsoldPages?.flatMap((p) => p.list) ?? [];
-    return all
-      .filter((m) => (m.price ?? 0) > 0 && m.isOpened === false)
-      .sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt))
-      .slice(0, UNSOLD_SHOWN);
-  }, [unsoldPages]);
+  const { items: unsoldPpvs, wantMore: unsoldWantMore } = useMemo(() => unsoldOf(unsoldPages), [unsoldPages]);
   const { hasNextPage: unsoldHasMore, isFetching: unsoldFetching, fetchNextPage: unsoldNextPage } = unsoldChatMediaQ;
-  const unsoldPageCount = unsoldPages?.length ?? 0;
   useEffect(() => {
-    if (!open || unsoldPageCount === 0 || unsoldPpvs.length >= UNSOLD_SHOWN) return;
-    if (!unsoldHasMore || unsoldFetching || unsoldPageCount >= UNSOLD_MAX_PAGES) return;
+    if (!open || !unsoldWantMore || !unsoldHasMore || unsoldFetching) return;
     void unsoldNextPage();
-  }, [open, unsoldPageCount, unsoldPpvs.length, unsoldHasMore, unsoldFetching, unsoldNextPage]);
+  }, [open, unsoldWantMore, unsoldHasMore, unsoldFetching, unsoldNextPage]);
 
   // Force-refresh button: blow away the persisted chat-media cache for
   // this fan + refetch both filter modes. Used when the operator knows
@@ -242,28 +166,13 @@ export function FanDrawer({
     void qc.invalidateQueries({ queryKey: ["fan", accountId, fanId] });
   };
 
-  // The "effective" nickname/note, with OF as the authoritative read (it's what
-  // shows on onlyfans.com). ONCE the live OF query has resolved we trust IT — even
-  // an empty value — over the chat-list payload, because that payload can be hours
-  // stale and would otherwise pin an out-of-date nickname/note after an automation
-  // (or another device) changed it. Before the OF query lands we fall back to the
-  // chat-list value for an instant first paint, then our local SQLite mirror so the
-  // panel never blanks when OF is slow/unreachable. On blur we write through to OF
-  // AND our local row so the two stay in sync.
-  const ofDisplayName = ofUserQ.isSuccess
-    ? (ofUserQ.data?.displayName ?? "")
-    : (chat.withUser.displayName ?? "");
-  const ofNotice = ofUserQ.isSuccess
-    ? (ofUserQ.data?.notice ?? "")
-    : (chat.withUser.notice ?? "");
-  const effectiveNickname = ofDisplayName || fan?.custom_nickname || "";
-  const effectiveNotes = ofNotice || fan?.notes || "";
+  // The "effective" nickname/note: OF once resolved (even empty), else the
+  // chat-list value, then our local mirror (`effectiveFields`).
+  const { effectiveNickname, effectiveNotes } = effectiveFields(ofUserQ, chat.withUser, fan);
 
-  // Local form mirrors so blur-save doesn't fight the cache when the user
-  // is mid-edit. Reset whenever the effective value (from OF or local) changes.
-  const [nickname, setNickname] = useState("");
-  const [notes, setNotes] = useState("");
-  const [tagsInput, setTagsInput] = useState("");
+  // Local form mirrors, their last-applied values and the OF write-through
+  // error (`fanDrawerForm`). Adopt whenever the effective value (from OF or local) changes.
+  const [form, dispatch] = useReducer(fanDrawerFormReducer, INITIAL_FORM);
   // Media lightbox lives at the drawer level (not inside PpvSalesSection)
   // so the drawer's Esc handler can tell when a higher overlay is open and
   // yield to it — Esc should collapse one layer at a time, not nuke both.
@@ -278,10 +187,6 @@ export function FanDrawer({
   const drag = useReorder(blocks.shown, blocks.reorder, (id) => id);
   // Two instances mount at once (slide-over + pinned), so ids are per instance.
   const uid = useId();
-  // The values we last pushed into the form mirrors. A field is "dirty" (being
-  // edited) when its current value no longer equals what we applied — in that
-  // case a fresh OF value must NOT overwrite it.
-  const appliedRef = useRef({ nick: "", notes: "", tags: "" });
   // Nickname/note are the only fields here that are read back OUT of `of-user`
   // and written over. Opening the drawer no longer refetches that query (see
   // [useOFUser.ts] — the per-open cost on the user lane bought very little), so
@@ -309,12 +214,6 @@ export function FanDrawer({
     editRefreshAtRef.current = Date.now();
     void ofRefetch();
   }, [ofRefetch]);
-  // The OF write-through (custom name / private note) is fire-and-forget and
-  // hits a different backend than the local PATCH. When it rejects the local
-  // mirror still updates, so without this the panel shows a value OF never
-  // accepted and silently reverts the next time of-user is re-read. Surface
-  // the failure so the operator knows the OF sync didn't stick.
-  const [ofWriteError, setOfWriteError] = useState<string | null>(null);
 
   // The Chat header's "Notes" (spec F23) and "Edit name" (ticket 142) asks,
   // one mechanism (`useFocusRequest`): Fan notes in the Notes block, Nickname
@@ -335,17 +234,8 @@ export function FanDrawer({
 
   useEffect(() => {
     if (!fan) return;
-    const tags = (fan.tags ?? []).join(", ");
-    // Adopt the freshest effective value ONLY for fields the user hasn't touched.
-    // A fresh OF read can land at any time (focus refetch, an invalidation, or
-    // the pre-edit refresh above), and a naive reset would clobber an
-    // in-progress edit; comparing against the last-applied value keeps the
-    // operator's typing while still picking up out-of-band changes.
-    const prev = appliedRef.current;
-    setNickname((cur) => (cur === prev.nick ? effectiveNickname : cur));
-    setNotes((cur) => (cur === prev.notes ? effectiveNotes : cur));
-    setTagsInput((cur) => (cur === prev.tags ? tags : cur));
-    appliedRef.current = { nick: effectiveNickname, notes: effectiveNotes, tags };
+    // Only untouched fields take it; a fresh OF read (e.g. the pre-edit refresh above) never clobbers typing.
+    dispatch({ type: "adopt", nick: effectiveNickname, notes: effectiveNotes, tags: (fan.tags ?? []).join(", ") });
   }, [fan, effectiveNickname, effectiveNotes]);
 
   // Esc closes the OVERLAY drawer only; in pinned mode it's a real
@@ -379,9 +269,9 @@ export function FanDrawer({
 
   if (!open) return null;
 
+  // `effectiveNickname`: OF name (chat-list name until OF resolves), else the local mirror.
   const displayName =
-    ofDisplayName ||
-    fan?.custom_nickname ||
+    effectiveNickname ||
     chat.withUser.name ||
     fan?.of_display_name ||
     chat.withUser.username ||
@@ -560,19 +450,17 @@ export function FanDrawer({
                 ref={nicknameRef}
                 id={`${uid}-nickname`}
                 type="text"
-                value={nickname}
-                onChange={(e) => setNickname(e.target.value)}
+                value={form.nick}
+                onChange={(e) => dispatch({ type: "edit", field: "nick", value: e.target.value })}
                 onFocus={refreshBeforeEdit}
                 onBlur={() => {
-                  const next = nickname.trim();
-                  if (next === effectiveNickname.trim()) return;
-                  setOfWriteError(null);
-                  update.mutate({ custom_nickname: next || null });
-                  void writeOFCustomName(accountId, fanId, next).catch((err) => {
+                  const patch = nickPatch(form.nick, effectiveNickname);
+                  if (!patch) return;
+                  dispatch({ type: "clearError" });
+                  update.mutate(patch);
+                  void writeOFCustomName(accountId, fanId, patch.custom_nickname ?? "").catch((err) => {
                     console.warn("[fan-drawer] OF custom-name write failed", err);
-                    setOfWriteError(
-                      "Saved locally, but OnlyFans rejected the nickname change — it may revert on the next sync.",
-                    );
+                    dispatch({ type: "ofWriteFailed", field: "nick" });
                   });
                 }}
                 placeholder={chat.withUser.name ?? fan.of_display_name ?? ""}
@@ -588,16 +476,11 @@ export function FanDrawer({
               <input
                 id={`${uid}-tags`}
                 type="text"
-                value={tagsInput}
-                onChange={(e) => setTagsInput(e.target.value)}
+                value={form.tags}
+                onChange={(e) => dispatch({ type: "edit", field: "tags", value: e.target.value })}
                 onBlur={() => {
-                  const next = tagsInput
-                    .split(",")
-                    .map((t) => t.trim())
-                    .filter(Boolean);
-                  const prev = fan.tags ?? [];
-                  if (sameList(next, prev)) return;
-                  update.mutate({ tags: next });
+                  const patch = tagsPatch(form.tags, fan.tags ?? []);
+                  if (patch) update.mutate(patch);
                 }}
                 placeholder="whale, EU, kink:feet"
                 className={INLINE_EDIT}
@@ -727,18 +610,17 @@ export function FanDrawer({
             ref={notesRef}
             aria-label="Fan notes"
             title="Synced with OnlyFans' private note. Anything the AI should know later goes here."
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
+            value={form.notes}
+            onChange={(e) => dispatch({ type: "edit", field: "notes", value: e.target.value })}
             onFocus={refreshBeforeEdit}
             onBlur={() => {
-              if (notes === effectiveNotes) return;
-              setOfWriteError(null);
-              update.mutate({ notes: notes || null });
-              void writeOFNotice(accountId, fanId, notes).catch((err) => {
+              const patch = notesPatch(form.notes, effectiveNotes);
+              if (!patch) return;
+              dispatch({ type: "clearError" });
+              update.mutate(patch);
+              void writeOFNotice(accountId, fanId, form.notes).catch((err) => {
                 console.warn("[fan-drawer] OF notice write failed", err);
-                setOfWriteError(
-                  "Saved locally, but OnlyFans rejected the note change — it may revert on the next sync.",
-                );
+                dispatch({ type: "ofWriteFailed", field: "notes" });
               });
             }}
             placeholder="loves bondage, German, paid $500 last week…"
@@ -831,54 +713,8 @@ export function FanDrawer({
           : cn(MP.ours.FanDrawer.slideOver, MP.ours.FanDrawer.pullFill, "sheet-right bg-[var(--inf-insights,var(--color-panel))] border-[var(--inf-rule,var(--color-border))] shadow-2xl pointer-events-auto flex flex-col after:bg-[var(--inf-insights,var(--color-panel))]")
       }
     >
-        {/* The head is the title only (16px/700, padding 16/16/10, no rule),
-         *  reading the active tab. The "+" then × sit on its right; "+" lists
-         *  the removed Insights blocks, and picking one adds it back. */}
-        <header className={cn(MP.insights.head, MP.ours.FanDrawer.head, "flex items-center")}>
-          <h2 className="flex-1 min-w-0 truncate leading-6">{TAB_TITLE[tab]}</h2>
-          <div ref={addRef} className="relative shrink-0">
-            <button
-              type="button"
-              onClick={() => setAddOpen((o) => !o)}
-              aria-expanded={addOpen}
-              aria-haspopup="menu"
-              aria-controls={addOpen ? `${uid}-add` : undefined}
-              aria-label="Add block"
-              title="Add a removed block back"
-              className={cn(
-                "grid place-items-center w-11 h-11 md:w-6 md:h-6 -my-2 md:my-0 rounded-md text-2xl md:text-lg font-normal leading-none hover:text-fg",
-                addOpen ? "text-[var(--inf-accent-text,var(--color-accent))]" : "text-fg-dim",
-              )}
-            >
-              +
-            </button>
-            {addOpen && (
-              <div id={`${uid}-add`} role="menu" aria-label="Add block" className={cn(MENU, MP.ours.FanDrawer.addMenu)}>
-                {blocks.removed.length === 0 ? (
-                  <div className={cn(MENU_ROW, "text-fg-dim")}>Every block is shown</div>
-                ) : blocks.removed.map((id) => (
-                  <button
-                    key={id}
-                    type="button"
-                    role="menuitem"
-                    onClick={() => { blocks.add(id); setTab("insights"); setAddOpen(false); }}
-                    className={MENU_ITEM}
-                  >
-                    {BLOCK_TITLE[id]}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="shrink-0 grid place-items-center w-11 h-11 md:w-6 md:h-6 -my-2 md:my-0 -mr-2 md:mr-0 text-2xl md:text-lg font-normal leading-none text-fg-dim hover:text-fg"
-            aria-label="Close"
-          >
-            ×
-          </button>
-        </header>
+        <InsightsHead uid={uid} tab={tab} setTab={setTab} blocks={blocks} onClose={onClose}
+                      addOpen={addOpen} setAddOpen={setAddOpen} addRef={addRef} />
 
         <div
           role="tabpanel"
@@ -975,8 +811,8 @@ export function FanDrawer({
               {(update.error as Error).message || "save failed"}
             </div>
           )}
-          {fan && ofWriteError && (
-            <div className="text-err text-xs">{ofWriteError}</div>
+          {fan && form.ofWriteError && (
+            <div className="text-err text-xs">{form.ofWriteError}</div>
           )}
         </div>
 
@@ -1020,1296 +856,6 @@ export function FanDrawer({
   );
 }
 
-/** The Unsold PPVs block shows the latest 2, read from at most 5 pages of 20. */
-const UNSOLD_SHOWN = 2;
-const UNSOLD_MAX_PAGES = 5;
-
-/** Each Insights block's title, as its head and the "+" menu read it. */
-const BLOCK_TITLE: Record<InsightsBlockId, string> = {
-  spending: "Spending behavior", org: "Organization metrics", subscription: "Subscription",
-  profile: "Profile", lists: "Lists", notes: "Notes",
-  fan: "Fan", massExclude: "Mass exclude", unsoldPpvs: "Unsold PPVs sent",
-};
-
-type InsightsTab = "insights" | "sales" | "notes";
-const INSIGHTS_TABS: InsightsTab[] = ["insights", "sales", "notes"];
-const TAB_LABEL: Record<InsightsTab, string> = { insights: "Insights", sales: "Sales", notes: "Notes" };
-/** The head reads the tab (Clone `messages.js:1614`). */
-const TAB_TITLE: Record<InsightsTab, string> = { insights: "Fan insights", sales: "Sales", notes: "Notes" };
-/** The Clone's 20px tab icons (`messages.html:845-847`): eye, tag, note. */
-const TAB_ICON: Record<InsightsTab, React.ReactNode> = {
-  insights: (
-    <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" className={MP.insights.tabIcon}>
-      <path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z" /><circle cx="12" cy="12" r="2.6" />
-    </svg>
-  ),
-  sales: (
-    <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" className={MP.insights.tabIcon}>
-      <path d="M20.6 13.4L13 21l-9-9V4h8l8.6 8.6a1.5 1.5 0 0 1 0 .8z" />
-      <circle cx="8" cy="8" r="1.3" fill="currentColor" stroke="none" />
-    </svg>
-  ),
-  notes: (
-    <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" className={MP.insights.tabIcon}>
-      <path d="M6 3h12a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" /><path d="M8 8h8M8 12h8M8 16h5" />
-    </svg>
-  ),
-};
-
-/** An editable Profile value styled as the Clone's `.nick-edit`
- *  (`messages.html:320-321`): the control, then a 13px pencil, gap 8px. */
-function NickEdit({ children }: { children: React.ReactNode }) {
-  return (
-    <span className={cn(MP.insights.nickEdit, "flex items-center justify-end")}>
-      {children}
-      <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
-           className={cn(MP.insights.pencil, "shrink-0 text-fg-dim")}>
-        <path d="M14 4l6 6L8 22H2v-6z" />
-      </svg>
-    </span>
-  );
-}
-
-/** The Clone's `.hr` (`messages.html:309`, FI17): a 1px line drawn as a
- *  fill, so the `<hr>`'s own top border is off. */
-const RULE = cn(MP.insights.rule, MP.ours.FanDrawer.rule, "bg-border");
-
-/** An always-rendered input that reads as an inline right-aligned 13.5px value. */
-const INLINE_EDIT = cn(
-  MP.ours.FanDrawer.inlineEdit,
-  "min-w-0 flex-1 bg-transparent text-right focus:outline-none focus:ring-1 focus:ring-accent",
-);
-
-const MM_DD = /^(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
-
-/** A Profile value saved on blur; "" clears it. With `pattern`, anything
- *  else that does not match goes back to the saved value (Birthday's MM-DD). */
-function BlurEdit({ id, saved, type = "text", pattern, inputMode, maxLength, placeholder, title, onSave }: {
-  id: string; saved: string | null; type?: "text" | "date"; pattern?: RegExp;
-  inputMode?: "numeric"; maxLength?: number; placeholder?: string; title?: string;
-  onSave: (value: string | null) => void;
-}) {
-  const [value, setValue] = useState(saved ?? "");
-  return (
-    <NickEdit>
-      <input
-        id={id}
-        type={type}
-        inputMode={inputMode}
-        maxLength={maxLength}
-        value={value}
-        placeholder={placeholder}
-        title={title}
-        onChange={(e) => setValue(e.target.value)}
-        onBlur={() => {
-          const v = value.trim();
-          if (v === (saved ?? "")) return;
-          if (v && pattern && !pattern.test(v)) { setValue(saved ?? ""); return; }
-          onSave(v || null);
-        }}
-        className={INLINE_EDIT}
-      />
-    </NickEdit>
-  );
-}
-
-/** The wall clock in `zone`, ticking each minute (a pinned drawer stays open all day). */
-function LocalTime({ zone }: { zone: string | null }) {
-  const [now, setNow] = useState(() => new Date());
-  useEffect(() => {
-    setNow(new Date());
-    if (!zone) return;
-    const t = setInterval(() => setNow(new Date()), 60_000);
-    return () => clearInterval(t);
-  }, [zone]);
-  if (!zone) return <>—</>;
-  return (
-    <span title={zone}>
-      {now.toLocaleTimeString([], { timeZone: zone, hour: "numeric", minute: "2-digit" })}
-    </span>
-  );
-}
-
-type Tone = SubStatusDisplay["tone"];
-
-const TONE_CLASS: Record<Tone, string> = {
-  ok: "text-ok", warn: "text-warn", err: "text-err", "fg-dim": "text-fg-dim",
-};
-function toneClass(tone: Tone): string {
-  return TONE_CLASS[tone];
-}
-
-/** An Insights tab block's place in its layout (`useInsightsBlocks`): the
- *  grip's drag and arrow-key move, the block as a drop target, and its ×. */
-type BlockCard = {
-  onDragStart: (e: React.DragEvent) => void;
-  onDragOver: (e: React.DragEvent) => void;
-  onDrop: (e: React.DragEvent) => void;
-  onDragEnd: (e: React.DragEvent) => void;
-  onMove: (dir: -1 | 1) => void;
-  /** This block is the one being dragged. */
-  dragging: boolean;
-  /** Another block is being dragged over this one. */
-  over: boolean;
-  onRemove: () => void;
-};
-
-/** An Insights block: the Clone's `.card` (`messages.html:295`) with its
- *  `.card-head` (`:296-301`): a grip, the title, and a chevron that
- *  collapses the rows. Starts expanded; not saved. With `card` (the Insights
- *  tab's blocks) the grip drags the block to a new place (↑/↓ move it from
- *  the keyboard) and a × removes it; without, the grip is not wired. */
-function InsightsBlock({
-  title, plainTitle, lead, children, trail, card,
-}: {
-  title: string;
-  /** Render the title as the Clone's plain `.ct` span, not an h3: for a block
-   *  whose title the pane head already shows as its h2 (Sales on the Sales tab). */
-  plainTitle?: boolean;
-  /** Content above the rows that is not a row, e.g. Spending behavior's headline pair. */
-  lead?: React.ReactNode;
-  children?: React.ReactNode;
-  /** Content below the rows that is not a row, e.g. the Purchases over time chart. */
-  trail?: React.ReactNode;
-  card?: BlockCard;
-}) {
-  const [expanded, setExpanded] = useState(true);
-  const id = useId();
-  const grip = (
-    <svg aria-hidden viewBox="0 0 24 24" fill="currentColor" className={MP.insights.dragIcon}>
-      <circle cx="9" cy="6" r="1.4" /><circle cx="15" cy="6" r="1.4" />
-      <circle cx="9" cy="12" r="1.4" /><circle cx="15" cy="12" r="1.4" />
-      <circle cx="9" cy="18" r="1.4" /><circle cx="15" cy="18" r="1.4" />
-    </svg>
-  );
-  return (
-    <section
-      aria-labelledby={`${id}-title`}
-      onDragOver={card?.onDragOver}
-      onDrop={card?.onDrop}
-      className={cn(
-        MP.insights.block,
-        "bg-[var(--inf-card,var(--color-bg-elev-1))] border-[var(--inf-card-border,var(--color-border))]",
-        card?.dragging && "opacity-50",
-        card?.over && "border-accent",
-      )}
-    >
-      <div className={cn(expanded ? MP.insights.blockHead : MP.ours.FanDrawer.blockHeadCollapsed, "flex items-center")}>
-        {card ? (
-          <button
-            type="button"
-            draggable
-            onDragStart={(e) => {
-              // The whole block follows the pointer, not just the grip.
-              const block = e.currentTarget.closest("section");
-              if (block) e.dataTransfer.setDragImage?.(block, 0, 0);
-              card.onDragStart(e);
-            }}
-            onDragEnd={card.onDragEnd}
-            onKeyDown={(e) => {
-              if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
-              e.preventDefault();
-              card.onMove(e.key === "ArrowUp" ? -1 : 1);
-            }}
-            aria-label={`Move ${title}`}
-            title="Drag to move (↑/↓ from the keyboard)"
-            className="shrink-0 text-fg-dim hover:text-fg cursor-grab active:cursor-grabbing"
-          >
-            {grip}
-          </button>
-        ) : (
-          <span title="not wired" className="shrink-0 text-fg-dim">{grip}</span>
-        )}
-        {plainTitle
-          ? <span id={`${id}-title`} className={cn(MP.insights.blockTitle, "flex-1 min-w-0")}>{title}</span>
-          : <h3 id={`${id}-title`} className={cn(MP.insights.blockTitle, "flex-1 min-w-0")}>{title}</h3>}
-        {card && (
-          <button
-            type="button"
-            onClick={card.onRemove}
-            aria-label={`Remove ${title}`}
-            title={`Remove ${title} (the head's + adds it back)`}
-            className="shrink-0 text-fg-dim hover:text-fg"
-          >
-            <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9"
-                 className={MP.insights.chevron}>
-              <path d="M7 7l10 10M17 7L7 17" />
-            </svg>
-          </button>
-        )}
-        <button
-          type="button"
-          onClick={() => setExpanded((e) => !e)}
-          aria-expanded={expanded}
-          aria-label={`${expanded ? "Collapse" : "Expand"} ${title}`}
-          className="shrink-0 text-fg-dim hover:text-fg"
-        >
-          <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9"
-               className={cn(MP.insights.chevron, !expanded && "rotate-180")}>
-            <path d="M6 15l6-6 6 6" />
-          </svg>
-        </button>
-      </div>
-      {expanded && <>{lead}{children && <dl>{children}</dl>}{trail}</>}
-    </section>
-  );
-}
-
-/** A block row, the Clone's `.mrow.plain` (`messages.html:310-316`): the
- *  term left, the value right, both 13.5px, padding 6px 0. */
-function InsightsRow({ term, value }: { term: React.ReactNode; value: React.ReactNode }) {
-  return (
-    <div className={cn(MP.insights.metric, MP.ours.FanDrawer.row, "flex items-start justify-between")}>
-      <dt className={cn(MP.insights.metricKey, MP.ours.FanDrawer.term, "flex items-center text-fg-dim")}>{term}</dt>
-      <dd className={cn(MP.insights.metricPlain, "min-w-0 flex-1 text-right")}>{value}</dd>
-    </div>
-  );
-}
-
-/** The Clone's `.badge-val` Geometry (`messages.html:315`) in our colours. */
-function Badge({ children }: { children: React.ReactNode }) {
-  return (
-    <span className={cn(MP.insights.badge, "inline-block bg-bg-elev-2")}>
-      {children}
-    </span>
-  );
-}
-
-/** The Clone's 14px `.info-i` (`messages.html:302`); `title` is its tooltip. */
-function InfoIcon({ title }: { title?: string }) {
-  return (
-    <span title={title} className="shrink-0">
-      <svg role="img" aria-label="info" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
-           className={cn(MP.insights.info, "shrink-0")}>
-        <circle cx="12" cy="12" r="9" /><path d="M12 11v5M12 8h.01" strokeLinecap="round" />
-      </svg>
-    </span>
-  );
-}
-
-/** OF's status semantics (`interpretSubStatus`): "active" renews, "Set to
- *  Expire" does not, an expired sub cannot; anything else is unknown. */
-function autoRenewal(status: SubStatusDisplay): string {
-  if (status.expired || status.short === "Won't renew") return "Off";
-  if (status.short === "Active") return "On";
-  return "—";
-}
-
-/** PPV Avg or Highest spend: the relay's average or maximum over the loaded
- *  purchase-history page (`service/fans.py:1006-1011`). A full page may hide
- *  older purchases, so it reads "—" then, and with no items (B11 option (b)).
- *  A placeholder page (the previous limit's or the previous Fan's, kept by
- *  `placeholderData` while a fetch is in flight) also reads "—". */
-function pageFigure(
-  q: { data?: PpvHistoryResp; isPlaceholderData: boolean },
-  salesLimit: number, key: "avg_cents" | "max_cents",
-): string {
-  const items = q.data?.items ?? [];
-  if (!q.data || q.isPlaceholderData || items.length === 0 || items.length === salesLimit) return "—";
-  return fmtPrice(q.data.summary[key]);
-}
-
-/** Whole-dollar formatter for ledger summaries. OF returns
- *  these as dollars (`tipsSumm: 87`); our DB returns cents. Prefer the
- *  OF number when it's a real value; fall back to DB cents otherwise.
- *  We treat `0` as "missing" on the OF side because OF reports 0 for
- *  long-tenure / hidden accounts even when activity exists — better to
- *  show our DB total than a misleading $0. */
-function fmtSummDollars(ofDollars: number | null | undefined, dbCents: number | null | undefined): string {
-  if (typeof ofDollars === "number" && ofDollars > 0) return `$${Math.round(ofDollars).toLocaleString("en-US")}`;
-  if (typeof dbCents === "number" && dbCents > 0) return `$${Math.round(dbCents / 100).toLocaleString("en-US")}`;
-  return "—";
-}
-
-/** The Clone's Sales table (`messages.js:1525-1528`, `.stab` at
- *  `messages.html:488-492`): Date, Gross, Net and Sent by at 12px, one row
- *  per ledger item. Nothing when the ledger is empty; the media rows below
- *  carry the empty text. */
-function SalesTable({ items }: { items: PpvHistoryItem[] }) {
-  if (items.length === 0) return null;
-  const th = cn(MP.insights.salesHead, "border-border text-fg-dim");
-  const td = cn(MP.insights.salesCell, "border-border whitespace-nowrap");
-  return (
-    <table className={cn(MP.insights.salesTable, "w-full border-collapse")}>
-      <thead>
-        <tr>
-          <th className={cn(th, "text-left")}>Date</th>
-          <th className={cn(th, "text-right")}>Gross</th>
-          <th className={cn(th, "text-right")}>Net</th>
-          <th className={cn(th, "text-left")}>Sent by</th>
-        </tr>
-      </thead>
-      <tbody>
-        {items.map((i) => {
-          const t = parseUtcMs(i.purchased_at);
-          return (
-            <tr key={i.transaction_id}>
-              <td className={td}>
-                {t == null ? "—" : new Date(t).toLocaleDateString([], { month: "short", day: "numeric" })}
-              </td>
-              <td className={cn(td, "text-right")}>{fmtPrice(i.price_cents)}</td>
-              <td className={cn(td, "text-right text-fg-dim")}>{i.net_cents == null ? "—" : fmtPrice(i.net_cents)}</td>
-              <td className={td}>{i.employee_name ?? "—"}</td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
-  );
-}
-
-/** How many sale rows to render before "show more". */
-const INITIAL_SALE_ROWS = 3;
-
-/** The Clone's Purchases over time bars (`messages.js:1472-1504`, `.bars`
- *  and `.axis` at `messages.html:493-496`): 12 gross-cent buckets from the
- *  Fan's first purchase to now. Shown on Insights and atop the Sales tab. */
-function PurchasesOverTime({ items, loading }: { items: PpvHistoryItem[]; loading: boolean }) {
-  if (loading && items.length === 0) {
-    return <div className={cn(MP.ours.FanDrawer.status, "text-fg-dim")}>Loading purchase history…</div>;
-  }
-  if (items.length === 0) {
-    return <div className={cn(MP.ours.FanDrawer.status, "text-fg-dim")}>No PPV purchases yet.</div>;
-  }
-  const { buckets, max, first, step } = salesBars(items);
-  const day = (ms: number) => new Date(ms).toLocaleDateString();
-  return (
-    <>
-      <div role="img" aria-label="Purchases over time" className={cn(MP.insights.chart, "flex items-end")}>
-        {buckets.map((v, i) => (
-          <span
-            key={i}
-            title={`${day(first + i * step)} – ${day(first + (i + 1) * step)}: ${fmtCents(v)}`}
-            style={{ height: `${max > 0 ? Math.max(2, Math.round((v * 100) / max)) : 2}%` }}
-            className={cn(MP.insights.bar, "flex-1 block", v ? "bg-accent" : "bg-bg-elev-2")}
-          />
-        ))}
-      </div>
-      <div className={cn(MP.insights.axis, "flex justify-between text-fg-dim")}>
-        <span>{new Date(first).toLocaleDateString([], { month: "short", day: "numeric", year: "2-digit" })}</span>
-        <span>peak {fmtCents(max)}</span>
-        <span>now</span>
-      </div>
-    </>
-  );
-}
-
-/** `salesBars` (`messages.js:1472-1490`): the window runs from the first
- *  purchase to now, at least 7 days, split into 12 equal steps. Epoch
- *  milliseconds throughout, so the buckets do not depend on the host zone. */
-function salesBars(items: PpvHistoryItem[]) {
-  const now = Date.now(), N = 12;
-  const times = items.map((i) => parseUtcMs(i.purchased_at)).filter((t): t is number => !!t);
-  const first = times.length ? Math.min(...times) : now - 7 * 864e5;
-  const span = Math.max(now - first, 7 * 864e5);
-  const step = span / N;
-  const buckets = new Array<number>(N).fill(0);
-  for (const i of items) {
-    const t = parseUtcMs(i.purchased_at);
-    if (t == null) continue;
-    const idx = Math.min(N - 1, Math.max(0, Math.floor((t - first) / step)));
-    buckets[idx] += i.price_cents || 0;
-  }
-  return { buckets, max: Math.max(...buckets), first, step };
-}
-
-/** The deleted Clone's `InflowwRea.parseUtc` (tag `legacy-ui-final`): relay stamps can be tz-naive
- *  UTC, so a stamp without a zone is read as UTC. Null when unparseable. */
-function parseUtcMs(s: string | null): number | null {
-  if (!s) return null;
-  let str = s;
-  if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(str) && !/(Z|[+-]\d{2}:?\d{2})$/.test(str)) {
-    str = str.replace(" ", "T") + "Z";
-  }
-  const t = new Date(str).getTime();
-  return Number.isNaN(t) ? null : t;
-}
-
-/** The purchased-media rows, last in the Sales tab's Sales block (below the
- *  table, under the block's own title). Renders newest-first; first `INITIAL_SALE_ROWS` shown,
- *  remainder revealed via a "Show N more" button at the BOTTOM (so
- *  scrolling down naturally exposes more, the way infinite-scroll
- *  feeds work). */
-function PpvSalesSection({
-  items, loading,
-  chatMedia, chatMediaLoading, chatMediaFetching, chatMediaUpdatedAt,
-  accountId,
-  salesLimit, onLoadMore, onRefresh, onOpenMedia, serverFetching,
-}: {
-  items: PpvHistoryItem[];
-  loading: boolean;
-  chatMedia: FanChatMediaItem[];
-  chatMediaLoading: boolean;
-  /** True whenever React Query is fetching ANY page (initial OR
-   *  background SWR refetch). Spins the refresh button while active. */
-  chatMediaFetching: boolean;
-  /** ms epoch the cached chat-media was last refreshed. 0 if never. */
-  chatMediaUpdatedAt: number;
-  accountId: string;
-  /** Current page size requested from both ppv-history + chat-media. */
-  salesLimit: number;
-  /** Bumps the page size in the parent. Hidden once we've hit the
-   *  server cap or the ledger has clearly returned fewer rows than
-   *  requested (= no more to load). */
-  onLoadMore: () => void;
-  /** Invalidates the chat-media cache and refetches both purchased +
-   *  unsold filter modes. Wired to the ↻ button above the media rows. */
-  onRefresh: () => void;
-  /** Opens a media tile in the drawer-level lightbox. Lifted to the
-   *  drawer so its Esc handler can yield to the open lightbox. */
-  onOpenMedia: (m: LightboxMedia) => void;
-  /** True while either upstream is mid-refetch — used to disable the
-   *  Load-more button so a fast double-click doesn't queue two bumps. */
-  serverFetching: boolean;
-}) {
-  // OF gallery is the spine (thumbnails + text); ledger items get
-  // fuzzy-matched on top for accounting/employee. Falls back to a
-  // ledger-only render when OF hasn't responded yet so the section
-  // never blanks.
-  const detailRows = buildSaleRows(chatMedia, items);
-
-  const [showAll, setShowAll] = useState(false);
-  const [expandedKeys, setExpandedKeys] = useState<Set<string>>(() => new Set());
-
-  // Delay the "loading media…" text by 300ms so cached data — which resolves
-  // almost instantly — renders its timestamp directly instead of flashing the
-  // loading state for a frame or two.
-  const [showLoading, setShowLoading] = useState(false);
-  useEffect(() => {
-    if (!(chatMediaLoading && chatMedia.length === 0)) {
-      setShowLoading(false);
-      return;
-    }
-    const t = window.setTimeout(() => setShowLoading(true), 300);
-    return () => window.clearTimeout(t);
-  }, [chatMediaLoading, chatMedia.length]);
-
-  const toggleExpanded = (key: string) => {
-    setExpandedKeys((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key); else next.add(key);
-      return next;
-    });
-  };
-
-  const visibleRows = showAll ? detailRows : detailRows.slice(0, INITIAL_SALE_ROWS);
-  const hiddenCount = detailRows.length - visibleRows.length;
-
-  return (
-    <div className="space-y-2 mt-3">
-      <div className="flex items-center justify-end gap-2">
-        {showLoading && (
-          <span className={cn(MP.ours.FanDrawer.mediaStamp, "text-fg-dim")}>loading media…</span>
-        )}
-        {!chatMediaLoading && chatMediaUpdatedAt > 0 && (
-          <span className={cn(MP.ours.FanDrawer.mediaStamp, "text-fg-dim")} title={new Date(chatMediaUpdatedAt).toLocaleString()}>
-            {fmtRelTime(new Date(chatMediaUpdatedAt).toISOString())}
-          </span>
-        )}
-        <button
-          type="button"
-          onClick={onRefresh}
-          disabled={chatMediaFetching}
-          title="Refresh OnlyFans gallery now (otherwise auto-refreshes after 30 min)"
-          aria-label="Refresh gallery"
-          className={cn(
-            MP.ours.FanDrawer.mediaRefresh,
-            "grid md:block place-items-center text-fg-dim hover:text-fg disabled:opacity-50",
-            chatMediaFetching && "animate-spin",
-          )}
-        >
-          ↻
-        </button>
-      </div>
-      {loading && items.length === 0 ? (
-        <div className={cn(MP.ours.FanDrawer.status, "text-fg-dim")}>Loading purchase history…</div>
-      ) : items.length === 0 ? (
-        <div className={cn(MP.ours.FanDrawer.status, "text-fg-dim")}>No PPV purchases yet.</div>
-      ) : (
-        <div className="space-y-2">
-          {visibleRows.map((row) => (
-            <PpvSaleRow
-              key={row.key}
-              row={row}
-              accountId={accountId}
-              expanded={expandedKeys.has(row.key)}
-              onToggle={() => toggleExpanded(row.key)}
-              onOpenMedia={onOpenMedia}
-            />
-          ))}
-          {/* Show-more lives at the BOTTOM — newest-first feed pattern,
-           *  scroll down to load older. */}
-          {hiddenCount > 0 && !showAll && (
-            <button
-              type="button"
-              onClick={() => setShowAll(true)}
-              className={cn(MP.ours.FanDrawer.showMore, "w-full text-fg-dim hover:text-fg border-dashed border-border")}
-            >
-              Show {hiddenCount} more
-            </button>
-          )}
-          {showAll && detailRows.length > INITIAL_SALE_ROWS && (
-            <button
-              type="button"
-              onClick={() => setShowAll(false)}
-              className={cn(MP.ours.FanDrawer.showMore, "w-full text-fg-dim hover:text-fg border-dashed border-border")}
-            >
-              Show less
-            </button>
-          )}
-          {/* Server-side pagination. Only meaningful once everything
-           *  already fetched is visible (i.e. user has expanded the
-           *  client-side hidden rows) — otherwise "Load more" would
-           *  confuse with "Show more". Hidden when the ledger came back
-           *  with fewer rows than requested (no more to fetch) OR we're
-           *  at the server's hard cap. */}
-          {showAll
-            && items.length >= salesLimit
-            && salesLimit < 200 && (
-            <button
-              type="button"
-              onClick={onLoadMore}
-              disabled={serverFetching}
-              className={cn(MP.ours.FanDrawer.loadMore, "w-full text-[var(--inf-accent-text,var(--color-accent))] border-dashed border-accent/50 disabled:opacity-50 disabled:cursor-progress")}
-            >
-              {serverFetching ? "Loading…" : "Load more from server"}
-            </button>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** Latest 2 unsold PPVs the creator has sent this fan, the Unsold PPVs
- *  block's body. Each row has a "Send to chat" button that populates the
- *  parent Composer with the exact same payload (text + media + price) so the
- *  operator can re-pitch the unlock in one click; without `onComposeWith`
- *  (read-only) the button is hidden. Always renders: a status line while
- *  loading, when the read failed, and when there are none. */
-function UnsoldPpvsSection({
-  items, loading, failed, onRetry, accountId, onComposeWith,
-}: {
-  items: FanChatMediaItem[];
-  loading: boolean;
-  /** The OF read failed and nothing of this Fan's is loaded. */
-  failed: boolean;
-  onRetry: () => void;
-  accountId: string;
-  onComposeWith?: (t: PickedTemplate) => void;
-}) {
-  const status = cn(MP.ours.FanDrawer.status, "text-fg-dim");
-  return (
-    <div title={extraTitle("Unsold PPVs")} className="space-y-2">
-      {items.length > 0 ? items.map((m) => (
-        <UnsoldPpvRow
-          key={m.id}
-          item={m}
-          accountId={accountId}
-          onComposeWith={onComposeWith}
-        />
-      )) : loading ? (
-        <div className={status}>Loading unsold PPVs…</div>
-      ) : failed ? (
-        <div className={status}>
-          Couldn&apos;t load unsold PPVs.{" "}
-          <button type="button" onClick={onRetry} className="underline hover:text-fg">Retry</button>
-        </div>
-      ) : (
-        <div className={status}>No unsold PPVs sent.</div>
-      )}
-    </div>
-  );
-}
-
-function UnsoldPpvRow({
-  item, accountId, onComposeWith,
-}: {
-  item: FanChatMediaItem;
-  accountId: string;
-  onComposeWith?: (t: PickedTemplate) => void;
-}) {
-  const text = stripOFHtml(item.text);
-  const priceCents = Math.round((item.price ?? 0) * 100);
-  const thumbs = pickThumbs(item.media);
-  const handleSend = () => {
-    if (!onComposeWith) return;
-    // Synthesize a PickedTemplate so Composer's existing onPickTemplate
-    // handler does the full replace (text + attached vault media + price
-    // + lock + previewCount). VaultMedia ids ARE the same ids OF returns
-    // on chat-media `media[i].id`, so attaching by id Just Works on send.
-    // Chat-media files can lack a url; vaultFilesFromChat drops those.
-    const media: VaultMedia[] = item.media.map((mm) => ({
-      id: mm.id,
-      type: (mm.type as VaultMedia["type"]) || "photo",
-      duration: mm.duration,
-      files: vaultFilesFromChat(mm.files),
-    }));
-    onComposeWith({
-      source: "of",
-      text,
-      displayText: item.text,
-      mediaCount: item.mediaCount ?? media.length,
-      price: item.price ?? 0,
-      // OF chat-media doesn't expose lockedText separately; we leave it
-      // off so the resend defaults to unlocked-text, matching what the
-      // operator usually wants for a follow-up pitch.
-      lockedText: false,
-      isWelcome: false,
-      media,
-      previews: [],
-      taggedUsers: [],
-    });
-  };
-  return (
-    <div className="rounded-md bg-[var(--inf-card,var(--color-bg-elev-1))] border border-[var(--inf-card-border,var(--color-border))] overflow-hidden">
-      <div className="flex items-center gap-2 px-2 py-1.5">
-        <span className={cn(MP.ours.FanDrawer.pricePill, "inline-flex items-center bg-warn text-white")}>
-          <span className="opacity-90">$</span>{fmtPrice(priceCents).slice(1)}
-        </span>
-        <span className={cn(MP.ours.FanDrawer.rowDate, "text-fg-dim flex-1 min-w-0 truncate")}>
-          {fmtFullDateTime(item.createdAt)}
-        </span>
-        {onComposeWith && (
-          <button
-            type="button"
-            onClick={handleSend}
-            className={cn(MP.ours.FanDrawer.sendToChat, "bg-accent hover:bg-accent-hover text-white")}
-            title="Load this PPV into the composer"
-          >
-            Send to chat
-          </button>
-        )}
-      </div>
-      {thumbs.length > 0 && (
-        <div className="flex gap-1.5 overflow-x-auto px-2 pb-2 -mt-0.5">
-          {thumbs.map((t, i) => (
-            <div
-              key={i}
-              className="relative shrink-0 w-16 h-16 rounded-md bg-bg-elev-2 border border-border overflow-hidden"
-            >
-              {t.rawUrl ? (
-                <img
-                  src={proxyImage(t.rawUrl, accountId)}
-                  alt=""
-                  loading="lazy"
-                  decoding="async"
-                  className="w-full h-full object-cover"
-                />
-              ) : (
-                <div className={cn(MP.ours.FanDrawer.thumbEmpty, "w-full h-full grid place-items-center text-fg-dim")}>—</div>
-              )}
-              {t.isVideo && (
-                <span className="absolute inset-0 grid place-items-center bg-black/20 text-white text-base pointer-events-none">
-                  ▶
-                </span>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-      {text && (
-        <div className={cn(MP.ours.FanDrawer.unsoldText, "text-fg-dim line-clamp-2 whitespace-pre-wrap break-words")}>
-          {text}
-        </div>
-      )}
-    </div>
-  );
-}
-
-interface PpvSaleThumb {
-  /** Raw signed OF CDN url — must be wrapped in proxyImage before rendering. */
-  rawUrl: string;
-  /** Best full-size url for the lightbox (full → preview → thumb). */
-  rawFullUrl: string;
-  /** Playable signed video URL for videos (used as both the hover-scrub
-   *  source and the lightbox <video src>). Empty for photos. */
-  rawVideoUrl: string;
-  /** Video duration in seconds — lets the relay's storyboard extractor
-   *  skip its own ffprobe step. */
-  durationSec: number;
-  isVideo: boolean;
-}
-
-interface PpvSaleRowData {
-  key: string;
-  /** OF message id when available (OF gallery row), null for ledger-only fallback. */
-  ofMessageId: number | null;
-  text: string;
-  priceCents: number;
-  purchasedAt: string | null;
-  thumbs: PpvSaleThumb[];
-  // DB enrichment — null if no fuzzy match.
-  netCents: number | null;
-  feeCents: number | null;
-  vatCents: number | null;
-  employeeName: string | null;
-  employeeColor: string | null;
-}
-
-interface LightboxMedia {
-  proxiedUrl: string;
-  isVideo: boolean;
-}
-
-function PpvSaleRow({
-  row, accountId, expanded, onToggle, onOpenMedia,
-}: {
-  row: PpvSaleRowData;
-  accountId: string;
-  expanded: boolean;
-  onToggle: () => void;
-  onOpenMedia: (m: LightboxMedia) => void;
-}) {
-  const accounting = formatAccounting(row);
-  return (
-    <div className="rounded-md bg-[var(--inf-card,var(--color-bg-elev-1))] border border-[var(--inf-card-border,var(--color-border))] overflow-hidden">
-      {/* Header row — green price pill + full date + expand chevron.
-       *  Clicking anywhere on this strip toggles the body text. */}
-      <button
-        type="button"
-        onClick={onToggle}
-        aria-expanded={expanded}
-        className="w-full flex items-center gap-2 px-2 py-1.5 text-left hover:bg-bg-elev-2/40"
-      >
-        <span className={cn(MP.ours.FanDrawer.pricePill, "inline-flex items-center bg-ok text-white")}>
-          <span className="opacity-90">$</span>{fmtPrice(row.priceCents).slice(1)}
-        </span>
-        <span className={cn(MP.ours.FanDrawer.rowDate, "text-fg-dim flex-1 min-w-0 truncate")}>
-          {fmtFullDateTime(row.purchasedAt)}
-        </span>
-        <span className={cn(MP.ours.FanDrawer.rowChevron, "text-fg-dim transition-transform", expanded && "rotate-180")}>
-          ▾
-        </span>
-      </button>
-
-      {/* Media strip — horizontal scroll, vault-style square tiles.
-       *  Click a tile to open it in the lightbox. Videos hover-scrub. */}
-      {row.thumbs.length > 0 && (
-        <div className="flex gap-1.5 overflow-x-auto px-2 pb-2 -mt-0.5 scrollbar-thin">
-          {row.thumbs.map((t, i) => {
-            const openInLightbox = () => {
-              if (!t.rawFullUrl && !t.rawUrl && !t.rawVideoUrl) return;
-              onOpenMedia({
-                // Videos: prefer the playable mp4 so the lightbox's
-                // <video> can stream it. Photos fall through to the
-                // best still.
-                proxiedUrl: proxyImage(
-                  t.isVideo ? (t.rawVideoUrl || t.rawFullUrl || t.rawUrl)
-                            : (t.rawFullUrl || t.rawUrl),
-                  accountId,
-                ),
-                isVideo: t.isVideo,
-              });
-            };
-            return t.isVideo && t.rawVideoUrl ? (
-              <VideoScrubThumb
-                key={i}
-                thumb={t}
-                accountId={accountId}
-                onClick={openInLightbox}
-              />
-            ) : (
-              <button
-                key={i}
-                type="button"
-                onClick={(e) => { e.stopPropagation(); openInLightbox(); }}
-                className="relative shrink-0 w-20 h-20 rounded-md bg-bg-elev-2 border border-border overflow-hidden group"
-                title="Click to preview"
-              >
-                {t.rawUrl ? (
-                  <img
-                    src={proxyImage(t.rawUrl, accountId)}
-                    alt=""
-                    loading="lazy"
-                    decoding="async"
-                    className="w-full h-full object-cover transition-transform group-hover:scale-105"
-                  />
-                ) : (
-                  <div className={cn(MP.ours.FanDrawer.thumbEmpty, "w-full h-full grid place-items-center text-fg-dim")}>—</div>
-                )}
-                {t.isVideo && (
-                  <span className="absolute inset-0 grid place-items-center bg-black/20 text-white text-lg pointer-events-none">
-                    ▶
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Expanded body — full text + accounting/employee. The screenshot's
-       *  "Read more" is implicit here: header click opens / closes. */}
-      {expanded && (
-        <div className={MP.ours.FanDrawer.saleBody}>
-          {row.text ? (
-            <div className="text-fg whitespace-pre-wrap break-words">{row.text}</div>
-          ) : row.thumbs.length > 0 ? (
-            // OF matched but no caption — just media. Don't say
-            // "media only" as a body since the thumbs above already
-            // make that obvious.
-            null
-          ) : (
-            // No OF match at all. The accounting line still shows
-            // below; the user knows what was paid even without the
-            // captioned content cached. Common causes: the OF gallery
-            // page that contains this sale hasn't been loaded yet (try
-            // Load more), or the message was deleted on OF.
-            <div className="text-fg-dim italic">
-              No matching OnlyFans gallery item — try Load more, or the
-              original message may have been deleted.
-            </div>
-          )}
-          {(accounting || row.employeeName) && (
-            <div className={cn(MP.ours.FanDrawer.saleAccounting, "text-fg-dim flex flex-wrap border-border/60")}>
-              {accounting && <span>{accounting}</span>}
-              {row.employeeName && (
-                <span style={row.employeeColor ? { color: row.employeeColor } : undefined}>
-                  · {row.employeeName}
-                </span>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** Video thumb with vault-style hover scrub. Hover-intent debounce
- *  (HOVER_DELAY_MS) kills brush-past thrash; once committed we render
- *  all 12 storyboard frames as overlayed <img> with opacity toggled,
- *  cycling every SCRUB_INTERVAL_MS. Dwell, frame count and pace come from
- *  useHoverPreview, shared with VaultPicker so the relay's /img/scrub disk
- *  cache (keyed by mp4 hash + frame index, not by caller) serves every
- *  surface — so a re-hover is free.
- *  On mouseleave (or unmount) we fire-and-forget a /img/scrub/cancel POST
- *  so the relay can abort the build if it's still mid-download. */
-export function VideoScrubThumb({
-  thumb, accountId, onClick,
-}: {
-  thumb: PpvSaleThumb;
-  accountId: string;
-  onClick: () => void;
-}) {
-  // Dwell, per-hover session id, slideshow cursor, the cold-build countdown
-  // (same ETA as VaultPicker) and the cancel POST all live in the hook.
-  const hover = useHoverPreview(HOVER_DELAY_MS);
-  const { sid, frame } = hover.state;
-  const hovered = hover.state.id !== null;
-  const frameReady = hover.state.scrub === "ready";
-  const countdownSec = scrubCountdownSec(hover.state);
-  // Touch devices synthesise mouseenter on tap, so every tap on this thumb
-  // would commit a 12-frame relay ffmpeg storyboard build (and the cancel
-  // POST rides on mouseleave, which may never fire) while the click opens
-  // the lightbox on top of it. Real pointers keep the hover-scrub exactly
-  // as it is today.
-  const [canHover] = useState(
-    () =>
-      typeof window !== "undefined" &&
-      window.matchMedia("(hover: hover) and (pointer: fine)").matches,
-  );
-
-  return (
-    <button
-      type="button"
-      onClick={(e) => { e.stopPropagation(); onClick(); }}
-      // One tile per hook here, so the tile id `start` keys on is a constant 0.
-      onMouseEnter={canHover ? () => hover.start(0, thumb.durationSec, thumb.rawVideoUrl) : undefined}
-      onMouseLeave={canHover ? () => hover.stop() : undefined}
-      className="relative shrink-0 w-20 h-20 rounded-md bg-bg-elev-2 border border-border overflow-hidden group"
-      title={canHover ? "Hover to scrub, click to play" : "Tap to play"}
-    >
-      {/* Static thumb — always rendered as the loading state /
-       *  fallback when frames fail. Frames fade in on top. */}
-      {thumb.rawUrl ? (
-        <img
-          src={proxyImage(thumb.rawUrl, accountId)}
-          alt=""
-          loading="lazy"
-          decoding="async"
-          className="absolute inset-0 w-full h-full object-cover"
-        />
-      ) : (
-        <div className={cn(MP.ours.FanDrawer.scrubEmpty, "absolute grid place-items-center text-fg-dim")}>—</div>
-      )}
-      {hovered && sid &&
-        Array.from({ length: SCRUB_FRAMES }).map((_, idx) => (
-          <img
-            // Per-frame key bound to the session id so re-hovers force
-            // fresh elements — prevents a stale paint from the previous
-            // hover bleeding into the new session.
-            key={`${sid}-${idx}`}
-            src={proxyScrubFrame(
-              thumb.rawVideoUrl,
-              accountId,
-              idx,
-              thumb.durationSec,
-              sid,
-            )}
-            alt=""
-            aria-hidden={idx !== frame}
-            decoding="async"
-            // The first frame that paints clears the shimmer (any frame, so a
-            // failed frame-0 fetch can't pin it); a frame-0 error drops the
-            // shimmer so we fall back to the static thumb.
-            {...hover.frameProps(idx)}
-            style={{
-              opacity: idx === frame && frameReady ? 1 : 0,
-            }}
-            className="absolute inset-0 w-full h-full object-cover transition-opacity duration-200"
-          />
-        ))}
-      {/* Cold-build shimmer + countdown — covers the thumb while the
-       *  relay is extracting the storyboard. Unmounts as soon as a frame
-       *  paints (the slideshow takes over) or frame 0 fails. Cached videos
-       *  go straight to ready on the first frame's onLoad so the shimmer
-       *  is invisible there. */}
-      {hovered && hover.state.scrub === "loading" && (
-        <>
-          <div aria-hidden className="scrub-shimmer pointer-events-none" />
-          <div
-            aria-hidden
-            className="absolute inset-0 grid place-items-center pointer-events-none"
-          >
-            <span className={cn(MP.ours.FanDrawer.countdown, "text-white/85 drop-shadow-black/70")}>
-              {countdownSec > 0 ? `${Math.ceil(countdownSec)}s` : "…"}
-            </span>
-          </div>
-        </>
-      )}
-      {!hovered && (
-        <span className="absolute inset-0 grid place-items-center bg-black/20 text-white text-lg pointer-events-none">
-          ▶
-        </span>
-      )}
-    </button>
-  );
-}
-
-function MediaLightbox({ media, onClose }: { media: LightboxMedia; onClose: () => void }) {
-  // Close on Esc — mirrors the drawer's own Esc handling so the keyboard
-  // story is consistent (Esc collapses one layer at a time).
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-  return (
-    <div
-      className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
-      onClick={onClose}
-    >
-      {media.isVideo ? (
-        <video
-          src={media.proxiedUrl}
-          controls
-          autoPlay
-          playsInline
-          className="max-w-full max-h-full rounded-md"
-          onClick={(e) => e.stopPropagation()}
-        />
-      ) : (
-        <img
-          src={media.proxiedUrl}
-          alt=""
-          className="max-w-full max-h-full rounded-md"
-          onClick={(e) => e.stopPropagation()}
-        />
-      )}
-      <button
-        type="button"
-        onClick={onClose}
-        className={cn(MP.ours.FanDrawer.lightboxClose, "absolute text-white grid place-items-center bg-black/40 hover:bg-black/60")}
-        aria-label="Close preview"
-      >
-        ×
-      </button>
-    </div>
-  );
-}
-
-function fmtFullDateTime(iso: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  // "May 24, 2026 at 7:04 PM" — matches the OF screenshot phrasing.
-  const datePart = d.toLocaleDateString(undefined, {
-    month: "short", day: "numeric", year: "numeric",
-  });
-  const timePart = d.toLocaleTimeString(undefined, {
-    hour: "numeric", minute: "2-digit",
-  });
-  return `${datePart} at ${timePart}`;
-}
-
-function formatAccounting(row: PpvSaleRowData): string | null {
-  const parts: string[] = [];
-  if (row.netCents != null) parts.push(`net ${fmtPrice(row.netCents)}`);
-  if (row.feeCents != null) parts.push(`fee ${fmtPrice(row.feeCents)}`);
-  if (row.vatCents != null && row.vatCents !== 0) parts.push(`VAT ${fmtPrice(row.vatCents)}`);
-  return parts.length ? parts.join(" · ") : null;
-}
-
-function pickThumbs(media: FanChatMediaItem["media"]): PpvSaleThumb[] {
-  if (!media) return [];
-  return media.map((m) => {
-    const f = m.files ?? {};
-    const thumbUrl =
-      f.squarePreview?.url ?? f.thumb?.url ?? f.preview?.url ?? f.full?.url ?? "";
-    // Lightbox prefers the full asset; falls back to preview then thumb
-    // so a missing `full` (common on locked / no-longer-purchasable media)
-    // still gives us something to render in the overlay.
-    const fullUrl =
-      f.full?.url ?? f.preview?.url ?? f.squarePreview?.url ?? f.thumb?.url ?? "";
-    const isVideo = m.type === "video";
-    // For videos OF puts the playable mp4 under files.full; preview is a
-    // shorter teaser clip on some items, full on others. The relay's
-    // /img/scrub builder needs a real mp4, so prefer full → preview.
-    const videoUrl = isVideo ? (f.full?.url ?? f.preview?.url ?? "") : "";
-    return {
-      rawUrl: thumbUrl ?? "",
-      rawFullUrl: fullUrl ?? "",
-      rawVideoUrl: videoUrl ?? "",
-      durationSec: typeof m.duration === "number" ? m.duration : 0,
-      isVideo,
-    };
-  });
-}
-
-/** True when OF's list price (in cents) plausibly corresponds to a
- *  ledger row's gross amount. The relationship isn't always 1:1:
- *    • creator sets list price X (e.g. $18.00)
- *    • OF charges fan X + VAT (varies by region, ~12% in EU)
- *    • OF returns `price: 18` on the gallery row regardless
- *    • our ledger row carries amount_cents = gross paid by fan
- *      (sometimes $18, sometimes $18.03 due to FX rounding, $20.16
- *      with VAT, etc.)
- *
- *  We accept a match if the OF price equals any of the following
- *  derivations of the ledger amount, ±2¢ rounding tolerance:
- *    • amount_cents               (no-VAT region; common case)
- *    • amount_cents − vat_cents   (when ledger amount is VAT-inclusive)
- *    • amount_cents + vat_cents   (when ledger amount is ex-VAT)
- *    • net_cents + fee_cents      (some Phase-F rows store these split)
- *  Plus a ±10% loose fallback to catch OF's occasional ad-hoc discount
- *  rounding. The strict candidates win first; loose only fires when no
- *  strict match exists in the whole gallery. */
-function priceMatchScore(ofCents: number, it: PpvHistoryItem): "strict" | "loose" | null {
-  const lc = it.price_cents;
-  const candidates: number[] = [lc];
-  if (it.vat_cents) {
-    candidates.push(lc - it.vat_cents);
-    candidates.push(lc + it.vat_cents);
-  }
-  if (it.net_cents != null && it.fee_cents != null) {
-    candidates.push(it.net_cents + it.fee_cents);
-  }
-  for (const c of candidates) {
-    if (Math.abs(ofCents - c) <= 2) return "strict";
-  }
-  if (lc > 0 && Math.abs(ofCents - lc) / lc < 0.10) return "loose";
-  return null;
-}
-
-/** Unified row builder — ledger is the spine (source of truth for what
- *  was paid), OF gallery enriches with thumbnails + text.
- *
- *  Matching pass order:
- *    1. ledger.message_id == OF.id  (definitive, when ledger has the id)
- *    2. price strict-match (any of the candidate derivations ±2¢),
- *       nearest |createdAt − purchased_at| wins
- *    3. price loose-match (±10%), nearest time wins
- *
- *  Each OF item is consumed at most once so two same-priced ledger rows
- *  on the same day can't both claim a single gallery entry. */
-function buildSaleRows(
-  media: FanChatMediaItem[],
-  ledger: PpvHistoryItem[],
-): PpvSaleRowData[] {
-  const sortedLedger = [...ledger].sort(
-    (a, b) =>
-      +new Date(b.purchased_at ?? b.sent_at ?? 0) -
-      +new Date(a.purchased_at ?? a.sent_at ?? 0),
-  );
-  const mediaById = new Map(media.map((m) => [m.id, m] as const));
-  const usedMediaIds = new Set<number>();
-
-  function chooseMedia(it: PpvHistoryItem): FanChatMediaItem | null {
-    // Pass 1: hard message-id match.
-    if (it.message_id != null) {
-      const direct = mediaById.get(it.message_id);
-      if (direct && !usedMediaIds.has(direct.id)) return direct;
-    }
-    // Pass 2+3: collect strict and loose price candidates, then pick by
-    // time-proximity within the tighter bucket.
-    const ts = +new Date(it.purchased_at ?? it.sent_at ?? 0);
-    let bestStrict: FanChatMediaItem | null = null;
-    let bestStrictDelta = Number.POSITIVE_INFINITY;
-    let bestLoose: FanChatMediaItem | null = null;
-    let bestLooseDelta = Number.POSITIVE_INFINITY;
-    for (const m of media) {
-      if (usedMediaIds.has(m.id)) continue;
-      const ofCents = Math.round((m.price ?? 0) * 100);
-      const score = priceMatchScore(ofCents, it);
-      if (!score) continue;
-      const mTs = +new Date(m.createdAt);
-      const delta = ts && mTs ? Math.abs(mTs - ts) : Number.POSITIVE_INFINITY;
-      if (score === "strict") {
-        if (delta < bestStrictDelta) { bestStrictDelta = delta; bestStrict = m; }
-      } else if (delta < bestLooseDelta) {
-        bestLooseDelta = delta; bestLoose = m;
-      }
-    }
-    return bestStrict ?? bestLoose;
-  }
-
-  return sortedLedger.map((it) => {
-    const best = chooseMedia(it);
-    if (best) usedMediaIds.add(best.id);
-    return {
-      key: `tx-${it.transaction_id}`,
-      ofMessageId: best?.id ?? it.message_id,
-      text: best ? stripOFHtml(best.text) : "",
-      priceCents: it.price_cents,
-      purchasedAt: it.purchased_at ?? it.sent_at,
-      thumbs: best ? pickThumbs(best.media) : [],
-      netCents: it.net_cents,
-      feeCents: it.fee_cents,
-      vatCents: it.vat_cents,
-      employeeName: it.employee_name,
-      employeeColor: it.employee_color,
-    };
-  });
-}
-
-function sameList(a: string[], b: string[]): boolean {
-  if (a.length !== b.length) return false;
-  const A = a.slice().sort();
-  const B = b.slice().sort();
-  return A.every((v, i) => v === B[i]);
-}
-
-// Per-fan language override options. "Default (account)" is the empty value — it clears
-// the override so the fan follows the account's language. Picking one pins it MANUAL,
-// so gen_info's auto-detection can never change it.
-const LANGUAGE_OPTIONS: { code: string; label: string }[] = [
-  { code: "en", label: "English" },
-  { code: "es", label: "Español" },
-  { code: "sl", label: "Slovenščina" },
-  { code: "pt", label: "Português" },
-  { code: "fr", label: "Français" },
-  { code: "de", label: "Deutsch" },
-  { code: "it", label: "Italiano" },
-];
-
-function languageHint(language: string | null, source: string | null): string {
-  if (!language) return "Using the account default. Pick one to pin this fan.";
-  if (source === "manual") return "Manual override — auto-detection won't change it.";
-  return "Auto-detected. Pick one to pin it (stops auto-detection).";
-}
-
-const LANG_LABEL: Record<string, string> = {
-  en: "English", es: "Español", sl: "Slovenščina", pt: "Português",
-  fr: "Français", de: "Deutsch", it: "Italiano",
-};
-
-function fmtCommStyle(cs: Record<string, unknown> | undefined): string {
-  if (!cs) return "";
-  return Object.entries(cs).filter(([, v]) => v === true).map(([k]) => k.replace(/_/g, " ")).join(", ");
-}
-
-// Read-only card summarising what gen_info learned: the detected language, the rich
-// note, the extracted facts, a dated timeline, and the openers it wrote.
-function ProfileCard({ fan }: { fan: FanRecord }) {
-  const p = fan.profile;
-  const facts: [string, string | null | undefined][] = [
-    ["Age", fan.his_age],
-    ["Location", [fan.home_city, fan.home_country].filter(Boolean).join(", ") || null],
-    ["Job", fan.occupation],
-    ["Employer", fan.employer],
-    ["Relationship", fan.relationship_status],
-    ["Stage", fan.relationship_stage],
-    ["Kids", fan.has_kids == null ? null : fan.has_kids ? "yes" : "no"],
-    ["Pets", Array.isArray(fan.pets) && fan.pets.length ? fan.pets.map(petLabel).join(", ") : null],
-    ["Style", fmtCommStyle(fan.communication_style) || null],
-  ];
-  const shown = facts.filter(([, v]) => v);
-  const timeline = (fan.recent_events_timeline ?? []).filter((t) => t?.event);
-  const richNote = p?.rich_note?.trim();
-  const langCode = fan.language ?? "";
-  const nothing = !richNote && shown.length === 0 && timeline.length === 0 &&
-    !(p?.q?.length) && !(p?.tease?.length);
-
-  return (
-    <div title={extraTitle("Generated profile note")} className="rounded-lg border border-[var(--inf-card-border,var(--color-border))] bg-[var(--inf-card,var(--color-bg-elev-1))]/40 p-3">
-      <div className="flex items-center justify-between mb-2">
-        <span className={cn(MP.ours.FanDrawer.sectionHeading, "text-fg-dim uppercase")}>AI profile</span>
-        <div className="flex items-center gap-2">
-          {langCode ? (
-            <span className={cn(MP.ours.FanDrawer.langChip, "border-border text-fg-dim")}
-              title={fan.language_source === "manual" ? "Manual override" : "Auto-detected"}>
-              🌐 {LANG_LABEL[langCode] ?? langCode}
-              {fan.language_source === "manual" ? " · pinned" : ""}
-            </span>
-          ) : null}
-          {p?.last_generated_at ? (
-            <span className={cn(MP.ours.FanDrawer.profileMeta, "text-fg-dim")}>{fmtRelTime(p.last_generated_at)}</span>
-          ) : null}
-        </div>
-      </div>
-
-      {nothing ? (
-        <div className={cn(MP.ours.FanDrawer.profileText, "text-fg-dim")}>No profile yet — gen_info fills this once he chats a little.</div>
-      ) : (
-        <div className="flex flex-col gap-3">
-          {richNote ? (
-            <div className={cn(MP.ours.FanDrawer.profileNote, "text-fg whitespace-pre-line")}>{richNote}</div>
-          ) : null}
-
-          {shown.length ? (
-            <div className="grid grid-cols-2 gap-x-3 gap-y-1">
-              {shown.map(([k, v]) => (
-                <div key={k} className={MP.ours.FanDrawer.profileText}>
-                  <span className="text-fg-dim">{k}: </span><span className="text-fg">{v}</span>
-                </div>
-              ))}
-            </div>
-          ) : null}
-
-          {timeline.length ? (
-            <div>
-              <div className={cn(MP.ours.FanDrawer.timelineLabel, "text-fg-dim uppercase")}>Timeline</div>
-              <ul className="space-y-0.5">
-                {timeline.slice(-6).reverse().map((t, i) => (
-                  <li key={i} className={cn(MP.ours.FanDrawer.profileText, "text-fg-dim")}>
-                    <span className={cn(MP.ours.FanDrawer.profileMeta, "font-mono")}>{t.date}</span> · <span className="text-fg">{t.event}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
-
-          {p?.q?.length || p?.tease?.length ? (
-            <div className={cn(MP.ours.FanDrawer.profileMeta, "text-fg-dim")}>
-              {p?.q?.length ? <div>{p.q.length} question{p.q.length > 1 ? "s" : ""} + {p?.tease?.length ?? 0} tease{(p?.tease?.length ?? 0) > 1 ? "s" : ""} ready</div> : null}
-            </div>
-          ) : null}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function petLabel(p: unknown): string {
-  if (p && typeof p === "object") {
-    const o = p as Record<string, unknown>;
-    return [o.kind, o.name].filter(Boolean).join(" ") || JSON.stringify(o);
-  }
-  return String(p);
-}
-
 // OF stores both the per-fan rename and the private creator-side note on
 // the subscription object. Both use PUT /subscriptions/{id} but the relay
 // exposes them as separate endpoints. Empty string clears the field on OF.
@@ -2330,4 +876,3 @@ function writeOFNotice(accountId: string, fanId: FanId, note: string) {
     { accountId },
   );
 }
-

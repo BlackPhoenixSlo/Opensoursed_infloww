@@ -27,6 +27,18 @@ name typed fast into the search box (one Creator) is one search for the box's
 text, and the rows are its matches; no console error and no 5xx in the browser
 session.
 
+The ranked inbox at volume (also `--no-ui`): per Creator and for the All Models
+union, the app's own `sortFanRows` + `chipCounts` (fanListSort.ts, in node through
+lib/app_ts.py + lib/fan_list_ts.mjs) over the relay's view: every sort mode lists
+each chat once (Newest first untouched); Amount spent is spend desc, Spend + unread
+on top is unread / read-owed / the rest with spend desc in each, Spend + recency
+puts its high-score rows first by score then the low ones unread first; the chip
+counts are the view's own tally; ties in every mode keep the view's order. Then
+`--users` owners arrive open loop (OWNER_RATE a second) and read the view
+(`/admin/chats/recent`, then `/admin/messages` of OWNER_THREADS of its chats, a
+think time apart): no non-2xx, no owner error, p95 per route within its budget and
+vs the last green run.
+
 Bypasses, declared:
 - OF's /chats (GET /api/of/v2/chats) is answered in the browser from the
   relay's view above (paged by offset/limit; `unread` and `who_tipped` filtered
@@ -41,17 +53,30 @@ Bypasses, declared:
 - every other /api/of/* read stays held (actors/ui.py), so spend, tipsEnabled
   ("Unread with tips") and the profile reads are absent;
 - console lines for requests the harness itself aborts (off-host URLs) are not
-  counted as the app's errors.
+  counted as the app's errors;
+- the ranking checks' spend is synthetic: the Fan List's OF spend batch is held at
+  the browser's wire (above; on screen only the relay's recent tip spend shows), so
+  node ranks on a spend map drawn from `--seed` (`w.rng("scenario:fan-list-chips:spend")`,
+  one per chat of the view: SPEND_ZERO of them $0, the rest 10^U(2,5) cents), not the
+  relay's numbers; node's `Date.now` is pinned to one instant for the call, so the
+  hybrid score is recomputed exactly here (half-lives idle 1 h, owed 2 h, unread 3 h;
+  low below 300 cents, the spec's).
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import re
+import time
+from collections import Counter
+from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from slop.actors import fan_dm, manager, ui
 from slop.actors.notif_click import _Console
+from slop.lib import app_ts
+from slop.lib import fan_list_faults as F
 
 PROFILE = "agency_inbox"
 UI = True
@@ -68,11 +93,30 @@ PINNED = "VIP whales"
 PIN_LISTS = "Pin lists as chips"
 PLUS = re.compile(r" extras$")  # "<brand> extras", the overflow trigger's name
 SEARCH_KEY_MS = 100  # the gap between keys of a fast typist (a guess: ~120 words a minute)
+TS = Path(__file__).resolve().parents[1] / "lib" / "fan_list_ts.mjs"
+ALL = "all-models"
+SPEND_ZERO = 0.25  # share of the view's chats ranked at $0 (ties keep OF's order)
+HALF_LIFE_H = {"unread": 3, "owed": 2, "idle": 1}  # Spend + recency's decay (spec)
+TIER = {"unread": 2, "owed": 1, "idle": 0}  # Spend + unread on top's buckets, highest first (spec)
+LOW_SCORE_CENTS = 300
+OWNER_THREADS = 5  # threads each owner opens after the Fan List read
+# Owners arrive open loop (seeded exponential gaps, a slow relay does not slow arrivals): --users of them at
+# OWNER_RATE a second, each pausing OWNER_THINK_S (uniform) before each thread it opens (guesses: a shift's
+# owners trickle in; a glance at the list, then a click).
+OWNER_RATE = 10.0
+OWNER_THINK_S = (0.5, 1.5)
+RECENT, MESSAGES = "GET /admin/chats/recent", "GET /admin/messages/:id/:id"
+# Product targets, as chatter-crowd's (/admin/chats/recent 750 ms, any other chatter route 500 ms). The first
+# green paced medium --users=200 run measured p95 recent 14.7 ms, messages 8.8 ms
+# (20261102T172119Z-2026-10-26-fan-list-chips-35aa).
+RECENT_P95_MS, MESSAGES_P95_MS = 750, 500
+P95_VS_LAST = (2.0, 100)
+P95_VS_LAST_MIN_N = 20
 
 C_ORDER = "chips on screen: All, Owe reply, Pinned, Unread, With Tips, the pinned lists, Priority"
 C_NO_PLUS = 'no "+" Extras overflow and no "✎ Lists" chip in the Fan List (All Models and one Creator with lists)'
 C_UNREAD = "Unread count == loaded chats"
-C_OWE = "Owe reply count == owed loaded chats, in amber, shown off and on"
+C_OWE = F.C_OWE
 C_OWE_ROWS = "Owe reply lists exactly the owed chats (by Fan)"
 C_DOTS = "owe dots only while Owe reply is on"
 C_SORT = "an extra sort turns the sort button active (blue), named by it, with its ✓, and puts unread rows first"
@@ -86,6 +130,11 @@ C_PHONE_PICK = "on a 390px phone, picking Amount spent in the sort menu names th
 C_MENU_PLACE = "the sort menu opens inside the Fan List pane, under the sort button (All Models and one Creator)"
 C_CONSOLE = "no console error in the browser session"
 C_5XX = "no 5xx from the app or relay in the browser session (OF's /api/of/* is faked or held)"
+FL_SORT_KEEPS_ALL, FL_SORT_TIERS, FL_COUNTS = F.FL_SORT_KEEPS_ALL, F.FL_SORT_TIERS, F.FL_COUNTS
+CK_RECENT_P95 = (f"p95 {RECENT} <= {RECENT_P95_MS} ms, no non-2xx and no owner error, --users owners arriving "
+                 f"open loop to read the Fan List view")
+CK_MESSAGES_P95 = (f"p95 {MESSAGES} <= {MESSAGES_P95_MS} ms, no non-2xx and no owner error, --users owners arriving "
+                   f"open loop to read the Fan List view")
 C_SEARCH = "a Fan's name typed fast is one search, for the box's text, and the rows are its matches (one Creator)"
 UI_CHECKS = (C_ORDER, C_NO_PLUS, C_UNREAD, C_OWE, C_OWE_ROWS, C_DOTS, C_SORT, C_SORT_STORED, C_PENCIL, C_PIN,
              C_ONE_LINE, C_MENU_PLACE, C_MENU_ORDER, C_PHONE_PICK, C_SEARCH, C_CONSOLE, C_5XX)
@@ -123,11 +172,13 @@ async def run(ctx) -> None:
               sent=len(statuses), want=len(frames))
     ctx.check("relay quiesced", not stats.get("timed_out"), stats=stats)
 
-    # A chatter opens unread chats and does not reply: read, still owed.
+    # A chatter opens unread chats and does not reply: read, still owed. Only chats the view
+    # holds (/admin/chats/recent's newest 100 a Creator; a read keeps a chat's place there).
     hit = {(f["account_id"], f["id"]) for f in fresh + tippers}
     opened = []
     for c in creators:
-        cand = sorted(k for k in unread0 | hit if k[0] == c["id"])
+        shown = {(c["id"], r["withUser"]["id"]) for r in await manager.recent_chats(ctx.owner, c["id"], 100)}
+        cand = sorted(k for k in unread0 | hit if k[0] == c["id"] and k in shown)
         opened += rng.sample(cand, min(n_open, len(cand)))
     reads = [(await ctx.owner.post(f"/admin/messages/{a}/{f}/mark-read")).status_code for a, f in opened]
     ctx.check("every mark-read 2xx", all(s < 300 for s in reads), n=len(reads))
@@ -143,6 +194,8 @@ async def run(ctx) -> None:
     ctx.check("each fresh / tipper chat not opened is unread", not bad, wrong=len(bad))
     bad = [k for k in opened_set if by_key.get(k, {}).get("hasUnread") or not by_key.get(k, {}).get("_fanLast")]
     ctx.check("each opened chat is read and owed", not bad, wrong=len(bad), sample=bad[:3])
+    await _ranked(ctx, w, view, creators)
+    await _owners(ctx, w, view, creators)
 
     if not ctx.app:
         for n in UI_CHECKS:
@@ -173,6 +226,175 @@ async def _view(ctx, creators) -> dict[str, list[dict]]:
 
         out[c["id"]] = list(await asyncio.gather(*(one(r) for r in base)))
     return out
+
+
+def _key(r) -> str:
+    return f"{r['__accountId']}:{r['withUser']['id']}"
+
+
+def _state(r) -> str:
+    """The view's attention state of a chat: unread (the row's unread mark), owed (read, the Fan
+    sent last) or idle."""
+    if r["hasUnread"] or (r.get("unreadMessagesCount") or 0) > 0:
+        return "unread"
+    return "owed" if r["_fanLast"] else "idle"
+
+
+def _score(r, cents: int, now_ms: int) -> float:
+    """Spend + recency's decayed score (useChatSortMode's hybridScore, restated)."""
+    if not cents:
+        return 0.0
+    iso = (r.get("lastMessage") or {}).get("createdAt")
+    if not iso:
+        return float(cents)
+    try:
+        t = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    except ValueError:
+        return float(cents)
+    t = t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+    hours = max(0.0, (now_ms - t.timestamp() * 1000) / 3_600_000)
+    return cents * 0.5 ** (hours / HALF_LIFE_H[_state(r)])
+
+
+def _desc(xs) -> int | None:
+    """The first index where `xs` (tuples or numbers) rises, None when non-increasing (1e-9 relative slack
+    for the float scores)."""
+    for i in range(len(xs) - 1):
+        a, b = xs[i], xs[i + 1]
+        a, b = (a, b) if isinstance(a, tuple) else ((a,), (b,))
+        for x, y in zip(a, b):
+            if abs(x - y) <= 1e-9 * max(1.0, abs(x), abs(y)):
+                continue
+            if y > x:
+                return i
+            break
+    return None
+
+
+def _slim(r) -> dict:
+    """The fields of a view row the app's sort and counts read."""
+    return {"__accountId": r["__accountId"], "hasUnread": r["hasUnread"],
+            "unreadMessagesCount": r.get("unreadMessagesCount") or 0,
+            "withUser": {"id": r["withUser"]["id"], "isRestricted": bool(r["withUser"].get("isRestricted"))},
+            "lastMessage": {k: (r.get("lastMessage") or {}).get(k) for k in ("createdAt", "fromUser")}}
+
+
+async def _ranked(ctx, w, view, creators) -> None:
+    """The app's sortFanRows + chipCounts in node over the view, per Creator and All Models, judged
+    against the view's own states, the seeded spend and the spec's score."""
+    rng = w.rng("scenario:fan-list-chips:spend")
+    rows_all = sorted((r for c in creators for r in view[c["id"]]), key=_key)
+    spend = {_key(r): 0 if rng.random() < SPEND_ZERO else int(10 ** rng.uniform(2, 5)) for r in rows_all}
+    union = sorted((r for c in creators for r in view[c["id"]]),
+                   key=lambda r: (r.get("lastMessage") or {}).get("createdAt") or "", reverse=True)
+    groups = {c["id"]: view[c["id"]] for c in creators} | {ALL: union}
+    now = int(time.time() * 1000)
+    t0 = time.perf_counter()
+    out = await app_ts.run(ctx, TS, {"now": now, "spend": spend,
+                                     "groups": [{"name": n, "rows": [_slim(r) for r in rs]} for n, rs in groups.items()]})
+    node_ms = round((time.perf_counter() - t0) * 1000)
+    keeps, tiers, counts, shape = {}, {}, {}, {}
+    for name, rs in groups.items():
+        got, by = out[name], {_key(r): r for r in rs}
+        want_keys = [_key(r) for r in rs]
+        bad = {m: {"n": len(o), "missing": sorted((Counter(want_keys) - Counter(o)).keys())[:3],
+                   "extra": sorted((Counter(o) - Counter(want_keys)).keys())[:3]}
+               for m, o in got["orders"].items() if Counter(o) != Counter(want_keys)}
+        if got["orders"]["recent"] != want_keys or not got["same_recent"]:
+            bad["recent"] = {"same_array": got["same_recent"], "in_view_order": got["orders"]["recent"] == want_keys}
+        if bad:
+            keeps[name] = bad
+        st = {k: _state(by[k]) for k in want_keys}
+        sc = {k: _score(by[k], spend[k], now) for k in want_keys}
+        # Each ordered subsequence and its sort key; every key ends with the view position (ascending),
+        # so ties must keep OF's order (the sort is stable).
+        o, pos = got["orders"], {k: i for i, k in enumerate(want_keys)}
+        hy = o["hybrid"]
+        high = [k for k in hy if sc[k] >= LOW_SCORE_CENTS]
+        low = [k for k in hy if sc[k] < LOW_SCORE_CENTS]
+        checks = {
+            "spend": (o["spend"], [(spend[k], -pos[k]) for k in o["spend"]]),
+            "spend-unread": (o["spend-unread"], [(TIER[st[k]], spend[k], -pos[k]) for k in o["spend-unread"]]),
+            "hybrid high first": (hy, [int(sc[k] >= LOW_SCORE_CENTS) for k in hy]),
+            "hybrid high by score": (high, [(sc[k], -pos[k]) for k in high]),
+            "hybrid low unread first": (low, [(int(st[k] == "unread"), spend[k], sc[k], -pos[k]) for k in low]),
+        }
+        wrong = {m: (keys, i) for m, (keys, vals) in checks.items() if (i := _desc(vals)) is not None}
+        if wrong:
+            keys, i = next(iter(wrong.values()))
+            tiers[name] = {"modes": {m: i for m, (_, i) in wrong.items()},
+                           "at": [{"key": k, "view_pos": pos[k], "state": st[k], "spend": spend[k],
+                                   "score": round(sc[k], 3)} for k in keys[i:i + 2]]}
+        kept = [r for r in rs if not r["withUser"].get("isRestricted")]
+        t = _tally(kept)
+        want = {"allCount": sum(1 for r in kept if r["hasUnread"] or r["_fanLast"]), "unreadCount": t["unread"],
+                "oweReplyCount": t["owe_reply"]}
+        if got["counts"] != want:
+            counts[name] = {"app": got["counts"], "view": want}
+        shape[name] = {"chats": len(rs), **Counter(st.values()), "zero_spend": sum(not spend[k] for k in want_keys),
+                       "hybrid_high": len(high), "restricted": len(rs) - len(kept), "counts": got["counts"]}
+    ctx.metric("ranked", {"node_ms": node_ms, "now_ms": now, "groups": shape})
+    ctx.note(f"ranked inbox (node, {node_ms} ms): {json.dumps(shape[ALL])} over {len(groups) - 1} Creators + All Models")
+    n = len(groups)
+    ctx.check(FL_SORT_KEEPS_ALL, not keeps, groups=n, wrong=len(keeps), sample=dict(list(keeps.items())[:2]))
+    ctx.check(FL_SORT_TIERS, not tiers, groups=n, wrong=len(tiers), sample=dict(list(tiers.items())[:2]))
+    ctx.check(FL_COUNTS, not counts, groups=n, wrong=len(counts), sample=dict(list(counts.items())[:2]),
+              all_models=shape[ALL]["counts"])
+
+
+async def _owners(ctx, w, view, creators) -> None:
+    """`--users` owners read the Fan List view, arriving open loop at OWNER_RATE a second: owner i reads
+    Creator i's recent chats (round robin), then opens OWNER_THREADS of them, OWNER_THINK_S apart. The
+    threads are sampled from the view read before the load, never from an owner's own answer."""
+    rng = w.rng("scenario:fan-list-chips:owners")
+    k = ctx.param("owner_threads", OWNER_THREADS)
+    rate = ctx.param("owner_rate", OWNER_RATE)
+    plans, at = [], 0.0
+    for i in range(ctx.users):
+        aid = creators[i % len(creators)]["id"]
+        rows = view[aid]
+        fans = [r["withUser"]["id"] for r in rng.sample(rows, min(k, len(rows)))]
+        plans.append((at, aid, fans, [rng.uniform(*OWNER_THINK_S) for _ in fans]))
+        at += rng.expovariate(rate)
+
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+
+    async def owner(start, aid, fans, thinks):
+        await asyncio.sleep(max(0.0, t0 + start - loop.time()))
+        http = ctx.owner.share(limits=2)
+        try:
+            await manager.recent_chats(http, aid, 100)
+            for f, think in zip(fans, thinks):
+                await asyncio.sleep(think)
+                await manager.thread_messages(http, aid, f, 200)
+        finally:
+            await http.aclose()
+
+    prev, ctx.rec.stage = ctx.rec.stage, "owners"
+    try:
+        res = await asyncio.gather(*(owner(*p) for p in plans), return_exceptions=True)
+    finally:
+        ctx.rec.stage = prev
+    wall_s = round(loop.time() - t0, 1)
+    errs = [repr(e)[:200] for e in res if isinstance(e, BaseException)]
+    summ = ctx.rec.summary("owners")
+    p95, n = {}, {}
+    for route, budget, name in ((RECENT, RECENT_P95_MS, CK_RECENT_P95), (MESSAGES, MESSAGES_P95_MS, CK_MESSAGES_P95)):
+        s = summ.get(route)
+        if not s:
+            ctx.skip(name, "no samples")
+            continue
+        p95[route], n[route] = s["p95_ms"], s["n"]
+        non2xx = s["4xx"] + s["5xx"]
+        ctx.check(name, s["p95_ms"] <= budget and not non2xx and not errs, budget=True, p95_ms=s["p95_ms"],
+                  p50_ms=s["p50_ms"], n=s["n"], non_2xx=non2xx, owners=len(plans), errors=len(errs),
+                  sample=errs[:3])
+    ctx.metric("p95_vs_last_green", p95)
+    ctx.metric("p95_vs_last_green_n", n)
+    ctx.metric("owners", {"owners": len(plans), "threads_each": k, "rate_per_s": rate, "think_s": OWNER_THINK_S,
+                          "arrivals_s": round(plans[-1][0], 1) if plans else 0, "wall_s": wall_s,
+                          "errors": len(errs), "p95_ms": p95, "n": n})
 
 
 def _chats_answer(view, url: str, account: str | None, loaded: dict) -> dict:

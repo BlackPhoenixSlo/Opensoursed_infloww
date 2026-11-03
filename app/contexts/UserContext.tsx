@@ -9,7 +9,10 @@
  * fetch returns:
  *   - user object → render children
  *   - null → redirect to /login (handled by the gate component)
- *   - unreachable (boot only) → a retry screen, not the sign-in form
+ *   - unreachable (boot only) → a retry screen, not the sign-in form —
+ *     unless a banner already put the form up (`formUp`)
+ *   - 403 from the proxy, or no answer after ME_SLOW_MS (boot only) → the
+ *     sign-in form with a banner and a Retry (`banner`)
  *
  * Login + logout are routed through here so consumers (TopNav, landing
  * form) don't have to know about the session cookie or refetch flow.
@@ -37,7 +40,8 @@ import { clearPersistedCache } from "@/lib/rqPersister";
 import { isTwoFactorChallenge, postAuthJSON, TwoFactorRequired, type TwoFactorChallenge } from "@/lib/twoFactor";
 
 import {
-  decideUserSession, initialUserSession, probeAction, type BootStatus, type MeOutcome, type UserSessionAction,
+  decideUserSession, initialUserSession, probeAction,
+  type AuthBanner, type BootStatus, type MeOutcome, type UserSessionAction,
 } from "./userSessionReducer";
 
 // localStorage / sessionStorage keys to PRESERVE across identity switches.
@@ -85,12 +89,18 @@ export interface AuthedUserDTO {
 
 interface UserContextValue {
   user: AuthedUserDTO | null;
-  /** Where the boot /auth/me is (userSessionReducer.ts); `unreachable` is the
-   *  gate's retry screen, not the sign-in form. */
+  /** Where the boot /auth/me is (userSessionReducer.ts); `unreachable` with
+   *  no form up (`formUp`) is the gate's retry screen, not the sign-in form. */
   boot: BootStatus;
+  /** The sign-in form's notice over an unsettled boot (403 from the proxy,
+   *  or no answer after ME_SLOW_MS); null otherwise. */
+  banner: AuthBanner | null;
+  /** A banner put the sign-in form up: the gate no longer waits on the probes. */
+  formUp: boolean;
   /** The boot probe is in flight and no warm-boot snapshot is painted. */
   loading: boolean;
-  /** From `unreachable`: run the boot again; a no-op otherwise. */
+  /** From `unreachable` or a banner: run the boot again; a no-op otherwise
+   *  (and while a banner's probe is still in flight). */
   retry: () => void;
   /** Sign in with a known username/password. Throws RelayError on 4xx, and
    *  TwoFactorRequired when the account has 2FA on (lib/twoFactor.ts). */
@@ -186,6 +196,9 @@ function wipeIdentityCaches(queryClient: ReturnType<typeof useQueryClient>): Pro
 /** How long a GET /auth/me may hang before it counts as unreachable: a hung
  *  boot probe would otherwise hold the gate shut (and every revalidation off). */
 const ME_TIMEOUT_MS = 15_000;
+/** How long a boot GET /auth/me may go unanswered before the sign-in form
+ *  shows (with a banner) instead of a blank gate; the probe keeps running. */
+const ME_SLOW_MS = 3_000;
 
 /** One GET /auth/me, as what it ended in. Never rejects. */
 async function readMe(): Promise<MeOutcome> {
@@ -224,7 +237,10 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
         case "fetchMe": {
           const gen = probeGen.current;
           const phase = fx.phase;
+          // On every probe; the reducer decides whether it counts (an unsettled boot, nothing painted).
+          const slow = setTimeout(() => { if (gen === probeGen.current) send({ type: "probeSlow" }); }, ME_SLOW_MS);
           void readMe().then((o) => {
+            clearTimeout(slow);
             if (gen === probeGen.current) send(probeAction(phase, o));
           });
           break;
@@ -268,8 +284,9 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     };
   }, [send]);
 
-  // The retry screen's button: the boot again, without the snapshot (the gate
-  // waits on the answer). A no-op once the boot settled.
+  // The retry screen's and a banner's button: the boot again, without the
+  // snapshot (the retry screen waits on the answer; a banner keeps the form
+  // up meanwhile). A no-op once the boot settled.
   const retry = useCallback(() => send({ type: "bootStart", snapshot: null }), [send]);
 
   /** What a flow's /auth/me answered: that user, or nobody signed in. */
@@ -372,13 +389,13 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     if (me.type === "answered") adoptAnswer(me.user);
   }, [queryClient, adoptAnswer]);
 
-  const { user, boot } = session;
+  const { user, boot, banner, formUp } = session;
   const value = useMemo<UserContextValue>(
     () => ({
-      user, boot, loading: boot === "probing" && !user, retry,
+      user, boot, banner, formUp, loading: boot === "probing" && !user, retry,
       login, register, logout, startImpersonating, stopImpersonating, clearUserLocally,
     }),
-    [user, boot, retry, login, register, logout, startImpersonating, stopImpersonating, clearUserLocally],
+    [user, boot, banner, formUp, retry, login, register, logout, startImpersonating, stopImpersonating, clearUserLocally],
   );
 
   return <UserContext.Provider value={value}>{children}</UserContext.Provider>;

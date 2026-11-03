@@ -12,7 +12,12 @@ Two fakes, declared, both at a wire boundary:
             other flow's prompt matches): the fact extract (system "You are a profile
             analyzer") gets `{}` (nothing new he said), the reply gets two lines with a
             tag unique to the call (`wcfi_reply_text`), after automation_relay.DEEPSEEK_LATENCY_S.
-            Counted at GET /__slop/fake/calls as deepseek:wcfi_extract / deepseek:wcfi_reply.
+            A fan whose history carries ECHO_LINE (the scenario writes it as his opening
+            line, for its seeded echo fans) gets the small-model echo instead: his last
+            line verbatim, then the tagged question (`wcfi_echo_text`); the product must
+            drop the parroting bubble and send the rest.
+            Counted at GET /__slop/fake/calls as deepseek:wcfi_extract / deepseek:wcfi_reply
+            (deepseek:wcfi_echo: the echo replies among them).
             Its ANSWERS purpose is None: the fake's 503 body names only the others.
   OF sends  `_OfflineOF.send_message` (every flow's offline client and automation_relay's walker,
             the lane's client here) keeps a journal of what OF received for the Creators
@@ -35,6 +40,8 @@ import automation_relay as _base
 PERSONA = ("slop-wcfi persona: you are Mia, 24, a warm, flirty OnlyFans creator from Austin "
            "chatting with one of your fans.")
 _EXTRACT_HEAD = "You are a profile analyzer"
+# An echo fan's opening line (the scenario's seeded echo fans): his reply parrots his DM.
+ECHO_LINE = "say it back to me so i know you actually read it"
 _ids = itertools.count(1)
 _lock = threading.Lock()
 _of_sends: list[dict] = []
@@ -70,6 +77,17 @@ def wcfi_reply_text(n: int) -> str:
     return f"haha you are trouble {t}\nso what keeps you busy these days {t}?"
 
 
+def wcfi_echo_text(his_line: str, n: int) -> str:
+    """The echo reply: his line verbatim (the bubble the product drops), then a tagged question."""
+    t = _tag(n)
+    return f"{his_line}\nso what keeps you busy these days {t}?"
+
+
+def _his_last_line(user: str) -> str:
+    """His newest line in the reply prompt's transcript (`FAN: ...`, oldest to newest)."""
+    return next((ln[5:] for ln in reversed(user.splitlines()) if ln.startswith("FAN: ")), "")
+
+
 def _answer(system: str, user: str) -> str | None:
     """The fake DeepSeek's text for a PERSONA prompt (module docstring); None for any other."""
     if PERSONA not in system and PERSONA not in user:
@@ -78,6 +96,9 @@ def _answer(system: str, user: str) -> str | None:
         _base._fake_calls["deepseek:wcfi_extract"] += 1
         return "{}"
     _base._fake_calls["deepseek:wcfi_reply"] += 1
+    if f"FAN: {ECHO_LINE}" in user:
+        _base._fake_calls["deepseek:wcfi_echo"] += 1
+        return wcfi_echo_text(_his_last_line(user), next(_ids))
     return wcfi_reply_text(next(_ids))
 
 

@@ -32,6 +32,9 @@ What it does, per tick (`run(account_id, payload, *, run_id)`):
 No Q&A: gen_info no longer asks for or writes the Q1-3 / Tease1-3 opener lines.
 Lines already stored stay on the row untouched; nothing refills them.
 
+Split: the pure rules (selection, prompt, nickname guard, facts/events/language
+decisions → `plan_persist`) live in gen_info_plan.py; this module does the IO.
+
 Concurrency: fans are processed with a bounded `asyncio.Semaphore` (cap 5, the
 legacy ThreadPoolExecutor width). Each fan's DB write uses its OWN AsyncSession —
 never a shared one across gather() branches (the SQLAlchemy parallel-session
@@ -48,9 +51,7 @@ the messages). NO edit to automation_executor.py.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import re
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -65,41 +66,17 @@ from llm_client import LLMCapExceeded, LLMError
 from ._fan_notes import build_facts_note, facts_from_fan, push_nick_and_notes
 from ._knobs import coerce_ids
 from ._model_pick import resolve_model
-from ._skiplist import load_promo_spam_ids, should_skip_muted_creator
+from ._skiplist import load_promo_spam_ids
 from ._textutil import is_substantive_msg
-from .names import build_structured_nickname, is_greetable_name, strip_spend_tier
+from .names import build_structured_nickname
+from . import gen_info_plan
 
 log = logging.getLogger("of-relay.automation.gen_info")
 
 # ── Knobs (ported from 02_gen_info.md) ───────────────────────────────
 _PURPOSE = "gen_info"
-_QUAL_MIN_FAN_MSGS = 1           # profile ANY fan who has written ≥1 message …
-_QUAL_MIN_SPEND_CENTS = 1        # …or spent anything (spend no longer gates; all in)
-# Re-run cadence (spend-tiered). HARD GATE first: never (re)compile a profile until
-# the fan has sent >= _MIN_NEW_MSGS new inbound messages since the last generation
-# (or >= that many total when never profiled) — no fresh chat ⇒ nothing new to mine
-# ⇒ no LLM call. Once that gate is met, regenerate on EITHER a time window OR a
-# new-message volume cap, both set by the fan's spend tier (_tier_knobs): paying fans
-# stay freshest, cold $0 fans back off. Replaces the old Fibonacci milestone ladder.
-_MIN_NEW_MSGS = 8                          # the gate: < this many new msgs ⇒ never recompile
-_NEW_SUB_WINDOW = timedelta(days=7)        # subbed within this ⇒ "new sub" (middle tier)
-_RECENT_SPEND_WINDOW = timedelta(days=7)   # cleared spend within this ⇒ "paying" tier
-_PAYING_LIFETIME_FLOOR_CENTS = 50000       # >= $500 lifetime ⇒ always paying (whale floor)
-# (fresh_after, volume_cap) per tier — fresh_after = time-based refresh window,
-# volume_cap = refresh after this many NEW inbound messages.
-_CADENCE_PAYING = (timedelta(days=2), 55)  # spent in last 7d OR >= $500 lifetime
-_CADENCE_MIDDLE = (timedelta(days=2), 89)  # new sub <7d OR lapsed payer (any lifetime spend)
-_CADENCE_COLD = (timedelta(days=7), 89)    # $0 lifetime and not a new sub
 _MAX_CONCURRENCY = 4             # background fan-out cap (≤4 — never block proxy/LLM)
 _DEFAULT_FAN_LIMIT = 200         # sweep ceiling when no force_ids
-_MSG_HEAD = 250                  # trim: keep first 250 …
-_MSG_TAIL = 250                  # … + last 250 when a chat exceeds 500
-_MSG_CLIP = 250                  # clip each message body to 250 chars
-# Spenders get a WIDER window of the already-stored history fed to the model (we
-# have it in the DB — use it), since their profile is worth more context.
-_MSG_HEAD_SPENDER = 500
-_MSG_TAIL_SPENDER = 500
-_SPENDER_CENTS = 5000            # ≥ $50 lifetime → "spender" → wider context window
 
 # Auto-scrape guard. A PAYING fan with thin LOCAL history is almost always a fan we
 # never deep-scraped: the WS pump only captures live traffic, so a whale who chatted
@@ -173,190 +150,23 @@ _SYSTEM_PROMPT = (
     "country, don't invent hobbies or a job he never mentioned).\n"
 )
 
-_HTML_OPEN = "<"
-_TAG_RE = re.compile(r"<[^>]+>")
-_SLASH_RE = re.compile(r"/{2,}")
-_WS_RE = re.compile(r"\s+")
-
-
-# ── Small text helpers (local copies — house pattern) ────────────────
-
-def _strip_html(s: str | None) -> str:
-    if not s:
-        return ""
-    if _HTML_OPEN not in s:
-        return s.strip()
-    return _TAG_RE.sub("", s).strip()
-
-
-def _clean_nickname(s: str | None) -> str:
-    """Drop empty + placeholder ('??') segments and any derived SPEND TIER, collapse
-    slashes, trim. The model sometimes fills unknown slots with '??' despite the
-    prompt (W2h).
-
-    The tier strip is here rather than at one call site because every path through
-    this module runs through this function, and the one that matters most is the
-    READ: `_known_block` hands the stored nickname back to the model as ground truth
-    to 'refine + keep complete', so a legacy '/Free' would be copied forward into
-    every regeneration for the rest of the fan's life. Stripping on the way in AND
-    on the way out means a fan heals on his next profile pass instead of needing a
-    sweep. See names.strip_spend_tier for why the tier was retired."""
-    if not s:
-        return ""
-    parts = [p.strip() for p in strip_spend_tier(s).split("/")]
-    parts = [p for p in parts if any(ch.isalnum() for ch in p)]   # drop empty/'??'/',' slots
-    return _WS_RE.sub(" ", "/".join(parts)).strip()
-
-
-def _blank_unknown(s: Any) -> str:
-    """Grok may emit 'Unknown' for original_name → treat as blank (02 edge case)."""
-    s = (s or "")
-    s = s.strip() if isinstance(s, str) else str(s)
-    return "" if s.lower() in ("unknown", "n/a", "none") else s
-
-
-def _as_text(v: Any) -> str:
-    """Coerce a profile text field to a plain string for the TEXT column. The model
-    sometimes returns a multi-line field (notably bullet_points) as a JSON ARRAY of
-    lines instead of a string — join those with newlines rather than letting a list
-    reach the DB (sqlite bind error 'type list is not supported')."""
-    if v is None:
-        return ""
-    if isinstance(v, (list, tuple)):
-        return "\n".join(str(x).strip() for x in v if str(x).strip())
-    return str(v).strip() if not isinstance(v, str) else v
-
-
-# An "empty" bullet line: a label with no value after the colon, e.g. "- Job:",
-# "Rel:", "* Kinks: " (model emits these despite the empty-string instruction).
-_EMPTY_BULLET_RE = re.compile(r"^[-*\s]*[A-Za-z][\w /]*:\s*$")
-
-
-def _clean_bullets(v: Any) -> str:
-    """bullet_points → text with EMPTY label-only lines dropped (skip empty fields).
-    Handles the JSON-array shape via _as_text first, then filters blank-value lines
-    so a stored bullet block never carries a bare 'Job:' / 'Rel:' / 'Kinks:'."""
-    text = _as_text(v)
-    if not text:
-        return ""
-    lines = [
-        ln for ln in (l.rstrip() for l in text.split("\n"))
-        if ln.strip() and not _EMPTY_BULLET_RE.match(ln.strip())
-    ]
-    return "\n".join(lines)
-
-
-def _parse_events(raw: Any) -> list[str]:
-    """recent_events is a JSON-array TEXT column (default '[]'). Parse defensively
-    to a list of non-empty strings (W2h)."""
-    if not raw:
-        return []
-    try:
-        v = json.loads(raw) if isinstance(raw, str) else raw
-    except (json.JSONDecodeError, TypeError):
-        s = str(raw).strip()
-        return [s] if s and s != "[]" else []
-    if isinstance(v, list):
-        return [str(x).strip() for x in v if str(x).strip()]
-    s = str(v).strip()
-    return [s] if s else []
-
-
-def _here(c: "_Candidate") -> tuple:
-    """This fan's own stored location — never his name. Passed to is_greetable_name
-    so a city no static list can hold ('Millbrook') is caught for THIS fan."""
-    return (c.known.get("home_country"), c.known.get("home_city"))
-
-
-def _guard_name(nickname: str, c: "_Candidate") -> str:
-    """Blank the Name slot (first '/'-segment) when it isn't a real first name —
-    `is_greetable_name`, the same predicate the senders greet by: a digit-handle
-    (111222333, T900, Sparky10, u7654321, the fan id), junk with no letters (',',
-    '.'), a place, or this fan's own city/country. With no name to be found the
-    model writes the COUNTRY into the Name slot ('Canada/Canada/office job'), which
-    every downstream sender then greeted him by. The _name_hint fallback re-adds a
-    real OF name afterwards (W2h) — it uses the same predicate, so it cannot hand
-    back what this just dropped."""
-    if not nickname:
-        return nickname
-    parts = nickname.split("/")
-    name = parts[0].strip()
-    if not name:
-        return nickname
-    if is_greetable_name(name, here=_here(c)):
-        return nickname
-    parts[0] = ""                       # drop the bad name; keep the rest of the tag
-    return _clean_nickname("/".join(parts))
-
-
-def _name_hint(c: "_Candidate") -> str:
-    """A real first name to anchor the nickname — prefer the chat-extracted real
-    name, then the OF display name, then the OF USERNAME. `is_greetable_name` decides
-    what qualifies (same predicate as _guard_name and the senders), so a bare number
-    or the fan id is never used and digit-handles ('T900', 'Sparky10', 'u7654321',
-    'gamer4you'), junk ('.', 'C') and PLACES are skipped. Without the place check
-    this handed straight back what _guard_name had just dropped: a fan whose OF
-    display name is 'Canada' got 'Canada' re-installed as his name one line later.
-    The username fallback means a fan whose display name is just their numeric id but
-    whose handle is a real word (e.g. id 111222333 / name 'sam k' → 'Sam') gets a
-    name, never a number. Capitalised (real name/username used, never digits)."""
-    for src in (c.known.get("real_name", ""), c.of_name, c.of_username):
-        s = (src or "").strip()
-        tok = s.split(" ")[0].strip(".,/") if s else ""
-        if len(tok) >= 2 and tok.isalpha() and is_greetable_name(tok, here=_here(c)):
-            return tok[:1].upper() + tok[1:]
-    return ""
-
-
-# The nickname's spend tier (`_spend_tier`, and the Bonus slot it filled) is gone —
-# see names.strip_spend_tier. `c.spend_cents` is still gathered: _tier_knobs below
-# spends the PROFILING BUDGET by spend tier, which is a live decision made fresh on
-# every pass. That is the difference — a tier is fine to compute, and was only ever
-# harmful once it got frozen into a label a human reads days later.
-def _tier_knobs(lifetime_cents: int, recent_cents: int,
-                subscribed_at: "datetime | None", now: datetime) -> tuple:
-    """(fresh_after, volume_cap) for a fan, by spend tier — spend the profiling
-    budget where the money is. PAYING (spent in the last _RECENT_SPEND_WINDOW, or a
-    >= $500 lifetime whale) gets the freshest cadence; MIDDLE (a new sub, or a lapsed
-    payer with any lifetime spend) the default; COLD ($0 and not new) the laziest.
-    First match wins."""
-    if recent_cents > 0 or lifetime_cents >= _PAYING_LIFETIME_FLOOR_CENTS:
-        return _CADENCE_PAYING
-    new_sub = subscribed_at is not None and (now - subscribed_at) < _NEW_SUB_WINDOW
-    if new_sub or lifetime_cents > 0:
-        return _CADENCE_MIDDLE
-    return _CADENCE_COLD
-
-
-def profile_is_stale(prev_count: int | None, last_gen_at: datetime | None,
-                     now_count: int, now: datetime, *,
-                     fresh_after: timedelta = _CADENCE_MIDDLE[0],
-                     volume_cap: int = _CADENCE_MIDDLE[1]) -> bool:
-    """Should this fan's profile be regenerated? Shared with welcome_chatter_for_info's
-    refresh-if-stale hook. `fresh_after`/`volume_cap` come from _tier_knobs (the
-    caller classifies the fan's spend tier); they default to the MIDDLE tier.
-
-    HARD GATE: returns False unless >= _MIN_NEW_MSGS new inbound messages have arrived
-    since the last generation (or >= that many total when never profiled) — no fresh
-    chat ⇒ nothing to re-mine ⇒ no LLM call. Past the gate, regenerate when never
-    profiled, when `volume_cap` new messages have piled up, or when the profile is
-    older than `fresh_after`.
-
-    There is no exemption. The gate used to be skipped when a fan's Q- or Tease-lines
-    ran out, to refill them; gen_info writes no lines now, so that signal would be
-    true for ever and buy an LLM call on every new message."""
-    nc = int(now_count)
-    prev = int(prev_count) if prev_count is not None else 0
-    new_msgs = nc - prev
-    if new_msgs < _MIN_NEW_MSGS:           # the gate — too little new chat to bother
-        return False
-    if prev_count is None:                 # never profiled, now past the gate
-        return True
-    if new_msgs >= volume_cap:             # volume: every `volume_cap` new messages
-        return True
-    if last_gen_at is not None and (now - last_gen_at) >= fresh_after:  # time
-        return True
-    return False
+# ── Pure half lives in gen_info_plan; the old private names that other modules /
+#    tests still import are kept as aliases. IO code below reads `gen_info_plan.X`.
+_MIN_NEW_MSGS = gen_info_plan.MIN_NEW_MSGS
+_CADENCE_PAYING = gen_info_plan.CADENCE_PAYING
+_CADENCE_MIDDLE = gen_info_plan.CADENCE_MIDDLE
+_CADENCE_COLD = gen_info_plan.CADENCE_COLD
+_Candidate = gen_info_plan.Candidate
+_clean_nickname = gen_info_plan.clean_nickname
+_guard_name = gen_info_plan.guard_name
+_name_hint = gen_info_plan.name_hint
+_tier_knobs = gen_info_plan.tier_knobs
+profile_is_stale = gen_info_plan.profile_is_stale
+_known_block = gen_info_plan.known_block
+select_candidates = gen_info_plan.select_candidates
+_trim_messages = gen_info_plan.trim_messages
+_build_user_prompt = gen_info_plan.build_user_prompt
+_PROFILE_KEEP_IF_EMPTY = gen_info_plan.PROFILE_KEEP_IF_EMPTY
 
 
 async def fan_cadence_knobs(s, account_id: str, fan_id: int, now: datetime,
@@ -364,7 +174,7 @@ async def fan_cadence_knobs(s, account_id: str, fan_id: int, now: datetime,
     """(fresh_after, volume_cap) for one fan, classified from the DB on an open
     session `s` — the per-fan analogue of the batch tier computation the sweep does
     inline. Reads lifetime spend + subscribed_at off the fans row and sums CLEARED
-    spend in the last _RECENT_SPEND_WINDOW. Used by welcome_chatter_for_info's refresh hook."""
+    spend in the last gen_info_plan.RECENT_SPEND_WINDOW. Used by welcome_chatter_for_info's refresh hook."""
     fan_id = int(fan_id)
     if lifetime_spend_cents is None:
         frow = (await s.execute(
@@ -383,75 +193,21 @@ async def fan_cadence_knobs(s, account_id: str, fan_id: int, now: datetime,
         .where(Transaction.account_id == str(account_id),
                Transaction.fan_id == fan_id,
                Transaction.status == "cleared",
-               Transaction.occurred_at >= now - _RECENT_SPEND_WINDOW)
+               Transaction.occurred_at >= now - gen_info_plan.RECENT_SPEND_WINDOW)
     )).scalar() or 0
-    return _tier_knobs(int(lifetime_spend_cents), int(recent), subscribed_at, now)
-
-
-def _known_block(c: "_Candidate") -> str:
-    """KNOWN INFO (ground truth) from prior stored facts so the model BUILDS ON what
-    we already learned + keeps the nickname complete (W2h). '' when nothing known."""
-    k = c.known or {}
-    lines: list[str] = []
-    real = (k.get("real_name") or "").strip()
-    if real:
-        lines.append(f"Real name: {real}")
-    loc = ", ".join(x for x in ((k.get("home_city") or "").strip(),
-                                (k.get("home_country") or "").strip()) if x)
-    if loc:
-        lines.append(f"Location: {loc}")
-    for label, key in (("Age", "his_age"), ("Job", "occupation"),
-                       ("Hobbies", "hobbies"), ("Relationship", "relationship_status"),
-                       ("Fetishes", "fetishes")):
-        v = (k.get(key) or "").strip()
-        if v:
-            lines.append(f"{label}: {v}")
-    events = _parse_events(k.get("recent_events"))
-    if events:
-        lines.append("Recent events: " + "; ".join(events))
-    prior_nick = _clean_nickname(k.get("generated_nickname"))
-    if prior_nick:
-        lines.append(f"Current nickname (refine + keep complete): {prior_nick}")
-    if not lines:
-        return ""
-    return ("KNOWN INFO (already confirmed — ground truth; confirm or correct from "
-            "the chat, never drop it):\n" + "\n".join(lines) + "\n\n")
-
-
-# ── Candidate selection ──────────────────────────────────────────────
-
-class _Candidate:
-    __slots__ = ("fan_id", "fan_msg_n", "total_msg_n", "spend_cents",
-                 "recent_spend_cents", "subscribed_at",
-                 "source", "is_muted", "of_name", "of_username", "known", "messages")
-
-    def __init__(self, fan_id: int):
-        self.fan_id = fan_id
-        self.fan_msg_n = 0
-        self.total_msg_n = 0
-        self.spend_cents = 0
-        self.recent_spend_cents = 0          # cleared spend in the last _RECENT_SPEND_WINDOW
-        self.subscribed_at = None            # fans.subscribed_at — for the new-sub tier
-        self.source = ""    # "fan" = subscribedOn (real fan); else peer creator/unknown
-        self.is_muted = False  # OF chat muted — a muted creator is spam, never profile
-        self.of_name = ""
-        self.of_username = ""
-        # Prior extracted facts from the fans row — fed back as ground truth so
-        # profiles ACCRETE and the nickname stays complete (W2h). DB-only, no OF call.
-        self.known: dict[str, str] = {}
-        self.messages: list[tuple[str, str]] = []  # (direction, body)
+    return gen_info_plan.tier_knobs(int(lifetime_spend_cents), int(recent), subscribed_at, now)
 
 
 async def _gather_candidates(
     account_id: str, force_ids: set[int], limit: int, now: datetime
-) -> list[_Candidate]:
+) -> list[gen_info_plan.Candidate]:
     """One pass over the account's messages → per-fan counts + trimmed history.
 
     Spend is summed from PURCHASED outbound PPV/tips (legacy `sender==Model and
     is_paid`). Fan-message count is inbound messages. The fan's display name +
     subscribed_at + recent cleared spend are lifted for the cadence tiering. Returns
     candidates that pass the qualification gate (or are forced)."""
-    counts: dict[int, _Candidate] = {}
+    counts: dict[int, gen_info_plan.Candidate] = {}
     async with get_session() as s:
         rows = (
             await s.execute(
@@ -471,9 +227,9 @@ async def _gather_candidates(
         for fan_id, direction, body, price_cents, is_paid, is_tip in rows:
             c = counts.get(fan_id)
             if c is None:
-                c = counts[fan_id] = _Candidate(int(fan_id))
+                c = counts[fan_id] = gen_info_plan.Candidate(int(fan_id))
             c.total_msg_n += 1
-            text = _strip_html(body)[:_MSG_CLIP]
+            text = gen_info_plan.strip_html(body)[:gen_info_plan.MSG_CLIP]
             # Count only substantive inbound (matches welcome_chatter_for_info): emoji-only
             # reactions don't inflate fan_msg_n, so message_count_at_gen and the
             # welcome_chatter_for_info staleness baseline stay on ONE scale (no suppressed/false
@@ -486,7 +242,7 @@ async def _gather_candidates(
 
         # Lift display name + username + prior extracted facts (ground truth, W2h)
         # + subscribed_at (tiering) onto the fans we care about — ONE DB read, no OF
-        # call (proxy-safe). A fan with no fans row keeps the _Candidate defaults.
+        # call (proxy-safe). A fan with no fans row keeps the Candidate defaults.
         if counts:
             frows = (await s.execute(
                 select(
@@ -550,7 +306,7 @@ async def _gather_candidates(
                 if c is not None:
                     c.spend_cents = max(c.spend_cents, int(total or 0))
 
-        # Recent cleared spend (last _RECENT_SPEND_WINDOW) → the "paying" cadence tier.
+        # Recent cleared spend (last gen_info_plan.RECENT_SPEND_WINDOW) → the "paying" cadence tier.
         if counts:
             txrecent = (await s.execute(
                 select(Transaction.fan_id, func.sum(Transaction.amount_cents))
@@ -558,7 +314,7 @@ async def _gather_candidates(
                 .where(Transaction.status == "cleared")
                 .where(Transaction.fan_id.is_not(None))
                 .where(Transaction.fan_id.in_(list(counts)))
-                .where(Transaction.occurred_at >= now - _RECENT_SPEND_WINDOW)
+                .where(Transaction.occurred_at >= now - gen_info_plan.RECENT_SPEND_WINDOW)
                 .group_by(Transaction.fan_id)
             )).all()
             for fid, total in txrecent:
@@ -567,301 +323,36 @@ async def _gather_candidates(
                     c.recent_spend_cents = int(total or 0)
 
     promo_spam = await load_promo_spam_ids(account_id)
-    return select_candidates(counts, force_ids=force_ids, limit=limit,
-                             promo_spam=promo_spam)
-
-
-def select_candidates(
-    counts: dict[int, _Candidate], *,
-    force_ids: set[int], limit: int, promo_spam: set[int],
-) -> list[_Candidate]:
-    """Pure, read-only half of _gather_candidates: the spam guard + qualification
-    gate, then the forced-first, spend-desc order capped at max(limit, #forced)."""
-    qualifying: list[_Candidate] = []
-    for fan_id, c in counts.items():
-        forced = fan_id in force_ids
-        # Promo-spam guard (shares welcome_chatter_for_info's rule): don't waste an LLM profile
-        # on peer creators who blast the inbox. Either we've MUTED their chat (a
-        # deliberate "silence this creator" — never profile one even if they once
-        # paid), or they're in the account's promo-blaster set.
-        #
-        # The old test was `creator_we_follow` + $0, on the belief that "real fans
-        # are NEVER this value". That was false — the flag only means OF says we're
-        # subscribed to them, which is true of any fan a free page followed back —
-        # and it silently stopped profiling 71 real fans on one live account.
-        # Re-evaluated each run.
-        #
-        # `c.spend_cents` re-checks the spend the SET already tested, deliberately:
-        # the set reads `fans.lifetime_spend_cents`, which LAGS ingest, while
-        # c.spend_cents is the fresher max(ledger, paid-PPV) this pass already
-        # computed. Live now: 9 of Ava's fans have real spend the column still
-        # reports as $0. Narrowing here can only ever RESCUE a payer from the guard,
-        # never silence one — the direction a spam gate must always fail in.
-        is_spam = not forced and (
-            should_skip_muted_creator(c)
-            or (fan_id in promo_spam and c.spend_cents == 0)
-        )
-        qualified = forced or (
-            not is_spam
-            and (c.fan_msg_n >= _QUAL_MIN_FAN_MSGS
-                 or c.spend_cents >= _QUAL_MIN_SPEND_CENTS)
-        )
-        if qualified:
-            qualifying.append(c)
-
-    # Stable, deterministic order; cap the sweep so a tick stays bounded. Forced ids
-    # sort FIRST so they always survive the `[:limit]` slice: the rest of the order is
-    # spend-desc, so a $0 fan on a big roster ranks below the cap and would otherwise be
-    # truncated away — an explicit force (the composer's "Generate new batch") must never
-    # be silently dropped just because the fan is poor.
-    qualifying.sort(
-        key=lambda x: (x.fan_id not in force_ids, -x.spend_cents, -x.fan_msg_n, x.fan_id))
-    return qualifying[:max(limit, len(force_ids))]
-
-
-def _trim_messages(messages: list[tuple[str, str]], spender: bool = False) -> str:
-    """Fan-only transcript: head + tail window (02 build_prompt). Spenders get a
-    WIDER window (500+500 vs 250+250) — we already have the history in the DB, so a
-    high-value fan's profile gets more of it; everyone else stays at the default.
-
-    V1 fed Grok the FAN side only and produced sharper profiles, so we drop the
-    creator's outbound lines (direction != "in") before trimming — the head/tail
-    window then counts fan messages, not the mixed stream."""
-    head = _MSG_HEAD_SPENDER if spender else _MSG_HEAD
-    tail = _MSG_TAIL_SPENDER if spender else _MSG_TAIL
-    fan_msgs = [(d, b) for d, b in messages if d == "in"]
-    if len(fan_msgs) > (head + tail):
-        fan_msgs = fan_msgs[:head] + fan_msgs[-tail:]
-    lines = []
-    for _direction, body in fan_msgs:
-        if not body:
-            continue
-        lines.append(f"FAN: {body}")
-    return "\n".join(lines)
-
-
-def _build_user_prompt(c: _Candidate) -> str:
-    history = _trim_messages(c.messages, spender=c.spend_cents >= _SPENDER_CENTS)
-    disp = (c.of_name or "").strip()
-    uname = (c.of_username or "").strip()
-    name_line = f"Fan OF display name: {disp or '(unknown)'}"
-    if uname and uname.lower() != disp.lower():
-        name_line += f"  (username/handle: {uname} — a handle, NOT a real name)"
-    return (
-        f"{name_line}\n"
-        f"Fan message count: {c.fan_msg_n}\n"
-        f"Lifetime spend: ${c.spend_cents / 100:.2f}\n\n"
-        f"{_known_block(c)}"
-        f"Chat history (oldest→newest):\n{history}\n"
-    )
-
-
-# ── Persistence ──────────────────────────────────────────────────────
-
-# The extracted facts written back onto the `fans` row, as (json_key, column, kind).
-# `kind` drives per-type serialization so a bool/JSON field never reaches the DB as a
-# Python repr: the naive `str(val)` path turned has_kids=False into "" (dropped) and
-# a bool True into the string "True", which RAISES StatementError on a Boolean column
-# and rolls back the whole persist. Adding a field here is now type-safe.
-#   str      → cleaned text ("" ⇒ skip); a list is comma-joined
-#   bool     → real True/False from yes/no/true/false/1/0 ("unknown"/"" ⇒ skip)
-#   json_arr → json.dumps(list)   ("[]"/empty ⇒ skip)
-#   json_obj → json.dumps(dict)   ({}/empty ⇒ skip)
-_FACT_FIELDS: tuple[tuple[str, str, str], ...] = (
-    ("real_name", "real_name", "str"),
-    ("his_age", "his_age", "str"),
-    ("home_country", "home_country", "str"),
-    ("home_city", "home_city", "str"),
-    ("hobbies", "hobbies", "str"),
-    ("occupation", "occupation", "str"),
-    ("relationship_status", "relationship_status", "str"),
-    ("fetishes", "fetishes", "str"),
-    # ── Richer facts (R1): fill columns gen_info never wrote before. ──
-    ("employer", "employer", "str"),
-    ("partner_name", "partner_name", "str"),
-    ("relationship_stage", "relationship_stage", "str"),
-    ("has_kids", "has_kids", "bool"),
-    ("pets", "pets", "json_arr"),
-    ("communication_style", "communication_style", "json_obj"),
-)
-
-# Profile columns that must be KEPT when the LLM returns them empty (FIX-2): a sparse
-# response (~7% are fully empty) must NOT null out a fan's stored nickname / bio.
-# These are guarded in the upsert set_. The q1-3 / tease1-3 columns are not written
-# at all any more, so old stored lines are left as they are.
-_PROFILE_KEEP_IF_EMPTY = frozenset((
-    "nickname", "short_bio", "bullet_points", "original_name",
-))
-
-
-# ── Language detection (R1) ──────────────────────────────────────────
-# gen_info DETECTS the fan's language and stores it as an observation (source="ai").
-# It does NOT yet drive routing — the bot's output language is the ACCOUNT default
-# (resolve_language) until per-fan routing is switched on. So a wrong detection is a
-# display/collection error, never a mis-route. Two guards make it safe:
-#   • EVIDENCE FLOOR — need real fan text before trusting a guess (44 fans have zero
-#     inbound; 19.7% have < 400 chars). Below the floor ⇒ leave NULL ⇒ "use account".
-#   • MANUAL WINS — never overwrite a language an operator pinned (language_source
-#     == "manual"). Enforced per-column in the upsert CASE, not a row-level where=.
-_LANG_EVIDENCE_MIN_CHARS = 40          # min inbound fan text before we trust detection
-_KNOWN_LANGS = frozenset((             # ISO 639-1 we accept; others ⇒ leave NULL
-    "en", "es", "sl", "pt", "fr", "de", "it", "nl", "ru", "pl", "tr", "ar",
-    "sv", "no", "da", "fi", "cs", "ro", "hu", "el", "he", "ja", "ko", "zh",
-))
-_LANG_NAME_MAP = {                      # tolerate a name if the model ignores "ISO code"
-    "english": "en", "spanish": "es", "español": "es", "espanol": "es",
-    "slovenian": "sl", "slovene": "sl", "slovenščina": "sl",
-    "portuguese": "pt", "french": "fr", "german": "de", "italian": "it",
-}
-
-
-def _norm_lang(raw: Any) -> str:
-    """Normalize a model language value to a known ISO 639-1 code, else "". Accepts
-    'es', 'ES', 'es-MX', or a language NAME ('Spanish'); rejects anything unknown so a
-    junk value never becomes a routing key."""
-    s = (raw or "")
-    s = s.strip().lower() if isinstance(s, str) else ""
-    if not s:
-        return ""
-    code = s.split("-")[0].split("_")[0]           # 'es-MX' → 'es'
-    if code in _KNOWN_LANGS:
-        return code
-    return _LANG_NAME_MAP.get(s, "")
-
-
-def _enough_language_evidence(c: "_Candidate") -> bool:
-    """True when the fan has written enough text to trust a language guess."""
-    chars = sum(len(b) for d, b in c.messages if d == "in" and b)
-    return chars >= _LANG_EVIDENCE_MIN_CHARS
-
-
-def _serialize_fact(kind: str, raw: Any) -> tuple[bool, Any]:
-    """(should_write, typed_value) for one extracted fact. Never returns should_write
-    for an empty/unknown value, so a sparse run never clobbers a prior fact. See
-    _FACT_FIELDS for the kinds. This is the single guard against binding a Python repr
-    (dict/bool) to a typed column."""
-    if raw is None:
-        return (False, None)
-    if kind == "bool":
-        if isinstance(raw, bool):
-            return (True, raw)
-        s = str(raw).strip().lower()
-        if s in ("true", "yes", "y", "1"):
-            return (True, True)
-        if s in ("false", "no", "n", "0"):
-            return (True, False)
-        return (False, None)                     # "unknown"/"" ⇒ leave the column alone
-    if kind == "json_arr":
-        if isinstance(raw, (list, tuple)):
-            items = [x for x in raw if x not in (None, "", {}, [])]
-            return (True, json.dumps(items, ensure_ascii=False)) if items else (False, None)
-        s = str(raw).strip()
-        if s and s != "[]":
-            return (True, json.dumps([s], ensure_ascii=False))
-        return (False, None)
-    if kind == "json_obj":
-        if isinstance(raw, dict):
-            obj = {k: v for k, v in raw.items() if v not in (None, "", [], {})}
-            return (True, json.dumps(obj, ensure_ascii=False)) if obj else (False, None)
-        return (False, None)
-    # str (default): flatten a list to a comma-joined string.
-    if isinstance(raw, (list, tuple)):
-        val = ", ".join(str(x).strip() for x in raw if str(x).strip())
-    else:
-        val = raw.strip() if isinstance(raw, str) else str(raw).strip()
-    return (True, val) if val else (False, None)
+    return gen_info_plan.select_candidates(counts, force_ids=force_ids, limit=limit,
+                                           promo_spam=promo_spam)
 
 
 async def _persist(
-    account_id: str, c: _Candidate, data: dict, call_id: int | None, now: datetime,
-    *, client=None
+    account_id: str, c: gen_info_plan.Candidate, plan: gen_info_plan.PersistPlan,
+    now: datetime, *, client=None
 ) -> None:
-    """Upsert fan_profiles + write extracted facts onto the fans row, in ONE
-    fresh session (never shared across gather branches). When `client` is given,
-    also (re)assert the structured OF nickname so the chat-header name stays in
-    sync — see _sync_of_fan_info."""
-    nickname = _guard_name(_clean_nickname(data.get("nickname")), c)
-    if not nickname:                       # AI gave nothing usable → keep the old one
-        nickname = _guard_name(_clean_nickname(c.known.get("generated_nickname")), c)
-    # Anchor the nickname with the fan's REAL name (the model often drops it even
-    # though OF gives us of_display_name). Prepend the hint unless it's already lead.
-    hint = _name_hint(c)
-    if hint and (not nickname or nickname.split("/")[0].strip().lower() != hint.lower()):
-        nickname = _clean_nickname(hint + "/" + nickname)
-    # A name-only nickname ("Mani") now STAYS name-only. It used to get a derived
-    # spend tier appended as a Bonus slot ("Mani" → "Mani/Spender") so the label
-    # "carried a useful flag" — but the flag was stamped once and never re-derived,
-    # so it aged into a lie in the one place the team reads it. A bare name is a
-    # thin label; a confidently wrong tier is a harmful one.
-    original_name = _blank_unknown(data.get("original_name") or data.get("real_name"))
+    """Write one fan's `plan` (from gen_info_plan.plan_persist): upsert fan_profiles +
+    the extracted facts onto the fans row, in ONE fresh session (never shared across
+    gather branches). When `client` is given, also (re)assert the structured OF
+    nickname so the chat-header name stays in sync — see _sync_of_fan_info.
 
-    prof_values = dict(
-        account_id=str(account_id),
-        fan_id=int(c.fan_id),
-        original_name=original_name or None,
-        message_count_at_gen=c.fan_msg_n,
-        total_spend_at_gen_cents=c.spend_cents,
-        nickname=nickname or None,
-        short_bio=_as_text(data.get("short_bio")) or None,
-        bullet_points=_clean_bullets(data.get("bullet_points")) or None,
-        last_generated_at=now,
-        generated_by_grok_call_id=call_id,
-    )
-    prof_update = {k: v for k, v in prof_values.items()
-                   if k not in ("account_id", "fan_id")}
-
-    # Extracted facts → fans columns. Only overwrite with a non-empty value so a
-    # later sparse generation never wipes a fact an earlier one found.
-    fact_update: dict[str, Any] = {"grok_facts_updated_at": now,
-                                   "updated_at": now}
-    for key, col, kind in _FACT_FIELDS:
-        ok, val = _serialize_fact(kind, data.get(key))
-        if ok:
-            fact_update[col] = val
-    if original_name and "real_name" not in fact_update:
-        fact_update["real_name"] = original_name
-    if nickname:
-        fact_update["generated_nickname"] = nickname
-    # recent_events: merge new events onto the prior list (accrete, dedup, cap 20)
-    # and store as the JSON-array TEXT column (NOT NULL default '[]'). Only write
-    # when non-empty so a sparse run never clears prior events.
-    new_events = _parse_events(data.get("recent_events"))
-    if new_events:
-        prior_events = _parse_events(c.known.get("recent_events"))
-        fresh = [e for e in new_events if e not in prior_events]
-        merged = prior_events + fresh
-        fact_update["recent_events"] = json.dumps(merged[:20], ensure_ascii=False)
-        # Dated timeline (step 6): stamp each NEWLY-learned event with today's date and
-        # accrete onto the prior timeline (keeps old dates), newest last, cap 30. Read by
-        # none of the six recent_events readers — the flat list above is untouched.
-        if fresh:
-            try:
-                prior_tl = json.loads(c.known.get("recent_events_timeline") or "[]")
-                prior_tl = [t for t in prior_tl if isinstance(t, dict) and t.get("event")]
-            except (json.JSONDecodeError, TypeError):
-                prior_tl = []
-            seen_ev = {t.get("event") for t in prior_tl}
-            day = now.strftime("%Y-%m-%d")
-            for e in fresh:
-                if e not in seen_ev:
-                    prior_tl.append({"date": day, "event": e})
-            fact_update["recent_events_timeline"] = json.dumps(prior_tl[-30:], ensure_ascii=False)
-
-    # Language: a detected observation (source="ai"), written only past the evidence
-    # floor and NEVER over an operator's manual pin. Kept out of fact_update because it
-    # needs a per-column CASE guard, not a plain overwrite.
-    detected_lang = _norm_lang(data.get("language"))
-    write_lang = bool(detected_lang) and _enough_language_evidence(c)
+    The race-safe rules stay SQL here, comparing against the row AS STORED:
+    keep-if-empty (`gen_info_plan.PROFILE_KEEP_IF_EMPTY`) and the operator language
+    pin (`gen_info_plan.MANUAL_LANGUAGE_SOURCES`)."""
+    nickname = plan.profile_set["nickname"]
+    fact_update: dict[str, Any] = {**plan.fan_set, **plan.facts, **plan.events}
 
     async with get_session() as s:
         # FIX-2: for the content columns, KEEP the stored value when the LLM returned
         # an empty/NULL one — a sparse (~7%) response must not wipe a fan's nickname /
         # bio. Metadata columns (counts, timestamps, call id) always take the new value.
-        prof_stmt = sqlite_insert(FanProfile).values(**prof_values)
+        prof_stmt = sqlite_insert(FanProfile).values(
+            account_id=str(account_id), fan_id=int(c.fan_id), **plan.profile_set)
         prof_set: dict[str, Any] = {}
-        for k in prof_update:
+        keep_if_empty = gen_info_plan.PROFILE_KEEP_IF_EMPTY
+        for k in plan.profile_set:
             new_val = prof_stmt.excluded[k]
-            if k in _PROFILE_KEEP_IF_EMPTY:
+            if k in keep_if_empty:
                 prof_set[k] = case(
                     (or_(new_val.is_(None), new_val == ""), getattr(FanProfile, k)),
                     else_=new_val,
@@ -875,34 +366,35 @@ async def _persist(
         )
         # The fans row exists (scrape/WS created it); guard anyway with an upsert
         # carrying identity-safe defaults so gen_info never fails on a stray fan.
-        fan_set: dict[str, Any] = dict(fact_update)
-        if write_lang:
-            # FIX-3, per-column: keep the operator's pin when language_source=='manual';
-            # otherwise record the AI observation. Bare `Fan.language*` = the EXISTING
-            # row's value in an ON CONFLICT DO UPDATE set_.
-            manual = Fan.language_source == "manual"
-            fan_set["language"] = case((manual, Fan.language), else_=detected_lang)
-            fan_set["language_source"] = case((manual, Fan.language_source), else_="ai")
+        fans_upd: dict[str, Any] = dict(fact_update)
+        if plan.write_lang:
+            # FIX-3, per-column: keep the operator's pin when language_source is an
+            # operator-pinned source (MANUAL_LANGUAGE_SOURCES); otherwise record the AI
+            # observation. Bare `Fan.language*` = the EXISTING row's value in an ON
+            # CONFLICT DO UPDATE set_.
+            manual = Fan.language_source.in_(gen_info_plan.MANUAL_LANGUAGE_SOURCES)
+            fans_upd["language"] = case((manual, Fan.language), else_=plan.write_lang)
+            fans_upd["language_source"] = case((manual, Fan.language_source), else_="ai")
         await s.execute(
             sqlite_insert(Fan)
             .values(
                 account_id=str(account_id),
                 fan_id=int(c.fan_id),
-                generated_nickname=nickname or None,
+                generated_nickname=nickname,
                 grok_facts_updated_at=now,
             )
             .on_conflict_do_update(
-                index_elements=["account_id", "fan_id"], set_=fan_set
+                index_elements=["account_id", "fan_id"], set_=fans_upd
             )
         )
 
     if client is not None:
         await _sync_of_fan_info(client, account_id, c, fact_update,
-                                short_bio=_as_text(data.get("short_bio")))
+                                short_bio=plan.profile_set["short_bio"] or "")
 
 
 async def _sync_of_fan_info(
-    client, account_id: str, c: "_Candidate", fact_update: dict[str, Any], *,
+    client, account_id: str, c: gen_info_plan.Candidate, fact_update: dict[str, Any], *,
     short_bio: str = "",
 ) -> None:
     """Push the fan's info to the two drawer fields OF stores, after a profile regen:
@@ -1009,7 +501,7 @@ async def _existing_profiles(
 # ── The automation entry point ───────────────────────────────────────
 
 async def _enqueue_thin_fan_scrapes(
-    account_id: str, candidates: list[_Candidate], force_ids: set[int], now: datetime
+    account_id: str, candidates: list[gen_info_plan.Candidate], force_ids: set[int], now: datetime
 ) -> set[int]:
     """Prevent "<name>/Whale with no facts": find PAYING fans with thin LOCAL history
     that we've never (recently) deep-scraped, enqueue a one-shot `scrape_chats` for
@@ -1092,7 +584,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # Re-run gate (skipped for forced ids): needs >= _MIN_NEW_MSGS new inbound msgs,
     # then regenerates on the fan's spend-tiered time window or new-message volume cap.
     prior = await _existing_profiles(account_id, [c.fan_id for c in candidates])
-    todo: list[_Candidate] = []
+    todo: list[gen_info_plan.Candidate] = []
     skipped_fresh = 0
     for c in candidates:
         if c.fan_id in deferred:
@@ -1103,9 +595,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         stored = prior.get(c.fan_id)
         prev_count = stored[0] if stored else None
         last_gen_at = stored[1] if stored else None
-        fresh_after, volume_cap = _tier_knobs(
+        fresh_after, volume_cap = gen_info_plan.tier_knobs(
             c.spend_cents, c.recent_spend_cents, c.subscribed_at, now)
-        if profile_is_stale(prev_count, last_gen_at, c.fan_msg_n, now,
+        if gen_info_plan.profile_is_stale(prev_count, last_gen_at, c.fan_msg_n, now,
                             fresh_after=fresh_after, volume_cap=volume_cap):
             todo.append(c)
         else:
@@ -1128,7 +620,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             log.debug("gen_info of-client init failed account=%s", account_id,
                       exc_info=True)
 
-    async def _one(c: _Candidate) -> None:
+    async def _one(c: gen_info_plan.Candidate) -> None:
         nonlocal generated, capped, failed, key_error
         async with sem:
             if key_error:
@@ -1138,7 +630,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                     model=model,
                     messages=[
                         {"role": "system", "content": _SYSTEM_PROMPT},
-                        {"role": "user", "content": _build_user_prompt(c)},
+                        {"role": "user", "content": gen_info_plan.build_user_prompt(c)},
                     ],
                     purpose=_PURPOSE,
                     account_id=account_id,
@@ -1166,8 +658,8 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                             account_id, c.fan_id, result.call_id)
                 return
             try:
-                await _persist(account_id, c, data, result.call_id, now,
-                               client=of_client)
+                plan = gen_info_plan.plan_persist(c, data, call_id=result.call_id, now=now)
+                await _persist(account_id, c, plan, now, client=of_client)
                 generated += 1
             except Exception:
                 failed += 1

@@ -28,7 +28,7 @@ import { useReducer, useState } from "react";
 import { useActionAllowed } from "@/components/shell/useGrantedPages";
 import { initialRecordForm, recordFormReducer, validateRecord } from "@/components/stats/recordEditor";
 import { useAgencyTimeZone } from "@/lib/appliedSettings";
-import { zoneOffsetNow } from "@/lib/creatorClock";
+import { rangeOffsetLabel } from "@/lib/creatorClock";
 import { downloadCsv } from "@/lib/csv";
 import { RelayError } from "@/lib/relay";
 import {
@@ -58,12 +58,6 @@ function csvStamp(iso: string, tz: string): string {
 /** A `datetime-local` value cut to its hour, the range picker's precision. */
 const toHour = (value: string) => value.slice(0, 13) + ":00";
 
-/** The zone as "Europe/Paris (UTC+2)". */
-const zoneLabel = (tz: string) => {
-  const off = zoneOffsetNow(tz);
-  return off ? `${tz} (${off.label})` : tz;
-};
-
 export default function ClockRecordsModal({ employeeId, employeeName, groupName, from, to, onClose }: {
   employeeId: number;
   employeeName: string;
@@ -89,6 +83,12 @@ export default function ClockRecordsModal({ employeeId, employeeName, groupName,
   const ranged = !!fromIso && !!toIso && new Date(fromIso) < new Date(toIso);
   const fromDate = new Date(fromIso ?? 0);
   const toDate = new Date(toIso ?? 0);
+  // The range's own offset, so a summer range viewed in winter still reads EDT; now's while the range is invalid.
+  // `toIso` is exclusive (the hour after the picked one), so its last instant is a ms before; the report's
+  // …59.999 end loses a ms, harmlessly.
+  const now = Date.now();
+  const [labelFrom, labelTo] = ranged ? [fromDate.getTime(), toDate.getTime() - 1] : [now, now];
+  const zoneLabel = rangeOffsetLabel(tz, labelFrom, labelTo);
   const records = useClockRecords(employeeId, fromDate, toDate, ranged);
   const list = records.data?.clock_events ?? [];
   const maxValue = `${toZonedInput(new Date().toISOString(), tz).slice(0, 10)}T23:00`;
@@ -156,7 +156,7 @@ export default function ClockRecordsModal({ employeeId, employeeName, groupName,
               </button>
             )}
           </div>
-          <p className="text-xs text-fg-dim">{`Times in ${zoneLabel(tz)}`}</p>
+          <p className="text-xs text-fg-dim">{`Times in ${zoneLabel}`}</p>
           {body}
           <div className="flex items-center justify-between gap-3">
             <p className="text-[11px] text-fg-dim">{"Edit is ours: Infloww can't edit clock records."}</p>

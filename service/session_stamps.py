@@ -7,6 +7,9 @@ milliseconds (`now_ms`); `session_revoked` compares it with its principal's
 `sessions_valid_after` (account_security.revoke_sessions), so a revoke ends
 every cookie and ticket issued before it; `session_verdict` adds the idle
 expiry and the last-seen bump both session middlewares apply.
+`impersonation_verdict` and `blocks_write` are auth.py's alone (the owner
+session_middleware): an impersonate cookie's fate, and impersonation's
+read-only rule.
 """
 
 from __future__ import annotations
@@ -60,3 +63,29 @@ def session_verdict(
     if age > max_idle_s or session_revoked(issued, valid_after):
         return "expired"
     return "touch" if age > touch_s else "ok"
+
+
+def impersonation_verdict(
+    parsed_cookie: tuple[str, str, int] | None, now: datetime, founder_uid: str, *, ttl: int,
+) -> Literal["apply", "clear"]:
+    """A present impersonate cookie's fate on one request, `parsed_cookie` being
+    auth._parse_impersonate_cookie's `(impersonated_uid, founder_uid, issued_epoch)` or
+    None (bad signature, wrong field count, non-int stamp). "clear" when it is None,
+    more than `ttl` seconds old (`int(now.timestamp()) - issued`, strict: exactly `ttl`
+    still applies) or bound to another founder than the signed-in `founder_uid`, so the
+    cookie is cleared; else "apply". `ttl` is auth.IMPERSONATE_TTL_SECONDS."""
+    if parsed_cookie is None:
+        return "clear"
+    _imp_uid, cookie_founder, issued = parsed_cookie
+    if int(now.timestamp()) - issued > ttl or cookie_founder != founder_uid:
+        return "clear"
+    return "apply"
+
+
+def blocks_write(method: str, path: str, impersonating: bool) -> bool:
+    """Whether an impersonated request is refused (impersonation is read-only): a
+    POST/PATCH/PUT/DELETE, except under /admin/impersonate (the exit) and /auth/ (logout).
+    Never when not impersonating."""
+    return impersonating and method in ("POST", "PATCH", "PUT", "DELETE") and not (
+        path.startswith("/admin/impersonate") or path.startswith("/auth/")
+    )

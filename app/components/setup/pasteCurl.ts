@@ -2,8 +2,9 @@
  * pasteCurl — PasteCurlCard's form and outcome as a pure reducer, plus the checks run before anything is sent and
  * the POST /admin/session/bootstrap body. The card only dispatches and does the I/O.
  *
- * The only client-side curl check is the `curl` prefix: cookies, user-agent and the signed headers are the relay's to
- * parse (it answers with the reason), so a curl missing them is sent as pasted.
+ * Client-side curl checks (instant, before any POST): the `curl` prefix, a bash copy (a Windows cmd copy's `^"` quoting
+ * is refused), cookies (`-b`/`--cookie` or a `cookie:` header) and a user-agent (`-A`/`--user-agent` or a `user-agent:`
+ * header). The signed headers (sign, time, x-bc, …) stay the relay's to parse: it answers 422 with the reason.
  */
 
 /** Select value for "Paste a new proxy…"; never a real label. */
@@ -70,9 +71,25 @@ export function pasteCurlReducer(state: PasteCurlState, action: PasteCurlAction)
   }
 }
 
-/** Why a pasted curl is refused before sending; null = send it. */
+const HOW_TO_COPY = "In DevTools → Network, right-click a /api2/v2 request → Copy → Copy as cURL (bash).";
+
+/** A `-H`/`--header` whose name is `name` (case-insensitive), in any quoting Chrome uses ('…', "…", $'…'). */
+const header = (name: string) => new RegExp(String.raw`(?:^|\s)(?:-H|--header)\s+\$?['"]?\s*${name}\s*:`, "i");
+/** A flag taking a value (`-b '…'`, `--cookie=…`); case-sensitive like curl's own flags. */
+const flag = (...names: string[]) => new RegExp(String.raw`(?:^|\s)(?:${names.join("|")})(?:\s|=)`);
+const HAS_COOKIES = [flag("-b", "--cookie"), header("cookie")];
+const HAS_UA = [flag("-A", "--user-agent"), header("user-agent")];
+
+/** Why a pasted curl is refused before sending; null = send it. Pure; Chrome's multi-line `\` copy passes. */
 export function validateCurl(text: string): string | null {
-  return text.trim().startsWith("curl") ? null : "Must start with `curl ...`";
+  const t = text.trim();
+  if (!t.startsWith("curl")) return "Must start with `curl ...`";
+  if (t.includes('^"')) return `That is a Windows (cmd) copy. ${HOW_TO_COPY}`;
+  const missing = [
+    !HAS_COOKIES.some((re) => re.test(t)) && "cookies (-b '…')",
+    !HAS_UA.some((re) => re.test(t)) && "user-agent (-H 'user-agent: …')",
+  ].filter(Boolean);
+  return missing.length ? `No ${missing.join(" and no ")} in this curl. ${HOW_TO_COPY}` : null;
 }
 
 /** Why the form is refused before anything is sent (curl first, then the pasted proxy); null = go on. */
@@ -83,8 +100,11 @@ export function submitError(form: PasteCurlForm): string | null {
   return null;
 }
 
-/** The Bootstrap button. */
-export const canSubmit = (form: PasteCurlForm) => !!form.curl.trim();
+/** The Bootstrap button: off while the curl is blank or refused (its hint shows under the textarea). */
+export const canSubmit = (form: PasteCurlForm) => !validateCurl(form.curl);
+
+/** The hint under the textarea: why the pasted curl would be refused; none while blank. */
+export const curlHint = (curl: string): string | null => (curl.trim() ? validateCurl(curl) : null);
 
 /** POST /admin/session/bootstrap's body: the curl as pasted, optional fields trimmed and left out when blank. */
 export function buildBootstrapBody(form: PasteCurlForm): BootstrapBody {

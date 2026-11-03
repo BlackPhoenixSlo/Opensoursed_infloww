@@ -81,10 +81,7 @@ from ._prompt_rules import (
     NO_NARRATION_RULE, ONPLATFORM_GUARDRAIL,
     STYLE_3LINE, STYLE_MAX_BUBBLES,
 )
-from ._nonnative import (
-    NONNATIVE_OUTPUTS, NONNATIVE_REGISTER, apply_nonnative_spacing, apply_nonnative_style,
-)
-from ._outbound_guard import apply_word_restriction
+from ._nonnative import NONNATIVE_OUTPUTS, NONNATIVE_REGISTER
 from ._typing_hold import (
     hold_with_typing, load_typing_indicator, load_typing_wpm, typing_delay_seconds,
 )
@@ -98,12 +95,13 @@ from .names import resolve_fan_name
 from ._model_pick import resolve_model
 from ._send_failure import skip_unreachable_fan
 from ._wordfilter import (  # compliance word filter
-    banned_hit_summary, filter_banned, load_banned_words,
+    banned_hit_summary, load_banned_words,
 )
 from ._clock import clock_block, clock_line, load_clock_tz
 from automations._outbound import finalize_draft
 from automations.rhythm import INLINE_MAX_S
-from ._bubbles import _dedupe_lead_reaction, _history_text, _strip_html, split_for_bubbles
+from ._bubbles import _history_text, _strip_html
+from . import _reply_shape  # the reply's sync shaping middle (shared with wcfi)
 from .welcome_chatter_for_info import _is_info_complete
 
 log = logging.getLogger("of-relay.automation.autoreply")
@@ -829,37 +827,30 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
             raw, _leak = await finalize_draft(
                 raw, account_id=account_id, fan_id=fid, purpose=_PURPOSE,
                 strip_emoji=strip_emoji_on, v=voice_blocks)
-            parts = [apply_word_restriction(p)[:_REPLY_MAX_CHARS]
-                     for p in split_for_bubbles(raw, max_bubbles,
-                                                rng=random.Random(f"split:{f.fan_id}:{raw}"))
-                     if p.strip()][:max_bubbles]
-            # Don't open with the same reaction word we just used ('oof' every send).
-            if style_on and parts:
-                parts = _dedupe_lead_reaction(parts, [b for d, b in history if d == "out"])
-            if not parts:
-                errors += 1
-                continue
-            # Compliance word filter — before the nonnative/typo layers
-            # (filter_banned's documented contract), so a typo can't smuggle a
-            # flagged word past the scan.
-            parts, _bw = filter_banned(parts, banned_words, banned_mode)
-            if parts is None:
-                skipped_banned += 1
-                log.warning("autoreply BLOCKED reply — banned word(s) %r account=%s fan=%s",
-                            banned_hit_summary(_bw), account_id, fid)
-                continue
-            if _bw:
-                log.info("autoreply masked banned word(s) %r account=%s fan=%s",
-                         banned_hit_summary(_bw), account_id, fid)
             name_protect = [n for n in (f.real_name, f.generated_nickname,
                                         f.of_display_name) if n]
-            if nonnative_on:  # opt-in: deterministic non-native misspellings (always)
-                # ONE rng for the whole reply — see apply_nonnative_spacing.
-                _q_rng = random.Random(f"{f.fan_id}:{raw}:q")
-                parts = [apply_nonnative_style(p, protect=name_protect)
-                         for p in parts]
-                if spacing_on:
-                    parts = [apply_nonnative_spacing(p, _q_rng) for p in parts]
+            # Split + word restriction, lead-reaction dedupe, banned-word filter,
+            # non-native: the sync middle shared with welcome_chatter_for_info
+            # (_reply_shape). This lane: language-blind restriction, no echo drop,
+            # no sticker (an empty reply is dropped).
+            shaped = _reply_shape.shape_parts(raw, _reply_shape.ShapeCtx(
+                seed_id=f.fan_id, max_bubbles=max_bubbles, max_chars=_REPLY_MAX_CHARS,
+                lang=None, echo_of=None, style_on=style_on,
+                recent_out=[b for d, b in history if d == "out"], allow_empty=False,
+                banned_words=banned_words, banned_mode=banned_mode,
+                nonnative_on=nonnative_on, spacing_on=spacing_on, name_protect=name_protect))
+            if shaped.dropped_reason == "banned":
+                skipped_banned += 1
+                log.warning("autoreply BLOCKED reply — banned word(s) %r account=%s fan=%s",
+                            banned_hit_summary(shaped.banned_hits), account_id, fid)
+                continue
+            if shaped.dropped_reason is not None:
+                errors += 1
+                continue
+            if shaped.banned_hits:
+                log.info("autoreply masked banned word(s) %r account=%s fan=%s",
+                         banned_hit_summary(shaped.banned_hits), account_id, fid)
+            parts = shaped.parts
             if typo_on:  # opt-in: a realistic thumb-slip (+ a throttled "*fix" bubble)
                 protect = name_protect + (list(NONNATIVE_OUTPUTS) if nonnative_on else [])
                 parts = await apply_typo_throttle(

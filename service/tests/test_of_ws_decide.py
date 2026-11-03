@@ -5,23 +5,33 @@ WebSocket pump's reconnect rules (service/of_ws.py's events() is the shell) as t
   case_backoff_doubles_to_the_cap        transient failures wait 1, 2, 4, 8, 16, 30, 30 … s
   case_uptime_resets_the_backoff         a failed pass whose socket was up >= RESET_AFTER_S
                                          (60 s, Failed.up_s) starts the backoff over; a
-                                         shorter one keeps it doubling; a dead session
-                                         after a long uptime still gives up
-  case_classifier_answer_to_effect       a real 101 otpState gives up, a socket close
-                                         reconnects (the classifier's full table:
-                                         test_session_health.py)
-  case_give_up_is_immediate_at_any_backoff
-                                         the first dead answer gives up, whatever came
-                                         before; no wait, state kept; "" is not a reason
+                                         shorter one keeps it doubling; a dead answer
+                                         after a long uptime is retry 1
+  case_classifier_answer_to_effect       a real 101 otpState gives up once retried out,
+                                         a socket close reconnects (the classifier's full
+                                         table: test_session_health.py)
+  case_dead_retries_then_gives_up        dead answers 1..3 wait 1, 2, 4 s as Wait(s, retry
+                                         1..3), the 4th gives up, state kept; a transient's
+                                         Wait has retry 0; "" is not a reason
+  case_dead_count_resets_only_with_the_backoff
+                                         a socket up >= 60 s resets the count; one up 5 s
+                                         or a transient pass keeps it (and the doubling),
+                                         so dead/transient alternation gives up on the 4th
   case_shell_refreshes_ticket_before_every_reconnect
                                          a real loopback socket that OF closes after each
                                          hello: /users/me, then the socket, then the hello
                                          with THAT ticket's token, every pass; decide saw a
                                          Failed per drop and the shell waited ~1 then ~2 s
-  case_shell_transient_then_dead         socket drop -> Wait(1) -> /users/me answers 101 ->
-                                         GiveUp: SessionDead("otp_required") (the slop path)
+  case_shell_transient_then_dead         socket drop -> Wait(1) -> /users/me answers 101
+                                         -> Wait 2, 4, 8 s (retry 1..3, logged n/3) -> the
+                                         4th 101 -> GiveUp: SessionDead("otp_required")
+                                         (the slop path)
   case_shell_without_classifier_never_gives_up
                                          no session_dead classifier: a 101 reconnects
+  case_shell_logs_a_retry_only_when_decide_retries
+                                         a decide blind to the classifier (the slop fault
+                                         of-ws-dead-session-keeps-reconnecting): a 101 is
+                                         logged as a plain ws error, never "retry 0/3"
 
 Run: ./venv/bin/python service/tests/test_of_ws_decide.py  (exit 0 = pass)
 """
@@ -33,6 +43,7 @@ _harness.bootstrap()
 
 import asyncio  # noqa: E402
 import json  # noqa: E402
+import logging  # noqa: E402
 import time  # noqa: E402
 
 import websockets  # noqa: E402
@@ -43,8 +54,8 @@ import account_health  # noqa: E402
 import of_ws  # noqa: E402
 import of_ws_decide as d  # noqa: E402
 from of_client import OFAPIError  # noqa: E402
-from of_ws_decide import (RECONNECT_MAX_S, RECONNECT_MIN_S, RESET_AFTER_S, Failed, GiveUp,  # noqa: E402
-                          Pump, Wait, decide)
+from of_ws_decide import (DEAD_RETRIES, RECONNECT_MAX_S, RECONNECT_MIN_S, RESET_AFTER_S,  # noqa: E402
+                          Failed, GiveUp, Pump, Wait, decide)
 
 OTP_BODY = ('{"error":{"code":101,"message":"Confirm it is you","payload":{"otpState":'
             '{"appOtp":true},"strong":false}}}')
@@ -91,8 +102,8 @@ def case_uptime_resets_the_backoff() -> None:
         st, eff = decide(st, Failed(None, 0.05))
         waits.append(eff.s)
     assert waits == [1, 2, 4, 8], waits
-    # A dead session after a long uptime: GiveUp, unchanged.
-    assert decide(Pump(30), Failed("otp_required", 600)) == (Pump(1), GiveUp("otp_required"))
+    # A dead answer after a long uptime: the reset, then retry 1.
+    assert decide(Pump(30, DEAD_RETRIES), Failed("otp_required", 600)) == (Pump(2, 1), Wait(1, 1))
 
 
 def case_classifier_answer_to_effect() -> None:
@@ -100,20 +111,72 @@ def case_classifier_answer_to_effect() -> None:
         (OFAPIError(f"400 for {ME}\n{OTP_BODY}"), GiveUp("otp_required")),
         (ConnectionClosedOK(Close(1000, ""), None), Wait(4)),
     ]:
-        assert decide(Pump(4), Failed(account_health.is_session_dead_error(err)))[1] == effect, err
+        st = Pump(4, DEAD_RETRIES)
+        assert decide(st, Failed(account_health.is_session_dead_error(err)))[1] == effect, err
 
 
-def case_give_up_is_immediate_at_any_backoff() -> None:
+def _run(st: Pump, evs: list[Failed]) -> tuple[Pump, list]:
+    effs = []
+    for ev in evs:
+        st, eff = decide(st, ev)
+        effs.append(eff)
+    return st, effs
+
+
+def case_dead_retries_then_gives_up() -> None:
+    assert DEAD_RETRIES == 3
+    dead = Failed("otp_required")
+    st = Pump()
+    for n, wait in [(1, 1), (2, 2), (3, 4)]:
+        st, eff = decide(st, dead)
+        assert (st, eff) == (Pump(wait * 2, n), Wait(wait, n)), (n, st, eff)
+    assert decide(st, dead) == (st, GiveUp("otp_required"))  # the 4th: no wait, state kept
+    # Retried out at any backoff, any reason: GiveUp; with retries left: the backoff's wait.
     for b in (1, 2, 8, 30):
         for reason in ("otp_required", "wrong_user", "no_session"):
-            assert decide(Pump(b), Failed(reason)) == (Pump(b), GiveUp(reason)), (b, reason)
-    # An empty reason is no reason (the shell's `if reason:` at HEAD): it reconnects.
-    assert decide(Pump(2), Failed("")) == (Pump(4), Wait(2))
-    # After any run of transient failures, the first dead answer ends it.
-    st = Pump()
-    for _ in range(5):
-        st, _ = decide(st, Failed(None))
-    assert decide(st, Failed("otp_required"))[1] == GiveUp("otp_required")
+            assert decide(Pump(b, DEAD_RETRIES), Failed(reason)) == (Pump(b, DEAD_RETRIES), GiveUp(reason))
+            assert decide(Pump(b, 2), Failed(reason)) == (Pump(min(b * 2, 30), 3), Wait(b, 3)), (b, reason)
+    # An empty reason is no reason (the shell's `if reason:` at HEAD): a transient (retry 0), count kept.
+    assert decide(Pump(2, 1), Failed("")) == (Pump(4, 1), Wait(2, 0))
+
+
+def case_dead_count_resets_only_with_the_backoff() -> None:
+    dead = "otp_required"
+    # (events) -> the effects; every row ends in GiveUp on its 4th dead answer unless reset.
+    for evs, want in [
+        # dead with a socket up 5 s (a dead session can still open it): no reset.
+        ([Failed(dead, 5)] * 4, [Wait(1, 1), Wait(2, 2), Wait(4, 3), GiveUp(dead)]),
+        # dead/transient alternation: the transient keeps the count and the doubling.
+        ([Failed(dead), Failed(None)] * 3 + [Failed(dead)],
+         [Wait(1, 1), Wait(2), Wait(4, 2), Wait(8), Wait(16, 3), Wait(30), GiveUp(dead)]),
+        ([Failed(dead), Failed(None, 5)] * 3 + [Failed(dead)],
+         [Wait(1, 1), Wait(2), Wait(4, 2), Wait(8), Wait(16, 3), Wait(30), GiveUp(dead)]),
+        # transient first (the slop path: OF ends the socket, then /users/me answers 101).
+        ([Failed(None, 0.05)] + [Failed(dead)] * 4, [Wait(1), Wait(2, 1), Wait(4, 2), Wait(8, 3), GiveUp(dead)]),
+        # a socket up >= 60 s between: the count starts over, so 3 more retries.
+        ([Failed(dead)] * 3 + [Failed(None, RESET_AFTER_S)] + [Failed(dead)] * 4,
+         [Wait(1, 1), Wait(2, 2), Wait(4, 3), Wait(1), Wait(2, 1), Wait(4, 2), Wait(8, 3), GiveUp(dead)]),
+        ([Failed(dead)] * 3 + [Failed(dead, RESET_AFTER_S)] + [Failed(dead)] * 3,
+         [Wait(1, 1), Wait(2, 2), Wait(4, 3), Wait(1, 1), Wait(2, 2), Wait(4, 3), GiveUp(dead)]),
+    ]:
+        assert _run(Pump(), evs)[1] == want, (evs, _run(Pump(), evs)[1])
+    # up_s 59.9 is no reset.
+    assert decide(Pump(8, 3), Failed(dead, 59.9)) == (Pump(8, 3), GiveUp(dead))
+
+
+class _Logs(logging.Handler):
+    """Collects of_ws's log lines (the shell's logger) while active."""
+
+    def __enter__(self):
+        self.lines: list[str] = []
+        logging.getLogger("of-ws").addHandler(self)
+        return self
+
+    def __exit__(self, *_a):
+        logging.getLogger("of-ws").removeHandler(self)
+
+    def emit(self, record) -> None:
+        self.lines.append(record.getMessage())
 
 
 class _Spy:
@@ -202,12 +265,13 @@ async def case_shell_refreshes_ticket_before_every_reconnect() -> None:
 async def case_shell_transient_then_dead() -> None:
     hellos: list = []
     srv, port = await _dropping_server(hellos)
-    c = _Client(port, answers=[None, OFAPIError(f"400 for {ME}\n{OTP_BODY}")])
+    otp = OFAPIError(f"400 for {ME}\n{OTP_BODY}")
+    c = _Client(port, answers=[None] + [otp] * (DEAD_RETRIES + 1))
     ws = of_ws.OFWebSocket(c, session_dead=account_health.is_session_dead_error)
     try:
-        with _Spy() as spy:
+        with _Spy() as spy, _Logs() as logs:
             try:
-                await asyncio.wait_for(_drain(ws), 5)
+                await asyncio.wait_for(_drain(ws), 20)  # waits 1 + 2 + 4 + 8 s
                 raise AssertionError("events() ended without raising")
             except of_ws.SessionDead as e:
                 assert e.reason == "otp_required", e.reason
@@ -216,11 +280,18 @@ async def case_shell_transient_then_dead() -> None:
     finally:
         srv.close()
         await srv.wait_closed()
-    assert len(hellos) == 1 and len(c.issued) == 2, (hellos, c.issued)
-    # The drop had a socket up ~0.05 s; the 101 came from /users/me, before any socket.
-    (ev1, eff1), (ev2, eff2) = spy.steps
+    assert len(hellos) == 1 and len(c.issued) == 5, (hellos, c.issued)
+    # The drop had a socket up ~0.05 s; each 101 came from /users/me, before any socket.
+    (ev1, eff1), *deads = spy.steps
     assert ev1.dead_reason is None and 0 <= ev1.up_s < 1 and eff1 == Wait(1), spy.steps
-    assert (ev2, eff2) == (Failed("otp_required"), GiveUp("otp_required")), spy.steps
+    assert all(ev == Failed("otp_required") for ev, _ in deads), spy.steps
+    assert [eff for _, eff in deads] == [Wait(2, 1), Wait(4, 2), Wait(8, 3), GiveUp("otp_required")], spy.steps
+    gaps = [round(b[0] - a[0], 1) for a, b in zip(c.issued, c.issued[1:])]
+    assert all(w - 0.1 <= g < w + 0.5 for g, w in zip(gaps, [1, 2, 4, 8])), gaps
+    # The shell logs each retry with decide's number, then the give-up.
+    dead_lines = [ln for ln in logs.lines if "session dead" in ln]
+    assert [ln.split("— ")[1] for ln in dead_lines] == [
+        "retry 1/3 in 2s", "retry 2/3 in 4s", "retry 3/3 in 8s", "not reconnecting"], logs.lines
 
 
 async def case_shell_without_classifier_never_gives_up() -> None:
@@ -233,6 +304,24 @@ async def case_shell_without_classifier_never_gives_up() -> None:
         ws.stop()
         assert await asyncio.wait_for(task, 3) == []  # ended by the stop, no SessionDead
     assert spy.steps[:2] == [(Failed(None), Wait(1)), (Failed(None), Wait(2))], spy.steps
+
+
+async def case_shell_logs_a_retry_only_when_decide_retries() -> None:
+    otp = OFAPIError(f"400 for {ME}\n{OTP_BODY}")
+    c = _Client(9, answers=[otp, otp, otp])
+    ws = of_ws.OFWebSocket(c, session_dead=account_health.is_session_dead_error)
+    real = d.decide
+    d.decide = lambda state, ev: real(state, Failed(None))  # the classifier's answer ignored
+    try:
+        with _Logs() as logs:
+            task = asyncio.create_task(_drain(ws))
+            await _until(lambda: len(c.issued) == 2, 5)
+            ws.stop()
+            assert await asyncio.wait_for(task, 3) == []
+    finally:
+        d.decide = real
+    assert not any("session dead" in ln for ln in logs.lines), logs.lines
+    assert sum(ln.startswith("ws error") for ln in logs.lines) >= 2, logs.lines
 
 
 _harness.run()

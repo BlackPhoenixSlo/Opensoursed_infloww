@@ -20,16 +20,18 @@ auto-follow record by SQL (`follow_ping_state`, one row per fan, as `auto_follow
 one Employee (real `POST /admin/employees`) and its one closed Clock event by SQL (3 h to 2 h ago, a manual
 clock-out on Creator 0, as `/clock-in` + `/clock-out` would leave it).
 
-1. Mass message (Smart Messages > New Message > OF mass message): PAID then FREE template ->
-   the price box empty and the lock gone, and a $5 typed after it shows the lock unticked;
-   Broadcast disabled with its reason as its title while the text is empty and while the price
-   is $2 (if it is enabled on either, it is clicked: no queue POST may leave the browser); a valid draft ($5, locked) POSTs one `/api/of/v2/messages/queue` body with its text,
-   price, lock and the default audience, the relay answers 200, OF's wire gets one
-   `POST /api2/v2/messages/queue` with them, and a `mass_runs` row holds OF's queue id. Then a
+1. Mass message (Smart Messages > New Message > OF mass message): Broadcast disabled with its reason
+   as its title while the text is empty and while the price is $2 (if it is enabled on either, it is
+   clicked: no queue POST may leave the browser); then PAID template, a GIF picked, FREE template ->
+   the price box empty and the lock gone, the GIF chip still there (a GIF-less template keeps the pick),
+   and a $5 typed after it shows the lock unticked; the text retyped, the valid draft ($5, locked) POSTs
+   one `/api/of/v2/messages/queue` body with its text, price, lock, the GIF (`giphy_id`) and the default
+   audience, the relay answers 200, OF's wire gets one `POST /api2/v2/messages/queue` with them
+   (`giphyId`), and a `mass_runs` row holds OF's queue id. Then a
    new draft: "All fans" turned off and the Smart List picked, all models on -> both chips back
    to included; off -> the Smart List unpicked; all models on again and Broadcast -> OF's wire
    gets one mass message per included model, `userLists` fans + following, no `userIds`.
-   Screenshots mass-free-template-trigger, mass-free-template-settled, mass-broadcast-sent,
+   Screenshots mass-gif-picked, mass-free-template-trigger, mass-free-template-settled, mass-broadcast-sent,
    mass-all-models-reset, mass-all-models-sent.
 1b. Mass all-models partial failure (compose/fanOut.ts via MassMessageComposer): a new draft, all models
    on, Creator 1's OF mass queue armed to answer 500 at OF's wire (`FakeOF.fail`), Broadcast -> the relay
@@ -124,9 +126,9 @@ clock-out on Creator 0, as `/clock-in` + `/clock-out` would leave it).
    shows it and GET /admin/automation-rules holds them (price in cents). Screenshots gtkf-edit-during-save,
    gtkf-after-save, gtkf-resaved.
 10. Priority mass (Smart Messages > New Message > Priority mass message): 'Post as' Creator 1,
-   include and exclude its lists, then 'Post as' Creator 0, include VIP, exclude Whales, Send ->
-   the POST (parsed) carries fans + following + VIP and excludes Whales only (no Creator 1 id),
-   and its run row's audience is those lists. Screenshots audience-pm-switch-trigger,
+   include and exclude its lists (Creator 1's "massdmexclude " pre-ticked), then 'Post as' Creator 0,
+   include VIP, exclude Whales, Send -> the POST (parsed) carries fans + following + VIP and excludes
+   Creator 0's pre-ticked MASSDMEXCLUDE (9103) and Whales only (no Creator 1 id), and its run row's audience is those lists. Screenshots audience-pm-switch-trigger,
    audience-pm-switch-settled, audience-pm-sent; bodies in audience-pm-bodies.json.
 11. Auto Funnel, Creator 0, Start: "Start funnel" disabled while OF's lists are held, then
    MASSDMEXCLUDE pre-ticked in Exclude, All fans in Send to, no built-in in Exclude, and Start
@@ -224,9 +226,13 @@ clock-out on Creator 0, as `/clock-in` + `/clock-out` would leave it).
    Add to tag and Remove from tag disabled, one POST (screenshot scripts-remove-busy); released -> 200, B leaves the
    tag; the owner's client puts B back; A ticked, Remove from tag answered 500 at the browser's wire -> A stays
    listed, ticked, "Selected 1", the error shown, its row keeps Keep; C's row Remove (200) refetches: B is back,
-   unticked. `scripts-relabels.json`.
+   unticked. Then two Creator switches on the creator column (to another world Creator and back), each from A's
+   row Remove answered 500 on Keep: settled (error shown, then away and back: no error either side); in flight (POST
+   held at the browser's wire: away and back -> A's row still busy; away again, released -> the 500 lands there, no
+   error; back -> row free, no error, one POST); A keeps Keep (route). `scripts-relabels.json`.
    Screenshots scripts-rename-prompt-refetched (trigger), scripts-renamed, scripts-remove-failed,
-   scripts-remove-settled.
+   scripts-remove-settled, scripts-switch-trigger, scripts-switch-other, scripts-switch-settled,
+   scripts-switch-inflight-back, scripts-switch-inflight-other, scripts-switch-inflight-settled.
 20. Session (app/contexts/userSessionReducer.ts), last since it signs the page out: on Smart
    Messages, a window focus whose /auth/me fails on the network keeps the page and the saved
    snapshot; a focus answered 401 puts the sign-in form in place and clears the snapshot while
@@ -335,6 +341,8 @@ taggable creators (`/api/of/v2/posts/tagged-friend-users`) are answered at the b
 (shape a guess); the first scheduled-sends POST is answered 400 at the browser's wire with the relay's own
 Fansly refusal text (the seeded Creators are OnlyFans, which the relay never refuses), the second goes to
 the relay unchanged (no supervisor fires it).
+In 1 Giphy's trending list (`/api/of/v2/giphy/proxy/gifs/*`) is answered at the browser's wire with 1 GIF
+(a loopback image); the Broadcast carrying it goes browser -> relay -> OF's wire unchanged.
 In 18c OF's /chats is answered the same way; Giphy's trending list (`/api/of/v2/giphy/proxy/gifs/*`, Giphy is
 off-host) is answered at the browser's wire with 2 GIFs (loopback images); the upload (`POST /api/of/v2/upload`:
 OF's signed upload and S3 PUT are not in lib/of_wire.py) is held, then answered at the browser's wire as a
@@ -349,6 +357,8 @@ Fault `bulk-unsend-picks-unselected` (`lib/mass_unsend_faults.py`: `bulkTargets`
 scope, so the bulk action unsends Creator 1's matching rows too: only the 1c check).
 Faults (client side, `lib/reducers_faults.py`): `free-template-keeps-price` (the scenario's: the
 mass reducer's `pickTemplate` keeps the draft's price and lock for a free template),
+`template-clears-picked-gifs` (composeDraft.ts `applyTemplate` clears the picked GIFs on a GIF-less template:
+only the template-GIF check),
 `mass-broadcast-ignores-invalid` (Broadcast's `disabled` stops reading validateMass; the send's own
 guard still refuses, so the untargeted no-invalid-send check stays green), `mass-reset-keeps-smart-pick`
 (the audience reset keeps the Smart List pick),
@@ -391,7 +401,9 @@ keeps the shimmer),
 `scripts-remove-unchecks-on-failure` (a failed
 Remove from tag drops the ticks, and the selection bar is gone while a remove is in flight: the failed-remove and
 bar-busy checks), `scripts-rename-stale-prompt` (the rename prompt acts on the page as it was when
-it opened),
+it opened), `scripts-switch-keeps-error` (another Creator keeps the failed remove's error),
+`scripts-stale-run-fail` (a remove answered while the page shows another Creator puts its error there),
+`scripts-switch-frees-busy` (another Creator drops the busy ids: back, the in-flight row is enabled),
 `vault-order-not-saved-for-reload` (a rail write
 does not save the query snapshot at once: only the 1 s reload check),
 `fanlist-switch-drops-next-page` (the chat list's query fn reads its abort signal for every list, so the page in
@@ -430,10 +442,12 @@ from slop.lib.reducers_faults import (ADMIN_EMPTY, ADMIN_GATE, ADMIN_ROSTER_FAIL
                                         FANLIST_LOAD_MORE, FANLIST_RETURN, FANLIST_REWARM, FANLIST_SCOPE, FL_SEED,
                                         FL_SWITCH, FRAME_PAGE1, GROUP_ACK, GROUP_ACK_MS, GROUP_BURST, GROUP_FANSLY,
                                         GTKF_INFLIGHT, MASS_ALL, MASS_BODY, MASS_FREE, MASS_GATE, MASS_GATE_SEND,
-                                        MASS_PARTIAL, MASS_RETRY, MASS_VOLUME, NUDGE_KEEP, NUDGE_STALE, NUDGE_STORED,
+                                        MASS_PARTIAL, MASS_RETRY, MASS_TEMPLATE_GIF, MASS_VOLUME, NUDGE_KEEP,
+                                        NUDGE_STALE, NUDGE_STORED,
                                         NUDGE_SWITCH, PM_ROW, PM_SWITCH, POST_ALL, POST_BODIES, POST_LOCKED,
                                         POST_PRICED, POST_RETRY, PREMADE_PAYLOAD, PREMADE_ROWS, PREMADE_STORED,
                                         SCRIPTS_BAR_BUSY, SCRIPTS_REMOVE_FAIL, SCRIPTS_REMOVE_OK, SCRIPTS_RENAME,
+                                        SCRIPTS_SWITCH_CLEARS,
                                         SESSION_401_OUT, SESSION_BOOT_OUT, SESSION_NET_KEEP, SMARTLIST_GATE,
                                         SMARTLIST_SAVED, SMARTLIST_STALE, VAULT_CANCEL, VAULT_DRAG, VAULT_QUICK_RELOAD,
                                         VAULT_RELOAD, VAULT_SORT, VAULT_SORT_LABEL, VAULT_MIRROR_SORT_LABEL, PICKER_SHIMMER,
@@ -457,7 +471,7 @@ PERSIST_SETTLE_MS = 6_000  # app/components/providers.tsx PERSIST_THROTTLE_MS (4
 FUNNEL_MEDIA_SAVED = "funnel media: an opener vault pick, Save media -> 'Saved' shown and the GET holds the pick"
 
 SECTIONS = {
-    "mass": (MASS_FREE, MASS_GATE, MASS_GATE_SEND, MASS_BODY, MASS_ALL),
+    "mass": (MASS_FREE, MASS_GATE, MASS_GATE_SEND, MASS_BODY, MASS_TEMPLATE_GIF, MASS_ALL),
     "mass-retry": (MASS_PARTIAL, MASS_RETRY),
     "mass-unsend": (MASS_BULK_UNSEND,),
     "post": (POST_PRICED, POST_ALL, POST_BODIES, POST_RETRY, POST_LOCKED),
@@ -488,7 +502,7 @@ SECTIONS = {
     "vaultmanage": (VM_TICKS, VM_PRICE),
     "redescribe": (REDESCRIBE_SHOWS, REDESCRIBE_KEEPS),
     "shimmer": (PICKER_SHIMMER,),
-    "scripts": (SCRIPTS_RENAME, SCRIPTS_BAR_BUSY, SCRIPTS_REMOVE_OK, SCRIPTS_REMOVE_FAIL),
+    "scripts": (SCRIPTS_RENAME, SCRIPTS_BAR_BUSY, SCRIPTS_REMOVE_OK, SCRIPTS_REMOVE_FAIL, SCRIPTS_SWITCH_CLEARS),
     "session": (SESSION_NET_KEEP, SESSION_401_OUT, SESSION_BOOT_OUT),
 }
 # Reducer fixes this scenario cannot drive on the real path; each reports SKIP with why.
@@ -789,15 +803,33 @@ async def _chips(page) -> dict:
     return out
 
 
+def _giphy_gifs(app: str, picks: list[tuple[str, str]]) -> list[dict]:
+    """Giphy GIFs (id, title) whose images are the app's own icon (loopback: ui.py aborts off-host images)."""
+    img = {"url": f"{app}/icon.svg", "width": "64", "height": "64"}
+    return [{"type": "gif", "id": i, "title": t, "images": {"original": img, "fixed_height": img}} for i, t in picks]
+
+
+def _giphy_route(gifs: list[dict]):
+    """(url predicate, handler) answering Giphy's trending list through the relay's proxy with `gifs`
+    (Giphy is off-host: answered at the browser's wire)."""
+    async def giphy(route):
+        await route.fulfill(status=200, content_type="application/json", body=json.dumps(
+            {"data": gifs, "pagination": {"total_count": len(gifs), "count": len(gifs), "offset": 0}}))
+    return (lambda u: urlsplit(u).path.startswith("/api/of/v2/giphy/proxy/gifs/")), giphy
+
+
 async def _mass(ctx, page, chk) -> None:
     bodies: list[dict] = []
+    gif = _giphy_gifs(ctx.app, [("slopmassgif1", "slop mass gif")])[0]
 
     async def queue(route):
         if route.request.method == "POST":
             bodies.append({"body": route.request.post_data_json, "account": route.request.headers.get("x-account-id")})
         await route.fallback()  # ui.py's THROUGH: on to the relay, whose OFClient reaches OF's wire
 
+    giphy = _giphy_route([gif])
     await page.route(lambda u: urlsplit(u).path == QUEUE, queue)
+    await page.route(*giphy)
     await _open_create_message(ctx, page, re.compile(r"^OF mass message"))
     ta = page.get_by_placeholder("What's the broadcast?")
     await ta.wait_for(timeout=WAIT_MS)
@@ -806,29 +838,6 @@ async def _mass(ctx, page, chk) -> None:
     aid = await page.locator("select:has(option[value])").first.input_value()
     price = page.get_by_placeholder("0 (free)")
     lock = page.get_by_label("Lock the text too (fan must pay to read)")
-
-    await _pick_template(page, PAID_TPL["title"])
-    paid_price = await _wait_value(price, "25")
-    paid_lock = await lock.is_checked() if await lock.count() else None
-    await page.get_by_title("Insert saved template").first.click()
-    await page.get_by_role("button").filter(has_text=FREE_TPL["title"]).first.wait_for(timeout=30_000)
-    await ui.shot(ctx, page, "mass-free-template-trigger")
-    await page.get_by_role("button").filter(has_text=FREE_TPL["title"]).first.click()
-    free_price = await _wait_value(price, "")
-    await page.wait_for_timeout(300)
-    lock_shown = await lock.count() > 0
-    free_lock = await lock.is_checked() if lock_shown else False
-    await ui.shot(ctx, page, "mass-free-template-settled")
-    # The lock box only shows on a PPV: type a price, and the FREE template's lock (off) shows.
-    await price.fill("5")
-    await lock.wait_for(timeout=10_000)
-    lock_after_price = await lock.is_checked()
-    chk(MASS_FREE, paid_price == "25" and paid_lock is True and free_price == "" and not free_lock
-        and lock_after_price is False,
-        account=aid, paid_price=paid_price, paid_lock=paid_lock, free_price=free_price,
-        lock_shown_after_free=lock_shown, lock_checked_after_free=free_lock,
-        lock_checked_after_typing_5=lock_after_price, text=await ta.input_value())
-
     send = page.get_by_role("button", name="Broadcast", exact=True)
     clicked: list[str] = []
 
@@ -839,7 +848,7 @@ async def _mass(ctx, page, chk) -> None:
             await send.click(timeout=10_000)  # confirm() accepted
             await page.wait_for_timeout(1_000)
 
-    await price.fill("")
+    # The gate first, on a draft with no GIF (a GIF alone is a valid draft).
     await ta.fill("")
     empty = await _button_state(send)
     await click_if_enabled("empty text")
@@ -851,7 +860,40 @@ async def _mass(ctx, page, chk) -> None:
         and low == {"disabled": True, "title": PRICE_NOTE}, empty_text=empty, price_2=low)
     chk(MASS_GATE_SEND, not bodies and not _statuses(page, QUEUE), clicked_enabled=clicked,
         queue_posts=len(bodies), relay_statuses=_statuses(page, QUEUE))
+    await price.fill("")
 
+    await _pick_template(page, PAID_TPL["title"])
+    paid_price = await _wait_value(price, "25")
+    paid_lock = await lock.is_checked() if await lock.count() else None
+    # A GIF picked after the PAID template: the GIF-less FREE one must keep it.
+    remove_gif = page.get_by_role("button", name="Remove GIF", exact=True)
+    await page.get_by_role("button", name="GIF picker", exact=True).first.click(timeout=10_000)
+    await page.locator(f"button[title='{gif['title']}']").first.click(timeout=30_000)
+    await remove_gif.first.wait_for(timeout=10_000)
+    gif_chips_before = await remove_gif.count()
+    await ui.shot(ctx, page, "mass-gif-picked")
+    await page.get_by_title("Insert saved template").first.click()
+    await page.get_by_role("button").filter(has_text=FREE_TPL["title"]).first.wait_for(timeout=30_000)
+    await ui.shot(ctx, page, "mass-free-template-trigger")
+    await page.get_by_role("button").filter(has_text=FREE_TPL["title"]).first.click()
+    free_price = await _wait_value(price, "")
+    await page.wait_for_timeout(300)
+    lock_shown = await lock.count() > 0
+    free_lock = await lock.is_checked() if lock_shown else False
+    gif_chips_after = await remove_gif.count()
+    gif_img_after = await page.locator(f"img[alt='{gif['title']}']").count()
+    await ui.shot(ctx, page, "mass-free-template-settled")
+    # The lock box only shows on a PPV: type a price, and the FREE template's lock (off) shows.
+    await price.fill("5")
+    await lock.wait_for(timeout=10_000)
+    lock_after_price = await lock.is_checked()
+    chk(MASS_FREE, paid_price == "25" and paid_lock is True and free_price == "" and not free_lock
+        and lock_after_price is False,
+        account=aid, paid_price=paid_price, paid_lock=paid_lock, free_price=free_price,
+        lock_shown_after_free=lock_shown, lock_checked_after_free=free_lock,
+        lock_checked_after_typing_5=lock_after_price, text=await ta.input_value())
+
+    await ta.fill(MASS_TEXT)
     await price.fill("5")
     await lock.check(timeout=10_000)
     valid = await _button_state(send)
@@ -882,6 +924,11 @@ async def _mass(ctx, page, chk) -> None:
         button=valid, posts=len(bodies), got=got, want=want, account=bodies[0]["account"] if bodies else None,
         picked=aid, relay_status=status, of_wire=got_wire, of_wire_want=want_wire,
         of_wire_sends={a: len(v) for a, v in wire.items()}, mass_runs=runs)
+    chk(MASS_TEMPLATE_GIF, gif_chips_before == 1 and gif_chips_after == 1 and gif_img_after == 1
+        and b.get("giphy_id") == gif["id"] and w0.get("giphyId") == gif["id"],
+        gif_chips_before_free_template=gif_chips_before, gif_chips_after_free_template=gif_chips_after,
+        gif_img_after_free_template=gif_img_after, body_giphy_id=b.get("giphy_id"),
+        of_wire_giphyId=w0.get("giphyId"), want=gif["id"])
 
     # All models: the audience resets in the one switch, the Smart List pick with it.
     await _open_create_message(ctx, page, re.compile(r"^OF mass message"))
@@ -924,6 +971,7 @@ async def _mass(ctx, page, chk) -> None:
         before_switch=picked, all_models_on=on, all_models_off=off, included=included, relay_statuses=statuses,
         of_wire=fanout)
     await page.unroute(lambda u: urlsplit(u).path == QUEUE)
+    await page.unroute(*giphy)
 
 
 async def _mass_retry(ctx, page, chk) -> None:
@@ -2581,11 +2629,7 @@ async def _chat_ppv(ctx, page, chk) -> None:
     c = ctx.world.data["creators"][0]
     view = await _chat_view(ctx, ctx.world.data["creators"])
     fan = view[c["id"]][0]["withUser"]
-    gif_url = f"{ctx.app}/icon.svg"  # loopback: ui.py aborts off-host images
-    gifs = [{"type": "gif", "id": g, "title": f"slop gif {i + 1}",
-             "images": {"original": {"url": gif_url, "width": "64", "height": "64"},
-                        "fixed_height": {"url": gif_url, "width": "64", "height": "64"}}}
-            for i, g in enumerate(PPV_GIFS)]
+    gifs = _giphy_gifs(ctx.app, [(g, f"slop gif {i + 1}") for i, g in enumerate(PPV_GIFS)])
     hold = {"release": asyncio.Event(), "uploads": 0, "sends": [], "released_t": None}
 
     async def chats(route):
@@ -2594,10 +2638,6 @@ async def _chat_ppv(ctx, page, chk) -> None:
             return await route.fallback()
         _aid, off, lim, _plain, rows = _chats_query(req, view)
         await _serve_chats(route, rows, off, lim)
-
-    async def giphy(route):
-        await route.fulfill(status=200, content_type="application/json",
-                            body=json.dumps({"data": gifs, "pagination": {"total_count": 2, "count": 2, "offset": 0}}))
 
     async def upload(route):
         hold["uploads"] += 1
@@ -2615,7 +2655,7 @@ async def _chat_ppv(ctx, page, chk) -> None:
 
     send_path = f"/api/of/v2/chats/{fan['id']}/messages"
     routes = ((lambda u: urlsplit(u).path == "/api/of/v2/chats", chats),
-              (lambda u: urlsplit(u).path.startswith("/api/of/v2/giphy/proxy/gifs/"), giphy),
+              _giphy_route(gifs),
               (lambda u: urlsplit(u).path == "/api/of/v2/upload", upload),
               (lambda u: urlsplit(u).path == send_path, send))
     for pat, fn in routes:
@@ -2806,6 +2846,15 @@ SELECTION_BAR = """() => { const bar = document.querySelector('[role=toolbar][ar
            disabled: Object.fromEntries(btns.map((x) => [x.textContent.trim(), x.disabled])) }; }"""
 BAR_BUSY = "(bar) => !!bar && Object.values(bar.disabled).some(Boolean)"
 BAR_SETTLED = "(bar) => !bar || bar.disabled['Remove from tag'] === false"  # remove no longer busy, or no bar left
+# What a Creator switch must not carry over, as drawn: whether the failed run's error text shows, the scripts whose
+# remove / delete is disabled (busy) and the listed scripts, each named by its box ("Select <title>").
+SWITCH_STATE = """(err) => { const rows = [...document.querySelectorAll('[aria-label="Scripts list"] li')];
+  const title = (li) => (li.querySelector('input[type=checkbox][aria-label^="Select "]')?.getAttribute('aria-label')
+    || '').slice('Select '.length);
+  return { error: document.body.innerText.includes(err),
+           busy: rows.filter((li) => [...li.querySelectorAll('button[aria-label^="Remove from"],button[aria-label=Delete]')]
+             .some((b) => b.disabled)).map(title),
+           titles: rows.map(title) }; }"""
 
 
 async def _selection_bar(page, until: str, timeout_ms: int) -> dict | None:
@@ -2832,8 +2881,12 @@ async def _route_tags(ctx, aid: str) -> dict[int, list[str]]:
 
 async def _scripts(ctx, page, chk) -> None:
     # The Creator the page opens on: useScopedAccount takes the first active one with a session.
-    accts = (await ctx.owner.get("/admin/accounts")).json().get("accounts", [])
-    aid = next(a["id"] for a in accts if a.get("has_session") and a.get("is_active", True))
+    accts = [a for a in (await ctx.owner.get("/admin/accounts")).json().get("accounts", [])
+             if a.get("has_session") and a.get("is_active", True)]
+    aid = accts[0]["id"]
+    # The Creator the switch checks pick on the creator column (by nickname, so one of the world's Creators).
+    world_ids = {c["id"] for c in ctx.world.data["creators"]}
+    other = next(a["id"] for a in accts if a["id"] != aid and a["id"] in world_ids)
     ids = []
     for title in SCRIPT_TITLES:
         r = await ctx.owner.post(f"/admin/saved-replies?account_id={aid}",
@@ -2861,15 +2914,16 @@ async def _scripts(ctx, page, chk) -> None:
         await page.route(is_relabel, failing_relabel)
         with recorded(page, "POST", RELABEL) as relabels:
             try:
-                await _scripts_steps(ctx, page, chk, aid, (a_id, b_id, c_id), relabels, hold, fail)
+                await _scripts_steps(ctx, page, chk, (aid, other), (a_id, b_id, c_id), relabels, hold, fail)
             finally:
                 await page.unroute(is_relabel, failing_relabel)
                 (ctx.out / "scripts-relabels.json").write_text(json.dumps(relabels, indent=2))
 
 
-async def _scripts_steps(ctx, page, chk, aid: str, ids: tuple, relabels: list, hold, fail: dict) -> None:
-    """`hold`: lib/hold.py's Hold on the FREE template's DELETE; `fail["next"]`: the next relabel POST is
-    answered 500 at the browser."""
+async def _scripts_steps(ctx, page, chk, creators: tuple, ids: tuple, relabels: list, hold, fail: dict) -> None:
+    """`creators`: the page's Creator and the one the switch checks pick; `hold`: lib/hold.py's Hold on the FREE
+    template's DELETE; `fail["next"]`: the next relabel POST is answered 500 at the browser."""
+    aid = creators[0]
     a_id, b_id, c_id = ids
     a_t, b_t, c_t = SCRIPT_TITLES
     tags_aside = page.locator('aside[aria-label="Tags"]')
@@ -3001,6 +3055,114 @@ async def _scripts_steps(ctx, page, chk, aid: str, ids: tuple, relabels: list, h
         relabel_posts=ok_sent, route_after_remove=ok_route, db_after_remove=ok_db, put_back=put_back,
         refetch_by=c_sent,
         b_ticked_after_refetch=b_ticked, db_b=db_b)
+
+    await _scripts_switch(ctx, page, chk, creators, a_id, relabels, fail, row, side_row)
+
+
+def _switch_clear(st: dict, title: str) -> bool:
+    """SWITCH_STATE read: no error, no busy row, `title` listed."""
+    return not st["error"] and st["busy"] == [] and title in st["titles"]
+
+
+def _switch_on_other(st: dict) -> bool:
+    """SWITCH_STATE read on the other Creator: clear, its seeded FREE template listed, none of A's scripts."""
+    return _switch_clear(st, FREE_TPL["title"]) and SCRIPT_TITLES[0] not in st["titles"]
+
+
+async def _scripts_switch(ctx, page, chk, creators: tuple, a_id: int, relabels: list, fail: dict, row,
+                          side_row) -> None:
+    """Two Creator switches on the page's creator column, each from A's Remove from tag answered 500 (on "slop Keep"):
+    settled (`_switch_settled`) then in flight (`_switch_in_flight`); A's script keeps its tag (route)."""
+    aid, other = creators
+    a_t = SCRIPT_TITLES[0]
+    nick = {c["id"]: c["nickname"] for c in ctx.world.data["creators"]}
+
+    async def switch(to: str, err_text: str, shot: str | None = None) -> dict:
+        """Picks Creator `to`; on the other Creator, waits for A's rows to go (its list carries the seeded templates,
+        not A's scripts), on A for A's row. SWITCH_STATE for `err_text`."""
+        await ui.pick_creator(page, nick[to], timeout_ms=WAIT_MS)
+        if to == aid:
+            await row(a_t).first.wait_for(timeout=WAIT_MS)
+        else:
+            await row(a_t).first.wait_for(state="detached", timeout=WAIT_MS)
+            await row(FREE_TPL["title"]).first.wait_for(timeout=WAIT_MS)
+        await _painted(page)
+        if shot:
+            await ui.shot(ctx, page, shot)
+        return await page.evaluate(SWITCH_STATE, err_text)
+
+    a_before = (await _route_tags(ctx, aid)).get(a_id)
+    want_sent = [{"body": {"kind": "tag", "from": SCRIPT_KEEP, "ids": [a_id]}, "status": 500}]
+    remove_a = row(a_t).first.get_by_role("button", name="Remove from tag")
+    settled_ok, settled = await _switch_settled(ctx, page, switch, creators, remove_a, relabels, fail, want_sent)
+    flight_ok, flight = await _switch_in_flight(ctx, page, switch, creators, remove_a, side_row, relabels, fail,
+                                                want_sent, settled["error"])
+    route_a = (await _route_tags(ctx, aid)).get(a_id)
+    chk(SCRIPTS_SWITCH_CLEARS, settled_ok and flight_ok and SCRIPT_KEEP in (a_before or []) and route_a == a_before,
+        other_creator=other, settled=settled, in_flight=flight, route=route_a, want=a_before)
+
+
+async def _switch_settled(ctx, page, switch, creators: tuple, remove_a, relabels: list, fail: dict,
+                          want_sent: list) -> tuple[bool, dict]:
+    """A's remove answered 500, its error shown; then the other Creator and A again: neither shows it."""
+    aid, other = creators
+    a_t = SCRIPT_TITLES[0]
+    fail["next"] = True
+    n = len(relabels)
+    await remove_a.click(timeout=10_000)  # confirm accepted
+    err = page.get_by_text(re.compile(r"^HTTP 500"))
+    await err.first.wait_for(timeout=15_000)
+    err_text = await err.first.inner_text()
+    await _until(lambda: relabels[n:] and all(x["status"] is not None for x in relabels[n:]), 10)
+    sent = [{"body": x["body"], "status": x["status"]} for x in relabels[n:]]
+    trigger = await page.evaluate(SWITCH_STATE, err_text)
+    await _painted(page)
+    await ui.shot(ctx, page, "scripts-switch-trigger")
+    on_other = await switch(other, err_text, "scripts-switch-other")
+    back = await switch(aid, err_text, "scripts-switch-settled")
+    ok = (trigger["error"] and a_t in trigger["titles"] and sent == want_sent
+          and _switch_on_other(on_other) and _switch_clear(back, a_t))
+    return bool(ok), {"error": err_text, "trigger": trigger, "relabel_posts": sent, "on_other": on_other,
+                      "back": back}
+
+
+async def _switch_in_flight(ctx, page, switch, creators: tuple, remove_a, side_row, relabels: list, fail: dict,
+                            want_sent: list, err_text: str) -> tuple[bool, dict]:
+    """A's remove held at the browser's wire while the owner leaves A and comes back (A's row still busy), then
+    leaves again: its 500 lands on the other Creator, which shows no error; back on A the row is free, no error,
+    one POST."""
+    aid, other = creators
+    a_t = SCRIPT_TITLES[0]
+    await side_row(SCRIPT_KEEP).click()  # A reopens on All scripts: Remove from tag lives on the tag
+    await remove_a.wait_for(timeout=10_000)
+    fail["next"] = True
+    n = len(relabels)
+    async with held(page, lambda u: urlsplit(u).path == RELABEL, "POST") as hold:
+        await remove_a.click(timeout=10_000)  # confirm accepted
+        await asyncio.wait_for(hold.seen.wait(), 15)
+        await switch(other, err_text)
+        held_back = await switch(aid, err_text, "scripts-switch-inflight-back")  # A's row still waits for its answer
+        await switch(other, err_text)
+        hold.release.set()
+        await _until(lambda: relabels[n:] and all(x["status"] is not None for x in relabels[n:]), 15)
+        try:  # the failure's render, if the page shows it here (it must not): a beat after the answer
+            await page.wait_for_function("(e) => document.body.innerText.includes(e)", arg=err_text, timeout=3_000)
+        except PwTimeout:
+            pass
+        landed_other = await page.evaluate(SWITCH_STATE, err_text)
+        await ui.shot(ctx, page, "scripts-switch-inflight-other")
+    sent = [{"body": x["body"], "status": x["status"]} for x in relabels[n:]]
+    await switch(aid, err_text)
+    try:  # the run's end frees A's row
+        await page.wait_for_function(f"(e) => ({SWITCH_STATE})(e).busy.length === 0", arg=err_text, timeout=10_000)
+    except PwTimeout:
+        pass
+    landed_back = await page.evaluate(SWITCH_STATE, err_text)
+    await ui.shot(ctx, page, "scripts-switch-inflight-settled")
+    ok = (held_back["busy"] == [a_t] and not held_back["error"] and sent == want_sent
+          and _switch_on_other(landed_other) and _switch_clear(landed_back, a_t))
+    return bool(ok), {"held_back": held_back, "landed_on_other": landed_other, "landed_back": landed_back,
+                      "relabel_posts": sent}
 
 
 async def _until(cond, timeout_s: float) -> bool:
@@ -3358,6 +3520,11 @@ async def _audience_pm(ctx, page, chk) -> None:
     await ui.shot(ctx, page, "audience-pm-switch-trigger")
     await _post_as(dlg, c[0]["id"], "VIP")
     await _box(dlg, "VIP", 0).click()
+    try:    # Creator 0's MASSDMEXCLUDE seed lands first, so Whales follows it in the excludes
+        excl = await _box(dlg, "MASSDMEXCLUDE", 1).element_handle()
+        await page.wait_for_function("(b) => b && b.checked", arg=excl, timeout=15_000)
+    except Exception:  # noqa: BLE001 — recorded as PM_SWITCH's failure
+        pass
     await _box(dlg, "Whales", 1).click()
     await dlg.get_by_label("Message").fill(PM_TEXT)
     await ui.shot(ctx, page, "audience-pm-switch-settled")
@@ -3371,7 +3538,7 @@ async def _audience_pm(ctx, page, chk) -> None:
     b = bodies[0]["body"] if bodies else {}
     keys = ("account_id", "user_lists", "excluded_user_lists")
     got = {k: b.get(k) for k in keys}
-    want = {"account_id": c[0]["id"], "user_lists": ["fans", "following", "9101"], "excluded_user_lists": ["9102"]}
+    want = {"account_id": c[0]["id"], "user_lists": ["fans", "following", "9101"], "excluded_user_lists": ["9103", "9102"]}
     chk(PM_SWITCH, status == 200 and len(bodies) == 1 and got == want, http_status=status, posts=len(bodies),
         got=got, want=want)
 
@@ -3981,7 +4148,7 @@ async def _mass_volume(ctx) -> None:
                                "round1_ms_max": max(e2e1), "retry_ms_p95": _p95(e2e2),
                                "send_ms_p95": _p95(send_ms), "sends": len(send_ms), **detail})
     (ctx.out / "mass-volume.json").write_text(json.dumps({"round1": u1, "retry": u2}, indent=1))
-    # Every queue POST mints its mass_runs row before OF is asked (server._open_mass_run), the failed ones too.
+    # Every queue POST mints its mass_runs row before OF is asked (mass_queue_api._open_mass_run), the failed ones too.
     minted = {a: runs2.get(a, 0) - runs0.get(a, 0) for a in creators}
     want_runs = {a: sum(1 for u in u1 + u2 for x in u["sends"] if x["account"] == a) for a in creators}
     ctx.check(MASS_VOLUME_RUNS, minted == want_runs, minted=minted, sends=want_runs,

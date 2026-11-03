@@ -58,6 +58,24 @@ null. Their runs nudge nobody (tick 2 showed every fan held). Expected traceback
 --fault=dispatch-bad-tz-aborts-pass the pass logs `automation_rule_materialize_failed` with the
 pre-fix ValueError on "x" (EXPECTED_TRACEBACKS), so only BAD_TZ goes red (the list route reads
 the quiet `dispatch_plan.trigger_of`, which the fault leaves alone).
+
+KILL, last (send once, service/automations/send_marker_decide.py: a nudge killed mid-send is
+never auto-resent; listed "may not have sent", the user retries). KILL Creators = the first
+min(KILL_CREATORS, Creators) (one run per Creator and kind, KILL_CREATORS = the 4 run slots), one
+KILL fan each, seeded by SQL now (seed/followup_drip.py `seed_kill`: a fresh `due1` fan, no
+followup_state row). OF's side is lib/send_once_relay.py (`first_key: fan_text`, the nudge line
+is the same for every fan; KILL fans `hang`; its O_APPEND journal outlives the SIGKILL). One tick
+per KILL Creator (on their own Recorder: they die with the relay) until each KILL fan's nudge is
+accepted and unanswered, the same set for KILL_STABLE_S; SIGKILL (`crash_relay`); OF answers
+normally from then on; restart on the same DB. Then two ticks (each settles first), the owner's
+`GET /admin/unconfirmed-sends`, one `POST /admin/unconfirmed-sends/retry` per KILL fan, one
+more tick. Checks (lib/send_marker_faults.py): DRIP_ONCE, DRIP_MARKED, DRIP_RETRY, and the
+scenario's own KILLED. Bypasses, declared: the KILL fans' `fan_lease` rows (the dead holder's
+900 s TTL) are expired by SQL right after the restart, as if 15 min had passed; the retried fans'
+`fans.automation_paused_until` nulled by SQL before the last tick (a no-op on correct code; the
+house funnel's twin needs it). Fault `followup-sending-marker-ignored` (`Entry.marked` always
+False): only the three KILL checks go red (tick 1 re-sends the hung nudge, whose Sent save
+clears the marker: nothing listed, Retry answers already_sent).
 """
 from __future__ import annotations
 
@@ -71,6 +89,9 @@ from slop.actors import manager
 from slop.lib import followup
 from slop.lib.dispatch_tz_faults import BAD_TZ
 from slop.lib.followup_faults import AGAIN, CAP, COUNTS, GAP, HOLD, LIVE, REPLIES, RESUME, STEPS
+from slop.lib.send_marker_faults import DRIP_MARKED, DRIP_ONCE, DRIP_RETRY
+from slop.lib.send_marker_kill import Kill
+from slop.seed import followup_drip
 from slop.seed.followup_drip import BAD_TZ_RAW, seed_bad_tz_rule
 
 PROFILE = "agency_inbox"
@@ -85,6 +106,11 @@ BAD_TZ_EVERY_S = 3600
 BAD_TZ_OFFSET_MIN = 330          # a half-hour zone (Kolkata)
 EXPECTED_TRACEBACKS = (("automation_rule_materialize_failed",
                         f"invalid literal for int() with base 10: {BAD_TZ_RAW!r}"),)
+KILL_CREATORS = 4      # the run slots (run_slot): one hung run per Creator, every slot busy
+KILL_HANG_S = 300.0    # the kill comes long before
+KILL_TIMEOUT_S = 120
+KILL_STABLE_S = 3.0
+KILLED = "follow-up kill: SIGKILL landed with each KILL Creator's KILL nudge taken by OF and unanswered"
 
 
 def _dt(v) -> datetime | None:
@@ -200,7 +226,8 @@ async def _bad_tz_phase(ctx, w, aids: list[str]) -> None:
 
 
 async def run(ctx) -> None:
-    if followup.refuse_live(ctx, (GAP, STEPS, CAP, REPLIES, RESUME, HOLD, COUNTS, LIVE, AGAIN, BAD_TZ)):
+    if followup.refuse_live(ctx, (GAP, STEPS, CAP, REPLIES, RESUME, HOLD, COUNTS, LIVE, AGAIN, BAD_TZ,
+                                  KILLED, DRIP_ONCE, DRIP_MARKED, DRIP_RETRY)):
         return
     cases = (await followup.setup(ctx, PROFILE))["cases"]
     w = ctx.world
@@ -344,3 +371,78 @@ async def run(ctx) -> None:
     ctx.note(f"tick 1: {rows} nudges over {len(aids)} Creators ({sent_sum} reported), "
              f"{len(tabs)} owner tabs; tick 2: {sent2}; per-nudge p95 {p95:.0f} ms")
     await _bad_tz_phase(ctx, w, aids)
+    await _kill_phase(ctx, w, aids)
+
+
+async def _drip_tick(ctx, http, aid: str) -> dict:
+    """lib/followup.tick on `http` (the KILL ticks' own pool and Recorder)."""
+    r = await http.post("/__slop/run-automation", timeout=900, json={
+        "account_id": aid, "kind": "send_followup", "payload": followup.payload(ctx)})
+    body = r.json() if r.status_code < 300 else {"error": r.text[:300]}
+    return {"aid": aid, "status": r.status_code,
+            "res": body.get("result") if isinstance(body.get("result"), dict) else body}
+
+
+async def _kill_phase(ctx, w, aids: list[str]) -> None:
+    """KILL (module docstring): a nudge killed after OF took it is listed, never re-sent
+    by a tick, and sent once more only on the user's Retry."""
+    ctx.rec.stage = "kill"
+    kaids = aids[:min(KILL_CREATORS, len(aids))]
+    kfans = followup_drip.seed_kill(w, kaids)
+    keys = {(a, f["id"]) for a, f in kfans.items()}
+    kill = Kill(ctx, keys, {a: f["id"] for a, f in kfans.items()}, lambda http, a: _drip_tick(ctx, http, a),
+                KILL_HANG_S)
+    hit, hung_text, waited = await kill.crash({f"{a}:{f}": "hang" for a, f in keys}, KILL_TIMEOUT_S, KILL_STABLE_S)
+    t_kill = kill.t_kill
+    ctx.check(KILLED, hit and set(hung_text) == keys, kill_creators=len(kaids), hung_at_kill=len(hung_text),
+              waited_s=waited)
+    con = w.sql()
+    kill.expire_leases(con)
+
+    ticks = []
+    for _ in range(2):
+        ticks.append(await kill.tick_all())
+    listed, get_status = await kill.unconfirmed()
+    retried = await kill.retry(con, {(a, f): {"kind": "followup", "fan_id": f} for a, f in sorted(keys)})
+    t_retry = kill.t_retry
+    ticks.append(await kill.tick_all())
+    state = {(a, int(f)): {"sent": json.loads(m or "{}"), "phase": ph, "marked": sa is not None or ua is not None}
+             for a, f, m, ph, sa, ua in con.execute(
+                 f"SELECT account_id, fan_id, messages_sent, phase, sending_at, unconfirmed_at FROM followup_state "
+                 f"WHERE account_id IN ({','.join('?' * len(kaids))})", kaids) if (a, int(f)) in keys}
+    con.close()
+    await kill.close()
+    ctx.rec.stage = None
+
+    rows = kill.journal()
+    took, pre = kill.took(), kill.pre_retry()
+    post = Counter((r["account_id"], int(r["fan_id"])) for r in rows if r["op"] == "accepted" and r["t"] >= t_retry)
+
+    def once(k) -> bool:
+        mine = {x: n for x, n in took.items() if x[:2] == k}
+        return (k in hung_text and all(n <= 1 for x, n in pre.items() if x[:2] == k)
+                and all(n == (2 if x[2] == hung_text[k] else 1) for x, n in mine.items()))
+    bad = [f"{a}/{f}" for a, f in sorted(keys) if not once((a, f))]
+    ctx.check(DRIP_ONCE, bool(keys) and not bad, fans=len(keys), wrong=bad[:5],
+              of_took={f"{a}/{f}/{t[:24]}": n for (a, f, t), n in list(took.items())[:8]})
+
+    def marked(k) -> bool:
+        row = listed.get(k) or {}
+        return row.get("kind") == "followup" and row.get("state") == "UNCONFIRMED" and row.get("step") == 1
+    bad = [f"{a}/{f}" for a, f in sorted(keys) if not marked((a, f))]
+    ctx.check(DRIP_MARKED, bool(keys) and not bad and all(s == 200 for s in get_status), fans=len(keys),
+              wrong=bad[:5], get_status=get_status, listed=len(listed))
+
+    def retry_ok(k) -> bool:
+        st = state.get(k) or {}
+        return (retried.get(k) == (200, "retried") and post[k] == 1 and "1" in st.get("sent", {})
+                and not st.get("marked"))
+    bad = [f"{a}/{f}" for a, f in sorted(keys) if not retry_ok((a, f))]
+    ticked = [t["status"] for tk in ticks for t in tk]
+    ctx.check(DRIP_RETRY, bool(keys) and not bad and all(x == 200 for x in ticked), fans=len(keys), wrong=bad[:5],
+              retry={f"{a}/{f}": v for (a, f), v in sorted(retried.items())},
+              sent_after_retry={f"{a}/{f}": post[(a, f)] for a, f in sorted(keys)},
+              state={f"{a}/{f}": v for (a, f), v in sorted(state.items())}, tick_status=ticked)
+    ctx.metric("kill", {"creators": len(kaids), "t_kill": t_kill, "ticks": [
+        [{k: t["res"].get(k) for k in ("followups_sent", "skipped_locked", "skipped_cooldown", "errors")}
+         for t in tk] for tk in ticks], "kill_ticks_http": kill.rec.summary()})

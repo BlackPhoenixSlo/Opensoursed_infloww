@@ -37,7 +37,7 @@ import {
   useUpdateFunnel,
 } from "@/hooks/useFunnels";
 import {
-  editFunnel, EMPTY_FUNNEL, FUNNEL_RAW, funnelDraftOf, saveBody,
+  editFunnel, EMPTY_FUNNEL, FUNNEL_RAW, funnelDraftOf, saveBody, stepErrorText,
   type FunnelBody, type FunnelEdit,
 } from "@/lib/funnelDraft";
 import { canSubmit, useRawJson } from "@/lib/rawJsonReducer";
@@ -106,7 +106,8 @@ export function FunnelEditor({
       onSaved?.();
       onClose();
     } catch (e) {
-      fail((e as Error)?.message || "Save failed");
+      // The server's 422 names steps by step[i] / id → by position, as on the cards.
+      fail(stepErrorText((e as Error)?.message || "Save failed", body.steps));
     }
   }
 

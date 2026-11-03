@@ -15,6 +15,8 @@ CANCEL = "cancel: every pending fan turns skipped, at most 1 send lands after it
 REFUSE = "a Sensitive word (added, imported) is refused 4xx and leaves no run row"
 REPEAT = "the same message to the same Creator again inside 120 s is refused 409, no second row"
 RESUME = "resume: a live run keeps one leg queued (never two); a cancelled run is 409"
+UI_SEED = ("UI: the composer pre-ticks the Creator's OF MASSDMEXCLUDE list in Exclude; the POST and its run row "
+           "exclude it and none of its fans is frozen or got an OF send")
 
 
 def _claimed_row_resent_after_crash() -> None:
@@ -87,4 +89,13 @@ def register(Fault) -> dict:
         "pm-cancel-keeps-pending": Fault(_cancel_keeps_pending, (CANCEL,)),
         # slop/run priority-mass-5k --break --fault=pm-sensitive-word-ignored --baseline=...
         "pm-sensitive-word-ignored": Fault(_sensitive_word_ignored, (REFUSE,)),
+        # slop/run priority-mass-5k --break --fault=pm-ui-no-massdm-seed --baseline=... (not --no-ui)
+        # app/components/growth/PriorityMass.tsx as before the seed: its seedExclude effect returns before
+        # dispatching and Send no longer waits for the seed (the fix reverted). Only the composer's chunk
+        # holds `!lists || isFetching` / `!seeded` on the pages this scenario opens (FunnelLaunchPanel's
+        # twin is in growth/auto-funnel's, Mass's composer reads `listsQ`).
+        "pm-ui-no-massdm-seed": Fault(None, (UI_SEED,), browser=(
+            (r"if \(!accountId \|\| !lists \|\| isFetching\) return;", "return;"),
+            (r"disabled: send\.isPending \|\| !seeded", "disabled: send.isPending"),
+        )),
     }

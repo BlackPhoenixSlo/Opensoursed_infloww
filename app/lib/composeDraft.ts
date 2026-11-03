@@ -7,9 +7,9 @@
  *     merge would break the saved FREE-first order). The price is replaced
  *     too: a FREE template clears a typed price and the text lock, or a "free"
  *     template would go out as a stale PPV (a price > 0 is the sole paid
- *     signal). A template without a GIF clears picked GIFs, so a stale pick
- *     doesn't ride along. Tagged creators are merged (placeholders by id).
- *     Fields a composer lacks (`lockedText`, `pickedGifs` on a post; `text`
+ *     signal). A template with a GIF replaces picked GIFs with its own; one
+ *     without keeps the user's pick. Tagged creators are merged (placeholders
+ *     by id). Fields a composer lacks (`lockedText`, `pickedGifs` on a post; `text`
  *     in the chat draft, whose text is the chat's own) are left absent.
  *   • `canBeFreePreview` is THE free-preview rule: only a tile with a real
  *     vault id can be a free teaser. A fresh upload still carries a `_claim`
@@ -62,7 +62,7 @@ export function applyTemplate<D extends ComposeDraft>(draft: D, t: PickedTemplat
   if (draft.lockedText !== undefined) next.lockedText = paid ? t.lockedText : false;
   if (draft.pickedGifs !== undefined) {
     const url = t.gifUrl ?? "";
-    next.pickedGifs = t.gifId ? [{ id: t.gifId, thumbUrl: url, fullUrl: url, title: t.title }] : [];
+    next.pickedGifs = t.gifId ? [{ id: t.gifId, thumbUrl: url, fullUrl: url, title: t.title }] : draft.pickedGifs;
   }
   return next;
 }

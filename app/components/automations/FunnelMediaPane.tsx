@@ -36,7 +36,7 @@ import {
   pickerIds as pickerIdsOf,
 } from "@/components/automations/funnelMediaReducer";
 
-/** A PPV step in the funnel that needs media, with its 1-based step number. */
+/** A PPV step that needs media: `stepNo` is its wire `step` id (the media key); `label` names it by position. */
 interface PpvSlot {
   stepNo: number;
   label: string;
@@ -68,7 +68,7 @@ export function FunnelMediaPane({
     (fullQ.data?.steps ?? []).forEach((s, i) => {
       if (s.type === "paid_ppv") {
         const stepNo = typeof s.step === "number" ? s.step : i + 1;
-        out.push({ stepNo, label: `Step ${stepNo} · PPV` });
+        out.push({ stepNo, label: `Step ${i + 1} · PPV` });
       }
     });
     return out;

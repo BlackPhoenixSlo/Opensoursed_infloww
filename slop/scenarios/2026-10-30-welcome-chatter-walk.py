@@ -7,7 +7,10 @@ plus seed/welcome_chatter.py: per Creator the persona, Reply Instant on (W7, no 
 an enabled welcome_chatter_for_info rule whose daily sweep last fired 30 min ago; then
 `--users` fans without a seeded thread, spread over the Creators, one case each: open
 (we spoke last), double (his line still unanswered), blacklisted, skip-listed, muted
-creator we follow, promo blaster.
+creator we follow, promo blaster. Echo fans: `--set echo=N` (default one in ECHO_EVERY) of
+the open / double fans, drawn from `w.rng("wcfi_echo")`, whose opening line is
+lib/wcfi_relay.py's ECHO_LINE (an SQL update of that seeded row), so the fake DeepSeek
+answers them the small-model echo: his DM verbatim, then a question.
 
 Load: `rounds` rounds (default 2, `--set rounds=`): every case fan sends one DM, each a WS
 frame through `POST /__slop/of-ws-frame` in the pump's shape (`fan_dm.serial`: one frame
@@ -23,12 +26,14 @@ fan's 10 s reply cooldown is deferred to its end: the product's rule).
 Invariants (lib/wcfi_faults.py names them): TURNS (one turn per DM of an open fan, nothing
 dropped), SKIPLISTED (zero sends to a blacklisted / skip-listed / muted / promo fan),
 DOUBLE (no bubble reached OF twice), COUNTS (OF's sends = the new outbound rows, none to a
-fan who did not DM, no run errors), LANDED (every DM is its row). Budget: e2e p95, a DM's
+fan who did not DM, no run errors), LANDED (every DM is its row), ECHO (no bubble that
+repeats a fan's DM reached OF; per echo turn one echo reply served and exactly its other
+bubble sent). Budget: e2e p95, a DM's
 frame handed to the relay -> his turn's first bubble at OF, vs E2E_P95_MS and the last green run.
 
 Faked or bypassed, declared: DeepSeek at its HTTP boundary (lib/wcfi_relay.py through
 lib/automation_relay.py's loopback fake: `{}` for the fact extract, two unique lines for a reply,
-0.4 s each); OF's send (lib/relay.py `_OfflineOF.send_message`, journalled by
+his DM + one unique line for an echo fan's, 0.4 s each); OF's send (lib/relay.py `_OfflineOF.send_message`, journalled by
 lib/wcfi_relay.py); the agency's (fake) DeepSeek key through the real `PUT /admin/my-llm-keys`;
 the account DM rate raised to DM_PER_MIN through the real Concurrency panel route. Typing holds
 are 0 under CHATTERLY_TEST_MODE (no pacing bypass of our own). SLOP_LIVE=1 is refused (it would
@@ -39,6 +44,8 @@ SKIPLISTED goes red, through the BLACKLISTED fans alone (W7 wakes the lane for t
 them as `listed`, the fault answers them). The skip-listed fans never reach run() (W7 wakes no
 lane for them), so the fault does not touch them; nor the muted / promo fans (their own gates).
 `--fault=wcfi-turn-sent-twice` (each text bubble sent and persisted twice): only DOUBLE.
+`--fault=reply-shape-echo-kept` (the shaping's echo predicate answers False, so the parroting
+bubble goes to OF): only ECHO, through the echo fans alone.
 """
 from __future__ import annotations
 
@@ -46,11 +53,13 @@ import asyncio
 import itertools
 import json
 import os
+import re
 import time
 from collections import Counter, defaultdict
 
 from slop.actors import fan_dm
-from slop.lib.wcfi_faults import COUNTS, DOUBLE, LANDED, SKIPLISTED, TURNS
+from slop.lib.wcfi_faults import COUNTS, DOUBLE, ECHO, LANDED, SKIPLISTED, TURNS
+from slop.lib.wcfi_relay import ECHO_LINE
 from slop.seed import welcome_chatter as wc
 
 PROFILE = "agency_inbox"
@@ -74,6 +83,7 @@ P95_VS_LAST = (1.5, 1000)
 DM_PER_MIN = 600
 ROUNDS = 2
 SETTLE_S = 300
+ECHO_EVERY = 6   # default echo fans: one in this many open / double fans (at least one)
 OF_SEND_ID_BASE = 9_700_000_000_000   # lib/relay.py: the fake OF's message ids (this run's sends)
 KIND = wc.KIND
 # wcfi's best-effort OF calls after a send (nickname push, mark read): the offline OF answers
@@ -87,13 +97,17 @@ def _pending_jobs(con) -> int:
                        (KIND,)).fetchone()[0]
 
 
+def _words(t: str | None) -> str:
+    return " ".join(re.findall(r"\w+", (t or "").lower()))
+
+
 def pct(xs, q=0.95):
     xs = sorted(xs)
     return round(xs[min(len(xs) - 1, int(round(q * (len(xs) - 1))))], 1) if xs else None
 
 
 async def run(ctx) -> None:
-    names = (TURNS, SKIPLISTED, DOUBLE, COUNTS, LANDED)
+    names = (TURNS, SKIPLISTED, DOUBLE, COUNTS, LANDED, ECHO)
     if os.environ.get("SLOP_LIVE") == "1":
         for n in names:
             ctx.skip(n, "SLOP_LIVE=1 would call the paid DeepSeek API; this scenario runs on the fake only")
@@ -114,6 +128,14 @@ async def run(ctx) -> None:
     rate = float(ctx.param("rate", RATE))
     ids = itertools.count(fan_dm.INJECT_ID_BASE)   # one id space over the rounds (no upsert of round 1)
     con = w.sql()
+    # Echo fans: his seeded opening line becomes ECHO_LINE (the fake echoes his DM back).
+    n_echo = int(ctx.param("echo", max(1, len(open_fans) // ECHO_EVERY)))
+    echo_fans = set(w.rng("wcfi_echo").sample(sorted(open_fans), min(n_echo, len(open_fans))))
+    with con:
+        for a, f in sorted(echo_fans):
+            con.execute("UPDATE messages SET body=? WHERE rowid=(SELECT rowid FROM messages WHERE account_id=?"
+                        " AND fan_id=? AND direction='in' ORDER BY created_at, message_id LIMIT 1)",
+                        (ECHO_LINE, a, f))
     flat = [x for k in sorted(cases) for x in k]
     pairs = " OR ".join(["(account_id=? AND fan_id=?)"] * len(cases))
     tc0 = {(a, int(f)): int(t or 0) for a, f, t in con.execute(
@@ -230,6 +252,17 @@ async def run(ctx) -> None:
               of_sends=len(sends), of_sends_stat=of_sends_n, new_rows=len(row_ids),
               only_at_of=len(send_ids - row_ids), only_in_db=len(row_ids - send_ids),
               other_kind_rows=len(foreign), stray_fans=stray[:5], runs=len(runs), run_errors=errs[:3])
+
+    # ECHO: no bubble repeating a DM at OF; each echo turn = one echo reply served = one distinct
+    # bubble at OF (distinct texts: a bubble sent twice is DOUBLE's, not this check's).
+    dm_words = {_words(f"slop wcfi round {r} 1/1") for r in range(1, rounds + 1)}
+    echoed = [f"{s['account_id']}/{s['fan_id']}: {s['text'][:40]}" for s in sends if _words(s["text"]) in dm_words]
+    served = int(calls.get("deepseek:wcfi_echo", 0))
+    echo_turns = sum(tc1.get(k, 0) - tc0.get(k, 0) for k in echo_fans)
+    echo_texts = len({(k, s["text"]) for k in echo_fans for s in by_fan.get(k, [])})
+    ctx.check(ECHO, bool(echo_fans) and served > 0 and not echoed and served == echo_turns == echo_texts,
+              echo_fans=len(echo_fans), echo_replies_served=served, echo_turns=echo_turns,
+              echo_fan_bubbles_distinct=echo_texts, echoed_at_of=len(echoed), e_g=echoed[:3])
 
     p95 = pct(e2e)
     ctx.check(f"e2e DM frame -> first bubble at OF p95 <= {E2E_P95_MS} ms",

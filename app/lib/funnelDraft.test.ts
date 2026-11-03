@@ -1,8 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 
 import { canSubmit, initialRawJson, rawJsonReducer, type RawJsonAction, type RawJsonState } from "./rawJsonReducer";
 import {
-  blankStep, editFunnel, EMPTY_FUNNEL, FUNNEL_RAW, funnelDraftOf, saveBody, toDraft, toWire,
+  blankStep, editFunnel, EMPTY_FUNNEL, FUNNEL_RAW, funnelDraftOf, saveBody, stepErrorText, toDraft, toWire,
   type FunnelDraft, type FunnelEdit,
 } from "./funnelDraft";
 import type { FunnelFull, FunnelStep } from "@/hooks/useFunnels";
@@ -47,7 +47,7 @@ describe("FUNNEL_RAW", () => {
     ["step number 0", body([{ step: 0, messages: ["a"] }]), "Step 1 step must be a whole number ≥ 1."],
     ["step number a string", body([{ step: "2", messages: ["a"] }]), "Step 1 step must be a whole number ≥ 1."],
     ["step number fractional", body([{ step: 1.5, messages: ["a"] }]), "Step 1 step must be a whole number ≥ 1."],
-    ["duplicate step numbers", body([{ step: 3, messages: ["a"] }, { step: 3, messages: ["b"] }]), "Step 2 reuses step number 3."],
+    ["duplicate step numbers", body([{ step: 3, messages: ["a"] }, { step: 3, messages: ["b"] }]), "Step 2 has the same id as Step 1 (id 3)."],
   ])("rejects %s, keeping the last valid draft", (_name, text, error) => {
     const s = edit(text);
     expect(s.error).toContain(error);
@@ -166,5 +166,125 @@ describe("editFunnel", () => {
     editFunnel(two, { type: "moveStep", i: 0, dir: 1 });
     editFunnel(two, { type: "patchMsg", i: 0, mi: 0, text: "q" });
     expect(JSON.stringify(two)).toBe(snap);
+  });
+});
+
+describe("stepErrorText (server 422 → step named by position)", () => {
+  const gapped = [{ step: 1 }, { step: 3 }, { step: 7 }];
+  it.each<[string, string]>([
+    ["step[1] must be an object", "Step 2 must be an object"],
+    ["step[0] is missing 'step'", "Step 1 is missing 'step'"],
+    ["step[2].step must be a whole number", "Step 3 step must be a whole number"],
+    ["step[2].step must be >= 1", "Step 3 step must be >= 1"],
+    ["step[1] has unknown type 'ppv' (only 'paid_ppv')", "Step 2 has unknown type 'ppv' (only 'paid_ppv')"],
+    ["step[0] needs non-empty 'messages' or 'prompt'/'generate': true",
+      "Step 1 needs non-empty 'messages' or 'prompt'/'generate': true"],
+    ["step[1].price must be a whole number", "Step 2 price must be a whole number"],
+    ["step[1].price must be >= 0", "Step 2 price must be >= 0"],
+    ["step[1].locked_text must be true or false", "Step 2 locked_text must be true or false"],
+    ["step[0].check_intervals_min must be a non-empty list", "Step 1 check_intervals_min must be a non-empty list"],
+    ["step[0].check_intervals_min must be a whole number", "Step 1 check_intervals_min must be a whole number"],
+    ["step[0].check_intervals_min must be positive ints", "Step 1 check_intervals_min must be positive ints"],
+    ["step[0].next must be an object", "Step 1 next must be an object"],
+    ["step[0].next has unknown key 'x' (allowed: bought, ignored, default, keyword)",
+      "Step 1 next has unknown key 'x' (allowed: bought, ignored, default, keyword)"],
+    ["step[0].next.bought must be a whole number", "Step 1 next.bought must be a whole number"],
+    ["step[0].next.keyword must be a non-empty object of {word: step}",
+      "Step 1 next.keyword must be a non-empty object of {word: step}"],
+    ["step[0].next.keyword has a blank keyword", "Step 1 next.keyword has a blank keyword"],
+    ["step[0].next.keyword['hi'] must be a whole number", "Step 1 next.keyword['hi'] must be a whole number"],
+    // dangling `next` target (cross-step check): the id is unknown → said so, id kept for the raw view
+    ["step[1].next.default → step 9 references no existing step",
+      "Step 2 next.default points to a step that does not exist (id 9)."],
+    ["step[0].next.keyword['buy'] → step 4 references no existing step",
+      "Step 1 next.keyword['buy'] points to a step that does not exist (id 4)."],
+    // an id that exists in the sent list → its position, still worded as an error (gapped ids 1, 3, 7)
+    ["step[0].next.bought → step 7 references no existing step",
+      "Step 1 next.bought points to Step 3 (id 7), which the server could not find."],
+    // not a step error → unchanged
+    ["steps must be a list", "steps must be a list"],
+    ["steps are not JSON-serialisable: bad", "steps are not JSON-serialisable: bad"],
+    ["name is required", "name is required"],
+    ["relay 500", "relay 500"],
+    ["Step 2 needs at least one message (or switch it to AI-generated).",
+      "Step 2 needs at least one message (or switch it to AI-generated)."],
+  ])("%s", (msg, want) => {
+    expect(stepErrorText(msg, gapped)).toBe(want);
+  });
+});
+
+describe("load repair (stored check_intervals_min the validators refuse)", () => {
+  let warn: MockInstance<typeof console.warn>;
+  beforeEach(() => { warn = vi.spyOn(console, "warn").mockImplementation(() => {}); });
+  afterEach(() => warn.mockRestore());
+  let nextId = 100;
+  const stored = (steps: FunnelStep[]) =>
+    ({ id: nextId++, name: "legacy", description: null, opening_message: "o", step_count: steps.length, steps }) as FunnelFull;
+
+  it.each<[string, unknown, boolean]>([
+    ["absent", undefined, false],
+    ["null", null, false],
+    ["good", [2, 4, 10], false],
+    ["not a list", 5, true],
+    ["empty list", [], true],
+    ["zero", [0], true],
+    ["negative", [-1], true],
+    ["fraction", [1.5], true],
+    ["string entry", ["5"], true],
+    ["bool entry", [true], true],
+    ["mixed (pre-validator row)", [0, "x"], true],
+  ])("%s", (_name, iv, dropped) => {
+    // reply steps are the ones the server refuses; PPV rows predate the validator
+    for (const type of [undefined, "paid_ppv"]) {
+      const s = { step: 3, ...(type ? { type } : {}), messages: ["a"], ...(iv === undefined ? {} : { check_intervals_min: iv }) } as FunnelStep;
+      const d = funnelDraftOf(stored([s]));
+      expect(d.steps).toEqual(dropped ? [{ ...toDraft(s), intervals: "" }] : [toDraft(s)]);
+      if (dropped) expect("check_intervals_min" in saveBody({ ...d, name: "n" }).steps[0]).toBe(false);
+    }
+    expect(warn).toHaveBeenCalledTimes(dropped ? 2 : 0);
+  });
+
+  it("drops it on load (blank → walker default), warns once per funnel, and a save sends no malformed field", () => {
+    const f = stored([
+      { step: 1, messages: ["a"], next: { default: 3 } },
+      { step: 3, type: "paid_ppv", messages: ["b"], check_intervals_min: [0, "x"] } as unknown as FunnelStep,
+    ]);
+    const d = funnelDraftOf(f);
+    expect(d.steps[1].intervals).toBe("");
+    expect(d.steps[1].step).toBe(3);
+    expect(saveBody({ ...d, name: "n" }).steps).toEqual([
+      { step: 1, messages: ["a"], next: { default: 3 } }, { step: 3, type: "paid_ppv", messages: ["b"] },
+    ]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain(`(id ${f.id})`);
+    expect(warn.mock.calls[0][0]).toContain("Step 2");
+    expect(warn.mock.calls[0][0]).toContain("dropped on save");
+    funnelDraftOf(f); // re-open on the same page load
+    expect(warn).toHaveBeenCalledTimes(1);
+    funnelDraftOf(stored(f.steps)); // another funnel
+    expect(warn).toHaveBeenCalledTimes(2);
+  });
+
+  it("a well-formed funnel: no warning, drafts = plain toDraft, request body unchanged", () => {
+    const steps: FunnelStep[] = [
+      { step: 1, messages: ["a"], check_intervals_min: [2, 4, 10], next: { default: 7 } },
+      { step: 7, type: "paid_ppv", price: 9, locked_text: true, messages: ["b"], check_intervals_min: [30] },
+      { step: 8, generate: true, prompt: "p" },
+    ];
+    const f = stored(steps);
+    expect(funnelDraftOf(f).steps).toEqual(f.steps.map(toDraft));
+    const body = saveBody(funnelDraftOf(f));
+    expect(JSON.stringify(body)).toBe(JSON.stringify({
+      name: "legacy", opening_message: "o", description: null, steps: [
+        { next: { default: 7 }, step: 1, check_intervals_min: [2, 4, 10], messages: ["a"] },
+        { step: 7, type: "paid_ppv", price: 9, locked_text: true, check_intervals_min: [30], messages: ["b"] },
+        { step: 8, generate: true, prompt: "p" },
+      ],
+    }));
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("raw JSON a user types keeps its validation (repair is load-only)", () => {
+    expect(edit(body([{ messages: ["a"], check_intervals_min: [0, "x"] }])).error).toContain('Step 1 interval "0" must be');
   });
 });

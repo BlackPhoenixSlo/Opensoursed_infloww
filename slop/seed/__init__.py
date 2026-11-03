@@ -62,7 +62,7 @@ FLOW_SIZES: dict[str, tuple[int, int, int]] = {
     "notifications_feed_rows": (1_000, 10_000, 50_000),
     # mass-placeholder-echo
     "mass_placeholder_per_run": (10, 60, 150), "mass_placeholder_stale": (4, 20, 40),
-    "mass_placeholder_both": (2, 10, 20),
+    "mass_placeholder_both": (2, 10, 20), "mass_placeholder_excluded": (2, 2, 2),
     # tracking-links-clicks
     "tracking_links_links": (4, 10, 20), "tracking_links_campaigns": (6, 12, 24),
     "tracking_links_claimed": (30, 150, 1_000), "tracking_links_clicks": (600, 8_000, 30_000),
@@ -77,6 +77,15 @@ FLOW_SIZES: dict[str, tuple[int, int, int]] = {
     "ledger_reports_recipients": (40, 300, 1_000),
     # state-reducers
     "state_reducers_unsend_copies": (3, 8, 8),
+    # fan-info-sweep: seed/fan_info_history.py fans per Creator (<= the sweep's 200 cap)
+    "fan_info_fans": (12, 60, 150),
+    # img-chat-media: seed/chat_media.py CDN assets (a photo = thumb + source); small 120: the quiet probe needs
+    # >= 20 cacheable tiles (P95_VS_LAST_MIN_N) besides the herd's chats
+    "img_chat_assets": (120, 400, 1_200),
+    # of-upload-wire: Composer files (all Creators), of them multipart (> 5 MiB); per Creator, a vault
+    # import's fresh files and its already-uploaded ones
+    "of_upload_files": (12, 400, 1_000), "of_upload_big_files": (2, 6, 12),
+    "of_upload_import_files": (3, 5, 8), "of_upload_import_dupes": (1, 2, 3),
 }
 for _i, _scale in enumerate(("small", "medium", "huge")):
     SCALES[_scale].update({k: v[_i] for k, v in FLOW_SIZES.items()})

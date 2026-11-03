@@ -1299,6 +1299,12 @@ class FollowupState(Base):
     messages_sent: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     completed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     stopped_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # Send-once marker (send_marker_decide): set right before the OF call, cleared
+    # by the Sent save; `unconfirmed_at` = it may have sent. Nullable/additive:
+    # init_db self-heals via ALTER TABLE. `sending_ctx` JSON {"step": n}.
+    sending_at: Mapped[datetime | None] = mapped_column(DateTime)
+    sending_ctx: Mapped[str | None] = mapped_column(Text)
+    unconfirmed_at: Mapped[datetime | None] = mapped_column(DateTime)
     updated_at: Mapped[datetime] = _ts_now()
 
 
@@ -1651,6 +1657,13 @@ class FunnelState(Base):
     # self-heals it via ALTER TABLE, so no migration (mirrors the rest of
     # funnel_state); NULL (a row from before it) keeps the old step c - 1 rule.
     last_sent_step: Mapped[int | None] = mapped_column(Integer)
+    # Send-once marker (send_marker_decide): set right before the step's first OF
+    # call, cleared by the Sent save; `unconfirmed_at` = it may have sent. Status
+    # stays 'pending'. Nullable/additive: init_db self-heals via ALTER TABLE.
+    # `sending_ctx` JSON = the funnel_decide.Facts the step was sent on.
+    sending_at: Mapped[datetime | None] = mapped_column(DateTime)
+    sending_ctx: Mapped[str | None] = mapped_column(Text)
+    unconfirmed_at: Mapped[datetime | None] = mapped_column(DateTime)
     updated_at: Mapped[datetime] = _ts_now()
 
 

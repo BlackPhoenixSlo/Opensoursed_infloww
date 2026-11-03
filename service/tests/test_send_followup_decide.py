@@ -14,6 +14,8 @@ The tables lock the ordering rules run() used to carry inline:
                           a finished drip with no reply, guard or Send). Only the guard's
                           hold is an effect (Wait); every other hold is just no Send.
   case_sent_table:        a returned send records the step; the third ends the drip.
+  case_marked_table:      a send-once marker (fresh or stale, unconfirmed or not) holds
+                          the fan: no Send and no Save on Tick or Seen; Sent clears it.
   case_thresholds_table:  _resolve_step_thresholds' overrides and fallbacks.
   case_pick_step_table:   _pick_next_step: the first unsent due step, in step order.
   case_whole_drip_walk:   one fan from silence through steps 1-3, a reply, the restart
@@ -230,6 +232,44 @@ def case_sent_table():
     e = Entry(messages_sent=sent(s1=40))
     decide(e, Sent(2, N), _STEP_THRESHOLDS_H)
     assert e.messages_sent == sent(s1=40), "decide must not mutate the entry it was given"
+
+
+# ── Send-once marker: a marked fan is never auto-sent ─────────────────
+
+FRESH = replace(A70, sending_at=h(0.01), sending_ctx={"step": 2})            # in flight
+STALE = replace(A70, sending_at=h(30), sending_ctx={"step": 2})              # dead attempt
+UNCONF = replace(FRESH, unconfirmed_at=h(0))
+MARKED_RC = replace(RC, sending_at=h(30), sending_ctx={"step": 1})          # cooldown ran out
+
+MARKED_ROWS = [
+    ("fresh mark, step due -> no Send, no Save", FRESH, seen(last_out=40), None, []),
+    ("stale mark, step due -> no Send, no Save", STALE, seen(last_out=40), None, []),
+    ("unconfirmed, step due -> no Send, no Save", UNCONF, seen(last_out=40), None, []),
+    ("marked + his reply -> no reply cooldown either", STALE, seen(last_in=1, last_out=40),
+     None, []),
+    ("marked + guard -> no Wait", STALE, seen(last_out=40, guarded=True), None, []),
+    ("marked, expired cooldown -> Tick resumes nothing", MARKED_RC, Tick(N), None, []),
+    ("Sent clears a stale mark", STALE, Sent(2, h(30)),
+     replace(A70, messages_sent={**A70.messages_sent, "2": h(30).isoformat()}), [Save()]),
+    ("Sent clears an unconfirmed mark", UNCONF, Sent(2, N),
+     replace(A70, messages_sent={**A70.messages_sent, "2": N.isoformat()}), [Save()]),
+]
+
+
+def case_marked_table():
+    _check(MARKED_ROWS)
+    for e in (FRESH, STALE, UNCONF, MARKED_RC):
+        assert e.marked, e
+        assert decide(e, seen(last_out=40), _STEP_THRESHOLDS_H)[0] is e, "held entry unchanged"
+    assert not A70.marked and not Entry().marked
+    # the row seam: marker columns + JSON ctx (a bad ctx reads None); NULLs are unmarked
+    from types import SimpleNamespace as NS
+    base = dict(phase="tracking", cycle=1, silence_started_at=None, fan_last_reply_at=None,
+                cooldown_until=None, messages_sent="{}", unconfirmed_at=None)
+    got = Entry.from_row(NS(**base, sending_at=h(1), sending_ctx='{"step": 3}'))
+    assert (got.sending_at, got.sending_ctx, got.marked) == (h(1), {"step": 3}, True), got
+    assert not Entry.from_row(NS(**base, sending_at=None, sending_ctx=None)).marked
+    assert Entry.from_row(NS(**base, sending_at=h(1), sending_ctx="not json")).sending_ctx is None
 
 
 # ── Thresholds ────────────────────────────────────────────────────────

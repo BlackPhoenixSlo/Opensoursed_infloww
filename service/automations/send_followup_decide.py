@@ -20,7 +20,12 @@ Events (what run() saw):
                                         whether the contact guard holds him;
                                         fed again with fresh times right before
                                         his send (a reply mid-tick -> no Send)
-  Sent(step, now)                       his step went out (OF returned the send)
+  Sent(step, now)                       his step went out (OF returned the send, or
+                                        the settle found it landed); clears the marker
+
+A marked entry (send-once marker `sending_at` / `unconfirmed_at`, send_marker_decide)
+is never auto-sent: every event but Sent is (e, []), no Send and no Save, so a tick
+never rewrites a marker the user's Retry just cleared.
 
 Effects (what run() does, in list order; run() counts each by value):
   Save()                 upsert entry' into followup_state
@@ -82,6 +87,16 @@ class Entry:
     fan_last_reply_at: datetime | None = None
     cooldown_until: datetime | None = None
     messages_sent: dict = field(default_factory=dict)
+    # The send-once marker (followup_state columns): set right before the OF call,
+    # `unconfirmed_at` when it may have sent; `sending_ctx` = {"step": n}.
+    sending_at: datetime | None = None
+    sending_ctx: dict | None = None
+    unconfirmed_at: datetime | None = None
+
+    @property
+    def marked(self) -> bool:
+        """A send of his may have left: never auto-send (a settle or Retry clears it)."""
+        return self.sending_at is not None or self.unconfirmed_at is not None
 
     @classmethod
     def from_row(cls, row) -> "Entry":
@@ -92,10 +107,17 @@ class Entry:
             sent = json.loads(row.messages_sent or "{}") or {}
         except Exception:
             sent = {}
+        try:
+            ctx = json.loads(row.sending_ctx or "null")
+        except Exception:
+            ctx = None
         return cls(phase=row.phase or "tracking", cycle=row.cycle or 1,
                    silence_started_at=row.silence_started_at,
                    fan_last_reply_at=row.fan_last_reply_at,
-                   cooldown_until=row.cooldown_until, messages_sent=sent)
+                   cooldown_until=row.cooldown_until, messages_sent=sent,
+                   sending_at=row.sending_at,
+                   sending_ctx=ctx if isinstance(ctx, dict) else None,
+                   unconfirmed_at=row.unconfirmed_at)
 
     def replied_since_anchor(self, last_fan: datetime | None) -> bool:
         """Fan wrote back after we started counting his silence. Anchored on
@@ -217,6 +239,9 @@ def _pick_next_step(
 
 def decide(e: Entry, ev: Tick | Seen | Sent,
            thresholds: dict[int, float]) -> tuple[Entry, list[Effect]]:
+    if e.marked and not isinstance(ev, Sent):
+        return e, []  # may have sent: held for a settle or the user's Retry
+
     if isinstance(ev, Tick):
         if e.phase in _COOLING and e.cooldown_until and ev.now > e.cooldown_until:
             restart = e.phase == "restart_cooldown"
@@ -228,7 +253,8 @@ def decide(e: Entry, ev: Tick | Seen | Sent,
     if isinstance(ev, Sent):
         sent = {**e.messages_sent, str(ev.step): ev.now.isoformat()}
         return replace(e, messages_sent=sent,
-                       phase="all_sent_waiting" if len(sent) >= 3 else e.phase), [Save()]
+                       phase="all_sent_waiting" if len(sent) >= 3 else e.phase,
+                       sending_at=None, sending_ctx=None, unconfirmed_at=None), [Save()]
 
     now = ev.now
     if e.phase in _COOLING:

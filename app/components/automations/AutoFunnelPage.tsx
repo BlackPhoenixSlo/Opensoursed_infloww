@@ -17,6 +17,7 @@
 import { AiKeyNotice } from "@/components/AiKeyNotice";
 import { NoCreator, useAutomationCreator } from "@/components/automations/automationPage";
 import { MassFunnelsTab } from "@/components/automations/FunnelEditor";
+import { UnconfirmedSends } from "@/components/automations/UnconfirmedSends";
 import { PageFrame } from "@/components/shell/PageFrame";
 
 const TITLE = "Auto Funnel";
@@ -34,6 +35,7 @@ export default function AutoFunnelPage() {
         <PageFrame title={TITLE} creators={creators} actions={actions}>
           <div className="space-y-4">
             <AiKeyNotice accountId={accountId} kinds={["reply_mass_funnel"]} />
+            <UnconfirmedSends key={accountId} accountId={accountId} />
             {body}
           </div>
         </PageFrame>

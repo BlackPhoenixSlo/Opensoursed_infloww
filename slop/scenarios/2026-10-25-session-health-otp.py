@@ -30,7 +30,8 @@ spread over the pump's 1 s reconnect) meet the same 101: many callers of two kin
 at once. READER's socket stays up: only its one inbox read can flag it. Once all are
 flagged, phase B schedules more for every Creator while the executor ticks and the
 pump supervisor passes; the window from the flip is at least WS_WINDOW_S, which
-the old reconnect loop (1, 2, 4, 8 s) fills with five /users/me. Phase C: OnlyFans
+holds the pump's 3 retries (2, 4, 8 s after the drop's 1 s), its exit and supervisor
+passes after it, which an unbounded reconnect loop would outlast still running. Phase C: OnlyFans
 takes the logins again and each owner re-captures each flagged Creator through the
 real `POST /admin/session/bootstrap` (paste-curl, a signed /users/me curl); the
 executor drains the parked sends. Phase D: OnlyFans asks one healthy Creator for a
@@ -50,11 +51,12 @@ Invariants: account_health flags exactly the 2FA Creators (otp_required); one
 session_dead notification per (owner, 2FA Creator) though many callers met the 101
 at once, data.href the Browserbase relink, none for any other owner, and each
 affected owner's /events carried it; every concurrent read answered 502 (upstream
-400); READER's read flagged and notified it; per OTP_IDX Creator at most two
-/users/me over the window (the pump's reconnect, the probe's) and its pump exited
-and stayed parked through the supervisor passes; after detection a 2FA Creator
-makes no run (no automation_runs row), no OF call but the probe's /users/me, its
-sends stay pending; every healthy Creator's send reached OF once, in fire-time
+400); READER's read flagged and notified it; per OTP_IDX Creator at most five
+/users/me over the window (the pump's 1 + 3 retries, the probe's), the retries each
+at least its backoff (2, 4, 8 s, less 0.5) after the last, and its pump exited within
+2 s of its last /users/me and stayed parked through the supervisor passes; after
+detection a 2FA Creator makes no run (no automation_runs row), no OF call but
+/users/me (the pump's, the probe's), its sends stay pending; every healthy Creator's send reached OF once, in fire-time
 order, with its outbound message row (nothing dropped, counts match), Agencies 2-4
 untouched; /admin/accounts shows each owner its 2FA Creators paused (the UI's
 side-effect check). Recovery: the flags clear, every parked send reaches OF exactly
@@ -97,7 +99,8 @@ from slop.lib.browserbase import paste_curl
 from slop.lib.client import Recorder
 from slop.lib.egress_faults import RESET_AFTER_S, WS_GAP, WS_GAP_MAX_S
 from slop.lib.pump_faults import (BACKOFF_SLACK_S, BACKOFF_WANT_S, BACKOFF_WINDOW_S, PROBE_RESTART,
-                                  PUMP_BACKOFF, PUMP_STOP, WS_PARKED, WS_WINDOW_S)
+                                  PUMP_BACKOFF, PUMP_STOP, WS_EXIT_SLACK_S, WS_ME_MAX, WS_PARKED,
+                                  WS_RETRIES, WS_RETRY_GAPS_S, WS_RETRY_SLACK_S, WS_WINDOW_S)
 from slop.seed import of_sessions
 
 PROFILE = "multi_agency_big_models"
@@ -138,6 +141,7 @@ C_READS = "every concurrent inbox read of a 2FA Creator answered 502 with OF's 4
 C_READER = ("a Creator with no automations is flagged by its owner's inbox read alone (via=proxy): "
             "otp_required, one notification")
 C_WS = WS_PARKED
+C_WS_RETRY = WS_RETRIES
 C_REC_ROW = "recovery: a re-capture through POST /admin/session/bootstrap clears every flag"
 C_REC_SENDS = ("recovery: every parked send of a 2FA Creator reached OF exactly once, in fire-time order, "
                "with its outbound row")
@@ -395,7 +399,7 @@ async def run(ctx) -> None:
               reason=flagged.get(reader), notes=got[(owner_of[reader], reader)], via_proxy_logged=via_proxy,
               automation_rows=reader_rows)
 
-    # ── the WS pump: one reconnect, then parked ───────────────────────────────
+    # ── the WS pump: 3 retries, then parked ───────────────────────────────────
     with fake.lock:
         calls = list(fake.calls)
         conns = list(fake.ws_connects)
@@ -403,14 +407,29 @@ async def run(ctx) -> None:
     for a in otp:
         me = [c for c in calls if c["account"] == a and c["route"] == "GET /api2/v2/users/me"
               and flip_t <= c["t"] <= end_b]
-        # Passes from 5 s after the flip: the pump's own reconnect is due 1 s after its socket ended.
-        states = [p["pumps"].get(a) for p in passes if p["t"] >= flip_t + 5]
+        # The pump's retries: from its first /users/me, each next one >= its backoff later (the probe's
+        # /users/me, if any, may fall between: skipped).
+        picked = me[:1]
+        for gap in WS_RETRY_GAPS_S:
+            nxt = next((c for c in me if c["t"] - picked[-1]["t"] >= gap - WS_RETRY_SLACK_S), None) if picked else None
+            if nxt is None:
+                break
+            picked.append(nxt)
+        # Passes from WS_EXIT_SLACK_S after the pump's last /users/me (the 101 it gives up on; the flip if
+        # none): an exit due then, not at a hard-coded time, so a slow relay still leaves passes to count.
+        exit_t = (picked[-1]["t"] if picked else flip_t) + WS_EXIT_SLACK_S
+        states = [p["pumps"].get(a) for p in passes if p["t"] >= exit_t]
         ws[a] = {"users_me": dict(Counter(c["status"] for c in me)),
+                 "users_me_s_after_flip": [round(c["t"] - flip_t, 1) for c in me],
                  "reconnects": sum(1 for c in conns if c["account"] == a and c["t"] >= flip_t),
-                 "pump_states_from_flip_plus_5s": dict(Counter(states))}
-        ws[a]["ok"] = (1 <= len(me) <= 2 and all(c["status"] == 400 for c in me) and ws[a]["reconnects"] == 0
+                 "pump_exit_due_s_after_flip": round(exit_t - flip_t, 1),
+                 "pump_states_from_exit_due": dict(Counter(states))}
+        ws[a]["ok"] = (len(me) <= WS_ME_MAX and all(c["status"] == 400 for c in me) and ws[a]["reconnects"] == 0
                        and len(states) >= 2 and set(states) == {"exited"})
+        ws[a]["retries_ok"] = len(picked) == 1 + len(WS_RETRY_GAPS_S)
     ctx.check(C_WS, all(v["ok"] for v in ws.values()), window_s=round(end_b - flip_t, 1), per_creator=ws)
+    ctx.check(C_WS_RETRY, all(v["retries_ok"] for v in ws.values()),
+              per_creator={a: v["users_me_s_after_flip"] for a, v in ws.items()})
 
     # ── the pause ─────────────────────────────────────────────────────────────
     calls_after = defaultdict(Counter)

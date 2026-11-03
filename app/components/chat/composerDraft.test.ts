@@ -104,9 +104,9 @@ describe("composerDraft", () => {
     ])("%s sets the draft's script (a newer pick replaces an older one)", (_name, over, want) => {
       expect(run(FULL, { type: "pickTemplate", t: tpl(over) }).script).toEqual(want);
     });
-    it("a free template clears a typed price, the lock, previews and a stale GIF", () => {
+    it("a free template clears a typed price, the lock and previews; a GIF-less one keeps the picked GIF", () => {
       const s = run(FULL, { type: "pickTemplate", t: tpl({ lockedText: true }) });
-      expect(s).toMatchObject({ price: "", priceOpen: false, lockedText: false, attached: [], previewCount: 0, pickedGifs: [] });
+      expect(s).toMatchObject({ price: "", priceOpen: false, lockedText: false, attached: [], previewCount: 0, pickedGifs: FULL.pickedGifs });
       expect(s.taggedCreators).toBe(FULL.taggedCreators);
       expect(s.scheduleAt).toBe(LATER);
     });

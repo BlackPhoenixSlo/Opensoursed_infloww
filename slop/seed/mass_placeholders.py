@@ -1,6 +1,6 @@
 """Mass placeholders whose OF echo never came: per Creator one closed `mass_runs` row (status
-`ok`, its body and send stamp, as `server._close_mass_run` leaves it, audience_filter as
-`server._open_mass_run` stores an explicit-fan composer send) and one optimistic `messages` row
+`ok`, its body and send stamp, as `mass_queue_api._close_mass_run` leaves it, audience_filter as
+`mass_queue_api._open_mass_run` stores an explicit-fan composer send) and one optimistic `messages` row
 per recipient in the shape `attribution.write_mass_optimistic_rows` writes (message_id
 `_MASS_PLACEHOLDER_BASE + run`, `temp_id mass:<run>:<fan>`, the run, the body as stored with
 plain `\\n`, sender_name "", no employee). Prod's common case: 90.6% of stubs never get a real
@@ -35,7 +35,7 @@ PLACEHOLDER_CEIL = _attribution_const("_MASS_PLACEHOLDER_CEIL")
 
 
 def _audience(fan_ids: list[int]) -> str:
-    """mass_runs.audience_filter as `server._open_mass_run` stores a composer send to explicit
+    """mass_runs.audience_filter as `mass_queue_api._open_mass_run` stores a composer send to explicit
     fans (`user_ids` only; same keys, same order). Not `send_mass_decide.audience_filter`: that
     is the automation sender's wider shape, and this run is a composer send."""
     return json.dumps({"user_lists": [], "included_users": list(fan_ids), "excluded_users": [],

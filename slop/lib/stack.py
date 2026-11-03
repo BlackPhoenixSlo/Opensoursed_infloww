@@ -268,7 +268,8 @@ class Stack:
             raise SystemExit(f"slop: APP_MODE=prod builds with Turbopack (as `pnpm build`), which refuses a symlinked "
                              f"app/node_modules; replace the link with an APFS clone: rm {nm} && cp -cR {nm.resolve()} {nm}")
         t0 = time.time()
-        # `next build` adds its dist dir's type paths to tsconfig.json and rewrites next-env.d.ts: put both back.
+        # `next build` rewrites next-env.d.ts, and adds a dist dir's type paths to tsconfig.json unless its
+        # exact includes already list them (a new dist dir): put both back.
         kept = {f: f.read_bytes() for f in (ROOT / "app" / "tsconfig.json", ROOT / "app" / "next-env.d.ts") if f.exists()}
         try:
             with open(self.logdir / "next-build.log", "w") as fh:

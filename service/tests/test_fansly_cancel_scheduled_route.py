@@ -27,6 +27,7 @@ from fansly_client import FanslySession  # noqa: E402
 from fansly_shim import FanslyShimClient  # noqa: E402
 
 import server  # noqa: E402
+import mass_queue_api  # noqa: E402
 
 # A snowflake above 2^53: the id must reach Fansly digit for digit.
 POST = "900546198725955584"
@@ -67,7 +68,7 @@ def case_cancel_route_reaches_the_fansly_post_lane_cancel():
     routes = {(m, r.path) for r in server.app.routes for m in getattr(r, "methods", ())}
     assert ("DELETE", "/api/of/v2/messages/queue/{queue_id}") in routes
     c = _shim()
-    resp = _with(c, lambda: asyncio.run(server.of_cancel_scheduled(_NoAccount(), int(POST))))
+    resp = _with(c, lambda: asyncio.run(mass_queue_api.of_cancel_scheduled(_NoAccount(), int(POST))))
     assert resp == {"success": True}, resp
     assert c.calls == [("POST", f"/post/scheduled/{POST}/cancel", None)], c.calls
 

@@ -28,7 +28,7 @@ const AID = "1000001";
 const folder = (id: number, name: string): VaultList => ({ id, name, type: "custom", hasMedia: false });
 const FOLDERS = [folder(1, "Alpha"), folder(2, "Beta"), folder(3, "Gamma")];
 /** The header's sort button: its text is the label. */
-const sortButton = () => screen.getByTitle(/^The sort last set here/);
+const sortButton = () => screen.getByTitle(/^Sort — the name shown is saved in this browser/);
 
 const newClient = () => new QueryClient({ defaultOptions: { queries: { gcTime: Infinity, retry: false } } });
 

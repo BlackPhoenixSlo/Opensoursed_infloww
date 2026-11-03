@@ -6,8 +6,9 @@ World: `agency_inbox` (seed/fans.py, seed/threads.py: the contact guard's histor
 seed/priority_mass_audience.py for three Creators: A (roster `--roster_a`, SCALES
 `priority_mass_roster_a`: 7,000 at medium, of whom ~5,600 pass, so the cap bites), B and C
 (their seeded fans). Per Creator: two OF include lists, one OF exclude list (OF's side:
-`$DEMO_SHOTS_TMP/of-rosters.json`, read by the freeze through lib/priority_mass_relay.py), a
-MASSdmEXCLUDE list, blacklist rows and, for A's priced run, fans who own its media (purchased
+`$DEMO_SHOTS_TMP/of-rosters.json`, read by the freeze through lib/priority_mass_relay.py) plus
+OF's MASSDMEXCLUDE list (members drawn from the first include list; the API runs name none of it), a
+local MASSdmEXCLUDE list, blacklist rows and, for A's priced run, fans who own its media (purchased
 `vault_sends`). Sensitive words only through the real `POST /admin/sensitive-words/add` and
 `/import` (an .xlsx).
 
@@ -22,7 +23,12 @@ the relay is SIGKILLed, started again on the same DB, the boot heal's `reconcile
 awaited, then `/resume` on A (live) and B (cancelled), and every run is driven to its end. UI run
 (not --no-ui): /growth/smart-messages > Mass Messages > Priority mass messages picks A and shows
 its sent count (screenshots trigger + settled, checked against the DB), /growth/sensitive-words
-adds a word through its Add dialog (trigger + settled; the word is then listed and refused).
+adds a word through its Add dialog (trigger + settled; the word is then listed and refused), then
+New Message > Priority mass message, 'Post as' B (its run settled, cancelled): OF's MASSDMEXCLUDE
+is pre-ticked in Exclude (screenshot priority-mass-ui-1-massdm-preticked), "slop vip" ticked in
+Include, Send; the run's legs driven to its end; Priority mass messages lists it Done with its DB
+sent count (screenshot priority-mass-ui-2-run-settled); the POST body (priority-mass-ui-body.json),
+the run row's audience, its frozen fans and OF's record are read for UI_SEED.
 
 Checks (names in lib/priority_mass_faults.py): FROZEN (per run: OF include lists minus the OF
 exclude list, minus blacklist / MASSdmEXCLUDE / contact guard (seeded messages out GUARD_H["out"]
@@ -31,11 +37,13 @@ freeze counts as decided by the product) / media owners (priced), the first 5,00
 resolved / excluded / capped counts too); ONCE (OF's record: no fan twice per Creator); ROWS
 (plus every OF send carries its run's price); CRASH (the hung fan's row was `claimed` at the kill
 and the next leg's stale sweep turned it `unknown`/`interrupted`); SETTLED; CANCEL; REFUSE;
-REPEAT; RESUME; budget p95 GET /admin/priority-mass/runs <= GET_P95_MS; P95_VS_LAST over that
+REPEAT; RESUME; UI_SEED (UI run only); budget p95 GET /admin/priority-mass/runs <= GET_P95_MS; P95_VS_LAST over that
 and A's leg time per fan sent.
 
 Bypasses (declared): OF's lists and sends are faked at the client boundary (lib/automation_relay.py's
-walker lists, fed by lib/priority_mass_relay.py; `list_s` LIST_S a call, a guess); the 11 s
+walker lists, fed by lib/priority_mass_relay.py; `list_s` LIST_S a call, a guess); the UI
+composer's `GET /api/of/v2/lists` answered at the browser's wire from the same of-rosters.json lists
+(the relay's offline OF client has no `get_lists`; OF's shape {id, name, type, usersCount}); the 11 s
 per-Creator write gap compressed to WRITE_GAP_S (`of-pm.json`, lib/priority_mass_relay.py; the
 gate itself is the product's); the account DM rate raised to DM_PER_MIN through the real
 Concurrency panel route (`POST /lanes-panel/config`); the supervisor's cadence (the drivers claim
@@ -45,7 +53,8 @@ The legs' own Recorder keeps the crash's in-flight transport error out of the st
 (checked here instead).
 Break-it-once: `pm-claimed-row-resent-after-crash` (FAULT: `_leg` requeues a crash's claim):
 ONCE + CRASH; `pm-cancel-keeps-pending` (cancel_run without its sweep): CANCEL;
-`pm-sensitive-word-ignored` (`_sensitive_words` reads nothing): REFUSE.
+`pm-sensitive-word-ignored` (`_sensitive_words` reads nothing): REFUSE; `pm-ui-no-massdm-seed` (the
+composer's MASSDMEXCLUDE seed reverted, client side; UI run only): UI_SEED.
 EXPECTED_TRACEBACKS (set by the UI run only; lib/cli.py reads it after `run`): the Mass Messages
 tab's always-mounted OnlyFans panel calls `POST /admin/mass-messages/refresh`, whose client is the
 relay's offline stub (no OF session file: KeyError 'headers'); server.py catches only OFAPIError
@@ -57,16 +66,18 @@ import asyncio
 import importlib.util
 import json
 import os
+import re
 import time
 from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 
 from slop.lib.client import Recorder
 from slop.lib.priority_mass_faults import (CANCEL, CRASH, FROZEN, ONCE, REFUSE, REPEAT, RESUME, ROWS,
-                                           SETTLED)
+                                           SETTLED, UI_SEED)
 from slop.lib.priority_mass_relay import read_sends
 from slop.seed import priority_mass_audience as pma
 
@@ -93,6 +104,7 @@ OF_SEND_ID_BASE = 9_700_000_000_000   # lib/relay.py: the fake OF's message ids
 EMPTY_LIST = pma.OF_LIST_BASE + 999   # an OF list with no members (the refusal posts')
 LIVE = ("resolving", "running")
 EXPECTED_TRACEBACKS: tuple = ()       # the UI run sets UI_TRACEBACKS (docstring)
+UI_TEXT = "hi {name}, thinking of you today"   # the UI run's text (not B's API text: REPEAT)
 UI_TRACEBACKS = (("Exception in ASGI application", "KeyError: 'headers'"),)
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -117,6 +129,32 @@ def _legs(q, rid: int) -> Counter:
                           "('pending','running') AND payload_json=? GROUP BY status", (json.dumps({"run_id": rid}),))))
 
 
+def _guarded(last_msg: dict[str, list[tuple]], fz: datetime) -> tuple[set[int], set[int]]:
+    """The contact guard at the freeze `fz`: (certain, within EDGE_S of a window's edge)."""
+    certain, amb = set(), set()
+    for direction, hours in GUARD_H.items():
+        cut = fz - timedelta(hours=hours)
+        for f, last in last_msg[direction]:
+            d = (datetime.fromisoformat(str(last)) - cut).total_seconds()
+            if d >= EDGE_S:
+                certain.add(f)
+            elif d > -EDGE_S:
+                amb.add(f)
+    return certain, amb
+
+
+def _last_msg(q, aid: str) -> dict[str, list[tuple]]:
+    """Per direction, (fan, the last seeded message's created_at) — the product's own sends left out."""
+    return {d: q("SELECT fan_id, MAX(created_at) FROM messages WHERE account_id=? AND direction=? "
+                 "AND message_id < ? GROUP BY fan_id", (aid, d, OF_SEND_ID_BASE)) for d in GUARD_H}
+
+
+def _massdm_local(q, aid: str) -> set[int]:
+    """The Creator's local MASSdmEXCLUDE list's fans."""
+    return {f for (f,) in q("SELECT m.fan_id FROM list_members m JOIN lists l ON l.id=m.list_id WHERE "
+                            "l.account_id=? AND l.kind='exclude' AND l.name='MASSdmEXCLUDE'", (aid,))}
+
+
 def _frozen_oracle(of_lists: list[dict], include: list[int], exclude: list[int], local: set[int],
                    last_msg: dict[str, list[tuple]], fz: datetime | None, got: set[int],
                    counts: tuple) -> tuple[bool, dict]:
@@ -125,16 +163,7 @@ def _frozen_oracle(of_lists: list[dict], include: list[int], exclude: list[int],
     `counts`: the run's (resolved, excluded, capped)."""
     by_id = {x["id"]: set(x["members"]) for x in of_lists}
     resolved = set().union(*(by_id[i] for i in include)) - set().union(*(by_id[i] for i in exclude))
-    certain, amb = set(), set()
-    if fz is not None:
-        for direction, hours in GUARD_H.items():
-            cut = fz - timedelta(hours=hours)
-            for f, last in last_msg[direction]:
-                d = (datetime.fromisoformat(str(last)) - cut).total_seconds()
-                if d >= EDGE_S:
-                    certain.add(f)
-                elif d > -EDGE_S:
-                    amb.add(f)
+    certain, amb = _guarded(last_msg, fz) if fz is not None else (set(), set())
     excl = (local | certain) & resolved
     amb_out = (amb & resolved) - excl - got          # the product excluded these at the edge
     eligible = sorted(resolved - excl - amb_out)
@@ -412,12 +441,10 @@ async def run(ctx) -> None:
     black = {f for (f,) in q("SELECT fan_id FROM blacklist")}
     frozen_detail, frozen_ok = {}, True
     for aid in runs:
-        massdm = {f for (f,) in q("SELECT m.fan_id FROM list_members m JOIN lists l ON l.id=m.list_id WHERE "
-                                  "l.account_id=? AND l.kind='exclude' AND l.name='MASSdmEXCLUDE'", (aid,))}
+        massdm = _massdm_local(q, aid)
         owners = {f for (f,) in q("SELECT fan_id FROM vault_sends WHERE account_id=? AND was_purchased=1 AND "
                                   "media_id=?", (aid, pma.MEDIA_ID))} if "price" in bodies[aid] else set()
-        last_msg = {d: q("SELECT fan_id, MAX(created_at) FROM messages WHERE account_id=? AND direction=? "
-                         "AND message_id < ? GROUP BY fan_id", (aid, d, OF_SEND_ID_BASE)) for d in GUARD_H}
+        last_msg = _last_msg(q, aid)
         ok, frozen_detail[aid[-4:]] = _frozen_oracle(
             lists[aid], aud[aid]["include"], aud[aid]["exclude"], black | massdm | owners, last_msg,
             frozen_at.get(aid), set(rows[aid]), tuple(status_of[aid][1:4]))
@@ -493,15 +520,37 @@ async def run(ctx) -> None:
     # ── UI: the runs list, and a word added through Sensitive words' dialog ────
     ui_runs = "UI: Priority mass messages lists A's run with its sent / total as the DB counts"
     ui_word = "UI: a word added in Sensitive words' Add dialog is listed and refuses a run"
+    ui_listed = "UI: a run launched from the composer is listed Done with its sent / total as the DB counts"
     if ctx.app is None:
-        ctx.skip(ui_runs, "--no-ui")
-        ctx.skip(ui_word, "--no-ui")
+        for n in (ui_runs, ui_word, UI_SEED, ui_listed):
+            ctx.skip(n, "--no-ui")
     else:
         global EXPECTED_TRACEBACKS      # deliberate: lib/cli.py reads it after run (docstring)
         EXPECTED_TRACEBACKS = UI_TRACEBACKS
         await _ui(ctx, A, C, runs[A], q, ui_runs, ui_word)
+        await _ui_seed(ctx, B, lists[B], aud[B], q, ui_listed)
     for h in (*https, legs_http):
         await h.aclose()
+
+
+async def _runs_tab(ctx, page, aid: str):
+    """Priority mass messages opened; its Creator picker (holding `aid`) returned, not yet picked."""
+    await page.goto(f"{ctx.app}/growth/smart-messages?tab=mass", wait_until="domcontentloaded", timeout=180_000)
+    await page.get_by_role("tab", name="Priority mass messages").click(timeout=120_000)
+    picker = page.locator(f"select:has(option[value='{aid}'])").first
+    await picker.wait_for(timeout=60_000)
+    return picker
+
+
+async def _run_listed(picker, page, aid: str, line: str, status: str) -> bool:
+    """`aid` picked: does a run row labelled `status` read `line` (its sent / total)?"""
+    await picker.select_option(aid)
+    rows = page.get_by_role("listitem").filter(has_text=status)
+    try:
+        await rows.get_by_text(re.compile(rf"^{re.escape(line)}( ·|$)")).first.wait_for(timeout=60_000)
+        return True
+    except Exception:  # noqa: BLE001 — recorded as the caller's check failure
+        return False
 
 
 async def _ui(ctx, A: str, C: str, rid: int, q, ui_runs: str, ui_word: str) -> None:
@@ -511,17 +560,9 @@ async def _ui(ctx, A: str, C: str, rid: int, q, ui_runs: str, ui_word: str) -> N
     line = f"{counts.get('sent', 0):,} of {sum(counts.values()):,} sent"
     word = "onlyfriends"
     async with ui.owner_browser(ctx) as page:
-        await page.goto(f"{ctx.app}/growth/smart-messages?tab=mass", wait_until="domcontentloaded", timeout=180_000)
-        await page.get_by_role("tab", name="Priority mass messages").click(timeout=120_000)
-        picker = page.locator(f"select:has(option[value='{A}'])").first
-        await picker.wait_for(timeout=60_000)
+        picker = await _runs_tab(ctx, page, A)
         await ui.shot(ctx, page, "smart-messages-1-priority-tab")
-        await picker.select_option(A)
-        shown = True
-        try:
-            await page.get_by_text(line).first.wait_for(timeout=60_000)
-        except Exception:  # noqa: BLE001 — recorded as the check's failure
-            shown = False
+        shown = await _run_listed(picker, page, A, line, "Done")
         await ui.shot(ctx, page, "smart-messages-2-run-settled")
         ctx.check(ui_runs, shown, line=line, counts=dict(counts))
 
@@ -550,3 +591,111 @@ async def _ui(ctx, A: str, C: str, rid: int, q, ui_runs: str, ui_word: str) -> N
     rows = q("SELECT COUNT(*) FROM priority_mass_runs WHERE text=?", ("join me on OnlyFriends",))[0][0]
     ctx.check(ui_word, listed and word in after and 400 <= r.status_code < 500 and detail == SENSITIVE_BLOCK_MESSAGE
               and rows == 0, listed=listed, words=after, http=r.status_code, detail=detail, run_rows=rows)
+
+
+async def _ui_seed(ctx, B: str, of_lists: list[dict], aud_b: dict, q, ui_listed: str) -> None:
+    """The composer pre-ticks B's OF MASSDMEXCLUDE list; launched from the UI, driven to its end."""
+    from slop.actors import ui
+
+    massdm = next(x for x in of_lists if x["id"] == aud_b["massdm_of"])
+    vip = next(x for x in of_lists if x["id"] == aud_b["include"][0])
+    members = set(massdm["members"])
+    tmp = ctx.stack.tmp
+    before = {s["fan_id"] for s in read_sends(tmp) if s["account_id"] == B}
+    black = {f for (f,) in q("SELECT fan_id FROM blacklist")}
+    # The list's fans the run would message but for it: VIP's, minus B's earlier sends, the blacklist,
+    # the local MASSdmEXCLUDE and the contact guard now (edge fans counted as guarded too). The guard
+    # only lifts with time, so they are unguarded at the freeze too. None: this --seed proves nothing.
+    certain, amb = _guarded(_last_msg(q, B), datetime.utcnow())
+    witness = sorted(members & set(vip["members"]) - before - black - _massdm_local(q, B) - certain - amb)
+    if not witness:
+        raise RuntimeError("UI_SEED: no MASSDMEXCLUDE member the UI run would message but for the list "
+                           "(B's API run sent them all, or blacklist / guard); another --seed")
+    bodies: list[dict] = []
+    answered: Counter = Counter()
+
+    async def of_lists_route(route):
+        aid = route.request.headers.get("x-account-id") or ""
+        answered[aid] += 1
+        rows = [{"id": x["id"], "name": x["name"], "type": "custom", "usersCount": len(x["members"])}
+                for x in (of_lists if aid == B else [])]
+        await route.fulfill(status=200, content_type="application/json",
+                            body=json.dumps({"list": rows, "hasMore": False}))
+
+    async def runs_route(route):
+        if route.request.method == "POST":
+            bodies.append(route.request.post_data_json)
+        await route.continue_()
+
+    def path_is(path: str):
+        return lambda u: urlsplit(u).path == path
+
+    def box(dlg, name: str, side: int):
+        return dlg.get_by_role("checkbox", name=re.compile(rf"^{re.escape(name)}")).nth(side)
+
+    pre_ticked, status, t_launch, listed, rid = False, None, None, False, None
+    line, counts = "", Counter()
+    async with ui.owner_browser(ctx) as page:
+        await page.route(path_is("/api/of/v2/lists"), of_lists_route)
+        await page.route(path_is("/admin/priority-mass/runs"), runs_route)
+        await page.goto(f"{ctx.app}/growth/smart-messages", wait_until="domcontentloaded", timeout=180_000)
+        await page.get_by_role("button", name="New Message").first.click(timeout=120_000)
+        await page.get_by_role("button", name=re.compile(r"^Priority mass message")).first.click(timeout=30_000)
+        await page.get_by_role("button", name="Next", exact=True).click(timeout=10_000)
+        dlg = page.get_by_role("dialog", name="Priority mass message")
+        await dlg.wait_for(timeout=60_000)
+        await dlg.locator("select").first.select_option(B, timeout=30_000)
+        await box(dlg, vip["name"], 0).wait_for(timeout=60_000)
+        excl = box(dlg, "MASSDMEXCLUDE", 1)
+        try:
+            await page.wait_for_function("(b) => b && b.checked", arg=await excl.element_handle(), timeout=15_000)
+        except Exception:  # noqa: BLE001 — recorded as UI_SEED's failure
+            pass
+        pre_ticked = await excl.is_checked()
+        await box(dlg, vip["name"], 0).click()
+        await dlg.get_by_label("Message").fill(UI_TEXT)
+        await ui.shot(ctx, page, "priority-mass-ui-1-massdm-preticked")
+        t_launch = time.time()
+        async with page.expect_response(lambda r: r.request.method == "POST"
+                                        and urlsplit(r.url).path == "/admin/priority-mass/runs",
+                                        timeout=30_000) as resp:
+            await dlg.get_by_role("button", name="Send", exact=True).click(timeout=30_000)
+        status = (await resp.value).status
+        await dlg.wait_for(state="hidden", timeout=30_000)
+
+        # The run's legs, to its end (the supervisor ticks too).
+        row = q("SELECT id FROM priority_mass_runs WHERE account_id=? AND text=?", (B, UI_TEXT))
+        rid = row[0][0] if row else None
+        deadline = time.monotonic() + RUN_TIMEOUT_S
+        while rid is not None and time.monotonic() < deadline:
+            st = q("SELECT status FROM priority_mass_runs WHERE id=?", (rid,))[0][0]
+            if st not in LIVE and not sum(_legs(q, rid).values()):
+                break
+            await ctx.owner.post("/__slop/run-automation", timeout=900, json={
+                "account_id": B, "kind": "priority_mass", "claim": True})
+            await asyncio.sleep(0.1)
+
+        counts = Counter(st for (st,) in q("SELECT status FROM priority_mass_recipients WHERE run_id=?", (rid,)))
+        line = f"{counts.get('sent', 0):,} of {sum(counts.values()):,} sent"
+        listed = await _run_listed(await _runs_tab(ctx, page, B), page, B, line, "Done")
+        await ui.shot(ctx, page, "priority-mass-ui-2-run-settled")
+    (ctx.out / "priority-mass-ui-body.json").write_text(json.dumps(bodies, indent=2))
+
+    run = q("SELECT status, audience_json FROM priority_mass_runs WHERE id=?", (rid,)) if rid else []
+    frozen = {f for (f,) in q("SELECT fan_id FROM priority_mass_recipients WHERE run_id=?", (rid,))} if rid else set()
+    of_new = {s["fan_id"] for s in read_sends(tmp) if s["account_id"] == B and s["t"] >= (t_launch or 0)}
+    b = bodies[0] if bodies else {}
+    stored = json.loads(run[0][1]) if run else {}
+    mid = str(massdm["id"])
+    ctx.check(ui_listed, listed and bool(run) and run[0][0] == "done", line=line, counts=dict(counts),
+              run_status=run[0][0] if run else None)
+    ctx.check(UI_SEED, pre_ticked and status == 200 and len(bodies) == 1
+              and b.get("excluded_user_lists") == [mid]
+              and b.get("user_lists") == ["fans", "following", str(vip["id"])]
+              and [str(x) for x in stored.get("excluded_user_lists") or []] == [mid]
+              and bool(of_new) and not (frozen & members) and not (of_new & members),
+              pre_ticked=pre_ticked, http=status, posts=len(bodies),
+              body={k: b.get(k) for k in ("account_id", "user_lists", "excluded_user_lists")},
+              row_audience=stored, massdm_list=mid, members=len(members), witness=len(witness),
+              frozen=len(frozen), frozen_members=sorted(frozen & members)[:10], of_sends=len(of_new),
+              of_sent_members=sorted(of_new & members)[:10], lists_answered=dict(answered))

@@ -42,6 +42,7 @@ from datetime import datetime, timedelta  # noqa: E402
 
 import messages as messages_api  # noqa: E402 — seed endpoint + flip helpers
 import server  # noqa: E402
+import mass_queue_api  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Account, MassRun, Message  # noqa: E402
 
@@ -218,7 +219,7 @@ async def case_queue_cancel_flips_broadcast_rows():
     await _seed_ppv(703, 90003, mass_run_id=run_id, funnel_step=2)
 
     with _Ctx() as ctx:
-        await server.of_cancel_scheduled(_Req(None), qid)
+        await mass_queue_api.of_cancel_scheduled(_Req(None), qid)
 
     assert ctx.client.cancels == [qid], ctx.client.cancels
     plain = await _row(701, 90001)
@@ -242,7 +243,7 @@ async def case_queue_cancel_without_a_run_is_a_noop():
     await _seed_ppv(704, 90004)  # no mass_run_id at all
 
     with _Ctx() as ctx:
-        resp = await server.of_cancel_scheduled(_Req(None), 9999)
+        resp = await mass_queue_api.of_cancel_scheduled(_Req(None), 9999)
 
     assert resp == {"success": True}, resp
     assert ctx.client.cancels == [9999], ctx.client.cancels
@@ -291,7 +292,7 @@ async def case_unsend_from_everyone_route_flips_copies():
                       created_at=sent_at + timedelta(hours=3)))
 
     with _Ctx() as ctx:
-        await server.of_cancel_scheduled(_Req(None), qid)
+        await mass_queue_api.of_cancel_scheduled(_Req(None), qid)
 
     assert ctx.client.cancels == [qid], ctx.client.cancels
     for fan_id, mid in ((710, 90010), (711, 90011), (712, 90012)):

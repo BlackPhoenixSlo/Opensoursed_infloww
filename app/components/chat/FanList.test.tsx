@@ -1590,6 +1590,43 @@ describe("FanList", () => {
     expect(shownFans()).toEqual(["Fixture Fan One", "Fixture Fan Two", "Fixture Fan Three"]);
   });
 
+  it("select mode counts only the picks on screen: a chip or Creator switch hides the others from the bar, and they return with their rows", async () => {
+    ACCOUNTS = [CREATOR_ACCOUNT, OTHER_ACCOUNT];
+    // Registered first, so it wins over serveChats: Unread holds Fans One and Two.
+    routeRelay("filter=unread", () => ({ list: [CHATS[0], CHATS[1]], hasMore: false }));
+    serveChats(() => (scopeCreator === ACCOUNT_ID ? CHATS : [answered(FAN_FIVE, 10), answered(FAN_FOUR, 11)]));
+    const user = userEvent.setup();
+    const { rerender } = renderFanList();
+    await rowOf("Fixture Fan Three");
+    const bar = () => within(screen.getByRole("toolbar", { name: "Selected chats" }));
+
+    await openSettings(user);
+    await user.click(screen.getByRole("button", { name: /Select chats/ }));
+    await user.click(await rowOf("Fixture Fan One"));
+    await user.click(await rowOf("Fixture Fan Three"));
+    expect(bar().getByText("2 selected")).toBeInTheDocument();
+
+    // Unread: Fan Three is off screen, so the bar counts Fan One alone.
+    await user.click(screen.getByRole("button", { name: /^Unread \d+$/ }));
+    await vi.waitFor(() => expect(rowOrder()).toEqual(["Fixture Fan One", "Fixture Fan Two"]));
+    expect(bar().getByText("1 selected")).toBeInTheDocument();
+    // Back on All, Fan Three's row is there again, picked.
+    await user.click(screen.getByRole("button", { name: "All" }));
+    await vi.waitFor(() => expect(rowOrder()).toEqual(["Fixture Fan One", "Fixture Fan Two", "Fixture Fan Three"]));
+    expect(bar().getByText("2 selected")).toBeInTheDocument();
+
+    // Another Creator: none of his rows is picked.
+    scopeCreator = OTHER_ACCOUNT.id;
+    rerender(<FanList selected={null} onSelect={vi.fn()} />);
+    await vi.waitFor(() => expect(rowOrder()).toEqual(["Fixture Fan Five", "Fixture Fan Four"]));
+    expect(bar().getByText("0 selected")).toBeInTheDocument();
+    // Back to the first Creator: both picks again.
+    scopeCreator = ACCOUNT_ID;
+    rerender(<FanList selected={null} onSelect={vi.fn()} />);
+    await vi.waitFor(() => expect(rowOrder()).toEqual(["Fixture Fan One", "Fixture Fan Two", "Fixture Fan Three"]));
+    expect(bar().getByText("2 selected")).toBeInTheDocument();
+  });
+
   it("a live message re-renders its own row only, not every row in the list", async () => {
     serveChats(CHATS);
     renderWithProviders(withRealtime(), new QueryClient({ defaultOptions: { queries: { retry: false } } }));

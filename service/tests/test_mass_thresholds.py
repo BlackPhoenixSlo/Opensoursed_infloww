@@ -57,6 +57,7 @@ from fastapi import HTTPException  # noqa: E402
 
 import automation_executor as ax  # noqa: E402
 import server  # noqa: E402
+import mass_queue_api  # noqa: E402
 from audiences import _threshold_base, resolve_mass_audience, threshold_fan_ids  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import Account, Blacklist, Fan, SubscriberSnapshot, Transaction  # noqa: E402
@@ -209,21 +210,21 @@ class _Patch:
         async def _close(*_a, **_k):
             return None
         self.orig = (server._resolve_account_id, server._get_client,
-                     server._open_mass_run, server._close_mass_run, ax._make_client)
+                     mass_queue_api._open_mass_run, mass_queue_api._close_mass_run, ax._make_client)
         server._resolve_account_id = lambda _req: self.aid
         server._get_client = lambda: self.fake
-        server._open_mass_run = _open
-        server._close_mass_run = _close
+        mass_queue_api._open_mass_run = _open
+        mass_queue_api._close_mass_run = _close
         ax._make_client = lambda _aid: self.fake
         return self
 
     def __exit__(self, *_):
         (server._resolve_account_id, server._get_client,
-         server._open_mass_run, server._close_mass_run, ax._make_client) = self.orig
+         mass_queue_api._open_mass_run, mass_queue_api._close_mass_run, ax._make_client) = self.orig
 
 
 def _body(**kw):
-    return server._MassScheduleBody(text="hey", user_lists=["fans", "following"],
+    return mass_queue_api._MassScheduleBody(text="hey", user_lists=["fans", "following"],
                                     online_only=True, **kw)
 
 
@@ -232,7 +233,7 @@ async def case_route_sends_explicit_ids_without_lists():
     await _seed(aid, {61: {"lifetime_spend_cents": 9000}, 62: {"lifetime_spend_cents": 100}})
     fake = FakeOF(online=[{"id": 61}, {"id": 62}])
     with _Patch(aid, fake):
-        await server.of_send_or_schedule_mass(None, _body(min_total_spent=50))
+        await mass_queue_api.of_send_or_schedule_mass(None, _body(min_total_spent=50))
     (sent,) = fake.sent
     assert sent["included_users"] == [61], sent
     assert sent["user_lists"] == [] and sent["online_only"] is False and sent["filters"] is None, sent
@@ -244,7 +245,7 @@ async def case_route_refuses_zero_matches_before_sending():
     fake = FakeOF(online=[{"id": 71}])
     with _Patch(aid, fake):
         try:
-            await server.of_send_or_schedule_mass(None, _body(min_total_spent=50))
+            await mass_queue_api.of_send_or_schedule_mass(None, _body(min_total_spent=50))
         except HTTPException as e:
             assert e.status_code == 422, e
         else:
@@ -258,7 +259,7 @@ async def case_route_refuses_scheduled_or_expired_online():
                {"expired_over_days": 7}):
         with _Patch("acc_thr_refuse", fake):
             try:
-                await server.of_send_or_schedule_mass(None, _body(**kw))
+                await mass_queue_api.of_send_or_schedule_mass(None, _body(**kw))
             except HTTPException as e:
                 assert e.status_code == 422, (kw, e)
             else:
@@ -267,13 +268,13 @@ async def case_route_refuses_scheduled_or_expired_online():
 
 
 def _list_body(lists, **kw):
-    return server._MassScheduleBody(text="hey", user_lists=lists, **kw)
+    return mass_queue_api._MassScheduleBody(text="hey", user_lists=lists, **kw)
 
 
 async def _refused(aid, fake, body) -> str:
     with _Patch(aid, fake):
         try:
-            await server.of_send_or_schedule_mass(None, body)
+            await mass_queue_api.of_send_or_schedule_mass(None, body)
         except HTTPException as e:
             assert e.status_code == 422, e
             assert fake.sent == [], fake.sent
@@ -290,7 +291,7 @@ async def case_route_narrows_the_picked_lists_never_widens():
                       85: {"lifetime_spend_cents": 9000}})
     fake = FakeOF(fans=[81, 82], following=[84], lists={777: [85]})
     with _Patch(aid, fake):
-        await server.of_send_or_schedule_mass(
+        await mass_queue_api.of_send_or_schedule_mass(
             None, _list_body(["fans", "following", "777"], min_total_spent=50))
     (sent,) = fake.sent
     assert sent["included_users"] == [81, 84, 85], sent   # 83 is on no picked list
@@ -331,7 +332,7 @@ async def case_route_expired_over_reads_the_expired_fans():
         s.add(SubscriberSnapshot(account_id=aid, fan_id=93, seen_at=NOW))   # still active
     fake = FakeOF(fans=[93])   # no list 999: with Fans picked it is never read
     with _Patch(aid, fake):
-        await server.of_send_or_schedule_mass(
+        await mass_queue_api.of_send_or_schedule_mass(
             None, _list_body(["fans", "following", "999"], expired_over_days=14))
     (sent,) = fake.sent
     assert sent["included_users"] == [91], sent
@@ -364,7 +365,7 @@ async def case_route_refuses_an_online_roster_past_the_cap():
         assert "More than 2 fans are online" in detail, detail
         at_cap = FakeOF(online=[{"id": 101}, {"id": 102}])   # exactly the cap: sent
         with _Patch(aid, at_cap):
-            await server.of_send_or_schedule_mass(None, _body(min_total_spent=50))
+            await mass_queue_api.of_send_or_schedule_mass(None, _body(min_total_spent=50))
     finally:
         audiences.ONLINE_ROSTER_MAX = orig
     (sent,) = at_cap.sent
@@ -379,7 +380,7 @@ async def case_route_subtracts_the_excluded_lists():
     await _seed(aid, {111: {"lifetime_spend_cents": 9000}, 112: {"lifetime_spend_cents": 9000}})
     fake = FakeOF(fans=[111, 112], lists={555: [112]})
     with _Patch(aid, fake):
-        await server.of_send_or_schedule_mass(
+        await mass_queue_api.of_send_or_schedule_mass(
             None, _list_body(["fans"], excluded_user_lists=["555"], min_total_spent=50))
     (sent,) = fake.sent
     assert sent["included_users"] == [111], sent
@@ -401,7 +402,7 @@ async def case_route_tenure_keeps_a_list_member_without_a_fan_row():
                                  subscribe_at=NOW - timedelta(days=5)))
     fake = FakeOF(lists={778: [121, 122]})
     with _Patch(aid, fake):
-        await server.of_send_or_schedule_mass(
+        await mass_queue_api.of_send_or_schedule_mass(
             None, _list_body(["778"], subscribed_over_days=30))
     (sent,) = fake.sent
     assert sent["included_users"] == [121], sent
@@ -428,7 +429,7 @@ async def case_route_expired_over_narrows_a_custom_list():
         s.add(SubscriberSnapshot(account_id=aid, fan_id=142, seen_at=NOW))   # still active
     fake = FakeOF(lists={780: [141, 142]})
     with _Patch(aid, fake):
-        await server.of_send_or_schedule_mass(None, _list_body(["780"], expired_over_days=14))
+        await mass_queue_api.of_send_or_schedule_mass(None, _list_body(["780"], expired_over_days=14))
     (sent,) = fake.sent
     assert sent["included_users"] == [141], sent
 

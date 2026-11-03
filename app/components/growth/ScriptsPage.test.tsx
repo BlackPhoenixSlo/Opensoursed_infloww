@@ -895,6 +895,67 @@ describe("tags and sequences are stored on the scripts", () => {
     expect(screen.getByRole("heading", { name: "New Sub" })).toBeInTheDocument();
   });
 
+  /** Creator A with TAGGED, opened on VIP; Creator B with one script ("for B"). */
+  async function mountTwoCreators() {
+    const B_ROW = { id: 9, account_id: "acc-b", title: "B script", text: "for B", price: 0, locked_text: false, media: [] };
+    const reads = get.getMockImplementation()!;
+    get.mockImplementation((path: string, ctx?: { accountId?: string }) =>
+      path === LIST_A ? Promise.resolve({ list: TAGGED })
+        : path === LIST_B ? Promise.resolve({ list: [B_ROW] }) : reads(path, ctx));
+    renderWithProviders(<ScriptsPage />);
+    await screen.findByText("Hey there");
+    fireEvent.click(within(sidebar("Tags")).getByText("VIP"));
+  }
+
+  it("another Creator drops a failed remove's error, the open name modal and the search", async () => {
+    await mountTwoCreators();
+    post.mockRejectedValueOnce(new Error("relay down"));
+    fireEvent.click(within(rows()[0]).getByRole("button", { name: "Remove from tag" }));
+    expect(await screen.findByText("relay down")).toBeInTheDocument();
+    pickCreator("Creator B");
+    await screen.findByText("for B");
+    expect(screen.queryByText("relay down")).toBeNull();
+    pickCreator("Creator A");
+    await screen.findByText("Hey there");
+    expect(screen.queryByText("relay down")).toBeNull();
+    // An open name modal and the search belong to the Creator they were opened on.
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search scripts" }), { target: { value: "9pm" } });
+    rowMenu("Tags", "Opener", "Rename");
+    expect(screen.getByRole("dialog", { name: "Modify tag name" })).toBeInTheDocument();
+    pickCreator("Creator B");
+    await screen.findByText("for B");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("searchbox", { name: "Search scripts" })).toBeNull();
+  });
+
+  it("a remove in flight at a Creator switch: its failure stays off the next Creator; back, its row waits for it", async () => {
+    await mountTwoCreators();
+    let fail!: (e: Error) => void;
+    post.mockImplementationOnce(() => new Promise((_, reject) => { fail = reject; }));
+    fireEvent.click(within(rows()[0]).getByRole("button", { name: "Remove from tag" }));
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1));
+    // Back on A while the remove is out: Greeting's row (All scripts now) still waits, no second POST.
+    pickCreator("Creator B");
+    await screen.findByText("for B");
+    pickCreator("Creator A");
+    await screen.findByText("Hey there");
+    const greetingDelete = () => within(rows().find((r) => r.textContent!.includes("Hey there"))!)
+      .getByRole("button", { name: "Delete" });
+    expect(greetingDelete()).toBeDisabled();
+    // On B when it fails: B shows no error; back on A the row is free again.
+    pickCreator("Creator B");
+    await screen.findByText("for B");
+    fail(new Error("relay down"));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByText("relay down")).toBeNull();
+    pickCreator("Creator A");
+    await screen.findByText("Hey there");
+    await waitFor(() => expect(greetingDelete()).toBeEnabled());
+    expect(screen.queryByText("relay down")).toBeNull();
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
   it("renames a new tag on the server once a script has taken it", async () => {
     await mountLive();
     openMore();

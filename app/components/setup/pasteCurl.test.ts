@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  PASTE_PROXY, buildBootstrapBody, canSubmit, initialPasteCurl, pasteCurlReducer, submitError, validateCurl,
+  PASTE_PROXY, buildBootstrapBody, canSubmit, curlHint, initialPasteCurl, pasteCurlReducer, submitError, validateCurl,
   type PasteCurlAction, type PasteCurlForm, type PasteCurlState,
 } from "@/components/setup/pasteCurl";
 
@@ -10,19 +10,37 @@ const BLANK = { nickname: "", proxyLabel: "" };
 const form = (over: Partial<PasteCurlForm> = {}): PasteCurlForm => ({ ...initialPasteCurl(BLANK), curl: GOOD, ...over });
 
 describe("validateCurl", () => {
-  // Only the `curl` prefix is checked here; cookies and headers are the relay's to parse (it says what is missing).
+  // Prefix, bash copy, cookies and user-agent are checked here; the signed headers stay the relay's (its 422 says which).
+  const U = "curl 'https://onlyfans.com/api2/v2/users/me'";
+  const HOW = "In DevTools → Network, right-click a /api2/v2 request → Copy → Copy as cURL (bash).";
+  const NO_COOKIES = `No cookies (-b '…') in this curl. ${HOW}`;
+  const NO_UA = `No user-agent (-H 'user-agent: …') in this curl. ${HOW}`;
+  const NO_BOTH = `No cookies (-b '…') and no user-agent (-H 'user-agent: …') in this curl. ${HOW}`;
+  const PREFIX = "Must start with `curl ...`";
   it.each([
     ["a good curl", GOOD, null],
     ["surrounding whitespace", `\n  ${GOOD}  \n`, null],
-    ["no cookie (-b)", "curl 'https://onlyfans.com/api2/v2/users/me' -H 'user-agent: UA'", null],
-    ["no user-agent", "curl 'https://onlyfans.com/api2/v2/users/me' -b 'sess=s'", null],
     ["extra headers", `${GOOD} -H 'x-relay-static-param: sp' -H 'accept: */*' -H 'sec-fetch-mode: cors'`, null],
-    ["Chrome's multi-line copy", "curl 'https://onlyfans.com/api2/v2/users/me' \\\n  -H 'user-agent: UA' \\\n  -b 'sess=s'", null],
-    ["empty", "", "Must start with `curl ...`"],
-    ["blank", "   ", "Must start with `curl ...`"],
-    ["not a curl", "wget https://onlyfans.com", "Must start with `curl ...`"],
-    ["a fetch() copy", "fetch(\"https://onlyfans.com/api2/v2/users/me\")", "Must start with `curl ...`"],
-    ["case-sensitive", "CURL 'https://onlyfans.com'", "Must start with `curl ...`"],
+    ["Chrome's multi-line copy", `${U} \\\n  -H 'user-agent: UA' \\\n  -b 'sess=s'`, null],
+    ["the extension's copy (-H lines, -b last)", `${U} \\\n  -H 'accept: */*' \\\n  -H 'user-agent: UA' \\\n  -H 'x-bc: x' \\\n  -b 'sess=s'`, null],
+    ["cookie via -H, header names any case", `${U} -H 'Cookie: sess=s' -H 'User-Agent: UA'`, null],
+    ["--cookie and --user-agent", `${U} --cookie 'sess=s' --user-agent 'UA'`, null],
+    ["UA via -A", `${U} -A 'UA' -b 'sess=s'`, null],
+    ["$'…' quoting", `${U} -H $'user-agent: UA' -b $'sess=s'`, null],
+    ["double quotes", `curl "https://onlyfans.com/api2/v2/users/me" -H "user-agent: UA" -b "sess=s"`, null],
+    ["no cookie (-b)", `${U} -H 'user-agent: UA'`, NO_COOKIES],
+    ["no user-agent", `${U} -b 'sess=s'`, NO_UA],
+    ["neither", `${U} -H 'x-bc: x'`, NO_BOTH],
+    ["'cookie' only inside a value", `${U} -H 'user-agent: UA' -H 'x-note: cookie: no'`, NO_COOKIES],
+    ["-B is not -b", `${U} -H 'user-agent: UA' -B 'sess=s'`, NO_COOKIES],
+    // Copy as cURL (cmd): ^-escaped quotes the relay's shlex can't read, so it is refused with the bash hint.
+    ["Windows cmd copy", `curl ^"https://onlyfans.com/api2/v2/users/me^" ^\n  -H ^"user-agent: UA^" ^\n  -b ^"sess=s^"`,
+      `That is a Windows (cmd) copy. ${HOW}`],
+    ["empty", "", PREFIX],
+    ["blank", "   ", PREFIX],
+    ["not a curl", "wget https://onlyfans.com", PREFIX],
+    ["a fetch() copy", "fetch(\"https://onlyfans.com/api2/v2/users/me\")", PREFIX],
+    ["case-sensitive", "CURL 'https://onlyfans.com'", PREFIX],
   ])("%s", (_, text, err) => expect(validateCurl(text)).toBe(err));
 });
 
@@ -36,8 +54,14 @@ describe("submitError", () => {
   ])("%s", (_, f, err) => expect(submitError(f)).toBe(err));
 });
 
+describe("curlHint", () => {
+  it.each([["", null], ["   \n ", null], [GOOD, null], ["wget x", "Must start with `curl ...`"]])(
+    "%j → %s", (curl, hint) => expect(curlHint(curl)).toBe(hint));
+  it("names what is missing", () => expect(curlHint("curl 'https://onlyfans.com/api2/v2/users/me' -b 's=1'")).toMatch(/^No user-agent/));
+});
+
 describe("canSubmit", () => {
-  it.each([["", false], ["  ", false], ["x", true], [GOOD, true]])("%j → %s", (curl, ok) => expect(canSubmit(form({ curl }))).toBe(ok));
+  it.each([["", false], ["  ", false], ["x", false], ["curl 'https://onlyfans.com/api2/v2/users/me'", false], [GOOD, true]])("%j → %s", (curl, ok) => expect(canSubmit(form({ curl }))).toBe(ok));
 });
 
 describe("buildBootstrapBody", () => {

@@ -64,8 +64,9 @@ class OFWebSocket:
     def __init__(self, client: OFClient,
                  session_dead: Callable[[BaseException], str | None] | None = None):
         self.client = client
-        # Classifies a (re)connect failure: a reason ends events() with
-        # SessionDead instead of reconnecting forever (server.py's pump passes
+        # Classifies a (re)connect failure: a reason is retried
+        # of_ws_decide.DEAD_RETRIES times, then ends events() with SessionDead
+        # instead of reconnecting forever (server.py's pump passes
         # account_health.is_session_dead_error).
         self._session_dead = session_dead
         self._ws_url: str | None = None
@@ -111,8 +112,9 @@ class OFWebSocket:
         """Async generator: yields each event dict as it arrives. Reconnects
         automatically on disconnect with exponential backoff. Caller can stop
         by calling `.stop()` (which causes the loop to exit on next iteration).
-        A failure `session_dead` classifies raises SessionDead instead. Those
-        rules are of_ws_decide.decide(); this loop performs its effects.
+        A failure `session_dead` classifies is retried DEAD_RETRIES times, then
+        raises SessionDead. Those rules are of_ws_decide.decide(); this loop
+        performs its effects.
 
         The WebSocket is tunneled through the same per-account proxy as the
         REST traffic (when one is assigned). Without this, REST would egress
@@ -199,18 +201,23 @@ class OFWebSocket:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                state, eff = of_ws_decide.decide(state, of_ws_decide.Failed(
+                ev = of_ws_decide.Failed(
                     self._session_dead(e) if self._session_dead else None,
-                    up_s=time.monotonic() - connected_at if connected_at is not None else None))
+                    up_s=time.monotonic() - connected_at if connected_at is not None else None)
+                state, eff = of_ws_decide.decide(state, ev)
                 if isinstance(eff, of_ws_decide.GiveUp):
                     log.warning("ws session dead account=%s reason=%s — not reconnecting",
                                 self._account_id(), eff.reason)
                     raise SessionDead(eff.reason) from e
-                # Wait. up=- : failed before the socket opened (proxy CONNECT, TLS, /users/me).
-                log.warning("ws error account=%s proxy=%s type=%s up=%s err=%s — reconnecting in %ds",
-                            self._account_id(), self._proxy_desc(), type(e).__name__,
-                            f"{time.monotonic() - connected_at:.0f}s" if connected_at else "-",
-                            self._scrub(str(e))[:200], eff.s)
+                if eff.retry:  # decide retries a dead answer: one of its DEAD_RETRIES
+                    log.warning("ws session dead account=%s reason=%s — retry %d/%d in %ds",
+                                self._account_id(), ev.dead_reason, eff.retry, of_ws_decide.DEAD_RETRIES, eff.s)
+                else:
+                    # up=- : failed before the socket opened (proxy CONNECT, TLS, /users/me).
+                    log.warning("ws error account=%s proxy=%s type=%s up=%s err=%s — reconnecting in %ds",
+                                self._account_id(), self._proxy_desc(), type(e).__name__,
+                                f"{time.monotonic() - connected_at:.0f}s" if connected_at else "-",
+                                self._scrub(str(e))[:200], eff.s)
                 try:
                     await asyncio.wait_for(self._stop.wait(), timeout=eff.s)
                     return

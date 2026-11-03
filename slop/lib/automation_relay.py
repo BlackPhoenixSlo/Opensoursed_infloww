@@ -5,7 +5,8 @@ method to `_OfflineOF`): the lane's offline OnlyFans client and a loopback DeepS
 Without `OF_API_ORIGIN` (no lib/of_wire.py OnlyFans), the lane's OF client
 (`ax._make_client`, every flow's automations) is `_OfflineWalkerOF`: `me()` and
 `send_message` (a priced one answers as OF's PPV and is kept per fan, `of_ppv` at
-/__slop/fake/calls) answer as OF does; anything else raises. Another flow's part adds
+/__slop/fake/calls) answer as OF does, as do the methods below and other flows' mixins;
+any other OF call raises `slop: OF is offline ...`. Another flow's part adds
 methods to it with `WALKER_MIXINS.insert(0, cls)` at import: relay.py imports the parts in
 sorted order, so the part sorted last comes first in the MRO, all before `_Walker`.
 
@@ -17,9 +18,9 @@ DeepSeek is faked at its HTTP boundary, keeping its latency and concurrency:
        turns; the first that returns text answers (fn counts its own label). Another
        flow's part adds one with `ANSWERS.insert(0, ...)` at import, so the part sorted
        last is asked first. Then send_followup's nudge (its user turn carries `Follow-up
-       step:`): one fixed short line. Any other prompt is a 503 naming the purposes faked
-       (an entry whose purpose is None is not named; other purposes stay unreachable).
-       Each answer after DEEPSEEK_LATENCY_S.
+       step:`): one fixed short line. Any other prompt is a 503 (`slop: prompt not faked`,
+       naming the entries' purposes and the nudge; an entry whose purpose is None is faked
+       but not named; other purposes stay unreachable). Each answer after DEEPSEEK_LATENCY_S.
 Calls count by label at relay.py's GET /__slop/fake/calls. With SLOP_LIVE=1 the fake is
 not installed: the run reaches the real API with the caller's test key through the
 guard's allowlist (lib/stack.py).
@@ -221,11 +222,8 @@ def _deepseek_answer(body: dict) -> tuple[int, dict]:
         # Only the prompts named above are faked; any other purpose stays as
         # unreachable as it was before this fake existed.
         _fake_calls["deepseek:other"] += 1
-        # Byte-for-byte the 503 body this fake answered before ANSWERS existed, for the
-        # same purposes: "slop: only <a>, <b> and <last> are faked" ("<a> is" for one).
         names = [p for p, _fn in ANSWERS if p is not None] + [_FOLLOWUP]
-        faked = f"{names[0]} is" if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]} are"
-        return 503, {"error": {"message": f"slop: only {faked} faked"}}
+        return 503, {"error": {"message": f"slop: prompt not faked (named fakes: {', '.join(names)})"}}
     time.sleep(DEEPSEEK_LATENCY_S)
     return 200, {"id": f"slop-{sum(_fake_calls.values())}", "object": "chat.completion",
                  "model": body.get("model"), "created": int(time.time()),
@@ -281,6 +279,6 @@ def wire(app, _loopback, relay) -> None:
     if not os.environ.get("OF_API_ORIGIN"):
         walker = type("_OfflineWalkerOF", (*WALKER_MIXINS, _Walker, relay._OfflineOF), {})
         ax._make_client = lambda account_id: walker(  # type: ignore[assignment]
-            str(account_id), RuntimeError("slop: OF is offline (only me() and send_message answer)"))
+            str(account_id), RuntimeError("slop: OF is offline (this OF call is not faked on the lane's client)"))
     if os.environ.get("SLOP_LIVE") != "1":
         _install_fakes()

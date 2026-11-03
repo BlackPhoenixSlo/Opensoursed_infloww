@@ -605,6 +605,116 @@ async def _master_account_ids(s) -> frozenset[str]:
     return _registry.account_ids() | frozenset(str(r[0]) for r in rows)
 
 
+async def _account_ids_for(s, user_id: str, is_admin: bool) -> frozenset[str]:
+    """The account_ids a signed-in (or impersonated) user may touch: a master
+    (is_admin) gets the fat set (_master_account_ids — the same source the
+    isolation middleware and _resolve_account_id check against; why a union
+    and why per request: see there), anyone else the accounts they own in
+    `user_accounts` (agency_account_ids)."""
+    if is_admin:
+        return await _master_account_ids(s)
+    return frozenset(await agency_account_ids(s, user_id))
+
+
+async def _touch_last_seen(user_id: str, now: datetime) -> None:
+    """Bump users.last_seen_at (session_verdict said "touch": only once per
+    ~5 min, to avoid write amplification — a chat session fires hundreds of
+    requests/min).
+
+    A cosmetic activity stamp must NEVER be able to fail the request it rides
+    on. Two things here:
+
+    Its OWN session, because a lock timeout would otherwise poison the
+    middleware's session — SQLAlchemy demands a rollback after any error, and
+    the impersonation overlay still has reads to do on it.
+
+    And SWALLOWED, because a missed bump costs nothing (the next request
+    retries) while a raised one costs the whole call. Unguarded, this UPDATE
+    sat on the 30 s busy_timeout whenever the DB was write-contended and
+    surfaced as a 500 on real API calls — /admin/messages, /api/of/v2/chats —
+    which is how a write-storm turned into a dead-looking UI on 2026-08-21.
+    Note the throttle cannot re-arm on its own while the write keeps failing:
+    `last_seen_at` is read from the row, so a never-committed stamp stays stale
+    and EVERY subsequent request retries the write. Failing quietly is what
+    breaks that loop."""
+    try:
+        async with get_session() as s:
+            await s.execute(update(User).where(User.id == user_id).values(last_seen_at=now))
+    except Exception:
+        log.debug("last_seen_at bump skipped (non-fatal)", exc_info=True)
+
+
+from typing import NamedTuple  # noqa: E402  (used by this region only)
+
+
+class _CookieClears(NamedTuple):
+    """Which cookies the response clears (`_resolve_session`)."""
+    session: bool = False
+    impersonate: bool = False
+
+
+async def _resolve_session(request: Request) -> _CookieClears:
+    """Resolve the session cookie onto `_request_user` (and the impersonation
+    overlay onto it, `_apply_impersonation`). Returns which cookies the
+    response clears: the session cookie when revoked (Log out other sessions,
+    2FA turned on) or idle too long, the impersonate cookie per
+    `_apply_impersonation`."""
+    cookie = request.cookies.get(COOKIE_NAME)
+    parsed = _parse_cookie_issued(cookie) if cookie else None
+    if not parsed:
+        return _CookieClears()
+    user_id, issued = parsed
+    async with get_session() as s:
+        row = (await s.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+        if row is None:
+            return _CookieClears()
+        now = datetime.utcnow()
+        verdict = session_verdict(
+            issued, row.sessions_valid_after, row.last_seen_at, now,
+            max_idle_s=SESSION_INACTIVITY_SECONDS, touch_s=LAST_SEEN_TOUCH_S,
+        )
+        if verdict == "expired":
+            return _CookieClears(session=True)
+        is_admin = bool(getattr(row, "is_admin", False))
+        account_ids = await _account_ids_for(s, user_id, is_admin)
+        if verdict == "touch":
+            await _touch_last_seen(user_id, now)
+        _request_user.set(AuthedUser(row.id, row.username, account_ids, is_admin))
+        imp_cookie = request.cookies.get(IMPERSONATE_COOKIE_NAME)
+        return _CookieClears(impersonate=await _apply_impersonation(imp_cookie, s, row, now))
+
+
+async def _apply_impersonation(imp_cookie: str | None, s, row: User, now: datetime) -> bool:
+    """Impersonation overlay, for the signed-in founder `row` (the impersonate
+    cookie binds to a specific founder user_id): overlays `_request_user` with
+    the impersonated user and sets `_impersonation`. Returns whether the
+    response clears the cookie: any parse/load failure does, so the next
+    request is clean. Impersonating a master gets the same fat set as a real
+    master (read-only — mutation is blocked for any impersonation)."""
+    if not imp_cookie:
+        return False
+    parsed = _parse_impersonate_cookie(imp_cookie)
+    verdict = session_stamps.impersonation_verdict(
+        parsed, now, row.id, ttl=IMPERSONATE_TTL_SECONDS,
+    )
+    if verdict == "clear" or parsed is None:  # "apply" implies parsed; `is None` narrows it
+        return True
+    imp_uid = parsed[0]
+    imp_row = (await s.execute(select(User).where(User.id == imp_uid))).scalar_one_or_none()
+    if imp_row is None:
+        return True
+    imp_is_admin = bool(getattr(imp_row, "is_admin", False))
+    imp_account_ids = await _account_ids_for(s, imp_uid, imp_is_admin)
+    _request_user.set(AuthedUser(imp_row.id, imp_row.username, imp_account_ids, imp_is_admin))
+    _impersonation.set(Impersonation(
+        real_user_id=row.id,
+        real_username=row.username,
+        impersonated_user_id=imp_row.id,
+        impersonated_username=imp_row.username,
+    ))
+    return False
+
+
 async def session_middleware(request: Request, call_next):
     """Read the session cookie, load the user + their account_ids, stash
     on the ContextVar, then call the route. Idle-too-long users get their
@@ -615,126 +725,7 @@ async def session_middleware(request: Request, call_next):
     requests reach this layer. /auth/* endpoints are exempt from the
     share-token gate via the existing allowlist below.
     """
-    cookie = request.cookies.get(COOKIE_NAME)
-    expired = False
-    clear_impersonate = False
-    if cookie:
-        parsed = _parse_cookie_issued(cookie)
-        if parsed:
-            user_id, issued = parsed
-            async with get_session() as s:
-                row = (await s.execute(
-                    select(User).where(User.id == user_id)
-                )).scalar_one_or_none()
-                if row is not None:
-                    now = datetime.utcnow()
-                    # Revoked (Log out other sessions, 2FA turned on) or idle
-                    # too long: signed out, and the cookie is cleared.
-                    verdict = session_verdict(
-                        issued, row.sessions_valid_after, row.last_seen_at, now,
-                        max_idle_s=SESSION_INACTIVITY_SECONDS, touch_s=LAST_SEEN_TOUCH_S,
-                    )
-                    if verdict == "expired":
-                        expired = True
-                    else:
-                        is_admin = bool(getattr(row, "is_admin", False))
-                        if is_admin:
-                            # Master role: the FULL fat set — the same source
-                            # the isolation middleware and _resolve_account_id
-                            # check against. Why a union and why per-request:
-                            # see _master_account_ids.
-                            account_ids = await _master_account_ids(s)
-                        else:
-                            acct_rows = (await s.execute(
-                                select(UserAccount.account_id).where(
-                                    UserAccount.user_id == user_id
-                                )
-                            )).all()
-                            account_ids = frozenset(str(r[0]) for r in acct_rows)
-                        # Only bump last_seen_at once per ~5 min to avoid
-                        # write amplification — a chat session fires
-                        # hundreds of requests/min.
-                        if verdict == "touch":
-                            # A cosmetic activity stamp must NEVER be able to
-                            # fail the request it rides on. Two things here:
-                            #
-                            # Its OWN session, because a lock timeout would
-                            # otherwise poison `s` — SQLAlchemy demands a
-                            # rollback after any error, and the impersonation
-                            # overlay below still has reads to do on it.
-                            #
-                            # And SWALLOWED, because a missed bump costs
-                            # nothing (the next request retries) while a raised
-                            # one costs the whole call. Unguarded, this UPDATE
-                            # sat on the 30 s busy_timeout whenever the DB was
-                            # write-contended and surfaced as a 500 on real API
-                            # calls — /admin/messages, /api/of/v2/chats — which
-                            # is how a write-storm turned into a dead-looking
-                            # UI on 2026-08-21. Note the throttle cannot
-                            # re-arm on its own while the write keeps failing:
-                            # `last_seen_at` is read from the row, so a never-committed
-                            # stamp stays stale and EVERY subsequent request
-                            # retries the write. Failing quietly is what breaks
-                            # that loop.
-                            try:
-                                async with get_session() as s2:
-                                    await s2.execute(update(User).where(
-                                        User.id == user_id
-                                    ).values(last_seen_at=now))
-                            except Exception:
-                                log.debug("last_seen_at bump skipped "
-                                          "(non-fatal)", exc_info=True)
-                        _request_user.set(
-                            AuthedUser(row.id, row.username, account_ids, is_admin)
-                        )
-
-                        # Impersonation overlay. Resolved only when the
-                        # founder is signed in (the impersonate cookie
-                        # binds to a specific founder user_id). Any
-                        # parse/load failure clears the bad cookie on the
-                        # response so the next request is clean.
-                        imp_cookie = request.cookies.get(IMPERSONATE_COOKIE_NAME)
-                        if imp_cookie:
-                            parsed = _parse_impersonate_cookie(imp_cookie)
-                            if parsed is None:
-                                clear_impersonate = True
-                            else:
-                                imp_uid, founder_uid, issued = parsed
-                                age_imp = int(now.timestamp()) - issued
-                                if age_imp > IMPERSONATE_TTL_SECONDS or founder_uid != row.id:
-                                    clear_impersonate = True
-                                else:
-                                    imp_row = (await s.execute(
-                                        select(User).where(User.id == imp_uid)
-                                    )).scalar_one_or_none()
-                                    if imp_row is None:
-                                        clear_impersonate = True
-                                    else:
-                                        imp_is_admin = bool(getattr(imp_row, "is_admin", False))
-                                        if imp_is_admin:
-                                            # Impersonating a master = the same
-                                            # fat set as a real master (read-
-                                            # only — mutation is blocked below
-                                            # for any impersonation).
-                                            imp_account_ids = await _master_account_ids(s)
-                                        else:
-                                            imp_acct_rows = (await s.execute(
-                                                select(UserAccount.account_id).where(
-                                                    UserAccount.user_id == imp_uid
-                                                )
-                                            )).all()
-                                            imp_account_ids = frozenset(
-                                                str(r[0]) for r in imp_acct_rows)
-                                        _request_user.set(AuthedUser(
-                                            imp_row.id, imp_row.username,
-                                            imp_account_ids, imp_is_admin,
-                                        ))
-                                        _impersonation.set(Impersonation(
-                                            real_user_id=row.id,
-                                            real_username=row.username,
-                                            impersonated_user_id=imp_row.id,
-                                            impersonated_username=imp_row.username,
-                                        ))
+    clears = await _resolve_session(request)
 
     # Impersonation is READ-ONLY. Any mutation while a valid impersonate
     # cookie is in effect is rejected, except the exit endpoint (DELETE
@@ -742,21 +733,18 @@ async def session_middleware(request: Request, call_next):
     # entirely, implicitly killing the overlay too). Without this, the
     # founder could silently send a message AS the friend and the audit
     # log would record it under the friend's identity.
-    if _impersonation.get() is not None:
-        method = request.method
-        path = request.url.path
-        if method in ("POST", "PATCH", "PUT", "DELETE") and not (
-            path.startswith("/admin/impersonate") or path.startswith("/auth/")
-        ):
-            return Response(
-                "read-only while impersonating — exit impersonation to mutate",
-                status_code=403,
-            )
+    if session_stamps.blocks_write(
+        request.method, request.url.path, _impersonation.get() is not None,
+    ):
+        return Response(
+            "read-only while impersonating — exit impersonation to mutate",
+            status_code=403,
+        )
 
     response = await call_next(request)
-    if expired:
+    if clears.session:
         _clear_session_cookie(response)
-    if clear_impersonate:
+    if clears.impersonate:
         _clear_impersonate_cookie(response)
     return response
 

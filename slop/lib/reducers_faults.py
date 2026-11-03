@@ -14,6 +14,8 @@ MASS_GATE_SEND = ("mass composer: an invalid draft never reaches /messages/queue
 MASS_BODY = ("mass composer: a valid draft's Broadcast POSTs one /messages/queue body with the draft's text, "
              "price, lock and the default audience, for the picked Creator; the relay answers 200, OnlyFans' wire "
              "gets that one mass message and a mass_runs row carries its queue id")
+MASS_TEMPLATE_GIF = ("mass composer: a GIF picked before a GIF-less FREE template stays (its chip still shown) and the "
+                     "Broadcast carries it (the /messages/queue body's giphy_id, OnlyFans' wire giphyId)")
 MASS_ALL = ("mass composer: all models on resets the audience (a chip turned off and a Smart List pick) to fans + "
             "following in that one switch, off again leaves the Smart List unpicked, and the all-models Broadcast "
             "reaches OnlyFans' wire once per included model with the default lists and no fan ids")
@@ -87,7 +89,8 @@ AUTOREPLY_DRAFT_INFLIGHT = ("auto-reply: a Delay typed while the settings PUT is
 GTKF_INFLIGHT = ("get to know fans: a cutoff, caption and price typed while the rule PATCH is in flight are kept and keep "
                  "'Saved' off once it lands; the next Save shows 'Saved' and stores them (GET /admin/automation-rules)")
 PM_SWITCH = ("priority mass: switching 'Post as' from one Creator to another drops the first one's list picks "
-             "(the POST carries the second Creator's picks on the default audience only)")
+             "(the POST carries the second Creator's picks and its pre-ticked MASSDMEXCLUDE on the default "
+             "audience only)")
 PM_ROW = "priority mass: the run row's audience (priority_mass_runs.audience_json) is the lists the POST sent"
 FL_SEED = ("funnel start: 'Start funnel' is disabled until the Creator's lists land; then its MASSDMEXCLUDE list is "
            "pre-ticked in Exclude and All fans in Send to, Exclude offers no OF built-in (All fans / Following), "
@@ -155,6 +158,11 @@ SCRIPTS_REMOVE_FAIL = ("scripts: a Remove from tag answered 500 keeps the script
                        "list, its box ticked and the selection bar at 'Selected 1', with the error shown")
 SCRIPTS_BAR_BUSY = ("scripts: while a Remove from tag is in flight the selection bar stays at 'Selected 1' with "
                     "Add to tag / Remove from tag disabled, one relabel POST")
+SCRIPTS_SWITCH_CLEARS = ("scripts: a Remove from tag answered 500 (its error shown), then another Creator picked in the "
+                         "creator column and this one again: neither shows the error; that remove again, held in "
+                         "flight: back on this Creator its row is still busy, and its 500 landing on the other "
+                         "Creator shows no error there; back again the row is free, no error, one POST each time; "
+                         "the script keeps its tag (route)")
 
 # Tier 2, batch 2 (docs/reducer-scan.md): VaultManagePanel editor/browse, the shared useHoverPreview
 VM_TICKS = ("vault manage: switching the media type clears the ticked files (no Selected bar on the new view, "
@@ -188,6 +196,17 @@ def register(Fault) -> dict:
             (r'(case \\?"pickTemplate\\?":(?:\\n|\s)*return )([^;]*?\(s, a\.t\));((?:\\n|\s)*case \\?"addGif\\?":)',
              r"\1((n) => a.t.price > 0 ? n : { ...n, price: s.price, lockedText: s.lockedText })(\2);\3"),
         )),
+        # slop/run 2026-10-29-state-reducers --break --fault=template-clears-picked-gifs
+        # lib/composeDraft.ts `applyTemplate`: a GIF-less template clears the picked GIFs again (the pre-Q7 rule),
+        # so the GIF picked before the FREE template is gone and the Broadcast carries none. Only the template-GIF
+        # check goes red: the body check's `want` has no GIF. Anchored on `] : draft.pickedGifs`, which only
+        # applyTemplate has; composeDraft.ts is shared, so every served chunk bundling it is rewritten (the fix
+        # reverted everywhere): the MassMessageComposer chunk and the Message dashboard, Get to know fans, Smart
+        # Messages and Messages Pro pages (5, measured: run 20261102T232149Z-2026-10-29-state-reducers-break-d637);
+        # in node, massMessageReducer's import (the volume check) is the one module.
+        "template-clears-picked-gifs": Fault(None, (MASS_TEMPLATE_GIF,), browser=(
+            (r"(\]" + _WS + r":" + _WS + r")draft\.pickedGifs\b", r"\1[]"),
+        ), browser_files=5, ts_files=1),
         # slop/run 2026-10-29-state-reducers --break --fault=mass-broadcast-ignores-invalid
         # app/components/compose/MassMessageComposer.tsx: Broadcast's `disabled` stops reading validateMass, so
         # an empty or under-$3 draft shows an enabled button (its title still says why). Only the gate check
@@ -384,11 +403,10 @@ def register(Fault) -> dict:
         # reducer delegates setAccount here but resets the audience after it, and the post reducer reads
         # only `isAccountSwitch` (green too). The module is served in three page chunks (growth/smart-messages,
         # growth/auto-funnel, analytics/message-dashboard for PostComposer's `isAccountSwitch`; measured),
-        # hence 3 files (the MassMessageComposer chunk on disk holds it too, yet the served one never matched:
-        # measured).
+        # plus the served MassMessageComposer chunk since the mass section's GIF step (matches measured), hence 4.
         "audience-setaccount-keeps-lists": Fault(None, (PM_SWITCH,), browser=(
             (r"\.\.\.resetAudience\(s\),((?:\\n|\s)*)accountId: a\.id", r"...s,\1accountId: a.id"),
-        ), browser_files=3, ts_files=1),  # node: the Mass volume path loads it once (measured)
+        ), browser_files=4, ts_files=1),  # node: the Mass volume path loads it once (measured)
         # slop/run 2026-10-29-state-reducers --break --fault=funnel-panel-unkeyed
         # app/components/automations/FunnelEditor.tsx: the FunnelLaunchPanel loses its
         # `key={accountId}`, so a Creator switch keeps the old Creator's audience (no setAccount
@@ -534,14 +552,13 @@ def register(Fault) -> dict:
             (rf"return \{{{_WS}\.\.\.state,{_WS}scrub: \\?\"failed\\?\"{_WS}\}};", "return state;"),
         ), browser_files=9),
         # slop/run 2026-10-29-state-reducers --break --fault=scripts-remove-unchecks-on-failure
-        # app/components/growth/ScriptsPage.tsx `removeScripts`: the uncheck runs before the relabel POST is
-        # answered (the pre-fix uncheck at click), so a failed remove loses the ticks, and the selection bar is gone
-        # while the remove is in flight. The failed-remove and bar-busy checks go red: a successful remove unchecks
-        # either way.
+        # app/components/growth/ScriptsPage.tsx `removeScripts`: the ticks go before the relabel POST is sent (the
+        # pre-fix uncheck at click) instead of on the run's successful end, so a failed remove loses them, and the
+        # selection bar is gone while the remove is in flight. The failed-remove and bar-busy checks go red: a
+        # successful remove unchecks either way.
         "scripts-remove-unchecks-on-failure": Fault(None, (SCRIPTS_REMOVE_FAIL, SCRIPTS_BAR_BUSY), browser=(
-            (r"(await relabelM\.mutateAsync\(\{(?:\\n|\s)*kind,(?:\\n|\s)*from,(?:\\n|\s)*ids(?:\\n|\s)*\}\);)"
-             r'((?:\\n|\s)*)(dispatch\(\{(?:\\n|\s)*type: \\?"check\\?",(?:\\n|\s)*ids,(?:\\n|\s)*on: false(?:\\n|\s)*\}\);)',
-             r"\3\2\1"),
+            (r"(await relabelM\.mutateAsync\(\{(?:\\n|\s)*kind,(?:\\n|\s)*from,(?:\\n|\s)*ids(?:\\n|\s)*\}\);)",
+             r"dispatch({ type: 'check', ids, on: false }); \1"),
         )),
         # slop/run 2026-10-29-state-reducers --break --fault=scripts-rename-stale-prompt
         # app/components/growth/ScriptsPage.tsx: the name modal's props (and `onOk`) are frozen when it opens (the
@@ -551,5 +568,26 @@ def register(Fault) -> dict:
             (r"promptProps\(namePrompt\)",
              "(globalThis.__slopPrompt?.[0] === namePrompt ? globalThis.__slopPrompt[1]"
              " : (globalThis.__slopPrompt = [namePrompt, promptProps(namePrompt)])[1])"),
+        )),
+        # slop/run 2026-10-29-state-reducers --break --fault=scripts-switch-keeps-error
+        # app/components/growth/scriptsPageState.ts `reset`: another Creator keeps the last run's error (the pre-fix
+        # `actionErr` useState that `pickCreator` never cleared), so a failed remove's error shows on the next
+        # Creator. Only the switch check goes red.
+        "scripts-switch-keeps-error": Fault(None, (SCRIPTS_SWITCH_CLEARS,), browser=(
+            (r"view: s\.view,((?:\\n|\s)*)sort: s\.sort", r"view: s.view,\1error: s.error,\1sort: s.sort"),
+        )),
+        # slop/run 2026-10-29-state-reducers --break --fault=scripts-stale-run-fail
+        # app/components/growth/scriptsPageState.ts `runEnd`: a run's end is not dropped on another Creator's page
+        # (no `otherCreator` guard), so a remove in flight at the switch puts its error on the next Creator. Only
+        # the switch check goes red.
+        "scripts-stale-run-fail": Fault(None, (SCRIPTS_SWITCH_CLEARS,), browser=(
+            (r"if \(otherCreator\(s, a\.account\)\) return freed;", ""),
+        )),
+        # slop/run 2026-10-29-state-reducers --break --fault=scripts-switch-frees-busy
+        # app/components/growth/scriptsPageState.ts `reset`: another Creator drops the busy ids (the brief's first
+        # cut), so a remove still in flight on the last Creator's script leaves its row enabled when the user comes
+        # back (a second POST possible). Only the switch check goes red.
+        "scripts-switch-frees-busy": Fault(None, (SCRIPTS_SWITCH_CLEARS,), browser=(
+            (r"busy: s\.busy,", ""),
         )),
     }

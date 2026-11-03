@@ -599,7 +599,6 @@ SHARED_ONLY = {
     "/growth/auto-story": "automation rules and the vault picker are other pages' too",
     "/growth/auto-mass": "its rules, run log, OF lists and vault picker are Auto Post's too",
     "/growth/auto-reply": "its autoreply config and OF lists are Auto Post's and Messages Pro's too",
-    "/growth/auto-funnel": "its funnels, rules, lists, queue and vault picker are Auto Post's too",
     "/growth/get-to-know-fans": "its account config (Model info) is Messages Pro's and Auto Post's too",
     "/growth/gen-info": "its automation rules and enqueue routes are Auto Post's too",
     "/employees": "its writes are owner-only; it reads vault lists for folder access",

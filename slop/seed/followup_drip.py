@@ -23,6 +23,12 @@ Cases, round-robin over a seeded shuffle of each Creator's candidates
 Declared: the earlier nudges carry no `sent_by_employee_id` (the product's attribution
 resolves the system Automation employee); nothing else differs from what it writes.
 
+`seed_kill` (not part of `seed`; only 2026-10-30-followup-drip's KILL phase calls it, last): per
+KILL Creator one fan who subscribed since the drip's other ticks (a new `fans` row, KILL_FAN_OFFSET
+past the profile's ids, $25 spend) with the `due1` history (his line 40 h ago, ours 30 h ago), its
+`chats` row and NO followup_state row: the drip's first-cycle fan, whose send marker the mark's
+upsert creates.
+
 `seed_bad_tz_rule` (not part of `seed`; only 2026-10-30-followup-drip's bad-tz phase calls it):
 one enabled send_followup clock rule (`daily_at` 00:00) whose stored `tz_offset_minutes` is "x"
 (lib/dispatch_tz_faults.py BAD_TZ). Declared bypass: raw SQL. No build ever wrote a non-number
@@ -34,7 +40,7 @@ from __future__ import annotations
 import json
 from datetime import timedelta
 
-from . import World, ts
+from . import World, fans as _fans, ts
 
 MSG_ID_BASE = 9_000_900_000_000   # above threads' history ids, below the relay's bands
 CASES = ("due1", "due2", "gap", "cap", "reply", "restart", "waiting",
@@ -64,6 +70,9 @@ _PLAN = {
     "cooling": ([("in", 60, 0), ("out", 50, 0), ("in", 16, 0)],
                 ("reply_cooldown", 1, 50, 16, -10, {})),
 }
+KILL_FAN_OFFSET = 900_000   # past any Creator's fans (fans.py: FAN_ID_BASE + creator * 1e6 + k)
+KILL_MSG_ID_BASE = MSG_ID_BASE + 9_000_000
+KILL_SPEND_CENTS = 2500
 BAD_TZ_RAW = "x"   # seed_bad_tz_rule's stored tz_offset_minutes
 _IN, _OUT, _NUDGE = "u up?", "hey you", "thinking of you 😘"
 
@@ -133,3 +142,47 @@ def seed_bad_tz_rule(w: World, account_id: str) -> int:
              ts(w.now))).lastrowid
     con.close()
     return rid
+
+
+def seed_kill(w: World, aids: list[str]) -> dict[str, dict]:
+    """One fresh `due1` fan per Creator in `aids` (module docstring) -> {aid: fan dict}."""
+    index = {c["id"]: i for i, c in enumerate(w.data["creators"])}
+    out: dict[str, dict] = {}
+    frows, mrows, crows = [], [], []
+    seq = KILL_MSG_ID_BASE
+    for a in aids:
+        fid = _fans.FAN_ID_BASE + index[a] * 1_000_000 + KILL_FAN_OFFSET
+        sub_at = w.now - timedelta(days=3)
+        f = {"id": fid, "account_id": a, "name": "Kai K.", "username": f"u{fid}", "spend_cents": KILL_SPEND_CENTS}
+        out[a] = f
+        frows.append((a, fid, f["username"], f["name"], None, 0, "[]", 0, 0, "[]", "[]", "[]", "{}",
+                      KILL_SPEND_CENTS, 0, 0, None, None, ts(w.now - timedelta(hours=1)), ts(sub_at),
+                      ts(w.now + timedelta(days=30)), "active", 0, "idle", 0, 0, "slop",
+                      ts(sub_at), ts(w.now)))
+        last = None
+        for direction, hours, _nudge in _PLAN["due1"][0]:
+            seq += 1
+            at = w.now - timedelta(hours=hours)
+            body = _IN if direction == "in" else _OUT
+            mrows.append((a, fid, seq, direction, f["name"] if direction == "in" else a, body, None, ts(at), ts(at)))
+            last = (seq, at, body)
+        crows.append((a, fid, last[0], ts(last[1]), last[2], 0))
+    con = w.sql()
+    with con:
+        con.executemany(
+            "INSERT INTO fans(account_id, fan_id, of_username, of_display_name, avatar_url, is_name_real, "
+            "recent_events, likes_boobs, likes_ass, family_names, pets, communication_style, custom_fields, "
+            "lifetime_spend_cents, is_bot, turn_counter, last_message_received_at, last_message_sent_at, "
+            "last_online_at, subscribed_at, subscription_expires_at, "
+            "subscription_status, is_followed, deep_convo_state, deep_convo_skip_level, deep_convo_skip_remaining, "
+            "source, created_at, updated_at, tags) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'[]')", frows)
+        con.executemany(
+            "INSERT INTO messages(account_id, fan_id, message_id, direction, sender_name, body, media_ids, "
+            "media_count, price_cents, is_paid, is_tip, is_unsent, is_promise, automation_kind, created_at, "
+            "ingested_at) VALUES (?,?,?,?,?,?,'[]',0,0,NULL,0,0,0,?,?,?)", mrows)
+        con.executemany(
+            "INSERT INTO chats(account_id, fan_id, last_message_id, last_message_at, last_message_preview, "
+            "unread_count, is_pinned, is_priority, hidden_locally, list_ids) VALUES (?,?,?,?,?,?,0,0,0,'[]')", crows)
+    con.close()
+    return out

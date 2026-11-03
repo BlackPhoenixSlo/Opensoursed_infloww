@@ -36,6 +36,7 @@ from fastapi import HTTPException  # noqa: E402
 
 import of_client  # noqa: E402
 import server  # noqa: E402
+import mass_queue_api  # noqa: E402
 
 AT = "2026-11-27T20:15:00+02:00"
 
@@ -131,7 +132,7 @@ def case_edit_message_needs_a_schedule():
 
 def case_edit_message_route_refuses_no_schedule():
     try:
-        server.of_edit_queued_message(31, server._EditQueuedMessageBody(text="Synthetic message", user_lists=["fans"]))
+        mass_queue_api.of_edit_queued_message(31, mass_queue_api._EditQueuedMessageBody(text="Synthetic message", user_lists=["fans"]))
     except HTTPException as e:
         assert e.status_code == 422, e
     else:
@@ -150,7 +151,7 @@ def case_mass_save_for_later_body():
 def case_mass_route_save_for_later_takes_the_scheduled_branch():
     """Save for later must never reach send_mass_message (an immediate blast)."""
     import inspect
-    src = inspect.getsource(server.of_send_or_schedule_mass)
+    src = inspect.getsource(mass_queue_api.of_send_or_schedule_mass)
     assert "if body.scheduled_date or body.save_for_later:" in src, "SFL must take the scheduled branch"
     assert "save_for_later=body.save_for_later" in src
 
@@ -163,12 +164,12 @@ def case_later_route_saves_for_later():
         seen.append((body.save_for_later, body.scheduled_date))
         return {"id": 1}
 
-    orig = server.of_send_or_schedule_mass
-    server.of_send_or_schedule_mass = _fake
+    orig = mass_queue_api.of_send_or_schedule_mass
+    mass_queue_api.of_send_or_schedule_mass = _fake
     try:
-        asyncio.run(server.of_save_mass_for_later(None, server._MassScheduleBody(text="x", user_lists=["fans"], scheduled_date="2026-11-07T10:00:00+01:00")))
+        asyncio.run(mass_queue_api.of_save_mass_for_later(None, mass_queue_api._MassScheduleBody(text="x", user_lists=["fans"], scheduled_date="2026-11-07T10:00:00+01:00")))
     finally:
-        server.of_send_or_schedule_mass = orig
+        mass_queue_api.of_send_or_schedule_mass = orig
     assert seen == [(True, None)], seen
 
 

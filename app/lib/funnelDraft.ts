@@ -9,7 +9,8 @@
  * `step` is the step's id (`next` targets and per-model PPV media key on it;
  * the walker goes by list order). `DraftStep.step` is the one source of truth:
  * kept through every edit, move and remove, written by `toWire`; a new step
- * (added, or unnumbered in raw text) gets max + 1.
+ * (added, or unnumbered in raw text) gets max + 1. Text the user reads names a
+ * step by its POSITION ("Step n"); an id shows only in parentheses (`stepErrorText`).
  */
 
 import type { FunnelFull, FunnelStep, PpvStep } from "@/hooks/useFunnels";
@@ -155,13 +156,57 @@ export interface FunnelBody {
 
 export const EMPTY_FUNNEL: FunnelDraft = { name: "", description: "", opening: "", steps: [] };
 
+/** A stored `check_intervals_min` the save validators would refuse: present
+ *  (not null) but not a non-empty list of positive whole numbers. */
+function badIntervals(iv: unknown): boolean {
+  if (iv == null) return false;
+  return !Array.isArray(iv) || iv.length === 0
+    || !iv.every((x) => typeof x === "number" && Number.isInteger(x) && x > 0);
+}
+
+/** Funnel ids already warned about this page load (warn once per funnel). */
+const warnedRepairs = new Set<number>();
+
+/** Stored funnel → draft. Load-only repair (rows from before the validator):
+ *  a malformed `check_intervals_min` loads blank, so a save omits it. */
 export function funnelDraftOf(f: FunnelFull): FunnelDraft {
+  const repaired: number[] = [];
+  const steps = (f.steps ?? []).map((s, i) => {
+    const d = toDraft(s);
+    if (!badIntervals(s.check_intervals_min)) return d;
+    repaired.push(i + 1);
+    return { ...d, intervals: "" };
+  });
+  if (repaired.length && !warnedRepairs.has(f.id)) {
+    warnedRepairs.add(f.id);
+    console.warn(
+      `Funnel "${f.name}" (id ${f.id}): invalid check_intervals_min on `
+      + `${repaired.map((n) => `Step ${n}`).join(", ")} — loaded blank, dropped on save; the walker default [2,4,10] applies after that.`,
+    );
+  }
   return {
     name: f.name,
     description: f.description ?? "",
     opening: f.opening_message,
-    steps: (f.steps ?? []).map(toDraft),
+    steps,
   };
+}
+
+/** A save error the user reads, with every step named by POSITION ("Step n",
+ *  as on the step cards) instead of the server's 0-based `step[i]` or a `step`
+ *  id. `steps` is the list that was sent (ids → positions). Other text passes
+ *  through unchanged. */
+export function stepErrorText(msg: string, steps: Pick<DraftStep, "step">[]): string {
+  const dangling = /^step\[(\d+)\]\.next\.(.+) → step (-?\d+) references no existing step$/.exec(msg);
+  if (dangling) {
+    const [, i, label, id] = dangling;
+    const at = steps.findIndex((s) => s.step === Number(id));
+    const where = at >= 0
+      ? `points to Step ${at + 1} (id ${id}), which the server could not find`
+      : `points to a step that does not exist (id ${id})`;
+    return `Step ${Number(i) + 1} next.${label} ${where}.`;
+  }
+  return msg.replace(/^step\[(\d+)\](\.?)/, (_m, i: string, dot: string) => `Step ${Number(i) + 1}${dot ? " " : ""}`);
 }
 
 /** A typed-form edit, applied by `editFunnel`. */
@@ -219,10 +264,11 @@ export function editFunnel(d: FunnelDraft, e: FunnelEdit): FunnelDraft {
  *  number). Name / opener may be blank — `saveBody` requires them. */
 function wireBody(d: FunnelDraft): FunnelBody {
   const steps = d.steps.map(toWire);
-  const seen = new Set<number>();
+  const seen = new Map<number, number>(); // id → position
   steps.forEach((s, i) => {
-    if (seen.has(s.step)) throw new Error(`Step ${i + 1} reuses step number ${s.step}.`);
-    seen.add(s.step);
+    const first = seen.get(s.step);
+    if (first != null) throw new Error(`Step ${i + 1} has the same id as Step ${first} (id ${s.step}).`);
+    seen.set(s.step, i + 1);
   });
   return {
     name: d.name.trim(),

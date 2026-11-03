@@ -28,6 +28,13 @@ held out of that broadcast for `seed_jump`: a second, branching funnel (JUMP_STE
 each carry a different `check_intervals_min`), one more broadcast per Creator to just
 those fans, seeded when the scenario calls it (after the main walk's ticks), so the main
 broadcast's world and ticks never see it.
+`seed_kill` (the scenario's KILL phase, last, after every other tick): per KILL Creator four
+of its THREADED fans (never in the other broadcasts; `w.rng("house_funnel_kill")`): three
+walking a third funnel (KILL_STEPS: one line, then a $KILL_PPV_PRICE PPV of two bubbles, bubble
+0 the PPV) from one more broadcast, each on the PPV step with his answer to step 1 in (`kill`,
+`partial`, `partial_noid`: the scenario's OF behaviour per role; `kill` the highest fan_id, as
+the walker goes in fan_id order), and one `control` fan with no funnel; plus the Creator's persona (lib/wcfi_relay.py's PERSONA, so the welcome chatter's fake
+DeepSeek answers it), the one `account_ai_config` field the Persona tab writes.
 Declared: the buyer's unlock is seeded as the two rows purchase_notifications'
 `_flip_paid` leaves (the chatter PPV flipped `is_paid=1`, `purchased_at` = the
 notification's time, and its `purchase_notices` row), not driven through that poll (it
@@ -70,6 +77,17 @@ JUMP_STEPS = [
     {"step": 5, "check_intervals_min": [2, 19, 30], "messages": ["jump funnel step 5"]},
 ]
 JUMP_FROM, JUMP_TO = 0, 4   # step INDEXES: step 1's keyword lands on step 5
+KILL_MSG_ID_BASE = MSG_ID_BASE + 6_000_000
+KILL_OPENER = "slop kill funnel opener: one more for you"
+KILL_PPV_PRICE = 18
+KILL_PPV_MEDIA_ID = 7_100_000_003
+KILL_STEPS = [
+    {"step": 1, "check_intervals_min": [2, 4, 10], "messages": ["kill funnel hi 😘"]},
+    {"step": 2, "type": "paid_ppv", "price": KILL_PPV_PRICE,
+     "messages": ["kill funnel ppv: open me 🔒", "made it just for you"]},
+]
+KILL_PPV_STEP = 1                     # index of the PPV step: every walking KILL fan is on it
+KILL_ROLES = ("kill", "partial", "partial_noid")   # walking; plus one `control` fan per Creator
 
 # case -> (current_step, [(direction, minutes ago, funnel step or None)])
 _PLAN = {
@@ -228,5 +246,74 @@ def seed_jump(w: World, jump: dict[str, list[dict]]) -> dict:
                 crows.append((a, f["id"], seq, ts(b_at), JUMP_OPENER, 0))
         con.executemany(_MSG_SQL, mrows)
         con.executemany(_CHAT_SQL, crows)
+    con.close()
+    return {"runs": runs, "fans": fans_out, "funnel_id": fid}
+
+
+def seed_kill(w: World, threads: list[dict], aids: list[str]) -> dict:
+    """The KILL phase's world (module docstring), as A10 and the walker leave it: the funnel,
+    its per-Creator PPV media, one broadcast per Creator to its three walking fans (the
+    `mass_runs` row, a tagged opener each), their `funnel_state` on the PPV step (step 1 sent
+    3 min ago, his answer 1 min ago), `funnel_responders` row and history, each touched
+    `chats` row moved to his latest line; the Creators' persona.
+    -> {"runs": {aid: mass_run_id}, "fans": {aid: {role: fan_id}}, "funnel_id": id}."""
+    from ..lib.wcfi_relay import PERSONA
+
+    rng = w.rng("house_funnel_kill")
+    b_at = w.now - timedelta(hours=BROADCAST_H)
+    threaded = sorted({(t["account_id"], t["fan_id"]) for t in threads})
+    names = {(f["account_id"], f["id"]): f["name"] for fl in w.data["fans"].values() for f in fl}
+    con = w.sql()
+    runs: dict[str, int] = {}
+    fans_out: dict[str, dict[str, int]] = {}
+    mrows, srows, rrows, chats = [], [], [], []
+    seq = KILL_MSG_ID_BASE
+    with con:
+        fid = _funnel(con, "slop kill funnel", "slop/seed/house_funnel.py seed_kill", KILL_OPENER, KILL_STEPS,
+                      b_at)
+        for a in aids:
+            pool = [f for (x, f) in threaded if x == a]
+            rng.shuffle(pool)
+            if len(pool) < len(KILL_ROLES) + 1:
+                continue
+            # The walker goes fan by fan in fan_id order: the hung `kill` fan last.
+            walk = sorted(pool[:len(KILL_ROLES)])
+            picked = {"partial": walk[0], "partial_noid": walk[1], "kill": walk[2], "control": pool[len(KILL_ROLES)]}
+            fans_out[a] = picked
+            walking = [picked[r] for r in KILL_ROLES]
+            con.execute(
+                "INSERT INTO funnel_account_media(funnel_id, account_id, opening_media_ids, steps_media_json, "
+                "created_at, updated_at) VALUES (?,?,?,?,?,?)",
+                (fid, a, "[]", json.dumps({"2": {"media_files": [KILL_PPV_MEDIA_ID], "previews": []}}),
+                 ts(b_at), ts(b_at)))
+            runs[a] = _run(con, a, fid, b_at, walking)
+            con.execute("INSERT OR IGNORE INTO account_ai_config (account_id, utc_offset, daily_cost_cap_cents)"
+                        " VALUES (?, 0, 100)", (a,))
+            con.execute("UPDATE account_ai_config SET persona=? WHERE account_id=?", (PERSONA, a))
+            for f in walking:
+                fan = {"id": f, "name": names[(a, f)]}
+                last = None
+                for direction, when, body, kind, step in (
+                        ("out", b_at, KILL_OPENER, "send_mass_message", None),
+                        ("in", w.now - timedelta(minutes=100), _IN, None, None),
+                        ("out", w.now - timedelta(minutes=3), KILL_STEPS[0]["messages"][0], "reply_mass_funnel", 1),
+                        ("in", w.now - timedelta(minutes=1), _IN, None, None)):
+                    seq += 1
+                    mrows.append(_msg_row(a, fan, seq, direction, when, body, kind=kind, run=runs[a], step=step)
+                                 if kind else _msg_row(a, fan, seq, direction, when, body))
+                    last = (seq, when, body)
+                rrows.append((a, fid, f, runs[a], ts(w.now - timedelta(minutes=100))))
+                srows.append((runs[a], f, KILL_PPV_STEP, KILL_PPV_STEP - 1, ts(w.now - timedelta(minutes=1)), 0,
+                              "pending", ts(w.now - timedelta(minutes=3))))
+                chats.append((last[0], ts(last[1]), last[2], a, f))
+        con.executemany(_MSG_SQL, mrows)
+        con.executemany(
+            "INSERT INTO funnel_responders(account_id, funnel_id, fan_id, mass_run_id, first_replied_at) "
+            "VALUES (?,?,?,?,?)", rrows)
+        con.executemany(
+            "INSERT INTO funnel_state(mass_run_id, fan_id, current_step, last_sent_step, next_check_at, "
+            "check_count, status, updated_at) VALUES (?,?,?,?,?,?,?,?)", srows)
+        con.executemany("UPDATE chats SET last_message_id=?, last_message_at=?, last_message_preview=?, "
+                        "unread_count=1 WHERE account_id=? AND fan_id=?", chats)
     con.close()
     return {"runs": runs, "fans": fans_out, "funnel_id": fid}

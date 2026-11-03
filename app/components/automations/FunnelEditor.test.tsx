@@ -25,6 +25,9 @@ vi.mock("@/hooks/useAccounts", async (importOriginal) => {
   };
 });
 
+// The Media pane's vault picker needs the user context; its slots are what's pinned here.
+vi.mock("@/components/chat/VaultPicker", () => ({ VaultPicker: () => null }));
+
 import AutoFunnelPage from "@/components/automations/AutoFunnelPage";
 import { relay } from "@/lib/relay";
 import { renderWithProviders } from "@/test-utils";
@@ -42,6 +45,7 @@ const GAPPED = {
 
 beforeEach(() => {
   get.mockImplementation((path: string) => {
+    if (path.startsWith("/admin/funnels/1/media/")) return Promise.resolve({ opening_media_ids: [], steps_media: {} });
     if (path.startsWith("/admin/funnels/1")) return Promise.resolve(GAPPED);
     if (path.startsWith("/admin/funnels")) {
       return Promise.resolve({ funnels: [
@@ -136,7 +140,7 @@ describe("Auto Funnel (MassFunnelsTab)", () => {
   });
 
   it("raw JSON → typed fields carries the draft over; a failed save shows its error", async () => {
-    post.mockRejectedValueOnce(new Error("step[1].next.default → step 7 references no existing step"));
+    post.mockRejectedValueOnce(new Error("step[0].next.default → step 9 references no existing step"));
     renderWithProviders(<AutoFunnelPage />);
     fireEvent.click(within(screen.getByRole("banner")).getByRole("button", { name: "New funnel" }));
     const dialog = screen.getByRole("dialog", { name: "New funnel" });
@@ -151,7 +155,8 @@ describe("Auto Funnel (MassFunnelsTab)", () => {
     await waitFor(() => expect(post).toHaveBeenCalledWith("/admin/funnels", {
       name: "n", opening_message: "o", description: null, steps: [{ step: 7, type: "paid_ppv", messages: ["b"] }],
     }));
-    expect(await within(dialog).findByText(/references no existing step/)).toBeTruthy();
+    // The server's 0-based `step[0]` + id reads as the step's position.
+    expect(await within(dialog).findByText("Step 1 next.default points to a step that does not exist (id 9).")).toBeTruthy();
   });
 
   const openEdit = async () => {
@@ -186,5 +191,21 @@ describe("Auto Funnel (MassFunnelsTab)", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(put).toHaveBeenCalled());
     expect(savedSteps().map((s) => s.step)).toEqual([1, 7, 8]);
+  });
+
+  it("a server 422 on save names the step by position, not step[i] or its id", async () => {
+    put.mockRejectedValueOnce(new Error("step[1].next.bought → step 9 references no existing step"));
+    const dialog = await openEdit();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
+    expect(await within(dialog).findByText("Step 2 next.bought points to a step that does not exist (id 9).")).toBeTruthy();
+    expect(within(dialog).queryByText(/step\[1\]/)).toBeNull();
+  });
+
+  it("Media labels a PPV step by its position, not its id (id 7 is Step 2)", async () => {
+    renderWithProviders(<AutoFunnelPage />);
+    const row = (await screen.findByText("strokes")).closest("tr")!;
+    fireEvent.click(within(row).getByRole("button", { name: "Media" }));
+    expect(await screen.findByText("Step 2 · PPV")).toBeTruthy();
+    expect(screen.queryByText("Step 7 · PPV")).toBeNull();
   });
 });

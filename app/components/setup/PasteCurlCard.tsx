@@ -35,7 +35,8 @@ import { EXTENSION_ID } from "@/components/setup/useExtensionProbe";
 import { useInDesktopApp } from "@/hooks/useInDesktopApp";
 import { BRAND_NAME } from "@/lib/brand";
 import {
-  PASTE_PROXY, buildBootstrapBody, canSubmit, initialPasteCurl, pasteCurlReducer, submitError, type BootstrapBody,
+  PASTE_PROXY, buildBootstrapBody, canSubmit, curlHint, initialPasteCurl, pasteCurlReducer, submitError,
+  type BootstrapBody,
 } from "@/components/setup/pasteCurl";
 
 const EXTENSION_URL = `https://chromewebstore.google.com/detail/chatterly-login-capture/${EXTENSION_ID}`;
@@ -64,6 +65,8 @@ export default function PasteCurlCard({ extInstalled, onLinked, initialNickname 
   // `pending`: an account captured but whose attach failed. `onLinked` waits for Retry or Continue, so the error
   // stays readable.
   const { curl, nickname, makeActive, proxyLabel, pastedProxy, staticOverride, result, pending } = state;
+  // Why the pasted curl would be refused (no cookies, no user-agent, …), shown under the textarea.
+  const hint = curlHint(curl);
 
   const proxiesQ = useQuery<ProxiesResp>({
     queryKey: ["proxies", "list"],
@@ -243,7 +246,14 @@ export default function PasteCurlCard({ extInstalled, onLinked, initialNickname 
         placeholder="curl 'https://onlyfans.com/api2/v2/...' -H 'sign: …' -H 'time: …' -H 'user-id: …' -H 'x-bc: …' -H 'x-of-rev: …' -H 'x-relay-static-param: …' -b 'auth_id=…; sess=…; …'"
         value={curl}
         onChange={(e) => dispatch({ type: "setField", field: "curl", value: e.target.value })}
+        aria-invalid={!!hint}
+        aria-describedby={hint ? "paste-curl-hint" : undefined}
       />
+      {hint && (
+        <p id="paste-curl-hint" role="status" aria-live="polite" className="text-xs text-err leading-relaxed break-words">
+          {hint}
+        </p>
+      )}
 
       {/* Optional fields */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">

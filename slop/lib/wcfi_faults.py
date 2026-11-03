@@ -1,9 +1,10 @@
 """The welcome chatter's break-it-once faults (lib/faults.py merges `register(Fault)` into
-FAULTS). Both patch `automations.welcome_chatter_for_info` (wcfi) inside the throwaway
-relay, never service/:
+FAULTS). Each patches a module wcfi (`automations.welcome_chatter_for_info`) calls through,
+inside the throwaway relay, never service/:
 
   wcfi-skiplist-ignored   scenarios/2026-10-30-welcome-chatter-walk (its FAULT)
   wcfi-turn-sent-twice    the same scenario, --break --fault=wcfi-turn-sent-twice
+  reply-shape-echo-kept   the same scenario, --break --fault=reply-shape-echo-kept
 
 The flow's check names live here and its scenario imports them, so a target can never name
 a check that does not exist.
@@ -20,6 +21,8 @@ DOUBLE = ("no-double-send: no bubble reached OF twice (same Creator, fan and tex
 COUNTS = ("counts: fake OF's sends = new welcome_chatter_for_info outbound rows (same ids), none to a "
           "fan who did not DM, the runs report no errors")
 LANDED = "every fan DM was accepted and is a messages row in its thread"
+ECHO = ("no echoed bubble reached OF: a reply that repeats the fan's DM is dropped and counted "
+        "(each echo reply's other bubble still sent, one distinct bubble per turn)")
 
 
 def _wcfi_skiplist_ignored() -> None:
@@ -70,8 +73,19 @@ def _wcfi_turn_sent_twice() -> None:
     wcfi.write_outbound_attribution = twice
 
 
+def _reply_shape_echo_kept() -> None:
+    """The shaping's echo drop never fires: the predicate `_reply_shape.shape_parts` reads
+    as its module attribute per call answers False, so a bubble that parrots the fan's
+    DM goes to OF with the rest of the reply. Exercised by the scenario's echo fans
+    only (the fake DeepSeek echoes nobody else); the turn and its counts are unchanged."""
+    from automations import _reply_shape
+
+    _reply_shape._looks_like_echo = lambda _part, _echo_of: False
+
+
 def register(Fault) -> dict:
     return {
         "wcfi-skiplist-ignored": Fault(_wcfi_skiplist_ignored, (SKIPLISTED,)),
         "wcfi-turn-sent-twice": Fault(_wcfi_turn_sent_twice, (DOUBLE,)),
+        "reply-shape-echo-kept": Fault(_reply_shape_echo_kept, (ECHO,)),
     }

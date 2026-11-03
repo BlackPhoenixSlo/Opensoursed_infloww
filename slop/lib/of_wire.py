@@ -77,6 +77,44 @@ concurrently and are recorded in arrival order.
   POST /api2/v2/lists/{id}/users/{user}    a member added / removed (`list_users[id]`); answers
   DELETE (same)                            `{"success": true}` (bypass, declared: OF's answer
                                            body is a guess)
+                                           The media upload (lib/of_wire_upload.py, `upload`: its
+                                           records below are `upload.<name>`, `upload.snapshot()`):
+  GET  /api2/v2/vault/media/hash?h=&size=  the upload dedupe: the vault media minted for that S3
+                                           ETag + size (`h`), else 404; each kept per Creator in
+                                           order (`lookups`: t, h, size, hit). A claim is minted
+                                           only once something REFERENCES it (a chat send's or a
+                                           post's `mediaFiles` names its processId), as OF does;
+                                           the minted media joins `vault[uid]` (by-id read) and
+                                           `minted[uid]`
+  POST /api2/v2/upload/signed/create       the presigned S3 target(s) on this fake's own origin:
+                                           OF's key (`upload/<uid>/...`, the Creator spliced in),
+                                           `uploadToken`, `getUrl`; `parts` 1 -> `putUrl`, more ->
+                                           `uploadId` + `keys: [{part, putUrl}]` and no putUrl. Each
+                                           kept per Creator in order (`uploads`)
+  PUT  /s3/<key>[?partNumber=&uploadId=]   S3: the bytes stored (size, sha256), answered 200 with
+                                           S3's `ETag` header, computed here (md5 of the body);
+                                           a key / part / uploadId it never handed out: 403. Each
+                                           kept per Creator in order (`s3_puts`, the Creator from
+                                           the key)
+  POST /api2/v2/upload/signed/finish       the multipart assembled: the parts named must be every
+                                           part stored, with their ETags; answers `{ETag}`, S3's
+                                           multipart one (md5 of the part md5 digests, `-N`), else
+                                           400 "Invalid input."
+  POST /convert/file/upload                convert.onlyfans.com's claim (lib/upload_relay.py points
+                                           the relay's convert host here): the FormData parsed
+                                           (stdlib `email`), kept per Creator in order (`claims`:
+                                           key, ETag, Location, Bucket, name, token_ok, processId,
+                                           the S3 object's size / sha256 / ETag); a key with no
+                                           stored object or a wrong `uploadToken`: 400 "Invalid
+                                           input." as OF does; else `{processId, host, sourceUrl,
+                                           extra, thumbs, files}` (`host` / `extra` are guesses)
+  GET  /api2/v2/posts/{id}                 a post as created (`posts[uid]`): `{id, text, postedAt,
+                                           media}`, `media` the vault media its `mediaFiles`
+                                           claims minted (the carrier's listing), shuffled
+                                           (seeded by the post id: OF's order is arbitrary);
+                                           deleted or unknown: 404
+  DELETE /api2/v2/posts/{id}               the post deleted: `{"success": true}` (a guess), kept
+                                           per Creator in order (`carriers`: t, id, media_ids)
   any other path                           404, counted (`unmodelled`)
 
 `extra_s[uid]` adds seconds to every /api2/ call of that Creator: a Creator whose proxy
@@ -118,6 +156,8 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
+from slop.lib.of_wire_upload import UploadWire
+
 LATENCY_S = 0.05
 OTP_BODY = {"error": {"code": 101, "message": "Confirm it is you", "payload": {
     "otpState": {"email": False, "phoneOtp": False, "appOtp": True, "faceOtp": False, "forceFaceOtp": False,
@@ -152,6 +192,7 @@ class FakeOF:
         self.campaigns: dict[str, list[dict]] = {}  # per Creator, OF's /campaigns rows in OF's list order
         self.lists: dict[str, list[dict]] = {}  # per Creator, its custom fan lists (OF's list items), made order
         self.list_users: dict[int, list[int]] = {}  # list id -> its members, added order
+        self.upload = UploadWire(self)  # the media upload's routes and records (lib/of_wire_upload.py)
         self.unmodelled: Counter = Counter()
         self.unsigned = 0
         self._ids = iter(range(9_000_000_000, 10**12))
@@ -435,6 +476,8 @@ class FakeOF:
                         fake.sends.setdefault(uid, []).append({"fan_id": int(m.group(1)), "t": time.time(), **msg,
                                                                "body": body})
                     return self._record(uid, route, 200, msg)
+                if fake.upload.handle(self, method, u, uid, route, raw):
+                    return
                 with fake.lock:
                     fake.unmodelled[route] += 1
                 return self._record(uid, route, 404, {"error": {"code": 0, "message": "slop fake: not modelled"}})
