@@ -20,7 +20,7 @@ import { useScope } from "@/contexts/ScopeContext";
 import { useCreatorProfiles } from "@/lib/creatorProfiles";
 import { useRosterCounts } from "@/hooks/useRosterCounts";
 import { ofMeQuery } from "@/lib/ofMe";
-import { relay, type AccountMeta } from "@/lib/relay";
+import { relay, type AccountMeta, type WatcherMeta } from "@/lib/relay";
 import { subscribeToStorage } from "@/lib/storageSync";
 import { cn } from "@/lib/utils";
 
@@ -74,6 +74,9 @@ export function CreatorColumn(props: {
   all?: { on: boolean; pick: () => void };
   /** A controlled column with no "All creators" row at all (pages that always work on one creator). */
   noAll?: boolean;
+  /** Watcher accounts: dimmed rows after the creators, never picked (a page that passes them). OF Manager's
+   *  own lists its watchers in `accounts` instead, as pickable rows with a "watcher" badge (WatcherScope). */
+  watchers?: WatcherMeta[];
   className?: string;
   variant?: "s4s";
   marks?: Record<string, S4SMark>;
@@ -81,7 +84,9 @@ export function CreatorColumn(props: {
   return props.onChange ? <ColumnBody {...props} onChange={props.onChange} /> : <ScopedColumn {...props} />;
 }
 
-function ScopedColumn({ accounts, onPicked, className }: { accounts: AccountMeta[]; onPicked?: () => void; className?: string }) {
+function ScopedColumn({ accounts, onPicked, className }: {
+  accounts: AccountMeta[]; onPicked?: () => void; className?: string;
+}) {
   const { scope, setScope } = useScope();
   const profiles = useCreatorProfiles();
   const [picked, setPicked] = useState("");
@@ -100,7 +105,7 @@ function ScopedColumn({ accounts, onPicked, className }: { accounts: AccountMeta
   );
 }
 
-function ColumnBody({ accounts, value, onChange, all, noAll = false, groups, ofManager = false, className, variant, marks }: {
+function ColumnBody({ accounts, value, onChange, all, noAll = false, watchers, groups, ofManager = false, className, variant, marks }: {
   accounts: AccountMeta[];
   value?: string | null;
   onChange: (accountId: string) => void;
@@ -108,6 +113,8 @@ function ColumnBody({ accounts, value, onChange, all, noAll = false, groups, ofM
   all?: { on: boolean; pick: () => void };
   /** No "All creators" row. */
   noAll?: boolean;
+  /** Watcher accounts after the creators, not pickable. */
+  watchers?: WatcherMeta[];
   /** OF Manager's creator groups (the Tags) under All creators; `value` "" is none picked. */
   groups?: { tags: string[]; value: string; pick: (tag: string) => void };
   /** OF Manager's own column: it collapses, warms the hovered creator's OF view and owns the `/` key. */
@@ -172,6 +179,7 @@ function ColumnBody({ accounts, value, onChange, all, noAll = false, groups, ofM
   };
   const q = filter.trim().toLowerCase();
   const shown = q ? accounts.filter((a) => (a.nickname || a.id).toLowerCase().includes(q)) : accounts;
+  const shownWatchers = (watchers ?? []).filter((w) => !q || (w.nickname || w.name || w.id).toLowerCase().includes(q));
   // The strip has no Search box, so it never stays filtered.
   const toggleCollapsed = () => {
     if (!collapsed) { setQuery(""); setFilter(""); }
@@ -265,7 +273,7 @@ function ColumnBody({ accounts, value, onChange, all, noAll = false, groups, ofM
         )}
       </div>}
       <div ref={listRef} className="flex-1 min-h-0 overflow-y-auto">
-        {shown.length === 0 ? (
+        {shown.length === 0 && shownWatchers.length === 0 ? (
           <EmptyState kind="data" className="mt-24" textClassName="text-base text-[#8f8f8f]" />
         ) : (
           shown.map((a) => s4s ? (
@@ -282,6 +290,7 @@ function ColumnBody({ accounts, value, onChange, all, noAll = false, groups, ofM
             />
           ))
         )}
+        {shownWatchers.map((w) => <WatcherRow key={w.id} watcher={w} collapsed={collapsed} />)}
       </div>
       {ofManager && (
         <button
@@ -315,6 +324,8 @@ function CreatorRow({ account, active, unread, onPick, collapsed = false, prefet
 }) {
   const name = account.nickname || account.id;
   const online = liveSession(account);
+  // OF Manager's watcher account (useOfManagerAccounts): picked like a Creator, badged so it is not taken for one.
+  const watcher = account.role === "watcher";
   const qc = useQueryClient();
   // The OnlyFans notification count; same query as Messages Pro's bell, so the two share it. Fresh for 60s, as
   // Infloww's; a creator without a live session has none to read (Infloww shows the chip for linked ones only).
@@ -345,6 +356,7 @@ function CreatorRow({ account, active, unread, onPick, collapsed = false, prefet
       aria-current={active || undefined}
       title={online ? name : `${name} · ${LOGGED_OUT}`}
       data-testid="of-creator-row"
+      data-watcher={watcher || undefined}
       className={cn(
         "w-full flex items-center gap-3 px-4 py-3 text-left focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--ofm-blue)]",
         collapsed && "justify-center px-0",
@@ -362,6 +374,7 @@ function CreatorRow({ account, active, unread, onPick, collapsed = false, prefet
       </span>
       {!collapsed && <span className="min-w-0 flex flex-col gap-1">
         <span className="text-sm font-medium truncate">{name}</span>
+        {watcher && <WatcherBadge />}
         {!online && <span className="text-xs text-err truncate">{LOGGED_OUT}</span>}
         {(count > 0 || unread > 0) && (
           <span className="self-start flex items-center gap-1">
@@ -384,6 +397,37 @@ function CreatorRow({ account, active, unread, onPick, collapsed = false, prefet
         )}
       </span>}
     </button>
+  );
+}
+
+/** A watcher account's row: the creator rows' button, disabled (it is no Creator, so nothing to pick), dimmed, with a
+ *  "watcher" badge. No photo: the avatar is a Creator's `/users/me`, and a watcher is a fan account. */
+function WatcherRow({ watcher, collapsed }: { watcher: WatcherMeta; collapsed: boolean }) {
+  const name = watcher.nickname || watcher.name || watcher.id;
+  return (
+    <button
+      type="button"
+      disabled
+      title={`${name} · watcher account (reads what your Creators send; not a Creator)`}
+      data-testid="of-creator-watcher-row"
+      className={cn("w-full flex items-center gap-3 px-4 py-3 text-left opacity-50 cursor-default", collapsed && "justify-center px-0")}
+    >
+      <span className="w-9 h-9 shrink-0 grid place-items-center rounded bg-[var(--ofm-hover)] text-sm font-semibold">
+        {name.slice(0, 1).toUpperCase()}
+      </span>
+      {!collapsed && <span className="min-w-0 flex flex-col gap-1">
+        <span className="text-sm font-medium truncate">{name}</span>
+        <WatcherBadge />
+      </span>}
+    </button>
+  );
+}
+
+function WatcherBadge() {
+  return (
+    <span className="self-start px-1 py-px rounded border border-[var(--ofm-line)] text-[10px] leading-none text-[var(--ofm-fg2)]">
+      watcher
+    </span>
   );
 }
 

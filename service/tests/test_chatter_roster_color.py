@@ -89,7 +89,7 @@ def _patched_get_account(account_id: str):
     return _orig_get_account(account_id)
 
 
-def _patched_list_accounts():
+def _patched_list_accounts(include_watchers: bool = False):
     return [{"id": aid, "nickname": aid, "color": "#aaaaaa"} for aid in sorted(_TEST_ACCOUNTS)]
 
 
@@ -255,6 +255,22 @@ def case_owner_keeps_full_patch() -> None:
             detail=f"got {call.get('nickname')!r}")
 
 
+def case_chatter_roster_marks_the_watcher() -> None:
+    """/chatter/me/accounts stamps `role` "watcher" on a watcher account (the app keeps
+    it out of every Creator roster and lists it in OF Manager only); a Creator has none."""
+    saved = account_registry.get_role
+    account_registry.get_role = lambda aid: account_registry.ROLE_WATCHER if aid == "accCelest" else None
+    try:
+        r = _login_chatter("sensui").get("/chatter/me/accounts")
+        _expect("chatter GET /chatter/me/accounts → 200", r.status_code == 200,
+                detail=f"got {r.status_code} {r.text[:120]}")
+        roles = {a["account_id"]: a.get("role") for a in r.json()} if r.status_code == 200 else {}
+        _expect("watcher row carries role watcher, Creator none",
+                roles == {"accCelest": "watcher", "accAva": None}, detail=f"got {roles}")
+    finally:
+        account_registry.get_role = saved
+
+
 # ── 6. Runner ────────────────────────────────────────────────────────
 
 def _main() -> int:
@@ -265,6 +281,7 @@ def _main() -> int:
         ("chatter recolor of a foreign account is 403", case_chatter_recolor_foreign_403),
         ("rest of /admin/accounts stays owner-only", case_chatter_still_blocked),
         ("owner keeps the full PATCH field set", case_owner_keeps_full_patch),
+        ("chatter roster marks the watcher", case_chatter_roster_marks_the_watcher),
     ]
     for i, (title, fn) in enumerate(cases, 1):
         print(f"\n─── Case {i}: {title} " + "─" * max(2, 40 - len(title)))

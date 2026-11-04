@@ -19,7 +19,7 @@ import { act, cleanup, render, screen, waitFor, fireEvent, within } from "@testi
 import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-vi.mock("@/lib/relay", () => ({ relay: { get: vi.fn(), delete: vi.fn(), post: vi.fn(), put: vi.fn() } }));
+vi.mock("@/lib/relay", () => ({ relay: { get: vi.fn(), delete: vi.fn(), post: vi.fn(), put: vi.fn(), patch: vi.fn() } }));
 
 import AccountsTable, { connectivity } from "@/components/setup/AccountsTable";
 import AddCreatorModal from "@/components/setup/AddCreatorModal";
@@ -29,6 +29,7 @@ const relayGet = relay.get as unknown as Mock;
 const relayDelete = relay.delete as unknown as Mock;
 const relayPost = relay.post as unknown as Mock;
 const relayPut = relay.put as unknown as Mock;
+const relayPatch = relay.patch as unknown as Mock;
 
 let client: QueryClient;
 function wrapper({ children }: { children: ReactNode }) {
@@ -244,6 +245,104 @@ describe("AccountsTable Creator avatar — no Display image picked", () => {
     render(<AccountsTable />, { wrapper });
     await screen.findAllByText("Fiona");
     expect(relayGet.mock.calls.map(([p]) => p)).not.toContain("/api/of/v2/users/me");
+  });
+});
+
+/**
+ * A watcher account (`role` "watcher": a fan account that reads what the Creators send) is never in `accounts`; GET /admin/accounts
+ * lists it under `watchers`, and the table shows it after the creators as an account row with a "watcher" badge and the
+ * ⋮ actions that make sense for it: Edit, Delete, the OnlyFans re-link and Rename; no Link another account, Deactivate
+ * or Make default.
+ */
+describe("AccountsTable — watcher accounts", () => {
+  function serve(accounts: object[], watchers?: object[]) {
+    relayGet.mockImplementation((path: string) => {
+      if (path === "/admin/accounts") return Promise.resolve({ accounts, active_account_id: null, ...(watchers ? { watchers } : {}) });
+      if (path.startsWith("/health")) return Promise.resolve({ ok: true, accounts: [] });
+      return Promise.resolve({});
+    });
+  }
+  const W = { id: "acct-w", nickname: "Company Account", name: null, has_session: true, role: "watcher" };
+
+  it("lists a watcher after the creators, badged, its session from the accounts read, with the watcher's actions", async () => {
+    serve(
+      [{ id: "acct-a", nickname: "Ana", has_session: true, is_active: true }, { id: "acct-b", nickname: "Bea", has_session: true, is_active: true }],
+      [W],
+    );
+    render(<AccountsTable />, { wrapper });
+    const row = await screen.findByTestId("accounts-watcher-row");
+    expect(row).not.toHaveClass("opacity-50");
+    expect(within(row).getByText("watcher")).toBeInTheDocument();
+    expect(within(row).getByText("Session captured")).toBeInTheDocument();
+    expect(within(row).queryByText(/no health answer/)).toBeNull();
+    const rows = screen.getAllByRole("row");
+    expect(rows[rows.length - 1]).toBe(row);
+    expect(screen.getAllByRole("button", { name: /^More actions for / })).toHaveLength(3);
+    // A captured session reads as connected: the Edit pencil, no link button, and a menu without Edit or Log in.
+    expect(within(row).getByRole("button", { name: "Edit" })).toBeInTheDocument();
+    expect(within(row).queryByRole("button", { name: /^Link creator account/ })).toBeNull();
+    fireEvent.click(within(row).getByRole("button", { name: "More actions for Company Account" }));
+    const items = screen.getAllByRole("menuitem").map((m) => m.textContent);
+    expect(items).toEqual(expect.arrayContaining(["Delete", "Rename"]));
+    for (const gone of ["Edit", "Log in to account via OnlyFans", "Link another account", "Deactivate", "Activate", "Make default"]) {
+      expect(items).not.toContain(gone);
+    }
+    // The footer counts Creators; the watcher is named apart, not counted as one.
+    expect(screen.getByText("Total: 2 creators + 1 watcher")).toBeInTheDocument();
+  });
+
+  it("Rename patches the watcher's nickname", async () => {
+    serve([], [W]);
+    relayPatch.mockResolvedValue({ ok: true });
+    render(<AccountsTable />, { wrapper });
+    await screen.findByTestId("accounts-watcher-row");
+    pick("Company Account", "Rename");
+    const input = screen.getByRole("textbox", { name: "Rename Company Account" });
+    fireEvent.change(input, { target: { value: "Company Account 2" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(relayPatch).toHaveBeenCalledWith("/admin/accounts/acct-w", { nickname: "Company Account 2" }));
+  });
+
+  it("Delete says the watcher stops reading", async () => {
+    serve([], [W]);
+    render(<AccountsTable />, { wrapper });
+    await screen.findByTestId("accounts-watcher-row");
+    pick("Company Account", "Delete");
+    expect(await screen.findByText("This watcher account stops reading your Creators.")).toBeInTheDocument();
+  });
+
+  it("a lone watcher is a row, not the empty table; no session reads —", async () => {
+    serve([], [{ id: "acct-w", nickname: null, name: "Company Account", has_session: false, role: "watcher" }]);
+    render(<AccountsTable />, { wrapper });
+    const row = await screen.findByTestId("accounts-watcher-row");
+    expect(row).toHaveTextContent("acct-w");
+    expect(within(row).getByText("—")).toBeInTheDocument();
+    // No session: the link button to capture one, Edit and Log in in the menu.
+    expect(within(row).queryByRole("button", { name: "Edit" })).toBeNull();
+    fireEvent.click(within(row).getByRole("button", { name: /^More actions for / }));
+    const items = screen.getAllByRole("menuitem").map((m) => m.textContent);
+    expect(items).toEqual(expect.arrayContaining(["Edit", "Log in to account via OnlyFans", "Rename", "Delete"]));
+    expect(screen.queryByText("No data")).not.toBeInTheDocument();
+    expect(screen.getByText("Total: 0 creators + 1 watcher")).toBeInTheDocument();
+  });
+
+  it("an older relay without `watchers` lists none", async () => {
+    serve([{ id: "acct-a", nickname: "Ana", has_session: true, is_active: true }]);
+    render(<AccountsTable />, { wrapper });
+    await screen.findAllByText("Ana");
+    expect(screen.queryByTestId("accounts-watcher-row")).not.toBeInTheDocument();
+  });
+});
+
+describe("connectivity — watcher", () => {
+  const base = { id: "w", is_active: true, proxy_down: false, role: "watcher" as const };
+  const read = { loaded: true, error: null };
+  it.each<[string, Partial<AccountMeta>, string]>([
+    ["a captured session", { has_session: true }, "Session captured"],
+    ["no session", { has_session: false }, "—"],
+    ["a flagged session", { has_session: true, session_dead_at: "2026-11-01T00:00:00Z" }, "Disconnected"],
+  ])("%s", (_n, a, label) => {
+    expect(connectivity({ ...base, ...a } as AccountMeta, undefined, read).label).toBe(label);
   });
 });
 

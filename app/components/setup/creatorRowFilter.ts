@@ -1,5 +1,6 @@
 /**
- * The Creators table's row filters (AccountsTable), one rule each for an account row and a Done-saved draft row, so
+ * The Creators table's row filters (AccountsTable), one rule each for an account row, a Done-saved draft row and a
+ * watcher row, so
  * the two lists cannot drift. A filter whose read failed applies nothing to an account row: `picked` is undefined when
  * the Employee read failed, `connWired` false when the health read did. A draft reads no health, so `connWired` does
  * not touch it.

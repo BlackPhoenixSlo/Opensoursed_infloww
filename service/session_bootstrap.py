@@ -364,7 +364,8 @@ def persist_session(user_id: str, *,
     session_path.write_text(json.dumps(dump, indent=2))
     account_registry.record_session(user_id, session_path)
     account_registry.upsert_account(user_id, nickname=nickname)
-    if make_active:
+    # Re-linking a watcher (a fan account) never makes it the default account.
+    if make_active and not account_registry.is_watcher(user_id):
         account_registry.set_active_account_id(user_id)
     print(f"[bootstrap] Saved {session_path.relative_to(SESSIONS_DIR.parent)}")
     return session_path

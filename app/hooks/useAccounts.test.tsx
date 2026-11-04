@@ -32,7 +32,7 @@ vi.mock("@/contexts/ChatterContext", () => ({
   useChatter: () => ({ chatter: mockChatter }),
 }));
 
-import { useAccounts } from "@/hooks/useAccounts";
+import { useAccounts, useActiveAccounts, useOfManagerAccounts, useWatcherAccounts } from "@/hooks/useAccounts";
 import { relay } from "@/lib/relay";
 const relayGet = relay.get as unknown as Mock;
 
@@ -75,5 +75,41 @@ describe("useAccounts principal isolation", () => {
     // still-fresh cache entry.
     await waitFor(() => expect(result.current.data?.accounts?.[0]?.id).toBe("acct-b"));
     expect(relayGet).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("watchers", () => {
+  const row = (id: string, role?: string) => ({
+    account_id: id, nickname: id, color: null, owner_id: "o", owner_username: "o", is_active: true, role,
+  });
+
+  it("a chatter's granted watcher goes to `watchers` and OF Manager only, never the Creator roster", async () => {
+    mockChatter = { id: "ch1" };
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => [row("c1"), row("w1", "watcher")] })));
+    try {
+      const { result } = renderHook(() => ({
+        all: useAccounts().data, active: useActiveAccounts(), watchers: useWatcherAccounts(), ofm: useOfManagerAccounts(),
+      }), { wrapper });
+      await waitFor(() => expect(result.current.all?.accounts.length).toBe(1));
+      expect(result.current.all?.accounts.map((a) => a.id)).toEqual(["c1"]);
+      expect(result.current.active.map((a) => a.id)).toEqual(["c1"]);
+      expect(result.current.watchers.map((a) => [a.id, a.role])).toEqual([["w1", "watcher"]]);
+      expect(result.current.ofm.map((a) => a.id)).toEqual(["c1", "w1"]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("an owner's watchers get a Creator's defaults; OF Manager lists those with a session after the Creators", async () => {
+    relayGet.mockResolvedValueOnce({
+      accounts: [{ id: "c1", has_session: true }],
+      active_account_id: "c1",
+      watchers: [{ id: "w1", has_session: true }, { id: "w2", has_session: false }],
+    });
+    mockUser = { user_id: "owner-A", username: "owner-a" };
+    const { result } = renderHook(() => ({ watchers: useWatcherAccounts(), ofm: useOfManagerAccounts() }), { wrapper });
+    await waitFor(() => expect(result.current.watchers.length).toBe(2));
+    expect(result.current.watchers[0]).toMatchObject({ id: "w1", is_active: true, proxy_down: false, role: "watcher" });
+    expect(result.current.ofm.map((a) => a.id)).toEqual(["c1", "w1"]);
   });
 });

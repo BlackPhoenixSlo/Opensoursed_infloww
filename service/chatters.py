@@ -40,6 +40,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 
 import account_health
+import accounts as account_registry
 import chatter_identity_cache as identity_cache
 import events
 from account_security import (
@@ -375,6 +376,9 @@ class FlatAccountDTO(BaseModel):
     session_dead_reason: str | None = None
     # False while the owner has the Creator deactivated: the picker drops it.
     is_active: bool = True
+    # "watcher" for a watcher account (a fan account that reads what the Creators send): the
+    # app lists it in OF Manager only, never as a Creator. None = a Creator.
+    role: str | None = None
 
 
 class ChatterMeResp(BaseModel):
@@ -740,6 +744,7 @@ async def _flat_accounts_for(c: "ChatterIdentity") -> list[FlatAccountDTO]:
                 session_dead_at=health.at,
                 session_dead_reason=health.reason,
                 is_active=r.account_id not in off,
+                role=account_registry.get_role(r.account_id),
             )
     return sorted(
         seen.values(),

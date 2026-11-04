@@ -32,20 +32,26 @@ let granted: Set<string> | null = null;
 vi.mock("@/components/shell/useGrantedPages", () => ({ useGrantedPages: () => granted }));
 let rosterCounts: Record<string, { unread: number; owe_reply: number }> = {};
 vi.mock("@/hooks/useRosterCounts", () => ({ useRosterCounts: () => rosterCounts }));
+let watchers: { id: string; nickname?: string | null; name?: string | null; has_session?: boolean; role: "watcher" }[] = [];
+/** The accounts read failed with nothing cached. */
+let readFailed = false;
 vi.mock("@/hooks/useAccounts", () => ({
-  useAccounts: () => ({ isSuccess: true, data: { accounts } }),
+  useAccounts: () => (readFailed ? { isSuccess: false, isError: true, data: undefined } : { isSuccess: true, data: { accounts, watchers } }),
   useActiveAccounts: () => accounts,
+  useWatcherAccounts: () => watchers,
+  useOfManagerAccounts: () => [...accounts, ...watchers.filter((w) => w.has_session)],
+  ofManagerWatcher: (w: { has_session?: boolean; is_active?: boolean }) => !!w.has_session && w.is_active !== false,
 }));
 
 import { renderWithProviders } from "@/test-utils";
-import { ScopeProvider } from "@/contexts/ScopeContext";
+import { ScopeProvider, useScope } from "@/contexts/ScopeContext";
 import { chatDraftKey } from "@/lib/ofMirrorChat";
 import { CreatorColumn } from "./CreatorColumn";
 import { OfManagerChrome } from "./OfManagerChrome";
 
 const ui = () => renderWithProviders(<ScopeProvider><OfManagerChrome><p>OF view</p></OfManagerChrome></ScopeProvider>);
 
-beforeEach(() => { localStorage.clear(); granted = null; rosterCounts = {}; nav.path = "/of-manager/home"; nav.search = ""; media.desktop = true; });
+beforeEach(() => { localStorage.clear(); watchers = []; readFailed = false; granted = null; rosterCounts = {}; nav.path = "/of-manager/home"; nav.search = ""; media.desktop = true; });
 afterEach(() => { cleanup(); get.mockClear(); });
 
 describe("OfManagerChrome", () => {
@@ -177,6 +183,127 @@ describe("OfManagerChrome", () => {
     expect(screen.getAllByTestId("of-creator-row")).toHaveLength(2);
   });
 
+  it("lists a watcher after the creators as a pickable row with a watcher badge; its pick stays OF Manager's", async () => {
+    accounts = [{ id: "1", nickname: "asdf", has_session: true }, { id: "2", nickname: "jade", has_session: true }];
+    watchers = [{ id: "9", nickname: "Company Account", name: null, has_session: true, role: "watcher" }];
+    localStorage.setItem("chatterly:scope", "model:1");
+    ui();
+    const rows = screen.getAllByTestId("of-creator-row");
+    expect(rows).toHaveLength(3);
+    const row = rows[2];
+    expect(row).toHaveAttribute("data-watcher", "true");
+    expect(within(row).getByText("watcher")).toBeInTheDocument();
+    expect(screen.queryByTestId("of-creator-watcher-row")).toBeNull();
+    fireEvent.click(row);
+    expect(row).toHaveAttribute("aria-current", "true");
+    expect(localStorage.getItem("chatterly:scope")).toBe("model:1");
+    expect(localStorage.getItem("chatterly:ofm-watcher")).toBe(JSON.stringify({ id: "9", over: "model:1" }));
+    // One account picked: the view tools are on, as for a Creator.
+    expect(screen.getByRole("button", { name: "Reload" })).toBeInTheDocument();
+    // A Creator pick clears it and is the app's scope again.
+    fireEvent.click(screen.getByTitle("jade"));
+    expect(localStorage.getItem("chatterly:scope")).toBe("model:2");
+    expect(localStorage.getItem("chatterly:ofm-watcher")).toBeNull();
+    // A Tag group hides it, as an untagged creator.
+    fireEvent.click(screen.getByRole("button", { name: "All creators" }));
+    fireEvent.click(await screen.findByRole("button", { name: "VIP" }));
+    expect(screen.getAllByTestId("of-creator-row")).toHaveLength(1);
+  });
+
+  it("a reload keeps the watcher picked; the header select names it a watcher", () => {
+    accounts = [{ id: "1", nickname: "asdf", has_session: true }];
+    watchers = [{ id: "9", nickname: "Company Account", has_session: true, role: "watcher" }];
+    localStorage.setItem("chatterly:scope", "model:1");
+    localStorage.setItem("chatterly:ofm-watcher", JSON.stringify({ id: "9", over: "model:1" }));
+    ui();
+    expect(screen.getByTitle("Company Account")).toHaveAttribute("aria-current", "true");
+    expect(screen.getByTitle("asdf")).not.toHaveAttribute("aria-current");
+    expect(screen.getByRole("combobox", { name: "Creator" })).toHaveTextContent("Company Account (watcher)");
+  });
+
+  it("a Creator picked elsewhere since (Messages Pro) wins over the saved watcher pick", () => {
+    accounts = [{ id: "1", nickname: "asdf", has_session: true }, { id: "2", nickname: "jade", has_session: true }];
+    watchers = [{ id: "9", nickname: "Company Account", has_session: true, role: "watcher" }];
+    localStorage.setItem("chatterly:ofm-watcher", JSON.stringify({ id: "9", over: "model:1" }));
+    localStorage.setItem("chatterly:scope", "model:2");
+    ui();
+    expect(screen.getByTitle("jade")).toHaveAttribute("aria-current", "true");
+    expect(screen.getByTitle("Company Account")).not.toHaveAttribute("aria-current");
+  });
+
+  it("a Pop-out window on a Creator wins over the saved watcher pick (accounts already read)", () => {
+    accounts = [{ id: "1", nickname: "asdf", has_session: true }, { id: "2", nickname: "jade", has_session: true }];
+    watchers = [{ id: "9", nickname: "Company Account", has_session: true, role: "watcher" }];
+    localStorage.setItem("chatterly:scope", "model:1");
+    localStorage.setItem("chatterly:ofm-watcher", JSON.stringify({ id: "9", over: "model:1" }));
+    window.history.replaceState(null, "", "/of-manager/home?account=2");
+    try {
+      ui();
+      expect(screen.getByTitle("jade")).toHaveAttribute("aria-current", "true");
+      expect(screen.getByTitle("Company Account")).not.toHaveAttribute("aria-current");
+      expect(localStorage.getItem("chatterly:scope")).toBe("model:1");
+    } finally {
+      window.history.replaceState(null, "", "/");
+    }
+  });
+
+  it("a failed accounts read applies no unknown Pop-out `?account=` (it may be a watcher): the window keeps its scope", () => {
+    readFailed = true;
+    accounts = [];
+    localStorage.setItem("chatterly:scope", "model:1");
+    const out: { scope?: ReturnType<typeof useScope> } = {};
+    function Outer() { out.scope = useScope(); return null; }
+    window.history.replaceState(null, "", "/of-manager/home?account=9");
+    try {
+      renderWithProviders(<ScopeProvider><Outer /><OfManagerChrome><p>OF view</p></OfManagerChrome></ScopeProvider>);
+      expect(out.scope!.accountId).toBe("1");
+      expect(localStorage.getItem("chatterly:scope")).toBe("model:1");
+    } finally {
+      window.history.replaceState(null, "", "/");
+    }
+  });
+
+  it("a saved pick of a watcher with no session is dropped: the Creator in scope, no watcher reads", () => {
+    accounts = [{ id: "1", nickname: "asdf", has_session: true }];
+    watchers = [{ id: "9", nickname: "Company Account", has_session: false, role: "watcher" }];
+    localStorage.setItem("chatterly:scope", "model:1");
+    localStorage.setItem("chatterly:ofm-watcher", JSON.stringify({ id: "9", over: "model:1" }));
+    ui();
+    expect(screen.getByTitle("asdf")).toHaveAttribute("aria-current", "true");
+    expect(localStorage.getItem("chatterly:ofm-watcher")).toBeNull();
+  });
+
+  it("a watcher with no captured session is not listed", () => {
+    accounts = [{ id: "1", nickname: "asdf", has_session: true }];
+    watchers = [{ id: "9", nickname: "Company Account", has_session: false, role: "watcher" }];
+    ui();
+    expect(screen.getAllByTestId("of-creator-row")).toHaveLength(1);
+  });
+
+  it("a lone watcher is an account to browse: the view shows, not the no-creator body", () => {
+    accounts = [];
+    watchers = [{ id: "9", nickname: null, name: "Company Account", has_session: true, role: "watcher" }];
+    ui();
+    expect(screen.getByTestId("of-creator-row")).toHaveAttribute("data-watcher", "true");
+    expect(screen.queryByText(/You have not yet tied a creator/)).toBeNull();
+    expect(screen.getByText("OF view")).toBeInTheDocument();
+  });
+
+  it("a Pop-out window on a watcher picks it there, never as the window's scope", () => {
+    accounts = [{ id: "1", nickname: "asdf", has_session: true }];
+    watchers = [{ id: "9", nickname: "Company Account", has_session: true, role: "watcher" }];
+    localStorage.setItem("chatterly:scope", "model:1");
+    window.history.replaceState(null, "", "/of-manager/home?account=9");
+    try {
+      ui();
+      expect(screen.getByTitle("Company Account")).toHaveAttribute("aria-current", "true");
+      expect(localStorage.getItem("chatterly:scope")).toBe("model:1");
+      expect(localStorage.getItem("chatterly:ofm-watcher")).toBeNull();
+    } finally {
+      window.history.replaceState(null, "", "/");
+    }
+  });
+
   it("shows Infloww's empty state with Link account when no creator is linked", () => {
     accounts = [];
     ui();
@@ -286,6 +413,15 @@ describe("OfManagerChrome", () => {
 describe("OfManagerChrome Fan insights", () => {
   const chatPage = (search = "?chat=42") => { nav.path = "/of-manager/messages/chat"; nav.search = search; };
   beforeEach(() => { accounts = [{ id: "1", nickname: "asdf", has_session: true }, { id: "2", nickname: "jade", has_session: true }]; });
+
+  it("no Fan insights on a watcher's chat (its chats are with Creators, not fans)", () => {
+    chatPage();
+    watchers = [{ id: "9", nickname: "Company Account", has_session: true, role: "watcher" }];
+    localStorage.setItem("chatterly:ofm-watcher", JSON.stringify({ id: "9", over: "all" }));
+    ui();
+    expect(screen.getByRole("button", { name: "Reload" })).toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: "Fan insights" })).toBeNull();
+  });
 
   it("pins Messages Pro's Fan insights beside an open chat of one creator, with the chat row from the chats cache", () => {
     chatPage();

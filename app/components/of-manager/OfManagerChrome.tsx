@@ -31,8 +31,8 @@ import { TemplatePicker } from "@/components/chat/TemplatePicker";
 import { ScopeSelect } from "@/components/shell/ScopeSelect";
 import { useGrantedPages } from "@/components/shell/useGrantedPages";
 import { EmptyState } from "@/components/ui/infloww";
-import { useScope } from "@/contexts/ScopeContext";
-import { useAccounts, useActiveAccounts } from "@/hooks/useAccounts";
+import { useScope, WatcherScope } from "@/contexts/ScopeContext";
+import { ofManagerWatcher, useAccounts, useOfManagerAccounts, useWatcherAccounts } from "@/hooks/useAccounts";
 import { findFanChatRow } from "@/hooks/useInboxRealtime";
 import { useIsDesktop } from "@/hooks/useIsDesktop";
 import { fanIdFromParam, type FanId } from "@/lib/fanId";
@@ -80,20 +80,45 @@ function useChatItem(accountId: string | null, fanId: FanId | null, fan: string 
   return row ?? (read?.withUser ? read : null) ?? bare;
 }
 
+/** A watcher account (a fan account that reads what the Creators send) is picked and browsed here like a Creator, but its
+ *  pick stays inside OF Manager (WatcherScope): leaving for Messages Pro, the bell or any composer finds the last
+ *  Creator in scope, never the watcher. */
 export function OfManagerChrome({ children }: { children: React.ReactNode }) {
+  const accountsQ = useAccounts();
+  const watchers = useWatcherAccounts();
+  const watcherIds = useMemo(() => watchers.map((w) => w.id), [watchers]);
+  const pickable = useMemo(() => watchers.filter(ofManagerWatcher).map((w) => w.id), [watchers]);
+  return (
+    <WatcherScope watcherIds={watcherIds} pickable={pickable} loaded={accountsQ.isSuccess}>
+      <Chrome>{children}</Chrome>
+    </WatcherScope>
+  );
+}
+
+function Chrome({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "";
   const section = pathname.split("/")[2] ?? "";
   const title = findNavLink(`/of-manager/${section}`)?.label ?? "OF Manager";
   const tz = useSyncExternalStore(noSubscribe, localOffsetLabel, () => null);
   const accountsQ = useAccounts();
-  const accounts = useActiveAccounts();
+  // The active Creators, then the watchers (pickable here alone, WatcherScope).
+  const accounts = useOfManagerAccounts();
   const noCreators = accountsQ.isSuccess && accounts.length === 0;
   const { scope, setScope } = useScope();
-  // A Pop-out window's `?account=<id>`: this window's creator, not saved, so the opener keeps its own.
+  // A Pop-out window's `?account=<id>`: this window's creator, not saved, so the opener keeps its own. Applied once the
+  // id is known as a Creator or a watcher (a cached list: at once), so a watcher's id stays OF Manager's (WatcherScope),
+  // never the window's scope; an id in neither list only after a successful read (as a Creator's). A failed read
+  // applies nothing unknown (it could be a watcher): the window keeps its scope until a read knows the id.
+  const known = accountsQ.data;
+  const popped = useRef(false);
   useEffect(() => {
+    if (popped.current) return;
     const id = new URL(window.location.href).searchParams.get("account");
+    const isKnown = !!id && [...(known?.accounts ?? []), ...(known?.watchers ?? [])].some((a) => a.id === id);
+    if (id && !isKnown && !accountsQ.isSuccess) return;
+    popped.current = true;
     if (id) setScope({ kind: "model", accountId: id }, { persist: false });
-  }, [setScope]);
+  }, [setScope, known, accountsQ.isSuccess]);
   const scoped = scope.kind === "model" ? accounts.find((a) => a.id === scope.accountId) : undefined;
   const sessionGone = !!scoped && !liveSession(scoped);
   // OfMessageToolbar: fullscreen and reload only for one creator with a live session; reload throttled to 2s.
@@ -111,7 +136,8 @@ export function OfManagerChrome({ children }: { children: React.ReactNode }) {
   // Fan insights: an open chat of one creator with a live session (no chat, All creators: none).
   const fan = useSearchParams()?.get("chat") ?? null;
   const fanId = fanIdFromParam(fan);
-  const onChat = pathname === "/of-manager/messages/chat" && viewTools;
+  // A watcher's chats are with Creators, not fans: no Fan insights.
+  const onChat = pathname === "/of-manager/messages/chat" && viewTools && scoped.role !== "watcher";
   const chat = useChatItem(scoped?.id ?? null, onChat ? fanId : null, onChat ? fan : null);
   const insights = viewTools && chat ? { accountId: scoped.id, fanId: chat.withUser.id, chat } : null;
   const desktop = useIsDesktop();

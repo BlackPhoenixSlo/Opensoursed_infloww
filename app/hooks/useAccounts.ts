@@ -20,7 +20,7 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
-import { relay, type AccountMeta } from "@/lib/relay";
+import { relay, type AccountMeta, type WatcherAccount } from "@/lib/relay";
 import { useUser } from "@/contexts/UserContext";
 import { useChatter } from "@/contexts/ChatterContext";
 import { chatterAccountsQuery } from "@/lib/chatterAccounts";
@@ -29,14 +29,22 @@ import { accountPlatform, usePlatform } from "@/lib/platform";
 export interface AccountsResp {
   accounts: AccountMeta[];
   active_account_id: string | null;
+  /** The caller's watcher accounts (`role` "watcher": fan accounts that read what the Creators send), never in
+   *  `accounts`: Manage creators and OF Manager (useOfManagerAccounts) list them, nothing else picks them. Always set
+   *  after fetchAccounts. */
+  watchers?: WatcherAccount[];
 }
 
 /** GET /admin/accounts, with `is_active` made total: a relay from before Creator deactivation (and a test fixture)
  *  omits it, and an omitted flag is an active Creator. The one place that default lives, so every reader can treat
- *  `is_active` as the plain boolean its type says. */
+ *  `is_active` as the plain boolean its type says. `watchers` likewise: an older relay omits it, read as none. */
 export async function fetchAccounts(): Promise<AccountsResp> {
   const r = await relay.get<AccountsResp>("/admin/accounts");
-  return { ...r, accounts: (r.accounts ?? []).map((a) => ({ ...a, is_active: a.is_active ?? true })) };
+  return {
+    ...r,
+    accounts: (r.accounts ?? []).map((a) => ({ ...a, is_active: a.is_active ?? true })),
+    watchers: (r.watchers ?? []).map((w) => ({ ...w, is_active: w.is_active ?? true, proxy_down: !!w.proxy_down, role: "watcher" })),
+  };
 }
 
 export function useAccounts() {
@@ -82,7 +90,7 @@ export function useAccounts() {
   // downstream consumer keeps working unmodified. has_session=true is a
   // best-effort assumption — the relay grant is the source of truth that
   // the owner intended this chatter to use this account.
-  const chatterAccounts: AccountMeta[] = useMemo(() => {
+  const chatterRows: AccountMeta[] = useMemo(() => {
     const rows = chatterQ.data || [];
     return rows.map((r) => ({
       id: r.account_id,
@@ -95,6 +103,7 @@ export function useAccounts() {
       session_dead_at: r.session_dead_at,
       session_dead_reason: r.session_dead_reason,
       is_active: r.is_active,
+      role: r.role === "watcher" ? "watcher" : null,
     } as AccountMeta));
   }, [chatterQ.data]);
 
@@ -104,9 +113,14 @@ export function useAccounts() {
   // Memoize the envelope on chatterAccounts alone so its reference stays
   // stable across renders (useQuery hands back a fresh object every render,
   // so depending on chatterQ would recompute this every time).
+  // A granted watcher goes to `watchers`, as the owner's list has it: OF Manager only, never a Creator roster.
   const chatterData: AccountsResp = useMemo(
-    () => ({ accounts: chatterAccounts, active_account_id: null }),
-    [chatterAccounts],
+    () => ({
+      accounts: chatterRows.filter((a) => a.role !== "watcher"),
+      active_account_id: null,
+      watchers: chatterRows.filter((a): a is WatcherAccount => a.role === "watcher"),
+    }),
+    [chatterRows],
   );
   return useMemo(() => {
     if (isChatterOnly) {
@@ -127,6 +141,25 @@ export function useAccountLabel(accountId?: string | null): string {
     if (!accountId) return "";
     return (all ?? []).find((a) => a.id === accountId)?.nickname || accountId;
   }, [all, accountId]);
+}
+
+const NO_WATCHERS: WatcherAccount[] = [];
+
+/** The caller's watcher accounts (GET /admin/accounts' `watchers`; a chatter's granted ones). Stable reference while
+ *  the data is unchanged. */
+export function useWatcherAccounts(): WatcherAccount[] {
+  return useAccounts().data?.watchers ?? NO_WATCHERS;
+}
+
+/** A watcher OF Manager lists and lets one pick: a captured session, active. */
+export const ofManagerWatcher = (w: WatcherAccount): boolean => !!w.has_session && w.is_active;
+
+/** OF Manager's roster: the active Creators (useActiveAccounts), then the watchers with a captured session, which
+ *  OF Manager alone lets one pick and browse as (WatcherScope). Every other surface reads Creators only. */
+export function useOfManagerAccounts(): AccountMeta[] {
+  const creators = useActiveAccounts();
+  const watchers = useWatcherAccounts();
+  return useMemo(() => [...creators, ...watchers.filter(ofManagerWatcher)], [creators, watchers]);
 }
 
 /** Accounts that currently have a captured session and are not deactivated

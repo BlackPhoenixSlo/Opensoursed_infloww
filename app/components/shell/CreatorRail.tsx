@@ -8,13 +8,15 @@
  * The page keeps its own pick (`?creator=`, state, a context): `value` and `onChange` only show and change it.
  * `onAll` makes "All creators" a pick (`value` null while it is on), for pages that work across creators;
  * `noAll` drops the "All creators" row entirely, for pages that always work on one creator.
+ * `watchers` lists the owner's watcher accounts after the creators as dimmed rows that cannot be picked (a watcher
+ * is no Creator, but the owner must still see it exists); only a page that passes it shows them.
  */
 
 import type { ReactNode } from "react";
 
 import { CreatorColumn } from "@/components/of-manager/CreatorColumn";
 import { IfCreatorSelect } from "@/components/ui/infloww";
-import type { AccountMeta } from "@/lib/relay";
+import type { AccountMeta, WatcherMeta } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 
 export type CreatorPick = {
@@ -24,6 +26,8 @@ export type CreatorPick = {
   onAll?: () => void;
   /** No "All creators" row: the page always works on one creator. */
   noAll?: boolean;
+  /** Watcher accounts, shown after the creators as non-selectable rows. */
+  watchers?: WatcherMeta[];
 };
 
 export function CreatorRail({ creators, top = "48px", className, children }: {
@@ -34,7 +38,7 @@ export function CreatorRail({ creators, top = "48px", className, children }: {
   className?: string;
   children: ReactNode;
 }) {
-  const { accounts, value, onChange, onAll, noAll } = creators;
+  const { accounts, value, onChange, onAll, noAll, watchers } = creators;
   return (
     // `.h-chat` on the column subtracts the header (`top`) too.
     <div className="flex min-h-0 min-w-0 flex-1" style={{ ["--shell-top" as string]: `calc(var(--chrome-top) + ${top})` }}>
@@ -44,12 +48,13 @@ export function CreatorRail({ creators, top = "48px", className, children }: {
         onChange={onChange}
         all={onAll && { on: value === null, pick: onAll }}
         noAll={noAll}
+        watchers={watchers}
         className="md:flex w-[260px] border-r border-border"
       />
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {accounts.length > 0 && (
           <div className="border-b border-border px-4 py-2 md:hidden">
-            <IfCreatorSelect accounts={accounts} value={value} onChange={onChange} onAll={onAll} />
+            <IfCreatorSelect accounts={accounts} value={value} onChange={onChange} onAll={onAll} watchers={watchers} />
           </div>
         )}
         <div className={cn("min-w-0 flex-1", className)}>{children}</div>

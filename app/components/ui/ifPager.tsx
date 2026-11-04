@@ -80,8 +80,10 @@ export function IfPager({ total, noun = "records", page, size, onPage, className
 /** HB's pager footer: a 1px #232323 rule above; "Total: N creators" #a3a3a3, prev / next 28px boxes on #232323, the
  *  current page a #1a1a1a box with a white digit; then "Per page" and the size select (#1a1a1a, 10 / 20 / 50). Pin
  *  it to the page foot with the caller's layout. */
-export function HbPager({ total, noun, page, size, sizes = [10, 20, 50], onPage, onSize, className }: {
+export function HbPager({ total, count = total, noun, page, size, sizes = [10, 20, 50], onPage, onSize, className }: {
   total: number;
+  /** The number the label shows when it differs from the paged `total` (rows that are not the noun). */
+  count?: number;
   noun: string;
   page: number;
   size: number;
@@ -94,7 +96,7 @@ export function HbPager({ total, noun, page, size, sizes = [10, 20, 50], onPage,
     <div className={cn("flex flex-wrap items-center gap-x-8 gap-y-2 border-t border-[#232323] py-4 text-[14px]",
       "[html[data-theme=light]_&]:border-black/[.09]", className)}>
       <nav aria-label="Pagination" className="flex flex-wrap items-center gap-2">
-        <span className={cn("mr-0.5", HB_DIM)}>Total: {total} {noun}</span>
+        <span className={cn("mr-0.5", HB_DIM)}>Total: {count} {noun}</span>
         <PageButtons
           page={page}
           pages={pageCount(total, size)}

@@ -71,6 +71,7 @@ const GROUPS = [
   { id: 10, name: "Fixture Leads", parent_id: null, employee_count: 2 },
 ];
 const CREATORS = [{ id: "901", nickname: "Creator North" }, { id: "902", nickname: "Creator South" }];
+let watchers: Record<string, unknown>[] = [];
 const CLOSER = { id: "role-closer", name: "Closer", description: "", permissions: { "/": true }, scope: "self" };
 /** A stored copy of the built-in Chatter, which "+ Add employee" picks by default. */
 const CHATTER = { id: "chatter", name: "Chatter", description: "Chats with fans.", permissions: { "/": true }, scope: "self" };
@@ -107,6 +108,7 @@ const TIMESHEET = {
 };
 
 beforeEach(() => {
+  watchers = [];
   // UserProvider opens from the last signed-in owner's localStorage snapshot; a chatter's mount must not.
   window.localStorage.clear();
   roster = ROSTER.map((r) => ({ ...r }));
@@ -129,7 +131,7 @@ beforeEach(() => {
     }
     if (url === "/chatter/me/accounts") return jsonRes([]);
     if (url === "/admin/employees?include_disabled=true" && method === "GET") return jsonRes({ employees: roster });
-    if (url === "/admin/accounts") return jsonRes({ accounts: CREATORS, active_account_id: null });
+    if (url === "/admin/accounts") return jsonRes({ accounts: CREATORS, active_account_id: null, watchers });
     if (url === "/admin/settings/roles" && method === "GET") {
       return rolesGetFails ? jsonRes({ detail: "down" }, 500) : jsonRes({ tab: "roles", config: ROLES });
     }
@@ -823,6 +825,18 @@ describe("ManageEmployees", () => {
     expect(openMore("Gamma Three").getByRole("menuitem", { name: "Access limits" })).toBeDisabled();
     fireEvent.click(openMore("Alpha One").getByRole("menuitem", { name: "Access limits" }));
     expect(await screen.findByText("Limit which models this employee sees")).toBeInTheDocument();
+  });
+
+  it("Access limits' Limit models lists the watcher account (badged) so it can be granted; no folder limit for it", async () => {
+    watchers = [{ id: "909", nickname: "Company Account", has_session: true, role: "watcher" }];
+    await loaded();
+    fireEvent.click(openMore("Alpha One").getByRole("menuitem", { name: "Access limits" }));
+    fireEvent.click(await screen.findByLabelText("Limit which models this employee sees"));
+    const row = screen.getByText("Company Account").closest("label")!;
+    expect(within(row).getByText("watcher")).toBeInTheDocument();
+    fireEvent.click(within(row).getByRole("checkbox"));
+    expect(within(row).getByRole("checkbox")).toBeChecked();
+    expect(screen.queryByText("Company Account", { selector: ".font-medium" })).toBeNull();
   });
 
   it("labels the filters By employee:, By Creator:, By status:, By role: and greys out the owner's checkbox", async () => {

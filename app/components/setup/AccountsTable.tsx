@@ -37,7 +37,7 @@ import { EmptyState, HB_TABLE, HbPager } from "@/components/ui/infloww";
 import { OnlyfansLine } from "@/components/shell/inflowwIcons";
 import { PlatformLogo } from "@/components/shell/PlatformSwitcher";
 import { useAccountAvatar } from "@/hooks/useAccountAvatar";
-import { fetchAccounts } from "@/hooks/useAccounts";
+import { fetchAccounts, type AccountsResp } from "@/hooks/useAccounts";
 import { useOutsideClose } from "@/components/ui/Menu";
 // The capture's row title, `creators0174` (creators-manage#46, #56), shared with the modal it opens.
 import { ROW_LINK_TITLE as ROW_LINK, type SectionKey } from "@/components/setup/AddCreatorModal";
@@ -59,10 +59,6 @@ import { cn, describeDeadSession, fmtRelTime } from "@/lib/utils";
 import { sessionConnectivity, type Connectivity } from "@/lib/sessionConnectivity";
 import { SkeletonRows } from "@/components/ui/Skeleton";
 
-interface AccountsResp {
-  accounts: AccountMeta[];
-  active_account_id: string | null;
-}
 interface HealthAllResp {
   ok: boolean;
   accounts: Array<{
@@ -94,6 +90,13 @@ const PLATFORM_LABEL = { onlyfans: "OnlyFans", fansly: "Fansly" } as const;
  * outranks the live probe, which decides only a live session.
  */
 export function connectivity(a: AccountMeta, h: Health | undefined, read: { loaded: boolean; error: Error | null }): Connectivity {
+  // A watcher (a fan account) is never probed (no /health row): its session from the accounts read alone.
+  if (a.role === "watcher") {
+    if (a.session_dead_at) return { label: "Disconnected", tone: "err", dead: true };
+    return a.has_session
+      ? { label: "Session captured", tone: "muted", title: "watcher account: not probed" }
+      : { label: "—", tone: "muted", title: "no captured session" };
+  }
   // A Fansly session the relay can no longer use reads Infloww's fansly0003 (FANSLY_T.rebind).
   const fansly = a.platform === "fansly";
   // From the accounts read, so a failed health read cannot hide it.
@@ -204,7 +207,7 @@ export type AddFrom = { draft: DraftCreator } | { linkAnother: { creator: Creato
 
 /** What the Delete modal deletes: an account, or a Creator saved with Done. */
 type Deleting =
-  | { kind: "account"; id: string; creator: string; nickname?: string }
+  | { kind: "account"; id: string; creator: string; nickname?: string; watcher?: boolean }
   | { kind: "draft"; id: string; creator: string };
 
 export default function AccountsTable({ onLink, onAdd, children }: {
@@ -337,21 +340,26 @@ export default function AccountsTable({ onLink, onAdd, children }: {
   };
   const connWired = !healthQ.error;
   const rowFilter = { filters, connWired, picked: roster?.find((e) => String(e.id) === filters.employee) };
-  const accounts = (accountsQ.data?.accounts || []).filter((a) => keepAccount({
+  const keep = (a: AccountMeta) => keepAccount({
     id: a.id,
-    names: [a.nickname, a.id, profiles.profiles[a.id]?.name],
+    names: [a.nickname, a.name, a.id, profiles.profiles[a.id]?.name],
     platform: a.platform,
     tag: profiles.profiles[a.id]?.tag,
-    isActive: a.is_active,
+    // A watcher has no Deactivate: it counts as activated.
+    isActive: a.role === "watcher" || a.is_active,
     conn: () => connectivity(a, healthByAid.get(a.id), healthRead).label,
-  }, rowFilter));
+  }, rowFilter);
+  const accounts = (accountsQ.data?.accounts || []).filter(keep);
   // The Creators saved with Done (creatorRowFilter's keepDraft), first, newest first, as Infloww lists a new Creator
   // at the top.
   const drafts = accountsQ.data ? [...profiles.drafts].reverse().filter((d) => keepDraft(d.name, rowFilter)) : [];
+  // Watcher accounts (GET /admin/accounts' `watchers`, `role` "watcher") last: an account row with a "watcher" badge
+  // and the ⋮ actions that make sense for a fan account (Row's `watcher`).
+  const watchers = (accountsQ.data?.watchers ?? []).filter(keep);
   type Item = { kind: "draft"; d: DraftCreator } | { kind: "account"; a: AccountMeta };
   const all: Item[] = [
     ...drafts.map((d) => ({ kind: "draft" as const, d })),
-    ...accounts.map((a) => ({ kind: "account" as const, a })),
+    ...[...accounts, ...watchers].map((a) => ({ kind: "account" as const, a })),
   ];
   const total = all.length;
   // A list that shrinks under the page lands on its last page and stays there when it grows again (usePagedRows).
@@ -449,6 +457,7 @@ export default function AccountsTable({ onLink, onAdd, children }: {
                     onDelete={() => setDeleting({
                       kind: "account", id: a.id, creator,
                       nickname: profile?.name && a.nickname && a.nickname !== profile.name ? a.nickname : undefined,
+                      watcher: a.role === "watcher",
                     })}
                   />
                 );
@@ -466,6 +475,7 @@ export default function AccountsTable({ onLink, onAdd, children }: {
         <DeleteCreatorModal
           creator={deleting.creator}
           nickname={deleting.kind === "account" ? deleting.nickname : undefined}
+          watcher={deleting.kind === "account" && deleting.watcher}
           pending={deleteM.isPending}
           error={deleteM.error}
           onClose={() => { setDeleting(null); deleteM.reset(); }}
@@ -510,7 +520,8 @@ export default function AccountsTable({ onLink, onAdd, children }: {
       {total > 0 && (
         <HbPager
           className="mx-4 shrink-0"
-          total={total} noun="creators" page={current} size={pageSize} sizes={[...PAGE_SIZES]}
+          total={total} count={total - watchers.length} page={current} size={pageSize} sizes={[...PAGE_SIZES]}
+          noun={watchers.length ? `creators + ${watchers.length} watcher${watchers.length > 1 ? "s" : ""}` : "creators"}
           onPage={setPage} onSize={(pageSize) => set({ pageSize })}
         />
       )}
@@ -586,6 +597,9 @@ function Row({
 }) {
   // A Fansly row relinks at the Fansly paste session, whichever action asks (Infloww: Fansly's own "Link account").
   const fansly = account.platform === "fansly";
+  // A watcher account (a fan account that reads what the Creators send): no Creator, so no default, no Deactivate and
+  // nothing to link under its Creator name.
+  const watcher = account.role === "watcher";
   const onLink = onLinkAt && fansly ? () => onLinkAt("fansly") : onLinkAt;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(account.nickname || account.id);
@@ -634,13 +648,14 @@ function Row({
       ) : (
         <span className="truncate">{profile?.name || label}</span>
       )}
+      {watcher && <Badge color="muted" title="Watcher account: reads what your Creators send; not a Creator">watcher</Badge>}
     </div>
   );
   const tag = profile?.tag ? <Badge color="muted">{profile.tag}</Badge> : null;
 
   // creators-manage#45, #46: a Connected row has the Edit pencil and a menu without Edit; any other row has the link
-  // button and the menu with all four items.
-  const connected = conn.label === "Connected";
+  // button and the menu with all four items. A watcher is never probed: its captured session counts as connected.
+  const connected = conn.label === "Connected" || (watcher && conn.label === "Session captured");
   const actions = (
     <>
       <div className="flex items-center gap-2">
@@ -672,6 +687,7 @@ function Row({
           onActivate={onActivate}
           active={account.is_active}
           onToggleActive={onToggleActive}
+          watcher={watcher}
         />
       </div>
     </>
@@ -679,7 +695,7 @@ function Row({
 
   const cells: RowCells = { account, conn, employees, isDefault, name, tag, actions };
   return (
-    <tr className={HB_TABLE.row}>
+    <tr className={HB_TABLE.row} data-testid={watcher ? "accounts-watcher-row" : undefined}>
       {COLUMNS.map((c) => (
         <td key={c.key} className={cn(HB_TABLE.td, c.sticky && STICKY)}>{c.cell(cells)}</td>
       ))}
@@ -706,6 +722,7 @@ function Row({
  */
 function RowMenu({
   label, connected, fansly, isDefault, onLink, onEdit, onLinkAnother, onDelete, onRename, onActivate, active, onToggleActive,
+  watcher = false,
 }: {
   label: string;
   connected: boolean;
@@ -721,6 +738,9 @@ function RowMenu({
   /** False on a deactivated creator: the item reads "Activate". */
   active: boolean;
   onToggleActive: () => void;
+  /** A watcher account: no "Link another account" (no Creator to link under), no Deactivate / Activate (no pollers or
+   *  automations to stop) and no Make default (a watcher is never the default; the relay refuses it). */
+  watcher?: boolean;
 }) {
   const { open, setOpen, ref } = useOutsideClose();
   const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
@@ -764,11 +784,11 @@ function RowMenu({
           {/* Each capture item leads with lucide's nearest icon (#48's Edit04Line, PlusLine, UserX01Line,
               Trash01Line); the bundle's icon font is not copied. */}
           {!connected && item("Edit", onEdit, { icon: Pencil })}
-          {item("Link another account", onLinkAnother, { icon: Plus })}
+          {!watcher && item("Link another account", onLinkAnother, { icon: Plus })}
           {/* Opens creators-manage#77's Deactivate modal (ActiveCreatorModal). */}
-          {active
+          {!watcher && (active
             ? item("Deactivate", onToggleActive, { icon: UserX })
-            : item("Activate", onToggleActive, { icon: UserCheck })}
+            : item("Activate", onToggleActive, { icon: UserCheck }))}
           {/* Opens creators-manage#78's Delete modal (DeleteCreatorModal). */}
           {item("Delete", onDelete, { danger: true, icon: Trash2 })}
           {!connected && !fansly && (
@@ -780,7 +800,7 @@ function RowMenu({
           <div role="group" aria-label={EXTRA_LABEL} className={MENU_RULE}>
             <div className="px-3 py-1"><ExtraTag /></div>
             {item("Rename", onRename, { title: EXTRA_LABEL })}
-            {!isDefault && item("Make default", onActivate, { title: EXTRA_LABEL })}
+            {!isDefault && !watcher && item("Make default", onActivate, { title: EXTRA_LABEL })}
           </div>
         </div>
       )}

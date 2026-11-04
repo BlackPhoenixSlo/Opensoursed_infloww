@@ -23,7 +23,8 @@ export function ScopeSelect({ accounts, pickAll, onPicked, className }: {
   const { scope, setScope } = useScope();
   const options: IfOption[] = [
     { value: ALL, label: "All creators" },
-    ...accounts.map((a) => ({ value: a.id, label: a.nickname || a.name || a.id })),
+    // OF Manager's list carries its watchers (useOfManagerAccounts), named so they are not taken for Creators.
+    ...accounts.map((a) => ({ value: a.id, label: `${a.nickname || a.name || a.id}${a.role === "watcher" ? " (watcher)" : ""}` })),
   ];
   return (
     <IfSelect

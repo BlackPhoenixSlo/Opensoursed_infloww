@@ -125,9 +125,11 @@ export function DraftRow({ columns, draft, onLink, onEdit, onDelete }: {
  * and "Step N of 2", then "Delete creator" and, on step 2, Submit, which deletes. The backdrop does not close it;
  * Escape does. Infloww sends the answer with its delete; the Relay has no field for it, so the answer stays here.
  */
-export function DeleteCreatorModal({ creator, nickname, pending, error, onClose, onDelete }: {
+export function DeleteCreatorModal({ creator, nickname, watcher = false, pending, error, onClose, onDelete }: {
   creator: string;
   nickname?: string;
+  /** A watcher account: the message adds that it stops reading the Creators. */
+  watcher?: boolean;
   pending: boolean;
   error: Error | null;
   onClose: () => void;
@@ -156,7 +158,10 @@ export function DeleteCreatorModal({ creator, nickname, pending, error, onClose,
     >
       <div className="text-sm">
         {step === 0 ? (
-          <p>{T.deleteMessage(creator, nickname)}</p>
+          <>
+            <p>{T.deleteMessage(creator, nickname)}</p>
+            {watcher && <p className="mt-2">This watcher account stops reading your Creators.</p>}
+          </>
         ) : (
           <fieldset className={RADIO_GROUP}>
             <legend className="mb-4 text-[16px] font-medium">

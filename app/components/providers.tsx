@@ -39,12 +39,13 @@ import {
   IsRestoringProvider,
 } from "@tanstack/react-query";
 import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { UserProvider } from "@/contexts/UserContext";
 import { ChatterProvider } from "@/contexts/ChatterContext";
 import { EmployeeProvider } from "@/contexts/EmployeeContext";
-import { ScopeProvider } from "@/contexts/ScopeContext";
+import { ScopeProvider, useDropWatcherScope } from "@/contexts/ScopeContext";
+import { useWatcherAccounts } from "@/hooks/useAccounts";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { installGlobalErrorHandlers } from "@/lib/errorReporter";
 import { perfBoot } from "@/lib/perfLog";
@@ -124,6 +125,14 @@ const PERSIST_KEYS: ReadonlyArray<readonly string[]> = [
 
 export function shouldPersistKey(queryKey: readonly unknown[]): boolean {
   return PERSIST_KEYS.some((p) => p.every((seg, i) => queryKey[i] === seg));
+}
+
+/** The app's scope never names a watcher (ScopeContext's useDropWatcherScope); outside OF Manager's WatcherScope. */
+function DropWatcherScope() {
+  const watchers = useWatcherAccounts();
+  const ids = useMemo(() => watchers.map((w) => w.id), [watchers]);
+  useDropWatcherScope(ids);
+  return null;
 }
 
 export default function Providers({ children }: { children: React.ReactNode }) {
@@ -258,6 +267,7 @@ export default function Providers({ children }: { children: React.ReactNode }) {
           <ChatterProvider>
             <EmployeeProvider>
               <ScopeProvider>
+                <DropWatcherScope />
                 <ErrorBoundary scope="root">{children}</ErrorBoundary>
               </ScopeProvider>
             </EmployeeProvider>

@@ -13,7 +13,7 @@
 import { useEffect, type RefObject } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useScope } from "@/contexts/ScopeContext";
-import { useActiveAccounts } from "@/hooks/useAccounts";
+import { useOfManagerAccounts } from "@/hooks/useAccounts";
 import { ofMeQuery, type OfMe } from "@/lib/ofMe";
 import { proxyImage } from "@/lib/mediaUrl";
 import { fillSlot, htmlLines } from "@/lib/ofMirrorDom";
@@ -439,7 +439,8 @@ export function switcherModels(accounts: readonly { id: string; nickname?: strin
 export function useOfIdentity(frameRef: RefObject<HTMLIFrameElement | null>, src: string): void {
   const { accountId, setScope } = useScope();
   const { data: me } = useQuery(ofMeQuery(accountId));
-  const accounts = useActiveAccounts();
+  // OF Manager's roster, watchers too: a pick goes through OF Manager's WatcherScope.
+  const accounts = useOfManagerAccounts();
 
   useEffect(() => {
     const frame = frameRef.current;

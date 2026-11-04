@@ -110,7 +110,12 @@ _ACCOUNTS = (OFF, ON, FOREIGN)
 
 # ── Registry + side effects, in memory ───────────────────────────────
 account_registry.get_account = lambda aid: {"id": aid} if aid in _ACCOUNTS else None
-account_registry.list_accounts = lambda: [{"id": a, "has_session": True} for a in _ACCOUNTS]
+# Watchers (`role` "watcher") exist only for `include_watchers=True`, as in accounts.list_accounts.
+_WATCHERS: list[str] = []
+account_registry.list_accounts = lambda include_watchers=False: [
+    {"id": a, "has_session": True} for a in _ACCOUNTS] + ([
+    {"id": w, "nickname": f"Company {w}", "name": None, "has_session": True, "role": account_registry.ROLE_WATCHER}
+    for w in _WATCHERS] if include_watchers else [])
 account_registry.is_account = lambda aid: aid in _ACCOUNTS
 _ACTIVE: dict[str, str | None] = {"id": OFF}
 account_registry.get_active_account_id = lambda: _ACTIVE["id"]
@@ -204,6 +209,57 @@ async def case_owner_deactivates() -> None:
     flat = {a["account_id"]: a for a in _login("/chatter/login", "chat").get("/chatter/me/accounts").json()}
     assert set(flat) == {OFF, ON}, f"chatter list dropped a row: {sorted(flat)}"
     assert flat[OFF]["is_active"] is False and flat[ON]["is_active"] is True, flat
+
+
+async def case_watchers_listed_apart_from_accounts() -> None:
+    """`GET /admin/accounts`' `watchers`: the caller's watcher accounts, never in `accounts`,
+    with a Creator's fields (Manage creators edits one, OF Manager browses as it); a watcher
+    is never `active_account_id`; another owner's watcher is in neither; anonymous is refused (401)."""
+    watch, foreign_watch = "acc_watch", "acc_watch_foreign"
+    async with get_session() as s:
+        s.add_all([Account(id=watch, nickname=watch), Account(id=foreign_watch, nickname=foreign_watch)])
+        await s.flush()
+        boss = (await s.execute(select(User).where(User.username == "boss"))).scalar_one()
+        other = (await s.execute(select(User).where(User.username == "other"))).scalar_one()
+        s.add_all([UserAccount(user_id=boss.id, account_id=watch),
+                   UserAccount(user_id=other.id, account_id=foreign_watch)])
+    _WATCHERS[:] = [watch, foreign_watch]
+    try:
+        body = _login("/auth/login", "boss").get("/admin/accounts").json()
+        ids = {a["id"] for a in body["accounts"]}
+        assert watch not in ids and foreign_watch not in ids, f"a watcher leaked into accounts: {sorted(ids)}"
+        assert body["watchers"] == [{"id": watch, "nickname": f"Company {watch}", "name": None,
+                                     "has_session": True, "role": "watcher",
+                                     "session_dead_at": None, "session_dead_reason": None,
+                                     "is_active": True, "proxy_down": False}], body["watchers"]
+        # Make default refuses a watcher (a route without X-Account-Id would act as it).
+        saved_get, saved_is = account_registry.get_account, account_registry.is_watcher
+        account_registry.get_account = lambda aid: {"id": aid} if aid in _ACCOUNTS or aid == watch else None
+        account_registry.is_watcher = lambda aid: aid == watch
+        try:
+            r = _login("/auth/login", "boss").post("/admin/accounts/active", json={"account_id": watch})
+            assert r.status_code == 400 and _ACTIVE["id"] != watch, (r.status_code, r.text, _ACTIVE)
+        finally:
+            account_registry.get_account, account_registry.is_watcher = saved_get, saved_is
+        # The shared default pointing at a watcher: clamped to a Creator, never the watcher.
+        saved_active = _ACTIVE["id"]
+        _ACTIVE["id"] = watch
+        try:
+            clamped = _login("/auth/login", "boss").get("/admin/accounts").json()
+            assert clamped["active_account_id"] in ids, clamped["active_account_id"]
+        finally:
+            _ACTIVE["id"] = saved_active
+        other_body = _login("/auth/login", "other").get("/admin/accounts").json()
+        assert [w["id"] for w in other_body["watchers"]] == [foreign_watch], other_body["watchers"]
+        # Anonymous: the auth gate refuses before the handler, so no watcher (nor account) leaks.
+        anon = TestClient(server.app).get("/admin/accounts")
+        assert anon.status_code == 401 and "acc_watch" not in anon.text, (anon.status_code, anon.text[:200])
+    finally:
+        _WATCHERS.clear()
+        async with get_session() as s:
+            for aid in (watch, foreign_watch):
+                for ua in (await s.execute(select(UserAccount).where(UserAccount.account_id == aid))).scalars():
+                    await s.delete(ua)
 
 
 async def case_of_write_to_deactivated_creator_is_409() -> None:

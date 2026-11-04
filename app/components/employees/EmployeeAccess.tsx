@@ -54,7 +54,11 @@ export function AccessEditor({ chatterId }: { chatterId: string }) {
 function AccessDraft({ chatterId, initial }: { chatterId: string; initial: AccessResp }) {
   const qc = useQueryClient();
   const accountsQ = useAccounts();
-  const ownerAccounts = accountsQ.data?.accounts ?? [];
+  // The watchers too (a fan account, OF Manager only), so a limited Employee can be given one.
+  const ownerAccounts = useMemo(
+    () => [...(accountsQ.data?.accounts ?? []), ...(accountsQ.data?.watchers ?? [])],
+    [accountsQ.data],
+  );
   const ownerIds = ownerAccounts.map((a) => a.id);
 
   const [state, dispatch] = useReducer(employeeAccessReducer, initial, seedEmployeeAccess);
@@ -129,7 +133,10 @@ function AccessDraft({ chatterId, initial }: { chatterId: string; initial: Acces
                   style={{ background: a.color || "#666" }}
                   aria-hidden
                 />
-                <span>{a.nickname || a.id}</span>
+                <span>{a.nickname || a.name || a.id}</span>
+                {a.role === "watcher" && (
+                  <span className="px-1 rounded border border-border text-[10px] text-fg-dim">watcher</span>
+                )}
               </label>
             ))}
             {accountSelectionInvalid && (
@@ -148,6 +155,8 @@ function AccessDraft({ chatterId, initial }: { chatterId: string; initial: Acces
         )}
         {visibleIds.map((aid) => {
           const a = ownerAccounts.find((x) => x.id === aid);
+          // A watcher is a fan account: no vault folders to limit.
+          if (a?.role === "watcher") return null;
           return (
             <FolderLimit
               key={aid}

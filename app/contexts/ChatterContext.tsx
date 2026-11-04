@@ -76,6 +76,8 @@ export interface ChatterFlatAccountDTO {
   session_dead_reason?: string | null;
   /** False while the owner has the Creator deactivated: the picker drops it. */
   is_active: boolean;
+  /** "watcher" on a watcher account: useAccounts lists it under `watchers` (OF Manager only), never as a Creator. */
+  role?: string | null;
 }
 
 interface ChatterContextValue {

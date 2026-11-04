@@ -28,7 +28,7 @@ import { AccountAvatarPicture } from "@/components/ui/AccountAvatarPicture";
 import { useOutsideClose } from "@/components/ui/Menu";
 import { EmptyArt, type EmptyKind } from "@/components/ui/emptyArt";
 import { HB_FILL_3, HB_TEXT, IF_FIELD, Listbox, type IconProp, type IfOption } from "@/components/ui/ifSelect";
-import type { AccountMeta } from "@/lib/relay";
+import type { AccountMeta, WatcherMeta } from "@/lib/relay";
 import { utcOffsetLabel } from "@/lib/utcOffset";
 import { cn } from "@/lib/utils";
 
@@ -455,7 +455,7 @@ export function IfSwitch({ checked, onChange, label, loading, disabled, "aria-la
 
 // ── Creator select + ?creator= ──────────────────────────────────────────────────────────────────────────────────
 
-const creatorName = (a: AccountMeta) => a.nickname || a.name || a.id;
+const creatorName = (a: AccountMeta | WatcherMeta) => a.nickname || a.name || a.id;
 
 /** A 20px creator avatar with the online dot (a live session) at its foot. */
 function CreatorAvatar({ account }: { account: AccountMeta }) {
@@ -476,11 +476,13 @@ const ALL_CREATORS = "";
 /** The legacy header's creator picker: 160x32 on `--tc-select-creator-b` #1E1E1E, a 20px avatar with the online dot,
  *  the name, a chevron. Pair it with `useCreatorParam` so the page body reads the same pick. `onAll` adds "All
  *  creators" first, picked while `value` is null. */
-export function IfCreatorSelect({ accounts, value, onChange, onAll, searchable, disabled, className }: {
+export function IfCreatorSelect({ accounts, value, onChange, onAll, watchers, searchable, disabled, className }: {
   accounts: AccountMeta[];
   value: string | null | undefined;
   onChange: (accountId: string) => void;
   onAll?: () => void;
+  /** Watcher accounts, listed after the creators as disabled options (`CreatorRail`'s `watchers`). */
+  watchers?: WatcherMeta[];
   searchable?: boolean;
   disabled?: boolean;
   className?: string;
@@ -494,6 +496,17 @@ export function IfCreatorSelect({ accounts, value, onChange, onAll, searchable, 
       <>
         <CreatorAvatar account={a} />
         <span className="truncate">{creatorName(a)}</span>
+      </>
+    ),
+  })), ...(watchers ?? []).map((w) => ({
+    value: `watcher:${w.id}`,
+    text: creatorName(w),
+    disabled: true,
+    title: "Watcher account: not a Creator",
+    label: (
+      <>
+        <span className="truncate">{creatorName(w)}</span>
+        <span className="rounded bg-bg-elev-2 px-1 text-[10px] text-fg-dim">watcher</span>
       </>
     ),
   }))];

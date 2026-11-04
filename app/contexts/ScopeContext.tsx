@@ -41,6 +41,8 @@ interface ScopeContextValue {
 }
 
 const ScopeContext = createContext<ScopeContextValue | null>(null);
+/** Private: the saved scope has been read (before it, the scope is a placeholder "all"). */
+const ScopeHydratedContext = createContext(false);
 /** Private: only useEventScopeOverride sets the override. */
 const EventOverrideContext = createContext<((s: EventScope | null) => void) | null>(null);
 
@@ -104,9 +106,11 @@ export function ScopeProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <ScopeContext.Provider value={value}>
-      <EventOverrideContext.Provider value={setEventScopeOverride}>
-        {children}
-      </EventOverrideContext.Provider>
+      <ScopeHydratedContext.Provider value={hydrated}>
+        <EventOverrideContext.Provider value={setEventScopeOverride}>
+          {children}
+        </EventOverrideContext.Provider>
+      </ScopeHydratedContext.Provider>
     </ScopeContext.Provider>
   );
 }
@@ -136,6 +140,95 @@ export function ScopeOverride({ accountId, children }: { accountId: string | nul
   const value = useMemo<ScopeContextValue>(
     () => (accountId ? { ...parent, scope: { kind: "model", accountId }, accountId } : parent),
     [parent, accountId],
+  );
+  return <ScopeContext.Provider value={value}>{children}</ScopeContext.Provider>;
+}
+
+/** The app's scope never names a watcher (useDropWatcherScope; OF Manager's own watcher pick is WatcherScope's): a
+ *  saved scope from before (a chatter's granted watcher, a Creator flagged as a watcher since) is reset to "all" once
+ *  the caller's watchers are read. Matches the watcher list, never "missing from the accounts", so a scope survives a
+ *  load. Mounted once, outside every WatcherScope (Providers). */
+export function useDropWatcherScope(watcherIds: readonly string[]): void {
+  const { scope, setScope } = useScope();
+  const stale = scope.kind === "model" && watcherIds.includes(scope.accountId);
+  useEffect(() => {
+    if (stale) setScope({ kind: "all" });
+  }, [stale, setScope]);
+}
+
+/** OF Manager's own pick of a watcher account (`chatterly:ofm-watcher`), kept apart from the app's scope: JSON
+ *  `{id, over}`, `over` the app's scope (serialized) it was picked over. */
+export const WATCHER_PICK_KEY = "chatterly:ofm-watcher";
+
+/** `over` null: picked before the saved scope was read (a Pop-out's `?account=` on mount); it takes the scope then. */
+interface WatcherPick { id: string; over: string | null }
+
+/** The saved watcher pick, as saved (WatcherScope checks `over`). */
+function readWatcherPick(): WatcherPick | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(WATCHER_PICK_KEY);
+    if (!raw) return null;
+    const { id, over } = JSON.parse(raw) as { id?: unknown; over?: unknown };
+    return typeof id === "string" && id && typeof over === "string" ? { id, over } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * OF Manager's subtree: a watcher account (a fan account, no Creator) can be picked and browsed here like a Creator,
+ * yet never becomes the app's scope. The app's scope drives the SSE scope, Messages Pro, the bell, the assistant and
+ * every composer, none of which may act as a watcher; so a watcher pick lives here alone (saved under its own key, so
+ * a reload keeps it) and the outer scope, its saved value and the SSE scope stay the last Creator's. Any other pick
+ * clears the watcher pick and goes to the outer setScope.
+ * The pick holds while the app's scope is the one it was picked over (`over`, checked every render): a Creator picked
+ * since anywhere (Messages Pro, the switcher, a Pop-out's `?account=`) ends it, and the saved pick is cleared.
+ * `watcherIds`: every watcher of the caller (a pick of one never reaches the outer scope); `pickable`: those OF Manager
+ * lists (useOfManagerAccounts: a captured session, active). A pick outside `pickable` is dropped once `loaded`.
+ * Never writes the outer scope with a watcher, so useDropWatcherScope (outer scope only) never fires on its account.
+ */
+export function WatcherScope({ watcherIds, pickable, loaded, children }: {
+  watcherIds: readonly string[];
+  pickable: readonly string[];
+  loaded: boolean;
+  children: React.ReactNode;
+}) {
+  const parent = useScope();
+  const hydrated = useContext(ScopeHydratedContext);
+  const [pick, setPick] = useState<WatcherPick | null>(readWatcherPick);
+  const outerKey = serialize(parent.scope);
+  // Before the saved scope is read the outer scope is a placeholder: neither shown nor judged stale.
+  const current = pick != null && hydrated && (pick.over === null || outerKey === pick.over);
+  const active = current && pickable.includes(pick.id) ? pick.id : null;
+  useEffect(() => {
+    if (hydrated && pick != null && pick.over === null) setPick({ id: pick.id, over: outerKey });
+  }, [hydrated, pick, outerKey]);
+  useEffect(() => {
+    if (pick == null || active) return;
+    const stale = (hydrated && pick.over !== null && outerKey !== pick.over) || (loaded && !pickable.includes(pick.id));
+    if (!stale) return;
+    setPick(null);
+    try { window.localStorage.removeItem(WATCHER_PICK_KEY); } catch { /* ignore */ }
+  }, [pick, active, hydrated, outerKey, loaded, pickable]);
+  const parentSet = parent.setScope;
+  const setScope = useCallback((s: Scope, options: SetScopeOptions = {}) => {
+    const watcher = s.kind === "model" && watcherIds.includes(s.accountId) ? s.accountId : null;
+    const next = watcher ? { id: watcher, over: hydrated ? outerKey : null } : null;
+    setPick(next);
+    if (options.persist !== false) {
+      try {
+        if (next) window.localStorage.setItem(WATCHER_PICK_KEY, JSON.stringify(next));
+        else window.localStorage.removeItem(WATCHER_PICK_KEY);
+      } catch { /* ignore */ }
+    }
+    if (!watcher) parentSet(s, options);
+  }, [watcherIds, parentSet, outerKey, hydrated]);
+  const value = useMemo<ScopeContextValue>(
+    () => (active
+      ? { ...parent, scope: { kind: "model", accountId: active }, accountId: active, setScope }
+      : { ...parent, setScope }),
+    [parent, active, setScope],
   );
   return <ScopeContext.Provider value={value}>{children}</ScopeContext.Provider>;
 }

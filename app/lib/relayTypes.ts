@@ -66,6 +66,24 @@ export interface AccountMeta {
    *  moved to a healthy one after two failed rechecks (docs/adr/0030); one on a custom proxy, or with no
    *  standby, stays and wears this flag. */
   proxy_down: boolean;
+  /** "watcher" on a watcher account (GET /admin/accounts' `watchers`, a chatter's roster row): a fan account that
+   *  reads what the Creators send, no Creator. Absent on a Creator. */
+  role?: "watcher" | null;
+}
+
+/** A watcher account as GET /admin/accounts lists it (`watchers`): a Creator's fields, so Manage creators edits it
+ *  and OF Manager browses as it (WatcherScope); never in `accounts`, so no sending, automation or analytics surface
+ *  sees it. */
+export type WatcherAccount = AccountMeta & { role: "watcher" };
+
+/** A watcher account as a creator picker lists it (`CreatorRail`'s `watchers`): a plain fan account that
+ *  reads what the Creators send, no Creator, so a dimmed row that cannot be picked. */
+export interface WatcherMeta {
+  id: string;
+  nickname?: string | null;
+  name?: string | null;
+  /** A captured session (GET /admin/accounts' `watchers`; a list without sessions omits it). */
+  has_session?: boolean;
 }
 
 /** `health` on a custom proxy (service/proxy_health.py `snapshot`). `state`: healthy | suspect (failed calls

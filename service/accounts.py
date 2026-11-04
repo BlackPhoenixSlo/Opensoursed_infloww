@@ -258,7 +258,14 @@ def set_role(account_id: str, role: str | None) -> dict[str, Any]:
     `upsert_account`, which keeps the other fields."""
     if role is not None and role not in ROLES:
         raise ValueError(f"unknown role {role!r}")
-    return upsert_account(account_id, role=role or "")
+    meta = upsert_account(account_id, role=role or "")
+    # A watcher is never the default account: a default Creator flagged as one
+    # leaves the pointer (get_active_account_id then falls back to a Creator).
+    if role == ROLE_WATCHER:
+        with _lock:
+            if _read_active_unlocked() == account_id:
+                ACTIVE_FILE.write_text(json.dumps({"active_account_id": None}, indent=2))
+    return meta
 
 
 def list_accounts(include_watchers: bool = False) -> list[dict[str, Any]]:
@@ -445,10 +452,13 @@ def _read_active_unlocked() -> str | None:
 
 
 def get_active_account_id() -> str | None:
-    """Return the explicitly-set active account, or — if none — the newest
-    account that has a session (so a fresh install just works)."""
+    """Return the explicitly-set active account, or — if none, or it is a
+    watcher (never the default) — the newest Creator that has a session (so a
+    fresh install just works)."""
     with _lock:
         active = _read_active_unlocked()
+    if active and is_watcher(active):
+        active = None
     # Recognize BOTH an OnlyFans session (latest.json) and a Fansly session
     # (fansly_session.json); otherwise an active Fansly account looks
     # session-less here and gets flipped to some other account below.

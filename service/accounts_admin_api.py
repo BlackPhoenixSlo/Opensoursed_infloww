@@ -230,17 +230,24 @@ async def admin_accounts_list(response: Response) -> dict[str, Any]:
     `no-store`. An UNauthenticated caller gets an EMPTY list, never the full
     multi-tenant registry: that fallback used to leak every owner's models,
     get cached by the client, and then 403 on save ("account X is not one of
-    yours"). Sign in to get the real, `user_accounts`-scoped list."""
+    yours"). Sign in to get the real, `user_accounts`-scoped list.
+
+    `watchers`: the caller's watcher accounts (`role` "watcher", a fan account
+    that reads what the Creators send), never in `accounts` (every sending / automation
+    surface reads `accounts`), with the same fields as a Creator so Manage
+    creators can edit one and OF Manager can browse as it. A watcher is never
+    `active_account_id`."""
     response.headers["Cache-Control"] = "no-store"
     user = _get_request_user()
     if user is None:
         # Anonymous caller — expose nothing. Authentication yields the
         # real, scoped list; leaking the registry here poisoned client
         # caches across owners.
-        return {"accounts": [], "active_account_id": None}
-    all_accounts = [
-        a for a in account_registry.list_accounts() if a.get("id") in user.account_ids
-    ]
+        return {"accounts": [], "active_account_id": None, "watchers": []}
+    # One registry scan (each reads every account dir) for the caller's Creators and watchers alike.
+    mine = [a for a in account_registry.list_accounts(include_watchers=True) if a.get("id") in user.account_ids]
+    all_accounts = [a for a in mine if a.get("role") != account_registry.ROLE_WATCHER]
+    watchers = [a for a in mine if a.get("role") == account_registry.ROLE_WATCHER]
     # Dead-session accounts (automations paused — see account_health.py) are
     # stamped so the switcher can badge "unlinked" instead of looking idle.
     # Deactivated Creators stay listed (analytics, grants and history keep
@@ -253,7 +260,7 @@ async def admin_accounts_list(response: Response) -> dict[str, Any]:
         dead, off = {}, set()
     # The Creator's proxy is bad: DOWN_AFTER counted failures in a row and a failed confirm probe (proxy_health).
     down = proxy_health.down_labels()
-    for a in all_accounts:
+    for a in all_accounts + watchers:
         health = dead.get(a.get("id"), account_health.NO_DEAD_SESSION)
         a["session_dead_at"] = health.at
         a["session_dead_reason"] = health.reason
@@ -261,11 +268,12 @@ async def admin_accounts_list(response: Response) -> dict[str, Any]:
         a["proxy_down"] = bool(down) and (
             (proxy_registry.get_for_account(a["id"]) or {}).get("label") in down)
     active = account_registry.get_active_account_id()
-    if active not in user.account_ids:
+    if active not in {a.get("id") for a in all_accounts}:
         active = all_accounts[0]["id"] if all_accounts else None
     return {
         "accounts": all_accounts,
         "active_account_id": active,
+        "watchers": watchers,
     }
 
 
@@ -495,6 +503,9 @@ def admin_accounts_activate(body: _ActivateBody = Body(...)) -> dict[str, Any]:
     """Flip which account is the default (no X-Account-Id header → this one)."""
     if body.account_id is not None and account_registry.get_account(body.account_id) is None:
         raise HTTPException(status_code=404, detail=f"unknown account {body.account_id!r}")
+    # A watcher (a fan account) is never the default: a route without X-Account-Id would act as it.
+    if body.account_id is not None and account_registry.is_watcher(body.account_id):
+        raise HTTPException(status_code=400, detail="a watcher account cannot be the default")
     account_registry.set_active_account_id(body.account_id)
     _kick_db_sync("accounts-active")
     return {"ok": True, "active_account_id": body.account_id}
