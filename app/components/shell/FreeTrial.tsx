@@ -8,13 +8,16 @@
  * banner; its close is remembered per principal), and the expired-trial nag
  * shown once per app start.
  * The nag never blocks: closing it carries on as normal, and nothing
- * remembers the close, so the next page load shows it again.
+ * remembers the close, so the next page load shows it again. Settings ›
+ * Preferences "Disable free trial popup" (Applied `hide_trial_popup`) turns it
+ * off; it waits for that read (or its failure) so it never flashes.
  */
 
 import { useState, useSyncExternalStore } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { X } from "lucide-react";
 
+import { useAppliedSettings } from "@/lib/appliedSettings";
 import { useUser } from "@/contexts/UserContext";
 import { useChatter } from "@/contexts/ChatterContext";
 import { Button } from "@/components/ui/primitives";
@@ -89,10 +92,13 @@ export function FreeTrialBanner() {
 
 export function FreeTrialExpiredModal() {
   const expired = useTrialDaysLeft() === 0;
+  const applied = useAppliedSettings();
+  // Unknown until the Applied read answers; a failed read shows the nag (the default).
+  const allowed = applied.data ? applied.data.preferences?.hide_trial_popup !== true : applied.isError;
   // Per mount: AppShell mounts once per page load, so this is per app start.
   const [closed, setClosed] = useState(false);
   return (
-    <Dialog.Root open={expired && !closed} onOpenChange={(o) => { if (!o) setClosed(true); }}>
+    <Dialog.Root open={expired && allowed && !closed} onOpenChange={(o) => { if (!o) setClosed(true); }}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-[60] bg-black/50" />
         <Dialog.Content

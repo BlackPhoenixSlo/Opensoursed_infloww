@@ -2,10 +2,11 @@
 
 /**
  * Your Preferences (docs/spec/settings-tabs/phase-01-account-preferences.md):
- * Report time zone, Time zone, Week start day and Language, saved whole to the
- * `preferences` Settings blob behind the Load gate. The time zones and week
- * start are Applied (ADR-0012, docs/spec/phase-04-apply-stored-settings.md);
- * Language is not applied yet, so the note names only it.
+ * Report time zone, Time zone, Week start day, Language and "Disable free trial
+ * popup", saved whole to the `preferences` Settings blob behind the Load gate.
+ * The time zones, week start and the popup switch are Applied (ADR-0012,
+ * docs/spec/phase-04-apply-stored-settings.md; the switch hides
+ * FreeTrialExpiredModal); Language is not applied yet, so the note names only it.
  *
  * The zone lists and the browser's zone are read through useSyncExternalStore
  * with empty server snapshots, so the server-rendered markup never disagrees
@@ -15,7 +16,7 @@
 import { useSyncExternalStore } from "react";
 
 import { useSettingsBlob } from "@/lib/settingsBlob";
-import { BlobNotes, Field, FieldSelect, NotAppliedYet, Section, SettingsPanel } from "@/components/settings/SettingsPanel";
+import { BlobNotes, Field, FieldSelect, NotAppliedYet, Section, SettingsPanel, ToggleRow } from "@/components/settings/SettingsPanel";
 import { SaveRow } from "@/components/settings/StickySaveBar";
 import PlatformSwitches from "@/components/settings/PlatformSwitches";
 
@@ -24,6 +25,8 @@ type Preferences = {
   tz: string;
   week_start: "monday" | "sunday";
   language: "en" | "es";
+  /** Absent until switched, so a save that never touched it sends only the four keys above. */
+  hide_trial_popup?: boolean;
 };
 
 const NO_ZONES: string[] = [];
@@ -97,6 +100,14 @@ export default function PreferencesTab() {
             onChange={(language) => blob.set({ language })}
           />
         </Field>
+      </Section>
+      <Section title="Free trial">
+        <ToggleRow
+          title="Disable free trial popup"
+          description="Never show the “Free trial exceeded” popup on app start"
+          checked={v.hide_trial_popup === true}
+          onChange={(hide_trial_popup) => blob.set({ hide_trial_popup })}
+        />
       </Section>
       <PlatformSwitches />
       <div className="flex flex-col gap-3">

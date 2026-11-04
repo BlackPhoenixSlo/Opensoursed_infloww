@@ -71,7 +71,7 @@ ALL_OPT_IN = ["/growth/auto-funnel", "/growth/auto-mass", "/growth/auto-post", "
 FLAGS_OFF = {"fansly_manager": False}
 
 DEFAULTS = {
-    "preferences": {"tz": None, "report_tz": None, "week_start": "monday"},
+    "preferences": {"tz": None, "report_tz": None, "week_start": "monday", "hide_trial_popup": False},
     "messaging": {"ai_translation": True},
     "permissions": {"enforced": True, "pages": None, "scope": "all", "opt_in": ALL_OPT_IN, "denied_actions": [], "denied_cards": []},
     "flags": FLAGS_OFF,
@@ -110,7 +110,7 @@ def _agency_a_roles(**assignments: str) -> dict:
 # Role enforcement on with chatter_a holding a custom "self" role. Agency B:
 # only a regular time zone, translation on, and `enforce: false` stored.
 _put(OWNER_A, "preferences", {"tz": "Europe/Ljubljana", "report_tz": "America/New_York",
-                              "week_start": "sunday", "language": "es"})
+                              "week_start": "sunday", "language": "es", "hide_trial_popup": True})
 _put(OWNER_A, "messaging", {"ai_translation": False, "prompt": PROMPT})
 AGENCY_A_ROLES = _agency_a_roles(**{str(EMP["chatter_a@a"]): "role-closer", "999999": "admin"})
 _put(OWNER_A, "roles", AGENCY_A_ROLES)
@@ -118,8 +118,9 @@ _put(OWNER_B, "preferences", {"tz": "Asia/Tokyo"})
 _put(OWNER_B, "messaging", {"ai_translation": True})
 _put(OWNER_B, "roles", {"enforce": False})
 
-AGENCY_A_PREFS = {"tz": "Europe/Ljubljana", "report_tz": "America/New_York", "week_start": "sunday"}
-AGENCY_B_PREFS = {"tz": "Asia/Tokyo", "report_tz": None, "week_start": "monday"}
+AGENCY_A_PREFS = {"tz": "Europe/Ljubljana", "report_tz": "America/New_York", "week_start": "sunday",
+                  "hide_trial_popup": True}
+AGENCY_B_PREFS = {"tz": "Asia/Tokyo", "report_tz": None, "week_start": "monday", "hide_trial_popup": False}
 
 
 def case_owner_reads_its_agency_and_is_never_role_checked():
@@ -174,7 +175,7 @@ def case_two_agency_chatter_with_no_creator_gets_no_zone_strictest_translation_a
     assert _mirror_count("chatter_ab") == 0
     # Agency B does not enforce, so it grants every page: the union is every page. A card either hides is hidden.
     assert _applied(CHATTER_AB) == {
-        "preferences": {"tz": None, "report_tz": None, "week_start": "monday"},
+        "preferences": {"tz": None, "report_tz": None, "week_start": "monday", "hide_trial_popup": False},
         "messaging": {"ai_translation": False},
         "permissions": {"enforced": True, "pages": None, "scope": "self", "opt_in": [], "denied_actions": [],
                         "denied_cards": CHATTER_HIDDEN_CARDS},
@@ -225,7 +226,7 @@ def case_two_agency_chatter_with_both_enforcing_gets_the_union_of_granted_pages(
     _put(OWNER_A, "messaging", {"ai_translation": True, "prompt": PROMPT})
     try:
         assert _applied(CHATTER_AB) == {
-            "preferences": {"tz": None, "report_tz": None, "week_start": "monday"},
+            "preferences": {"tz": None, "report_tz": None, "week_start": "monday", "hide_trial_popup": False},
             "messaging": {"ai_translation": True},
             "permissions": {"enforced": True,
                             "pages": ["/analytics/employee-reports", "/messages-pro"],
@@ -275,12 +276,13 @@ def case_another_agencys_session_never_sees_this_agencys_values():
 
 def case_a_stored_invalid_field_reads_as_its_default():
     fx.store_blob(IDS["agency_b_owner"], "preferences",
-                  {"tz": "Mars/Olympus_Mons", "report_tz": "Asia/Tokyo", "week_start": "friday"})
+                  {"tz": "Mars/Olympus_Mons", "report_tz": "Asia/Tokyo", "week_start": "friday",
+                   "hide_trial_popup": "yes"})
     fx.store_blob(IDS["agency_b_owner"], "messaging", {"ai_translation": "no"})
     fx.store_blob(IDS["agency_b_owner"], "roles", {"enforce": "yes"})
     try:
         assert _applied(OWNER_B) == {
-            "preferences": {"tz": None, "report_tz": "Asia/Tokyo", "week_start": "monday"},
+            "preferences": {"tz": None, "report_tz": "Asia/Tokyo", "week_start": "monday", "hide_trial_popup": False},
             "messaging": {"ai_translation": True},
             # An invalid switch reads as the default: on.
             "permissions": {"enforced": True, "pages": None, "scope": "all", "opt_in": ALL_OPT_IN, "denied_actions": [], "denied_cards": []},
@@ -400,7 +402,7 @@ def case_no_report_zone_keeps_utc_days():
         assert _report(OWNER_A, "creator_a") == UTC_DAYS
     finally:
         _put(OWNER_A, "preferences", {"tz": "Europe/Ljubljana", "report_tz": "America/New_York",
-                                      "week_start": "sunday", "language": "es"})
+                                      "week_start": "sunday", "language": "es", "hide_trial_popup": True})
 
 
 def case_a_stored_invalid_report_zone_keeps_utc_days():
@@ -409,7 +411,7 @@ def case_a_stored_invalid_report_zone_keeps_utc_days():
         assert _report(OWNER_A, "creator_a") == UTC_DAYS
     finally:
         _put(OWNER_A, "preferences", {"tz": "Europe/Ljubljana", "report_tz": "America/New_York",
-                                      "week_start": "sunday", "language": "es"})
+                                      "week_start": "sunday", "language": "es", "hide_trial_popup": True})
 
 
 def case_full_iso_bounds_are_unchanged_by_the_report_zone():

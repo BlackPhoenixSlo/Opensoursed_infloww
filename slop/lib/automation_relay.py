@@ -33,7 +33,11 @@ UTC dates, newest first). OnlyFans' side lives in `$DEMO_SHOTS_TMP/of-mass.jsonl
 one line per step, written straight to the file so it outlives a SIGKILLed relay:
 `send_begin`, `send_accepted` (OF has the mass: it gets its queue id and is in the
 history from here on) after `accept_at` of `send_s`, `send_returned` (the relay has
-OF's answer) at `send_s`; `cancel_begin` / `cancel_done` after `cancel_s`. A kill
+OF's answer) at `send_s`; `cancel_begin` / `cancel_done` after `cancel_s`. A Creator in
+`cancel_fail` ({account: "proxy" | "of"}, re-read every call) gets `cancel_refused`
+instead and the cancel raises: "proxy" as curl_cffi's ProxyError after `proxy_s` (the
+proxy's CONNECT 403 once OFClient._proxy_retry's ~6 s of retries ran out; OF never sees
+it), "of" as OF's own error (OFAPIError, a 400) after `cancel_s`. A kill
 between `send_accepted` and `send_returned` is OF accepting a mass the relay never
 heard back about. Blocking sleeps, in the caller's worker thread as the real curl.
 With the same file: `subscribers` / `following` answer empty pages (a send's
@@ -183,6 +187,18 @@ class _Walker:
     def cancel_scheduled(self, queue_id) -> dict:
         cfg = self._mass_cfg()
         token = f"{self.account_id}:{time.time_ns()}:{threading.get_ident()}"
+        fail = (cfg.get("cancel_fail") or {}).get(self.account_id)
+        if fail == "proxy":
+            from curl_cffi.requests.exceptions import ProxyError
+            time.sleep(float(cfg.get("proxy_s", 6.0)))
+            self._mass_line("cancel_refused", token=token, queue_id=int(queue_id), by=fail)
+            raise ProxyError("Failed to perform, curl: (56) CONNECT tunnel failed, response 403")
+        if fail == "of":
+            from of_client import OFAPIError
+            time.sleep(float(cfg.get("cancel_s", 0.5)))
+            self._mass_line("cancel_refused", token=token, queue_id=int(queue_id), by=fail)
+            raise OFAPIError(f"400 for https://onlyfans.com/api2/v2/messages/queue/{int(queue_id)}\n"
+                             '{"error":{"code":0,"message":"Something went wrong"}}')
         self._mass_line("cancel_begin", token=token, queue_id=int(queue_id))
         time.sleep(float(cfg.get("cancel_s", 0.5)))
         self._mass_line("cancel_done", token=token, queue_id=int(queue_id))

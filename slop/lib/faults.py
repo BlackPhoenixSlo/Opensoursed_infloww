@@ -344,6 +344,20 @@ def _runtime_switch_env_bypass() -> None:
     webhook_dispatch._global_kill_switch = env_only
 
 
+def _applied_drops_hide_trial_popup() -> None:
+    """The Applied settings read never carries Preferences' "Disable free trial popup": the
+    saved switch never reaches the shell, so the expired-trial nag keeps showing."""
+    import settings_api
+    real = settings_api._applied_in
+
+    async def dropped(s, ctx):
+        out = await real(s, ctx)
+        out["preferences"]["hide_trial_popup"] = False
+        return out
+
+    settings_api._applied_in = dropped
+
+
 # The app's notification clicks before notificationLink.ts: a left click on a
 # link opens a browser tab of its own (the toast's named `infloww-rea-<path>`
 # target, the bell rows' _blank) instead of the Fan tab in Messages Pro, and the
@@ -907,6 +921,11 @@ FAULTS: dict[str, Fault] = {
     # slop/run runtime-switches --break (the scenario's FAULT)
     "runtime-switch-env-bypass": Fault(_runtime_switch_env_bypass, (
         "W7 switch on from Settings > System: no dispatch job for any DM sent while it is on",
+    )),
+    # slop/run trial-popup --break (the scenario's FAULT)
+    "applied-drops-hide-trial-popup": Fault(_applied_drops_hide_trial_popup, (
+        "GET /admin/settings/applied: hide_trial_popup true after the save",
+        "UI: switch on, shell reloaded: no Free trial exceeded dialog",
     )),
     # slop/run 2026-10-26-fan-list-chips --break (the scenario's FAULT)
     "fan-list-owe-reply-last-sort-never-active": Fault(None, (

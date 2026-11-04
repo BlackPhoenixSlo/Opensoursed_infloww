@@ -1,7 +1,8 @@
 /**
  * The top bar's free-trial days left, the "trial has started" banner (while
  * the trial runs, its close remembered per principal), and the expired-trial
- * nag: shown on mount (an app start), closable, never remembered across mounts.
+ * nag: shown on mount (an app start), closable, never remembered across mounts,
+ * and never while Settings › Preferences "Disable free trial popup" is on.
  */
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -10,6 +11,9 @@ let user: { user_id?: string; username: string; created_at?: string | null } | n
 let chatter: { chatter_id?: string; username: string; created_at?: string | null } | null = null;
 vi.mock("@/contexts/UserContext", () => ({ useUser: () => ({ user }) }));
 vi.mock("@/contexts/ChatterContext", () => ({ useChatter: () => ({ chatter }) }));
+/** The Applied settings read: answered with `hide_trial_popup` (undefined: never stored), loading, or failed. */
+let applied: { data?: { preferences: { hide_trial_popup?: boolean } }; isError: boolean } = { data: { preferences: {} }, isError: false };
+vi.mock("@/lib/appliedSettings", () => ({ useAppliedSettings: () => applied }));
 
 import { FreeTrialBadge, FreeTrialBanner, FreeTrialExpiredModal } from "@/components/shell/FreeTrial";
 
@@ -20,6 +24,7 @@ afterEach(() => {
   cleanup();
   user = null;
   chatter = null;
+  applied = { data: { preferences: {} }, isError: false };
   localStorage.clear();
 });
 
@@ -104,5 +109,29 @@ describe("FreeTrialExpiredModal", () => {
     render(<FreeTrialExpiredModal />);
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("never shows when Disable free trial popup is on", () => {
+    user = { username: "owner", created_at: daysAgo(10) };
+    applied = { data: { preferences: { hide_trial_popup: true } }, isError: false };
+    render(<FreeTrialExpiredModal />);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("waits for the Applied read (no flash), then shows when the switch is off", () => {
+    user = { username: "owner", created_at: daysAgo(10) };
+    applied = { isError: false };
+    const { rerender } = render(<FreeTrialExpiredModal />);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    applied = { data: { preferences: { hide_trial_popup: false } }, isError: false };
+    rerender(<FreeTrialExpiredModal />);
+    expect(screen.getByRole("dialog", { name: "Free trial exceeded" })).toBeInTheDocument();
+  });
+
+  it("shows when the Applied read failed (the default)", () => {
+    chatter = { username: "tim", created_at: daysAgo(10) };
+    applied = { isError: true };
+    render(<FreeTrialExpiredModal />);
+    expect(screen.getByRole("dialog", { name: "Free trial exceeded" })).toBeInTheDocument();
   });
 });

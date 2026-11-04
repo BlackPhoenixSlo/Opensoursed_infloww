@@ -35,8 +35,8 @@ export type FeatureFlag = "fansly_manager";
 export type FeatureFlags = Record<FeatureFlag, boolean>;
 
 export interface AppliedSettings {
-  /** `null` zones mean "use the browser's". */
-  preferences: { tz: string | null; report_tz: string | null; week_start: WeekStart };
+  /** `null` zones mean "use the browser's". `hide_trial_popup`: Settings › Preferences "Disable free trial popup". */
+  preferences: { tz: string | null; report_tz: string | null; week_start: WeekStart; hide_trial_popup?: boolean };
   messaging: { ai_translation: boolean };
   /** `pages: null` means every page. `opt_in`: the My Automations pages a
    *  chatter may open (a stored role ticking them, with enforcement on, in

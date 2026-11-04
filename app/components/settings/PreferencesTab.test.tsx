@@ -143,4 +143,23 @@ describe("PreferencesTab", () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(puts()).toEqual([]);
   });
+
+  it("Disable free trial popup: off by default, switched on it saves hide_trial_popup true", async () => {
+    renderWithProviders(<PreferencesTab />);
+    await waitFor(() => expect(save()).toBeEnabled());
+    const sw = screen.getByRole("switch", { name: "Disable free trial popup" });
+    expect(sw).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(sw);
+    expect(sw).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(save());
+    await waitFor(() => expect(puts()).toHaveLength(1));
+    expect(puts()[0].body).toMatchObject({ hide_trial_popup: true });
+  });
+
+  it("Disable free trial popup pre-fills from a stored blob", async () => {
+    getReply = () => jsonRes({ tab: "preferences", config: { hide_trial_popup: true } });
+    renderWithProviders(<PreferencesTab />);
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Disable free trial popup" }))
+      .toHaveAttribute("aria-checked", "true"));
+  });
 });

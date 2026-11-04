@@ -159,6 +159,7 @@ def _preferences(raw: dict[str, Any], errors: list[Error]) -> dict[str, Any]:
     return _fields(raw, {
         "tz": _zone, "report_tz": _zone,
         "week_start": _enum("monday", "sunday"), "language": _enum("en", "es"),
+        "hide_trial_popup": _bool,
         "notifications": {kind: _bool for kind in NOTIFICATION_KINDS},
     }, "preferences", errors)
 

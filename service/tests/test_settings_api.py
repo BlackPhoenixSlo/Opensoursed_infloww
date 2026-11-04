@@ -235,6 +235,7 @@ def case_each_tab_refuses_a_bad_value_naming_its_dotted_path_and_stores_nothing(
          "unknown report zone"),
         ("preferences", {"week_start": "friday"}, "preferences.week_start", "week start"),
         ("preferences", {"language": "fr"}, "preferences.language", "language"),
+        ("preferences", {"hide_trial_popup": "yes"}, "preferences.hide_trial_popup", "a string for a switch"),
         ("time-tracking", {"enabled": True, "auto_clock_out_minutes": 0},
          "time-tracking.auto_clock_out_minutes", "minutes 0"),
         ("time-tracking", {"auto_clock_out_minutes": 1000}, "time-tracking.auto_clock_out_minutes",
@@ -291,7 +292,7 @@ def case_each_tab_refuses_a_bad_value_naming_its_dotted_path_and_stores_nothing(
     ok = [
         ("account", {"agency_name": "x" * 128}),
         ("preferences", {"tz": "Europe/Paris", "report_tz": "America/New_York", "week_start": "sunday",
-                         "language": "es"}),
+                         "language": "es", "hide_trial_popup": True}),
         ("time-tracking", {"enabled": True, "auto_clock_out_minutes": 1, "clock_in_reminder": False}),
         ("time-tracking", {"enabled": True, "auto_clock_out_minutes": 999, "clock_in_reminder": True}),
         # Unknown ids are kept: the roles blob may hold them later.

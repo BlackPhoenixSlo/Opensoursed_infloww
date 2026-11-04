@@ -361,7 +361,8 @@ async def translation_allowed(s, contexts: list[AgencyContext]) -> bool:
 
 async def _applied_in(s, ctx: AgencyContext) -> dict[str, Any]:
     """One Agency's Applied settings for one session: a never-stored or
-    invalid field reads as its default (no zone, Monday, translation on)."""
+    invalid field reads as its default (no zone, Monday, translation on,
+    the free-trial popup shown)."""
     prefs = await applied_blob(s, ctx.agency_user_id, "preferences")
     roles = await applied_blob(s, ctx.agency_user_id, "roles")
     flags = await applied_blob(s, ctx.agency_user_id, "flags")
@@ -371,6 +372,7 @@ async def _applied_in(s, ctx: AgencyContext) -> dict[str, Any]:
             "tz": prefs.get("tz"),
             "report_tz": prefs.get("report_tz"),
             "week_start": prefs.get("week_start", "monday"),
+            "hide_trial_popup": prefs.get("hide_trial_popup") is True,
         },
         "messaging": {"ai_translation": await translation_allowed(s, [ctx])},
         "permissions": {
@@ -392,7 +394,8 @@ def _merged(parts: list[dict[str, Any]]) -> dict[str, Any]:
 
     ASSUMPTION: the week start reads as Monday, `enforced` is true if any
     Agency enforces, the Data scope is "self" if any Agency narrows it, and a
-    feature flag is on only if every Agency turns it on.
+    feature flag is on only if every Agency turns it on, and the free-trial
+    popup is hidden only if every Agency hides it.
     Rung 4: never wider than one of the Agencies allows. Overturned if the
     owner wants the week start or Data scope taken from one chosen Agency.
     """
@@ -401,7 +404,8 @@ def _merged(parts: list[dict[str, Any]]) -> dict[str, Any]:
         granted = part["permissions"]["pages"]
         pages = None if pages is None or granted is None else pages | set(granted)
     return {
-        "preferences": {"tz": None, "report_tz": None, "week_start": "monday"},
+        "preferences": {"tz": None, "report_tz": None, "week_start": "monday",
+                        "hide_trial_popup": all(p["preferences"]["hide_trial_popup"] for p in parts)},
         "messaging": {"ai_translation": all(p["messaging"]["ai_translation"] for p in parts)},
         "permissions": {
             "enforced": any(p["permissions"]["enforced"] for p in parts),
@@ -421,7 +425,7 @@ def _merged(parts: list[dict[str, Any]]) -> dict[str, Any]:
 # Declared before /{tab}, so "applied" is never read as a tab name.
 @router.get("/applied")
 async def get_applied(request: Request) -> dict[str, Any]:
-    """`{preferences: {tz, report_tz, week_start}, messaging: {ai_translation},
+    """`{preferences: {tz, report_tz, week_start, hide_trial_popup}, messaging: {ai_translation},
     permissions: {enforced, pages, scope, opt_in, denied_actions, denied_cards}, flags:
     {<name>: bool}}` for the caller's session; `null` zones mean the browser's,
     `pages: null` every page, `opt_in` the My Automations pages it may use

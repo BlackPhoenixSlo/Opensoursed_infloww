@@ -113,6 +113,8 @@ EXPECTED_TRACEBACKS = (("roster-counts: OF read failed", "has no captured sessio
                        # The sweep's Share for Share pages: the session-less Creator's OF profile, kept as stored.
                        ("s4s: OnlyFans profile of", "has no captured session"))
 APP_MODE = "prod"
+# Push on, as in prod (SITE_URL set there): without a subject the Dashboard's GET /push/key answers 503.
+RELAY_ENV = {"VAPID_SUBJECT": "mailto:slop@example.test"}
 OF_WIRE = True
 FAULT = "dashboard-total-waits-of-reads"
 CREATORS = 4
