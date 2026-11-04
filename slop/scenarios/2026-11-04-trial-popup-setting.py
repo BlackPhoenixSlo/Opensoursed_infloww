@@ -10,11 +10,19 @@ Invariants: Applied reads `hide_trial_popup` false before any save; in the brows
 with the switch off (stored absent), the switch saves `hide_trial_popup: true` (PUT 200), GET
 /admin/settings/preferences, the `user_settings` row and the Applied read then say true, the shell
 after a reload shows no nag; stored `false` (PUT through the route) brings it back on the next
-load. Screenshots: modal-switch-off (the trigger page), switch-on, preferences-saved,
-shell-no-modal (settled end state), modal-back-switch-false. --no-ui: the route checks only.
+load. A second browser whose React Query snapshot (IndexedDB) holds the pre-save Applied answer
+(false, just fetched: what another tab re-saving its cache leaves) still shows no nag on
+Settings > Preferences: the nag waits for this load's own read (the owner's 2026-11-04 report).
+Screenshots: modal-switch-off (the trigger page), switch-on, preferences-saved, shell-no-modal
+(settled end state), stale-snapshot-settled, modal-back-switch-false. --no-ui: the route checks only.
 
-Fault `applied-drops-hide-trial-popup` (the Applied read always says false) must turn exactly the
-Applied check and the no-nag check red; the nag-shows checks stay green.
+Fault `trial-popup-trusts-saved-applied` (the scenario's: the nag trusts the restored answer, as
+before the fix) must turn exactly the stale-snapshot check red. `--fault=applied-drops-hide-trial-popup`
+(the Applied read always says false) turns the Applied check and the no-nag check red (the
+stale-snapshot check with them, as noise); the nag-shows checks stay green.
+
+Bypass: the stale snapshot is written by an init script before the app's restore, not by a real
+second tab's throttled save (same record, same shape, copied from the first browser's own save).
 """
 from __future__ import annotations
 
@@ -27,7 +35,7 @@ from slop.seed import ts
 
 PROFILE = "agency_inbox"
 UI = True
-FAULT = "applied-drops-hide-trial-popup"
+FAULT = "trial-popup-trusts-saved-applied"
 VIEWPORT = (1440, 900)
 
 DIALOG = "Free trial exceeded"
@@ -39,6 +47,51 @@ APPLIED_ON = "GET /admin/settings/applied: hide_trial_popup true after the save"
 UI_SHOWN = "UI: expired trial, switch off: the Free trial exceeded dialog shows"
 UI_HIDDEN = "UI: switch on, shell reloaded: no Free trial exceeded dialog"
 UI_BACK = "UI: stored false, shell reloaded: the dialog shows again"
+UI_STALE = "UI: stored true, a stale saved Applied answer (false) restored: no Free trial exceeded dialog"
+
+# The React Query snapshot (app/lib/rqPersister.ts): one IndexedDB record per origin.
+_READ_SNAPSHOT = """async () => {
+  window.dispatchEvent(new Event("blur"));  // rqPersister's flush event: save the snapshot now
+  await new Promise((r) => setTimeout(r, 1000));
+  return await new Promise((res, rej) => {
+    const o = indexedDB.open("chatterly-rq", 1);
+    o.onsuccess = () => {
+      const g = o.result.transaction("snapshot").objectStore("snapshot").get("cache");
+      g.onsuccess = () => res(g.result ?? null);
+      g.onerror = () => rej(g.error);
+    };
+    o.onerror = () => rej(o.error);
+  });
+}"""
+# Before the app's scripts: write the snapshot as another tab of the same browser could have
+# saved it, its Applied answers just fetched (fresh for their 60 s staleTime). Ordered before
+# the app's restore: IndexedDB opens and transactions on one store run in creation order.
+_WRITE_STALE = """(() => {
+  if (window.top !== window || sessionStorage.getItem("slop-stale-applied")) return;
+  sessionStorage.setItem("slop-stale-applied", "1");
+  const snap = __SNAP__;
+  const now = Date.now();
+  snap.timestamp = now;
+  for (const q of snap.clientState.queries) { q.state.dataUpdatedAt = now; q.state.isInvalidated = false; }
+  const o = indexedDB.open("chatterly-rq", 1);
+  o.onupgradeneeded = () => o.result.createObjectStore("snapshot");
+  o.onsuccess = () => {
+    o.result.transaction("snapshot", "readwrite").objectStore("snapshot").put(JSON.stringify(snap), "cache");
+  };
+})();"""
+
+
+def _stale_snapshot(raw) -> tuple:
+    """The browser's saved snapshot cut to its Applied answers, each turned back to hide false."""
+    if not raw:
+        return None, []
+    snap = json.loads(raw)
+    qs = [q for q in snap.get("clientState", {}).get("queries", [])
+          if (q.get("queryKey") or [None])[0] == "applied-settings"]
+    for q in qs:
+        q["state"]["data"]["preferences"]["hide_trial_popup"] = False
+    snap["clientState"] = {"mutations": [], "queries": qs}
+    return snap, [q["queryKey"] for q in qs]
 
 
 async def _dialog_after_load(page, url: str, want_shown: bool) -> bool:
@@ -85,7 +138,7 @@ async def run(ctx) -> None:
     ctx.check(APPLIED_OFF, st == 200 and val is False, http_status=st, got=val)
 
     if ctx.app is None:
-        for c in (UI_SHOWN, UI_HIDDEN, UI_BACK):
+        for c in (UI_SHOWN, UI_HIDDEN, UI_BACK, UI_STALE):
             ctx.skip(c, "--no-ui")
         cfg = (await ctx.owner.get("/admin/settings/preferences")).json().get("config", {})
         r = await ctx.owner.put("/admin/settings/preferences", json={**cfg, "hide_trial_popup": True})
@@ -121,6 +174,21 @@ async def run(ctx) -> None:
             hidden = not await _dialog_after_load(page, f"{ctx.app}/", False)
             await ui.shot(ctx, page, "shell-no-modal")
             ctx.check(UI_HIDDEN, hidden)
+            stale, keys = _stale_snapshot(await page.evaluate(_READ_SNAPSHOT))
+
+        # The owner's report: the switch saved on, yet the nag over Settings > Preferences. A browser
+        # whose saved snapshot still holds the pre-save Applied answer (another tab re-saved it on
+        # its throttle) restores that answer as fresh; the nag must wait for this load's own read.
+        if keys:
+            async with ui.owner_browser(ctx, viewport=VIEWPORT) as page:
+                await page.add_init_script(_WRITE_STALE.replace("__SNAP__", json.dumps(stale)))
+                reads = []
+                page.on("request", lambda r: reads.append(r.url) if "/admin/settings/applied" in r.url else None)
+                shown = await _dialog_after_load(page, f"{ctx.app}/settings/preferences", False)
+                await ui.shot(ctx, page, "stale-snapshot-settled")
+                ctx.check(UI_STALE, not shown, restored_keys=keys, applied_reads=len(reads))
+        else:
+            ctx.check(UI_STALE, False, reason="no Applied answer in the first browser's snapshot")
 
         await _checks_after_save(ctx)
         cfg = (await ctx.owner.get("/admin/settings/preferences")).json().get("config", {})

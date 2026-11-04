@@ -13,7 +13,9 @@ vi.mock("@/contexts/UserContext", () => ({ useUser: () => ({ user }) }));
 vi.mock("@/contexts/ChatterContext", () => ({ useChatter: () => ({ chatter }) }));
 /** The Applied settings read: answered with `hide_trial_popup` (undefined: never stored), loading, or failed. */
 let applied: { data?: { preferences: { hide_trial_popup?: boolean } }; isError: boolean } = { data: { preferences: {} }, isError: false };
-vi.mock("@/lib/appliedSettings", () => ({ useAppliedSettings: () => applied }));
+vi.mock("@/lib/appliedSettings", () => ({
+  useAppliedSettingsAfterMount: () => ({ settings: applied.data, failed: applied.isError }),
+}));
 
 import { FreeTrialBadge, FreeTrialBanner, FreeTrialExpiredModal } from "@/components/shell/FreeTrial";
 

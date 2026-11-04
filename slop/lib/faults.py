@@ -927,6 +927,16 @@ FAULTS: dict[str, Fault] = {
         "GET /admin/settings/applied: hide_trial_popup true after the save",
         "UI: switch on, shell reloaded: no Free trial exceeded dialog",
     )),
+    # slop/run trial-popup --break --fault=trial-popup-trusts-saved-applied (client side)
+    # app/lib/appliedSettings.ts useAppliedSettingsAfterMount as before 2026-11-04: the nag decides from
+    # the Applied answer the snapshot restored (fresh for 60 s, no refetch), so a pre-save false shows it.
+    "trial-popup-trusts-saved-applied": Fault(None, (
+        "UI: stored true, a stale saved Applied answer (false) restored: no Free trial exceeded dialog",
+    ), browser=((r"\bstaleTime:\s*0(?=\s*[,}])", "staleTime: 60000"),  # appliedQuery's own staleTime
+                (r"q\.isFetchedAfterMount\s*&&\s*!q\.isPlaceholderData", "true")),
+        # next dev bundles appliedSettings.ts into each chunk the run loads: app/layout, app/page,
+        # settings/layout, settings/[tab]/page (one match per pattern per load of each).
+        browser_files=4, ts_files=1),
     # slop/run 2026-10-26-fan-list-chips --break (the scenario's FAULT)
     "fan-list-owe-reply-last-sort-never-active": Fault(None, (
         "chips on screen: All, Owe reply, Pinned, Unread, With Tips, the pinned lists, Priority",

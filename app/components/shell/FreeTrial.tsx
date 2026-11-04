@@ -10,14 +10,15 @@
  * The nag never blocks: closing it carries on as normal, and nothing
  * remembers the close, so the next page load shows it again. Settings ›
  * Preferences "Disable free trial popup" (Applied `hide_trial_popup`) turns it
- * off; it waits for that read (or its failure) so it never flashes.
+ * off; it waits for this load's own read of it (or its failure), never the
+ * saved snapshot's, so it never flashes and a pre-save answer never shows it.
  */
 
 import { useState, useSyncExternalStore } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { X } from "lucide-react";
 
-import { useAppliedSettings } from "@/lib/appliedSettings";
+import { useAppliedSettingsAfterMount } from "@/lib/appliedSettings";
 import { useUser } from "@/contexts/UserContext";
 import { useChatter } from "@/contexts/ChatterContext";
 import { Button } from "@/components/ui/primitives";
@@ -92,9 +93,9 @@ export function FreeTrialBanner() {
 
 export function FreeTrialExpiredModal() {
   const expired = useTrialDaysLeft() === 0;
-  const applied = useAppliedSettings();
-  // Unknown until the Applied read answers; a failed read shows the nag (the default).
-  const allowed = applied.data ? applied.data.preferences?.hide_trial_popup !== true : applied.isError;
+  // Unknown until this load's Applied read answers; a failed read shows the nag (the default).
+  const { settings, failed } = useAppliedSettingsAfterMount(expired);
+  const allowed = settings ? settings.preferences?.hide_trial_popup !== true : failed;
   // Per mount: AppShell mounts once per page load, so this is per app start.
   const [closed, setClosed] = useState(false);
   return (

@@ -21,6 +21,7 @@ vi.mock("@/components/shifts/ClockButton", () => ({
 // The time-zone label's Applied settings read: nothing stored, so the browser's zone.
 vi.mock("@/lib/appliedSettings", () => ({
   useAppliedSettings: () => ({ data: undefined }),
+  useAppliedSettingsAfterMount: () => ({ settings: undefined, failed: false }),
   useAgencyTimeZone: () => Intl.DateTimeFormat().resolvedOptions().timeZone,
 }));
 // The platform selector and gate read accounts and roster counts (PlatformSwitcher.test covers them).

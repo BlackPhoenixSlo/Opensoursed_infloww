@@ -32,7 +32,11 @@ let scopeAccount: string | null = null;
 vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => ({ accountId: scopeAccount }) }));
 vi.mock("@/lib/appliedSettings", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/appliedSettings")>();
-  return { ...actual, useAppliedSettings: () => (realApplied ? actual.useAppliedSettings() : applied) };
+  return {
+    ...actual,
+    useAppliedSettings: () => (realApplied ? actual.useAppliedSettings() : applied),
+    useAppliedSettingsAfterMount: (on: boolean) => (realApplied ? actual.useAppliedSettingsAfterMount(on) : { failed: false }),
+  };
 });
 
 import AppShell from "@/components/shell/AppShell";

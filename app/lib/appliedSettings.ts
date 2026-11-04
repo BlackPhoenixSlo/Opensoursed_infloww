@@ -72,6 +72,18 @@ export function useAppliedSettings() {
   return useQuery<AppliedSettings>(appliedQuery(usePrincipalId(), accountId));
 }
 
+/** The Applied read as the Relay answered it since this mount, for a decision the
+ *  saved snapshot must not drive: a restored answer counts as fresh for 60 s, and
+ *  another tab may have re-saved one from before a save. `settings` is undefined
+ *  until this mount's own read lands (never restored or placeholder data);
+ *  `failed` once it failed. Off while `enabled` is false. */
+export function useAppliedSettingsAfterMount(enabled: boolean): { settings?: AppliedSettings; failed: boolean } {
+  const { accountId } = useScope();
+  const q = useQuery<AppliedSettings>({ ...appliedQuery(usePrincipalId(), accountId), staleTime: 0, enabled });
+  const answered = !q.isError && q.isFetchedAfterMount && !q.isPlaceholderData;
+  return { settings: answered ? q.data : undefined, failed: q.isError };
+}
+
 /** Whether this session may use AI translation in a chat with the Creator
  *  `accountId` (spec phase-04, stories 56-59): always for an owner session
  *  (never refused) or no session, else the chatter's Applied
