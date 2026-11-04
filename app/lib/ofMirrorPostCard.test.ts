@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { applyData } from "./ofMirrorData";
-import { TEMPLATES, type MirrorPost } from "./ofMirrorFeeds";
+import { TEMPLATES, type MirrorPost } from "./ofMirrorFeedsShared";
 import { bindPostActions, type PostHandlers } from "./ofMirrorHome";
 import { MEDIA, mediaOf, ofDuration, ofPrice, votingBlock, votingTotal } from "./ofMirrorPostCard";
 import { closeViewer, VIEWER } from "./ofMirrorVault";

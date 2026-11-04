@@ -19,7 +19,7 @@ _harness.bootstrap()
 
 import asyncio  # noqa: E402
 import json  # noqa: E402
-from datetime import datetime  # noqa: E402
+from datetime import datetime, timedelta  # noqa: E402
 
 from sqlalchemy import select  # noqa: E402
 
@@ -158,6 +158,31 @@ def case_following_from_the_first_occurrence_left_after_the_first_date_was_cut_i
         emp, aid, MONDAYS[1], "08:00", "16:00", scope="following", occurrence_start=_at(MONDAYS[1], "09:00")))
     assert (r.status_code, r.json()["shift_id"]) == (200, sid), r.text
     assert _starts(aid) == [_at(d, "08:00") for d in MONDAYS[1:]], _starts(aid)
+
+
+def case_concurrent_this_shift_deletes_each_keep_their_date():
+    # Twelve "this" deletes on one weekly series at once: each rewrites
+    # `cancelled_dates`, so none may write from a read another one already
+    # changed (W24). Twelve, not five: five lost no date in 1 of 10 unfixed runs.
+    import httpx
+
+    import server
+
+    days = [(datetime(2026, 3, 2) + timedelta(weeks=i)).date().isoformat() for i in range(12)]
+    aid, emp = _creator(), _employee("scope_concurrent_delete")
+    sid = _create(OWNER_A, start_utc=_at(days[0], "09:00"), end_utc=_at(days[0], "17:00"), tz="UTC",
+                  repeat_days=[1], repeat_until=days[-1], employee_ids=[emp], account_ids=[aid])["shift_id"]
+
+    async def race():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app), base_url="http://testserver",
+                                     cookies=dict(OWNER_A.cookies)) as c:
+            return await asyncio.gather(*(c.post(f"/admin/shifts/{sid}/cancel", json={
+                "scope": "this", "occurrence_start": _at(d, "09:00")}) for d in days))
+
+    got = asyncio.run(race())
+    assert [r.status_code for r in got] == [200] * len(days), [(r.status_code, r.text) for r in got]
+    assert sorted(json.loads(_row(sid).cancelled_dates)) == days, _row(sid).cancelled_dates
+    assert [a for a, _ in _audit(sid)].count("shift.cancel") == len(days), _audit(sid)
 
 
 def case_a_one_off_shifts_this_shift_delete_cancels_it():

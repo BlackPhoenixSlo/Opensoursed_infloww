@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""POST /api/of/v2/upload keeps the chatter's file name.
+"""POST /api/of/v2/upload keeps the chatter's file name, and runs off the loop.
 
 The relay spools the multipart body to a temp file before handing it to
 `upload_media`, and both clients (OFClient and the Fansly shim) name the
@@ -24,6 +24,8 @@ import io
 import os
 import sys
 import tempfile
+import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -143,6 +145,62 @@ for raw in ("Beach day #1 100%?.jpg", "写真 😀.png", "a\x7fb.gif", None, "x"
     seen, _ = upload(raw)
     check(f"{raw!r:.30} is all [A-Za-z0-9._-]",
           all(ch.isascii() and (ch.isalnum() or ch in "._-") for ch in seen["name"]), True)
+
+print("\noff the event loop (#171)")
+
+
+class _SlowClient(_Client):
+    """upload_media blocks like the real one (curl: hash, S3 PUTs, claim)."""
+
+    def upload_media(self, file_path, *, content_type=None, **_):
+        self.thread = threading.get_ident()
+        self.ctx_request = server._request_ctx.get()
+        time.sleep(0.4)
+        return super().upload_media(file_path, content_type=content_type)
+
+
+class _Req:
+    """The request the middleware puts in `_request_ctx`, as `_proxy` reads it."""
+    headers: dict = {}
+    query_params: dict = {}
+
+
+async def _upload_while_ticking(filename: str) -> tuple[_SlowClient, dict, int, int]:
+    """One upload with a 0.4 s upload_media, and a 10 ms ticker on the same
+    loop: on the loop the ticker would stall for the whole upload."""
+    client = _SlowClient()
+    server._get_client = lambda *a, **k: client
+    marker = _Req()
+    server._request_ctx.set(marker)
+    ticks = 0
+    done = asyncio.Event()
+
+    async def tick():
+        nonlocal ticks
+        while not done.is_set():
+            await asyncio.sleep(0.01)
+            ticks += 1
+
+    ticker = asyncio.create_task(tick())
+    f = UploadFile(io.BytesIO(b"slow"), filename=filename, headers=Headers({"content-type": "image/png"}))
+    try:
+        result = await server.of_upload_media(f)
+    finally:
+        done.set()
+        await ticker
+    client.marker = marker
+    return client, result, ticks, threading.get_ident()
+
+
+client, result, ticks, loop_thread = asyncio.run(_upload_while_ticking("Off loop #2.png"))
+check("upload_media ran on a worker thread, not the loop thread", client.thread != loop_thread, True)
+check("the loop kept running during the upload (>= 20 ticks of 10 ms in 0.4 s)", ticks >= 20, True)
+check("the request contextvar reached the worker (what _proxy/_get_client read)",
+      client.ctx_request is client.marker, True)
+check("the response is upload_media's answer, unchanged",
+      result, {"ready": True, "filename": "Off_loop_2.png"})
+check("…its spool was named by _upload_basename", client.seen["name"], "Off_loop_2.png")
+check("…and is gone afterwards", client.seen["path"].parent.exists(), False)
 
 if failures:
     print(f"\n{len(failures)} FAILED")

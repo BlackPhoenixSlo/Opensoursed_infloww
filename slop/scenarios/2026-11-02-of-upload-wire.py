@@ -43,19 +43,15 @@ Checks (names in lib/upload_faults.py), the fake's records split by phase (A-C v
                  outbound `messages` row (the send's attribution) per message OF accepted.
 Budgets: p95 of A and B (route latency at --users), both vs the last green run; stock no 5xx / Traceback.
 
-KNOWN_RED {check: finding}, at KNOWN_RED_SCALES with --users >= KNOWN_RED_MIN_USERS[check] (where each was measured
-red; no service fix in this task): the send budget from medium --users=20, the upload budget and AUDIT_ROWS from
-medium --users=200 (both green at medium --users=20). Inside that gate each is measured every run: red, it SKIPs
-with the finding and its numbers; green, it FAILs "finding closed" (remove the entry). Outside it, a live check.
-p95_vs_last_green is always recorded. The finding: `POST /api/of/v2/upload` (service/server.py) is `async def` and
-runs the blocking `_proxy(... upload_media ...)` on the event loop (no `asyncio.to_thread`, unlike the send
-route), so Composer uploads go one at a time and stall every other request. While stalled, a coroutine holding a
-SQLite write transaction cannot commit, so other writers hit busy_timeout: "database is locked" in the audit
-(`actions`) and attribution (`messages`) writes, rows lost (AUDIT_ROWS counts them), and now and then the
-chatter→employee get-or-create (run 20261102T220908Z-2026-11-02-of-upload-wire-3ace: 1). EXPECTED_TRACEBACKS takes
-those three writers' lock tracebacks: the first link by the line logged before it, the chained second link
-(lib/cli.py counts it too; the line before is blank) by the statement that failed (`INSERT INTO actions` /
-`employees`; attribution's `BEGIN IMMEDIATE` is not unique to it, but any other writer's first link still counts).
+The loop finding (#171), closed: `POST /api/of/v2/upload` is `async def` and ran the blocking
+`_proxy(... upload_media ...)` on the event loop, so uploads went one at a time and stalled every other request; a
+coroutine holding a SQLite write transaction could not commit and other writers hit busy_timeout ("database is
+locked", audit and attribution rows lost). Pre-fix, medium --users=200 (run
+20261103T152551Z-2026-11-02-of-upload-wire-73b3): upload p95 86,817.5 ms, send p95 48,422.8 ms, 80 of 1250 actions
+and 36 of 400 outbound messages lost, 232 'database is locked' log lines. The route now runs the spool and the
+upload in one `asyncio.to_thread` worker; measured at medium --users=200 (runs
+20261103T184145Z-2026-11-02-of-upload-wire-28e8, 20261103T184210Z-2026-11-02-of-upload-wire-99d2): upload p95
+1,814.6 / 1,783.0 ms, send p95 1,516.7 / 1,570.0 ms, 1250 / 1250 actions, 0 messages lost, 0 'database is locked'.
 
 Bypasses (declared): lib/of_wire.py is OnlyFans, S3 and convert (its docstring: 50 ms a call, a guess; the convert
 answer's `host` / `extra` are guesses; the vault media is minted at reference, as the product's live notes say OF
@@ -65,7 +61,10 @@ pools, not browsers; their upload / send / import calls wait up to 300 s (a brow
 
 Break-it-once: upload-dedupe-uses-md5 (the scenario's FAULT: `s3_etag_and_md5` returns the plain md5 as the
 dedupe key) turns REUPLOAD_MULTI and DEDUPE_KEY red; `--fault=upload-convert-claimed-twice` (`convert_register` POSTs
-twice) turns ONE_CLAIM red.
+twice) turns ONE_CLAIM red; `--scale=medium --users=200 --fault=upload-on-loop` (the Composer's `upload_media`
+handed back to the event loop, the #171 shape) turns both budgets and AUDIT_ROWS red (run
+20261103T184340Z-2026-11-02-of-upload-wire-break-3c7b: upload p95 101,805.3 ms, send p95 49,684.0 ms, 79 actions
+and 32 messages lost, 222 'database is locked'; the lock Tracebacks are its noise). At small / 20 it has nothing to catch.
 """
 from __future__ import annotations
 
@@ -77,8 +76,9 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
-from slop.lib.upload_faults import (AUDIT_ROWS, CLAIM_ETAG, CLAIM_TARGET, DEDUPE_KEY, IMPORT, OFFHOST, ONE_CLAIM,
-                                    REUPLOAD_MULTI, REUPLOAD_ONE, S3_BYTES, SEND, UPLOAD_SHAPE)
+from slop.lib.upload_faults import (AUDIT_ROWS, BUDGET, CLAIM_ETAG, CLAIM_TARGET, DEDUPE_KEY, IMPORT, OFFHOST,
+                                    ONE_CLAIM, REUPLOAD_MULTI, REUPLOAD_ONE, S3_BYTES, SEND, SEND_ROUTE, UPLOAD,
+                                    UPLOAD_SHAPE)
 from slop.seed import of_sessions
 
 PROFILE = "agency_inbox"
@@ -90,30 +90,10 @@ SMALL = (20_000, 200_000)         # bytes of a small image
 BIG = (PART + 1, 2 * PART + PART // 2)   # 2-3 parts
 CALL_TIMEOUT_S = 300
 IMPORT_TIMEOUT_S = 900
-UPLOAD, SEND_ROUTE = "POST /api/of/v2/upload", "POST /api/of/v2/chats/:id/messages"
 BATCH, APPEND, STATUS = ("/api/of/v2/vault/upload/batch", "/api/of/v2/vault/upload/batch/append",
                          "/api/of/v2/vault/upload/status")
-P95_MS = {UPLOAD: 15_000, SEND_ROUTE: 5_000}
-BUDGET = {r: f"p95 {r} (A + B at --users) < {b}ms" for r, b in P95_MS.items()}   # the budget checks' names
+P95_MS = {UPLOAD: 15_000, SEND_ROUTE: 5_000}   # BUDGET (lib/upload_faults.py) names the checks
 P95_VS_LAST = (2.0, 2000)
-_LOOP = ("open finding: POST /api/of/v2/upload runs upload_media on the event loop (async def + sync _proxy, no "
-         "asyncio.to_thread): medium --users=200, run 20261102T201810Z-2026-11-02-of-upload-wire-d379: 400 uploads "
-         "in 117 s (serial), upload p95 95,435.8 ms, send p95 43,666.0 ms (A + B), 102 'database is locked' "
-         "(78 audit, 24 attribution writes), DB pool wait max 31 s; rows lost (AUDIT_ROWS, run "
-         "20261102T211151Z-2026-11-02-of-upload-wire-805e): 77 of 1250 actions, 35 of 400 outbound messages; "
-         "medium --users=20 (runs 20261102T212758Z-2026-11-02-of-upload-wire-cc89, "
-         "20261102T213049Z-2026-11-02-of-upload-wire-40e8): send p95 9,541.2 / 8,509.1 ms, upload p95 6,725.5 / "
-         "10,191.9 ms, no rows lost; small --users=20: upload p95 3.7 s")
-KNOWN_RED: dict[str, str] = {**{name: _LOOP for name in BUDGET.values()}, AUDIT_ROWS: _LOOP}
-KNOWN_RED_SCALES = ("medium", "huge")
-KNOWN_RED_MIN_USERS = {BUDGET[SEND_ROUTE]: 20, BUDGET[UPLOAD]: 200, AUDIT_ROWS: 200}   # the --users measured red at
-# That finding's lock tracebacks, from the three writers it measured (docstring): (line before, exception line(s)).
-EXPECTED_TRACEBACKS = (("audit write failed (path=/api/of/v2/", "database is locked"),
-                       ("attribution write failed (account=", "database is locked"),
-                       ("", "database is locked\n[SQL: INSERT INTO actions "),
-                       ("", "database is locked\n[SQL: BEGIN IMMEDIATE]"),
-                       ("chatter→emp: get-or-create failed (", "database is locked"),
-                       ("", "database is locked\n[SQL: INSERT INTO employees "))
 
 
 def s3_etag(data: bytes) -> str:
@@ -143,23 +123,6 @@ async def _pool(items, fn, n: int) -> None:
 
 def _name_of(key: str) -> str:
     return key.rsplit("/", 1)[-1]
-
-
-def _checker(ctx):
-    """ctx.check, except a KNOWN_RED check (at KNOWN_RED_SCALES, --users >= its KNOWN_RED_MIN_USERS): SKIP with
-    its finding while it measures red, FAIL as 'finding closed' once it measures green (s4s-requests-race's rule)."""
-    known = {n: f for n, f in KNOWN_RED.items()
-             if ctx.scale in KNOWN_RED_SCALES and ctx.users >= KNOWN_RED_MIN_USERS[n]}
-
-    def chk(name: str, ok, **detail) -> None:
-        if name not in known:
-            ctx.check(name, bool(ok), **detail)
-        elif ok:
-            ctx.check(name, False, finding_closed=f"measured green: remove its KNOWN_RED entry ({known[name]})",
-                      **detail)
-        else:
-            ctx.skip(name, known[name], measured_ok=False, **detail)
-    return chk
 
 
 async def run(ctx) -> None:
@@ -439,7 +402,6 @@ async def run(ctx) -> None:
     ctx.check(OFFHOST, not off and n_claims > 0, offhost=off[:5], convert_claims=n_claims)
 
     # AUDIT_ROWS: what the audit / attribution writers committed (SQL), against the 2xx answers and OF's sends
-    chk = _checker(ctx)
     # actions.action is "METHOD path" (service/audit_log.py), so the upload's is UPLOAD
     want_act = Counter((f["aid"], UPLOAD) for f in compose if ups.get(f["name"], {}).get("status") == 200)
     want_act += Counter((f["aid"], UPLOAD) for f in again_files if again.get(f["name"], {}).get("status") == 200)
@@ -458,7 +420,7 @@ async def run(ctx) -> None:
     act_off = {f"{a} {act}": (got_act.get((a, act), 0), n) for (a, act), n in (want_act | got_act).items()
                if got_act.get((a, act), 0) != want_act.get((a, act), 0)}
     lost_msg = sorted(want_msg - got_msg)
-    chk(AUDIT_ROWS, bool(want_act) and bool(want_msg) and not act_off and not lost_msg,
+    ctx.check(AUDIT_ROWS, bool(want_act) and bool(want_msg) and not act_off and not lost_msg,
         actions_want=sum(want_act.values()), actions_got=sum(got_act.values()), actions_off=len(act_off),
         sample_off=dict(list(act_off.items())[:5]), messages_want=len(want_msg), messages_lost=len(lost_msg),
         sample_lost=lost_msg[:5])
@@ -469,8 +431,8 @@ async def run(ctx) -> None:
         if route not in routes:
             ctx.skip(BUDGET[route], "no samples")
         else:
-            chk(BUDGET[route], routes[route]["p95_ms"] < budget, budget=True, p95=routes[route]["p95_ms"],
-                n=routes[route]["n"])
+            ctx.check(BUDGET[route], routes[route]["p95_ms"] < budget, budget=True, p95=routes[route]["p95_ms"],
+                n=routes[route]["n"], budget_ms=budget)
     re_routes = ctx.rec.summary("reupload")
     ctx.metric("load", {"creators": len(aids), "users": ctx.users, "compose_s": round(compose_s, 2),
                         "import_s": round(import_s, 2), "reupload_s": round(reupload_s, 2),

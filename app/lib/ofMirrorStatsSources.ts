@@ -6,7 +6,8 @@
  */
 
 import { useSyncExternalStore } from "react";
-import { rowsOf, valid } from "@/lib/ofMirrorData";
+import { rowsOf } from "@/lib/ofMirrorData";
+import { valid } from "@/lib/ofMirrorDom";
 import { basePage } from "@/lib/ofMirrorRow";
 import { moneyOf } from "@/lib/ofMirrorMoney";
 import { at, num, pad, wallOf } from "@/lib/ofMirrorStatsDom";

@@ -7,15 +7,15 @@ pages change. Nothing else in the app changes except what a Phase below names.
 
 ## Ground truth (observation rung; read before any spec)
 
-1. Mirror wiring today: `app/lib/ofMirrorWrites.ts` (header :3-16 says how writes were confirmed;
-   `WRITABLE` :28, `SUBMITS` :40, `READ_ONLY` :56, `SELECT_MODEL` :57, `note()` :93, `parseDate`
-   :118, `parseTime` :133, `localIso` :149, `bindWrites` :182, handlers `null` in all-models scope
-   :311); `app/lib/ofMirrorData.ts` (`DATA_PAGES` :32, `MirrorData` :54, OF HTML to text :129,
-   `tileThumb` :388, `applyVaultMedia` :393, `applyData` :489, `useOfData` :518);
-   `app/lib/ofMirrorRow.ts` (`ROW_TARGETS` :32, `basePage` :61); `app/lib/ofMirrorIdentity.ts`
-   (`OfMe` :19, `useOfIdentity` :121); `app/lib/ofMirrorSettings.ts` (`SOURCE_PATHS` :30,
-   `SETTINGS_MAP` :63); route `app/app/of-manager/[section]/[[...path]]/page.tsx` :13-32; hooks
-   mounted in `app/components/of-manager/OfMirrorFrame.tsx` :17-22.
+1. Mirror wiring today: `app/lib/ofMirrorWrites.ts` (header says how writes were confirmed;
+   `WRITABLE`, `SUBMITS`, `READ_ONLY`, `SELECT_MODEL`, `note()`, `parseDate`,
+   `parseTime`, `localIso`, `bindWrites`, handlers `null` in all-models scope);
+   `app/lib/ofMirrorData.ts` (`DATA_PAGES`, `applyData`, `useOfData`; `MirrorData` in
+   `ofMirrorDataOf.ts`, OF HTML to text `plain` in `ofMirrorDom.ts`, `tileThumb` and `applyVaultMedia` in `ofMirrorDataVault.ts`);
+   `app/lib/ofMirrorRow.ts` (`ROW_TARGETS`, `basePage`); `app/lib/ofMirrorIdentity.ts`
+   (`OfMe`, `useOfIdentity`); `app/lib/ofMirrorSettings.ts` (`SOURCE_PATHS`,
+   `SETTINGS_MAP`); route `app/app/of-manager/[section]/[[...path]]/page.tsx`; hooks
+   mounted in `app/components/of-manager/OfMirrorFrame.tsx`.
 2. Generator and guard: `scripts/of-mirror.mjs` (`SECTIONS` :172, `--check` :1411-1451). Checks:
    `scripts/of-mirror-check/*.py` and its `README.md` (Playwright route mocks, `PORT` env default
    3091, screenshots to `/tmp/of-mirror-shots`; `writes.py` records non-GET `/api/**` bodies).
@@ -140,7 +140,7 @@ thumbnails; picked tiles attach to the post and show as thumbs in the composer.
 
 Decisions:
 - `DATA_PAGES` gains `"new-post/state-vault": ["vaultMedia"]`; the grid reuses `applyVaultMedia`
-  and `tileThumb` (ofMirrorData.ts) with `proxyImage(url, accountId)`, so every `<img>`
+  and `tileThumb` (`ofMirrorDataVault.ts`) with `proxyImage(url, accountId)`, so every `<img>`
   src is `/img?u=...&account_id=...` (img_api.py `proxy_image`), never an OF CDN URL.
 - A tile click toggles OF's selected mark and the media id in the draft's `media_files`;
   `media_vault_search` filters the loaded tiles client-side (no new query param).

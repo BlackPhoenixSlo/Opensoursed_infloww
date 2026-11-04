@@ -21,7 +21,7 @@ import { VaultPicker } from "@/components/chat/VaultPicker";
 import { MediaTray } from "@/components/compose/MediaTray";
 import { Input } from "@/components/ui/primitives";
 import { useReportTimeZone } from "@/lib/appliedSettings";
-import { VAULT_PICK_MAX, readPrice } from "@/lib/ofMirrorChat";
+import { VAULT_PICK_MAX, readPrice } from "@/lib/ofMirrorChatShared";
 import { MIN_PRICE } from "@/lib/sendGuards";
 import { type VaultMedia } from "@/lib/relay";
 import { fromZonedInput, toZonedInput } from "@/lib/shifts";

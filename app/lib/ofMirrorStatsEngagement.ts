@@ -15,7 +15,8 @@
  */
 
 import { viewDuration } from "@/lib/ofMirrorChart";
-import { plain, valid } from "@/lib/ofMirrorData";
+import { plain } from "@/lib/ofMirrorData";
+import { valid } from "@/lib/ofMirrorDom";
 import type { Period } from "@/lib/ofMirrorStatsPeriod";
 import { listOf, type MassMessage, type PagedBody, type Picks, type PostsBy, type StatsData } from "@/lib/ofMirrorStatsSources";
 import { add, agendaText, at, cell, count, display, elOf, enable, isObj, loadingRow, moreAt, num, ofCount, pickTabs, setClass, setText } from "@/lib/ofMirrorStatsDom";

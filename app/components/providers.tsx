@@ -49,6 +49,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { installGlobalErrorHandlers } from "@/lib/errorReporter";
 import { perfBoot } from "@/lib/perfLog";
 import { registerImageSW } from "@/lib/registerImageSW";
+import { listenNotificationClicks } from "@/lib/webPush";
 import { createIdbPersister, LEGACY_LOCALSTORAGE_KEY, persistQueryClientLazily } from "@/lib/rqPersister";
 
 // Bump when the persisted cache shape changes (added/removed fields on
@@ -163,11 +164,15 @@ export default function Providers({ children }: { children: React.ReactNode }) {
     // SW for image caching — no-op in dev, lazy register in prod (the old
     // IMAGE_LOAD_PLAN.txt phase C, tag `legacy-ui-final`).
     registerImageSW();
+    // Its notification clicks (lib/webPush); the pushes it offers this
+    // focused page are the toaster's (useNotificationDelta), in its scope.
+    const unlistenPush = listenNotificationClicks();
     // Side-effect import: perfLog's module-evaluation mints the tabId
     // and emits the `tab open` event. The call itself is a no-op; we
     // just want the import to land in the boot bundle so the open
     // event fires before lazy-loaded hooks first drag perfLog in.
     perfBoot();
+    return unlistenPush;
   }, []);
 
   useEffect(() => {

@@ -26,6 +26,7 @@ from typing import Any
 from curl_cffi import requests as curl_requests
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
 import admission
 from of_client import DEFAULT_TIMEOUT_S, IMPERSONATE, OF_CDN_SUFFIXES
@@ -79,7 +80,7 @@ _img_high_water: int = 0
 _img_total_started: int = 0
 _img_total_aborted: int = 0
 
-# The sync-side admission lanes this module drives (IMG_FETCH, VIDEO_STREAM)
+# The admission lanes this module drives (IMG_FETCH, VIDEO_STREAM)
 # live in `admission` — instances included — because they bound resources of
 # the PROCESS. Referenced through the module rather than aliased here: an
 # alias is indirection that buys nothing, and reading
@@ -505,11 +506,14 @@ def admin_streams() -> dict:
 
 
 @router.get("/img")
-def proxy_image(request: Request, u: str = Query(..., description="Absolute OF CDN URL")):
+async def proxy_image(request: Request, u: str = Query(..., description="Absolute OF CDN URL")):
     """Fetch `u` via the requesting account's OF client (so the source IP
     matches the URL's signed Policy) and stream the bytes back. The unsigned
     static hosts (`_DIRECT_CDN_HOST`) are the exception: they go out the
     relay's own IP on `_DIRECT_HTTP`, with no cookies or account headers."""
+    # `async def`, every blocking step (disk, client load, the upstream GET) in
+    # the threadpool, so a request queued for a slot holds no threadpool token
+    # (#172, see `Lane.enter_async`). A comment: the docstring is OpenAPI's.
     from urllib.parse import urlparse
     parsed = urlparse(u)
     if parsed.scheme not in ("http", "https"):
@@ -526,16 +530,16 @@ def proxy_image(request: Request, u: str = Query(..., description="Absolute OF C
     # Skipped on Range because we don't store partials.
     if not range_hdr:
         global _img_cache_hits, _img_cache_misses
-        hit = _img_cache_lookup(u)
-        if hit is not None:
+        cached = await run_in_threadpool(_serve_if_cached, u, "HIT")
+        if cached is not None:
             _img_cache_hits += 1
-            return _serve_cached(hit, u, label="HIT")
+            return cached
         _img_cache_misses += 1
 
     if _DIRECT_CDN_HOST.fullmatch(host):
         http, timeout_s = _DIRECT_HTTP, DEFAULT_TIMEOUT_S
     else:
-        client = _get_client(request)
+        client = await run_in_threadpool(_get_client, request)
         http, timeout_s = client.http, client.timeout_s
 
     # Forward the browser's Range header so video <video> tags can seek.
@@ -551,34 +555,17 @@ def proxy_image(request: Request, u: str = Query(..., description="Absolute OF C
     # Picking the lane rather than branching on it keeps ONE admission site —
     # the rejection reads the same for both because the lane names itself.
     held = admission.VIDEO_STREAM if range_hdr else admission.IMG_FETCH
-    if not held.enter(u[:80]):
+    if not await held.enter_async(u[:80]):
         raise HTTPException(
             status_code=503,
             detail=f"too many {held.name} requests in flight; retry shortly",
         )
 
-    if not range_hdr:
-        # Re-read the store INSIDE the slot, the same way vault_stills does.
-        # Forty tiles opening on one media all miss together, all queue here,
-        # and without this re-read each would then pay its own OF round-trip
-        # for bytes the first waiter has already written. The cap bounds how
-        # many run at once; this is what stops them being redundant.
-        hit = _img_cache_lookup(u)
-        if hit is not None:
-            held.exit()
-            global _img_cache_collapsed
-            # Not also counted as a hit: this request DID miss, and was already
-            # tallied as one above. `collapsed` is the separate story of how
-            # many of those misses the lane absorbed instead of forwarding.
-            _img_cache_collapsed += 1
-            return _serve_cached(hit, u, label="COLLAPSED")
-
     # From here to the `return StreamingResponse` the slot is held by THIS
-    # frame; past it, `_safe_iter`'s finally owns the release. Everything
-    # between is wrapped because a lane that leaks a slot never gets it back —
-    # it drains to zero and then rejects every request forever. Three
-    # hand-placed release sites used to cover only the two failures anyone had
-    # thought of, leaving the header-building below unguarded.
+    # frame (a collapse releases it, any raise hands it to `_close_then_exit`);
+    # past it, `_safe_iter`'s finally owns the release. Everything between is wrapped because a lane
+    # that leaks a slot never gets it back — it drains to zero and then rejects
+    # every request forever.
     #
     # The unwind closes the upstream response too. That is not hypothetical
     # tidiness: OF answers 403 on an expired signature, which is the single most
@@ -588,11 +575,25 @@ def proxy_image(request: Request, u: str = Query(..., description="Absolute OF C
     # change exists to prevent.
     r = None
     try:
+        if not range_hdr:
+            # Re-read the store INSIDE the slot, the same way vault_stills does.
+            # Forty tiles opening on one media all miss together, all queue here,
+            # and without this re-read each would then pay its own OF round-trip
+            # for bytes the first waiter has already written. The cap bounds how
+            # many run at once; this is what stops them being redundant.
+            cached = await run_in_threadpool(_serve_if_cached, u, "COLLAPSED")
+            if cached is not None:
+                global _img_cache_collapsed
+                # Not also counted as a hit: this request DID miss, and was already
+                # tallied as one above. `collapsed` is the separate story of how
+                # many of those misses the lane absorbed instead of forwarding.
+                _img_cache_collapsed += 1
+                held.exit()
+                return cached
         try:
-            r = http.get(
-                u, timeout=timeout_s, stream=True,
-                headers=upstream_headers or None,
-            )
+            r = await run_in_threadpool(
+                http.get, u, timeout=timeout_s, stream=True,
+                headers=upstream_headers or None)
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"upstream fetch failed: {e}")
         # 206 (Partial Content) is the normal Range response — treat it as ok.
@@ -602,11 +603,35 @@ def proxy_image(request: Request, u: str = Query(..., description="Absolute OF C
             r, u, held, range_hdr,
             account_id_hdr=request.headers.get("x-account-id") or "")
     except BaseException:
-        if r is not None:
-            try: r.close()
-            except Exception: pass
-        held.exit()
+        # Off the loop, fire-and-forget: closing a streamed curl response joins
+        # its transfer thread, and a cancelled frame cannot await. The slot goes
+        # back after the close, so the cap bounds open upstream sockets — except
+        # when the task is cancelled mid-GET (shutdown): `r` is still None here
+        # while the worker goes on opening the stream. Deliberately the default
+        # executor, NOT the anyio pool: a token-needing close while the slot is
+        # held is the #172 cycle.
+        try:
+            asyncio.get_running_loop().run_in_executor(None, _close_then_exit, r, held)
+        except RuntimeError:  # executor shut down: release here, exactly once
+            _close_then_exit(r, held)
         raise
+
+
+def _close_then_exit(r: Any, held: admission.Lane) -> None:
+    try:
+        if r is not None:
+            r.close()
+    except Exception:
+        pass
+    finally:
+        held.exit()
+
+
+def _serve_if_cached(u: str, label: str) -> FileResponse | None:
+    """`_serve_cached` if the store has `u`, else None. Blocking (disk): the
+    route runs it in the threadpool."""
+    hit = _img_cache_lookup(u)
+    return None if hit is None else _serve_cached(hit, u, label=label)
 
 
 def _serve_cached(hit: tuple[Path, str], u: str, *, label: str) -> FileResponse:
@@ -786,7 +811,7 @@ def _stream_upstream(r: Any, u: str, held: admission.Lane,
 
 
 @router.get("/img/by-hash/{h}")
-def proxy_image_by_hash(request: Request, h: str):
+async def proxy_image_by_hash(request: Request, h: str):
     """Stable-URL alias for /img. Resolves the hash to the most recent
     signed URL we've seen for it, then delegates to proxy_image. Returns
     410 if the signed URL has aged past _IMG_HASH_TTL_S — at that point
@@ -813,7 +838,7 @@ def proxy_image_by_hash(request: Request, h: str):
             status_code=410,
             detail="signed URL expired; refetch the producing endpoint for a fresh one",
         )
-    return proxy_image(request, u=u)
+    return await proxy_image(request, u=u)
 
 
 @cache_router.get("/admin/img-cache/disk")

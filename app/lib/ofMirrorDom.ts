@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * The OF mirror's DOM primitives, cut from ofMirrorData (which re-exports them): the undo list every change registers
+ * The OF mirror's DOM primitives, cut from ofMirrorData: the undo list every change registers
  * with (track, restore, ...), cloning and filling rows (make, fill, fillGrid), users' names, links and avatars, OF's
  * date formats, icons and vault tiles, OF's infinite loading row (applyMore). Every ofMirrorData* and ofMirrorFeeds*
  * leaf imports them from here.

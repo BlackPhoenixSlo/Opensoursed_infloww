@@ -16,7 +16,7 @@
  * New post's vault dialog (new-post/state-vault) shows the same vault media grid, the Post draft's
  * picks marked (ofMirrorPost handles the tile clicks).
  * A chat message's media shows in OF's own media bubble markup.
- * The feed pages (Home, My profile, its Media tab, All bookmarks, the queue, the notifications, Statements' Earnings, Payouts and Referrals, Streaming's dashboard and the schedule form's right column) are drawn by ofMirrorFeeds;
+ * The feed pages (Home, My profile, its Media tab, All bookmarks, the queue, the notifications, Statements' Earnings, Payouts and Referrals, Streaming's dashboard and the schedule form's right column) are drawn by the ofMirrorFeeds* leaves;
  * a real post row's like, comments and (the Creator's own post) More menu are ofMirrorHome's; another creator's post's
  * More button is disabled with the "Not available in Inflowwww yet" tooltip; collections' writes are ofMirrorCollections'.
  * Home and the notifications tabs keep no example (the generator drops Home's example post, fan stories, alerts and
@@ -24,7 +24,8 @@
  * ?row= links still work, see useOfRow). The query is read from the app URL;
  * the frame's src never carries it.
  * The code lives in leaves (ofMirrorDom, ofMirrorData{Chats,Vault,Lists,Queries,Of}); this module keeps the page map,
- * applyData and useOfData, and re-exports the rest, so its importers read every name from here as before.
+ * applyData and useOfData, and re-exports what was cut from here: rowsOf, plain and mirrorQuery for their many importers,
+ * ofMirrorPaging's other names for ofMirrorData.test or no reader at all.
  */
 
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
@@ -35,7 +36,7 @@ import type { OFChatItem, OFUserMini } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
 import { basePage, CHAT_VAULT, HOME_VAULT, homeDraft, MASS_VAULT, VAULT_DIALOG } from "@/lib/ofMirrorRow";
 import { loadDraft } from "@/lib/ofMirrorPost";
-import { loadVaultPick, vaultPickKey } from "@/lib/ofMirrorChat";
+import { loadVaultPick, vaultPickKey } from "@/lib/ofMirrorPick";
 import { ofMeQuery } from "@/lib/ofMirrorIdentity";
 import { vaultListsPath, viewOf } from "@/lib/ofMirrorVault";
 import { message } from "@/lib/ofMirrorWrites";
@@ -49,7 +50,7 @@ import { useChatPinned } from "@/hooks/useChatPinned";
 import { useFanChatMedia } from "@/hooks/useFanChatMedia";
 import { applyGallery, galleryRequest, galleryTab, useThreadFind } from "@/lib/ofMirrorThread";
 import { applyProfile, applyProfileStatus, applyRecent, mediaKind, ofKind, PROFILE_CHANGE } from "@/lib/ofMirrorProfile";
-// The leaves this module's code was cut into, and ofMirrorFeeds' (read directly, never through the ofMirrorFeeds barrel).
+// The leaves this module's code was cut into, and the ofMirrorFeeds* leaves.
 import { restore, sameId, setText, toggleTile, type Part } from "@/lib/ofMirrorDom";
 import { applyChatLinks, applyChats, applyChatsMore, applyChatsStatus, applyThread, keepThreadScroll, OLDER_PX, THREAD_BOX, threadScroll } from "@/lib/ofMirrorDataChats";
 import { applyListSort, applyVaultAll, applyVaultLists, applyVaultMedia, applyVaultStatus } from "@/lib/ofMirrorDataVault";
@@ -64,12 +65,8 @@ import { applyNotificationCounts, applyNotifications, applyNotificationsStatus, 
 import { applyPastStreams, applyPayouts, applyStatementsStatus, applyTransactions } from "@/lib/ofMirrorFeedsStatements";
 // Re-exported: what was cut from here (into ofMirrorPaging and the leaves), so its importers still read it from here.
 export { nextFeedOffset, nextMarker, nextOffset, pageRows, POSTS_PAGE, rowsOf, uniqueRows } from "@/lib/ofMirrorPaging";
-export type { Part } from "@/lib/ofMirrorDom";
-export { clock, dayOf, dropClass, duration, fill, fillGrid, fillSlot, handleOf, htmlLines, linkUser, make, nameOf, objectOf, own, photoGrid, plain, restore, setAttr, setAvatar, setClass, setIcon, setText, stamp, toggleTile, track, userHref, valid } from "@/lib/ofMirrorDom";
-export { bubbleClass, chatMedia, chatMediaTemplate, isPurchaseCard, isTipMessage, keepThreadScroll, paymentState, THREAD_BOX, threadScroll, type ThreadScroll } from "@/lib/ofMirrorDataChats";
-export { LIST_POSTS, LIST_TABS, listPostsPath, listSubline, POST_TYPES, postTypeOf, type PostLabel, type UserList } from "@/lib/ofMirrorDataLists";
-export { CHATS_PAGE, chatPath, chatRowsOf, chatUser, GALLERY_EMPTY_CAP, galleryItems, galleryStalled, isVaultPage, markerPagesQuery, mirrorQuery, nextVaultOffset, offsetPagesQuery, pendingPartners, relatedOnly, STORIES_FEED, STREAMS_FEED, TRANSACTIONS, TRANSACTIONS_PAGE, USER_LISTS, usersListPath, useRevalidate, VAULT_LISTS, vaultMediaOf, vaultPageMedia, vaultPagesQuery, withChatUsers } from "@/lib/ofMirrorDataQueries";
-export type { MirrorData } from "@/lib/ofMirrorDataOf";
+export { plain } from "@/lib/ofMirrorDom";
+export { mirrorQuery } from "@/lib/ofMirrorDataQueries";
 
 /** Page (path under of-mirror/pages, or the page its state-* / modal-* subpage belongs to) -> the data it shows. */
 export const DATA_PAGES: Record<string, Part[]> = {

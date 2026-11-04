@@ -21,7 +21,7 @@ import {
 import { RelayError } from "./relay";
 import { linesOf } from "./ofMirrorChart";
 import { applyData, partsOf } from "./ofMirrorData";
-import type { Transaction } from "./ofMirrorFeeds";
+import type { Transaction } from "./ofMirrorFeedsStatements";
 
 const capture = (p: string) => readFileSync(resolve(__dirname, `../public/of-mirror/pages/${p}.html`), "utf8");
 const load = (p: string) => {

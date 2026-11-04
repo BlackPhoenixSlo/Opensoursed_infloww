@@ -2,7 +2,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import { applyData } from "./ofMirrorData";
-import { dayBars, dayCounts, queueActions, TEMPLATES, wallClock, type QueueItem } from "./ofMirrorFeeds";
+import { queueActions, TEMPLATES, wallClock, type QueueItem, type QueueKind } from "./ofMirrorFeedsShared";
+import { dayBars, dayCounts, QUEUE_CHANGE } from "./ofMirrorFeedsSchedule";
 import {
   ADD_HELP,
   ADD_MENU,
@@ -30,11 +31,9 @@ import {
   type QueueHandlers,
 } from "./ofMirrorQueue";
 import { loadDraft } from "./ofMirrorPost";
-import { loadMassDraft } from "./ofMirrorChat";
+import { loadMassDraft } from "./ofMirrorMass";
 import { localIso } from "./ofMirrorWrites";
-import { QUEUE_CHANGE } from "./ofMirrorFeeds";
 import { bindWrites, NOT_YET, SELECT_MODEL, TOO_SOON } from "./ofMirrorWrites";
-import type { QueueKind } from "./ofMirrorFeeds";
 import { standInModel } from "./ofMirrorProfile";
 
 const capture = (p: string) => readFileSync(resolve(__dirname, `../public/of-mirror/pages/${p}.html`), "utf8");

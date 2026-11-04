@@ -3562,6 +3562,7 @@ class LinkClaimer(Base):
 
     __table_args__ = (
         UniqueConstraint("account_id", "kind", "of_id", "fan_id", name="uq_link_claimers_fan"),
+        Index("ix_link_claimers_account_fan", "account_id", "fan_id"),  # fan_report: a spender's earliest claim
     )
 
 
@@ -3589,3 +3590,43 @@ def is_paid_ratchet(is_paid: bool | None):
     a third would otherwise reintroduce the bug by simply forgetting.
     """
     return case((Message.is_paid.is_(True), True), else_=is_paid)
+
+
+class PushSubscription(Base):
+    """One browser's Web Push subscription (push_api / push_send): where to send
+    (`endpoint`, the browser's `p256dh` / `auth` keys) and for which sign-in
+    (`principal_kind` 'user'|'chatter', `principal_id`, the cookie's `issued_ms`:
+    a revoked or expired cookie's rows are pruned at send). `types` is a JSON list
+    of NotifTypeKey, `platforms` a JSON {onlyfans, fansly} of bools. Upserted by
+    endpoint; at most 10 per principal (oldest evicted)."""
+    __tablename__ = "push_subscriptions"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    endpoint: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    p256dh: Mapped[str] = mapped_column(String, nullable=False)
+    auth: Mapped[str] = mapped_column(String, nullable=False)
+    principal_kind: Mapped[str] = mapped_column(String, nullable=False)
+    principal_id: Mapped[str] = mapped_column(String, nullable=False)
+    issued_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    types: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    platforms: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = _ts_now()
+    updated_at: Mapped[datetime] = _ts_now()
+
+    __table_args__ = (
+        Index("ix_push_subscriptions_principal", "principal_kind", "principal_id"),
+    )
+
+
+class PushSent(Base):
+    """A notice tag the push service accepted for one subscription (push_send):
+    the dedupe that outlives a restart (the purchase feed is re-walked on boot).
+    Rows older than 24 h are pruned on start and hourly. No FK: a pruned
+    subscription's rows age out."""
+    __tablename__ = "push_sent"
+
+    sub_id: Mapped[str] = mapped_column(String, primary_key=True)
+    tag: Mapped[str] = mapped_column(String, primary_key=True)
+    sent_at: Mapped[datetime] = _ts_now()
+
+    __table_args__ = (Index("ix_push_sent_sent_at", "sent_at"),)

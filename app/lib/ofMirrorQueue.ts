@@ -39,14 +39,16 @@ import { useScope } from "@/contexts/ScopeContext";
 import { relay, type OFMedia } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
 import { stillUrl } from "@/lib/ofMedia";
-import { plain, valid } from "@/lib/ofMirrorData";
+import { plain } from "@/lib/ofMirrorData";
+import { valid } from "@/lib/ofMirrorDom";
 import { mirrorKey } from "@/lib/ofMirrorKeys";
-import { fromWallClock, QUEUE, QUEUE_CHANGE, queueDay, useAgencyZone, wallClock, type QueueActions, type QueueKind } from "@/lib/ofMirrorFeeds";
+import { fromWallClock, QUEUE, useAgencyZone, wallClock, type QueueActions, type QueueKind } from "@/lib/ofMirrorFeedsShared";
+import { QUEUE_CHANGE, queueDay } from "@/lib/ofMirrorFeedsSchedule";
 import { dateTimeFields, localIso, message, minuteAhead, modalButton, note, NOT_YET, openModal, parseDate, SELECT_MODEL, TOO_SOON } from "@/lib/ofMirrorWrites";
 import { loadDraft, saveDraft, type PostDraft } from "@/lib/ofMirrorPost";
-import { loadMassDraft, massDraftKey, type MassDraft } from "@/lib/ofMirrorChat";
+import { loadMassDraft, massDraftKey, type MassDraft } from "@/lib/ofMirrorMass";
 
-export { fromWallClock } from "@/lib/ofMirrorFeeds";
+export { fromWallClock } from "@/lib/ofMirrorFeedsShared";
 
 export interface QueueHandlers {
   publish(schedule: string): Promise<unknown>;

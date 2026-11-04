@@ -1,4 +1,4 @@
-{"openapi_sha1": "cd3079a84cb60fabb78f369b51704ae281e3e490",
+{"openapi_sha1": "6a02fd847ec9de450ed98f52e5cabf4b2bb1542c",
  "routes": [
   ["GET,HEAD", "/openapi.json", "openapi"],
   ["GET,HEAD", "/docs", "swagger_ui_html"],
@@ -156,6 +156,10 @@
   ["GET", "/admin/agency-notifications", "list_notifications"],
   ["POST", "/admin/agency-notifications/read-all", "read_all"],
   ["POST", "/admin/agency-notifications/{notification_id}/read", "read_one"],
+  ["GET", "/push/key", "get_key"],
+  ["PUT", "/push/subscription", "put_subscription"],
+  ["DELETE", "/push/subscription", "delete_subscription"],
+  ["POST", "/push/test", "post_test"],
   ["GET", "/admin/employee-groups", "list_groups"],
   ["POST", "/admin/employee-groups", "create_group"],
   ["PATCH", "/admin/employee-groups/{group_id}", "update_group"],

@@ -639,6 +639,11 @@ async def gated_follow(client, fan_id: int, *, account_id: str,
     return "followed"
 
 
+def _notified(counts: Counter) -> int:
+    """Notifications fired so far (gate skips don't count)."""
+    return sum(counts[o] for o in _NOTIFY_OUTCOMES)
+
+
 async def _follow_batch(
     account_id: str, client, pool: list[int], cap: int, *, unfollow_first: bool,
     money_gate: bool = True,
@@ -651,7 +656,7 @@ async def _follow_batch(
     stranded = errors = 0
     label = "ping" if unfollow_first else "follow"
     for fid in pool:
-        if sum(counts[o] for o in _NOTIFY_OUTCOMES) >= cap:
+        if _notified(counts) >= cap:
             break
         try:
             outcome = await gated_follow(client, fid, account_id=account_id,
@@ -774,7 +779,16 @@ def _pool_exhausted(pool: list[int], counts: Counter, errors: int,
         return False
     if examined is not None and examined < len(pool):
         return False
-    return sum(counts[o] for o in _NOTIFY_OUTCOMES) == 0
+    return _notified(counts) == 0
+
+
+def _verdict_counts(counts: Counter) -> dict:
+    """The non-notifying verdicts' report keys, shared by the preview and the live run."""
+    return {
+        "already_following": counts["already_following"],
+        "paid_profile_skipped": counts["paid_profile"],
+        "no_price_skipped": counts["no_price"],
+    }
 
 
 def _preview_result(pool: list[int], cap: int, counts: Counter,
@@ -788,9 +802,7 @@ def _preview_result(pool: list[int], cap: int, counts: Counter,
     return {
         "candidates": len(pool),
         "examined": examined,
-        "already_following": counts["already_following"],
-        "paid_profile_skipped": counts["paid_profile"],
-        "no_price_skipped": counts["no_price"],
+        **_verdict_counts(counts),
         # The live run's own bit, on the preview too. It was live-path only, so
         # the ONE chunk that explains a pinned window was unreachable from dry
         # run — this tab's default and its recommended posture, and the posture
@@ -980,9 +992,7 @@ async def _run_follow(account_id: str, payload: dict, *, cap: int, dry_run: bool
             "money_gate": money_gate,
             "candidates": len(pool), "followed": counts["followed"],
             "refollowed": counts["refollowed"],
-            "already_following": counts["already_following"],
-            "paid_profile_skipped": counts["paid_profile"],
-            "no_price_skipped": counts["no_price"],
+            **_verdict_counts(counts),
             "pool_exhausted": pool_exhausted,
             # R3-4. Same key, same meaning, on the path that is actually
             # draining the pool — `drainHint` was unreachable on every live rule

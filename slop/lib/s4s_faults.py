@@ -1,5 +1,5 @@
 """Share for Share requests' break-it-once faults (scenarios/2026-11-01-s4s-requests-race.py): lib/faults.py
-merges `register(Fault)` into FAULTS. Both patch service/s4s_requests_api.py inside the throwaway relay. The check
+merges `register(Fault)` into FAULTS. Each patches service/s4s_requests_api.py inside the throwaway relay. The check
 names live here and the scenario imports them, so a target can never name a check that does not exist.
 """
 from __future__ import annotations
@@ -65,10 +65,26 @@ def _daily_limit_skipped() -> None:
     m._limit_full = never_full
 
 
+def _send_cap_unlocked() -> None:
+    """Send runs in a deferred transaction again (`immediate_session` = get_session, not BEGIN IMMEDIATE): concurrent
+    sends from one Creator all count the same requests sent today before any INSERT, so a burst across the cap stores
+    more than CAP. `send_request` looks `immediate_session` up in the module at call time, so it uses the patched one."""
+    import inspect
+
+    import s4s_requests_api as m
+    from db.engine import get_session
+
+    if not hasattr(m, "immediate_session") or "immediate_session()" not in inspect.getsource(m.send_request):
+        raise RuntimeError("s4s-send-cap-unlocked: s4s_requests_api.send_request no longer uses immediate_session()")
+    m.immediate_session = get_session
+
+
 def register(Fault) -> dict:
     return {
         # slop/run s4s-requests-race --break (the scenario's FAULT)
         "s4s-accept-unguarded-update": Fault(_accept_unguarded_update, (ONE_WINNER, SLOTS_JOBS)),
         # slop/run s4s-requests-race --break --fault=s4s-daily-limit-skipped --baseline=slop/evidence/<run-dir>
         "s4s-daily-limit-skipped": Fault(_daily_limit_skipped, (DAILY_LIMIT, PROPOSAL)),
+        # slop/run s4s-requests-race --break --fault=s4s-send-cap-unlocked --baseline=slop/evidence/<run-dir>
+        "s4s-send-cap-unlocked": Fault(_send_cap_unlocked, (CAP_RACE,)),
     }

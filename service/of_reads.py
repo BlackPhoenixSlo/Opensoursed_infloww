@@ -398,11 +398,6 @@ class ReadsMixin:
             offset += len(rows)
         return out[:max_fans]
 
-    # subscriptions (creators I follow): no clean direct path found on this
-    # account. Use /subscribers with type=all (these are subscribed *to me* though,
-    # so this is for creator accounts). For "creators I'm subscribed to as a fan"
-    # a different OF endpoint exists in some versions but isn't reliable here.
-
     # ── Posts (own + fan) ──────────────────────────────────────
 
     def list_posts(self, *, limit: int = 10, offset: int = 0,
@@ -576,10 +571,6 @@ class ReadsMixin:
 
     # ── Money: statements, transactions, payouts ───────────────
 
-    # statements (payout history list): no direct path found that returns 200 here.
-    # Likely creator-only and surfaced via the /payouts/stats time-series instead.
-    # Use `earning_stats()` for the data the UI actually displays.
-
     def transactions(self, *, limit: int = 20, offset: int = 0,
                      type: str | None = None,
                      start: str | None = None, end: str | None = None,
@@ -653,9 +644,6 @@ class ReadsMixin:
         """
         return self.get_json(f"{API_BASE}/promotions",
                              params={"offset": int(offset), "limit": int(limit)})
-
-    # tracking_links: no direct path found on this account. May be hidden under
-    # creator-tier features or surfaced through /init only.
 
     # ── Chat extras: queue (scheduled), single chat ────────────
 
@@ -1028,10 +1016,8 @@ class ReadsMixin:
         totals per tab: filter[{type}_messages], filter[{type}_messages_purchases]
         with withTotal (type group|direct). Reply {<t>_messages: {chart, total,
         delta}, <t>_messages_purchases: {chart, total, delta}}."""
-        params = self._date_range_params(start, end)
-        params["withTotal"] = "true"
-        params.update(self._filter_params([f"{type}_messages", f"{type}_messages_purchases"]))
-        return self.get_json(f"{API_BASE}/messages/queue/chart", params=params)
+        return self._with_total_chart(
+            "/messages/queue/chart", [f"{type}_messages", f"{type}_messages_purchases"], start, end)
 
     def mass_message_buyers(self, queue_id: int, *, limit: int = 10, offset: int = 0,
                             marker: str | None = None, skip_users: str | None = None) -> dict:
@@ -1136,6 +1122,19 @@ class ReadsMixin:
         params.update(self._filter_params(["chartAmount", "chartCount"]))
         return self.get_json(f"{API_BASE}{path}", params=params)
 
+    def _stats_chart(self, path: str, start, end) -> dict:
+        """The Reach charts OF reads as {claims, offers}: startDate, endDate, stats=1."""
+        params = self._date_range_params(start, end)
+        params["stats"] = 1
+        return self.get_json(f"{API_BASE}{path}", params=params)
+
+    def _with_total_chart(self, path: str, series: list, start, end) -> dict:
+        """The Engagement charts: startDate, endDate, withTotal=true, filter[<series>]."""
+        params = self._date_range_params(start, end)
+        params["withTotal"] = "true"
+        params.update(self._filter_params(series))
+        return self.get_json(f"{API_BASE}{path}", params=params)
+
     def payouts_chart(self, *, start: str | None = None, end: str | None = None) -> dict:
         """GET /api2/v2/payouts/chart — Statements › Payout requests chart."""
         return self._amount_count_chart("/payouts/chart", start, end)
@@ -1152,16 +1151,12 @@ class ReadsMixin:
     def promotions_chart(self, *, start: str | None = None, end: str | None = None) -> dict:
         """GET /api2/v2/promotions/chart?startDate&endDate&stats=1 — Reach › Promotions.
         Reply {claims, offers}, each {chart, total, delta}."""
-        params = self._date_range_params(start, end)
-        params["stats"] = 1
-        return self.get_json(f"{API_BASE}/promotions/chart", params=params)
+        return self._stats_chart("/promotions/chart", start, end)
 
     def trials_chart(self, *, start: str | None = None, end: str | None = None) -> dict:
         """GET /api2/v2/trials/chart?startDate&endDate&stats=1 — Reach › Free trial
         links. Reply {claims, offers}, each {chart, total, delta}, as promotions."""
-        params = self._date_range_params(start, end)
-        params["stats"] = 1
-        return self.get_json(f"{API_BASE}/trials/chart", params=params)
+        return self._stats_chart("/trials/chart", start, end)
 
     def campaigns_chart(self, *, start: str | None = None, end: str | None = None) -> dict:
         """GET /api2/v2/campaigns/chart — Reach › Tracking links: filter[clicks],
@@ -1174,18 +1169,12 @@ class ReadsMixin:
     def stories_chart(self, *, by: str, start: str | None = None, end: str | None = None) -> dict:
         """GET /api2/v2/stories/chart — Engagement › Stories: withTotal,
         filter[{by}], filter[stories]. Read as {<series>: {chart, total, delta}}."""
-        params = self._date_range_params(start, end)
-        params["withTotal"] = "true"
-        params.update(self._filter_params([by, "stories"]))
-        return self.get_json(f"{API_BASE}/stories/chart", params=params)
+        return self._with_total_chart("/stories/chart", [by, "stories"], start, end)
 
     def streams_chart(self, *, by: str, start: str | None = None, end: str | None = None) -> dict:
         """GET /api2/v2/streams/chart — Engagement › Streaming: withTotal,
         filter[{by}], filter[duration]."""
-        params = self._date_range_params(start, end)
-        params["withTotal"] = "true"
-        params.update(self._filter_params([by, "duration"]))
-        return self.get_json(f"{API_BASE}/streams/chart", params=params)
+        return self._with_total_chart("/streams/chart", [by, "duration"], start, end)
 
     def stream_viewers(self, stream_id: int, *, limit: int = 10, offset: int = 0,
                        tips_only: bool = False) -> dict:

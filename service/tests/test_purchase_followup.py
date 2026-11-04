@@ -364,7 +364,10 @@ def case_a_rate_limited_send_is_released_for_a_later_sweep_other_failures_are_no
         await _seed_purchase(aid, 46, 4601)
         await _seed_purchase(aid, 47, 4701)
         # OF's throttle: nothing was created, so the claim is handed back.
-        fake = _use_fake(fail=Exception('400 {"message":"Please allow 10 seconds"}'))
+        from types import SimpleNamespace
+        from of_client import OFAPIError
+        fake = _use_fake(fail=OFAPIError('400 {"message":"Please allow 10 seconds"}',
+                                         response=SimpleNamespace(status_code=400)))
         res = await _run(aid, 1)
         assert res.get("errors") == 3 and fake.sent == [], res
         fake.fail = None

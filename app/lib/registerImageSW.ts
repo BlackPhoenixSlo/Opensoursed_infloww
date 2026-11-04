@@ -10,13 +10,19 @@
  *
  * The SW lives at /sw-images.js (public root) so its scope is the whole
  * origin — necessary to intercept /img and /img/by-hash from any path.
+ * It also shows Web Push (public/sw-push.js, imported at its top).
  */
 
 const SW_URL = "/sw-images.js";
 
+/** Whether this build registers the SW at all (prod only); Web Push rides on it. */
+export function swEnabled(): boolean {
+  return process.env.NODE_ENV === "production";
+}
+
 export function registerImageSW(): void {
   if (typeof window === "undefined") return;
-  if (process.env.NODE_ENV !== "production") return;
+  if (!swEnabled()) return;
   if (!("serviceWorker" in navigator)) return;
 
   // navigator.serviceWorker only works over HTTPS or localhost. Tailscale

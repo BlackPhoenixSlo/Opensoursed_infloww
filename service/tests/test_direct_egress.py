@@ -169,12 +169,12 @@ def _img(u: str) -> dict[str, list]:
     img_api._DIRECT_HTTP = SimpleNamespace(get=_get("direct"))
     try:
         req = SimpleNamespace(headers={"range": "bytes=0-", "x-account-id": "acct-1"})
-        resp = img_api.proxy_image(req, u=u)
 
-        async def _drain():   # releases the fetch slot the stream holds
+        async def _fetch():   # draining releases the fetch slot the stream holds
+            resp = await img_api.proxy_image(req, u=u)
             async for _ in resp.body_iterator:
                 pass
-        asyncio.run(_drain())
+        asyncio.run(_fetch())
     finally:
         server._get_client, img_api._DIRECT_HTTP = saved
     return seen

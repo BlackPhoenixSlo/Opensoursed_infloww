@@ -21,7 +21,7 @@ The repo also has these extras in Messages Pro, which the plan does not name. Th
 
 | Extra | Today (`file:line`) | Automation? | Destination | Tooltip |
 |---|---|---|---|---|
-| Generated profile note | `app/components/chat/FanDrawer.tsx:402` mounts `ProfileCard` (`:1707`), headed "AI profile" (`:1730`) and filled by gen_info (`:1746`). `docs/infloww-screens.md` §3.3 tags it ours. | yes (ASSUMPTION below) | flag: Fan insights | `Inflowwww extra — Generated profile note` |
+| Generated profile note | `app/components/chat/FanDrawer.tsx` mounts `ProfileCard` (`FanDrawerParts.tsx`), headed "AI profile" and filled by gen_info. `docs/infloww-screens.md` §3.3 tags it ours. | yes (ASSUMPTION below) | flag: Fan insights | `Inflowwww extra — Generated profile note` |
 | AI seller chip | `FanDrawer.tsx:360` mounts `AiSellerChip` (`:42`), which reads the AI chatter's open offers. | yes (ASSUMPTION below) | flag: Fan insights, after the Notes block in the Insights tab (Phase 5) | `Inflowwww extra — AI seller chip` |
 | Persona claims | `FanDrawer.tsx:495` mounts `PersonaClaims` (`app/components/chat/PersonaClaims.tsx:88`): the claims block of the AI chatter's prompt (`:4-16`). | yes (ASSUMPTION below) | flag: Fan insights | `Inflowwww extra — Persona claims` |
 | Automation restrict | Kebab items "Auto-restricted" (`app/components/chat/ChatActionsMenu.tsx:252`) and "Restrict from automations" / "Allow automations" (`:259`). | yes (ASSUMPTION below) | flag: Kebab menu, after the Infloww items | `Inflowwww extra — Automation restrict` |

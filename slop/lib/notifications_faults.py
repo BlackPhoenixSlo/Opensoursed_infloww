@@ -86,6 +86,17 @@ def _prune_ignores_retention() -> None:
     na.RETENTION = timedelta(days=30)
 
 
+def _prune_not_pushed() -> None:
+    """The sweep's push after a prune dropped (the pre-fix product): an Agency that lost unread rows
+    and got nothing filed keeps a stale badge until its next notify."""
+    import notifications_api as na
+
+    async def push_pruned(agencies) -> None:
+        return None
+
+    na._push_pruned = push_pruned
+
+
 def register(Fault) -> dict:
     return {
         # slop/run notifications-feed-volume --break (the scenario's FAULT)
@@ -94,4 +105,6 @@ def register(Fault) -> dict:
         "notif-page-skips-offset": Fault(_page_skips_offset, (PAGED,)),
         # slop/run notifications-feed-volume --break --fault=notif-prune-ignores-retention --baseline=...
         "notif-prune-ignores-retention": Fault(_prune_ignores_retention, (PRUNED,)),
+        # slop/run notifications-feed-volume --break --fault=notif-prune-not-pushed --baseline=...
+        "notif-prune-not-pushed": Fault(_prune_not_pushed, (PRUNE_PUSHED,)),
     }

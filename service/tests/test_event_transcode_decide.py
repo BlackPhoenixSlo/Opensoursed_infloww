@@ -32,6 +32,8 @@ import event_transcode_decide as td  # noqa: E402
 from event_transcode_decide import Inbound, Outbound, Skip  # noqa: E402
 
 try:
+    if __name__ == "__main__":
+        raise ImportError  # script mode uses the runner below, even with pytest installed
     import pytest
     table = pytest.mark.parametrize
 except ImportError:  # script mode: the runner below calls each row

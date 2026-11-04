@@ -46,3 +46,7 @@ Pillow==12.2.0
 requests==2.34.2
 # The served Browserbase login: Playwright connect_over_cdp, no local browser.
 playwright==1.63.0
+# Web Push (service/push_send.py): aes128gcm payload encryption + VAPID ES256.
+http-ece==1.2.1
+py-vapid==1.9.6
+cryptography==50.0.2

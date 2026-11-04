@@ -24,7 +24,7 @@
  */
 
 import type { GiphyItem } from "@/lib/relay";
-import type { ChatDraft, ChatHandlers } from "@/lib/ofMirrorChat";
+import type { ChatDraft, ChatHandlers } from "@/lib/ofMirrorChatShared";
 import { bindFormatPanel, lock } from "@/lib/ofMirrorPost";
 import { message, note } from "@/lib/ofMirrorWrites";
 

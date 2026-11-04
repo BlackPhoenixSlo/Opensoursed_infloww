@@ -39,7 +39,6 @@ from db.models import (  # noqa: E402
     PriorityMassRecipient, PriorityMassRun, ScheduledJob, SensitiveWord, SkipList,
     VaultSend,
 )
-from priority_mass_api import sensitive_hits  # noqa: E402
 
 _REPO = Path(__file__).resolve().parents[2]
 _MIGRATIONS = _REPO / "service" / "db" / "migrations"
@@ -381,7 +380,10 @@ def case_send_outcomes_unreachable_no_id_rate_limit_and_rejected_media():
         await _seed_account(aid)
         fake = _use_fake(FakeOF(fans=[1, 2, 3]))
         fake.fail[1] = Exception("Cannot send message to this user")
-        fake.fail[2] = Exception('400 {"message":"Please allow 10 seconds"}')
+        from types import SimpleNamespace
+        from of_client import OFAPIError
+        fake.fail[2] = OFAPIError('400 {"message":"Please allow 10 seconds"}',
+                                  response=SimpleNamespace(status_code=400))
         rid = await _new_run(aid)
         res = await _leg(aid, rid)
         rows = await _recipients(rid)
@@ -539,11 +541,65 @@ def case_the_list_counts_recipients_and_cancel_and_resume_work():
     _sandboxed(go)
 
 
-def case_the_sensitive_matcher_matches_between_boundaries_only():
-    assert sensitive_hits("you are in my class", ["ass"]) == []
-    assert sensitive_hits("nice ASS!", ["ass"]) == ["ass"]
-    assert sensitive_hits("text me on Tele\tgram", ["tele gram"]) == ["tele gram"]
-    assert sensitive_hits("cashapp_me", ["cashapp"]) == ["cashapp"]
+def case_a_word_listed_after_create_stops_the_first_leg_whatever_its_spacing():
+    """create_run refuses on `sensitive_hits`; the leg runs it beside `filter_banned`, so a
+    phrase listed after the create stops the run at its first leg however the text spaces it,
+    and "ass" still never trips on "class"."""
+    _clear_runs()
+    agency = IDS["agency_a_owner"]
+
+    async def go():
+        fake = _use_fake(FakeOF(fans=[701, 702, 703]))   # fans no earlier case rested
+        r = OWNER_A.post(ROUTE, json=_body(text="pay me on Cash\tApp {name}"))
+        assert r.status_code == 200, r.text
+        dirty = r.json()["id"]
+        r = OWNER_A.post(ROUTE, json=_body(text="see you after class {name}"))
+        assert r.status_code == 200, r.text
+        clean = r.json()["id"]
+        await _add_sensitive(agency, "cash app")
+        await _add_sensitive(agency, "ass")
+        try:
+            res = await _leg(CREATOR_A, dirty)
+            assert res.get("status") == "error" and res.get("reason") == "banned_words", res
+            row = await _run_row(dirty)
+            assert row.status == pm.ERROR and "cash app" in (row.last_error or ""), row.last_error
+            assert fake.sent == [], fake.sent
+            res = await _leg(CREATOR_A, clean)
+            assert res.get("status") == "ok" and res.get("sent") == 3, res
+        finally:
+            async with get_session() as s:
+                await s.execute(sa.delete(SensitiveWord).where(
+                    SensitiveWord.agency_user_id == agency,
+                    SensitiveWord.word_key.in_(["cash app", "ass"])))
+    _sandboxed(go)
+
+
+def case_a_session_without_headers_is_a_structured_503_not_a_500():
+    """POST /admin/mass-messages/refresh on a Creator whose session file lacks `headers`
+    (OFClient raises KeyError): the same structured 503 as a missing session."""
+    import accounts as account_registry
+    import client_pool
+
+    d = account_registry.ACCOUNTS_DIR / CREATOR_A
+    d.mkdir(parents=True, exist_ok=True)
+    sess, latest = d / "session-noheaders.json", d / "latest.json"
+    had_latest = latest.read_bytes() if latest.exists() else None
+    sess.write_text(json.dumps({"signing": {"rules": {}}}))
+    latest.write_text(json.dumps({"session": sess.name}))
+    client_pool.evict(CREATOR_A)
+    try:
+        r = OWNER_A.post("/admin/mass-messages/refresh", params={"account_id": CREATOR_A})
+        assert r.status_code == 503, (r.status_code, r.text)
+        detail = r.json()["detail"]
+        assert detail["error"] == "bad_session" and detail["account_id"] == CREATOR_A, detail
+        assert detail["remedy"] == ["POST /admin/session/bootstrap"], detail
+    finally:
+        client_pool.evict(CREATOR_A)
+        sess.unlink()
+        if had_latest is None:
+            latest.unlink()
+        else:
+            latest.write_bytes(had_latest)
 
 
 # ── the migration ─────────────────────────────────────────────────────

@@ -42,10 +42,14 @@ Load: owner task i starts at i * ramp_s / owners, takes units i, i + owners, ...
 relay.post sets none, a browser waits; lib/client.py's 30 s would turn a slow preview into a transport error).
 
 Faults (lib/smart_lists_faults.py): `smart-list-between-exclusive-bound` (FAULT; targets ORACLE),
-`smart-list-cap-read-then-write` (targets CAP), `smart-list-ledger-org-leak` (targets ORACLE).
+`smart-list-cap-read-then-write` (targets CAP), `smart-list-ledger-org-leak` (targets ORACLE),
+`smart-list-projection-drops-column` (targets ORACLE).
 KNOWN_RED {check: finding}: the two oracle-phase budgets, measured red at the scales and owner counts in
-KNOWN_RED_MIN_OWNERS ({scale: owners}) with no service fix in this task. There they are ctx.skip'ped
-(numbers kept in p95_owners); anywhere else they are live checks (green at small / 20 owners).
+KNOWN_RED_MIN_OWNERS ({scale: owners}) after the loader's column projection. There they are ctx.skip'ped
+(numbers kept in p95_owners) while red and FAIL as `finding_closed` once green; anywhere else they are live
+checks (green at small / 20; medium / 90 green 5 of 6 runs, red once in a host pile-up,
+20261103T091733Z-2026-11-01-smart-lists-50k-607a: preview p95 20 s, list 2.0 s, host load 15; huge / 5 green
+in its one run, 20261103T085211Z-2026-11-01-smart-lists-50k-3e3d).
 
 Bypasses (declared):
 - Bulk seeding is SQL (README); seed/smart_list_facts.py UPDATEs fans' last message columns, tags and
@@ -96,16 +100,17 @@ CK_PREVIEW_P95 = f"p95 {PREVIEW} <= {PREVIEW_P95_MS} ms (one owner, quiet relay)
 CK_LIST_P95 = f"p95 {LIST} <= {LIST_P95_MS} ms (one owner, quiet relay)"
 CK_PREVIEW_LOAD = f"p95 {PREVIEW} <= {PREVIEW_P95_MS} ms under concurrent owners (oracle phase)"
 CK_LIST_LOAD = f"p95 {LIST} <= {LIST_P95_MS} ms under concurrent owners (oracle phase)"
-# {scale: owners}: measured red there (no service fix here); green at small / 20 owners; huge / 5 straddles
-# the budget (1.75 s in 20261101T115542Z-2026-11-01-smart-lists-50k-9cfc, 2.45 s in
-# 20261101T140728Z-2026-11-01-smart-lists-50k-46f0), so huge skips from 5.
-KNOWN_RED_MIN_OWNERS = {"medium": 90, "huge": 5}
-_COLLAPSE = ("open finding: preview / resolve collapse under concurrent owners (smart_lists_api._load_normalised_fans "
-             "loads every Fan ORM row per call): medium --users=200 (90 concurrent owners), run "
-             "20261101T110325Z-2026-11-01-smart-lists-50k-0653: preview p95 174 s (p50 0.38 s), resolve p95 171 s, "
-             "list p95 3.9 s, relay RSS 1.8 GB; one owner: preview p95 1.0 s; huge --users=50 (50 concurrent "
-             "owners), run 20261101T113412Z-2026-11-01-smart-lists-50k-f228: 52/91 previews past the 300 s client "
-             "timeout, relay RSS 3.5 GB")
+# {scale: owners}: measured red there after the projection; huge / 5 green in one run (preview p95 1.17 s,
+# list 219 ms, 20261103T085211Z-2026-11-01-smart-lists-50k-3e3d), 6..19 unmeasured; medium / 90 live: 5 of 6
+# runs green, 1 red under host load 15 (20261103T091733Z-2026-11-01-smart-lists-50k-607a).
+KNOWN_RED_MIN_OWNERS = {"huge": 20}
+_COLLAPSE = ("open finding, perf paused (owner 10-29), projection done: 50k fans per Creator, preview / resolve "
+             "still collapse under concurrent owners (every fan normalised + resolved in Python per call): huge "
+             "--users=20, run 20261103T090901Z-2026-11-01-smart-lists-50k-babd: preview p95 99 s (p50 11 s), resolve "
+             "p95 99 s, list p95 1.8 s; huge --users=50, run 20261103T085813Z-2026-11-01-smart-lists-50k-602d: "
+             "preview p95 211 s, list p95 0.9 s, relay RSS 1.7 GB, no request past the 300 s timeout (was 52/91, "
+             "3.5 GB); medium / 90 owners green in 5 of 6 runs since the projection (1 red pile-up, run "
+             "20261103T091733Z-2026-11-01-smart-lists-50k-607a: preview p95 20 s, list 2.0 s, host load 15)")
 KNOWN_RED: dict[str, str] = {CK_PREVIEW_LOAD: _COLLAPSE, CK_LIST_LOAD: _COLLAPSE}
 
 LO, HI = smart_list_facts.LO, smart_list_facts.HI
@@ -451,6 +456,10 @@ def _budgets(ctx, owners: int) -> None:
             ctx.skip(name, "no samples")
         elif name not in KNOWN_RED or owners < KNOWN_RED_MIN_OWNERS.get(ctx.scale, owners + 1):
             ctx.check(name, _within(s, budget), budget=True, owners=owners, **_stats(s))
+        elif _within(s, budget):   # parked but green: the finding is closed, so its entry must go
+            ctx.check(name, False, finding_closed=f"measured green: drop {ctx.scale!r} from KNOWN_RED_MIN_OWNERS "
+                      f"(and the KNOWN_RED entry once no scale is left) ({KNOWN_RED[name]})",
+                      owners=owners, **_stats(s))
         else:
             ctx.skip(name, KNOWN_RED[name], owners=owners, **_stats(s))
 

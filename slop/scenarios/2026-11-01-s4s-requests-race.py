@@ -48,7 +48,8 @@ none). A run that crosses 00:00 UTC would shift the CAP/day count (not guarded).
 
 Faults: `s4s-accept-unguarded-update` (the scenario's FAULT) drops `_transition`'s status guard, so racing answers
 both win: one-winner and slots/jobs go red. `s4s-daily-limit-skipped` makes Accept's and the proposal's limit test
-always pass: the Daily-limit and proposal checks go red.
+always pass: the Daily-limit and proposal checks go red. `s4s-send-cap-unlocked` runs Send in a deferred
+transaction again (`immediate_session` = get_session), so S2's burst passes the cap: the racing-cap check goes red.
 """
 from __future__ import annotations
 
@@ -108,10 +109,6 @@ KNOWN_RED: dict[str, str] = {
                "last write 24-59 ms over 5 runs. Cause unproven; suspects: GET /discover runs s4s_api._fill_primary's UPDATE "
                "(78c4 write telemetry: discover held SQLite's write lock 20.1 s of 60 s), the proposal's up to "
                "2 x 60 _booked reads a call, the relay's 8-connection pool"),
-    CAP_RACE: (f"open finding: concurrent sends from one Creator pass the {CAP}/day cap: S2's burst stored 51-55 "
-               "requests in each of 31 runs, never 50 (20261101T113142Z-...-ce12: 12 sends from 44 -> 9 x 201 + "
-               "3 x 409, 53 stored; 20261101T104822Z-...-0c29: 8 from 46 -> 8 x 201, 54 stored). "
-               "service/s4s_requests_api.py send_request counts _sent_today before the INSERT's write transaction"),
 }
 # A KNOWN_RED entry measured red only at these scales: P95_LOAD passes at small (20 users, load p95 78-147 ms).
 KNOWN_RED_SCALES = {P95_LOAD: ("medium", "huge")}
@@ -650,7 +647,9 @@ def _check_cap(run: _Run, db: dict, chk) -> dict:
     chk(CAP_SEQ, not s1["fail"] and [e["status"] for e in s1["extra"]] == [409, 409]
         and all(str(CAP) in (e["detail"] or "") for e in s1["extra"]) and sent_today[p.s1] == CAP,
         stored=sent_today[p.s1], extra=s1["extra"], fail=s1["fail"][:5])
-    chk(CAP_RACE, not s2["fail"] and sent_today[p.s2] == CAP, stored=sent_today[p.s2], burst=p.burst,
+    # The burst must have crossed the cap (some 201, some 409), else a stored == CAP passes vacuously.
+    chk(CAP_RACE, not s2["fail"] and sent_today[p.s2] == CAP and p.burst > 0 and s2["burst"][201] >= 1
+        and s2["burst"][409] >= 1, stored=sent_today[p.s2], burst=p.burst,
         burst_statuses=dict(s2["burst"]), fail=s2["fail"][:5])
     return {"s1": sent_today[p.s1], "s2": sent_today[p.s2]}
 

@@ -39,7 +39,8 @@ import { fanIdFromParam, type FanId } from "@/lib/fanId";
 import { deniedPage, findNavLink } from "@/lib/nav";
 import { applyScript, type PickedScript } from "@/lib/ofMirrorChat";
 import { OF_INSIGHTS_ATTR } from "@/lib/ofMirrorChrome";
-import { chatPath, mirrorQuery } from "@/lib/ofMirrorData";
+import { mirrorQuery } from "@/lib/ofMirrorData";
+import { chatPath } from "@/lib/ofMirrorDataQueries";
 import { type OFChatItem } from "@/lib/relay";
 
 /** "UTC+02:00": this computer's offset (Infloww's OF Manager shows the local zone, not the Agency's). */

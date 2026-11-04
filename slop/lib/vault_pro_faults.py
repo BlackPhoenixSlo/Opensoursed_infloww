@@ -1,8 +1,8 @@
 """Vault Pro at 20k's break-it-once faults (scenarios/2026-11-01-vault-pro-20k.py): lib/faults.py merges
 `register(Fault)` into FAULTS. Every correctness check the scenario records is named here and the scenario
 imports it, so a target can never name a check that does not exist. The latency budgets are named in the scenario
-(budgets live in the scenario file) and no fault targets them; neither does HIDE_STRICT0, an open product finding
-(KNOWN_RED in the scenario).
+(budgets live in the scenario file) and no fault targets them; a fault never targets a check still KNOWN_RED in the
+scenario.
 
 Deviation (declared): `vault-items-page-overlap` swaps the route's endpoint (`APIRoute.dependant.call`, FastAPI
 internals), not a product module attribute: FastAPI keeps its own reference to `vault_ai_api.local_items`, and
@@ -62,10 +62,25 @@ def _dupes_ignore_strictness() -> None:
     vault_dupes.cluster = default_only
 
 
+def _hide_threshold_or_default() -> None:
+    """POST /duplicates/hide reads its strictness as `int(raw or DEFAULT_THRESHOLD)` again, the pre-W23 line:
+    0 is falsy, so a hide at 0 re-clusters at 2 and hides a copy that is no duplicate at 0. GET /duplicates is
+    untouched. `hide_duplicates` looks `parse_threshold` up in vault_of_folders' globals per call."""
+    import vault_of_folders
+
+    def or_default(raw, default, _top):
+        return int(raw or default)
+
+    vault_of_folders.parse_threshold = or_default
+
+
 def register(Fault) -> dict:
     return {
         # slop/run vault-pro-20k --break (the scenario's FAULT)
         "vault-items-page-overlap": Fault(_items_page_overlap, (PAGING,)),
         # slop/run vault-pro-20k --break --fault=vault-dupes-ignores-strictness
-        "vault-dupes-ignores-strictness": Fault(_dupes_ignore_strictness, (DUPES,)),
+        # (the hide at 0 re-clusters through it too, so HIDE_STRICT0 goes red with DUPES)
+        "vault-dupes-ignores-strictness": Fault(_dupes_ignore_strictness, (DUPES, HIDE_STRICT0)),
+        # slop/run vault-pro-20k --break --fault=vault-hide-threshold-or-default
+        "vault-hide-threshold-or-default": Fault(_hide_threshold_or_default, (HIDE_STRICT0,)),
     }

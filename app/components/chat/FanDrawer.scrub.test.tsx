@@ -7,7 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 
-import { VideoScrubThumb } from "./FanDrawer";
+import { VideoScrubThumb } from "./FanDrawerSalesView";
 
 const THUMB = {
   rawUrl: "https://cdn.example/v-thumb.jpg",

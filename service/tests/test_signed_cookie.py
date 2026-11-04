@@ -120,10 +120,10 @@ def case_wrappers_golden():
             OS, "u-friend-2", "u-founder-1", imp_issued)
     finally:
         auth.now_ms, chatters.now_ms, auth.datetime = saved
-    assert auth._parse_cookie_issued(OWNER) == ("u-owner-1", 1761900000123)
+    assert auth.parse_cookie_issued(OWNER) == ("u-owner-1", 1761900000123)
     assert auth._parse_cookie(OWNER) == "u-owner-1"
-    assert auth._parse_cookie_issued(CHATTER) is None
-    assert chatters._parse_cookie_issued(CHATTER) == ("c-chatter-1", 1761900000456)
+    assert auth.parse_cookie_issued(CHATTER) is None
+    assert chatters.parse_cookie_issued(CHATTER) == ("c-chatter-1", 1761900000456)
     assert chatters._parse_cookie(CHATTER) == "c-chatter-1"
     assert chatters._parse_cookie(OWNER) is None
     assert auth._parse_impersonate_cookie(IMPERSONATE) == ("u-friend-2", "u-founder-1", IMP_ISSUED)

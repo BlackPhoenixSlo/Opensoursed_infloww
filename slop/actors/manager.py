@@ -56,14 +56,17 @@ class SseListener:
     relay replays what it missed; `reconnects` counts them. Off, a closed stream is `ended`.
 
     `states=("agency_notifications", ...)`: every event of those types (alone or in a
-    batch) is kept in `state_events` as (type, its fields, its `__account_id`), in order."""
+    batch) is kept in `state_events` as (type, its fields, its `__account_id`), in order.
+
+    `last_id`: the first connect already sends `Last-Event-ID` (a dropped stream's reconnect)."""
 
     def __init__(self, http, scope: str = "all", *, resume: bool = False, retry_s: float = 3.0,
-                 states: tuple[str, ...] = ()):
+                 states: tuple[str, ...] = (), last_id: str | None = None):
         self.http, self.scope, self.resume, self.retry_s = http, scope, resume, retry_s
+        self._resume_from = last_id  # the first connect sends Last-Event-ID: a browser tab's reconnect
         self.states = tuple(states)
         self.state_events: list[tuple[str, dict, str | None]] = []
-        self.last_id: str | None = None
+        self.last_id: str | None = last_id
         self.reconnects = 0
         self.message_ids: list[int] = []
         self.received_at: dict[int, float] = {}
@@ -95,7 +98,7 @@ class SseListener:
             self.connected.set()  # never leave start() waiting on a stream that is gone
 
     async def _stream(self) -> None:
-        hdr = {"Last-Event-ID": self.last_id} if self.reconnects and self.last_id else {}
+        hdr = {"Last-Event-ID": self.last_id} if (self.reconnects or self._resume_from) and self.last_id else {}
         async with self.http.c.stream("GET", f"/events?scope={self.scope}", headers=hdr, timeout=None) as r:
             self.http.rec.add("GET /events (status)", r.status_code, 0.0)
             self.status = r.status_code

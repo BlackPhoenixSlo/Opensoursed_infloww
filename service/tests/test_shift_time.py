@@ -31,6 +31,8 @@ from types import SimpleNamespace  # noqa: E402
 from shift_time import _merged, cancelled_dates, minutes_up, repeat_days, shift_occurrences  # noqa: E402
 
 try:
+    if __name__ == "__main__":
+        raise ImportError  # script mode uses the runner below, even with pytest installed
     import pytest
     table = pytest.mark.parametrize
 except ImportError:  # script mode: the runner below calls each row

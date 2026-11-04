@@ -50,6 +50,7 @@ FLOW_SIZES: dict[str, tuple[int, int, int]] = {
     "shifts_clock_open_n": (3, 10, 20), "shifts_clock_race_rounds": (4, 8, 12),
     "shifts_clock_race_n": (8, 16, 16), "shifts_clock_storm": (4, 4, 4),
     "shifts_clock_readers": (3, 6, 8), "shifts_clock_edits": (8, 16, 16),
+    "shifts_clock_cancel_series": (4, 12, 16),
     # vault-pro-20k; huge 20_000 = seed/vault_items.COLLECT_CAP (a literal: importing it is circular)
     "vault_pro_items": (2_000, 20_000, 20_000),
     # s4s-requests-race
@@ -86,6 +87,17 @@ FLOW_SIZES: dict[str, tuple[int, int, int]] = {
     # import's fresh files and its already-uploaded ones
     "of_upload_files": (12, 400, 1_000), "of_upload_big_files": (2, 6, 12),
     "of_upload_import_files": (3, 5, 8), "of_upload_import_dupes": (1, 2, 3),
+    # mass-placeholder-echo's dry-run tail: per Creator, its OF list's fresh / guard fans, the fans on
+    # each fence (MASSdmEXCLUDE, AUTOFENCE), the excluded_users of each dry run
+    "mass_dry_run_fresh": (6, 20, 40), "mass_dry_run_guard": (3, 10, 20),
+    "mass_dry_run_fence": (2, 5, 10), "mass_dry_run_excluded": (2, 3, 4),
+    # auto-exclude-25k: the big Creators' pre-made Auto_Exclude (past the 20k backstop, and its guard alone
+    # too: 90% of it, so the list stays past 20k once its stale members go), how many big Creators, and the
+    # control Creator's list (under it)
+    "auto_exclude_members": (24_000, 26_000, 60_000), "auto_exclude_big_creators": (1, 2, 2),
+    "auto_exclude_control_members": (400, 1_000, 3_000),
+    # os-ping-push: Creators in multi_agency_big_models (5 Agencies), steady-phase frames per Creator
+    "os_ping_creators": (10, 20, 20), "os_ping_frames": (12, 24, 40),
 }
 for _i, _scale in enumerate(("small", "medium", "huge")):
     SCALES[_scale].update({k: v[_i] for k, v in FLOW_SIZES.items()})

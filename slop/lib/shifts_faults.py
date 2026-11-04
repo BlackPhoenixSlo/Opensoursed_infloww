@@ -19,6 +19,8 @@ OWNER_WRITES = ("owner writes: every PATCH (all, this, following) and cancel (th
                 "the week list shows it")
 AUDIT = ("one actions row (shift.create|edit|cancel, clock.in|out) per 2xx write, none for a refused one, "
          "no auto clock-out")
+CANCEL_DATES = ("shift cancels: N concurrent POST /admin/shifts/{id}/cancel scope=this on distinct dates of one "
+                "series each answer 2xx, every date is in the series' cancelled_dates and the week list drops it")
 UI_SHIFTS = "UI: /employees/shifts settles naming an Employee GET /admin/shifts lists for this week"
 UI_REPORTS = ("UI: /analytics/employee-reports' Clocked hours card settles naming an Employee the 30-day "
               "GET /admin/shifts/timesheet?group=employee lists")
@@ -62,6 +64,16 @@ def _clock_in_twice_opens_two() -> None:
         table.indexes.discard(ix)
 
 
+def _shift_cancel_unlocked() -> None:
+    """cancel_shift back on the plain `get_session()` (the pre-fix path): no BEGIN IMMEDIATE before the
+    read, so concurrent "this" cancels on one series each rewrite `cancelled_dates` from the same read
+    and a date is lost. cancel_shift looks `_cancel_txn` up per call."""
+    import shifts_api
+    from db.engine import get_session
+
+    shifts_api._cancel_txn = get_session
+
+
 def register(Fault) -> dict:
     return {
         # slop/run shifts-clock-crowd --break (the scenario's FAULT)
@@ -70,4 +82,6 @@ def register(Fault) -> dict:
         "timesheet-drops-open-shift": Fault(_timesheet_drops_open_shift, (ORACLE_EMP, ORACLE_ACC)),
         # slop/run shifts-clock-crowd --break --fault=clock-in-twice-opens-two --baseline=slop/evidence/<run>
         "clock-in-twice-opens-two": Fault(_clock_in_twice_opens_two, (ONE_OPEN,)),
+        # slop/run shifts-clock-crowd --break --fault=shift-cancel-unlocked --baseline=slop/evidence/<run>
+        "shift-cancel-unlocked": Fault(_shift_cancel_unlocked, (CANCEL_DATES,)),
     }

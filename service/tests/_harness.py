@@ -60,6 +60,8 @@ os.environ.setdefault("CHATTER_SESSION_SECRET", "test-chatter-secret-not-for-pro
 os.environ.setdefault("ADMIN_PASSWORD", "test-admin-password")
 # Fake LLM keys so llm_client construction never reads the real ones in tests.
 os.environ.setdefault("DEEPSEEK_API_KEY", "test-deepseek-key")
+# Web Push (push_send): a generated VAPID key lands in the temp dir, never service/secrets.
+os.environ.setdefault("VAPID_KEY_FILE", str(Path(tempfile.gettempdir()) / f"vapid_test_{uuid.uuid4().hex}.pem"))
 
 
 def bootstrap() -> None:

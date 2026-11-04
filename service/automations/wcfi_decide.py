@@ -21,9 +21,13 @@ Precedence (first match wins) — the order the loop has always checked:
   8. too_long     runaway cutoff, gather not done, no closing PPV due → durable
      ClosePpv     the same cutoff with the closing PPV set and not yet sent
   9. Ask          everyone else: a candidate this tick
+
+Also two pure reads for `_turn`: `asked_topics` (fans.questions_asked, once per fan)
+and `msg_id_of` (the id in OF's send response, once per send).
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Literal
 
@@ -109,3 +113,17 @@ def decide(snap: FanSnapshot) -> Verdict:
                 return ClosePpv(h)
             return Skip("too_long", h)
     return Ask(h)
+
+
+def asked_topics(f) -> set:
+    """The topics already asked of him (`fans.questions_asked`, a JSON list); an
+    unreadable value counts as nothing asked."""
+    try:
+        return set(json.loads(f.questions_asked or "[]"))
+    except Exception:
+        return set()
+
+
+def msg_id_of(result):
+    """The id OF gave the message (its send response dict), or None."""
+    return result.get("id") if isinstance(result, dict) else None

@@ -22,9 +22,9 @@ stopped answering; it keeps its own calls, statuses, timeouts and rows, and each
   pass 3   the plan again, describe-all pressed by PRESSES owner tabs at once per Creator (a double click / two
            managers): one sweep each (one 200, the rest 409), each still-blank item called once over.
 
-Checks (names in lib/vault_describe_faults.py): EXACTLY_ONCE, PLAN, CACHE, ESCALATE, COST, FLAGS, UI_SETTLED (with
-UI), KNOWN_RED (SKIP with this run's result: ONE_SWEEP, COST_INCL_FLAGS), budgets on the status routes' p95
-(`STATUS_P95_MS`) and p95 vs the last green run, plus the stock no 5xx / no unexpected Traceback.
+Checks (names in lib/vault_describe_faults.py): EXACTLY_ONCE, PLAN, CACHE, ESCALATE, COST, COST_INCL_FLAGS, FLAGS,
+ONE_SWEEP, UI_SETTLED (with UI), budgets on the status routes' p95 (`STATUS_P95_MS`) and p95 vs the last green run,
+plus the stock no 5xx / no unexpected Traceback.
 
 Bypasses (declared):
   - DeepInfra is lib/vault_describe_relay.py's loopback fake at its OpenAI-compatible wire
@@ -47,7 +47,9 @@ Bypasses (declared):
 Break-it-once: `vault-describe-ignores-cache` (the scenario's FAULT: the 'undescribed' selection loses its
 `describe_status` filter) turns only CACHE and PLAN red (the plan then counts the cached rows too, != the seeded
 undescribed count); `--fault=vault-describe-cost-last-attempt` (`_describe_one` reports only the last attempt's
-cost, the pre-W9 under-report) only COST.
+cost, the pre-W9 under-report) only COST and COST_INCL_FLAGS; `--fault=vault-describe-claim-after-budget` (the
+start claims the Creator only after awaiting the budget, so concurrent presses all start a sweep) only ONE_SWEEP;
+`--fault=vault-describe-drops-flags-cost` (describe-and-flag drops the flags call's cost) only COST_INCL_FLAGS.
 """
 # No `from __future__ import annotations`: lib/cli.py loads a scenario outside sys.modules, and @dataclass resolves
 # string annotations through it.
@@ -87,25 +89,17 @@ FLAGS_STATUS = f"{FLAGS_ALL}/status"
 # vault_ai_vision_decide.build_flags_fields), besides its own `_flags_*` stamps. Any other key it changes is a bug.
 FLAG_FIELDS = ("underwear_visible", "vulva_vis", "breasts_vis", "anus_vis", "over_breasts", "over_vulva", "over_anus")
 WANT_SEQ = {"ok": [M30], "refuse": [M30, M235], "blank": [M30, M235]}
-# Budgets on the status routes over the sweep phases (pass 1, flags, pass 2; not pass 3, the KNOWN_RED race's 3x
-# sweeps). Guess. Measured medium/200 on the shared dev machine: first green 20261101T105606Z-...-d0c3 (host load
-# ~23) describe status p95 96.6 ms (n=11575), flags status 337.5 ms (n=8755); runs at host load 30-88 reached
-# 0.5-4.6 s / 1.8-2.3 s, tracking pool spills and the relay loop at ~90% of a core (the tail is queueing). Both are
-# the auth gate plus an in-memory read; flags adds a parse of every photo's ai_fields_json per poll
-# (vault_scripts.flags_coverage), O(vault) on the loop. So these catch a gross regression, not drift.
+# Budgets on the status routes over the sweep phases (pass 1, flags, pass 2; not pass 3: one sweep of the blank
+# retries behind ONE_SWEEP's press race, few samples, kept out so the numbers stay comparable). Guess. Measured
+# medium/200 on the shared dev machine: first green 20261101T105606Z-...-d0c3 (host load ~23) describe status p95
+# 96.6 ms (n=11575), flags status 337.5 ms (n=8755); runs at host load 30-88 reached 0.5-4.6 s / 1.8-2.3 s,
+# tracking pool spills and the relay loop at ~90% of a core (the tail is queueing). Both are the auth gate plus an
+# in-memory read; flags adds a parse of every photo's ai_fields_json per poll (vault_scripts.flags_coverage),
+# O(vault) on the loop. So these catch a gross regression, not drift.
 STATUS_P95_MS = {f"GET {STATUS}": 2500, f"GET {FLAGS_STATUS}": 5000}
 BUDGET_STAGES = ("pass1", "flags", "pass2")
 P95_VS_LAST = (1.5, 2000)
 P95_VS_LAST_MIN_N = 20
-KNOWN_RED: dict[str, str] = {
-    ONE_SWEEP: "open finding: concurrent describe-all presses all start a sweep (service/vault_ai_vision.py "
-               "describe_all checks _describe_running, awaits _vision_budget, then adds): N presses = N sweeps, "
-               "N x the LLM spend",
-    COST_INCL_FLAGS: "open finding: service/vault_ai_vision.py:936-953 `_describe_and_flag` awaits `_flags_one` "
-                     "and drops its result, so the auto-flag calls' cost_millicents never reach the sweep's "
-                     "progress (the single-item describe route :883-887 the same): describe-all under-reports "
-                     "its spend by every flags call it makes",
-}
 IMG = re.compile(r"/img(/scrub)?\?")
 TOURS_SEEN = ("localStorage.setItem('vaultProOnboarding', JSON.stringify({batchUploadEntry: '1', "
               "uploadPageStep: '1', batchEdit: '1', uploadBtn: '1'}));")
@@ -342,10 +336,6 @@ class Run:
         return [i for i in self.targets if i["outcome"] == outcome]
 
 
-def _known_red(ctx, name: str, ok: bool, **detail) -> None:
-    ctx.skip(name, f"KNOWN_RED: {KNOWN_RED[name]} (this run: {'pass' if ok else 'fail'})", **detail)
-
-
 def _check_exactly_once(ctx, r: Run) -> None:
     """Pass 1: one answer that described each undescribed item, and its row holds it."""
     d1, bad = r.p1.by_item("describe"), {}
@@ -409,17 +399,20 @@ def _check_escalate(ctx, r: Run) -> None:
 
 
 def _check_cost(ctx, r: Run) -> None:
-    """Each sweep's reported cost == the fake's billed sum for the sweep's own calls; pass 1's incl. the auto-flags
-    it makes (KNOWN_RED; pass 2 describes no row, so it flags none and could only agree)."""
-    sweeps = (("pass1", r.p1, "describe"), ("flags", r.pf, "flags"), ("pass2", r.p2, "describe"))
-    own = {aid: {name: [p.reported(aid), p.billed(purpose)[aid]] for name, p, purpose in sweeps} for aid in r.aids}
+    """Each sweep's reported cost == the fake's billed sum for the sweep's own calls. COST: flags-all and pass 2
+    (describe + any auto-flags; its retries are blank answers, so it makes no auto-flags). COST_INCL_FLAGS: pass 1,
+    its describe calls plus the auto-flags it makes, which must be > 0 per Creator (else reported == billed would
+    hold with the flags cost dropped). One total cannot say which part went missing, so a describe under-report
+    reds both; a dropped flags cost only COST_INCL_FLAGS (pass 2 flags none to drop)."""
+    sweeps = (("flags", r.pf, ("flags",)), ("pass2", r.p2, ("describe", "flags")))
+    own = {aid: {name: [p.reported(aid), p.billed(*purposes)[aid]] for name, p, purposes in sweeps} for aid in r.aids}
     ok = all(rep == b for c in own.values() for rep, b in c.values())
     ctx.check(COST, ok, per_creator=own, reported_mc=sum(rep or 0 for c in own.values() for rep, _ in c.values()),
               billed_mc=sum(b for c in own.values() for _, b in c.values()))
-    both = r.p1.billed("describe", "flags")
-    incl = {aid: [r.p1.reported(aid), both[aid]] for aid in r.aids}
-    _known_red(ctx, COST_INCL_FLAGS, all(rep == b for rep, b in incl.values()), per_creator=incl,
-               unreported_auto_flags_mc=sum(r.p1.billed("flags").values()))
+    both, flags1 = r.p1.billed("describe", "flags"), r.p1.billed("flags")
+    incl = {aid: [r.p1.reported(aid), both[aid], flags1[aid]] for aid in r.aids}
+    ctx.check(COST_INCL_FLAGS, all(rep == b and f > 0 for rep, b, f in incl.values()),
+              per_creator_reported_billed_flags=incl, auto_flags_mc=sum(flags1.values()))
 
 
 def _non_flag(ai: dict | None) -> dict:
@@ -453,14 +446,14 @@ def _check_flags(ctx, r: Run) -> None:
 
 def _check_one_sweep(ctx, r: Run) -> None:
     """Pass 3: PRESSES concurrent presses -> one 200, the rest 409, and each item the plan still counts called once
-    over (its outcome's model sequence: one sweep's worth). KNOWN_RED."""
+    over (its outcome's model sequence: one sweep's worth)."""
     d3 = r.p3.by_item("describe")
     dup = {k: v for k, v in d3.items() if [m for m, _ in v] != WANT_SEQ[r.by_key[k]["outcome"]]}
     presses_ok = all(sorted(v) == [200] + [409] * (PRESSES - 1) for v in r.p3.presses.values())
-    _known_red(ctx, ONE_SWEEP, presses_ok and not dup and not r.p3.timed_out, presses=r.p3.presses,
-               plan3=r.p3.want, called=len(d3), dup=len(dup),
-               extra_calls=sum(len(v) for v in d3.values()) - sum(len(WANT_SEQ[r.by_key[k]["outcome"]]) for k in d3),
-               sample=dict(list(dup.items())[:3]), timed_out=r.p3.timed_out)
+    ctx.check(ONE_SWEEP, presses_ok and not dup and not r.p3.timed_out, presses=r.p3.presses,
+              plan3=r.p3.want, called=len(d3), dup=len(dup),
+              extra_calls=sum(len(v) for v in d3.values()) - sum(len(WANT_SEQ[r.by_key[k]["outcome"]]) for k in d3),
+              sample=dict(list(dup.items())[:3]), timed_out=r.p3.timed_out)
 
 
 def _check_ui(ctx, r: Run) -> None:

@@ -140,6 +140,9 @@ async def tips_list(
             Message,
             and_(
                 Message.account_id == Transaction.account_id,
+                # The full messages PK: one seek per tip. Every writer of a tip's message_id
+                # sets its fan_id too; a NULL-fan tip gets no note / Employee.
+                Message.fan_id == Transaction.fan_id,
                 Message.message_id == Transaction.message_id,
             ),
         )

@@ -38,7 +38,9 @@ import { relay, type VaultList } from "@/lib/relay";
 import { addToOfFolder, createOfFolder, deleteOfFolder, invalidateVaultGrid, removeFromOfFolder, renameOfFolder, sortOfFolders } from "@/hooks/useVaultCache";
 import { floatLabel } from "@/lib/ofMirrorSettings";
 import { GREY, message, note, NOTE_STYLE, SELECT_MODEL } from "@/lib/ofMirrorWrites";
-import { mirrorQuery, toggleTile, VAULT_LISTS } from "@/lib/ofMirrorData";
+import { mirrorQuery } from "@/lib/ofMirrorData";
+import { VAULT_LISTS } from "@/lib/ofMirrorDataQueries";
+import { toggleTile } from "@/lib/ofMirrorDom";
 import { isoDay, openDatepicker, parseDay, type Day } from "@/lib/ofMirrorDatepicker";
 import { BRAND_NAME } from "@/lib/brand";
 
@@ -217,15 +219,19 @@ function phoneColumns(doc: Document, view: VaultView): () => void {
   };
 }
 
-/** The media tabs and the sort title show the view. */
-function showView(doc: Document, view: VaultView) {
-  const tabs = [...doc.querySelectorAll<HTMLButtonElement>(`${RIGHT} .b-tabs__nav__link`)];
+/** Media type tabs in TYPES' order: `type`'s is current (and not clickable); all are wired. */
+export function markTypeTabs(tabs: Element[], type: string | null) {
   tabs.forEach((t, i) => {
-    const on = (TYPES[i] ?? null) === view.type;
+    const on = (TYPES[i] ?? null) === type;
     t.classList.toggle("m-current", on);
     t.classList.toggle("m-no-pointer", on);
     wire(t);
   });
+}
+
+/** The media tabs and the sort title show the view. */
+function showView(doc: Document, view: VaultView) {
+  markTypeTabs([...doc.querySelectorAll(`${RIGHT} .b-tabs__nav__link`)], view.type);
   const title = doc.querySelector(`${RIGHT} .b-content-filter__title`);
   if (title) title.textContent = FIELDS[view.field ?? "recent"];
   const search = doc.querySelector<HTMLInputElement>(`${RIGHT} ${SEARCH}`);
@@ -279,25 +285,32 @@ function bindMediaSort(doc: Document, ctx: VaultContext) {
     const radio = item.querySelector<HTMLInputElement>("input[type='radio']");
     const a = item.querySelector<HTMLAnchorElement>("a.of-state-link");
     if (!radio || !a) continue;
-    if (radio.name === "vault-go-date-field") {
-      radio.checked = radio.value === "date_all_time" ? !view.date : !!view.date;
-      if (radio.value === "date_all_time") setHref(a, vaultHref({ ...view, date: null }));
-      else bindGoToDate(doc, item, ctx);
-    } else if (radio.name === "vault-filter-field") {
-      setHref(a, vaultHref({ ...view, field: radio.value === "recent" ? null : radio.value }));
-      radio.checked = radio.value === (view.field ?? "recent");
-    } else if (radio.name === "ascending-field") {
-      setHref(a, vaultHref({ ...view, sort: radio.value === "asc" ? "asc" : null }));
-      radio.checked = radio.value === (view.sort ?? "desc");
+    switch (radio.name) {
+      case "vault-go-date-field":
+        radio.checked = radio.value === "date_all_time" ? !view.date : !!view.date;
+        if (radio.value === "date_all_time") setHref(a, vaultHref({ ...view, date: null }));
+        else bindGoToDate(doc, item, ctx);
+        break;
+      case "vault-filter-field":
+        setHref(a, vaultHref({ ...view, field: radio.value === "recent" ? null : radio.value }));
+        radio.checked = radio.value === (view.field ?? "recent");
+        break;
+      case "ascending-field":
+        setHref(a, vaultHref({ ...view, sort: radio.value === "asc" ? "asc" : null }));
+        radio.checked = radio.value === (view.sort ?? "desc");
+        break;
     }
   }
 }
+
+/** A folder sort dropdown radio of the sort group (the other group is the order). */
+const isSortRadio = (radio: HTMLInputElement) => /-sort-/.test(radio.name);
 
 /** The folder sort dropdown: the folders' sort and order are checked; a pick sends them (POST /vault/lists/sort) and closes it. */
 function bindListSort(doc: Document, ctx: VaultContext): () => void {
   const sort = ctx.lists?.sort ?? "default";
   const order = ctx.lists?.order ?? "desc";
-  const pick = (radio: HTMLInputElement) => (/-sort-/.test(radio.name) ? { sort: radio.value, order } : { sort, order: radio.value });
+  const pick = (radio: HTMLInputElement) => (isSortRadio(radio) ? { sort: radio.value, order } : { sort, order: radio.value });
   // As OF's (its list sort's orderDisabled): the order is off for a custom order.
   const unordered = sort === "custom";
   // Customize order: off while a folder search is open, as OF's.
@@ -308,7 +321,7 @@ function bindListSort(doc: Document, ctx: VaultContext): () => void {
     item.setAttribute("aria-disabled", String(!!ctx.view.slist));
   }
   for (const radio of doc.querySelectorAll<HTMLInputElement>(`${SELECT} input[type='radio']`)) {
-    const isSort = /-sort-/.test(radio.name);
+    const isSort = isSortRadio(radio);
     wire(radio.closest(SELECT)); // its click is this handler's, not its State page link's
     radio.checked = isSort ? radio.value === sort : radio.value === order && !unordered;
     if (isSort) continue;
@@ -662,6 +675,38 @@ function bindActions(doc: Document, ctx: VaultContext, handlers: VaultHandlers):
     );
   };
 
+  /** The row's buttons by their `data-oi-act`; each gets the media selected at its click. */
+  const acts: Record<string, (ids: number[]) => void> = {
+    upload: () => file.click(),
+    tags: (ids) => {
+      if (ids.length === 1) editTags(ids[0]);
+    },
+    "tags-cancel": () => draw(),
+    "tags-save": () => {
+      if (!editor) return;
+      const { id, input } = editor;
+      const tags = input.value.split(/[,\n]/).map((t) => t.trim()).filter(Boolean);
+      run(() => handlers.saveTags(id, tags), "Tags saved", "Could not save tags");
+    },
+    rename: () => ctx.navigate(vaultHref(ctx.view, `${VAULT}/state-add-list`) + (ctx.view.list ? "&" : "?") + "edit=1"),
+    delete: () => {
+      if (!folder) return;
+      if (!handlers.confirm(`Delete the folder "${folder.name}"? Its media stay in the vault.`)) return;
+      run(() => handlers.deleteFolder(String(folder.id)).then(() => ctx.navigate(VAULT)), "Deleted", "Could not delete");
+    },
+    remove: (ids) => {
+      if (folder) run(() => handlers.removeFromFolder(String(folder.id), ids).then(clear), "Removed from the folder", "Could not remove");
+    },
+    hide: (ids) => {
+      if (!handlers.confirm(`Remove ${ids.length} media from the vault? OnlyFans has no undo.`)) return;
+      run(() => handlers.hide(ids).then(clear), "Removed from the vault", "Could not remove");
+    },
+    clear: () => {
+      clear();
+      draw();
+    },
+  };
+
   const onClick = (ev: MouseEvent) => {
     const target = ev.target as Element | null;
     if (!target?.closest) return;
@@ -676,29 +721,8 @@ function bindActions(doc: Document, ctx: VaultContext, handlers: VaultHandlers):
       return draw();
     }
     const act = target.closest<HTMLElement>(`#${BAR} button`)?.dataset.oiAct;
-    if (!act) return;
-    const ids = selected(doc);
-    if (act === "upload") file.click();
-    else if (act === "tags" && ids.length === 1) editTags(ids[0]);
-    else if (act === "tags-cancel") draw();
-    else if (act === "tags-save" && editor) {
-      const { id, input } = editor;
-      const tags = input.value.split(/[,\n]/).map((t) => t.trim()).filter(Boolean);
-      run(() => handlers.saveTags(id, tags), "Tags saved", "Could not save tags");
-    }
-    else if (act === "rename") ctx.navigate(vaultHref(ctx.view, `${VAULT}/state-add-list`) + (ctx.view.list ? "&" : "?") + "edit=1");
-    else if (act === "delete" && folder) {
-      if (!handlers.confirm(`Delete the folder "${folder.name}"? Its media stay in the vault.`)) return;
-      run(() => handlers.deleteFolder(String(folder.id)).then(() => ctx.navigate(VAULT)), "Deleted", "Could not delete");
-    } else if (act === "remove" && folder) {
-      run(() => handlers.removeFromFolder(String(folder.id), ids).then(clear), "Removed from the folder", "Could not remove");
-    } else if (act === "hide") {
-      if (!handlers.confirm(`Remove ${ids.length} media from the vault? OnlyFans has no undo.`)) return;
-      run(() => handlers.hide(ids).then(clear), "Removed from the vault", "Could not remove");
-    } else if (act === "clear") {
-      clear();
-      draw();
-    }
+    if (!act || !Object.hasOwn(acts, act)) return;
+    acts[act](selected(doc));
   };
   const onChange = (ev: Event) => {
     const t = ev.target as HTMLElement;

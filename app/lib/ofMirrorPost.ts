@@ -79,16 +79,18 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useScope } from "@/contexts/ScopeContext";
 import { relay, toChoice, type TaggedFriendUser, type TaggedFriendUsersResp, type VaultMedia, type VaultUploadResp } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
-import { linkUser, mirrorQuery, plain, rowsOf, toggleTile, userHref, VAULT_LISTS, vaultMediaOf } from "@/lib/ofMirrorData";
+import { mirrorQuery, plain, rowsOf } from "@/lib/ofMirrorData";
+import { VAULT_LISTS, vaultMediaOf } from "@/lib/ofMirrorDataQueries";
+import { linkUser, toggleTile, userHref } from "@/lib/ofMirrorDom";
 import { sortOfFolders } from "@/hooks/useVaultCache";
 import { HOME_VAULT, homeDraft, VAULT_DIALOG } from "@/lib/ofMirrorRow";
 import { ofMeQuery, type OfMe } from "@/lib/ofMirrorIdentity";
 import { floatLabel } from "@/lib/ofMirrorSettings";
-import { FIELDS, TYPES, vaultHref, viewOf } from "@/lib/ofMirrorVault";
+import { FIELDS, LIST_SORTS, markTypeTabs, TYPES, vaultHref, viewOf } from "@/lib/ofMirrorVault";
 import { applyFormat, COLORS, hasFormatting, ofHtml, setOfHtml, SIZES, type FormatCommand } from "@/lib/ofMirrorFormat";
 import { closeMenu, ORDER_GROUP, showMenu } from "@/lib/ofMirrorMenu";
 import { GREY, localIso, message, note, NOTE_STYLE, QUEUE, READ_ONLY, schedulePill, SELECT_MODEL, textOf } from "@/lib/ofMirrorWrites";
-import { useAgencyZone, wallClock } from "@/lib/ofMirrorFeeds";
+import { useAgencyZone, wallClock } from "@/lib/ofMirrorFeedsShared";
 import { ofPrice } from "@/lib/ofMirrorPostCard";
 import { bindSchedule, clearDraft, clock, collectPost, COMPOSER, type CreatePostBody, draftOf, EMPTY_TEXT, keepOf, loadDraft, mergeSendWith, MONTHS, type PostContext, type PostDraft, type PostHandlers, type PriceLimits, saveDraft, type SearchPost, type SearchUser, type UploadsInFlight, VOTING_DAYS, WEEKDAYS } from "@/lib/ofMirrorPostDraft";
 import { bindLabels, bindTags, labelsOf, type PostLabelsResp, tagsRoute, type TagView, tagViewOf } from "@/lib/ofMirrorPostTags";
@@ -214,6 +216,12 @@ const CLOSE_SEARCH = "[at-attr='close_search']";
 const SEARCH_OPEN = "m-search-form-visible";
 /** The vault dialog's media type tabs (All, Photo, GIF, Video, Audio: ofMirrorVault's TYPES). */
 const VAULT_TABS = ".modal.show .b-tabs__nav__link";
+
+/** The draft patch dropping one picked media (its id and its thumb). */
+const dropMediaAt = ({ media_files, thumbs }: PostDraft, at: number): Pick<PostDraft, "media_files" | "thumbs"> => ({
+  media_files: media_files.filter((_, i) => i !== at),
+  thumbs: thumbs.filter((_, i) => i !== at),
+});
 
 /** A dialog page's own binding: `update` saves a patch onto the draft. Returns an unbind. */
 type DialogBinder = (doc: Document, ctx: PostContext, update: (patch: Partial<PostDraft>) => void, page: string) => () => void;
@@ -486,11 +494,14 @@ const bindPeriod: DialogBinder = (doc, ctx, update, page) => {
   };
 };
 
+/** A dollars field's number text: trimmed, with no leading "$". */
+const dollars = (value: string) => value.trim().replace(/^\$/, "");
+
 /** POST PRICE's dollars: "" is free (0); a number within `limits` is itself; anything else (or no limits) is null. */
 export const readPrice =
   (limits: PriceLimits | null | undefined) =>
   (value: string): number | null => {
-    const v = value.trim().replace(/^\$/, "");
+    const v = dollars(value);
     if (!v) return 0;
     const n = Number(v);
     return limits && Number.isFinite(n) && n >= limits.min && n <= limits.max ? Math.round(n * 100) / 100 : null;
@@ -521,7 +532,7 @@ const bindPrice: DialogBinder = (doc, ctx, update, page) => {
 
 /** The fundraising target in dollars ("$" allowed), or null below the minimum. */
 const readTarget = (value: string): number | null => {
-  const n = Number(value.trim().replace(/^\$/, ""));
+  const n = Number(dollars(value));
   return value.trim() && Number.isFinite(n) && n >= MIN_TARGET ? n : null;
 };
 
@@ -585,12 +596,7 @@ export function bindVaultSearch(doc: Document): () => void {
 function bindVault(doc: Document, ctx: PostContext, update: (patch: Partial<PostDraft>) => void, page: string): () => void {
   const view = ctx.vaultView ?? {};
   const tabs = [...doc.querySelectorAll<HTMLElement>(VAULT_TABS)];
-  tabs.forEach((t, i) => {
-    const on = (TYPES[i] ?? null) === (view.type ?? null);
-    t.classList.toggle("m-current", on);
-    t.classList.toggle("m-no-pointer", on);
-    t.setAttribute("data-oi-wired", "");
-  });
+  markTypeTabs(tabs, view.type ?? null);
   const close = doc.querySelector(".modal.show .modal-footer a");
   const story = doc.createElement("button");
   story.type = "button";
@@ -630,12 +636,13 @@ function bindVault(doc: Document, ctx: PostContext, update: (patch: Partial<Post
     const id = Number(tile.getAttribute("data-oi-media"));
     // In the dialog's footer: a note in the grid would take a tile's place.
     if (!ctx.handlers || !id) return note(doc, doc.querySelector(".modal-footer a") ?? tile, SELECT_MODEL);
-    const { media_files, thumbs } = draftOf(ctx);
+    const draft = draftOf(ctx);
+    const { media_files, thumbs } = draft;
     const at = media_files.indexOf(id);
     if (at < 0) {
       update({ media_files: [...media_files, id], thumbs: [...thumbs, tile.querySelector(".b-photos__item__img")?.getAttribute("src") ?? ""] });
     } else {
-      update({ media_files: media_files.filter((_, i) => i !== at), thumbs: thumbs.filter((_, i) => i !== at) });
+      update(dropMediaAt(draft, at));
     }
     toggleTile(tile, at < 0);
   };
@@ -650,15 +657,6 @@ function bindVault(doc: Document, ctx: PostContext, update: (patch: Partial<Post
     unbindTools();
   };
 }
-
-/** OF's vault folder Sort (the Vault page's captured menu: sort default | name | recent | media | custom, and order). */
-const FOLDER_SORTS = [
-  { value: "default", label: "Default" },
-  { value: "name", label: "Name" },
-  { value: "recent", label: "Recent" },
-  { value: "media", label: "Media" },
-  { value: "custom", label: "Custom" },
-];
 
 /** The folder rows ofMirrorData drew (not "All media"), in the dialog's folder column. */
 const folderRows = (doc: Document) => [...doc.querySelectorAll<HTMLElement>(".modal.show .l-sidebar-column .b-rows-lists__item[data-oi-data]")];
@@ -748,7 +746,9 @@ export function bindVaultTools(
       ev.preventDefault();
       if (!ctx.handlers) return note(doc, b, SELECT_MODEL);
       const { handlers } = ctx;
-      showMenu(doc, b, [{ name: "sort", value: sorted.sort, options: FOLDER_SORTS }, ORDER_GROUP(sorted.order)], (g, v) => {
+      // OF's vault folder Sort (the Vault page's captured menu), and order.
+      const options = Object.entries(LIST_SORTS).map(([value, label]) => ({ value, label }));
+      showMenu(doc, b, [{ name: "sort", value: sorted.sort, options }, ORDER_GROUP(sorted.order)], (g, v) => {
         Object.assign(sorted, { [g]: v });
         if (sorted.sort === "name") sortFoldersByName(doc, sorted.order);
         if (!handlers.sortFolders) return note(doc, b, READ_ONLY);
@@ -890,6 +890,9 @@ const bindFormat: DialogBinder = (doc, ctx) => {
   return bindFormatPanel(doc, editor, panel, () => (ctx.handlers ? null : SELECT_MODEL));
 };
 
+/** The Format text tools that take no value, by their aria-label. */
+const PLAIN_FORMATS: Record<string, "bold" | "italic" | "clear"> = { Bold: "bold", Italic: "italic", "Clear Formatting": "clear" };
+
 /** OF's Format text `panel` over `editor` (New post's dialog, a chat's composer); `blocked`: the note when no write may be made. */
 export function bindFormatPanel(doc: Document, editor: HTMLElement, panel: HTMLElement, blocked: () => string | null): () => void {
   const tool = (label: string) => panel.querySelector<HTMLElement>(`[aria-label='${label}']`);
@@ -922,9 +925,9 @@ export function bindFormatPanel(doc: Document, editor: HTMLElement, panel: HTMLE
     const t = (ev.target as Element | null)?.closest?.<HTMLElement>("[aria-label]");
     if (!t || !panel.contains(t)) return;
     const label = t.getAttribute("aria-label");
-    if (label === "Bold" || label === "Italic" || label === "Clear Formatting") {
+    if (label && Object.hasOwn(PLAIN_FORMATS, label)) {
       ev.preventDefault();
-      return apply({ kind: label === "Bold" ? "bold" : label === "Italic" ? "italic" : "clear" });
+      return apply({ kind: PLAIN_FORMATS[label] });
     }
     if (label === "Text Color" && color) {
       ev.preventDefault();
@@ -1278,9 +1281,7 @@ export function bindPost(doc: Document, page: string, given: PostContext): () =>
     const remove = target.closest<HTMLElement>("[data-oi-remove-media]");
     if (remove) {
       ev.preventDefault();
-      const at = Number(remove.dataset.oiRemoveMedia);
-      const { media_files, thumbs } = draftOf(ctx);
-      return update({ media_files: media_files.filter((_, i) => i !== at), thumbs: thumbs.filter((_, i) => i !== at) });
+      return update(dropMediaAt(draftOf(ctx), Number(remove.dataset.oiRemoveMedia)));
     }
     if (target.closest("[data-oi-discard]")) {
       ev.preventDefault();

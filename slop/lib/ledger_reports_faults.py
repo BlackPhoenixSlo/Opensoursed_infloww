@@ -1,6 +1,7 @@
 """The ledger reports' break-it-once faults (scenarios/2026-11-01-ledger-reports-volume.py): lib/faults.py
 merges `register(Fault)` into FAULTS. Each patches a product module attribute inside the throwaway relay,
-looked up at call time by the route. The check names live here and the scenario imports them, so a
+looked up at call time by the route, except loadmore-refires-on-error: a client fault (`browser=`, the app's
+served JS in actors/ui.py). The check names live here and the scenario imports them, so a
 target can never name a check that does not exist. Rank and CSV checks are one per route, so each
 fault targets only the checks of the route it breaks.
 """
@@ -27,6 +28,9 @@ SALES = ("ledger reports: sales-records rows == oracle (each tracked credited sa
 XLSX = "ledger reports: POST /admin/stats/xlsx answers 2xx with a workbook body (PK zip magic)"
 UI_TOTALS = "ledger reports UI: Fan reports' Total spend cells == the fan-report rows the page read == oracle"
 UI_SIDE = "ledger reports UI side effect: Fan reports' Download report file == oracle (rows and total)"
+PAGE_ERR_BOUNDED = ("ledger reports UI: the Tips tab list's next page answering 500 (browser wire) with the list's foot "
+                    "in view 5 s is asked <= 2 times (retry: 1) and Load more stays offered; Load more once it "
+                    "answers loads that page's rows")
 
 
 def _counts_refunds() -> None:
@@ -78,6 +82,21 @@ def _csv_truncates() -> None:
     stats_fans.csv_export = types.SimpleNamespace(**{**shim, "download": download})
 
 
+def _latest_claim() -> None:
+    """Traffic credits a spender's newest claim (bug class: the earliest-claim order flipped):
+    `stats_fans.first_claim_order` orders claims newest first (coalesce desc, then id desc)."""
+    import stats_fans
+    real = stats_fans.first_claim_order
+    stats_fans.first_claim_order = lambda: tuple(c.desc() for c in real())
+
+
+# app/hooks/useLoadMoreSentinel.ts's error gate, as next dev serves it (`!hasNextPage || isError)`).
+# Files this scenario's UI loads that serve the hook: the Fan reports, Message dashboard and Sales records page
+# chunks (3, measured: run 20261103T162315Z-2026-11-01-ledger-reports-volume-break-de25).
+_LOADMORE_GATE = (r"(!hasNextPage)\s*\|\|\s*isError(\))", r"\1\2")
+LOADMORE_FILES = 3
+
+
 def register(Fault) -> dict:
     return {
         # slop/run ledger-reports-volume --break (the scenario's FAULT)
@@ -89,4 +108,12 @@ def register(Fault) -> dict:
         # slop/run ledger-reports-volume --break --fault=fan-report-csv-truncates
         # (with the UI on, the UI side-effect check, the page's Download report, goes red too)
         "fan-report-csv-truncates": Fault(_csv_truncates, (FAN_CSV,)),
+        # slop/run ledger-reports-volume --break --fault=fan-report-latest-claim
+        # Only spenders with two or more claims move, so only traffic leaves the oracle.
+        "fan-report-latest-claim": Fault(_latest_claim, (TRAFFIC,)),
+        # slop/run ledger-reports-volume --break --fault=loadmore-refires-on-error
+        # Client side: the sentinel loses its error gate (the pre-fix hook), so a failed next page with the foot in
+        # view is asked again on every fetch flip; only the page-error check goes red (no other check fails a page).
+        "loadmore-refires-on-error": Fault(None, (PAGE_ERR_BOUNDED,), browser=(_LOADMORE_GATE,),
+                                           browser_files=LOADMORE_FILES),
     }

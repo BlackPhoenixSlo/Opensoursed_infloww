@@ -16,6 +16,9 @@ and past the cap the file ends in the TRUNCATED line.
       the Fan join does not inflate the sums.
   case_csv_stops_at_the_row_cap:
       the shared cap holds for both.
+  case_tip_note_needs_the_tips_fan_and_message:
+      the note is the tip's own message (account, fan, message): a hit; no
+      fan and no message; no fan with a message id -> no note.
 
 Run: ./venv/bin/python service/tests/test_tips_csv.py  (exit 0 = pass)
 """
@@ -126,6 +129,23 @@ async def case_csv_stops_at_the_row_cap():
             assert lines[-1][0] == csv_export.TRUNCATED_LINE, lines[-1]
     finally:
         csv_export.CSV_MAX_ROWS = cap
+
+
+async def case_tip_note_needs_the_tips_fan_and_message():
+    # 8101 note hit; 8103 no fan, no message; 8104 no fan, a real message id: no note (the join
+    # is the messages PK, fan included). A fan's tip without a message: case 1 (8002).
+    aid = "tipnote"
+    async with get_session() as s:
+        s.add(Account(id=aid))
+        s.add(Message(account_id=aid, fan_id=1, message_id=601, direction="in", body="for you",
+                      created_at=_NOW - timedelta(days=2)))
+        for tx_id, fan, msg in ((8101, 1, 601), (8103, None, None), (8104, None, 601)):
+            s.add(Transaction(id=tx_id, account_id=aid, fan_id=fan, kind="tip", amount_cents=100,
+                              occurred_at=_NOW - timedelta(days=1), message_id=msg, status="cleared"))
+    page = await tips_list(from_=_FROM, to=_TO, account_id=aid, employee_id=None, fan_query=None,
+                           limit=10, before_id=None, format="json")
+    got = {r["transaction_id"]: (r["fan_id"], r["message_id"], r["tip_note"]) for r in page["rows"]}
+    assert got == {8101: (1, 601, "for you"), 8103: (None, None, None), 8104: (None, 601, None)}, got
 
 
 async def case_formula_cells_open_as_text():

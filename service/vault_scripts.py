@@ -336,11 +336,16 @@ def short_outfit(outfit: str) -> str:
     return str(outfit).replace("_set", "").replace("_", " ").strip()
 
 
+def _clothing_text(fields: dict[str, Any]) -> str:
+    """The describe's clothing_items, lowercased and space-joined."""
+    return " ".join(str(x).lower() for x in (fields.get("clothing_items") or []))
+
+
 def outfit_colour(fields: dict[str, Any]) -> str:
     """The item's dominant garment colour, else its material. '' if unnamed."""
     if not isinstance(fields, dict):
         return ""
-    text = " ".join(str(x).lower() for x in (fields.get("clothing_items") or []))
+    text = _clothing_text(fields)
     if not text.strip():
         return ""
     for colour in _COLOURS:
@@ -357,7 +362,7 @@ def garment_class(fields: dict[str, Any]) -> str:
     """Which KIND of outfit this is — bodysuit / lingerie_set / top / …"""
     if not isinstance(fields, dict):
         return ""
-    text = " ".join(str(x).lower() for x in (fields.get("clothing_items") or []))
+    text = _clothing_text(fields)
     for name, words in _GARMENT_CLASSES:
         if any(w in text for w in words):
             return name
@@ -377,6 +382,16 @@ def outfit_key(fields: dict[str, Any]) -> str:
         return ""
     kind = garment_class(fields)
     return f"{colour} {kind}".strip()
+
+
+def _with_why(r: dict[str, Any]) -> dict[str, Any]:
+    """`r` plus its `why` (send_order_reason of its fields)."""
+    return {**r, "why": send_order_reason(r.get("fields") or {})}
+
+
+def _ordered_items(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """`rows` in order, each stamped with its 1-based `manual_order`."""
+    return [{**r, "manual_order": i + 1} for i, r in enumerate(rows)]
 
 
 def _tally(items: list[dict[str, Any]]) -> tuple[dict[str, int], dict[str, int], int]:
@@ -430,8 +445,7 @@ async def collect_outfit_scripts(
         for seg in segments:
             if len(seg) < min_items:
                 continue
-            enriched = [{**r, "why": send_order_reason(r.get("fields") or {})}
-                        for r in seg]
+            enriched = [_with_why(r) for r in seg]
             rungs = {r["why"]["rung"] for r in enriched if r["why"]["rung"] is not None}
             if require_escalation and len(rungs) < 2:
                 continue
@@ -451,8 +465,7 @@ async def collect_outfit_scripts(
                 "closes_on_own": closes,
                 "started_at": min(r["created_at"] for r in seg if r["created_at"]),
                 "ended_at": max(r["created_at"] for r in seg if r["created_at"]),
-                "items": [{**r, "manual_order": i + 1}
-                          for i, r in enumerate(ordered)],
+                "items": _ordered_items(ordered),
             })
 
     # Mixed media first, then widest escalation, then biggest.
@@ -480,14 +493,28 @@ async def collect_outfit_scripts(
 # at a glance which folders a human curated and which the pipeline generated —
 # and can delete the whole generated set without touching their own work.
 AI_FOLDER_PREFIX = "AI-"
+# `VaultFolder.created_by` on every folder this module makes. Reuse and retire
+# key on it, so an operator's folder is never reached even if named `AI-…`.
+AI_FOLDER_CREATOR = "vault_ai_script"
+_FOLDER_NAME_MAX = 120
 
 
 def ai_folder_name(name: str) -> str:
     """`AI-<name>`, never double-prefixed on a re-run."""
     clean = str(name).strip()
     if clean.startswith(AI_FOLDER_PREFIX):
-        return clean[:120]
-    return f"{AI_FOLDER_PREFIX}{clean}"[:120]
+        return clean[:_FOLDER_NAME_MAX]
+    return f"{AI_FOLDER_PREFIX}{clean}"[:_FOLDER_NAME_MAX]
+
+
+def _unique_name(name: str, used: set[str]) -> str:
+    """`name`, or `name 2`, `name 3`… — the first not yet `used`, still capped."""
+    out, n = name, 1
+    while out in used:
+        n += 1
+        tail = f" {n}"
+        out = f"{name[:_FOLDER_NAME_MAX - len(tail)]}{tail}"
+    return out
 
 
 # Tiers a paid tease can be cut from. Below explicit there is nothing to charge
@@ -840,7 +867,7 @@ async def collect_purpose_folders(
         wanted = {int(m) for m in media_ids}
         rows = [r for r in rows if r["media_id"] in wanted]
 
-    enriched = [{**r, "why": send_order_reason(r.get("fields") or {})} for r in rows]
+    enriched = [_with_why(r) for r in rows]
 
     def _folder(slug: str, name: str, purpose: str, picked: list[dict[str, Any]],
                 *, solo_of: int | None = None) -> dict[str, Any]:
@@ -854,8 +881,7 @@ async def collect_purpose_folders(
             "size": len(picked), "kinds": kinds, "tiers": tiers,
             "closes_on_own": closes,
             "solo": solo_of is not None, "solo_of": solo_of,
-            "items": [{**r, "manual_order": i + 1}
-                      for i, r in enumerate(picked)],
+            "items": _ordered_items(picked),
         }
 
     def _solo_cut(lane: dict[str, Any]) -> dict[str, Any] | None:
@@ -1007,15 +1033,27 @@ async def plan_ai_folders(
             **extra,
         }
 
+    kept = shoots[:max(0, keep)]
     folders = [
         _folder(s, "script", f"one shoot — {s['outfit']}",
                 outfit=s["outfit"], mixed=s["mixed"])
-        for s in shoots[:max(0, keep)]
+        for s in kept
     ] + [
         _folder(f, "lane", f["purpose"], lane=f["lane"],
                 solo=f["solo"], solo_of=f["solo_of"])
         for f in lanes
     ]
+
+    # Names unique across the plan: apply and the OF mirror both join on name.
+    # One outfit shot weeks apart is two shoots with one name; the suffix goes
+    # by when each STARTED, not by rank, so a re-rank never swaps two folders'
+    # contents on a re-run. Lanes come after and only move on a clash.
+    by_start = sorted(range(len(kept)), key=lambda i: (
+        kept[i]["started_at"] or datetime.min, kept[i]["items"][0]["media_id"]))
+    used: set[str] = set()
+    for i in [*by_start, *range(len(kept), len(folders))]:
+        folders[i]["name"] = _unique_name(folders[i]["name"], used)
+        used.add(folders[i]["name"])
 
     unique = {r["media_id"] for f in folders for r in f["items"]}
 
@@ -1055,24 +1093,32 @@ async def plan_ai_folders(
 async def apply_ai_folders(account_id: str, plan: dict[str, Any]) -> dict[str, Any]:
     """Create the planned folders and fill them, in send order.
 
-    Re-runnable: a folder whose `AI-` name already exists is REUSED and its
-    membership rewritten, so pressing the button twice refreshes rather than
-    piling up duplicates. Only `AI-`-prefixed folders are ever touched — a
-    folder an operator made by hand is never rewritten, even on a name clash.
+    Re-runnable: a live folder this module made (`AI_FOLDER_CREATOR`) under the
+    same name is REUSED and its membership rewritten, so pressing the button
+    twice refreshes rather than piling up duplicates. A folder an operator made
+    is never reused, even on a name clash; the generated one is made beside it.
+    Names come from the plan as-is — `plan_ai_folders` keeps them unique.
 
     Internal folders only. No OF writes, nothing sent.
     """
     created: list[dict[str, Any]] = []
     async with get_session() as s:
+        # Every live folder this module made, oldest first per name. Each spec
+        # takes at most one; whatever is left after the loop is stale.
+        owned: dict[str, list[VaultFolder]] = {}
+        for folder in (await s.execute(
+            select(VaultFolder).where(
+                VaultFolder.account_id == account_id,
+                VaultFolder.created_by == AI_FOLDER_CREATOR,
+                VaultFolder.deleted_at.is_(None),
+            ).order_by(VaultFolder.id)
+        )).scalars().all():
+            owned.setdefault(folder.name, []).append(folder)
+
         for spec in plan.get("folders") or []:
             name = ai_folder_name(spec["name"])
-            existing = (await s.execute(
-                select(VaultFolder).where(
-                    VaultFolder.account_id == account_id,
-                    VaultFolder.name == name,
-                    VaultFolder.deleted_at.is_(None),
-                )
-            )).scalars().first()
+            mine = owned.get(name)
+            existing = mine.pop(0) if mine else None
 
             if existing is not None:
                 folder_id = existing.id
@@ -1087,7 +1133,7 @@ async def apply_ai_folders(account_id: str, plan: dict[str, Any]) -> dict[str, A
                 )
             else:
                 folder = VaultFolder(account_id=account_id, name=name,
-                                     created_by="vault_ai_script")
+                                     created_by=AI_FOLDER_CREATOR)
                 s.add(folder)
                 await s.flush()
                 folder_id = folder.id
@@ -1110,17 +1156,10 @@ async def apply_ai_folders(account_id: str, plan: dict[str, Any]) -> dict[str, A
         # Scoped hard: only rows this module created (`created_by`) AND carrying
         # the AI- prefix are ever retired, and only by soft-delete. An operator's
         # own folder cannot be reached by this even if it collides on name.
-        wanted = {c["name"] for c in created}
-        stale = (await s.execute(
-            select(VaultFolder).where(
-                VaultFolder.account_id == account_id,
-                VaultFolder.created_by == "vault_ai_script",
-                VaultFolder.deleted_at.is_(None),
-            )
-        )).scalars().all()
         retired: list[dict[str, Any]] = []
-        for folder in stale:
-            if folder.name in wanted or not folder.name.startswith(AI_FOLDER_PREFIX):
+        for folder in sorted((f for rows in owned.values() for f in rows),
+                             key=lambda f: f.id):
+            if not folder.name.startswith(AI_FOLDER_PREFIX):
                 continue
             folder.deleted_at = datetime.utcnow()
             retired.append({"folder_id": folder.id, "name": folder.name,

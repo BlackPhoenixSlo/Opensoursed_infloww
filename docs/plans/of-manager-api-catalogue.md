@@ -121,7 +121,7 @@ built by `chats-send-017397ff.js` `prepareMultipleUserMessageData`.
 | Mass message / scheduled / save-for-later | POST | `/messages/queue` | everything in the single-message body, plus `userLists: (listId)[]`; `excludedLists?: (listId\|"last24h")[]`; `userIds?: int[]`; `excludeUserIds?: int[]`; `recent?: 1`; audience shortcuts (one of): `fundRaisingPostId`, `awards: "y/m"`, `queueBuyers: [id]`, `postDonators`, `postBuyers`, `postLiked`, `campaignClaimers`, `postVoters: str[]`, `storyViewers`, `storyDonators`, `streamViewers`, `streamDonators`, `promoClaimed`, `trialClaimed`; `scheduledSubscribedOn?: ISO`; `filters?: {recent:1, ...}`; `recommenders?: 1`; `releaseForms?` | queue item `id`, `pending` | `204607.g` (`HI`); `chats-send-017397ff.js sendScheduleMessage` | APP |
 | Edit scheduled mass message | PUT | `/messages/queue/{id}` | same as above | queue item | `204607.y` (`W9`) | MISSING |
 | Cancel scheduled / unsent | DELETE | `/messages/queue/{id}` | none | `success` | `204607.S` (`po`) | APP |
-| Queue list / one item | GET | `/messages/queue`, `/messages/queue/{id}?format=scheduled` | none | array / item | `204607.h`, `.f` | WIRED (`ofMirrorFeeds.ts:49`) |
+| Queue list / one item | GET | `/messages/queue`, `/messages/queue/{id}?format=scheduled` | none | array / item | `204607.h`, `.f` | One item WIRED (`ofMirrorQueue.ts` `QueuedMessage`); list has a relay route (`of_scheduled_messages`) and no app caller, the queue pages read `/schedules` (`QUEUE`) |
 | Audience size estimate | POST | `/messages/queue/size` | `{queueBuyers}` | count | `204607._` | MISSING |
 | Queue buyers | GET | `/messages/queue/{id}/buyers` | `limit, offset, marker` | `{list}` | `204607.b` | MISSING |
 | Unsend message | DELETE | `/messages/{id}` | `data.withUserId?` | `success` | `204607.m` (`gQ`) | APP |
@@ -139,7 +139,7 @@ built by `chats-send-017397ff.js` `prepareMultipleUserMessageData`.
 
 | Action | Method | Path | Body / query | Response | Source | Status |
 |---|---|---|---|---|---|---|
-| Calendar | GET | `/schedules` | `publish_date, publish_date_end, time_zone, limit`, `filter[type][0]=stream`, `filter[timeZone]` | `{list[{entity, type, date}]}` | `409363.c`, `.m` | WIRED (`ofMirrorFeeds.ts:37`) |
+| Calendar | GET | `/schedules` | `publish_date, publish_date_end, time_zone, limit`, `filter[type][0]=stream`, `filter[timeZone]` | `{list[{entity, type, date}]}` | `409363.c`, `.m` | WIRED (`ofMirrorFeedsShared.ts` `SCHEDULES`) |
 | Day counters | GET | `/schedules/counters` | same params | counts by day | `409363.d` | RELAY |
 | Saved for later (posts / chats) | GET | `/schedules/later/{post\|chat}` | `limit` | `{list}` | `409363.l` | WIRED |
 | Publish now | PUT | `/schedules/{id}/publish` (`id`: the schedule item's own id, not its entity's) | none | `success` | `409363.u` | WIRED (queue row menu, `ofMirrorQueue.ts`; relay `of_publish_schedule`) |
@@ -227,7 +227,7 @@ Source: `app.js` modules `565144` and `622365`. Body built in `streaming-create-
 | Edit scheduled stream | PATCH | `/streams/{id}` | `{description, scheduledDate, mediaFiles?}` | stream | `565144.k` (`K4`) | MISSING |
 | Delete scheduled stream | DELETE | `/streams/{id}` | none | `success` | `622365.o` | MISSING |
 | Reminders | GET | `/streams/reminder` | query | `{list}` | `409363.p` | RELAY |
-| Past live streams (dashboard) | GET | `/users/{id}/streams` | `limit=8, offset, skip_users=all` | `{list[{id, media, viewsCount, startedAt}], hasMore}` | `202600.mQ` (`Ie`) | WIRED (`ofMirrorFeeds.ts` `applyPastStreams`) |
+| Past live streams (dashboard) | GET | `/users/{id}/streams` | `limit=8, offset, skip_users=all` | `{list[{id, media, viewsCount, startedAt}], hasMore}` | `202600.mQ` (`Ie`) | WIRED (`ofMirrorFeedsStatements.ts` `applyPastStreams`) |
 | Notifications tab list | GET | `/users/notifications` | `limit, fromId, type, related_user, skip_users, format=infinite`; `type` is the tab's route name (`tip`, `purchases`, `favorited`, `message`, `deactivated_media`, ...; none on All) | `{list, hasMore}` | `202600` (`Tr`), types in `463670` | WIRED (all tabs) |
 | Notifications Tags tab | GET | `/release-forms/mentions` | `limit, offset, fromId, related_user, skip_users=all, format=infinite` | `{list, hasMore, lastId}` | `783434.OM` | WIRED |
 | Notification tab counts | GET | `/users/notifications/count` | none | `{all, <type>: n}` | `202600` (`Ge`) | WIRED (Tags uses `/users/me` `newTagsCount`) |

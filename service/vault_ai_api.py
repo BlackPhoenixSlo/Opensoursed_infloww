@@ -116,6 +116,16 @@ async def _warm_store(client: Any, account_id: str, phase: str,
                                           "warm_total": total}
 
 
+async def _update_run(run_id: int, **fields: Any) -> None:
+    """Set `fields` on the VaultCacheRun row (if it still exists) and commit."""
+    async with get_session() as s:
+        run = await s.get(VaultCacheRun, run_id)
+        if run:
+            for k, v in fields.items():
+                setattr(run, k, v)
+            await s.commit()
+
+
 async def _run_collect(account_id: str, run_id: int) -> None:
     """Background sweep: page the whole vault, upsert into the mirror."""
     try:
@@ -172,14 +182,8 @@ async def _run_collect(account_id: str, run_id: int) -> None:
                 await s.commit()
             pages += 1
             offset += _PAGE
-            async with get_session() as s:
-                run = await s.get(VaultCacheRun, run_id)
-                if run:
-                    run.pages_done = pages
-                    run.total_seen = total
-                    run.upserted = upserted
-                    run.phase = "media"
-                    await s.commit()
+            await _update_run(run_id, pages_done=pages, total_seen=total,
+                              upserted=upserted, phase="media")
             if not (resp or {}).get("hasMore"):
                 break
             await asyncio.sleep(_PAGE_SLEEP_S)
@@ -189,11 +193,7 @@ async def _run_collect(account_id: str, run_id: int) -> None:
         # already on disk. Metadata is already committed above, so search +
         # the grid are usable while this (slower) phase runs. Re-collect only
         # warms NEW videos — _warm_one_sync short-circuits cached ones.
-        async with get_session() as s:
-            run = await s.get(VaultCacheRun, run_id)
-            if run:
-                run.phase = "thumbs"
-                await s.commit()
+        await _update_run(run_id, phase="thumbs")
         # Fill the three permanent stores. All incremental — an already-cached file
         # is skipped, so a re-collect only pays for what is new.
         await _warm_store(client, account_id, "thumbs",
@@ -211,11 +211,7 @@ async def _run_collect(account_id: str, run_id: int) -> None:
                           [(vault_stills.poster_path(account_id, mid, idx), u)
                            for mid, frames in drm_posters
                            for idx, u in enumerate(frames)])
-        async with get_session() as s:
-            run = await s.get(VaultCacheRun, run_id)
-            if run:
-                run.phase = "warming"
-                await s.commit()
+        await _update_run(run_id, phase="warming")
         warmed = 0
         _warm_progress[account_id] = {"phase": "warming", "warmed": 0, "warm_total": len(videos)}
         for vurl, vdur in videos:
@@ -230,27 +226,15 @@ async def _run_collect(account_id: str, run_id: int) -> None:
             await asyncio.sleep(0.02)   # light pacing between mp4 downloads
         _warm_progress.pop(account_id, None)
 
-        async with get_session() as s:
-            run = await s.get(VaultCacheRun, run_id)
-            if run:
-                run.status = "done"
-                run.phase = "done"
-                run.pages_done = pages
-                run.total_seen = total
-                run.upserted = upserted
-                run.finished_at = datetime.utcnow()
-                await s.commit()
+        await _update_run(run_id, status="done", phase="done", pages_done=pages,
+                          total_seen=total, upserted=upserted,
+                          finished_at=datetime.utcnow())
         log.info("vault_collect done account=%s run=%s items=%s", account_id, run_id, total)
     except Exception as e:  # noqa: BLE001
         log.exception("vault_collect failed account=%s run=%s", account_id, run_id)
         try:
-            async with get_session() as s:
-                run = await s.get(VaultCacheRun, run_id)
-                if run:
-                    run.status = "error"
-                    run.error = str(e)[:500]
-                    run.finished_at = datetime.utcnow()
-                    await s.commit()
+            await _update_run(run_id, status="error", error=str(e)[:500],
+                              finished_at=datetime.utcnow())
         except Exception:  # noqa: BLE001
             pass
     finally:
@@ -301,18 +285,23 @@ def _run_status(row: VaultCacheRun, account_id: str) -> str:
     return row.status
 
 
+async def _latest_run(s: Any, account_id: str) -> VaultCacheRun | None:
+    """The account's most recently started collect run, or None."""
+    return (
+        await s.execute(
+            select(VaultCacheRun)
+            .where(VaultCacheRun.account_id == account_id)
+            .order_by(VaultCacheRun.started_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
 @router.get("/admin/vault-ai/collect/status")
 async def collect_status(account_id: str = Query(...)) -> dict[str, Any]:
     assert_account_owned(account_id)
     async with get_session() as s:
-        row = (
-            await s.execute(
-                select(VaultCacheRun)
-                .where(VaultCacheRun.account_id == account_id)
-                .order_by(VaultCacheRun.started_at.desc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
+        row = await _latest_run(s, account_id)
     if row is None:
         return {"account_id": account_id, "run": None}
     warm = _warm_progress.get(account_id)
@@ -349,14 +338,7 @@ async def cache_summary(account_id: str = Query(...)) -> dict[str, Any]:
                 .where(VaultItem.account_id == account_id, VaultItem.removed_at.is_(None))
             )
         ).scalar_one()
-        last = (
-            await s.execute(
-                select(VaultCacheRun)
-                .where(VaultCacheRun.account_id == account_id)
-                .order_by(VaultCacheRun.started_at.desc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
+        last = await _latest_run(s, account_id)
     return {
         "account_id": account_id,
         "count": int(count or 0),
@@ -508,10 +490,21 @@ async def local_items(
         return st
 
     out: list[dict[str, Any]] = []
+    mo = VaultFolderItem.manual_order
+
+    async def _append_ordered_page(s, stmt) -> bool:
+        """A folder view's page in manual_order (0 first, 1,2,3… from front, then
+        unpinned by date, then …-3,-2,-1) appended to `out`; returns has_more."""
+        bucket = case((mo.is_(None), 1), (mo >= 0, 0), else_=2)
+        stmt = _apply_common(stmt)
+        stmt = stmt.order_by(bucket, mo, VaultItem.created_at.desc()).limit(limit + 1).offset(offset)
+        pairs = (await s.execute(stmt)).all()
+        for item, m_ord in pairs[:limit]:
+            out.append(_overlay(item, m_ord))
+        return len(pairs) > limit
+
     async with get_session() as s:
         if internal_folder_id is not None:
-            mo = VaultFolderItem.manual_order
-            bucket = case((mo.is_(None), 1), (mo >= 0, 0), else_=2)
             stmt = (
                 select(VaultItem, mo)
                 .join(
@@ -525,18 +518,11 @@ async def local_items(
                     VaultFolderItem.folder_id == internal_folder_id,
                 )
             )
-            stmt = _apply_common(stmt)
-            stmt = stmt.order_by(bucket, mo, VaultItem.created_at.desc()).limit(limit + 1).offset(offset)
-            pairs = (await s.execute(stmt)).all()
-            has_more = len(pairs) > limit
-            for item, m_ord in pairs[:limit]:
-                out.append(_overlay(item, m_ord))
+            has_more = await _append_ordered_page(s, stmt)
         elif of_folder_id is not None:
             # An OF folder, served from the mirror. Membership = of_folder_ids
             # (parsed from listStates); manual_order via a LEFT join on
             # vault_folder_items keyed by the OF list id.
-            mo = VaultFolderItem.manual_order
-            bucket = case((mo.is_(None), 1), (mo >= 0, 0), else_=2)
             stmt = (
                 select(VaultItem, mo)
                 .outerjoin(
@@ -551,12 +537,7 @@ async def local_items(
                     func.coalesce(VaultItem.of_folder_ids, "[]").like(f"%{of_folder_id}%"),
                 )
             )
-            stmt = _apply_common(stmt)
-            stmt = stmt.order_by(bucket, mo, VaultItem.created_at.desc()).limit(limit + 1).offset(offset)
-            pairs = (await s.execute(stmt)).all()
-            has_more = len(pairs) > limit
-            for item, m_ord in pairs[:limit]:
-                out.append(_overlay(item, m_ord))
+            has_more = await _append_ordered_page(s, stmt)
         else:
             stmt = select(VaultItem).where(
                 VaultItem.account_id == account_id, VaultItem.removed_at.is_(None)
@@ -685,6 +666,13 @@ async def reorder(payload: dict = Body(...)) -> dict[str, Any]:
 
 # ── The pack picker (logic: vault_pack_picker) ──────────────────────
 
+def _unknown_category() -> HTTPException:
+    """400 for a pack category `vault_pack_picker` does not know."""
+    return HTTPException(status_code=400, detail={
+        "error": "unknown_category",
+        "known": sorted(vault_pack_picker.CATEGORIES)})
+
+
 @router.get("/admin/vault-ai/pack-candidates")
 async def pack_candidates(
     account_id: str = Query(...),
@@ -702,9 +690,7 @@ async def pack_candidates(
     try:
         cat = vault_pack_picker.category(category)
     except vault_pack_picker.UnknownCategory:
-        raise HTTPException(status_code=400, detail={
-            "error": "unknown_category",
-            "known": sorted(vault_pack_picker.CATEGORIES)}) from None
+        raise _unknown_category() from None
     return {"account_id": account_id,
             **await vault_pack_picker.candidates(account_id, cat, limit=limit)}
 
@@ -722,9 +708,7 @@ async def pack_triage(payload: dict = Body(...)) -> dict[str, Any]:
         cat = vault_pack_picker.category(payload.get("category") or "feet")
         verdicts = vault_pack_picker.normalise_verdicts(cat, payload.get("verdicts") or [])
     except vault_pack_picker.UnknownCategory:
-        raise HTTPException(status_code=400, detail={
-            "error": "unknown_category",
-            "known": sorted(vault_pack_picker.CATEGORIES)}) from None
+        raise _unknown_category() from None
     except vault_pack_picker.UnknownRung as e:
         raise HTTPException(status_code=400, detail={
             "error": "unknown_rung", "rung": str(e)}) from None
@@ -759,6 +743,14 @@ router.include_router(vault_of_folders.plan_router)
 router.include_router(vault_ai_vision.flags_router)
 
 
+def _media_id(payload: dict) -> int:
+    """`payload["media_id"]` as an int, else 400 media_id_required."""
+    try:
+        return int(payload.get("media_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail={"error": "media_id_required"})
+
+
 @router.get("/admin/vault-ai/disputes")
 async def list_disputes(account_id: str = "") -> dict[str, Any]:
     """Items where the describe pass and the flags pass contradict each other.
@@ -782,10 +774,7 @@ async def resolve_dispute(payload: dict = Body(...)) -> dict[str, Any]:
     """
     account_id = str(payload.get("account_id") or "")
     assert_account_owned(account_id)
-    try:
-        media_id = int(payload.get("media_id"))
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail={"error": "media_id_required"})
+    media_id = _media_id(payload)
     res = await vault_ai_fix.apply_fix(account_id, media_id,
                                        payload.get("values") or {})
     if not res.get("ok"):
@@ -827,10 +816,7 @@ async def flags_review_grade(payload: dict = Body(...)) -> dict[str, Any]:
     """
     account_id = str(payload.get("account_id") or "")
     assert_account_owned(account_id)
-    try:
-        media_id = int(payload.get("media_id"))
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail={"error": "media_id_required"})
+    media_id = _media_id(payload)
     res = await vault_ai_fix.record_grade(
         account_id, media_id,
         corrections=payload.get("corrections") or {},

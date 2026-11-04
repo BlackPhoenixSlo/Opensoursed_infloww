@@ -4,8 +4,9 @@ import { describe, expect, it, vi } from "vitest";
 import { applyData } from "./ofMirrorData";
 import { applyIdentity, formatCount } from "./ofMirrorIdentity";
 import { ARCHIVE_PATH, bindProfile, PROFILE_CHANGE, standInModel, type Highlight, type MediaPost, type MirrorProfile, type ProfileHandlers, type ProfileUser } from "./ofMirrorProfile";
-import type { MirrorPost, Promotion } from "./ofMirrorFeeds";
-import type { PostLabel } from "./ofMirrorData";
+import type { MirrorPost } from "./ofMirrorFeedsShared";
+import type { Promotion } from "./ofMirrorFeedsStrip";
+import type { PostLabel } from "./ofMirrorDataLists";
 import { bindStory, highlightItems } from "./ofMirrorPost";
 import { STORY_PHOTO_MS, VIEWER } from "./ofMirrorVault";
 

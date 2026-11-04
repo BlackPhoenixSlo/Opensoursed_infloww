@@ -35,25 +35,48 @@ BOTH fan the 2-day-old stub is still there; per STALE fan the 2-day-old stub is 
 and OF's row carries no run. Budgets: echo visible -> every stub adopted (E2E_SETTLE_MS),
 route p95s, p95 vs the last green run.
 
+Dry-run tail (O3, after every check above is recorded, so it can redden none of them): per Creator,
+seed/mass_dry_run.py puts `--set dry_fence=` fans on MASSdmEXCLUDE and as many outside an enforce-mode
+include list (AUTOFENCE), and the scenario gives FakeOF a custom list (`lists` / `list_users`) whose
+roster = `--set dry_fresh=` fans no message touched in 12 h, `--set dry_guard=` fans the broadcasts above
+reached (inside the 6 h contact guard), and both fences. max(`--users`, 2 per Creator) concurrent
+`POST /admin/automation/enqueue` `send_mass_message` dry runs, alternating per Creator explicit (the
+roster as `included_users`, `--set dry_excluded=` fresh fans as `excluded_users`, one payload per
+Creator) and list (`user_lists: [that list]`, its own excluded fresh fans), drained by
+`/__slop/automation-tick`; then ONE real enqueue per Creator of the explicit payload. DRY_NO_SEND
+(lib/mass_dry_run_faults.py), the dry phase only: of_wire `queue` frames per Creator unchanged, no OF
+list POST / DELETE, no new mass_runs / out messages row, every job done and every run's stats
+(`GET /admin/stats/automation-runs`) dry_run, sent 0. DRY_LIST: the list runs' would_send are, as a
+multiset, roster - guard - fences - their excluded_users (each non-empty); every explicit run's
+would_send is that, in roster order, and the real send's wire `userIds`.
+
 Bypasses (declared): lib/of_wire.py is OnlyFans (its own declared bypasses; the queue answer
 `{id, text, createdAt}` is a guess, which is what makes every recipient a placeholder; no 10 s
 broadcast throttle); OF's chat list is set by the scenario, one item per recipient, its
 `<br />` echo shape the one test_placeholder_adopt pins; the inbox clients are httpx pools, not
-browsers, and model only the page-load + head poll (no SSE, no manual Refresh); the stale run is SQL in the product's shape (no actor can send 2 days ago).
+browsers, and model only the page-load + head poll (no SSE, no manual Refresh); the stale run is SQL in the product's shape (no actor can send 2 days ago);
+the tail's fences are SQL rows (seed/mass_dry_run.py), its OF list is set on FakeOF directly (OF's
+side: no route makes a custom list with members in one step), its runs are drained by tick passes,
+not the supervisor's cadence.
 Break-it-once: placeholder-pair-ignores-window (the 6 h bound dropped: only PH_ONCE);
-`--fault=mass-queue-excluded-kept` (only EXCL).
+`--fault=mass-queue-excluded-kept` (only EXCL); `--fault=mass-dry-run-ignored` (a dry run sends:
+DRY_NO_SEND + DRY_LIST); `--fault=mass-dry-run-skips-guard` (the list dry run's in-memory excludes
+dropped: only DRY_LIST).
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from slop.lib.attribution_pair_faults import PH_ONCE
+from slop.lib.client import Recorder
+from slop.lib.mass_dry_run_faults import DRY_LIST, DRY_NO_SEND
 from slop.lib.mass_queue_faults import EXCL
-from slop.seed import mass_placeholders, of_sessions
+from slop.seed import mass_dry_run, mass_placeholders, of_sessions, ts
 
 sys.path.append(str(Path(__file__).resolve().parents[2] / "service"))   # the pairing key, pure
 from attribution_pair import _norm_body  # noqa: E402
@@ -77,11 +100,18 @@ POLL_S = (30.0, 45.0)
 SETTLE_S = 240
 ECHO_ID_BASE = 9_760_000_000_000                     # OF ids for the chat list's copies
 E2E_SETTLE_MS = 2 * 45_000   # each page's first load lands within one compressed poll; 2x slack
+# The enqueue budget is the composer's: every dry run is enqueued at once, one SQLite write each, so the
+# burst queues on the write lock (measured --scale=medium --users=200: p50 755 / p95 1143 ms,
+# 20261103T045033Z-2026-10-31-mass-placeholder-echo-9023).
 P95_MS = {"GET /api/of/v2/chats": 2000, "POST /api/of/v2/messages/queue": 3000,
-          "GET /admin/messages/:id/:id": 1000}
+          "GET /admin/messages/:id/:id": 1000, "POST /admin/automation/enqueue": 3000}
 P95_VS_LAST = (1.5, 500)
 
 SENT = "every broadcast answered 200 and left one placeholder per recipient"
+DRY_LIST_ID_BASE = 7_900_000                         # the tail's OF custom list, one per Creator
+DRY_SETTLE_S = 300
+_LIST_WRITES = ("POST /api2/v2/lists", "POST /api2/v2/lists/{id}/users/{id}",
+                "DELETE /api2/v2/lists/{id}/users/{id}")
 
 
 def caption(aid: str, k: int) -> str:
@@ -219,6 +249,8 @@ async def run(ctx) -> None:
               seconds=round(send_s, 2))
     if send_bad or short:
         ctx.skip(PH_ONCE, "the broadcasts did not leave their placeholders (SENT)")
+        for c in (DRY_NO_SEND, DRY_LIST):
+            ctx.skip(c, "the broadcasts did not leave their placeholders (SENT)")
         await owner.aclose()
         return
 
@@ -354,6 +386,8 @@ async def run(ctx) -> None:
     else:
         ctx.check(f"echo visible -> every placeholder adopted <= {E2E_SETTLE_MS} ms", settle_ms <= E2E_SETTLE_MS,
                   budget=True, settle_ms=round(settle_ms), reads=reads[0])
+    await dry_tail(ctx, w, aids, plan, rng)
+
     routes = ctx.rec.summary()
     for route, budget in P95_MS.items():
         if route in routes:
@@ -368,3 +402,212 @@ async def run(ctx) -> None:
     ctx.metric("p95_vs_last_green", {**{r: routes[r]["p95_ms"] for r in P95_MS if r in routes},
                                      **({"echo -> adopted": round(settle_ms)} if settle_ms is not None else {})})
     await owner.aclose()
+
+
+async def dry_tail(ctx, w, aids: list[str], plan: dict, rng) -> None:
+    """The dry-run tail (module docstring): fences + an OF list per Creator, concurrent dry runs, one
+    real send per Creator, DRY_NO_SEND and DRY_LIST."""
+    sizes = {k: ctx.param(f"dry_{k}", w.size[f"mass_dry_run_{k}"]) for k in ("fresh", "guard", "fence", "excluded")}
+    lists = _dry_world(ctx, w, aids, plan, rng, sizes)
+    jobs = _dry_jobs(ctx, aids, lists, rng)
+    http = ctx.owner.share(limits=len(jobs))
+    tick_http = ctx.owner.share(rec=Recorder(), limits=2)
+    before = _dry_counts(ctx, w, aids)
+    t_dry = time.perf_counter()
+    enq_bad = await _enqueue(http, jobs)
+    status = await _drain(w, tick_http, [j["job_id"] for j in jobs if j["job_id"] is not None])
+    dry_s = time.perf_counter() - t_dry
+    after = _dry_counts(ctx, w, aids)
+    with ctx.of_wire.lock:
+        new_calls = ctx.of_wire.calls[before["calls"]:after["calls"]]
+    list_writes = [c for c in new_calls if c["route"] in _LIST_WRITES]
+    stats: dict[str, list[dict]] = {}
+    for aid in aids:
+        r = await http.get(f"/admin/stats/automation-runs?kind=send_mass_message&account_id={aid}&limit=500")
+        stats[aid] = [{"status": x["status"], **json.loads(x["stats_json"] or "{}")}
+                      for x in (r.json().get("runs", []) if r.status_code == 200 else [])]
+    _check_no_send(ctx, aids, jobs, stats, status, before, after,
+                   enq_bad=enq_bad, list_writes=list_writes, seconds=dry_s)
+
+    # One real send per Creator of the explicit payload: what OF is told is what the dry runs said.
+    real_before = _dry_counts(ctx, w, aids)["queue"]
+    reals = [{"aid": aid, "payload": _explicit(lists, aid)} for aid in aids]
+    await _enqueue(http, reals)
+    await _drain(w, tick_http, [j["job_id"] for j in reals if j["job_id"] is not None])
+    wire: dict[str, tuple[list[int], int]] = {}
+    with ctx.of_wire.lock:
+        for aid in aids:
+            new = ctx.of_wire.queue.get(aid, [])[real_before[aid]:]
+            last_body = new[-1] if new else {}
+            wire[aid] = ([int(u) for u in last_body.get("userIds") or []], len(new))
+    _check_list(ctx, aids, lists, jobs, stats, wire)
+    ctx.metric("dry_run", {"dry_runs": len(jobs), "seconds": round(dry_s, 2), "creators": len(aids), **sizes})
+    await http.aclose()
+    await tick_http.aclose()
+
+
+def _dry_world(ctx, w, aids: list[str], plan: dict, rng, sizes: dict) -> dict[str, dict]:
+    """Per Creator: the OF list roster (fresh ∪ guard ∪ both fences), its fences seeded, the list set on
+    FakeOF. -> {aid: {id, roster, fresh, guard, massdm, autofence, ex_exp}}."""
+    n_fresh, n_guard, n_fence, n_dx = (sizes[k] for k in ("fresh", "guard", "fence", "excluded"))
+    assert n_fresh > n_dx >= 0, (n_fresh, n_dx)
+    con = w.sql()
+    try:
+        cut = ts(datetime.utcnow() - timedelta(hours=12))
+        busy = {(str(a), int(f)) for a, f in con.execute(
+            "SELECT DISTINCT account_id, fan_id FROM messages WHERE created_at >= ?", (cut,))}
+        massdm_had = {(str(a), int(f)) for a, f in con.execute(
+            "SELECT l.account_id, m.fan_id FROM list_members m JOIN lists l ON l.id = m.list_id "
+            "WHERE l.kind = 'exclude'")}
+    finally:
+        con.close()
+    lists: dict[str, dict] = {}
+    for ci, aid in enumerate(aids):
+        p = plan[aid]
+        used = {f for r in p["runs"] for f in r} | set(p["stale"])
+        pool = [f["id"] for f in w.data["fans"][aid]
+                if f["id"] not in used and (aid, f["id"]) not in busy and (aid, f["id"]) not in massdm_had]
+        rng.shuffle(pool)
+        need = n_fresh + 2 * n_fence
+        assert len(pool) >= need, (aid, len(pool), need)
+        fresh, massdm, autof = pool[:n_fresh], pool[n_fresh:n_fresh + n_fence], pool[n_fresh + n_fence:need]
+        sent = [f for r in p["sent"] for f in r]
+        guard = rng.sample(sent, min(n_guard, len(sent)))
+        roster = fresh + guard + massdm + autof
+        rng.shuffle(roster)
+        lists[aid] = {"id": DRY_LIST_ID_BASE + ci, "roster": roster, "fresh": fresh, "guard": guard,
+                      "massdm": massdm, "autofence": autof, "ex_exp": rng.sample(fresh, n_dx)}
+    mass_dry_run.seed(w, {aid: {"massdm": v["massdm"], "autofence": v["autofence"]} for aid, v in lists.items()},
+                      of_list_id_base=DRY_LIST_ID_BASE + 1000)
+    with ctx.of_wire.lock:
+        for aid, v in lists.items():
+            ctx.of_wire.lists.setdefault(aid, []).append(
+                {"id": v["id"], "type": "custom", "name": "slop dry vip", "usersCount": len(v["roster"])})
+            ctx.of_wire.list_users[v["id"]] = list(v["roster"])
+    return lists
+
+
+def _explicit(lists: dict, aid: str) -> dict:
+    v = lists[aid]
+    return {"text": f"slop dry run for {aid}", "included_users": v["roster"], "excluded_users": v["ex_exp"]}
+
+
+def _want(lists: dict, aid: str, ex) -> list[int]:
+    """Who a run with excluded_users `ex` reaches: the roster's fresh fans minus `ex`, in roster order."""
+    v, ex = lists[aid], set(ex)
+    return [f for f in v["roster"] if f in set(v["fresh"]) and f not in ex]
+
+
+def _dry_jobs(ctx, aids: list[str], lists: dict, rng) -> list[dict]:
+    """max(--users, 2 per Creator) dry payloads, alternating per Creator explicit / list.
+    -> [{aid, kind, payload}] (`job_id` set by _enqueue)."""
+    jobs: list[dict] = []
+    for u in range(max(ctx.users, 2 * len(aids))):
+        aid = aids[u % len(aids)]
+        if (u // len(aids)) % 2 == 0:
+            jobs.append({"aid": aid, "kind": "explicit", "payload": {**_explicit(lists, aid), "dry_run": True}})
+        else:
+            jobs.append({"aid": aid, "kind": "list", "payload": {
+                "text": f"slop dry run for {aid}", "user_lists": [lists[aid]["id"]],
+                "excluded_users": rng.sample(lists[aid]["fresh"], len(lists[aid]["ex_exp"])),
+                "dry_run": True}})
+    return jobs
+
+
+def _dry_counts(ctx, w, aids: list[str]) -> dict:
+    con = w.sql()
+    try:
+        q = ",".join("?" * len(aids))
+        runs = con.execute(f"SELECT COUNT(*) FROM mass_runs WHERE account_id IN ({q})", aids).fetchone()[0]
+        outs = con.execute(f"SELECT COUNT(*) FROM messages WHERE direction = 'out' AND account_id IN ({q})",
+                           aids).fetchone()[0]
+    finally:
+        con.close()
+    with ctx.of_wire.lock:
+        return {"mass_runs": runs, "out_rows": outs, "calls": len(ctx.of_wire.calls),
+                "queue": {a: len(ctx.of_wire.queue.get(a, [])) for a in aids}}
+
+
+async def _enqueue(http, jobs: list[dict]) -> list[dict]:
+    """POST every job at once; sets each `job_id` (None on a failed enqueue). -> the failures."""
+    bad: list[dict] = []
+
+    async def one(j: dict) -> None:
+        r = await http.post("/admin/automation/enqueue",
+                            json={"account_id": j["aid"], "kind": "send_mass_message", "payload": j["payload"]})
+        j["job_id"] = r.json().get("enqueued_job_id") if r.status_code == 200 else None
+        if j["job_id"] is None:
+            bad.append({"aid": j["aid"], "status": r.status_code, "body": r.text[:200]})
+
+    await asyncio.gather(*(one(j) for j in jobs))
+    return bad
+
+
+async def _drain(w, tick_http, ids: list[int]) -> dict[int, str]:
+    """Tick the automation worker until every job in `ids` is final (or DRY_SETTLE_S). -> {id: status}."""
+    t0 = time.monotonic()
+    st: dict[int, str] = {}
+    while time.monotonic() - t0 < DRY_SETTLE_S:
+        con = w.sql()
+        try:
+            st = dict(con.execute("SELECT id, status FROM scheduled_jobs WHERE id IN (%s)"
+                                  % ",".join("?" * len(ids)), ids).fetchall()) if ids else {}
+        finally:
+            con.close()
+        if all(x in ("done", "error", "cancelled") for x in st.values()) and len(st) == len(ids):
+            break
+        await tick_http.post("/__slop/automation-tick", timeout=600)
+    return st
+
+
+def _check_no_send(ctx, aids, jobs, stats, status, before, after, *, enq_bad, list_writes, seconds) -> None:
+    bad: dict[str, list] = {"enqueue": enq_bad, "job_not_done": [], "queue_frame": [], "runs": [],
+                            "not_dry": [], "list_write": list_writes[:5]}
+    for jid, st in status.items():
+        if st != "done":
+            bad["job_not_done"].append((jid, st))
+    for aid in aids:
+        if after["queue"][aid] != before["queue"][aid]:
+            bad["queue_frame"].append((aid, before["queue"][aid], after["queue"][aid]))
+        n_jobs = sum(1 for j in jobs if j["aid"] == aid)
+        if len(stats[aid]) != n_jobs:
+            bad["runs"].append((aid, len(stats[aid]), n_jobs))
+        for x in stats[aid]:
+            if x.get("dry_run") is not True or x.get("sent") != 0 or x["status"] != "ok":
+                bad["not_dry"].append((aid, {k: x.get(k) for k in ("status", "dry_run", "sent", "reason")}))
+    ctx.check(DRY_NO_SEND, not any(bad.values()) and after["mass_runs"] == before["mass_runs"]
+              and after["out_rows"] == before["out_rows"],
+              dry_runs=len(jobs), seconds=round(seconds, 2), list_writes=len(list_writes),
+              mass_runs=(before["mass_runs"], after["mass_runs"]), out_rows=(before["out_rows"], after["out_rows"]),
+              counts={k: len(v) for k, v in bad.items()}, sample={k: v[:3] for k, v in bad.items() if v})
+
+
+def _check_list(ctx, aids, lists, jobs, stats, wire) -> None:
+    """`wire`: {aid: (the real send's userIds, its queue frames)}."""
+    bad: dict[str, list] = {"list": [], "list_empty": [], "explicit": [], "explicit_runs": [],
+                            "explicit_vs_wire": [], "wire": []}
+    for aid in aids:
+        runs, (wire_ids, wire_n) = stats[aid], wire[aid]
+        got = sorted(tuple(x.get("would_send") or ()) for x in runs if x.get("audience") == "list")
+        exp = sorted(tuple(sorted(_want(lists, aid, j["payload"]["excluded_users"]))) for j in jobs
+                     if j["aid"] == aid and j["kind"] == "list")
+        if got != exp:
+            bad["list"].append((aid, [list(g)[:6] for g in got[:2]], [list(e)[:6] for e in exp[:2]]))
+        if any(not e for e in exp):
+            bad["list_empty"].append(aid)
+        w_exp = _want(lists, aid, lists[aid]["ex_exp"])
+        n_exp = sum(1 for j in jobs if j["aid"] == aid and j["kind"] == "explicit")
+        if sum(1 for x in runs if x.get("audience") == "explicit") != n_exp:
+            bad["explicit_runs"].append((aid, n_exp))
+        for x in runs:
+            if x.get("audience") == "explicit" and x.get("would_send") != w_exp:
+                bad["explicit"].append((aid, (x.get("would_send") or [])[:6], w_exp[:6]))
+            if x.get("audience") == "explicit" and x.get("would_send") != wire_ids:
+                bad["explicit_vs_wire"].append((aid, (x.get("would_send") or [])[:6], wire_ids[:6]))
+        if wire_n != 1:
+            bad["wire"].append((aid, wire_n))
+    ctx.check(DRY_LIST, not any(bad.values()),
+              list_runs=sum(1 for j in jobs if j["kind"] == "list"),
+              explicit_runs=sum(1 for j in jobs if j["kind"] == "explicit"),
+              roster=len(next(iter(lists.values()))["roster"]) if lists else 0,
+              counts={k: len(v) for k, v in bad.items()}, sample={k: v[:3] for k, v in bad.items() if v})

@@ -20,9 +20,9 @@ owner-made logins (`POST /admin/employees/login`, role Chatter, one Creator each
    (CLICK_SYNC, polled up to SSE_WAIT_S). Then one sweep at the seed's `now` (the hook below) while no
    Shift is due, so it only prunes: every row older than RETENTION gone, every younger one kept (the
    -1 s / 0 / +1 s boundary rows too), and then every SSE stream must show SQL's new unread (unread
-   rows were among the pruned) within SSE_WAIT_S (KNOWN_RED: it does not; skipped too when the streams
-   were not in sync before the sweep). Then a running Shift for login 0 (`POST /admin/shifts`, started
-   1 h ago, no clock-in): the next sweep files its missed clock-in.
+   rows were among the pruned: `tick` pushes to each Agency it pruned unread rows of) within SSE_WAIT_S
+   (skipped when the streams were not in sync before the sweep). Then a running Shift for login 0
+   (`POST /admin/shifts`, started 1 h ago, no clock-in): the next sweep files its missed clock-in.
 3. read: the sessions click Mark all read / one row (picked at setup, younger than RETENTION -
    PICK_MARGIN so no real-clock sweep prunes it first) / reopen the bell while one filer files for real
    (role toggles via `PUT /admin/employees/{id}/setup`, deactivate + reactivate via `PATCH
@@ -57,7 +57,8 @@ each needs a Shift: the sweep files those for real here). The sweep's 5-min cade
 scenario writes `$DEMO_SHOTS_TMP/notifications-tick.json`; `now` is passed only for the prune
 (the seed's clock, so the boundary rows are exact). Everything else is real routes.
 Break-it-once (lib/notifications_faults.py): read-all-marks-later-rows (FAULT): only LATER_UNREAD;
---fault=notif-page-skips-offset: only PAGED; --fault=notif-prune-ignores-retention: only PRUNED.
+--fault=notif-page-skips-offset: only PAGED; --fault=notif-prune-ignores-retention: only PRUNED;
+--fault=notif-prune-not-pushed: only PRUNE_PUSHED.
 """
 from __future__ import annotations
 
@@ -105,14 +106,6 @@ ROLES = ("chatter", "team-leader")
 WAIT_MS = 120_000          # next dev compiles a page on first visit
 STEP_MS = 30_000           # one UI step after the page is up
 SHOT_SETTLE_MS = 300       # the panel's re-render after the badge goes, before the settled shot
-# {check name: "open finding: <one line>"}: a check red on a green harness (product bug) is SKIPped
-# with its finding until the product is fixed. No fault may target one.
-KNOWN_RED: dict[str, str] = {
-    # measured 20261101T112655Z-2026-11-01-notifications-feed-volume-84ca (small): 49 unread pruned,
-    # SQL unread 174 -> 125, all 10 streams still 174 after 10 s
-    PRUNE_PUSHED: ("open finding: tick prune deletes unread rows without an SSE push (notify returns early "
-                   "with no notices); the badge stays stale until the next notify (service/notifications_api.py tick)"),
-}
 
 
 def _load(timeline, t0: float, t1: float) -> dict:
@@ -153,13 +146,6 @@ class _State:
 
 def _iso(dt: datetime) -> str:
     return dt.replace(microsecond=0).isoformat() + "Z"
-
-
-def _chk(ctx, name: str, ok: bool, **detail) -> None:
-    if name in KNOWN_RED:
-        ctx.skip(name, KNOWN_RED[name], observed_ok=ok, **detail)
-    else:
-        ctx.check(name, ok, **detail)
 
 
 def _q(w, q: str, *a) -> list[tuple]:
@@ -322,14 +308,14 @@ async def _page(s: _State) -> None:
                          "dup": sum(1 for v in c.values() if v > 1), "extra": len(set(got) - set(want)),
                          "first_diff": next((j for j, (a, b) in enumerate(zip(got, want)) if a != b), None),
                          "missing_pages": missing_pages[:10]}
-    _chk(ctx, PAGED, not bad and len(want) == s.total, rows=s.total, pages=sum(len(p) for p in pages.values()),
-         users=users, load=s.load["page"], bad=bad)
+    ctx.check(PAGED, not bad and len(want) == s.total, rows=s.total, pages=sum(len(p) for p in pages.values()),
+              users=users, load=s.load["page"], bad=bad)
     unread_now = _unread(s.w)
     marks = ",".join("?" * len(clicks)) or "NULL"
     not_marked = [r[0] for r in _q(s.w, f"SELECT id FROM agency_notifications WHERE id IN ({marks})"
                                         " AND read_at IS NULL", *clicks)]
-    _chk(ctx, READ_ONE, unread_now == len(s.seeded_unread) - len(clicks) and not not_marked,
-         seeded_unread=len(s.seeded_unread), clicked=len(clicks), unread=unread_now, not_marked=not_marked[:10])
+    ctx.check(READ_ONE, unread_now == len(s.seeded_unread) - len(clicks) and not not_marked,
+              seeded_unread=len(s.seeded_unread), clicked=len(clicks), unread=unread_now, not_marked=not_marked[:10])
 
 
 # ── 2. prune: one sweep at the seed's clock that files nothing ─────────────
@@ -337,8 +323,8 @@ async def _prune(s: _State) -> None:
     ctx, w = s.ctx, s.w
     ctx.rec.stage = "prune"
     synced = await _sse_reaches_sql(s)  # phase 1's concurrent clicks each pushed after their commit
-    _chk(ctx, CLICK_SYNC, synced["ok"], clicks=min(s.users, len(s.seeded_unread)),
-         **{k: v for k, v in synced.items() if k != "ok"})
+    ctx.check(CLICK_SYNC, synced["ok"], clicks=min(s.users, len(s.seeded_unread)),
+              **{k: v for k, v in synced.items() if k != "ok"})
     edge = ts(w.now - RETENTION)
     rows = _q(w, "SELECT id, created_at, read_at IS NULL FROM agency_notifications WHERE agency_user_id=?", w.user_id)
     before = {i: at for i, at, _ in rows}
@@ -347,17 +333,17 @@ async def _prune(s: _State) -> None:
     older = {i for i, at in before.items() if at < edge}
     gone = set(before) - after
     b = s.bulk["boundary"]
-    _chk(ctx, PRUNED, bool(older) and gone == older and b["before"] in gone and b["at"] in after
-         and b["after"] in after, retention_days=RETENTION.days, older=len(older), gone=len(gone),
-         kept_younger=len(set(before) - older - gone), wrongly_gone=sorted(gone - older)[:10],
-         left_old=sorted(older - gone)[:10], boundary=b, sweep=swept)
+    ctx.check(PRUNED, bool(older) and gone == older and b["before"] in gone and b["at"] in after
+              and b["after"] in after, retention_days=RETENTION.days, older=len(older), gone=len(gone),
+              kept_younger=len(set(before) - older - gone), wrongly_gone=sorted(gone - older)[:10],
+              left_old=sorted(older - gone)[:10], boundary=b, sweep=swept)
     unread_pruned = sum(1 for i, _, unread in rows if unread and i in gone)
     seen = await _sse_reaches_sql(s)
     detail = dict(unread_pruned=unread_pruned, filed=swept.get("filed"), before_prune=synced, after_prune=seen)
     if not synced["ok"]:  # a stale stream before the sweep would make "after" meaningless either way
         ctx.skip(PRUNE_PUSHED, "streams not in sync with SQL before the sweep (see CLICK_SYNC)", **detail)
     else:
-        _chk(ctx, PRUNE_PUSHED, swept.get("filed") == 0 and unread_pruned > 0 and seen["ok"], **detail)
+        ctx.check(PRUNE_PUSHED, swept.get("filed") == 0 and unread_pruned > 0 and seen["ok"], **detail)
     await _shift_for(s, s.logins[0])  # due now: the next sweep files login 0's missed clock-in
 
 
@@ -410,17 +396,17 @@ async def _read(s: _State) -> None:
     await asyncio.sleep(max(0.0, last + LATER_WAIT_S - time.time()))
     later = _q(w, "SELECT id, kind, read_at FROM agency_notifications WHERE agency_user_id=? AND id>?", w.user_id, mark)
     in_lag = filed_s < READ_ALL_LAG_S  # else a deferred read-all re-run would land before them: unjudgeable
-    _chk(ctx, LATER_UNREAD, in_lag and len(later) >= len(FINAL_STEPS) and all(r[2] is None for r in later),
-         rows=len(later), kinds=dict(Counter(k for _, k, _ in later)),
-         marked_read=[r[0] for r in later if r[2] is not None], filed_after_last_read_all_s=filed_s,
-         fault_lag_s=READ_ALL_LAG_S, reason=None if in_lag else
-         f"final filings took {filed_s}s >= the read-all fault's lag {READ_ALL_LAG_S}s: cannot judge",
-         judged_after_s=round(time.time() - last, 2), sweep=final_tick)
+    ctx.check(LATER_UNREAD, in_lag and len(later) >= len(FINAL_STEPS) and all(r[2] is None for r in later),
+              rows=len(later), kinds=dict(Counter(k for _, k, _ in later)),
+              marked_read=[r[0] for r in later if r[2] is not None], filed_after_last_read_all_s=filed_s,
+              fault_lag_s=READ_ALL_LAG_S, reason=None if in_lag else
+              f"final filings took {filed_s}s >= the read-all fault's lag {READ_ALL_LAG_S}s: cannot judge",
+              judged_after_s=round(time.time() - last, 2), sweep=final_tick)
 
     seen = await _sse_reaches_sql(s, with_api=True)
     synced = seen.pop("ok")
     ended = [li.ended for li in s.listeners if li.ended]
-    _chk(ctx, BADGE, synced and not ended, **seen, ended=ended[:3])
+    ctx.check(BADGE, synced and not ended, **seen, ended=ended[:3])
     s.phases.update(read_s=round(time.time() - t0, 1), filer_steps=len(steps), filed_by_kind=dict(Counter(
         k for (k,) in _q(w, "SELECT kind FROM agency_notifications WHERE id>?", max(s.bulk["ids"])))))
 
@@ -487,10 +473,10 @@ async def _ui(s: _State) -> None:
             detail["after"] = {"sql_unread": _unread(w), "api_unread": await _api_unread(ctx.owner)}
             five = [(st, u) for st, u in page.slop["statuses"] if st >= 500]
             detail["five_xx"] = five[:10]
-            _chk(ctx, UI_FEED, detail["badge"] == want and detail["read_all_status"] == 200
-                 and detail["after"] == {"sql_unread": 0, "api_unread": 0} and not five, **detail)
+            ctx.check(UI_FEED, detail["badge"] == want and detail["read_all_status"] == 200
+                      and detail["after"] == {"sql_unread": 0, "api_unread": 0} and not five, **detail)
     except Exception as e:  # noqa: BLE001 — a UI step that cannot complete is the check's FAIL
-        _chk(ctx, UI_FEED, False, error=f"{type(e).__name__}: {e}"[:600], **detail)
+        ctx.check(UI_FEED, False, error=f"{type(e).__name__}: {e}"[:600], **detail)
 
 
 async def run(ctx) -> None:

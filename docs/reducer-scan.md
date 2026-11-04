@@ -1,5 +1,4 @@
 # Reducer scan — 2026-10-29 (closed 2026-10-30)
-Programme status: [`docs/thermo-pass-2026-11.md`](thermo-pass-2026-11.md).
 
 Rule: `CLAUDE.md` "State logic".
 Baseline: no test calls a reducer directly.
@@ -25,7 +24,7 @@ Each PR below built the reducer and ran its own rwl in the same PR, unless a sep
 - `automations/FunnelEditor.tsx` + `ReadyMadePanel.tsx` raw JSON → `lib/rawJsonReducer.ts`, `lib/funnelDraft.ts` (raw steps go through `toWire`) — #15 · +#38 (shared `parseJsonObjectOr`).
 - `growth/ScriptsPage.tsx` → `scriptsPageState.ts` — #14 · +#38 (rename prompt as data, failed remove keeps tick).
 - `vault/VaultManagePanel.tsx` → `vaultItemEditorReducer.ts` + `vaultBrowseReducer.ts` — #34 (port of #7 batch 2), slop #35. **No rwl** on these two reducers.
-- `chat/VaultPicker.tsx` + `FanDrawer.tsx` `VideoScrubThumb` → `app/hooks/useHoverPreview.ts` — #34, slop #35 · rwl #37 · +#53 (`VaultTile` onto the same hook).
+- `chat/VaultPicker.tsx` + `FanDrawerSalesView.tsx` `VideoScrubThumb` → `app/hooks/useHoverPreview.ts` — #34, slop #35 · rwl #37 · +#53 (`VaultTile` onto the same hook).
 - `growth/AutoReplyPage.tsx` → `autoReplyForm.ts` + `automations/humanStyle.ts` `dropSaved` — #16 · +#46 (`{draft,sent}`, `useHumanStyle`/`<HumanStyleBlock>`, GetToKnowFans `getToKnowFansForm.ts`), +#65 (`usePageSave` edit/save).
 - `vault/VaultImportCard.tsx` → `importPickReducer.ts` — #26.
 - `employees/EmployeeAccess.tsx` → `employeeAccessState.ts` — #31 · +#48 (partial access save surfaced).
@@ -35,7 +34,7 @@ Each PR below built the reducer and ran its own rwl in the same PR, unless a sep
 - `setup/PasteCurlCard.tsx` → `pasteCurl.ts` — #23.
 - `growth/PriorityMass.tsx` + `automations/FunnelLaunchPanel.tsx` → `audience/audienceReducer.ts` — #19 · +#51 (Mass composer embeds it).
 - `growth/LinksListFrame.tsx` `useFrameFilters` → `pagedFilters.ts` (now `app/hooks/`) — #22 · +#37 (AccountsTable), +#53 (`usePagedRows` clamp). Not done: Links/Promotion/Tracking still clamp in render (#53 O-a).
-- `vault/VaultFolderRail.tsx` → `vaultFolderOrder.ts` — #25 · +#50 (reload shows new order), +#65 (sort label saved in `sortOfFolders`). Not done: label read back from OF (`SORT_READ_NOT_WIRED`).
+- `vault/VaultFolderRail.tsx` → `vaultFolderOrder.ts` — #25 · +#50 (reload shows new order), +#65 (sort label saved in `sortOfFolders`), +#173 (label stays browser-local, OF's sort not read back; `SORT_TITLE`).
 - `compose/PremadeComposer.tsx` → `premadeRows.ts` — #25. Not done: partial fan-out has no retry/lock (owner call, #51).
 - `chat/FanList.tsx` → `fanListPaging.ts` — #33 · +#50.
 - `NotificationBell.tsx` → `notificationBellReducer.ts` — #33 · +#50.
@@ -49,14 +48,12 @@ All 10 built in #17 (`reducers-service`, no rwl in it); rwl per item:
 4. `service/server.py` pump reconcile → `pump_reconcile.py` — #17 · rwl #28 · +#47 (restart backoff).
 5. `app/contexts/UserContext.tsx` → `userSessionReducer.ts` — #17 · rwl #29.
 6. `service/run_slot.py` → `run_slot_decide.py` — #17 · rwl #45.
-7. `service/events.py` → `events_decide.py` — #17 · rwl #30 · +#47 (persist worker → `events_persist.py`); open #60 (routing/classifiers, `events_wire.py`).
-8. `service/automation_executor.py` → `dispatch_plan.py` — #17 · rwl #45; open #61 (`job_queue.py` + `run_decide.py`).
+7. `service/events.py` → `events_decide.py` — #17 · rwl #30 · +#47 (persist worker → `events_persist.py`), +#60 (routing/classifiers, `events_wire.py`).
+8. `service/automation_executor.py` → `dispatch_plan.py` — #17 · rwl #45 · +#61 (`job_queue.py` + `run_decide.py`).
 9. `reply_mass_funnel.py` → `funnel_decide.py` — #17 · rwl #44.
-10. `service/of_ws.py` → `of_ws_decide.py` — #17 · rwl #30. **Won't fix**: "reset backoff on a good frame" / "dead after N auth failures" — HEAD has neither; adding = behaviour change, owner call.
+10. `service/of_ws.py` → `of_ws_decide.py` — #17 · rwl #30 · +#109 (backoff resets after ≥60 s up) · +#177 (session-dead retried 3×, then parks).
 
 ## Done 2026-10-30
 1. Every Tier 1, Tier 2 and Non-React item but `CreatorReportsCard` is a pure reducer/decide with vitest/script tables, most with a slop check + fault (not: setup wizard, GifPicker, raw JSON — real-path run or unit only); 8 scan bugs fixed in 7f2604fcd; 44 merged PRs in #6–#65 ran the 2-round review loop and closed their leftovers.
 2. Reviews found ~124 more behaviour bugs, all fixed (hand count of bullets listed as fixed bugs in those 44 PR bodies, 6 of them mobile gestures #21/#49; structure/test/polish items and unfixed open findings excluded; ±10 on judgment).
 3. Biggest: paid mass/post re-sent to models that already succeeded (#11, #13, #51); customs Pull re-fired a paid brief (#10, #36); `/admin/users` leaked every agency's users to any owner (#48); proxy left unwatched after an error (#59); follow-up nudged a fan who just replied (#44).
-4. Won't fix / not done: `CreatorReportsCard` (no gating), `of_ws` backoff reset (owner call), vault sort label read-back from OF (not wired), Premade partial fan-out retry (owner call), VaultManagePanel reducers never review-looped (#34).
-5. Still open (W9, unmerged): #60 events routing, #61 job queue; chat `composerDraft` keeps its own free-preview copy (#51 follow-up).

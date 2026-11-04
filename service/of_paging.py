@@ -19,15 +19,17 @@ ROSTER_PAGE = 50             # OF caps subscriber pages low; offset math is len-
 MAX_PAGES = 200              # backstop: 200 × 100 = 20k rows
 
 
-def page_all_checked(fetch) -> tuple[list[dict], bool]:
+def page_all_checked(fetch, max_pages: int | None = None) -> tuple[list[dict], bool]:
     """`page_all` plus an explicit truncation flag: (rows, hit_backstop).
     The audience-fence / include-mirror paths must treat a truncated crawl as a
     FAILED sync (loud), never as a complete snapshot — a silently short read
-    would drop every member past the ceiling and un-fence / un-admit them."""
+    would drop every member past the ceiling and un-fence / un-admit them.
+    `max_pages` (opt-in) moves the backstop for one crawl; None = MAX_PAGES."""
+    cap = MAX_PAGES if max_pages is None else max_pages
     out: list[dict] = []
     seen_ids: set = set()
     offset = 0
-    for _ in range(MAX_PAGES):
+    for _ in range(cap):
         r = fetch(offset)
         items = (r.get("list") or []) if isinstance(r, dict) else (r or [])
         added = 0
@@ -48,7 +50,7 @@ def page_all_checked(fetch) -> tuple[list[dict], bool]:
         offset += len(items)
     else:
         log.warning("page_all_checked hit the %d-page backstop (%d rows) — repeated-page "
-                    "guard never fired; result may be truncated", MAX_PAGES, len(out))
+                    "guard never fired; result may be truncated", cap, len(out))
         return out, True
     return out, False
 
@@ -72,10 +74,11 @@ def page_all(fetch):
     return page_all_checked(fetch)[0]
 
 
-def ids_from_pages(fetch) -> tuple[set[int], bool]:
+def ids_from_pages(fetch, **paging) -> tuple[set[int], bool]:
     """(user ids, hit_backstop) for any paged OF user list. Blocking.
-    Rows without an int-able `id` are skipped."""
-    rows, truncated = page_all_checked(fetch)
+    Rows without an int-able `id` are skipped. `paging`: `page_all_checked`'s
+    keywords (`max_pages`), forwarded as given."""
+    rows, truncated = page_all_checked(fetch, **paging)
     ids: set[int] = set()
     for u in rows:
         uid = u.get("id")
@@ -88,7 +91,9 @@ def ids_from_pages(fetch) -> tuple[set[int], bool]:
     return ids, truncated
 
 
-def list_member_ids(client, list_id) -> tuple[set[int], bool]:
-    """(member ids, hit_backstop) of an OF custom list (`/lists/{id}/users`). Blocking."""
+def list_member_ids(client, list_id, **paging) -> tuple[set[int], bool]:
+    """(member ids, hit_backstop) of an OF custom list (`/lists/{id}/users`). Blocking.
+    `paging`: `page_all_checked`'s keywords; Auto_Exclude's background refresh
+    crawls past 20k with `max_pages` (audiences `_refresh_auto_exclude`)."""
     return ids_from_pages(
-        lambda off: client.list_users_in(list_id, limit=LIST_PAGE, offset=off))
+        lambda off: client.list_users_in(list_id, limit=LIST_PAGE, offset=off), **paging)

@@ -133,6 +133,7 @@ from tenant_keys_api import (  # noqa: E402
 from system_admin_api import router as _system_admin_router  # noqa: E402
 from settings_api import router as _settings_router  # noqa: E402
 import notifications_api  # noqa: E402
+import push_api  # noqa: E402
 from shifts_api import router as _shifts_router  # noqa: E402
 from employee_groups_api import router as _employee_groups_router  # noqa: E402
 from sensitive_words_api import router as _sensitive_words_router  # noqa: E402
@@ -175,21 +176,11 @@ def _kick_db_sync(reason: str) -> None:
     mutating admin endpoint so the SQL mirror catches up within a few hundred
     ms of any change to accounts.py / proxies.py / session_bootstrap state.
 
-    Wrapped in try/except + logged because a sync failure must NEVER bubble
-    out of an admin response — the user's actual mutation already succeeded
-    against the JSON write path."""
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        # Sync FastAPI handlers run in the threadpool; trampoline to the
-        # main loop captured at startup.
-        if _main_loop is None:
-            return
-        _main_loop.call_soon_threadsafe(
-            lambda: asyncio.create_task(_sync_db_from_disk(), name=f"db-sync-{reason}")
-        )
-        return
-    loop.create_task(_sync_db_from_disk(), name=f"db-sync-{reason}")
+    Fire-and-forget task, so a sync failure never bubbles out of an admin
+    response — the user's actual mutation already succeeded against the JSON
+    write path."""
+    # Lambda, not the bare function: `_sync_db_from_disk` stays read when the task starts.
+    _on_main_loop(lambda: _sync_db_from_disk(), f"db-sync-{reason}")
 
 
 def _redact(s: str) -> str:
@@ -354,6 +345,8 @@ app.include_router(_system_admin_router)
 app.include_router(_settings_router)
 # The owner's agency notifications (/admin/agency-notifications); owner-only, chatter-blocked by prefix.
 app.include_router(notifications_api.router)
+# The session's Web Push subscriptions (/push/*, push_api); the sender is push_send (startup below).
+app.include_router(push_api.router)
 # Employee groups (/admin/employee-groups), the Organization Chart's tree; owner-only, session-gated the same way.
 app.include_router(_employee_groups_router)
 app.include_router(_sensitive_words_router)
@@ -1569,6 +1562,24 @@ async def _seed_chat_links_once() -> None:
         log.warning("w7_seed_chat_links failed", exc_info=True)
 
 
+@app.on_event("startup")
+async def _start_push() -> None:
+    """Web Push sender (push_send): loads the subscriptions, starts its tasks; off (logged) without
+    a usable VAPID subject. Not behind the test-mode guard: slop drives it."""
+    import push_send
+    try:
+        await push_send.start()
+    except Exception:
+        log.exception("push_send start failed; push off")
+
+
+@app.on_event("shutdown")
+async def _stop_push() -> None:
+    import push_send
+    with contextlib.suppress(Exception):
+        await push_send.stop()
+
+
 @app.on_event("shutdown")
 async def _stop_event_pumps() -> None:
     # Save the lane counters before anything else can raise — a clean stop is
@@ -1583,22 +1594,11 @@ async def _stop_event_pumps() -> None:
     # CancelledError is not an "Exception" in 3.8+ (it's BaseException) so we
     # have to suppress it explicitly — otherwise FastAPI logs a noisy traceback
     # at every clean shutdown.
-    if _supervisor_task and not _supervisor_task.done():
-        _supervisor_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await _supervisor_task
-    if _tx_ingest_task and not _tx_ingest_task.done():
-        _tx_ingest_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await _tx_ingest_task
-    if _tx_fast_task and not _tx_fast_task.done():
-        _tx_fast_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await _tx_fast_task
-    if _automation_exec_task and not _automation_exec_task.done():
-        _automation_exec_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await _automation_exec_task
+    for task in (_supervisor_task, _tx_ingest_task, _tx_fast_task, _automation_exec_task):
+        if task and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
     for task in list(_account_pumps.values()):
         if not task.done():
             task.cancel()
@@ -1624,9 +1624,10 @@ def _load_client(account_id: str) -> OFClient:
     """Return the OFClient for `account_id`, loading it the first time.
     Raises a structured 503 if the account has no usable session yet.
 
-    Pooling lives in client_pool; this is only the HTTP translation of the two
-    ways a build can fail. Routes and automations share the one pool, so an
-    account has one client (and one cookie jar), not one per lane.
+    Pooling lives in client_pool; this is only the HTTP translation of the
+    ways a build can fail (no file, incomplete signing rules, a missing field).
+    Routes and automations share the one pool, so an account has one client
+    (and one cookie jar), not one per lane.
 
     Platform branch (additive): a Fansly account returns the OF-shaped shim
     (fansly_backend → FanslyShimClient); OnlyFans accounts — the default for
@@ -1636,23 +1637,20 @@ def _load_client(account_id: str) -> OFClient:
             import fansly_backend
             return fansly_backend.get_client(account_id)
         return client_pool.get(account_id)
-    except FileNotFoundError as e:
+    except (FileNotFoundError, ValueError, KeyError) as e:
+        # (error, message) per failure.
+        error, message = next(v for t, v in (
+            (FileNotFoundError, ("no_session", str(e))),
+            (ValueError, ("incomplete_signing_rules", str(e))),
+            # A session file without a field the client needs (`headers`, `signing`).
+            (KeyError, ("bad_session", f"session file is missing {e}")),
+        ) if isinstance(e, t))
         raise HTTPException(
             status_code=503,
             detail={
-                "error": "no_session",
+                "error": error,
                 "account_id": account_id,
-                "message": str(e),
-                "remedy": ["POST /admin/session/bootstrap"],
-            },
-        ) from None
-    except ValueError as e:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "error": "incomplete_signing_rules",
-                "account_id": account_id,
-                "message": str(e),
+                "message": message,
                 "remedy": ["POST /admin/session/bootstrap"],
             },
         ) from None
@@ -2846,6 +2844,11 @@ def _assemble_chats_page(
     return {"list": page.rows, "hasMore": page.has_more}
 
 
+def _is_plain_view(filter: str | None, list_id: str | None, q: str | None) -> bool:
+    """The chat list with no filter, folder or search: an unbiased window of the roster."""
+    return not filter and list_id is None and not q
+
+
 @app.get("/api/of/v2/chats")
 async def list_chats(
     limit: int = Query(10, ge=1, le=50),
@@ -2872,7 +2875,7 @@ async def list_chats(
     # the badge's staleness clock (see _chats_window_fetched_at).
     is_badge_window = (
         limit == _ROSTER_SCAN_MAX and offset == 0 and order == "recent"
-        and not filter and list_id is None and not q
+        and _is_plain_view(filter, list_id, q)
     )
     async def _fetch():
         def _read():
@@ -2893,7 +2896,7 @@ async def list_chats(
         # from WS frames, so it is not OF's read state and must not overwrite the
         # mirror. Only the unfiltered/no-search/no-folder view (unbiased
         # snapshot); fire-and-forget so it never adds latency.
-        if value and not filter and not q and list_id is None:
+        if value and _is_plain_view(filter, list_id, q):
             chats = value.get("list") or value.get("chats") or []
             if chats:
                 from messages import reconcile_chats_from_of
@@ -2913,7 +2916,7 @@ async def list_chats(
     # Without this, the one button users press when badge≠list leaves the badge
     # serving pre-refresh counts for up to its own TTL: the symptom survives its
     # own remedy.
-    if refresh and offset == 0 and not filter and not q and list_id is None:
+    if refresh and offset == 0 and _is_plain_view(filter, list_id, q):
         relay_cache.invalidate("roster_count", aid)
     return await _annotate_chat_rows(aid, resp)
 
@@ -3394,11 +3397,7 @@ async def send_message(
     outbound chat_message events on purpose; this is the single producer
     of outbound rows."""
     # Extract context BEFORE _proxy — its lambda has no request scope.
-    try:
-        account_id = _resolve_account_id(request)
-    except HTTPException:
-        # _resolve_account_id already shaped the error; let it propagate.
-        raise
+    account_id = _resolve_account_id(request)
     # Same chatter-aware resolution as the mass-message path above. For
     # owner sessions this reads X-Employee-Id; for chatter sessions it
     # looks up (chatter, account_owner) → Employee, materialising the
@@ -3409,8 +3408,7 @@ async def send_message(
 
     await _reject_if_resale(account_id, int(chat_id), body)
 
-    # Bridge sync _proxy from this async handler — copied from the
-    # /users/list pattern at server.py around line 2388.
+    # Bridge sync _proxy from this async handler.
     result = await asyncio.to_thread(
         _proxy,
         lambda: _get_client().send_message(
@@ -5094,27 +5092,8 @@ async def of_schedule_message(chat_id: int, request: Request,
                            previews=body.previews, locked_text=body.locked_text)
         except FanslyAPIError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
-        from employees import resolve_outbound_employee_id
-        from automation_executor import enqueue_job
-        employee_id = await resolve_outbound_employee_id(request, account_id)
-        run_at = _run_at_naive_utc(body.scheduled_date)
-        payload = {
-            "fan_id": chat_id,
-            "text": body.text,
-            "price": body.price,
-            "locked_text": body.locked_text,
-            "media_files": body.media_files,
-            "previews": body.previews,
-            "tagged_users": body.tagged_users,
-            "giphy_id": None,
-            "sent_by_employee_id": employee_id,
-            "send_purpose": "manual",
-        }
-        job_id = await enqueue_job(
-            account_id, "scheduled_send",
-            payload=payload, run_at=run_at, created_by_employee_id=employee_id,
-        )
-        return {"job_id": job_id, "fan_id": chat_id, "run_at": run_at.isoformat() + "Z"}
+        return await _enqueue_scheduled(request, account_id, body, fan_id=chat_id,
+                                        run_at_iso=body.scheduled_date, giphy_id=None)
     return await asyncio.to_thread(_proxy, lambda: _get_client().schedule_message(
         chat_id, text=body.text, scheduled_date=body.scheduled_date,
         price=body.price, locked_text=body.locked_text, media_files=body.media_files,
@@ -5150,6 +5129,38 @@ def _run_at_naive_utc(iso: str) -> datetime:
     return dt
 
 
+async def _enqueue_scheduled(request: Request, account_id: str,
+                             body: "_ScheduleMessageBody | _ScheduledSendBody", *,
+                             fan_id: int, run_at_iso: str, giphy_id: str | None) -> dict[str, Any]:
+    """Insert the `scheduled_jobs` row the executor fires at `run_at`, attributed
+    to the scheduling chatter's employee id; the reply both schedule routes give."""
+    from employees import resolve_outbound_employee_id
+    from automation_executor import enqueue_job
+
+    employee_id = await resolve_outbound_employee_id(request, account_id)
+    run_at = _run_at_naive_utc(run_at_iso)
+    payload = {
+        "fan_id": fan_id,
+        "text": body.text,
+        "price": body.price,
+        "locked_text": body.locked_text,
+        "media_files": body.media_files,
+        "previews": body.previews,
+        "tagged_users": body.tagged_users,
+        "giphy_id": giphy_id,
+        "sent_by_employee_id": employee_id,
+        # Typed stamp: a HUMAN scheduled this. The audience at-fire recheck
+        # bypasses manual sends; automation-enqueued scheduled_send jobs don't
+        # carry it and get re-checked against the fence at fire time.
+        "send_purpose": "manual",
+    }
+    job_id = await enqueue_job(
+        account_id, "scheduled_send",
+        payload=payload, run_at=run_at, created_by_employee_id=employee_id,
+    )
+    return {"job_id": job_id, "fan_id": fan_id, "run_at": run_at.isoformat() + "Z"}
+
+
 @app.post("/api/of/v2/scheduled-sends")
 async def create_scheduled_send(request: Request, body: _ScheduledSendBody = Body(...)):
     """Enqueue a near-term deferred 1:1 send. Resolves the scheduling chatter's
@@ -5168,31 +5179,8 @@ async def create_scheduled_send(request: Request, body: _ScheduledSendBody = Bod
                    "PPV price and media attachments aren't wired on the Fansly "
                    "path yet.",
         )
-    from employees import resolve_outbound_employee_id
-    from automation_executor import enqueue_job
-
-    employee_id = await resolve_outbound_employee_id(request, account_id)
-    run_at = _run_at_naive_utc(body.run_at)
-    payload = {
-        "fan_id": body.fan_id,
-        "text": body.text,
-        "price": body.price,
-        "locked_text": body.locked_text,
-        "media_files": body.media_files,
-        "previews": body.previews,
-        "tagged_users": body.tagged_users,
-        "giphy_id": body.giphy_id,
-        "sent_by_employee_id": employee_id,
-        # Typed stamp: a HUMAN scheduled this. The audience at-fire recheck
-        # bypasses manual sends; automation-enqueued scheduled_send jobs don't
-        # carry it and get re-checked against the fence at fire time.
-        "send_purpose": "manual",
-    }
-    job_id = await enqueue_job(
-        account_id, "scheduled_send",
-        payload=payload, run_at=run_at, created_by_employee_id=employee_id,
-    )
-    return {"job_id": job_id, "fan_id": body.fan_id, "run_at": run_at.isoformat() + "Z"}
+    return await _enqueue_scheduled(request, account_id, body, fan_id=body.fan_id,
+                                    run_at_iso=body.run_at, giphy_id=body.giphy_id)
 
 
 @app.get("/api/of/v2/scheduled-sends")
@@ -5539,25 +5527,36 @@ async def of_upload_media(file: UploadFile = File(...)):
     # upload after `path.name` (S3 key, convert claim `name`, Fansly
     # `fileName`), so a bare NamedTemporaryFile landed every Composer upload in
     # the vault as `tmpXXXX`.
-    tmp_dir = tempfile.mkdtemp(prefix="of-upload-")
-    tmp_path = os.path.join(tmp_dir, _upload_basename(file.filename))
-    try:
-        with open(tmp_path, "wb") as tmp:
-            shutil.copyfileobj(file.file, tmp)
-        result = _proxy(lambda: _get_client().upload_media(
-            tmp_path,
-            content_type=file.content_type,
-        ))
-        # New vault item — every cached page is now potentially stale.
-        # Drop the whole account's cache so the next picker open re-fetches.
+    def _upload():
+        tmp_dir = tempfile.mkdtemp(prefix="of-upload-")
         try:
-            aid = _current_aid()
-            await vault_cache.invalidate(aid)
-        except Exception as e:  # noqa: BLE001 — cache invalidation must never block the upload response
-            log.warning("vault_cache: invalidate-on-upload failed: %s", e)
-        return result
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+            tmp_path = os.path.join(tmp_dir, _upload_basename(file.filename))
+            with open(tmp_path, "wb") as tmp:
+                shutil.copyfileobj(file.file, tmp)
+            return _proxy(lambda: _get_client().upload_media(
+                tmp_path,
+                content_type=file.content_type,
+            ))
+        finally:
+            # In the worker, so a cancelled request cannot unlink the spool
+            # under an upload that is still running.
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    # Off the loop (#171): the spool is up to a 15 MB copy, and upload_media
+    # is blocking curl for seconds (hash, S3 PUTs, convert claim). On the loop
+    # it ran uploads one at a time and stalled every other request, so writers
+    # holding a SQLite transaction could not commit: "database is locked",
+    # audit/attribution rows lost. to_thread copies the request's contextvars,
+    # which `_proxy` and `_get_client` read.
+    result = await asyncio.to_thread(_upload)
+    # New vault item — every cached page is now potentially stale.
+    # Drop the whole account's cache so the next picker open re-fetches.
+    try:
+        aid = _current_aid()
+        await vault_cache.invalidate(aid)
+    except Exception as e:  # noqa: BLE001 — cache invalidation must never block the upload response
+        log.warning("vault_cache: invalidate-on-upload failed: %s", e)
+    return result
 
 
 # ── Vault import (fan check, batch, append, Drive list, status) ─────────

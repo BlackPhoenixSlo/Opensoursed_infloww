@@ -12,15 +12,43 @@ const { relayGet } = vi.hoisted(() => ({ relayGet: vi.fn() }));
 vi.mock("@/lib/relay", () => ({ relay: { get: (...args: unknown[]) => relayGet(...args) } }));
 vi.mock("@/hooks/useAccounts", () => ({ useActiveAccounts: () => [{ id: "acc-1", nickname: "Creator One" }] }));
 vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => ({ accountId: "acc-1" }) }));
+// lib/webPush at its interface (its HTTP is webPush.test.ts's).
+const wp = vi.hoisted(() => {
+  const state = { id: null as string | null, failed: null as string | null };
+  return {
+    state,
+    supported: true,
+    ios: false,
+    subscribePush: vi.fn(async () => { state.id = "sub-1"; return "sub-1"; }),
+    unsubscribePush: vi.fn(async () => { state.id = null; }),
+    showViaWorker: vi.fn(async () => undefined),
+    testPush: vi.fn(async () => ({ status: 201 })),
+  };
+});
+vi.mock("@/lib/webPush", () => ({
+  pushSupported: () => wp.supported,
+  iosTab: () => wp.ios,
+  subscribePush: wp.subscribePush,
+  unsubscribePush: wp.unsubscribePush,
+  showViaWorker: wp.showViaWorker,
+  testPush: wp.testPush,
+  usePushState: () => ({ ...wp.state }),
+  why: (e: unknown) => (e instanceof Error ? e.message : String(e)),
+}));
 
 import { renderWithProviders } from "@/test-utils";
 import { NOTIF_CLEARED_EVENT, appendNotifHistory, dispatchNotifArrived, markNotifHistoryResponded } from "@/lib/notifSettings";
 import { NotificationBell } from "./NotificationBell";
+import { DENIED_MSG, IOS_TAB_MSG } from "./OsPingSettings";
 
 afterEach(() => {
   cleanup();
   relayGet.mockReset();
   localStorage.clear();
+  vi.clearAllMocks();
+  Object.assign(wp.state, { id: null, failed: null });
+  wp.supported = true;
+  wp.ios = false;
 });
 
 describe("NotificationBell (top bar)", () => {
@@ -167,5 +195,134 @@ describe("NotificationBell (Agency pane)", () => {
     rerender(<NotificationBell />);
     expect(screen.queryByText("Agency feed")).toBeNull();
     expect(await screen.findByText("No notifications.")).toBeInTheDocument();
+  });
+});
+
+describe("NotificationBell (OS notifications: Web Push)", () => {
+  async function openSettings() {
+    relayGet.mockResolvedValue({ list: [] });
+    const user = userEvent.setup();
+    renderWithProviders(<NotificationBell />);
+    await user.click(screen.getByRole("button", { name: "Notifications" }));
+    await user.click(await screen.findByRole("button", { name: "Toast settings" }));
+    return user;
+  }
+
+  it("Test with push: subscribes from the tap, shows through the service worker, then offers the delayed push", async () => {
+    vi.stubGlobal("Notification", Object.assign(vi.fn(), { permission: "default", requestPermission: vi.fn() }));
+    try {
+      const user = await openSettings();
+      await user.click(screen.getByRole("button", { name: "Test" }));
+
+      expect(await screen.findByText(/✓ Push on: lock screen alerts active/)).toBeInTheDocument();
+      expect(wp.subscribePush).toHaveBeenCalledTimes(1); // it asks the permission itself
+      expect(Notification.requestPermission).not.toHaveBeenCalled();
+      expect(wp.showViaWorker).toHaveBeenCalledWith("Inflowwww test", expect.objectContaining({ tag: "chatterly-test" }));
+      expect(Notification).not.toHaveBeenCalled(); // no in-page notification
+
+      await user.click(screen.getByRole("button", { name: "Send push in 8 s, lock your phone" }));
+      expect(wp.testPush).toHaveBeenCalledWith(8);
+      expect(await screen.findByText(/Push in 8 s: lock your phone now/)).toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("Test when push fails: the relay's reason, alerts only while open", async () => {
+    vi.stubGlobal("Notification", Object.assign(vi.fn(), { permission: "default" }));
+    wp.subscribePush.mockRejectedValueOnce(new Error("push disabled: no VAPID subject"));
+    try {
+      const user = await openSettings();
+      await user.click(screen.getByRole("button", { name: "Test" }));
+      expect(await screen.findByText("✗ push unavailable: push disabled: no VAPID subject, alerts only while open")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /Send push in 8 s/ })).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("Test without push support: the in-page notification, as before", async () => {
+    wp.supported = false;
+    const N = Object.assign(vi.fn(), { permission: "granted" });
+    vi.stubGlobal("Notification", N);
+    try {
+      const user = await openSettings();
+      await user.click(screen.getByRole("button", { name: "Test" }));
+      expect(await screen.findByText("✓ Fired — check your OS tray.")).toBeInTheDocument();
+      expect(N).toHaveBeenCalledWith("Inflowwww test", expect.objectContaining({ tag: "chatterly-test" }));
+      expect(wp.subscribePush).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("the OS checkbox: off drops the relay's row; on subscribes from the tap", async () => {
+    const user = await openSettings();
+    const box = screen.getByRole("checkbox", { name: "OS notification when tab is unfocused" });
+    expect(box).toBeChecked();
+    await user.click(box);
+    expect(wp.unsubscribePush).toHaveBeenCalledTimes(1);
+    expect(wp.subscribePush).not.toHaveBeenCalled();
+    await user.click(box);
+    expect(wp.subscribePush).toHaveBeenCalledWith(expect.objectContaining({ osPing: true }));
+  });
+
+  it("permission denied: says alerts are blocked and where to allow them, not the generic failure", async () => {
+    vi.stubGlobal("Notification", Object.assign(vi.fn(), { permission: "denied" }));
+    wp.subscribePush.mockRejectedValueOnce(new DOMException("Registration failed - permission denied", "NotAllowedError"));
+    try {
+      const user = await openSettings();
+      await user.click(screen.getByRole("button", { name: "Test" }));
+      expect(await screen.findByText(DENIED_MSG)).toBeInTheDocument();
+      expect(DENIED_MSG).toMatch(/site settings.*Settings > Notifications/);
+      expect(Notification).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("an iPhone / iPad Safari tab (not installed): Add to Home Screen first, no subscribe", async () => {
+    wp.ios = true;
+    wp.supported = false; // a tab there has no PushManager
+    const user = await openSettings();
+    await user.click(screen.getByRole("button", { name: "Test" }));
+    expect(await screen.findByText(IOS_TAB_MSG)).toBeInTheDocument();
+    expect(IOS_TAB_MSG).toMatch(/Add to Home Screen/);
+    expect(wp.subscribePush).not.toHaveBeenCalled();
+  });
+
+  it("push wanted, never asked (permission default), not live: the panel says to tap Test", async () => {
+    vi.stubGlobal("Notification", Object.assign(vi.fn(), { permission: "default" }));
+    try {
+      relayGet.mockResolvedValue({ list: [] });
+      renderWithProviders(<NotificationBell />);
+      await userEvent.click(screen.getByRole("button", { name: "Notifications" }));
+      expect(await screen.findByRole("button", { name: "Tap Test to enable lock-screen alerts" })).toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("granted, live: no hint", async () => {
+    vi.stubGlobal("Notification", Object.assign(vi.fn(), { permission: "granted" }));
+    wp.state.id = "sub-1";
+    try {
+      relayGet.mockResolvedValue({ list: [] });
+      renderWithProviders(<NotificationBell />);
+      await userEvent.click(screen.getByRole("button", { name: "Notifications" }));
+      await screen.findByText("No notifications.");
+      expect(screen.queryByRole("button", { name: "Tap Test to enable lock-screen alerts" })).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("a lazy subscribe that failed: the panel says to tap Test", async () => {
+    wp.state.failed = "Registration failed - permission denied";
+    relayGet.mockResolvedValue({ list: [] });
+    renderWithProviders(<NotificationBell />);
+    await userEvent.click(screen.getByRole("button", { name: "Notifications" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Tap Test to enable lock-screen alerts" }));
+    expect(screen.getByRole("button", { name: "Test" })).toBeInTheDocument();
   });
 });

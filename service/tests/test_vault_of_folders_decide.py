@@ -8,6 +8,9 @@ and test_vault_foreign_media_guard.
                                not mutated.
   case_parse_folder_ids_table: None / bad JSON / non-int ids → [].
   case_too_many_table:         exactly max passes, max+1 is the 400 detail.
+  case_parse_threshold_table:  None / "" → default, 0 and "0" stay 0, clamp
+                               9 → 8 and -1 → 0, " 3 " → 3; "x" / [1] / {} /
+                               2.0 / True raise (400 bad_threshold).
   case_hide_selection_table:   keeper refused, not-a-dupe refused, sent copies
                                only with allow_sent, order kept, empty input.
   case_chunks_table:           100 → [100], 205 → [100, 100, 5], [] → [].
@@ -61,6 +64,31 @@ def case_too_many_table():
         ("exactly max", (list(range(500)), 500), None),
         ("max + 1", (list(range(501)), 500), {"error": "too_many", "max": 500, "got": 501}),
     ], d.too_many)
+
+
+def _threshold_or_error(raw):
+    try:
+        return d.parse_threshold(raw, 2, 8)
+    except ValueError:
+        return "400"
+
+
+def case_parse_threshold_table():
+    _table([
+        ("None → default", (None,), 2),
+        ("'' → default", ("",), 2),
+        ("0 stays 0", (0,), 0),
+        ("'0' stays 0", ("0",), 0),
+        ("2", (2,), 2),
+        ("9 clamps to max", (9,), 8),
+        ("-1 clamps to 0", (-1,), 0),
+        ("' 3 ' → 3", (" 3 ",), 3),
+        ("non-int", ("x",), "400"),
+        ("list", ([1],), "400"),
+        ("dict", ({},), "400"),
+        ("float", (2.0,), "400"),
+        ("bool", (True,), "400"),
+    ], _threshold_or_error)
 
 
 def _cluster(original: int, *dupes: tuple[int, int]) -> dict:

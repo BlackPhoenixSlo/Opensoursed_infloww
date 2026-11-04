@@ -25,6 +25,8 @@
   case_org_scope_stays_in_one_agency  a master's oversight link never joins
                                    another agency's creator to the org.
   case_stale_snapshot_falls_back...  an old roster crawl no longer decides status.
+  case_projection_matches_orm_load  the 12-column loader == the old select(Fan)
+                                   loader, dict for dict and resolve ids per rule.
 
 The DB-backed cases call the Relay as a signed-in owner (the shared two-Agency
 fixture) and link each case's Creator to that owner's Agency, so they pass with
@@ -45,7 +47,7 @@ import _agency_fixtures as fx  # noqa: E402
 import json  # noqa: E402
 import os  # noqa: E402
 
-from sqlalchemy import select  # noqa: E402
+from sqlalchemy import func, select  # noqa: E402
 
 from db.models import (  # noqa: E402
     Account, AutomationRule, Fan, ScheduledJob, SmartList, SubscriberSnapshot,
@@ -553,6 +555,136 @@ def case_ghost_audience_idle_days():
         raise AssertionError("within_next accepted on idle_days")
 
 
+async def _orm_load(account_id, rules_obj, now, *, roster_fresh=False):
+    """The loader before the projection (full `select(Fan)` entities), kept as
+    the oracle for case_projection_matches_orm_load."""
+    m = smart_lists_api
+    rules = rules_obj.get("rules") or []
+    windows = m._windows_in_rules(rules_obj)
+    async with get_session() as s:
+        fan_rows = (await s.execute(
+            select(Fan).where(Fan.account_id == str(account_id)))).scalars().all()
+        spend_by_window = {}
+        for days in windows:
+            rows = (await s.execute(
+                select(Transaction.fan_id, func.sum(Transaction.amount_cents))
+                .where(Transaction.account_id == str(account_id), Transaction.fan_id.isnot(None),
+                       Transaction.occurred_at >= now - timedelta(days=days))
+                .group_by(Transaction.fan_id))).all()
+            spend_by_window[days] = {int(f): int(t or 0) for f, t in rows}
+        ledger = await m._ledger_facts(s, account_id, rules, now)
+        snap = await m._snapshot(s, account_id, now, roster_fresh=roster_fresh)
+    out = []
+    for row in fan_rows:
+        fid = int(row.fan_id)
+        rs = {d: spend_by_window.get(d, {}).get(fid, 0) for d in windows}
+        status, renew, sub_at, exp_at, back_at = snap.get(fid, (None,) * 5)
+        facts = dict(ledger.get(fid, {}))
+        facts["last_message_sent_at"] = m._days_ago(row.last_message_sent_at, now)
+        facts["sub_start"] = m._days_ago(sub_at or row.subscribed_at, now)
+        facts["expires_at"] = m._days_ago(exp_at or row.subscription_expires_at, now)
+        facts["resubscribed_at"] = m._days_ago(back_at, now)
+        touched = [d for d in (facts.pop(m._LAST_REVENUE, None), row.last_message_received_at,
+                               sub_at or row.subscribed_at) if d is not None]
+        facts["idle_days"] = m._days_ago(max(touched), now) if touched else None
+        out.append(m._normalise_fan(row, now, rs, facts, (status, renew)))
+    return out
+
+
+def case_projection_matches_orm_load():
+    """Every column the loader reads, through each fallback: tags JSON /
+    garbage / non-list / empty, null dates, fresh vs stale snapshot, each
+    display-name fallback. Same dicts, same order, same resolve ids."""
+    now = datetime.utcnow()
+    d = lambda days: now - timedelta(days=days)  # noqa: E731
+    fresh, stale = "sl_proj_fresh", "sl_proj_stale"
+    fans = [
+        dict(fan_id=1, tags='["vip","x"]', lifetime_spend_cents=25000, custom_nickname="Cust",
+             generated_nickname="Gen", of_display_name="Disp", of_username="user1",
+             subscription_status="active", last_message_received_at=d(1), last_message_sent_at=d(3),
+             subscribed_at=d(40), subscription_expires_at=d(-5)),
+        dict(fan_id=2, tags="not json", lifetime_spend_cents=500, generated_nickname="Gen2",
+             of_display_name="Disp2", subscription_status="expired", last_message_received_at=d(20),
+             last_message_sent_at=d(15), subscribed_at=d(100), subscription_expires_at=d(2)),
+        dict(fan_id=3, tags='{"a": 1}', of_display_name="Disp3", of_username="user3",
+             last_message_sent_at=d(8)),
+        dict(fan_id=4, tags="", of_username="user4", subscription_status="active"),
+        dict(fan_id=5, tags="[]", lifetime_spend_cents=None),
+        dict(fan_id=6, tags='["vip"]', lifetime_spend_cents=12000, custom_nickname="Six",
+             last_message_received_at=d(3), last_message_sent_at=d(10), subscribed_at=d(60)),
+    ]
+    txs = [(1, "tip", 500, 2), (1, "ppv", 8000, 10), (2, "subscription", 999, 5),
+           (2, "rebill", 999, 40), (6, "ppv", 3000, 1), (6, "tip", 500, 50)]
+
+    async def seed():
+        for aid in (fresh, stale):
+            await _link(aid)
+            async with get_session() as s:
+                for f in fans:
+                    s.add(Fan(account_id=aid, **f))
+                for fid, kind, cents, ago in txs:
+                    s.add(Transaction(account_id=aid, fan_id=fid, kind=kind, amount_cents=cents,
+                                      occurred_at=d(ago)))
+        async with get_session() as s:   # fresh: 1 active (renew on, roster dates), 2 expired
+            s.add(SubscriberSnapshot(account_id=fresh, fan_id=1, seen_at=d(0), renew_on=True,
+                                     subscribe_at=d(35), expired_at=d(-4)))
+            s.add(SubscriberSnapshot(account_id=fresh, fan_id=2, seen_at=d(1), renew_on=False,
+                                     resubscribed_at=d(6)))
+            s.add(SubscriberSnapshot(account_id=stale, fan_id=1, seen_at=d(2), renew_on=True))
+            s.add(SubscriberSnapshot(account_id=stale, fan_id=2, seen_at=d(3), resubscribed_at=d(6)))
+    asyncio.run(seed())
+
+    money = {"scope": "creator", "timeframe": "30d"}
+    rows = [
+        [], [{"field": "lifetime_spend", "op": ">=", "value": 10000}],
+        [{"field": "recent_spend", "op": ">", "value": 0, "days": 7}],
+        [{"field": "last_active_days", "op": "<=", "value": 5}],
+        [{"field": "total_spend", "op": "<", "value": 5000, **money}],
+        [{"field": "ppv_spend", "op": "==", "value": 3000, **money}],
+        [{"field": "tips_spend", "op": "!=", "value": 0, "scope": "creator", "timeframe": "all"}],
+        [{"field": "subscription_spend", "op": "between", "value": [1, 2000], **money}],
+        [{"field": "highest_spend", "op": ">", "value": 100, **money}],
+        [{"field": "last_spend_amount", "op": ">=", "value": 500, "scope": "creator"}],
+        [{"field": "last_purchase_at", "op": "within_last", "value": 7, "scope": "creator"}],
+        [{"field": "last_message_sent_at", "op": "within_last", "value": 7}],
+        [{"field": "last_message_sent_at", "op": "more_than", "value": 9}],
+        [{"field": "sub_start", "op": "between", "value": [30, 90]}],
+        [{"field": "expires_at", "op": "within_next", "value": 10}],
+        [{"field": "resubscribed_at", "op": "within_last", "value": 30}],
+        [{"field": "idle_days", "op": "more_than", "value": 2}],
+        [{"field": "status", "op": "==", "value": "active"}],
+        [{"field": "status", "op": "!=", "value": "active"}],
+        [{"field": "renew", "op": "==", "value": "on"}],
+        [{"field": "tag", "op": "has", "value": "vip"}],
+        [{"field": "tag", "op": "not_has", "value": "vip"}],
+    ]
+    real_dt = smart_lists_api.datetime
+
+    class Frozen(real_dt):
+        @classmethod
+        def utcnow(cls):
+            return now
+
+    smart_lists_api.datetime = Frozen
+    try:
+        for aid in (fresh, stale):
+            for rules in rows:
+                obj = _validate_rules({"match": "all", "rules": rules})
+                new = asyncio.run(smart_lists_api._load_normalised_fans(aid, obj))
+                old = asyncio.run(_orm_load(aid, obj, now))
+                assert new == old, (aid, rules, new, old)
+                assert resolve(obj, new) == resolve(obj, old), (aid, rules)
+        # the fixtures exercise what they claim: names fall back, sent dates are read
+        sent = _validate_rules(
+            {"match": "all", "rules": [{"field": "last_message_sent_at", "op": "more_than", "value": 9}]})
+        got = asyncio.run(smart_lists_api._load_normalised_fans(stale, sent))
+        names = {f["fan_id"]: f["_name"] for f in got}
+        assert names == {1: "Cust", 2: "Gen2", 3: "Disp3", 4: "user4", 5: "5", 6: "Six"}, names
+        assert resolve(sent, got) == [2, 6]
+    finally:
+        smart_lists_api.datetime = real_dt
+
+
 _harness.run(
     case_resolve_empty_matches_all,
     case_resolve_lifetime_spend,
@@ -575,4 +707,5 @@ _harness.run(
     case_org_scope_stays_in_one_agency,
     case_stale_snapshot_falls_back_to_fan_row,
     case_ghost_audience_idle_days,
+    case_projection_matches_orm_load,
 )

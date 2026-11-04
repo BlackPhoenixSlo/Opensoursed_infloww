@@ -151,6 +151,8 @@ const nextConfig: NextConfig = {
       { source: "/img/:path*",     destination: `${RELAY_URL}/img/:path*` },
       // SSE channel.
       { source: "/events",       destination: `${RELAY_URL}/events` },
+      // Web Push: key, subscription, test (service/push_api.py; app/lib/webPush.ts).
+      { source: "/push/:path*",  destination: `${RELAY_URL}/push/:path*` },
       // The Concurrency panel, served by the relay and UNAUTHENTICATED there
       // (`service/lane_config_api.py`, on `server.py`'s no-auth allowlist).
       // Until 2026-09-20 this rewrite was deliberately absent so the panel

@@ -36,7 +36,8 @@ per-Creator 11 s OF write gap shared with every other automation, so a run
 sends at most ~300 fans an hour (Infloww's upper 700/h is not reachable without
 a shorter gap; owner question). OF's rate-limit refusal puts the fan back to
 pending and the next leg waits `_DEFER_S`. The text gets the account's banned
-words (block stops the run, mask masks), `{name}`, and the OF word restriction.
+words (block stops the run, mask masks; the create route's phrase matcher
+`sensitive_hits` also stops it), `{name}`, and the OF word restriction.
 A vault id OF refuses stops the run (`error`): every later fan would fail too.
 Another 4xx marks the fan `failed`; a timeout, dropped connection or 5xx may
 have sent, so the fan turns `unknown`. A leg past `_LEG_BUDGET_S` stops early
@@ -64,7 +65,7 @@ from automations._common import (
     quarantine_if_undeliverable, should_skip_muted_creator, skip_unreachable_fan,
     substitute_placeholders, template_fan_name,
 )
-from automations._wordfilter import banned_hit_summary, filter_banned, load_banned_words
+from automations._wordfilter import banned_hit_summary, filter_banned, load_banned_words, sensitive_hits
 from db.engine import get_session
 from db.models import Blacklist, Fan, PriorityMassRecipient, PriorityMassRun, ScheduledJob
 
@@ -281,9 +282,12 @@ async def _leg(run: PriorityMassRun) -> dict:
 
     words, mode = await load_banned_words(aid)
     scanned, hits = filter_banned([run.text], words, mode)
-    if scanned is None:
+    # And the create route's matcher (any whitespace between a phrase's words): a word
+    # listed after the run was created stops it here however the text spaces it.
+    phrase_hits = sensitive_hits(run.text or "", words)
+    if scanned is None or phrase_hits:
         await _set_status(rid, ERROR, error=(
-            f"the text holds a banned word ({', '.join(banned_hit_summary(hits))}); stopped"))
+            f"the text holds a banned word ({', '.join(banned_hit_summary(hits + phrase_hits))}); stopped"))
         return {**stats, "status": "error", "reason": "banned_words"}
     template = scanned[0]
     price = run.price_cents / 100 if run.price_cents > 0 else 0

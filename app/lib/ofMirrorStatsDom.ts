@@ -5,7 +5,7 @@
  * apply undoes the last before it draws again (idempotent); the wall clock in the owner's time zone; OF's number formats.
  */
 
-import { valid } from "@/lib/ofMirrorData";
+import { valid } from "@/lib/ofMirrorDom";
 import { undoList } from "@/lib/ofMirrorUndo";
 import { usd } from "@/lib/ofMirrorMoney";
 import { elOf, iconOf } from "@/lib/ofMirrorAvatar";

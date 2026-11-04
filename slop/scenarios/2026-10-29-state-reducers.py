@@ -452,7 +452,7 @@ from slop.lib.reducers_faults import (ADMIN_EMPTY, ADMIN_GATE, ADMIN_ROSTER_FAIL
                                         SMARTLIST_SAVED, SMARTLIST_STALE, VAULT_CANCEL, VAULT_DRAG, VAULT_QUICK_RELOAD,
                                         VAULT_RELOAD, VAULT_SORT, VAULT_SORT_LABEL, VAULT_MIRROR_SORT_LABEL, PICKER_SHIMMER,
                                         REDESCRIBE_KEEPS, REDESCRIBE_SHOWS, VM_PRICE, VM_TICKS)
-from slop.lib.nudge_faults import NUDGE_ABA
+from slop.lib.nudge_faults import NUDGE_ABA, NUDGE_ACK_LOST, NUDGE_TAB_CLOSED
 from slop.lib.mass_unsend_faults import MASS_BULK_UNSEND
 from slop.lib.composer_faults import PPV_SEND_BODY
 from slop.seed import agency_notifications, mass_broadcast_cache, of_sessions, ts
@@ -478,7 +478,7 @@ SECTIONS = {
     "dupes": (DUPES_CONFIRM, DUPES_HIDE),
     "dupes-partial": (DUPES_PARTIAL,),
     "group": (GROUP_ACK, GROUP_FANSLY, GROUP_BURST, GROUP_ACK_MS),
-    "nudge": (NUDGE_KEEP, NUDGE_STORED, NUDGE_SWITCH, NUDGE_STALE, NUDGE_ABA),
+    "nudge": (NUDGE_KEEP, NUDGE_STORED, NUDGE_SWITCH, NUDGE_STALE, NUDGE_ABA, NUDGE_TAB_CLOSED, NUDGE_ACK_LOST),
     "admin": (ADMIN_EMPTY,),
     "smartlist": (SMARTLIST_STALE, SMARTLIST_GATE, SMARTLIST_SAVED),
     "admin-roster": (ADMIN_ROSTER_FAILED,),
@@ -1594,6 +1594,148 @@ async def _nudge(ctx, page, chk) -> None:
         and pick(route_aba) == aba_want and pick(db_aba) == aba_want,
         account=aid, pre=pre, want=aba_want, back_mid_save_delay_fields=back_mid_save,
         shown_after_refetch=shown_aba, put1=status_a, put2=status_b, route=pick(route_aba), db=pick(db_aba))
+
+    # A tab closed mid-save (lib/pendingDraft.ts: the draft is kept in localStorage until a PUT acks it), each on
+    # pages of their own (later sections reuse `page`). Bypasses, declared: closing a page is the operator closing the
+    # tab (ui.close_popup: its held /api/of/ reads aborted first). A: the Save PUT is held at the browser's wire, then
+    # aborted there, THEN the tab closed (Chromium lets a request still paused at the Fetch domain through when its
+    # page closes), so it never reaches the relay: what A drives is "the PUT failed at the wire, then the tab closed".
+    # A tab unmounted while its PUT is still in flight is vitest's (NudgeOnlineTab.draft.test.tsx). B: the PUT is
+    # fetched through to the relay
+    # (`route.fetch()`, the write lands) and its answer never fulfilled: the page closes while the request is still
+    # paused (were Chromium to resume it at the close, it is the same body again, the same write). Each tab is
+    # reopened on a new page of the same context (same localStorage, as a reopened tab).
+    draft_key = f"chatterly:nudge-draft:{aid}"
+    restored_rx = re.compile(r"Unsaved changes restored")
+
+    async def read_key(p) -> dict | None:  # the kept draft, as Delay values (None: no key)
+        raw = await p.evaluate("(k) => localStorage.getItem(k)", draft_key)
+        e = json.loads(raw) if raw else None
+        return e and {"draft_delay": (e.get("draft") or {}).get("delay_minutes"),
+                      "base_delay": (e.get("base") or {}).get("delay_minutes")}
+
+    async def open_tab():
+        p = await page.context.new_page()
+        await _open_create_message(ctx, p, re.compile(r"^Nudge"))
+        dlg = p.get_by_role("dialog").filter(has=p.get_by_role("heading", name="Nudge online", exact=True))
+        d = dlg.get_by_label("Delay (min)", exact=True)
+        await d.wait_for(timeout=WAIT_MS)
+        sv = dlg.get_by_role("button", name=re.compile(r"^(Create automation|Save changes)$")).first
+        await p.wait_for_function("(b) => b && !b.disabled", arg=await sv.element_handle(), timeout=WAIT_MS)
+        pk = dlg.locator("select").filter(has=p.locator(f'option[value="{aid}"]'))
+        if await pk.count() and await pk.first.input_value() != aid:  # the editor's own account
+            await pk.first.select_option(aid)
+            await p.wait_for_timeout(1000)
+            await p.wait_for_function("(b) => b && !b.disabled", arg=await sv.element_handle(), timeout=30_000)
+        await _painted(p)
+        return p, dlg, d, sv
+
+    async def key_gone(p, secs: float = 3) -> dict | None:  # the kept draft once gone (or as it is after `secs`)
+        t_end = time.monotonic() + secs
+        k = await read_key(p)
+        while k is not None and time.monotonic() < t_end:
+            await asyncio.sleep(0.1)
+            k = await read_key(p)
+        return k
+
+    class Wire:
+        """The page's first nudge PUT held at its wire: `seen` once it arrived (`body`); with `fetch_first` fetched
+        through to the relay (`fetched`, `relay_status`) and left unanswered; on `go` aborted (`aborted`)."""
+
+        def __init__(self, fetch_first: bool):
+            self.fetch_first = fetch_first
+            self.seen, self.fetched, self.go, self.aborted = (asyncio.Event() for _ in range(4))
+            self.body: dict | None = None
+            self.relay_status: int | None = None
+
+        async def handler(self, route):
+            if route.request.method != "PUT" or self.seen.is_set():
+                return await route.fallback()
+            self.body = route.request.post_data_json
+            self.seen.set()
+            if self.fetch_first:
+                self.relay_status = (await route.fetch()).status
+                self.fetched.set()
+            await self.go.wait()
+            try:
+                await route.abort()
+            except Exception:  # noqa: BLE001 — the page is gone with its request
+                pass
+            self.aborted.set()
+
+    # A: the PUT aborted at the wire, then the tab closed -> reopened, the typed Delay is back with the restored
+    # note; the stored config is still the old one; Save stores it and the kept draft goes.
+    route_old, row_old = await stored(aid)
+    p2, dlg2, d2, s2 = await open_tab()
+    closed_want = int(await d2.input_value()) + 3
+    w2 = Wire(fetch_first=False)
+    await p2.route(is_nudge, w2.handler)
+    await d2.fill(str(closed_want))
+    await s2.click(timeout=10_000)
+    await asyncio.wait_for(w2.seen.wait(), 15)
+    await _painted(p2)
+    await ui.shot(ctx, p2, "nudge-tab-closed-trigger")
+    key_held = await read_key(p2)
+    w2.go.set()
+    await asyncio.wait_for(w2.aborted.wait(), 15)  # aborted at the wire before the close
+    await ui.close_popup(page, p2)
+    route_mid, row_mid = await stored(aid)
+    p3, dlg3, d3, s3 = await open_tab()
+    note_a = await dlg3.get_by_text(restored_rx).count()
+    shown_a = await d3.input_value()
+    key_reopen = await read_key(p3)
+    await ui.shot(ctx, p3, "nudge-tab-closed-restored")
+    async with p3.expect_response(lambda r: r.request.method == "PUT" and is_nudge(r.url), timeout=30_000) as put_c:
+        await s3.click(timeout=10_000)
+    status_c = (await put_c.value).status
+    await dlg3.get_by_text(re.compile(r"✓ Saved\.")).first.wait_for(timeout=30_000)
+    key_acked = await key_gone(p3)
+    note_acked = await dlg3.get_by_text(restored_rx).count()
+    await _painted(p3)
+    await ui.shot(ctx, p3, "nudge-tab-closed-settled")
+    route_c, row_c = await stored(aid)
+    old_delay = pick(route_old)["delay"]
+    tab_closed = {"account": aid, "typed_delay": closed_want, "old_delay": old_delay,
+                  "held_put": pick((w2.body or {}).get("config") or {}),
+                  "key_while_held": key_held, "route_after_close": pick(route_mid), "row_after_close": pick(row_mid),
+                  "reopened_delay": shown_a, "restored_note": note_a, "key_on_reopen": key_reopen,
+                  "put_status": status_c, "key_after_ack": key_acked, "note_after_ack": note_acked,
+                  "route_after_ack": pick(route_c), "row_after_ack": pick(row_c)}
+    chk(NUDGE_TAB_CLOSED, tab_closed["held_put"]["delay"] == closed_want and pick(route_mid)["delay"] == old_delay
+        and pick(row_mid)["delay"] == pick(row_old)["delay"] and shown_a == str(closed_want) and note_a > 0
+        and status_c == 200 and key_acked is None and note_acked == 0
+        and pick(route_c)["delay"] == closed_want and pick(row_c)["delay"] == closed_want, **tab_closed)
+
+    # B: the PUT reached the relay, its answer never reached the tab (closed) -> reopened on the stored config, no
+    # restored note, the kept draft gone.
+    lost_want = closed_want + 2
+    w3 = Wire(fetch_first=True)
+    await p3.route(is_nudge, w3.handler)
+    await d3.fill(str(lost_want))
+    await s3.click(timeout=10_000)
+    await asyncio.wait_for(w3.fetched.wait(), 15)  # the relay answered; the tab has not
+    await _painted(p3)
+    await ui.shot(ctx, p3, "nudge-ack-lost-trigger")
+    key_unacked = await read_key(p3)
+    await ui.close_popup(page, p3)
+    w3.go.set()
+    route_l, row_l = await stored(aid)
+    p4, dlg4, d4, _s4 = await open_tab()
+    key_lost = await key_gone(p4)
+    note_b = await dlg4.get_by_text(restored_rx).count()
+    shown_b = await d4.input_value()
+    await ui.shot(ctx, p4, "nudge-ack-lost-reopened")
+    await ui.close_popup(page, p4)
+    ack_lost = {"account": aid, "typed_delay": lost_want, "relay_status": w3.relay_status,
+                "key_unacked": key_unacked, "route": pick(route_l), "row": pick(row_l), "reopened_delay": shown_b,
+                "restored_note": note_b, "key_on_reopen": key_lost}
+    (ctx.out / "nudge-draft.json").write_text(json.dumps({"tab_closed": tab_closed, "ack_lost": ack_lost}, indent=2))
+    # `key_unacked` (the draft kept while the answer is pending) is evidence, not the claim: with no stash at all
+    # the reopen is the same, and that is NUDGE_TAB_CLOSED's to catch.
+    chk(NUDGE_ACK_LOST, w3.relay_status == 200 and pick(route_l)["delay"] == lost_want
+        and pick(row_l)["delay"] == lost_want and shown_b == str(lost_want) and note_b == 0 and key_lost is None,
+        **ack_lost)
+    await page.bring_to_front()
 
 
 ROSTER = "/admin/users/llm-key-status"

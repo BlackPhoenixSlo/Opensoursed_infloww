@@ -1,12 +1,10 @@
 "use client";
 
-/** The queue and Home's Scheduled events widget, cut from ofMirrorFeeds: the calendar, the agenda, the saved-for-later cards (the Agency's time zone and wall clock are ofMirrorFeedsShared's, re-exported here). */
+/** The queue and Home's Scheduled events widget: the calendar, the agenda, the saved-for-later cards. */
 
 import { localIso, NOT_YET, parseDate } from "@/lib/ofMirrorWrites";
 import { clock, dayOf, dropClass, fill, make, plain, stamp, track, valid } from "@/lib/ofMirrorDom";
 import { isSavedForLater, QUEUE, queueActions, SCHEDULES, wallClock, type Month, type QueueItem, type QueueKind } from "@/lib/ofMirrorFeedsShared";
-
-export { fromWallClock, useAgencyZone, wallClock } from "@/lib/ofMirrorFeedsShared";
 
 /** OF's "more" icon (its sprite symbol: the queue pages' cut-down sprite lacks it). */
 const SVG = "http://www.w3.org/2000/svg";

@@ -147,7 +147,7 @@ Cases:
       confirming creates exactly the previewed folders, each filled 1..n in the
       order the preview showed.
   case_apply_twice_refreshes_instead_of_duplicating:
-      pressing the button again REUSES the AI- folders and rewrites membership
+      pressing the button again REUSES the folders it made and rewrites membership
       rather than piling up a second set.
   case_rebuild_retires_folders_the_plan_no_longer_makes:
       a previous generation's folders are soft-deleted on rebuild, so a rules or
@@ -155,8 +155,17 @@ Cases:
   case_retire_never_touches_operator_folders:
       only rows this module created AND carrying the AI- prefix are retired —
       an operator folder is safe even if they named it AI- themselves.
-  case_apply_never_rewrites_a_hand_made_folder:
-      a folder the operator made is never touched — only AI- folders.
+  case_apply_leaves_an_operators_ai_named_folder_alone:
+      an operator folder NAMED like a generated one ("AI-x") is not reused or
+      wiped; the generated folder is made beside it.
+  case_two_shoots_with_one_name_keep_their_own_items:
+      one outfit shot weeks apart plans as "<n>" (earlier) and "<n> 2", each
+      folder holds only its own shoot, and a re-run reuses the same pair.
+  case_same_name_suffix_follows_start_not_rank:
+      the later shoot outranking the earlier does not move the bare name — a
+      re-rank must not swap two folders' contents.
+  case_mirror_keeps_two_same_named_shoots_apart:
+      each OF list gets only its own shoot's media; none is pushed empty.
 
 Run: cd service/tests && \
   PYTHONPATH=$(cd .. && pwd) ../../venv/bin/python test_vault_scripts.py
@@ -1299,30 +1308,118 @@ def case_retire_never_touches_operator_folders() -> None:
     assert asyncio.run(_count_folders(aid)) == res["folders"] + 2
 
 
-def case_apply_never_rewrites_a_hand_made_folder() -> None:
-    """A folder the operator made themselves is never touched, even if the plan
-    wants a folder of a colliding name — only `AI-` folders are rewritten."""
+def case_apply_leaves_an_operators_ai_named_folder_alone() -> None:
+    """The reuse lookup is scoped to rows this module made, like retire is."""
     aid = _next_account()
     _plan_seed(aid)
+    plan = asyncio.run(vault_scripts.plan_ai_folders(aid, keep=1))
+    clash = plan["folders"][0]["name"]
 
-    async def _hand_made():
+    async def _theirs():
         async with get_session() as s:
-            s.add(Account(id=f"{aid}_x"))  # unrelated, keeps the seed honest
-            folder = VaultFolder(account_id=aid, name="My favourites",
-                                 created_by="operator")
+            folder = VaultFolder(account_id=aid, name=clash, created_by="operator")
             s.add(folder)
             await s.flush()
-            s.add(VaultFolderItem(account_id=aid, folder_id=folder.id,
-                                  media_id=2001, manual_order=7))
+            for i, mid in enumerate((9001, 9002, 9003), start=1):
+                s.add(VaultFolderItem(account_id=aid, folder_id=folder.id,
+                                      media_id=mid, manual_order=i))
             await s.commit()
             return folder.id
-    fid = asyncio.run(_hand_made())
+    fid = asyncio.run(_theirs())
 
-    plan = asyncio.run(vault_scripts.plan_ai_folders(aid, keep=1))
-    asyncio.run(vault_scripts.apply_ai_folders(aid, plan))
+    res = asyncio.run(vault_scripts.apply_ai_folders(aid, plan))
 
     got = asyncio.run(_read_order(aid, fid))
-    assert got == [(2001, 7)], f"hand-made folder was rewritten: {got}"
+    assert got == [(9001, 1), (9002, 2), (9003, 3)], f"operator folder wiped: {got}"
+    made = res["created"][0]
+    assert made["folder_id"] != fid and not made["reused"], made
+    assert asyncio.run(_count_folders(aid)) == res["folders"] + 1
+
+
+def _split_shoot_seed(aid: str, *, later_bigger: bool = False) -> None:
+    """One black lace set shot twice, three weeks apart (801-803, 804-806).
+    `later_bigger` adds 807 so the LATER shoot outranks the earlier."""
+    later = 30240.0
+    rows = [
+        (801, 0.0, _outfit(["black lace bra"], ["posing"], "sfw", "dressed")),
+        (802, 0.1, _outfit(["black lace bra"], ["tease"], "suggestive")),
+        (803, 0.2, _outfit(["black lace bra"], ["fingering"], "explicit", "fully_nude")),
+        (804, later, _outfit(["black lace bra"], ["posing"], "sfw", "dressed")),
+        (805, later + 0.1, _outfit(["black lace bra"], ["tease"], "suggestive")),
+        (806, later + 0.2, _outfit(["black lace bra"], ["fingering"], "explicit",
+                                   "fully_nude")),
+    ]
+    if later_bigger:
+        rows.append((807, later + 0.3, _outfit(["black lace bra"], ["tease"],
+                                               "suggestive")))
+    asyncio.run(_seed(aid, rows))
+
+
+def _scripts(plan: dict) -> dict[str, set[int]]:
+    """Script folder name → its media ids."""
+    return {f["name"]: {int(i["media_id"]) for i in f["items"]}
+            for f in plan["folders"] if f["source"] == "script"}
+
+
+def case_two_shoots_with_one_name_keep_their_own_items() -> None:
+    """One outfit shot weeks apart is two shoots with one name. The plan names
+    them "<n>" (earlier) and "<n> 2", each folder holds only its own shoot,
+    and a re-run reuses the same pair."""
+    aid = _next_account()
+    _split_shoot_seed(aid)
+    plan = asyncio.run(vault_scripts.plan_ai_folders(aid, keep=2))
+    names = [f["name"] for f in plan["folders"]]
+    assert len(names) == len(set(names)), f"plan repeats a name: {names}"
+
+    bare = plan["folders"][0]["name"].removesuffix(" 2")
+    scripts = _scripts(plan)
+    assert scripts == {bare: {801, 802, 803}, f"{bare} 2": {804, 805, 806}}, scripts
+
+    first = asyncio.run(vault_scripts.apply_ai_folders(aid, plan))
+    made = {c["name"]: c["folder_id"] for c in first["created"]}
+    a, b = made[bare], made[f"{bare} 2"]
+    assert a != b, "two shoots landed in one folder"
+    assert {m for m, _ in asyncio.run(_read_order(aid, a))} == {801, 802, 803}
+    assert {m for m, _ in asyncio.run(_read_order(aid, b))} == {804, 805, 806}
+
+    second = asyncio.run(vault_scripts.apply_ai_folders(aid, plan))
+    again = {c["name"]: c["folder_id"] for c in second["created"]}
+    assert again == made, second["created"]
+    assert second["new"] == 0 and second["retired"] == [], second
+
+
+def case_same_name_suffix_follows_start_not_rank() -> None:
+    """The later shoot is bigger, so it ranks first — the bare name still goes
+    to the shoot that STARTED first. Rank-order suffixing would swap the two
+    folders' contents whenever their rank flipped."""
+    aid = _next_account()
+    _split_shoot_seed(aid, later_bigger=True)
+    plan = asyncio.run(vault_scripts.plan_ai_folders(aid, keep=2))
+    first = plan["folders"][0]
+    assert 807 in {i["media_id"] for i in first["items"]}, "later shoot not ranked first"
+
+    bare = first["name"].removesuffix(" 2")
+    scripts = _scripts(plan)
+    assert scripts[bare] == {801, 802, 803}, scripts
+    assert scripts[f"{bare} 2"] == {804, 805, 806, 807}, scripts
+
+
+def case_mirror_keeps_two_same_named_shoots_apart() -> None:
+    """The mirror joins created folders back to plan specs by name. Each OF
+    list must get only its own shoot's media, and none may be pushed empty."""
+    aid = _next_account()
+    _split_shoot_seed(aid)
+    fake = _FakeOF()
+    res = asyncio.run(_apply_with_of(aid, fake, keep=2))
+    assert res["of_failed"] == 0, res
+
+    got = {c["name"]: set(fake.members.get(c["of_list_id"], []))
+           for c in res["created"]}
+    assert all(got.values()), f"an OF list was pushed empty: {got}"
+    scripts = [c["name"] for c in res["created"] if c["source"] == "script"]
+    bare = min(scripts, key=len)
+    assert got[bare] == {801, 802, 803}, got
+    assert got[f"{bare} 2"] == {804, 805, 806}, got
 
 
 async def _count_folders(aid: str) -> int:
@@ -1599,7 +1696,10 @@ _harness.run(
     case_apply_twice_refreshes_instead_of_duplicating,
     case_rebuild_retires_folders_the_plan_no_longer_makes,
     case_retire_never_touches_operator_folders,
-    case_apply_never_rewrites_a_hand_made_folder,
+    case_apply_leaves_an_operators_ai_named_folder_alone,
+    case_two_shoots_with_one_name_keep_their_own_items,
+    case_same_name_suffix_follows_start_not_rank,
+    case_mirror_keeps_two_same_named_shoots_apart,
     case_no_paid_item_is_left_out_of_every_lane,
     case_explicit_clips_get_a_lane,
     case_solo_cut_keeps_only_her,

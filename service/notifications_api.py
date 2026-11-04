@@ -31,7 +31,8 @@ blob stores `notifications.<kind>: false`. One `notify` call files a
 request's (or a sweep's) notices for one Agency in one insert and pushes the
 owner's unread count once over SSE (`agency_notifications {unread}`, to the
 owner's sessions only: events.owner_audience). `tick` also drops rows older
-than RETENTION.
+than RETENTION and pushes the new unread count to each Agency that lost
+unread ones.
 """
 from __future__ import annotations
 
@@ -317,8 +318,21 @@ async def notify_session_dead(account_id: str, reason: str, since: datetime) -> 
 
 # ── The periodic sweep: missed clock-ins, retention ──────────────────
 
+async def _push_pruned(agencies: Sequence[str]) -> None:
+    """Push the unread count to each Agency the sweep dropped unread rows of
+    (`notify` pushes only when it files, so a prune alone would leave the
+    badge stale)."""
+    if not agencies:
+        return
+    async with get_session() as s:
+        counts = [(agency, await _unread(s, agency)) for agency in agencies]
+    for agency, unread in counts:
+        _push(agency, unread)
+
+
 async def tick(now: datetime | None = None) -> int:
-    """Drop rows older than RETENTION, then file `clock_in_missed` for every
+    """Drop rows older than RETENTION (pushing the new unread count to each
+    Agency that lost unread ones), then file `clock_in_missed` for every
     Shift occurrence running for at least CLOCK_IN_GRACE whose assigned
     Employee may clock (clock_api._clock_gate: time tracking on, its role
     enabled, active) and has no Clock event touching the occurrence. One per
@@ -328,9 +342,13 @@ async def tick(now: datetime | None = None) -> int:
     from clock_api import _clock_gate, _occurrence_at, _time_tracking  # lazy: clock_api imports employees
     now = now or datetime.utcnow()
     async with get_session() as s:
-        await s.execute(delete(AgencyNotification).where(AgencyNotification.created_at < now - RETENTION))
+        old = AgencyNotification.created_at < now - RETENTION
+        lost_unread = (await s.execute(select(AgencyNotification.agency_user_id).where(
+            old, AgencyNotification.read_at.is_(None)).distinct())).scalars().all()
+        await s.execute(delete(AgencyNotification).where(old))
         agencies = (await s.execute(select(SettingsVersion.user_id).where(
             SettingsVersion.tab == "time-tracking").distinct())).scalars().all()
+    await _push_pruned(lost_unread)
     filed = 0
     for agency in agencies:
         notices: list[Notice] = []

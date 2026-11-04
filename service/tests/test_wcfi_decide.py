@@ -14,6 +14,8 @@ shell) as tables.
   case_handoff_opens_the_turn_gate     a welcome handoff counts as his turn
   case_handoff_admitted_per_reason     handoff_admitted iff past listed/mid_funnel w/ handoff
   case_stat_covers_every_reason        STAT maps every Reason to a stats key; DURABLE ⊂ Reason
+  case_asked_topics                    questions_asked JSON → set; bad JSON / None → empty
+  case_msg_id_of                       OF's send response → its message id, or None
   case_module_is_pure                  stdlib only (no DB import)
 
 Run: ./venv/bin/python service/tests/test_wcfi_decide.py  (exit 0 = pass)
@@ -133,11 +135,31 @@ def case_stat_covers_every_reason() -> None:
     assert all(d.STAT[r] == "newly_skiplisted" for r in d.DURABLE)
 
 
+def case_asked_topics() -> None:
+    from types import SimpleNamespace as F
+    rows = [
+        (None, set()), ("", set()), ("[]", set()),
+        ('["age", "job"]', {"age", "job"}), ('["age:2", "age:2"]', {"age:2"}),
+        ("not json", set()), ("5", set()),      # bad JSON / a bare number → nothing asked
+    ]
+    for raw, want in rows:
+        assert d.asked_topics(F(questions_asked=raw)) == want, (raw, want)
+
+
+def case_msg_id_of() -> None:
+    rows = [  # (OF response, msg id)
+        ({"id": 7, "text": "hi"}, 7), ({"success": True}, None),  # 200 without an id
+        ({"id": 0}, 0), (None, None), ("ok", None),               # not a dict → None
+    ]
+    for result, want in rows:
+        assert d.msg_id_of(result) == want, (result, d.msg_id_of(result))
+
+
 def case_module_is_pure() -> None:
     tree = ast.parse(Path(d.__file__).read_text(encoding="utf-8"))
     mods = {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
     mods |= {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
-    assert mods <= {"__future__", "dataclasses", "typing"}, mods
+    assert mods <= {"__future__", "dataclasses", "json", "typing"}, mods
 
 
 _harness.run()

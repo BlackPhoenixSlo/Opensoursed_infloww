@@ -3,7 +3,7 @@ service/llm_client.py — pluggable LLM client (DeepSeek + DeepInfra + Z.ai).
 
 ONE async entry point — `chat()` — that every automation runner will eventually
 call instead of POSTing a provider directly (see library/db_data/19_llm_providers.md §2,
-library/db_data/05_grok_extraction.md §1+§7). Greenfield: nothing imports this yet.
+library/db_data/05_grok_extraction.md §1+§7).
 
 Every provider here speaks the OpenAI `/chat/completions` shape, so the client is
 one code path; `base_url` + `api_key` + `model` differ, and so — per MODEL, not

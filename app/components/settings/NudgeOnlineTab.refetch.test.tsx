@@ -86,8 +86,9 @@ const ready = () => waitFor(() => expect(saveButton()).not.toBeDisabled(), { tim
 // awaited `act` has also run the hydrate effect (no fixed waits).
 beforeAll(() => { notifyManager.setScheduler((cb) => cb()); });
 // reset, not clear: a test that fails before its PUT must not leave its
-// `mockImplementationOnce` queued for the next test's PUT.
-afterEach(() => { cleanup(); vi.resetAllMocks(); });
+// `mockImplementationOnce` queued for the next test's PUT. The unmount flushes a
+// dirty draft to localStorage (lib/pendingDraft): cleared after it.
+afterEach(() => { cleanup(); vi.resetAllMocks(); localStorage.clear(); });
 
 describe("NudgeOnlineTab over a config refetch", () => {
   it("keeps an unsaved edit when the config refetches", async () => {
@@ -131,7 +132,8 @@ describe("NudgeOnlineTab over its own save", () => {
     fireEvent.change(jitter(), { target: { value: "1" } });
 
     await release();
-    await waitFor(() => expect(cfgState(qc, A)?.dataUpdateCount).toBe(2));
+    // 2 = the PUT's echo (setQueryData), 3 = the refetch.
+    await waitFor(() => expect(cfgState(qc, A)?.dataUpdateCount).toBe(3));
     await act(async () => {});
     expect([delay().value, jitter().value]).toEqual(["9", "1"]);
   });

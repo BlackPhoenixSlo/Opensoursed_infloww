@@ -50,7 +50,7 @@ const { readAdvanced, advancedPatch, applyBeforeReady, applyAfterReady } = requi
 const { createLogFile, mirrorConsole } = require("./lib/logfile");
 const { createToasts } = require("./lib/toast-window");
 const { SseClient } = require("./lib/sse");
-const { DEFAULT_SETTINGS, SETTINGS_KEY, parseSettings, shouldPing, noticesFor, SeenKeys } = require("./lib/relay-notices");
+const { DEFAULT_BRAND, DEFAULT_SETTINGS, SETTINGS_KEY, parseSettings, shouldPing, noticesFor, SeenKeys } = require("./lib/relay-notices");
 const { ClockPause } = require("./lib/clock-pause");
 const { registerCaptureIpc, openOfCaptureFlow } = require("./capture/of-capture");
 
@@ -902,6 +902,7 @@ async function relayJson(pathname, init = {}) {
 
 const seenNotices = new SeenKeys(); // the relay's replay must not ping twice
 let notifSettings = DEFAULT_SETTINGS; // the page's, as last read
+let notifBrand = DEFAULT_BRAND; // the page's name (app/lib/brand.ts), as last read
 let titleUnread = 0; // from the page title (lib/badge.js)
 let streamUnseen = 0; // inbound DMs that arrived while the page was down
 
@@ -919,18 +920,20 @@ async function readNotifSettings() {
   try {
     const raw = await Promise.race([
       mainWindow.webContents.executeJavaScript(
-        `(() => { try { return localStorage.getItem(${JSON.stringify(SETTINGS_KEY)}); } catch (e) { return null; } })()`,
+        `(() => { const brand = document.querySelector('meta[name="application-name"]')?.content || null;
+          try { return [localStorage.getItem(${JSON.stringify(SETTINGS_KEY)}), brand]; } catch (e) { return [null, brand]; } })()`,
       ),
       new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 1000)),
     ]);
-    notifSettings = parseSettings(raw);
+    notifSettings = parseSettings(raw[0]);
+    if (typeof raw[1] === "string" && raw[1]) notifBrand = raw[1];
   } catch {
     /* keep the last known */
   }
 }
 
 async function onRelayEvent(type, payload) {
-  const notices = noticesFor(type, payload).filter((n) => seenNotices.claim(n.id));
+  const notices = noticesFor(type, payload, notifBrand).filter((n) => seenNotices.claim(n.id));
   if (!notices.length) return;
   if (pageIsLive()) return readNotifSettings();
   const dms = notices.filter((n) => n.typeKey === "message").length;

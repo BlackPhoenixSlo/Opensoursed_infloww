@@ -11,8 +11,8 @@ only what this flow adds. Each scenario's docstring is its spec (timeline, bypas
 |---|---|
 | `lib/welcome_relay.py` | OnlyFans' side of a welcome sweep at the offline client (`automation_executor._make_client`), only while a scenario writes `$DEMO_SHOTS_TMP/of-welcome.json` (`{feed: {account: [items, newest first]}, of_welcome_on: [account]}`, read on every call): `notifications` (the subscribe feed, paged, `type` filter), `my_settings` (`replyOnSubscribe`), `message_templates` (`reply_on_subscribe` when OF's welcome is on), `follow_user` (recorded), `get_user` (a free profile for a feed fan), `send_message` (recorded per Creator). `GET /__slop/welcome`: what OF received (sends, follows, feed and settings reads). Without the file every call fails as before. |
 | `lib/welcome_burst_faults.py` | The burst's check names and its two faults, both patching `send_welcome_decide.partition` (one `Reads` field blanked). |
-| `lib/wcfi_relay.py` | The chatter's part, chained on `lib/automation_relay.py` (loaded after it): its loopback DeepSeek fake also answers a prompt carrying `PERSONA` (fact extract `{}`, a reply of two lines unique to the call, counted `deepseek:wcfi_extract` / `deepseek:wcfi_reply` at `GET /__slop/fake/calls`); a journal of OF's sends for `PERSONA` Creators only, `GET /__slop/wcfi/of-sends` (`[{account_id, fan_id, text, id, t}]`). |
-| `lib/wcfi_faults.py` | The chatter's check names and its two faults, patching `wcfi_decide.decide` and wcfi's `write_outbound_attribution`. |
+| `lib/wcfi_relay.py` | The chatter's part, chained on `lib/automation_relay.py` (loaded after it): its loopback DeepSeek fake also answers a prompt carrying `PERSONA` (fact extract `{}`, a reply of two lines unique to the call, or for a fan whose history carries `ECHO_LINE` the small-model echo: his last line verbatim, then the question; counted `deepseek:wcfi_extract` / `deepseek:wcfi_reply` / `deepseek:wcfi_echo` at `GET /__slop/fake/calls`); a journal of OF's sends for `PERSONA` Creators only, `GET /__slop/wcfi/of-sends` (`[{account_id, fan_id, text, id, t}]`). |
+| `lib/wcfi_faults.py` | The chatter's check names and its faults (below), patching `wcfi_decide.decide`, wcfi's `write_outbound_attribution` and the reply shaping's echo predicate. |
 | `seed/welcome_burst.py` | `seed(w, fans, threads, new=, welcomed=, established=, of_on_frac=)`: per Creator `new` subs (no row), `welcomed` renewals (claim + 2 welcome rows, at the NOT-NEW tolerance), `established` renewals (4 out / 10 in, no claim), all in OF's subscribe `feed`; `of_welcome_on` Creators (`round(frac * Creators)`, at least one, never all). Every seeded message older than 2 days. |
 | `seed/welcome_chatter.py` | `seed(w, fans, threads, live=)`: per Creator `PERSONA`, Reply Instant on (`webhook_config_json`, no delay), one enabled `welcome_chatter_for_info` rule whose daily sweep fired 30 min ago; then `live` fans without a seeded thread round-robin over the cases open, double, blacklisted, skiplisted, muted, promo, each with its short history and `chats` row. |
 | `scenarios/2026-10-30-welcome-burst.py` | The burst scenario. |
@@ -34,9 +34,11 @@ only what this flow adds. Each scenario's docstring is its spec (timeline, bypas
 - `2026-10-30-welcome-chatter-walk`: `agency_inbox` plus `seed/welcome_chatter` with `--users` case fans. The
   agency's fake DeepSeek key through `PUT /admin/my-llm-keys`, the DM rate raised; the real supervisor runs
   (`SLOP_SUPERVISOR=1`). Each round every case fan DMs once (`fan_dm.serial`, open loop at `--rate=` DMs/s per
-  Creator, 0.25); W7 queues a fan-scoped job and the supervisor answers; a round ends when every open fan's answer
+  Creator, 0.25); `--echo=` of the open / double fans (default one in `ECHO_EVERY`) open with `ECHO_LINE`; W7 queues a fan-scoped job and the supervisor answers; a round ends when every open fan's answer
   reached OF and no job of the lane is left. Checks (`lib/wcfi_faults.py`): `TURNS`, `SKIPLISTED`, `DOUBLE`,
-  `COUNTS`, `LANDED`; budget `e2e DM frame -> first bubble at OF p95` (the scenario's, also vs the last green
+  `COUNTS`, `LANDED`, `ECHO` (no bubble repeating a fan's DM reached OF; per echo turn exactly its other bubble
+  sent); budget `e2e DM frame -> first bubble at OF p95` (the scenario's, also vs the last green
   run). `SLOP_LIVE=1`: every check SKIPs. Faults: `wcfi-skiplist-ignored` (default; targets `SKIPLISTED`, through
-  the blacklisted fans), `wcfi-turn-sent-twice` (`DOUBLE`). Knobs: `--rounds=` (2), `--rate=`; no per-scale value
-  of its own.
+  the blacklisted fans), `wcfi-turn-sent-twice` (`DOUBLE`), `reply-shape-echo-kept` (the parroting bubble goes to
+  OF; `ECHO`, through the echo fans). Knobs: `--rounds=` (2), `--rate=`, `--echo=`; no per-scale value of its
+  own.

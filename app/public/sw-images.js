@@ -1,4 +1,18 @@
 /* eslint-disable */
+// push sha256:a47979cc4e3de9f34156545aa0804c3203c5c47653fa1564ce25bea71e4fe664
+try { importScripts("/sw-push.js"); } catch (e) {
+  console.warn("[sw] sw-push.js failed", e);
+  // Still show every push (Apple revokes a subscription whose pushes show
+  // nothing) and open the app on a click.
+  self.addEventListener("push", (event) => event.waitUntil(
+    fetch("/manifest.webmanifest").then((r) => r.json()).then((m) => m.name).catch(() => null)
+      .then((name) => self.registration.showNotification(
+        (typeof name === "string" && name) || "Inflowwww", { body: "New activity", data: { href: "/" } }))));
+  self.addEventListener("notificationclick", (event) => {
+    event.notification.close();
+    event.waitUntil(self.clients.openWindow("/"));
+  });
+}
 /**
  * sw-images.js — Service Worker for the chat-image proxy.
  *
@@ -19,6 +33,12 @@
  *
  * Registered only in production (see app/lib/registerImageSW.ts) to
  * avoid Turbopack dev confusing the SW lifecycle.
+ *
+ * The top imports Web Push (sw-push.js), in a try so a broken push file never
+ * takes the image cache down; its catch still shows every push. The
+ * `// push sha256:` line MUST be sw-push.js's sha256 (sw-push.test.ts checks
+ * it): updating it is the bump, without which installed workers may keep the
+ * old sw-push.js.
  */
 
 // v3: TTL is now access-based (we stamp x-cached-at on every read, not

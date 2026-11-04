@@ -116,14 +116,14 @@ import json
 import logging
 import random
 import re
-from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import NamedTuple
 
 from sqlalchemy import or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+import audience_include as _audiences  # the include-only fence (read per call)
 import automation_executor as ax  # _make_client / _parse_iso / _to_cents / lease seams
 import dm_rate
 import of_write                    # _may_have_sent, read at call time
@@ -144,6 +144,7 @@ from ._wordfilter import (  # compliance word filter
 )
 from ._funnel_routing import step_number_index, strip_html
 from . import funnel_decide as fd  # the per-fan status machine (pure)
+from . import funnel_run_decide as frd  # run()'s tick tally + stats dict (pure)
 from . import send_marker_decide as smd  # the send-once marker's rules (pure)
 from . import send_marker_store as smst  # ...and its SQL (looked up per call)
 from ._funnel_signals import (
@@ -156,6 +157,7 @@ from db.models import (
     MassMessageFunnel, MassRun, Message,
 )
 from llm_client import LLMCapExceeded
+from of_client import OFClient
 from automations.rhythm import INLINE_MAX_S
 
 log = logging.getLogger("of-relay.automation.reply_mass_funnel")
@@ -557,8 +559,8 @@ async def _save_state(cs: FunnelState, now: datetime) -> None:
 
 
 # ── Send-once marker (send_marker_decide / send_marker_store) ────────
-# House-funnel rows only: a funnel_state row whose `mass_runs.funnel_id` is
-# NULL is not a house funnel's — never read or written here.
+# House-funnel rows only: funnel-less rows (NULL `mass_runs.funnel_id`)
+# share funnel_state — never read or written here.
 
 _HOUSE_JOIN = (MassRun, MassRun.id == FunnelState.mass_run_id)
 
@@ -799,368 +801,375 @@ async def _send_step(
 
 
 # ── The automation ───────────────────────────────────────────────────
+# run() orchestrates I/O phase helpers sharing one `_Tick`; pure: funnel_decide
+# (the fan's status), funnel_run_decide (the tally).
+
+class _Knobs(NamedTuple):
+    dry_run: bool
+    only_run: int | None
+    only_fan: int | None
+    max_chats: int
+
+
+def _knobs(payload: dict) -> _Knobs:
+    only_run, only_fan = payload.get("mass_run_id"), payload.get("test_fan")
+    return _Knobs(
+        dry_run=bool(payload.get("dry_run")),
+        only_run=int(only_run) if only_run is not None else None,
+        only_fan=int(only_fan) if only_fan is not None else None,
+        max_chats=int(payload.get("max_chats") or _DEFAULT_MAX_CHATS),
+    )
+
+
+@dataclass
+class _Tick:
+    """One run()'s context and tally, shared by its phase helpers."""
+    account_id: str
+    k: _Knobs
+    now: datetime
+    model: str
+    typing_wpm: float
+    typing_indicator: bool
+    strip_emoji_on: bool
+    banned_words: list[str]
+    banned_mode: str
+    persona: str
+    client: OFClient
+    audience_pol: _audiences.AudiencePolicy
+    tally: frd.Tally = field(default_factory=frd.Tally)
+
+
+class _Funnel(NamedTuple):
+    """One broadcast's walk invariants: its anchor, script and this account's media."""
+    a: _Anchor
+    script: fd.Script
+    acct_media: dict | None
+
+
+async def _audience_allows(t: _Tick, fan_id: int) -> bool:
+    """Include-only audience fence: applied at discovery (no enrol) and at the walk
+    (no advance) before any LLM spend; `only_fan` (operator targeting) is exempt."""
+    pol = t.audience_pol
+    if pol.mode == "off" or (t.k.only_fan is not None and fan_id == t.k.only_fan):
+        return True
+    if pol.mode == "shadow":
+        if int(fan_id) not in pol.member_ids:
+            t.tally.audience_skipped += 1        # would-skip; shadow gates nothing
+        return True
+    ok, _why = await _audiences.audience_allows_fan(
+        t.account_id, fan_id, kind="reply_mass_funnel", policy=pol)
+    if not ok:
+        t.tally.audience_skipped += 1
+    return ok
+
+
+async def _perform(t: _Tick, cs: FunnelState, e: fd.Entry, effects: list[fd.Effect]) -> bool:
+    """Carry out decide()'s effects in order; Save copies entry' onto the detached row
+    and persists it (not on a dry run). True iff it asks for the step to be sent."""
+    t.tally.fx.update(effects)
+    for eff in effects:
+        if isinstance(eff, fd.Save):
+            for k, v in vars(e).items():
+                setattr(cs, k, v)
+            if not t.k.dry_run:
+                await _save_state(cs, t.now)
+    return fd.Generate() in effects
+
+
+async def _adopt_list_openers(t: _Tick, a: _Anchor) -> None:
+    """0) List-audience sends wrote no per-fan rows — adopt the scrape-backfilled
+    opener rows so those fans are discoverable."""
+    if not (a.audience.get("user_lists") or a.audience.get("list_ids")):
+        return
+    try:
+        openers = await _opener_texts(t.account_id, a.funnel_id, a.queue_id)
+        excluded = {int(x) for x in (a.audience.get("excluded_users") or [])}
+        await _adopt_list_recipients(t.account_id, a.mass_run_id, a.started_at, openers, excluded)
+    except Exception:
+        log.warning("reply_mass_funnel adopt failed run=%s", a.mass_run_id, exc_info=True)
+
+
+async def _discover(t: _Tick, a: _Anchor) -> list[FunnelState]:
+    """1) New repliers → ledger + fresh step-0 state. A dry run saves neither and
+    returns the unsaved step-0 states it would walk."""
+    dry_enrolled: list[FunnelState] = []
+    # Past the discovery window this run only walks fans already enrolled — asking
+    # ~1,600 recipients "did you reply yet?" forever is the leak
+    # `_DISCOVERY_WINDOW_DAYS` closes (decided in `_active_mass_runs`; see `_Anchor`).
+    if not a.discovery_open:
+        t.tally.discovery_skipped += 1
+        return dry_enrolled
+    # ONE query for the whole question, not two per recipient.
+    tracked = await _tracked_fans(a.mass_run_id)
+    for fan_id in sorted(await replied_recipient_fans(t.account_id, a.mass_run_id) - tracked):
+        if t.k.only_fan is not None and fan_id != t.k.only_fan:
+            continue
+        # They ANSWERED this funnel's opener → durable dedup ledger (R1/R2),
+        # regardless of the cutoff below. Not on a dry run: the ledger drops the fan
+        # from every later send of this funnel, and nothing ever deletes it.
+        if not t.k.dry_run:
+            await _record_responder(t.account_id, a.funnel_id, fan_id, a.mass_run_id, t.now)
+        # #R4: once the first mass is unsent, only a replier whose inbound landed
+        # at/before the cutoff enrolls; a later one is deduped but not walked.
+        if a.discovery_closed_at is not None:
+            broadcast_at = await last_funnel_out_at(t.account_id, fan_id, a.mass_run_id)
+            last_in = await last_inbound_at(t.account_id, fan_id, since=broadcast_at)
+            if last_in is None or last_in > a.discovery_closed_at:
+                continue
+        # Audience fence: the dedup row above is ALWAYS recorded (a later admit can
+        # never re-send the opener), but an outside fan is not ENROLLED.
+        if not await _audience_allows(t, fan_id):
+            continue
+        if t.k.dry_run:
+            # Would enroll: walk an unsaved step-0 state instead.
+            t.tally.discovered += 1
+            dry_enrolled.append(FunnelState(
+                mass_run_id=int(a.mass_run_id), fan_id=int(fan_id),
+                current_step=0, next_check_at=t.now, check_count=0,
+                status="pending", hops=0))
+            continue
+        if await _ensure_state(a.mass_run_id, fan_id, t.now):
+            t.tally.discovered += 1
+    return dry_enrolled
+
+
+async def _facts(t: _Tick, entry: fd.Entry, fan_id: int, a: _Anchor) -> fd.Facts:
+    """Branching FACTS, gathered once: #30 "offer taken" (a PPV unlocked since this
+    funnel's baseline — our own last PPV, else the broadcast time), whether the fan
+    replied since our last funnel message, and that reply's text."""
+    paid_since = fd.offer_since(entry, a.started_at)
+    bought = bool(paid_since is not None and await has_fan_paid_ppv(
+        t.account_id, fan_id, paid_since))
+    last_out = await last_funnel_out_at(t.account_id, fan_id, a.mass_run_id)
+    # One query answers both "replied since?" and "with what text?".
+    replied, reply_text = await latest_reply(t.account_id, fan_id, last_out)
+    substantive = is_substantive_msg(reply_text) if reply_text else False
+    return fd.Facts(replied=replied, bought=bought, substantive=substantive,
+                    reply_text=reply_text)
+
+
+async def _compose(t: _Tick, fan_id: int, step: dict, c: int) -> list[str] | None:
+    """The step's texts, or None: an LLM cap sets tally.cap_hit (the walk stops); a key
+    error stops generated steps this run; a failure / empty text is an error."""
+    try:
+        texts = await _step_texts(t.account_id, fan_id, step, t.persona, t.model)
+    except LLMCapExceeded:
+        t.tally.cap_hit = True
+        log.warning("reply_mass_funnel daily LLM cap reached account=%s — stopping",
+                    t.account_id)
+        return None
+    except llm_client.LLMKeyError as e:
+        t.tally.key_error = llm_client.key_error_payload(e)
+        return None
+    except Exception:
+        t.tally.errors += 1
+        log.warning("reply_mass_funnel generate failed account=%s fan=%s step=%s",
+                    t.account_id, fan_id, c, exc_info=True)
+        return None
+    if not texts:
+        t.tally.errors += 1
+        log.warning("reply_mass_funnel empty step text account=%s fan=%s step=%s",
+                    t.account_id, fan_id, c)
+    return texts or None
+
+
+def _screen(t: _Tick, texts: list[str], is_ppv: bool, media: list[int],
+            fan_id: int, c: int) -> tuple[list[str] | None, list[str]]:
+    """#1 pre-send validation + the compliance word filter → (texts', problems).
+    A "block" verdict joins the #1 reasons so it rides the SAME blocked/back-off/
+    resume path — an operator fixing the copy or media makes the step deliverable."""
+    texts, bw = filter_banned(texts, t.banned_words, t.banned_mode)
+    if bw:
+        log.info("reply_mass_funnel banned word(s) %r account=%s fan=%s step=%s",
+                 banned_hit_summary(bw), t.account_id, fan_id, c)
+    return texts, (["banned_words"] if texts is None
+                   else _presend_problems(is_ppv, texts, media))
+
+
+async def _send_once(t: _Tick, f: _Funnel, cs: FunnelState, entry: fd.Entry,
+                     texts: list[str], facts: fd.Facts) -> None:
+    """Screen, send (_send_step commits the marker before OF sees it), then the send-once
+    bookkeeping. A lost slot re-raises after what landed is recorded."""
+    fan_id, c = int(cs.fan_id), entry.current_step
+    step = f.script.steps[c]
+    is_ppv = step.get("type") == "paid_ppv"
+    media, previews = _resolve_step_media(step, f.acct_media) if is_ppv else ([], [])
+    texts, problems = _screen(t, texts, is_ppv, media, fan_id, c)
+    if problems:
+        # A broken step won't fix itself per tick: backed off, still pending.
+        entry, effects = fd.decide(entry, fd.Blocked(t.now, tuple(problems)), f.script)
+        await _perform(t, cs, entry, effects)
+        log.warning("reply_mass_funnel BLOCKED send account=%s fan=%s step=%s reasons=%s",
+                    t.account_id, fan_id, c, problems)
+        return
+    lost = err = None
+    attempt = _Attempt(facts)
+    try:
+        await _send_step(t.client, t.account_id, fan_id, f.a.mass_run_id, step, texts, is_ppv,
+                         attempt=attempt, media=media, previews=previews,
+                         typing_wpm=t.typing_wpm, typing_indicator=t.typing_indicator,
+                         strip_emoji_on=t.strip_emoji_on)
+    except run_slot.SlotLost as e:
+        lost = err = e  # not this fan's failure: stop the run (re-raised below)
+    except Exception as e:
+        t.tally.errors += 1
+        err = e
+        log.warning("reply_mass_funnel send failed account=%s fan=%s step=%s",
+                    t.account_id, fan_id, c, exc_info=True)
+    # Permanent (deleted/blocked) → quarantine fleet-wide AND end THIS funnel state
+    # — it stays due forever otherwise, regenerating the step texts every tick.
+    unreachable = (err is not None and lost is None
+                   and await skip_unreachable_fan(t.account_id, fan_id, err, log=log))
+    keys = _keys(f.a.mass_run_id, fan_id)
+    # Part of the step landed → sent (the PPV is bubble 0, a later bubble's failure
+    # never requeues it); may have sent → unconfirmed, left for the user's Retry;
+    # surely not → the marker goes and the step retries when due.
+    match out := smd.failure_outcome(
+            attempt.sent, attempt.returned, attempt.marked_at is not None,
+            err is not None and of_write._may_have_sent(err), unreachable=unreachable):
+        case smd.SENT:
+            # The step just sent picks the next one (a reply keyword, a purchase,
+            # `default`, else +1); a routeless PPV hands off.
+            entry, effects = fd.decide(entry, fd.Sent(t.now, facts), f.script)
+            await _perform(t, cs, entry, effects)
+            t.tally.advanced += 1
+        case smd.UNCONFIRMED:
+            why = ((" ".join(str(err).split())[:200] or type(err).__name__)
+                   if err is not None else "send returned no id")
+            await smst.unconfirm(FunnelState, keys, attempt.marked_at,
+                                 last_error=f"may not have sent: {why}"[:500],
+                                 updated_at=datetime.utcnow())
+        case smd.CLEAR if attempt.marked_at is not None and not unreachable:
+            await smst.clear(FunnelState, keys, if_sending_at=attempt.marked_at)
+    if unreachable:   # its save drops any marker too
+        entry, effects = fd.decide(entry, fd.Unreachable(t.now), f.script)
+        await _perform(t, cs, entry, effects)
+    if err is None and out != smd.SENT:
+        t.tally.errors += 1     # nothing went out (id-less / all emptied)
+    if lost is not None:
+        raise lost
+
+
+async def _leased_step(t: _Tick, f: _Funnel, cs: FunnelState, entry: fd.Entry) -> None:
+    """The fan's lease is held: facts → Checked; on Generate compose and send once."""
+    fan_id, c = int(cs.fan_id), entry.current_step
+    step = f.script.steps[c]
+    facts = await _facts(t, entry, fan_id, f.a)
+    # Offer taken (halt, or a `next.bought` branch), no reply yet (wait, or a spent
+    # window's `next.ignored` branch), else send.
+    entry, effects = fd.decide(entry, fd.Checked(t.now, facts), f.script)
+    if not await _perform(t, cs, entry, effects):
+        return
+    if t.tally.key_error and _is_generated(step):
+        return  # no usable key this run — one failed call, not one per fan
+    texts = await _compose(t, fan_id, step, c)
+    if texts is None:
+        return
+    if t.k.dry_run:
+        t.tally.advanced += 1  # would-send; do NOT send or advance state
+        return
+    await _send_once(t, f, cs, entry, texts, facts)
+
+
+async def _end_lease(t: _Tick, fan_id: int, sent_ok: bool) -> None:
+    """W3 (paced-funnel variant): on a confirmed send set the SHORT cooldown, then
+    RELEASE the lease, so the next step (due in 2-10 min) isn't blocked by a 30-min
+    rest or a 900s lease. Cooldown first so it guards the moment the lease drops; on
+    a cooldown-write failure KEEP the lease (900s) as the fallback guard."""
+    if not sent_ok:
+        await ax.release_fan_lease(t.account_id, fan_id)
+        return
+    try:
+        await ax.start_fan_cooldown(t.account_id, fan_id, cooldown_s=_REPLY_COOLDOWN_S)
+        await ax.release_fan_lease(t.account_id, fan_id)
+    except Exception:
+        log.warning("reply_mass_funnel cooldown set failed account=%s fan=%s "
+                    "— keeping lease as fallback guard", t.account_id, fan_id, exc_info=True)
+
+
+async def _walk_fan(t: _Tick, f: _Funnel, cs: FunnelState) -> None:
+    """2) One due state: past the end → done; the audience / cooldown / lease gates;
+    then the leased step."""
+    # The fan's state, threaded through every decide(); the row only follows it on a Save.
+    entry, effects = fd.decide(fd.Entry.from_row(cs), fd.Due(t.now), f.script)
+    await _perform(t, cs, entry, effects)
+    if fd.Complete() in effects:  # past the script's end
+        return
+    fan_id = int(cs.fan_id)
+    # A fan who left (or never joined) the folder stops advancing; an admit resumes him.
+    if not await _audience_allows(t, fan_id):
+        return
+    # Another automation messaged this fan recently → rest it (W3 cooldown).
+    if await ax.fan_on_cooldown(t.account_id, fan_id):
+        t.tally.skipped_cooldown += 1
+        return
+    # One bot message per fan per cycle — don't race A05/A06/A07/A09.
+    if not await ax.acquire_fan_lease(t.account_id, fan_id, _PURPOSE):
+        t.tally.skipped_locked += 1
+        return
+    advanced = t.tally.advanced
+    try:
+        await _leased_step(t, f, cs, entry)
+    finally:
+        # Sent = its save went through (only then is it counted; a dry run counts a
+        # would-send) — even if a later raise (lost slot, Unreachable save) follows.
+        await _end_lease(t, fan_id, not t.k.dry_run and t.tally.advanced > advanced)
+
+
+async def _walk_anchor(t: _Tick, a: _Anchor) -> bool:
+    """One funnel broadcast: adopt, discover, walk its due states (up to the per-run
+    send cap). True = stop sweeping (LLM cap or send cap); a stepless one is skipped."""
+    steps = await _load_funnel_steps(a.funnel_id)
+    if not steps:
+        log.info("reply_mass_funnel run=%s funnel=%s has no steps — skipping",
+                 a.mass_run_id, a.funnel_id)
+        return False
+    # Branching: `next` targets are step NUMBERS → resolve them to indices. MEDIA is
+    # per-account (vault ids don't carry between models): this account's binding
+    # once per run; _resolve_step_media falls back to legacy in-step media.
+    f = _Funnel(a, fd.Script(steps=steps, num_to_idx=step_number_index(steps),
+                             max_hops=_MAX_HOPS),
+                await _load_account_media(a.funnel_id, t.account_id))
+    await _adopt_list_openers(t, a)
+    dry_enrolled = await _discover(t, a)
+    for cs in [*dry_enrolled, *await _due_states(a.mass_run_id, t.now, t.k.only_fan)]:
+        if t.tally.advanced >= t.k.max_chats:
+            log.info("reply_mass_funnel batch capped run=%s cap=%d (rest next tick)",
+                     a.mass_run_id, t.k.max_chats)
+            break
+        await _walk_fan(t, f, cs)
+        if t.tally.cap_hit:
+            break  # the daily LLM cap: stop the walk
+    return t.tally.cap_hit or t.tally.advanced >= t.k.max_chats
+
 
 @register("reply_mass_funnel")
 async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     payload = payload or {}
-    dry_run = bool(payload.get("dry_run"))
-    only_run = payload.get("mass_run_id")
-    only_run = int(only_run) if only_run is not None else None
-    only_fan = payload.get("test_fan")
-    only_fan = int(only_fan) if only_fan is not None else None
-    max_chats = int(payload.get("max_chats") or _DEFAULT_MAX_CHATS)
-
+    k = _knobs(payload)
     model = await resolve_model(account_id, _PURPOSE, payload.get("model"))
     typing_wpm = await load_typing_wpm(account_id)            # per-bubble pacing
     typing_indicator = await load_typing_indicator(account_id)  # live "...is typing"
     strip_emoji_on = await load_strip_emojis(account_id)  # account-wide emoji strip
     banned_words, banned_mode = await load_banned_words(account_id)  # compliance word filter
     persona = await _load_persona(account_id)
-
     now = datetime.utcnow()
-    if not dry_run:
+    if not k.dry_run:
         # Send once: a step a dead attempt landed is saved as sent, never re-sent.
         await settle_landed(account_id, smd.BOOT_TS, now)
-    runs = await _active_mass_runs(account_id, only_run, now)
+    runs = await _active_mass_runs(account_id, k.only_run, now)
     if not runs:
         return {"status": "skipped", "reason": "no_active_funnel_runs",
                 "runs": 0, "discovered": 0, "advanced": 0}
 
     client = await asyncio.to_thread(ax._make_client, account_id)
-
-    discovered = 0
-    discovery_skipped = 0  # anchors past the window — walking only, not scanning
-    advanced = 0          # states that sent a step this tick
-    # waiting / completed / converted / branched / blocked: fx (funnel_decide's
-    # Wait / Complete / Convert / Branch / Block effects performed this tick)
-    skipped_locked = 0
-    skipped_cooldown = 0
-    errors = 0
-    cap_hit = False
-    key_error = None  # missing/rejected key: generated steps stop for this run, static ones still send
-
-    # Include-only audience: one policy read for the whole tick. Applied at BOTH
-    # per-fan seams — discovery (stops enrolling outside fans) and the due-state
-    # walk (stops advancing already-enrolled fans who left/never were in the
-    # folder) — before any LLM step-text spend. `only_fan` is operator-explicit
-    # targeting and stays exempt (like force_ids).
-    import audience_include as _audiences
-    _audience_pol = await _audiences.automation_audience(account_id)
-    audience_skipped = 0
-
-    async def _audience_allows(fan_id: int) -> bool:
-        nonlocal audience_skipped
-        if _audience_pol.mode == "off" or (only_fan is not None and fan_id == only_fan):
-            return True
-        if _audience_pol.mode == "shadow":
-            if int(fan_id) not in _audience_pol.member_ids:
-                audience_skipped += 1        # would-skip; shadow gates nothing
-            return True
-        ok, _why = await _audiences.audience_allows_fan(
-            account_id, fan_id, kind="reply_mass_funnel", policy=_audience_pol)
-        if not ok:
-            audience_skipped += 1
-        return ok
-
-    async def _save(cs: FunnelState) -> None:
-        # dry_run walks the states without moving them (they're detached, so
-        # only an explicit save persists).
-        if not dry_run:
-            await _save_state(cs, now)
-
-    fx: Counter = Counter()  # every effect performed, by value (the stats read it)
-
-    async def _perform(cs: FunnelState, e: fd.Entry, effects: list[fd.Effect]) -> bool:
-        """Carry out decide()'s effects in order; Save copies entry' onto the
-        detached row and persists it. True iff it asks for the step to be
-        generated and sent."""
-        fx.update(effects)
-        for eff in effects:
-            if isinstance(eff, fd.Save):
-                for k, v in vars(e).items():
-                    setattr(cs, k, v)
-                await _save(cs)
-        return fd.Generate() in effects
-
-    for (mass_run_id, funnel_id, queue_id, started_at,
-         discovery_closed_at, audience, discovery_open) in runs:
-        steps = await _load_funnel_steps(funnel_id)
-        if not steps:
-            log.info("reply_mass_funnel run=%s funnel=%s has no steps — skipping",
-                     mass_run_id, funnel_id)
-            continue
-        # Branching: `next` targets are step NUMBERS → resolve them to indices.
-        script = fd.Script(steps=steps, num_to_idx=step_number_index(steps),
-                           max_hops=_MAX_HOPS)
-        # MEDIA is per-account (vault ids don't carry between models) — resolve
-        # this account's binding once per run; _resolve_step_media falls back to
-        # any legacy in-step media for funnels not yet seeded.
-        acct_media = await _load_account_media(funnel_id, account_id)
-
-        # ── 0) List-audience sends wrote no per-fan rows — adopt the
-        #      scrape-backfilled opener rows so those fans are discoverable.
-        if audience.get("user_lists") or audience.get("list_ids"):
-            try:
-                openers = await _opener_texts(account_id, funnel_id, queue_id)
-                excluded = {int(x) for x in (audience.get("excluded_users") or [])}
-                await _adopt_list_recipients(
-                    account_id, mass_run_id, started_at, openers, excluded)
-            except Exception:
-                log.warning("reply_mass_funnel adopt failed run=%s", mass_run_id,
-                            exc_info=True)
-
-        # ── 1) Discovery: new repliers → ledger + fresh step-0 state ──
-        dry_enrolled: list[FunnelState] = []
-        # Past the discovery window this run is here solely to walk fans who are
-        # already enrolled — asking ~1,600 recipients "did you reply yet?"
-        # forever is precisely the leak `_DISCOVERY_WINDOW_DAYS` closes.
-        # `discovery_open` is decided in `_active_mass_runs`; see `_Anchor`.
-        if discovery_open:
-            # ONE query for the whole question, not two per recipient.
-            tracked = await _tracked_fans(mass_run_id)
-            for fan_id in sorted(
-                await replied_recipient_fans(account_id, mass_run_id) - tracked
-            ):
-                if only_fan is not None and fan_id != only_fan:
-                    continue
-                # They ANSWERED this funnel's opener → durable dedup ledger
-                # (R1/R2), regardless of the discovery cutoff below. Not on a
-                # dry run: the ledger drops the fan from every later send of
-                # this funnel, and nothing ever deletes it.
-                if not dry_run:
-                    await _record_responder(
-                        account_id, funnel_id, fan_id, mass_run_id, now)
-                # #R4: once the first mass is unsent (discovery_closed_at set),
-                # only ENROLL repliers whose inbound landed at/before the cutoff —
-                # a fan who replies after the mass is gone is deduped but not
-                # walked. Pre-cutoff replies (adopted late) still enroll.
-                if discovery_closed_at is not None:
-                    broadcast_at = await last_funnel_out_at(
-                        account_id, fan_id, mass_run_id)
-                    last_in = await last_inbound_at(
-                        account_id, fan_id, since=broadcast_at)
-                    if last_in is None or last_in > discovery_closed_at:
-                        continue
-                # Audience fence: the responder-dedup row above is ALWAYS
-                # recorded (so a later admit can never re-send the opener), but
-                # an outside fan is not ENROLLED for the walk.
-                if not await _audience_allows(fan_id):
-                    continue
-                if dry_run:
-                    # Would enroll: walk an unsaved step-0 state below instead.
-                    discovered += 1
-                    dry_enrolled.append(FunnelState(
-                        mass_run_id=int(mass_run_id), fan_id=int(fan_id),
-                        current_step=0, next_check_at=now, check_count=0,
-                        status="pending", hops=0))
-                    continue
-                if await _ensure_state(mass_run_id, fan_id, now):
-                    discovered += 1
-        else:
-            discovery_skipped += 1
-
-        # ── 2) Process due states ────────────────────────────────────
-        for cs in [*dry_enrolled, *await _due_states(mass_run_id, now, only_fan)]:
-            if advanced >= max_chats:
-                log.info("reply_mass_funnel batch capped run=%s cap=%d (rest next tick)",
-                         mass_run_id, max_chats)
-                break
-
-            # The fan's state, threaded through every decide() below; the row
-            # only follows it on a Save.
-            entry, _fx = fd.decide(fd.Entry.from_row(cs), fd.Due(now), script)
-            await _perform(cs, entry, _fx)
-            if fd.Complete() in _fx:        # past the script's end
-                continue
-            c = entry.current_step
-
-            fan_id = int(cs.fan_id)
-            # Audience fence at the walk too: a fan who left (or never joined)
-            # the folder stops advancing — his state simply waits; an admit
-            # resumes it on a later tick.
-            if not await _audience_allows(fan_id):
-                continue
-            # Another automation messaged this fan recently → rest it (W3 cooldown).
-            if await ax.fan_on_cooldown(account_id, fan_id):
-                skipped_cooldown += 1
-                continue
-            # One bot message per fan per cycle — don't race A05/A06/A07/A09.
-            if not await ax.acquire_fan_lease(account_id, fan_id, _PURPOSE):
-                skipped_locked += 1
-                continue
-            sent_ok = False
-            try:
-                step = steps[c]
-                is_ppv = step.get("type") == "paid_ppv"
-
-                # ── Branching FACTS — gathered once, drive the status machine.
-                #    #30 "offer taken" (a PPV unlocked since this funnel's
-                #    baseline — our own last PPV, else the broadcast time),
-                #    whether the fan replied since our last funnel message, and
-                #    that reply's text.
-                paid_since = fd.offer_since(entry, started_at)
-                bought = bool(paid_since is not None and await has_fan_paid_ppv(
-                    account_id, fan_id, paid_since))
-                last_out = await last_funnel_out_at(account_id, fan_id, mass_run_id)
-                # One query answers both "replied since?" and "with what text?" —
-                # the old pair scanned the identical rows twice per due fan per tick.
-                replied, reply_text = await latest_reply(account_id, fan_id, last_out)
-                substantive = is_substantive_msg(reply_text) if reply_text else False
-                facts = fd.Facts(replied=replied, bought=bought,
-                                 substantive=substantive, reply_text=reply_text)
-                # Offer taken (halt, or a `next.bought` branch), no reply yet
-                # (wait, or a spent window's `next.ignored` branch), else send.
-                entry, _fx = fd.decide(entry, fd.Checked(now, facts), script)
-                if not await _perform(cs, entry, _fx):
-                    continue  # finally releases the lease (sent_ok False)
-
-                if key_error and _is_generated(step):
-                    continue  # no usable key this run — one failed call, not one per fan
-                try:
-                    texts = await _step_texts(account_id, fan_id, step, persona, model)
-                except LLMCapExceeded:
-                    cap_hit = True
-                    log.warning("reply_mass_funnel daily LLM cap reached account=%s — stopping",
-                                account_id)
-                    break
-                except llm_client.LLMKeyError as e:
-                    key_error = llm_client.key_error_payload(e)
-                    continue
-                except Exception:
-                    errors += 1
-                    log.warning("reply_mass_funnel generate failed account=%s fan=%s step=%s",
-                                account_id, fan_id, c, exc_info=True)
-                    continue
-
-                if not texts:
-                    errors += 1
-                    log.warning("reply_mass_funnel empty step text account=%s fan=%s step=%s",
-                                account_id, fan_id, c)
-                    continue
-
-                if dry_run:
-                    advanced += 1  # would-send; do NOT send or advance state
-                    continue
-
-                step_media, step_previews = (
-                    _resolve_step_media(step, acct_media) if is_ppv else ([], []))
-
-                # ── #1 Pre-send validation: never send a blank paywall or an empty
-                #    bubble. A broken step (PPV with no media bound for THIS account,
-                #    or text that empties after word-restriction) won't fix itself
-                #    per tick — record it, back off to the fallback interval, and
-                #    skip. It stays `pending` so a later media/text fix can resume.
-                # Compliance word filter. A "block" verdict joins the #1 pre-send
-                # reasons below so it rides the SAME blocked/back-off/resume path —
-                # an operator fixing the copy makes the step deliverable again.
-                texts, _bw = filter_banned(texts, banned_words, banned_mode)
-                if _bw:
-                    log.info("reply_mass_funnel banned word(s) %r account=%s fan=%s step=%s",
-                             banned_hit_summary(_bw), account_id, fan_id, c)
-                problems = (["banned_words"] if texts is None
-                            else _presend_problems(is_ppv, texts, step_media))
-                if problems:
-                    entry, _fx = fd.decide(entry, fd.Blocked(now, tuple(problems)), script)
-                    await _perform(cs, entry, _fx)
-                    log.warning("reply_mass_funnel BLOCKED send account=%s fan=%s step=%s "
-                                "reasons=%s", account_id, fan_id, c, problems)
-                    continue
-                lost = err = None
-                attempt = _Attempt(facts)
-                try:
-                    await _send_step(client, account_id, fan_id, mass_run_id,
-                                     step, texts, is_ppv, attempt=attempt,
-                                     media=step_media, previews=step_previews,
-                                     typing_wpm=typing_wpm,
-                                     typing_indicator=typing_indicator,
-                                     strip_emoji_on=strip_emoji_on)
-                except run_slot.SlotLost as e:
-                    # The run lost its slot: not this fan's failure, stop the run
-                    # (re-raised below, after what landed is recorded).
-                    lost = err = e
-                except Exception as e:
-                    errors += 1
-                    err = e
-                    log.warning("reply_mass_funnel send failed account=%s fan=%s step=%s",
-                                account_id, fan_id, c, exc_info=True)
-                # Permanent (deleted/blocked) → quarantine fleet-wide AND end THIS
-                # funnel state — it stays due forever otherwise, regenerating the
-                # step texts (an LLM call) every tick. Transients stay pending.
-                unreachable = (err is not None and lost is None
-                               and await skip_unreachable_fan(account_id, fan_id, err, log=log))
-                keys = _keys(mass_run_id, fan_id)
-                # Send once (send_marker_decide): part of the step landed → it
-                # counts as sent (advance, cooldown), so it is never sent again —
-                # the PPV is bubble 0, a later bubble's failure never requeues
-                # it; may have sent → unconfirmed, left for the user's Retry;
-                # surely not → the marker goes and the step retries when due.
-                match smd.failure_outcome(
-                        attempt.sent, attempt.returned, attempt.marked_at is not None,
-                        err is not None and of_write._may_have_sent(err),
-                        unreachable=unreachable):
-                    case smd.SENT:
-                        # Advance the state machine + schedule the next reply-check:
-                        # the step just sent picks the next one (a reply keyword, a
-                        # purchase, `default`, else +1); a routeless PPV hands off.
-                        entry, _fx = fd.decide(entry, fd.Sent(now, facts), script)
-                        await _perform(cs, entry, _fx)
-                        advanced += 1
-                        sent_ok = True
-                    case smd.UNCONFIRMED:
-                        why = ((" ".join(str(err).split())[:200] or type(err).__name__)
-                               if err is not None else "send returned no id")
-                        await smst.unconfirm(FunnelState, keys, attempt.marked_at,
-                                             last_error=f"may not have sent: {why}"[:500],
-                                             updated_at=datetime.utcnow())
-                    case smd.CLEAR if attempt.marked_at is not None and not unreachable:
-                        await smst.clear(FunnelState, keys, if_sending_at=attempt.marked_at)
-                if unreachable:   # its save drops any marker too
-                    entry, _fx = fd.decide(entry, fd.Unreachable(now), script)
-                    await _perform(cs, entry, _fx)
-                if err is None and not sent_ok:
-                    errors += 1     # nothing went out (id-less / all emptied)
-                if lost is not None:
-                    raise lost
-            finally:
-                # W3 (paced-funnel variant): on a confirmed step send set the
-                # SHORT cooldown then RELEASE the lease, so the next step (due in
-                # 2-10 min via next_check_at) isn't blocked by a 30-min rest or a
-                # 900s lease. Cooldown is committed BEFORE release so it guards the
-                # moment the lease drops; on a cooldown-write failure KEEP the
-                # lease (900s) as the fallback guard.
-                if sent_ok:
-                    try:
-                        await ax.start_fan_cooldown(
-                            account_id, fan_id, cooldown_s=_REPLY_COOLDOWN_S
-                        )
-                        await ax.release_fan_lease(account_id, fan_id)
-                    except Exception:
-                        log.warning("reply_mass_funnel cooldown set failed account=%s fan=%s "
-                                    "— keeping lease as fallback guard",
-                                    account_id, fan_id, exc_info=True)
-                else:
-                    await ax.release_fan_lease(account_id, fan_id)
-
-        if cap_hit or advanced >= max_chats:
+    # Include-only audience: one policy read for the whole tick (_audience_allows).
+    audience_pol = await _audiences.automation_audience(account_id)
+    t = _Tick(account_id=account_id, k=k, now=now, model=model, typing_wpm=typing_wpm,
+              typing_indicator=typing_indicator, strip_emoji_on=strip_emoji_on,
+              banned_words=banned_words, banned_mode=banned_mode, persona=persona,
+              client=client, audience_pol=audience_pol)
+    for a in runs:
+        if await _walk_anchor(t, a):
             break  # LLM cap or the per-run send cap → stop sweeping further runs
-
-    return {
-        "runs": len(runs),
-        "discovered": discovered,
-        "discovery_skipped": discovery_skipped,
-        "advanced": advanced,
-        "waiting": fx[fd.Wait()],
-        "completed": fx[fd.Complete()],
-        "converted": fx[fd.Convert()],
-        "branched": fx[fd.Branch()],
-        "blocked": fx[fd.Block()],
-        "skipped_locked": skipped_locked,
-        "skipped_cooldown": skipped_cooldown,
-        "audience_mode": _audience_pol.mode,
-        "audience_skipped": audience_skipped,
-        "errors": errors,
-        "cap_hit": cap_hit,
-        "dry_run": dry_run,
-        "model": model,
-        **({"key_error": key_error} if key_error else {}),
-    }
+    return frd.summary(t.tally, len(runs), audience_pol.mode, k.dry_run, model)

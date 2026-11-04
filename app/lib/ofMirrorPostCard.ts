@@ -1,5 +1,5 @@
 /**
- * What OF's post card draws beyond the captured row (ofMirrorFeeds' postRows clones it for My profile's wall, Home,
+ * What OF's post card draws beyond the captured row (ofMirrorFeedsPosts' postRows clones it for My profile's wall, Home,
  * All bookmarks and a list's Posts tab), from OF's own Post component (app.js, build 202610161317) and the markup of a
  * live Home capture:
  * - a priced post's price beside its pin (OF's PostPrice: "$28" and the lock; another creator's opened post "Purchased
@@ -11,7 +11,7 @@
  * - a poll or quiz (OF's PostVotingWrapper, PostVoteOption, ProgressVote and its due row), read-only: the Relay has no
  *   vote route, so a vote button is disabled with the tooltip;
  * - its viewable files stamped on the picture for the viewer (`MEDIA`, opened by ofMirrorHome's post actions), as My
- *   profile's Media tab tiles (ofMirrorFeeds).
+ *   profile's Media tab tiles (ofMirrorFeedsPosts).
  */
 
 import { stillUrl } from "@/lib/ofMedia";

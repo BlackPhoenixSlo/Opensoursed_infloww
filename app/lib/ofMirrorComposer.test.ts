@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { bindChat, chatDraftKey, collectMessage, loadChatDraft, loadVaultPick, vaultPickKey, NO_CHAT, NO_EDIT_GIF, NO_SCHEDULED_FORMS, NO_SCHEDULED_GIF, type ChatContext, type ChatDraft } from "./ofMirrorChat";
+import { bindChat, chatDraftKey, collectMessage, loadChatDraft, loadVaultPick, vaultPickKey, NO_CHAT, NO_SCHEDULED_FORMS, NO_SCHEDULED_GIF } from "./ofMirrorChat";
+import { NO_EDIT_GIF, type ChatContext, type ChatDraft } from "./ofMirrorChatShared";
 import { bindMass, collectMass, loadMassDraft, massDraftKey, NO_MASS_FORMS, type MassDraft } from "./ofMirrorMass";
 import { applyData } from "./ofMirrorData";
 import { bareType, CAMERA_BLOCKED, GIF_ALONE, GIF_SEARCH_MS, MIC_BLOCKED, NO_GIFS, NO_MIC, notMedia, VOICE_MAX_MS } from "./ofMirrorComposer";

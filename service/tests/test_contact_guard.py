@@ -29,6 +29,22 @@ their EXCLUDE set here: messages-out ∪ NudgeState.last_nudged_at ∪ messages-
       OF's /lists/{id}/users returns a BARE list with no hasMore — the sync
       must page it to exhaustion (short-page stop) and remove EVERY stale
       member, not just the first page, or fans linger excluded forever.
+  case_big_*: a list past the paging backstop (MAX_PAGES patched to 3, so a
+      crawl past 200 rows is cut; per-account state reset per case):
+      cold_then_refresh: the cold send crawls once (capped), adds only guard −
+        read, removes nothing, schedules the refresh; the refresh crawls past
+        the backstop, removes every stale member, leaves a refused id out.
+      warm_adds_only: a warm send never crawls the list, adds only what the
+        mirror lacks, schedules nothing when not due.
+      refresh_readds: a guard id removed on OF's side comes back next refresh.
+      list_id_swap: Auto_Exclude recreated on OF (new id) after warm-up -> the
+        mirror is dropped and the new list crawled + reconciled like today.
+      failed_refresh_stamped: a refresh whose crawl hits its own backstop
+        changes nothing but stamps the attempt (not due again at once).
+      rule_matches_pager: "big" is the pager's own cut both ways (a 210-row list
+        stays big after its refresh; shrunk to 150 the next refresh drops it).
+      coverage_zero: coverage 0 still fails closed; an all-refused tick with
+        coverage does not.
   case_resolve_window_hours:
       None → default; 0/negative → off; garbage → default.
 
@@ -40,8 +56,12 @@ import _harness  # MUST be first
 
 _harness.bootstrap()
 
+import contextlib  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
 
+import audiences  # noqa: E402
+import auto_exclude_decide as aed  # noqa: E402
+import of_paging  # noqa: E402
 from audiences import (  # noqa: E402
     contact_guard_excludes,
     ensure_exclude_list,
@@ -181,6 +201,145 @@ async def case_ensure_exclude_list_paginates():
     assert len(fake.removed) == 250, len(fake.removed)
 
 
+class _BigListFake(_BareListFake):
+    """_BareListFake that refuses some adds per id (OF's 403 for a deleted /
+    blocked account) and counts its page reads."""
+
+    def __init__(self, existing, refuse=()):
+        super().__init__(existing)
+        self.refuse = set(refuse)
+        self.pages = 0
+
+    def list_users_in(self, list_id, *, limit=20, offset=0):
+        self.pages += 1
+        return super().list_users_in(list_id, limit=limit, offset=offset)
+
+    def add_user_to_list(self, lid, uid):
+        if int(uid) in self.refuse:
+            raise RuntimeError("Unable to add user to user list")
+        super().add_user_to_list(lid, uid)
+
+
+@contextlib.contextmanager
+def _backstop_3():
+    """MAX_PAGES 3 (a crawl past 200 rows is cut); the per-account mirror state
+    and the patched decide globals reset around the case."""
+    saved = of_paging.MAX_PAGES, aed.REFRESH_EVERY_S, aed.REFRESH_MAX_PAGES
+    of_paging.MAX_PAGES = 3
+    audiences._ae_mirrors.clear()
+    audiences._ae_refreshes.clear()
+    try:
+        yield
+    finally:
+        of_paging.MAX_PAGES, aed.REFRESH_EVERY_S, aed.REFRESH_MAX_PAGES = saved
+        audiences._ae_mirrors.clear()
+        audiences._ae_refreshes.clear()
+
+
+_GUARD = frozenset(range(1, 331)) | {400}
+_STALE = frozenset(range(1000, 1040))
+
+
+async def _warm(aid: str) -> _BigListFake:
+    """A big list after its cold send and first refresh: members == _GUARD − {7}
+    (7 refused), call logs cleared."""
+    fake = _BigListFake((_GUARD - {7, 400}) | _STALE, refuse={7})
+    await ensure_exclude_list(aid, _GUARD, client=fake)
+    await audiences._ae_refreshes[aid]
+    fake.added.clear()
+    fake.removed.clear()
+    return fake
+
+
+async def case_big_cold_then_refresh():
+    with _backstop_3():
+        fake = _BigListFake((_GUARD - {7, 400}) | _STALE, refuse={7})
+        assert await ensure_exclude_list("acc_big", _GUARD, client=fake) == _BigListFake.LID
+        assert fake.pages == 3, fake.pages                   # one capped crawl: first 300 ids
+        assert fake.added == list(range(302, 331)) + [400], fake.added[:5]
+        assert fake.removed == [], fake.removed[:5]
+        m = audiences._ae_mirrors["acc_big"]
+        assert 7 not in m.members and _GUARD - {7} <= m.members
+        await audiences._ae_refreshes["acc_big"]
+        assert fake.members == _GUARD - {7}, sorted(fake.members ^ (_GUARD - {7}))[:5]
+        assert sorted(fake.removed) == sorted(_STALE), len(fake.removed)
+        assert audiences._ae_mirrors["acc_big"] is m and m.members == fake.members
+
+
+async def case_big_warm_adds_only():
+    with _backstop_3():
+        fake = await _warm("acc_big")
+        pages = fake.pages
+        await ensure_exclude_list("acc_big", (_GUARD - set(range(1, 11))) | {500}, client=fake)
+        assert (fake.pages, fake.added, fake.removed) == (pages, [500], []), (
+            fake.pages - pages, fake.added, fake.removed)
+        assert audiences._ae_refreshes["acc_big"].done()       # not due: no new refresh
+
+
+async def case_big_refresh_readds():
+    with _backstop_3():
+        fake = await _warm("acc_big")
+        g2 = (_GUARD - set(range(1, 11))) | {500}
+        dropped = {100, 101, 102}
+        fake.members -= dropped                                # an operator edit on OF
+        aed.REFRESH_EVERY_S = 0.0
+        await ensure_exclude_list("acc_big", g2, client=fake)
+        await audiences._ae_refreshes["acc_big"]
+        assert fake.members == g2 - {7}, sorted(fake.members ^ (g2 - {7}))[:5]
+        assert dropped <= set(fake.added) and set(range(1, 11)) - {7} <= set(fake.removed)
+
+
+async def case_big_list_id_swap():
+    with _backstop_3():
+        fake = await _warm("acc_big")
+        fake.LID, fake.members = 8, set()                      # Auto_Exclude recreated on OF
+        pages = fake.pages
+        assert await ensure_exclude_list("acc_big", _GUARD, client=fake) == 8
+        assert fake.pages == pages + 1, fake.pages - pages     # the new list crawled
+        assert fake.members == _GUARD - {7}, len(fake.members)
+        assert "acc_big" not in audiences._ae_mirrors          # small when crawled: per-send again
+
+
+async def case_big_failed_refresh_stamped():
+    with _backstop_3():
+        fake = await _warm("acc_big")
+        m = audiences._ae_mirrors["acc_big"]
+        fake.members |= {2000, 2001}                           # stale, never reached
+        aed.REFRESH_MAX_PAGES, before = 2, m.refreshed_at
+        stats = await audiences._refresh_auto_exclude("acc_big", fake)
+        assert stats.crawled == 200 and fake.removed == [], (stats, fake.removed)
+        assert m.refreshed_at > before and audiences._ae_mirrors["acc_big"] is m
+        assert not aed.refresh_due(m, m.refreshed_at + 1)     # REFRESH_EVERY_S paces the retry
+
+
+async def case_big_rule_matches_pager():
+    with _backstop_3():
+        guard = set(range(1, 151))
+        fake = _BigListFake(guard | set(range(1000, 1060)))   # 210 rows: cut at 3 pages
+        await ensure_exclude_list("acc_big", guard, client=fake)
+        m = audiences._ae_mirrors["acc_big"]
+        await audiences._ae_refreshes["acc_big"]
+        assert fake.members == guard and audiences._ae_mirrors.get("acc_big") is m
+        aed.REFRESH_EVERY_S = 0.0                              # 150 rows now: fits 3 pages
+        await ensure_exclude_list("acc_big", guard, client=fake)
+        await audiences._ae_refreshes["acc_big"]
+        assert "acc_big" not in audiences._ae_mirrors
+
+
+async def case_big_coverage_zero():
+    with _backstop_3():
+        none = _BigListFake(range(2000, 2400), refuse={9})
+        try:
+            await ensure_exclude_list("acc_big0", {9}, client=none)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("coverage 0 must raise")
+        some = _BigListFake(range(2000, 2400), refuse={9})
+        assert await ensure_exclude_list("acc_big1", {9, 2001}, client=some) == _BigListFake.LID
+        await audiences._ae_refreshes["acc_big1"]
+
+
 async def case_resolve_window_hours():
     assert resolve_window_hours(None, 12) == 12.0
     assert resolve_window_hours(8, 12) == 8.0
@@ -196,5 +355,12 @@ _harness.run(
     case_windows_off,
     case_resolve_mass_audience_sees_nudges,
     case_ensure_exclude_list_paginates,
+    case_big_cold_then_refresh,
+    case_big_warm_adds_only,
+    case_big_refresh_readds,
+    case_big_list_id_swap,
+    case_big_failed_refresh_stamped,
+    case_big_rule_matches_pager,
+    case_big_coverage_zero,
     case_resolve_window_hours,
 )

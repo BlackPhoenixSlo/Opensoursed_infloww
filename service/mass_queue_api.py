@@ -18,6 +18,7 @@ server.py for route order (pinned by service/tests/test_route_order.py).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from datetime import datetime, timedelta
@@ -39,6 +40,17 @@ from relay_host import (
 log = logging.getLogger("of-relay")
 
 router = APIRouter()
+
+
+@contextlib.asynccontextmanager
+async def _exclude_list_held(account_id: str, excluded_users: list[int]):
+    """The composer's Auto_Exclude sync, yielding its OF list id with the
+    account's `broadcast_lock` held until the caller's block ends: the block is
+    the blast's OF POST. Looked up per call: slop's `auto-exclude-manual-lock-early`
+    fault (slop/lib/auto_exclude_faults.py) wraps it to release the lock early."""
+    from audiences import broadcast_lock, ensure_exclude_list
+    async with broadcast_lock(account_id):
+        yield await ensure_exclude_list(account_id, excluded_users, client=_get_client())
 
 
 async def _open_mass_run(
@@ -434,31 +446,67 @@ async def of_send_or_schedule_mass(
     # silently dropped and excluded fans got the blast). Mirror the ids into the
     # per-account Auto_Exclude OF list, which OF honors via `excludedLists`.
     # Explicit `user_ids` need no list — they're already stripped just above.
-    # Done under the shared per-account broadcast lock so a concurrent
-    # automation send can't rewrite the list mid-sync. Errors bubble up (500) —
-    # a broadcast without its guard is the bug itself. (Known minor gap: the
-    # lock is released before the send below, so a manual composer blast firing
-    # in the same instant as an automation tick on the SAME account can race on
-    # Auto_Exclude membership; automation<->automation sends hold it through.)
-    if mass_queue_decide.needs_exclude_list(
-            body.excluded_users, body.user_lists, body.online_only, body.filters):
-        from audiences import broadcast_lock, ensure_exclude_list
-        async with broadcast_lock(_aid):
-            auto_lid = await ensure_exclude_list(
-                _aid, body.excluded_users, client=_get_client())
+    # Done under the shared per-account broadcast lock, held from the sync
+    # through the OF POST below (as automation sends hold it): a concurrent
+    # automation send or Auto_Exclude refresh can't rewrite the list between
+    # this blast's sync and OF reading its `excludedLists`. Errors bubble up
+    # (500) — a broadcast without its guard is the bug itself.
+    _later = bool(body.scheduled_date or body.save_for_later)
+    _held = (_exclude_list_held(_aid, body.excluded_users) if mass_queue_decide.needs_exclude_list(
+        body.excluded_users, body.user_lists, body.online_only, body.filters) else contextlib.nullcontext())
+    async with _held as auto_lid:
         if auto_lid is not None and auto_lid not in (body.excluded_user_lists or []):
             body.excluded_user_lists = [*(body.excluded_user_lists or []), auto_lid]
-    account_id, employee_id, mass_run_id = await _open_mass_run(
-        request,
-        user_lists=body.user_lists,
-        included_users=body.user_ids,
-        excluded_users=body.excluded_users,
-        excluded_user_lists=body.excluded_user_lists,
-        funnel_id=body.funnel_id,
-    )
+        account_id, employee_id, mass_run_id = await _open_mass_run(
+            request,
+            user_lists=body.user_lists,
+            included_users=body.user_ids,
+            excluded_users=body.excluded_users,
+            excluded_user_lists=body.excluded_user_lists,
+            funnel_id=body.funnel_id,
+        )
+        client = _get_client()
+        # OF throttles consecutive broadcast POSTs with a 400 "Please allow 10
+        # seconds". Every automation absorbs that already (of_write_paced pre-spaces
+        # >=11s, of_write_with_retry re-tries once after an async pause); this
+        # handler — the one the Next composer hits, with a human watching — did not.
+        # A blast landing within ~10s of an automation's blast failed AFTER the
+        # audience resolve, the exclude sync and the mass_runs mint, and the manual
+        # resubmit re-paid all of it.
+        #
+        # Retry only, no pacing: pacing would tax the common un-throttled case and
+        # this is the interactive path. Safe to re-send because the retry fires only
+        # on OF's rate-limit 400 — a POST OF refused, so nothing was created. Every
+        # other error still surfaces unchanged. Both kinds are wrapped: scheduled
+        # and immediate are the same throttled endpoint. The function-local import
+        # mirrors this module's other automation_executor uses (that module must not
+        # import server).
+        from automation_executor import of_write_with_retry
+        shared = dict(
+            text=body.text,
+            user_lists=body.user_lists,
+            excluded_users=body.excluded_users,
+            excluded_user_lists=body.excluded_user_lists,
+            price=body.price,
+            locked_text=body.locked_text,
+            media_files=body.media_files,
+            previews=body.previews,
+            tagged_users=body.tagged_users,
+            giphy_id=body.giphy_id,
+            filters=body.filters,
+            online_only=body.online_only,
+        )
+        if _later:
+            post, extra = client.schedule_mass_message, dict(
+                scheduled_date=body.scheduled_date,
+                save_for_later=body.save_for_later and not body.scheduled_date,
+                user_ids=body.user_ids)
+        else:
+            post, extra = client.send_mass_message, dict(included_users=body.user_ids)
+        result = await of_write_with_retry(lambda: _proxy(lambda: post(**shared, **extra)))
     # A funnel-linked send only works if the reply-walker runs on this account —
     # without it the opener goes out and no reply-check ever fires. Best-effort:
-    # never blocks the broadcast.
+    # never blocks the broadcast (nor holds its lock).
     if body.funnel_id and mass_run_id is not None:
         try:
             from funnels_api import ensure_funnel_walker
@@ -466,66 +514,11 @@ async def of_send_or_schedule_mass(
         except Exception:
             log.exception("funnel walker ensure failed (account=%s) — enable "
                           "Reply-walking in My Automations > Auto Funnel", account_id)
-    client = _get_client()
-    # OF throttles consecutive broadcast POSTs with a 400 "Please allow 10
-    # seconds". Every automation absorbs that already (of_write_paced pre-spaces
-    # >=11s, of_write_with_retry re-tries once after an async pause); this
-    # handler — the one the Next composer hits, with a human watching — did not.
-    # A blast landing within ~10s of an automation's blast failed AFTER the
-    # audience resolve, the exclude sync and the mass_runs mint, and the manual
-    # resubmit re-paid all of it.
-    #
-    # Retry only, no pacing: pacing would tax the common un-throttled case and
-    # this is the interactive path. Safe to re-send because the retry fires only
-    # on OF's rate-limit 400 — a POST OF refused, so nothing was created. Every
-    # other error still surfaces unchanged. Both branches are wrapped: scheduled
-    # and immediate are the same throttled endpoint. The function-local import
-    # mirrors this module's other automation_executor uses (that module must not
-    # import server).
-    from automation_executor import of_write_with_retry
-    if body.scheduled_date or body.save_for_later:
-        # Scheduled sends don't produce per-fan rows now — OF fires the
-        # actual messages later. The mass_run_id is stamped on `mass_runs`
-        # so the WS-pump reconciler (TODO inside _close_mass_run) can match
-        # the eventual arrivals.
-        result = await of_write_with_retry(
-            lambda: _proxy(
-                lambda: client.schedule_mass_message(
-                    text=body.text, scheduled_date=body.scheduled_date,
-                    save_for_later=body.save_for_later and not body.scheduled_date,
-                    user_ids=body.user_ids, user_lists=body.user_lists,
-                    excluded_users=body.excluded_users,
-                    excluded_user_lists=body.excluded_user_lists,
-                    price=body.price,
-                    locked_text=body.locked_text, media_files=body.media_files,
-                    previews=body.previews,
-                    tagged_users=body.tagged_users,
-                    giphy_id=body.giphy_id,
-                    filters=body.filters,
-                    online_only=body.online_only,
-                ),
-            ),
-        )
-    else:
-        result = await of_write_with_retry(
-            lambda: _proxy(
-                lambda: client.send_mass_message(
-                    text=body.text,
-                    user_lists=body.user_lists,
-                    included_users=body.user_ids,
-                    excluded_users=body.excluded_users,
-                    excluded_user_lists=body.excluded_user_lists,
-                    price=body.price,
-                    locked_text=body.locked_text,
-                    media_files=body.media_files,
-                    previews=body.previews,
-                    tagged_users=body.tagged_users,
-                    giphy_id=body.giphy_id,
-                    filters=body.filters,
-                    online_only=body.online_only,
-                ),
-            ),
-        )
+    # Scheduled sends don't produce per-fan rows now — OF fires the actual
+    # messages later. The mass_run_id is stamped on `mass_runs` so the
+    # WS-pump reconciler (TODO inside _close_mass_run) can match the
+    # eventual arrivals.
+    if not _later:
         await _close_mass_run(
             account_id=account_id,
             employee_id=employee_id,
@@ -539,11 +532,11 @@ async def of_send_or_schedule_mass(
                       "excluded_user_lists": body.excluded_user_lists,
                       "filters": body.filters,
                       "online_only": body.online_only},
-            # This branch is the IMMEDIATE one (the scheduled branch above never
-            # calls us at all — see §8 of plans/blast-splice, that run stays
-            # 'running' forever and is its own bug), so this is always False.
-            # Passed explicitly anyway: the day the scheduled branch learns to
-            # close itself, the flag is already where it belongs.
+            # Only immediate sends close here (a `_later` run never does — see
+            # §8 of plans/blast-splice, that run stays 'running' forever and is
+            # its own bug), so this is always False. Passed explicitly anyway:
+            # the day a scheduled run learns to close itself, the flag is
+            # already where it belongs.
             scheduled=False,
         )
         # Auto-unsend timer: schedule a one-shot `unsend_messages` job for the

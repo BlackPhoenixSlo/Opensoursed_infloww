@@ -14,14 +14,14 @@ Anything that can be started N-at-a-time by a person scrolling therefore needs a
 ceiling, and a ceiling nobody can read the current value of is a ceiling nobody
 maintains — hence `stats()`.
 
-TWO TYPES, HONESTLY NAMED, NOT ONE THAT LIES. `Lane` guards SYNC call sites and
-parks waiters on a THREAD (`/img` is a plain `def` streaming endpoint;
-`vault_frames.warm_one_sync` runs inside `asyncio.to_thread`). `LoopLane` guards
-async ones and parks waiters on the EVENT LOOP. They are not one class with a
-flag, because an asyncio semaphore binds to a running loop and a threading one
-does not, and what a waiter COSTS is the whole reason each exists — a `Lane`
-waiter is holding a thread hostage, so it gives up after `wait_s`; a `LoopLane`
-waiter holds nothing, so it simply queues.
+TWO TYPES. `Lane` is process-wide THREADING slots: `exit` works from any thread
+(a streaming body's `finally` runs in a worker), the wait gives up after
+`wait_s` (a retryable rejection), and a waiter parks either on a thread
+(`enter`: `vault_frames.warm_one_sync` inside `asyncio.to_thread`) or on its
+event loop (`enter_async`: `/img`, an `async def` streaming endpoint).
+`LoopLane` is per-loop asyncio slots for async-only call sites; its waiters
+park on the loop and it never rejects. Two classes because an asyncio
+semaphore binds to one running loop and a threading one does not.
 
 `vault_stills._MAX_INFLIGHT_FETCHES` and `vault_ai_api._VISION_GLOBAL_CONCURRENCY`
 are still hand-rolled copies of `LoopLane` in their own modules; they belong
@@ -36,6 +36,7 @@ stays open.
 from __future__ import annotations
 
 import asyncio
+import collections
 import logging
 import threading
 import weakref
@@ -52,10 +53,11 @@ log = logging.getLogger("of-relay.admission")
 class Lane:
     """A named ceiling on concurrent work, with the counters to see it working.
 
-    `enter()` returns True if a slot was taken and False if the wait expired.
-    False means "not now", never "not possible" — callers must map it to
-    something retryable. A caller that took a slot MUST pair it with `exit()` in
-    a `finally`, and must not call `exit()` otherwise.
+    `enter()` / `await enter_async()` return True if a slot was taken and
+    False if the wait (`wait_s`) expired. False means "not now", never "not
+    possible" — callers must map it to something retryable. A caller that took
+    a slot MUST pair it with `exit()` (from any thread) in a `finally`, and must
+    not call `exit()` otherwise.
     """
 
     def __init__(self, name: str, env_var: str, default_cap: int,
@@ -77,29 +79,99 @@ class Lane:
         self._lock = threading.Lock()
         self.busy = 0
         self.rejected = 0
+        # `enter_async` waiters, FIFO. `exit` hands its slot to the head one.
+        self._waiters: collections.deque[asyncio.Future] = collections.deque()
 
     def enter(self, label: str = "") -> bool:
         if not self._sem.acquire(timeout=self.wait_s):
-            with self._lock:
-                self.rejected += 1
-            log.warning("%s lane full: waited %ss, %s already running (%s)",
-                        self.name, self.wait_s, self.cap, label or "-")
+            self._reject(label)
             return False
         with self._lock:
             self.busy += 1
         return True
 
+    def _reject(self, label: str) -> None:
+        with self._lock:
+            self.rejected += 1
+        log.warning("%s lane full: waited %ss, %s already running (%s)",
+                    self.name, self.wait_s, self.cap, label or "-")
+
+    async def enter_async(self, label: str = "") -> bool:
+        """`enter` for an `async def` caller: the same slots, cap, `wait_s` and
+        `rejected`, but the waiter parks on its event loop, not on a thread.
+
+        Why (#172): `/img` waited in `enter` inside a sync route, so each waiter
+        held an anyio threadpool token for up to `wait_s` — and the slot
+        holders' StreamingResponse generators need tokens of that same pool to
+        finish. A cold herd bigger than the pool (200) parked every token on a
+        waiter, no slot could finish, and the relay wedged until the waiters
+        timed out (/img 5xx, /admin/streams 30 s). A loop waiter holds nothing.
+
+        FIFO by hand-off: `exit` gives its slot straight to the head waiter
+        (the semaphore is never released in between, so a newcomer cannot take
+        it first), and a newcomer queues whenever anyone is queued. Mixing: a
+        sync `enter` on the same lane gets a slot only via the semaphore, i.e.
+        when no `enter_async` waiter is queued; the cap covers both."""
+        loop = asyncio.get_running_loop()
+        with self._lock:
+            if not self._waiters and self._sem.acquire(blocking=False):
+                self.busy += 1
+                return True
+            fut = loop.create_future()
+            self._waiters.append(fut)
+        try:
+            await asyncio.wait_for(fut, self.wait_s)
+            return True               # handed a slot; `busy` already counts it
+        except BaseException as e:
+            # One fact decides: did `exit` pop us? Popped = handed a slot, ours
+            # however the wait ended (its `_deliver` may still be on the way).
+            with self._lock:
+                try:
+                    self._waiters.remove(fut)
+                    popped = False
+                except ValueError:
+                    popped = True
+            if popped:
+                if isinstance(e, TimeoutError):
+                    return True
+                self.exit()           # cancelled holding a slot: pass it on
+                raise
+            if isinstance(e, TimeoutError):
+                self._reject(label)
+                return False
+            raise
+
+    @staticmethod
+    def _deliver(fut: asyncio.Future) -> None:
+        """On the waiter's loop: wake it. A waiter already gone (cancelled,
+        timed out) was popped all the same, so its except path owns the slot."""
+        if not fut.done():
+            fut.set_result(None)
+
     def exit(self) -> None:
-        """Hand back a slot taken by `enter`.
+        """Hand back a slot taken by `enter` / `enter_async`: to the head
+        `enter_async` waiter if one is queued, else to the semaphore.
 
         An over-release raises `ValueError` from the bounded semaphore and is
         NOT swallowed: it is the one signal that an enter/exit pair has come
         apart, and a lane that quietly grows past its cap is worse than the
         crash that tells you about it. `busy` is decremented only on a release
-        that actually happened, so the gauge cannot drift below the truth.
+        that actually happened, so the gauge cannot drift below the truth. (A
+        hand-off keeps the slot taken, so `busy` stays; with `busy` 0 there is
+        no slot to hand, and the release below raises.)
+
+        One lock over check + release: else an `enter_async` could queue
+        between them and the released permit would sit beside a parked waiter.
         """
-        self._sem.release()
         with self._lock:
+            while self.busy > 0 and self._waiters:
+                fut = self._waiters.popleft()
+                try:
+                    fut.get_loop().call_soon_threadsafe(self._deliver, fut)
+                    return
+                except RuntimeError:  # its loop is closed: that waiter is gone
+                    continue
+            self._sem.release()
             self.busy = max(0, self.busy - 1)
 
     def free(self) -> int:
@@ -121,18 +193,18 @@ class LoopLane:
     loop instead of on a thread.
 
     A separate class rather than a flag on `Lane`, for the reason the module
-    docstring gives: what a waiter COSTS is different, and one class covering
-    both would have to hide that. It lives here rather than at a call site
+    docstring gives: its semaphore is bound to a loop. It lives here rather than at a call site
     because the same ten lines had already been hand-rolled three times (the
     by-id vault read, `vault_stills._SLOTS`, `vault_ai_api._vision_sema`) —
     which is exactly the situation that produced `Lane` in the first place.
 
     Two things follow from parking a coroutine rather than a thread:
 
-    • It never rejects. `Lane.enter()` gives up after `wait_s` because a queued
-      caller there is holding a thread hostage while it waits. A queued caller
-      here holds nothing, so queueing is simply the right answer and a timeout
-      would only invent a failure mode the callers would have to handle.
+    • It never rejects. `Lane` gives up after `wait_s` (a `Lane.enter` waiter
+      holds a thread; an `/img` waiter is a browser tile better answered with a
+      retryable 503 than left hanging). A queued caller here holds nothing, so
+      queueing is simply the right answer and a timeout would only invent a
+      failure mode the callers would have to handle.
     • The semaphore is PER RUNNING LOOP. An `asyncio.Semaphore` that has parked
       a waiter belongs to the loop it parked it on, and the test harness gives
       every case its own `asyncio.run()`. Weak keys, so a finished loop takes
@@ -358,8 +430,9 @@ def describe() -> list[dict[str, Any]]:
             "busy": lane.busy,
             "rejected": lane.rejected,
             "peak": None,
-            # A thread waiter is holding a thread hostage, so this lane gives up
-            # after `wait_s` and the caller gets a retryable 503.
+            # "thread": threading slots (waiters park on a thread or, via
+            # `enter_async`, on a loop); the wait gives up after `wait_s` and
+            # the caller answers something retryable.
             "wait_s": lane.wait_s,
             "env_var": lane.env_var,
         })

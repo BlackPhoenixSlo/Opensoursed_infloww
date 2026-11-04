@@ -2,8 +2,7 @@
 scenario imports them, so a target can never name a check that does not exist). lib/faults.py merges
 `register(Fault)` into FAULTS. Each patches a product function in the relay (service/of_upload.py), never the repo.
 
-Declared gaps: no fault proves CLAIM_ETAG (YAGNI; an open finding in the PR) or AUDIT_ROWS (the open lock
-finding's check, the scenario's KNOWN_RED at medium --users=200).
+Declared gap: no fault proves CLAIM_ETAG (YAGNI; an open finding in the PR).
 """
 from __future__ import annotations
 
@@ -19,6 +18,9 @@ SEND = "each send with a fresh claim: 200, one OF message, mediaFiles == the upl
 IMPORT = "vault import: every item done, one vault id per file (a dupe its earlier id), carriers deleted"
 OFFHOST = "no curl_cffi call left loopback; the convert claim reached the fake"
 AUDIT_ROWS = "each 2xx upload / send: its audit row (actions); each send: its outbound messages row"
+UPLOAD, SEND_ROUTE = "POST /api/of/v2/upload", "POST /api/of/v2/chats/:id/messages"
+# The budget checks' names, per route; the numbers are the scenario's P95_MS.
+BUDGET = {r: f"p95 {r} (A + B at --users) within the scenario's P95_MS" for r in (UPLOAD, SEND_ROUTE)}
 
 
 def _dedupe_uses_md5() -> None:
@@ -46,10 +48,37 @@ def _convert_claimed_twice() -> None:
     of_upload.UploadMixin.convert_register = twice
 
 
+def _upload_on_loop() -> None:
+    """The Composer upload's `upload_media` runs ON the event loop again (the #171 shape: `async def` route, blocking
+    curl inline): the worker thread the route dispatched to hands the call to the main loop and waits, so the loop
+    blocks for the whole upload. Only for `POST /api/of/v2/upload` (the request contextvar); the import's uploads
+    keep their threads."""
+    import asyncio
+
+    import of_upload
+    import server
+    real = of_upload.UploadMixin.upload_media
+
+    def on_loop(self, *a, **kw):
+        req = server._request_ctx.get()
+        if req is None or req.url.path != "/api/of/v2/upload":
+            return real(self, *a, **kw)
+
+        async def inline():
+            return real(self, *a, **kw)
+
+        return asyncio.run_coroutine_threadsafe(inline(), server._main_loop).result()
+
+    of_upload.UploadMixin.upload_media = on_loop
+
+
 def register(Fault) -> dict:
     return {
         # slop/run of-upload-wire --break
         "upload-dedupe-uses-md5": Fault(_dedupe_uses_md5, (REUPLOAD_MULTI, DEDUPE_KEY)),
         # slop/run of-upload-wire --break --fault=upload-convert-claimed-twice --baseline=slop/evidence/<run-dir>
         "upload-convert-claimed-twice": Fault(_convert_claimed_twice, (ONE_CLAIM,)),
+        # slop/run of-upload-wire --scale=medium --users=200 --no-ui --break --fault=upload-on-loop
+        #     --baseline=slop/evidence/<run-dir>
+        "upload-on-loop": Fault(_upload_on_loop, (BUDGET[UPLOAD], BUDGET[SEND_ROUTE], AUDIT_ROWS)),
     }

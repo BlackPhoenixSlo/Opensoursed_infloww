@@ -4,45 +4,35 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { DEFAULT_SETTINGS, parseSettings, shouldPing, noticesFor, SeenKeys } = require("../lib/relay-notices");
 
-test("an inbound DM is a message notice with the page's id and href; our own send is not", () => {
-  const env = {
-    __account_id: "100",
-    api2_chat_message: { id: 55, text: "<p>hey <b>you</b></p>", fromUser: { id: 777, name: "Fan" } },
-  };
-  assert.deepEqual(noticesFor("api2_chat_message", env), [{
-    id: "100:m55",
-    typeKey: "message",
-    title: "Fan",
-    body: "hey you",
-    href: "/messages-pro/100/777",
-  }]);
-  const out = { __account_id: "100", api2_chat_message: { id: 56, text: "hi", fromUser: { id: "100" } } };
-  assert.deepEqual(noticesFor("api2_chat_message", out), []);
-  const media = { __account_id: "100", api2_chat_message: { id: 57, text: "", mediaCount: 2, fromUser: { id: 9 } } };
-  assert.equal(noticesFor("api2_chat_message", media)[0].body, "Sent you media");
+const path = require("node:path");
+const fs = require("node:fs");
+
+// One notice shape, three parsers: the page's (canonical), this one and the relay's push.
+const FIXTURE = path.join(__dirname, "..", "..", "service", "tests", "fixtures", "notice_cases.json");
+const { cases } = JSON.parse(fs.readFileSync(FIXTURE, "utf8"));
+
+const frameType = (frame) => Object.keys(frame).find((k) => !k.startsWith("__"));
+
+test("notice_cases.json: the page's notices, gated by the same settings", () => {
+  assert.ok(cases.length >= 15);
+  for (const c of cases) {
+    const settings = parseSettings(JSON.stringify(c.settings || {}));
+    const got = noticesFor(frameType(c.frame), c.frame).filter((n) => shouldPing(settings, n.typeKey));
+    assert.deepEqual(got, c.expect, c.name);
+  }
 });
 
-test("a PPV unlock and OF toasts; money links refresh the chat's media", () => {
-  const buy = { __account_id: "100", purchase_notified: { notif_id: "n1", fan_id: 9, amount_cents: 1250, name: "Bob" } };
-  const [n] = noticesFor("purchase_notified", buy);
-  assert.equal(n.id, "100:n1");
-  assert.equal(n.typeKey, "purchases");
-  assert.equal(n.body, "Unlocked your PPV — $12.50");
-  assert.equal(n.href, "/messages-pro/100/9?refresh=media");
-
-  const toasts = {
-    __account_id: "100",
-    toasts: [
-      { id: 1, type: "tip", text: "{RELATED_USER_NAME} tipped $5", data: { replacements: { "{RELATED_USER_NAME}": "Ann", "{RELATED_USER_ID}": "42" } } },
-      { id: 2, type: "unknown_kind", text: "x" },
-      { type: "tip" },
-      { id: 3, type: "subscribed", text: "New subscriber" },
-    ],
-  };
-  assert.deepEqual(noticesFor("toasts", toasts).map((t) => [t.id, t.typeKey, t.title, t.body, t.href]), [
-    ["100:1", "tip", "Ann", "Ann tipped $5", "/messages-pro/100/42?refresh=media"],
-    ["100:3", "subscribed", "Inflowwww", "New subscriber", null],
-  ]);
+test("a tip DM is a tip notice with its amount; the title falls back to the brand passed in", () => {
+  const env = { __account_id: "100", api2_chat_message: { id: 9, isTip: true, tipAmount: 12, price: 0, fromUser: { id: 5 } } };
+  assert.deepEqual(noticesFor("api2_chat_message", env, "Example App"), [{
+    id: "100:m9",
+    typeKey: "tip",
+    title: "Example App",
+    body: "Tipped you $12",
+    href: "/messages-pro/100/5?refresh=media&fanTab=fan+5",
+  }]);
+  const free = { ...env, api2_chat_message: { ...env.api2_chat_message, tipAmount: 0 } };
+  assert.equal(noticesFor("api2_chat_message", free)[0].body, "Sent you a tip");
 });
 
 test("events without an account or of other types are ignored", () => {

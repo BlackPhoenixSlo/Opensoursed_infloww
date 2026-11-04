@@ -19,7 +19,9 @@ The whole feature, in the order a sender meets it:
     banned_hit_summary(hits)                         for the log line
 
 `scan_outbound` is the pure single-string scanner underneath; `normalize_banned_config`
-dedupes the list and pins the mode.
+dedupes the list and pins the mode. `sensitive_hits` is the composers' matcher
+(app/lib/sensitiveWords.ts): which listed words a text holds, case-insensitive,
+between boundaries, a phrase across any run of whitespace.
 """
 from __future__ import annotations
 
@@ -240,3 +242,16 @@ class OutboundGuard:
 def outbound_guard(words, mode="block"):
     """This run's OutboundGuard, or None when there is nothing to scan."""
     return OutboundGuard(words, mode) if words else None
+
+
+def sensitive_hits(text: str, words: list[str]) -> list[str]:
+    """The listed words in `text`, as app/lib/sensitiveWords.ts matches them:
+    case-insensitive, only between boundaries (no letter or digit beside it, so
+    "ass" never trips on "class"), a phrase across any run of whitespace."""
+    hits: list[str] = []
+    for w in words:
+        parts = [re.escape(p) for p in str(w).split()]
+        if parts and re.search(r"(?<![^\W_])" + r"\s+".join(parts) + r"(?![^\W_])",
+                               text, re.IGNORECASE):
+            hits.append(w)
+    return hits

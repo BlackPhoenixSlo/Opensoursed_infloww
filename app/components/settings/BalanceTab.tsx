@@ -18,7 +18,7 @@ import { useScope } from "@/contexts/ScopeContext";
 import { useAccounts, useActiveAccounts } from "@/hooks/useAccounts";
 import { fmtCents, fmtPrice } from "@/lib/format";
 import { relay } from "@/lib/relay";
-import type { Payout } from "@/lib/ofMirrorFeeds";
+import type { Payout } from "@/lib/ofMirrorFeedsStatements";
 import { LoadError, SettingsPanel, SettingsTable, TABLE_CELL, TABLE_ROW } from "@/components/settings/SettingsPanel";
 import { EmptyState, IfCreatorSelect } from "@/components/ui/infloww";
 import { cn } from "@/lib/utils";

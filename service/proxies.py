@@ -233,18 +233,13 @@ def list_proxies() -> list[dict[str, Any]]:
     return load().get("proxies", [])
 
 
+def _by_label(data: dict[str, Any], label: str) -> dict[str, Any] | None:
+    """The entry of `label` in a registry already read (the caller's copy)."""
+    return next((p for p in data["proxies"] if p.get("label") == label), None)
+
+
 def get_by_label(label: str) -> dict[str, Any] | None:
-    for p in list_proxies():
-        if p.get("label") == label:
-            return p
-    return None
-
-
-def get_for_session(session_filename: str) -> dict[str, Any] | None:
-    """Return the proxy currently assigned to `session_filename`, or None.
-    Legacy: pre-multi-account installs bound proxies to a specific session
-    file. New installs bind to account_id (see `get_for_account`)."""
-    return _session_entry(load(), session_filename)
+    return _by_label(load(), label)
 
 
 def _session_entry(data: dict[str, Any], session_filename: str | None) -> dict[str, Any] | None:
@@ -487,9 +482,9 @@ def assign_account(label: str, account_id: str | None) -> dict[str, Any]:
         # to express "unbind". With multi-binding, that gesture is ambiguous
         # (unbind WHICH account?) so the explicit `unbind_account` path
         # owns it. Look up the target so callers still get the proxy back.
-        for p in list_proxies():
-            if p.get("label") == label:
-                return p
+        p = get_by_label(label)
+        if p is not None:
+            return p
         raise KeyError(f"no proxy with label {label!r}")
 
     with _lock:
@@ -532,18 +527,14 @@ def unbind_account(label: str, account_id: str) -> dict[str, Any]:
     aid = str(account_id)
     with _lock:
         data = _load_for_write()
-        target = None
-        for p in data["proxies"]:
-            if p.get("label") == label:
-                target = p
-                # Lift legacy singular into the list first so a pre-multi
-                # entry can be unbound just like any other.
-                ids = _ids_on(p)
-                p["assigned_account_ids"] = [x for x in ids if x != aid]
-                _sync_legacy_singular(p)
-                break
+        target = _by_label(data, label)
         if target is None:
             raise KeyError(f"no proxy with label {label!r}")
+        # Lift legacy singular into the list first so a pre-multi
+        # entry can be unbound just like any other.
+        ids = _ids_on(target)
+        target["assigned_account_ids"] = [x for x in ids if x != aid]
+        _sync_legacy_singular(target)
         save(data)
         return target
 
@@ -589,17 +580,15 @@ def record_verification(label: str, *, ip: str | None, geo: str | None,
     """Persist the last egress-IP probe result for a proxy."""
     with _lock:
         data = _load_for_write()
-        for p in data["proxies"]:
-            if p.get("label") == label:
-                if ok:
-                    p["verified_ip"] = ip
-                    p["verified_geo"] = geo
-                    p["verified_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                else:
-                    p["verified_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                    p["verified_ip"] = None
-                save(data)
-                return
+        p = _by_label(data, label)
+        if p is None:
+            return
+        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if ok:
+            p.update(verified_ip=ip, verified_geo=geo, verified_at=stamp)
+        else:
+            p.update(verified_at=stamp, verified_ip=None)
+        save(data)
 
 
 TRACE_URL = "https://1.1.1.1/cdn-cgi/trace"
@@ -623,12 +612,12 @@ def probe(p: dict[str, Any], timeout_s: int = 15) -> dict[str, Any]:
     Blocking; safe from a request handler."""
     from curl_cffi import CurlInfo, requests as curl_requests
 
-    url = proxy_url(p)
+    routes = proxies_dict_for_requests(p)  # outside the try: a malformed entry still raises
     out: dict[str, Any] = {"ok": False, "ip": None, "geo": None, "colo": None,
                            "ttfb_ms": None, "error": None}
     try:
         with curl_requests.Session(curl_infos=[CurlInfo.STARTTRANSFER_TIME]) as s:
-            r = s.get(TRACE_URL, proxies={"http": url, "https": url}, timeout=timeout_s)
+            r = s.get(TRACE_URL, proxies=routes, timeout=timeout_s)
         if r.status_code != 200:
             out["error"] = f"proxy_probe_failed: HTTP {r.status_code}"
             return out
@@ -922,7 +911,7 @@ def failover_pool(label: str, *, bad: set[str], geo: Geo, verify: Verify,
     Returns the moved account ids ([]: it ran and nobody moved)."""
     rng = rng or random
     data = load()
-    source = next((p for p in data["proxies"] if p.get("label") == label), None)
+    source = _by_label(data, label)
     if not is_pool(source) or not _ids_on(source):
         return None
     skip = set(bad) | {label}

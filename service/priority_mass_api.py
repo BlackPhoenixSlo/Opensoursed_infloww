@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -37,7 +36,7 @@ from sqlalchemy import select, update
 import automation_executor as ax
 from auth import assert_account_owned
 from automations import priority_mass as pm
-from automations._wordfilter import banned_hit_summary, filter_banned, load_banned_words
+from automations._wordfilter import banned_hit_summary, filter_banned, load_banned_words, sensitive_hits
 from db.engine import get_session
 from db.models import PriorityMassRecipient, PriorityMassRun, ScheduledJob, SensitiveWord
 from employees import agency_contexts, json_object, resolve_outbound_employee_id
@@ -54,19 +53,6 @@ _REPEAT_S = 120
 _LIST_LIMIT = 50
 # The composers' "Please check the contents of the messages" (app/lib/sensitiveWords.ts).
 SENSITIVE_BLOCK_MESSAGE = "Please check the contents of the messages"
-
-
-def sensitive_hits(text: str, words: list[str]) -> list[str]:
-    """The listed words in `text`, as app/lib/sensitiveWords.ts matches them:
-    case-insensitive, only between boundaries (no letter or digit beside it, so
-    "ass" never trips on "class"), a phrase across any run of whitespace."""
-    hits: list[str] = []
-    for w in words:
-        parts = [re.escape(p) for p in str(w).split()]
-        if parts and re.search(r"(?<![^\W_])" + r"\s+".join(parts) + r"(?![^\W_])",
-                               text, re.IGNORECASE):
-            hits.append(w)
-    return hits
 
 
 async def _sensitive_words(account_id: str) -> list[str]:

@@ -27,7 +27,8 @@ import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-quer
 import { useSearchParams } from "next/navigation";
 import { useScope } from "@/contexts/ScopeContext";
 import { relay, type OFMessage } from "@/lib/relay";
-import { chatPath, mirrorQuery, usersListPath } from "@/lib/ofMirrorData";
+import { mirrorQuery } from "@/lib/ofMirrorData";
+import { chatPath, usersListPath } from "@/lib/ofMirrorDataQueries";
 import { chatDraftKey, DRAFT_EVENT, loadChatDraft } from "@/lib/ofMirrorChat";
 import { dialog, dialogError, FLAT, type FanState } from "@/lib/ofMirrorChatTools";
 import { toast } from "@/lib/ofMirrorPost";

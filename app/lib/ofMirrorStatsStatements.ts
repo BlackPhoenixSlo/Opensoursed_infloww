@@ -14,8 +14,9 @@
  */
 
 import { relayFile } from "@/lib/relay";
-import { make, plain, valid } from "@/lib/ofMirrorData";
-import type { Transaction } from "@/lib/ofMirrorFeeds";
+import { plain } from "@/lib/ofMirrorData";
+import { make, valid } from "@/lib/ofMirrorDom";
+import type { Transaction } from "@/lib/ofMirrorFeedsStatements";
 import { NOT_YET, note } from "@/lib/ofMirrorWrites";
 import type { Period } from "@/lib/ofMirrorStatsPeriod";
 import { TIPS_SOURCES, inPeriod, listOf, pagedDone, valueOf, type EarningsType, type PagedBody, type PayoutRow, type Picks, type StatsData } from "@/lib/ofMirrorStatsSources";

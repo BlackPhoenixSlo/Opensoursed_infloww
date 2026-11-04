@@ -32,7 +32,9 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useScope } from "@/contexts/ScopeContext";
 import { relay } from "@/lib/relay";
-import { LIST_TABS, mirrorQuery, rowsOf, USER_LISTS, usersListPath } from "@/lib/ofMirrorData";
+import { mirrorQuery, rowsOf } from "@/lib/ofMirrorData";
+import { USER_LISTS, usersListPath } from "@/lib/ofMirrorDataQueries";
+import { LIST_TABS, usersLabel } from "@/lib/ofMirrorDataLists";
 import { afterChatWrite } from "@/lib/ofMirrorKeys";
 import { message, note, NOT_YET, SELECT_MODEL } from "@/lib/ofMirrorWrites";
 import { floatLabel } from "@/lib/ofMirrorSettings";
@@ -100,8 +102,6 @@ export const openListPage = (page: string) => page === INDEX || LIST_TABS.includ
 
 /** "@a, b  @c" -> ["a", "b", "c"]: usernames without "@", once each. */
 export const usernames = (text: string) => [...new Set(text.split(/[\s,]+/).map((s) => s.replace(/^@/, "")).filter(Boolean))];
-
-const users = (n: number) => `${n} ${n === 1 ? "user" : "users"}`;
 
 /** OF's "Create new category" dialog (the Vault's b-modal__custom-list, captured on vault/state-add-list), as markup. */
 const DIALOG_HTML = `<div style="position: absolute; z-index: 1040;" data-oi-dialog="" data-oi-wired=""><div role="dialog" class="modal fade show b-modal__custom-list" style="display: block;" aria-modal="true"><div class="modal-dialog modal-md modal-dialog-centered"><div tabindex="-1" class="modal-content"><header class="modal-header"><h4 class="modal-title"></h4></header><div class="modal-body m-footer-inside-body"><form><div class="modal-body"><div class="g-input__wrapper no-padding"><div data-v-5684fe78="" class="g-input__wrapper input-text-field m-reset-bottom-gap m-empty"><div data-v-5684fe78="" class=""><div data-v-5684fe78="" class="v-input form-control g-input mb-0 theme--light v-text-field v-text-field--is-booted v-text-field--enclosed v-text-field--outlined v-text-field--placeholder"><div class="v-input__control"><div class="v-input__slot"><fieldset aria-hidden="true"><legend style="width: 0px;"><span class="notranslate">​</span></legend></fieldset><div class="v-text-field__slot"><label class="v-label theme--light" style="left: 0px; right: auto; position: absolute;"></label><input at-attr="input" autocomplete="off" required="required" type="text"></div></div><div class="v-text-field__details"><div class="v-messages theme--light"><div class="v-messages__wrapper"></div></div><div class="v-counter theme--light"></div></div></div></div></div></div></div></div><div class="modal-footer"><a class="g-btn m-flat m-btn-gaps m-reset-width" role="button" href="#"> Cancel </a><button type="submit" disabled="disabled" class="g-btn m-flat m-btn-gaps m-reset-width"> Save </button></div></form></div></div></div></div><div class="modal-backdrop show"></div></div>`;
@@ -403,7 +403,7 @@ export function bindCollections(
             label: "Usernames",
             placeholder: "@username, @username",
             anchor: opener,
-            save: async (t) => `Added ${users(await h.addUsers(id, usernames(t)))}`,
+            save: async (t) => `Added ${usersLabel(await h.addUsers(id, usernames(t)))}`,
           }),
         );
       if ((current!.canUpdate || current!.canAddUsers) && (current!.canManageUsers || current!.canDelete)) {

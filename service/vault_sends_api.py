@@ -21,6 +21,7 @@ from typing import Any
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from auth import assert_account_owned
 from relay_host import load_client as _load_client
 
 router = APIRouter()
@@ -47,6 +48,7 @@ async def admin_vault_sends_create(body: _VaultSendBody = Body(...)) -> dict[str
     Skips negative ids (fresh-claim placeholders the optimistic bubble
     used before the real vault id was assigned) — those slip through if
     the caller doesn't filter, and we shouldn't pollute history with them."""
+    assert_account_owned(body.account_id)
     from db.engine import get_session
     from db.models import VaultSend
     real_ids = [mid for mid in body.media_ids if isinstance(mid, int) and mid > 0]
@@ -93,6 +95,7 @@ async def admin_vault_sends_backfill(body: _VaultBackfillBody = Body(...)) -> di
 
     This is how we cover historical sends (pre-tracking), without
     requiring a one-off backfill job."""
+    assert_account_owned(body.account_id)
     from db.engine import get_session
     from db.models import VaultSend
     from sqlalchemy import select

@@ -22,7 +22,7 @@ import { useAppliedSettings } from "@/lib/appliedSettings";
 import { relay } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
 import { rowsOf } from "@/lib/ofMirrorData";
-import type { Transaction } from "@/lib/ofMirrorFeeds";
+import type { Transaction } from "@/lib/ofMirrorFeedsStatements";
 import { DASH, usd } from "@/lib/ofMirrorMoney";
 import { BLUE } from "@/lib/ofMirrorChart";
 import { basePage } from "@/lib/ofMirrorRow";

@@ -6,7 +6,8 @@ gets a verdict back. Table-tested in tests/test_vault_ai_vision_decide.py.
   flags fold        _garment_over, _ground_in_named_garment, _reconcile_with_acts,
                     _fold_clip_flags, _clip_arc
   describe          _frames_for_duration, _parse_describe, next_attempt,
-                    describe_answer, build_describe_update
+                    describe_answer, prompt_variant, build_describe_update,
+                    with_flags_cost
   flags merge       build_flags_fields — the row's ai_fields after a flags run.
   selection         live_describable (the base every vision sweep walks) and
                     describe_selection — the ONE predicate both the describe-all
@@ -377,6 +378,24 @@ def describe_answer(data: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def with_flags_cost(describe_res: Mapping[str, Any],
+                    flags_res: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Describe's result with the auto-flag call's cost added: describe-and-flag
+    bills both, and the sweep reports what its items' results carry. No flags
+    result (it raised / never ran) or no cost on it: describe's cost unchanged —
+    an unparsed flags answer carries none, so that billed call is not reported."""
+    out = dict(describe_res)
+    if flags_res and "cost_millicents" in flags_res:
+        out["cost_millicents"] = (int(out.get("cost_millicents") or 0)
+                                  + int(flags_res.get("cost_millicents") or 0))
+    return out
+
+
+def prompt_variant(prompt_version: Any) -> str:
+    """The describe prompt variant: "v1" only when asked for exactly, else "v2"."""
+    return "v1" if str(prompt_version) == "v1" else "v2"
+
+
 def build_describe_update(is_video: bool, data: Mapping[str, Any], *,
                           prev_ai: Mapping[str, Any], locked: Collection[str],
                           overrides: Mapping[str, Any], used_model: str,
@@ -403,7 +422,7 @@ def build_describe_update(is_video: bool, data: Mapping[str, Any], *,
 
     # Stamp WHICH variant produced this row: a v1 row is a candidate for a later
     # v2 re-scan, and without the stamp "already described" is ambiguous.
-    out = {**data, "_prompt_version": ("v1" if str(pv) == "v1" else "v2"),
+    out = {**data, "_prompt_version": prompt_variant(pv),
            "_frames": n_frames}
 
     # `ai_fields_json` is written whole from `data`, which holds ONLY what the

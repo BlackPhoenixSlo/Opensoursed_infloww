@@ -7,12 +7,16 @@
  */
 
 import { type TaggedFriendUser, type GiphyItem, type VaultUploadResp } from "@/lib/relay";
-import { toggleTile, type UserList } from "@/lib/ofMirrorData";
+import { toggleTile } from "@/lib/ofMirrorDom";
+import type { UserList } from "@/lib/ofMirrorDataLists";
+import { loadVaultPick, vaultPickKey, type VaultPick } from "@/lib/ofMirrorPick";
 import { bindAddMedia, bindTags, bindVaultSearch, bindVaultTools, mediaTaker, tagHref, type TagView } from "@/lib/ofMirrorPost";
 import { bindComposer, GIF_ALONE, isMobile } from "@/lib/ofMirrorComposer";
-import { TYPES, vaultHref, type VaultView } from "@/lib/ofMirrorVault";
+import { markTypeTabs, TYPES, vaultHref, type VaultView } from "@/lib/ofMirrorVault";
 import { note } from "@/lib/ofMirrorWrites";
 import { MIN_PRICE, PRICE_NOTE } from "@/lib/sendGuards";
+// Re-exported: cut into ofMirrorPick, so its importers still read them from here.
+export { load, loadVaultPick, vaultPickKey } from "@/lib/ofMirrorPick";
 
 /** The Chat draft (sessionStorage JSON): thumbs[i] is the picture of media_files[i] (vault ids, in click order). */
 export interface ChatDraft {
@@ -65,27 +69,8 @@ const VAULT_TILE = ".b-photos__item.m-checkbox-control";
 const VAULT_TABS = ".modal.show .b-tabs__nav__link";
 export const SUMMARY = "oi-chat-summary";
 
-export function load<T>(storage: Storage, key: string, fresh: T): T {
-  try {
-    const raw = storage.getItem(key);
-    return raw ? { ...fresh, ...(JSON.parse(raw) as Partial<T>) } : fresh;
-  } catch {
-    return fresh;
-  }
-}
-
-/**
- * A composer's vault dialog's ticked tiles (OF's "N / 40 Selected"), kept over its tabs and folders (each its own page)
- * and attached only by its Add; Close, the backdrop or any other way back to the composer drops them (bindChat, bindMass).
- */
-export interface VaultPick {
-  ids: number[];
-  thumbs: string[];
-}
 /** OF's most media one message takes: its vault dialog's "N / 40 Selected". */
 export const VAULT_PICK_MAX = 40;
-export const vaultPickKey = (accountId: string, page: string, chat?: string | null) => `oi:vault-pick:${accountId}:${page}:${chat ?? ""}`;
-export const loadVaultPick = (storage: Storage, key: string): VaultPick => load<VaultPick>(storage, key, { ids: [], thumbs: [] });
 
 /** The price field's value in dollars: "" is free (0), else a number of at least MIN_PRICE (a leading "$" allowed); null otherwise. */
 export function readPrice(value: string): number | null {
@@ -303,12 +288,7 @@ function vaultBar(doc: Document, count: number) {
 export const bindVault: ChatDialog = (doc, ctx, { page, draftOf, update, back, ready, writer, stay }) => {
   const view = ctx.vaultView ?? {};
   const tabs = [...doc.querySelectorAll<HTMLElement>(VAULT_TABS)];
-  tabs.forEach((t, i) => {
-    const on = (TYPES[i] ?? null) === (view.type ?? null);
-    t.classList.toggle("m-current", on);
-    t.classList.toggle("m-no-pointer", on);
-    t.setAttribute("data-oi-wired", "");
-  });
+  markTypeTabs(tabs, view.type ?? null);
   const store = ctx.storage && ctx.accountId ? { storage: ctx.storage, key: vaultPickKey(ctx.accountId, page, ctx.chat) } : null;
   const pickOf = (): VaultPick => (store ? loadVaultPick(store.storage, store.key) : { ids: [], thumbs: [] });
   const keep = (pick: VaultPick) => {

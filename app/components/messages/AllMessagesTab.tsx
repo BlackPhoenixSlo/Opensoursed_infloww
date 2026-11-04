@@ -236,6 +236,7 @@ function AllTab({ from, to, fanId, onClearFanId }: Props) {
             hasNextPage={q.hasNextPage}
             isFetchingNextPage={q.isFetchingNextPage}
             fetchNextPage={q.fetchNextPage}
+            isError={q.isError}
             endLabel="end of results"
           />
         </div>

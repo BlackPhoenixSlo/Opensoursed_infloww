@@ -9,7 +9,8 @@ own Agency's; read / read-all and the unread count; a kind switched off in
 the `preferences` blob files nothing; an assignment naming another Agency's
 Employee files nothing; a dead session files once per episode; the clock-in
 sweep files once per missed occurrence (not on a cancelled date, and past a
-Shift it cannot read) and drops rows past retention; the unread count's SSE
+Shift it cannot read) and drops rows past retention, pushing the unread count
+to each Agency that lost unread ones; the unread count's SSE
 push (once per batch) reaches the subscription the real /events route opens
 for an owner and not a chatter's; a Master impersonating an owner reads that
 owner's feed. No OnlyFans call: the unsend runs against a fake client.
@@ -506,6 +507,35 @@ def case_the_sweep_drops_rows_past_retention():
     asyncio.run(_seed())
     asyncio.run(notifications_api.tick(now))
     assert [r.text for r in _rows(A)] == ["recent"]
+
+
+def case_the_sweep_pushes_unread_once_to_each_agency_it_pruned_unread_rows_of():
+    """(agency, days old, read) rows: A loses an unread row (one push, its
+    post-prune unread), B only a read one (no push); a sweep with nothing
+    left to prune pushes nothing."""
+    _clear()
+    now = datetime(2026, 6, 1)  # before every fixture Shift: the sweep files nothing
+    table = ((A, 91, False), (A, 92, True), (A, 1, False), (B, 91, True), (B, 1, False))
+
+    async def _seed():
+        async with get_session() as s:
+            for agency, days, read in table:
+                at = now - timedelta(days=days)
+                s.add(AgencyNotification(agency_user_id=agency, kind="role_changed", text=f"{days}d",
+                                         created_at=at, read_at=at if read else None))
+    asyncio.run(_seed())
+    pushed: list[tuple] = []
+    original = events.publish_state
+    events.publish_state = lambda kind, **kw: pushed.append((kind, kw))
+    try:
+        assert asyncio.run(notifications_api.tick(now)) == 0
+        assert pushed == [("agency_notifications", {"agency": events.owner_audience(A), "unread": 1})], pushed
+        pushed.clear()
+        assert asyncio.run(notifications_api.tick(now)) == 0
+        assert pushed == [], f"a sweep that pruned nothing pushed: {pushed}"
+    finally:
+        events.publish_state = original
+    assert [r.text for r in _rows(A)] == ["1d"] and [r.text for r in _rows(B)] == ["1d"]
 
 
 # ── Audit log: names and dates (6.16) ──────────────────────────────────────

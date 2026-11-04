@@ -214,7 +214,7 @@ The Composer is rebuilt to Infloww's layout. It has a button row (emoji, ⚙ fav
 - **Timed reminder.**
   - Same 1–60 minute field and "Start".
   - While it runs, the notice area shows "Timed reminder · m:ss" with ✕ to cancel.
-  - At zero it shows a `role="alert"` strip, "Timed reminder — time's up", with ✕ to dismiss. It also fires an OS notification, but only if permission is already granted (rung 3: toastStore.ts `deliverNotification`).
+  - At zero it shows a `role="alert"` strip, "Timed reminder — time's up", with ✕ to dismiss. It also fires an OS notification, but only if permission is already granted (rung 3: toastStore.ts `pingNotification`).
   - It never calls `onSend`.
   ASSUMPTION: the reminder range is 1–60 minutes like the Timed message, because §3.3:213 gives no range for the reminder. Overturned by Infloww evidence of a different reminder range.
   ASSUMPTION: there is one reminder per Fan. It is held in a module-level timer (survives chat switches) and in localStorage (survives reloads). A reminder that expired while its Thread was closed fires the next time that Thread opens. There is no sound, because the app has no audio asset. Overturned if the human wants one global reminder or an audible alarm.

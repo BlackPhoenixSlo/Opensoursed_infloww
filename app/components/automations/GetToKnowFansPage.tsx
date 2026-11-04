@@ -32,7 +32,7 @@ import { useAccountConfig, useSaveAccountConfig, type AccountConfigResp } from "
 import {
   useAutomationKinds, useAutomationRules, useSwitchKind, useUpdateRule, type AutomationKind, type AutomationRule,
 } from "@/hooks/useAutomations";
-import { VAULT_PICK_MAX } from "@/lib/ofMirrorChat";
+import { VAULT_PICK_MAX } from "@/lib/ofMirrorChatShared";
 import { Skeleton } from "@/components/ui/Skeleton";
 
 import { buildPayload, gtkfReducer, initState, invalidReason, limitsOf } from "./getToKnowFansForm";

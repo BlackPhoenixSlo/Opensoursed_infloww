@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
-  applyListRows,
   bindMass,
   collectMass,
   loadMassDraft,
@@ -13,6 +12,7 @@ import {
   massRequest,
   NO_LISTS,
 } from "./ofMirrorMass";
+import { applyListRows } from "./ofMirrorDataLists";
 import { EMPTY_MESSAGE, NO_DATE, type ChatContext } from "./ofMirrorChatShared";
 import { localIso, SELECT_MODEL, TOO_SOON } from "./ofMirrorWrites";
 import type { VaultUploadResp } from "./relay";

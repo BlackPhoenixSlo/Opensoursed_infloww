@@ -2,7 +2,7 @@
 
 /**
  * What a mirror page shows (MirrorData), built from useOfData's reads: mirrorDataOf is the body of its memo, cut from
- * ofMirrorData (which re-exports MirrorData), a pure function of plain values (the memo reads its refs and passes their
+ * ofMirrorData, a pure function of plain values (the memo reads its refs and passes their
  * values, and the chat list's next page as a callback that reads its ref when called), so a table test can feed it plain
  * reads.
  */

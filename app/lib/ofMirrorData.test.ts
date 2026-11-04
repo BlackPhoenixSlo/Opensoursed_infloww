@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { applyData, DATA_PAGES, LIST_POSTS, listPostsPath, listSubline, mirrorQuery, postTypeOf, nextOffset, partsOf, rowsOf, toggleTile, pageRows, uniqueRows, vaultMediaOf } from "./ofMirrorData";
-import { TEMPLATES, type MirrorPost } from "./ofMirrorFeeds";
+import { applyData, DATA_PAGES, mirrorQuery, nextOffset, partsOf, rowsOf, pageRows, uniqueRows } from "./ofMirrorData";
+import { vaultMediaOf } from "./ofMirrorDataQueries";
+import { LIST_POSTS, listPostsPath, listSubline, postTypeOf } from "./ofMirrorDataLists";
+import { toggleTile } from "./ofMirrorDom";
+import { TEMPLATES, type MirrorPost } from "./ofMirrorFeedsShared";
 import type { OFMessage, VaultMedia } from "./relay";
 import { bindWrites, NOT_YET, READ_ONLY } from "./ofMirrorWrites";
 import { applyIdentity } from "./ofMirrorIdentity";

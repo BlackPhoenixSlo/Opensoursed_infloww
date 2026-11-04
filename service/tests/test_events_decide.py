@@ -37,6 +37,8 @@ from events_decide import (  # noqa: E402
     coalesce, decide_ring, decide_stream, replay, window_s)
 
 try:
+    if __name__ == "__main__":
+        raise ImportError  # script mode uses the runner below, even with pytest installed
     import pytest
     table = pytest.mark.parametrize
 except ImportError:  # script mode: the runner below calls each row

@@ -34,7 +34,7 @@ import {
   TRIAL_MODAL,
 } from "./ofMirrorOffers";
 import { SUBMITS } from "./ofMirrorWrites";
-import { applyPromotions } from "./ofMirrorFeeds";
+import { applyPromotions } from "./ofMirrorFeedsStrip";
 import type { OfMe } from "./ofMirrorIdentity";
 
 const fixture = <T,>(name: string): T => JSON.parse(readFileSync(resolve(__dirname, `__fixtures__/of/${name}.json`), "utf8")) as T;

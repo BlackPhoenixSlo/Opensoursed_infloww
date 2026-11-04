@@ -246,6 +246,12 @@ class Probe:
         return self.duration if self.duration and self.duration > 0 else None
 
     @property
+    def vmap(self) -> str:
+        """ffmpeg's `-map` for the video stream: by index when probed (`0:v:0`
+        is the cover art on a file that has some — see `probe`), else `0:v:0`."""
+        return f"0:{self.video_index}" if self.video_index is not None else "0:v:0"
+
+    @property
     def audio_needs_aac(self) -> bool:
         """Is ANY audio stream outside what mp4 carries?
 
@@ -425,7 +431,7 @@ class Pass:
     """The result of one ffmpeg pass: the output, and why there isn't one.
 
     `out is None` is still the whole of "it did not work", so the public
-    `remux`/`transcode`/`compress` keep returning `Path | None` and nothing
+    `compress` keeps returning `Path | None` and nothing
     outside this module has to know about verdicts. What the verdict buys is
     the distinction `prepare` needs and could not previously make:
 
@@ -659,16 +665,14 @@ def _run_ffmpeg(cmd: list[str], out: Path, src: Path, *, what: str,
     return Pass(out, DONE)
 
 
-def _duration_survived(src: Path, out: Path, source_duration: float | None,
+def _duration_survived(src: Path, out: Path, source_duration: float,
                        *, what: str) -> bool:
     """Did the output keep the source's running time? See `_run_ffmpeg`.
 
-    `source_duration` is guaranteed non-empty by the caller — a pass with no
+    `source_duration` is guaranteed positive by the caller — a pass with no
     number to check against is refused before ffmpeg is launched — so this only
     ever asks the interesting question.
     """
-    if not source_duration or source_duration <= 0:
-        return False
     made = probe(out).duration
     if not made:
         log.warning("media_prep: cannot read the %s output's duration for %s "
@@ -718,12 +722,6 @@ def _plan_probe(path: Path, plan: Plan | None) -> tuple[Probe, float | None]:
     return pr, dur
 
 
-def remux(path: Path, dest_dir: Path, *, plan: Plan | None = None,
-          timeout_s: float = FFMPEG_BUDGET_S) -> Path | None:
-    """Rewrap the SAME encoded video into a faststart .mp4. None on any failure."""
-    return _remux(path, dest_dir, plan=plan, timeout_s=timeout_s).out
-
-
 def _remux(path: Path, dest_dir: Path, *, plan: Plan | None = None,
            timeout_s: float = FFMPEG_BUDGET_S) -> Pass:
     """Rewrap the SAME encoded video into a faststart .mp4. None on any failure.
@@ -746,24 +744,15 @@ def _remux(path: Path, dest_dir: Path, *, plan: Plan | None = None,
     dest_dir.mkdir(parents=True, exist_ok=True)
     out = _out_path(path, dest_dir, "mp4")
     pr, dur = _plan_probe(path, plan)
-    vmap = f"0:{pr.video_index}" if pr.video_index is not None else "0:v:0"
     acodec = ["-c:a", "aac", "-b:a", f"{AUDIO_KBPS}k"] if pr.audio_needs_aac \
         else ["-c:a", "copy"]
     cmd = ["ffmpeg", "-nostdin", "-y", "-i", str(path),
-           "-map", vmap, "-map", "0:a?", "-c:v", "copy", *acodec,
+           "-map", pr.vmap, "-map", "0:a?", "-c:v", "copy", *acodec,
            "-movflags", "+faststart", str(out)]
     log.info("media_prep: remuxing %s (%.0f MB) into mp4 — no re-encode",
              path.name, path.stat().st_size / 1e6)
     return _run_ffmpeg(cmd, out, path, what="remux", timeout_s=timeout_s,
                        source_duration=dur)
-
-
-def transcode(path: Path, dest_dir: Path, *, crf: int = TRANSCODE_CRF,
-              plan: Plan | None = None,
-              timeout_s: float = FFMPEG_BUDGET_S) -> Path | None:
-    """Re-encode to H.264/AAC mp4 at a QUALITY target. None on any failure."""
-    return _transcode(path, dest_dir, crf=crf, plan=plan,
-                      timeout_s=timeout_s).out
 
 
 def _transcode(path: Path, dest_dir: Path, *, crf: int = TRANSCODE_CRF,
@@ -782,9 +771,8 @@ def _transcode(path: Path, dest_dir: Path, *, crf: int = TRANSCODE_CRF,
     dest_dir.mkdir(parents=True, exist_ok=True)
     out = _out_path(path, dest_dir, "h264")
     pr, dur = _plan_probe(path, plan)
-    vmap = f"0:{pr.video_index}" if pr.video_index is not None else "0:v:0"
     cmd = ["ffmpeg", "-nostdin", "-y", "-i", str(path),
-           "-map", vmap, "-map", "0:a?",
+           "-map", pr.vmap, "-map", "0:a?",
            "-vf", _scale_vf(MAX_HEIGHT),
            "-c:v", "libx264", "-preset", "veryfast", "-profile:v", "high",
            "-pix_fmt", "yuv420p", "-crf", str(crf),
@@ -835,14 +823,13 @@ def _compress(path: Path, dest_dir: Path, *, target_mb: int = TARGET_MB,
     # target. Halve it past ten minutes — speech and music both survive 64k far
     # better than the video survives being starved of bits.
     audio_kbps = AUDIO_KBPS if not duration or duration <= 600 else 64
-    vmap = f"0:{pr.video_index}" if pr.video_index is not None else "0:v:0"
 
     def _common(max_edge: int) -> list[str]:
         # Built once the size is known, rather than built at MAX_HEIGHT and
         # then patched by matching the formatted scale filter against itself.
         return [
             "ffmpeg", "-nostdin", "-y", "-i", str(path),
-            "-map", vmap, "-map", "0:a?",
+            "-map", pr.vmap, "-map", "0:a?",
             "-vf", _scale_vf(max_edge),
             "-c:v", "libx264", "-preset", "veryfast", "-profile:v", "high",
             "-pix_fmt", "yuv420p",

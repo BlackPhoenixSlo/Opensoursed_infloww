@@ -16,7 +16,7 @@ import { useScope } from "@/contexts/ScopeContext";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { ofMeQuery, type OfMe } from "@/lib/ofMe";
 import { proxyImage } from "@/lib/mediaUrl";
-import { fillSlot, htmlLines } from "@/lib/ofMirrorData";
+import { fillSlot, htmlLines } from "@/lib/ofMirrorDom";
 
 // `/users/me` lives in lib/ofMe (Messages Pro reads it too); re-exported for the mirror's readers.
 export { ofMeQuery, type OfMe };

@@ -15,7 +15,6 @@ the request's method, headers, multipart body and timeout are the product's.
 from __future__ import annotations
 
 import os
-from urllib.parse import urlsplit
 
 CONVERT_HOST = "convert.onlyfans.com"
 
@@ -24,15 +23,11 @@ def wire(app, loopback, relay) -> None:
     origin = os.environ.get("OF_API_ORIGIN", "").rstrip("/")
     if not origin:
         return
-    from curl_cffi import requests as cffi
-    inner = cffi.Session.request
+    from cffi_wrap import path_query, wrap_request
 
-    def to_fake(self, method, url, *a, **k):
-        u = urlsplit(str(url))
-        if u.hostname == CONVERT_HOST:
-            url = f"{origin}/convert{u.path}" + (f"?{u.query}" if u.query else "")
-        return inner(self, method, url, *a, **k)
+    def to_fake(_session, u, _k):
+        return f"{origin}/convert" + path_query(u) if u.hostname == CONVERT_HOST else None
 
-    # Copied so a later `_guard_curl_cffi()` (relay.py) skips it: re-wrapped, it would refuse convert pre-rewrite.
-    to_fake.__slop_guard__ = getattr(inner, "__slop_guard__", False)
-    cffi.Session.request = to_fake
+    # `__slop_guard__` copied so a later `_guard_curl_cffi()` (relay.py) skips it: re-wrapped, it would refuse convert
+    # pre-rewrite.
+    wrap_request(to_fake, "__slop_upload__")

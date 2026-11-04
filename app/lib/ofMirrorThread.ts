@@ -22,7 +22,8 @@
 
 import { useCallback, useEffect, useRef, type RefObject } from "react";
 import { relay, type OFMedia, type OFMessage, type OFUserMini } from "@/lib/relay";
-import { duration, fill, make, nameOf, setAttr, setAvatar, setText, THREAD_BOX, track } from "@/lib/ofMirrorData";
+import { THREAD_BOX } from "@/lib/ofMirrorDataChats";
+import { duration, fill, make, nameOf, setAttr, setAvatar, setText, track } from "@/lib/ofMirrorDom";
 import { message, note } from "@/lib/ofMirrorWrites";
 import { fanIdFromParam } from "@/lib/fanId";
 import type { ChatMediaKind } from "@/hooks/useFanChatMedia";

@@ -20,7 +20,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
-from sqlalchemy import and_, case, column, func, literal_column, or_, select, text
+from sqlalchemy import SQLColumnExpression, and_, case, column, func, literal_column, or_, select, text
 from sqlalchemy.orm import aliased
 
 import csv_export
@@ -80,6 +80,12 @@ def new_subs_q(account_ids: list[str] | None, start: datetime, end: datetime) ->
 FAN_REPORT_FIELDS = ("account_id", "fan_id", "fan_name", "username", "total_cents", "net_or_80_cents",
                      "tips_cents", "ppv_cents", "subs_cents", "subscribed_at")
 _FAN_SORTS = {"total": "total_cents", "tips": "tips_cents", "ppv": "ppv_cents", "subs": "subs_cents"}
+
+
+def first_claim_order() -> tuple[SQLColumnExpression[Any], ...]:
+    """The one definition of a fan's earliest claim, as an ORDER BY over link_claimers: OF's
+    subscribe_at, else when we first saw it, then id."""
+    return func.coalesce(LinkClaimer.subscribe_at, LinkClaimer.first_seen_at), LinkClaimer.id
 
 
 @router.get("/admin/stats/fan-report", response_model=None)
@@ -175,27 +181,20 @@ async def fan_report(
             lambda rec: ["" if rec[k] is None else rec[k] for k in FAN_REPORT_FIELDS],
         )
 
-    # Each fan's earliest claim, then the window's spend by that link.
+    # Each spender's earliest claim, one index seek per spender (ix_link_claimers_account_fan), then the
+    # window's spend by that link.
     LC = LinkClaimer
-    ranked = select(LC.id, LC.account_id, LC.fan_id, func.row_number().over(
-        partition_by=(LC.account_id, LC.fan_id),
-        order_by=(func.coalesce(LC.subscribe_at, LC.first_seen_at), LC.id)).label("n"))
-    if account_ids is not None:
-        ranked = ranked.where(LC.account_id.in_(account_ids))
-    ranked = ranked.subquery()
-    first_claim = (
-        select(ranked.c.account_id, ranked.c.fan_id, ranked.c.id.label("cid"))
-        .where(ranked.c.n == 1)
-        .subquery()
+    first_claim_id = (
+        select(LC.id).where(LC.account_id == spend.c.account_id, LC.fan_id == spend.c.fan_id)
+        .order_by(*first_claim_order()).limit(1)
+        .correlate(spend).scalar_subquery()
     )
     claim = aliased(LinkClaimer)
     traffic_q = (
         select(spend.c.account_id, claim.kind, claim.of_id,
                func.count().label("fans"), func.sum(spend.c.total_cents).label("total_cents"))
         .select_from(spend)
-        .outerjoin(first_claim, and_(first_claim.c.account_id == spend.c.account_id,
-                                     first_claim.c.fan_id == spend.c.fan_id))
-        .outerjoin(claim, claim.id == first_claim.c.cid)
+        .outerjoin(claim, claim.id == first_claim_id)
         .group_by(spend.c.account_id, claim.kind, claim.of_id)
         .order_by(func.sum(spend.c.total_cents).desc())
     )

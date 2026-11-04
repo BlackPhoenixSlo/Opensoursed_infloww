@@ -32,7 +32,9 @@ import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-quer
 import { useRouter, useSearchParams } from "next/navigation";
 import { useScope } from "@/contexts/ScopeContext";
 import { relay, type OFChatItem, type OFUserMini } from "@/lib/relay";
-import { chatPath, mirrorQuery, setAvatar, usersListPath } from "@/lib/ofMirrorData";
+import { mirrorQuery } from "@/lib/ofMirrorData";
+import { chatPath, usersListPath } from "@/lib/ofMirrorDataQueries";
+import { setAvatar } from "@/lib/ofMirrorDom";
 import { ofMeQuery } from "@/lib/ofMirrorIdentity";
 import { afterChatWrite } from "@/lib/ofMirrorKeys";
 import { frameNavigate, takeCarried, toast } from "@/lib/ofMirrorPost";

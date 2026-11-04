@@ -53,6 +53,8 @@ interface ChatMessagePayload {
   price?: number;
   isFree?: boolean;
   isTip?: boolean;
+  /** A tip's amount, in dollars (OF sends a tip as a DM with isTip, price 0). */
+  tipAmount?: number;
   isOpened?: boolean;
 }
 

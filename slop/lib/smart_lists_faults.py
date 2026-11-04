@@ -109,6 +109,21 @@ def _ledger_org_leak() -> None:
     m._ledger_facts = leaky
 
 
+def _projection_drops_column() -> None:
+    """The loader's Fan projection (smart_lists_api._FAN_COLS, read per call by `_load_normalised_fans`)
+    still yields a `last_message_sent_at` key but selects a literal NULL for it: every fan reads as never
+    messaged, so the ORACLE rows on that date (within_last / more_than) answer empty. Dropping the column
+    instead would raise on attribute access (a 5xx the stock check sees too)."""
+    from sqlalchemy import literal
+
+    import smart_lists_api as m
+
+    cols = [c for c in m._FAN_COLS if getattr(c, "key", None) != "last_message_sent_at"]
+    if len(cols) != len(m._FAN_COLS) - 1:
+        raise SystemExit("slop: smart-list-projection-drops-column: no last_message_sent_at in _FAN_COLS")
+    m._FAN_COLS = (*cols, literal(None).label("last_message_sent_at"))
+
+
 def register(Fault) -> dict:
     return {
         # slop/run smart-lists-50k --break (the scenario's FAULT)
@@ -117,4 +132,6 @@ def register(Fault) -> dict:
         "smart-list-cap-read-then-write": Fault(_cap_read_then_write, (CAP,)),
         # slop/run smart-lists-50k --break --fault=smart-list-ledger-org-leak
         "smart-list-ledger-org-leak": Fault(_ledger_org_leak, (ORACLE,)),
+        # slop/run smart-lists-50k --break --fault=smart-list-projection-drops-column
+        "smart-list-projection-drops-column": Fault(_projection_drops_column, (ORACLE,)),
     }

@@ -35,16 +35,19 @@ copies whose linked sale is not a reversal. Each correctness check also needs it
 (budget=True, stage "load"): p95 fan-report <= 1500 ms, tips-list / top-tippers <= 800 ms; p95 vs the
 last green run (P95_VS_LAST) over those and the other report routes. UI (small, UI on): Fan reports'
 Top fans cells == the fan-report rows the page read == oracle, and its Download report file == oracle
-(the side effect); screenshots fan-reports-settled, fan-reports-download-trigger, message-dashboard,
-sales-records.
+(the side effect); the Message dashboard's Tips tab list with its next pages answering 500 at the browser
+wire (page.route) and its foot in view PAGE_ERR_WAIT_S: <= 2 next-page requests (retry: 1) and Load more
+offered, then the route lifted, Load more renders that page's rows (the side effect); screenshots
+fan-reports-settled, fan-reports-download-trigger, message-dashboard, sales-records, page-error-trigger,
+page-error-settled.
 
 KNOWN_RED (open findings, `KnownRed`): a budget red on a green harness from a measured product cause,
-keyed by route, with the scales it was measured red at (parked) and the scales where the crowd must
-avoid the big Creators on that route (narrowed, always within parked). A parked budget is judged on the
+keyed by route, with the scales it was measured red at (parked); at FAN_NARROWED scales (within
+fan-report's parked) the crowd avoids the big Creators on fan-report. A parked budget is judged on the
 crowd's p95 and on a probe, the crowd stopped (label `probe `, metric known_red_probe); a probe counts
 only if every call answered 200, else the budget FAILs (probe_status). A slow route's probe is one
-call: tips-list = Agency 0's Agency-wide first page (its 3 big Creators; the last 7 days when narrowed,
-else 45), fan-report = one big Creator's 45 days; crowd or probe red -> SKIP with the reason and both
+call: tips-list = Agency 0's Agency-wide first page (its 3 big Creators, 45 days), fan-report = one big
+Creator's 45 days; crowd or probe red -> SKIP with the reason and both
 figures; both within budget -> FAIL "stale KNOWN_RED entry, remove it". A starved route's probe
 (top-tippers) is the route alone: the crowd's owners, split, think time and windows, reading only
 top-tippers (Agency-wide, as the crowd does) on the page loads that open the Tips tab (TIPS_TAB share),
@@ -56,7 +59,10 @@ parked check. Every other budget, and every budget at a scale not parked (huge: 
 Break-it-once (targets in lib/ledger_reports_faults.py): fan-report-counts-refunds (FAULT; reversals
 counted as spend: fan totals, fan-report rank, fan-report CSV, traffic), --fault=top-tippers-crosses-agency
 (top-tippers loses its Agency clamp: scope, top-tippers totals, rank and CSV),
---fault=fan-report-csv-truncates (the fan-report CSV stops at 100 rows: fan-report CSV). With the UI on,
+--fault=fan-report-csv-truncates (the fan-report CSV stops at 100 rows: fan-report CSV),
+--fault=fan-report-latest-claim (traffic credits each spender's newest claim: traffic),
+--fault=loadmore-refires-on-error (client: the load-more sentinel loses its error gate: the page-error check).
+With the UI on,
 the UI checks of Fan reports go red too under the fan-report faults (noise, not targets: they skip
 under --no-ui, where a target would be INCONCLUSIVE).
 
@@ -64,15 +70,14 @@ Bypasses (declared): every ledger, message, mass run and claimer row is SQL-seed
 ingest, the WS pump, the mass send and OF's claimer walk are not run), in the shapes those writers
 leave; the tx_rollup triggers fire on the inserts as on any write. The oracle reads the same DB rows
 the product reads (it checks the reads, not the writers). OnlyFans is never reached; in the browser
-`/api/of/*` stays held. The Message dashboard and Sales records screens are screenshot only; their
-figures are checked through the API. While a KNOWN_RED entry is narrowed (its scale), the crowd avoids
-the big Creators on that route, which bypasses both the budget's sampling there (the probe stands in)
-and the stock no-transport-error check on those calls (a big Creator's read under the crowd ran
-101-120 s against the crowd's 120 s timeout): fan-report narrowed -> the crowd's one-Creator fan-report
-and fan-report exports read only Creators that are not big (Agency-wide reads still include them);
-tips-list narrowed -> the crowd's tips-list and tips exports read one Creator that is not big, never
-Agency-wide where a big Creator is (Agency 0), and the checks read big Creators' and Agency 0's
-tips-list (pages + CSV) over the last 7 days instead of 45.
+`/api/of/*` stays held; the Tips tab's next-page 500s are answered at the browser's wire. The Message dashboard and Sales records screens are screenshot only; their
+figures are checked through the API. At FAN_NARROWED scales the crowd's one-Creator fan-report and
+fan-report exports read only Creators that are not big (Agency-wide reads still include them), which
+bypasses both the budget's sampling there (the probe stands in) and the stock no-transport-error check
+on those calls: before the
+query-shape fixes a big Creator's read under the crowd ran 101-120 s against the crowd's 120 s timeout;
+after them, unnarrowed (run 4de0), no call timed out but the big Creators' reads starve the relay
+(fan-report crowd p95 30.0 s, its exports' 61.5 s; pool wait p95 2000 ms, 79 spills).
 """
 from __future__ import annotations
 
@@ -81,6 +86,7 @@ import csv
 import io
 import math
 import random
+import re
 import time as clock
 from collections import defaultdict
 from datetime import datetime, time, timedelta
@@ -89,8 +95,9 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 
 from slop.actors import ui
 from slop.actors.reports import THINK_S
-from slop.lib.ledger_reports_faults import (FAN_CSV, FAN_RANK, FAN_TOTALS, PAID, SALES, SCOPE, TIPS, TIPS_CSV,
-                                            TOP_CSV, TOP_RANK, TOP_TOTALS, TRAFFIC, UI_SIDE, UI_TOTALS, XLSX)
+from slop.lib.ledger_reports_faults import (FAN_CSV, FAN_RANK, FAN_TOTALS, PAGE_ERR_BOUNDED, PAID, SALES, SCOPE,
+                                            TIPS, TIPS_CSV, TOP_CSV, TOP_RANK, TOP_TOTALS, TRAFFIC, UI_SIDE, UI_TOTALS,
+                                            XLSX)
 from slop.seed import earnings, ledger_bulk, ts
 
 PROFILE = "multi_agency_big_models"
@@ -109,42 +116,48 @@ def _budget_name(route: str) -> str:
 
 
 class KnownRed(NamedTuple):
-    """An open finding on a budget (the docstring's KNOWN_RED): the scales measured red (parked), the
-    scales where the crowd keeps off the big Creators on the route (narrowed, within parked), why, and
-    the probe that judges it: one call (the route is slow by itself) or, `starved`, the crowd's reads
+    """An open finding on a budget (the docstring's KNOWN_RED): the scales measured red (parked), why,
+    and the probe that judges it: one call (the route is slow by itself) or, `starved`, the crowd's reads
     of the route alone (other routes take its capacity)."""
     parked: tuple[str, ...]
-    narrowed: tuple[str, ...]
     reason: str
     starved: bool = False
 
 
+# Medium on one product code (44c4f608d, c57cad20c, 26c382292) runs in two modes on the same seeded request mix.
+_BIMODAL = (
+    "; medium is bimodal: a fast mode, relay ~2 cores (runs 2c65, 9e26, 9241, ac00), {fast}, and a slow "
+    "mode, relay ~4 cores, every route's p50 4-15x (runs 7385, d5b5, 1ec1, 9ed5), {slow}; with crowd and "
+    "probe within budget this entry FAILs stale. Cause open: not a plan flip (measured: the post-load checks "
+    "cost the same in both modes), not the WAL (measured: reset after the seed in both, runs ac00, f962), not "
+    "plain host CPU load (measured: 11 CPU burners, run 11d5, also raise the event loop's CPU per page load, "
+    "the slow mode leaves it unchanged)")
+
 KNOWN_RED: dict[str, KnownRed] = {
     TIPS_ROUTE: KnownRed(
-        ("small", "medium"), ("medium",),
-                 "open finding: service/transactions.py tips_list outer-joins messages on (account_id, message_id) "
-                 "without fan_id; messages' PK is (account_id, fan_id, message_id), so SQLite scans the Creator's "
-                 "messages once per tip (query plan, ix_messages_dir_created). Probe, crowd stopped: Agency 0's "
-                 "first page 1.5 s over 45 days at small (run dc3a; crowd p95 1.4 s), 29.9 s over 7 days at medium "
-                 "(run 3510: a big Creator has 10.3k tips in 45 days, 34k messages); at medium even the crowd's "
-                 "reads of Creators that are not big have p95 1.8 s"),
+        ("medium",),
+        "open finding (perf paused, owner 10-29; query shape done): tips_list joins messages on their full "
+        "PK (one seek per tip), so Agency 0's 45-day first page alone (probe, crowd stopped) takes 77 ms (run "
+        "2f96; its 7-day one 31.7 s before, run ae72) and small is within budget (run 6786)"
+        + _BIMODAL.format(fast="crowd p95 0.27-0.65 s", slow="0.74-1.24 s (0.74 s in 9ed5)")),
     FAN_ROUTE: KnownRed(
-        ("medium",), ("medium",),
-                "open finding: fan-report's crowd p95 is over budget at medium under 200 owners even with big "
-                "Creators out of the crowd's one-Creator reads (3.0 s, run 3510; 4.8 s, run e1a9), and one big "
-                "Creator's 45-day fan-report alone (probe, crowd stopped) takes 1.8 s; one measured contributor: "
-                "service/stats_fans.py fan_report's traffic query (each spender's earliest link_claimers row by "
-                "row_number(), outer-joined to the spend subquery), planned as a nested SCAN of the first-claim "
-                "subquery per spender, 76% of the relay's SQL thread time under 200 owners (--profile, round 1)"),
+        ("medium",),
+        "open finding (perf paused, owner 10-29; query shape done): fan_report's traffic query seeks each "
+        "spender's earliest claim (ix_link_claimers_account_fan) instead of scanning a row_number() subquery "
+        "per spender, so one big Creator's 45-day fan-report alone (probe, crowd stopped) takes 146 ms (run "
+        "b24c; 2.2 s before, run ae72); big Creators in the crowd's one-Creator reads starve the relay (crowd "
+        "p95 30.0 s, run 4de0), so medium keeps them out (FAN_NARROWED)"
+        + _BIMODAL.format(fast="crowd p95 1.0-1.46 s", slow="3.3-4.54 s")),
     TOP_ROUTE: KnownRed(
-        ("medium",), (),
-        "open finding: top-tippers starved by the parked slow routes (tips-list, fan-report): under the crowd "
-        "its p95 is over budget at medium (1.4 s run d03a, 1.7 s run de1b; relay pool wait p95 1-2 s) while "
-        "the same owners' top-tippers reads alone, the other routes stopped, stay within it (p95 130 ms, n 178, "
-        "run de1b)",
+        ("medium",),
+        "open finding: top-tippers starved by the parked crowd routes (tips-list, fan-report): under the crowd "
+        "its p95 is over budget at medium (4.8 s run 9b86, 5.3 s run ae72; relay pool wait p95 2 s) while "
+        "the same owners' top-tippers reads alone, the other routes stopped, stay within it (p95 169 ms, n 178, "
+        "run 9b86)",
         starved=True),
 }
-assert all(set(k.narrowed) <= set(k.parked) for k in KNOWN_RED.values()), "a narrowed scale must be parked"
+FAN_NARROWED = ("medium",)  # scales where the crowd's one-Creator fan-report reads keep off the big Creators
+assert set(FAN_NARROWED) <= set(KNOWN_RED[FAN_ROUTE].parked), "a narrowed scale must be parked"
 TIPS_TAB = (0.35, 0.6)  # the share of an owner's page loads that open the Tips tab (tips-list + top-tippers)
 PROBE_ALONE_S = 30  # top-tippers alone: how long (~170 calls at 200 owners)
 
@@ -158,6 +171,7 @@ SORT_COL = {"total": 0, "tips": 2, "ppv": 3, "subs": 4}  # into the oracle's (to
 CSV_CAP = 50_000  # csv_export.CSV_MAX_ROWS: past it the file ends in a TRUNCATED line
 WINDOW_DAYS = 45
 TIP_PAGES = 3
+PAGE_ERR_WAIT_S = 5  # the foot in view after its next page failed (unfixed: 13 requests in 5 s, finding 133.1)
 
 
 def _iso(dt: datetime) -> str:
@@ -170,22 +184,16 @@ class Window(NamedTuple):
     hi: datetime
     week: datetime
 
-    def start(self, week: bool = False) -> datetime:
-        return self.week if week else self.lo
-
     def q(self, week: bool = False) -> dict[str, str]:
         """The window as a route's from / to params."""
-        return {"from": _iso(self.start(week)), "to": _iso(self.hi)}
+        return {"from": _iso(self.week if week else self.lo), "to": _iso(self.hi)}
 
 
 class Menu(NamedTuple):
-    """What one Agency's owners may read: its Creators (top-tippers exports), the Creators a one-Creator
-    fan-report / tips-list (and its export) may read, whether an Agency-wide tips-list may be read, and
-    the rows an XLSX export posts."""
+    """What one Agency's owners may read: its Creators (tips-list, top-tippers and their exports), the
+    Creators a one-Creator fan-report (and its export) may read, and the rows an XLSX export posts."""
     creators: list[str]
     fan_pick: list[str]
-    tip_pick: list[str]
-    tips_wide: bool
     fan_rows: list
 
 
@@ -395,8 +403,8 @@ async def _owner(*, pool, export, ag: int, menu: Menu, windows: list[dict], stop
             reads.append((pool, "GET", f"/admin/stats/fan-report?{urlencode(q)}", None))
         elif x < TIPS_TAB[1]:
             q = {**win, "limit": 50}
-            if rng.random() < 0.75 or not menu.tips_wide:
-                q["account_id"] = rng.choice(menu.tip_pick)
+            if rng.random() < 0.75:
+                q["account_id"] = rng.choice(menu.creators)
             reads.append((pool, "GET", f"/admin/tips-list?{urlencode(q)}", None))
             reads.append((pool, "GET", f"/admin/top-tippers?{urlencode({**win, 'limit': 20})}", None))
         elif x < 0.75:
@@ -411,7 +419,7 @@ async def _owner(*, pool, export, ag: int, menu: Menu, windows: list[dict], stop
                 reads.append((export, "POST", "/admin/stats/xlsx", {"sheet": "Top fans", "rows": rows}))
             else:
                 path, pick = {"fan": ("/admin/stats/fan-report", menu.fan_pick),
-                              "tips": ("/admin/tips-list", menu.tip_pick),
+                              "tips": ("/admin/tips-list", menu.creators),
                               "top": ("/admin/top-tippers", menu.creators)}[kind]
                 q = {**win, "account_id": rng.choice(pick), "format": "csv"}
                 reads.append((export, "GET", f"{path}?{urlencode(q)}", None))
@@ -516,9 +524,8 @@ async def _probes(ctx, *, w, http: dict, parked: dict[str, KnownRed], big: set, 
         probe = ctx.owner.share(limits=1)
         probe.prefix = "probe "
         aid = sorted(big)[0]
-        tips_week = TIPS_ROUTE in parked and ctx.scale in parked[TIPS_ROUTE].narrowed
         for route, path, q in (
-                (TIPS_ROUTE, "/admin/tips-list", {**win.q(tips_week), "limit": 50}),
+                (TIPS_ROUTE, "/admin/tips-list", {**win.q(), "limit": 50}),
                 (FAN_ROUTE, "/admin/stats/fan-report", {**win.q(), "sort": "total", "account_id": aid})):
             if route in one:
                 out[route] = _probe_stats([await _timed(probe, f"{path}?{urlencode(q)}", 900)],
@@ -672,15 +679,13 @@ async def _per_creator_fans(ck: Checks, mine, o_fans, win: Window) -> None:
                         vals_bad=vals_bad, json_prefix_ok=keys[:len(json_keys)] == json_keys)
 
 
-async def _tips(ck: Checks, w, mine, o_tips, tips_readable: set, win: Window) -> None:
-    """Per Creator: tips-list pages + CSV (the window, its last 7 days for a Creator not in
-    `tips_readable`), top-tippers JSON + CSV (the window); then each Agency's own Tips tab reads
-    (tips-list first page, 7 days when any of its Creators is; top-tippers)."""
+async def _tips(ck: Checks, mine, o_tips, win: Window) -> None:
+    """Per Creator: tips-list pages + CSV, top-tippers JSON + CSV (the window); then each Agency's own
+    Tips tab reads (tips-list first page, top-tippers)."""
     for i in (0, 1):
         for aid in mine[i]:
-            week = aid not in tips_readable
-            tips = oracle_tips(w, [aid], win.start(week), win.hi)
-            q = {**win.q(week), "account_id": aid}
+            tips = [t for t in o_tips[i] if t[1] == aid]
+            q = {**win.q(), "account_id": aid}
             st, rows = await ck.pages(i, "/admin/tips-list", _next_id, TIP_PAGES, **q, limit=100)
             got = _cmp_tips(ck, f"tips-list {aid} from {q['from']}", st, rows, tips, 100 * TIP_PAGES)
             st, crows, trunc = await ck.csv(i, "/admin/tips-list", **q)
@@ -691,8 +696,7 @@ async def _tips(ck: Checks, w, mine, o_tips, tips_readable: set, win: Window) ->
                 ck.fail(TIPS_CSV, where=aid, status=st, rows=len(ids), want=len(want), truncated=trunc,
                         sum=sum(a for _, a in ids), want_sum=sum(a for _, a in want))
 
-            tippers = tippers_of([t for t in o_tips[i] if t[1] == aid])
-            q = {**win.q(), "account_id": aid}
+            tippers = tippers_of(tips)
             st, body = await ck.json(i, "/admin/top-tippers", **q, limit=100)
             jrows = _cmp_tippers(ck, f"top-tippers {aid}", st, body, tippers, 100)
             st, crows, trunc = await ck.csv(i, "/admin/top-tippers", **q)
@@ -704,10 +708,8 @@ async def _tips(ck: Checks, w, mine, o_tips, tips_readable: set, win: Window) ->
                 ck.fail(TOP_CSV, where=aid, status=st, rows=len(crows), want=len(tippers), sum=sum(ctot),
                         want_sum=sum(v[0] for v in tippers.values()))
 
-        week = not set(mine[i]) <= tips_readable
-        tips = oracle_tips(w, mine[i], win.start(week), win.hi)
-        st, body = await ck.json(i, "/admin/tips-list", **win.q(week), limit=100)
-        _cmp_tips(ck, f"tips-list ag{i} from {win.q(week)['from']}", st, (body or {}).get("rows", []), tips, 100)
+        st, body = await ck.json(i, "/admin/tips-list", **win.q(), limit=100)
+        _cmp_tips(ck, f"tips-list ag{i} from {win.q()['from']}", st, (body or {}).get("rows", []), o_tips[i], 100)
         st, body = await ck.json(i, "/admin/top-tippers", **win.q(), limit=100)
         _cmp_tippers(ck, f"top-tippers ag{i}", st, body, tippers_of(o_tips[i]), 100)
 
@@ -788,16 +790,14 @@ async def run(ctx) -> None:
     names = {(c["id"], f["id"]): f["name"] for c in creators for f in w.data["fans"][c["id"]]}
     scope = Scope(accounts)
 
-    # Narrowed KNOWN_RED entries keep the crowd off big Creators on their route (declared bypass, docstring).
+    # At FAN_NARROWED scales the crowd's one-Creator fan-report keeps off big Creators (declared bypass, docstring).
     parked = {r: kr for r, kr in KNOWN_RED.items() if ctx.scale in kr.parked}
-    narrowed = {r for r, kr in KNOWN_RED.items() if ctx.scale in kr.narrowed}
-    tips_readable = {a for i in (0, 1) for a in mine[i] if not (TIPS_ROUTE in narrowed and a in big)}
-    menus = {i: Menu(creators=mine[i], fan_pick=[a for a in mine[i] if not (FAN_ROUTE in narrowed and a in big)],
-                     tip_pick=[a for a in mine[i] if a in tips_readable], tips_wide=set(mine[i]) <= tips_readable,
+    narrow = ctx.scale in FAN_NARROWED
+    menus = {i: Menu(creators=mine[i], fan_pick=[a for a in mine[i] if not (narrow and a in big)],
                      fan_rows=[[names.get(k, str(k[1])), o_fans[i][k][0]] for k in ranked(o_fans[i], "total")[:1000]])
              for i in (0, 1)}
-    for i, m in menus.items():  # the crowd's one-Creator reads and the Sales records check need a Creator not big
-        if not (m.fan_pick and m.tip_pick and set(mine[i]) - big):
+    for i in menus:  # the crowd's one-Creator reads and the Sales records check need a Creator not big
+        if not set(mine[i]) - big:
             raise RuntimeError(f"Agency {i}: no Creator that is not big ({mine[i]}); the world changed")
 
     # ── Load: owners of both Agencies read the reports. ──────────────────────
@@ -813,7 +813,7 @@ async def run(ctx) -> None:
     o_paid = {i: oracle_paid(w, mine[i], win.lo, win.hi) for i in (0, 1)}
     xlsx = await _fan_report(ck, w, mine, o_fans, win)
     await _per_creator_fans(ck, mine, o_fans, win)
-    await _tips(ck, w, mine, o_tips, tips_readable, win)
+    await _tips(ck, mine, o_tips, win)
     await _paid(ck, o_paid, win)
     await _sales(ck, w, mine, big, win)
     refused = await _refusals(ck, mine, win)
@@ -828,8 +828,7 @@ async def run(ctx) -> None:
             (FAN_RANK, fans_ok, {}),
             (FAN_CSV, fans_ok, {"creators": each}),
             (TRAFFIC, fans_ok, {}),
-            (TIPS, tips_ok, {"tips": {i: len(o_tips[i]) for i in (0, 1)},
-                             "tips_list_7d": sorted({a for i in (0, 1) for a in mine[i]} - tips_readable)}),
+            (TIPS, tips_ok, {"tips": {i: len(o_tips[i]) for i in (0, 1)}}),
             (TIPS_CSV, tips_ok, {}),
             (TOP_TOTALS, tips_ok, {"creators": each}),
             (TOP_RANK, tips_ok, {}),
@@ -842,7 +841,7 @@ async def run(ctx) -> None:
     ctx.check(SCOPE, not foreign and not not_refused, foreign=foreign, not_refused=not_refused, lists=scope.lists)
 
     if not ctx.app:
-        for name in (UI_TOTALS, UI_SIDE):
+        for name in (UI_TOTALS, UI_SIDE, PAGE_ERR_BOUNDED):
             ctx.skip(name, "--no-ui")
         return
     await _ui(ctx, w, mine[0])
@@ -850,63 +849,123 @@ async def run(ctx) -> None:
 
 async def _ui(ctx, w, mine: list[str]) -> None:
     async with ui.owner_browser(ctx, viewport=(1600, 1000)) as page:
-        hits = []
-        page.on("response", lambda r: hits.append(r) if "/admin/stats/fan-report" in r.url
-                and "format=csv" not in r.url and r.status == 200 else None)
-        await page.goto(f"{ctx.app}/analytics/fan-reports", timeout=180_000)
-        cells = page.locator('[data-testid="total-spend"]')
-        try:
-            await cells.first.wait_for(timeout=180_000)
-        except Exception as e:  # noqa: BLE001
-            await ui.shot(ctx, page, "fan-reports-failed")
-            ctx.check(UI_TOTALS, False, error=f"no Top fans rows: {type(e).__name__}")
-            ctx.skip(UI_SIDE, "the Fan reports page never showed its rows")
-            return
-        await page.wait_for_timeout(1500)  # a refetch after the Applied settings landed
-        texts = await cells.all_inner_texts()
-        resp = hits[-1] if hits else None
-        body = await resp.json() if resp else {}
-        q = {k: v[0] for k, v in parse_qs(urlsplit(resp.url).query).items()} if resp else {}
-        top = body.get("top_fans", [])
-        aid = q.get("account_id")
-        lo, hi = (_instant(q["from"]), _instant(q["to"])) if "from" in q else (None, None)
-        want = oracle_fans(w, [aid], lo, hi) if aid and lo else {}
-        order = ranked(want, q.get("sort", "total"))
-        api_ok = [(r["account_id"], r["fan_id"]) for r in top] == order[:100] and all(
-            (r["total_cents"], r["tips_cents"], r["ppv_cents"]) == (want[(aid, r["fan_id"])][0],
-                                                                  want[(aid, r["fan_id"])][2], want[(aid, r["fan_id"])][3])
-            for r in top if (aid, r["fan_id"]) in want)
-        cells_ok = texts == [_fmt_cents(r["total_cents"]) for r in top]
-        await cells.first.scroll_into_view_if_needed()
-        await ui.shot(ctx, page, "fan-reports-settled")
-        ctx.check(UI_TOTALS, bool(top) and api_ok and cells_ok, rows=len(top), cells=len(texts), account_id=aid,
-                  window=[q.get("from"), q.get("to")], api_ok=api_ok, cells_ok=cells_ok,
-                  first=list(zip(texts[:3], [r["total_cents"] for r in top[:3]])), screenshot="fan-reports-settled.png")
-
-        btn = page.get_by_role("button", name="Download report")
-        await btn.scroll_into_view_if_needed()
-        await ui.shot(ctx, page, "fan-reports-download-trigger")
-        try:
-            async with page.expect_download(timeout=120_000) as dl:
-                await btn.click()
-            path = await (await dl.value).path()
-            rows, trunc = _parse_csv(open(path, encoding="utf-8").read())
-            got_total = sum(int(r["total_cents"]) for r in rows)
-            ok = (bool(want) and trunc == (len(want) > CSV_CAP)
-                  and [(r["account_id"], int(r["fan_id"])) for r in rows] == order[:CSV_CAP]
-                  and (trunc or got_total == sum(v[0] for v in want.values())))
-            ctx.check(UI_SIDE, ok, rows=len(rows), want=len(want), truncated=trunc, total=got_total,
-                      want_total=sum(v[0] for v in want.values()), account_id=aid, file=str(path))
-        except Exception as e:  # noqa: BLE001
-            ctx.check(UI_SIDE, False, error=f"{type(e).__name__}: {e}"[:300])
-
-        for page_path, route, shot in (("/analytics/message-dashboard?tab=mass", "/admin/paid-messages", "message-dashboard"),
-                                       ("/analytics/sales-records", "/admin/stats/sales-records", "sales-records")):
-            try:
-                async with page.expect_response(lambda r, p=route: p in r.url, timeout=120_000):
-                    await page.goto(f"{ctx.app}{page_path}", timeout=180_000)
-                await page.wait_for_timeout(2000)
-            except Exception:  # noqa: BLE001 — the screenshot still shows what loaded
-                pass
-            await ui.shot(ctx, page, shot)
+        hits = await _fan_reports(ctx, w, page)
+        await _page_error(ctx, page)  # its own list, so it runs whether or not Fan reports showed rows
     ctx.metric("ui", {"creators": mine, "fan_report_reads": len(hits)})
+
+
+async def _fan_reports(ctx, w, page) -> list:
+    hits = []
+    page.on("response", lambda r: hits.append(r) if "/admin/stats/fan-report" in r.url
+            and "format=csv" not in r.url and r.status == 200 else None)
+    await page.goto(f"{ctx.app}/analytics/fan-reports", timeout=180_000)
+    cells = page.locator('[data-testid="total-spend"]')
+    try:
+        await cells.first.wait_for(timeout=180_000)
+    except Exception as e:  # noqa: BLE001
+        await ui.shot(ctx, page, "fan-reports-failed")
+        ctx.check(UI_TOTALS, False, error=f"no Top fans rows: {type(e).__name__}")
+        ctx.skip(UI_SIDE, "the Fan reports page never showed its rows")
+        return hits
+    await page.wait_for_timeout(1500)  # a refetch after the Applied settings landed
+    texts = await cells.all_inner_texts()
+    resp = hits[-1] if hits else None
+    body = await resp.json() if resp else {}
+    q = {k: v[0] for k, v in parse_qs(urlsplit(resp.url).query).items()} if resp else {}
+    top = body.get("top_fans", [])
+    aid = q.get("account_id")
+    lo, hi = (_instant(q["from"]), _instant(q["to"])) if "from" in q else (None, None)
+    want = oracle_fans(w, [aid], lo, hi) if aid and lo else {}
+    order = ranked(want, q.get("sort", "total"))
+    api_ok = [(r["account_id"], r["fan_id"]) for r in top] == order[:100] and all(
+        (r["total_cents"], r["tips_cents"], r["ppv_cents"]) == (want[(aid, r["fan_id"])][0],
+                                                              want[(aid, r["fan_id"])][2], want[(aid, r["fan_id"])][3])
+        for r in top if (aid, r["fan_id"]) in want)
+    cells_ok = texts == [_fmt_cents(r["total_cents"]) for r in top]
+    await cells.first.scroll_into_view_if_needed()
+    await ui.shot(ctx, page, "fan-reports-settled")
+    ctx.check(UI_TOTALS, bool(top) and api_ok and cells_ok, rows=len(top), cells=len(texts), account_id=aid,
+              window=[q.get("from"), q.get("to")], api_ok=api_ok, cells_ok=cells_ok,
+              first=list(zip(texts[:3], [r["total_cents"] for r in top[:3]])), screenshot="fan-reports-settled.png")
+
+    btn = page.get_by_role("button", name="Download report")
+    await btn.scroll_into_view_if_needed()
+    await ui.shot(ctx, page, "fan-reports-download-trigger")
+    try:
+        async with page.expect_download(timeout=120_000) as dl:
+            await btn.click()
+        path = await (await dl.value).path()
+        rows, trunc = _parse_csv(open(path, encoding="utf-8").read())
+        got_total = sum(int(r["total_cents"]) for r in rows)
+        ok = (bool(want) and trunc == (len(want) > CSV_CAP)
+              and [(r["account_id"], int(r["fan_id"])) for r in rows] == order[:CSV_CAP]
+              and (trunc or got_total == sum(v[0] for v in want.values())))
+        ctx.check(UI_SIDE, ok, rows=len(rows), want=len(want), truncated=trunc, total=got_total,
+                  want_total=sum(v[0] for v in want.values()), account_id=aid, file=str(path))
+    except Exception as e:  # noqa: BLE001
+        ctx.check(UI_SIDE, False, error=f"{type(e).__name__}: {e}"[:300])
+
+    for page_path, route, shot in (("/analytics/message-dashboard?tab=mass", "/admin/paid-messages", "message-dashboard"),
+                                   ("/analytics/sales-records", "/admin/stats/sales-records", "sales-records")):
+        try:
+            async with page.expect_response(lambda r, p=route: p in r.url, timeout=120_000):
+                await page.goto(f"{ctx.app}{page_path}", timeout=180_000)
+            await page.wait_for_timeout(2000)
+        except Exception:  # noqa: BLE001 — the screenshot still shows what loaded
+            pass
+        await ui.shot(ctx, page, shot)
+    return hits
+
+
+_TIP_ROWS_JS = """() => {
+  const b = [...document.querySelectorAll('button')].find((x) => /^(Load more|Loading…)$/.test(x.textContent.trim()));
+  const list = b && b.closest('.space-y-2');
+  return list ? list.querySelectorAll(':scope > .block').length : 0;
+}"""
+
+
+async def _page_error(ctx, page) -> None:
+    """PAGE_ERR_BOUNDED: every Tips tab list read with a cursor (`before_id`, its next pages) answers 500 at the
+    browser's wire (page.route, set before the tab opens), the list's foot scrolled into view for PAGE_ERR_WAIT_S;
+    then the route lifted and Load more clicked, the next page's rows must render (the side effect)."""
+    def is_next(u: str) -> bool:
+        s = urlsplit(u)
+        return s.path.endswith("/admin/tips-list") and "before_id=" in s.query and "format=csv" not in s.query
+
+    asked: list[str] = []
+
+    async def fail(route):
+        asked.append(route.request.url)
+        await route.fulfill(status=500, content_type="application/json", body='{"detail":"slop: injected 500"}')
+
+    await page.route(is_next, fail)
+    d: dict = {}
+    try:
+        async with page.expect_response(lambda r: "/admin/tips-list" in r.url and "before_id=" not in r.url,
+                                        timeout=120_000):
+            await page.goto(f"{ctx.app}/analytics/message-dashboard?tab=tips", timeout=180_000)
+        foot = page.get_by_role("button", name=re.compile(r"^(Load more|Loading…)$"))
+        await foot.wait_for(timeout=60_000)
+        d["rows_before"] = await page.evaluate(_TIP_ROWS_JS)
+        d["asked_before_scroll"] = len(asked)
+        await foot.scroll_into_view_if_needed()
+        await page.wait_for_timeout(PAGE_ERR_WAIT_S * 1000)
+        d["page2_requests"] = len(asked)
+        more = page.get_by_role("button", name="Load more")
+        d["load_more_offered"] = await more.is_visible() and await more.is_enabled()
+        d["error_banner"] = await page.get_by_text("Failed to load:").count() > 0
+        await ui.shot(ctx, page, "page-error-trigger")
+        await page.unroute(is_next, fail)
+        await more.click(timeout=15_000)
+        await page.wait_for_function(f"({_TIP_ROWS_JS})() > {d['rows_before']}", timeout=30_000)
+        d["rows_after"] = await page.evaluate(_TIP_ROWS_JS)
+        await ui.shot(ctx, page, "page-error-settled")
+    except Exception as e:  # noqa: BLE001
+        d["error"] = f"{type(e).__name__}: {e}"[:300]
+        await ui.shot(ctx, page, "page-error-failed")
+    finally:
+        await page.unroute(is_next)
+    n = d.get("page2_requests", 0)
+    ctx.check(PAGE_ERR_BOUNDED, "error" not in d and d["rows_before"] > 0 and 1 <= n <= 2 and d["load_more_offered"]
+              and d["rows_after"] > d["rows_before"], **d, wait_s=PAGE_ERR_WAIT_S,
+              screenshots=["page-error-trigger.png", "page-error-settled.png"])

@@ -20,6 +20,11 @@ Cases:
       the seed-based grouping is what stops a cluster drifting off its original.
   case_video_duration_gate:
       two clips that share a poster frame but differ in length are NOT grouped.
+  case_cluster_matches_allpairs:
+      the banded candidate index returns exactly the all-pairs walk's sets
+      (`_cluster_allpairs`, the pre-index code kept here as the oracle) over
+      seeded worlds: n 0/1/50/2000, strictness -1/0/2/4/6/8, md5 collisions,
+      videos +-2 s, planted chains a~b~c, created_at ties, cross-kind copies.
   case_hide_refuses_original:
       asking to hide an id that is the original of its set is refused, and the
       OF call never receives it — the keeper cannot be removed by a stale UI.
@@ -53,6 +58,7 @@ import os  # noqa: E402
 os.environ["ALLOW_ANONYMOUS_ADMIN"] = "1"
 
 import io  # noqa: E402
+import random  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
 from typing import Any  # noqa: E402
 
@@ -204,6 +210,110 @@ async def case_video_duration_gate() -> None:
     assert ids == [11], ids          # the 95s clip is a different edit
 
 
+def _cluster_allpairs(items: list[dict], threshold: int) -> list[dict]:
+    """The all-pairs seed walk `vault_dupes.cluster` replaced: every later item
+    is tested against every seed. The equivalence oracle, test-only."""
+    items = sorted(items, key=lambda r: (r["created_at"], r["media_id"]))
+    claimed: set[int] = set()
+    clusters: list[dict] = []
+    for i, seed in enumerate(items):
+        if seed["media_id"] in claimed:
+            continue
+        dupes: list[dict] = []
+        for cand in items[i + 1:]:
+            if cand["media_id"] in claimed or cand["kind"] != seed["kind"]:
+                continue
+            if seed["kind"] == "video":
+                if abs((seed["duration"] or 0) - (cand["duration"] or 0)) > \
+                        vault_dupes._VIDEO_DUR_TOLERANCE_S:
+                    continue
+            if cand["md5"] == seed["md5"]:
+                dd = da = 0
+                exact = True
+            else:
+                dd = vault_dupes.hamming(seed["dhash"], cand["dhash"])
+                if dd > threshold:
+                    continue
+                da = vault_dupes.hamming(seed["ahash"], cand["ahash"])
+                if da > threshold:
+                    continue
+                exact = False
+            dupes.append({**cand, "dhash_dist": dd, "ahash_dist": da,
+                          "exact": exact})
+        if not dupes:
+            continue
+        claimed.add(seed["media_id"])
+        claimed.update(d["media_id"] for d in dupes)
+        worst = max(max(d["dhash_dist"], d["ahash_dist"]) for d in dupes)
+        clusters.append({
+            "original": seed, "dupes": dupes, "worst": worst,
+            "band": vault_dupes.band_of(worst),
+            "all_exact": all(d["exact"] for d in dupes),
+        })
+    clusters.sort(key=lambda c: (-len(c["dupes"]), c["worst"]))
+    return clusters
+
+
+def _flip(h: int, rng: random.Random, k: int) -> int:
+    for b in rng.sample(range(64), k):
+        h ^= 1 << b
+    return h
+
+
+def _world(n: int, seed: int) -> list[dict]:
+    """n fingerprints: random singles plus planted near copies (0-9 bits off on
+    each hash), md5 collisions with far hashes, videos +-0..2 s, chains a~b~c
+    whose ends are far apart, created_at ties, and exact / near copies under
+    another kind (never grouped)."""
+    rng = random.Random(seed)
+    t0 = datetime(2026, 1, 1)
+    out: list[dict] = []
+
+    def add(kind, md5, dh, ah, dur=None):
+        mid = len(out) + 1
+        out.append({"media_id": mid, "kind": kind, "md5": md5, "dhash": dh,
+                    "ahash": ah, "duration": dur, "send_count": 0,
+                    "created_at": t0 + timedelta(hours=rng.randrange(n // 3 + 1))})
+
+    while len(out) < n:
+        kind = rng.choice(("photo", "photo", "video", "gif"))
+        dur = rng.randrange(5, 60) if kind == "video" else None
+        md5, dh, ah = f"{rng.getrandbits(128):032x}", rng.getrandbits(64), rng.getrandbits(64)
+        add(kind, md5, dh, ah, dur)
+        roll = rng.random()
+        if roll < 0.3:            # near copies
+            for _ in range(rng.randrange(1, 4)):
+                add(kind, f"{rng.getrandbits(128):032x}", _flip(dh, rng, rng.randrange(10)),
+                    _flip(ah, rng, rng.randrange(10)),
+                    None if dur is None else dur + rng.choice((-2, -1, 0, 1, 2)))
+        elif roll < 0.4:          # same bytes, hashes far (md5 path only)
+            add(kind, md5, rng.getrandbits(64), rng.getrandbits(64), dur)
+        elif roll < 0.5:          # chain a~b~c: b near both, c far from a
+            b_dh = _flip(dh, rng, 3)
+            add(kind, f"{rng.getrandbits(128):032x}", b_dh, ah, dur)
+            add(kind, f"{rng.getrandbits(128):032x}", _flip(b_dh, rng, 3), ah, dur)
+        elif roll < 0.6:          # same md5 + hashes, other kind
+            other = rng.choice([k for k in ("photo", "video", "gif") if k != kind])
+            add(other, md5, dh, ah, rng.randrange(5, 60) if other == "video" else None)
+        elif roll < 0.7:          # near copy, other kind
+            other = rng.choice([k for k in ("photo", "video", "gif") if k != kind])
+            add(other, f"{rng.getrandbits(128):032x}", _flip(dh, rng, rng.randrange(3)),
+                _flip(ah, rng, rng.randrange(3)), rng.randrange(5, 60) if other == "video" else None)
+    return out[:n]
+
+
+def case_cluster_matches_allpairs() -> None:
+    worlds = [(n, s) for n in (0, 1, 50) for s in range(5)] + [(2000, 0)]
+    for n, s in worlds:
+        items = _world(n, s)
+        for t in (-1, 0, 2, 4, 6, 8):
+            got, want = vault_dupes.cluster(items, t), _cluster_allpairs(items, t)
+            assert got == want, (n, s, t, len(got), len(want))
+            if (n, t) == (2000, 6):
+                planted = want
+    assert len(planted) > 100 and any(not c["all_exact"] for c in planted), len(planted)
+
+
 async def case_hide_refuses_original() -> None:
     aid = _next_account()
     await _seed_account(aid)
@@ -349,6 +459,7 @@ _harness.run(
     case_original_is_earliest,
     case_no_transitive_chaining,
     case_video_duration_gate,
+    case_cluster_matches_allpairs,
     case_hide_refuses_original,
     case_hide_refuses_non_duplicate,
     case_hide_skips_sent_unless_allowed,

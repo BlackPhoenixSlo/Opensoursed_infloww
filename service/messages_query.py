@@ -160,20 +160,9 @@ def _build_messages_query(
         # NULL is_paid coexists with price_cents>0 on legacy rows
         # (OF didn't always echo the flag) — treat NULL as unpaid.
         q = q.where(or_(Message.is_paid.is_(False), Message.is_paid.is_(None)))
-    if fan_query and not for_csv:
+    if fan_query:
         like = f"%{fan_query}%"
         q = q.where(or_(Fan.of_username.like(like), Fan.of_display_name.like(like)))
-    elif fan_query and for_csv:
-        # CSV path didn't outerjoin Fan in the base select — apply via
-        # a subquery on fans to keep filter semantics identical.
-        like = f"%{fan_query}%"
-        fan_ids = (
-            select(Fan.fan_id)
-            .where(Fan.account_id == Message.account_id)
-            .where(or_(Fan.of_username.like(like), Fan.of_display_name.like(like)))
-            .scalar_subquery()
-        )
-        q = q.where(Message.fan_id.in_(fan_ids))
     if kind == "direct":
         q = q.where(Message.mass_run_id.is_(None))
     elif kind == "mass":

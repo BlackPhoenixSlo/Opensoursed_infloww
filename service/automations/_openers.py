@@ -23,7 +23,7 @@ a `>>PHASE_GOAL` protocol so the model could declare what it used, a lexical
 heuristic to check it really had, an exact-text conditional UPDATE so a stale
 worker couldn't destroy a regenerated line — and, worst, an unbounded-regeneration
 hazard, because an empty class tripped `gen_info.profile_is_stale`'s (since removed) `lines_empty`
-exemption, ~7% of generations come back empty, and `_PROFILE_KEEP_IF_EMPTY` then
+exemption, ~7% of generations come back empty, and `gen_info_plan.PROFILE_KEEP_IF_EMPTY` then
 preserves the NULL (gen_info's own comment warns about exactly this loop).
 
 None of that was buying anything a used-marker doesn't. Recording WHICH slots were

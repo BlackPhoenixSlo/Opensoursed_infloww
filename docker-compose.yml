@@ -88,6 +88,9 @@ services:
       # issuer, the help assistant, proxy messages); empty = Inflowwww. The app
       # takes the same BRAND_NAME as a build arg (below).
       BRAND_NAME: "${BRAND_NAME:-}"
+      # The logo path prefix (app/lib/brand.ts BRAND_LOGO): the Web Push icon is its -180.png
+      # (service/push_notice.py ICON); empty = /icon.svg.
+      BRAND_LOGO: "${BRAND_LOGO:-}"
       # The SQLite DB, in the bind-mounted directory below. Literal values, not
       # ${...}: a compose .env cannot move the DB, and service/.env loses to
       # them (db/engine.py loads it with override=False). DATABASE_URL is what
@@ -156,6 +159,17 @@ services:
       # clobber that took the Dockerfile's whole-package COPY down on 2026-08-21.
       SESSION_SECRET: "${SESSION_SECRET:-}"
       CHATTER_SESSION_SECRET: "${CHATTER_SESSION_SECRET:-}"
+      # Web Push (service/push_send.py). The VAPID key: this env (b64url raw or PEM), else
+      # service/secrets/vapid_private.pem (bind-mounted below, in ae-backup), made once on first
+      # start. NEVER rotate it: every browser subscription is bound to it. The subject (a mailto:
+      # or https: with a real host; Apple refuses localhost) comes from VAPID_SUBJECT, else
+      # SITE_URL; with neither, push stays off and GET /push/key answers 503.
+      VAPID_PRIVATE_KEY: "${VAPID_PRIVATE_KEY:-}"
+      VAPID_SUBJECT: "${VAPID_SUBJECT:-}"
+      SITE_URL: "${SITE_URL:-}"
+      # Push-service hosts a subscription endpoint may name (SSRF allowlist); empty = the
+      # browser vendors' (push_decide.DEFAULT_HOSTS).
+      PUSH_ENDPOINT_HOSTS: "${PUSH_ENDPOINT_HOSTS:-}"
       # Inflowwww proxy pool (Add creator › "Inflowwww proxy"): the proxy
       # lines, comma-separated, read at startup. Format: docs/proxies.md.
       INFLOWW_PROXIES: "${INFLOWW_PROXIES:-}"

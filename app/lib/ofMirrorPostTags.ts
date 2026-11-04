@@ -9,7 +9,8 @@
 import { toChoice, type TaggedFriendUser } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
 import { avatarOf } from "@/lib/ofMirrorAvatar";
-import { fill, make, own, plain } from "@/lib/ofMirrorData";
+import { plain } from "@/lib/ofMirrorData";
+import { fill, make, own } from "@/lib/ofMirrorDom";
 import { closeMenu, ORDER_GROUP, showMenu, type MenuGroup } from "@/lib/ofMirrorMenu";
 import { message, note, READ_ONLY, SELECT_MODEL } from "@/lib/ofMirrorWrites";
 import { toast } from "@/lib/ofMirrorToast";

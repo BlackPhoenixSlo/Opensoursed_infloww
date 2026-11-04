@@ -1,6 +1,6 @@
 "use client";
 
-/** The notifications tabs and their tab bar's counts, cut from ofMirrorFeeds. */
+/** The notifications tabs and their tab bar's counts. */
 
 import type { OFUserMini } from "@/lib/relay";
 import { dayOf, dropClass, fill, handleOf, linkUser, make, nameOf, otherAvatar, setIcon, stamp, track, userHref, valid } from "@/lib/ofMirrorDom";

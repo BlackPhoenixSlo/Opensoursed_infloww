@@ -1,0 +1,536 @@
+{
+ "_doc": "Relay-only extra notice cases (encoding, cents, outbound worker echo, Fansly ids, unknown toast type: notices_for keeps it with typeKey null, should_push drops it). Expectations checked against the app's toastArrival / dmArrival / purchaseArrival on 2026-11-03 (tip DMs by hand: A1.7). The shared table is notice_cases.json.",
+ "cases": [
+  {
+   "name": "dm_html_text",
+   "frame": {
+    "api2_chat_message": {
+     "id": 555,
+     "fromUser": {
+      "id": 4242,
+      "name": "Tom",
+      "username": "tom_k"
+     },
+     "toUser": {
+      "id": 1000001
+     },
+     "text": "<p>Hey <b>babe</b></p>\n  ",
+     "mediaCount": 0
+    },
+    "__account_id": "1000001"
+   },
+   "expect": [
+    {
+     "id": "1000001:m555",
+     "typeKey": "message",
+     "title": "Tom",
+     "body": "Hey babe",
+     "href": "/messages-pro/1000001/4242?fanTab=Tom"
+    }
+   ]
+  },
+  {
+   "name": "dm_media_username_only",
+   "frame": {
+    "api2_chat_message": {
+     "id": 556,
+     "fromUser": {
+      "id": 4243,
+      "username": "anna.b"
+     },
+     "toUser": {
+      "id": 1000001
+     },
+     "text": "",
+     "mediaCount": 2
+    },
+    "__account_id": "1000001"
+   },
+   "expect": [
+    {
+     "id": "1000001:m556",
+     "typeKey": "message",
+     "title": "anna.b",
+     "body": "Sent you media",
+     "href": "/messages-pro/1000001/4243?fanTab=anna.b"
+    }
+   ]
+  },
+  {
+   "name": "dm_blank_text_special_name",
+   "frame": {
+    "api2_chat_message": {
+     "id": 557,
+     "fromUser": {
+      "id": 4244,
+      "name": "Zoë & Co"
+     },
+     "toUser": {
+      "id": 1000001
+     },
+     "text": "   ",
+     "mediaCount": 0
+    },
+    "__account_id": "1000001"
+   },
+   "expect": [
+    {
+     "id": "1000001:m557",
+     "typeKey": "message",
+     "title": "Zoë & Co",
+     "body": "Sent you a message",
+     "href": "/messages-pro/1000001/4244?fanTab=Zo%C3%AB+%26+Co"
+    }
+   ]
+  },
+  {
+   "name": "tip_dm_5",
+   "frame": {
+    "api2_chat_message": {
+     "id": 777,
+     "fromUser": {
+      "id": 4242,
+      "name": "Tom",
+      "username": "tom_k"
+     },
+     "toUser": {
+      "id": 1000001
+     },
+     "text": "",
+     "isTip": true,
+     "tipAmount": 5,
+     "price": 0
+    },
+    "__account_id": "1000001"
+   },
+   "expect": [
+    {
+     "id": "1000001:m777",
+     "typeKey": "tip",
+     "title": "Tom",
+     "body": "Tipped you $5",
+     "href": "/messages-pro/1000001/4242?refresh=media&fanTab=Tom"
+    }
+   ]
+  },
+  {
+   "name": "tip_dm_7_50_with_text",
+   "frame": {
+    "api2_chat_message": {
+     "id": 778,
+     "fromUser": {
+      "id": 4242,
+      "name": "Tom",
+      "username": "tom_k"
+     },
+     "toUser": {
+      "id": 1000001
+     },
+     "text": "for you x",
+     "isTip": true,
+     "tipAmount": 7.5,
+     "price": 0
+    },
+    "__account_id": "1000001"
+   },
+   "expect": [
+    {
+     "id": "1000001:m778",
+     "typeKey": "tip",
+     "title": "Tom",
+     "body": "Tipped you $7.50",
+     "href": "/messages-pro/1000001/4242?refresh=media&fanTab=Tom"
+    }
+   ]
+  },
+  {
+   "name": "tip_dm_price_fallback",
+   "frame": {
+    "api2_chat_message": {
+     "id": 779,
+     "fromUser": {
+      "id": 4242,
+      "name": "Tom",
+      "username": "tom_k"
+     },
+     "toUser": {
+      "id": 1000001
+     },
+     "text": "",
+     "isTip": true,
+     "price": 3
+    },
+    "__account_id": "1000001"
+   },
+   "expect": [
+    {
+     "id": "1000001:m779",
+     "typeKey": "tip",
+     "title": "Tom",
+     "body": "Tipped you $3",
+     "href": "/messages-pro/1000001/4242?refresh=media&fanTab=Tom"
+    }
+   ]
+  },
+  {
+   "name": "tip_dm_no_amount",
+   "frame": {
+    "api2_chat_message": {
+     "id": 780,
+     "fromUser": {
+      "id": 4242,
+      "name": "Tom",
+      "username": "tom_k"
+     },
+     "toUser": {
+      "id": 1000001
+     },
+     "text": "",
+     "isTip": true,
+     "tipAmount": 0,
+     "price": 0
+    },
+    "__account_id": "1000001"
+   },
+   "expect": [
+    {
+     "id": "1000001:m780",
+     "typeKey": "tip",
+     "title": "Tom",
+     "body": "Sent you a tip",
+     "href": "/messages-pro/1000001/4242?refresh=media&fanTab=Tom"
+    }
+   ]
+  },
+  {
+   "name": "outbound_dm",
+   "frame": {
+    "api2_chat_message": {
+     "id": 781,
+     "fromUser": {
+      "id": 1000001,
+      "name": "Creator A"
+     },
+     "toUser": {
+      "id": 1000001
+     },
+     "text": "hi"
+    },
+    "__account_id": "1000001"
+   },
+   "expect": []
+  },
+  {
+   "name": "outbound_worker_dm",
+   "frame": {
+    "api2_chat_message": {
+     "id": 782,
+     "fromUser": {
+      "id": 1000001,
+      "name": ""
+     },
+     "toUser": {
+      "id": 1000001
+     },
+     "text": "welcome"
+    },
+    "__account_id": "1000001",
+    "__fan_id": 4242
+   },
+   "expect": []
+  },
+  {
+   "name": "dm_fansly_snowflake",
+   "frame": {
+    "api2_chat_message": {
+     "id": 9001,
+     "fromUser": {
+      "id": "700345678901234567",
+      "name": "Kat"
+     },
+     "toUser": {
+      "id": "500345678901234567"
+     },
+     "text": "hey"
+    },
+    "__account_id": "500345678901234567"
+   },
+   "expect": [
+    {
+     "id": "500345678901234567:m9001",
+     "typeKey": "message",
+     "title": "Kat",
+     "body": "hey",
+     "href": "/messages-pro/500345678901234567/700345678901234567?fanTab=Kat"
+    }
+   ]
+  },
+  {
+   "name": "purchase_full",
+   "frame": {
+    "purchase_notified": {
+     "notif_id": "9001",
+     "fan_id": 4242,
+     "message_id": 1,
+     "amount_cents": 1500,
+     "created_at": "2026-11-03T10:00:00+00:00",
+     "name": "Tom"
+    },
+    "__account_id": "1000001"
+   },
+   "expect": [
+    {
+     "id": "1000001:9001",
+     "typeKey": "purchases",
+     "title": "Tom",
+     "body": "Unlocked your PPV — $15",
+     "href": "/messages-pro/1000001/4242?refresh=media&fanTab=Tom"
+    }
+   ]
+  },
+  {
+   "name": "purchase_cents_and_commas",
+   "frame": {
+    "purchase_notified": {
+     "notif_id": "9002",
+     "fan_id": 4242,
+     "message_id": 2,
+     "amount_cents": 123456,
+     "created_at": null,
+     "name": "Tom"
+    },
+    "__account_id": "1000001"
+   },
+   "expect": [
+    {
+     "id": "1000001:9002",
+     "typeKey": "purchases",
+     "title": "Tom",
+     "body": "Unlocked your PPV — $1,234.56",
+     "href": "/messages-pro/1000001/4242?refresh=media&fanTab=Tom"
+    }
+   ]
+  },
+  {
+   "name": "purchase_no_name_no_amount",
+   "frame": {
+    "purchase_notified": {
+     "notif_id": "9003",
+     "fan_id": 4245,
+     "message_id": 3,
+     "amount_cents": 0,
+     "created_at": null,
+     "name": null
+    },
+    "__account_id": "1000001"
+   },
+   "expect": [
+    {
+     "id": "1000001:9003",
+     "typeKey": "purchases",
+     "title": "Inflowwww",
+     "body": "Unlocked your PPV",
+     "href": "/messages-pro/1000001/4245?refresh=media&fanTab=fan+4245"
+    }
+   ]
+  },
+  {
+   "name": "toast_like_related_user",
+   "frame": {
+    "toasts": [
+     {
+      "id": 31337,
+      "type": "favorited",
+      "text": "<a href=\"https://onlyfans.com/tom_k\">Tom</a> liked your post",
+      "data": {
+       "relatedUser": {
+        "id": 4242,
+        "name": "Tom",
+        "username": "tom_k"
+       }
+      },
+      "user": {
+       "name": "Creator A",
+       "username": "creatora"
+      }
+     }
+    ],
+    "__account_id": "1000001"
+   },
+   "expect": [
+    {
+     "id": "1000001:31337",
+     "typeKey": "favorited",
+     "title": "Tom",
+     "body": "Tom liked your post",
+     "href": "/messages-pro/1000001/4242?fanTab=Tom"
+    }
+   ]
+  },
+  {
+   "name": "toast_sub_replacements",
+   "frame": {
+    "toasts": [
+     {
+      "id": "abc-1",
+      "type": "subscribed",
+      "text": "{RELATED_USER_NAME} subscribed to you",
+      "data": {
+       "replacements": {
+        "{RELATED_USER_ID}": "5151",
+        "{RELATED_USER_NAME}": "Lia",
+        "{RELATED_USER_LOGIN}": "lia_x"
+       }
+      }
+     }
+    ],
+    "__account_id": "1000001"
+   },
+   "expect": [
+    {
+     "id": "1000001:abc-1",
+     "typeKey": "subscribed",
+     "title": "Lia",
+     "body": "Lia subscribed to you",
+     "href": "/messages-pro/1000001/5151?fanTab=Lia"
+    }
+   ]
+  },
+  {
+   "name": "toast_tip_type",
+   "frame": {
+    "toasts": [
+     {
+      "id": 4000,
+      "type": "tip",
+      "text": "<b>Tom</b> sent you a tip of $10",
+      "data": {
+       "relatedUser": {
+        "id": 4242,
+        "name": "Tom"
+       }
+      }
+     }
+    ],
+    "__account_id": "1000001"
+   },
+   "expect": [
+    {
+     "id": "1000001:4000",
+     "typeKey": "tip",
+     "title": "Tom",
+     "body": "Tom sent you a tip of $10",
+     "href": "/messages-pro/1000001/4242?refresh=media&fanTab=Tom"
+    }
+   ]
+  },
+  {
+   "name": "toast_without_id_skipped",
+   "frame": {
+    "toasts": [
+     {
+      "type": "favorited",
+      "text": "x liked"
+     },
+     {
+      "id": 4001,
+      "type": "commented",
+      "text": "Nice!",
+      "fromUser": {
+       "id": 4242,
+       "name": "Tom",
+       "username": "tom_k"
+      }
+     }
+    ],
+    "__account_id": "1000001"
+   },
+   "expect": [
+    {
+     "id": "1000001:4001",
+     "typeKey": "commented",
+     "title": "Tom",
+     "body": "Nice!",
+     "href": "/messages-pro/1000001/4242?fanTab=Tom"
+    }
+   ]
+  },
+  {
+   "name": "toast_unknown_type",
+   "frame": {
+    "toasts": [
+     {
+      "id": 4100,
+      "type": "release_form",
+      "text": "New release form",
+      "fromUser": {
+       "id": 4242,
+       "name": "Tom",
+       "username": "tom_k"
+      }
+     }
+    ],
+    "__account_id": "1000001"
+   },
+   "expect": [
+    {
+     "id": "1000001:4100",
+     "typeKey": null,
+     "title": "Tom",
+     "body": "New release form",
+     "href": "/messages-pro/1000001/4242?fanTab=Tom"
+    }
+   ]
+  },
+  {
+   "name": "toast_username_only",
+   "frame": {
+    "toasts": [
+     {
+      "id": 4200,
+      "type": "mentioned",
+      "text": "<a href=\"https://onlyfans.com/mike99\">@mike99</a> mentioned you"
+     }
+    ],
+    "__account_id": "1000001"
+   },
+   "expect": [
+    {
+     "id": "1000001:4200",
+     "typeKey": "mentioned",
+     "title": "mike99",
+     "body": "@mike99 mentioned you",
+     "href": "/messages-pro/1000001/u/mike99?fanTab=mike99"
+    }
+   ]
+  },
+  {
+   "name": "toast_fansly_string_related_id",
+   "frame": {
+    "toasts": [
+     {
+      "id": "t-77",
+      "type": "subscribed",
+      "text": "Kat subscribed",
+      "data": {
+       "relatedUser": {
+        "id": "700345678901234567",
+        "name": "Kat"
+       }
+      }
+     }
+    ],
+    "__account_id": "500345678901234567"
+   },
+   "expect": [
+    {
+     "id": "500345678901234567:t-77",
+     "typeKey": "subscribed",
+     "title": "Kat",
+     "body": "Kat subscribed",
+     "href": null
+    }
+   ]
+  }
+ ]
+}

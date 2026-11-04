@@ -1,10 +1,11 @@
 # OF Manager, automations and theme: current state (2026-10-18)
 
 Research snapshot for "fix the OF manager and the rest of automations, and match Infloww's colours".
-Main at `2e6d8035` plus uncommitted work. File:line refs are against the main checkout.
+Main at `2e6d8035`.
 
 **§1 re-checked against main `159f77ac` on 2026-10-20.** Its layout gaps, per-section status and branch notes below
-are updated; §0 and §2-§4 are still the 2026-10-18 snapshot.
+are updated; §0, §2 and §3 are the 2026-10-18 snapshot. Code refs in §0-§3 are refreshed 2026-11; values stay the
+snapshot unless marked.
 
 ## 0. What the screenshots show
 
@@ -27,14 +28,14 @@ are updated; §0 and §2-§4 are still the 2026-10-18 snapshot.
    theme: `#161618`, OF blue `#00aff0` (links, DISMISS, GO LIVE, VIEW QUEUE), and the All chip `#1c3c4f`.
 
 **Ours** (attachment `74ebc3a0`). The shot predates the rebrand, so the top bar still says "OpenInfloww"; it now
-says "Inflowwww" (`app/components/shell/TopBar.tsx:60`). Our sidebar is collapsed, which **hides it completely**.
+says "Inflowwww" (`app/components/shell/TopBar.tsx`, `BRAND_NAME`). Our sidebar is collapsed, which **hides it completely**.
 What fills the left of the screen is **OnlyFans' own left nav**: Home, Notifications, Messages, Collections, Vault,
 Queue, Statements, Statistics, My profile, More, NEW POST. It is baked into every mirrored HTML page and sits inside
 the iframe. There is no creator column and no section header.
 
 ## 1. How OF Manager is built
 
-**Route.** `app/app/of-manager/[section]/[[...path]]/page.tsx:12-33`. It maps `/of-manager/<section>/<sub>` to
+**Route.** `app/app/of-manager/[section]/[[...path]]/page.tsx` `pageOf`. It maps `/of-manager/<section>/<sub>` to
 `/of-mirror/pages/<section>/<sub|index>.html` through the generated table `app/lib/of-mirror-pages.ts` (236 lines)
 and renders `<OfMirrorFrame>`.
 
@@ -42,11 +43,11 @@ and renders `<OfMirrorFrame>`.
 in `app/public/of-mirror/`, built from a SiteSucker dump plus logged-in captures by `scripts/of-mirror.mjs` (3621
 lines). The generator scrubs identities and drops all of OF's JS. It also injects **OF's left nav
 (`header.l-header`) into every page**, with the current item marked (`scripts/of-mirror.mjs`). At runtime the
-frame hides it, as Infloww does (`app/lib/ofMirrorChrome.ts`). The overrides CSS is at `:747-764`, and the theme boot script that adds `m-mode-dark` from the parent is
-at `:743`.
+frame hides it, as Infloww does (`app/lib/ofMirrorChrome.ts`). The overrides CSS is `OVERRIDES`, and the theme boot script that adds `m-mode-dark` from the parent is
+`THEME_BOOT`.
 
-**Frame.** `app/components/of-manager/OfMirrorFrame.tsx` (147 lines) loads one page in a same-origin iframe (`:144`,
-bg `#161618`). About 27 `useOf*` hooks (`:76-102`) reach into `iframe.contentDocument` and hydrate it with real data
+**Frame.** `app/components/of-manager/OfMirrorFrame.tsx` (`Frame`, 154 lines) loads one page in a same-origin iframe (bg `#161618`).
+About 29 `useOf*` hooks reach into `iframe.contentDocument` and hydrate it with real data
 from the relay's `/api/of/v2/*` proxy:
 
 - **Data and lists:** `ofMirrorData`, `ofMirrorRow`, `ofMirrorChats`, `ofMirrorCollections`, `ofMirrorVault`,
@@ -56,8 +57,7 @@ from the relay's `/api/of/v2/*` proxy:
 - **Money and stats:** `ofMirrorMoney`, `ofMirrorStats`.
 - **Theme:** `ofMirrorTheme`.
 
-In total `app/lib/ofMirror*.ts` is about 37.6k lines. In-frame links to `/of-manager/*` become `router.push`
-(`:104-138`).
+In total `app/lib/ofMirror*.ts` is about 37.6k lines. In-frame links to `/of-manager/*` become `router.push`.
 
 **Shell and nav.** `app/components/shell/AppShell.tsx` puts the TopBar on top and our `Sidebar` on the left. The
 sidebar has the "OF Manager" group (`app/lib/nav.ts`), now with Release forms too. Collapse shrinks the sidebar to
@@ -81,13 +81,13 @@ TopBar has the Operational pill, the trial chip and the free-trial banner. The o
 
 1. **OF's own left nav shows inside the frame.** Infloww hides it. The cheapest fix is a runtime `<style>` the
    frame injects, for example `header.l-header{display:none}` plus a width reset on OF's `.l-wrapper`/main columns,
-   in `OfMirrorFrame` or `useOfTheme`. A rule in `OVERRIDES` (`scripts/of-mirror.mjs:747`) would also work, but it
+   in `OfMirrorFrame` or `useOfTheme`. A rule in `OVERRIDES` (`scripts/of-mirror.mjs`) would also work, but it
    needs a regenerate, and the generator's inputs live in `~/Downloads`.
-   - The DOM stays, so the identity badges (`ofMirrorIdentity.ts:74`) and the tests are unaffected.
+   - The DOM stays, so the identity badges (`ofMirrorIdentity.ts`) and the tests are unaffected.
    - OF's NEW POST button and avatar/More drawer then need another entry point. The sidebar already has New post
      and My profile.
 2. **No icon-rail collapse.** Collapse should shrink the `Sidebar` to icons, about 80px on `#000`, instead of
-   `lg:hidden`. Infloww picks the OF page from the sidebar's OF Manager submenu (`docs/infloww-screens.md:147`), so
+   `lg:hidden`. Infloww picks the OF page from the sidebar's OF Manager submenu (`docs/infloww-screens.md` §3.2), so
    the rail needs a flyout for the OF Manager group. Infloww appears to show the rail by default on OF Manager.
 3. **No creator column.** Infloww has Search, reload, "All creators ▾", and rows with an avatar, online dot and
    notification badge. It could be built from `AccountRoster`/`useActiveAccounts`/`useRosterCounts` and set the scope
@@ -106,10 +106,10 @@ a control shown disabled. Parked connector tickets: 06, 12, 19, 31, 38, 46.
 |---|---|
 | Home | Feed is wired, with likes and comments. On the Creator's own post, "N Likes" lists its likers and Post statistics opens OF's popup for a role with Statistics (W8 8.9). The story tiles read `GET /stories` (checked on a fixture only). Another creator's post keeps only Copy link to post. |
 | New post | Post, schedule, vault picks and uploads are wired. Labels, poll, quiz, expiration and target are read-only. Parked: Co-tag live (06), upload dedupe (19). |
-| Notifications | Every tab reads its own type (`NOTIFICATIONS`, `ofMirrorFeeds.ts`); Tags reads `/release-forms/mentions`. Tips' `tip` value comes from OF's bundle, not a live capture (ticket 31). |
+| Notifications | Every tab reads its own type (`NOTIFICATIONS`, `ofMirrorFeedsNotifications.ts`); Tags reads `/release-forms/mentions`. Tips' `tip` value comes from OF's bundle, not a live capture (ticket 31). |
 | Messages Basic | The chat list and thread are real. Infloww's 280px Fan insights column sits beside an open chat (`OfManagerChrome`, page-parity 06). Countdown, Copy as draft and Unsend PPV are not on OF's bubbles. |
 | Vault | Wired, including the tag editor (`PATCH /admin/vault-ai/items/{media_id}`), folder Search and Go to date, and a folder page's sorts and Create new category (W8 8.9). A folder page's More stays disabled. Ticket 12 (thumbnails through `/img`) is not live-checked. |
-| Queue | Edit post, edit message, reschedule and Save for later are on main (`PUT /api/of/v2/queue/posts/{id}`, `GET`/`PUT /api/of/v2/messages/queue/{id}`, `POST /api/of/v2/messages/queue/later` in `service/server.py`), with month and day navigation. The auto-publish switch stays disabled. |
+| Queue | Edit post, edit message, reschedule and Save for later are on main (`PUT /api/of/v2/queue/posts/{id}`, `GET`/`PUT /api/of/v2/messages/queue/{id}`, `POST /api/of/v2/messages/queue/later`; the post route in `service/server.py`, the message routes in `service/mass_queue_api.py`), with month and day navigation. The auto-publish switch stays disabled. |
 | Collections | Lists are real, and create, rename, add users and delete are wired. A list's Posts tab reads `GET /api/of/v2/lists/{list_id}/posts`. |
 | Statements | Read, including balances, Earning Statistics and the chargeback ratio (`ofMirrorMoney.ts`). The guessed fields `invoice`, `state` and `reason` are unverified live. |
 | Statistics | Every figure is read from the relay (`app/lib/ofMirrorStats*.ts`); the old "fixed fake" note was stale. `/of-manager/statistics` lands on Statements › Earnings, as Infloww's menu does (`app/next.config.ts`, W8 8.9). |
@@ -126,18 +126,14 @@ fixes are on main. Nothing needs merging before touching `OfMirrorFrame`.
 
 **Backend.** `service/automations/`, about 85 modules. The rule kinds are listed in `service/assistant_manual.md`
 (ai_chatter, auto_follow, auto_posts, auto_stories, autoreply, mass_nudge, send_welcome, purchase_followup,
-unsend_messages, ppv_send, tip_request, and others). `tip_reward.py` was deleted in `2e6d8035`, and the uncommitted
-`assistant_manual.md` edit removes it from the docs. `tip_reward_config.py` and `tip_reward_config_api.py` still
-exist.
+unsend_messages, ppv_send, tip_request, and others). `tip_reward.py` was deleted in `2e6d8035`.
 
 **UI routes:**
 
-- "My Automations" (ours): `/growth/auto-post`, `/growth/auto-story`, `/growth/auto-reply` (`nav.ts:135-143`).
+- "My Automations" (ours): `/growth/auto-post`, `/growth/auto-story`, `/growth/auto-reply` (`nav.ts` "My Automations" group).
 - Growth: `/growth/smart-messages`, which holds the Automated Messages tab (Nudge, Delayed welcome, Purchased
   triggers) and Mass messages with the auto-unsend card; `/growth/smart-lists`; `/growth/auto-follow`; plus vault-pro,
   scripts, profile-promotion, free-trial-links and tracking-links.
-- Legacy `/automations` (`AutomationsPanel`, `ReadyMadePanel`, `RuleEditor`) appears only when
-  `OPENINFLOWW_LEGACY_AUTOMATIONS=1` (`nav.ts:146`).
 
 **Tests run today, all passing:**
 
@@ -146,7 +142,7 @@ exist.
 - Python: test_collections_lists, test_auto_posts, test_auto_follow, test_autoreply, test_smart_lists,
   test_purchase_followup, test_send_welcome, test_mass_nudge, test_auto_stories.
 
-**Known broken or missing.** Sources: `docs/infloww-parity-matrix.md` §3.5.x and §4.1, `zzz_goaltodos.txt`.
+**Known broken or missing.** Sources: `docs/infloww-parity-matrix.md` §3.5.x and §4.1, `zzz_goaltodos.txt` (owner's untracked notes, not in the repo).
 
 - Smart Messages, §3.5.1 "not wired":
   - Filters #30-33 and the Scheduled/Completed statuses.
@@ -174,21 +170,21 @@ exist.
 
 | Where | What | Current |
 |---|---|---|
-| `app/app/globals.css:12-38` (`@theme`, dark default) | The 14 `--color-*` tokens behind every Tailwind utility (`bg-bg`, `bg-panel`, `bg-accent`, `text-fg-dim`, `border-border`, ...) | bg `#0e1116`, elev-1 `#161b22`, elev-2 `#1f2530`, panel `#14151a`, fg `#e6edf3`, fg-dim `#8b949e`, muted `#6e7681`, border `#2a313a`/`#3a414c`, **accent purple `#8b5cf6`**/hover `#a78bfa`, ok/warn/err/pink, info `#3b82f6` |
-| `globals.css:119-139` | Light theme overrides | accent `#7c3aed` |
-| `globals.css:68-104`, light at `:140-153` | `--if-*` Infloww Settings tokens, already the sampled Infloww palette, used only by `components/settings/` (about 190 uses) | bg `#262626`, list `#232323`, accent `#4166f6` (light `#3467ff`), line `#333` |
-| `components/chat/InflowwPalette.tsx:26-75` | Messages Pro wrapper that re-declares `--color-*` with Infloww values on its subtree, plus `--inf-*` split roles | bg `#151515`, elev `#2b2b2b`/`#353535`, panel `#1c1c1c`, fg `#d9d9d9`, border `#333`, accent `#4166f6` |
-| `globals.css:159-176` `[data-look="site"]` | Signed-out `/login` page in the app | site look |
-| `app/app/layout.tsx:57` | `themeColor` | `#14151a` |
-| `OfMirrorFrame.tsx:144` | Frame background | `#161618` |
-| `web/src/main.css:7-16` (marketing site `@theme`) | ink, cream, mint, **forest `#00805e`**, sun | light site |
-| `web/src/main.css` (uncommitted additions) | dark `/login/` and `/signup/` | `#0c0c0c`, orange `#f97b4f`, pink `#ff5c9a` |
+| `app/app/globals.css` `@theme` (dark default) | The 14 `--color-*` tokens behind every Tailwind utility (`bg-bg`, `bg-panel`, `bg-accent`, `text-fg-dim`, `border-border`, ...) | bg `#0e1116`, elev-1 `#161b22`, elev-2 `#1f2530`, panel `#14151a`, fg `#e6edf3`, fg-dim `#8b949e`, muted `#6e7681`, border `#2a313a`/`#3a414c`, **accent purple `#8b5cf6`**/hover `#a78bfa`, ok/warn/err/pink, info `#3b82f6` |
+| `globals.css` `html[data-theme="light"]` | Light theme overrides | accent `#7c3aed` |
+| `globals.css` `:root`, light in `html[data-theme="light"]` | `--if-*` Infloww Settings tokens, already the sampled Infloww palette, used only by `components/settings/` (about 190 uses) | bg `#262626`, list `#232323`, accent `#4166f6` (light `#3467ff`), line `#333` |
+| `components/chat/InflowwPalette.tsx` `PALETTE` | Messages Pro wrapper that re-declares `--color-*` with Infloww values on its subtree, plus `--inf-*` split roles | bg `#151515`, elev `#2b2b2b`/`#353535`, panel `#1c1c1c`, fg `#d9d9d9`, border `#333`, accent `#4166f6` |
+| `globals.css` `[data-look="site"]` | Signed-out `/login` page in the app | site look |
+| `app/app/layout.tsx` | `themeColor` | `#000000` (2026-11; snapshot `#14151a`) |
+| `OfMirrorFrame.tsx` `Frame` | Frame background | `#161618` |
+| `web/src/main.css` `@theme` (marketing site) | ink, cream, mint, **forest `#00805e`**, sun | light site |
+| `web/src/main.css` | dark `/login/` and `/signup/` | `#0c0c0c`, orange `#f97b4f`, pink `#ff5c9a` |
 | `ui-redesign/infloww-exact/PALETTE.md` (deleted in cleanup Phase 2; tag `legacy-ui-final`) | Pixel-sampled reference | |
 
 **What it takes to swap the palette.**
 
 - **Two edits cover about 90% of the app.**
-  - Retune the 14 dark tokens in `globals.css:14-38`, and the light block at `:120-139`, to Infloww values.
+  - Retune the 14 dark tokens in `globals.css` `@theme`, and the `html[data-theme="light"]` block, to Infloww values.
   - Alternatively, hoist `InflowwPalette`'s values into `@theme`, which makes the Messages Pro wrapper redundant.
 - The accent classes are all token-based: 492 uses across 130 files follow the tokens automatically.
 - **Leftovers** do not follow tokens:
@@ -218,32 +214,3 @@ exist.
 
 The caller's guess of `#2f6bff` is close; the measured value is `#3467ff`. `PALETTE.md` and the `--if-*` tokens use
 `#4166f6`. The OF page keeps OF's own colours (`#161618`, `#00aff0`) through `m-mode-dark`.
-
-## 4. Uncommitted work on main
-
-Three separate streams.
-
-1. **OF Manager, Collections list "Posts" tab, plus names in New message's Users tab.** This looks complete, and its
-   tests pass.
-   - `app/lib/ofMirrorData.ts`: the `LIST_POSTS` page `collections/user-lists/list/posts`, `listPostsPath`,
-     `postTypeOf`, type chips, `applyListTabs`, and author resolution through `/users/list`.
-   - `ofMirrorFeeds.ts`: `LIST_FEED`, and `applyHomeStatus` generalised to take a feed.
-   - `ofMirrorCollections.ts`: the list More menu on the Posts tab too.
-   - `ofMirrorChat.ts`: mass-send "Users" tab partners named through batched `/users/list` (20 ids a read) instead
-     of bare ids.
-   - Relay: `service/of_reads.py` `list_posts_in()` and `service/server.py`
-     `GET /api/of/v2/lists/{list_id}/posts`.
-   - Tests: `service/tests/test_collections_lists.py` (+2 cases) and the vitest specs. The mirror page
-     `collections/user-lists/list/posts.html` was already committed.
-   - It is ready to commit.
-2. **`service/assistant_manual.md`**: removes `tip_reward` (whose module was deleted in `2e6d8035`) from the
-   assistant's manual. This is docs only and ready to commit.
-3. **Marketing site `/login/` and `/signup/` dark restyle** in Infloww's auth-page shape.
-   - `web/src/_includes/base.njk` adds `bare: true`, which drops the header and footer and sets `html.auth-dark`
-     and the theme colour `#0c0c0c`.
-   - `auth.njk`, `login.njk`, `signup.njk` and `main.css` (+117 lines) add `.auth-*` classes: orange `#f97b4f`
-     focus and buttons, pink errors.
-   - It looks coherent, but I did not build or check it visually.
-
-Untracked files: `LIVE_TEST_HERE.md`, the sandbox live-test runbook (A1-D8, with an empty results table, so the live
-pass has not been run), and `zzz_goaltodos.txt`, the owner's notes.

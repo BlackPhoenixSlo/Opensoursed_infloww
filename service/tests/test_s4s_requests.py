@@ -495,4 +495,59 @@ def case_the_proposal_refuses_like_send_and_is_null_for_an_opted_out_sender():
     assert proposed(OWNER_A, OUT_A, PROP_B) is None, "an opted-out sender got a time"
 
 
+def case_concurrent_sends_across_the_daily_cap_store_exactly_the_cap():
+    """`room` short of the cap, then 10 sends at once to distinct partners: `room` x 201, the rest 409, the cap
+    stored. Each send's count is slowed (`_sent_today` + 50 ms) so racing sends overlap between the count and
+    the INSERT, as the slop burst did (stored 51-55) in a deferred transaction."""
+    import httpx
+
+    import s4s_requests_api
+    import server
+    from s4s_common import MAX_SENT_PER_DAY
+
+    sender, partners = "1000031", [str(1000041 + i) for i in range(10)]
+    seed_creators({sender: "agency_a_owner", **{aid: "agency_b_owner" for aid in partners}})
+    cap_caption = list_in_discovery(OWNER_A, sender, "Fixture Cap", "fixture_cap")
+    for i, aid in enumerate(partners):
+        list_in_discovery(OWNER_B, aid, f"Fixture Cap Partner {i}", f"fixture_cap_partner_{i}")
+    pids = [pid(OWNER_B, aid) for aid in partners]
+    room = 4
+    seeded = MAX_SENT_PER_DAY - room
+
+    async def seed() -> None:
+        now, proj = datetime.utcnow(), json.dumps({"seeded": True})
+        async with get_session() as s:
+            s.add_all(S4SRequest(from_account_id=sender, to_account_id=B, slot_at=day(40), from_caption=cap_caption,
+                                 to_caption=CAPTION[B], from_projection_json=proj, to_projection_json=proj,
+                                 status="cancelled", created_at=now) for _ in range(seeded))
+    asyncio.run(seed())
+
+    real_count = s4s_requests_api._sent_today
+
+    async def slow_count(*a, **kw):
+        n = await real_count(*a, **kw)
+        await asyncio.sleep(0.05)
+        return n
+
+    async def race() -> list[int]:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app), base_url="http://testserver",
+                                     cookies=dict(OWNER_A.cookies)) as c:
+            s4s_requests_api._sent_today = slow_count
+            try:
+                got = await asyncio.gather(*(c.post("/admin/s4s/requests", json={
+                    "from_account_id": sender, "to_profile_id": p, "slot_at": z(day(41, 10, i))})
+                    for i, p in enumerate(pids)))
+            finally:
+                s4s_requests_api._sent_today = real_count
+        return got
+
+    got = asyncio.run(race())
+    statuses = sorted(r.status_code for r in got)
+    assert statuses == [201] * room + [409] * (len(pids) - room), statuses
+    refused = [r.json().get("detail", "") for r in got if r.status_code == 409]
+    assert all(str(MAX_SENT_PER_DAY) in d for d in refused), refused
+    stored = count(S4SRequest, from_account_id=sender)
+    assert stored == MAX_SENT_PER_DAY, stored
+
+
 _harness.run()

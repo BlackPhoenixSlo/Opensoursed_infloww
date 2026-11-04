@@ -13,7 +13,7 @@ import {
   type FanState,
 } from "./ofMirrorChatTools";
 import { discountShown, maxDiscount } from "./fanDiscount";
-import { relatedOnly } from "./ofMirrorData";
+import { relatedOnly } from "./ofMirrorDataQueries";
 import { frameNavigate } from "./ofMirrorPost";
 import { ELSEWHERE } from "./ofMirrorTooltip";
 import { NOT_YET, SELECT_MODEL } from "./ofMirrorWrites";

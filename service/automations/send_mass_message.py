@@ -44,15 +44,19 @@ Payload shape (all optional; an empty payload is a no-op run)::
       "exclude_list_ids": [4],
       "previews": [123],              # unlocked preview media ids (PPV)
       "online_only": true,            # OF resolves "online now" server-side
-      "filters": {"online": 1}        # raw OF audience filters (Mass Online)
+      "filters": {"online": 1},       # raw OF audience filters (Mass Online)
+      "dry_run": true                 # send nothing; answer `would_send` (O3)
     }
 
 Returns (stats dict) include `queue_id` (OF's broadcast id from the send
 response) so a caller can schedule a forever-window unsend of THIS broadcast.
+A dry run returns `smd.dry_run_result` instead: `would_send` (fan ids, or None +
+`reason` when OF's audience is not a readable roster), `sent: 0`.
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import replace
 from datetime import datetime
@@ -73,7 +77,7 @@ from automations._wordfilter import (  # compliance word filter
     banned_hit_summary, filter_banned, load_banned_words,
 )
 from db.engine import get_session
-from db.models import FunnelAccountMedia, ListMember, MassMessageFunnel, MassRun
+from db.models import FunnelAccountMedia, ListMember, MassMessageFunnel, MassRun, ScheduledJob
 from event_transcoder import _parse_iso, _to_cents
 
 log = logging.getLogger("of-relay.automation.send_mass_message")
@@ -123,12 +127,99 @@ async def _members_of_lists(s, list_ids: list[int]) -> list[int]:
     return [int(r[0]) for r in rows]
 
 
+async def _pending_send_ids_but_dry(account_id: str) -> set[int]:
+    """Mirror of `audiences.pending_send_fan_ids` minus queued dry runs: a dry
+    run never sends, so another dry run must not lose those fans to it. Fold
+    into it as a skip param when audiences.py is free (parity:
+    test_send_mass.case_dry_pending_ids_mirror_pending_send_fan_ids)."""
+    from audiences import _PENDING_SEND_KINDS, _payload_recipient_ids
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(ScheduledJob.payload_json).where(
+                ScheduledJob.account_id == str(account_id),
+                ScheduledJob.status == "pending",
+                ScheduledJob.kind.in_(_PENDING_SEND_KINDS),
+            )
+        )).scalars().all()
+    out: set[int] = set()
+    for raw in rows:
+        try:
+            queued = json.loads(raw or "{}")
+        except (ValueError, TypeError):
+            continue
+        if isinstance(queued, dict) and not smd.is_dry_run(queued):
+            out |= _payload_recipient_ids(queued)
+    return out
+
+
+async def _dry_fence(account_id: str, client, pol, stats: dict) -> set[int]:
+    """The AUTOFENCE ids a real list run keeps out, read only. off / shadow go
+    through the real gate (`audience_fence_for_broadcast` writes nothing there;
+    shadow stats included); enforce repeats `ensure_autofence`'s halts (kill
+    switch, unhealthy mirror, fence_scale) as AudienceHalt and returns the fence
+    instead of building the OF list or persisting fence state. Fold into
+    audience_include as the read-only half of `ensure_autofence` when it is
+    free (parity: test_send_mass.case_dry_run_enforce_halts_like_the_real_run)."""
+    import audience_include as _audiences
+    if pol.mode != "enforce":
+        await _audiences.audience_fence_for_broadcast(
+            account_id, client=client, policy=pol, stats=stats)
+        return set()
+    stats["audience_mode"] = pol.mode
+    if pol.paused:
+        raise _audiences.AudienceHalt("kill_switch")
+    if not pol.healthy:
+        raise _audiences.AudienceHalt(pol.reason or "mirror_unhealthy")
+    fence = await _audiences._audience_universe_ids(account_id) - pol.member_ids
+    if len(fence) > _audiences.AUDIENCE_MAX_LIST_ROWS:
+        raise _audiences.AudienceHalt("fence_scale")
+    return fence
+
+
+async def _dry_run(account_id: str, run_id: int, p: smd.Plan, client, pol,
+                   stats: dict) -> dict:
+    """O3: who `p` would reach, nothing written: no broadcast_lock, no
+    Auto_Exclude / AUTOFENCE sync, no mint, no OF write, no rows. A list /
+    online audience (or an explicit one with exclude lists) is read off OF's
+    rosters (read-only crawls, as step 6), the excludes Auto_Exclude and
+    AUTOFENCE would carry subtracted in memory."""
+    import audience_include as _audiences
+    would_send: list[int] | None = list(p.recipients)
+    if p.is_list_audience or p.excluded_user_lists:
+        fence: set[int] = set()
+        if p.is_list_audience:
+            try:
+                fence = await _dry_fence(account_id, client, pol, stats)
+            except _audiences.AudienceHalt as e:
+                return {"status": "error", "reason": f"audience_halt:{e.reason}", **stats}
+        from audiences import resolve_recipients_blocking
+        would_send = await asyncio.to_thread(
+            resolve_recipients_blocking, client,
+            user_lists=list(p.user_lists),
+            included_users=p.recipients,
+            excluded_users=smd.dry_excludes(p, fence),
+            excluded_user_lists=list(p.excluded_user_lists),
+            filters=p.filters,
+            online_only=p.online_only,
+        )
+    log.info("send_mass_message DRY RUN account=%s run=%s would_send=%s",
+             account_id, run_id, None if would_send is None else len(would_send))
+    return {**smd.dry_run_result(p, would_send), **stats}
+
+
 @register("send_mass_message")
 async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     """Broadcast a funnel opener (or an explicit text) to the resolved audience,
     mint a `mass_runs` row, and persist one optimistic `messages` row per known
-    recipient. Returns a stats dict (lands in `automation_runs.stats_json`)."""
-    payload = payload or {}
+    recipient. Returns a stats dict (lands in `automation_runs.stats_json`).
+    Every answer of a dry run, its skips and halts too, says `dry_run`, `sent: 0`."""
+    out = await _run(account_id, payload or {}, run_id=run_id)
+    if smd.is_dry_run(payload or {}):
+        out = {**out, "dry_run": True, "sent": 0}
+    return out
+
+
+async def _run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # Attribution tag for MassRun / optimistic rows (Mass Messages tab badge). A
     # delegating caller passes its own kind; default is this automation's name.
     attr_kind = str(payload.get("automation_kind") or "send_mass_message")
@@ -174,6 +265,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         payload.get("exclude_replied_hours"), BROADCAST_DEFAULT_OUTBOUND_H)
     in_h = resolve_window_hours(
         payload.get("exclude_inbound_hours"), BROADCAST_DEFAULT_INBOUND_H)
+    dry = smd.is_dry_run(payload)
+    if dry:  # a dry run reads the pending sends itself, minus other dry runs
+        excluded = [*excluded, *sorted(await _pending_send_ids_but_dry(account_id))]
     resolved = await resolve_mass_audience(
         account_id,
         included_users=included,
@@ -189,6 +283,7 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
         unread_limit=payload.get("unread_limit"),
         # Every broadcast, priced or not, skips the MASSdmEXCLUDE opt-out list.
         exclude_list_name=MASSDMEXCLUDE_LIST,
+        exclude_pending_sends=not dry,
     )
 
     # ── 1c) The pure plan: dedupe, excludes win, text, audience, media ────
@@ -261,6 +356,11 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
                         **audience_stats}
             return {"status": "skipped", "reason": "audience_empty",
                     **audience_stats}
+
+    # ── Dry run (O3): forks after every read a real run makes (plan, word
+    # filter, fence intersection), before its first write ──────────────────
+    if dry:
+        return await _dry_run(account_id, run_id, p, client, audience_pol, audience_stats)
 
     # Did the AUTOFENCE list get attached to this send? Recorded on the run's
     # audience_filter for forensics — nothing reads it at gather time (the

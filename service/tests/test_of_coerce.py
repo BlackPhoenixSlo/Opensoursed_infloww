@@ -22,6 +22,8 @@ import transaction_ingest_decide as tid  # noqa: E402
 from of_coerce import cents_or_none, cents_or_zero, json_list, strip_tags  # noqa: E402
 
 try:
+    if __name__ == "__main__":
+        raise ImportError  # script mode uses the runner below, even with pytest installed
     import pytest
     table = pytest.mark.parametrize
 except ImportError:  # script mode: the runner below calls each row

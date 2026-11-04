@@ -69,6 +69,7 @@ export default function PostsTab() {
             hasNextPage={q.hasNextPage}
             isFetchingNextPage={q.isFetchingNextPage}
             fetchNextPage={q.fetchNextPage}
+            isError={q.isError}
             endLabel="end of feed"
           />
         </div>

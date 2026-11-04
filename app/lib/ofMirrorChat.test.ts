@@ -6,17 +6,14 @@ import {
   bindChat,
   chatDraftKey,
   collectMessage,
-  EMPTY_MESSAGE,
   loadChatDraft,
   loadVaultPick,
   NO_CHAT,
-  readPrice,
   sendPath,
-  type ChatContext,
   vaultPickKey,
-  type ChatDraft,
   type PickedScript,
 } from "./ofMirrorChat";
+import { EMPTY_MESSAGE, readPrice, type ChatContext, type ChatDraft } from "./ofMirrorChatShared";
 import { applyData } from "./ofMirrorData";
 import { bindWrites, localIso, READ_ONLY, SELECT_MODEL, TOO_SOON } from "./ofMirrorWrites";
 import type { VaultMedia, VaultUploadResp } from "./relay";

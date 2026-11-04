@@ -80,7 +80,7 @@ budget goes red as noise.
 | `lib/stack.py` | A throwaway stack for each scenario: the relay on a temp SQLite DB, plus `next dev` if the scenario has UI. Uses free loopback ports and restores `app/tsconfig.json` and `next-env.d.ts` on exit (a file that did not exist before the run is deleted, not restored; a run without `next dev` touches neither). Points `TYPESAFE_BASE_URL` at the relay's loopback fake (a flow's relay part serves it, and points the DeepSeek provider at its own); `SLOP_LIVE=1` instead passes the caller's `TYPESAFE_API_KEY` / `DEEPSEEK_API_KEY` and allows only `api.typesafe.ai` and `api.deepseek.com` off-host. `shards=N` (a fleet): N relays, each with its own temp dir (`sNN/`: DB, sessions, off-host log), port, process group and SESSION_SECRET, logs `relay-sNN.log`; `next dev` only on the scenario's `APPS` shard indexes (`next-sNN.log`), or on its `UI_APPS` when the run has UI. `boxes={name: (shard indexes)}` (a scenario's `BOXES`, with `SHARDS_PER_BOX`) lays the shards out as the boxes do: `<box>/shards/sNN/` with `data/chatterly.db`, `service/` (sessions, secrets, off-host log) and a `.env` with the session secrets, as `oi-backup` reads them. `kill_group(pid)` SIGKILLs any process group it started; `stop_relay(i, grace_s)` stops relay `i` as `docker stop` does (SIGTERM to its group, SIGKILL past the grace) and returns when it exited and how long it took. A scenario's `RELAY_ENV` dict is added to every relay's env (lib/cli.py). `relay_cmd()`, `relay_env_of(i)`, `spawn(cmd, env, log)` and `wait_ready(...)` start another relay (another box's) the stack still reaps and collects off-host logs from. `SLOP_PY` picks the relay's Python. `app_mode="prod"` (a scenario's `APP_MODE`, one shard) serves the app as production does instead: `next build --turbopack` into `app/.next/slop-prod` against this run's relay (the rewrites bake `RELAY_URL` in; ~15 s, `next-build.log`), then `next start`; the build's edits to `tsconfig.json` / `next-env.d.ts` are put back at once. In a worktree, Turbopack refuses `slop/run --list`'s symlinked `app/node_modules`: the run stops and names the fix (an APFS clone, `cp -cR`). A stack with `next dev` takes an exclusive per-checkout lock (`app/.next/slop.lock`, flock): a second one refuses with INFRA and names the holder, since both would share `app/.next/slop*` and rewrite `app/tsconfig.json`. |
 | `lib/relay.py` | Runs `scripts/demo-shots/relay_guarded.py` (network guards, redirected secrets and sessions, `CHATTERLY_TEST_MODE`), starts the production persist worker, adds loopback-only `/__slop/*` hooks (below) and answers OnlyFans' side of `OFClient.send_message` (and `get_messages` from `of-truth.jsonl`; OF Statistics' `earnings_chart` / `my_profile_stats` / `subscribers_chart` from `of-statistics.json`, each read 0.3 s, counted as `of_earnings_reads`; `me()` from `of-me.json`). `POST /__slop/of-stats-tick` runs one `of_stats_daily` pass now. A flow's relay part, `lib/<flow>_relay.py` when present, adds to the offline OnlyFans (its `OF` class joins `_OfflineOF`'s bases) and wires its own hooks (`wire(app, loopback, relay)`, at the end of `_wire`). `SLOP_SUPERVISOR=1` starts the real automation supervisor (`CHATTERLY_TEST_MODE` skips it otherwise). Passes `UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN` (5, as the Dockerfile) to uvicorn. Applies `SLOP_FAULT`. `relay_guarded.py` points the proxy registry (`proxies.REGISTRY_PATH`) at the temp dir's `proxies.json`, so a proxy added through `/admin/proxies` never touches the checkout's; `POST /__slop/proxy-pool {text}` runs the startup's own `proxies.sync_pool` (the fake proxies' ports exist only once the relay is up) and evicts the pooled clients; under `OF_WIRE` it points `proxies.TRACE_URL` (the proxy probe's Cloudflare trace) at `lib/of_wire.py`'s `/cdn-cgi/trace`. |
 | `lib/automation_relay.py` | The automation lane's relay part (loaded before every flow's part that builds on it): its offline OnlyFans client (`ax._make_client` without `OF_API_ORIGIN`: `me()`, sends, and with `of-mass.json` OF's mass messages, recipient crawl and in-process user lists) and a loopback DeepSeek fake (send_followup's nudge; a flow adds its prompts through `ANSWERS`, its client methods through `WALKER_MIXINS`; module docstring). |
-| `lib/of_wire.py` | OnlyFans' API at its wire, on loopback (`FakeOF`, a stdlib `ThreadingHTTPServer` in the harness process, a thread per request): what the relay's REAL `OFClient` (curl_cffi, signed headers) reaches when a scenario sets `OF_WIRE = True`. `lib/cli.py` starts it and points the relay's `OF_API_ORIGIN` (the product's loopback-only seam, ADR 0024) at it. Answers the hash CDN, the signing chunk (`/static/prod/f/<rev>/2313.js`, `lib/browserbase.py`'s synthetic one, so a paste-curl `POST /admin/session/bootstrap` derives its rules), `GET /api2/v2/users/me` (with the WS ticket, `wsUrl` + `wsAuthToken`), `GET /api2/v2/chats` (empty), `GET /api2/v2/users/notifications/count` (all zero), the Dashboard's per-Creator reads `GET /api2/v2/subscriptions/count/all`, `subscriptions/subscribers/chart`, `payouts/referrals/chart` and `users/notifications` (empty or zero; subscriber counts from the Creator id), `GET /api2/v2/vault/lists` (a scenario's `vault_lists[uid]`, in the last sorted custom order), `POST /api2/v2/vault/lists/sort` (recorded, `customOrder` kept), `GET /api2/v2/campaigns` (`campaigns[creator]` as a scenario set it, paged by `offset` / `limit`, deleted ones only with `with_deleted`), `POST /api2/v2/chats/{fan}/messages` (kept per Creator, in order), `POST /api2/v2/messages/queue` and `POST /api2/v2/posts` (wire bodies kept per Creator, in order: `queue`, `posts`), the empty fans / following rosters `GET /api2/v2/subscriptions/subscribers` and `subscriptions/subscribes`, `GET /api2/v2/vault/media/{id}` (`vault[creator][id]` as a scenario set it, else OF's 404 "Media Not Found"), OF's custom fan lists (`GET`/`POST /api2/v2/lists`, `GET /api2/v2/lists/{id}/users`, `POST`/`DELETE .../users/{user}`: per Creator `lists`, members in `list_users`; a mass send's Auto_Exclude sync), and Cloudflare's `GET /cdn-cgi/trace` (the proxy probe's, through the fake proxy to loopback, never 1.1.1.1); any other path is a counted 404 (`unmodelled`). The module docstring is the route table. Serves OF's chat WebSocket too (`websockets`, its own thread and loop): `{"act":"connect"}` is answered `{"connected":true,"v":"5.4.0"}` as OF does, then nothing is pushed; `ws_connects` records each connect, `drop_ws(ids)` ends those Creators' sockets (the pump reconnects through `/users/me`). `set_otp(ids)` makes those Creators' every `/api2/` call answer 400 with OF's code-101 `otpState` body; `fail` (a set of (Creator, route label)) answers that Creator's calls on that route 500 while armed (OF failing one model of a fan-out). Every `/api2/` call waits `latency_s`, plus `extra_s[creator]` for that Creator (a slow proxy, e.g. retries on CONNECT 403). Records every call (`calls`: time, Creator, route, status) in arrival order. |
+| `lib/of_wire.py` | OnlyFans' API at its wire, on loopback (`FakeOF`, a stdlib `ThreadingHTTPServer` in the harness process, a thread per request): what the relay's REAL `OFClient` (curl_cffi, signed headers) reaches when a scenario sets `OF_WIRE = True`. `lib/cli.py` starts it and points the relay's `OF_API_ORIGIN` (the product's loopback-only seam, ADR 0024) at it. Answers the hash CDN, the signing chunk (`/static/prod/f/<rev>/2313.js`, `lib/browserbase.py`'s synthetic one, so a paste-curl `POST /admin/session/bootstrap` derives its rules), `GET /api2/v2/users/me` (with the WS ticket, `wsUrl` + `wsAuthToken`), `GET /api2/v2/chats` (empty), `GET /api2/v2/users/notifications/count` (all zero), the Dashboard's per-Creator reads `GET /api2/v2/subscriptions/count/all`, `subscriptions/subscribers/chart`, `payouts/referrals/chart` and `users/notifications` (empty or zero; subscriber counts from the Creator id), `GET /api2/v2/vault/lists` (a scenario's `vault_lists[uid]`, in the last sorted custom order), `POST /api2/v2/vault/lists/sort` (recorded, `customOrder` kept), `GET /api2/v2/campaigns` (`campaigns[creator]` as a scenario set it, paged by `offset` / `limit`, deleted ones only with `with_deleted`), `POST /api2/v2/chats/{fan}/messages` (kept per Creator, in order), `POST /api2/v2/messages/queue` and `POST /api2/v2/posts` (wire bodies kept per Creator, in order: `queue`, `posts`), the empty fans / following rosters `GET /api2/v2/subscriptions/subscribers` and `subscriptions/subscribes`, `GET /api2/v2/vault/media/{id}` (`vault[creator][id]` as a scenario set it, else OF's 404 "Media Not Found"), OF's custom fan lists (`GET`/`POST /api2/v2/lists`, `GET /api2/v2/lists/{id}/users`, `POST`/`DELETE .../users/{user}`: per Creator `lists`, members in `list_users`; a mass send's Auto_Exclude sync), and Cloudflare's `GET /cdn-cgi/trace` (the proxy probe's, through the fake proxy to loopback, never 1.1.1.1); any other path is a counted 404 (`unmodelled`). The module docstring is the route table. Serves OF's chat WebSocket too (`websockets`, its own thread and loop): `{"act":"connect"}` is answered `{"connected":true,"v":"5.4.0"}` as OF does, then nothing is pushed; `ws_connects` records each connect, `drop_ws(ids)` ends those Creators' sockets (the pump reconnects through `/users/me`). `set_otp(ids)` makes those Creators' every `/api2/` call answer 400 with OF's code-101 `otpState` body; `fail` (a set of (Creator, route label)) answers that Creator's calls on that route 500 while armed (OF failing one model of a fan-out). Every `/api2/` call waits `latency_s`, plus `extra_s[creator]` for that Creator (a slow proxy, e.g. retries on CONNECT 403). Records every call (`calls`: time, Creator, route, status) in arrival order. Its media upload is `lib/of_wire_upload.py` (`FakeOF.upload`; `README.upload.md`). |
 | `lib/proxy_wire.py` | A Creator's proxy at its wire, on loopback (`ProxyWire`, a SOCKS5 server, a thread per connection): bound through the product's own `POST /admin/proxies` + `/admin/proxies/assign`, it tunnels the relay's REAL `OFClient` to `lib/of_wire.py`. `kill()` ends the open tunnels and answers each later CONNECT, after `refuse_s` (0.33 s, measured from prod's `proxy_error_retry` gaps), with SOCKS5 reply 0x02, which curl_cffi raises as `ProxyError` like prod's CONNECT 403, so the product's retry, proxy_health and 502 run unchanged. `revive()` lets CONNECTs through again. Records every CONNECT (`connects`: t, alive, dest; the probe's trace CONNECTs too, which the relay logs as `proxy_probe`). A pool of them is synced through `POST /__slop/proxy-pool` (`lib/relay.py`). Declared: SOCKS5, not HTTP CONNECT (curl tunnels only an https target through an HTTP proxy, and the fake OF is http). |
 | `lib/wan.py` | A phone's way to the app, all on loopback: `WanEdge(stack, rtt_ms)` puts nghttpx (TLS, HTTP/2, as Traefik) in front of the stack's app and a `DelayProxy` (each byte held half the RTT each way, order kept; a new connection one RTT before its first byte) in front of that, so a fresh connection pays connect + TLS 1.3 + request = 3 RTTs, as a live deployment measured. `edge.url` is `https://localhost:<port>`; launch Chromium with `edge.chrome_args` (the per-run self-signed cert's SPKI pinned), not `ignore_https_errors`: Chromium caches nothing from an origin with a certificate error. Bandwidth and CPU are Chromium's throttling (CDP); no loss, no TCP slow start. Edge access log `edge-access.log`. |
 | `lib/browserbase.py` | The outside world of a served Browserbase login, on loopback: `World(tmp, accounts={email: uid}, otp=, password=, chromium=, autosubmit={email})` runs Browserbase's API (`POST /v1/sessions` launches a fresh local Chromium and answers its CDP URL as `connectUrl`; `/debug` answers a live-view stand-in page that shows that Chromium's tab; release stops it) and OnlyFans' site over a self-signed TLS server (login form, "Signing in…" for `SIGNIN_MS`, 2FA prompt with a decoy first form, "Verifying…" with no field for `VERIFY_MS` after a code, `/my/chats/` with a signed request and a stand-in of OF's signing module, `/api2/v2/users/me`). Every page carries a hidden reCAPTCHA frame (served from the fake site). An `autosubmit` account's 2FA field sends its form itself on the last digit. Chromium maps `onlyfans.com` to the fake site and every other host to NOTFOUND. Records `calls`, `logins`, `otp_tries`, `otp_sends` (code and how it was sent: `click`, `enter` or `auto`), `decoys`, `captcha_frames`, `sessions`. `paste_curl(uid, rev)` is the curl the owner copies from DevTools for a Creator (the body of `POST /admin/session/bootstrap`). |
@@ -90,12 +90,11 @@ budget goes red as noise.
 | `lib/client.py` | Timed HTTP client. Every actor call is recorded (route, status, latency), so the stock invariants need no extra code. Set `ctx.rec.stage` to also keep calls per load stage (`ctx.rec.summary(stage)`); `ctx.rec.timeline` keeps every call with its end time. Idle keep-alive connections are reused only under 2 s (`KEEPALIVE_EXPIRY_S`): httpx's 5 s default equals uvicorn's and gets requests reset after a relay stall. |
 | `lib/report.py` | Invariants, metrics and the evidence writer. `ctx.check(..., budget=True)` labels a latency budget (a miss is still FAIL); `ctx.check(name, None)` or `ctx.skip(name, reason)` records SKIP (no samples, `--no-ui`), shown and never a pass. `ctx.note(...)` adds lines (e.g. a per-stage table) to `summary.txt`. |
 | `lib/hold.py` | A page's save held at the browser's wire: `async with held(page, match, method) as h` records each `method` body (`h.bodies`), holds the first until `h.release` (`h.seen` once it arrived), always released on exit; `release_settled(page, h, refetch=, save=)` lets it through and waits for its response, the refetch GET and the Save button enabled again. `with recorded(page, method, path) as sent` records every such request unaltered (`url`, `body`, `status`: None until answered, `failed: <reason>` if it failed before an answer). |
-| `lib/followup.py` | The follow-up world and tick the three follow-up scenarios share: `setup` (profile + `seed/followup_drip.py`, a fake DeepSeek key, the DM rate via the real Concurrency panel route), `payload` (the run's: no image, `limit` = fans per Creator), `tick` (one `POST /__slop/run-automation`, kind `send_followup`), `refuse_live` (SLOP_LIVE=1: every check SKIPs). |
 | `lib/cli.py` | Discovers scenarios, handles the knobs, adds the stock invariants, and runs the break-it-once logic. A scenario that crashes leaves `scenario-traceback.txt`. `OF_WIRE = True` starts `lib/of_wire.py` for the run (`ctx.of_wire`) and sets the relay's `OF_API_ORIGIN` to it. `EXPECTED_TRACEBACKS = ((marker, text), ...)`: a relay Traceback whose preceding log line holds `marker` and whose exception line holds `text` is the product logging an error the scenario provokes on purpose, not an unexpected one. |
 | `seed/` | One seeder per entity: `agency` (real `POST /auth/register`, `n` Agencies), `creators` (optional owner per Creator), `fans` (one size, or a size per Creator), `threads`, `agency_notifications` (one unread owner row per Creator, as `notify` files them, without its SSE push), `chatters` (employees via the real `POST /admin/chatters/invite` + `POST /chatter/register`; `account_ids=` per username is the invite's Employee setup, the Creators that chatter may work), `earnings` (OF Statistics' daily net per Creator and category in `<tmp>/of-statistics.json`, plus the `transactions` rows the ledger caught: a trickle before the Creator was connected, most of it since, some sales today; `accounts.created_at` = the connection day), `of_sessions` (a captured session file per Creator, `session_wire.json` in the bootstrap's shape with `lib/browserbase.py`'s synthetic signing rules, and `latest.json` pointed at it, so the relay builds a REAL `OFClient`; only for an `OF_WIRE` run). Sizes come from `seed.SCALES`. A World's `stream` gives a fleet shard its own RNG streams and `user_prefix` its own usernames. |
 | `seed/profiles/` | Named world shapes that only compose seeders: `agency_inbox`, `agency_pool` (`agency_inbox` with at least 7 Creators at every scale: more than the 4 run slots), `multi_agency_big_models` (5 Agencies, 20 Creators, 3 big), `one_agency` (one relay: one Agency with 50 Creators, 9 big, plus a neighbour Agency with 1 Creator and no chatters). |
 | `actors/` | Simulated people: `fan_dm` (fans DMing: `serial`, the pump's shape, one frame in flight per Creator, optional `rate`; `say`, given lines per fan, serial per Creator; `burst`, many in flight per Creator; or open-loop `Paced` DMs/minute with tips, PPV purchases and typing), `chatter` (head page, thread, mark read, reply; `Crowd`: employee mode, each chatter its own `POST /chatter/login` cookie, own `/events` stream and the request pattern of a real chatter tab (tab open, chat open, send, 60 s polls, perflog), human-paced, only its assigned Creators), `manager` (SSE listener with arrival times, each chat message's (account, fan) and every event's `__account_id`; `states=(types)` also keeps those `state` events as (type, fields, `__account_id`), batch frames unwrapped; ready on the stream's first body line, the subscriber is registered by then; `ended` if the stream died; plus inbox reads), `ui` (signed-in Chromium, screenshots; `owner_browser(..., through=, send=)` lets exact `/api/of/` paths or compiled GET path patterns, and the chat send, through to the relay; `close_popup(opener, pop)` closes a window the page opened, its held `/api/of/` reads aborted first (Chromium lets paused requests through when their page closes); `touch=True` is a phone's context (touch input, mobile viewport) and `swipe(page, x0, y0, x1, y1, cancel=, via=, legs=, mid=, hold_ms=)` one finger as Chromium touch input (CDP, each event stamped with the finger's own time); `touch_log`/`touches` log the touch events the page sees, `sheet_probe(page, sel, pt)`/`sheet_read` record one sheet gesture (release, off screen, unmount, touchstarts, clicks); `chatter_tab` signs in as a chatter and lets its chat send through; `owner_tabs` + `PROBE_JS` for SSE receipt/handler time, long tasks, heap, rows, marker text), `reports` (owners reading the Dashboard's earnings card and Creator reports' Overview with the app's own report reads, human think time), `notif_click` (the owner clicking a fan DM's notification from each place it shows, in headless Chromium and in the real Electron app (temp userData, never the user's profile; SKIP without the binary); each click must leave one Messages Pro window, never reloaded, with a Fan that had no tab now active, stored and its chat open; its bypasses are in the module docstring), `clock` (chatters clocking in and out on their own logins: a clock-in storm, the top bar's day; `README.shifts.md`). `fan_dm.serial(..., ids=)` shares one message-id counter across calls; `phase=` staggers each Creator's open-loop start; `stop=` (an Event) ends an open-ended flood and `out=` receives records as they are sent. |
-| `lib/<flow>_faults.py`, `lib/*_ts.mjs`, `lib/pump_relay.py`, `seed/mass_broadcast_cache.py`, no flow README | A scenario's own faults (its check names, `register(Fault)`), node scripts (`lib/app_ts.py`), relay part or seeder, named in its entry below: `chats_cache_faults` + `chats_cache_ts.mjs`, `events_wants_faults`, `group_faults`: big-model-dm-flood; `composer_faults`, `nudge_faults`, `mass_unsend_faults`, `seed/mass_broadcast_cache.py`, `fanout_ts.mjs`: state-reducers; `dispatch_tz_faults`: followup-drip; `egress_faults`: dead-proxy-interactive-reads and session-health-otp; `employees_faults`: employees-management; `funnel_jump_faults`: house-funnel-walk; `jobs_faults`: dispatch-plan; `mobile_faults`, `msglist_faults`: mobile-gestures; `scope_faults`: scoped-reads-fanout; `w7_faults`: runtime-switches; `pump_relay.py` (`/__slop/pump-crash`): session-health-otp. |
+| `lib/<flow>_faults.py`, `lib/*_ts.mjs`, `lib/pump_relay.py`, `seed/mass_broadcast_cache.py`, no flow README | A scenario's own faults (its check names, `register(Fault)`), node scripts (`lib/app_ts.py`), relay part or seeder, named in its entry below: `chats_cache_faults` + `chats_cache_ts.mjs`, `events_wants_faults`, `group_faults`: big-model-dm-flood; `composer_faults`, `nudge_faults`, `mass_unsend_faults`, `seed/mass_broadcast_cache.py`, `fanout_ts.mjs`: state-reducers; `egress_faults`: dead-proxy-interactive-reads and session-health-otp; `employees_faults`: employees-management; `mobile_faults`, `msglist_faults`: mobile-gestures; `scope_faults`: scoped-reads-fanout; `w7_faults`: runtime-switches; `pump_relay.py` (`/__slop/pump-crash`): session-health-otp; `fan_list_faults` + `fan_list_ts.mjs`: fan-list-chips. |
 | `scenarios/` | One file per feature or task: `YYYY-MM-DD-<feature-slug>.py`. |
 | `README.<flow>.md` | A flow kept in files of its own (its relay part, faults, seeders, actors, scenarios) documents them there, beside this one. |
 | `evidence/` | Gitignored. One folder per run, with `latest` pointing at the newest. |
@@ -306,18 +305,23 @@ A flow with a `README.<flow>.md` lists its scenarios there.
 - Sales attribution of tips and PPV (`2026-10-27-sales-attribution-tips-ppv`, Converters' window):
   `README.attribution.md`.
 - The owed-customs pane race (`2026-10-30-customs-pane-race`, Messages dashboard > Customs): `README.customs.md`.
+- The follow-up drip and the scheduler under it (`2026-10-30-followup-drip`, `2026-10-30-run-slot-pool`,
+  `2026-10-30-dispatch-plan`, `lib/followup.py`'s world): `README.followup.md`.
+- The house funnel walker (`2026-10-30-house-funnel-walk`, enroll, advance, PPV, `next` jump): `README.funnel.md`.
 - Welcome burst after `send_welcome_decide.partition` (`2026-10-30-welcome-burst`, subscribe wave, once per sub):
   `README.welcome.md`.
 - Welcome chatter reply loop after `wcfi_decide.decide` (`2026-10-30-welcome-chatter-walk`, W7 wakes, one turn
   per reply): `README.welcome.md`.
-- Scheduled send once (`2026-10-31-scheduled-send-once`, stall / refuse / SIGKILL mid-send, never a double DM):
-  `README.send-once.md`.
-- Mass placeholders folding into OF's echo (`2026-10-31-mass-placeholder-echo`, `OF_WIRE`, 6 h bound):
-  `README.mass-placeholder.md`.
+- Scheduled send once (`2026-10-31-scheduled-send-once`, stall / refuse / SIGKILL mid-send, never a double DM;
+  plus the drip senders' KILL phase): `README.send-once.md`.
+- Mass placeholders folding into OF's echo (`2026-10-31-mass-placeholder-echo`, `OF_WIRE`, 6 h bound, plus
+  `excluded_users` and a dry-run tail): `README.mass-placeholder.md`.
 - Ledger reports at volume (`2026-11-01-ledger-reports-volume`, Fan reports / Tips / paid broadcasts / Sales
   records vs a SQL oracle): `README.ledger-reports.md`.
 - Agency notification feed at volume (`2026-11-01-notifications-feed-volume`, paging, prune, read-all):
   `README.notifications.md`.
+- OS notification push (`2026-11-03-os-ping-push`, Web Push to a loopback push service: scope, types, once across
+  re-offer / replay / restart, prune, the service worker shows it): `README.push.md`.
 - Priority mass message at its 5,000 cap (`2026-11-01-priority-mass-5k`, freeze, once across SIGKILL, cancel,
   Sensitive words): `README.priority-mass.md`.
 - Smart Lists at 50k fans per big Creator (`2026-11-01-smart-lists-50k`, preview / resolve vs a SQL oracle,
@@ -333,6 +337,14 @@ A flow with a `README.<flow>.md` lists its scenarios there.
 - Vault Pro at 20k (`2026-11-01-vault-pro-20k`, paging, filters, duplicates, hide): `README.vault.md`.
 - Vault Pro's AI describe sweep (`2026-11-01-vault-describe-sweep`, describe-all, flags-all, cache, escalation,
   cost): `README.vault.md`.
+- The fan-info sweep at volume (`2026-11-02-fan-info-sweep`, Run now on every Creator, pinned language, kept
+  profile, facts on their own fan): `README.fan-info.md`.
+- Chat media through `/img` (`2026-11-02-img-chat-media`, cold-pane herd, warm hits, re-signed URLs, the
+  IMG_FETCH lane): `README.img.md`.
+- Media upload on OnlyFans' wire (`2026-11-02-of-upload-wire`, `OF_WIRE`, dedupe, S3 multipart, convert claim,
+  vault import): `README.upload.md`.
+- Auto_Exclude past OF's 20k paging backstop (`2026-11-03-auto-exclude-25k`, background refresh, composer blasts,
+  OF-side drops): `README.auto-exclude.md`.
 
 - `2026-10-23-inbox-unread-fan-burst`: `--users` fans DM their Creators, sent the
   pump's way (one frame in flight per Creator, all Creators at once; `--rate=N` for
@@ -485,10 +497,11 @@ A flow with a `README.<flow>.md` lists its scenarios there.
   notified (DB and `GET /admin/agency-notifications`); each affected owner's `/events`
   carried the notification and the pause, no other owner's did; every concurrent read
   answered 502 with OF's 400; the reader is flagged by its read alone (`via=proxy` in the
-  relay log, no automation rows); per 2FA Creator at most two `/users/me` over the window (the
-  pump's reconnect, the probe's; the old loop makes five), no reconnect, its pump exited and
-  stayed parked through the supervisor passes; after detection a 2FA Creator runs nothing (no
-  run row, no send, no OF call but the probe's `/users/me`) and its sends stay pending; every
+  relay log, no automation rows); per 2FA Creator at most five `/users/me` over the window (the
+  pump's 1 + 3 retries, the probe's), no reconnect, its pump exited within 2 s of its last `/users/me`
+  and stayed parked through the supervisor passes, and (its own check) the retries each at least its
+  backoff (2, 4, 8 s, less 0.5) after the last; after detection a 2FA Creator runs nothing (no
+  run row, no send, no OF call but `/users/me`, the pump's and the probe's) and its sends stay pending; every
   healthy Creator's send reached OF once, in fire-time order (among sends already
   scheduled when its previous send went out: operators post while ticks drain), with its
   outbound row;
@@ -529,7 +542,9 @@ A flow with a `README.<flow>.md` lists its scenarios there.
   `service/of_ws_decide.decide` since 2026-10-30; this is the only scenario that runs the real
   of_ws pump (the DM-flood and failover scenarios inject frames past it, `/__slop/of-ws-frame`).
   Fault `of-ws-dead-session-keeps-reconnecting` (`lib/of_ws_faults.py`: decide blind to the
-  classifier, so a 2FA Creator's pump re-reads /users/me forever) turns red the WS pump check.
+  classifier, so a 2FA Creator's pump re-reads /users/me forever) turns red the WS pump check;
+  `of-ws-dead-gives-up-first` (the pre-Q2 rule: decide gives up on the first dead answer, no retry)
+  only the retries check.
   Alongside from phase A, OnlyFans ends one more healthy Creator's socket 3 times (backoff 1, 2, 4 s), lets it
   stay up 60 s (`RESET_AFTER_S`) and ends it again: it must reconnect within 2 s, its backoff started over. Fault
   `of-ws-backoff-never-resets` (`lib/egress_faults.py`: decide() deaf to `Failed.up_s`, the gap is 8 s) targets
@@ -580,6 +595,17 @@ A flow with a `README.<flow>.md` lists its scenarios there.
   be exactly one, for the box's text, and the rows its matches (screenshots of the typed box
   and the settled list). Fault `fan-search-every-keystroke` (`browser=`: FanList's debounce
   timer at 0 ms, as before 2026-10-28) turns only the search check red.
+  The ranked inbox at volume (also `--no-ui`): per Creator and for the All Models union, the app's own
+  `sortFanRows` + `chipCounts` (`fanListSort.ts`, in node through `lib/app_ts.py` + `lib/fan_list_ts.mjs`) over
+  the relay's view, on a spend map drawn from `--seed` (declared: the Fan List's OF spend batch is held at the
+  browser's wire): `FL_SORT_KEEPS_ALL` (every mode lists each chat once, Newest first untouched),
+  `FL_SORT_TIERS` (Amount spent, Spend + unread on top, Spend + recency), `FL_COUNTS` (the chip counts are the
+  view's own tally); then `--users` owners arrive open loop (`OWNER_RATE` a second) and read the view
+  (`/admin/chats/recent`, then `/admin/messages` of `OWNER_THREADS` chats): no non-2xx, p95 per route within its
+  budget and vs the last green run. Faults (`lib/fan_list_faults.py`, client side, node too):
+  `fan-list-owed-tier-lost` (a read owed chat drops to the idle tier; targets `FL_SORT_TIERS`),
+  `fan-list-owe-count-from-unread` (Owe reply counts the unread chats; `FL_COUNTS` and the UI Owe reply count
+  check).
 - `2026-10-26-mobile-gestures`: the owner on a phone (390x844, `owner_browser(touch=True)`,
   swipes as Chromium touch input via `ui.swipe`, CDP `Input.dispatchTouchEvent`). Dashboard:
   a vertical drag, a swipe from the OS edge zone (x < 24px) and a drag that turns vertical
@@ -670,7 +696,8 @@ A flow with a `README.<flow>.md` lists its scenarios there.
   `page-placeholders-not-drawn`): the scenario's docstring.
 - `2026-10-29-state-reducers`: the six reducers of docs/reducer-scan.md Tier 1 on the real UI
   (one plain owner, 1440x900, `agency_inbox`; a second Agency's owner, made master by SQL, runs /admin/manage): a FREE template after a PAID one empties the mass
-  composer's price and lock, Broadcast's disabled reasons and its queue body through the relay
+  composer's price and lock and keeps a picked GIF (the queue body's `giphy_id`, OF's wire `giphyId`; Giphy's
+  trending list answered at the browser's wire), Broadcast's disabled reasons and its queue body through the relay
   to OF's wire (`OF_WIRE`) with a `mass_runs` row, the all-models switch resetting the whole
   audience (Smart List picks included) and fanning out one send per model; the post
   composer's all-models clearing a typed price, each post reaching OF's wire free; a
@@ -683,7 +710,7 @@ A flow with a `README.<flow>.md` lists its scenarios there.
   shown as an error (no skeleton, no "No users"), and a non-master's open by URL drawing one "master account
   required" line with no master-only read fired; Tier 2's Auto-reply form: every field edited, saved, reloaded, and the GET holding it; a
   Human style box toggled during its save kept; the shared audience reducer: Priority mass's 'Post as' switch dropping the old
-  Creator's lists (POST and run row), the funnel Start panel's MASSDMEXCLUDE pre-tick (Start
+  Creator's lists and excluding the new one's pre-ticked MASSDMEXCLUDE (POST and run row), the funnel Start panel's MASSDMEXCLUDE pre-tick (Start
   disabled until it lands) and its reset on a Creator switch (queue POST). Vault Pro's folder rail (`vaultFolderOrder.ts`): Customize order drags, Cancel, Done's
   `/admin/vault-ai/of-folders/sort` and the order after a reload, OnlyFans on `lib/of_wire.py`
   (`OF_WIRE`, one Creator with a captured session; the fake keeps the sorted `customOrder`). Auto Post's
@@ -695,7 +722,7 @@ A flow with a `README.<flow>.md` lists its scenarios there.
   quick reload and sort label; a 2-batch duplicates hide failing on its second batch; the Fan List's
   "Load more", a page in flight across a Creator switch and the warm-up refetch on return.
   Checks, bypasses and faults
-  (`free-template-keeps-price`, `mass-broadcast-ignores-invalid`, `mass-reset-keeps-smart-pick`,
+  (`free-template-keeps-price`, `template-clears-picked-gifs`, `mass-broadcast-ignores-invalid`, `mass-reset-keeps-smart-pick`,
   `dupes-threshold-keeps-confirm`, `nudge-hydrate-overwrites`, `nudge-save-ok-any-account`,
   `admin-failed-roster-reads-count`, `admin-users-failed-keeps-skeleton`, `admin-manage-ungated`,
   `autoreply-payload-drops-field`, `autoreply-style-save-wipes-edits`,
@@ -730,7 +757,11 @@ A flow with a `README.<flow>.md` lists its scenarios there.
   Scripts (`scriptsPageState.ts`, Growth > Scripts): a page-only tag
   renamed after a refetch under the open prompt gave it a script goes to the relabel route, and a Remove
   from tag unchecks only once answered 200 (a 500 keeps the ticks); faults
-  `scripts-rename-stale-prompt`, `scripts-remove-unchecks-on-failure`.
+  `scripts-rename-stale-prompt`, `scripts-remove-unchecks-on-failure`. Then two Creator switches on the creator
+  column, each from a Remove answered 500, settled and in flight (the POST held at the browser's wire): neither
+  Creator shows the error, back mid-flight the row is still busy, a 500 landing while away shows nowhere, one POST
+  (`SCRIPTS_SWITCH_CLEARS`); faults
+  `scripts-switch-keeps-error`, `scripts-stale-run-fail`, `scripts-switch-frees-busy`.
   Refused schedule after a chat switch (`app/components/chat/refusedOffers.ts`):
   a paid, tagged schedule refused (400 at the wire) once the owner is in another Fan's chat shows its
   notice there; Restore in its own chat brings the whole draft back and it schedules through the relay
@@ -742,69 +773,16 @@ A flow with a `README.<flow>.md` lists its scenarios there.
   (`lib/mass_unsend_faults.py`). Chat PPV send (`Composer.tsx` `submit`): vault media, an upload, price, lock and 2
   GIFs reach OF as one send with the first GIF, the trailing GIF only after the upload settles; fault
   `trailing-gif-before-upload` (`lib/composer_faults.py`). Nudge A -> B -> A while A's save is in flight never
-  hydrates the pre-save config; fault `nudge-hydrate-stale-cache` (`lib/nudge_faults.py`). Each targets only its
+  hydrates the pre-save config; fault `nudge-hydrate-stale-cache` (`lib/nudge_faults.py`). Nudge's kept draft
+  (`app/lib/pendingDraft.ts`): a tab closed with its Save PUT aborted at the wire reopens with the typed Delay and
+  the restored note (`NUDGE_TAB_CLOSED`); one closed after the PUT reached the relay reopens on the stored config,
+  the kept draft gone (`NUDGE_ACK_LOST`); faults `nudge-draft-not-stashed` (`NUDGE_TAB_CLOSED`),
+  `nudge-draft-kept-after-ack` (both). Each targets only its
   own check. Mass fan-out at volume (`lib/fanout_ts.mjs` via `lib/app_ts.py`, also `--no-ui`): `--users`
   operators' all-models Broadcasts over every Creator, one Creator's OF queue answering 500, a mid-round edit and
   Start over refused; faults (`lib/reducers_faults.py`) `fanout-content-unlocked` (never locks: the Mass partial
   and retry, Post lock and volume checks), `fanout-inflight-unlocked` and `fanout-startover-in-flight` (only the
   volume check), `mass-retry-resends-all` (the Mass retry and volume checks).
-- `2026-10-30-followup-drip`: the follow-up drip (`automations.send_followup`, its phase
-  machine the pure `decide()` of `service/automations/send_followup_decide.py`) ticked on
-  every Creator at once (`POST /__slop/run-automation` via `lib/followup.py`, `agency_inbox` +
-  `seed/followup_drip.py`: one drip case per unthreaded eligible fan, the threaded ones a natural
-  mix) while the owner's dashboard tab and `--users` more `/events` streams on its session watch
-  (opened over `--set tab_ramp_s=` 20 s). Per rule: the 18 h gap, steps 1/2 at 26/64 h, the
-  7-day cap, reply (26 h) vs restart (72 h) cooldowns, expiry before the sweep, the fans held;
-  then LLM calls = sends = rows = recorded steps, every nudge on every tab, a second tick nudging
-  nobody. `lib/automation_relay.py`'s DeepSeek fake answers the nudge prompt; SLOP_LIVE=1 SKIPs.
-  Budget: the product's run time per nudge (`automation_runs`), p95 vs `TICK_PER_NUDGE_P95_MS`
-  and the last green run. Fault `followup-skips-18h-gap` (`lib/followup_faults.py`: the gap and
-  the second-tick checks). Then a bad `tz_offset_minutes` (one rule stored "x" by SQL, `seed/followup_drip.py`)
-  beside two good rules made through the rules route, one real supervisor pass: the bad rule makes no job, each
-  good one exactly one and its `next_due_at` is the next fire; fault `dispatch-bad-tz-aborts-pass`
-  (`lib/dispatch_tz_faults.py`: the pre-fix raise aborts the pass) targets only that check.
-- `2026-10-30-run-slot-pool`: the run slot pool (`service/run_slot_decide.py`, Non-React #6) under
-  the same world on `agency_pool` (at least 7 Creators, so more runs ask than the 4 slots at every
-  scale) and two follow-up ticks on every Creator at once (`lib/followup.py`);
-  `/__slop/run-automation` answers each run's `slot`, and two checks (`lib/run_slot_faults.py`)
-  read them: never more runs holding a slot than `n` and the pool fills when more ask (CAP), queued
-  runs granted in the order they asked (FIFO). Small (7 Creators) queues 3 per tick, medium (10) 6.
-  Budget: the hook's round trip per run, p95 vs the
-  last green run. `--users` changes nothing (no streams: the pool, not the fan-out). Faults
-  `run-slot-fresh-runs-served-last-first` (FIFO, the scenario's) and
-  `run-slot-automation-ignores-the-cap` (CAP) patch the pool's `decide()`.
-- `2026-10-30-dispatch-plan`: the dispatch rules (`service/dispatch_plan.py`'s helpers and the
-  executor's busy gate, Non-React #8) on the scheduler's real path, same world (`lib/followup.py`).
-  The owner switches the follow-up on per Creator through `POST /admin/automation-rules` (two rules
-  of the kind on every other Creator and the last), deactivates the last one (`POST
-  /admin/accounts/{id}/active`), then real supervisor passes (`POST /__slop/automation-tick`,
-  its `tasks`): one, a wake while its runs still queue for a slot, three more. ONE: one job per
-  Creator, each active one's run spawned once and run once, the deactivated one's job pending and
-  unspawned; CADENCE: each rule exactly one job over the passes (a second rule deferred, then
-  once). Budget: a pass with nothing due, vs the last green run. `--users` changes nothing (no
-  streams). Faults (`lib/dispatch_faults.py`): `dispatch-plan-two-jobs-per-kind` (ONE, the
-  scenario's) and `dispatch-plan-ignores-cadence` (CADENCE) at any scale,
-  `dispatch-plan-spawns-in-flight-pairs` (ONE) at `--scale=medium` (at small nobody waits for a
-  slot, so each run claims its job at once and the wake finds no due pair to stack on: NOT
-  CAUGHT there). Then RULE_OFF (`service/run_decide.py` `park`): an auto_posts rule switched off
-  (`PATCH /admin/automation-rules/{id}`) while its job runs and OnlyFans refuses the post: the job
-  ends `cancelled` after one attempt, nothing posted after. Fault `job-park-ignores-rule-off`
-  (`lib/jobs_faults.py`).
-- `2026-10-30-house-funnel-walk`: the house funnel walker (`automations.reply_mass_funnel`, its
-  per-fan status machine the pure `decide()` of `service/automations/funnel_decide.py`,
-  Non-React #9). `agency_inbox` + `seed/house_funnel.py`: one 3-step funnel (two lines, one
-  line, a $24 PPV), one broadcast per Creator to every unthreaded fan, one case each; `--users`
-  fans answer through the pump (`fan_dm.say`), then one `reply_mass_funnel` tick per Creator at
-  once and a second right after. Checks: a new replier is enrolled with step 1's two lines, a
-  silent one never walks; an answer earns exactly the next step, no answer reschedules (+4 min);
-  the PPV step sends one priced PPV (fake OF's `of_ppv` agrees) and ends the walk; a buyer is
-  halted `offer_taken`; a walk past the script's end closes; rows = lines earned = the runs'
-  `advanced`; tick 2 moves nobody. Budget: run time per due fan (`automation_runs`). Bypasses:
-  `lib/funnel_relay.py` (the 4 s line gap to 0.2 s), the buyer's unlock seeded as the
-  rows purchase_notifications' `_flip_paid` leaves. Fault `house-funnel-offer-taken-ignored` (`lib/funnel_faults.py`).
-  Then held-out fans jump from step 1 to step 5 on a branching broadcast's keyword (`seed_jump`); quiet at their
-  next check, they must reschedule on the sent step's intervals; fault `house-funnel-jump-waits-prev-step`
-  (`lib/funnel_jump_faults.py`: the pre-F1 c - 1 rule) targets only that check.
 - `2026-10-30-session-relay-outage`: the auth session across a real relay outage
   (`app/contexts/userSessionReducer.ts`, 0357a072c; one owner, 1440x900, `agency_inbox`): signs
   in through the sign-in form; relay SIGKILLed (`crash_relay`), a focus + visibilitychange
@@ -813,8 +791,14 @@ A flow with a `README.<flow>.md` lists its scenarios there.
   never the sign-in form, and a focus there sends nothing; relay back, Retry signs in; a
   `POST /auth/logout` then a focus puts the sign-in form back. Side effects: the browser's own
   GET /auth/me and the localStorage snapshot. No volume, no budget (timings as `ms_*`
-  metrics). Bypasses and screenshots: the scenario's docstring. Faults (`lib/session_faults.py`,
-  client side): `outage-revalidate-signs-out` (the scenario's) and `outage-boot-signs-out`.
+  metrics). Then a 403 from the blocking proxy (the browser's /auth/me answered 403 at the wire): the sign-in form
+  with the "Proxy blocked (403)" banner, also at 390x844, the typed username kept across a failed Retry, Retry once
+  lifted signs in (`BLOCKED_LOGIN`); and a silent relay (/auth/me and /chatter/me held at the wire): the form with
+  the "Relay not answering" banner within `ME_SLOW_MS` + slack, not at the 15 s abort, kept through a late `null`
+  and a late user answer while /chatter/me stays held (`HUNG_LOGIN`). Bypasses and screenshots: the scenario's
+  docstring. Faults (`lib/session_faults.py`, client side): `outage-revalidate-signs-out` (the scenario's),
+  `outage-boot-signs-out`, `auth-403-as-unreachable` (`BLOCKED_LOGIN`), `auth-me-waits-15s`,
+  `gate-waits-chatter-probe` and `late-answer-drops-form` (each `HUNG_LOGIN`).
 - `2026-10-30-employees-management`: Manage employees on the real UI (one owner, 1440x900,
   `agency_inbox`; groups and logins through the real routes, a second Agency's login for "Existing
   login", Creator 0's folder list as one SQL `vault_response_cache` row served by the relay): each of

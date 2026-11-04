@@ -41,6 +41,7 @@ from collections import deque
 from typing import Any, Awaitable, Callable, Hashable
 
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from db import write_telemetry
 from db.engine import engine
@@ -84,6 +85,23 @@ async def immediate():
                 await conn.execute(text("ROLLBACK"))
             raise
         await conn.execute(text("COMMIT"))
+
+
+@contextlib.asynccontextmanager
+async def immediate_session():
+    """An ORM session inside `immediate()` (BEGIN IMMEDIATE, the lock before the
+    first read), so a check and the write it guards run alone: concurrent
+    callers cannot all pass the same check before any of them writes. Flushed
+    on success; COMMIT / ROLLBACK are immediate()'s; after-commit hooks
+    (`events.on_commit`) run after the COMMIT."""
+    async with immediate() as conn:
+        s = AsyncSession(bind=conn, expire_on_commit=False)
+        try:
+            yield s
+            await s.flush()
+        finally:
+            await s.close()
+    s.sync_session.dispatch.after_commit(s.sync_session)
 
 
 def running() -> bool:

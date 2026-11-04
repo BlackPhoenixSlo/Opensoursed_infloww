@@ -1,0 +1,479 @@
+{
+  "note": "One notice shape, three parsers (design.md B3). frame = an SSE frame as the relay emits it (OF pump: __account_* + the OF key; purchase_notified: purchase_notifications._broadcast_purchase). settings = a partial stored NotifSettings over the defaults; expect = the OS notices that pass its per-type gate (enabled && osPing && toast[typeKey]). Canonical source: the app (app/lib/pushNotice.test.ts); consumers: desktop/test/relay-notices.test.js, service/tests/test_push_notice.py.",
+  "cases": [
+    {
+      "name": "inbound DM (message toast on)",
+      "settings": {
+        "toast": {
+          "message": true
+        }
+      },
+      "frame": {
+        "__account_id": "100",
+        "__account_name": "Creator One",
+        "__account_color": "#e91e63",
+        "api2_chat_message": {
+          "id": 5001,
+          "text": "<p>hey <b>you</b></p>",
+          "price": 0,
+          "isFree": true,
+          "isOpened": false,
+          "isTip": false,
+          "mediaCount": 0,
+          "media": [],
+          "responseType": "message",
+          "fromUser": {
+            "id": 777,
+            "username": "fanboy",
+            "name": "Fan Boy"
+          },
+          "createdAt": "2026-11-03T10:00:00.000Z"
+        }
+      },
+      "expect": [
+        {
+          "id": "100:m5001",
+          "typeKey": "message",
+          "title": "Fan Boy",
+          "body": "hey you",
+          "href": "/messages-pro/100/777?fanTab=Fan+Boy"
+        }
+      ]
+    },
+    {
+      "name": "inbound DM muted by default (message toast off)",
+      "frame": {
+        "__account_id": "100",
+        "__account_name": "Creator One",
+        "__account_color": "#e91e63",
+        "api2_chat_message": {
+          "id": 5002,
+          "text": "<p>hey</p>",
+          "price": 0,
+          "isFree": true,
+          "isOpened": false,
+          "isTip": false,
+          "mediaCount": 0,
+          "media": [],
+          "responseType": "message",
+          "fromUser": {
+            "id": 777,
+            "username": "fanboy",
+            "name": "Fan Boy"
+          },
+          "createdAt": "2026-11-03T10:00:00.000Z"
+        }
+      },
+      "expect": []
+    },
+    {
+      "name": "media DM, username only",
+      "settings": {
+        "toast": {
+          "message": true
+        }
+      },
+      "frame": {
+        "__account_id": "100",
+        "__account_name": "Creator One",
+        "__account_color": "#e91e63",
+        "api2_chat_message": {
+          "id": 5003,
+          "text": "",
+          "price": 0,
+          "isFree": true,
+          "isOpened": false,
+          "isTip": false,
+          "mediaCount": 2,
+          "media": [
+            {
+              "id": 1,
+              "type": "photo"
+            },
+            {
+              "id": 2,
+              "type": "photo"
+            }
+          ],
+          "responseType": "message",
+          "fromUser": {
+            "id": 778,
+            "username": "mediafan"
+          },
+          "createdAt": "2026-11-03T10:00:00.000Z"
+        }
+      },
+      "expect": [
+        {
+          "id": "100:m5003",
+          "typeKey": "message",
+          "title": "mediafan",
+          "body": "Sent you media",
+          "href": "/messages-pro/100/778?fanTab=mediafan"
+        }
+      ]
+    },
+    {
+      "name": "tip DM $5",
+      "frame": {
+        "__account_id": "100",
+        "__account_name": "Creator One",
+        "__account_color": "#e91e63",
+        "api2_chat_message": {
+          "id": 5004,
+          "text": "",
+          "price": 0,
+          "isFree": true,
+          "isOpened": false,
+          "isTip": true,
+          "mediaCount": 0,
+          "media": [],
+          "responseType": "message",
+          "fromUser": {
+            "id": 779,
+            "username": "tipper",
+            "name": "Tipper"
+          },
+          "createdAt": "2026-11-03T10:00:00.000Z",
+          "tipAmount": 5
+        }
+      },
+      "expect": [
+        {
+          "id": "100:m5004",
+          "typeKey": "tip",
+          "title": "Tipper",
+          "body": "Tipped you $5",
+          "href": "/messages-pro/100/779?refresh=media&fanTab=Tipper"
+        }
+      ]
+    },
+    {
+      "name": "tip DM $7.50 with text",
+      "frame": {
+        "__account_id": "100",
+        "__account_name": "Creator One",
+        "__account_color": "#e91e63",
+        "api2_chat_message": {
+          "id": 5005,
+          "text": "<p>for you</p>",
+          "price": 0,
+          "isFree": true,
+          "isOpened": false,
+          "isTip": true,
+          "mediaCount": 0,
+          "media": [],
+          "responseType": "message",
+          "fromUser": {
+            "id": 779,
+            "username": "tipper",
+            "name": "Tipper"
+          },
+          "createdAt": "2026-11-03T10:00:00.000Z",
+          "tipAmount": 7.5
+        }
+      },
+      "expect": [
+        {
+          "id": "100:m5005",
+          "typeKey": "tip",
+          "title": "Tipper",
+          "body": "Tipped you $7.50",
+          "href": "/messages-pro/100/779?refresh=media&fanTab=Tipper"
+        }
+      ]
+    },
+    {
+      "name": "tip DM without tipAmount uses price",
+      "frame": {
+        "__account_id": "100",
+        "__account_name": "Creator One",
+        "__account_color": "#e91e63",
+        "api2_chat_message": {
+          "id": 5006,
+          "text": "",
+          "price": 3,
+          "isFree": true,
+          "isOpened": false,
+          "isTip": true,
+          "mediaCount": 0,
+          "media": [],
+          "responseType": "message",
+          "fromUser": {
+            "id": 779,
+            "username": "tipper",
+            "name": "Tipper"
+          },
+          "createdAt": "2026-11-03T10:00:00.000Z"
+        }
+      },
+      "expect": [
+        {
+          "id": "100:m5006",
+          "typeKey": "tip",
+          "title": "Tipper",
+          "body": "Tipped you $3",
+          "href": "/messages-pro/100/779?refresh=media&fanTab=Tipper"
+        }
+      ]
+    },
+    {
+      "name": "outbound DM (our own send) is none",
+      "settings": {
+        "toast": {
+          "message": true
+        }
+      },
+      "frame": {
+        "__account_id": "100",
+        "__account_name": "Creator One",
+        "__account_color": "#e91e63",
+        "api2_chat_message": {
+          "id": 5007,
+          "text": "<p>hi</p>",
+          "price": 0,
+          "isFree": true,
+          "isOpened": false,
+          "isTip": false,
+          "mediaCount": 0,
+          "media": [],
+          "responseType": "message",
+          "fromUser": {
+            "id": 100,
+            "username": "creator",
+            "name": "Creator One"
+          },
+          "createdAt": "2026-11-03T10:00:00.000Z"
+        }
+      },
+      "expect": []
+    },
+    {
+      "name": "purchase with name and amount",
+      "frame": {
+        "purchase_notified": {
+          "notif_id": "9001",
+          "fan_id": 779,
+          "message_id": 5100,
+          "amount_cents": 1250,
+          "created_at": "2026-11-03T10:00:00+00:00",
+          "name": "Bob"
+        },
+        "__account_id": "100"
+      },
+      "expect": [
+        {
+          "id": "100:9001",
+          "typeKey": "purchases",
+          "title": "Bob",
+          "body": "Unlocked your PPV — $12.50",
+          "href": "/messages-pro/100/779?refresh=media&fanTab=Bob"
+        }
+      ]
+    },
+    {
+      "name": "purchase without name or amount",
+      "frame": {
+        "purchase_notified": {
+          "notif_id": "9002",
+          "fan_id": 780,
+          "message_id": 5100,
+          "amount_cents": 0,
+          "created_at": "2026-11-03T10:00:00+00:00",
+          "name": null
+        },
+        "__account_id": "100"
+      },
+      "expect": [
+        {
+          "id": "100:9002",
+          "typeKey": "purchases",
+          "title": "Inflowwww",
+          "body": "Unlocked your PPV",
+          "href": "/messages-pro/100/780?refresh=media&fanTab=fan+780"
+        }
+      ]
+    },
+    {
+      "name": "toast like (favorited), fan by html username",
+      "settings": {
+        "toast": {
+          "favorited": true
+        }
+      },
+      "frame": {
+        "__account_id": "100",
+        "__account_name": "Creator One",
+        "__account_color": "#e91e63",
+        "toasts": [
+          {
+            "id": 3001,
+            "type": "favorited",
+            "text": "<a href=\"https://onlyfans.com/liker1\">liker1</a> liked your post",
+            "createdAt": "2026-11-03T10:00:00+00:00"
+          }
+        ]
+      },
+      "expect": [
+        {
+          "id": "100:3001",
+          "typeKey": "favorited",
+          "title": "liker1",
+          "body": "liker1 liked your post",
+          "href": "/messages-pro/100/u/liker1?fanTab=liker1"
+        }
+      ]
+    },
+    {
+      "name": "toast subscribed via replacements",
+      "settings": {
+        "toast": {
+          "subscribed": true
+        }
+      },
+      "frame": {
+        "__account_id": "100",
+        "__account_name": "Creator One",
+        "__account_color": "#e91e63",
+        "toasts": [
+          {
+            "id": 3002,
+            "type": "subscribed",
+            "text": "{RELATED_USER_NAME} subscribed to you",
+            "createdAt": "2026-11-03T10:00:00+00:00",
+            "data": {
+              "replacements": {
+                "{RELATED_USER_ID}": "782",
+                "{RELATED_USER_NAME}": "Subby",
+                "{RELATED_USER_LOGIN}": "subby"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "id": "100:3002",
+          "typeKey": "subscribed",
+          "title": "Subby",
+          "body": "Subby subscribed to you",
+          "href": "/messages-pro/100/782?fanTab=Subby"
+        }
+      ]
+    },
+    {
+      "name": "toast tip type with relatedUser",
+      "frame": {
+        "__account_id": "100",
+        "__account_name": "Creator One",
+        "__account_color": "#e91e63",
+        "toasts": [
+          {
+            "id": 3003,
+            "type": "tip",
+            "text": "{RELATED_USER_NAME} tipped you $5",
+            "createdAt": "2026-11-03T10:00:00+00:00",
+            "data": {
+              "relatedUser": {
+                "id": 783,
+                "name": "Ann",
+                "username": "ann"
+              },
+              "replacements": {
+                "{RELATED_USER_NAME}": "Ann"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        {
+          "id": "100:3003",
+          "typeKey": "tip",
+          "title": "Ann",
+          "body": "Ann tipped you $5",
+          "href": "/messages-pro/100/783?refresh=media&fanTab=Ann"
+        }
+      ]
+    },
+    {
+      "name": "toast subscribed muted by default",
+      "frame": {
+        "__account_id": "100",
+        "__account_name": "Creator One",
+        "__account_color": "#e91e63",
+        "toasts": [
+          {
+            "id": 3004,
+            "type": "subscribed",
+            "text": "New subscriber"
+          }
+        ]
+      },
+      "expect": []
+    },
+    {
+      "name": "toast without id is none",
+      "frame": {
+        "__account_id": "100",
+        "__account_name": "Creator One",
+        "__account_color": "#e91e63",
+        "toasts": [
+          {
+            "type": "tip",
+            "text": "x tipped you"
+          }
+        ]
+      },
+      "expect": []
+    },
+    {
+      "name": "toast of an unknown type is none",
+      "frame": {
+        "__account_id": "100",
+        "__account_name": "Creator One",
+        "__account_color": "#e91e63",
+        "toasts": [
+          {
+            "id": 3005,
+            "type": "release_forms",
+            "text": "Release form signed"
+          }
+        ]
+      },
+      "expect": []
+    },
+    {
+      "name": "Fansly snowflake string ids",
+      "settings": {
+        "toast": {
+          "message": true
+        }
+      },
+      "frame": {
+        "__account_id": "900000000000000001",
+        "__account_name": "Fansly One",
+        "__account_color": "#03a9f4",
+        "api2_chat_message": {
+          "id": "900000000000000777",
+          "text": "hello",
+          "fromUser": {
+            "id": "900000000000000123",
+            "username": "snow",
+            "name": "Snow Flake"
+          },
+          "createdAt": "2026-11-03T10:00:00.000Z"
+        }
+      },
+      "expect": [
+        {
+          "id": "900000000000000001:m900000000000000777",
+          "typeKey": "message",
+          "title": "Snow Flake",
+          "body": "hello",
+          "href": "/messages-pro/900000000000000001/900000000000000123?fanTab=Snow+Flake"
+        }
+      ]
+    }
+  ]
+}

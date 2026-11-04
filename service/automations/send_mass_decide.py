@@ -12,6 +12,8 @@ the OF broadcast, per-recipient rows), in that order:
     plan(payload, funnel, resolved,  -> Plan | Skip   (dedupe, exclusions win, text, media)
          list_ids, opener_media)
     audience_filter / echoed_of      -> the mass_runs forensics JSON / OF's per-fan echo
+    is_dry_run / dry_excludes /      -> a `dry_run` payload's answer (O3: never sends,
+      dry_run_result                    returns who a real run would reach)
 """
 from __future__ import annotations
 
@@ -161,4 +163,31 @@ def echoed_of(result) -> list[tuple[int, int]]:
             out.append((int(fid_raw), int(mid_raw)))
         except (TypeError, ValueError):
             continue
+    return out
+
+
+def is_dry_run(payload: dict) -> bool:
+    """O3: a `dry_run` payload never sends: no lock, no OF list write, no mint,
+    no rows. It answers who the same payload would reach now."""
+    return bool(payload.get("dry_run"))
+
+
+def dry_excludes(p: Plan, fence) -> list[int]:
+    """The ids a real list/online run keeps out through its OF exclude lists
+    (Auto_Exclude = the contact guard + excludes, AUTOFENCE = `fence`), which a
+    dry run subtracts in memory instead of syncing."""
+    return sorted(p.excl_set | set(fence))
+
+
+def dry_run_result(p: Plan, would_send: list[int] | None) -> dict:
+    """A dry run's stats. `would_send` None = OF's audience cannot be read off a
+    roster (online / filters / unknown list / cut or failed crawl): `reason`
+    says why, never a partial list."""
+    out = {"status": "ok", "dry_run": True, "sent": 0,
+           "would_send": would_send,
+           "would_send_count": len(would_send) if would_send is not None else None,
+           "audience": "list" if p.is_list_audience else "explicit"}
+    if would_send is None:
+        out["reason"] = ("online_or_filtered" if p.online_only or p.filters
+                         else "audience_unreadable")
     return out

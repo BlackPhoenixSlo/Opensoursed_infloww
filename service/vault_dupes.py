@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+from bisect import bisect_right
 from pathlib import Path
 from typing import Any
 
@@ -189,17 +190,41 @@ async def ensure_hashes(account_id: str, *, force: bool = False) -> dict[str, in
 
 def cluster(items: list[dict], threshold: int) -> list[dict]:
     """Seed-based grouping, oldest-first. Returns sets of >= 2 where `original`
-    is the earliest-uploaded item and `dupes` are the removable copies."""
+    is the earliest-uploaded item and `dupes` are the removable copies.
+
+    A seed tests only the later items that share a bucket with it, not every
+    later item: a pair within `threshold` on the 64-bit dhash agrees exactly on
+    at least one of threshold+1 disjoint dhash bands (pigeonhole), and an exact
+    copy shares its md5. Buckets are per kind and candidates are walked in
+    sorted order, so the sets are the all-pairs walk's (test_vault_dupes)."""
     items = sorted(items, key=lambda r: (r["created_at"], r["media_id"]))
+    n_bands = max(1, threshold + 1)   # threshold < 0: one band, still a superset
+    edges = [64 * j // n_bands for j in range(n_bands + 1)]
+    bands = [(j, edges[j], (1 << (edges[j + 1] - edges[j])) - 1)
+             for j in range(n_bands)]
+
+    keys = [[(r["kind"], "md5", r["md5"])] + [
+        (r["kind"], j, (r["dhash"] >> lo) & mask) for j, lo, mask in bands]
+        for r in items]
+    buckets: dict[tuple, list[int]] = {}
+    for pos, ks in enumerate(keys):
+        for key in ks:
+            buckets.setdefault(key, []).append(pos)
+
     claimed: set[int] = set()
     clusters: list[dict] = []
 
     for i, seed in enumerate(items):
         if seed["media_id"] in claimed:
             continue
+        later: set[int] = set()
+        for key in keys[i]:
+            b = buckets[key]
+            later.update(b[bisect_right(b, i):])
         dupes: list[dict] = []
-        for cand in items[i + 1:]:
-            if cand["media_id"] in claimed or cand["kind"] != seed["kind"]:
+        for pos in sorted(later):
+            cand = items[pos]
+            if cand["media_id"] in claimed:
                 continue
             if seed["kind"] == "video":
                 if abs((seed["duration"] or 0) - (cand["duration"] or 0)) > \

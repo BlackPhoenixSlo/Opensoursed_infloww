@@ -61,8 +61,6 @@ import {
   type BlockCard, type InsightsTab,
 } from "./FanDrawerParts";
 
-export { VideoScrubThumb } from "./FanDrawerSalesView";
-
 export function FanDrawer({
   open, onClose, accountId, fanId, chat,
   pinned = false,

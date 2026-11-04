@@ -37,8 +37,17 @@ _RATE_LIMIT_MARK = "allow 10 seconds"
 
 
 def is_rate_limited(exc: BaseException) -> bool:
-    """Whether `exc` is OF's "Please allow 10 seconds" rate-limit refusal."""
-    return _RATE_LIMIT_MARK in str(exc).lower()
+    """Whether `exc` is OF's "Please allow 10 seconds" rate-limit refusal: the mark in
+    OF's answer AND a 4xx status. Read from server._proxy's HTTPException as its
+    `detail` {"upstream_status": OF's status, "upstream_body": OF's body}, else from
+    the OF error's `response.status_code` and text. A 5xx or no answer echoing the
+    text is unconfirmed: OF may have created it."""
+    detail = getattr(exc, "detail", None)
+    if isinstance(detail, dict) and isinstance(detail.get("upstream_status"), int):
+        status, text = detail["upstream_status"], str(detail.get("upstream_body", ""))
+    else:
+        status, text = getattr(getattr(exc, "response", None), "status_code", None), str(exc)
+    return isinstance(status, int) and 400 <= status < 500 and _RATE_LIMIT_MARK in text.lower()
 
 
 async def of_write_with_retry(fn, *, tries: int = 2, pause_s: float = 11.0):
@@ -156,14 +165,12 @@ def _may_have_sent(e: BaseException) -> bool:
     Surely not: refused before it left the box (OFDeniedError, a deactivated Creator's
     too), the proxy never opened the tunnel (ProxyError), the connection never opened
     (ConnectTimeout, curl's couldn't-connect: of_client._proxy_retry's own split), or
-    OF answered 4xx (its rate-limit 400 included: is_rate_limited). Anything else may
+    OF answered 4xx (its rate-limit 400 included). Anything else may
     have: a read timeout, a dropped connection, a 5xx, a cancel while the call was out
     (its worker thread runs on), anything unknown."""
     if isinstance(e, (OFDeniedError, curl_exc.ProxyError, curl_exc.ConnectTimeout)):
         return False
     if isinstance(e, curl_exc.ConnectionError) and getattr(e, "code", None) == CurlECode.COULDNT_CONNECT:
-        return False
-    if is_rate_limited(e):
         return False
     status = getattr(getattr(e, "response", None), "status_code", None)
     return not (isinstance(status, int) and 400 <= status < 500)

@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Post actions on the OF mirror's real post rows (Home's feed, My profile's wall, All bookmarks): ofMirrorFeeds marks
+ * Post actions on the OF mirror's real post rows (Home's feed, My profile's wall, All bookmarks): ofMirrorFeedsPosts marks
  * each with data-oi-post (the post's id) and, when known, data-oi-author. With a single model selected:
  * - Like (OF's heart): POST /api/of/v2/posts/{id}/like, with ?author_id= on another creator's post (OF likes with
  *   /posts/{id}/favorites/{authorId}); the same POST again unlikes, as on OF. The button shows m-active and the row's
@@ -18,7 +18,7 @@
  *   relay's sparse edit, so media and price stay), Archive post (POST /posts/{id}/archive) and Delete post (DELETE
  *   /posts/{id}, only on a second click, which the item asks for). Each success refetches the page's rows.
  *   Another creator's post's More has OF's "Copy link to post" only (https://onlyfans.com/<post id>/<author's handle>,
- *   to the clipboard; hide and report have no Relay route), disabled with the tooltip without the handle (ofMirrorFeeds).
+ *   to the clipboard; hide and report have no Relay route), disabled with the tooltip without the handle (ofMirrorFeedsPosts).
  * - A post's picture, and a My profile Media tab tile: its files (ofMirrorPostCard's stamp) in the Vault's viewer, the
  *   first one first, previous and next through the rest (OF's media viewer); a locked file is not among them.
  * A failure shows the status note in red. The clicks it owns never reach bindWrites' click fallback, and the boxes it
@@ -29,7 +29,8 @@ import { useEffect, type RefObject } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useScope } from "@/contexts/ScopeContext";
 import { relay, type OFUserMini } from "@/lib/relay";
-import { nameOf, plain } from "@/lib/ofMirrorData";
+import { plain } from "@/lib/ofMirrorData";
+import { nameOf } from "@/lib/ofMirrorDom";
 import { ofMeQuery } from "@/lib/ofMirrorIdentity";
 import { message, note, NOT_YET } from "@/lib/ofMirrorWrites";
 import { useAppliedSettings } from "@/lib/appliedSettings";
@@ -64,7 +65,7 @@ export const ARM = "Click again to delete";
 const LIKES = "post-stat-likes";
 const COMMENTS = "post-stat-comments";
 const STAT = ".b-summary-list a[data-testid]";
-/** The own-post text button: Post statistics (another creator's row has Send Tip there, ofMirrorFeeds' sendTip). */
+/** The own-post text button: Post statistics (another creator's row has Send Tip there, ofMirrorFeedsPosts' sendTip). */
 const POST_STATS = ".b-post__tools__item.m-with-text-button button:not([at-attr='post_tip'])";
 
 export const postPath = (id: string) => `/api/of/v2/posts/${encodeURIComponent(id)}`;

@@ -652,7 +652,7 @@ export function shareDialog(doc: Document, trialId: number, handlers: Pick<Offer
 
 // ---------------------------------------------------------------- promotion cards
 
-/** A running promotion's Stop promotion and Copy link to profile, on any page that draws one (ofMirrorFeeds, ofMirrorSubscription mark them). */
+/** A running promotion's Stop promotion and Copy link to profile, on any page that draws one (ofMirrorFeedsStrip, ofMirrorSubscription mark them). */
 function bindPromotionCards(doc: Document, handlers: OfferHandlers | null): () => void {
   const onClick = (ev: MouseEvent) => {
     const b = (ev.target as Element | null)?.closest?.<HTMLButtonElement>("button[data-oi-finish], button[data-oi-copy]");

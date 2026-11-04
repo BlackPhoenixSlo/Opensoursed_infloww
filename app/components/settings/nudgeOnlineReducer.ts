@@ -34,11 +34,22 @@
  *     verdict: the pinned bar keeps it in view and must not outlive the state
  *     it describes. Typing in the JSON box counts as unsaved (so a refetch
  *     keeps it) but is not an edit until applied.
+ *   • `hydrate` also takes the account's kept draft (lib/pendingDraft: a tab
+ *     closed mid-edit or mid-save) — on the account's first fill only (`base`
+ *     null: the open or the pick); a refetch of a loaded form ignores it. Equal to the server's config → the PUT
+ *     landed and only its ack was lost: dropped. Otherwise the form is seeded
+ *     from it over `base` = the server's (dirty, Save live) with `restored`;
+ *     `restored.moved` when the server moved off the draft's own base (changed
+ *     elsewhere): Save overwrites that, so it says so. Never saved by itself,
+ *     never dropped silently: `discardDraft` takes the server's config back.
+ *     What is kept is `buildConfig` (`keptDraft`): the JSON box's unapplied
+ *     text is not (not an edit until applied) and is lost with the tab.
  *   • `selected` null = every model (the default and "All").
  */
 
 import type { NudgeConfig, NudgeSlots } from "@/hooks/useNudgeConfig";
 import type { GateNote } from "@/components/settings/StickySaveBar";
+import { stableJSON } from "@/lib/pendingDraft";
 
 export type FormKey = Exclude<keyof NudgeConfig, "slots">;
 
@@ -69,13 +80,25 @@ export interface NudgeOnlineState {
   /** Per account: Infinity while its save is in flight, then when it settled
    *  (ms) — `preSaveConfig`. */
   savedAt: Record<string, number>;
+  /** The form was seeded from a kept draft (`hydrate`) — cleared by a landed
+   *  save, a discard or the pick; shown only while dirty (`restoredNote`). */
+  restored: { moved: boolean } | null;
+}
+
+/** A kept draft and what the server held when it was made. */
+export interface KeptDraft {
+  draft: NudgeConfig;
+  base: NudgeConfig;
 }
 
 export type NudgeOnlineAction =
   | { type: "account"; accountId: string | null }
   /** `fetchedAt` = the query's dataUpdatedAt; `pending` = a save PUT is in
-   *  flight for `accountId` (useNudgeSavePending). */
-  | { type: "hydrate"; eff: NudgeConfig; accountId: string | null; fetchedAt: number; pending: boolean }
+   *  flight for `accountId` (useNudgeSavePending); `draft` = its kept draft. */
+  | { type: "hydrate"; eff: NudgeConfig; accountId: string | null; fetchedAt: number; pending: boolean;
+      draft: KeptDraft | null }
+  /** Drop the restored draft: the form takes `base` again. */
+  | { type: "discardDraft" }
   | { type: "field"; k: FormKey; v: NudgeConfig[FormKey] }
   | { type: "slots"; slots: NudgeSlots }
   | { type: "jsonDraft"; text: string }
@@ -94,34 +117,20 @@ export type NudgeOnlineAction =
 
 export const initialNudgeOnlineState: NudgeOnlineState = {
   form: {}, slots: {}, jsonDraft: "", jsonErr: null, save: null, runMsg: null, previewErr: null,
-  base: null, accountId: null, saving: null, selected: null, bulkMsg: null, savedAt: {},
+  base: null, accountId: null, saving: null, selected: null, bulkMsg: null, savedAt: {}, restored: null,
 };
 
-/** Defaults with the stored config over them — what the automation runs. */
-export function effectiveConfig(
-  data: { defaults?: NudgeConfig; config?: NudgeConfig } | undefined,
-): NudgeConfig {
-  return { ...(data?.defaults ?? {}), ...(data?.config ?? {}) };
-}
+export const RESTORED_NOTE = "Unsaved changes restored — Save to keep";
+export const RESTORED_MOVED_NOTE = "Saved settings changed since this draft; Save overwrites them";
 
 /** The config a save / preview / roll-out sends. */
 export function buildConfig(s: Pick<NudgeOnlineState, "form" | "slots">): NudgeConfig {
   return { ...s.form, slots: s.slots };
 }
 
-function stable(v: unknown): unknown {
-  if (Array.isArray(v)) return v.map(stable);
-  if (v && typeof v === "object") {
-    return Object.fromEntries(
-      Object.keys(v as object).sort().map((k) => [k, stable((v as Record<string, unknown>)[k])]),
-    );
-  }
-  return v;
-}
-
 /** Same config, ignoring key order; absent `slots` = `{}` (what the draft holds). */
 export function sameConfig(a: NudgeConfig, b: NudgeConfig): boolean {
-  const norm = (c: NudgeConfig) => JSON.stringify(stable({ ...c, slots: c.slots ?? {} }));
+  const norm = (c: NudgeConfig) => stableJSON({ ...c, slots: c.slots ?? {} });
   return norm(a) === norm(b);
 }
 
@@ -140,6 +149,25 @@ export function hasUnsavedEdits(
 ): boolean {
   if (s.base === null) return false;
   return isDirty(s) || s.jsonDraft !== JSON.stringify(s.slots, null, 2);
+}
+
+/** The restored-draft note to show: only while the form still differs from
+ *  the server — edited back to it, there is nothing restored left to save. */
+export function restoredNote(
+  s: Pick<NudgeOnlineState, "form" | "slots" | "base" | "restored">,
+): NudgeOnlineState["restored"] {
+  return s.restored && isDirty(s) ? s.restored : null;
+}
+
+/** What the tab keeps in localStorage (lib/pendingDraft): the dirty — or
+ *  saving — draft and the `base` it was made on; null = nothing to keep (the
+ *  stash goes). Never before the first load: a kept draft is the hydrate's to
+ *  read first. */
+export function keptDraft(
+  s: Pick<NudgeOnlineState, "form" | "slots" | "base" | "jsonDraft" | "saving">,
+): KeptDraft | null {
+  return s.base !== null && (hasUnsavedEdits(s) || s.saving)
+    ? { draft: buildConfig(s), base: s.base } : null;
 }
 
 /** The Advanced JSON as slot pools, or why not. */
@@ -256,6 +284,13 @@ function stamp(state: NudgeOnlineState, accountId: string, at: number): NudgeOnl
   return { ...state, savedAt: { ...state.savedAt, [accountId]: at } };
 }
 
+/** The form seeded from `cfg`. */
+function seeded(state: NudgeOnlineState, cfg: NudgeConfig): NudgeOnlineState {
+  const { slots, ...form } = cfg;
+  const so = slots ?? {};
+  return { ...state, form, slots: so, jsonDraft: JSON.stringify(so, null, 2), jsonErr: null };
+}
+
 function withSlots(state: NudgeOnlineState, slots: NudgeSlots): NudgeOnlineState {
   return {
     ...state, save: null, slots, jsonDraft: JSON.stringify(slots, null, 2), jsonErr: null,
@@ -275,10 +310,20 @@ export function nudgeOnlineReducer(state: NudgeOnlineState, action: NudgeOnlineA
       if (action.accountId !== state.accountId) return state;
       if (preSaveConfig(state, action)) return state;
       if (hasUnsavedEdits(state)) return { ...state, base: action.eff };
-      const { slots, ...form } = action.eff;
-      const so = slots ?? {};
-      return { ...state, form, slots: so, jsonDraft: JSON.stringify(so, null, 2), jsonErr: null, base: action.eff };
+      // The kept draft is the reopen's: read on the account's first fill only — a
+      // later refetch of a clean form (its own save's, another tab's stash) is not one.
+      const d = state.base === null ? action.draft : null;
+      if (d && !sameConfig(d.draft, action.eff)) {
+        return {
+          ...seeded(state, d.draft), base: action.eff, save: null,
+          restored: { moved: !sameConfig(d.base, action.eff) },
+        };
+      }
+      return { ...seeded(state, action.eff), base: action.eff, restored: null };
     }
+    case "discardDraft":
+      if (state.base === null) return state;
+      return { ...seeded(state, state.base), save: null, restored: null };
     case "field":
       return { ...state, save: null, form: { ...state.form, [action.k]: action.v } };
     case "slots":
@@ -302,7 +347,7 @@ export function nudgeOnlineReducer(state: NudgeOnlineState, action: NudgeOnlineA
       const stamped = stamp(state, action.accountId, action.at);
       // No snapshot: the tab left the account mid-save (and maybe came back).
       if (action.accountId !== state.accountId || state.saving === null) return stamped;
-      return { ...stamped, save: { ok: true }, saving: null, base: state.saving };
+      return { ...stamped, save: { ok: true }, saving: null, base: state.saving, restored: null };
     }
     case "saveErr": {
       const stamped = stamp(state, action.accountId, action.at);

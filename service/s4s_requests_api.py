@@ -61,6 +61,7 @@ from auth import get_request_user
 from automation_executor import enqueue_job
 from db.engine import get_session
 from db.models import Action, S4SBlock, S4SPost, S4SProfile, S4SRequest, S4SSlot, UserAccount
+from db.of_writer import immediate_session
 from route_wire import parse_utc, wire as _wire  # `OPEN` and `_wire` are s4s_schedule_api's imports too
 from s4s_common import (OPEN, VERBS, Refuse, _json_object, _owner_context, daily_full, next_status,
                         partner_refusal, request_refusal)
@@ -293,7 +294,8 @@ async def send_request(request: Request) -> dict[str, Any]:
     from_id, to_pid, slot_at = _parse_send(await _json_object(request))
     ctx = await _owner_context(from_id)
     now = datetime.utcnow()
-    async with get_session() as s:
+    # BEGIN IMMEDIATE: the per-day count and its INSERT run alone (deferred: 12 concurrent sends from 44 stored 53).
+    async with immediate_session() as s:
         to_p = await _partner(s, from_id, to_pid)
         from_p = (await s.execute(
             select(S4SProfile).where(S4SProfile.account_id == from_id)

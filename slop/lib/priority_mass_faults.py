@@ -15,6 +15,8 @@ CANCEL = "cancel: every pending fan turns skipped, at most 1 send lands after it
 REFUSE = "a Sensitive word (added, imported) is refused 4xx and leaves no run row"
 REPEAT = "the same message to the same Creator again inside 120 s is refused 409, no second row"
 RESUME = "resume: a live run keeps one leg queued (never two); a cancelled run is 409"
+LEG_SCAN = ("a run created clean stops at its first leg (error, banned_words) once a Sensitive word its text "
+            "holds across odd whitespace is listed before that leg; OF gets nothing from it")
 UI_SEED = ("UI: the composer pre-ticks the Creator's OF MASSDMEXCLUDE list in Exclude; the POST and its run row "
            "exclude it and none of its fans is frozen or got an OF send")
 
@@ -81,6 +83,16 @@ def _sensitive_word_ignored() -> None:
     api._sensitive_words = _sensitive_words
 
 
+def _leg_exact_scan_only() -> None:
+    """automations/priority_mass.py `_leg` as before the leg re-ran the create route's matcher:
+    only `filter_banned` (exact spacing, `\\b`) scans the text, so a phrase listed after the run
+    was created and spelled with other whitespace ("pay  pal") goes out. Only the leg's name is
+    patched; the create route's refusal stays the product's."""
+    from automations import priority_mass as pm
+
+    pm.sensitive_hits = lambda text, words: []
+
+
 def register(Fault) -> dict:
     return {
         # slop/run priority-mass-5k --break (the scenario's FAULT)
@@ -89,6 +101,8 @@ def register(Fault) -> dict:
         "pm-cancel-keeps-pending": Fault(_cancel_keeps_pending, (CANCEL,)),
         # slop/run priority-mass-5k --break --fault=pm-sensitive-word-ignored --baseline=...
         "pm-sensitive-word-ignored": Fault(_sensitive_word_ignored, (REFUSE,)),
+        # slop/run priority-mass-5k --break --fault=pm-leg-exact-scan-only --baseline=...
+        "pm-leg-exact-scan-only": Fault(_leg_exact_scan_only, (LEG_SCAN,)),
         # slop/run priority-mass-5k --break --fault=pm-ui-no-massdm-seed --baseline=... (not --no-ui)
         # app/components/growth/PriorityMass.tsx as before the seed: its seedExclude effect returns before
         # dispatching and Send no longer waits for the seed (the fix reverted). Only the composer's chunk

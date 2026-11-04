@@ -13,12 +13,16 @@ interface Props {
   hasNextPage: boolean;
   isFetchingNextPage: boolean;
   fetchNextPage: () => unknown;
+  /** The query is in error: the sentinel stays still until Load more (or a refetch) brings a page. */
+  isError?: boolean;
   /** The end line's words: the reports say "end of results", the post feeds "end of feed". */
   endLabel: string;
 }
 
-export default function InfiniteListFooter({ hasNextPage, isFetchingNextPage, fetchNextPage, endLabel }: Props) {
-  const sentinelRef = useLoadMoreSentinel(hasNextPage, isFetchingNextPage, fetchNextPage);
+export default function InfiniteListFooter({
+  hasNextPage, isFetchingNextPage, fetchNextPage, isError, endLabel,
+}: Props) {
+  const sentinelRef = useLoadMoreSentinel(hasNextPage, isFetchingNextPage, fetchNextPage, isError);
   return (
     <>
       <div ref={sentinelRef} className="h-4" />

@@ -283,6 +283,26 @@ def _creator_access(ids: list[str | None]) -> list[str] | None:
     return None if None in ids else [i for i in ids if i is not None]
 
 
+def _brief(e: Employee) -> dict[str, Any]:
+    """The create / update reply: id, display_name, color, is_active."""
+    return {
+        "id": e.id,
+        "display_name": e.display_name,
+        "color": e.color,
+        "is_active": e.is_active,
+    }
+
+
+async def _active_count(s, user_id: str) -> int:
+    """How many active Employees `user_id` has (what the employee cap counts)."""
+    return (await s.execute(
+        select(func.count(Employee.id)).where(
+            Employee.user_id == user_id,
+            Employee.is_active == True,  # noqa: E712
+        )
+    )).scalar_one()
+
+
 @router.post("/admin/employees")
 async def create_employee(body: _EmployeeCreateBody = Body(...)) -> dict[str, Any]:
     """Create one, owned by the signed-in friend. No de-dupe on
@@ -295,12 +315,7 @@ async def create_employee(body: _EmployeeCreateBody = Body(...)) -> dict[str, An
         # can't be one bad actor in a multi-tenant deploy.
         cap = _max_employees()
         if user is not None and cap > 0:
-            active_count = (await s.execute(
-                select(func.count(Employee.id)).where(
-                    Employee.user_id == user.id,
-                    Employee.is_active == True,  # noqa: E712
-                )
-            )).scalar_one()
+            active_count = await _active_count(s, user.id)
             if active_count >= cap:
                 raise _employee_limit(active_count, (
                     f"employee cap reached ({active_count}/{cap}). "
@@ -327,12 +342,7 @@ async def create_employee(body: _EmployeeCreateBody = Body(...)) -> dict[str, An
         )
         s.add(e)
         await s.flush()
-        return {
-            "id": e.id,
-            "display_name": e.display_name,
-            "color": e.color,
-            "is_active": e.is_active,
-        }
+        return _brief(e)
 
 
 @router.patch("/admin/employees/{employee_id}")
@@ -352,12 +362,7 @@ async def update_employee(
             and e.user_id
             and cap > 0
         ):
-            active_count = (await s.execute(
-                select(func.count(Employee.id)).where(
-                    Employee.user_id == e.user_id,
-                    Employee.is_active == True,  # noqa: E712
-                )
-            )).scalar_one()
+            active_count = await _active_count(s, e.user_id)
             if active_count >= cap:
                 raise _employee_limit(active_count, (
                     f"cannot re-enable: employee cap reached "
@@ -374,12 +379,7 @@ async def update_employee(
                 await _unlink_login(s, e)
             if body.is_active and is_login(e) and e.user_id:
                 await _relink_login(s, e)
-        return {
-            "id": e.id,
-            "display_name": e.display_name,
-            "color": e.color,
-            "is_active": e.is_active,
-        }
+        return _brief(e)
 
 
 @router.get("/admin/employees/{employee_id}/access")
@@ -497,6 +497,26 @@ async def _relink_login(s, e: Employee) -> None:
     await link_login(s, chatter, e.user_id)
 
 
+async def _replace_login_access(s, chatter_id: str, owner_id: str, ids) -> None:
+    """The login's enforced allowlist in this Agency becomes exactly `ids`
+    (none = every Creator)."""
+    await s.execute(delete(ChatterAccountAccess).where(
+        ChatterAccountAccess.chatter_id == chatter_id, ChatterAccountAccess.user_id == owner_id,
+    ))
+    for aid in ids:
+        s.add(ChatterAccountAccess(
+            chatter_id=chatter_id, user_id=owner_id, account_id=aid, created_at=datetime.utcnow(),
+        ))
+
+
+async def _refuse_foreign(s, owner_id: str, ids) -> None:
+    """403 on the first of `ids` that is not one of `owner_id`'s Creators."""
+    owned = await agency_account_ids(s, owner_id)
+    foreign = [a for a in ids if a not in owned]
+    if foreign:
+        raise HTTPException(status_code=403, detail=f"account {foreign[0]!r} is not one of yours")
+
+
 async def _set_login_access(s, e: Employee, body: "_EmployeeAccessBody") -> dict[str, Any]:
     """Creator access for an Employee with a login is the enforced allowlist
     (`chatter_account_access`, per Agency), where no rows means every Creator.
@@ -510,18 +530,8 @@ async def _set_login_access(s, e: Employee, body: "_EmployeeAccessBody") -> dict
             detail="an employee needs at least one Creator; deactivate them to remove all access",
         )
     if not wildcard:
-        owned = await agency_account_ids(s, e.user_id)
-        foreign = [a for a in ids if a not in owned]
-        if foreign:
-            raise HTTPException(status_code=403, detail=f"account {foreign[0]!r} is not one of yours")
-    await s.execute(delete(ChatterAccountAccess).where(
-        ChatterAccountAccess.chatter_id == e.chatter_id, ChatterAccountAccess.user_id == e.user_id,
-    ))
-    if not wildcard:
-        for aid in ids:
-            s.add(ChatterAccountAccess(
-                chatter_id=e.chatter_id, user_id=e.user_id, account_id=aid, created_at=datetime.utcnow(),
-            ))
+        await _refuse_foreign(s, e.user_id, ids)
+    await _replace_login_access(s, e.chatter_id, e.user_id, [] if wildcard else ids)
     await s.flush()
     events.on_commit(s, "assignment_changed", agency=e.user_id)
     return {"employee_id": e.id, "account_ids": [None] if wildcard else ids, "wildcard": wildcard}
@@ -575,10 +585,7 @@ async def validate_employee_setup(owner_id: str, setup: dict[str, Any]) -> dict[
     async with get_session() as s:
         if out.get("account_ids"):
             ids = sorted(set(out["account_ids"]))
-            owned = await agency_account_ids(s, owner_id)
-            foreign = [a for a in ids if a not in owned]
-            if foreign:
-                raise HTTPException(status_code=403, detail=f"account {foreign[0]!r} is not one of yours")
+            await _refuse_foreign(s, owner_id, ids)
             out["account_ids"] = ids
         elif "account_ids" in out:
             out["account_ids"] = None
@@ -600,13 +607,7 @@ async def apply_employee_setup(owner_id: str, employee_id: int, setup: dict[str,
         if "group_id" in setup:
             e.group_id = setup["group_id"]
         if "account_ids" in setup and is_login(e):
-            await s.execute(delete(ChatterAccountAccess).where(
-                ChatterAccountAccess.chatter_id == e.chatter_id, ChatterAccountAccess.user_id == owner_id,
-            ))
-            for aid in setup["account_ids"] or []:
-                s.add(ChatterAccountAccess(
-                    chatter_id=e.chatter_id, user_id=owner_id, account_id=aid, created_at=datetime.utcnow(),
-                ))
+            await _replace_login_access(s, e.chatter_id, owner_id, setup["account_ids"] or [])
             events.on_commit(s, "assignment_changed", agency=owner_id)
     if "role_id" in setup:
         from settings_api import _read_blob, _write_blob
@@ -910,19 +911,18 @@ async def resolve_outbound_employee_id(
                 return emp_id
         return await get_owner_employee_id(user)
     # Chatter session: ignore the header (defensive), resolve mirror.
-    if user is None:
-        from chatters import get_request_chatter as _grc
-        chatter = _grc()
-        if chatter is not None:
-            if emp_id_raw:
-                _warn_chatter_header_ignored_once()
-            return await resolve_chatter_employee_id(
-                chatter_id=chatter.id,
-                owner_user_ids=chatter.owner_user_ids,
-                account_id=account_id,
-                display_name=chatter.display_name or chatter.username,
-                color=chatter.color,
-            )
+    from chatters import get_request_chatter as _grc
+    chatter = _grc()
+    if chatter is not None:
+        if emp_id_raw:
+            _warn_chatter_header_ignored_once()
+        return await resolve_chatter_employee_id(
+            chatter_id=chatter.id,
+            owner_user_ids=chatter.owner_user_ids,
+            account_id=account_id,
+            display_name=chatter.display_name or chatter.username,
+            color=chatter.color,
+        )
     # Unauthed (internal curl / cron) — caller's Automation fallback wins.
     if emp_id_raw and emp_id_raw.isdigit():
         return int(emp_id_raw)
@@ -1023,6 +1023,15 @@ async def find_owner_employee_id(s, user) -> int | None:
     ).order_by(Employee.id).limit(1))).scalar_one_or_none()
 
 
+async def _mirror_id(s, chatter_id: str, owner_user_id: str) -> int | None:
+    return (await s.execute(
+        select(Employee.id).where(
+            Employee.chatter_id == chatter_id,
+            Employee.user_id == owner_user_id,
+        )
+    )).scalar_one_or_none()
+
+
 async def get_or_create_mirror_employee(
     chatter_id: str,
     owner_user_id: str,
@@ -1053,12 +1062,7 @@ async def get_or_create_mirror_employee(
     try:
         async with get_session() as s:
             # Fast path: row already exists.
-            existing = (await s.execute(
-                select(Employee.id).where(
-                    Employee.chatter_id == chatter_id,
-                    Employee.user_id == owner_user_id,
-                )
-            )).scalar_one_or_none()
+            existing = await _mirror_id(s, chatter_id, owner_user_id)
             if existing is not None:
                 return existing
 
@@ -1090,12 +1094,7 @@ async def get_or_create_mirror_employee(
                 # Sibling raced us — roll back the failed insert and
                 # SELECT to capture the canonical id from the winner.
                 await s.rollback()
-                existing = (await s.execute(
-                    select(Employee.id).where(
-                        Employee.chatter_id == chatter_id,
-                        Employee.user_id == owner_user_id,
-                    )
-                )).scalar_one_or_none()
+                existing = await _mirror_id(s, chatter_id, owner_user_id)
                 if existing is None:
                     log.error(
                         "chatter→emp: IntegrityError on insert but no "
@@ -1191,8 +1190,3 @@ def _normalize_color(c: str) -> str:
     if not re.fullmatch(r"[0-9a-f]{6}", c):
         raise HTTPException(status_code=400, detail=f"invalid color {c!r}, expected #RRGGBB")
     return "#" + c
-
-
-# ── Optional: response header that tells the UI who the relay thinks
-# the current employee is. Useful for sanity-checking the picker.
-

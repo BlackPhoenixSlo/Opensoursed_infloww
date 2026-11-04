@@ -19,6 +19,7 @@ No DB, no LLM, no OF: every row is (entry, event) -> (entry', effects).
                          only on a substantive reply), guard armed only with `next`.
   case_whole_funnel_walk:  one fan: wait, reply, send, keyword branch, PPV, bought.
   case_offer_since_table:  the `bought` fact's baseline: our last PPV, else the broadcast.
+  case_run_summary:      funnel_run_decide: the tick's tally -> run()'s stats dict.
 
 Run: ./venv/bin/python service/tests/test_funnel_decide.py   (exit 0 = pass)
 """
@@ -30,6 +31,7 @@ from dataclasses import replace  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
 
 from automations import funnel_decide as fd  # noqa: E402
+from automations import funnel_run_decide as frd  # noqa: E402
 from automations.funnel_decide import (  # noqa: E402
     Block, Blocked, Branch, Checked, Complete, Convert, Due, Entry, Facts, Generate, Save,
     Script, Sent, Unreachable, Wait, decide,
@@ -365,6 +367,20 @@ def case_offer_since_table():
     bad = [f"{rid}: {got} != {want}" for rid, e, started, want in rows
            if (got := fd.offer_since(e, started)) != want]
     assert not bad, "\n  " + "\n  ".join(bad)
+
+# ── run()'s tally -> stats dict (funnel_run_decide) ───────────────────
+
+def case_run_summary():
+    t = frd.Tally()
+    t.fx.update([Wait(), Wait(), Complete(), Convert(), Branch(), Block(), Save()])
+    t.discovered, t.advanced, t.errors = 3, 1, 1
+    want = {"runs": 2, "discovered": 3, "discovery_skipped": 0, "advanced": 1, "waiting": 2,
+            "completed": 1, "converted": 1, "branched": 1, "blocked": 1, "skipped_locked": 0,
+            "skipped_cooldown": 0, "audience_mode": "off", "audience_skipped": 0,
+            "errors": 1, "cap_hit": False, "dry_run": False, "model": "m"}
+    assert (got := frd.summary(t, 2, "off", False, "m")) == want, got
+    t.key_error = {"code": "x"}
+    assert frd.summary(t, 2, "off", False, "m") == {**want, "key_error": {"code": "x"}}
 
 
 _harness.run()

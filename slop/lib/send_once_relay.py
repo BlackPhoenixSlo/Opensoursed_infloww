@@ -2,7 +2,7 @@
 `_wire`): OnlyFans' side of a 1:1 send that OF takes but the relay never hears back about.
 
 Only when a scenario writes `$DEMO_SHOTS_TMP/of-send-once.json` ({"fans": {"<account>:<fan>":
-"stall" | "hang" | "refuse_once"}, "stall_s": s, "hang_s": s}; read on every send, so a
+"stall" | "hang" | "refuse_once" | "echo_5xx"}, "stall_s": s, "hang_s": s}; read on every send, so a
 scenario rewrites it between phases), `_OfflineOF.send_message` (POST
 /api2/v2/chats/{fan}/messages, every flow's offline client and automation_relay's walker inherit it)
 answers per fan, the FIRST time OF sees that text (a resend of it answers as OF does):
@@ -10,7 +10,10 @@ answers per fan, the FIRST time OF sees that text (a resend of it answers as OF 
                30 s read timeout, compressed) the call raises curl_cffi's ReadTimeout, what
                OFClient raises then;
   hang         OF takes the message and the call blocks `hang_s` (the relay is killed meanwhile);
-  refuse_once  the proxy refuses the CONNECT (curl_cffi ProxyError): OF never sees it.
+  refuse_once  the proxy refuses the CONNECT (curl_cffi ProxyError): OF never sees it;
+  echo_5xx     OF takes the message, then the answer is a 502 whose text echoes OF's rate-limit
+               refusal ("Please allow 10 seconds"): of_client.OFAPIError, `response.status_code`
+               502, so only a text sniff calls it a refusal.
 Opt-in `"first_key": "fan_text"` (lines repeat across fans: a funnel's step, the drip's one
 nudge line): "the first time" is per (account, fan, text) instead, OF refusing a bubble with a
 400 counts as seen too, and three more fan behaviours answer (none without the opt-in):
@@ -74,6 +77,13 @@ class _Refused400:
 
     def json(self) -> dict:
         return json.loads(self.text)
+
+
+class _Echo502:
+    """The response OFAPIError carries on a 5xx whose body echoes OF's rate-limit text."""
+    status_code = 502
+    reason = "Bad Gateway"
+    text = json.dumps({"error": {"code": 0, "message": "Please allow 10 seconds"}})
 
 
 def _line(row: dict) -> None:
@@ -145,6 +155,10 @@ def wire(_app, _loopback, relay) -> None:
             raise curl.ReadTimeout(f"{SLOP_MARK}: Operation timed out after 30000 milliseconds")
         if first and how == "hang":
             time.sleep(float(cfg.get("hang_s", 300.0)))
+        if first and how == "echo_5xx":
+            from of_client import OFAPIError
+            raise OFAPIError(f"{SLOP_MARK}: 502 for /api2/v2/chats/{int(chat_id)}/messages\n{_Echo502.text}",
+                             response=_Echo502())
         if after and first and (answer := after(key, after_first, cfg, msg)) is not None:
             return answer
         _line({"op": "returned", "id": msg["id"], **key})

@@ -7,8 +7,8 @@ description: Scaffold a house-style service/tests/test_*.py for an automation in
 
 Writes a runnable test that matches the repo's conventions exactly. These tests
 are **standalone scripts**, not pytest: `./venv/bin/python service/tests/test_X.py`,
-exit 0 = pass. Study an existing sibling (`tests/test_send_followup.py`,
-`tests/test_send_welcome.py`, `tests/test_unreachable_skip.py`) before writing — copy
+exit 0 = pass. Study an existing sibling (`service/tests/test_send_followup.py`,
+`service/tests/test_send_welcome.py`, `service/tests/test_unreachable_skip.py`) before writing — copy
 its seams, don't invent new ones.
 
 ## The five non-negotiables (each one is a footgun if skipped)

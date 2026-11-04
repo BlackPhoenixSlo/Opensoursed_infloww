@@ -25,6 +25,13 @@ seam exactly like a real scheduled job.
   case_exclude_sync_failure_fails_closed:
       the Auto_Exclude sync failing must SKIP the broadcast — blasting
       without the guard is the over-send bug itself.
+  case_dry_run_* (O3):
+      a `dry_run` payload sends nothing, writes no OF list, mints no run, writes
+      no row; `would_send` is the explicit audience the real run sends, the list
+      roster minus guard / excludes / exclude lists / fence, or None + reason
+      for online / an unreadable roster; an enforce halt (kill switch, unhealthy
+      mirror, fence_scale) is the real run's; every answer says dry_run, sent 0;
+      the job ends done; other queued dry runs never shrink it.
 
 Run: ./venv/bin/python service/tests/test_send_mass.py  (exit 0 = pass)
 """
@@ -48,13 +55,16 @@ from automation_executor import enqueue_job, run_once  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import (  # noqa: E402
     Account,
+    AccountAiConfig,
     AutomationRun,
+    Fan,
     FunnelResponder,
     List,
     ListMember,
     MassMessageFunnel,
     MassRun,
     Message,
+    ScheduledJob,
 )
 
 
@@ -815,8 +825,8 @@ def case_init_db_heals_the_four_columns_and_the_index():
 # ── House cases (automation-test-writer): dry_run / no-id / cap / list members ──
 
 async def case_mass_premade_dry_run_never_reaches_this_sender():
-    """Covers mass_premade's preview path, not send_mass_message (which has no
-    dry run of its own): the delegate's dry_run must stop before this sender —
+    """Covers mass_premade's preview path (send_mass_message's own dry run is
+    case_dry_run_*): the delegate's dry_run must stop before this sender —
     no OF call, no mass_runs row, no messages row."""
     import automations.mass_premade  # noqa: F401 — registers the delegate
     aid = "acc_mass_dry"
@@ -911,6 +921,250 @@ async def case_list_members_union_minus_exclude_lists():
     assert mr.recipient_count == 2, mr.recipient_count
 
 
+# ── O3: send_mass_message's own dry_run — the would-send list, nothing written ──
+
+class FakeDryClient(FakeRosterClient):
+    """FakeRosterClient that records every OF list write (a dry run makes none)."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.writes: list[tuple] = []
+
+    def create_list(self, name):
+        self.writes.append(("create", name))
+        return super().create_list(name)
+
+    def add_user_to_list(self, list_id, user_id):
+        self.writes.append(("add", int(list_id), int(user_id)))
+        super().add_user_to_list(list_id, user_id)
+
+    def remove_user_from_list(self, list_id, user_id):
+        self.writes.append(("remove", int(list_id), int(user_id)))
+        super().remove_user_from_list(list_id, user_id)
+
+
+async def _written(aid: str) -> tuple[int, int]:
+    """(mass_runs rows, messages rows) of the account."""
+    async with get_session() as s:
+        runs = (await s.execute(select(MassRun).where(MassRun.account_id == aid))).scalars().all()
+        msgs = (await s.execute(select(Message).where(Message.account_id == aid))).scalars().all()
+    return len(runs), len(msgs)
+
+
+async def case_dry_run_explicit_sends_nothing_and_matches_the_real_run():
+    aid = "acc_mass_dry_exp"
+    await _seed_account(aid)
+    await _seed_message(aid, 9601, "out", 96001)     # inside the 6 h guard
+    fake = FakeDryClient()
+    _use_fake(fake)
+    payload = {"text": "dry hi", "included_users": [9601, 9602, 9603, 9604],
+               "excluded_users": [9603]}
+    job = await enqueue_job(aid, "send_mass_message", payload={**payload, "dry_run": True})
+    res = await run_once(aid, "send_mass_message")
+    assert res["status"] == "ok" and res["dry_run"] is True and res["sent"] == 0, res
+    assert res["would_send"] == [9602, 9604] and res["would_send_count"] == 2, res
+    assert res["audience"] == "explicit", res
+    assert fake.sent == [] and fake.writes == [], (fake.sent, fake.writes)
+    assert await _written(aid) == (0, 1), "no mass_runs row, only the seeded guard row"
+    async with get_session() as s:
+        j = await s.get(ScheduledJob, job)
+        arun = (await s.execute(select(AutomationRun).where(
+            AutomationRun.account_id == aid))).scalars().one()
+    assert j.status == "done", j.status          # never parked / retried
+    assert arun.status == "ok" and json.loads(arun.stats_json)["dry_run"] is True, arun.stats_json
+
+    # The same payload for real sends to exactly that list.
+    res2 = await run_once(aid, "send_mass_message", payload=payload)
+    assert res2["status"] == "ok" and "dry_run" not in res2, res2
+    assert fake.sent[0]["included_users"] == res["would_send"], fake.sent
+
+
+async def case_dry_run_list_reads_the_roster_and_writes_no_list():
+    aid = "acc_mass_dry_list"
+    await _seed_account(aid)
+    await _seed_message(aid, 9701, "out", 97001)     # contact guard
+    async with get_session() as s:                    # the MASSdmEXCLUDE opt-out
+        lst = List(account_id=aid, name="MASSdmEXCLUDE", kind="exclude", is_system=True)
+        s.add(lst)
+        await s.flush()
+        s.add(ListMember(list_id=lst.id, fan_id=9702))
+    fake = FakeDryClient()
+    fake.lists.append({"id": 9700, "name": "vip"})
+    fake.members[9700] = {9701, 9702, 9703, 9704, 9705}
+    _use_fake(fake)
+    payload = {"text": "dry list", "user_lists": ["9700"], "excluded_users": [9703]}
+    res = await run_once(aid, "send_mass_message", payload={**payload, "dry_run": True})
+    assert res["dry_run"] is True and res["audience"] == "list", res
+    assert res["would_send"] == [9704, 9705], res
+    assert fake.sent == [] and fake.writes == [], (fake.sent, fake.writes)
+    assert [x["name"] for x in fake.lists] == ["vip"], "no Auto_Exclude made"
+    assert await _written(aid) == (0, 1), await _written(aid)
+
+    # The real run syncs Auto_Exclude and records the same recipients off OF.
+    res2 = await run_once(aid, "send_mass_message", payload=payload)
+    assert res2["status"] == "ok" and fake.sent and fake.writes, (res2, fake.writes)
+    async with get_session() as s:
+        run = (await s.execute(select(MassRun).where(MassRun.account_id == aid))).scalars().one()
+    assert json.loads(run.recipients_json) == res["would_send"], run.recipients_json
+
+
+async def _seed_enforce(aid: str, members: tuple, universe: tuple) -> int:
+    """Enforce mode on a synced include list holding `members`; `universe` = the
+    known fans rows. Returns the include list id."""
+    await _seed_account(aid)
+    async with get_session() as s:
+        inc = List(account_id=aid, name="Include", kind="automation_include",
+                   synced_at=datetime.utcnow())
+        s.add(inc)
+        await s.flush()
+        for fid in members:
+            s.add(ListMember(list_id=inc.id, fan_id=fid))
+        for fid in universe:
+            s.add(Fan(account_id=aid, fan_id=fid))
+        s.add(AccountAiConfig(account_id=aid, audience_mode="enforce",
+                              audience_list_id=int(inc.id)))
+        return int(inc.id)
+
+
+async def case_dry_run_enforce_fence_in_memory():
+    """Enforce mode: an explicit dry run is intersected with the include list as
+    the real run is; a list dry run drops the AUTOFENCE (known fans outside the
+    include list) in memory and never builds the fence list."""
+    aid = "acc_mass_dry_fence"
+    await _seed_enforce(aid, (9801, 9802), (9801, 9802, 9803))
+    fake = FakeDryClient()
+    fake.lists.append({"id": 9800, "name": "vip"})
+    fake.members[9800] = {9801, 9803, 9804}            # 9804: no fans row, not fenced
+    _use_fake(fake)
+    base = {"text": "fenced", "exclude_replied_hours": 0, "exclude_inbound_hours": 0,
+            "dry_run": True}
+    res = await run_once(aid, "send_mass_message",
+                         payload={**base, "included_users": [9801, 9803]})
+    assert res["would_send"] == [9801], res
+    res = await run_once(aid, "send_mass_message", payload={**base, "user_lists": ["9800"]})
+    assert res["would_send"] == [9801, 9804], res
+    # A fence that empties the explicit audience: the real run's skip, marked dry.
+    res = await run_once(aid, "send_mass_message", payload={**base, "included_users": [9803]})
+    assert (res["status"], res["reason"], res["dry_run"], res["sent"]) == (
+        "skipped", "audience_empty", True, 0), res
+    assert fake.sent == [] and fake.writes == [], (fake.sent, fake.writes)
+
+
+async def case_dry_run_enforce_halts_like_the_real_run():
+    """A list dry run halts with the real run's reason (kill switch, unhealthy
+    mirror, fence over the list-row bound) and builds / writes nothing."""
+    import audience_include
+    aid = "acc_mass_dry_halt"
+    inc = await _seed_enforce(aid, (9851,), (9851, 9852))
+    fake = FakeDryClient()
+    fake.lists.append({"id": 9850, "name": "vip"})
+    fake.members[9850] = {9851, 9852}
+    _use_fake(fake)
+    payload = {"text": "halt", "user_lists": ["9850"],
+               "exclude_replied_hours": 0, "exclude_inbound_hours": 0}
+
+    async def both() -> tuple[dict, dict]:
+        dry = await run_once(aid, "send_mass_message", payload={**payload, "dry_run": True})
+        assert fake.sent == [] and fake.writes == [], (fake.sent, fake.writes)
+        return dry, await run_once(aid, "send_mass_message", payload=payload)
+
+    for meta, want in (('{"paused": true}', "kill_switch"),
+                       ('{"truncated": true}', "sync_truncated")):
+        async with get_session() as s:
+            (await s.get(List, inc)).sync_meta_json = meta
+        dry, real = await both()
+        assert dry["reason"] == real["reason"] == f"audience_halt:{want}", (dry, real)
+        assert dry["status"] == "error" and dry["dry_run"] is True and dry["sent"] == 0, dry
+    async with get_session() as s:
+        (await s.get(List, inc)).sync_meta_json = None
+    bound = audience_include.AUDIENCE_MAX_LIST_ROWS
+    audience_include.AUDIENCE_MAX_LIST_ROWS = 0        # the 1-fan fence is over it
+    try:
+        dry, real = await both()
+    finally:
+        audience_include.AUDIENCE_MAX_LIST_ROWS = bound
+    assert dry["reason"] == real["reason"] == "audience_halt:fence_scale", (dry, real)
+    assert dry["dry_run"] is True and dry["sent"] == 0, dry
+    assert fake.sent == [] and fake.writes == [], (fake.sent, fake.writes)
+    assert await _written(aid) == (0, 0)
+
+
+async def case_dry_run_unreadable_roster_and_exclude_lists():
+    """A list roster OF will not hand over → would_send None + why, never a
+    partial list; an explicit audience's OF exclude lists are subtracted as the
+    real run's recorded recipients are."""
+    aid = "acc_mass_dry_unread"
+    await _seed_account(aid)
+    base = {"text": "read", "exclude_replied_hours": 0, "exclude_inbound_hours": 0,
+            "dry_run": True}
+
+    class Boom(FakeDryClient):
+        def list_users_in(self, list_id, **kw):
+            raise RuntimeError("proxy 403")
+    _use_fake(Boom())
+    res = await run_once(aid, "send_mass_message", payload={**base, "user_lists": ["9870"]})
+    assert res["would_send"] is None and res["reason"] == "audience_unreadable", res
+    assert res["dry_run"] is True and res["sent"] == 0, res
+
+    fake = FakeDryClient()
+    fake.members[9871] = {9872}                       # an OF exclude list
+    _use_fake(fake)
+    payload = {**base, "included_users": [9872, 9873], "excluded_user_lists": [9871]}
+    res = await run_once(aid, "send_mass_message", payload=payload)
+    assert res["would_send"] == [9873] and res["audience"] == "explicit", res
+    payload.pop("dry_run")
+    await run_once(aid, "send_mass_message", payload=payload)
+    async with get_session() as s:
+        run = (await s.execute(select(MassRun).where(MassRun.account_id == aid))).scalars().one()
+    assert json.loads(run.recipients_json) == res["would_send"], run.recipients_json
+
+
+async def case_dry_run_online_refuses_a_list():
+    aid = "acc_mass_dry_online"
+    await _seed_account(aid)
+    fake = FakeDryClient(fans=[1, 2])
+    _use_fake(fake)
+    res = await run_once(aid, "send_mass_message", payload={
+        "text": "who is on", "online_only": True, "dry_run": True})
+    assert res["dry_run"] is True and res["would_send"] is None, res
+    assert res["reason"] == "online_or_filtered", res
+    assert fake.sent == [] and fake.writes == [], (fake.sent, fake.writes)
+    assert await _written(aid) == (0, 0)
+
+
+async def case_dry_run_ignores_queued_dry_runs():
+    """A queued real send still holds its fans back; a queued DRY run does not
+    (it never sends)."""
+    aid = "acc_mass_dry_pending"
+    await _seed_account(aid)
+    later = datetime.utcnow() + timedelta(minutes=15)
+    await enqueue_job(aid, "send_mass_message", run_at=later, payload={
+        "text": "queued dry", "included_users": [9901], "dry_run": True})
+    await enqueue_job(aid, "send_mass_message", run_at=later, payload={
+        "text": "queued real", "included_users": [9902]})
+    _use_fake(FakeDryClient())
+    res = await run_once(aid, "send_mass_message", payload={
+        "text": "now", "included_users": [9901, 9902, 9903], "dry_run": True})
+    assert res["would_send"] == [9901, 9903], res
+
+
+async def case_dry_pending_ids_mirror_pending_send_fan_ids():
+    """`_pending_send_ids_but_dry` is `pending_send_fan_ids` minus queued dry
+    jobs: equal over every pending-send kind, and a dry job is the only diff."""
+    aid = "acc_mass_dry_mirror"
+    await _seed_account(aid)
+    later = datetime.utcnow() + timedelta(minutes=15)
+    for kind, payload in (("scheduled_send", {"fan_id": 9951}),
+                          ("send_mass_message", {"fan_ids": [9952]}),
+                          ("mass_premade", {"messages": [{"included_users": [9953]}]})):
+        await enqueue_job(aid, kind, run_at=later, payload=payload)
+    assert await a10._pending_send_ids_but_dry(aid) == await pending_send_fan_ids(aid) \
+        == {9951, 9952, 9953}
+    await enqueue_job(aid, "send_mass_message", run_at=later, payload={
+        "included_users": [9954], "dry_run": True})
+    assert await pending_send_fan_ids(aid) - await a10._pending_send_ids_but_dry(aid) == {9954}
+
+
 _harness.run(
     case_run,
     case_echoed_real_rows,
@@ -933,4 +1187,12 @@ _harness.run(
     case_no_id_response_still_persists,
     case_recent_chat_limit_caps_the_audience,
     case_list_members_union_minus_exclude_lists,
+    case_dry_run_explicit_sends_nothing_and_matches_the_real_run,
+    case_dry_run_list_reads_the_roster_and_writes_no_list,
+    case_dry_run_enforce_fence_in_memory,
+    case_dry_run_enforce_halts_like_the_real_run,
+    case_dry_run_unreadable_roster_and_exclude_lists,
+    case_dry_run_online_refuses_a_list,
+    case_dry_run_ignores_queued_dry_runs,
+    case_dry_pending_ids_mirror_pending_send_fan_ids,
 )

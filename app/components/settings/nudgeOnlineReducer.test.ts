@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import type { NudgeConfig } from "@/hooks/useNudgeConfig";
+import { effectiveConfig, type NudgeConfig } from "@/hooks/useNudgeConfig";
 import {
-  buildConfig, canSave, effectiveConfig, gateNote, hasUnsavedEdits, initialNudgeOnlineState, isDirty,
-  nudgeOnlineReducer, parseSlotsJson, pickedIds, preSaveConfig, previewPayload, rolloutBlock, sameConfig,
-  type NudgeOnlineAction, type NudgeOnlineState, type SaveGateInput,
+  buildConfig, canSave, gateNote, hasUnsavedEdits, initialNudgeOnlineState, isDirty, keptDraft,
+  nudgeOnlineReducer, parseSlotsJson, pickedIds, preSaveConfig, previewPayload, restoredNote, rolloutBlock, sameConfig,
+  type KeptDraft, type NudgeOnlineAction, type NudgeOnlineState, type SaveGateInput,
 } from "./nudgeOnlineReducer";
 
 const A = "100000001";
@@ -29,8 +29,9 @@ const okFor = (accountId: string): Settle => ({ type: "saveOk", accountId, at: S
 const errFor = (accountId: string, msg = "boom"): Settle => ({ type: "saveErr", msg, accountId, at: SETTLED });
 const OK_A = okFor(A);
 /** The config query's data landing (`fetchedAt` = its dataUpdatedAt; `pending` = a save PUT in flight). */
-const hy = (eff: NudgeConfig, accountId: string | null = A, fetchedAt = FRESH, pending = false): NudgeOnlineAction =>
-  ({ type: "hydrate", eff, accountId, fetchedAt, pending });
+const hy = (eff: NudgeConfig, accountId: string | null = A, fetchedAt = FRESH, pending = false,
+  draft: KeptDraft | null = null): NudgeOnlineAction =>
+  ({ type: "hydrate", eff, accountId, fetchedAt, pending, draft });
 const to = (accountId: string): NudgeOnlineAction => ({ type: "account", accountId });
 const loaded = (eff = EFF, accountId = A) => run([to(accountId), hy(eff, accountId, STALE)]);
 
@@ -83,6 +84,92 @@ describe("hydrate", () => {
     expect(nudgeOnlineReducer(s, hy({ enabled: false }, B))).toBe(s);
   });
 
+});
+
+describe("hydrate with a kept draft (a tab closed mid-edit / mid-save)", () => {
+  const DRAFT: NudgeConfig = { ...EFF, delay_minutes: 9 };
+  const MOVED: NudgeConfig = { ...EFF, jitter_minutes: 7 }; // the server, changed elsewhere since the draft
+  const first = (eff: NudgeConfig, draft: KeptDraft | null, pending = false) =>
+    run([to(A), hy(eff, A, FRESH, pending, draft)]);
+
+  it.each<[string, NudgeConfig, KeptDraft, NudgeConfig, NudgeOnlineState["restored"]]>([
+    // [name, server, kept draft, form shown, restored]
+    ["equal to the server (the PUT landed, its ack was lost) → dropped", DRAFT, { draft: DRAFT, base: EFF }, DRAFT, null],
+    ["equal ignoring key order / absent slots → dropped", { delay_minutes: 4, enabled: true },
+      { draft: { enabled: true, delay_minutes: 4, slots: {} }, base: EFF }, { delay_minutes: 4, enabled: true }, null],
+    ["base = the server → restored", EFF, { draft: DRAFT, base: EFF }, DRAFT, { moved: false }],
+    ["base moved (changed elsewhere) → restored + warn", MOVED, { draft: DRAFT, base: EFF }, DRAFT, { moved: true }],
+  ])("%s", (_n, server, draft, shown, restored) => {
+    const s = first(server, draft);
+    expect(buildConfig(s)).toEqual({ ...shown, slots: shown.slots ?? {} });
+    expect(s.restored).toEqual(restored);
+    expect(s.base).toEqual(server);
+    // Restored = dirty: Save is live and a refetch keeps it; never saved by itself.
+    expect(isDirty(s)).toBe(restored !== null);
+    expect(s.saving).toBeNull();
+  });
+
+  it("discard takes the server's config back and drops the note", () => {
+    const s = nudgeOnlineReducer(first(MOVED, { draft: DRAFT, base: EFF }), { type: "discardDraft" });
+    expect(buildConfig(s)).toEqual(MOVED);
+    expect([s.restored, isDirty(s), hasUnsavedEdits(s)]).toEqual([null, false, false]);
+  });
+
+  it("discard before the load is a no-op", () => {
+    const s = run([to(A)]);
+    expect(nudgeOnlineReducer(s, { type: "discardDraft" })).toBe(s);
+  });
+
+  it("mid-save (pending) the draft is ignored like the config", () => {
+    const s = run([to(A)]);
+    expect(nudgeOnlineReducer(s, hy(EFF, A, FRESH, true, { draft: DRAFT, base: EFF }))).toBe(s);
+  });
+
+  it("a refetch while restored keeps the draft; a landed save clears the note", () => {
+    const r = first(EFF, { draft: DRAFT, base: EFF });
+    const again = nudgeOnlineReducer(r, hy(MOVED, A, FRESH + 1, false, null));
+    expect([again.form.delay_minutes, again.restored, again.base]).toEqual([9, { moved: false }, MOVED]);
+    const saved = run(["save", OK_A], r);
+    expect([saved.restored, isDirty(saved)]).toEqual([null, false]);
+  });
+
+  it("refetch on clean loaded form ignores kept draft", () => {
+    const clean = loaded();
+    const again = nudgeOnlineReducer(clean, hy(MOVED, A, FRESH, false, { draft: DRAFT, base: EFF }));
+    expect([buildConfig(again), again.base, again.restored]).toEqual([MOVED, MOVED, null]);
+    // …also after a discard: the form is loaded, the draft dropped.
+    const discarded = run([{ type: "discardDraft" }], first(EFF, { draft: DRAFT, base: EFF }));
+    const after = nudgeOnlineReducer(discarded, hy(EFF, A, FRESH + 1, false, { draft: DRAFT, base: EFF }));
+    expect([buildConfig(after), after.restored]).toEqual([EFF, null]);
+    // The pick is a first fill again: B's kept draft is read.
+    const onB = run([to(B), hy(EFF, B, FRESH, false, { draft: DRAFT, base: EFF })], clean);
+    expect([onB.form.delay_minutes, onB.restored]).toEqual([9, { moved: false }]);
+  });
+
+  it("an edit keeps the note while dirty; edited back to the server it is not shown; the pick drops it", () => {
+    const r = run([{ type: "field", k: "jitter_minutes", v: 1 }], first(EFF, { draft: DRAFT, base: EFF }));
+    expect([r.restored, restoredNote(r)]).toEqual([{ moved: false }, { moved: false }]);
+    const reverted = run([{ type: "field", k: "jitter_minutes", v: EFF.jitter_minutes },
+      { type: "field", k: "delay_minutes", v: EFF.delay_minutes }], r);
+    expect([isDirty(reverted), restoredNote(reverted)]).toEqual([false, null]);
+    expect(nudgeOnlineReducer(r, to(B)).restored).toBeNull();
+  });
+});
+
+describe("keptDraft (what the tab stashes)", () => {
+  const edited = run([{ type: "field", k: "delay_minutes", v: 9 }], loaded());
+  it.each<[string, NudgeOnlineState, NudgeOnlineState["base"] | "none"]>([
+    ["not loaded → nothing (the kept draft is the hydrate's to read)", run([to(A), { type: "field", k: "delay_minutes", v: 9 }]), "none"],
+    ["loaded, clean → nothing (the stash goes)", loaded(), "none"],
+    ["dirty → the draft on its base", edited, EFF],
+    ["unapplied JSON text → kept (the draft itself is unchanged)", run([{ type: "jsonDraft", text: "{" }], loaded()), EFF],
+    ["saving, form clean again → kept until the PUT acks", run(["save", { type: "field", k: "delay_minutes", v: 4 }], edited), EFF],
+    ["saved → nothing", run(["save", OK_A], edited), "none"],
+  ])("%s", (_n, s, base) => {
+    const k = keptDraft(s);
+    if (base === "none") expect(k).toBeNull();
+    else expect(k).toEqual({ draft: buildConfig(s), base });
+  });
 });
 
 describe("account", () => {

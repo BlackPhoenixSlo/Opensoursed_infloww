@@ -17,7 +17,7 @@ import { useQueries, type UseQueryResult } from "@tanstack/react-query";
 import { useScope } from "@/contexts/ScopeContext";
 import { relay } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
-import { objectOf } from "@/lib/ofMirrorData";
+import { objectOf } from "@/lib/ofMirrorDom";
 import { applyAccount, applyMessaging, applySecurity } from "@/lib/ofMirrorSettingsPages";
 
 type Transport = "email" | "message" | "toast" | "webpush";

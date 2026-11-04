@@ -40,6 +40,7 @@ _AUDIT_SKIP_PREFIXES = (
     # The served Browserbase login (remote_login_api): its start body carries
     # the OnlyFans PASSWORD, which must never be written to the actions table.
     "/admin/login",
+    "/push",             # a browser's push subscription sync, on every page load
 )
 # Note: do NOT include "/" here — every absolute path starts with "/", so
 # `startswith("/")` would silently skip every endpoint. The root path is

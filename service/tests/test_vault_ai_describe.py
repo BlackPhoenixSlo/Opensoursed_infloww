@@ -309,11 +309,11 @@ async def case_describe_also_flags():
 
     async def _desc(_aid, mid, **_k):
         described.append(int(mid))
-        return {"media_id": mid, "ok": True, "status": "described"}
+        return {"media_id": mid, "ok": True, "status": "described", "cost_millicents": 70}
 
     async def _flags(_aid, mid, **_k):
         flagged.append(int(mid))
-        return {"media_id": mid, "ok": True, "status": "flagged"}
+        return {"media_id": mid, "ok": True, "status": "flagged", "cost_millicents": 3}
 
     vault_ai_vision._describe_one = _desc
     vault_ai_vision._flags_one = _flags
@@ -321,6 +321,9 @@ async def case_describe_also_flags():
         await vault_ai_vision._run_describe_all(aid, "force", prompt_version="v2")
         assert described == [9001], described
         assert flagged == [9001], f"describe did not flag what it described: {flagged}"
+        # The sweep's spend is BOTH calls: the auto-flag is paid for too.
+        cost = vault_ai_vision._describe_progress[aid]["cost_millicents"]
+        assert cost == 73, f"the sweep's cost dropped the flags call: {cost}"
 
         # A flags failure must not take the description down with it.
         flagged.clear()
@@ -335,6 +338,8 @@ async def case_describe_also_flags():
         assert flagged == [9001], "the flags call was skipped"
         assert described == [9001], (
             "a cheap flags failure stopped the expensive describe sweep")
+        cost = vault_ai_vision._describe_progress[aid]["cost_millicents"]
+        assert cost == 70, f"a raised flags call changed describe's cost: {cost}"
     finally:
         vault_ai_vision._describe_one, vault_ai_vision._flags_one = o_desc, o_flags
 
@@ -483,11 +488,11 @@ async def case_describing_one_item_flags_it_too():
     o_desc, o_flags = vault_ai_vision._describe_one, vault_ai_vision._flags_one
 
     async def _desc(_aid, mid, **_k):
-        return {"media_id": mid, "ok": True, "status": "described"}
+        return {"media_id": mid, "ok": True, "status": "described", "cost_millicents": 70}
 
     async def _flags(_aid, mid, **_k):
         flagged.append(int(mid))
-        return {"media_id": mid, "ok": True, "status": "flagged"}
+        return {"media_id": mid, "ok": True, "status": "flagged", "cost_millicents": 3}
 
     vault_ai_vision._describe_one = _desc
     vault_ai_vision._flags_one = _flags
@@ -495,6 +500,7 @@ async def case_describing_one_item_flags_it_too():
         out = await vault_ai_vision.describe_one({"account_id": aid, "media_id": 80})
         assert out["ok"], out
         assert flagged == [80], f"the single-item describe did not flag it: {flagged}"
+        assert out["cost_millicents"] == 73, f"the flags call's cost went unreported: {out}"
 
         # …and a flags failure must not lose the description that was paid for.
         async def _boom(_aid, mid, **_k):
@@ -503,6 +509,7 @@ async def case_describing_one_item_flags_it_too():
         vault_ai_vision._flags_one = _boom
         out2 = await vault_ai_vision.describe_one({"account_id": aid, "media_id": 80})
         assert out2["ok"], "a cheap flags failure sank an expensive describe"
+        assert out2["cost_millicents"] == 70, out2
     finally:
         vault_ai_vision._describe_one, vault_ai_vision._flags_one = o_desc, o_flags
 
@@ -740,6 +747,43 @@ async def case_describe_all_refuses_to_start_over_the_cap() -> None:
         vault_ai_vision._run_describe_all = orig
 
 
+async def case_concurrent_describe_all_presses_start_one_sweep() -> None:
+    """Two presses at once (a double click, two managers) started TWO sweeps:
+    the start checked `_describe_running`, awaited the budget, then claimed it,
+    so the second press passed the check while the first was still awaiting.
+    N presses = N sweeps = N x the spend. Now one 200, the rest 409."""
+    import asyncio
+
+    aid = _fresh_account()
+    await _seed_account(aid)
+    await _seed_items(aid, [97])
+
+    started: list[str] = []
+    o_run, o_budget = vault_ai_vision._run_describe_all, vault_ai_vision._vision_budget
+
+    async def _spy(account_id, *a, **k):
+        started.append(account_id)
+
+    async def _slow_budget(account_id, model="qwen3-vl-30b"):
+        await asyncio.sleep(0.05)
+        return await o_budget(account_id, model)
+
+    vault_ai_vision._run_describe_all = _spy
+    vault_ai_vision._vision_budget = _slow_budget
+    try:
+        got = await asyncio.gather(*(vault_ai_vision.describe_all({"account_id": aid}) for _ in range(2)),
+                                   return_exceptions=True)
+        await asyncio.sleep(0)  # let the created task(s) run
+        ok = [g for g in got if isinstance(g, dict)]
+        busy = [g for g in got if isinstance(g, HTTPException) and g.status_code == 409
+                and g.detail == {"error": "describe_already_running"}]
+        assert len(ok) == 1 and len(busy) == 1, got
+        assert started == [aid], f"concurrent presses started {len(started)} sweeps"
+    finally:
+        vault_ai_vision._run_describe_all, vault_ai_vision._vision_budget = o_run, o_budget
+        vault_ai_vision._describe_running.discard(aid)
+
+
 async def case_one_item_describe_over_the_cap_fetches_nothing() -> None:
     """`Describe selected` is a client-side loop over the single-item endpoint.
     Over the cap every one of those calls was refused by `_reserve` — AFTER the
@@ -941,6 +985,7 @@ async def case_escalation_failure_still_reports_the_paid_refusal() -> None:
 
 _harness.run(
     case_describe_all_refuses_to_start_over_the_cap,
+    case_concurrent_describe_all_presses_start_one_sweep,
     case_capped_means_no_call_on_the_model_fits,
     case_one_item_describe_over_the_cap_fetches_nothing,
     case_cap_state_reads_the_money_not_the_sticky_flag,

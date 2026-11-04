@@ -1,6 +1,6 @@
 "use client";
 
-/** Home's story strip (stories and streams) and the right column's promotions, cut from ofMirrorFeeds. */
+/** Home's story strip (stories and streams) and the right column's promotions. */
 
 import type { OFMedia, OFUserMini } from "@/lib/relay";
 import { stillUrl } from "@/lib/ofMedia";

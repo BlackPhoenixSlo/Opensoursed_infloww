@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import secrets
 import uuid
 from contextvars import ContextVar
@@ -63,6 +62,7 @@ from db.models import (
 from auth import (
     USERNAME_RE,
     RESERVED_USERNAMES,
+    _cookie_secure,
     _normalize_username,
     _validate_password,
 )
@@ -140,11 +140,11 @@ def _make_cookie(chatter_id: str) -> str:
 
 def _parse_cookie(value: str) -> str | None:
     """Return the chatter_id if the cookie's HMAC verifies, else None."""
-    parsed = _parse_cookie_issued(value)
+    parsed = parse_cookie_issued(value)
     return parsed[0] if parsed else None
 
 
-def _parse_cookie_issued(value: str) -> tuple[str, int] | None:
+def parse_cookie_issued(value: str) -> tuple[str, int] | None:
     """`(chatter_id, issued_ms)` if the cookie's HMAC verifies, else None."""
     return signed_cookie.parse_issued(_SESSION_SECRET, value)
 
@@ -156,7 +156,7 @@ def _set_session_cookie(response: Response, chatter_id: str) -> None:
         max_age=COOKIE_MAX_AGE_SECONDS,
         httponly=True,
         samesite="lax",
-        secure=os.environ.get("SESSION_COOKIE_SECURE", "").lower() in {"1", "true", "yes"},
+        secure=_cookie_secure(),
     )
 
 
@@ -211,8 +211,7 @@ def _filter_owner_accounts(
     intersection with its allowlist."""
     allowed: set[str] = set()
     for uid, aid in pairs:
-        limit = restrictions.get(uid)
-        if limit is None or aid in limit:
+        if _allowed(restrictions, uid, aid):
             allowed.add(aid)
     return allowed
 
@@ -248,7 +247,7 @@ async def allowed_folder_ids_for_chatter(account_id: str) -> "frozenset[int] | N
     return frozenset(r[0] for r in rows)
 
 
-async def _load_identity(chatter_id: str) -> "identity_cache.CachedIdentity | None":
+async def load_identity(chatter_id: str) -> "identity_cache.CachedIdentity | None":
     """Hydrate a ChatterIdentity by joining
         chatters → chatter_users → user_accounts (+ users for usernames),
     in one session, with the Chatter row's revocation and inactivity stamps
@@ -311,7 +310,7 @@ async def _session_identity(chatter_id: str, issued: int) -> tuple[ChatterIdenti
     entry = identity_cache.get(chatter_id)
     if entry is None:
         gen = identity_cache.generation()
-        entry = await _load_identity(chatter_id)
+        entry = await load_identity(chatter_id)
         if entry is None:
             return None, False
         identity_cache.store(chatter_id, entry, gen)
@@ -510,7 +509,7 @@ async def register(
     if challenge is not None:
         return challenge
     _set_session_cookie(response, new_id)
-    entry = await _load_identity(new_id)
+    entry = await load_identity(new_id)
     return await _me_response(entry.identity if entry else None)
 
 
@@ -531,12 +530,14 @@ async def login(
         return result
     _, row = result
     _set_session_cookie(response, row.id)
-    entry = await _load_identity(row.id)
+    entry = await load_identity(row.id)
     return await _me_response(entry.identity if entry else None)
 
 
 @router.post("/logout")
-async def logout(response: Response) -> dict[str, bool]:
+async def logout(request: Request, response: Response) -> dict[str, bool]:
+    import push_api
+    await push_api.forget_cookies(request)  # before the cookies go: their sessions' push subs
     # Wipe every principal cookie (chatter + user + impersonate) so a
     # surviving cross-principal cookie can't re-authenticate the next
     # request after explicit logout. Reuses the auth helper so the set
@@ -647,6 +648,12 @@ async def _me_response(c: "ChatterIdentity | None") -> ChatterMeResp:
     )
 
 
+def _allowed(restrictions: dict[str, frozenset[str]], user_id: str, account_id: str) -> bool:
+    """Per-owner allowlist check: an owner not in `restrictions` allows all."""
+    limit = restrictions.get(user_id)
+    return limit is None or account_id in limit
+
+
 async def _owners_for(c: "ChatterIdentity") -> list[OwnerDTO]:
     if not c.owner_user_ids:
         return []
@@ -674,8 +681,7 @@ async def _owners_for(c: "ChatterIdentity") -> list[OwnerDTO]:
 
     grouped: dict[str, list[OwnerAccountDTO]] = {uid: [] for uid in c.owner_user_ids}
     for r in acct_rows:
-        limit = restrictions.get(r.user_id)
-        if limit is not None and r.account_id not in limit:
+        if not _allowed(restrictions, r.user_id, r.account_id):
             continue
         grouped[r.user_id].append(OwnerAccountDTO(
             account_id=r.account_id,
@@ -720,8 +726,7 @@ async def _flat_accounts_for(c: "ChatterIdentity") -> list[FlatAccountDTO]:
     # first owner's — a deterministic, audit-friendly choice.
     seen: dict[str, FlatAccountDTO] = {}
     for r in rows:
-        limit = restrictions.get(r.user_id)
-        if limit is not None and r.account_id not in limit:
+        if not _allowed(restrictions, r.user_id, r.account_id):
             continue
         existing = seen.get(r.account_id)
         if existing is None or (r.username or "").lower() < existing.owner_username.lower():
@@ -829,7 +834,7 @@ async def chatter_session_middleware(request: Request, call_next):
     cookie = request.cookies.get(COOKIE_NAME)
     expired = False
     if cookie:
-        parsed = _parse_cookie_issued(cookie)
+        parsed = parse_cookie_issued(cookie)
         if parsed:
             identity, expired = await _session_identity(*parsed)
             if identity is not None:
@@ -999,6 +1004,17 @@ class _InviteBody(BaseModel):
     group_id: int | None = None
 
 
+async def _mint_invite(s, owner_id: str, setup_json: str | None) -> AdminInviteResp:
+    """Add a fresh 24h single-use ChatterInvite of `owner_id` to session `s` and flush."""
+    token = secrets.token_urlsafe(24)
+    now = datetime.utcnow()
+    expires = now + timedelta(seconds=INVITE_TTL_SECONDS)
+    s.add(ChatterInvite(token=token, user_id=owner_id, created_at=now, expires_at=expires,
+                        setup_json=setup_json))
+    await s.flush()
+    return AdminInviteResp(token=token, expires_at=expires, accept_path=f"/chatter-login?token={token}")
+
+
 @admin_router.post("/invite", response_model=AdminInviteResp)
 async def invite_chatter(body: _InviteBody | None = Body(None)) -> AdminInviteResp:
     """Mint a single-use signup token good for 24h. The owner copies the
@@ -1011,23 +1027,8 @@ async def invite_chatter(body: _InviteBody | None = Body(None)) -> AdminInviteRe
     if body is not None:
         from employees import validate_employee_setup
         setup = await validate_employee_setup(actor.id, _setup_from(body))
-    token = secrets.token_urlsafe(24)
-    now = datetime.utcnow()
-    expires = now + timedelta(seconds=INVITE_TTL_SECONDS)
     async with get_session() as s:
-        s.add(ChatterInvite(
-            token=token,
-            user_id=actor.id,
-            created_at=now,
-            expires_at=expires,
-            setup_json=json.dumps(setup) if setup else None,
-        ))
-        await s.flush()
-    return AdminInviteResp(
-        token=token,
-        expires_at=expires,
-        accept_path=f"/chatter-login?token={token}",
-    )
+        return await _mint_invite(s, actor.id, json.dumps(setup) if setup else None)
 
 
 # Pending invites: Manage employees lists each unused, unexpired invite as an
@@ -1089,17 +1090,11 @@ async def resend_invite(token: str) -> AdminInviteResp:
     """Replace an unused invite with a fresh link good for another 24h, keeping
     its setup; the old link stops working."""
     actor = assert_owner()
-    new = secrets.token_urlsafe(24)
-    now = datetime.utcnow()
-    expires = now + timedelta(seconds=INVITE_TTL_SECONDS)
     async with get_session() as s:
         old = await _own_pending_invite(s, actor.id, token)
         setup_json = old.setup_json
         await s.delete(old)
-        s.add(ChatterInvite(token=new, user_id=actor.id, created_at=now, expires_at=expires,
-                            setup_json=setup_json))
-        await s.flush()
-    return AdminInviteResp(token=new, expires_at=expires, accept_path=f"/chatter-login?token={new}")
+        return await _mint_invite(s, actor.id, setup_json)
 
 
 # ── Chatter Access: owner-set visibility limits (step 5) ─────────────
@@ -1207,6 +1202,7 @@ async def put_chatter_account_access(
     """Replace THIS owner's account allowlist for the chatter atomically.
     Empty list = remove the restriction (chatter sees all of this owner's
     models again). Rejects any account id the owner doesn't own."""
+    from employees import _replace_login_access
     actor = assert_owner()
     # Validate ownership of every supplied id before touching the DB.
     for aid in body.account_ids:
@@ -1214,19 +1210,7 @@ async def put_chatter_account_access(
     deduped = sorted(set(body.account_ids))
     async with get_session() as s:
         await _assert_linked(s, chatter_id, actor.id)
-        await s.execute(
-            delete(ChatterAccountAccess).where(
-                ChatterAccountAccess.chatter_id == chatter_id,
-                ChatterAccountAccess.user_id == actor.id,
-            )
-        )
-        for aid in deduped:
-            s.add(ChatterAccountAccess(
-                chatter_id=chatter_id,
-                user_id=actor.id,
-                account_id=aid,
-                created_at=datetime.utcnow(),
-            ))
+        await _replace_login_access(s, chatter_id, actor.id, deduped)
         events.on_commit(s, "assignment_changed", agency=actor.id)
     return {"ok": True, "chatter_id": chatter_id, "account_ids": deduped}
 

@@ -347,11 +347,11 @@ def _parse_cookie(value: str) -> str | None:
     Does NOT check inactivity expiry — that needs a DB read and happens
     in the middleware. Pure crypto check here.
     """
-    parsed = _parse_cookie_issued(value)
+    parsed = parse_cookie_issued(value)
     return parsed[0] if parsed else None
 
 
-def _parse_cookie_issued(value: str) -> tuple[str, int] | None:
+def parse_cookie_issued(value: str) -> tuple[str, int] | None:
     """`(user_id, issued_ms)` if the cookie's HMAC verifies, else None."""
     return signed_cookie.parse_issued(session_stamps.SESSION_SECRET, value)
 
@@ -407,6 +407,10 @@ def _validate_password(password: str) -> None:
         raise HTTPException(status_code=400, detail="password too long")
 
 
+def _cookie_secure() -> bool:
+    return os.environ.get("SESSION_COOKIE_SECURE", "").lower() in {"1", "true", "yes"}
+
+
 def _set_session_cookie(response: Response, user_id: str) -> None:
     response.set_cookie(
         COOKIE_NAME,
@@ -416,7 +420,7 @@ def _set_session_cookie(response: Response, user_id: str) -> None:
         samesite="lax",
         # Secure is appropriate in prod (HTTPS via tunnel) but breaks
         # localhost dev. Honor an env opt-in.
-        secure=os.environ.get("SESSION_COOKIE_SECURE", "").lower() in {"1", "true", "yes"},
+        secure=_cookie_secure(),
     )
 
 
@@ -433,7 +437,7 @@ def _set_impersonate_cookie(
         max_age=IMPERSONATE_TTL_SECONDS,
         httponly=True,
         samesite="lax",
-        secure=os.environ.get("SESSION_COOKIE_SECURE", "").lower() in {"1", "true", "yes"},
+        secure=_cookie_secure(),
     )
 
 
@@ -548,7 +552,9 @@ async def login(
 
 
 @router.post("/logout")
-async def logout(response: Response) -> dict[str, bool]:
+async def logout(request: Request, response: Response) -> dict[str, bool]:
+    import push_api
+    await push_api.forget_cookies(request)  # before the cookies go: their sessions' push subs
     # Wipe every principal cookie (user + impersonate + chatter) so a
     # surviving cross-principal cookie can't re-authenticate the next
     # request after the user explicitly signed out.
@@ -605,7 +611,7 @@ async def _master_account_ids(s) -> frozenset[str]:
     return _registry.account_ids() | frozenset(str(r[0]) for r in rows)
 
 
-async def _account_ids_for(s, user_id: str, is_admin: bool) -> frozenset[str]:
+async def account_ids_for(s, user_id: str, is_admin: bool) -> frozenset[str]:
     """The account_ids a signed-in (or impersonated) user may touch: a master
     (is_admin) gets the fat set (_master_account_ids — the same source the
     isolation middleware and _resolve_account_id check against; why a union
@@ -660,7 +666,7 @@ async def _resolve_session(request: Request) -> _CookieClears:
     2FA turned on) or idle too long, the impersonate cookie per
     `_apply_impersonation`."""
     cookie = request.cookies.get(COOKIE_NAME)
-    parsed = _parse_cookie_issued(cookie) if cookie else None
+    parsed = parse_cookie_issued(cookie) if cookie else None
     if not parsed:
         return _CookieClears()
     user_id, issued = parsed
@@ -676,7 +682,7 @@ async def _resolve_session(request: Request) -> _CookieClears:
         if verdict == "expired":
             return _CookieClears(session=True)
         is_admin = bool(getattr(row, "is_admin", False))
-        account_ids = await _account_ids_for(s, user_id, is_admin)
+        account_ids = await account_ids_for(s, user_id, is_admin)
         if verdict == "touch":
             await _touch_last_seen(user_id, now)
         _request_user.set(AuthedUser(row.id, row.username, account_ids, is_admin))
@@ -704,7 +710,7 @@ async def _apply_impersonation(imp_cookie: str | None, s, row: User, now: dateti
     if imp_row is None:
         return True
     imp_is_admin = bool(getattr(imp_row, "is_admin", False))
-    imp_account_ids = await _account_ids_for(s, imp_uid, imp_is_admin)
+    imp_account_ids = await account_ids_for(s, imp_uid, imp_is_admin)
     _request_user.set(AuthedUser(imp_row.id, imp_row.username, imp_account_ids, imp_is_admin))
     _impersonation.set(Impersonation(
         real_user_id=row.id,

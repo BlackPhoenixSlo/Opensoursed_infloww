@@ -26,6 +26,7 @@ import { ImportCaptionsButton } from "@/components/compose/ImportCaptionsButton"
 import { mergeCaptions } from "@/lib/parseCaptions";
 import { type VaultMedia } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
+import { clearDraft, readDraft, usePendingDraft } from "@/lib/pendingDraft";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import {
   useAutomationRules,
@@ -37,6 +38,8 @@ import {
   useBulkApplyNudgeConfig,
   useNudgePreview,
   useNudgeSavePending,
+  effectiveConfig,
+  nudgeDraftKey,
   type NudgeConfig,
   type NudgeSlotEntry,
 } from "@/hooks/useNudgeConfig";
@@ -44,13 +47,16 @@ import StickySaveBar from "@/components/settings/StickySaveBar";
 import {
   buildConfig,
   canSave,
-  effectiveConfig,
   gateNote,
   initialNudgeOnlineState,
+  keptDraft,
   nudgeOnlineReducer,
   pickedIds,
   previewPayload,
+  restoredNote,
   rolloutBlock,
+  RESTORED_MOVED_NOTE,
+  RESTORED_NOTE,
   type FormKey,
 } from "@/components/settings/nudgeOnlineReducer";
 
@@ -146,13 +152,25 @@ export default function NudgeOnlineTab({
   // this account's last save (or one arriving while it is pending) is ignored
   // (the reducer's `hydrate`). Re-run when `busy` drops: the cache may then
   // hold that pre-save config, which must not seed the form.
+  // The account's kept draft (a tab closed mid-edit / mid-save) rides along.
   useEffect(() => {
     if (!cfgQ.data) return;
     dispatch({
       type: "hydrate", eff: effectiveConfig(cfgQ.data), accountId,
       fetchedAt: cfgQ.dataUpdatedAt, pending: busy,
+      draft: accountId ? readDraft<NudgeConfig>(nudgeDraftKey(accountId)) : null,
     });
   }, [cfgQ.data, cfgQ.dataUpdatedAt, accountId, busy]);
+
+  // Keep the dirty (or saving) draft in localStorage until a PUT acks it
+  // (useSaveNudgeConfig); not before the form is seeded — a kept draft is the
+  // hydrate's to read first.
+  usePendingDraft(state.base !== null && accountId ? nudgeDraftKey(accountId) : null, keptDraft(state));
+  const restored = restoredNote(state);
+  const discardDraft = () => {
+    dispatch({ type: "discardDraft" });
+    if (accountId) clearDraft(nudgeDraftKey(accountId));
+  };
 
   const set = <K extends FormKey>(k: K, v: NudgeConfig[K]) => dispatch({ type: "field", k, v });
   const num = (k: FormKey, fallback = 0): number => {
@@ -270,6 +288,16 @@ export default function NudgeOnlineTab({
             : <div className="text-sm text-fg-dim">Loading…</div>
       ) : (
         <Card className="p-4 space-y-5">
+          {restored && (
+            <div className="flex items-start gap-2 border border-warn/40 rounded-lg p-3 text-sm">
+              <div className="flex-1">
+                <div>{RESTORED_NOTE}</div>
+                {restored.moved && <div className="text-warn mt-1">{RESTORED_MOVED_NOTE}</div>}
+              </div>
+              {/* Off mid-save: the PUT's ack would land under a form already put back. */}
+              <Button variant="ghost" onClick={discardDraft} disabled={busy || !!state.saving}>Discard</Button>
+            </div>
+          )}
           {/* Enable */}
           <div>
             <label className="flex items-center gap-2 text-sm cursor-pointer">

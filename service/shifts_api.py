@@ -68,7 +68,6 @@ than SCHEDULE_HORIZON ahead (422), unless the start stays where it was
 
 from __future__ import annotations
 
-import contextlib
 import json
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal
@@ -78,7 +77,6 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import delete, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-from sqlalchemy.ext.asyncio import AsyncSession
 
 import events
 from chatters import _account_restrictions_for, _filter_owner_accounts
@@ -652,20 +650,8 @@ def _assign(s, shift_id: int, fields: dict[str, Any]) -> None:
             s.add(ShiftAssignment(shift_id=shift_id, employee_id=emp, account_id=acc))
 
 
-@contextlib.asynccontextmanager
-async def _write_txn():
-    """An ORM session inside `of_writer.immediate()` (BEGIN IMMEDIATE, the lock
-    before the first read), so a check and the write it guards run alone (without
-    it, 8 concurrent creates on one slot stored 7 Shifts). COMMIT / ROLLBACK are
-    immediate()'s; after-commit hooks (`events.on_commit`) run after the COMMIT."""
-    async with of_writer.immediate() as conn:
-        s = AsyncSession(bind=conn, expire_on_commit=False)
-        try:
-            yield s
-            await s.flush()
-        finally:
-            await s.close()
-    s.sync_session.dispatch.after_commit(s.sync_session)
+# Without BEGIN IMMEDIATE, 8 concurrent creates on one slot stored 7 Shifts.
+_write_txn = of_writer.immediate_session
 
 
 # response_model=None: FastAPI cannot build a response model from a return
@@ -792,6 +778,13 @@ async def edit_shift(shift_id: str, request: Request) -> dict[str, Any] | JSONRe
         return await _add_shift(s, ctx, fields, grantable)
 
 
+# cancel_shift's transaction (BEGIN IMMEDIATE: two concurrent "this" cancels on
+# one series each rewrote `cancelled_dates` from the same read, one date lost).
+# Its own name, looked up per call, so slop's `shift-cancel-unlocked` fault
+# swaps cancel_shift's alone (not every `_write_txn` route's).
+_cancel_txn = _write_txn
+
+
 @router.post("/{shift_id}/cancel")
 async def cancel_shift(shift_id: str, request: Request) -> dict[str, Any]:
     """Cancel the series, or part of it (Infloww's "Delete recurring shift":
@@ -811,9 +804,10 @@ async def cancel_shift(shift_id: str, request: Request) -> dict[str, Any]:
     occurrences must be kept.
     """
     ctx = await shift_owner_context()
-    async with get_session() as s:
+    raw = await request.body()  # read (and cached) before the write lock
+    async with _cancel_txn() as s:
         shift = await own_agency_row(s, ctx, Shift, shift_id, "shift")
-        scope, at = _parse_scope(await json_body(request) if await request.body() else {})
+        scope, at = _parse_scope(await json_body(request) if raw else {})
         if shift.status == "cancelled":
             raise HTTPException(status_code=409, detail="the Shift is already cancelled")
         day = _occurrence_date(shift, at) if at else None

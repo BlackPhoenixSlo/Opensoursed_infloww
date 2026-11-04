@@ -8,7 +8,8 @@ import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { cleanup, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { mirrorQuery, useRevalidate, VAULT_LISTS } from "./ofMirrorData";
+import { mirrorQuery } from "./ofMirrorData";
+import { useRevalidate, VAULT_LISTS } from "./ofMirrorDataQueries";
 import { relay } from "./relay";
 
 /** OF's own vault responses, captured through the Relay and scrubbed. */

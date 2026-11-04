@@ -23,7 +23,7 @@ spread over the list, so each is opened by ~users x CHATS_PER_USER / herd chats 
               then `/img/by-hash/<h>?account_id=`.
 Every phase ends once the img_fetch lane is back to 0 busy (DRAIN_S).
 
-Checks (names in lib/img_faults.py): BYTES, CDN_COLLAPSE, WARM_HIT, MAX_INFLIGHT, BIG, DIRECT, EXPIRED,
+Checks (names in lib/img_faults.py): BYTES, CDN_COLLAPSE, COLD_HERD, WARM_HIT, MAX_INFLIGHT, BIG, DIRECT, EXPIRED,
 LANE_DRAINED, REJECTED, BY_HASH, NO_OFFHOST; TILE_HASH is KNOWN_RED (SKIP with this run's result). Budgets: the quiet
 probe's cacheable tiles, cold (`MISS_P95_MS`, probe-miss) and warm (`HIT_P95_MS`, probe-hit), both also vs the last
 green run (`P95_VS_LAST`); plus the stock no 5xx / no unexpected Traceback. The herd's tile p95s are metrics only
@@ -31,6 +31,20 @@ green run (`P95_VS_LAST`); plus the stock no 5xx / no unexpected Traceback. The 
 "Cacheable" = a fresh asset <= 2 MiB. Assets > 2 MiB (BIG) and stale ones (EXPIRED) are excluded from
 CDN_COLLAPSE / WARM_HIT and asserted on their own lines. CDN_COLLAPSE is per asset <= the cap, not == 1: the
 product has no per-URL single-flight (up to `cap` slots can fetch one asset before the first write lands).
+COLD_HERD (cold and stale, the herds that miss the cache): no /img 5xx but the lane's own 503, and /admin/streams
+(a sync route: it needs a threadpool token) polled every STREAMS_POLL_S from its own thread answers
+< COLD_HERD_STREAMS_MS. The contention lives in the stale herd (every fetch misses and takes a slot); cold is
+mostly HIT / COLLAPSED once the first misses land. Measured green at medium / 200
+(20261103T184827Z-2026-11-02-img-chat-media-c239): max 299.0 ms cold (482 first-look misses of 5362), 21.1 ms stale.
+
+The threadpool finding (#172, the mechanism in service/admission.py `Lane.enter_async`), closed. Pre-fix at
+medium / 200 (20261103T153026Z-2026-11-02-img-chat-media-7911, host load ~26): 5239 of 5362 cold /img 5xx,
+/admin/streams p50 ~10 s, 246 relay threads, the run died INFRA. Not reliably reproduced on a quieter host (the same
+pre-fix code: 20261103T162502Z-...-a362 COLD_HERD red only, stale /admin/streams 2266 ms;
+20261103T162707Z-...-fcde green; HEAD's img_api.py + admission.py copied onto this tree,
+20261103T184642Z-2026-11-02-img-chat-media-4256: green, 167 relay threads at cold's peak, stale /admin/streams max
+1431.9 ms). /img is now `async def` and waits in `Lane.enter_async` on the loop; measured (c239 above): 0 5xx, 84
+relay threads at cold's peak, stale /admin/streams max 21.1 ms.
 
 Bypasses (declared):
   - OnlyFans' CDN is lib/img_relay.py's loopback fake (module docstring), reached through the product's own
@@ -44,13 +58,18 @@ Bypasses (declared):
     HTTP/1.1 per-host cap; a guess for an HTTP/2 deploy), no browser HTTP cache or service worker (sw-images.js
     is production-only).
   - The by-hash phase sends X-Account-Id on /img, which MediaTile never does (TILE_HASH).
+  - The tabs' GET is resent once on a socket reset before any response (`_TabHttp`, Chromium's keep-alive retry),
+    counted in the `resent_on_reset` metric (0-3 a run at medium / 200).
   - SLOP_LIVE=1 is refused (every check SKIPs).
 
 Break-it-once: `img-cache-never-hits` (the scenario's FAULT, `--break`'s default small / 20: `img_api._img_cache_lookup`
-always misses) turns WARM_HIT and CDN_COLLAPSE red (the probe-hit budget too: noise); at medium / 200 it wedges the
-relay, a product finding (lib/img_faults.py); `--fault=img-cache-key-keeps-signature` (the disk-cache key is the whole
+always misses) turns WARM_HIT and CDN_COLLAPSE red (the probe-hit budget too: noise); `--fault=img-cache-key-keeps-signature` (the disk-cache key is the whole
 signed URL, so the rotated reopen misses) WARM_HIT; `--fault=img-fetch-lane-unbounded` (IMG_FETCH admits
-everything) MAX_INFLIGHT (CDN_COLLAPSE often red too: noise, measured not reliable).
+everything) MAX_INFLIGHT (CDN_COLLAPSE may go red too: noise, measured not reliable); `--scale=medium --users=200
+--fault=img-fetch-on-pool-tokens` (the #172 cycle back: the lane's wait parks a threadpool thread and the
+failed-fetch close needs a pool token while holding its slot) COLD_HERD
+(20261103T185000Z-2026-11-02-img-chat-media-break-f83d: stale /admin/streams 10 s timeouts, 177 lane 503s; EXPIRED,
+REJECTED and the stock 5xx go red too: noise, the wedge's own 503s).
 """
 # No `from __future__ import annotations`: lib/cli.py loads a scenario outside sys.modules, and @dataclass resolves
 # string annotations through it.
@@ -58,6 +77,7 @@ import asyncio
 import hashlib
 import json
 import os
+import threading
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -68,9 +88,10 @@ from urllib.parse import urlencode, urlsplit
 import httpx
 
 from slop.lib.img_faults import (
-    BIG, BY_HASH, BYTES, CDN_COLLAPSE, DIRECT, EXPIRED, LANE_DRAINED, MAX_INFLIGHT, NO_OFFHOST, REJECTED, TILE_HASH,
-    WARM_HIT,
+    BIG, BY_HASH, BYTES, CDN_COLLAPSE, COLD_HERD, DIRECT, EXPIRED, LANE_DRAINED, MAX_INFLIGHT, NO_OFFHOST, REJECTED,
+    TILE_HASH, WARM_HIT,
 )
+from slop.lib.client import Http
 from slop.lib.img_relay import ACCOUNT_HEADERS, arm_run, creator_headers, signed
 from slop.lib.procmon import pct
 from slop.seed import chat_media
@@ -84,9 +105,13 @@ CHATS_PER_USER = 3
 STALE_USERS_DIV = 4
 PROBE_TILES = 30        # cacheable assets the probe chats hold
 DRAIN_S = 30
+STREAMS_POLL_S = 0.5    # COLD_HERD: /admin/streams polled this often through the cold and stale phases
+STREAMS_TIMEOUT_S = 10  # a poll that takes longer is recorded as this (a wedged relay)
+COLD_HERD_STREAMS_MS = 2000  # COLD_HERD's budget: every /admin/streams poll through a cache-miss herd
 # Budgets on the quiet probe (one tab, one fetch at a time, nothing else in flight), cacheable tiles. Measured
-# (host load ~3-4): probe-miss p95 127.4 ms (n=32, medium/200, 20261102T210759Z-...-3c0f) and 125.1 ms (n=32,
-# small/20, 20261102T210741Z-...-976c), of which 100 ms is the fake's CDN_LATENCY_S sleep; probe-hit p95 2.8 / 2.6 ms.
+# (host load ~3): probe-miss p95 125.2 ms (n=32, medium/200, 20261103T184827Z-2026-11-02-img-chat-media-c239) and
+# 125.5 ms (n=32, small/20, 20261103T185147Z-2026-11-02-img-chat-media-baseline-b668), of which 100 ms is the fake's
+# CDN_LATENCY_S sleep; probe-hit p95 2.4 / 2.9 ms.
 # What catches what (headroom is a guess):
 #   MISS_P95_MS   absolute ceiling on a quiet miss (one CDN round-trip + the relay's ~27 ms): a miss stuck behind the
 #                 lane or a stall, or >= 2 extra round-trips. One extra round-trip (~227 ms) still fits it:
@@ -106,6 +131,44 @@ KNOWN_RED = {
                "and MediaTile fetches /img?u=&account_id= with no header (app/lib/mediaUrl.ts proxyImage, "
                "next.config rewrites, Traefik add none), so its by-hash pivot never fires",
 }
+
+
+def _keepalive_reset(e: httpx.HTTPError) -> bool:
+    """The keep-alive race's shapes: a reset socket (ReadError, measured: cause BrokenResourceError) or a close
+    before any response. A truncated body ('peer closed connection without sending complete message body') is
+    neither: never resent, it reaches BYTES as a transport error."""
+    if isinstance(e, httpx.RemoteProtocolError):
+        return "without sending a response" in str(e)
+    return isinstance(e, httpx.ReadError)
+
+
+class _TabHttp(Http):
+    """The tabs' pool. A GET the relay's socket reset before any response (`_keepalive_reset`) is sent once more,
+    as Chromium resends a request whose reused keep-alive socket fails (lib/client.py's KEEPALIVE_EXPIRY_S note).
+    With /img off the threadpool the relay outruns the harness: it drains users x TAB_CONC bodies at once, and can
+    finish reading one > 5 s - KEEPALIVE_EXPIRY_S after uvicorn started that connection's keep-alive timer
+    (measured: those requests never reach the relay's access log, and with keep-alive off none fail,
+    20261103T155317Z-2026-11-02-img-chat-media-9283). The resend sits under Http's recording (one record per GET,
+    both tries timed); each is kept in `resent` with its error."""
+
+    def __init__(self, owner: Http, limits: int) -> None:
+        super().__init__(str(owner.c.base_url), owner.rec, limits=limits, host=owner.host, prefix=owner.prefix,
+                         headers=owner.headers)
+        self.c.cookies = owner.c.cookies   # as Http.share
+        self.resent: list[str] = []
+        send = self.c.request
+
+        async def once_more(method: str, url, **kw) -> httpx.Response:
+            try:
+                return await send(method, url, **kw)
+            except httpx.HTTPError as e:
+                if method != "GET" or not _keepalive_reset(e):
+                    raise
+                self.resent.append(f"{str(url).split('?')[0]} {type(e).__name__}: {e} (cause "
+                                   f"{e.__cause__ or e.__context__!r}; stage {self.rec.stage})")
+                return await send(method, url, **kw)
+
+        self.c.request = once_more
 
 
 def _key(url: str) -> str:
@@ -133,6 +196,7 @@ class Phase:
     streams1: dict
     drained: bool
     seconds: float
+    streams_ms: list    # COLD_HERD: each /admin/streams poll's latency during the opens (cold and stale only)
 
     def disk_delta(self, k: str) -> int:
         return self.disk1[k] - self.disk0[k]
@@ -157,6 +221,7 @@ async def _img(http, sink: Sink, assets: dict, key: str, aid: str, url: str | No
         status, body, h = 599, b"", {}
     a = assets.get(key)
     rec = {"key": key, "url": url, "aid": aid, "status": status, "cache": h.get("x-img-cache"),
+           "detail": "" if status == 200 else body[:200].decode("utf-8", "replace"),
            "hash": h.get("x-img-hash"), "ms": (time.perf_counter() - t) * 1000, "by_hash": by_hash,
            "bytes_ok": a is not None and status == 200 and len(body) == a["size"]
            and hashlib.sha256(body).hexdigest() == a["sha256"]}
@@ -212,17 +277,46 @@ async def _json(ctx, path: str) -> dict:
     return r.json()
 
 
-async def _phase(ctx, name: str, want: Counter, body) -> Phase:
-    """`body(sink)` runs the phase's opens; then wait for the lane to drain and take the fake's calls."""
+def _watch_streams(owner, out: list, stop: threading.Event) -> None:
+    """COLD_HERD: GET /admin/streams every STREAMS_POLL_S until `stop`, each poll's ms (a timeout, transport error
+    or non-200 is STREAMS_TIMEOUT_S x 1000). Its own thread, sync client and connection, so the harness's own loop
+    (busy with users x TAB_CONC fetches) is not in the number."""
+    with httpx.Client(base_url=str(owner.c.base_url), cookies=owner.c.cookies, headers=owner.headers,
+                      timeout=STREAMS_TIMEOUT_S) as http:
+        while not stop.is_set():
+            t = time.perf_counter()
+            try:
+                r = http.get("/admin/streams")
+                ms = (time.perf_counter() - t) * 1000 if r.status_code == 200 else STREAMS_TIMEOUT_S * 1000
+            except httpx.HTTPError:
+                ms = STREAMS_TIMEOUT_S * 1000
+            out.append(round(ms, 1))
+            stop.wait(STREAMS_POLL_S)
+
+
+async def _phase(ctx, name: str, want: Counter, body, *, watch: bool = False) -> Phase:
+    """`body(sink)` runs the phase's opens (`watch`: /admin/streams polled meanwhile); then wait for the lane to
+    drain and take the fake's calls."""
     ctx.rec.stage = name
     disk0, streams0 = await _json(ctx, "/admin/img-cache/disk"), await _json(ctx, "/admin/streams")
     n0 = (await _json(ctx, "/__slop/img/stats"))["n"]
     sink = Sink([], [])
     t = time.time()
-    await body(sink)
+    streams_ms: list = []
+    stop = threading.Event()
+    watcher = asyncio.create_task(asyncio.to_thread(_watch_streams, ctx.owner, streams_ms, stop)) if watch else None
+    try:
+        await body(sink)
+    finally:
+        stop.set()
+        if watcher:
+            await watcher
     drained, t_end = False, time.monotonic() + DRAIN_S
     while time.monotonic() < t_end:
-        st = await _json(ctx, "/admin/streams")
+        try:  # a wedged relay (COLD_HERD red) may not answer at once: keep polling until DRAIN_S
+            st = await _json(ctx, "/admin/streams")
+        except httpx.HTTPError:
+            continue
         if st["img_fetch_busy"] == 0 and st["active"] == 0:
             drained = True
             break
@@ -231,7 +325,8 @@ async def _phase(ctx, name: str, want: Counter, body) -> Phase:
     disk1, streams1 = await _json(ctx, "/admin/img-cache/disk"), await _json(ctx, "/admin/streams")
     n1 = (await _json(ctx, "/__slop/img/stats"))["n"]
     calls = (await _json(ctx, f"/__slop/img/calls?since={n0}&until={n1}"))["calls"]
-    return Phase(name, want, sink.recs, sink.bad, calls, disk0, disk1, streams0, streams1, drained, seconds)
+    return Phase(name, want, sink.recs, sink.bad, calls, disk0, disk1, streams0, streams1, drained, seconds,
+                 streams_ms)
 
 
 @dataclass
@@ -379,6 +474,27 @@ def _check_expired(ctx, r: Run) -> None:
               cdn_statuses=dict(Counter(c["status"] for c in calls)))
 
 
+def _check_cold_herd(ctx, r: Run) -> None:
+    """The herds that miss the cache (cold: every tab at once on an empty cache; stale: every fetch needs a slot,
+    403s are never cached): each did miss, no /img 5xx but the lane's own 503, and /admin/streams kept answering
+    < COLD_HERD_STREAMS_MS through each."""
+    detail, ok = {}, True
+    for p in (r.cold, r.stale):
+        recs = p.img_recs()
+        lane = [x for x in recs if x["status"] == 503 and "requests in flight" in x["detail"]]
+        bad = [x for x in recs if x["status"] >= 500 and x not in lane]
+        ms = p.streams_ms
+        worst = max(ms, default=None)
+        # A herd that found the cache warm proves nothing about contention.
+        ok = ok and bool(recs) and p.disk_delta("misses") > 0 and bool(ms) and not bad \
+            and worst < COLD_HERD_STREAMS_MS
+        detail[p.name] = {"fetches": len(recs), "first_look_misses": p.disk_delta("misses"), "other_5xx": len(bad),
+                          "other_5xx_statuses": dict(Counter(x["status"] for x in bad)), "lane_503": len(lane),
+                          "sample": [(x["key"], x["status"], x["detail"][:80]) for x in bad[:3]],
+                          "streams_polls": len(ms), "streams_max_ms": worst, "streams_p95_ms": pct(ms)}
+    ctx.check(COLD_HERD, ok, budget_ms=COLD_HERD_STREAMS_MS, **detail)
+
+
 def _check_lane(ctx, r: Run) -> None:
     """The lane back to 0 busy after every phase; nothing rejected over the run."""
     ctx.check(LANE_DRAINED, all(p.drained and p.streams1["img_fetch_busy"] == 0 for p in r.phases),
@@ -447,8 +563,8 @@ def _metrics(ctx, r: Run) -> None:
 
 
 async def run(ctx) -> None:
-    every = (BYTES, CDN_COLLAPSE, WARM_HIT, MAX_INFLIGHT, BIG, DIRECT, EXPIRED, LANE_DRAINED, REJECTED, BY_HASH,
-             TILE_HASH, NO_OFFHOST)
+    every = (BYTES, CDN_COLLAPSE, COLD_HERD, WARM_HIT, MAX_INFLIGHT, BIG, DIRECT, EXPIRED, LANE_DRAINED, REJECTED,
+             BY_HASH, TILE_HASH, NO_OFFHOST)
     if os.environ.get("SLOP_LIVE") == "1":
         for c in every:
             ctx.skip(c, "SLOP_LIVE=1: this scenario runs on the fake CDN only")
@@ -478,13 +594,13 @@ async def run(ctx) -> None:
         "tabs_per_chat": round(ctx.users * per_tab / max(1, len(herd)), 1)})
     stale_plans = [[stale[i % len(stale)]] for i in range(max(1, ctx.users // STALE_USERS_DIV))]
     bigs = [k for k, a in assets.items() if a["big"]]
-    http = ctx.owner.share(limits=max(20, ctx.users * TAB_CONC))
+    http = _TabHttp(ctx.owner, limits=max(20, ctx.users * TAB_CONC))
     try:
-        cold = await _phase(ctx, "cold", _want(plans), _tabs(http, plans, assets))
+        cold = await _phase(ctx, "cold", _want(plans), _tabs(http, plans, assets), watch=True)
         warm = await _phase(ctx, "warm", _want(plans), _tabs(http, plans, assets))
         rotated_urls = chat_media.rotate(w, data)
         rot = await _phase(ctx, "rotated", _want(plans), _tabs(http, plans, assets))
-        stl = await _phase(ctx, "stale", _want(stale_plans), _tabs(http, stale_plans, assets))
+        stl = await _phase(ctx, "stale", _want(stale_plans), _tabs(http, stale_plans, assets), watch=True)
         pmiss = await _phase(ctx, "probe-miss", _want([probe]), _tabs(http, [probe], assets, conc=1))
         phit = await _phase(ctx, "probe-hit", _want([probe]), _tabs(http, [probe], assets, conc=1))
 
@@ -505,8 +621,9 @@ async def run(ctx) -> None:
     for p in r.phases:
         (ctx.out / f"img-calls-{p.name}.json").write_text(json.dumps(p.calls))
 
-    for check in (_check_bytes, _check_collapse, _check_warm, _check_inflight, _check_big, _check_direct,
+    for check in (_check_bytes, _check_collapse, _check_cold_herd, _check_warm, _check_inflight, _check_big, _check_direct,
                   _check_expired, _check_lane, _check_by_hash, _check_budgets):
         check(ctx, r)
     _check_offhost(ctx)
     _metrics(ctx, r)
+    ctx.metric("resent_on_reset", {"n": len(http.resent), "sample": http.resent[:5]})

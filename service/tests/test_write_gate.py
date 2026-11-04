@@ -164,15 +164,17 @@ async def case_the_tier_reaches_the_gate_from_an_operators_run():
 def case_the_apps_paced_writes_are_the_operators():
     """The relay's own of_write_paced calls (chat delete, the vault import's
     carrier writes and its linked-fan send) run in a request, outside any run:
-    each must say it is the operator's."""
-    src = Path(ax.__file__).with_name("server.py").read_text()
-    calls = [n for n in ast.walk(ast.parse(src))
-             if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "of_write_paced"]
-    assert len(calls) == 3, len(calls)
-    for c in calls:
+    each must say it is the operator's. Every relay module: routes move out of
+    server.py. service/automations/ is not scanned, those calls are a run's."""
+    calls = [(path.name, n) for path in sorted(Path(ax.__file__).parent.glob("*.py"))
+             for n in ast.walk(ast.parse(path.read_text()))
+             if isinstance(n, ast.Call)
+             and "of_write_paced" in (getattr(n.func, "id", None), getattr(n.func, "attr", None))]
+    assert len(calls) == 3, [(name, c.lineno) for name, c in calls]
+    for name, c in calls:
         kw = {k.arg: k.value for k in c.keywords}
         assert isinstance(kw.get("operator"), ast.Constant) and kw["operator"].value is True, (
-            "server.py:%d of_write_paced without operator=True" % c.lineno)
+            "%s:%d of_write_paced without operator=True" % (name, c.lineno))
 
 
 if __name__ == "__main__":

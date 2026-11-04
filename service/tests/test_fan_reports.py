@@ -7,7 +7,7 @@
   csv     `format=csv` streams the whole ranking (`limit` aside) with FAN_REPORT_FIELDS as the header, under the
           shared CSV cap.
   traffic the window's spend by the trial link or promotion each spender claimed (his earliest claim by OF's
-          subscribe_at, else first sighting), named by the trial mirror and the promotion's campaign (through
+          subscribe_at, else first sighting, then id), named by the trial mirror and the promotion's campaign (through
           link_meta.campaign_id); the rest as no link.
   growth  new fans per report-zone day (a subscription sale or the roster's subscribe_at, each fan once) and
           renewed fans (a rebill).
@@ -70,7 +70,8 @@ def _get(path: str, status: int = 200):
     return r
 
 
-C1, C2, C3, C4 = _creator("5600001"), _creator("5600002"), _creator("5600003"), _creator("5600004")
+C1, C2, C3, C4, C5 = (_creator("5600001"), _creator("5600002"), _creator("5600003"), _creator("5600004"),
+                      _creator("5600005"))
 MARCH = "from=2026-03-01&to=2026-03-31"
 
 
@@ -145,6 +146,19 @@ def case_traffic_groups_spend_by_each_fans_earliest_claimed_link():
         {"account_id": C3, "kind": None, "of_id": None, "name": None, "source": None,
          "fans": 1, "total_cents": 50},
     ], traffic
+
+
+def case_traffic_earliest_claim_ties_break_on_id():
+    # Fan 20's three claims, in insert (id) order: by coalesce(subscribe_at, first_seen_at), the first
+    # two tie on Mar 2, so the lower id (the trial) takes his spend.
+    _add(LinkClaimer(account_id=C5, kind="trial", of_id=72, fan_id=20, first_seen_at=datetime(2026, 3, 2)),
+         LinkClaimer(account_id=C5, kind="promo", of_id=83, fan_id=20, subscribe_at=datetime(2026, 3, 2),
+                     first_seen_at=datetime(2026, 3, 1)),
+         LinkClaimer(account_id=C5, kind="trial", of_id=73, fan_id=20, first_seen_at=datetime(2026, 3, 3)))
+    _sale(C5, 20, "tip", 1000, datetime(2026, 3, 12, 9, 0))
+
+    traffic = _get(f"/admin/stats/fan-report?account_id={C5}&{MARCH}").json()["traffic"]
+    assert [(t["kind"], t["of_id"], t["fans"], t["total_cents"]) for t in traffic] == [("trial", 72, 1, 1000)], traffic
 
 
 def case_growth_counts_new_and_renewed_fans_per_report_zone_day():

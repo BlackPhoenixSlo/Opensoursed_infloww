@@ -306,7 +306,7 @@ export default function SalesRecords() {
 
   // Infinite scroll: the next page loads when the sentinel under the table comes within 200px of the viewport.
   const { hasNextPage, isFetchingNextPage, fetchNextPage } = pages;
-  const sentinel = useLoadMoreSentinel(hasNextPage, isFetchingNextPage, fetchNextPage);
+  const sentinel = useLoadMoreSentinel(hasNextPage, isFetchingNextPage, fetchNextPage, pages.isError);
 
   const creatorName = (id: string) => accounts.find((a) => a.id === id)?.nickname || id;
   const typeLabel = (k: string) => SALES_TYPES.find((t) => t.kind === k)?.label ?? k;

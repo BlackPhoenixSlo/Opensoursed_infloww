@@ -1,6 +1,6 @@
 /**
  * InfiniteListFooter — what the foot of a list shows in each paging state, and that its sentinel, once seen,
- * asks for the next page only when there is one and none is loading.
+ * asks for the next page only when there is one, none is loading and the list is not in error.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
@@ -26,14 +26,15 @@ afterEach(() => {
 
 describe("InfiniteListFooter", () => {
   it.each([
-    // state,                     hasNext, fetching, button,       disabled, end line,             fetches when seen
-    ["more to load",              true,    false,    "Load more",  false,    null,                 1],
-    ["loading the next page",     true,    true,     "Loading…",   true,     null,                 0],
-    ["end of a report",           false,   false,    null,         false,    "· end of results ·", 0],
-  ] as const)("%s", (_state, hasNextPage, isFetchingNextPage, button, disabled, end, fetches) => {
+    // state,                     hasNext, fetching, error, button,      disabled, end line,             fetches when seen
+    ["more to load",              true,    false,    false, "Load more", false,    null,                 1],
+    ["loading the next page",     true,    true,     false, "Loading…",  true,     null,                 0],
+    ["the list is in error",      true,    false,    true,  "Load more", false,    null,                 0],
+    ["end of a report",           false,   false,    false, null,        false,    "· end of results ·", 0],
+  ] as const)("%s", (_state, hasNextPage, isFetchingNextPage, isError, button, disabled, end, fetches) => {
     const fetchNextPage = vi.fn();
     render(<InfiniteListFooter hasNextPage={hasNextPage} isFetchingNextPage={isFetchingNextPage}
-      fetchNextPage={fetchNextPage} endLabel="end of results" />);
+      fetchNextPage={fetchNextPage} isError={isError} endLabel="end of results" />);
 
     if (button) {
       const b = screen.getByRole("button", { name: button });

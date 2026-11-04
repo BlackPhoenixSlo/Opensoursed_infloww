@@ -11,12 +11,13 @@ oracles, bypasses).
 |---|---|
 | `seed/vault_items.py` | `seed(w, creators, n)` (`n`: {account_id: items}): `vault_items` rows by SQL as Collect sweeps leave them, then the passes on top (thumb hash, describe, flags, operator grades, OF's search harvest, sends, earlier hides), two finished `vault_cache_runs` per Creator, 6 OF folders (`listStates`) and 3 AI folders. About a fifth of the hashed media are planted re-upload groups of 2 to 5 (exact bytes or 0-7 bits off, at most one video decoy edit per group) and a few flagged rows planted review suspects. `COLLECT_CAP` (20,000) is the most one Collect sweep mirrors. Returns per Creator `of_folders`, `folders`, `copies` (planted distances), `iffy`. |
 | `lib/vault_pro_relay.py` | OnlyFans' `PUT /vault/media/hidden` (`OFClient.hide_vault_media`), only when the run wrote `of-vault-pro.json`: records each call's ids in order, answers success; `GET /__slop/vault-pro/fake` (`FAKE_PATH`) answers them. |
-| `lib/vault_pro_faults.py` | Every correctness check of vault-pro-20k (`PAGING`, `FILTERS`, `DUPES`, `HIDE`, `HIDE_STRICT0`, `SUMMARY_BEFORE`, `SUMMARY_AFTER`, `OF_FOLDERS`, `FLAGS`, `UI_HIDE`) and two faults (below). |
+| `lib/vault_pro_faults.py` | Every correctness check of vault-pro-20k and its faults (below). |
 | `seed/vault_items_describe.py` | In two steps around the relay arm: `plan(w, creators, n)` (per Creator its share of `n` photos, clips of 6 / 9 / 12 frames and a few audio files; 15% described by an earlier sweep, of the rest a deterministic refuse set and blank set, each at least one per Creator), then `seed(w, items, armed)` (the `vault_items` rows, a cached row with its `grok_calls` row, and the stills `vault_frames.collect` reads, plus a 300px grid stand-in; each item's picture its own pixel size). |
 | `lib/vault_describe_relay.py` | DeepInfra's OpenAI-compatible wire on its own loopback port, inert until the run wrote `deepinfra.json` and armed it (`arm_run`, `POST /__slop/vault-describe/arm`; 409 under `SLOP_LIVE=1`): answers describe prompts by each item's outcome (ok; refuse: 30b refuses, 235b answers; blank: both ""), flags prompts with flags JSON plus a hostile description / tags, bills each answer at `llm_models.MODELS`' listed price; re-points the still stores into the run's temp dir. `GET /__slop/vault-describe/calls`, `/count`. |
-| `lib/vault_describe_faults.py` | The describe sweep's check names (`EXACTLY_ONCE`, `PLAN`, `CACHE`, `ESCALATE`, `COST`, `COST_INCL_FLAGS`, `FLAGS`, `ONE_SWEEP`, `UI_SETTLED`) and two faults (below). |
+| `lib/vault_describe_faults.py` | The describe sweep's check names and its faults (below). |
 | `lib/vault_relay.py` | OnlyFans' side of a vault import (upload claim, carrier post, `GET /__slop/vault/fake`), for `2026-10-30-vault-import-reducer` (below). |
 | `lib/vault_faults.py` | That import's check names and its client fault `import-sends-unselected`. |
+| `lib/vault_import_faults.py` | That import's relay-side fault (below; its check name from `lib/vault_faults.py`). |
 | `lib/picker_faults.py` | That scenario's restricted-chatter phase: check `RESTRICTED_MENU` and client fault `picker-ignores-folder-access` (the picker's restricted branch off). |
 | `lib/picker_ts.mjs` | The same phase in node (`lib/app_ts.py`): `vaultPickerFolders.folderSelectItems` on the chatter's folder access and vault lists. |
 | `scenarios/2026-11-01-vault-pro-20k.py` | Vault Pro at 20k; its `_oracle` (what `GET /duplicates` must answer at a strictness, from the planted copies). |
@@ -37,10 +38,10 @@ oracles, bypasses).
   `vault-pro-dupes-settled`). Checks (`lib/vault_pro_faults.py`): `PAGING`, `FILTERS`, `DUPES` (== the planted
   groups; needs Creator 0's sets at 0 < 2 < 6), `HIDE`, `HIDE_STRICT0`, `SUMMARY_BEFORE`, `SUMMARY_AFTER`,
   `OF_FOLDERS`, `FLAGS` (needs planted live suspects), `UI_HIDE`; budgets (items and duplicates p95, p95 vs the
-  last green run) are the scenario's. `KNOWN_RED` (SKIP with the reason when red): the duplicates budget from a
-  20k vault, `HIDE_STRICT0` at any size (the hide reads strictness 0 as 2). Faults: `vault-items-page-overlap`
-  (default; swaps the items route's endpoint; targets `PAGING`), `vault-dupes-ignores-strictness` (`DUPES`); none
-  targets `HIDE_STRICT0`. Knobs: `--vault_items=` (SCALES `vault_pro_items`; huge 20,000 (=
+  last green run) are the scenario's. `KNOWN_RED` (SKIP with the reason when red): only the duplicates budget
+  from a 20k vault. Faults: `vault-items-page-overlap` (default; swaps the items route's
+  endpoint; targets `PAGING`), `vault-dupes-ignores-strictness` (`DUPES`, `HIDE_STRICT0`: the hide at 0
+  re-clusters through it), `vault-hide-threshold-or-default` (`HIDE_STRICT0`). Knobs: `--vault_items=` (SCALES `vault_pro_items`; huge 20,000 (=
   `COLLECT_CAP`; the `min()` clamp caps overrides)).
 - `2026-11-01-vault-describe-sweep`: `agency_inbox` plus `seed/vault_items_describe` (`--items=`), the Agency's
   dummy DeepInfra key through `PUT /admin/my-llm-keys`, `lib/vault_describe_relay.py` armed. Each phase runs its
@@ -48,11 +49,13 @@ oracles, bypasses).
   and the fake went quiet: pass 1 (plan, then describe-all for every Creator at once; with UI the UI Creator's from
   Extras, "Describe all (N)", screenshots `describe-trigger` / `describe-settled`), flags (`flags-all {force}` for
   every Creator), pass 2 (must retry only the blank ones), pass 3 (describe-all pressed by 3 tabs at once per
-  Creator). Checks (`lib/vault_describe_faults.py`): `EXACTLY_ONCE`, `PLAN`, `CACHE`, `ESCALATE`, `COST`, `FLAGS`,
-  `UI_SETTLED`; `ONE_SWEEP` and `COST_INCL_FLAGS` are `KNOWN_RED` (always SKIP, with this run's result); budgets
+  Creator). Checks (`lib/vault_describe_faults.py`): `EXACTLY_ONCE`, `PLAN`, `CACHE`, `ESCALATE`, `COST`,
+  `COST_INCL_FLAGS`, `FLAGS`, `ONE_SWEEP`, `UI_SETTLED`; budgets
   (the status routes' p95 over pass 1, flags and pass 2, p95 vs the last green run) are the scenario's.
   `SLOP_LIVE=1`: every check SKIPs. Faults: `vault-describe-ignores-cache` (default; targets `CACHE`, `PLAN`),
-  `vault-describe-cost-last-attempt` (`COST`). Knobs: `--items=` (SCALES `vault_describe_items`),
+  `vault-describe-cost-last-attempt` (`COST`, `COST_INCL_FLAGS`), `vault-describe-claim-after-budget` (the start
+  claims the Creator only after awaiting the budget, so concurrent presses all start a sweep; `ONE_SWEEP`),
+  `vault-describe-drops-flags-cost` (`COST_INCL_FLAGS`). Knobs: `--items=` (SCALES `vault_describe_items`),
   `--llm_latency_s=` (0.05 per call).
 - `2026-10-30-vault-import-reducer`: Vault Pro > Add media's pick list
   (`app/components/vault/importPickReducer.ts`) on the real UI and relay route (one owner,
@@ -70,4 +73,6 @@ oracles, bypasses).
   picker (also `--no-ui`): one `chatter_folder_access` row to 1 of Creator 1's 3 OF folders; its folder access and
   vault lists through `vaultPickerFolders.folderSelectItems` in node (`lib/picker_ts.mjs`) and, with UI, its real
   picker must list exactly that folder (`RESTRICTED_MENU`); fault `picker-ignores-folder-access`
-  (`lib/picker_faults.py`) turns only that check red.
+  (`lib/picker_faults.py`) turns only that check red. Relay-side fault `vault-import-status-drops-items`
+  (`lib/vault_import_faults.py`: the status route's `items` lose the run's last one, the counts unchanged) turns
+  only `RUN_ITEMS` red.

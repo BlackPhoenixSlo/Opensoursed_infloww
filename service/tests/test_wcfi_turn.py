@@ -11,10 +11,16 @@ stats), called directly on a real gathered candidate, a fake OF and a patched LL
                              nothing sent, the turn still counted (turn_counter +1)
   case_lost_slot             SlotLost at bubble 2: _turn raises, bubble 1 recorded
                              (send stamp, rest, lease released)
+  case_lost_slot_at_sticker  SlotLost at the sticker's hold after the text landed: the
+                             bubble recorded (send stamp), no gif, then _turn raises —
+                             mark-read never called, the lease released
   case_no_id_quarantined     200 without an id from a lapsed sub: kind "no_id",
                              errors 1, the fan rested a week
   case_cap_raises            the LLM cap / a rejected key raise out of `_turn` (run()
                              stops on them), nothing sent, the lease released
+  case_persist_seam          a bubble persists through the module's
+                             `write_outbound_attribution`, looked up per call (slop's
+                             wcfi-turn-sent-twice patches it there)
   case_fold_table            `_fold` (pure): each outcome's counters summed under the
                              stats keys run() returns, newly_skiplisted in the skips
   case_run_stats_keys        run_once: the stats keys (in order) run() always returned
@@ -186,6 +192,38 @@ async def case_lost_slot():
     assert await _lease(aid, fid) is None
 
 
+async def case_lost_slot_at_sticker():
+    from automations import cat_stickers as cs
+    aid, fid = "turn_lost_st", 7110
+    await _seed(aid, fid, [("in", "lol that was so funny")])
+
+    class _OF(FakeOF):
+        read = 0
+
+        def mark_chat_read(self, chat_id) -> dict:
+            self.read += 1
+            return super().mark_chat_read(chat_id)
+    of, real_roll = _OF(), cs.roll_mode
+    cs._last_sent.clear()
+    cs.roll_mode = lambda *a, **k: "allow"
+    try:
+        with _patched_llm("omg ur funny\nSTICKER: laugh"), \
+                _harness.slot_lost_at_hold(a05, 2) as calls:
+            try:
+                await _turn(aid, fid, of)
+                raise AssertionError("SlotLost not raised")
+            except run_slot.SlotLost:
+                pass
+    finally:
+        cs.roll_mode = real_roll
+        cs._last_sent.clear()
+    assert calls[0] == 2 and of.sent == [(fid, "omg ur funny")], (calls, of.sent)
+    f = await _fan(aid, fid)
+    assert f.last_message_sent_at is not None, "the landed bubble was not recorded"
+    assert of.read == 0, "mark-read ran after the slot was lost"
+    assert await _lease(aid, fid) is None
+
+
 async def case_no_id_quarantined():
     aid, fid = "turn_noid", 7106
     await _seed(aid, fid, [("in", "how badly?")])
@@ -218,6 +256,23 @@ async def case_cap_raises():
             llm_client.chat = real  # type: ignore[attr-defined]
         assert not of.sent, of.sent
         assert await _lease(aid, fid) is None, f"lease kept after {type(exc).__name__}"
+
+
+async def case_persist_seam():
+    aid, fid = "turn_seam", 7109
+    await _seed(aid, fid, [("in", "hi there")])
+    real, seen = a05.write_outbound_attribution, []
+
+    async def _spy(**kw):
+        seen.append(kw["body"])
+        return await real(**kw)
+    a05.write_outbound_attribution = _spy  # type: ignore[attr-defined]
+    try:
+        with _patched_llm("heyy what are you up to tonight?"):
+            out = await _turn(aid, fid, FakeOF())
+    finally:
+        a05.write_outbound_attribution = real  # type: ignore[attr-defined]
+    assert out.kind == "sent" and seen == ["heyy what are you up to tonight?"], (out, seen)
 
 
 def case_fold_table():

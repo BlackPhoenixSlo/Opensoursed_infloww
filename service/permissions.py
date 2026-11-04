@@ -462,6 +462,7 @@ UNMAPPED: dict[str, str] = {
     "/health": "health check", "/livez": "liveness check",
     "/docs": "API docs", "/openapi.json": "API schema", "/redoc": "API docs",
     "/events": "the shell's live event stream",
+    "/push": "the session's own Web Push subscriptions (OS notifications), no Creator data",
     "/img": "media proxy behind every page's images",
     "/lanes-panel": "operator lanes panel, no nav page",
     "/admin/accounts": "the shell's Creator switcher (ScopeSwitcher) and its recolor, the one write"

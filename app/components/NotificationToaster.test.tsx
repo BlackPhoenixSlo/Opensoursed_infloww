@@ -48,6 +48,12 @@ let mockSession: { user: object | null; chatter: object | null };
 // The relay's GET, by path; the reminder lane is its only caller here.
 let mockRelayGet: ReturnType<typeof vi.fn>;
 let mockRelayPost: ReturnType<typeof vi.fn> = vi.fn();
+// Web Push live for this device (the relay pushes, so the page doesn't ping).
+let mockPushLive = false;
+// The page's push-notice handler (lib/webPush listenPushNotices), as the service worker reaches it.
+let pushNotice: ((raw: unknown) => boolean) | null = null;
+const mockPlayAlertOnce = vi.fn();
+const mockOsNotify = vi.fn(async () => {});
 
 function settingsWith(over: {
   toastMessage: boolean;
@@ -121,6 +127,22 @@ async function loadComponent(
     useChatter: () => ({ chatter: null }),
   }));
 
+  vi.doMock("@/lib/webPush", () => ({
+    isPushLive: () => mockPushLive,
+    pushSupported: () => false,
+    primePush: async () => {},
+    syncPush: () => {},
+    listenPushNotices: (fn: (raw: unknown) => boolean) => {
+      pushNotice = fn;
+      return () => { if (pushNotice === fn) pushNotice = null; };
+    },
+  }));
+  vi.doMock("@/lib/alertSounds", async (orig) => ({
+    ...(await orig<typeof import("@/lib/alertSounds")>()),
+    playAlertOnce: mockPlayAlertOnce,
+  }));
+  vi.doMock("@/lib/osNotify", () => ({ osNotify: mockOsNotify, hasShellNotify: () => false }));
+
   const mod = await import("@/components/NotificationToaster");
   const Toaster = () => <mod.NotificationToaster />;
   return Toaster;
@@ -158,6 +180,8 @@ beforeEach(() => {
   mockAccountId = "100";
   mockActive = [];
   mockSession = { user: null, chatter: null };
+  mockPushLive = false;
+  pushNotice = null;
   mockRelayGet = vi.fn(async (path: string) => {
     throw new Error(`unmocked GET ${path}`);
   });
@@ -845,5 +869,114 @@ describe("NotificationToaster — platform switcher", () => {
       });
       expect(findToastByText(container, "of dm in fansly mode")).not.toBeNull();
     });
+  });
+});
+
+describe("NotificationToaster — Web Push", () => {
+  const dm = (id: number, text: string) => ({
+    __account_id: "900",
+    api2_chat_message: { id, text, fromUser: { id: 777, name: "Pushy" } },
+  });
+  const notice = (id: number, text: string) => ({
+    v: 1, tag: `900:m${id}`, title: "Pushy", body: text,
+    href: "/messages-pro/900/777?fanTab=Pushy", type: "message", account_id: "900",
+  });
+  const count = (c: HTMLElement, text: string) =>
+    Array.from(c.querySelectorAll("div.bg-panel")).filter((d) => d.textContent?.includes(text)).length;
+
+  beforeEach(() => {
+    mockAccountId = "900";
+    mockSettings = { ...settingsWith({ toastMessage: true, bubbleMessage: false }), osPing: true };
+    window.localStorage.setItem("chatterly:notif-settings:v1", JSON.stringify(mockSettings));
+  });
+
+  it.each([
+    [false, 1],
+    [true, 0],
+  ])("unfocused tab, push live=%s → in-page OS pings: %i", async (live, pings) => {
+    mockPushLive = live;
+    const focus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    try {
+      const Comp = await loadComponent();
+      const { container } = renderToaster(Comp);
+      fire("api2_chat_message", dm(9001, "ping me"));
+      expect(count(container, "ping me")).toBe(1); // the toast shows either way
+      expect(mockOsNotify).toHaveBeenCalledTimes(pings);
+    } finally {
+      focus.mockRestore();
+    }
+  });
+
+  /** The service worker offering this page a push: the page's ack. */
+  function offer(raw: unknown): boolean {
+    if (!pushNotice) throw new Error("no push-notice listener");
+    let took = false;
+    act(() => { took = pushNotice!(raw); });
+    return took;
+  }
+
+  it("the SW's push-notice after the lane's frame → one toast, still acked (no OS notification)", async () => {
+    const Comp = await loadComponent();
+    const { container } = renderToaster(Comp);
+    fire("api2_chat_message", dm(9002, "lane first"));
+    expect(offer(notice(9002, "lane first"))).toBe(true);
+    expect(count(container, "lane first")).toBe(1);
+  });
+
+  it("the push-notice before the lane's frame (idle mode's replay) → one toast; the frame still plays the sound, keyed once", async () => {
+    mockSettings = { ...mockSettings, sounds: { ...mockSettings.sounds, message: { on: true, sound: mockSettings.sounds.message.sound } } };
+    const Comp = await loadComponent();
+    const { container } = renderToaster(Comp);
+    expect(offer(notice(9003, "push first"))).toBe(true);
+    expect(count(container, "push first")).toBe(1);
+    expect(container.textContent).toContain("Pushy");
+    expect(mockPlayAlertOnce).not.toHaveBeenCalled();
+    fire("api2_chat_message", dm(9003, "push first"));
+    fire("api2_chat_message", dm(9003, "push first")); // a second replay
+    expect(count(container, "push first")).toBe(1);
+    expect(mockPlayAlertOnce.mock.calls).toEqual([["900:m9003", mockSettings.sounds.message.sound]]);
+  });
+
+  it("the push-notice before the lane's frame → the bell's history row is the lane's (avatar, username, OF's time), not the push's", async () => {
+    const Comp = await loadComponent();
+    renderToaster(Comp);
+    expect(offer(notice(9005, "rich row"))).toBe(true);
+    expect(readNotifHistory()["900"] ?? []).toEqual([]); // the push path never mirrors
+    fire("api2_chat_message", {
+      __account_id: "900",
+      api2_chat_message: {
+        id: 9005, text: "rich row", createdAt: "2026-11-03T10:00:00+00:00",
+        fromUser: { id: 777, name: "Pushy", username: "pushy_u", avatar: "https://cdn.example/a.jpg" },
+      },
+    });
+    const rows = readNotifHistory()["900"] ?? [];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: "m9005",
+      user: { id: 777, name: "Pushy", username: "pushy_u", avatar: "https://cdn.example/a.jpg" },
+      createdAt: "2026-11-03T10:00:00.000Z",
+    });
+  });
+
+  it("the push-notice before a money frame → one toast; the frame still seeds the rail's list", async () => {
+    const Comp = await loadComponent();
+    const { container, qc } = renderToaster(Comp);
+    qc.setQueryData(["notif-list", "900", "purchases"], [{ id: 1, type: "purchases", text: "older", createdAt: "2026-01-01T00:00:00.000Z" }]);
+    const ppv = { v: 1, tag: "900:9050", title: "Buyer", body: "Unlocked your PPV — $5", type: "purchases", account_id: "900", href: "/messages-pro/900/778?refresh=media&fanTab=Buyer" };
+    expect(offer(ppv)).toBe(true);
+    fire("purchase_notified", {
+      __account_id: "900",
+      purchase_notified: { notif_id: "9050", fan_id: 778, amount_cents: 500, name: "Buyer" },
+    });
+    expect(count(container, "Unlocked your PPV")).toBe(1);
+    const list = qc.getQueryData<{ id: unknown }[]>(["notif-list", "900", "purchases"]);
+    expect(list?.map((r) => String(r.id))).toEqual(["9050", "1"]);
+  });
+
+  it("a notice for a Creator out of this page's scope → no toast, not acked (the worker shows it)", async () => {
+    const Comp = await loadComponent();
+    const { container } = renderToaster(Comp);
+    expect(offer({ ...notice(9004, "elsewhere"), tag: "901:m9004", account_id: "901" })).toBe(false);
+    expect(count(container, "elsewhere")).toBe(0);
   });
 });

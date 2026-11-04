@@ -3,14 +3,14 @@
 The owner's notification feed (`service/notifications_api.py`: `GET /admin/agency-notifications?limit&offset`,
 `POST /read-all`, `POST /{id}/read`, the `tick` sweep, the owner's `agency_notifications` SSE count). The
 harness, its knobs and its rules are in `README.md`; this file is only what this flow adds. The scenario's
-docstring is its spec (phases, load, KNOWN_RED, bypasses).
+docstring is its spec (phases, load, bypasses).
 
 ## Layout
 
 | Path | Role |
 |---|---|
 | `lib/notifications_relay.py` | `POST /__slop/notifications-tick {now?}`: one `notifications_api.tick(now)` pass (missed clock-ins, retention prune; looked up at call time), `now` standing in for the clock; answers `{filed, ms}`. In production only `server._periodic` runs it (every 5 min, skipped under `CHATTERLY_TEST_MODE`). Inert (404) unless the scenario wrote `$DEMO_SHOTS_TMP/notifications-tick.json`. |
-| `lib/notifications_faults.py` | The check names, `READ_ALL_LAG_S` (the read-all fault's re-run delay, which the scenario's wait is coupled to) and three faults, each patching a `notifications_api` attribute looked up at call time. |
+| `lib/notifications_faults.py` | The check names, `READ_ALL_LAG_S` (the read-all fault's re-run delay, which the scenario's wait is coupled to) and its faults (below), each patching a `notifications_api` attribute looked up at call time. |
 | `seed/agency_notifications_bulk.py` | `n` owner rows in one SQL insert, shaped as `notify` files them (`role_changed`, `employee_deactivated`, `message_unsent`, `session_dead`), read and unread, aged 1 min to 120 days, in filings that share one `created_at` (ties ordered by id), plus three boundary rows at `w.now - retention` -1 s / 0 / +1 s. No `clock_in_missed` (each needs a Shift; the sweep files those for real). `w.data["agency_notifications_bulk"]`: ids and the boundary ids. |
 | `scenarios/2026-11-01-notifications-feed-volume.py` | The scenario; its `_State` (the seeded feed and every session's plan). |
 
@@ -25,8 +25,8 @@ docstring is its spec (phases, load, KNOWN_RED, bypasses).
   Shift, sweeps); after a barrier every session's Mark all read, then one filing each that must stay unread. 4, UI:
   /notifications and the bell (screenshots `notifications-page`, `bell-trigger`, `bell-agency-open`,
   `bell-agency-settled`); side effect SQL and API unread 0. Checks (`lib/notifications_faults.py`): `PAGED`,
-  `READ_ONE`, `CLICK_SYNC`, `PRUNED`, `PRUNE_PUSHED` (KNOWN_RED: a prune-only sweep pushes no SSE count; SKIPped
-  with its finding), `LATER_UNREAD`, `BADGE`, `UI_FEED`; budget `p95 GET /admin/agency-notifications`, plus GET,
+  `READ_ONE`, `CLICK_SYNC`, `PRUNED`, `PRUNE_PUSHED` (a prune-only sweep pushes the
+  new count to each Agency it pruned unread rows of), `LATER_UNREAD`, `BADGE`, `UI_FEED`; budget `p95 GET /admin/agency-notifications`, plus GET,
   `POST read-all` and `POST /:id/read` p95 vs the last green run, all in the scenario. Faults:
   `read-all-marks-later-rows` (default; targets `LATER_UNREAD`), `notif-page-skips-offset` (`PAGED`),
-  `notif-prune-ignores-retention` (`PRUNED`). Knob: `--notif_rows=` bulk rows (SCALES `notifications_feed_rows`).
+  `notif-prune-ignores-retention` (`PRUNED`), `notif-prune-not-pushed` (`PRUNE_PUSHED`). Knob: `--notif_rows=` bulk rows (SCALES `notifications_feed_rows`).

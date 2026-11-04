@@ -700,14 +700,13 @@ def landed_ids(state: dict) -> list[int]:
     a crash mid-write of an item, and a KeyError here would lose the ids of every
     file that DID land.
     """
-    out: list[int] = []
-    for it in (state or {}).get("items") or []:
-        if not isinstance(it, dict) or it.get("status") != "done":
-            continue
-        vid = it.get("vault_id")
-        if vid:
-            out.append(int(vid))
-    return out
+    return [int(it["vault_id"]) for it in (state or {}).get("items") or []
+            if _landed(it)]
+
+
+def _landed(it: Any) -> bool:
+    """A well-formed item that is `done` and carries its vault id."""
+    return isinstance(it, dict) and it.get("status") == "done" and bool(it.get("vault_id"))
 
 
 def begin(account_id: str, *, list_id: int | None = None,
@@ -860,8 +859,7 @@ def landed_meta(state: dict) -> dict[int, dict]:
     Same `done`-only rule as `landed_ids`, for the same reason."""
     out: dict[int, dict] = {}
     for it in (state or {}).get("items") or []:
-        if (isinstance(it, dict) and it.get("status") == "done"
-                and it.get("vault_id") and it.get("meta")):
+        if _landed(it) and it.get("meta"):
             out[int(it["vault_id"])] = it["meta"]
     return out
 
@@ -1390,6 +1388,11 @@ def _carrier_hooks(state: dict, items: list[dict]):
     return note_carrier_intent, remember_carrier, carrier_gone
 
 
+def _fail(item: dict, e: BaseException) -> None:
+    """Mark one file failed with the exception's `Type: message`."""
+    item.update(status="failed", error=f"{type(e).__name__}: {e}")
+
+
 def _upload_one(state: dict, item: dict, client, limits: Limits) -> _Staged | None:
     """One file's bytes: up to S3 and claimed (`OFClient.upload_claim`).
 
@@ -1418,7 +1421,7 @@ def _upload_one(state: dict, item: dict, client, limits: Limits) -> _Staged | No
             guard_space(Path(path).stat().st_size, limits,
                         path=_run_dir(state["run_id"]))
     except Exception as e:  # noqa: BLE001 — one file, not the whole run
-        item.update(status="failed", error=f"{type(e).__name__}: {e}")
+        _fail(item, e)
         return None
     try:
         upload_path, prepared = media_prep.prepare(
@@ -1427,7 +1430,7 @@ def _upload_one(state: dict, item: dict, client, limits: Limits) -> _Staged | No
             mime=item.get("mime_type"))
     except Exception as e:  # noqa: BLE001 — one file, not the whole run
         log.exception("vault: preparing %s failed", item["name"])
-        item.update(status="failed", error=f"{type(e).__name__}: {e}")
+        _fail(item, e)
         return None
     renamed = (Path(upload_path).name
                if prepared and str(upload_path) != str(path) else None)
@@ -1460,7 +1463,7 @@ def _upload_one(state: dict, item: dict, client, limits: Limits) -> _Staged | No
         claim = client.upload_claim(str(upload_path))
     except Exception as e:  # noqa: BLE001 — one file, not the whole run
         log.exception("vault upload failed for %s", item["name"])
-        item.update(status="failed", error=f"{type(e).__name__}: {e}")
+        _fail(item, e)
         claim = None
     # Clear the prepared copy as soon as it is no longer needed — the whole
     # point of "push it up and let go of it" is that the disk stays flat. A
@@ -1546,7 +1549,7 @@ def _send(state: dict, staged: _Staged, client, gate) -> None:
             size=claim.size, gate=gate)
     except Exception as e:
         log.exception("vault send failed for %s", item["name"])
-        item.update(status="failed", error=f"{type(e).__name__}: {e}")
+        _fail(item, e)
         if isinstance(e, of_client.FanSendRefused):
             item["error"] = str(e)
             raise
@@ -1588,7 +1591,7 @@ def _carry(state: dict, batch: list[_Staged], client, gate) -> bool:
     except BaseException as e:
         log.exception("vault carrier for %d files failed", len(items))
         for it in items:
-            it.update(status="failed", error=f"{type(e).__name__}: {e}")
+            _fail(it, e)
             if isinstance(e, _MAYBE_WRITTEN):
                 # The gate gave up on (or was cancelled out of) a carrier
                 # write. The route cancels the queued coroutine, but a cancel
@@ -1672,10 +1675,14 @@ def _carriers(items: list) -> dict[str, list[dict]]:
     return out
 
 
+def _rides_live(i: dict) -> bool:
+    """Did this file ride a carrier post still recorded as live?"""
+    return bool(i.get("carrier_post_id") and not i.get("carrier_deleted"))
+
+
 def _live_post(riders: list[dict]):
     """The post id of a carrier still recorded as live, else None."""
-    return next((i["carrier_post_id"] for i in riders
-                 if i.get("carrier_post_id") and not i.get("carrier_deleted")), None)
+    return next((i["carrier_post_id"] for i in riders if _rides_live(i)), None)
 
 
 def _delete_live_carriers(items: list, remove: Callable[[Any], Any]
@@ -2006,8 +2013,7 @@ def sweep(client_for: Callable[[str], Any], *, keep_hours: int = 48) -> dict:
         # — and that includes an INTENT with no id, which is the MOST dangerous
         # record there is, not the least: nothing else knows the post may exist.
         unresolved = any(
-            (i.get("carrier_post_id") and not i.get("carrier_deleted"))
-            or _intent_unresolved(i)
+            _rides_live(i) or _intent_unresolved(i)
             for i in items)
         try:
             stale = (d / "run.json").stat().st_mtime < cutoff

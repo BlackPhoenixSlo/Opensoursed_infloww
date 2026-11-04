@@ -45,7 +45,10 @@ import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useScope } from "@/contexts/ScopeContext";
 import { gifSearch, gifTrending, relay, type OFChatItem, type TaggedFriendUser, type TaggedFriendUsersResp, type VaultUploadResp } from "@/lib/relay";
-import { chatPath, handleOf, mirrorQuery, nameOf, usersListPath, withChatUsers, rowsOf, stamp, USER_LISTS, type UserList } from "@/lib/ofMirrorData";
+import { mirrorQuery, rowsOf } from "@/lib/ofMirrorData";
+import { chatPath, usersListPath, withChatUsers, USER_LISTS } from "@/lib/ofMirrorDataQueries";
+import type { UserList } from "@/lib/ofMirrorDataLists";
+import { handleOf, nameOf, stamp } from "@/lib/ofMirrorDom";
 import { afterChatWrite } from "@/lib/ofMirrorKeys";
 import { collectSchedule, renderCalendar, tagsRoute, tagViewOf, type TagView } from "@/lib/ofMirrorPost";
 import { type bindComposer, GIF_ALONE } from "@/lib/ofMirrorComposer";
@@ -53,7 +56,7 @@ import { hasFormatting, ofHtml, setOfHtml } from "@/lib/ofMirrorFormat";
 import { CHAT_VAULT } from "@/lib/ofMirrorRow";
 import { viewOf } from "@/lib/ofMirrorVault";
 import { GREY, message, minuteAhead, note, NOTE_STYLE, SELECT_MODEL, textOf, TOO_SOON } from "@/lib/ofMirrorWrites";
-import { useAgencyZone } from "@/lib/ofMirrorFeeds";
+import { useAgencyZone } from "@/lib/ofMirrorFeedsShared";
 import { ofPrice } from "@/lib/ofMirrorPostCard";
 import {
   bindChatTags,
@@ -75,41 +78,14 @@ import {
   type ChatDraft,
   type ChatHandlers,
 } from "@/lib/ofMirrorChatShared";
-import { bindMass, MASS_FANS, MASS_SEND, MASS_TAG, massViewOf, tickMassList, USERS_LIST_MAX } from "@/lib/ofMirrorMass";
+import { bindMass, MASS_FANS, MASS_TAG, massViewOf, tickMassList, USERS_LIST_MAX } from "@/lib/ofMirrorMass";
+import { MASS_SEND } from "@/lib/ofMirrorPick";
 
+// Re-exported: the vault pick's tests (ofMirrorChat, ofMirrorComposer, ofMirrorStandIn) read a chat's pick from here.
 export {
-  EMPTY_MESSAGE,
   loadVaultPick,
-  NO_DATE,
-  NO_EDIT_GIF,
-  readPrice,
-  UPLOADING,
-  VAULT_PICK_MAX,
   vaultPickKey,
-  type ChatContext,
-  type ChatDraft,
-  type ChatHandlers,
-  type ChatTag,
-  type MassView,
-  type VaultPick,
 } from "@/lib/ofMirrorChatShared";
-export {
-  applyListRows,
-  bindMass,
-  collectMass,
-  loadMassDraft,
-  MASS_PICKED_TITLE,
-  MASS_SEND,
-  massDraftKey,
-  massRequest,
-  massViewOf,
-  NO_LISTS,
-  NO_MASS_FORMS,
-  SCHEDULE_TITLE,
-  tickMassList,
-  type MassDraft,
-  type MassMessageBody,
-} from "@/lib/ofMirrorMass";
 
 /** The chat draft changed outside the composer (a message's Reply): its line and Send are redrawn. */
 export const DRAFT_EVENT = "oi-chat-draft";

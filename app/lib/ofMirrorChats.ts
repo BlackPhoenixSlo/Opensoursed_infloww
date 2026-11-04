@@ -34,8 +34,8 @@ import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-quer
 import { useRouter, useSearchParams } from "next/navigation";
 import { useScope } from "@/contexts/ScopeContext";
 import { relay } from "@/lib/relay";
-import { own } from "@/lib/ofMirrorData";
-import { applyListRows } from "@/lib/ofMirrorChat";
+import { own } from "@/lib/ofMirrorDom";
+import { applyListRows } from "@/lib/ofMirrorDataLists";
 import { ofMeQuery, type OfMe } from "@/lib/ofMirrorIdentity";
 import { message, note, SELECT_MODEL } from "@/lib/ofMirrorWrites";
 import { useAllChatFolders, type ChatFolder } from "@/hooks/useChatFolders";

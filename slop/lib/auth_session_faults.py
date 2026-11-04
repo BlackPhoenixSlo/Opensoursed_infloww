@@ -1,4 +1,4 @@
-"""The owner session's break-it-once fault (service/auth.py `_account_ids_for`, the one load of a
+"""The owner session's break-it-once fault (service/auth.py `account_ids_for`, the one load of a
 signed-in owner's Creators, which `_resolve_session` looks up on the module per request), checked
 by scenarios/2026-10-24-chatter-crowd.py `--layout=one-agency` (the only layout with an owner
 watching): lib/faults.py merges `register(Fault)` into FAULTS. The two target names are that
@@ -33,7 +33,7 @@ def _auth_owner_ids_dropped() -> None:
     import auth
     import server
 
-    real = auth._account_ids_for
+    real = auth.account_ids_for
 
     async def ids_for(s, user_id, is_admin):
         ids = await real(s, user_id, is_admin)
@@ -43,7 +43,7 @@ def _auth_owner_ids_dropped() -> None:
             return ids
         return ids - {max(ids)}
 
-    auth._account_ids_for = ids_for
+    auth.account_ids_for = ids_for
 
 
 def register(Fault) -> dict:

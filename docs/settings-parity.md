@@ -6,35 +6,32 @@ Inflowwww's eleven Settings tabs graded against Infloww 5.7.20's Settings. The o
 
 These replace §3 of the deleted draft runbook `docs/NEXT_SESSION_SETTINGS_UI.md` (removed in `b07a433d`, not recreated). They are Ground truth 5 of `docs/plans/settings-tabs.md`, checked against the Relay on this tree; the draft's wiring must not come back.
 
-- No role field on `/admin/employees`: `GET /admin/employees` (`service/employees.py` `list_employees`) returns id, display_name, color, is_active, chatter_id and created_at. Roles and their Employee assignments live in the `roles` Settings blob, not in an Employee column.
+- No role field on `/admin/employees` (`service/employees.py` `list_employees`). Roles and their Employee assignments live in the `roles` Settings blob, not in an Employee column.
 - `/api/of/v2/users/me` (`GET` `service/server.py` `users_me`, `PATCH` `of_update_profile`) is the OF model's (Creator's) profile, not the Agency account. Your Account never calls it; the Agency Name is the `account` Settings blob.
-- No rename, `password`, sessions-list or `2FA` route: `service/auth.py` has only `/auth/register`, `/auth/login`, `/auth/logout` (`logout`) and `/auth/me` (`me`, `AuthResp` = user_id, username, is_admin, impersonating). Username Edit, Change password, Enable 2FA, the organization 2FA switch and Reset are therefore Not wired.
+- No rename or `password` route: `service/auth.py` has `/auth/register`, `/auth/login`, `/auth/logout` and `/auth/me`. Username Edit and Change password are therefore Not wired.
 - `referrals/balance` and payouts are per Creator: `GET /api/of/v2/payments/referrals/balance` (`service/of_stats_api.py` `of_referrals_balance`) and `GET /api/of/v2/payouts/requests/referral` (`of_referral_payouts`) answer for the selected model (`X-Account-Id`), so Your Balance fetches nothing in all-Creators scope.
 - `/admin/translate` (`service/translate_api.py:253`) has no prompt: it is the Google gtx batch translator. Of the `messaging` blob it reads only `ai_translation`, and refuses a chatter 403 while that is off (ADR-0012).
 - No attribution config route: sales attribution rules live in the `sales` Settings blob.
 - The version shown on About comes from `app/package.json` (`version`), the same value the Sidebar footer shows; there is no build hash.
 
-The one store this effort added is `user_settings` behind `GET/PUT /admin/settings/{tab}` (`service/settings_api.py`, allow-list `account`, `preferences`, `roles`, `sales`, `time-tracking`, `messaging`; ADR-0007).
+The one store this effort added is `user_settings` behind `GET/PUT /admin/settings/{tab}` (`service/settings_api.py`, allow-list `settings_schema.TABS`; `sales` and `time-tracking` are append-only `settings_versions` rows, not blobs; ADR-0007).
 
 ## Not wired
 
-Every Not wired control in the Settings Panels: each `<NotWired` and the `notWired` `ToggleRow` in the non-test files under `app/components/settings` (eleven uses, all eleven named by the plan; no other use exists). Each renders disabled with the tooltip "not wired" and never fakes success.
+The Not wired controls listed here: the `NotWired` buttons in the non-test files under `app/components/settings` and the personal picture's upload veil. Each renders disabled with the tooltip "not wired" and never fakes success.
 
-- `account` — Upload picture (the camera veil over each picture, shown on hover): no picture upload or picture store for the User or the Agency in the Relay (`YourAccountTab.tsx`).
-- `account` — Edit: no rename route; the Username comes read-only from `GET /auth/me` (`YourAccountTab.tsx:64`).
-- `security-org` — Two-factor authentication: no 2FA route and no 2FA state in the Relay (`ToggleRow notWired`, `SecurityOrgTab.tsx:28`).
-- `security-org` — Reset: no per-Employee 2FA reset route, and `/admin/employees` carries no 2FA field (`SecurityOrgTab.tsx:52`).
-- `security-personal` — Change password: no password route under `/auth` (`SecurityPersonalTab.tsx:37`).
-- `security-personal` — Enable 2FA: no 2FA enrolment route (`SecurityPersonalTab.tsx:40`).
-- `billing` — Pricing plans: no billing backend; self-hosted Inflowwww has no plan or pricing route (`BillingTab.tsx:31`).
-- `billing` — Update card: no payment-method route (`BillingTab.tsx:32`).
-- `billing` — Cancel subscription: no subscription route (`BillingTab.tsx:33`).
-- `billing` — Billing information: no billing-profile route (`BillingTab.tsx:34`).
-- `billing` — Make a Payment: no invoice or payment route (`BillingTab.tsx:39`).
+- `account` — Upload picture on the Personal picture (the camera veil, shown on hover): no picture store for the User in the Relay; the Agency picture uploads into the `account` blob (`YourAccountTab.tsx` `Picture`).
+- `account` — Edit: no rename route; the Username comes read-only from `GET /auth/me` (`YourAccountTab.tsx`).
+- `security-personal` — Change password: no password route under `/auth` (`SecurityPersonalTab.tsx`).
+- `billing` — Pricing plans: no billing backend; self-hosted Inflowwww has no plan or pricing route (`BillingTab.tsx`).
+- `billing` — Update card: no payment-method route (`BillingTab.tsx`).
+- `billing` — Cancel subscription: no subscription route (`BillingTab.tsx`).
+- `billing` — Billing information: no billing-profile route (`BillingTab.tsx`).
+- `billing` — Make a Payment: no invoice or payment route (`BillingTab.tsx`).
 
 ## Visual gaps
 
-Each line is carried verbatim from its ticket in `.scratch/settings-tabs/issues/`. "Owner: the human (see Needs the human)" points at the Needs the human entries in `.scratch/settings-tabs/map.md` (Tab list icons, the dark palette mapping, the Assistant launcher, the initials colours).
+Each line is carried verbatim from its ticket in `.scratch/settings-tabs/issues/`, with code refs refreshed 2026-11. "Owner: the human (see Needs the human)" points at the Needs the human entries in `.scratch/settings-tabs/map.md` (Tab list icons, the dark palette mapping, the initials colours).
 
 ### Open (ticket 26's final walk, which merged the per-ticket lines; re-graded by page-parity tickets 20 and 21)
 
@@ -44,7 +41,7 @@ VISUAL GAP: the two-column field grid `repeat(2,350px)` (`._personal-item-row_rx
 
 VISUAL GAP: the Tab list's icons are lucide stand-ins for Infloww's set (ticket 20 picked the closest lucide glyph per tab at a 1.5 stroke; the 20px size is ours); Infloww's own SVGs are not copied (ticket 05). Owner: the human (see Needs the human).
 
-VISUAL GAP: the app-wide help launcher now docks where Intercom's bubble does (`app/components/assistant/AssistantWidget.tsx:244`, `fixed bottom-5 right-5`, page-parity ticket 22), so it no longer covers the Tab list; it sits over the Panel's bottom-right corner on every Settings tab (ticket 05). Owner: none.
+VISUAL GAP: the app-wide help launcher now docks where Intercom's bubble does (`app/components/assistant/AssistantWidget.tsx`, `fixed bottom-5 right-5`, page-parity ticket 22), so it no longer covers the Tab list; it sits over the Panel's bottom-right corner on every Settings tab (ticket 05). Owner: none.
 
 VISUAL GAP: the Personal and Agency pictures' initials colours (`--if-accent` on `--if-accent-bg`) are ours, not measured (ticket 08). Owner: the human (see Needs the human).
 
@@ -124,8 +121,6 @@ VISUAL GAP: the dark palette in every PNG (the default theme) is sampled, not me
 
 VISUAL GAP: row icon size (20px) and the lucide icon names are ours, not measured. Owner: the human (see Needs the human).
 
-VISUAL GAP: the app-wide Assistant "?" launcher (`app/components/assistant/AssistantWidget.tsx:188`, `fixed bottom-3 left-[264px]`) floats over the Tab list's bottom-left corner on every Settings tab. It is outside the Settings components and Infloww has no equivalent. Owner: the human (see Needs the human).
-
 From ticket 06:
 
 VISUAL GAP: Save is the house `SaveRow` primary Button (purple), not an `--if-accent` button, and sits below the 900px fold in the Panel body's own scroll; owner ticket 08.
@@ -148,7 +143,7 @@ VISUAL GAP: Save is the house `SaveRow` primary Button (purple), not an `--if-ac
 
 VISUAL GAP: on Your Account at 1440x900 the Not applied yet note and Save sit at the 900px fold, reached by the Panel body's own scroll, because `SaveRow` renders in flow after two measured 140px pictures. Owner: ticket 27 (carried verbatim).
 
-VISUAL GAP: the selects are native `<select>`s with the browser's own arrow, not Infloww's custom dropdown arrow (spec ASSUMPTION, house `RestrictionsTab.tsx:118`). Owner: ticket 27 (carried verbatim).
+VISUAL GAP: the selects are native `<select>`s with the browser's own arrow, not Infloww's custom dropdown arrow (spec ASSUMPTION). Owner: ticket 27 (carried verbatim).
 
 VISUAL GAP: the Personal and Agency pictures' initials colours (`--if-accent` on `--if-accent-bg`) are ours, not measured. Owner: the human (see Needs the human).
 
@@ -170,7 +165,7 @@ VISUAL GAP: the Current session card carries no title or tip of its own. "Curren
 
 VISUAL GAP: the Employees table's row height (48px), cell padding and header style (14px `--if-fg-3`) are ours. The bundle has no security-table selector (spec A1). Owner: ticket 27 (carried verbatim).
 
-VISUAL GAP: "Sign out" is the house `Button` (secondary), whose colours come from the house theme, not from `--if-*` tokens (spec A4, `TopBar.tsx:102` precedent). Owner: ticket 27 (carried verbatim).
+VISUAL GAP: "Sign out" is the house `Button` (secondary), whose colours come from the house theme, not from `--if-*` tokens (spec A4, `TopBar.tsx` precedent). Owner: ticket 27 (carried verbatim).
 
 From ticket 12:
 
@@ -212,7 +207,7 @@ VISUAL GAP: the Employee roles layout (one Field per Employee) is unmeasured, be
 
 VISUAL GAP: the Employee role selects are native `<select>`s with the browser's own arrow, not Infloww's custom dropdown arrow (same as ticket 08's select gap). Owner: ticket 27 (carried verbatim).
 
-VISUAL GAP: an unchecked radio is a 1px `--if-line` ring (`RADIO`, `SettingsPanel.tsx:204`). That is (49,49,49) against (38,38,38) on the dark PNG, barely visible (the opt-in checkbox is native with `accent-color` and clearly visible), and the unchecked style is unmeasured (the gap table pins only checked = `--if-accent`). Owner: ticket 27 (carried verbatim).
+VISUAL GAP: an unchecked radio is a 1px `--if-line` ring (`RADIO`, `SettingsPanel.tsx`). That is (49,49,49) against (38,38,38) on the dark PNG, barely visible (the opt-in checkbox is native with `accent-color` and clearly visible), and the unchecked style is unmeasured (the gap table pins only checked = `--if-accent`). Owner: ticket 27 (carried verbatim).
 
 From ticket 18:
 
@@ -314,8 +309,8 @@ VISUAL GAP: the Operations column lacks "Edit"; owner: ticket 14.
 |---|---|---|---|---|---|
 | `account` | §3.10 row 1, C[H262101, H262021]; `._personal-info-wrap_rxwf7_132`, `._personal-item_rxwf7_146`, `._personal-input_rxwf7_237`, `._disabled-input_rxwf7_242`, `._personal-avatar_rxwf7_192`, `._upload-input_rxwf7_218` | `YourAccountTab` (`app/components/settings/YourAccountTab.tsx`) | Username read-only from `GET /auth/me`; Agency Name saved whole to `/admin/settings/account`, blob keys `agency_name`; Not applied yet (no consumer, so the whole-Panel note stays) | Upload, Edit | initials colours (the human); font (`--font-sans`) |
 | `preferences` | §3.10 row 2, C[H262077, H451172]; `._personal-item_rxwf7_146`, `._personal-item-title_rxwf7_155`, `._personal-item-timezone_rxwf7_176`, `._persinal-text_rxwf7_253` | `PreferencesTab` (`app/components/settings/PreferencesTab.tsx`) | Report time zone, Time zone, Week start day and Language saved whole to `/admin/settings/preferences`, blob keys `report_tz`, `tz`, `week_start`, `language`; zones from `Intl.supportedValuesOf("timeZone")`; Applied: `tz` labels the top bar, `report_tz` cuts report days, `week_start` starts the Shift schedule and "My shifts" week; `language` Not applied yet | none | font (`--font-sans`) |
-| `security-org` | §3.10 row 3, C[H463402, CL]; `._switch-theme_rxwf7_303` (toggle row), `._title_rxwf7_137`, `._table-wrap_rxwf7_143`; no security-table selector in the bundle | `SecurityOrgTab` (`app/components/settings/SecurityOrgTab.tsx`) | Employees from `GET /admin/employees` (`useRoster`), disabled ones greyed; 2FA status and Last login read "—"; stores nothing | Two-factor authentication, Reset | no security-table selector in the bundle (the table takes the shared antd head, 13px cells); font (`--font-sans`) |
-| `security-personal` | §3.10 row 4 (tab C[BS], fields G); `._translation-item_rxwf7_369` (session card), `._title_rxwf7_137` | `SecurityPersonalTab` (`app/components/settings/SecurityPersonalTab.tsx`) | Current session username from `GET /auth/me`; Sign out sends `POST /auth/logout` with `{}`; stores nothing | Change password, Enable 2FA | font (`--font-sans`) |
+| `security-org` | §3.10 row 3, C[H463402, CL]; `._switch-theme_rxwf7_303` (toggle row), `._title_rxwf7_137`, `._table-wrap_rxwf7_143`; no security-table selector in the bundle | `SecurityOrgTab` (`app/components/settings/SecurityOrgTab.tsx`) | Employees from `GET /admin/employees` (`useRoster`), disabled ones greyed; 2FA status and Last login from the roster rows (`two_factor`, `last_login_at`); the Two-factor authentication switch stores `require_2fa` (`service/account_security.py`); Reset posts `/admin/employees/{employee_id}/2fa/reset` | none | no security-table selector in the bundle (the table takes the shared antd head, 13px cells); font (`--font-sans`) |
+| `security-personal` | §3.10 row 4 (tab C[BS], fields G); `._translation-item_rxwf7_369` (session card), `._title_rxwf7_137` | `SecurityPersonalTab` (`app/components/settings/SecurityPersonalTab.tsx`) | Current session username from `GET /auth/me`; Sign out sends `POST /auth/logout` with `{}`; Two-factor authentication and Other sessions are `TwoFactorCard.tsx` over `/auth/2fa*` and `/auth/sessions/revoke-others` | Change password | font (`--font-sans`) |
 | `billing` | §3.10 row 5, C[H262093], [CL]; `._billing-header_6tj53_47`, `._billing-tabs-wrap_6tj53_60`, `._period_6tj53_29`, `._translation-item_rxwf7_369` | `BillingTab` (`app/components/settings/BillingTab.tsx`) | static: subtabs "Infloww subscription" / "AI Copilot" (local state), plan card "Inflowwww — self-hosted, free", invoice table with "No invoices"; reads and writes nothing | Pricing plans, Update card, Cancel subscription, Billing information, Make a Payment | font (`--font-sans`) |
 | `balance` | §3.10 row 6 (tab C[BS], fields G from H262091); `._balance-amount_1dq9x_13`, `._balance-amount-text_1dq9x_21`, `._personal-info-wrap_rxwf7_132` | `BalanceTab` (`app/components/settings/BalanceTab.tsx`) | four cards from `GET /api/of/v2/payments/referrals/balance` and payouts from `GET /api/of/v2/payouts/requests/referral` for the selected Creator (`X-Account-Id`); all-Creators scope fetches nothing; a missing field reads "—"; stores nothing | none | the three extra figures' row is ours (Infloww shows one amount); `1dq9x` amount type unconfirmed; committed PNG is the all-Creators view; font (`--font-sans`) |
 | `roles` | §3.10 row 7, C[H262098]; `._role-header_1r0jx_36`, `._tabble-content_1r0jx_77`, `._table-title_1r0jx_83`, `._table-wrap_1r0jx_89`, `._open-delete-role_1r0jx_52`, `._personal-input_rxwf7_237` | `RoleSettingsTab` with `PermissionEditor` (`app/components/settings/RoleSettingsTab.tsx`, `PermissionEditor.tsx`) | Roles, permissions per sidebar page, data scope and Employee role assignments saved whole to `/admin/settings/roles`, blob keys `roles` (id, name, description, permissions, scope), `assignments` and `enforce`; Employees from `GET /admin/employees`; Applied under Role enforcement ("Enforce role permissions", off by default): the Relay refuses denied pages, the sidebar shows only granted pages, Data scope narrows a chatter's Employee reports; Not applied yet while it is off | none | Employee roles table is ours (Infloww assigns roles on Manage employees); font (`--font-sans`) |

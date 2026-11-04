@@ -13,7 +13,7 @@ import { relayFile } from "./relay";
 import { PICK_DEFAULTS, periodOf, startOf, type EarningsType, type PagedBody, type Picks, type StatsData } from "./ofMirrorStats";
 import { applyEarningsAside, applyEarningsTabs, applyPayouts, applyRatio, applyStatements, applyTransactions, rekeyFor, rekeyReferrals, statementsSeries, type StatementsCtx } from "./ofMirrorStatsStatements";
 import { chartSpecOf } from "./ofMirrorChart";
-import type { Transaction } from "./ofMirrorFeeds";
+import type { Transaction } from "./ofMirrorFeedsStatements";
 import { NOT_YET } from "./ofMirrorWrites";
 
 const capture = (p: string) => readFileSync(resolve(__dirname, `../public/of-mirror/pages/${p}.html`), "utf8");

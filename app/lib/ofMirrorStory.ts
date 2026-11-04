@@ -13,7 +13,7 @@ import { proxyImage } from "@/lib/mediaUrl";
 import { rowsOf } from "@/lib/ofMirrorData";
 import { openViewer, viewerItem, type StoryAuthor, type ViewerItem } from "@/lib/ofMirrorVault";
 import { message, note, READ_ONLY, SELECT_MODEL } from "@/lib/ofMirrorWrites";
-import { storyItems, type StoryEntry } from "@/lib/ofMirrorFeeds";
+import { storyItems, type StoryEntry } from "@/lib/ofMirrorFeedsStrip";
 
 /**
  * POST /api/of/v2/stories for one vault item, as OF's web client publishes a vault item as a Story: a photo by its full

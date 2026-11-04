@@ -23,6 +23,7 @@ import zipfile  # noqa: E402
 from sqlalchemy import delete, func, select  # noqa: E402
 
 import _agency_fixtures as fx  # noqa: E402
+from automations._wordfilter import sensitive_hits  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import SensitiveWord  # noqa: E402
 from sensitive_words_api import read_xlsx_first_column, write_column  # noqa: E402
@@ -127,6 +128,26 @@ def case_add_trims_holds_each_word_once_in_any_case_and_reports_each_failure():
     assert again["success_count"] == 0 and again["failed"][0]["reason"] == "already in the list", again
     _add(OWNER_A, [], status=422)
     assert OWNER_A.post(f"{ROUTE}/add", json={"words": "venmo"}).status_code == 422
+
+
+def case_a_listed_phrase_matches_across_any_whitespace_and_only_between_boundaries():
+    """The matcher a Priority mass create and every leg refuse on (`_wordfilter.sensitive_hits`,
+    app/lib/sensitiveWords.ts's rule), first against the list as stored (inner whitespace
+    collapsed)."""
+    _reset()
+    _add(OWNER_A, ["cash  app", "ass"])
+    listed = _words(OWNER_A)
+    assert listed == ["ass", "cash app"], listed
+    for text, words, want in (
+            ("pay me on cash  app", listed, ["cash app"]),        # double space
+            ("pay me on Cash\tApp", listed, ["cash app"]),        # tab, any case
+            ("cash\n  app?", listed, ["cash app"]),               # newline + spaces
+            ("cashapp me", listed, []),                           # no whitespace: another word
+            ("see you after class", listed, []),                  # "ass" inside a word
+            ("nice ASS!", listed, ["ass"]),
+            ("text me on Tele\tgram", ["tele gram"], ["tele gram"]),
+            ("cashapp_me", ["cashapp"], ["cashapp"])):            # "_" is a boundary
+        assert sensitive_hits(text, words) == want, (text, words, sensitive_hits(text, words))
 
 
 def case_update_renames_a_word_and_refuses_a_clash_or_a_bad_word():

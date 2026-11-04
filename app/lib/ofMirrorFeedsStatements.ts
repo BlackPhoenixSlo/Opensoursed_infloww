@@ -1,12 +1,10 @@
 "use client";
 
-/** Statements' Earnings, Payouts and Referrals tables and Streaming's past streams, cut from ofMirrorFeeds (OF's infinite loading row, applyMore, is ofMirrorDom's, re-exported here). */
+/** Statements' Earnings, Payouts and Referrals tables and Streaming's past streams. */
 
 import { NOT_YET } from "@/lib/ofMirrorWrites";
 import { applyMore, clock, dayOf, dropClass, fill, make, plain, stamp, track, valid, type MorePages } from "@/lib/ofMirrorDom";
 import { fullDay, wallClock } from "@/lib/ofMirrorFeedsShared";
-
-export { applyMore, type MorePages } from "@/lib/ofMirrorDom";
 
 /**
  * Statements' Earnings, Payouts and Referrals tables while their rows load (`null`) or after they failed: OF's empty row

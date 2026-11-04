@@ -101,6 +101,10 @@ upsert() { local k="$1" v="$2"; [ -z "$v" ] && return 0
 grep -q '^SESSION_SECRET=.\+'         .env || upsert SESSION_SECRET "$(gen_secret)"
 grep -q '^CHATTER_SESSION_SECRET=.\+' .env || upsert CHATTER_SESSION_SECRET "$(gen_secret)"
 grep -q '^SHARE_TOKEN='               .env || echo 'SHARE_TOKEN=' >> .env   # empty = friend-auth only
+# Web Push VAPID key (service/push_send.py): none made here. The relay writes
+# service/secrets/vapid_private.pem on first start (bind-mounted, in ae-backup); never rotate it.
+# The VAPID subject needs a real host (Apple refuses localhost); without one push stays off.
+if [ -n "${DOMAIN:-}" ] && ! grep -q '^VAPID_SUBJECT=.\+' .env; then upsert VAPID_SUBJECT "mailto:admin@$DOMAIN"; fi
 # DeepSeek key is optional — only bake it in if you passed one inline. Otherwise
 # leave a blank placeholder. It is the HOUSE key (ownerless accounts only); the
 # account you capture is owned by your login and reads Setup → Your AI keys.

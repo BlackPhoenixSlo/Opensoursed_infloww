@@ -232,27 +232,22 @@ def _domain_match(host: str, domain: str) -> bool:
 
 def _route_curl() -> None:
     """curl_cffi's Session.request: a seeded CDN host goes to the fake (docstring 2). Idempotent."""
-    from curl_cffi import requests as cffi
-    inner = cffi.Session.request
-    if getattr(inner, "__slop_img__", False):
-        return
+    from cffi_wrap import path_query, wrap_request
 
-    def request(self, method, url, *a, **k):
-        p = urlsplit(str(url))
+    def to_fake(session, p, k):
         host = (p.hostname or "").lower()
-        if _state["port"] and host in _cfg["hosts"]:
-            hdrs = dict(k.pop("headers", None) or {})
-            hdrs[ORIG_HOST] = host
-            jar = "; ".join(f"{c.name}={c.value}" for c in self.cookies.jar if _domain_match(host, c.domain))
-            if jar:
-                hdrs["Cookie"] = jar
-            k["headers"] = hdrs
-            url = f"http://127.0.0.1:{_state['port']}{p.path}" + (f"?{p.query}" if p.query else "")
-        return inner(self, method, url, *a, **k)
+        if not (_state["port"] and host in _cfg["hosts"]):
+            return None
+        hdrs = dict(k.pop("headers", None) or {})
+        hdrs[ORIG_HOST] = host
+        jar = "; ".join(f"{c.name}={c.value}" for c in session.cookies.jar if _domain_match(host, c.domain))
+        if jar:
+            hdrs["Cookie"] = jar
+        k["headers"] = hdrs
+        return f"http://127.0.0.1:{_state['port']}" + path_query(p)
 
-    request.__slop_img__ = True
-    request.__slop_guard__ = True  # the guard sits under it: `_guard_curl_cffi` stays idempotent
-    cffi.Session.request = request
+    # The guard sits under it: `_guard_curl_cffi` stays idempotent.
+    wrap_request(to_fake, "__slop_img__")
 
 
 def _arm() -> dict:

@@ -23,7 +23,7 @@ Events (what run() saw, in the order it sees them for one due fan):
   Sent(now, facts)          the step went out (OF returned it, all or part)
 
 Effects (what run() does, in list order; run() counts each by value):
-  Save()       persist entry' (run()'s `_save`: a dry run persists nothing)
+  Save()       persist entry' (run()'s `_perform`: a dry run persists nothing)
   Complete()   the walk ended (`completed`)
   Convert()    the fan bought, no `next.bought` route: handed to chatters (`converted`)
   Branch()     re-routed by the step's `next` map, no send (`branched`)

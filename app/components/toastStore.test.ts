@@ -4,6 +4,9 @@ import { QueryClient } from "@tanstack/react-query";
 
 const relayGet = vi.fn();
 vi.mock("@/lib/relay", () => ({ relay: { get: (...args: unknown[]) => relayGet(...args) } }));
+const { osNotifySpy, push } = vi.hoisted(() => ({ osNotifySpy: vi.fn(async () => true), push: { live: false } }));
+vi.mock("@/lib/osNotify", () => ({ osNotify: osNotifySpy }));
+vi.mock("@/lib/webPush", () => ({ isPushLive: () => push.live }));
 
 import { DEFAULT_NOTIF_SETTINGS, readNotifHistory, type NotifSettings } from "@/lib/notifSettings";
 import { ofUserNameKey } from "@/hooks/useOFUser";
@@ -15,14 +18,18 @@ import {
   TOAST_TTL_MS,
   claimUnseen,
   deliverDecision,
-  deliverNotification,
+  deliverPushNotice,
   dismissToast,
   dmArrival,
   extractAvatarFromHtml,
   extractUsernameFromHtml,
+  mirrorNotification,
   patchToastHref,
+  pingNotification,
   purchaseArrival,
+  pushArrival,
   pushToast,
+  MISS_TTL_MS,
   resolveUsernameId,
   toastArrival,
   useToastStack,
@@ -122,14 +129,23 @@ describe("resolveUsernameId", () => {
   it.each([
     ["a failed read", () => relayGet.mockRejectedValueOnce(new Error("502"))],
     ["a reply with no valid id", () => relayGet.mockResolvedValueOnce({ id: null, username: "x" })],
-  ])("%s is null and not cached — the next lookup reads again", async (_label, arrange) => {
-    const qc = new QueryClient();
-    const aid = `r-${_label}`;
-    arrange();
-    expect(await resolveUsernameId(aid, "ann", qc)).toBeNull();
-    relayGet.mockResolvedValueOnce({ id: 77, username: "ann" });
-    expect(await resolveUsernameId(aid, "ann", qc)).toBe(77);
-    expect(relayGet).toHaveBeenCalledTimes(2);
+  ])("%s is null, cached for MISS_TTL_MS (the lane asks every frame), then read again", async (_label, arrange) => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    try {
+      const qc = new QueryClient();
+      const aid = `r-${_label}`;
+      arrange();
+      expect(await resolveUsernameId(aid, "ann", qc)).toBeNull();
+      now.mockReturnValue(1_000_000 + MISS_TTL_MS - 1);
+      expect(await resolveUsernameId(aid, "ann", qc)).toBeNull();
+      expect(relayGet).toHaveBeenCalledTimes(1);
+      now.mockReturnValue(1_000_000 + MISS_TTL_MS);
+      relayGet.mockResolvedValueOnce({ id: 77, username: "ann" });
+      expect(await resolveUsernameId(aid, "ann", qc)).toBe(77);
+      expect(relayGet).toHaveBeenCalledTimes(2);
+    } finally {
+      now.mockRestore();
+    }
   });
 
   it("is scoped per account: one username on two Creators is two fans", async () => {
@@ -172,7 +188,7 @@ describe("deliverDecision", () => {
 
 });
 
-describe("deliverNotification: history always, pings gated", () => {
+describe("mirrorNotification + pingNotification: history always, pings gated", () => {
   beforeEach(() => { vi.useFakeTimers(); window.localStorage.clear(); });
   afterEach(() => {
     act(() => { vi.runAllTimers(); });
@@ -197,7 +213,7 @@ describe("deliverNotification: history always, pings gated", () => {
     const { result } = renderHook(() => useToastStack());
     const arrived = vi.fn();
     window.addEventListener("chatterly:notif-arrived", arrived);
-    act(() => deliverNotification(s, arrival()));
+    act(() => { mirrorNotification(arrival()); pingNotification(s, arrival()); });
     window.removeEventListener("chatterly:notif-arrived", arrived);
     expect(readNotifHistory().deliver?.map((r) => [r.id, r.text])).toEqual([["d1", "<b>sent</b> you a $5 tip"]]);
     expect(result.current.map((t) => t.id)).toEqual(toasts ? ["d1"] : []);
@@ -306,6 +322,24 @@ describe("dmArrival", () => {
   });
 });
 
+describe("dmArrival: a tip", () => {
+  const target = (msg: Partial<ChatTarget["msg"]>): ChatTarget => ({
+    accountId: "acc", fanId: 5, isOutbound: false, fromId: 5,
+    msg: { id: 100, isTip: true, price: 0, fromUser: { id: 5, name: "Jim" }, ...msg },
+  });
+  it.each([
+    // [label, msg, text]
+    ["tipAmount in dollars", { tipAmount: 5 }, "Tipped you $5"],
+    ["cents kept", { tipAmount: 7.5, text: "<p>for you</p>" }, "Tipped you $7.50"],
+    ["no tipAmount: price", { price: 3 }, "Tipped you $3"],
+    ["no amount", {}, "Sent you a tip"],
+  ] as const)("%s", (_l, msg, text) => {
+    const a = dmArrival(target(msg), 9_000);
+    expect(a).toMatchObject({ id: "m100", typeKey: "tip", rawType: "tip", text, historyText: text });
+    expect(a.href).toBe(notificationHref("acc", { id: 5, name: "Jim" }, { refresh: true }));
+  });
+});
+
 describe("purchaseArrival", () => {
   it.each([
     // [label, payload extras, cached, name, text]
@@ -319,5 +353,87 @@ describe("purchaseArrival", () => {
       user: { id: 9, name, username: cached?.username }, createdMs: Date.parse("2026-10-31T00:00:00Z"),
     });
     expect(a.href).toContain("refresh=media");
+  });
+});
+
+describe("the OS ping: unfocused, and only while no push subscription is live", () => {
+  beforeEach(() => { vi.useFakeTimers(); osNotifySpy.mockClear(); });
+  afterEach(() => {
+    act(() => { vi.runAllTimers(); });
+    vi.useRealTimers();
+    push.live = false;
+    vi.restoreAllMocks();
+  });
+  const on: NotifSettings = { ...DEFAULT_NOTIF_SETTINGS, osPing: true };
+  it.each([
+    // [label, focused, push live, osPing, pings]
+    ["unfocused, no push", false, false, true, true],
+    ["unfocused, push live: the service worker shows it", false, true, true, false],
+    ["focused", true, false, true, false],
+    ["OS ping off", false, false, false, false],
+  ] as const)("%s", (label, focused, live, osPing, pings) => {
+    vi.spyOn(document, "hasFocus").mockReturnValue(focused);
+    push.live = live;
+    const id = `p-${label}`;
+    act(() => pingNotification({ ...on, osPing }, {
+      id, accountId: "ping", typeKey: "tip", rawType: "tip", user: { id: 5, name: "Jim" },
+      text: "Tipped you $5", createdMs: Date.now(), href: "/x",
+    }));
+    expect(osNotifySpy).toHaveBeenCalledTimes(pings ? 1 : 0);
+    if (pings) expect(osNotifySpy).toHaveBeenCalledWith({ id: `ping:${id}`, title: "Jim", body: "Tipped you $5", href: "/x" });
+  });
+});
+
+describe("pushArrival / deliverPushNotice: a push the service worker left to this page", () => {
+  const payload = {
+    v: 1, tag: "acc:m42", title: "Jim", body: "Tipped you $5", type: "tip", account_id: "acc",
+    href: "/messages-pro/acc/5?refresh=media&fanTab=Jim", icon: "/icon.svg",
+  };
+  it.each([
+    // [label, payload, arrival (subset) or null]
+    ["the lane's id, fan from the link", payload,
+      { id: "m42", accountId: "acc", typeKey: "tip", rawType: "tip", text: "Tipped you $5", user: { id: 5, name: "Jim" }, createdMs: 7 }],
+    ["the brand title names no one", { ...payload, title: "Inflowwww" }, { user: { id: 5, name: undefined } }],
+    ["an off-site link is dropped", { ...payload, href: "//evil.example/x" }, { href: null, user: { id: undefined } }],
+    ["a tag of another account", { ...payload, tag: "other:m42" }, null],
+    ["no tag", { ...payload, tag: undefined }, null],
+    ["not an object", "junk", null],
+  ] as const)("%s", (_l, p, want) => {
+    const a = pushArrival(p, 7);
+    if (want === null) expect(a).toBeNull();
+    else expect(a).toMatchObject(want);
+  });
+
+  describe("delivered through the lanes' dedupe", () => {
+    beforeEach(() => { vi.useFakeTimers(); window.localStorage.clear(); });
+    afterEach(() => { act(() => { vi.runAllTimers(); }); vi.useRealTimers(); });
+    const inScope = (aid: string) => (aid === "pn" ? { ...DEFAULT_NOTIF_SETTINGS, enabled: true } : null);
+    it("a notice the lane already delivered is taken (acked) but dropped; a new one toasts once", () => {
+      const { result } = renderHook(() => useToastStack());
+      expect(claimUnseen("pn", "m1")).toBe(true); // the SSE lane got there first
+      let took = false;
+      act(() => { took = deliverPushNotice({ ...payload, tag: "pn:m1", account_id: "pn" }, inScope); });
+      expect(took).toBe(true);
+      expect(result.current.filter((t) => t.accountId === "pn")).toEqual([]);
+
+      act(() => { deliverPushNotice({ ...payload, tag: "pn:m2", account_id: "pn" }, inScope); });
+      act(() => { deliverPushNotice({ ...payload, tag: "pn:m2", account_id: "pn" }, inScope); });
+      expect(result.current.filter((t) => t.accountId === "pn").map((t) => t.id)).toEqual(["m2"]);
+      expect(claimUnseen("pn", "m2")).toBe(false); // the lane's copy is now the no-op
+    });
+
+    it("a Creator out of this page's scope, or no Creator: not taken (the worker shows it), nothing toasted or claimed", () => {
+      const { result } = renderHook(() => useToastStack());
+      let took = [true, true];
+      act(() => {
+        took = [
+          deliverPushNotice({ ...payload, tag: "out:m3", account_id: "out" }, inScope),
+          deliverPushNotice({ v: 1, tag: "test:1", title: "test" }, inScope),
+        ];
+      });
+      expect(took).toEqual([false, false]);
+      expect(result.current.filter((t) => t.accountId === "out")).toEqual([]);
+      expect(claimUnseen("out", "m3")).toBe(true); // its lane (another window) still delivers it
+    });
   });
 });

@@ -52,8 +52,8 @@ by many sessions, not one tab scrolling. The /duplicates and /hide calls wait up
 (the browser's fetch has no 30 s cap either). Every /api/of/ read stays held in the browser (ui.py), so the
 folder rail lists no OF folders. Vault Pro's tours are marked seen (a returning owner). The page-overlap fault
 swaps the route's endpoint (FastAPI internals), not a product attribute (lib/vault_pro_faults.py).
-Break-it-once: vault-items-page-overlap (FAULT; PAGING only), vault-dupes-ignores-strictness (DUPES only); no fault
-targets HIDE_STRICT0 (KNOWN_RED).
+Break-it-once: vault-items-page-overlap (FAULT; PAGING only), vault-dupes-ignores-strictness (DUPES and
+HIDE_STRICT0: the hide at 0 re-clusters through it), vault-hide-threshold-or-default (HIDE_STRICT0 only).
 """
 from __future__ import annotations
 
@@ -112,17 +112,13 @@ P95_VS_LAST_MIN_N = 5
 # Open product findings {check: (big-vault size from which it applies, reason)}: the check is measured every
 # run; red at or above that size it SKIPs with the reason, otherwise it is an ordinary check.
 KNOWN_RED: dict[str, tuple[int, str]] = {
-    DUPES_BUDGET: (20_000, "open finding: service/vault_dupes.py:cluster is an all-pairs seed scan in pure Python "
-                           "(O(n^2), holds the GIL in to_thread): with a 20k vault, p95 117-121 s for 40 scans at "
-                           "once (10 Creators x 4 strictness; 20261101T130126Z-2026-11-01-vault-pro-20k-28ab, "
-                           "20261101T130444Z-2026-11-01-vault-pro-20k-1ecd); POST /duplicates/hide re-runs it "
-                           "(p95 29-36 s); 2k: green"),
-    HIDE_STRICT0: (0, "open finding: service/vault_of_folders.py:hide_duplicates reads the strictness as "
-                      "`int(payload.get('threshold') or DEFAULT_THRESHOLD)`, so 0 re-clusters at 2 and hides a copy "
-                      "that is no duplicate at 0 (the modal's strictest setting): 1 copy at 2 only ticked -> hidden "
-                      "1, removed_at set, OnlyFans PUT 1 id (small 20261101T124203Z-2026-11-01-vault-pro-20k-cdd5, "
-                      "medium 20261101T130444Z-2026-11-01-vault-pro-20k-1ecd); want refused not_a_duplicate, 0 "
-                      "hidden"),
+    DUPES_BUDGET: (20_000, "open finding (perf paused until real data, owner 10-29): GET /duplicates p95 3.7-5.7 s "
+                           "for 40 scans at once (10 Creators x 4 strictness) with a 20k vault "
+                           "(20261103T084238Z-2026-11-01-vault-pro-20k-4499, "
+                           "20261103T085027Z-2026-11-01-vault-pro-20k-0b41; all-pairs cluster was 116 s, "
+                           "20261103T083900Z-2026-11-01-vault-pro-20k-0d1d). vault_dupes.cluster is a banded index "
+                           "now (t=6 0.5 s on the seed's 20k world, bench); the rest is each scan loading every "
+                           "fingerprint and encoding every set, 40 at once on one GIL (inferred); 2k: green (#142)"),
 }
 VIEWPORT = (1440, 900)
 WAIT_MS = 180_000
@@ -379,7 +375,7 @@ async def run(ctx) -> None:
             s0["status"], s0["body"] = await hide(s0_aid, [mid], 0)
             s0["newly"] = sorted(_removed(w).get(s0_aid, set()) - after.get(s0_aid, set()))
             s0["of_calls"] = (await _of_hidden(ctx)).get(s0_aid, [])[len(of_hidden.get(s0_aid, [])):]
-        _check_strict0(ctx, s0, big)
+        _check_strict0(ctx, s0)
     finally:
         await dupes_http.aclose()
 
@@ -670,7 +666,7 @@ def _check_hide(ctx, plans, hidden, before, after, of_hidden, summ2, truth) -> N
     ctx.check(SUMMARY_AFTER, not bad_s, bad=bad_s[:5])
 
 
-def _check_strict0(ctx, s0: dict, big: int) -> None:
+def _check_strict0(ctx, s0: dict) -> None:
     """A copy only at 2 ticked at strictness 0: refused as not_a_duplicate, nothing hidden or sent to OF."""
     if s0["aid"] is None:
         ctx.check(HIDE_STRICT0, False, error="no Creator has an unsent copy at 2 that is none at 0")
@@ -679,9 +675,9 @@ def _check_strict0(ctx, s0: dict, big: int) -> None:
     mid = s0["media_id"]
     ok = (s0["status"] == 200 and body.get("hidden") == 0 and body.get("refused") == {"not_a_duplicate": [mid]}
           and not s0["newly"] and not s0["of_calls"])
-    _verdict(ctx, HIDE_STRICT0, ok, big, aid=s0["aid"], media_id=mid, http=s0["status"],
-             hidden=body.get("hidden"), hidden_ids=body.get("hidden_ids"), refused=body.get("refused"),
-             newly_removed=s0["newly"], of_calls=s0["of_calls"])
+    ctx.check(HIDE_STRICT0, ok, aid=s0["aid"], media_id=mid, http=s0["status"],
+              hidden=body.get("hidden"), hidden_ids=body.get("hidden_ids"), refused=body.get("refused"),
+              newly_removed=s0["newly"], of_calls=s0["of_calls"])
 
 
 # ── UI ──────────────────────────────────────────────────────────────

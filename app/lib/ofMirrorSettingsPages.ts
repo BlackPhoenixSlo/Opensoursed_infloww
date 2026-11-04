@@ -12,7 +12,8 @@
 
 import type { OFMedia } from "@/lib/relay";
 import { stillUrl } from "@/lib/ofMedia";
-import { bubbleClass, chatMedia, chatMediaTemplate, clock, fillSlot, htmlLines, objectOf } from "@/lib/ofMirrorData";
+import { bubbleClass, chatMedia, chatMediaTemplate } from "@/lib/ofMirrorDataChats";
+import { clock, fillSlot, htmlLines, objectOf } from "@/lib/ofMirrorDom";
 import type { SettingsData } from "@/lib/ofMirrorSettings";
 import { ELSEWHERE } from "@/lib/ofMirrorTooltip";
 import { BRAND_NAME } from "@/lib/brand";

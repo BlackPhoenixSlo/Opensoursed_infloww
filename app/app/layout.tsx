@@ -36,6 +36,8 @@ export const metadata: Metadata = {
     template: `%s · ${BRAND_NAME}`,
   },
   description: "OnlyFans agency dashboard — unified inbox + automations.",
+  // <meta name="application-name">: the desktop app's notification title fallback (desktop/main.js).
+  applicationName: BRAND_NAME,
   // The favicon: public/icon.svg (the OIF mark, SiteLook's IfMark), or a deployment's logo (lib/brand.ts).
   icons: BRAND_ICONS,
 };

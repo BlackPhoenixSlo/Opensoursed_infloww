@@ -36,7 +36,7 @@ import { useEffect, useState, type RefObject } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useScope } from "@/contexts/ScopeContext";
 import { relay } from "@/lib/relay";
-import { make } from "@/lib/ofMirrorData";
+import { make } from "@/lib/ofMirrorDom";
 import { undoList } from "@/lib/ofMirrorUndo";
 import { ofMeQuery } from "@/lib/ofMirrorIdentity";
 import { clearChart, drawLines, type LinesSpec } from "@/lib/ofMirrorChart";

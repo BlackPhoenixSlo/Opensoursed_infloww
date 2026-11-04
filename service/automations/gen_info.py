@@ -166,7 +166,6 @@ _known_block = gen_info_plan.known_block
 select_candidates = gen_info_plan.select_candidates
 _trim_messages = gen_info_plan.trim_messages
 _build_user_prompt = gen_info_plan.build_user_prompt
-_PROFILE_KEEP_IF_EMPTY = gen_info_plan.PROFILE_KEEP_IF_EMPTY
 
 
 async def fan_cadence_knobs(s, account_id: str, fan_id: int, now: datetime,

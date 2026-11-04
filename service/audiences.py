@@ -168,25 +168,20 @@ async def contact_guard_excludes(
     A window that is None/0 is off. Returns a plain set[int].
     """
     out: set[int] = {int(x) for x in (extra_ids or [])}
-    if outbound_hours and outbound_hours > 0:
-        out |= set(await recent_chat_fan_ids(
-            account_id, hours=float(outbound_hours), direction="out",
-            exclude_bots=False, exclude_blacklisted=False,
-        ))
-        out |= await _recent_nudged_ids(account_id, float(outbound_hours))
-    if inbound_hours and inbound_hours > 0:
-        out |= set(await recent_chat_fan_ids(
-            account_id, hours=float(inbound_hours), direction="in",
-            exclude_bots=False, exclude_blacklisted=False,
-        ))
-    if either_hours and either_hours > 0:
+    for hours, direction, nudges_too in (
+        (outbound_hours, "out", True),
+        (inbound_hours, "in", False),
         # BOTH directions — the inbound guard above only drops fans who messaged
         # US; a warm two-way chat needs the outbound side too.
-        out |= set(await recent_chat_fan_ids(
-            account_id, hours=float(either_hours), direction=None,
-            exclude_bots=False, exclude_blacklisted=False,
-        ))
-        out |= await _recent_nudged_ids(account_id, float(either_hours))
+        (either_hours, None, True),
+    ):
+        if hours and hours > 0:
+            out |= set(await recent_chat_fan_ids(
+                account_id, hours=float(hours), direction=direction,
+                exclude_bots=False, exclude_blacklisted=False,
+            ))
+            if nudges_too:
+                out |= await _recent_nudged_ids(account_id, float(hours))
     return out
 
 
@@ -230,18 +225,17 @@ def _payload_recipient_ids(payload: dict) -> set[int]:
     `included_users`/`fan_ids` (explicit mass) + the same, nested per message
     in a mass_premade `messages` list. Non-numeric entries are dropped."""
     ids: set[int] = set()
-    fid = payload.get("fan_id")
-    if fid is not None:
+
+    def add(v: object) -> None:
         try:
-            ids.add(int(fid))
+            ids.add(int(v))
         except (TypeError, ValueError):
             pass
+
+    add(payload.get("fan_id"))
     for key in ("included_users", "fan_ids"):
         for v in payload.get(key) or []:
-            try:
-                ids.add(int(v))
-            except (TypeError, ValueError):
-                pass
+            add(v)
     for m in payload.get("messages") or []:
         if isinstance(m, dict):
             ids |= _payload_recipient_ids(m)
@@ -819,15 +813,28 @@ def resolve_recipients_blocking(
         return None
 
 
-def _sync_exclude_list_blocking(client, ids: set[int]) -> int:
-    """Reconcile the account's Auto_Exclude OF custom list to exactly `ids`.
-    Blocking (sync OF client) — call via asyncio.to_thread. Returns list id."""
+# Module-level imports of the Auto_Exclude block, kept beside it (this block's
+# own region of the file). Leaf modules: no import cycle.
+import time  # noqa: E402
+
+import auto_exclude_decide as aed  # noqa: E402
+
+
+def _auto_exclude_list_id_blocking(client) -> int:
+    """The account's Auto_Exclude OF list id, made when missing. Blocking."""
     lists = of_paging.page_all(
         lambda off: client.get_lists(limit=of_paging.LIST_PAGE, offset=off))
     list_id = next((it.get("id") for it in lists
                     if (it.get("name") or "") == AUTO_EXCLUDE_LIST_NAME), None)
     if list_id is None:
         list_id = client.create_list(AUTO_EXCLUDE_LIST_NAME).get("id")
+    return list_id
+
+
+def _sync_exclude_list_blocking(client, ids: set[int]) -> int:
+    """Reconcile the account's Auto_Exclude OF custom list to exactly `ids`.
+    Blocking (sync OF client) — call via asyncio.to_thread. Returns list id."""
+    list_id = _auto_exclude_list_id_blocking(client)
 
     members, truncated = of_paging.list_member_ids(client, list_id)
     if truncated:
@@ -837,10 +844,27 @@ def _sync_exclude_list_blocking(client, ids: set[int]) -> int:
         log.error("auto_exclude: Auto_Exclude list=%s crawl hit the paging backstop "
                   "(%d members read) — stale members past it are NOT removed",
                   list_id, len(members))
+    _reconcile_exclude_list_blocking(client, list_id, members, ids)
+    return int(list_id)
 
+
+def _reconcile_exclude_list_blocking(client, list_id, members: set[int], ids: set[int]) -> None:
+    """A crawled Auto_Exclude to exactly `ids`: `_add_missing_blocking`, then
+    remove `members − ids`. Blocking."""
     # Stale members are REMOVED, not just superseded — a fan left behind from
     # a previous tick would be excluded from every future broadcast forever.
-    #
+    stale = sorted(members - ids)
+    _add_missing_blocking(client, list_id, members, ids)
+    for uid in stale:
+        try:
+            client.remove_user_from_list(list_id, uid)
+        except Exception:  # noqa: BLE001 — a stale member we can't drop is harmless
+            log.warning("auto_exclude remove failed account-list=%s uid=%s", list_id, uid)
+
+
+def _add_missing_blocking(client, list_id, members: set[int], ids: set[int]) -> None:
+    """Add `ids − members` one by one, ascending; each confirmed add joins
+    `members`. Raises only when not one of `ids` is on the list. Blocking."""
     # Per-user adds are best-effort: OF 403s "Unable to add user to user list"
     # for the odd un-listable id (deleted/blocked/restricted account, the creator
     # herself). ONE such id must not abort the whole exclude build and sink the
@@ -857,6 +881,8 @@ def _sync_exclude_list_blocking(client, ids: set[int]) -> int:
         except Exception as e:  # noqa: BLE001 — per-user tolerance, see above
             add_fail += 1
             last_err = e
+            continue
+        members.add(uid)
     # Judge the guard by its COVERAGE, never by this tick's add success rate.
     # The old test was `add_fail == len(to_add)` and it sank live broadcasts:
     # an un-addable id never becomes a member, so it returns in `to_add` on
@@ -873,19 +899,177 @@ def _sync_exclude_list_blocking(client, ids: set[int]) -> int:
     # next broadcast would blast everyone — fail loudly. If 447 are on it and
     # one straggler won't add, the guard is intact; honour the docstring above
     # ("ONE such id must not abort the whole exclude build") and carry on.
-    covered = len(ids & members) + (len(to_add) - add_fail)
-    if ids and covered == 0:
+    if ids and not (ids & members):
         raise last_err or RuntimeError(
             "auto_exclude: no ids could be listed — exclude guard is empty")
     if add_fail:
         log.warning("auto_exclude partial account-list=%s added=%d skipped=%d (last=%r)",
                     list_id, len(to_add) - add_fail, add_fail, last_err)
-    for uid in sorted(members - ids):
+
+
+# ── An Auto_Exclude past the 20k backstop (owner decision O2) ─────────────────
+# `ensure_exclude_list` crawls the list and reconciles it on every send
+# (`_reconcile_exclude_list_blocking`, as `_sync_exclude_list_blocking` does)
+# until that crawl hits `of_paging.MAX_PAGES`. Past it, a per-send crawl costs the
+# whole read inside `broadcast_lock` and never drops its unread stale members, so
+# the list keeps an in-process mirror instead (`aed.Mirror` in `_ae_mirrors`: its
+# presence means "big"; per process + per account like `_broadcast_locks`, cold
+# after a restart): a send re-resolves the list id (a changed id drops the mirror:
+# crawled cold again), then adds only the guard ids the mirror lacks
+# (`_add_missing_blocking`), no crawl, no removes. A background refresh
+# (single-flight per account, an asyncio task off the send) crawls the whole list
+# past the backstop, then reconciles it to the newest guard in `aed.BATCH`-sized
+# batches, one short `broadcast_lock` hold each. Declared lag, both closed by the
+# next refresh: stale members (over-exclude) and a guard id removed on OF's side.
+_ae_mirrors: dict[str, aed.Mirror] = {}        # account -> mirror (big lists only)
+_ae_refreshes: dict[str, asyncio.Task] = {}    # account -> its refresh task (single-flight)
+AE_PAGE_TRIES = 3             # a refresh page retried in place: the crawl resumes, never restarts
+
+
+def _ensure_exclude_blocking(account_id: str, client, ids: set[int]) -> tuple[int, bool]:
+    """(Auto_Exclude list id, schedule a background refresh). Blocking; the
+    caller holds `broadcast_lock`. Same list id as a warm mirror: adds only.
+    Else one checked crawl as today; not truncated -> today's reconcile;
+    truncated -> a new mirror (its crawl cost logged), adds only, refresh."""
+    list_id = int(_auto_exclude_list_id_blocking(client))
+    m = _ae_mirrors.get(account_id)
+    if m is not None and m.list_id == list_id:
+        m.guard = frozenset(ids)
+        _add_missing_blocking(client, list_id, m.members, ids)
+        return list_id, aed.refresh_due(m, time.time())
+    if m is not None:
+        log.warning("auto_exclude: Auto_Exclude list=%s is now list=%s on OF — mirror "
+                    "dropped, crawled again", m.list_id, list_id)
+        del _ae_mirrors[account_id]
+    t0 = time.monotonic()
+    members, truncated = of_paging.list_member_ids(client, list_id)
+    if not truncated:
+        _reconcile_exclude_list_blocking(client, list_id, members, ids)
+        return list_id, False
+    log.warning("auto_exclude: Auto_Exclude list=%s past the paging backstop (%d read in "
+                "%.1fs) — incremental: adds only, stale members go in the background refresh",
+                list_id, len(members), time.monotonic() - t0)
+    m = _ae_mirrors[account_id] = aed.Mirror(list_id, members, frozenset(ids), time.time())
+    _add_missing_blocking(client, list_id, m.members, ids)
+    return list_id, True
+
+
+class _ResumableLists:
+    """`list_users_in` retried in place (AE_PAGE_TRIES): a refresh crawl that
+    hits one failed page resumes at that offset instead of starting over.
+    `pages`: the pages read, so the refresh tells "big" by the pager's own rule."""
+
+    def __init__(self, client):
+        self._c = client
+        self.pages = 0
+
+    def list_users_in(self, list_id, **kw):
+        for i in range(AE_PAGE_TRIES):
+            try:
+                page = self._c.list_users_in(list_id, **kw)
+            except Exception:  # noqa: BLE001 — retried, the last one raises
+                if i == AE_PAGE_TRIES - 1:
+                    raise
+                time.sleep(1.0 + i)
+                continue
+            self.pages += 1
+            return page
+
+
+def _ae_apply_batch_blocking(client, m: aed.Mirror, kind: str, uids: list[int],
+                             skip: set[int], stats: aed.RefreshStats) -> None:
+    """One refresh batch (`aed.next_batch`): add or remove each id, the mirror
+    following each confirmed call; a failed id joins `skip` for this refresh.
+    Blocking; run under `broadcast_lock`."""
+    add = kind == "add"
+    call = client.add_user_to_list if add else client.remove_user_from_list
+    for uid in uids:
         try:
-            client.remove_user_from_list(list_id, uid)
-        except Exception:  # noqa: BLE001 — a stale member we can't drop is harmless
-            log.warning("auto_exclude remove failed account-list=%s uid=%s", list_id, uid)
-    return int(list_id)
+            call(m.list_id, uid)
+        except Exception:  # noqa: BLE001 — refused add (deleted / blocked) or a stale member we can't drop
+            skip.add(uid)
+            if add:
+                stats.add_fail += 1
+            else:
+                stats.remove_fail += 1
+            continue
+        if add:
+            m.members.add(uid)
+            stats.adds += 1
+        else:
+            m.members.discard(uid)
+            stats.removes += 1
+
+
+async def _refresh_auto_exclude(account_id: str, client) -> aed.RefreshStats | None:
+    """A big Auto_Exclude's background refresh: crawl it whole without the lock,
+    then in one hold mirror = crawled ∪ the adds sends confirmed meanwhile, then
+    one hold per `aed.next_batch` against the newest guard (adds first: an id
+    removed on OF's side comes back). Crawled fully before any remove: offset
+    paging shifts under removals. Stops when the mirror was replaced (list id
+    changed). A crawl that fits under `of_paging.MAX_PAGES` drops the mirror:
+    crawled per send again. The attempt is stamped even when it fails, so
+    REFRESH_EVERY_S paces retries."""
+    aid = str(account_id)
+    m = _ae_mirrors.get(aid)
+    if m is None:
+        return None
+    t0 = time.monotonic()
+    stats = aed.RefreshStats()
+    try:
+        async with broadcast_lock(aid):
+            snap = set(m.members)
+        lists = _ResumableLists(client)
+        crawled, truncated = await asyncio.to_thread(
+            of_paging.list_member_ids, lists, m.list_id, max_pages=aed.REFRESH_MAX_PAGES)
+        stats.crawled, stats.crawl_s = len(crawled), round(time.monotonic() - t0, 2)
+        if truncated:
+            log.error("auto_exclude refresh account=%s list=%s crawl hit its %d-page backstop "
+                      "(%d read) — mirror kept, nothing removed", aid, m.list_id,
+                      aed.REFRESH_MAX_PAGES, len(crawled))
+            return stats
+        async with broadcast_lock(aid):
+            if _ae_mirrors.get(aid) is not m:
+                return stats
+            m.members = crawled | (m.members - snap)
+        skip: set[int] = set()
+        while True:
+            async with broadcast_lock(aid):
+                batch = (aed.next_batch(m.members, m.guard, aed.BATCH, skip)
+                         if _ae_mirrors.get(aid) is m else None)
+                if batch is not None:
+                    await asyncio.to_thread(_ae_apply_batch_blocking, client, m, *batch,
+                                            skip, stats)
+                    stats.holds += 1
+            if batch is None:
+                break
+            await asyncio.sleep(0)
+        if lists.pages <= of_paging.MAX_PAGES and _ae_mirrors.get(aid) is m:
+            del _ae_mirrors[aid]
+    finally:
+        m.refreshed_at = time.time()
+        stats.s = round(time.monotonic() - t0, 2)
+    log.info("auto_exclude refresh account=%s list=%s members=%d %s", aid, m.list_id,
+             len(m.members), stats)
+    return stats
+
+
+async def _run_auto_exclude_refresh(account_id: str, client) -> None:
+    try:
+        await _refresh_auto_exclude(account_id, client)
+    except Exception:  # noqa: BLE001 — the next due send schedules another
+        log.warning("auto_exclude refresh failed account=%s", account_id, exc_info=True)
+
+
+def _schedule_auto_exclude_refresh(account_id: str, client):
+    """Start the account's background refresh unless one runs (single-flight)."""
+    aid = str(account_id)
+    t = _ae_refreshes.get(aid)
+    if t is not None and not t.done():
+        return t
+    t = asyncio.get_running_loop().create_task(_run_auto_exclude_refresh(aid, client))
+    _ae_refreshes[aid] = t
+    return t
 
 
 async def ensure_exclude_list(
@@ -904,6 +1088,10 @@ async def ensure_exclude_list(
     list, it may hold stale members from a previous run). Raises on OF
     errors: callers decide whether to fail the broadcast (recommended — a
     blast without its guard is exactly the bug this exists to fix) or warn.
+
+    A list past the 20k paging backstop is kept incrementally (the block above
+    `_ensure_exclude_blocking`): every `ids` is on it at return, bar ids OF
+    refused to list; its stale members go in a background refresh.
     """
     idset = {int(x) for x in (ids or set())}
     if not idset:
@@ -912,7 +1100,10 @@ async def ensure_exclude_list(
     if c is None:
         import automation_executor as ax
         c = await asyncio.to_thread(ax._make_client, account_id)
-    list_id = await asyncio.to_thread(_sync_exclude_list_blocking, c, idset)
+    aid = str(account_id)
+    list_id, refresh = await asyncio.to_thread(_ensure_exclude_blocking, aid, c, idset)
+    if refresh:
+        _schedule_auto_exclude_refresh(aid, c)
     log.info("auto_exclude synced account=%s list=%s ids=%d",
              account_id, list_id, len(idset))
     return list_id

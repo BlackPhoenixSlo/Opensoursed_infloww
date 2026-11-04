@@ -81,7 +81,7 @@ import random
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Literal
+from typing import Any, Literal
 
 from sqlalchemy import select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -860,7 +860,7 @@ async def _skip_and_collect(account_id: str, fan_id: int, reason: str) -> None:
     """Cut a fan out of the AI chat AND enqueue a FINAL gen_info regen, so the facts
     we extracted inline each turn are turned into a fresh profile/nickname/note before
     a human takes over (`spent` → paying fan) or the convo is abandoned (`too_long`).
-    Mirrors the graduation's gen_info enqueue (_graduate): the
+    The graduation (_graduate) goes through here too: the
     early-exit cutoffs used to skip-list only, leaving the structured profile stale."""
     await _add_to_skip_list(account_id, fan_id, reason)
     await ax.enqueue_job(account_id, "gen_info", payload={"force_ids": [int(fan_id)]})
@@ -1052,8 +1052,7 @@ async def _graduate(client, account_id: str, fan_id: int, f: Fan) -> None:
 
     The openers happen here, so there is nothing to hand over — after this row
     every engine that honours the skip leaves the fan alone."""
-    await _add_to_skip_list(account_id, fan_id, "info")
-    await ax.enqueue_job(account_id, "gen_info", payload={"force_ids": [int(fan_id)]})
+    await _skip_and_collect(account_id, fan_id, "info")
     try:
         await push_nick_and_notes(
             client, account_id, fan_id,
@@ -1374,10 +1373,7 @@ def _snapshot_of(c: _Candidate, f: Fan | None, *, now: datetime, handoff: bool,
     row gates for him anyway."""
     paused = muted = gather_done = closing_due = False
     if f is not None:
-        try:
-            asked = set(json.loads(f.questions_asked or "[]"))
-        except Exception:
-            asked = set()
+        asked = wcfi_decide.asked_topics(f)
         paused = bool(f.automation_paused_until and f.automation_paused_until > now)
         muted = should_skip_muted_creator(f)
         gather_done = _gather_done(f, asked)
@@ -1555,7 +1551,8 @@ def _fold(tally: Counter, skips: Counter, out: TurnOutcome) -> None:
     skips["newly_skiplisted"] += out.newly_skiplisted
 
 
-async def _record_send(account_id: str, fan_id: int, msg_id, result: dict, body: str) -> None:
+async def _record_send(account_id: str, fan_id: int, msg_id: int | str, result: dict,
+                       body: str) -> None:
     """Persist one bubble OF accepted (text, or a gif with `body` "") as this lane's
     outbound row + its live event. `write_outbound_attribution` is this module's
     attribute, looked up per call (slop's wcfi-turn-sent-twice patches it)."""
@@ -1572,379 +1569,453 @@ async def _record_send(account_id: str, fan_id: int, msg_id, result: dict, body:
     )
 
 
+@dataclass
+class _Turn:
+    """One fan's turn in flight — what `_turn`'s IO steps share. `f`: his Fan row
+    (the fact step refreshes it). `sent_ok`: something (a bubble, the gif, the
+    closing PPV) landed at OF this turn → the finally rests him and releases the
+    lease (`_turn_release`)."""
+    cfg: _RunConfig
+    c: _Candidate
+    client: Any
+    profile: FanProfile | None
+    now: datetime
+    out: TurnOutcome
+    f: Fan
+    sent_ok: bool = False
+
+
+async def _close_with_ppv(t: _Turn) -> bool:
+    """The closing PPV + its bookkeeping — ONE copy for both ways out (the
+    runaway cut and the info graduation). A priced send IS a send: it counts
+    against `max_replies` and earns the cooldown. Returns True on a dry-run
+    preview — the caller then leaves the fan in the lane, so previewing never
+    costs a fan his closing PPV. Every other outcome graduates him."""
+    if t.cfg.closing is None:
+        return False
+    outcome = await _send_closing_ppv(t.client, t.cfg.account_id, t.c.fan_id, t.cfg.closing,
+                                      dry_run=t.cfg.dry_run)
+    if outcome == "dry_run":
+        t.out.closing_ppvs_sent += 1
+        t.out.replies_sent += 1
+        return True
+    if outcome == "sent":
+        t.out.closing_ppvs_sent += 1
+        t.out.replies_sent += 1
+        t.sent_ok = True
+        await _mark_reply_sent(t.cfg.account_id, t.c.fan_id, t.now)
+    return False
+
+
+async def _turn_fill_facts(t: _Turn) -> None:
+    """Inline fact fill (V1): save the facts he just stated BEFORE replying, so
+    age/job/location land this turn (t.f refreshed), then push the structured
+    nickname. Cap / a rejected key raise (run() stops); any other failure is
+    logged and skipped."""
+    account_id, fan_id = t.cfg.account_id, t.c.fan_id
+    try:
+        # Extract sees only the last few turns (a newly-stated fact is
+        # always recent) — its own short tail, NOT the reply's.
+        t.f = await _extract_and_fill(account_id, fan_id, t.f, t.c, t.cfg.model,
+                                      _EXTRACT_HISTORY_TAIL, persona=t.cfg.persona)
+    except LLMCapExceeded:
+        log.warning("welcome_chatter_for_info LLM cap reached (extract) account=%s — stopping",
+                    account_id)
+        raise                     # run() records cap_hit and stops
+    except llm_client.LLMKeyError:
+        raise                     # run() records key_error and stops
+    except Exception:
+        log.debug("welcome_chatter_for_info fact-extract failed account=%s fan=%s",
+                  account_id, fan_id, exc_info=True)
+    # Update + push the structured nickname EVERY tick (V1 apply_nickname).
+    try:
+        await _maybe_push_nickname(t.client, account_id, fan_id, t.f)
+    except Exception:
+        log.debug("welcome_chatter_for_info nick push failed account=%s fan=%s",
+                  account_id, fan_id, exc_info=True)
+
+
+async def _turn_finish_lane(t: _Turn) -> None:
+    """The lane is finished with him (`_openers.next_for` gave None): the closing
+    PPV (when set), then he graduates. A failed send changes nothing.
+    One pass: the starter lane finishes with a fan after one question and one
+    tease. It cannot wait for a dry pool — gen_info restocks after every reply, so
+    the pool never empties (see next_for). A None there always means the lane is
+    finished, never "come back tomorrow" — which matters, because None GRADUATES
+    the fan here."""
+    if await _close_with_ppv(t):
+        t.out.kind = "closing_preview"
+        return  # dry-run preview: he stays in the lane
+    await _graduate(t.client, t.cfg.account_id, t.c.fan_id, t.f)
+    t.out.kind = "graduated"
+    t.out.newly_skiplisted += 1
+
+
+def _turn_sticker_roll(t: _Turn) -> str:
+    """Cat-sticker roll (code-side rate control): deterministic per reply (fan +
+    his latest text) so a re-run rolls the same. Cooldown (per-account gap knob)
+    forces skip."""
+    sticker_cfg = t.cfg.sticker_cfg
+    if not sticker_cfg.enabled:
+        return "skip"
+    account_id, fan_id = t.cfg.account_id, t.c.fan_id
+    return cat_stickers.roll_mode(
+        random.Random(f"sticker:{account_id}:{fan_id}:{t.c.last_body}"),
+        cat_stickers.cooldown_active(account_id, fan_id, gap_min=sticker_cfg.gap_min),
+        skip_w=sticker_cfg.skip_w, solo_w=sticker_cfg.solo_w)
+
+
+async def _turn_generate(t: _Turn, asked: set, opener, fan_lang: str,
+                         sticker_mode: str) -> tuple[str, list[str]] | None:
+    """Build the prompt and generate → (raw reply, the topics presented), or None when
+    the call failed (out: generate_failed); the cap / a rejected key raise."""
+    cfg, c = t.cfg, t.c
+    msgs, presented = _build_messages(
+        cfg.persona, t.f, c, asked, cfg.history_tail,
+        style_on=cfg.style_on, nonnative_on=cfg.nonnative_on,
+        painful_on=cfg.painful_on, lang=fan_lang,
+        profile=t.profile if cfg.factground_on else None,
+        clock=clock_line(cfg.clock_tz),
+        sticker_mode=sticker_mode,
+        day=cfg.day,
+        opener=opener, v=cfg.voice_blocks)
+    try:
+        res = await llm_client.chat(
+            model=cfg.model,
+            messages=msgs,
+            purpose=_PURPOSE,
+            account_id=cfg.account_id,
+            fan_id=c.fan_id,
+            temperature=_REPLY_TEMPERATURE,
+        )
+    except LLMCapExceeded:
+        log.warning("welcome_chatter_for_info daily LLM cap reached account=%s — stopping",
+                    cfg.account_id)
+        raise
+    except llm_client.LLMKeyError:
+        raise
+    except Exception:
+        log.warning("welcome_chatter_for_info generate failed account=%s fan=%s",
+                    cfg.account_id, c.fan_id, exc_info=True)
+        t.out.kind, t.out.errors = "generate_failed", 1
+        return None
+    return (res.content or "").strip(), presented
+
+
+async def _turn_tag_and_finalize(t: _Turn, raw: str, sticker_mode: str):
+    """The sticker tag off the draft (kept only when the roll offered the pack and
+    it is not a repeat), then the send chokepoint (`finalize_draft`) over the text
+    → (raw, sticker_tag)."""
+    cfg, account_id, fan_id = t.cfg, t.cfg.account_id, t.c.fan_id
+    # Sticker marker: ALWAYS strip protocol lines (a fan must never see
+    # them); honor the tag only when this reply's roll offered the pack.
+    raw, sticker_tag = cat_stickers.parse_marker(raw)
+    if sticker_mode == "skip":
+        sticker_tag = None
+    # Never the same reaction twice running — see cat_stickers.keep_tag.
+    if sticker_tag is not None:
+        sticker_tag = cat_stickers.keep_tag(
+            account_id, fan_id, sticker_tag, has_text=bool(raw))
+        if sticker_tag is None:
+            log.info("welcome_chatter_for_info sticker tag repeat dropped account=%s "
+                     "fan=%s", account_id, fan_id)
+    # Deterministic floor under ONPLATFORM_GUARDRAIL: if the model still
+    # leaked a number / off-platform handle / meetup arrangement, swap for
+    # a warm on-platform deflection before it can be sent.
+    # The shared send chokepoint: guard_offplatform stops her leaking a
+    # phone number, PHASE 2 stops her contradicting herself, then the
+    # account-wide emoji strip — all in _outbound, in that order. PHASE 2
+    # is off unless the account opts in; a no-self-claim draft costs
+    # nothing either way.
+    # A bare name on purpose: test_outbound's AST check reads `strip_emoji=<Name>`
+    # as "the account flag" (an attribute would fail it).
+    strip_emoji_on = cfg.strip_emoji_on
+    raw, _leak = await finalize_draft(
+        raw, account_id=account_id, fan_id=fan_id, purpose=_PURPOSE,
+        consistency=ConsistencyCtx(
+            fan=t.f, persona=cfg.persona, model=cfg.model,
+            last_inbound=t.c.last_body or "") if cfg.consistency_on else None,
+        strip_emoji=strip_emoji_on, v=cfg.voice_blocks)
+    return raw, sticker_tag
+
+
+async def _turn_shape(t: _Turn, raw: str, fan_lang: str, sticker_tag) -> list[str] | None:
+    """The reply's bubbles, or None when the shaping dropped it (out: banned / empty
+    / echo)."""
+    cfg, c, f = t.cfg, t.c, t.f
+    account_id, fan_id = cfg.account_id, c.fan_id
+    # (the account-wide emoji strip ran in finalize_draft, `_turn_tag_and_finalize`
+    # — still BEFORE the split, so the emoji-aware bubble logic never fires, and
+    # the split's `if p.strip()` filter still drops a bubble it emptied.)
+    # The sync middle shared with autoreply (_reply_shape): up to
+    # `max_bubbles` bubbles (2, or 3 with the style opt-in) + the OF word
+    # restriction in his language; drop a bubble that parrots his last message
+    # (small-model echo tell the humanizer can trigger); never open with the
+    # SAME reaction word two sends running (style on); the compliance word
+    # filter — before the nonnative/typo layers (filter_banned's documented
+    # contract), so a typo can't smuggle a flagged word past the scan; then
+    # the non-native register. A reply with a sticker tag may be text-less.
+    name_protect = [n for n in (f.real_name, f.generated_nickname,
+                                f.of_display_name) if n]
+    shaped = _reply_shape.shape_parts(raw, _reply_shape.ShapeCtx(
+        seed_id=fan_id, max_bubbles=cfg.max_bubbles, max_chars=_REPLY_MAX_CHARS,
+        lang=fan_lang, echo_of=c.last_body, style_on=cfg.style_on,
+        recent_out=[b for d, b in c.messages if d == "out"],
+        allow_empty=sticker_tag is not None,
+        banned_words=cfg.banned_words, banned_mode=cfg.banned_mode,
+        nonnative_on=cfg.nonnative_on, spacing_on=cfg.spacing_on,
+        name_protect=name_protect))
+    if shaped.dropped_reason == "banned":
+        log.warning("of_ai_chat BLOCKED reply — banned word(s) %r account=%s fan=%s",
+                    banned_hit_summary(shaped.banned_hits), account_id, fan_id)
+        t.out.kind, t.out.skipped_banned = "banned", 1
+        return None
+    if shaped.dropped_reason is not None:   # empty, or every bubble an echo
+        log.debug("welcome_chatter_for_info dropped echo-only reply account=%s fan=%s",
+                  account_id, fan_id)
+        t.out.kind, t.out.errors = shaped.dropped_reason, 1
+        return None
+    if shaped.banned_hits:
+        log.info("of_ai_chat masked banned word(s) %r account=%s fan=%s",
+                 banned_hit_summary(shaped.banned_hits), account_id, fan_id)
+    parts = shaped.parts
+    if cfg.typo_on:  # opt-in: a realistic thumb-slip (+ a throttled "*fix" bubble)
+        # protect the words non-native already mangled so we don't double-corrupt
+        protect = name_protect + (list(NONNATIVE_OUTPUTS) if cfg.nonnative_on else [])
+        parts = await apply_typo_throttle(
+            account_id, fan_id, parts, random.Random(f"{fan_id}:{raw}"),
+            protect=protect, max_bubbles=cfg.max_bubbles)
+    return parts
+
+
+async def _turn_send_bubbles(t: _Turn, parts: list[str]) -> bool:
+    """The text bubbles to OF, each held for its typing time and the DM rate. True:
+    the turn is over (out: send_failed / no_id). run_slot.SlotLost from a hold
+    propagates (`_turn` decides)."""
+    cfg, out = t.cfg, t.out
+    account_id, fan_id = cfg.account_id, t.c.fan_id
+    for idx, part in enumerate(parts):
+        # Hold each bubble for the time it'd take to TYPE it (~typing_wpm),
+        # showing the live "...is typing" bubble during the wait if enabled.
+        await hold_with_typing(account_id, fan_id,
+                               typing_delay_seconds(part, cfg.typing_wpm),
+                               typing_indicator=cfg.typing_indicator)
+        # The account's DM rate (OF_DM_PER_MIN), waited like the hold.
+        await dm_rate.turn(account_id, release_budget_s=INLINE_MAX_S)
+        try:
+            result = await asyncio.to_thread(t.client.send_message, fan_id, part)
+        except Exception as e:
+            out.errors += 1
+            await skip_unreachable_fan(account_id, fan_id, e, log=log)
+            log.warning("welcome_chatter_for_info send failed account=%s fan=%s",
+                        account_id, fan_id, exc_info=True)
+            out.kind = "send_failed"
+            return True
+        msg_id = wcfi_decide.msg_id_of(result)
+        if msg_id:
+            await _record_send(account_id, fan_id, msg_id, result, part)
+            t.sent_ok = True
+        elif idx == 0:
+            # 200 but no id on the first bubble — nothing landed: can't persist
+            # (message_id is the PK). Probe WHY first — an undeliverable fan
+            # (lapsed sub / deleted) would otherwise re-fire ('fan spoke last')
+            # every tick forever, burning a reply we can never deliver.
+            # quarantine_if_undeliverable rests/skips those; only a genuinely
+            # transient no-id falls through to the short pause (which also stops
+            # the immediate double-reply); retry next tick.
+            out.kind = "no_id"
+            out.errors += 1
+            reason = await quarantine_if_undeliverable(t.client, account_id, fan_id)
+            if reason is None:
+                await _pause_fan(account_id, fan_id, t.now + _NOID_PAUSE)
+                log.warning("welcome_chatter_for_info send returned no id account=%s fan=%s — paused %s",
+                            account_id, fan_id, _NOID_PAUSE)
+            return True
+    return False
+
+
+async def _turn_send_sticker(t: _Turn, sticker_tag, parts: list[str]) -> bool:
+    """Cat sticker — its own bubble after the text, or the WHOLE reply (parts
+    empty). Empty text + top-level giphyId is the verified GIF-only wire shape;
+    failure is non-fatal when text already landed. True: the gif landed.
+    run_slot.SlotLost from its hold propagates (`_turn` decides)."""
+    if sticker_tag is None:
+        return False
+    account_id, fan_id = t.cfg.account_id, t.c.fan_id
+    gid = cat_stickers.pick_gif(
+        sticker_tag,
+        random.Random(f"gif:{account_id}:{fan_id}:{t.c.last_body}"),
+        account_id=account_id, fan_id=fan_id,
+        voice=t.cfg.voice_blocks.voice)
+    if gid is None:
+        return False
+    srng = random.Random(f"sdelay:{fan_id}:{gid}")
+    await hold_with_typing(account_id, fan_id,
+                           2.0 + 4.0 * srng.random(),
+                           typing_indicator=t.cfg.typing_indicator)
+    await dm_rate.turn(account_id, release_budget_s=INLINE_MAX_S)
+    try:
+        result = await asyncio.to_thread(
+            lambda g=gid: t.client.send_message(fan_id, "",
+                                                giphy_id=g))
+    except Exception:
+        result = None
+        log.warning("welcome_chatter_for_info sticker send failed account=%s "
+                    "fan=%s tag=%s", account_id, fan_id,
+                    sticker_tag, exc_info=True)
+    s_msg_id = wcfi_decide.msg_id_of(result)
+    if not s_msg_id:
+        return False
+    await _record_send(account_id, fan_id, s_msg_id, result, "")
+    cat_stickers.mark_sent(account_id, fan_id,
+                           tag=sticker_tag, gif_id=gid)
+    t.sent_ok = True
+    t.out.stickers_sent += 1
+    log.info("welcome_chatter_for_info sticker sent account=%s fan=%s "
+             "tag=%s gif=%s solo=%s", account_id, fan_id,
+             sticker_tag, gid, not parts)
+    return True
+
+
+async def _turn_bookkeep(t: _Turn, parts: list[str], presented, asked: set,
+                         opener) -> None:
+    """At least one bubble landed: the send stamp, the asked topic, the opener used,
+    the profile refresh; out → sent."""
+    account_id, fan_id = t.cfg.account_id, t.c.fan_id
+    # At least one bubble landed → stamp the send (the turn was already
+    # counted by _bump_attempt when the reply was generated).
+    await _mark_reply_sent(account_id, fan_id, t.now)
+    # Info-gather (V1): mark the topic we nudged him on as asked so we never
+    # re-ask it. gen_info fills the actual fact from his answer. (Empty on a
+    # no-question style roll → nothing marked.) HARD RULE: mark the highest-
+    # PRIORITY still-needed topic (what the model actually fixates on), not
+    # the poke-later-reordered front — that's what makes a still-empty core
+    # fact escalate to ":2" and DROP after two asks (never a 3rd time), so a
+    # dodgy fan graduates with a self-generated nickname.
+    # A gif-only reply asked nothing — don't burn the topic's ask slot
+    # (":2" caps at two asks; a kitten gif must not count as one).
+    target = _primary_ask_target(presented) if parts else None
+    if target:
+        await _mark_question_asked(account_id, fan_id, target, asked)
+    # A gif-only reply carried no opener, so it doesn't burn one.
+    if opener is not None and parts:
+        await _openers.record_used(account_id, fan_id, t.f,
+                                   t.profile, opener.slot)
+    # Keep stored info current: refresh the profile when the gate says stale.
+    await _maybe_refresh_profile(account_id, fan_id, t.c.fan_msg_n, t.now)
+    t.out.kind = "sent"
+    t.out.replies_sent += 1
+
+
+async def _turn_mark_read(t: _Turn) -> None:
+    """We just replied → clear the unread badge. A mark-read failure must never
+    break the (already-persisted) send."""
+    try:
+        await asyncio.to_thread(t.client.mark_chat_read, t.c.fan_id)
+    except Exception:
+        log.warning("welcome_chatter_for_info mark_chat_read failed account=%s fan=%s",
+                    t.cfg.account_id, t.c.fan_id, exc_info=True)
+
+
+async def _turn_release(t: _Turn) -> None:
+    """W3 (live-chat variant): on a confirmed reply, set a SHORT cooldown
+    (_REPLY_COOLDOWN_S) and then RELEASE the lease so the next reply can
+    re-acquire once the rest elapses — keeping the 900s lease here would
+    silence the bot for 15 min. The cooldown is committed BEFORE the
+    release, so it's the cross-tick guard the moment the lease drops.
+    If the cooldown write fails we KEEP the lease (900s) as the fallback
+    double-message guard rather than release into an unguarded window."""
+    account_id, fan_id = t.cfg.account_id, t.c.fan_id
+    if t.sent_ok:
+        try:
+            await ax.start_fan_cooldown(
+                account_id, fan_id, cooldown_s=_REPLY_COOLDOWN_S
+            )
+            await ax.release_fan_lease(account_id, fan_id)
+        except Exception:
+            log.warning("welcome_chatter_for_info cooldown set failed account=%s fan=%s "
+                        "— keeping lease as fallback guard",
+                        account_id, fan_id, exc_info=True)
+    else:
+        await ax.release_fan_lease(account_id, fan_id)
+
+
 async def _turn(cfg: _RunConfig, c: _Candidate, fan_row: Fan | None,
                 profile: FanProfile | None, client, now: datetime) -> TurnOutcome:
     """One candidate's turn, under the per-fan lease: the closing cut, the fact
     extract, the reply (generate → shape → bubbles to OF → persist), the sticker
-    and the bookkeeping. Raises run_slot.SlotLost as the run's loop always did (a
-    landed bubble is recorded first), and LLMCapExceeded / LLMKeyError (run() stops)."""
+    and the bookkeeping — each a `_turn_*` step above. Raises run_slot.SlotLost (a
+    landed bubble is recorded first) and LLMCapExceeded / LLMKeyError (run() stops)."""
     account_id, fan_id = cfg.account_id, c.fan_id
-    out = TurnOutcome()
+    t = _Turn(cfg, c, client, profile, now, TurnOutcome(),
+              fan_row or Fan(account_id=str(account_id), fan_id=fan_id))
     # Another automation messaged this fan recently → rest it (W3 cooldown).
     if await ax.fan_on_cooldown(account_id, fan_id):
-        out.kind, out.skipped_cooldown = "cooldown", 1
-        return out
+        t.out.kind, t.out.skipped_cooldown = "cooldown", 1
+        return t.out
     # One bot message per fan per cycle — don't race A06/A07/A09/A11.
     if not await ax.acquire_fan_lease(account_id, fan_id, "welcome_chatter_for_info"):
-        out.kind, out.skipped_locked = "locked", 1
-        return out
-    sent_ok = False
-
-    async def _close_with_ppv() -> bool:
-        """The closing PPV + its bookkeeping — ONE copy for both ways out (the
-        runaway cut and the info graduation). A priced send IS a send: it counts
-        against `max_replies` and earns the cooldown. Returns True on a dry-run
-        preview — the caller then leaves the fan in the lane, so previewing never
-        costs a fan his closing PPV. Every other outcome graduates him."""
-        nonlocal sent_ok
-        if cfg.closing is None:
-            return False
-        outcome = await _send_closing_ppv(client, account_id, fan_id, cfg.closing,
-                                          dry_run=cfg.dry_run)
-        if outcome == "dry_run":
-            out.closing_ppvs_sent += 1
-            out.replies_sent += 1
-            return True
-        if outcome == "sent":
-            out.closing_ppvs_sent += 1
-            out.replies_sent += 1
-            sent_ok = True
-            await _mark_reply_sent(account_id, fan_id, now)
-        return False
-
+        t.out.kind, t.out.skipped_locked = "locked", 1
+        return t.out
     try:
-        f = fan_row or Fan(account_id=str(account_id), fan_id=fan_id)
         # ── The runaway cut, executed under the lease: the closing PPV, then
         # the `too_long` row exactly as the gate loop writes it. No fact
         # extract first — the cut never spent an LLM call on him.
         if c.closing_cut:
-            out.kind = "closing_cut"
-            if not await _close_with_ppv():
+            t.out.kind = "closing_cut"
+            if not await _close_with_ppv(t):
                 await _skip_and_collect(account_id, fan_id, "too_long")
-                out.newly_skiplisted += 1
-            return out  # finally releases the lease
-        # Inline fact fill (V1): save the facts he just stated BEFORE replying,
-        # so age/job/location land this turn. Cap → stop the run cleanly.
-        try:
-            # Extract sees only the last few turns (a newly-stated fact is
-            # always recent) — its own short tail, NOT the reply's.
-            f = await _extract_and_fill(account_id, fan_id, f, c, cfg.model,
-                                        _EXTRACT_HISTORY_TAIL, persona=cfg.persona)
-        except LLMCapExceeded:
-            log.warning("welcome_chatter_for_info LLM cap reached (extract) account=%s — stopping",
-                        account_id)
-            raise                     # run() records cap_hit and stops
-        except llm_client.LLMKeyError:
-            raise                     # run() records key_error and stops
-        except Exception:
-            log.debug("welcome_chatter_for_info fact-extract failed account=%s fan=%s",
-                      account_id, fan_id, exc_info=True)
-        # Update + push the structured nickname EVERY tick (V1 apply_nickname).
-        try:
-            await _maybe_push_nickname(client, account_id, fan_id, f)
-        except Exception:
-            log.debug("welcome_chatter_for_info nick push failed account=%s fan=%s",
-                      account_id, fan_id, exc_info=True)
-        try:
-            asked = set(json.loads(f.questions_asked or "[]"))
-        except Exception:
-            asked = set()
+                t.out.newly_skiplisted += 1
+            return t.out  # finally releases the lease
+        await _turn_fill_facts(t)
+        asked = wcfi_decide.asked_topics(t.f)
         # The gather is over once the inline fill left nothing to ask. The fan
         # does NOT leave — he moves on to the gen_info openers, worked into this
         # same reply. Only when those run out does welcome_chatter_for_info finish with him:
         # it is the starter lane, so it graduates rather than chatting for ever.
         opener = None
-        if fan_id not in cfg.force_ids and _gather_done(f, asked):
-            # One pass: the starter lane finishes with a fan after one question
-            # and one tease. It cannot wait for a dry pool — gen_info restocks
-            # after every reply, so the pool never empties (see next_for).
-            # A None here always means the lane is finished, never "come back
-            # tomorrow" — which matters, because None GRADUATES the fan below.
-            opener = _openers.next_for(f, profile)
-            if opener is None:
-                # The lane is finished with him: the closing PPV (when set),
-                # then he graduates. A failed send changes nothing.
-                if await _close_with_ppv():
-                    out.kind = "closing_preview"
-                    return out  # dry-run preview: he stays in the lane
-                await _graduate(client, account_id, fan_id, f)
-                out.kind = "graduated"
-                out.newly_skiplisted += 1
-                return out  # finally releases the lease
+        if fan_id not in cfg.force_ids and _gather_done(t.f, asked):
+            opener = _openers.next_for(t.f, profile)
+            if opener is None:  # one pass: the lane is finished with him
+                await _turn_finish_lane(t)
+                return t.out  # closing_preview / graduated
         # Per-fan language: a manual pin or gen_info detection on this fan
         # (fans.language) overrides the account default; unset → account default.
-        fan_lang = _language.resolve_language(cfg.account_lang, getattr(f, "language", None))
-
-        # Cat-sticker roll (code-side rate control):
-        # deterministic per reply (fan + his latest text) so a re-run rolls
-        # the same. Cooldown (per-account gap knob) forces skip.
-        sticker_cfg = cfg.sticker_cfg
-        sticker_mode = "skip"
-        if sticker_cfg.enabled:
-            sticker_mode = cat_stickers.roll_mode(
-                random.Random(f"sticker:{account_id}:{fan_id}:{c.last_body}"),
-                cat_stickers.cooldown_active(account_id, fan_id,
-                                             gap_min=sticker_cfg.gap_min),
-                skip_w=sticker_cfg.skip_w, solo_w=sticker_cfg.solo_w)
-        msgs, presented = _build_messages(
-            cfg.persona, f, c, asked, cfg.history_tail,
-            style_on=cfg.style_on, nonnative_on=cfg.nonnative_on,
-            painful_on=cfg.painful_on, lang=fan_lang,
-            profile=profile if cfg.factground_on else None,
-            clock=clock_line(cfg.clock_tz),
-            sticker_mode=sticker_mode,
-            day=cfg.day,
-            opener=opener, v=cfg.voice_blocks)
-        try:
-            res = await llm_client.chat(
-                model=cfg.model,
-                messages=msgs,
-                purpose=_PURPOSE,
-                account_id=account_id,
-                fan_id=fan_id,
-                temperature=_REPLY_TEMPERATURE,
-            )
-        except LLMCapExceeded:
-            log.warning("welcome_chatter_for_info daily LLM cap reached account=%s — stopping",
-                        account_id)
-            raise
-        except llm_client.LLMKeyError:
-            raise
-        except Exception:
-            log.warning("welcome_chatter_for_info generate failed account=%s fan=%s",
-                        account_id, fan_id, exc_info=True)
-            out.kind, out.errors = "generate_failed", 1
-            return out
-
-        raw = (res.content or "").strip()
-        # Sticker marker: ALWAYS strip protocol lines (a fan must never see
-        # them); honor the tag only when this reply's roll offered the pack.
-        raw, sticker_tag = cat_stickers.parse_marker(raw)
-        if sticker_mode == "skip":
-            sticker_tag = None
-        # Never the same reaction twice running — see cat_stickers.keep_tag.
-        if sticker_tag is not None:
-            sticker_tag = cat_stickers.keep_tag(
-                account_id, fan_id, sticker_tag, has_text=bool(raw))
-            if sticker_tag is None:
-                log.info("welcome_chatter_for_info sticker tag repeat dropped account=%s "
-                         "fan=%s", account_id, fan_id)
-        # Deterministic floor under ONPLATFORM_GUARDRAIL: if the model still
-        # leaked a number / off-platform handle / meetup arrangement, swap for
-        # a warm on-platform deflection before it can be sent.
-        # The shared send chokepoint: guard_offplatform stops her leaking a
-        # phone number, PHASE 2 stops her contradicting herself, then the
-        # account-wide emoji strip — all in _outbound, in that order. PHASE 2
-        # is off unless the account opts in; a no-self-claim draft costs
-        # nothing either way.
-        # A bare name on purpose: test_outbound's AST check reads `strip_emoji=<Name>`
-        # as "the account flag" (an attribute would fail it).
-        strip_emoji_on = cfg.strip_emoji_on
-        raw, _leak = await finalize_draft(
-            raw, account_id=account_id, fan_id=fan_id, purpose=_PURPOSE,
-            consistency=ConsistencyCtx(
-                fan=f, persona=cfg.persona, model=cfg.model,
-                last_inbound=c.last_body or "") if cfg.consistency_on else None,
-            strip_emoji=strip_emoji_on, v=cfg.voice_blocks)
-        # Count the turn the moment a reply is GENERATED — a "try" counts
-        # whether or not it lands. An undeliverable fan (no-id) or an echo-only
-        # drop never bumps via the confirmed-send path, so its turn_counter
-        # would stay 0 forever and the _MAX_TURNS cap could never fire. Bumping
-        # here makes the cap count attempts, so a fan we keep failing to send to
-        # still hits 30 and graduates instead of looping for ever.
+        fan_lang = _language.resolve_language(cfg.account_lang, getattr(t.f, "language", None))
+        sticker_mode = _turn_sticker_roll(t)
+        gen = await _turn_generate(t, asked, opener, fan_lang, sticker_mode)
+        if gen is None:
+            return t.out  # generate_failed
+        raw, presented = gen
+        raw, sticker_tag = await _turn_tag_and_finalize(t, raw, sticker_mode)
+        # Count the turn the moment a reply is GENERATED, landed or not (see _bump_attempt).
         if not cfg.dry_run:
             await _bump_attempt(account_id, fan_id, now)
-        # (the account-wide emoji strip ran in finalize_draft above — still
-        # BEFORE the split, so the emoji-aware bubble logic never fires, and
-        # the split's `if p.strip()` filter still drops a bubble it emptied.)
-        # The sync middle shared with autoreply (_reply_shape): up to
-        # `max_bubbles` bubbles (2, or 3 with the style opt-in) + the OF word
-        # restriction in his language; drop a bubble that parrots his last message
-        # (small-model echo tell the humanizer can trigger); never open with the
-        # SAME reaction word two sends running (style on); the compliance word
-        # filter — before the nonnative/typo layers (filter_banned's documented
-        # contract), so a typo can't smuggle a flagged word past the scan; then
-        # the non-native register. A reply with a sticker tag may be text-less.
-        name_protect = [n for n in (f.real_name, f.generated_nickname,
-                                    f.of_display_name) if n]
-        shaped = _reply_shape.shape_parts(raw, _reply_shape.ShapeCtx(
-            seed_id=fan_id, max_bubbles=cfg.max_bubbles, max_chars=_REPLY_MAX_CHARS,
-            lang=fan_lang, echo_of=c.last_body, style_on=cfg.style_on,
-            recent_out=[b for d, b in c.messages if d == "out"],
-            allow_empty=sticker_tag is not None,
-            banned_words=cfg.banned_words, banned_mode=cfg.banned_mode,
-            nonnative_on=cfg.nonnative_on, spacing_on=cfg.spacing_on,
-            name_protect=name_protect))
-        if shaped.dropped_reason == "banned":
-            log.warning("of_ai_chat BLOCKED reply — banned word(s) %r account=%s fan=%s",
-                        banned_hit_summary(shaped.banned_hits), account_id, fan_id)
-            out.kind, out.skipped_banned = "banned", 1
-            return out
-        if shaped.dropped_reason is not None:   # empty, or every bubble an echo
-            log.debug("welcome_chatter_for_info dropped echo-only reply account=%s fan=%s",
-                      account_id, fan_id)
-            out.kind, out.errors = shaped.dropped_reason, 1
-            return out
-        if shaped.banned_hits:
-            log.info("of_ai_chat masked banned word(s) %r account=%s fan=%s",
-                     banned_hit_summary(shaped.banned_hits), account_id, fan_id)
-        parts = shaped.parts
-        if cfg.typo_on:  # opt-in: a realistic thumb-slip (+ a throttled "*fix" bubble)
-            # protect the words non-native already mangled so we don't double-corrupt
-            protect = name_protect + (list(NONNATIVE_OUTPUTS) if cfg.nonnative_on else [])
-            parts = await apply_typo_throttle(
-                account_id, fan_id, parts, random.Random(f"{fan_id}:{raw}"),
-                protect=protect, max_bubbles=cfg.max_bubbles)
-
+        parts = await _turn_shape(t, raw, fan_lang, sticker_tag)
+        if parts is None:
+            return t.out  # banned / empty / echo
         if cfg.dry_run:
-            out.kind, out.replies_sent = "dry_run", 1  # would-send; persist nothing on a dry run
-            return out
-
-        lost = None     # run_slot.SlotLost after part of the reply landed
-        for idx, part in enumerate(parts):
-            # Hold each bubble for the time it'd take to TYPE it (~typing_wpm),
-            # showing the live "...is typing" bubble during the wait if enabled.
-            try:
-                await hold_with_typing(account_id, fan_id,
-                                       typing_delay_seconds(part, cfg.typing_wpm),
-                                       typing_indicator=cfg.typing_indicator)
-                # The account's DM rate (OF_DM_PER_MIN), waited like the hold.
-                await dm_rate.turn(account_id, release_budget_s=INLINE_MAX_S)
-            except run_slot.SlotLost as e:
-                # The run lost its slot: send no more. A bubble landed → the
-                # reply is recorded below as sent, then the run stops.
-                if not sent_ok:
-                    raise
-                lost = e
-                break
-            try:
-                result = await asyncio.to_thread(client.send_message, fan_id, part)
-            except Exception as e:
-                out.errors += 1
-                await skip_unreachable_fan(account_id, fan_id, e, log=log)
-                log.warning("welcome_chatter_for_info send failed account=%s fan=%s",
-                            account_id, fan_id, exc_info=True)
-                out.kind = "send_failed"
-                return out
-            msg_id = result.get("id") if isinstance(result, dict) else None
-            if msg_id:
-                await _record_send(account_id, fan_id, msg_id, result, part)
-                sent_ok = True
-            elif idx == 0:
-                # 200 but no id on the first bubble — nothing landed: can't persist
-                # (message_id is the PK). Probe WHY first — an undeliverable fan
-                # (lapsed sub / deleted) would otherwise re-fire ('fan spoke last')
-                # every tick forever, burning a reply we can never deliver.
-                # quarantine_if_undeliverable rests/skips those; only a genuinely
-                # transient no-id falls through to the short pause (which also stops
-                # the immediate double-reply); retry next tick.
-                out.kind = "no_id"
-                out.errors += 1
-                reason = await quarantine_if_undeliverable(client, account_id, fan_id)
-                if reason is None:
-                    await _pause_fan(account_id, fan_id, now + _NOID_PAUSE)
-                    log.warning("welcome_chatter_for_info send returned no id account=%s fan=%s — paused %s",
-                                account_id, fan_id, _NOID_PAUSE)
-                return out
-        # ── Cat sticker — its own bubble after the text, or the WHOLE reply
-        # (parts empty). Empty text + top-level giphyId is the verified
-        # GIF-only wire shape; failure is non-fatal when text already landed.
-        sticker_sent = False
-        if sticker_tag is not None and lost is None:
-            gid = cat_stickers.pick_gif(
-                sticker_tag,
-                random.Random(f"gif:{account_id}:{fan_id}:{c.last_body}"),
-                account_id=account_id, fan_id=fan_id,
-                voice=cfg.voice_blocks.voice)
-            if gid is not None:
-                srng = random.Random(f"sdelay:{fan_id}:{gid}")
-                try:
-                    await hold_with_typing(account_id, fan_id,
-                                           2.0 + 4.0 * srng.random(),
-                                           typing_indicator=cfg.typing_indicator)
-                    await dm_rate.turn(account_id, release_budget_s=INLINE_MAX_S)
-                except run_slot.SlotLost as e:
-                    if not sent_ok:
-                        raise   # a sticker-only reply: nothing landed
-                    lost, gid = e, None
-            if gid is not None:
-                try:
-                    result = await asyncio.to_thread(
-                        lambda g=gid: client.send_message(fan_id, "",
-                                                          giphy_id=g))
-                except Exception:
-                    result = None
-                    log.warning("welcome_chatter_for_info sticker send failed account=%s "
-                                "fan=%s tag=%s", account_id, fan_id,
-                                sticker_tag, exc_info=True)
-                s_msg_id = result.get("id") if isinstance(result, dict) else None
-                if s_msg_id:
-                    await _record_send(account_id, fan_id, s_msg_id, result, "")
-                    cat_stickers.mark_sent(account_id, fan_id,
-                                           tag=sticker_tag, gif_id=gid)
-                    sticker_sent = True
-                    sent_ok = True
-                    out.stickers_sent += 1
-                    log.info("welcome_chatter_for_info sticker sent account=%s fan=%s "
-                             "tag=%s gif=%s solo=%s", account_id, fan_id,
-                             sticker_tag, gid, not parts)
-        if not parts and not sticker_sent:
-            out.kind = "sticker_failed"
-            out.errors += 1     # sticker-only reply and the gif never landed
-            return out
-        # At least one bubble landed → stamp the send (the turn was already
-        # counted by _bump_attempt when the reply was generated).
-        await _mark_reply_sent(account_id, fan_id, now)
-        # Info-gather (V1): mark the topic we nudged him on as asked so we never
-        # re-ask it. gen_info fills the actual fact from his answer. (Empty on a
-        # no-question style roll → nothing marked.) HARD RULE: mark the highest-
-        # PRIORITY still-needed topic (what the model actually fixates on), not
-        # the poke-later-reordered front — that's what makes a still-empty core
-        # fact escalate to ":2" and DROP after two asks (never a 3rd time), so a
-        # dodgy fan graduates with a self-generated nickname.
-        # A gif-only reply asked nothing — don't burn the topic's ask slot
-        # (":2" caps at two asks; a kitten gif must not count as one).
-        target = _primary_ask_target(presented) if parts else None
-        if target:
-            await _mark_question_asked(account_id, fan_id, target, asked)
-        # A gif-only reply carried no opener, so it doesn't burn one.
-        if opener is not None and parts:
-            await _openers.record_used(account_id, fan_id, f,
-                                       profile, opener.slot)
-        # Keep stored info current: refresh the profile when the gate says stale.
-        await _maybe_refresh_profile(account_id, fan_id, c.fan_msg_n, now)
-        out.kind = "sent"
-        out.replies_sent += 1
-        if lost is not None:
-            raise lost  # recorded (and rested, finally): now stop the run
-        # We just replied → clear the unread badge. A mark-read failure must
-        # never break the (already-persisted) send.
+            t.out.kind, t.out.replies_sent = "dry_run", 1  # would-send; persist nothing
+            return t.out
         try:
-            await asyncio.to_thread(client.mark_chat_read, fan_id)
-        except Exception:
-            log.warning("welcome_chatter_for_info mark_chat_read failed account=%s fan=%s",
-                        account_id, fan_id, exc_info=True)
-        return out
+            if await _turn_send_bubbles(t, parts):
+                return t.out  # send_failed / no_id
+            sticker_sent = await _turn_send_sticker(t, sticker_tag, parts)
+        except run_slot.SlotLost:
+            # Slot lost: send no more, no mark-read. A bubble landed → recorded
+            # as sent (rested by the finally), then raised to stop the run.
+            if t.sent_ok:
+                await _turn_bookkeep(t, parts, presented, asked, opener)
+            raise
+        if not parts and not sticker_sent:
+            t.out.kind = "sticker_failed"
+            t.out.errors += 1     # sticker-only reply and the gif never landed
+            return t.out
+        await _turn_bookkeep(t, parts, presented, asked, opener)
+        await _turn_mark_read(t)
+        return t.out
     finally:
-        # W3 (live-chat variant): on a confirmed reply, set a SHORT cooldown
-        # (_REPLY_COOLDOWN_S) and then RELEASE the lease so the next reply can
-        # re-acquire once the rest elapses — keeping the 900s lease here would
-        # silence the bot for 15 min. The cooldown is committed BEFORE the
-        # release, so it's the cross-tick guard the moment the lease drops.
-        # If the cooldown write fails we KEEP the lease (900s) as the fallback
-        # double-message guard rather than release into an unguarded window.
-        if sent_ok:
-            try:
-                await ax.start_fan_cooldown(
-                    account_id, fan_id, cooldown_s=_REPLY_COOLDOWN_S
-                )
-                await ax.release_fan_lease(account_id, fan_id)
-            except Exception:
-                log.warning("welcome_chatter_for_info cooldown set failed account=%s fan=%s "
-                            "— keeping lease as fallback guard",
-                            account_id, fan_id, exc_info=True)
-        else:
-            await ax.release_fan_lease(account_id, fan_id)
+        await _turn_release(t)
 
 
 @register("welcome_chatter_for_info")

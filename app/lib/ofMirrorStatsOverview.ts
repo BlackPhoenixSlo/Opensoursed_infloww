@@ -12,7 +12,8 @@
  */
 
 import { BLUE } from "@/lib/ofMirrorChart";
-import { make, plain, valid } from "@/lib/ofMirrorData";
+import { plain } from "@/lib/ofMirrorData";
+import { make, valid } from "@/lib/ofMirrorDom";
 import { moneyOf } from "@/lib/ofMirrorMoney";
 import { ELSEWHERE } from "@/lib/ofMirrorTooltip";
 import { NOT_YET } from "@/lib/ofMirrorWrites";

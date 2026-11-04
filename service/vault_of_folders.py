@@ -34,7 +34,7 @@ import vault_scripts
 from auth import assert_account_owned
 from db.engine import get_session
 from db.models import VaultFolder, VaultFolderItem, VaultItem
-from vault_of_folders_decide import chunks, hide_selection, next_folder_ids, parse_folder_ids, too_many
+from vault_of_folders_decide import chunks, hide_selection, next_folder_ids, parse_folder_ids, parse_threshold, too_many
 
 # Same logger name as before the split, so log routing/filters are unchanged.
 log = logging.getLogger("of-relay.vault_ai_api")
@@ -487,7 +487,12 @@ async def hide_duplicates(payload: dict = Body(...)) -> dict[str, Any]:
     if over:
         raise HTTPException(status_code=400, detail=over)
     allow_sent = bool(payload.get("allow_sent"))
-    threshold = int(payload.get("threshold") or vault_dupes.DEFAULT_THRESHOLD)
+    try:
+        threshold = parse_threshold(payload.get("threshold"), vault_dupes.DEFAULT_THRESHOLD,
+                                    vault_dupes.MAX_THRESHOLD)
+    except ValueError:
+        raise HTTPException(status_code=400,
+                            detail={"error": "bad_threshold"}) from None
 
     # Re-derive the truth rather than trusting the payload's classification.
     res = await vault_dupes.find_duplicates(account_id, threshold, rehash=False)

@@ -37,6 +37,7 @@ import { readAuthSnapshot, writeAuthSnapshot } from "@/lib/authSnapshot";
 import { clearSendStash } from "@/lib/sendStash";
 import { clearRefusedOffers } from "@/components/chat/refusedOffers";
 import { clearPersistedCache } from "@/lib/rqPersister";
+import { forgetPush } from "@/lib/webPush";
 import { isTwoFactorChallenge, postAuthJSON, TwoFactorRequired, type TwoFactorChallenge } from "@/lib/twoFactor";
 
 import {
@@ -325,6 +326,8 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
   }, [queryClient, send]);
 
   const logout = useCallback(async () => {
+    // Push stops counting as live here; the relay's logout deletes the rows.
+    forgetPush();
     try { await postAuthJSON<unknown>("/auth/logout", {}); } catch { /* best effort */ }
     const wiped = wipeIdentityCaches(queryClient);
     send({ type: "logout" });

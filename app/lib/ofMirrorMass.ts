@@ -32,12 +32,13 @@
  * All models and no model: as ofMirrorChat's.
  */
 
-import { fill, make, restore, setAttr, setText, stamp, type UserList } from "@/lib/ofMirrorData";
+import { restore, setAttr, setText, stamp } from "@/lib/ofMirrorDom";
+import { applyListRows, markRow, MASS_ROW, usersLabel } from "@/lib/ofMirrorDataLists";
 import { type bindComposer, GIF_ALONE } from "@/lib/ofMirrorComposer";
 import { hasFormatting, ofHtml, setOfHtml } from "@/lib/ofMirrorFormat";
 import { MASS_VAULT } from "@/lib/ofMirrorRow";
 import { dateTimeFields, GREY, localIso, message, minuteAhead, note, NOTE_STYLE, openModal, schedulePill, SELECT_MODEL, textOf, TOO_SOON } from "@/lib/ofMirrorWrites";
-import { fromWallClock, wallClock } from "@/lib/ofMirrorFeeds";
+import { fromWallClock, wallClock } from "@/lib/ofMirrorFeedsShared";
 import { ofPrice } from "@/lib/ofMirrorPostCard";
 import {
   bindChatTags,
@@ -112,7 +113,6 @@ export const NO_LISTS = "Pick at least one list";
 /** The Relay's mass body tags creators only (`tagged_users`): no guest or release-form field. */
 export const NO_MASS_FORMS = "A mass message can only tag creators";
 export const MASS_TAG = "messages/send/state-tag-people";
-const MASS_ROW = ".b-chats__scroller label.b-rows-lists__item";
 /** New message's "N Selected ⊗" chip over the search (OF's filter counter) and its search field. */
 const SELECTED = "oi-mass-selected";
 const MASS_SEARCH = ".b-search-users-form input";
@@ -131,8 +131,6 @@ const MASS_TABS: Array<[MassView, string, string]> = [
 export const MASS_PICKED_TITLE = "New message to selected list";
 
 export const massDraftKey = (accountId: string) => `oi:mass:${accountId}`;
-/** New message's page, `?to=<list>` from a list page's Send message (OF's sendlist-<list>): opens with that list ticked. */
-export const MASS_SEND = "/of-manager/messages/send";
 
 export const loadMassDraft = (storage: Storage, accountId: string): MassDraft => load<MassDraft>(storage, massDraftKey(accountId), { text: "", user_lists: [] });
 /** Tick `list` on the Mass draft's Send to (and off its Exclude, as a list ticked on one tab is off the other). */
@@ -194,52 +192,6 @@ const MASS_DIALOGS: Record<string, ChatDialog> = {
 };
 const MASS_PAGE = "/of-manager/messages/send";
 
-const users = (n: number) => `${n} ${n === 1 ? "user" : "users"}`;
-/** OF's checkbox row: ticked, it drops `m-not-active` (its CSS shows the tick only then; `:checked` alone shows nothing). */
-const markRow = (row: Element, on: boolean) => row.classList.toggle("m-not-active", !on);
-
-/**
- * New message's Send to rows for `lists`: the example (the generator's hidden one) cloned per list (`data-oi-list="<id>"`, its
- * name and user count, or its `sub` line, no avatars, no link, checked when picked). As OF's, a ticked row drops
- * `m-not-active` (OF's tick shows only then) and a `disabled` one (picked on the other tab) can't be ticked.
- * ofMirrorData's restore (the unbind) undoes it. `where`: another checkbox list's rows and "Nothing found" (the chat
- * list's folders dialog), default New message's.
- */
-export function applyListRows(doc: Document, lists: Array<UserList & { sub?: string }>, picked: string[], where: { rows: string; empty: string } = { rows: MASS_ROW, empty: ".b-chats__scroller [data-oi-empty]" }, disabled: string[] = []): void {
-  const examples = [...doc.querySelectorAll<HTMLElement>(`${where.rows}:not([data-oi-list])`)];
-  if (!examples.length) return;
-  const rows = lists.map((l) => {
-    const row = make(examples[0]);
-    row.style.removeProperty("display"); // the generator's hidden template
-    row.setAttribute("data-oi-list", String(l.id));
-    row.setAttribute("data-oi-wired", "");
-    const box = row.querySelector<HTMLInputElement>("input[type='checkbox']");
-    if (box) {
-      box.checked = picked.includes(String(l.id));
-      box.disabled = disabled.includes(String(l.id));
-      markRow(row, box.checked);
-      box.addEventListener("change", () => markRow(row, box.checked));
-    }
-    // A link inside the label would open the list instead of ticking the row.
-    const a = row.querySelector("a.b-rows-lists__item__text");
-    if (a) {
-      const div = doc.createElement("div");
-      div.className = a.className;
-      div.append(...a.childNodes);
-      a.replaceWith(div);
-    }
-    const name = row.querySelector(".b-rows-lists__item__name");
-    if (name) name.textContent = ` ${l.name ?? ""} `;
-    row.querySelector(".b-media-set")?.remove();
-    const count = row.querySelector(".b-content-inside-thumbs__item");
-    if (count) count.textContent = ` ${l.sub ?? users(l.usersCount ?? 0)} `;
-    return row;
-  });
-  // OF's "Nothing found" (the generator's) only for no list.
-  const empty = lists.length ? [...doc.querySelectorAll<HTMLElement>(where.empty)] : [];
-  fill(doc, [...examples, ...empty], rows);
-}
-
 /**
  * New message's Send to before the user lists are here: OF's "Nothing found" reads "Loading lists…" while the Relay
  * answers, or the red "Could not load lists: <the Relay's text>" after it failed. The unbind's restore puts it back.
@@ -290,7 +242,7 @@ export function bindMass(doc: Document, ctx: ChatContext, page = "messages/send"
     const d = draftOf();
     const parts = [
       ...(d.edit_id ? [d.save_for_later ? "Editing a message saved for later" : "Editing a scheduled message"] : []),
-      ...(d.user_ids?.length ? [`${users(d.user_ids.length)} picked`] : []),
+      ...(d.user_ids?.length ? [`${usersLabel(d.user_ids.length)} picked`] : []),
       ...(d.excluded_user_lists?.length ? [`${d.excluded_user_lists.length} excluded ${d.excluded_user_lists.length === 1 ? "list" : "lists"}`] : []),
       ...(d.media_files?.length ? [`${d.media_files.length} media`] : []),
       ...(d.giphy_id ? ["GIF"] : []),
@@ -506,8 +458,8 @@ export function bindMass(doc: Document, ctx: ChatContext, page = "messages/send"
     const count = picked.reduce((n, l) => n + (l.usersCount ?? 0), 0);
     const names = picked.map((l) => l.name ?? String(l.id)).join(", ");
     const audience = [
-      ...(body.user_lists.length ? [`${users(count)} on ${names || `${body.user_lists.length} lists`}`] : []),
-      ...(body.user_ids?.length ? [`${users(body.user_ids.length)} picked`] : []),
+      ...(body.user_lists.length ? [`${usersLabel(count)} on ${names || `${body.user_lists.length} lists`}`] : []),
+      ...(body.user_ids?.length ? [`${usersLabel(body.user_ids.length)} picked`] : []),
     ].join(" and ") + (body.price ? ` for ${ofPrice(body.price)}` : "");
     const when = body.save_for_later ? "for later" : body.scheduled_date ? `for ${at(body.scheduled_date)}` : "";
     const ask = draft.edit_id

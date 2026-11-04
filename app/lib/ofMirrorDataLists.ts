@@ -1,10 +1,13 @@
 "use client";
 
-/** Collections' rows, cut from ofMirrorData (applyData draws them): the user lists, a list's users and tabs, the Fans, the post labels. */
+/**
+ * Collections' rows, cut from ofMirrorData (applyData draws them): the user lists, a list's users and tabs, the Fans, the post
+ * labels. And New message's list rows (ofMirrorMass, ofMirrorChats' folders dialog): applyListRows, below.
+ */
 
 import type { OFUserMini } from "@/lib/relay";
 import { basePage, keepQuery } from "@/lib/ofMirrorRow";
-import { MASS_SEND } from "@/lib/ofMirrorChat";
+import { MASS_SEND } from "@/lib/ofMirrorPick";
 import { formatCount } from "@/lib/ofMirrorIdentity";
 import { avatarOf } from "@/lib/ofMirrorAvatar";
 import { fill, handleOf, linkUser, make, markOpen, nameOf, ROW_MARKS, sameId, setAttr, setAvatar, setClass, setText, track, unit, userHref } from "@/lib/ofMirrorDom";
@@ -218,4 +221,54 @@ export function applyLabels(doc: Document, labels: PostLabel[], open: string | n
   fill(doc, rows, clones);
   if (labels.length) hideEmpty(doc, LABELS_COLUMN);
   if (current?.name) setHeading(doc, current.name);
+}
+
+// New message's list rows, here and not in ofMirrorMass: ofMirrorChats reads applyListRows and sits in ofMirrorData's
+// import cycle, while ofMirrorMass reads ofMirrorChatShared's bindChatTags while it loads (MASS_DIALOGS). Inside that cycle,
+// a page entering at ofMirrorChatShared dies on the read: "Cannot access 'bindChatTags' before initialization".
+export const MASS_ROW = ".b-chats__scroller label.b-rows-lists__item";
+export const usersLabel = (n: number) => `${n} ${n === 1 ? "user" : "users"}`;
+/** OF's checkbox row: ticked, it drops `m-not-active` (its CSS shows the tick only then; `:checked` alone shows nothing). */
+export const markRow = (row: Element, on: boolean) => row.classList.toggle("m-not-active", !on);
+
+/**
+ * New message's Send to rows for `lists`: the example (the generator's hidden one) cloned per list (`data-oi-list="<id>"`, its
+ * name and user count, or its `sub` line, no avatars, no link, checked when picked). As OF's, a ticked row drops
+ * `m-not-active` (OF's tick shows only then) and a `disabled` one (picked on the other tab) can't be ticked.
+ * ofMirrorDom's restore (the unbind) undoes it. `where`: another checkbox list's rows and "Nothing found" (the chat
+ * list's folders dialog), default New message's.
+ */
+export function applyListRows(doc: Document, lists: Array<UserList & { sub?: string }>, picked: string[], where: { rows: string; empty: string } = { rows: MASS_ROW, empty: ".b-chats__scroller [data-oi-empty]" }, disabled: string[] = []): void {
+  const examples = [...doc.querySelectorAll<HTMLElement>(`${where.rows}:not([data-oi-list])`)];
+  if (!examples.length) return;
+  const rows = lists.map((l) => {
+    const row = make(examples[0]);
+    row.style.removeProperty("display"); // the generator's hidden template
+    row.setAttribute("data-oi-list", String(l.id));
+    row.setAttribute("data-oi-wired", "");
+    const box = row.querySelector<HTMLInputElement>("input[type='checkbox']");
+    if (box) {
+      box.checked = picked.includes(String(l.id));
+      box.disabled = disabled.includes(String(l.id));
+      markRow(row, box.checked);
+      box.addEventListener("change", () => markRow(row, box.checked));
+    }
+    // A link inside the label would open the list instead of ticking the row.
+    const a = row.querySelector("a.b-rows-lists__item__text");
+    if (a) {
+      const div = doc.createElement("div");
+      div.className = a.className;
+      div.append(...a.childNodes);
+      a.replaceWith(div);
+    }
+    const name = row.querySelector(".b-rows-lists__item__name");
+    if (name) name.textContent = ` ${l.name ?? ""} `;
+    row.querySelector(".b-media-set")?.remove();
+    const count = row.querySelector(".b-content-inside-thumbs__item");
+    if (count) count.textContent = ` ${l.sub ?? usersLabel(l.usersCount ?? 0)} `;
+    return row;
+  });
+  // OF's "Nothing found" (the generator's) only for no list.
+  const empty = lists.length ? [...doc.querySelectorAll<HTMLElement>(where.empty)] : [];
+  fill(doc, [...examples, ...empty], rows);
 }

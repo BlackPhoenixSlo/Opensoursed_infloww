@@ -148,12 +148,37 @@ def case_mass_save_for_later_body():
     assert body["isPublishedWithPeriod"] == 1 and "scheduledDate" not in body, body
 
 
-def case_mass_route_save_for_later_takes_the_scheduled_branch():
+async def case_mass_route_save_for_later_takes_the_scheduled_branch():
     """Save for later must never reach send_mass_message (an immediate blast)."""
-    import inspect
-    src = inspect.getsource(mass_queue_api.of_send_or_schedule_mass)
-    assert "if body.scheduled_date or body.save_for_later:" in src, "SFL must take the scheduled branch"
-    assert "save_for_later=body.save_for_later" in src
+    aid, posts = "acc_sfl", []
+
+    class _Fake:
+        def send_mass_message(self, text, **kw):
+            posts.append("send")
+            return {"id": 1}
+
+        def schedule_mass_message(self, **kw):
+            posts.append((kw["scheduled_date"], kw["save_for_later"]))
+            return {"id": 1}
+
+    async def _open(*_a, **_k):
+        return aid, None, None
+
+    orig = (server._resolve_account_id, server._get_client, mass_queue_api._open_mass_run)
+    server._resolve_account_id = lambda _req: aid
+    server._get_client = lambda: _Fake()
+    mass_queue_api._open_mass_run = _open
+    try:
+        for kw, want in (({"save_for_later": True}, (None, True)),
+                         ({"save_for_later": True, "scheduled_date": AT}, (AT, False)),
+                         ({"scheduled_date": AT}, (AT, False)),
+                         ({}, "send")):
+            posts.clear()
+            await mass_queue_api.of_send_or_schedule_mass(
+                None, mass_queue_api._MassScheduleBody(text="x", user_ids=[1, 2], **kw))
+            assert posts == [want], (kw, posts)
+    finally:
+        server._resolve_account_id, server._get_client, mass_queue_api._open_mass_run = orig
 
 
 def case_later_route_saves_for_later():

@@ -821,7 +821,8 @@ class UploadMixin:
                     carrier_posted_at=posted_at, auto_tag=False))
                 break
             except OFAPIError as e:
-                if "allow 10 seconds" not in str(e) or attempt == 3:
+                import of_write  # function-local: of_write -> of_client -> of_upload
+                if not of_write.is_rate_limited(e) or attempt == 3:
                     raise
                 log_of.info("carrier post throttled — waiting %ss (attempt %d/3)",
                             _CARRIER_MIN_GAP_S, attempt + 1)

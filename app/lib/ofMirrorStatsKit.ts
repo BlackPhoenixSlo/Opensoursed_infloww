@@ -7,7 +7,8 @@
  */
 
 import { BLUE, GREY, chartLabels, clearChart, drawChart, type ValueKind } from "@/lib/ofMirrorChart";
-import { make, plain } from "@/lib/ofMirrorData";
+import { plain } from "@/lib/ofMirrorData";
+import { make } from "@/lib/ofMirrorDom";
 import { add, at, display, elOf, iconOf, isObj, level, num, setClass, setText, track } from "@/lib/ofMirrorStatsDom";
 import { usd } from "@/lib/ofMirrorMoney";
 import { openModal } from "@/lib/ofMirrorWrites";

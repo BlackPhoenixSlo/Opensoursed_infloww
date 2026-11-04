@@ -4,9 +4,16 @@
  * useNotificationDelta — the toaster's SSE lanes (`NotificationToaster`): OF's
  * `toasts` feed, inbound DMs (`api2_chat_message`), PPV unlocks
  * (`purchase_notified`) and `chat_responded`. The three arrival lanes are
- * each parse (toastStore's pure `*Arrival`) → claim (`claimUnseen`) →
- * deliver (`deliverNotification`), plus the lane's own cache seeding; and
- * the lazy OS-permission request.
+ * each parse (toastStore's pure `*Arrival`) → on EVERY frame the history row
+ * (`mirrorNotification`) and the lane's own side effects (name / rail seeding,
+ * the username lookup, the sound) → claim (`claimUnseen`) → pings
+ * (`pingNotification`). The claim gates the pings only: a Web Push the service
+ * worker offered this focused page (`push-notice`, toastStore.deliverPushNotice,
+ * same scope as the lanes, pings only) may have claimed the arrival first, and
+ * its frame (idle mode's replay) must still write the full history row, seed
+ * the rail and play the sound; those dedupe themselves (by id, by the sound's
+ * own claim). Also the lazy Web Push sync (lib/webPush). The OS permission
+ * is asked only from a tap (NotificationBell): iOS ignores an ask without one.
  */
 
 import { useEffect, useMemo } from "react";
@@ -22,7 +29,7 @@ import { eventBus, type EventEnvelope } from "@/lib/events";
 import { resolveChatTarget } from "@/hooks/useInboxRealtime";
 import { isValidFanId, type FanId } from "@/lib/fanId";
 import { notificationHref } from "@/lib/notificationLink";
-import { hasShellNotify } from "@/lib/osNotify";
+import { listenPushNotices, primePush, pushSupported, syncPush } from "@/lib/webPush";
 import { playAlertOnce } from "@/lib/alertSounds";
 import type { NotificationItem, NotificationUser } from "@/lib/moneyRailStorage";
 import { ofUserNameKey } from "@/hooks/useOFUser";
@@ -34,9 +41,11 @@ import {
 } from "@/lib/notifSettings";
 import {
   claimUnseen,
-  deliverNotification,
+  deliverPushNotice,
   dmArrival,
+  mirrorNotification,
   patchToastHref,
+  pingNotification,
   purchaseArrival,
   resolveUsernameId,
   seedName,
@@ -127,13 +136,14 @@ export function useNotificationDelta(): void {
         // Parse, then dedupe on the notification ID: OF's locale variants
         // share the same id so we only count each arrival once.
         const arrival = toastArrival(aid, raw);
-        if (!arrival || !claimUnseen(aid, arrival.id)) continue;
+        if (!arrival) continue;
         const { id, typeKey, user } = arrival;
         if (user.id != null) seedName(qc, aid, user.id, user);
 
         // History always, pings gated — the money rail and the feed dropdown
         // must still list a muted arrival (incl. likes).
-        deliverNotification(settingsFor(aid), arrival);
+        mirrorNotification(arrival);
+        if (claimUnseen(aid, id)) pingNotification(settingsFor(aid), arrival);
         // No notif-list refetch, muted or not: a tip/purchase is seeded into
         // the rail's list from this payload; anything else reaches the bell
         // through the history mirror it already merges.
@@ -177,11 +187,10 @@ export function useNotificationDelta(): void {
       if (!targetIds.includes(aid)) return;   // in-scope accounts only
 
       const arrival = dmArrival(target);
-      if (!claimUnseen(aid, arrival.id)) return;
       const { id, user } = arrival;
       if (user.id != null) seedName(qc, aid, user.id, user);
 
-      // History is mirrored REGARDLESS of the toggles (see deliverNotification),
+      // History is mirrored REGARDLESS of the toggles (toastStore.mirrorNotification),
       // so the bell dropdown still lists DMs with toasts off — OF's
       // /notifications feed lists them inconsistently, so this is their only
       // reliable route into the dropdown.
@@ -189,11 +198,13 @@ export function useNotificationDelta(): void {
       // the history mirror — re-reading OF's feed per DM was 2 OF calls per
       // model per message, the bulk of the rail's OF traffic.
       const s = settingsFor(aid);
-      deliverNotification(s, arrival);
+      mirrorNotification(arrival);
+      if (claimUnseen(aid, id)) pingNotification(s, arrival);
       // The new-message sound has its own switch (not the toast's); the master
       // toggle (and the account's platform switch) mutes it like every other
-      // ping. One window plays it.
-      if (s.enabled && s.sounds.message.on) {
+      // ping. One window plays it, once per message: its own claim, apart
+      // from the toast's (a push-notice may have claimed that one first).
+      if (s.enabled && s.sounds.message.on && claimUnseen(`${aid}#sound`, id)) {
         playAlertOnce(`${aid}:${id}`, s.sounds.message.sound);
       }
     });
@@ -238,8 +249,8 @@ export function useNotificationDelta(): void {
       const cached = qc.getQueryData<NotificationUser | null>(ofUserNameKey(aid, fanId));
       const arrival = purchaseArrival(aid, { ...p, notif_id: p.notif_id, fan_id: fanId }, cached);
       // OF's own id, unprefixed — the dedupe this whole design rests on.
-      if (!claimUnseen(aid, arrival.id)) return;
-      deliverNotification(settingsFor(aid), arrival);
+      mirrorNotification(arrival);
+      if (claimUnseen(aid, arrival.id)) pingNotification(settingsFor(aid), arrival);
       // The relay read this off OF's purchases feed — the list already has it,
       // so seed the row instead of re-reading it.
       seedMoneyList(qc, arrival);
@@ -247,13 +258,37 @@ export function useNotificationDelta(): void {
     return off;
   }, [qc, settingsFor, ready, targetIds]);
 
-  // Request OS permission lazily once the user has flipped osPing on. The
-  // desktop app notifies natively and needs no web permission.
+  // Web Push the service worker offers this focused page (instead of an OS
+  // notification): toasted here for an in-scope Creator, through the lanes'
+  // claim, and acked; out of scope (or before this mounts: a popout still
+  // booting) the worker shows it itself. No rail seeding or sound here: the
+  // lane's own frame still does both when it arrives.
   useEffect(() => {
-    if (!settings.osPing) return;
-    if (typeof Notification === "undefined" || hasShellNotify()) return;
-    if (Notification.permission === "default") {
-      try { Notification.requestPermission().catch(() => {}); } catch { /* ignore */ }
-    }
-  }, [settings.osPing]);
+    if (!ready) return;
+    return listenPushNotices((raw) =>
+      deliverPushNotice(raw, (aid) => (targetIds.includes(aid) ? settingsFor(aid) : null)));
+  }, [settingsFor, ready, targetIds]);
+
+  // Web Push, lazily: the key and SW cached for a tap's subscribe; the relay's
+  // row kept matching the settings (the PUT is an idempotent upsert that also
+  // recreates a pruned row, the DELETE drops it when nothing is wanted); and
+  // re-PUT on tab return and SSE reconnect, so a revoked session (401/404)
+  // stops counting as live and the page pings again. A failed subscribe
+  // shows the bell's hint (NotificationBell).
+  useEffect(() => { void primePush(); }, []);
+  useEffect(() => {
+    if (!pushSupported()) return;
+    void syncPush(settings);
+    const again = () => { if (document.visibilityState === "visible") void syncPush(settings, { force: true }); };
+    let was: boolean | null = null;
+    const offStream = eventBus.onStateChange((up) => {
+      if (up && was === false) again();
+      was = up;
+    });
+    document.addEventListener("visibilitychange", again);
+    return () => {
+      offStream();
+      document.removeEventListener("visibilitychange", again);
+    };
+  }, [settings]);
 }

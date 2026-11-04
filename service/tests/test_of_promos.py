@@ -32,6 +32,8 @@ from of_promos import (  # noqa: E402
     of_field, promo_type_body, promo_type_store, safe_int, to_cents)
 
 try:
+    if __name__ == "__main__":
+        raise ImportError  # script mode uses the runner below, even with pytest installed
     import pytest
     table = pytest.mark.parametrize
 except ImportError:  # script mode: the runner below calls each row

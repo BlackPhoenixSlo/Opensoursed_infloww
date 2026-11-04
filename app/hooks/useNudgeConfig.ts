@@ -15,6 +15,7 @@ import { useMutation, useMutationState, useQuery, useQueryClient } from "@tansta
 
 import { relay, type RelayContext } from "@/lib/relay";
 import { type FanId } from "@/lib/fanId";
+import { clearDraft, readDraft, stashDraft } from "@/lib/pendingDraft";
 
 const KEY = "nudge-config";
 const SAVE_KEY = [KEY, "save"];
@@ -64,6 +65,16 @@ interface NudgeConfigResponse extends NudgeConfigWrite {
   defaults: NudgeConfig;
 }
 
+/** Defaults with the stored config over them — what the automation runs. */
+export function effectiveConfig(
+  data: { defaults?: NudgeConfig; config?: NudgeConfig } | undefined,
+): NudgeConfig {
+  return { ...(data?.defaults ?? {}), ...(data?.config ?? {}) };
+}
+
+/** The account's unsaved draft in localStorage (lib/pendingDraft) — kept until a PUT acks it. */
+export const nudgeDraftKey = (accountId: string) => `chatterly:nudge-draft:${accountId}`;
+
 export function useNudgeConfig(accountId: string | null) {
   return useQuery<NudgeConfigResponse>({
     queryKey: [KEY, accountId],
@@ -81,12 +92,38 @@ export function useNudgeConfig(accountId: string | null) {
 /** The account rides in the variables, not the hook: a save that lands after
  *  the tab switched account must refresh the account it wrote. Refreshed on
  *  error too: every save, landed or failed, is followed by a config fetched
- *  after it settled — a caller may treat anything older as pre-save. */
+ *  after it settled — a caller may treat anything older as pre-save.
+ *
+ *  The PUT is the draft's ack: the config is stashed before the request leaves
+ *  (a tab closed mid-PUT reopens with it), and dropped on success — here, at
+ *  the mutation, so it still runs once the tab unmounted — only if the stash
+ *  is still what this PUT wrote (an edit typed during it stays, rebased onto
+ *  the PUT's echo: this save is not "changed elsewhere"). A failed PUT
+ *  keeps it. The cache takes the PUT's echo before the invalidation, so it
+ *  never holds the pre-PUT config after an ack. */
 export function useSaveNudgeConfig() {
   const qc = useQueryClient();
   return useMutation<NudgeConfigWrite, Error, NudgeConfigWrite>({
     mutationKey: SAVE_KEY,
-    mutationFn: (vars) => relay.put(`/admin/nudge-config`, vars),
+    mutationFn: (vars) => {
+      stashDraft(nudgeDraftKey(vars.account_id), {
+        draft: vars.config, base: effectiveConfig(qc.getQueryData<NudgeConfigResponse>([KEY, vars.account_id])),
+        at: Date.now(),
+      });
+      return relay.put(`/admin/nudge-config`, vars);
+    },
+    onSuccess: (echo, vars) => {
+      const key = nudgeDraftKey(vars.account_id);
+      const kept = clearDraft(key, vars.config) ? null : readDraft<NudgeConfig>(key);
+      // An edit typed during the PUT stays — on the server's new config, so its
+      // reopen does not read this save as a change made elsewhere.
+      if (kept) {
+        const d = qc.getQueryData<NudgeConfigResponse>([KEY, vars.account_id]);
+        stashDraft(key, { ...kept, base: effectiveConfig({ defaults: d?.defaults, config: echo.config }) });
+      }
+      qc.setQueryData<NudgeConfigResponse>([KEY, vars.account_id], (old) =>
+        old ? { ...old, config: echo.config } : old);
+    },
     onSettled: (_r, _e, vars) => {
       qc.invalidateQueries({ queryKey: [KEY, vars.account_id] });
       // The PUT also syncs the nudge_online rule (server-side) — refresh it.

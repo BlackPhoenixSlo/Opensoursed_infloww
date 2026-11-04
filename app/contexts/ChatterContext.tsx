@@ -38,6 +38,7 @@ import {
 
 import { clearIdentityMemory, wipeIdentityStorage } from "@/contexts/UserContext";
 import { chatterAccountsQuery } from "@/lib/chatterAccounts";
+import { forgetPush } from "@/lib/webPush";
 import { isTwoFactorChallenge, postAuthJSON, TwoFactorRequired, type TwoFactorChallenge } from "@/lib/twoFactor";
 
 export interface ChatterOwnerAccountDTO {
@@ -205,6 +206,8 @@ export function ChatterProvider({ children }: { children: React.ReactNode }) {
   );
 
   const logout = useCallback(async () => {
+    // Push stops counting as live here; the relay's logout deletes the rows.
+    forgetPush();
     try { await postAuthJSON<unknown>("/chatter/logout", {}); } catch { /* best effort */ }
     // Full wipe — including the chatter family — because logout is the
     // "start over" moment. cancelQueries first so resolving fetches

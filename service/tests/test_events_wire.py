@@ -22,6 +22,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import events_wire as ew  # noqa: E402
 
 try:
+    if __name__ == "__main__":
+        raise ImportError  # script mode uses the runner below, even with pytest installed
     import pytest
     table = pytest.mark.parametrize
 except ImportError:  # script mode: the runner below calls each row

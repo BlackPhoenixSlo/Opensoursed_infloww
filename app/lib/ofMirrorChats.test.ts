@@ -17,7 +17,9 @@ import {
   type ChatsMe,
   type ChatsView,
 } from "./ofMirrorChats";
-import { applyData, keepThreadScroll, rowsOf, threadScroll, withChatUsers } from "./ofMirrorData";
+import { applyData, rowsOf } from "./ofMirrorData";
+import { withChatUsers } from "./ofMirrorDataQueries";
+import { keepThreadScroll, threadScroll } from "./ofMirrorDataChats";
 import { SELECT_MODEL } from "./ofMirrorWrites";
 import { relay, type OFChatItem, type OFMessage } from "./relay";
 import type { ChatFolder } from "@/hooks/useChatFolders";

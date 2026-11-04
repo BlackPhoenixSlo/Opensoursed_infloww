@@ -26,6 +26,7 @@ from sqlalchemy import func, select, update
 import llm_client
 import vault_ai_brief
 import vault_ai_fix
+import vault_ai_vision_decide  # module attr `with_flags_cost`, looked up per call
 import vault_frames
 import vault_scripts
 import vault_sweep
@@ -38,7 +39,7 @@ from llm_client import LLMCapExceeded, LLMError
 from vault_ai_vision_decide import (
     _DESCRIBABLE_KINDS, DescribeMode, _frames_for_duration, _ground_in_named_garment, _parse_describe,
     build_describe_update, build_flags_fields, describe_answer, describe_selection,
-    live_describable, next_attempt,
+    live_describable, next_attempt, prompt_variant,
 )
 
 # Same logger name as before the split, so log routing/filters are unchanged.
@@ -449,6 +450,17 @@ def _assert_vision_model(model: str) -> None:
                             detail={"error": "model_not_vision", "model": model})
 
 
+async def _write_item(account_id: str, media_id: int, **vals: Any) -> None:
+    """UPDATE one vault_items row with `vals` and commit."""
+    async with get_session() as s:
+        await s.execute(
+            update(VaultItem)
+            .where(VaultItem.account_id == account_id, VaultItem.media_id == media_id)
+            .values(**vals)
+        )
+        await s.commit()
+
+
 # ── Flags pass (one item) ───────────────────────────────────────────
 
 async def _stamp_flags_failure(account_id: str, media_id: int, status: str,
@@ -549,13 +561,8 @@ async def _flags_one(account_id: str, media_id: int,
         locked=set(load_json(item.locked_fields_json, []) or []),
         is_video=is_video, model=model, version=_FLAGS_VERSION)
 
-    async with get_session() as s:
-        await s.execute(
-            update(VaultItem)
-            .where(VaultItem.account_id == account_id, VaultItem.media_id == media_id)
-            .values(ai_fields_json=json.dumps(fields, ensure_ascii=False, default=str))
-        )
-        await s.commit()
+    await _write_item(account_id, media_id,
+                      ai_fields_json=json.dumps(fields, ensure_ascii=False, default=str))
     return {"media_id": media_id, "ok": True, "status": "flagged",
             **{k: fields.get(k) for k in _FLAG_KEYS},
             "frames": len(per_frame), "cost_millicents": cost}
@@ -736,13 +743,8 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
     got = await vault_frames.collect(account_id, item, raw, want=want)
     if not got.images:
         status = _NO_IMAGE_STATUS.get(got.reason, "fetch_failed")
-        async with get_session() as s:
-            await s.execute(
-                update(VaultItem)
-                .where(VaultItem.account_id == account_id, VaultItem.media_id == media_id)
-                .values(describe_status=status, describe_generated_at=datetime.utcnow())
-            )
-            await s.commit()
+        await _write_item(account_id, media_id, describe_status=status,
+                          describe_generated_at=datetime.utcnow())
         # `detail` is what the sweep shows the operator as `first_error`. Without
         # it a whole vault failing on a frame bug reads as "1,777 could not be
         # described" and nothing else — a failure count with no cause is the same
@@ -751,7 +753,7 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
         return {"media_id": media_id, "ok": False, "status": status,
                 "detail": got.detail or f"no frames ({status})"}
 
-    prompt = _DESCRIBE_PROMPT if str(prompt_version) == "v1" else _DESCRIBE_PROMPT_V2
+    prompt = _DESCRIBE_PROMPT if prompt_variant(prompt_version) == "v1" else _DESCRIBE_PROMPT_V2
     content = [{"type": "text", "text": prompt}]
     content += [{"type": "image_url", "image_url": {"url": u}} for u in got.images]
 
@@ -793,14 +795,9 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
             # indistinguishable from one never attempted — a missing
             # DEEPINFRA_API_KEY failed all 327 items of a vault while the UI
             # reported "done 327/327" and the row stayed blank.
-            async with get_session() as s:
-                await s.execute(
-                    update(VaultItem)
-                    .where(VaultItem.account_id == account_id, VaultItem.media_id == media_id)
-                    .values(describe_status="failed", describe_model=attempt_model,
-                            describe_generated_at=datetime.utcnow())
-                )
-                await s.commit()
+            await _write_item(account_id, media_id, describe_status="failed",
+                              describe_model=attempt_model,
+                              describe_generated_at=datetime.utcnow())
             return {"media_id": media_id, "ok": False, "status": "error",
                     "detail": str(e)[:300], "cost_millicents": cost}
         cost += int(result.cost_cents or 0)
@@ -813,15 +810,10 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
 
     # `data` is only ever `{}` or an answer that carries a description or tags.
     if not data:
-        async with get_session() as s:
-            await s.execute(
-                update(VaultItem)
-                .where(VaultItem.account_id == account_id, VaultItem.media_id == media_id)
-                .values(describe_status="refused", describe_model=used_model,
-                        describe_call_id=(result.call_id if result else None),
-                        describe_generated_at=datetime.utcnow())
-            )
-            await s.commit()
+        await _write_item(account_id, media_id, describe_status="refused",
+                          describe_model=used_model,
+                          describe_call_id=(result.call_id if result else None),
+                          describe_generated_at=datetime.utcnow())
         return {"media_id": media_id, "ok": False, "status": "refused",
                 "raw": (result.content if result else "" or "")[:200],
                 "cost_millicents": cost}
@@ -835,13 +827,7 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
         fixable=vault_ai_fix.FIXABLE,
         call_id=result.call_id if result else None, now=datetime.utcnow())
 
-    async with get_session() as s:
-        await s.execute(
-            update(VaultItem)
-            .where(VaultItem.account_id == account_id, VaultItem.media_id == media_id)
-            .values(**vals)
-        )
-        await s.commit()
+    await _write_item(account_id, media_id, **vals)
     return {
         "media_id": media_id, "ok": True, "status": "described",
         **describe_answer(data),
@@ -849,6 +835,33 @@ async def _describe_one(account_id: str, media_id: int, model: str = "qwen3-vl-3
         "cost_millicents": cost,
         "images_sent": len(got.images),
     }
+
+
+async def _describe_and_flag(account_id: str, media_id: int,
+                             **describe_kw: Any) -> dict[str, Any]:
+    """Describe one item, then flag it in the same breath — the single-item
+    route and the describe-all sweep both. "Described" used to mean prose plus
+    `clothing_state` and nothing about what is actually on show, so a
+    freshly-described vault had no flags at all and every gated lane was empty
+    until someone remembered a second button. The flags pass is ~3s and
+    ~$0.00002 against describe's ~16s and ~$0.0086 — a fifth of a percent — so
+    making it conditional bought nothing but a way to forget it.
+
+    The flags call's cost rides on the result (`vault_sweep.run` sums
+    `cost_millicents`), so both callers report describe + flags billed — except
+    an unparsed flags answer, which carries no cost, so that call's spend is not
+    reported. `_describe_one` / `_flags_one` / `vault_ai_vision_decide
+    .with_flags_cost` are looked up per call, so patches bite."""
+    res = await _describe_one(account_id, media_id, **describe_kw)
+    if res.get("ok"):
+        try:
+            return vault_ai_vision_decide.with_flags_cost(
+                res, await _flags_one(account_id, media_id))
+        except Exception:  # noqa: BLE001
+            # Never let the cheap pass take down the expensive one: the
+            # description is already written and worth keeping.
+            log.exception("flags after describe failed media=%s", media_id)
+    return res
 
 
 @describe_router.post("/admin/vault-ai/describe")
@@ -872,20 +885,14 @@ async def describe_one(payload: dict = Body(...)) -> dict[str, Any]:
     if budget["capped"]:
         return {"media_id": media_id, "ok": False, "status": "capped",
                 "detail": budget["blocked_reason"]}
-    res = await _describe_one(
+    # Flagged in the same breath, exactly as the sweep does. Describing ONE item
+    # from the UI otherwise left it as the only row in the vault the gated lanes
+    # could not read, and nothing on screen said so.
+    return await _describe_and_flag(
         account_id, media_id, model=model,
         prompt_version=str(payload.get("prompt_version") or "v2"),
         frames=payload.get("frames"),
     )
-    # Flag it in the same breath, exactly as the sweep does. Describing ONE item
-    # from the UI otherwise left it as the only row in the vault the gated lanes
-    # could not read, and nothing on screen said so.
-    if res.get("ok"):
-        try:
-            await _flags_one(account_id, media_id)
-        except Exception:  # noqa: BLE001
-            log.exception("flags after describe failed media=%s", media_id)
-    return res
 
 
 # ── Describe ALL (background sweep, gen_info-style) ─────────────────
@@ -933,27 +940,10 @@ async def _run_describe_all(account_id: str, mode: DescribeMode,
                                  VaultItem.media_id.desc())
             ids = [r[0] for r in (await s.execute(stmt)).all()]
 
-        async def _describe_and_flag(mid: int) -> dict[str, Any]:
-            res = await _describe_one(account_id, mid, model=model,
-                                      prompt_version=prompt_version)
-            # Flag it in the same breath. "Described" used to mean prose plus
-            # `clothing_state` and nothing about what is actually on show, so a
-            # freshly-described vault had no flags at all and every gated lane
-            # was empty until someone remembered a second button. The flags pass
-            # is ~3s and ~$0.00002 against describe's ~16s and ~$0.0086 — a fifth
-            # of a percent — so making it conditional bought nothing but a way to
-            # forget it.
-            if res.get("ok"):
-                try:
-                    await _flags_one(account_id, mid)
-                except Exception:  # noqa: BLE001
-                    # Never let the cheap pass take down the expensive one: the
-                    # description is already written and worth keeping.
-                    log.exception("flags after describe failed media=%s", mid)
-            return res
-
         c = await vault_sweep.run(
-            ids, _describe_and_flag, concurrency=_DESCRIBE_CONCURRENCY,
+            ids, lambda mid: _describe_and_flag(account_id, mid, model=model,
+                                                prompt_version=prompt_version),
+            concurrency=_DESCRIBE_CONCURRENCY,
             gate=_vision_gate, into=_describe_progress, key=account_id,
             label=f"describe_all account={account_id}")
         try:
@@ -986,35 +976,52 @@ async def _run_describe_all(account_id: str, mode: DescribeMode,
         # keep last progress snapshot for the status endpoint to report "done"
 
 
+async def _claim_describe(account_id: str, model: str) -> dict[str, Any]:
+    """Claim the account's ONE describe sweep, or refuse; returns the budget.
+
+    The claim is taken in the same step as the check, before any await. It used
+    to come after the budget read, so a second press (a double click, two
+    managers) passed the check while the first was still awaiting it: N presses,
+    N sweeps, N x the spend. Every refusal after the claim releases it, or the
+    account would 409 forever; a started sweep releases it in its `finally`.
+    """
+    if account_id in _describe_running:
+        raise HTTPException(status_code=409, detail={"error": "describe_already_running"})
+    _describe_running.add(account_id)
+    try:
+        # REFUSE to start over the daily cap.
+        #
+        # Nothing here was ever unsafe: `llm_client._reserve` refuses every call
+        # over the cap and the sweep stops on the first one. It was DISHONEST. The
+        # sweep ended, the button went straight back to "Describe all (1777)", and a
+        # second press started another one — which pulled frames off OF and cut them
+        # with ffmpeg for a batch of items, had every LLM call refused, and reported
+        # the same 1777 still to do. Nothing on screen ever said "you are out of
+        # budget today", so the only reading available was that describe is broken,
+        # and the natural response to that is to press it again.
+        _assert_vision_model(model)  # a bad request is a 400 whatever the key/budget
+        budget = await _vision_budget(account_id, model)
+        if budget["key_missing"]:
+            raise _vision_key_missing()
+        if budget["capped"]:
+            raise HTTPException(status_code=429,
+                                detail={"error": "daily_cap_reached", **budget})
+    except BaseException:
+        _describe_running.discard(account_id)
+        raise
+    return budget
+
+
 @describe_router.post("/admin/vault-ai/describe-all")
 async def describe_all(payload: dict = Body(...)) -> dict[str, Any]:
     account_id = str(payload.get("account_id") or "")
     assert_account_owned(account_id)
-    if account_id in _describe_running:
-        raise HTTPException(status_code=409, detail={"error": "describe_already_running"})
-    # REFUSE to start over the daily cap.
-    #
-    # Nothing here was ever unsafe: `llm_client._reserve` refuses every call
-    # over the cap and the sweep stops on the first one. It was DISHONEST. The
-    # sweep ended, the button went straight back to "Describe all (1777)", and a
-    # second press started another one — which pulled frames off OF and cut them
-    # with ffmpeg for a batch of items, had every LLM call refused, and reported
-    # the same 1777 still to do. Nothing on screen ever said "you are out of
-    # budget today", so the only reading available was that describe is broken,
-    # and the natural response to that is to press it again.
     model = str(payload.get("model") or "qwen3-vl-30b")
-    _assert_vision_model(model)  # a bad request is a 400 whatever the key/budget
-    budget = await _vision_budget(account_id, model)
-    if budget["key_missing"]:
-        raise _vision_key_missing()
-    if budget["capped"]:
-        raise HTTPException(status_code=429,
-                            detail={"error": "daily_cap_reached", **budget})
+    await _claim_describe(account_id, model)
     force = bool(payload.get("force"))
     restage = bool(payload.get("restage"))
     mode: DescribeMode = "force" if force else ("restage" if restage else "undescribed")
-    prompt_version = "v1" if str(payload.get("prompt_version")) == "v1" else "v2"
-    _describe_running.add(account_id)
+    prompt_version = prompt_variant(payload.get("prompt_version"))
     asyncio.create_task(_run_describe_all(account_id, mode,
                                           prompt_version=prompt_version,
                                           model=model))
@@ -1031,7 +1038,7 @@ async def describe_all_plan(
     """What each sweep mode WOULD do, so the UI can show real counts (and a cost
     estimate) before the operator commits to a re-scan of the whole vault."""
     assert_account_owned(account_id)
-    pv = "v1" if str(prompt_version) == "v1" else "v2"
+    pv = prompt_variant(prompt_version)
     async with get_session() as s:
         def _count(mode: DescribeMode):
             return (select(func.count()).select_from(VaultItem)

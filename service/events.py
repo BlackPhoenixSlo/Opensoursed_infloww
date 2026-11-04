@@ -31,6 +31,7 @@ import chatter_identity_cache
 import events_decide as ed
 import events_persist
 import events_wire as ew
+import push_send
 from db import write_telemetry
 
 log = logging.getLogger("of-relay.events")
@@ -337,6 +338,7 @@ def _fanout(event: dict) -> int:
     frame.t = time.monotonic()
     _ring = ed.decide_ring(_ring, ed.Published(frame))
     frame.eid = ed.head_id(_ring)
+    push_send.offer(frame)  # Web Push (push_send): put_nowait, never awaits or raises
 
     knobs = _knobs()
     ends = ed.first_key(frame) in ed.ENDS_STREAM
@@ -573,6 +575,7 @@ def sse_stats() -> dict:
                   "SSE_BATCH_MAX_WINDOW_MS": SSE_BATCH_MAX_WINDOW_MS},
         "batching": sum(1 for st in streams if st["mode"] == "batch"),
         "streams": streams,
+        "push": push_send.stats(),
     }
 
 

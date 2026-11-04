@@ -19,6 +19,9 @@ Covers the two bugs fixed in `messages.py` _collapsed_mass_rows + the
   case_time_keyset_paginates:
       the (sent_at, message_id) cursor walks pages correctly across the
       interleaved set — no dupes, no gaps, mass row appears exactly once.
+  case_csv_fan_query_keeps_only_matching_fans:
+      format=csv + fan_query streams only the matching fans' rows (the CSV
+      fan filter used to 500: its subquery auto-correlated away its FROM).
 
 Run: ./venv/bin/python service/tests/test_paid_messages_mass.py  (exit 0 = pass)
 """
@@ -28,12 +31,14 @@ import _harness  # MUST be first — binds a throwaway temp DB (PROD-fallback fo
 
 _harness.bootstrap()
 
+import csv  # noqa: E402
+import io  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
 
 from attribution import mass_placeholder_message_id  # noqa: E402
 from db.engine import get_session  # noqa: E402
 from db.models import (  # noqa: E402
-    Account, MassBroadcastCache, MassRun, Message,
+    Account, Fan, MassBroadcastCache, MassRun, Message,
 )
 from messages import list_paid_messages  # noqa: E402
 
@@ -184,6 +189,31 @@ async def case_time_keyset_paginates():
     assert page2["next_before_id"] is None, "short page → cursor exhausted"
 
 
+# ── CSV + fan_query ───────────────────────────────────────────────────
+async def case_csv_fan_query_keeps_only_matching_fans():
+    aid = "pm_csvfan"
+    await _seed_account(aid)
+    async with get_session() as s:
+        s.add(Fan(account_id=aid, fan_id=70, of_username="abby_fan", of_display_name="Abby"))
+        s.add(Fan(account_id=aid, fan_id=71, of_username="zed", of_display_name="Zed"))
+    await _add_normal(aid, fan_id=70, msg_id=7001, age=timedelta(hours=1))
+    await _add_normal(aid, fan_id=70, msg_id=7002, age=timedelta(hours=2))
+    await _add_normal(aid, fan_id=71, msg_id=7003, age=timedelta(hours=3))
+    resp = await list_paid_messages(
+        request=None,  # type: ignore[arg-type]
+        from_=_FROM, to=_TO, account_id=aid,
+        employee_id=None, status="all", type_="all", direction="any",
+        fan_id=None, fan_query="ab", collapse_mass=True, format="csv",
+        limit=50, before_sent_at=None, before_id=None,
+    )
+    assert resp.status_code == 200, resp.status_code
+    assert resp.media_type == "text/csv", resp.media_type
+    body = b"".join([c async for c in resp.body_iterator]).decode()
+    lines = list(csv.reader(io.StringIO(body)))
+    assert [r[0] for r in lines[1:]] == ["7001", "7002"], lines
+    assert {r[4] for r in lines[1:]} == {"abby_fan"}, lines
+
+
 async def case_cache_is_stale_once_a_mass_run_is_newer():
     """The Mass messages tab refetches after our own sends: a cache fetched
     before the account's latest mass_runs row (minted at send, `started_at`, or
@@ -215,5 +245,6 @@ _harness.run(
     case_no_cache_falls_back_to_placeholder,
     case_mass_interleaves_by_time,
     case_time_keyset_paginates,
+    case_csv_fan_query_keeps_only_matching_fans,
     case_cache_is_stale_once_a_mass_run_is_newer,
 )

@@ -276,6 +276,15 @@ async def _snapshot(s, account_id: str, now: datetime, *,
     return out
 
 
+# The Fan columns `_normalise_fan` and `_load_normalised_fans` read: Core rows
+# (attribute access like the entity) skip hydrating ~50-column ORM Fans per
+# call, which starved every route under concurrent previews.
+_FAN_COLS = (Fan.fan_id, Fan.tags, Fan.lifetime_spend_cents, Fan.last_message_received_at,
+             Fan.last_message_sent_at, Fan.subscription_status, Fan.subscribed_at,
+             Fan.subscription_expires_at, Fan.custom_nickname, Fan.generated_nickname,
+             Fan.of_display_name, Fan.of_username)
+
+
 async def _load_normalised_fans(account_id: str, rules_obj: dict, *,
                                 roster_fresh: bool = False) -> list[dict]:
     """Load every fan for the account as a normalised resolver dict, with each
@@ -286,8 +295,8 @@ async def _load_normalised_fans(account_id: str, rules_obj: dict, *,
     windows = _windows_in_rules(rules_obj)
     async with get_session() as s:
         fan_rows = (await s.execute(
-            select(Fan).where(Fan.account_id == str(account_id))
-        )).scalars().all()
+            select(*_FAN_COLS).where(Fan.account_id == str(account_id))
+        )).all()
 
         spend_by_window: dict[int, dict[int, int]] = {}
         for days in windows:

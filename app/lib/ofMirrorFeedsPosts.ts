@@ -1,6 +1,6 @@
 "use client";
 
-/** The post feeds, cut from ofMirrorFeeds: My profile's wall and Media tab, Home's feed, the right column's (bookmarks, a list's Posts tab). */
+/** The post feeds: My profile's wall and Media tab, Home's feed, the right column's (bookmarks, a list's Posts tab). */
 
 import type { OFUserMini } from "@/lib/relay";
 import { stillUrl } from "@/lib/ofMedia";
@@ -8,8 +8,6 @@ import { NOT_YET } from "@/lib/ofMirrorWrites";
 import { drawPostCard, stampMedia, viewerItems, visibleMedia, type CardViewer } from "@/lib/ofMirrorPostCard";
 import { applyMore, clock, dayOf, fill, fillGrid, linkUser, make, otherAvatar, photoGrid, plain, stamp, track, userHref, valid, type MorePages } from "@/lib/ofMirrorDom";
 import { fullDay, type MirrorPost } from "@/lib/ofMirrorFeedsShared";
-
-export { otherAvatar } from "@/lib/ofMirrorDom";
 
 /** dayjs's fromNow with OF's words (its UtilsTime's relativeTime: "seconds", "1 minute", "%d hours", ...) and thresholds. */
 function fromNow(ms: number): string {

@@ -567,7 +567,7 @@ def case_may_have_sent_table():
         (_rate_limit_400(1), False),
         (http(403), False),
         (http(404), False),
-        (Exception("400 ... Please Allow 10 seconds before"), False),   # wrapped rate limit
+        (Exception("400 ... Please Allow 10 seconds before"), True),   # no response = unconfirmed
         (curl.exceptions.ReadTimeout("Operation timed out after 30000 ms"), True),
         (curl.exceptions.Timeout("timed out"), True),
         (curl.exceptions.ConnectionError("Connection reset by peer"), True),

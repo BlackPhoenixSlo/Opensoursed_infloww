@@ -77,7 +77,8 @@ import type { FanId } from "@/lib/fanId";
 import type { NotificationUser } from "@/lib/moneyRailStorage";
 import { ALERT_SOUNDS, isAlertSoundId, playAlertSound } from "@/lib/alertSounds";
 import { notificationHref, onNotificationClick } from "@/lib/notificationLink";
-import { hasShellNotify, osNotify } from "@/lib/osNotify";
+import { usePushState } from "@/lib/webPush";
+import { OsPingSettings, PUSH_HINT, pushHintShown } from "./OsPingSettings";
 import {
   ALERT_KINDS,
   NOTIF_ARRIVED_EVENT,
@@ -92,7 +93,6 @@ import {
   type NotifTypeKey,
   type SoundPref,
 } from "@/lib/notifSettings";
-import { BRAND_NAME } from "@/lib/brand";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { initialBellState, notificationBellReducer, ofListOnScreen } from "./notificationBellReducer";
 import { NOTIF_PAGE_SIZE, fmtTime, notifPath, parseList, renderText } from "@/lib/notifText";
@@ -348,7 +348,7 @@ export function NotificationBell(props: NotificationBellProps = {}) {
     writeNotifFilterId(f.id);
   };
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [osTestMsg, setOsTestMsg] = useState<string | null>(null);
+  const push = usePushState();
   const openFan = proProps?.onOpenFan;
   const ref = useRef<HTMLDivElement | null>(null);
   const { settings, setToast, setBubble, update } = useNotificationSettings();
@@ -572,6 +572,15 @@ export function NotificationBell(props: NotificationBellProps = {}) {
                   it hosts the rail's un-hide control. Renders null when the
                   rail isn't hidden on the current surface. */}
               <MoneyRailRestoreButton />
+              {!settingsOpen && pushHintShown(settings, push) && (
+                <button
+                  type="button"
+                  onClick={() => setSettingsOpen(true)}
+                  className="w-full px-3 py-1.5 border-b border-border text-left text-[11px] text-warn hover:bg-bg-elev-1"
+                >
+                  {PUSH_HINT}
+                </button>
+              )}
               {settingsOpen && (
                 <div className="border-b border-border p-2.5 bg-bg-elev-1/30">
                   <div className="flex items-center justify-between mb-2 gap-2">
@@ -628,79 +637,7 @@ export function NotificationBell(props: NotificationBellProps = {}) {
                       </Fragment>
                     ))}
                   </div>
-                  <div className="mt-2 flex items-center justify-between gap-2">
-                    <label className="flex items-center gap-1.5 text-[11px] text-fg-dim cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={settings.osPing}
-                        onChange={(e) => update({ osPing: e.target.checked })}
-                        disabled={!settings.enabled}
-                      />
-                      OS notification when tab is unfocused
-                    </label>
-                    <button
-                      type="button"
-                      onMouseDown={(e) => { e.stopPropagation(); }}
-                      onClick={async (e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        if (hasShellNotify()) {
-                          // The desktop app notifies natively: no web permission.
-                          setOsTestMsg("Sending to the desktop app…");
-                          const ok = await osNotify({
-                            id: `chatterly-test:${Date.now()}`,
-                            title: `${BRAND_NAME} test`,
-                            body: "If you see this in your OS tray, it works.",
-                          });
-                          setOsTestMsg(ok
-                            ? "✓ Handed to the OS — check your notifications."
-                            : `✗ The desktop app could not show it. Check the OS notification settings for ${BRAND_NAME}.`);
-                          return;
-                        }
-                        if (typeof Notification === "undefined") {
-                          setOsTestMsg("✗ This browser has no Notification API.");
-                          return;
-                        }
-                        let perm = Notification.permission;
-                        setOsTestMsg(`Permission: ${perm}…`);
-                        if (perm === "default") {
-                          try {
-                            perm = await Notification.requestPermission();
-                          } catch {
-                            setOsTestMsg("✗ requestPermission threw");
-                            return;
-                          }
-                          setOsTestMsg(`Permission: ${perm}…`);
-                        }
-                        if (perm !== "granted") {
-                          setOsTestMsg(
-                            `✗ Permission ${perm}. Open Opera → site settings → allow Notifications.`,
-                          );
-                          return;
-                        }
-                        try {
-                          const n = new Notification(`${BRAND_NAME} test`, {
-                            body: "If you see this in your OS tray, it works.",
-                            tag: "chatterly-test",
-                          });
-                          n.onshow = () => setOsTestMsg("✓ Fired — check your OS tray.");
-                          n.onerror = () => setOsTestMsg("✗ Notification.onerror fired.");
-                          setOsTestMsg("✓ Fired — check your OS tray.");
-                        } catch (err) {
-                          setOsTestMsg("✗ new Notification threw: " + (err as Error).message);
-                        }
-                      }}
-                      className="px-2 py-0.5 text-[11px] rounded border border-border text-fg-dim hover:text-fg hover:bg-bg-elev-1"
-                      title="Verify OS notifications are working"
-                    >
-                      Test
-                    </button>
-                  </div>
-                  {osTestMsg && (
-                    <div className="mt-1.5 text-[10px] text-fg-dim leading-snug">
-                      {osTestMsg}
-                    </div>
-                  )}
+                  <OsPingSettings settings={settings} update={update} />
                   <div className="mt-2 grid grid-cols-[1fr_auto_auto] items-center gap-x-2 gap-y-1 text-[11px]">
                     <span className="col-span-3 text-fg-dim">Sounds</span>
                     {ALERT_KINDS.map((k) => {

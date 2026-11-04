@@ -9,7 +9,7 @@
 import type { TaggedFriendUser, VaultMedia, VaultUploadResp } from "@/lib/relay";
 import type { VaultView } from "@/lib/ofMirrorVault";
 import { localIso, minuteAhead, note, scheduleAt, SELECT_MODEL, TOO_SOON } from "@/lib/ofMirrorWrites";
-import { fromWallClock, wallClock } from "@/lib/ofMirrorFeeds";
+import { fromWallClock, wallClock } from "@/lib/ofMirrorFeedsShared";
 import type { PostLabel, TagView } from "@/lib/ofMirrorPostTags";
 import type { VaultStoryBody } from "@/lib/ofMirrorStory";
 

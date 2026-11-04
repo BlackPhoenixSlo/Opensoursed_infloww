@@ -15,6 +15,7 @@ and test_vault_flags_sweep walk that on a DB).
   case_frames_for_duration_table:     the duration ladder.
   case_parse_describe_table:          JSON pulled out of prose, else {}.
   case_next_attempt_table:            30b → 235b ONCE, never past 235b.
+  case_with_flags_cost_table:         describe-and-flag reports both calls' cost.
   case_describe_selection_table:      the WHOLE where clause (live, describable,
                                       mode), run on a real SQLite table — the
                                       set the sweep walks = the plan's count.
@@ -175,6 +176,21 @@ def case_next_attempt_table():
         ("235b refused: stop (once)", ("qwen3-vl-235b", True), None),
         ("235b answered: done", ("qwen3-vl-235b", False), None),
     ], d.next_attempt)
+
+
+def case_with_flags_cost_table():
+    ok = {"media_id": 1, "ok": True, "status": "described", "cost_millicents": 70}
+    _table([
+        ("described + flagged: both costs", (ok, {"ok": True, "cost_millicents": 3}),
+         {**ok, "cost_millicents": 73}),
+        ("flags raised / not run (None): describe's cost", (ok, None), ok),
+        ("unparsed flags (billed, no cost on it): its cost not reported, describe's alone",
+         (ok, {"ok": False, "status": "unparsed"}), ok),
+        ("describe reported no cost: flags' alone", ({"ok": True}, {"cost_millicents": 3}),
+         {"ok": True, "cost_millicents": 3}),
+        ("describe failed (not flagged): unchanged", ({"ok": False, "status": "refused", "cost_millicents": 9}, None),
+         {"ok": False, "status": "refused", "cost_millicents": 9}),
+    ], d.with_flags_cost)
 
 
 def case_describe_selection_table():

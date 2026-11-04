@@ -18,12 +18,17 @@ PLAIN sends OF answers. Phase B, per Creator: HANG sends OF takes and the call b
 every run slot holds a send OF took and has not answered (steady), the relay is SIGKILLed,
 OF answers normally from then on, and the relay starts again on the same DB; the scenario
 waits for the boot heal's `reconciled_orphans` line before its first pass, so a pass never
-claims a job the heal then sees as orphaned.
+claims a job the heal then sees as orphaned. Phase C, per Creator: one ECHO send OF takes
+and answers with a 502 whose text echoes its rate-limit refusal ("Please allow 10 seconds"):
+never retried (the rate-limit retry is for OF's 4xx), parked "may have sent". Phase C is not
+in phase A: a 5th phase-A send per Creator lands >= 44 s after its first (the 11 s write
+spacing) and would crowd the schedule -> OF-took budget.
 
 Checks (names in lib/send_once_faults.py): OF holds exactly 1 message per job; every job
 ends done or error; every job in error carries "may have sent"; every REFUSE job ends done;
-the SIGKILL landed as planned; route p95s and schedule -> OF-took p95 (PLAIN, phase A) in
-budget, and vs the last green run.
+the SIGKILL landed as planned; every ECHO send is one OF message, its job error "may have
+sent", never resent (settled within its own wait); route p95s and schedule -> OF-took p95
+(PLAIN, phase A) in budget, and vs the last green run.
 
 Open (owner question, declared): the boot heal parks EVERY orphaned one-shot, also one whose
 run never reached its OF write (still waiting in dm_rate.turn / the 11 s write gate /
@@ -32,11 +37,14 @@ spec says an orphaned one-shot parks. Phase B only kills once every running send
 its write, so this scenario does not exercise that case.
 
 Bypasses (declared): OF's DM endpoint is faked at the client boundary (lib/send_once_relay.py:
-the 30 s client read timeout compressed to STALL_S, latency nil); the supervisor's cadence
+the 30 s client read timeout compressed to STALL_S, latency nil; ECHO's 502 is a fake
+answer, OF's 5xx body unmeasured); the supervisor's cadence
 (the scenario ticks between its own ticks). The per-Creator 11 s write spacing, the claim, the
 retry backoff (60 s) and the boot heal are the product's.
 Break-it-once: send-once-retries-after-accept (run_decide.ONE_SHOT_KINDS emptied: every
-failed / orphaned job requeued, the pre-fix lane): only ONCE goes red.
+failed / orphaned job requeued, the pre-fix lane): only ONCE and ECHO_5XX go red;
+--fault=rate-limit-text-sniff (of_write.is_rate_limited on the text alone, the pre-fix gate:
+the ECHO send retried): only ECHO_5XX and ONCE.
 """
 from __future__ import annotations
 
@@ -48,7 +56,7 @@ from collections import Counter
 from datetime import datetime
 
 from slop.lib.client import Recorder
-from slop.lib.send_once_faults import ONCE, PARKED, REFUSED, SETTLED
+from slop.lib.send_once_faults import ECHO_5XX, ONCE, PARKED, REFUSED, SETTLED
 from slop.lib.send_once_relay import SLOP_MARK, read_journal
 
 PROFILE = "agency_inbox"
@@ -97,10 +105,13 @@ async def run(ctx) -> None:
     tmp = ctx.stack.tmp
     cfg_file = tmp / "of-send-once.json"
 
-    # The plan: per Creator, distinct fans per behaviour; phase A then phase B.
-    plan: dict[str, list[dict]] = {"A": [], "B": []}
+    # The plan: per Creator, distinct fans per behaviour; phases A, B, then C.
+    plan: dict[str, list[dict]] = {"A": [], "B": [], "C": []}
+    rng_c = w.rng("scenario:send-once:C")   # its own stream: phases A and B pick as before
     for ci, aid in enumerate(creators):
-        fans = rng.sample([f["id"] for f in w.data["fans"][aid]], sum(PER_CREATOR.values()))
+        every = [f["id"] for f in w.data["fans"][aid]]
+        fans = rng.sample(every, sum(PER_CREATOR.values()))
+        echo = rng_c.choice([f for f in every if f not in fans])
         for how, n in PER_CREATOR.items():
             for _ in range(n):
                 fan = fans.pop()
@@ -108,6 +119,8 @@ async def run(ctx) -> None:
                 k = len(plan[ph])
                 plan[ph].append({"account_id": aid, "fan_id": fan, "how": how,
                                  "text": f"slop send-once {ph}{k} c{ci} {how} fan {fan}"})
+        plan["C"].append({"account_id": aid, "fan_id": echo, "how": "echo_5xx",
+                          "text": f"slop send-once C{ci} c{ci} echo_5xx fan {echo}"})
 
     def write_cfg(hows: set[str]) -> None:
         fans = {f"{j['account_id']}:{j['fan_id']}": j["how"] for ph in plan.values() for j in ph
@@ -180,17 +193,22 @@ async def run(ctx) -> None:
 
     phases: dict[str, dict] = {}
 
+    async def simple_phase(ph: str, hows: set[str]) -> bool:
+        """Phase `ph` with OF answering `hows`: schedule its sends, chatters polling, settle."""
+        ctx.rec.stage = ph
+        write_cfg(hows)
+        stop = asyncio.Event()
+        pollers = asyncio.create_task(poll(stop))
+        await schedule(ph)
+        t = time.monotonic()
+        ok = await settle(ph)
+        stop.set()
+        await pollers
+        phases[ph] = {"settled": ok, "s": round(time.monotonic() - t, 1)}
+        return ok
+
     # ── phase A: OF takes it and never answers / the proxy refuses it once / plain ──
-    ctx.rec.stage = "A"
-    write_cfg({"stall", "refuse_once"})
-    stop = asyncio.Event()
-    pollers = asyncio.create_task(poll(stop))
-    await schedule("A")
-    t = time.monotonic()
-    ok_a = await settle("A")
-    stop.set()
-    await pollers
-    phases["A"] = {"settled": ok_a, "s": round(time.monotonic() - t, 1)}
+    ok_a = await simple_phase("A", {"stall", "refuse_once"})
 
     # ── phase B: OF takes it, the call hangs, SIGKILL, restart ─────────────────
     ctx.rec.stage = "B"
@@ -261,6 +279,9 @@ async def run(ctx) -> None:
     phases["B"] = {"settled": ok_b, "s": round(time.monotonic() - t, 1), "restart_s": restart_s,
                    "heal_waited_s": healed_s,
                    "at_kill": dict(Counter(at_kill.values()))}
+
+    # ── phase C: OF takes it, then a 502 echoing its rate-limit text ──────────
+    ok_c = await simple_phase("C", {"echo_5xx"})
     ctx.rec.stage = None
 
     # ── verdicts ──────────────────────────────────────────────────────────────
@@ -278,7 +299,8 @@ async def run(ctx) -> None:
     ctx.check(ONCE, not unscheduled and not not_once, jobs=len(everyone), of_messages=sum(took.values()),
               not_once=dict(list(not_once.items())[:20]), unscheduled=unscheduled[:10])
 
-    left = {i: r["status"] for i, r in rows.items() if r["status"] not in ("done", "error")}
+    ab = set(ids("A") + ids("B"))   # SETTLED is A+B by owner spec: phase C settles inside ECHO_5XX's own wait
+    left = {i: r["status"] for i, r in rows.items() if i in ab and r["status"] not in ("done", "error")}
     ctx.check(SETTLED, not left and ok_a and ok_b, left=left, phases=phases)
 
     errored = {i: r["last_error"] for i, r in rows.items() if r["status"] == "error"}
@@ -290,6 +312,16 @@ async def run(ctx) -> None:
     bad = {j["text"]: rows.get(j.get("job_id"), {}).get("status") for j in refuse
            if rows.get(j.get("job_id"), {}).get("status") != "done"}
     ctx.check(REFUSED, bool(refuse) and not bad, n=len(refuse), bad=bad)
+
+    echo = [j for j in everyone if j["how"] == "echo_5xx"]
+    off = {}
+    for j in echo:
+        r = rows.get(j.get("job_id"), {})
+        if took[j["text"]] != 1 or r.get("status") != "error" or "may have sent" not in r.get("last_error", ""):
+            off[j["text"]] = {"of_messages": took[j["text"]], "status": r.get("status"),
+                              "last_error": r.get("last_error", "")[:120]}
+    ctx.check(ECHO_5XX, bool(echo) and ok_c and not off, n=len(echo), settled=ok_c,
+              off=dict(list(off.items())[:10]))
 
     # Budgets: the composer route, the ghost-bubble list, schedule -> OF took it (PLAIN, phase A).
     routes = ctx.rec.summary()

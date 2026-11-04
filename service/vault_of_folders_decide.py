@@ -7,8 +7,9 @@ Table-tested in tests/test_vault_of_folders_decide.py.
 
   membership   parse_folder_ids, next_folder_ids — an item's `of_folder_ids`
                after a read-back, both directions (gained AND dropped lists).
-  dupes hide   too_many (the per-call blast-radius cap), hide_selection (keeper
-               never hidden, sent copies only with allow_sent).
+  dupes hide   too_many (the per-call blast-radius cap), parse_threshold (the
+               strictness a hide re-clusters at; 0 stays 0), hide_selection
+               (keeper never hidden, sent copies only with allow_sent).
   batching     chunks — bounded slices for OF bodies and SQL IN(...).
 """
 from __future__ import annotations
@@ -52,6 +53,18 @@ def too_many(requested: list[int], max_n: int) -> dict[str, Any] | None:
     if len(requested) > max_n:
         return {"error": "too_many", "max": max_n, "got": len(requested)}
     return None
+
+
+def parse_threshold(raw: Any, default: int, top: int) -> int:
+    """A hide request's strictness: None / "" → `default`, else an int clamped
+    to 0..`top` (as find_duplicates does); 0 stays 0, never the default.
+    Only ints and int strings count: floats, bools and anything else raise
+    ValueError (the shell's 400 bad_threshold)."""
+    if raw is None or raw == "":
+        return default
+    if isinstance(raw, bool) or not isinstance(raw, (int, str)):
+        raise ValueError(f"bad threshold: {raw!r}")
+    return max(0, min(top, int(raw)))
 
 
 def hide_selection(

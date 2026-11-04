@@ -254,11 +254,17 @@ async def _link_ppv_message(
     )
     if msg is None:
         return False
+    _apply_link(tx, msg, occurred_at, stamp_paid=stamp_paid)
+    return True
+
+
+def _apply_link(tx: Any, msg: Message, occurred_at: datetime, *,
+                stamp_paid: bool) -> None:
+    """Point `tx` at `msg`; with `stamp_paid`, also mark `msg` paid at `occurred_at`."""
     if stamp_paid:
         msg.is_paid = True
         msg.purchased_at = occurred_at
     tx.message_id = msg.message_id
-    return True
 
 
 async def _select_ppv_link_candidate(
@@ -546,10 +552,7 @@ async def _relink_pass(s, rows, *, dry_run: bool, stamp_paid: bool) -> dict[str,
         else:
             try:
                 async with s.begin_nested():
-                    if stamp_paid:
-                        msg.is_paid = True
-                        msg.purchased_at = occ
-                    tx.message_id = msg.message_id
+                    _apply_link(tx, msg, occ, stamp_paid=stamp_paid)
                     await s.flush()
             except IntegrityError:
                 outcomes[tx_id] = "conflict_skipped"
@@ -1096,6 +1099,13 @@ async def _mark_success(
             now=datetime.utcnow()))
 
 
+def _tick_result(t0: float, *, inserted: int = 0, patched: int = 0,
+                 pages: int = 0, error: str | None = None) -> dict:
+    """run_one_tick's result, `duration_ms` measured from `t0` now."""
+    return {"rows_inserted": inserted, "rows_patched": patched, "pages": pages,
+            "duration_ms": int((time.monotonic() - t0) * 1000), "error": error}
+
+
 async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
     """One supervisor tick for one account.
 
@@ -1129,9 +1139,7 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
         # The seam is where the translation to OF's tick dict belongs: `pages`
         # and `rows_patched` are OF-ledger concepts the Fansly lane has no
         # honest value for, and the clock is held here.
-        return {"rows_inserted": r.rows_inserted, "rows_patched": 0, "pages": 0,
-                "duration_ms": int((time.monotonic() - t0) * 1000),
-                "error": r.error}
+        return _tick_result(t0, inserted=r.rows_inserted, error=r.error)
     lock = _tick_locks[account_id]
     async with lock:
         t0 = time.monotonic()
@@ -1174,11 +1182,7 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
                         # Skip path didn't touch the stamp, so we mark
                         # finalized=True to suppress the finally cleanup.
                         finalized = True
-                        return {
-                            "skipped": True, "rows_inserted": 0, "rows_patched": 0,
-                            "pages": 0, "duration_ms": int((time.monotonic() - t0) * 1000),
-                            "error": None,
-                        }
+                        return {"skipped": True, **_tick_result(t0)}
                     log.warning(
                         "ingest_tx_scan_proceed_after_stale account=%s status=%s age_s=%.0f",
                         account_id, state.current_status, age_s,
@@ -1200,11 +1204,7 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
                 log.warning("ingest_tx_no_session account=%s", account_id)
                 await _record_failure(account_id, err)
                 finalized = True
-                return {
-                    "rows_inserted": 0, "rows_patched": 0, "pages": 0,
-                    "duration_ms": int((time.monotonic() - t0) * 1000),
-                    "error": "no_session",
-                }
+                return _tick_result(t0, error="no_session")
 
             pages = inserted = patched = 0
             offset = 0
@@ -1285,12 +1285,8 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
                     log.warning("ingest_tx_scan_failed account=%s", account_id, exc_info=True)
                 await _record_failure(account_id, e)
                 finalized = True
-                return {
-                    "rows_inserted": inserted, "rows_patched": patched,
-                    "pages": pages,
-                    "duration_ms": int((time.monotonic() - t0) * 1000),
-                    "error": repr(e),
-                }
+                return _tick_result(t0, inserted=inserted, patched=patched,
+                                    pages=pages, error=repr(e))
 
             await _mark_success(
                 account_id,
@@ -1447,11 +1443,7 @@ async def start_fast_poll() -> None:
     while True:
         try:
             cycle_started = time.monotonic()
-            off = await account_health.deactivated_ids()
-            account_ids = [
-                m["id"] for m in account_registry.list_accounts()
-                if m.get("has_session") and m["id"] not in off
-            ]
+            account_ids = await _live_account_ids()
             wanted = await _fast_poll_account_ids()
             account_ids = [aid for aid in account_ids
                            if aid in wanted and not await _is_paused(aid)]
@@ -1493,6 +1485,16 @@ async def start_fast_poll() -> None:
 # catches ~0 unlock events and the ledger lands hours late. They run around the
 # clock, so their purchase detection cannot wait for someone to open the app.
 _SELLING_KINDS = ("welcome_chatter_for_info", "ppv_send", "reengage_buyers")
+
+
+async def _live_account_ids() -> list[str]:
+    """Every account with a session that is not deactivated, in registry order.
+    Both registries are read through their modules at call time (tests swap them)."""
+    off = await account_health.deactivated_ids()
+    return [
+        m["id"] for m in account_registry.list_accounts()
+        if m.get("has_session") and m["id"] not in off
+    ]
 
 
 async def _fast_poll_account_ids() -> set[str]:
@@ -1652,11 +1654,7 @@ async def start_supervisor() -> None:
     while True:
         try:
             cycle_started = time.monotonic()
-            off = await account_health.deactivated_ids()
-            account_ids = [
-                m["id"] for m in account_registry.list_accounts()
-                if m.get("has_session") and m["id"] not in off
-            ]
+            account_ids = await _live_account_ids()
             # NO online gate here. This loop is not a dashboard convenience —
             # it is the only writer of the `transactions` ledger, and
             # `event_transcoder` bumps `fans.lifetime_spend_cents` off those
@@ -1669,10 +1667,6 @@ async def start_supervisor() -> None:
             # who had already blown past the whale cap still read as $0 and the
             # AI kept selling to him. Freshness for a watching human is what the
             # 30s fast poll is for — THAT one keeps the online gate.
-            if not account_ids:
-                elapsed = time.monotonic() - cycle_started
-                await asyncio.sleep(max(_MIN_CYCLE_GAP_S, _TICK_INTERVAL_S - elapsed))
-                continue
             refresh_aids: list[str] = []
             backfill_aids: list[str] = []
             for aid in account_ids:
