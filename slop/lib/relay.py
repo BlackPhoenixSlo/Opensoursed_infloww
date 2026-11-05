@@ -66,11 +66,15 @@ falls back to `_OfflineOF` too.
        grace, and drops the pause between OF reads; the pass itself is the job's.
 
 OF's `/users/me` is faked the same way, only when a scenario writes
-`$DEMO_SHOTS_TMP/of-me.json` ({"latency_s": s, "dead": [account ids], "dead_s": s}):
+`$DEMO_SHOTS_TMP/of-me.json` ({"latency_s": s, "dead": [account ids], "dead_s": s, "avatars": bool,
+"answer_as": {account id: other account id}}):
 `me()` (the /setup table's per-Creator probe, `GET /health?all_accounts=1`) answers
 the Creator after `latency_s`, blocking in the probe's worker thread as the real
 curl does; a Creator in `dead` sits behind a dead proxy: it waits `dead_s` (the
-client's own timeout) and raises. `proxy_label` / `proxy_url` answer None (no proxy
+client's own timeout) and raises. With `avatars`, each Creator's answer carries its own
+`username`, `avatar` and `avatarThumbs` (an SVG data URL in its own colour, `_avatar`). A Creator in
+`answer_as` is answered with the other Creator's body (AE: Wren's /users/me reached every Creators table
+row). `proxy_label` / `proxy_url` answer None (no proxy
 registry in a slop run). Without the file, `me()` re-raises the build error.
 
 The hooks are not product requests: no `actions` audit row is written for them
@@ -174,6 +178,21 @@ OF_STATS_LATENCY_S = 0.3  # how long the faked OF Statistics read takes (a guess
 # The flows' own parts of this relay (module docstring), as top-level modules (lib/ is on sys.path).
 PLUGINS = [importlib.import_module(m.stem) for m in sorted(Path(__file__).resolve().parent.glob("*_relay.py"))]
 _SELF = sys.modules[__name__]  # this module: runpy below puts relay_guarded's in sys.modules["__main__"]
+
+
+def _avatar(account_id: str) -> dict:
+    """A Creator's own OF profile picture for the offline `me()`: an SVG data URL (the app shows
+    data: URLs as they are, never through /img, so nothing leaves loopback), a colour and the last
+    two digits of the account id, so each Creator's picture is distinct on a screenshot and its
+    URL names its Creator (`#<account id>` fragment)."""
+    import hashlib
+    import urllib.parse
+    hue = int(hashlib.sha1(account_id.encode()).hexdigest()[:4], 16) % 360
+    svg = (f"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 50 50'><rect width='50' height='50' "
+           f"fill='hsl({hue},70%,45%)'/><text x='25' y='33' font-size='22' text-anchor='middle' "
+           f"fill='white' font-family='sans-serif'>{account_id[-2:]}</text></svg>")
+    url = "data:image/svg+xml," + urllib.parse.quote(svg) + f"#{account_id}"
+    return {"avatar": url, "avatarThumbs": {"c50": url, "c144": url}}
 
 
 class _OfflineOF(*(m.OF for m in PLUGINS if hasattr(m, "OF"))):
@@ -284,7 +303,11 @@ class _OfflineOF(*(m.OF for m in PLUGINS if hasattr(m, "OF"))):
             time.sleep(float(cfg["dead_s"]))
             raise ConnectionError(f"proxy timed out after {cfg['dead_s']}s")  # what a dead proxy ends in
         time.sleep(float(cfg["latency_s"]))
-        return {"id": int(self.account_id), "name": f"creator {self.account_id}"}
+        who = cfg.get("answer_as", {}).get(self.account_id, self.account_id)
+        me = {"id": int(who), "name": f"creator {who}"}
+        if cfg.get("avatars"):
+            me.update(username=f"creator_{who}", **_avatar(who))
+        return me
 
     def __getattr__(self, name):
         if name in ("proxy_label", "proxy_url") and (

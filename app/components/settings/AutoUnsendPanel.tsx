@@ -5,7 +5,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { Button } from "@/components/ui/primitives";
+import { IfButton, IfInput, IfSwitch } from "@/components/ui/infloww";
 import {
   useAutomationRules,
   useCreateRule,
@@ -83,33 +83,30 @@ export function AutoUnsendPanel({ accountId, label }: { accountId: string; label
   };
 
   return (
-    <div className="border border-border rounded-md p-3 space-y-2">
+    <div className="rounded-md border border-border p-4 space-y-3 text-[14px]">
       <div className="flex items-center justify-between gap-2">
-        <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
-          <input
-            type="checkbox"
-            checked={enabled}
-            onChange={(e) => setEnabled(e.target.checked)}
-          />
-          {label}
-          {existing?.is_enabled && <span className="text-[10px] text-accent">● active</span>}
-        </label>
-        <span className="text-[10px] text-fg-dim">runs hourly</span>
+        <div className="flex items-center gap-2">
+          <IfSwitch label={<span className="font-medium">{label}</span>} checked={enabled} onChange={setEnabled} />
+          {existing?.is_enabled && (
+            <span className="rounded-[4px] bg-accent/15 px-1.5 text-[12px] text-accent">Active</span>
+          )}
+        </div>
+        <span className="text-[12px] text-fg-dim">Runs hourly</span>
       </div>
       <AutoClassRow label="Free text-only" v={text} set={setText} />
       <AutoClassRow label="With image / video" v={img} set={setImg} />
       <AutoClassRow label="PPV (priced)" v={price} set={setPrice} />
-      <div className="flex items-center gap-2 pt-1 flex-wrap">
-        <Button size="sm" variant="secondary" onClick={save} disabled={saving || noClass}>
+      <div className="flex items-center gap-3 pt-1 flex-wrap">
+        <IfButton onClick={save} disabled={saving || noClass}>
           {saving ? "Saving…" : existing ? "Update" : "Save"}
-        </Button>
+        </IfButton>
         {noClass && (
-          <span className="text-xs text-fg-dim">Turn on at least one class to save.</span>
+          <span className="text-[12px] text-fg-dim">Turn on at least one class to save.</span>
         )}
-        {err && <span className="text-xs text-err">{err.message}</span>}
+        {err && <span className="text-[12px] text-err">{err.message}</span>}
         {existing?.last_run && (
-          <span className="text-[10px] text-fg-dim">
-            last run: {existing.last_run.status}
+          <span className="text-[12px] text-fg-dim">
+            Last run: {existing.last_run.status}
             {existing.next_due_at
               ? ` · next ${new Date(existing.next_due_at).toLocaleTimeString()}`
               : ""}
@@ -128,20 +125,14 @@ function AutoClassRow({
   set: (x: { on: boolean; h: number }) => void;
 }) {
   return (
-    <div className="flex items-center gap-2 text-xs flex-wrap md:flex-nowrap">
-      <label className="flex items-center gap-1.5 w-full md:w-36 cursor-pointer">
-        <input
-          type="checkbox"
-          checked={v.on}
-          onChange={(e) => set({ ...v, on: e.target.checked })}
-        />
-        {label}
-      </label>
+    <div className="flex items-center gap-2 flex-wrap md:flex-nowrap">
+      <IfSwitch className="w-full md:w-52" label={label} checked={v.on} onChange={(on) => set({ ...v, on })} />
       <span className="text-fg-dim">after</span>
-      <input
+      <IfInput
         type="number"
         min={1}
-        className="w-16 bg-bg-elev-1 border border-border rounded px-1.5 py-0.5 text-base md:text-xs disabled:opacity-40"
+        aria-label={`${label} hours`}
+        className={v.on ? "w-20" : "w-20 opacity-50"}
         value={v.h}
         disabled={!v.on}
         onChange={(e) => set({ ...v, h: Math.max(1, Number(e.target.value) || 1) })}

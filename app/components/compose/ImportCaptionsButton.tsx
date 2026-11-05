@@ -8,13 +8,13 @@
  * fit; the outcome is toasted. Nothing parsed / nothing fits → toast, no change.
  *
  * Its root is `display: contents`, so in the caller's `flex flex-wrap` row the
- * trigger sits beside "+ add variant" and the open panel wraps onto its own
+ * trigger sits beside "Add variant" and the open panel wraps onto its own
  * full-width line (no absolute popover to overflow a phone or a modal's scroll).
  */
 
-import { useRef } from "react";
+import { useId, useRef } from "react";
 
-import { Button } from "@/components/ui/primitives";
+import { IfButton, IfHelp, IfLabel, IfTextArea } from "@/components/ui/infloww";
 import { useOutsideClose } from "@/components/ui/Menu";
 import { pushNotice } from "@/lib/notices";
 import { mergeCaptions, parseCaptions, type MergeResult } from "@/lib/parseCaptions";
@@ -35,12 +35,13 @@ export function ImportCaptionsButton({ current, onImport, max, className }: {
   current: string[];
   onImport: (items: string[]) => void;
   max?: number;
-  /** Trigger classes; default is the small accent link of the "+ add variant" rows. */
+  /** Extra trigger classes (the trigger is a kit link button). */
   className?: string;
 }) {
   const { open, setOpen, ref } = useOutsideClose<HTMLDivElement>();
   const fileRef = useRef<HTMLInputElement>(null);
   const pasteRef = useRef<HTMLTextAreaElement>(null);
+  const pasteId = useId();
 
   const run = (text: string, filename?: string) => {
     const { items } = parseCaptions(text, { filename });
@@ -59,13 +60,13 @@ export function ImportCaptionsButton({ current, onImport, max, className }: {
 
   return (
     <div ref={ref} className="contents">
-      <button
-        type="button"
+      <IfButton
+        variant="link"
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
-        className={className ?? "text-[11px] text-accent hover:underline"}
-      >Import captions</button>
+        className={className}
+      >Import captions</IfButton>
       <input
         ref={fileRef}
         type="file"
@@ -77,20 +78,23 @@ export function ImportCaptionsButton({ current, onImport, max, className }: {
       />
       {open && (
         <div role="dialog" aria-label="Import captions" className="basis-full">
-          <div className="pop-menu origin-top max-w-sm space-y-2 rounded-md border border-border bg-bg p-2 shadow-sm">
-            <Button type="button" size="sm" variant="secondary" className="w-full" onClick={() => fileRef.current?.click()}>
+          <div className="pop-menu origin-top max-w-sm space-y-3 rounded-md border border-border bg-bg p-3 text-[14px] text-fg shadow-sm">
+            <IfButton className="w-full" onClick={() => fileRef.current?.click()}>
               Choose file (.csv, .txt, .json)
-            </Button>
-            <textarea
-              ref={pasteRef}
-              rows={4}
-              aria-label="Paste captions"
-              placeholder="…or paste captions, one per line"
-              className="w-full bg-bg border border-border rounded-md px-2 py-1.5 text-base md:text-xs placeholder:text-muted focus:outline-none focus:border-accent resize-y"
-            />
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[11px] text-fg-dim">{max ? `Up to ${max} variants.` : "Dupes skipped."}</span>
-              <Button type="button" size="sm" onClick={() => run(pasteRef.current?.value ?? "")}>Add pasted</Button>
+            </IfButton>
+            <div>
+              <IfLabel htmlFor={pasteId}>Or paste captions</IfLabel>
+              <IfTextArea
+                id={pasteId}
+                ref={pasteRef}
+                rows={4}
+                aria-label="Paste captions"
+                placeholder="One per line"
+              />
+              <IfHelp>{max ? `Up to ${max} variants; dupes skipped.` : "Dupes skipped."}</IfHelp>
+            </div>
+            <div className="flex justify-end">
+              <IfButton variant="primary" onClick={() => run(pasteRef.current?.value ?? "")}>Add pasted</IfButton>
             </div>
           </div>
         </div>

@@ -21,9 +21,9 @@
 import { Fragment, useState } from "react";
 import { Info, RotateCw } from "lucide-react";
 
-import { Badge, ExtraTag, Input, Textarea } from "@/components/ui/primitives";
+import { Badge, ExtraTag } from "@/components/ui/primitives";
 import {
-  EmptyState, IF_TABLE, IfButton, IfModal, IfPager, IfSelect, IfSwitch, type IfOption,
+  EmptyState, IF_TABLE, IfButton, IfInput, IfLabel, IfModal, IfPager, IfSelect, IfSwitch, IfTextArea, type IfOption,
 } from "@/components/ui/infloww";
 import { errMsg, useIfConfirm } from "@/components/growth/_bits";
 import {
@@ -271,17 +271,17 @@ function NumSelect({ label, value, options, onChange }: {
   return <IfSelect aria-label={label} value={String(value)} options={options} onChange={(v) => onChange(Number(v))} className="w-full" />;
 }
 
-/** A form row: the bundle's colon label, then the control. */
+/** A form row: the label (antd's vertical form: no colon), then the control. */
 function Row({ label, htmlFor, children }: { label: string; htmlFor?: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-2">
-      <label htmlFor={htmlFor} className="text-[14px] text-fg">{label}</label>
+      <IfLabel htmlFor={htmlFor} className="mb-0">{label}</IfLabel>
       {children}
     </div>
   );
 }
 
-/** `CreatePromotionModal`: 520px, the bundle's colon labels, Cancel then Create. The line over the footer says what
+/** `CreatePromotionModal`: 520px, label over control, Cancel then Create. The line over the footer says what
  *  OnlyFans will be asked to run (ours, in place of a second confirm). */
 function CreatePromotionModal({ accountId, onClose }: { accountId: string | null; onClose: () => void }) {
   const meQ = useOfMe(accountId);
@@ -329,17 +329,17 @@ function CreatePromotionModal({ accountId, onClose }: { accountId: string | null
       )}
     >
       <div className="flex flex-col gap-5">
-        <Row label="Name:" htmlFor="promo-new-name">
+        <Row label="Name" htmlFor="promo-new-name">
           <span className="flex items-center gap-2">
-            <Input id="promo-new-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Summer free week" />
+            <IfInput id="promo-new-name" className="flex-1" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Summer free week" />
             <ExtraTag />
           </span>
         </Row>
-        <Row label="User type:">
+        <Row label="User type">
           <IfSelect aria-label="User type" value={form.audience} options={AUDIENCES} onChange={(audience) => set({ audience })} className="w-full" />
         </Row>
         <fieldset className="flex flex-col gap-2">
-          <legend className="mb-2 text-[14px] text-fg">Promotion type:</legend>
+          <legend className="mb-2 text-[14px] text-fg">Promotion type</legend>
           <div className="flex flex-wrap items-center gap-6 text-[14px]">
             <label className="inline-flex items-center gap-2 cursor-pointer">
               <input type="radio" name="promo-kind" checked={form.kind === "trial"} onChange={() => set({ kind: "trial" })} className="accent-accent" />
@@ -352,30 +352,30 @@ function CreatePromotionModal({ accountId, onClose }: { accountId: string | null
             </label>
           </div>
         </fieldset>
-        <Row label="Offer limit:">
+        <Row label="Offer limit">
           <NumSelect label="Offer limit" value={form.limit} options={PROMO_LIMITS} onChange={(limit) => set({ limit })} />
         </Row>
-        <Row label="Offer expiration:">
+        <Row label="Offer expiration">
           <NumSelect label="Offer expiration" value={form.expiration} options={EXPIRATIONS} onChange={(expiration) => set({ expiration })} />
         </Row>
         {form.kind === "trial" ? (
-          <Row label="Free trial duration:">
+          <Row label="Free trial duration">
             <NumSelect label="Free trial duration" value={form.duration} options={PROMO_DURATIONS} onChange={(duration) => set({ duration })} />
           </Row>
         ) : (
-          <Row label="Discount percent:">
+          <Row label="Discount percent">
             <NumSelect label="Discount percent" value={form.percent} options={discountSteps(price)} onChange={(percent) => set({ percent })} />
           </Row>
         )}
-        <Row label="Message (optional):" htmlFor="promo-new-message">
-          <Textarea id="promo-new-message" value={form.message} maxLength={MESSAGE_MAX} rows={3}
+        <Row label="Message" htmlFor="promo-new-message">
+          <IfTextArea id="promo-new-message" value={form.message} maxLength={MESSAGE_MAX} rows={3}
             onChange={(e) => set({ message: e.target.value })} placeholder="Shown with the promotion" />
           <span className="self-end text-[12px] text-fg-dim tabular-nums">{form.message.length}/{MESSAGE_MAX}</span>
         </Row>
         <p className="text-[12px] text-fg-dim">
           Creates a real OnlyFans promotion: {offer}, {promoAudience(body.type.join(",")).toLowerCase()}, {cap}, {ends}.
         </p>
-        {err && <div className="text-err text-xs" role="alert">{err}</div>}
+        {err && <div className="text-err text-[12px]" role="alert">{err}</div>}
       </div>
     </IfModal>
   );

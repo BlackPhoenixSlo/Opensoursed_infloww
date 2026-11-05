@@ -55,7 +55,9 @@
 
 import { useMemo, useState, type ReactNode } from "react";
 
+import { EDITOR_MODAL } from "@/components/automations/automationPage";
 import NudgeOnlineTab from "@/components/settings/NudgeOnlineTab";
+import { FooterSlotContext } from "@/components/ui/ifModal";
 import {
   EmptyState, IF_TABLE, IfBody, IfButton, IfInput, IfModal, IfRangePicker, IfSelect, type IfOption,
 } from "@/components/ui/infloww";
@@ -404,40 +406,25 @@ export function AutomatedEditor({
   accountId: string | null;
   onClose: () => void;
 }) {
+  // The editor's Save (and its status line) lands in the footer, after Cancel (`EditorFooter`).
+  const [slot, setSlot] = useState<HTMLElement | null>(null);
   return (
-    <div className="fixed inset-0 z-50 bg-black/50 grid place-items-center p-4">
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="sm-auto-editor-title"
-        className="w-full max-w-[720px] max-h-[90vh] flex flex-col bg-panel border border-border rounded-xl shadow-2xl"
-      >
-        <header className="px-4 py-3 border-b border-border flex items-center gap-2">
-          <h2 id="sm-auto-editor-title" className="text-sm font-semibold">{trigger}</h2>
-          {/* Our editor, not Infloww's seven-step wizard. */}
-          <ExtraTag />
-          <button
-            type="button"
-            aria-label="Close"
-            title="Close"
-            onClick={onClose}
-            className="ml-auto text-fg-dim hover:text-fg text-lg leading-none"
-          >
-            ×
-          </button>
-        </header>
-        <div className="flex-1 overflow-y-auto p-4">
-          {/* Keyed on the Creator: it opens on the chip's pick. */}
-          {trigger === NUDGE.label
-            ? <NudgeOnlineTab key={accountId ?? ""} initialAccountId={accountId} />
-            : trigger === PURCHASED.label
-              ? <PurchaseFollowupEditor key={accountId ?? ""} accountId={accountId} />
-              : LIFECYCLE_KIND.has(trigger)
-                ? <LifecycleMessageEditor key={accountId ?? ""} accountId={accountId} kind={LIFECYCLE_KIND.get(trigger)!} />
-                : <DelayedWelcomeEditor key={accountId ?? ""} accountId={accountId} />}
-        </div>
-      </div>
-    </div>
+    // The dialog is named by the Trigger alone; the extra tag opens the body.
+    <IfModal title={trigger} width={722} className={EDITOR_MODAL} onClose={onClose}
+      footer={<><IfButton onClick={onClose}>Cancel</IfButton><span ref={setSlot} className="contents" /></>}>
+      {/* Our editor, not Infloww's seven-step wizard. */}
+      <div className="mb-4"><ExtraTag /></div>
+      <FooterSlotContext.Provider value={slot}>
+      {/* Keyed on the Creator: it opens on the chip's pick. */}
+      {trigger === NUDGE.label
+        ? <NudgeOnlineTab key={accountId ?? ""} initialAccountId={accountId} />
+        : trigger === PURCHASED.label
+          ? <PurchaseFollowupEditor key={accountId ?? ""} accountId={accountId} />
+          : LIFECYCLE_KIND.has(trigger)
+            ? <LifecycleMessageEditor key={accountId ?? ""} accountId={accountId} kind={LIFECYCLE_KIND.get(trigger)!} />
+            : <DelayedWelcomeEditor key={accountId ?? ""} accountId={accountId} />}
+      </FooterSlotContext.Provider>
+    </IfModal>
   );
 }
 

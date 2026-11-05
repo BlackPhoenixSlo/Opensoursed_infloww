@@ -187,7 +187,7 @@ describe("ChatHeader", () => {
       const DISCOUNT = `/api/of/v2/subscriptions/${FAN_ID}/discount`;
       /** A Creator at `price` dollars a month and this Fan. */
       const offersWith = (ofUser: Record<string, unknown>, price = 10) =>
-        serve({ [USER]: { id: FAN_ID, ...ofUser }, [ME]: { subscribePrice: price } });
+        serve({ [USER]: { id: FAN_ID, ...ofUser }, [ME]: { id: Number(ACCOUNT_ID), subscribePrice: price } });
       const offersRow = (menu: HTMLElement) => within(menu).getByRole("button", { name: "Special offers ▸" });
 
       it("is disabled, its title saying why, for a Fan OF offers no discount (never subscribed, or a free page); a click opens nothing", async () => {

@@ -22,6 +22,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { AccountPicker } from "@/components/compose/AccountPicker";
 import { MediaTray } from "@/components/compose/MediaTray";
+import { isAudienceSeed, useTouched } from "@/components/compose/useTouched";
 import {
   audienceError, audienceReducer, buildAudiencePayload, initAudience, massExcludeListId,
 } from "@/components/audience/audienceReducer";
@@ -29,7 +30,8 @@ import { ListColumn, SYSTEM_AUDIENCES, SysChip, useFanLists } from "@/components
 import { sanitizePriceInput } from "@/lib/priceInput";
 import { SensitiveWordWarning } from "@/components/chat/SensitiveWordWarning";
 import { VaultPicker } from "@/components/chat/VaultPicker";
-import { Button } from "@/components/ui/primitives";
+import { EDITOR_MODAL } from "@/components/automations/automationPage";
+import { IfButton, IfHelp, IfInput, IfLabel, IfModal, IfTextArea } from "@/components/ui/infloww";
 import { relay, type VaultMedia } from "@/lib/relay";
 import { SENSITIVE_BLOCK_MESSAGE, useSensitiveHits } from "@/lib/sensitiveWords";
 import { fmtPrice } from "@/lib/format";
@@ -37,6 +39,8 @@ import { fmtPrice } from "@/lib/format";
 const ROUTE = "/admin/priority-mass/runs";
 const MAX_RECIPIENTS = 5000;
 const HOURLY_RATE = 300;
+/** A list column's heading (under the Audience label), as in AudiencePanel. */
+const SUB = "mb-1.5 text-[12px] text-fg-dim";
 
 export interface PriorityMassRun {
   id: number;
@@ -73,7 +77,9 @@ export function PriorityMassComposer({ open, onClose, initialAccountId = null }:
 }) {
   const qc = useQueryClient();
   // The account and its audience (list ids are per account) — one reducer.
-  const [aud, dispatch] = useReducer(audienceReducer, initialAccountId, (id) => initAudience(id));
+  const [aud, rawDispatch] = useReducer(audienceReducer, initialAccountId, (id) => initAudience(id));
+  // The user's dispatch and setters: any of them but the seeding touches the form (Escape then keeps it).
+  const { touched, dispatch, edit } = useTouched(aud, rawDispatch, isAudienceSeed);
   const { accountId, includes, excludes } = aud;
   const [text, setText] = useState("");
   const [attached, setAttached] = useState<VaultMedia[]>([]);
@@ -90,7 +96,7 @@ export function PriorityMassComposer({ open, onClose, initialAccountId = null }:
   // settle (not a stale cache mid-refetch); seeded once per account, so an untick sticks.
   useEffect(() => {
     if (!accountId || !lists || isFetching) return;
-    dispatch({ type: "seedExclude", accountId, listId: massExcludeListId(lists) });
+    rawDispatch({ type: "seedExclude", accountId, listId: massExcludeListId(lists) });
   }, [accountId, lists, isFetching]);
 
   // Send waits for that seed, so a run never goes out before MASSDMEXCLUDE is excluded.
@@ -128,103 +134,108 @@ export function PriorityMassComposer({ open, onClose, initialAccountId = null }:
   }
 
   if (!open) return null;
+  const close = () => { if (!send.isPending) onClose(); };
   return (
-    <div className="fixed inset-0 z-50 bg-black/50 grid place-items-center p-4">
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="pm-compose-title"
-        className="w-full max-w-[640px] max-h-[90vh] flex flex-col bg-panel border border-border rounded-xl shadow-2xl"
+    <>
+      <IfModal
+        title="Priority mass message"
+        width={722}
+        className={EDITOR_MODAL}
+        onClose={close}
+        // Escape never drops a draft the user touched; × and Cancel still close.
+        keyboard={!touched}
+        footer={<>
+          <IfButton onClick={onClose} disabled={send.isPending}>Cancel</IfButton>
+          <IfButton variant="primary" onClick={launch} disabled={send.isPending || !seeded}
+            title={seeded ? undefined : listsFailed
+              ? "Couldn't load the Creator's lists — reopen to retry"
+              : "Loading the Creator's lists…"}>
+            {send.isPending ? "Starting…" : "Send"}
+          </IfButton>
+        </>}
       >
-        <header className="px-4 py-3 border-b border-border">
-          <h2 id="pm-compose-title" className="text-sm font-semibold">Priority mass message</h2>
-          <p className="text-xs text-fg-dim mt-1">
-            {paceLine()} Fans messaged in the last 6 hours, fans who wrote in the last 2 hours, and
-            fans on your exclusion lists are skipped.
-          </p>
-        </header>
-        <div className="flex-1 overflow-y-auto p-4 space-y-3">
+        <div className="space-y-4">
+          <IfHelp className="mt-0">{paceLine()}</IfHelp>
           <AccountPicker value={accountId} onChange={(id) => dispatch({ type: "setAccount", id })} />
-          <div className="space-y-1.5">
-            <textarea
+          <div className="space-y-2">
+            <IfTextArea
               aria-label="Message"
               value={text}
-              onChange={(e) => setText(e.target.value)}
+              onChange={(e) => edit(setText)(e.target.value)}
               placeholder="Hey {name}…"
               rows={4}
               maxLength={2000}
-              className="w-full bg-bg border border-border rounded-md px-3 py-2 text-base md:text-sm placeholder:text-muted focus:outline-none focus:border-accent resize-y"
+              className="max-md:text-base"
             />
             <SensitiveWordWarning hits={sensitiveHits} />
           </div>
           <MediaTray
             accountId={accountId}
             attached={attached}
-            onChange={setAttached}
+            onChange={edit(setAttached)}
             onOpenVaultPicker={() => setPickerOpen(true)}
             price={numericPrice}
             previewCount={previewCount}
-            onPreviewCountChange={setPreviewCount}
+            onPreviewCountChange={edit(setPreviewCount)}
           />
-          <div className="flex items-center gap-2">
-            <label htmlFor="pm-price" className="text-xs text-fg-dim shrink-0">Price (USD):</label>
-            <input
-              id="pm-price"
-              type="text"
-              inputMode="decimal"
-              value={price}
-              onChange={(e) => setPrice(sanitizePriceInput(e.target.value))}
-              placeholder="0 (free)"
-              className="flex-1 bg-bg border border-border rounded-md px-2 py-1.5 text-base md:text-xs focus:outline-none focus:border-accent"
-            />
-          </div>
-          {numericPrice > 0 && (
-            <label className="flex items-center gap-2 text-xs text-fg-dim cursor-pointer">
-              <input type="checkbox" checked={lockedText} onChange={(e) => setLockedText(e.target.checked)} />
-              Lock the text too (fan must pay to read)
-            </label>
-          )}
-          <div className="border border-border rounded-md p-3 space-y-3">
-            <div className="text-[11px] uppercase tracking-wide text-fg-dim">Audience</div>
-            <div className="flex flex-wrap gap-1.5">
-              {SYSTEM_AUDIENCES.map((b) => (
-                <SysChip key={b.id} state={includes.has(b.id) ? "in" : "off"} onClick={() => dispatch({ type: "toggleInclude", id: b.id })} label={b.label} />
-              ))}
+          <div>
+            <IfLabel htmlFor="pm-price">Price (USD)</IfLabel>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+              <IfInput
+                id="pm-price"
+                type="text"
+                inputMode="decimal"
+                value={price}
+                onChange={(e) => edit(setPrice)(sanitizePriceInput(e.target.value))}
+                placeholder="0 (free)"
+                className="w-40 max-md:text-base"
+              />
+              {numericPrice > 0 && (
+                <label className="flex cursor-pointer select-none items-center gap-2 text-[14px] text-fg">
+                  <input type="checkbox" checked={lockedText} onChange={(e) => edit(setLockedText)(e.target.checked)}
+                    className="h-4 w-4 accent-accent" />
+                  Lock the text too (fan must pay to read)
+                </label>
+              )}
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-border/60">
+          </div>
+          <div className="space-y-3">
+            <div>
+              <IfLabel required>Audience</IfLabel>
+              <div className="flex flex-wrap gap-1.5">
+                {SYSTEM_AUDIENCES.map((b) => (
+                  <SysChip key={b.id} state={includes.has(b.id) ? "in" : "off"} onClick={() => dispatch({ type: "toggleInclude", id: b.id })} label={b.label} />
+                ))}
+              </div>
+              <IfHelp>
+                Skipped: fans messaged in the last 6 hours, fans who wrote in the last 2 hours, and your exclusion lists.
+              </IfHelp>
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
-                <div className="text-[11px] text-fg-dim mb-1.5">Custom lists — include</div>
+                <div className={SUB}>Custom lists — include</div>
                 <ListColumn lists={customLists} loading={isLoading} selected={includes}
                   onToggle={(id) => dispatch({ type: "toggleInclude", id })} emptyLabel="No custom lists." />
               </div>
               <div>
-                <div className="text-[11px] text-fg-dim mb-1.5">Custom lists — exclude</div>
+                <div className={SUB}>Custom lists — exclude</div>
                 <ListColumn lists={customLists} loading={isLoading} selected={excludes}
                   onToggle={(id) => dispatch({ type: "toggleExclude", id })} emptyLabel="—" />
               </div>
             </div>
           </div>
-          {error && <div role="alert" className="text-xs text-err">{error}</div>}
+          {error && <div role="alert" className="text-[14px] text-err">{error}</div>}
         </div>
-        <footer className="px-4 py-3 border-t border-border flex justify-end gap-4">
-          <Button variant="secondary" size="sm" onClick={onClose} disabled={send.isPending}>Cancel</Button>
-          <Button variant="primary" size="sm" onClick={launch} disabled={send.isPending || !seeded}
-            title={seeded ? undefined : listsFailed
-              ? "Couldn't load the Creator's lists — reopen to retry"
-              : "Loading the Creator's lists…"}>
-            {send.isPending ? "Starting…" : "Send"}
-          </Button>
-        </footer>
-      </div>
+      </IfModal>
       <VaultPicker
         open={pickerOpen}
         onClose={() => setPickerOpen(false)}
         accountId={accountId}
         fanId={null}
         initialSelectedIds={attached.map((m) => m.id)}
-        onConfirm={(p) => { setAttached(p); setPickerOpen(false); }}
+        onConfirm={(p) => { edit(setAttached)(p); setPickerOpen(false); }}
       />
-    </div>
+    </>
   );
 }
 
@@ -273,12 +284,12 @@ export function PriorityMassRuns() {
                   <span className="text-xs text-fg-dim">{new Date(r.created_at).toLocaleString()}</span>
                   <span className="ml-auto flex gap-2">
                     {live && r.stalled && (
-                      <Button size="sm" variant="secondary" disabled={act.isPending}
-                        onClick={() => act.mutate({ id: r.id, verb: "resume" })}>Resume</Button>
+                      <IfButton disabled={act.isPending}
+                        onClick={() => act.mutate({ id: r.id, verb: "resume" })}>Resume</IfButton>
                     )}
                     {live && (
-                      <Button size="sm" variant="secondary" disabled={act.isPending}
-                        onClick={() => act.mutate({ id: r.id, verb: "cancel" })}>Cancel</Button>
+                      <IfButton disabled={act.isPending}
+                        onClick={() => act.mutate({ id: r.id, verb: "cancel" })}>Cancel</IfButton>
                     )}
                   </span>
                 </div>

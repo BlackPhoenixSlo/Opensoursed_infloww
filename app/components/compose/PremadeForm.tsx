@@ -1,58 +1,58 @@
 "use client";
 
-import { useMemo, useReducer, useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useId, useMemo, useReducer, useState, type ReactNode } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { Image as ImageIcon, Lock, Plus, Trash2, X } from "lucide-react";
 
-import { useEmployee } from "@/contexts/EmployeeContext";
 import { fanListsQuery, topRank, type FanList } from "@/components/audience/fanLists";
-import { relay } from "@/lib/relay";
 import { sanitizePriceInput } from "@/lib/priceInput";
 import { VaultPicker } from "@/components/chat/VaultPicker";
-import { usePlatformAccounts } from "@/hooks/useAccounts";
-import { useAllModelsInclude } from "@/hooks/useAllModelsInclude";
+import { IfButton, IfHelp, IfInput, IfLabel, IfSelect, IfSwitch, IfTextArea } from "@/components/ui/infloww";
 import { useVaultLists } from "@/hooks/useVaultMedia";
+import { cn } from "@/lib/utils";
 
-import { AccountPicker } from "./AccountPicker";
 import { ImportCaptionsButton } from "./ImportCaptionsButton";
-import { includedTargets, runFanOut, summarizeFanOut } from "./fanOut";
 import {
   SYSTEM_AUDIENCES, buildPayload, numStr, payloadToRows, rowsReducer,
-  type Kind, type PremadePayload, type Row,
+  type Kind, type Row,
 } from "./premadeRows";
 import { fmtPrice } from "@/lib/format";
 
-/** The inline form (account picker + repeating rows + dry-run + submit). Used
- *  inside PremadeComposer's modal and the ready-made rule editor's ComposeModal.
- *
- *  Return-payload mode: pass `onComposePayload` and the form STOPS enqueuing —
- *  the submit button becomes "Use in rule" and calls back with the same
- *  `{posts:[…]}` / `{messages:[…]}` payload it would have enqueued, so the
- *  a rule editor can store it on an automation_rule. `forcedAccountId` pins the
- *  account (a rule is single-account) and hides the picker + all-models switch. */
+/** A built-in "frame" when no caller supplies one: the body, then the footer row right-aligned. */
+const inlineFrame: PremadeFrame = ({ body, footer }) => (
+  <>
+    {body}
+    <div className="mt-4 flex items-center justify-end gap-2">{footer}</div>
+  </>
+);
+
+/** Where the form's body and its Reset / Use in rule footer go (ComposeModal puts them in an IfModal).
+ *  `dirty`: rows or the repost cycle differ from what the form opened with, so Escape must not drop them. */
+export type PremadeFrame = (parts: { body: ReactNode; footer: ReactNode; dirty: boolean }) => ReactNode;
+
+/** The ready-made rule composer: repeating posts / messages, built into the `{posts:[…]}` / `{messages:[…]}`
+ *  payload a rule editor stores (`onComposePayload`, "Use in rule"). A rule is single-account
+ *  (`forcedAccountId`). */
 export function PremadeForm({
   kind,
-  onDone,
   forcedAccountId,
   onComposePayload,
   initialPayload,
+  frame = inlineFrame,
 }: {
   kind: Kind;
-  /** Optional — called after a successful enqueue (the modal uses it to close). */
-  onDone?: () => void;
-  /** Pin the account (return-payload mode); hides the picker + all-models. */
-  forcedAccountId?: string;
-  /** Return-payload mode: receive the built payload instead of enqueuing. */
-  onComposePayload?: (payload: Record<string, unknown>) => void;
+  /** The rule's account (vault folders, images, custom lists). */
+  forcedAccountId: string;
+  /** Receives the built payload ("Use in rule"). */
+  onComposePayload: (payload: Record<string, unknown>) => void;
   /** Re-compose mode: seed the rows + repost cycle from a previously saved
    *  `{posts|messages:[…]}` payload so editing an existing rule isn't blank. */
   initialPayload?: Record<string, unknown>;
+  frame?: PremadeFrame;
 }) {
   const posts = kind === "auto_posts";
-  const composeMode = !!onComposePayload;
-  const { current: currentEmployee } = useEmployee();
-  const [accountId, setAccountId] = useState<string | null>(forcedAccountId ?? null);
+  const accountId = forcedAccountId;
   const [rows, dispatch] = useReducer(rowsReducer, undefined, () => payloadToRows(initialPayload, kind));
-  const [dryRun, setDryRun] = useState(false);
   // Auto Posts repost CYCLE (list-level, not per-row): re-post the whole list
   // after it finishes. Baked into the auto_posts payload, not the rule cadence.
   const [postsResendAfterHours, setPostsResendAfterHours] = useState(() =>
@@ -61,22 +61,14 @@ export function PremadeForm({
   const [postsResendCount, setPostsResendCount] = useState(() =>
     posts ? numStr(initialPayload?.resend_count) : "",
   );
+  // What the form opened with: Escape closes only while nothing differs from it.
+  const [opened] = useState(() => JSON.stringify([rows, postsResendAfterHours, postsResendCount]));
   const [pickerFor, setPickerFor] = useState<number | null>(null);
   const [previewPickerFor, setPreviewPickerFor] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [okMsg, setOkMsg] = useState<string | null>(null);
-
-  // All-models fan-out — enqueue the same job for every active model at once
-  // (mirrors MassMessageComposer). Text-only: images are per-account vault ids,
-  // so there's no single id that means the same media across every model.
-  const [allModels, setAllModels] = useState(false);
-  const activeAccounts = usePlatformAccounts();
-  const { isIncluded, toggle: toggleAllModelsInclude } = useAllModelsInclude();
-  // No retry here (no results): every included model.
-  const { included: broadcastAccounts, targets: broadcastIds } = includedTargets(activeAccounts, isIncluded, null);
 
   // Custom lists for the mass_premade audience picker (same source + sort as the
-  // Mass Online composer). Only fetched for broadcasts, once an account is set.
+  // Mass Online composer). Only fetched for broadcasts.
   // The shared fan-lists cache: every list, not the first page.
   const listsQ = useQuery<FanList[]>({ ...fanListsQuery(accountId), enabled: !!accountId && !posts });
   const customLists = useMemo(() => {
@@ -101,8 +93,8 @@ export function PremadeForm({
   }, [listsQ.data]);
 
   // Vault folders for the per-row folder pool (same hook as AutoStoriesTab).
-  // Only folders WITH photos — posts/mass attach photos. Disabled in all-models.
-  const foldersQ = useVaultLists(accountId, !allModels);
+  // Only folders WITH photos — posts/mass attach photos.
+  const foldersQ = useVaultLists(accountId);
   const photoFolders = useMemo(
     () => (foldersQ.data?.list ?? []).filter((f) => (f.photosCount ?? 0) > 0),
     [foldersQ.data],
@@ -114,605 +106,263 @@ export function PremadeForm({
   }
   function reset() {
     dispatch({ type: "reset" });
-    setDryRun(false);
     setPostsResendAfterHours("");
     setPostsResendCount("");
     setError(null);
-    setOkMsg(null);
   }
 
   const cycle = { resendCount: postsResendCount, resendAfterHours: postsResendAfterHours };
 
-  /** Enqueue one job for one account; returns the new job id. */
-  async function enqueueFor(aid: string, payload: PremadePayload) {
-    const resp = await relay.post<{ enqueued_job_id: number }>(
-      "/admin/automation/enqueue",
-      { account_id: aid, kind, payload },
-      { accountId: aid, employeeId: currentEmployee?.id },
-    );
-    return resp.enqueued_job_id;
-  }
-
-  const submit = useMutation({
-    mutationFn: async () => {
-      const payload = buildPayload(rows, cycle, { kind, allModels }, dryRun);
-      if (!payload) {
-        throw new Error(
-          allModels ? "Add at least one post with text" : "Add at least one post with text or media",
-        );
-      }
-      const count = (payload.posts ?? payload.messages ?? []).length;
-
-      if (allModels) {
-        if (broadcastIds.length === 0) throw new Error("No active models to broadcast from");
-        const fan = await runFanOut(broadcastIds, (aid) => enqueueFor(aid, payload));
-        return { fan, count };
-      }
-
-      if (!accountId) throw new Error("Pick an account");
-      const jobId = await enqueueFor(accountId, payload);
-      return { jobId, count };
-    },
-    onSuccess: ({ jobId, fan, count }) => {
-      setError(null);
-      const noun = `${count} ${posts ? "post" : "message"}${count === 1 ? "" : "s"}`;
-      const dry = dryRun ? " (dry run — plan only, nothing sent)" : "";
-      if (fan) {
-        const failed = fan.filter((r) => !r.ok);
-        setOkMsg(
-          `Enqueued ${noun} on all models${dry}: ${summarizeFanOut(fan)}. The worker runs them within ~30s.` +
-            (failed.length ? ` Failed: ${failed.map((f) => f.accountId).join(", ")}.` : ""),
-        );
-      } else {
-        setOkMsg(`Enqueued job #${jobId} — ${noun}${dry}. The worker runs it within ~30s.`);
-      }
-      dispatch({ type: "reset" });
-    },
-    onError: (err: Error) => {
-      setOkMsg(null);
-      setError(err.message);
-    },
-  });
-
-  /** Return-payload mode: the same payload the enqueue path sends, minus
-   *  `dry_run` (that's a separate rule knob in the editor). */
+  /** The payload, minus `dry_run` (that's a separate rule knob in the editor). */
   function useInRule() {
     setError(null);
-    const payload = buildPayload(rows, cycle, { kind, allModels });
+    const payload = buildPayload(rows, cycle, { kind });
     if (!payload) {
       setError(posts ? "Add at least one post with text or media"
                      : "Add at least one message with text or media");
       return;
     }
-    onComposePayload?.(payload);
+    onComposePayload(payload);
   }
 
-  // Surface the optional onDone after a successful enqueue (modal closes; the
-  // embedded panel passes nothing and just shows the success line).
-  void onDone;
+  /** A folder-pool select: "None" always clears it, even with no folders fetched; a saved folder that is gone
+   *  (deleted or emptied) stays listed so the rule shows it and can drop it. */
+  const folderSelect = (id: string, value: string, onChange: (v: string) => void) => (
+    <IfSelect
+      id={id}
+      value={value}
+      onChange={onChange}
+      disabled={foldersQ.isLoading}
+      placeholder="Loading folders…"
+      options={foldersQ.isLoading ? [] : [
+        { value: "", label: photoFolders.length ? "None" : "No photo folders" },
+        ...photoFolders.map((f) => ({ value: String(f.id), label: `${f.name} (${f.photosCount} photos)` })),
+        ...(value && !photoFolders.some((f) => String(f.id) === value)
+          ? [{ value, label: `Missing folder #${value}` }] : []),
+      ]}
+      className="w-full"
+    />
+  );
 
-  return (
-    <>
-      <div className="space-y-3">
-        {/* All-models switch — fan the same job out to every active model.
-         *  Text-only (images are per-account vault ids). Hidden in return-payload
-         *  mode: a rule targets exactly one account (forcedAccountId). */}
-        {!composeMode && (
-          <label className="flex items-center gap-2 text-xs cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={allModels}
-              onChange={(e) => setAllModels(e.target.checked)}
-            />
-            <span className="font-medium">{posts ? "Post from ALL models" : "Broadcast from ALL models"}</span>
-            <span className="text-fg-dim">
-              ({broadcastAccounts.length}/{activeAccounts.length} included)
-            </span>
-          </label>
-        )}
+  const body = (
+    <div className="space-y-4">
+      {rows.map((r, i) => (
+        <section key={i} className="space-y-4 rounded-md border border-border p-4">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="text-[14px] font-medium text-fg">{posts ? "Post" : "Message"} {i + 1}</h3>
+            {rows.length > 1 && (
+              <IfButton variant="link" icon={Trash2} onClick={() => dispatch({ type: "remove", i })}
+                className="text-err hover:text-err/80">Remove</IfButton>
+            )}
+          </div>
 
-        {composeMode ? null : allModels ? (
-          <div className="flex flex-wrap gap-1.5">
-            {activeAccounts.map((a) => {
-              const inc = isIncluded(a.id);
-              return (
-                <button
-                  key={a.id}
-                  type="button"
-                  onClick={() => toggleAllModelsInclude(a.id)}
-                  title={inc ? "Click to exclude from broadcast" : "Click to include"}
-                  className={
-                    "flex items-center gap-1.5 px-2 py-1 rounded-full text-[11px] border transition-colors " +
-                    (inc
-                      ? "bg-bg-elev-1 border-border text-fg"
-                      : "bg-bg border-border/60 text-fg-dim line-through opacity-60")
+          {/* Text variant POOL — a random one is sent each fire. */}
+          <div className="space-y-2">
+            {r.texts.map((t, ti) => (
+              <div key={ti} className="flex items-start gap-2">
+                <IfTextArea
+                  value={t}
+                  onChange={(e) => dispatch({ type: "patchText", i, ti, val: e.target.value })}
+                  placeholder={
+                    r.texts.length > 1
+                      ? `Variant ${ti + 1} (random one sent)`
+                      : posts ? "Post caption…" : "Broadcast text…"
                   }
-                >
-                  <span className="w-2 h-2 rounded-full shrink-0" style={{ background: a.color || "#666" }} />
-                  <span>{a.nickname || a.id}</span>
-                </button>
-              );
-            })}
-            {activeAccounts.length === 0 && (
-              <span className="text-[11px] text-fg-dim">No active sessions.</span>
-            )}
-          </div>
-        ) : (
-          <AccountPicker value={accountId} onChange={setAccountId} />
-        )}
-
-          <div className="text-[11px] text-fg-dim border border-dashed border-border rounded-md py-2 px-3 leading-relaxed">
-            {allModels
-              ? "Text only — a random text variant is picked each time it fires (images are per-account, so they're off for all-models). "
-              : "Add text variants and an image pool — pick individual images and/or a whole vault folder; a random text + random image(s) are picked each time it fires. "}
-            {posts
-              ? "Each post goes out one at a time (per-post delay staggers them). Set hours-to-live to auto-delete; blank = keep."
-              : "Each broadcast goes to fans online now (toggle off for all fans). Set auto-unsend to clean up later; set resend to re-send on a timer (keep gaps ≥ a few minutes — OF rate-limits back-to-back sends)."}
-          </div>
-
-          {rows.map((r, i) => (
-            <div key={i} className="border border-border rounded-md p-3 space-y-2 relative">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] uppercase tracking-wide text-fg-dim">
-                  {posts ? "Post" : "Message"} {i + 1}
-                </span>
-                {rows.length > 1 && (
-                  <button
-                    type="button"
-                    onClick={() => dispatch({ type: "remove", i })}
-                    className="text-[11px] text-err hover:underline"
-                  >remove</button>
-                )}
-              </div>
-
-              {/* Text variant POOL — a random one is sent each fire. */}
-              <div className="space-y-1.5">
-                {r.texts.map((t, ti) => (
-                  <div key={ti} className="flex items-start gap-1.5">
-                    <textarea
-                      value={t}
-                      onChange={(e) => dispatch({ type: "patchText", i, ti, val: e.target.value })}
-                      placeholder={
-                        r.texts.length > 1
-                          ? `Variant ${ti + 1} (random one sent)`
-                          : posts ? "Post caption…" : "Broadcast text…"
-                      }
-                      rows={2}
-                      className="flex-1 bg-bg border border-border rounded-md px-3 py-2 text-base md:text-sm placeholder:text-muted focus:outline-none focus:border-accent resize-y"
-                    />
-                    {r.texts.length > 1 && (
-                      <button
-                        type="button"
-                        onClick={() => dispatch({ type: "removeText", i, ti })}
-                        title="Remove this variant"
-                        className="text-fg-dim hover:text-err text-sm leading-none mt-2"
-                      >×</button>
-                    )}
-                  </div>
-                ))}
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                  <button
-                    type="button"
-                    onClick={() => dispatch({ type: "addText", i })}
-                    className="text-[11px] text-accent hover:underline"
-                  >
-                    + add text variant{r.texts.length > 1 ? ` (${r.texts.length})` : ""}
-                  </button>
-                  <ImportCaptionsButton current={r.texts} onImport={(vals) => dispatch({ type: "addTexts", i, vals })} />
-                </div>
-              </div>
-
-              {/* Image POOL — pre-picked vault media AND/OR a whole vault folder.
-               *  Both feed one pool; `media_count` is sampled from it per fire.
-               *  Hidden in all-models mode (vault ids are per-account). */}
-              {allModels ? (
-                <div className="text-[11px] text-fg-dim italic">
-                  Text only — images aren’t available when {posts ? "posting" : "broadcasting"} from all models.
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  {/* Whole-folder pool. */}
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-[11px] text-fg-dim">📁 Folder pool</span>
-                    <select
-                      value={r.folderId}
-                      onChange={(e) => patchRow(i, { folderId: e.target.value })}
-                      disabled={!accountId || foldersQ.isLoading}
-                      className="text-[11px] bg-bg border border-border rounded-md px-2 py-1 text-fg focus:outline-none focus:border-accent disabled:opacity-50 max-w-[260px]"
-                    >
-                      <option value="">
-                        {!accountId
-                          ? "— pick an account first —"
-                          : foldersQ.isLoading
-                            ? "Loading folders…"
-                            : photoFolders.length === 0 ? "— no photo folders —" : "— none —"}
-                      </option>
-                      {photoFolders.map((f) => (
-                        <option key={f.id} value={String(f.id)}>
-                          {f.name} ({f.photosCount} photos)
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {/* Pre-picked image pool. */}
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <button
-                      type="button"
-                      onClick={() => setPickerFor(i)}
-                      disabled={!accountId}
-                      className="text-[11px] px-2 py-1 rounded border border-border hover:border-border-light text-fg-dim hover:text-fg disabled:opacity-50"
-                    >
-                      {r.media.length ? `🖼 ${r.media.length} in pool` : "🖼 Pick image pool"}
-                    </button>
-                    {r.media.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => patchRow(i, { media: [] })}
-                        className="text-[11px] text-fg-dim hover:text-err"
-                      >clear</button>
-                    )}
-                  </div>
-
-                  {/* How many to attach per fire — sampled from the combined pool
-                   *  (picked images ∪ folder). Shown once either source is set. */}
-                  {(r.media.length > 0 || r.folderId) && (
-                    <label className="flex items-center gap-1 text-[11px] text-fg-dim">
-                      <span>send</span>
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        value={r.mediaCount}
-                        onChange={(e) => patchRow(i, { mediaCount: e.target.value.replace(/[^0-9]/g, "") })}
-                        placeholder="1"
-                        className="w-16 md:w-12 bg-bg border border-border rounded-md px-2 py-1 text-base md:text-xs text-fg text-center focus:outline-none focus:border-accent"
-                      />
-                      <span>
-                        image{r.mediaCount === "1" ? "" : "s"} at random per fire
-                        {r.media.length > 0 && r.folderId
-                          ? ` (from ${r.media.length} picked + folder)`
-                          : r.media.length > 0 ? ` (of ${r.media.length} picked)` : " (from folder)"}
-                      </span>
-                    </label>
-                  )}
-                </div>
-              )}
-
-              {/* PPV price — a priced post/broadcast is paywalled; OF needs at
-               *  least one image attached. Blank/0 = free. Both kinds support it
-               *  (auto_posts→create_post, mass_premade→send_mass_message). */}
-              <div className="flex items-center gap-2">
-                <label className="text-[11px] text-fg-dim shrink-0">Price (USD)</label>
-                <input
-                  type="text"
-                  inputMode="decimal"
-                  value={r.price}
-                  onChange={(e) => patchRow(i, { price: sanitizePriceInput(e.target.value) })}
-                  placeholder="0 (free)"
-                  className="w-24 bg-bg border border-border rounded-md px-2 py-1.5 text-base md:text-xs text-fg focus:outline-none focus:border-accent"
+                  rows={2}
+                  className="min-w-0 flex-1"
                 />
-                {Number(r.price) > 0 ? (
-                  <span className="text-warn text-[11px]">
-                    🔒 PPV {fmtPrice(Math.round(Number(r.price) * 100))} · needs an image
-                  </span>
-                ) : (
-                  <span className="text-fg-dim text-[11px]">{posts ? "free post" : "free message"}</span>
+                {r.texts.length > 1 && (
+                  <IfButton variant="link" icon={X} title="Remove this variant" aria-label="Remove this variant"
+                    onClick={() => dispatch({ type: "removeText", i, ti })}
+                    className="text-muted hover:text-err" />
                 )}
               </div>
-
-              {/* Free-preview pool — PAID auto_posts only. These images post as a
-               *  FREE teaser on the paywalled post (the backend adds them to the
-               *  attachment set so they're always a valid subset). Same controls
-               *  as the image pool above; per-account, so off in all-models. */}
-              {posts && !allModels && Number(r.price) > 0 && (
-                <div className="space-y-2 border border-warn/30 bg-warn/5 rounded-md p-2.5">
-                  <div className="text-[11px] uppercase tracking-wide text-fg-dim">
-                    Free preview pool{" "}
-                    <span className="opacity-60 normal-case">(shown unlocked as the teaser)</span>
-                  </div>
-                  {/* Whole-folder preview pool. */}
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-[11px] text-fg-dim">📁 Folder pool</span>
-                    <select
-                      value={r.previewFolderId}
-                      onChange={(e) => patchRow(i, { previewFolderId: e.target.value })}
-                      disabled={!accountId || foldersQ.isLoading}
-                      className="text-[11px] bg-bg border border-border rounded-md px-2 py-1 text-fg focus:outline-none focus:border-accent disabled:opacity-50 max-w-[260px]"
-                    >
-                      <option value="">
-                        {photoFolders.length === 0 ? "— no photo folders —" : "— none —"}
-                      </option>
-                      {photoFolders.map((f) => (
-                        <option key={f.id} value={String(f.id)}>
-                          {f.name} ({f.photosCount} photos)
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  {/* Pre-picked preview pool. */}
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <button
-                      type="button"
-                      onClick={() => setPreviewPickerFor(i)}
-                      disabled={!accountId}
-                      className="text-[11px] px-2 py-1 rounded border border-border hover:border-border-light text-fg-dim hover:text-fg disabled:opacity-50"
-                    >
-                      {r.previewMedia.length ? `🖼 ${r.previewMedia.length} in preview pool` : "🖼 Pick preview pool"}
-                    </button>
-                    {r.previewMedia.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => patchRow(i, { previewMedia: [] })}
-                        className="text-[11px] text-fg-dim hover:text-err"
-                      >clear</button>
-                    )}
-                  </div>
-                  {/* How many previews are shown free per fire. */}
-                  {(r.previewMedia.length > 0 || r.previewFolderId) && (
-                    <label className="flex items-center gap-1 text-[11px] text-fg-dim">
-                      <span>show</span>
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        value={r.previewCount}
-                        onChange={(e) => patchRow(i, { previewCount: e.target.value.replace(/[^0-9]/g, "") })}
-                        placeholder="1"
-                        className="w-12 bg-bg border border-border rounded-md px-2 py-1 text-xs text-fg text-center focus:outline-none focus:border-accent"
-                      />
-                      <span>image{r.previewCount === "1" ? "" : "s"} free per fire</span>
-                    </label>
-                  )}
-                </div>
-              )}
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {posts ? (
-                  <NumField
-                    label="Auto-delete after" suffix="hrs · blank = keep"
-                    value={r.hoursToLive}
-                    onChange={(v) => patchRow(i, { hoursToLive: v })}
-                    placeholder="e.g. 6"
-                  />
-                ) : (
-                  <NumField
-                    label="Auto-unsend after" suffix="hrs · blank = keep"
-                    value={r.unsendAfterHours}
-                    onChange={(v) => patchRow(i, { unsendAfterHours: v })}
-                    placeholder="e.g. 8"
-                  />
-                )}
-                <NumField
-                  label={i === 0 ? "Delay before posting" : "Delay after previous"}
-                  suffix="minutes"
-                  value={r.delayMinutes}
-                  onChange={(v) => patchRow(i, { delayMinutes: v })}
-                  placeholder={i === 0 ? "0 (now)" : "e.g. 30"}
-                />
-                {!posts && (
-                  <>
-                    <NumField
-                      label="Resend this many times" suffix="0 = once"
-                      value={r.resendCount}
-                      onChange={(v) => patchRow(i, { resendCount: v })}
-                      placeholder="0"
-                    />
-                    <NumField
-                      label="…waiting between resends" suffix="hrs"
-                      value={r.resendAfterHours}
-                      onChange={(v) => patchRow(i, { resendAfterHours: v })}
-                      placeholder="e.g. 24"
-                    />
-                  </>
-                )}
-              </div>
-
-              {!posts && (
-                <div className="border border-border/70 rounded-md p-2.5 space-y-2.5">
-                  <div className="text-[11px] uppercase tracking-wide text-fg-dim">
-                    Audience
-                  </div>
-
-                  <label className="flex items-center gap-2 text-xs cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={r.onlineOnly}
-                      onChange={(e) => patchRow(i, { onlineOnly: e.target.checked })}
-                    />
-                    <span>Only fans online right now</span>
-                    <span className="text-fg-dim">(OF resolves at send time)</span>
-                  </label>
-
-                  {/* System audiences — tri-state chips (off → +include → −exclude). */}
-                  <div className="flex flex-wrap gap-1.5">
-                    {SYSTEM_AUDIENCES.map((b) => {
-                      const state = r.includes.includes(b.id)
-                        ? "in"
-                        : r.excludes.includes(b.id) ? "ex" : "off";
-                      return (
-                        <SysChip
-                          key={b.id}
-                          state={state}
-                          onClick={() => dispatch({ type: "cycleSystem", i, id: b.id })}
-                          label={b.label}
-                        />
-                      );
-                    })}
-                  </div>
-
-                  {/* Custom lists — include / exclude columns. Per-account, so
-                   *  hidden in all-models mode (only system audiences apply). */}
-                  {!allModels && (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1 border-t border-border/50">
-                      <div>
-                        <div className="text-[11px] text-fg-dim mb-1">Custom lists — include</div>
-                        <ListColumn
-                          lists={customLists}
-                          loading={listsQ.isLoading}
-                          selected={new Set(r.includes)}
-                          onToggle={(id) => dispatch({ type: "toggleListInclude", i, id })}
-                          emptyLabel={accountId ? "No custom lists." : "Pick an account."}
-                        />
-                      </div>
-                      <div>
-                        <div className="text-[11px] text-fg-dim mb-1">Custom lists — exclude</div>
-                        <ListColumn
-                          lists={customLists}
-                          loading={listsQ.isLoading}
-                          selected={new Set(r.excludes)}
-                          onToggle={(id) => dispatch({ type: "toggleListExclude", i, id })}
-                          emptyLabel="—"
-                        />
-                      </div>
-                    </div>
-                  )}
-
-                  {/* DB-sourced add/exclude knobs (resolved server-side). */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 border-t border-border/50">
-                    <NumField
-                      label="Exclude I replied to" suffix="last N hrs"
-                      value={r.excludeRepliedHours}
-                      onChange={(v) => patchRow(i, { excludeRepliedHours: v })}
-                      placeholder="e.g. 2"
-                    />
-                    <NumField
-                      label="Exclude who messaged me" suffix="last N hrs"
-                      value={r.excludeInboundHours}
-                      onChange={(v) => patchRow(i, { excludeInboundHours: v })}
-                      placeholder="e.g. 2"
-                    />
-                    <NumField
-                      label="Include chatted-with" suffix="last N hrs"
-                      value={r.recentChatHours}
-                      onChange={(v) => patchRow(i, { recentChatHours: v })}
-                      placeholder="(optional)"
-                    />
-                    <NumField
-                      label="…cap recent-chat to" suffix="N fans"
-                      value={r.recentChatLimit}
-                      onChange={(v) => patchRow(i, { recentChatLimit: v })}
-                      placeholder="(optional)"
-                    />
-                    <NumField
-                      label="Include fans with unread" suffix="up to N"
-                      value={r.unreadLimit}
-                      onChange={(v) => patchRow(i, { unreadLimit: v })}
-                      placeholder="(optional)"
-                    />
-                  </div>
-                </div>
-              )}
+            ))}
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+              <IfButton variant="link" onClick={() => dispatch({ type: "addText", i })}>Add variant</IfButton>
+              <ImportCaptionsButton current={r.texts} onImport={(vals) => dispatch({ type: "addTexts", i, vals })} />
             </div>
-          ))}
+          </div>
 
-          <button
-            type="button"
-            onClick={() => dispatch({ type: "add" })}
-            className="w-full text-xs py-2 rounded border border-dashed border-border text-fg-dim hover:text-fg hover:border-border-light"
-          >
-            + Add another {posts ? "post" : "message"}
-          </button>
+          {/* Image POOL — pre-picked vault media AND/OR a whole vault folder.
+           *  Both feed one pool; `media_count` is sampled from it per fire. */}
+          <MediaPool
+            idPrefix={`pm-${kind}-${i}`}
+            folderSelect={(id) => folderSelect(id, r.folderId, (v) => patchRow(i, { folderId: v }))}
+            picked={r.media.length}
+            pickLabel="Pick image pool"
+            pickedLabel={`${r.media.length} in pool`}
+            onPick={() => setPickerFor(i)}
+            onClear={() => patchRow(i, { media: [] })}
+          />
+          {/* How many to attach per fire — sampled from the combined pool
+           *  (picked images ∪ folder). Shown once either source is set. */}
+          {(r.media.length > 0 || r.folderId) && (
+            <CountLine
+              lead="Send"
+              value={r.mediaCount}
+              onChange={(v) => patchRow(i, { mediaCount: v })}
+              tail={`image${r.mediaCount === "1" ? "" : "s"} at random per fire${
+                r.media.length > 0 && r.folderId
+                  ? ` (from ${r.media.length} picked + folder)`
+                  : r.media.length > 0 ? ` (of ${r.media.length} picked)` : " (from folder)"}`}
+            />
+          )}
 
-          {/* How multiple entries combine — no behaviour, just guidance. */}
-          <div className="text-[10px] text-fg-dim leading-relaxed">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            {/* PPV price — a priced post/broadcast is paywalled; OF needs at
+             *  least one image attached. Blank/0 = free. Both kinds support it
+             *  (auto_posts→create_post, mass_premade→send_mass_message). */}
+            <Field label="Price (USD)" help={Number(r.price) > 0 && (
+              <span className="flex items-center gap-1 text-warn">
+                <Lock className="h-3 w-3" aria-hidden />PPV {fmtPrice(Math.round(Number(r.price) * 100))} · needs an image
+              </span>
+            )}>
+              {(id) => (
+                <IfInput id={id} inputMode="decimal" value={r.price} placeholder="0 (free)" className="w-full"
+                  onChange={(e) => patchRow(i, { price: sanitizePriceInput(e.target.value) })} />
+              )}
+            </Field>
             {posts ? (
-              <>
-                Each <b>post</b> here is published on its own, one after another (staggered by its delay) —
-                they’re independent, not combined into one post. Inside a post, the <b>text variants</b> are
-                alternatives: one is picked at random per fire, not all sent.
-              </>
+              <NumField label="Auto-delete after" help="hours · blank = keep" placeholder="e.g. 6"
+                value={r.hoursToLive} onChange={(v) => patchRow(i, { hoursToLive: v })} />
             ) : (
+              <NumField label="Auto-unsend after" help="hours · blank = keep" placeholder="e.g. 8"
+                value={r.unsendAfterHours} onChange={(v) => patchRow(i, { unsendAfterHours: v })} />
+            )}
+            <NumField label={i === 0 ? "Delay before posting" : "Delay after previous"} help="minutes"
+              placeholder={i === 0 ? "0 (now)" : "e.g. 30"}
+              value={r.delayMinutes} onChange={(v) => patchRow(i, { delayMinutes: v })} />
+            {!posts && (
               <>
-                Each <b>message</b> here is sent as its own broadcast to its own audience — they
-                <b> don’t exclude each other</b>, so a fan who matches two messages gets both. To avoid
-                overlap, narrow each audience or use the “exclude” knobs. Inside a message, the
-                <b> text variants</b> are alternatives: one is picked at random per send, not all sent.
+                <NumField label="Resend this many times" help="0 = once" placeholder="0"
+                  value={r.resendCount} onChange={(v) => patchRow(i, { resendCount: v })} />
+                <NumField label="Wait between resends" help="hours" placeholder="e.g. 24"
+                  value={r.resendAfterHours} onChange={(v) => patchRow(i, { resendAfterHours: v })} />
               </>
             )}
           </div>
 
-          {/* Auto Posts repost cycle — list-level, re-posts the WHOLE list after
-           *  it finishes. Shown in both enqueue + return-payload (rule) modes. */}
-          {posts && (
-            <div className="border border-border/70 rounded-md p-2.5 space-y-2">
-              <div className="text-[11px] uppercase tracking-wide text-fg-dim">
-                Repost cycle
+          {/* Free-preview pool — PAID auto_posts only. These images post as a
+           *  FREE teaser on the paywalled post (the backend adds them to the
+           *  attachment set so they're always a valid subset). */}
+          {posts && Number(r.price) > 0 && (
+            <div className="space-y-4 border-t border-border pt-4">
+              <div>
+                <h4 className="text-[14px] font-medium text-fg">Free preview pool</h4>
+                <IfHelp>Shown unlocked as the teaser.</IfHelp>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                <NumField
-                  label="Repost whole list after" suffix="hrs · blank = once"
-                  value={postsResendAfterHours}
-                  onChange={setPostsResendAfterHours}
-                  placeholder="e.g. 24"
+              <MediaPool
+                idPrefix={`pm-${kind}-${i}-preview`}
+                folderSelect={(id) => folderSelect(id, r.previewFolderId, (v) => patchRow(i, { previewFolderId: v }))}
+                picked={r.previewMedia.length}
+                pickLabel="Pick preview pool"
+                pickedLabel={`${r.previewMedia.length} in preview pool`}
+                onPick={() => setPreviewPickerFor(i)}
+                onClear={() => patchRow(i, { previewMedia: [] })}
+              />
+              {(r.previewMedia.length > 0 || r.previewFolderId) && (
+                <CountLine
+                  lead="Show"
+                  value={r.previewCount}
+                  onChange={(v) => patchRow(i, { previewCount: v })}
+                  tail={`image${r.previewCount === "1" ? "" : "s"} free per fire`}
                 />
-                <NumField
-                  label="Repost this many times" suffix="0 = once"
-                  value={postsResendCount}
-                  onChange={setPostsResendCount}
-                  placeholder="0"
-                />
-              </div>
-              <div className="text-[10px] text-fg-dim leading-relaxed">
-                After the last post goes out, the whole list re-posts after the gap —
-                this many extra times. Leave blank to post once. Pair with each
-                post’s auto-delete for a self-refreshing feed.
-              </div>
+              )}
             </div>
           )}
 
-          {/* Dry-run is an enqueue-time choice; in return-payload mode the rule
-           *  carries its own `dry_run` knob, so hide it here. */}
-          {!composeMode && (
-            <label className="flex items-center gap-2 text-xs cursor-pointer select-none">
-              <input type="checkbox" checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} />
-              <span className="font-medium">Dry run</span>
-              <span className="text-fg-dim">(plan only — nothing is posted or sent)</span>
-            </label>
-          )}
+          {!posts && (
+            <div className="space-y-4 border-t border-border pt-4">
+              <h4 className="text-[14px] font-medium text-fg">Audience</h4>
+              <div>
+                <IfSwitch label="Only fans online right now" checked={r.onlineOnly}
+                  onChange={(on) => patchRow(i, { onlineOnly: on })} />
+                <IfHelp>OF resolves it at send time.</IfHelp>
+              </div>
 
-          {okMsg && (
-            <div className="text-[11px] text-ok border border-ok/30 bg-ok/5 rounded-md px-3 py-2">
-              {okMsg}
+              {/* System audiences — tri-state chips (off → include → exclude). */}
+              <div className="flex flex-wrap gap-2">
+                {SYSTEM_AUDIENCES.map((b) => {
+                  const state = r.includes.includes(b.id)
+                    ? "in"
+                    : r.excludes.includes(b.id) ? "ex" : "off";
+                  return (
+                    <SysChip
+                      key={b.id}
+                      state={state}
+                      onClick={() => dispatch({ type: "cycleSystem", i, id: b.id })}
+                      label={b.label}
+                    />
+                  );
+                })}
+              </div>
+
+              {/* Custom lists — include / exclude columns. */}
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div>
+                  <IfLabel>Include custom lists</IfLabel>
+                  <ListColumn
+                    lists={customLists}
+                    loading={listsQ.isLoading}
+                    selected={new Set(r.includes)}
+                    onToggle={(id) => dispatch({ type: "toggleListInclude", i, id })}
+                    emptyLabel="No custom lists."
+                  />
+                </div>
+                <div>
+                  <IfLabel>Exclude custom lists</IfLabel>
+                  <ListColumn
+                    lists={customLists}
+                    loading={listsQ.isLoading}
+                    selected={new Set(r.excludes)}
+                    onToggle={(id) => dispatch({ type: "toggleListExclude", i, id })}
+                    emptyLabel="No custom lists."
+                  />
+                </div>
+              </div>
+
+              {/* DB-sourced add/exclude knobs (resolved server-side). */}
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <NumField label="Exclude I replied to" help="last N hours" placeholder="e.g. 2"
+                  value={r.excludeRepliedHours} onChange={(v) => patchRow(i, { excludeRepliedHours: v })} />
+                <NumField label="Exclude who messaged me" help="last N hours" placeholder="e.g. 2"
+                  value={r.excludeInboundHours} onChange={(v) => patchRow(i, { excludeInboundHours: v })} />
+                <NumField label="Include chatted-with" help="last N hours"
+                  value={r.recentChatHours} onChange={(v) => patchRow(i, { recentChatHours: v })} />
+                <NumField label="Cap recent-chat to" help="N fans"
+                  value={r.recentChatLimit} onChange={(v) => patchRow(i, { recentChatLimit: v })} />
+                <NumField label="Include fans with unread" help="up to N"
+                  value={r.unreadLimit} onChange={(v) => patchRow(i, { unreadLimit: v })} />
+              </div>
             </div>
           )}
+        </section>
+      ))}
 
-          <div className="flex items-center justify-end gap-2 sticky bottom-0 z-10 -mx-4 -mb-4 px-4 py-3 bg-panel border-t border-border md:static md:z-auto md:mx-0 md:mb-0 md:px-0 md:pb-0 md:pt-1 md:border-0 md:bg-transparent">
-            {error && <span className="text-err text-[11px] mr-auto">{error}</span>}
-            <button
-              type="button"
-              onClick={reset}
-              disabled={submit.isPending}
-              className="text-xs px-3 py-1.5 rounded border border-border hover:border-border-light text-fg-dim hover:text-fg disabled:opacity-50"
-            >
-              Reset
-            </button>
-            {composeMode ? (
-              <button
-                type="button"
-                onClick={useInRule}
-                className="text-xs px-4 py-1.5 rounded bg-accent text-white font-medium hover:bg-accent-hover disabled:opacity-50"
-              >
-                Use in rule
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => {
-                  setError(null);
-                  const real = rows.filter((r) => r.texts.some((t) => t.trim()) || (!allModels && (r.media.length || r.folderId))).length;
-                  const verb = posts ? "post" : "broadcast";
-                  const note = dryRun ? " (dry run)" : "";
-                  const scope = allModels ? ` on ${broadcastAccounts.length} model${broadcastAccounts.length === 1 ? "" : "s"}` : "";
-                  if (!confirm(`Enqueue ${real} ${verb}${real === 1 ? "" : "s"}${scope}${note}?`)) return;
-                  submit.mutate();
-                }}
-                disabled={submit.isPending || (allModels ? broadcastAccounts.length === 0 : !accountId)}
-                className="text-xs px-4 py-1.5 rounded bg-accent text-white font-medium hover:bg-accent-hover disabled:opacity-50"
-              >
-                {submit.isPending ? "Enqueuing…" : dryRun ? "Enqueue (dry run)" : "Enqueue"}
-              </button>
-            )}
-          </div>
+      <div>
+        <IfButton icon={Plus} onClick={() => dispatch({ type: "add" })} className="w-full">
+          Add another {posts ? "post" : "message"}
+        </IfButton>
+        <IfHelp>
+          {posts
+            ? "Each post publishes on its own, in order; one text variant is picked at random each time."
+            : "Each message is its own broadcast to its own audience; one text variant is picked at random each time."}
+        </IfHelp>
       </div>
+
+      {/* Auto Posts repost cycle — list-level, re-posts the WHOLE list after it finishes. */}
+      {posts && (
+        <section className="space-y-4 rounded-md border border-border p-4">
+          <h3 className="text-[14px] font-medium text-fg">Repost cycle</h3>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <NumField label="Repost whole list after" help="hours · blank = once" placeholder="e.g. 24"
+              value={postsResendAfterHours} onChange={setPostsResendAfterHours} />
+            <NumField label="Repost this many times" help="0 = once" placeholder="0"
+              value={postsResendCount} onChange={setPostsResendCount} />
+          </div>
+        </section>
+      )}
 
       <VaultPicker
         open={pickerFor !== null}
@@ -737,12 +387,66 @@ export function PremadeForm({
           setPreviewPickerFor(null);
         }}
       />
+    </div>
+  );
+
+  const footer = (
+    <>
+      {error && <span className="mr-auto min-w-0 text-[12px] text-err">{error}</span>}
+      <IfButton onClick={reset}>Reset</IfButton>
+      <IfButton variant="primary" onClick={useInRule}>Use in rule</IfButton>
     </>
+  );
+
+  const dirty = JSON.stringify([rows, postsResendAfterHours, postsResendCount]) !== opened;
+  return <>{frame({ body, footer, dirty })}</>;
+}
+
+/** Folder pool + picked-image pool, side by side. */
+function MediaPool({ idPrefix, folderSelect, picked, pickLabel, pickedLabel, onPick, onClear }: {
+  idPrefix: string;
+  folderSelect: (id: string) => ReactNode;
+  picked: number;
+  pickLabel: string;
+  pickedLabel: string;
+  onPick: () => void;
+  onClear: () => void;
+}) {
+  return (
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+      <div>
+        <IfLabel htmlFor={`${idPrefix}-folder`}>Folder pool</IfLabel>
+        {folderSelect(`${idPrefix}-folder`)}
+      </div>
+      <div>
+        <IfLabel>Image pool</IfLabel>
+        <div className="flex items-center gap-4">
+          <IfButton icon={ImageIcon} onClick={onPick}>{picked ? pickedLabel : pickLabel}</IfButton>
+          {picked > 0 && <IfButton variant="link" onClick={onClear}>Clear</IfButton>}
+        </div>
+      </div>
+    </div>
   );
 }
 
-/** Tri-state chip for system audiences: off / include (+) / exclude (−).
- *  Mirrors the Mass Online composer's SysChip. */
+/** "Send [n] images at random per fire": how many of a pool go out each time. */
+function CountLine({ lead, value, onChange, tail }: {
+  lead: string;
+  value: string;
+  onChange: (v: string) => void;
+  tail: string;
+}) {
+  return (
+    <label className="flex flex-wrap items-center gap-2 text-fg-dim">
+      <span>{lead}</span>
+      <IfInput inputMode="numeric" value={value} placeholder="1" className="w-16 text-center"
+        onChange={(e) => onChange(e.target.value.replace(/[^0-9]/g, ""))} />
+      <span>{tail}</span>
+    </label>
+  );
+}
+
+/** Tri-state chip for system audiences: off / include / exclude. */
 function SysChip({
   state, onClick, label,
 }: {
@@ -750,23 +454,19 @@ function SysChip({
   onClick: () => void;
   label: string;
 }) {
-  const stateStyles = {
-    off: "bg-transparent text-fg-dim border-border hover:border-border-light",
-    in:  "bg-accent/15 text-accent border-accent/30",
-    ex:  "bg-err/15 text-err border-err/30 line-through",
-  };
-  const prefix = state === "in" ? "+ " : state === "ex" ? "− " : "";
   return (
     <button
       type="button"
       onClick={onClick}
       title="Click to cycle: off → include → exclude → off"
-      className={
-        "px-2 py-1 rounded-full border text-[11px] flex items-center gap-1.5 transition-colors " +
-        stateStyles[state]
-      }
+      className={cn(
+        "h-7 rounded-full border border-border px-3 text-[14px] transition-colors",
+        state === "off" && "text-fg-dim hover:border-accent hover:text-fg",
+        state === "in" && "border-accent/40 bg-accent/10 text-accent",
+        state === "ex" && "border-err/40 text-err line-through",
+      )}
     >
-      <span>{prefix}{label}</span>
+      {state === "in" ? "Include · " : state === "ex" ? "Exclude · " : ""}{label}
     </button>
   );
 }
@@ -782,22 +482,19 @@ function ListColumn({
   onToggle: (id: string) => void;
   emptyLabel: string;
 }) {
-  if (loading) return <div className="text-[11px] text-fg-dim">Loading…</div>;
+  if (loading) return <div className="text-muted">Loading…</div>;
   if (lists.length === 0) {
-    return <div className="text-[11px] text-fg-dim italic">{emptyLabel}</div>;
+    return <div className="text-muted">{emptyLabel}</div>;
   }
   return (
-    <div className="flex flex-col gap-1 max-h-32 overflow-y-auto pr-1">
+    <div className="flex max-h-32 flex-col gap-1 overflow-y-auto pr-1">
       {lists.map((l) => {
         const id = String(l.id);
         return (
-          <label
-            key={id}
-            className="flex items-center gap-1.5 text-xs cursor-pointer hover:bg-bg-elev-1/40 rounded px-1 py-0.5"
-          >
-            <input type="checkbox" checked={selected.has(id)} onChange={() => onToggle(id)} />
+          <label key={id} className="flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 hover:bg-bg-elev-1">
+            <input type="checkbox" checked={selected.has(id)} onChange={() => onToggle(id)} className="accent-accent" />
             <span className="flex-1 truncate">{l.name || `List #${id}`}</span>
-            <span className="text-[10px] text-fg-dim shrink-0">({l.usersCount ?? 0})</span>
+            <span className="shrink-0 text-[12px] text-muted">{l.usersCount ?? 0}</span>
           </label>
         );
       })}
@@ -805,27 +502,38 @@ function ListColumn({
   );
 }
 
-/** Compact labelled numeric input — blank = the knob isn't applied. */
+/** A labelled field with one help line; `children` gets the input's id. */
+function Field({ label, help, children }: {
+  label: string;
+  help?: ReactNode;
+  children: (id: string) => ReactNode;
+}) {
+  const id = useId();
+  return (
+    <div className="min-w-0">
+      <IfLabel htmlFor={id}>{label}</IfLabel>
+      {children(id)}
+      {help && <IfHelp>{help}</IfHelp>}
+    </div>
+  );
+}
+
+/** A labelled numeric input — blank = the knob isn't applied. */
 function NumField({
-  label, suffix, value, onChange, placeholder,
+  label, help, value, onChange, placeholder,
 }: {
   label: string;
-  suffix: string;
+  help: string;
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
 }) {
   return (
-    <label className="flex flex-col gap-1 text-[11px] text-fg-dim">
-      <span className="leading-tight">{label} <span className="opacity-60">({suffix})</span></span>
-      <input
-        type="text"
-        inputMode="numeric"
-        value={value}
-        onChange={(e) => onChange(e.target.value.replace(/[^0-9.]/g, ""))}
-        placeholder={placeholder}
-        className="bg-bg border border-border rounded-md px-2 py-1.5 text-base md:text-xs text-fg focus:outline-none focus:border-accent"
-      />
-    </label>
+    <Field label={label} help={help}>
+      {(id) => (
+        <IfInput id={id} inputMode="numeric" value={value} placeholder={placeholder} className="w-full"
+          onChange={(e) => onChange(e.target.value.replace(/[^0-9.]/g, ""))} />
+      )}
+    </Field>
   );
 }

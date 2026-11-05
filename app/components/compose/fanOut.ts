@@ -1,6 +1,6 @@
 /**
  * fanOut — the all-models fan-out the composers share (PostComposer,
- * MassMessageComposer; PremadeComposer uses the runner): one result type,
+ * MassMessageComposer): one result type,
  * one runner, one send-lifecycle slice of form state, one set of rules.
  *
  *   • `runFanOut` sends to each target in turn and never throws: every target

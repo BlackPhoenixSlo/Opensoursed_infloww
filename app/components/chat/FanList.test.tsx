@@ -834,7 +834,7 @@ describe("FanList", () => {
     expect(screen.getByDisplayValue("Test Creator")).toHaveValue(ACCOUNT_ID);
     expect(screen.getByRole("checkbox", { name: /^Broadcast from ALL models/ })).not.toBeChecked();
 
-    await user.click(screen.getByTitle("Close"));
+    await user.click(screen.getByRole("button", { name: "Close" }));
     expect(screen.queryByRole("heading", { name: "New mass message" })).not.toBeInTheDocument();
 
     await user.click(within(header()).getByRole("button", { name: "New" }));

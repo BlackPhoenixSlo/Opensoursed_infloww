@@ -30,6 +30,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import ClockDialog from "@/components/shifts/ClockDialog";
 import { ClockCheckLine, ClockOutLine } from "@/components/shell/inflowwIcons";
 import { HEADER_TILE, HEADER_TILE_ICON } from "@/components/shell/headerTile";
+import { IfButton } from "@/components/ui/infloww";
+import { IF_MODAL_BOX, IF_MODAL_MASK } from "@/components/ui/ifModal";
 import { useChatter } from "@/contexts/ChatterContext";
 import { useUser } from "@/contexts/UserContext";
 import { pushNotice } from "@/lib/notices";
@@ -39,9 +41,6 @@ import {
   type ClockStatus,
 } from "@/lib/shifts";
 
-const BUTTON =
-  "text-xs px-3 py-1.5 rounded-lg bg-bg-elev-1 hover:bg-bg-elev-2 border border-border disabled:opacity-50";
-const PRIMARY = "text-xs px-3 py-1.5 rounded-lg bg-accent text-white hover:opacity-90 disabled:opacity-50";
 
 /** The input that counts as activity, Infloww's mouse and keyboard. */
 const ACTIVITY = ["pointermove", "pointerdown", "keydown", "wheel"] as const;
@@ -208,22 +207,23 @@ export default function ClockButton() {
       {clock.picking && <ClockDialog onClose={clock.closePicker} />}
       <Dialog.Root open={confirming} onOpenChange={setConfirming}>
         <Dialog.Portal>
-          <Dialog.Overlay className="fixed inset-0 z-40 bg-black/50" />
+          {/* IfModal's look on Radix: antd's 416px confirm, the 70% mask, the kit box. */}
+          <Dialog.Overlay className={`fixed inset-0 z-40 ${IF_MODAL_MASK}`} />
           <Dialog.Content
             aria-describedby={undefined}
-            className="fixed left-1/2 top-1/2 z-50 -translate-x-1/2 -translate-y-1/2 w-[22rem] max-w-[calc(100vw-32px)] p-5 rounded-lg border border-border bg-bg space-y-4 outline-none"
+            className={`fixed left-1/2 top-1/2 z-50 w-[416px] max-w-[calc(100vw-32px)] -translate-x-1/2 -translate-y-1/2 space-y-6 px-6 pb-5 pt-[22px] ${IF_MODAL_BOX}`}
           >
             {/* Infloww's sign modal has no title: the question is its body, and OK reads "Yes" (bundle @10634621). */}
-            <Dialog.Title className="text-sm font-normal">
+            <Dialog.Title className="text-[14px] font-normal">
               {open ? CLOCK_TEXT.confirmOut : CLOCK_TEXT.confirmIn}
             </Dialog.Title>
             <div className="flex justify-end gap-2">
               <Dialog.Close asChild>
-                <button type="button" className={BUTTON}>Cancel</button>
+                <IfButton>Cancel</IfButton>
               </Dialog.Close>
-              <button type="button" className={PRIMARY} onClick={() => { setConfirming(false); void clock.act(); }}>
+              <IfButton variant="primary" onClick={() => { setConfirming(false); void clock.act(); }}>
                 Yes
-              </button>
+              </IfButton>
             </div>
           </Dialog.Content>
         </Dialog.Portal>

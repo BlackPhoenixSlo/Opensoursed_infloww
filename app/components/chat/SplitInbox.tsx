@@ -16,6 +16,7 @@
 
 import { useId, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
+import { IfButton } from "@/components/ui/infloww";
 import { useSplitInbox, type SplitInboxConfig } from "@/hooks/useSplitInbox";
 import type { FanId } from "@/lib/fanId";
 import { MP } from "@/lib/messagesPro";
@@ -65,7 +66,7 @@ export function SplitInbox({
   return (
     <Dialog.Root open={open} onOpenChange={(next) => { if (!next) onClose(); }}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-40 bg-black/50" />
+        <Dialog.Overlay className="fixed inset-0 z-40 bg-black/70" />
         <Dialog.Content
           aria-describedby={undefined}
           className={cn(MP.ours.SplitInbox.dialog, "fixed z-50 border-border bg-panel text-fg shadow-xl outline-none")}
@@ -159,21 +160,11 @@ function SplitInboxForm({
       )}
       <div className="mt-5 flex justify-end gap-2">
         <Dialog.Close asChild>
-          <button
-            type="button"
-            className="px-3 py-1.5 rounded-md border border-border text-sm hover:border-border-light"
-          >
-            Cancel
-          </button>
+          <IfButton>Cancel</IfButton>
         </Dialog.Close>
-        <button
-          type="button"
-          onClick={submit}
-          disabled={save.isPending}
-          className="px-3 py-1.5 rounded-md bg-accent text-sm text-white disabled:opacity-50"
-        >
+        <IfButton variant="primary" onClick={submit} disabled={save.isPending}>
           {save.isPending ? "Saving…" : "Save"}
-        </button>
+        </IfButton>
       </div>
     </>
   );

@@ -811,3 +811,8 @@ A flow with a `README.<flow>.md` lists its scenarios there.
   (`employees-api.json`). Checks, bypasses and faults (`employee-access-drops-folders`,
   `employee-access-saved-beside-unsaved-edit`, `employee-access-partial-not-invalidated`): the
   scenario's docstring.
+- `2026-11-04-creator-avatars`: Manage creators' OF avatars (AE: the default Creator's picture on every
+  row). `agency_inbox`, UI only; the fake OF's `me()` (`of-me.json` `avatars`, `answer_as`) answers half the
+  non-default Creators with the default Creator's body. Checks: no row shows another Creator's picture,
+  every Creator answered as itself shows its own (all distinct), rows == /admin/accounts. Fault
+  `avatar-keeps-other-creators-body` (`lib/creator_avatars_faults.py`, client: the identity guard reverted).

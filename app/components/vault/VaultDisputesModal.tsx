@@ -26,6 +26,7 @@
 
 import { useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { AlertTriangle, Play } from "lucide-react";
 
 import {
   mirrorFullSrc,
@@ -35,6 +36,7 @@ import {
   type VaultDispute,
 } from "@/hooks/useVaultCache";
 import ImageLightbox from "@/components/vault/ImageLightbox";
+import { IfButton, IfHelp, IfModal } from "@/components/ui/infloww";
 import { errText } from "@/lib/errText";
 
 const REGION_LABEL: Record<string, string> = {
@@ -53,11 +55,11 @@ const STATE_STYLE: Record<string, string> = {
  *  choice is hidden behind a friendly label. */
 function ProposalLines({ values }: { values: Record<string, unknown> }) {
   const entries = Object.entries(values);
-  if (!entries.length) return <p className="text-[11px] text-fg-dim">no change</p>;
+  if (!entries.length) return <p className="text-[12px] text-muted">no change</p>;
   return (
     <ul className="space-y-0.5">
       {entries.map(([k, v]) => (
-        <li key={k} className="text-[11px] font-mono text-fg-dim">
+        <li key={k} className="text-[12px] text-muted">
           {REGION_LABEL[k] ?? k}
           {" → "}
           <span className="text-fg">
@@ -113,10 +115,11 @@ function CardMedia({
       <img src={src} alt="" className="w-full h-full object-contain" draggable={false} />
       {isVideo && (
         <>
-          <span className="absolute top-1.5 left-1.5 rounded bg-black/70 px-1.5 py-px text-[10px] font-semibold tracking-wide text-white">
-            ▶ VIDEO
+          <span className="absolute top-1.5 left-1.5 flex items-center gap-1 rounded bg-black/70 px-1.5 py-px text-[12px] font-semibold text-white">
+            <Play className="h-3 w-3" aria-hidden />
+            Video
           </span>
-          <span className="absolute bottom-2 right-1.5 rounded bg-black/70 px-1.5 py-px font-mono text-[10px] text-white/90">
+          <span className="absolute bottom-2 right-1.5 rounded bg-black/70 px-1.5 py-px text-[12px] tabular-nums text-white/90">
             {frame + 1}/{d.frame_count}
           </span>
           <div className="absolute inset-x-0 bottom-0 h-1 bg-white/20">
@@ -161,7 +164,7 @@ function DisputeCard({
   const descSide = d.propose.describe;
 
   return (
-    <div className="rounded-lg border border-border bg-bg-soft overflow-hidden flex flex-col">
+    <div className="rounded-md border border-border bg-bg-soft overflow-hidden flex flex-col">
       <CardMedia accountId={accountId} d={d} onZoom={() => setZoom(true)} />
       {zoom && (
         <ImageLightbox accountId={accountId} mediaId={d.media_id} onClose={() => setZoom(false)} />
@@ -171,7 +174,7 @@ function DisputeCard({
           {Object.entries(d.regions).map(([r, state]) => (
             <span
               key={r}
-              className={`px-1.5 py-px rounded-full border text-[10px] font-medium ${
+              className={`px-1.5 py-px rounded-full border text-[12px] font-medium ${
                 STATE_STYLE[state] ?? STATE_STYLE.not_in_frame
               }`}
             >
@@ -181,7 +184,7 @@ function DisputeCard({
         </div>
 
         {Object.entries(d.over).some(([, v]) => v) && (
-          <p className="text-[11px] text-fg-dim leading-snug">
+          <p className="text-[12px] text-muted leading-snug">
             {Object.entries(d.over)
               .filter(([, v]) => v)
               .map(([r, v]) => (
@@ -192,14 +195,15 @@ function DisputeCard({
           </p>
         )}
 
-        <p className="text-[11px] text-fg-dim line-clamp-3 leading-snug">{d.description}</p>
-        <p className="text-[10px] text-fg-dim">
+        <p className="text-[12px] text-fg-dim line-clamp-3 leading-snug">{d.description}</p>
+        <p className="text-[12px] text-muted">
           #{d.media_id} · {d.kind} · {d.explicitness} · {d.clothing_state}
         </p>
 
         {d.reasons.map((r) => (
-          <p key={r} className="text-[11px] text-err leading-snug">
-            ⚠ {r}
+          <p key={r} className="flex items-start gap-1 text-[12px] text-err leading-snug">
+            <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" aria-hidden />
+            {r}
           </p>
         ))}
 
@@ -210,7 +214,7 @@ function DisputeCard({
             onClick={() => pick("flags")}
             className="rounded-md border border-info/60 bg-info/10 px-2 py-1.5 text-left hover:bg-info/20 disabled:opacity-40"
           >
-            <span className="block text-[11px] font-semibold text-info">
+            <span className="block text-[12px] font-semibold text-info">
               {busy === "flags" ? "Saving…" : "Flags were right"}
             </span>
             <ProposalLines values={flagsSide} />
@@ -221,13 +225,13 @@ function DisputeCard({
             onClick={() => pick("describe")}
             className="rounded-md border border-warn/60 bg-warn/10 px-2 py-1.5 text-left hover:bg-warn/20 disabled:opacity-40"
           >
-            <span className="block text-[11px] font-semibold text-warn">
+            <span className="block text-[12px] font-semibold text-warn">
               {busy === "describe" ? "Saving…" : "Describe was right"}
             </span>
             <ProposalLines values={descSide} />
           </button>
         </div>
-        {err && <p className="text-[11px] text-err">{err}</p>}
+        {err && <p className="text-[12px] text-err">{err}</p>}
       </div>
     </div>
   );
@@ -264,61 +268,39 @@ export default function VaultDisputesModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/50 grid place-items-center p-4" onClick={onClose}>
-      <div
-        className="w-full max-w-6xl max-h-[88vh] overflow-auto rounded-xl border border-border bg-bg shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <header className="px-4 py-3 border-b border-border flex items-start justify-between gap-3 sticky top-0 bg-bg z-10">
-          <div className="min-w-0">
-            <h2 className="text-sm font-semibold">Fix disagreements</h2>
-            <p className="text-[11px] text-fg-dim">
-              The two vision passes contradict each other here, so at least one is wrong —
-              and it is not always the same one. Pick the reading that matches what you
-              see. A video shows one still by default: hover and drag across it to scrub
-              the whole clip, since the passes sample different frames. Your choice is
-              locked — re-running the flags refreshes everything except what you fixed.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-fg-dim hover:text-fg text-sm px-2 shrink-0"
-          >
-            ✕
-          </button>
-        </header>
-
-        <div className="p-4">
-          {isLoading && <p className="text-[12px] text-fg-dim">Checking…</p>}
-          {error && (
-            <p className="text-[12px] text-err">
-              {errText(error)}
-            </p>
-          )}
-          {data && (
-            <p className="text-[11px] text-fg-dim mb-3">
-              {open.length} of {data.count} left · {data.checked} items checked
-              {done.size > 0 && ` · ${done.size} fixed this session`}
-            </p>
-          )}
-          {data && open.length === 0 && (
-            <p className="text-[12px] text-ok">
-              Nothing left — the two passes agree on every checked item.
-            </p>
-          )}
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-3">
-            {open.map((d) => (
-              <DisputeCard
-                key={d.media_id}
-                accountId={accountId}
-                d={d}
-                onDone={() => markDone(d.media_id)}
-              />
-            ))}
-          </div>
+    <IfModal
+      title="Fix disagreements"
+      width={820}
+      onClose={onClose}
+      footer={<IfButton onClick={onClose}>Done</IfButton>}
+    >
+      <IfHelp className="mt-0">
+        The two passes contradict each other here, so pick the reading that matches what you see. Your choice is locked against re-runs.
+      </IfHelp>
+      <IfHelp>A video shows one still: hover and drag across it to scrub.</IfHelp>
+      <div className="mt-4">
+        {isLoading && <p className="text-muted">Checking…</p>}
+        {error && <p className="text-err">{errText(error)}</p>}
+        {data && (
+          <p className="mb-3 text-[12px] text-muted">
+            {open.length} of {data.count} left · {data.checked} items checked
+            {done.size > 0 && ` · ${done.size} fixed this session`}
+          </p>
+        )}
+        {data && open.length === 0 && (
+          <p className="text-ok">Nothing left — the two passes agree on every checked item.</p>
+        )}
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-3">
+          {open.map((d) => (
+            <DisputeCard
+              key={d.media_id}
+              accountId={accountId}
+              d={d}
+              onDone={() => markDone(d.media_id)}
+            />
+          ))}
         </div>
       </div>
-    </div>
+    </IfModal>
   );
 }

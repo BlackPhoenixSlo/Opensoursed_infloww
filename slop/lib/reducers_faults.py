@@ -242,8 +242,8 @@ def register(Fault) -> dict:
              r"\1true"),
         )),
         # slop/run 2026-10-29-state-reducers --break --fault=post-retry-reposts-all
-        # app/components/compose/fanOut.ts `fanOutTargets` (shared by PostComposer, MassMessageComposer and
-        # PremadeComposer): a retry targets every included model again (the pre-fix bug), so the models that
+        # app/components/compose/fanOut.ts `fanOutTargets` (shared by PostComposer and MassMessageComposer):
+        # a retry targets every included model again (the pre-fix bug), so the models that
         # already took it get a duplicate. The first round is the same (no results yet), so only the retry
         # checks go red: Post's, Mass's and the volume run's (the module in node). `next dev` serves the
         # module in the dynamic MassMessageComposer chunk and the message-dashboard and auto-post page

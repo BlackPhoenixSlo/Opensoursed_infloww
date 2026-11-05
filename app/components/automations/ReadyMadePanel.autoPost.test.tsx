@@ -111,8 +111,8 @@ describe("Auto Post (ReadyMadePanel only=auto_posts)", () => {
     await screen.findByText("Morning feed");
     fireEvent.click(within(screen.getByText("Morning feed").closest("tr")!).getByRole("button", { name: "Edit" }));
     const dialog = screen.getByRole("dialog", { name: "Edit · Morning feed" });
-    expect(within(dialog).getByLabelText("Name (optional):")).toHaveValue("Morning feed");
-    expect(within(dialog).getByLabelText("Run every:")).toHaveValue(2);
+    expect(within(dialog).getByLabelText("Name")).toHaveValue("Morning feed");
+    expect(within(dialog).getByLabelText("Run every")).toHaveValue(2);
   });
 
   it("shows the creator empty state when no Creator has a live session", () => {

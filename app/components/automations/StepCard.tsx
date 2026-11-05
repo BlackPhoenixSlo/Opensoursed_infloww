@@ -2,13 +2,24 @@
 
 /** FunnelEditor's step card: one reply / PPV step of a mass-message funnel. */
 
-import { Badge, Input } from "@/components/ui/primitives";
-import { cn } from "@/lib/utils";
+import { useId } from "react";
+import { ChevronDown, ChevronUp, Image as ImageIcon, Trash2, X } from "lucide-react";
+
+import {
+  IfButton, IfHelp, IfInput, IfLabel, IfSegmented, IfSwitch, IfTextArea, type IfOption,
+} from "@/components/ui/infloww";
 import { ImportCaptionsButton } from "@/components/compose/ImportCaptionsButton";
 import type { DraftStep } from "@/lib/funnelDraft";
 
 /** reply_mass_funnel._step_texts: a static step sends its first 2 messages. */
 const FUNNEL_STEP_MSGS = 2;
+
+const KINDS: IfOption<DraftStep["kind"]>[] = [
+  { value: "reply", label: "Reply" },
+  { value: "ppv", label: "Paid PPV" },
+];
+/** Icon-only link actions: muted until hovered, thumb-sized below md. */
+const ICON_ACTION = "w-8 text-muted hover:text-fg disabled:hover:text-muted max-md:h-10 max-md:w-10";
 
 /** One step card: reply / PPV toggle + the per-kind fields. */
 export function StepCard({
@@ -35,160 +46,110 @@ export function StepCard({
   onMsgRemove: (mi: number) => void;
 }) {
   const isPpv = step.kind === "ppv";
+  const id = useId();
   return (
-    <div className="border border-border rounded-md p-3 space-y-2.5">
+    <div className="space-y-4 rounded-md border border-border p-4">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <span className="text-[11px] uppercase tracking-wide text-fg-dim">Step {index + 1}</span>
-          <Badge color={isPpv ? "warn" : "muted"}>{isPpv ? "paid PPV" : "reply"}</Badge>
+          <span className="text-[14px] font-medium text-fg">Step {index + 1}</span>
+          <span className="rounded bg-accent/10 px-1.5 text-[12px] text-accent">{isPpv ? "paid PPV" : "reply"}</span>
         </div>
-        <div className="flex items-center gap-2 md:gap-1">
-          <button
-            type="button"
-            onClick={() => onMove(-1)}
-            disabled={index === 0}
-            className="text-fg-dim hover:text-fg disabled:opacity-30 text-base px-2 py-1 min-w-10 min-h-10 md:text-xs md:px-1 md:py-0 md:min-w-0 md:min-h-0"
-            title="Move up"
-          >↑</button>
-          <button
-            type="button"
-            onClick={() => onMove(1)}
-            disabled={index === total - 1}
-            className="text-fg-dim hover:text-fg disabled:opacity-30 text-base px-2 py-1 min-w-10 min-h-10 md:text-xs md:px-1 md:py-0 md:min-w-0 md:min-h-0"
-            title="Move down"
-          >↓</button>
-          <button
-            type="button"
-            onClick={onRemove}
-            className="text-xs px-2 py-1 min-h-10 md:text-[11px] md:px-0 md:py-0 md:min-h-0 text-err hover:underline ml-1"
-          >remove</button>
+        <div className="flex items-center">
+          <IfButton variant="link" icon={ChevronUp} aria-label="Move up" title="Move up"
+            onClick={() => onMove(-1)} disabled={index === 0} className={ICON_ACTION} />
+          <IfButton variant="link" icon={ChevronDown} aria-label="Move down" title="Move down"
+            onClick={() => onMove(1)} disabled={index === total - 1} className={ICON_ACTION} />
+          <IfButton variant="link" icon={Trash2} aria-label="Remove step" title="Remove step"
+            onClick={onRemove} className={`${ICON_ACTION} hover:text-err`} />
         </div>
       </div>
 
-      {/* Reply / PPV toggle. */}
-      <div className="flex items-center gap-1.5">
-        <KindChip active={!isPpv} onClick={() => onPatch({ kind: "reply" })} label="Reply" />
-        <KindChip active={isPpv} onClick={() => onPatch({ kind: "ppv" })} label="Paid PPV" />
-      </div>
+      <IfSegmented aria-label="Step type" options={KINDS} value={step.kind} onChange={(kind) => onPatch({ kind })} />
 
       {/* Poll intervals (the walker waits on a PPV step's cadence too). */}
-      <label className="block space-y-1">
-        <span className="text-[11px] text-fg-dim">
-          Check for a reply every <span className="opacity-60">(minutes, comma-separated; blank = default 2, 4, 10)</span>
-        </span>
-        <Input
+      <div>
+        <IfLabel htmlFor={`${id}-every`}>Check for a reply every</IfLabel>
+        <IfInput
+          id={`${id}-every`}
           value={step.intervals}
           onChange={(e) => onPatch({ intervals: e.target.value })}
           placeholder="2, 4, 10"
+          className="w-full"
         />
-      </label>
+        <IfHelp>minutes, comma-separated · blank = 2, 4, 10</IfHelp>
+      </div>
 
       {/* PPV: price + locked-text. MEDIA is per-model → set in the Media pane. */}
       {isPpv && (
-        <div className="space-y-2">
-          <label className="block space-y-1 max-w-[12rem]">
-            <span className="text-[11px] text-fg-dim">Price (USD, whole)</span>
-            <Input
+        <>
+          <div>
+            <IfLabel htmlFor={`${id}-price`}>Price (USD)</IfLabel>
+            <IfInput
+              id={`${id}-price`}
               type="number"
               min={0}
               value={step.price}
               onChange={(e) => onPatch({ price: e.target.value })}
               placeholder="default $24"
+              className="w-48"
             />
-          </label>
-          <div className="text-[11px] text-fg-dim italic">
-            🖼 Media for this PPV step is set per model in the funnel&apos;s{" "}
-            <span className="text-fg not-italic">Media</span> action (vault ids
-            differ per account).
+            <IfHelp>whole dollars</IfHelp>
+            <IfHelp className="flex items-center gap-1.5">
+              <ImageIcon aria-hidden className="h-3.5 w-3.5 shrink-0" />
+              Media is set per model in the funnel&apos;s Media action.
+            </IfHelp>
           </div>
-          <label className="flex items-center gap-2 text-xs cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={step.lockedText}
-              onChange={(e) => onPatch({ lockedText: e.target.checked })}
-            />
-            <span>Lock the text too (fan must pay to read the copy)</span>
-          </label>
-        </div>
+          <IfSwitch label="Lock the text too (fan must pay to read)" checked={step.lockedText}
+            onChange={(lockedText) => onPatch({ lockedText })} className="flex" />
+        </>
       )}
 
       {/* Copy: AI-generate toggle, then either a prompt or a variant pool. */}
-      <label className="flex items-center gap-2 text-xs cursor-pointer select-none">
-        <input
-          type="checkbox"
-          checked={step.generate}
-          onChange={(e) => onPatch({ generate: e.target.checked })}
-        />
-        <span>Generate the {isPpv ? "sales copy" : "reply"} with AI</span>
-      </label>
+      <IfSwitch label={`Generate the ${isPpv ? "sales copy" : "reply"} with AI`} checked={step.generate}
+        onChange={(generate) => onPatch({ generate })} className="flex" />
 
       {step.generate ? (
-        <label className="block space-y-1">
-          <span className="text-[11px] text-fg-dim">
-            Prompt <span className="opacity-60">(optional — guides the AI; blank uses the default persona)</span>
-          </span>
-          <textarea
+        <div>
+          <IfLabel htmlFor={`${id}-prompt`}>Prompt</IfLabel>
+          <IfTextArea
+            id={`${id}-prompt`}
             value={step.prompt}
             onChange={(e) => onPatch({ prompt: e.target.value })}
             rows={2}
             placeholder="e.g. tease the PPV and create urgency…"
-            className="w-full bg-bg border border-border rounded-md px-3 py-2 text-sm placeholder:text-muted focus:outline-none focus:border-accent resize-y"
           />
-        </label>
+          <IfHelp>Guides the AI; blank uses the default persona.</IfHelp>
+        </div>
       ) : (
-        <div className="space-y-1.5">
-          <span className="text-[11px] text-fg-dim">
-            {isPpv ? "Sales copy" : "Reply"} variants <span className="opacity-60">(one is sent at random; first ≤2 used)</span>
-          </span>
-          {step.messages.map((m, mi) => (
-            <div key={mi} className="flex items-start gap-1.5">
-              <textarea
-                value={m}
-                onChange={(e) => onMsgChange(mi, e.target.value)}
-                rows={2}
-                placeholder={step.messages.length > 1 ? `Variant ${mi + 1}` : "Message…"}
-                className="flex-1 bg-bg border border-border rounded-md px-3 py-2 text-sm placeholder:text-muted focus:outline-none focus:border-accent resize-y"
-              />
-              {step.messages.length > 1 && (
-                <button
-                  type="button"
-                  onClick={() => onMsgRemove(mi)}
-                  title="Remove this variant"
-                  className="text-fg-dim hover:text-err text-sm leading-none mt-2"
-                >×</button>
-              )}
-            </div>
-          ))}
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-            <button
-              type="button"
-              onClick={onMsgAdd}
-              className="text-[11px] text-accent hover:underline"
-            >
-              + add variant{step.messages.length > 1 ? ` (${step.messages.length})` : ""}
-            </button>
+        <div>
+          <IfLabel>{isPpv ? "Sales copy" : "Reply"} variants</IfLabel>
+          <div className="space-y-2">
+            {step.messages.map((m, mi) => (
+              <div key={mi} className="flex items-start gap-1">
+                <IfTextArea
+                  value={m}
+                  onChange={(e) => onMsgChange(mi, e.target.value)}
+                  rows={2}
+                  placeholder={step.messages.length > 1 ? `Variant ${mi + 1}` : "Message…"}
+                  className="flex-1"
+                />
+                {step.messages.length > 1 && (
+                  <IfButton variant="link" icon={X} aria-label="Remove this variant" title="Remove this variant"
+                    onClick={() => onMsgRemove(mi)} className={`${ICON_ACTION} hover:text-err`} />
+                )}
+              </div>
+            ))}
+          </div>
+          <IfHelp>One is sent at random; the first 2 are used.</IfHelp>
+          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
+            <IfButton variant="link" onClick={onMsgAdd}>
+              Add variant{step.messages.length > 1 ? ` (${step.messages.length})` : ""}
+            </IfButton>
             {/* reply_mass_funnel sends static messages[:2] only. */}
             <ImportCaptionsButton current={step.messages} max={FUNNEL_STEP_MSGS} onImport={onMsgImport} />
           </div>
         </div>
       )}
     </div>
-  );
-}
-
-function KindChip({ active, onClick, label }: { active: boolean; onClick: () => void; label: string }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "px-2.5 py-1 rounded-full text-[11px] border transition-colors",
-        active
-          ? "bg-accent text-white border-accent"
-          : "bg-bg-elev-1 text-fg-dim border-border hover:text-fg hover:border-fg-dim",
-      )}
-    >
-      {label}
-    </button>
   );
 }

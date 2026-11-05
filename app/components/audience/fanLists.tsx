@@ -180,10 +180,9 @@ export function SysChip({
   disabled?: boolean;
 }) {
   const stateStyles = {
-    off: "bg-transparent text-fg-dim border-border hover:border-border-light",
-    in:  "bg-accent/15 text-accent border-accent/30",
+    off: "bg-transparent text-fg-dim border-border hover:border-accent hover:text-fg",
+    in:  "bg-accent/10 text-accent border-accent/30",
   };
-  const prefix = state === "in" ? "+ " : "";
   const hint = state === "off" ? "OF built-in" : "included";
   return (
     <button
@@ -192,12 +191,12 @@ export function SysChip({
       disabled={disabled}
       title="Click to toggle: off → include → off"
       className={
-        "px-2 py-1 rounded-full border text-[11px] flex items-center gap-1.5 transition-colors " +
+        "h-6 px-2 rounded-full border text-[12px] flex items-center gap-1.5 transition-colors " +
         "disabled:opacity-40 " + stateStyles[state]
       }
     >
-      <span>{prefix}{label}</span>
-      <span className="opacity-60 no-underline">· {hint}</span>
+      <span>{label}</span>
+      <span className="opacity-70">· {hint}</span>
     </button>
   );
 }
@@ -221,7 +220,7 @@ export function ListColumn({
     );
   }
   if (lists.length === 0) {
-    return <div className="text-[11px] text-fg-dim italic">{emptyLabel}</div>;
+    return <div className="text-[12px] text-muted">{emptyLabel}</div>;
   }
   return (
     <div className="flex flex-col gap-1 max-h-none sm:max-h-32 overflow-visible sm:overflow-y-auto pr-1">
@@ -240,7 +239,7 @@ export function ListColumn({
               onChange={() => onToggle(id)}
             />
             <span className="flex-1 truncate">{l.name || `List #${id}`}</span>
-            <span className="text-[10px] text-fg-dim shrink-0">({l.usersCount ?? 0})</span>
+            <span className="text-[12px] text-muted shrink-0">({l.usersCount ?? 0})</span>
           </label>
         );
       })}

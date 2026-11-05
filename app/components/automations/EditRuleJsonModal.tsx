@@ -14,8 +14,11 @@
  * say so, and if none exists the button is disabled until the form saves one.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
+import { Braces } from "lucide-react";
 
+import { RawJsonModal } from "@/components/automations/RawJsonModal";
+import { IfButton } from "@/components/ui/infloww";
 import {
   useAutomationRules,
   useUpdateRule,
@@ -26,7 +29,7 @@ import { parseJsonObjectOr } from "@/lib/rawJsonReducer";
 export function EditRuleJsonButton({
   accountId,
   kind,
-  label = "{ } Edit raw JSON",
+  label = "Edit raw JSON",
   className,
 }: {
   accountId: string | null;
@@ -44,14 +47,12 @@ export function EditRuleJsonButton({
   const disabled = !accountId || !rule;
   return (
     <>
-      <button
-        type="button"
+      <IfButton
+        variant="link"
+        icon={Braces}
         disabled={disabled}
         onClick={() => setOpen(true)}
-        className={
-          className ??
-          "text-[11px] text-fg-dim hover:text-fg underline underline-offset-2 disabled:opacity-40 disabled:no-underline"
-        }
+        className={className}
         title={
           !accountId
             ? "Pick an account first"
@@ -61,7 +62,7 @@ export function EditRuleJsonButton({
         }
       >
         {label}
-      </button>
+      </IfButton>
       {open && rule && accountId && (
         <EditRuleJsonModal
           rule={rule}
@@ -91,14 +92,6 @@ function EditRuleJsonModal({
   );
   const [err, setErr] = useState<string | null>(null);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   const parseOrError = () => parseJsonObjectOr(text, "Payload", '{ "enabled": true }', setErr);
 
   function onSave() {
@@ -118,78 +111,19 @@ function EditRuleJsonModal({
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 bg-black/50 grid place-items-center p-4"
-      onClick={onClose}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-[820px] max-h-[90vh] flex flex-col bg-panel border border-border rounded-xl shadow-2xl"
-      >
-        <header className="px-4 py-3 border-b border-border flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h2 className="text-sm font-semibold">
-              Edit raw JSON — {rule.name || rule.kind}
-            </h2>
-            <p className="text-[11px] text-fg-dim truncate">
-              acct {accountId} · rule #{rule.id} ({rule.kind}) · PATCH
-              /admin/automation-rules/{rule.id}
-              {extraCount > 0 && ` · +${extraCount} more rule(s) of this kind not shown`}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-fg-dim hover:text-fg text-lg leading-none shrink-0 w-11 h-11 -mr-2 -my-2 grid place-items-center md:w-auto md:h-auto md:mr-0 md:my-0 md:inline"
-            title="Close"
-          >
-            ×
-          </button>
-        </header>
-
-        <div className="flex-1 overflow-y-auto p-4 min-h-0">
-          <textarea
-            value={text}
-            onChange={(e) => {
-              setText(e.target.value);
-              if (err) setErr(null);
-            }}
-            spellCheck={false}
-            className="w-full h-[52vh] rounded-lg bg-bg-elev-1 border border-border text-xs font-mono px-3 py-2 text-fg focus:outline-none focus:ring-2 focus:ring-accent/40 resize-none"
-            placeholder="{ }"
-          />
-          {err && (
-            <div className="mt-2 text-xs text-err whitespace-pre-wrap">{err}</div>
-          )}
-        </div>
-
-        <footer className="px-4 py-3 border-t border-border flex items-center justify-between gap-2">
-          <button
-            type="button"
-            onClick={reformat}
-            className="text-[11px] text-fg-dim hover:text-fg underline underline-offset-2"
-          >
-            Reformat
-          </button>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="text-xs px-3 py-1.5 rounded-lg border border-border text-fg-dim hover:text-fg"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={onSave}
-              disabled={updateM.isPending}
-              className="text-xs px-3 py-1.5 rounded-lg bg-accent text-white disabled:opacity-50"
-            >
-              {updateM.isPending ? "Saving…" : "Save"}
-            </button>
-          </div>
-        </footer>
-      </div>
-    </div>
+    <RawJsonModal
+      name={rule.name || rule.kind}
+      subtitle={`acct ${accountId} · rule #${rule.id} (${rule.kind})${extraCount > 0 ? ` · +${extraCount} more rule(s) of this kind not shown` : ""}`}
+      text={text}
+      onText={(t) => {
+        setText(t);
+        if (err) setErr(null);
+      }}
+      error={err}
+      busy={updateM.isPending}
+      onReformat={reformat}
+      onSave={onSave}
+      onClose={onClose}
+    />
   );
 }

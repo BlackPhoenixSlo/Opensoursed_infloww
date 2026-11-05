@@ -6,7 +6,9 @@
  * hide is never resent, and a double click sends once. Only the relay wire is faked.
  */
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 vi.mock("@/lib/relay", async (importOriginal) => {
@@ -62,12 +64,12 @@ function serve(scans: Record<string, DupeCluster[]> = SCANS, hide = hideOk) {
 
 function mount(onClose = () => {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const { container } = render(
+  render(
     <QueryClientProvider client={qc}>
       <VaultDuplicatesModal accountId={ACCT} onClose={onClose} />
     </QueryClientProvider>,
   );
-  return { qc, backdrop: container.firstElementChild as HTMLElement };
+  return { qc };
 }
 
 const scanCalls = () =>
@@ -141,25 +143,44 @@ describe("VaultDuplicatesModal hide request", () => {
     expect(hideCalls()).toHaveLength(1);
   });
 
-  it("while the hide is out: a double click sends once, Close and the backdrop do nothing", async () => {
+  it("while the hide is out: a double click sends once, and neither × nor Escape can close it", async () => {
     let release: (v: unknown) => void = () => {};
     serve(SCANS, (body) => new Promise((res) => { release = () => res(hideOk(body)); }));
     const onClose = vi.fn();
-    const { backdrop } = mount(onClose);
+    mount(onClose);
     fireEvent.click(await screen.findByText("Remove 3 copies from OnlyFans…"));
     const yes = screen.getByText("Yes, remove them");
     fireEvent.click(yes);
     fireEvent.click(yes);
     await screen.findByText("Removing 0/3…");
-    const close = screen.getByText("Close") as HTMLButtonElement;
-    expect(close.disabled).toBe(true);
-    fireEvent.click(close);
-    fireEvent.click(backdrop);
+    expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
+    fireEvent.keyDown(document, { key: "Escape" });
     expect(onClose).not.toHaveBeenCalled();
     release(undefined);
     await screen.findByText(/Removed 3/);
     expect(hideCalls()).toHaveLength(1);
-    fireEvent.click(backdrop);
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+});
+
+describe("the state-reducers slop scenario's selectors match this modal", () => {
+  // Its page.evaluate reading the ticked copies, run here on the same DOM.
+  const scenario = readFileSync(resolve(__dirname, "../../../slop/scenarios/2026-10-29-state-reducers.py"), "utf8");
+  const js = /TICKED_DUPES = """([\s\S]*?)"""/.exec(scenario)![1];
+  const ticked = new Function(`return (${js})();`) as () => number[];
+
+  it("TICKED_DUPES reads the ticked copies (aria-pressed), and the dialog by name has its Close", async () => {
+    serve();
+    mount();
+    await screen.findByText("Remove 3 copies from OnlyFans…");
+    expect(ticked()).toEqual([11, 12, 21]);
+    expect(tile(11)).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(tile(21));
+    expect(tile(21)).toHaveAttribute("aria-pressed", "false");
+    expect(ticked()).toEqual([11, 12]);
+    // page.get_by_role("dialog", name="Duplicate media").get_by_role("button", name="Close")
+    within(screen.getByRole("dialog", { name: "Duplicate media" })).getByRole("button", { name: "Close" });
   });
 });

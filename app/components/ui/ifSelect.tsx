@@ -5,7 +5,9 @@
  * `IfSelect`, `HbSelect` and the `HbFilter` boxes, plus the HB greys and the antd field box the other primitives share.
  */
 
-import { useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import {
+  forwardRef, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type SelectHTMLAttributes,
+} from "react";
 import { ChevronDown, type LucideIcon } from "lucide-react";
 
 import { useOutsideClose } from "@/components/ui/Menu";
@@ -186,6 +188,17 @@ type SelectProps<T extends string> = {
 
 /** The antd field box: 1px L1, radius 6, B-nav fill, 14px T1; 32px (the Dashboard's `lg` 36px). */
 export const IF_FIELD = "rounded-md border border-border bg-bg text-[14px] text-fg hover:border-accent";
+
+/** A native `<select>` on the field box (32px, `padding:0 11px`): where tests and slop pick by option. `className`
+ *  adds width and the like. */
+export const IfNativeSelect = forwardRef<HTMLSelectElement, SelectHTMLAttributes<HTMLSelectElement>>(
+  ({ className, ...rest }, ref) => (
+    <select ref={ref}
+      className={cn(IF_FIELD, "h-8 px-[11px] outline-none focus:border-accent disabled:cursor-not-allowed disabled:opacity-50", className)}
+      {...rest} />
+  ),
+);
+IfNativeSelect.displayName = "IfNativeSelect";
 
 /** antd's select (button + listbox): 32px, `padding:0 11px`, a 12px T3 chevron; `size="lg"` is the Dashboard's 36px
  *  "Net earnings" with T2 text. The menu is the panel colour, 32px items. */

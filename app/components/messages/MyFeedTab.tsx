@@ -13,8 +13,9 @@
 
 import { useMemo, useState } from "react";
 import { useMutation, useQueryClient, type InfiniteData } from "@tanstack/react-query";
+import { Plus } from "lucide-react";
 
-import { Button } from "@/components/ui/primitives";
+import { IfButton, IfSegmented } from "@/components/ui/infloww";
 import { PostCard } from "@/components/messages/PostCard";
 import EditPostModal from "@/components/messages/EditPostModal";
 import InfiniteListFooter from "@/components/messages/InfiniteListFooter";
@@ -22,7 +23,6 @@ import ModelSelect, { usePickedModel } from "@/components/messages/ModelSelect";
 import { PostComposer } from "@/components/compose/PostComposer";
 import { useMyFeed, type FeedMediaType, type OFPost } from "@/hooks/usePosts";
 import { relay } from "@/lib/relay";
-import { cn } from "@/lib/utils";
 import { TableSkeleton } from "@/components/ui/Skeleton";
 
 // Mirror of useMyFeed's page shape, for typing the optimistic cache edits.
@@ -97,43 +97,20 @@ export default function MyFeedTab() {
       <div className="flex flex-wrap items-center gap-3 p-3 bg-panel border border-border rounded-xl">
         <ModelSelect accounts={accounts} value={accountId} onChange={setAccountId} />
 
-        <label className="flex flex-col gap-1 w-full md:w-auto">
-          <span className="text-[10px] uppercase tracking-wide text-fg-dim">Type</span>
-          <div className="grid grid-cols-3 gap-1 md:flex md:items-center">
-            {TYPES.map((t) => (
-              <Button
-                key={t.key}
-                type="button"
-                variant={type === t.key ? "primary" : "secondary"}
-                size="sm"
-                onClick={() => setType(t.key)}
-                className={cn("px-1.5 py-2.5 md:px-3 md:py-1.5", type !== t.key && "border-border")}
-              >
-                {t.label}
-              </Button>
-            ))}
-          </div>
-        </label>
+        <IfSegmented aria-label="Type" value={type} onChange={setType} className="self-end"
+          options={TYPES.map((t) => ({ value: t.key, label: t.label }))} />
 
         <div className="flex items-center gap-2 self-end ml-auto">
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
+          <IfButton
             onClick={() => q.refetch()}
             disabled={!accountId || q.isFetching}
-            className="hidden md:inline-flex border-border"
+            className="hidden md:inline-flex"
           >
             {q.isFetching ? "Loading…" : "Refresh"}
-          </Button>
-          <Button
-            type="button"
-            variant="primary"
-            size="sm"
-            onClick={() => setNewPostOpen(true)}
-          >
-            + New post
-          </Button>
+          </IfButton>
+          <IfButton variant="primary" icon={Plus} onClick={() => setNewPostOpen(true)}>
+            New post
+          </IfButton>
         </div>
       </div>
 

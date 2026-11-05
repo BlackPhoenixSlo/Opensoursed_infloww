@@ -14,7 +14,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen } from "@testing-library/react";
 
 import { renderWithProviders } from "@/test-utils";
-import { PremadeForm } from "@/components/compose/PremadeComposer";
+import { PremadeForm } from "@/components/compose/PremadeForm";
+import { ComposeModal } from "@/components/automations/ComposeModal";
 
 // The enqueue route — assert it's never called in return-payload mode.
 const postSpy = vi.fn(async (..._a: unknown[]) => ({ enqueued_job_id: 1 }));
@@ -133,5 +134,42 @@ describe("PremadeForm return-payload mode", () => {
     fireEvent.click(screen.getByRole("button", { name: /use in rule/i }));
     expect(onComposePayload).not.toHaveBeenCalled();
     expect(postSpy).not.toHaveBeenCalled();
+  });
+
+  it("a saved folder that is gone (none fetched) still shows and clears", () => {
+    const onComposePayload = vi.fn();
+    renderWithProviders(
+      <PremadeForm
+        kind="auto_posts"
+        forcedAccountId="acct1"
+        onComposePayload={onComposePayload}
+        initialPayload={{ posts: [{ text: "hi", media_folder_id: 77 }] }}
+      />,
+    );
+    const folder = screen.getAllByLabelText("Folder pool")[0];
+    expect(folder).toBeEnabled();
+    expect(folder).toHaveTextContent("Missing folder #77");
+    fireEvent.click(folder);
+    fireEvent.click(screen.getByRole("option", { name: "No photo folders" }));
+    expect(folder).toHaveTextContent("No photo folders");
+    fireEvent.click(screen.getByRole("button", { name: /use in rule/i }));
+    expect(onComposePayload).toHaveBeenCalledWith({ posts: [{ text: "hi" }] });
+  });
+});
+
+describe("ComposeModal — Escape never drops an edited draft", () => {
+  const escape = () => fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+  it("clean: Escape closes", () => {
+    const onClose = vi.fn();
+    renderWithProviders(<ComposeModal kind="auto_posts" accountId="acct1" onClose={onClose} onComposePayload={vi.fn()} />);
+    escape();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+  it("dirty: Escape does nothing", () => {
+    const onClose = vi.fn();
+    renderWithProviders(<ComposeModal kind="auto_posts" accountId="acct1" onClose={onClose} onComposePayload={vi.fn()} />);
+    fireEvent.change(screen.getByPlaceholderText(/post caption/i), { target: { value: "hello" } });
+    escape();
+    expect(onClose).not.toHaveBeenCalled();
   });
 });

@@ -10,8 +10,9 @@
  *  the importers were repointed is gone. */
 
 import { useState, type ReactNode } from "react";
-import { Button, Input } from "@/components/ui/primitives";
-import { IfButton, IfModal } from "@/components/ui/infloww";
+import { Button } from "@/components/ui/primitives";
+import { IfButton, IfInput, IfModal } from "@/components/ui/infloww";
+import { cn } from "@/lib/utils";
 import { errText } from "@/lib/errText";
 
 /** antd's `Modal.confirm` as an awaited `IfModal` (416px): `ask(title, body, ok)` resolves true on the primary
@@ -51,8 +52,9 @@ export function Field({
   label, children,
 }: { label: string; children: React.ReactNode }) {
   return (
-    <label className="block space-y-1">
-      <span className="text-[11px] uppercase tracking-wide text-fg-dim">{label}</span>
+    <label className="block">
+      {/* `IfLabel`'s look (14px, no colon); the label still wraps its field. */}
+      <span className="mb-2 block text-[14px] text-fg">{label}</span>
       {children}
     </label>
   );
@@ -67,8 +69,8 @@ export function NumInput({
   // blur normalises it back to the real number.
   const [draft, setDraft] = useState<string | null>(null);
   return (
-    <Input
-      type="number" min={min} className={className}
+    <IfInput
+      type="number" min={min} className={cn("w-full", className)}
       value={draft ?? String(value)}
       onChange={(e) => {
         const raw = e.target.value;

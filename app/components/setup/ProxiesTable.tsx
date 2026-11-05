@@ -27,7 +27,7 @@ import { useEffect, useState } from "react";
 import { relay, type ProxyMeta, type AccountMeta } from "@/lib/relay";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { Button } from "@/components/ui/primitives";
-import { EmptyState, IfModal, InflowwPageHeader } from "@/components/ui/infloww";
+import { EmptyState, IfButton, IfModal, InflowwPageHeader } from "@/components/ui/infloww";
 import AddProxyModal, {
   EMPTY_DRAFT, draftLabel, type BulkResp, type ProxyDraft, type ProxyScheme,
 } from "@/components/setup/AddProxyModal";
@@ -340,7 +340,6 @@ export default function ProxiesTable() {
  *  corners, a 22px 24px header), so it joins the modal stack: Escape closes only the top modal, Tab stays inside, and
  *  focus goes back to the row's Delete. Ours: a mask click does not close it (antd's `maskClosable` is on there). */
 function DeleteProxyModal({ removing, onDelete, onClose }: { removing: boolean; onDelete: () => void; onClose: () => void }) {
-  const foot = "h-8 py-0 px-[15px] min-w-[72px] rounded text-sm font-normal whitespace-nowrap";
   return (
     <IfModal
       title="Delete proxy"
@@ -349,13 +348,11 @@ function DeleteProxyModal({ removing, onDelete, onClose }: { removing: boolean; 
       keyboard
       footer={
         <>
-          <Button variant="ghost" className={foot} onClick={onClose}>
-            Cancel
-          </Button>
-          <Button className={`${foot} bg-err hover:bg-err/90 text-white`} disabled={removing} onClick={onDelete}>
+          <IfButton onClick={onClose}>Cancel</IfButton>
+          <IfButton variant="primary" className="bg-err hover:bg-err/90" disabled={removing} onClick={onDelete}>
             {removing && <Loader2 size={14} className="animate-spin" aria-hidden />}
             Delete
-          </Button>
+          </IfButton>
         </>
       }
     >

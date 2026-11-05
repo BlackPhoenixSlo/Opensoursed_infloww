@@ -6,7 +6,9 @@
  */
 
 import { useState } from "react";
+import { Lock } from "lucide-react";
 
+import { IfButton } from "@/components/ui/infloww";
 import { postPlainText, postThumbUrl, type OFPost } from "@/hooks/usePosts";
 import { proxyImage } from "@/lib/mediaUrl";
 
@@ -80,31 +82,20 @@ export function PostCard({
           <span className="px-1.5 py-0.5 rounded bg-accent/15 text-accent font-medium">Pinned</span>
         )}
         {isPaidPost && (
-          <span className="px-1.5 py-0.5 rounded bg-pink/15 text-pink font-semibold">
-            🔒 Paid wall{price ? ` · ${price}` : ""}
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-pink/15 text-pink font-semibold">
+            <Lock className="h-3 w-3" aria-hidden />Paid wall{price ? ` · ${price}` : ""}
           </span>
         )}
         <span>{dateStr}</span>
         {(onTogglePin || onEdit || onDelete) && (
-          <div className="ml-auto flex items-center gap-1 md:gap-3">
+          <div className="ml-auto flex items-center gap-4">
             {onTogglePin && (
-              <button
-                type="button"
-                onClick={() => onTogglePin(post)}
-                disabled={pinning}
-                className="inline-flex items-center justify-center min-h-[40px] px-2 -my-2 md:min-h-0 md:px-0 md:my-0 text-[11px] text-fg-dim hover:text-accent transition-colors disabled:opacity-50"
-              >
+              <IfButton variant="link" onClick={() => onTogglePin(post)} disabled={pinning}>
                 {pinning ? "…" : post.isPinned ? "Unpin" : "Pin"}
-              </button>
+              </IfButton>
             )}
             {onEdit && (
-              <button
-                type="button"
-                onClick={() => onEdit(post)}
-                className="inline-flex items-center justify-center min-h-[40px] px-2 -my-2 md:min-h-0 md:px-0 md:my-0 text-[11px] text-fg-dim hover:text-fg transition-colors"
-              >
-                Edit
-              </button>
+              <IfButton variant="link" onClick={() => onEdit(post)}>Edit</IfButton>
             )}
             {onDelete && (
               <DeleteControl deleting={!!deleting} onConfirm={() => onDelete(post.id)} />
@@ -144,8 +135,8 @@ export function PostCard({
                 )}
                 {isPaidPost && (
                   isLocked(m) ? (
-                    <span className="absolute top-1 left-1 text-[9px] px-1 py-0.5 rounded bg-pink/90 text-white font-medium">
-                      🔒 Paid
+                    <span className="absolute top-1 left-1 inline-flex items-center gap-0.5 text-[9px] px-1 py-0.5 rounded bg-pink/90 text-white font-medium">
+                      <Lock className="h-2.5 w-2.5" aria-hidden />Paid
                     </span>
                   ) : (
                     <span className="absolute top-1 left-1 text-[9px] px-1 py-0.5 rounded bg-ok/90 text-white font-medium">
@@ -181,37 +172,19 @@ function DeleteControl({
   const [armed, setArmed] = useState(false);
 
   if (deleting) {
-    return <span className="text-[11px] text-err">Deleting…</span>;
+    return <span className="text-[14px] text-err">Deleting…</span>;
   }
 
   if (!armed) {
     return (
-      <button
-        type="button"
-        onClick={() => setArmed(true)}
-        className="inline-flex items-center justify-center min-h-[40px] px-2 -my-2 md:min-h-0 md:px-0 md:my-0 text-[11px] text-fg-dim hover:text-err transition-colors"
-      >
-        Delete
-      </button>
+      <IfButton variant="link" onClick={() => setArmed(true)}>Delete</IfButton>
     );
   }
 
   return (
-    <span className="flex flex-row-reverse md:flex-row items-center gap-2">
-      <button
-        type="button"
-        onClick={onConfirm}
-        className="inline-flex items-center justify-center min-h-[40px] px-2 -my-2 md:min-h-0 md:px-0 md:my-0 text-[11px] font-medium text-err hover:underline"
-      >
-        Confirm
-      </button>
-      <button
-        type="button"
-        onClick={() => setArmed(false)}
-        className="inline-flex items-center justify-center min-h-[40px] px-2 -my-2 md:min-h-0 md:px-0 md:my-0 text-[11px] text-fg-dim hover:text-fg"
-      >
-        Cancel
-      </button>
+    <span className="flex flex-row-reverse md:flex-row items-center gap-4">
+      <IfButton variant="link" onClick={onConfirm} className="text-err hover:text-err/80">Confirm</IfButton>
+      <IfButton variant="link" onClick={() => setArmed(false)}>Cancel</IfButton>
     </span>
   );
 }

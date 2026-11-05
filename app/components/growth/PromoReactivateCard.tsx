@@ -12,8 +12,8 @@
 
 import { useEffect, useState } from "react";
 
-import { Button, ExtraTag } from "@/components/ui/primitives";
-import { IfSwitch } from "@/components/ui/infloww";
+import { ExtraTag } from "@/components/ui/primitives";
+import { IfButton, IfHelp, IfSwitch } from "@/components/ui/infloww";
 import { Field, NumInput, errMsg } from "@/components/growth/_bits";
 import { RunStats, isDryRun } from "@/lib/runStats";
 import { usePromotions } from "@/hooks/useGrowth";
@@ -71,7 +71,7 @@ export default function PromoReactivateCard({ accountId }: { accountId: string |
           every_seconds, payload, is_enabled: form.enabled,
         });
       }
-      setMsg("✓ Saved.");
+      setMsg("Saved.");
     } catch (e) { setErr(errMsg(e, "Save failed")); }
   }
 
@@ -86,8 +86,8 @@ export default function PromoReactivateCard({ accountId }: { accountId: string |
     try {
       await runM.mutateAsync(rule.id);
       setMsg(savedDryRun
-        ? "✓ Dry run queued — it will report what it would re-create, and change nothing."
-        : "✓ Checking now — finished campaigns get re-created within ~30s.");
+        ? "Dry run queued — it will report what it would re-create, and change nothing."
+        : "Checking now — finished campaigns get re-created within ~30s.");
     } catch (e) { setErr(errMsg(e, "Run failed")); }
   }
 
@@ -125,58 +125,57 @@ export default function PromoReactivateCard({ accountId }: { accountId: string |
       </div>
 
       {/* Ours under it, labelled: how the re-arm runs. */}
-      <div className="space-y-3 rounded-lg border border-border p-4">
+      <div className="space-y-4 rounded-md border border-border p-4 text-[14px]">
         <div>
-          <h3 className="flex items-center gap-2 text-sm font-semibold text-fg">Keep promos running <ExtraTag /></h3>
-          <p className="text-xs text-fg-dim">
-            OnlyFans ends a promo when its clock runs out or the claim cap fills. This
-            re-creates any campaign you ticked <b>Keep running</b> below — same
-            discount, same cap — so the offer never silently lapses.{" "}
+          <h3 className="flex items-center gap-2 text-[14px] font-medium text-fg">Keep promos running <ExtraTag /></h3>
+          <IfHelp>
+            Re-creates a finished campaign ticked <b>Keep running</b> below, same discount and cap.{" "}
             {armed > 0
               ? <span className="text-fg">{armed} campaign{armed === 1 ? "" : "s"} set to keep running.</span>
-              : <span>Nothing is set to keep running yet — tick a campaign below.</span>}
-          </p>
+              : <span>Nothing is set to keep running yet; tick a campaign below.</span>}
+          </IfHelp>
         </div>
 
-        <label className="flex items-center gap-2 text-sm cursor-pointer">
-          <input type="checkbox" checked={form.dryRun}
-            onChange={(e) => set("dryRun", e.target.checked)}
-            className="w-4 h-4 rounded accent-accent cursor-pointer" />
-          Dry run <span className="text-[11px] text-fg-dim">(report only — creates nothing)</span>
-        </label>
-
-        <div className="grid gap-3 sm:grid-cols-2 max-w-md">
-          <Field label="Check every (minutes)">
-            <NumInput value={form.everyMinutes} min={1} onChange={(v) => set("everyMinutes", v)} />
-          </Field>
-          <Field label="Max re-arms each (0 = no limit)">
-            <NumInput value={form.maxCycles} min={0} onChange={(v) => set("maxCycles", v)} />
-          </Field>
+        <div>
+          <IfSwitch label="Dry run" checked={form.dryRun} onChange={(on) => set("dryRun", on)} />
+          <IfHelp>Report only, creates nothing.</IfHelp>
         </div>
 
-        {err && <div className="text-sm text-err">{err}</div>}
-
-        <div className="flex items-center gap-2">
-          <Button size="sm" onClick={save} disabled={busy || !accountId}>
-            {rule ? "Save changes" : "Create automation"}
-          </Button>
-          {rule && (
-            <Button size="sm" variant="ghost" onClick={runNow} disabled={runM.isPending}>
-              {runM.isPending ? "Checking…" : "Check now"}
-            </Button>
-          )}
-        </div>
-
-        {msg && <div className="text-sm text-accent border-t border-border pt-3">{msg}</div>}
-
-        {rule && last && (
-          <div className="text-xs text-fg-dim border-t border-border pt-3">
-            Last check: <span className="text-fg">{last.status}</span>
-            <RunStats stats={last.stats} />
-            {last.started_at && ` · ${new Date(last.started_at).toLocaleString()}`}
-            {last.error_text && <span className="text-err"> · {last.error_text}</span>}
+        <div className="grid gap-4 sm:grid-cols-2 max-w-md">
+          <div>
+            <Field label="Check every (minutes)">
+              <NumInput value={form.everyMinutes} min={1} onChange={(v) => set("everyMinutes", v)} />
+            </Field>
           </div>
-        )}
+          <div>
+            <Field label="Max re-arms each">
+              <NumInput value={form.maxCycles} min={0} onChange={(v) => set("maxCycles", v)} />
+            </Field>
+            <IfHelp>0 = no limit.</IfHelp>
+          </div>
+        </div>
+
+        {err && <div className="text-[14px] text-err">{err}</div>}
+        {msg && <div className="text-[14px] text-accent">{msg}</div>}
+
+        <div className="flex items-center justify-end gap-3 border-t border-border pt-4">
+          {rule && last && (
+            <div className="mr-auto text-[12px] text-fg-dim">
+              Last check: <span className="text-fg">{last.status}</span>
+              <RunStats stats={last.stats} />
+              {last.started_at && ` · ${new Date(last.started_at).toLocaleString()}`}
+              {last.error_text && <span className="text-err"> · {last.error_text}</span>}
+            </div>
+          )}
+          {rule && (
+            <IfButton onClick={runNow} disabled={runM.isPending}>
+              {runM.isPending ? "Checking…" : "Check now"}
+            </IfButton>
+          )}
+          <IfButton variant="primary" onClick={save} disabled={busy || !accountId}>
+            {rule ? "Save changes" : "Create automation"}
+          </IfButton>
+        </div>
       </div>
     </section>
   );

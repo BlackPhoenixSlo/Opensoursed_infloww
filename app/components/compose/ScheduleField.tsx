@@ -6,14 +6,19 @@
  * Behavior mirrors the desktop app's chip: once the scope (account id)
  * has ≥1 prior pick in localStorage, we show a chip that fills the
  * field with the predicted next slot ("Tue, May 25 · 9:00 PM · +1d").
- * Click to apply, ✕ next to a populated field clears it.
+ * Click to apply; Clear next to a populated field empties it.
  *
  * Empty value === "send immediately" — the parent decides what to do
  * with that. Callers should also call `recordSchedule(scope, value)`
  * after a successful submit so the cadence keeps learning.
  */
 
-import { useMemo, useState, useEffect } from "react";
+import { useId, useMemo, useState, useEffect } from "react";
+import { Clock } from "lucide-react";
+
+import { IfButton, IfHelp, IfLabel } from "@/components/ui/infloww";
+import { IF_FIELD } from "@/components/ui/ifSelect";
+import { cn } from "@/lib/utils";
 
 import {
   describePrediction,
@@ -23,7 +28,7 @@ import {
 } from "@/lib/scheduleHistory";
 
 export function ScheduleField({
-  scope, value, onChange, label = "Schedule (optional)",
+  scope, value, onChange, label = "Schedule",
 }: {
   scope: string | null;
   value: string;
@@ -39,44 +44,41 @@ export function ScheduleField({
 
   const prediction = useMemo(() => predictNext(history), [history]);
 
+  const id = useId();
   return (
-    <div className="space-y-1.5">
-      <label className="text-xs text-fg-dim block">{label}</label>
-      <div className="flex items-center gap-2">
+    <div>
+      <IfLabel htmlFor={id}>{label}</IfLabel>
+      <div className="flex items-center gap-3">
         <input
+          id={id}
           type="datetime-local"
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          className="flex-1 bg-bg border border-border rounded-md px-2 py-1.5 text-base md:text-xs focus:outline-none focus:border-accent"
+          className={cn(IF_FIELD, "h-8 min-w-0 flex-1 px-[11px] outline-none focus:border-accent max-md:text-base")}
         />
         {value && (
-          <button
-            type="button"
-            onClick={() => onChange("")}
-            className="text-xs text-fg-dim hover:text-fg px-2"
-            title="Clear schedule (send immediately)"
-          >
-            ✕
-          </button>
+          <IfButton variant="link" onClick={() => onChange("")} title="Clear schedule (send immediately)">
+            Clear
+          </IfButton>
         )}
       </div>
+      <IfHelp>Optional: leave empty to send now.</IfHelp>
       {prediction && (
-        <button
-          type="button"
+        <IfButton
+          icon={Clock}
           onClick={() => onChange(prediction.value)}
-          className="inline-flex items-center gap-1.5 text-[11px] px-2 py-1 rounded-full border border-border bg-bg-elev-1/40 hover:bg-bg-elev-1 text-fg-dim hover:text-fg"
+          className="mt-2"
           title={
             prediction.fromDelta
               ? `Based on a ${prediction.intervalLabel} cadence learned from your recent picks`
               : "Suggested as next day at the same time"
           }
         >
-          <span>⏱</span>
           <span>{describePrediction(prediction.value)}</span>
           {prediction.fromDelta && (
-            <span className="opacity-70">+{prediction.intervalLabel}</span>
+            <span className="text-muted">+{prediction.intervalLabel}</span>
           )}
-        </button>
+        </IfButton>
       )}
     </div>
   );

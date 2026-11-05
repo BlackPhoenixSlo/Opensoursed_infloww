@@ -10,6 +10,8 @@ import { useState } from "react";
 import { Info } from "lucide-react";
 
 import { type VaultList } from "@/lib/relay";
+import { IfButton, IfLabel, IfModal } from "@/components/ui/infloww";
+import { IF_FIELD } from "@/components/ui/ifSelect";
 import { cn } from "@/lib/utils";
 
 /** Step 3's per-file columns (growth-vault-pro#109), each a key of `RowMeta`. */
@@ -81,6 +83,7 @@ export function MetaField({
   disabled,
   multiline = false,
   className,
+  id,
 }: {
   field: MetaKey;
   label: string;
@@ -90,10 +93,13 @@ export function MetaField({
   disabled?: boolean;
   multiline?: boolean;
   className?: string;
+  /** For a label above it (`htmlFor`). */
+  id?: string;
 }) {
   if (field === "category") {
     return (
       <select
+        id={id}
         aria-label={label}
         value={value}
         disabled={disabled}
@@ -112,6 +118,7 @@ export function MetaField({
   if (field === "notes" && multiline) {
     return (
       <textarea
+        id={id}
         aria-label={label}
         rows={3}
         value={value}
@@ -124,6 +131,7 @@ export function MetaField({
   }
   return (
     <input
+      id={id}
       aria-label={label}
       value={value}
       disabled={disabled}
@@ -167,8 +175,8 @@ export function BatchEditModal({
   };
   const chip = (on: boolean) =>
     cn(
-      "rounded-full border px-3 py-1 text-xs",
-      on ? "border-accent bg-accent/15 text-accent" : "border-border text-fg-dim hover:text-fg",
+      "h-8 rounded-md border px-[15px] text-[14px] transition-colors",
+      on ? "border-accent bg-accent/10 text-accent" : "border-border text-fg hover:border-accent hover:text-accent",
     );
   const shown = CRITERIA.filter((c) => all || criteria.includes(c.key));
   const save = () => {
@@ -176,79 +184,64 @@ export function BatchEditModal({
     for (const c of shown) out[c.key] = values[c.key] ?? "";
     onSave(out);
   };
+  const field = (key: MetaKey) =>
+    cn(IF_FIELD, "w-full px-[11px] outline-none placeholder:text-muted focus:border-accent", key === "notes" ? "py-1" : "h-8");
   return (
-    <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4"
-      onKeyDown={(e) => e.key === "Escape" && onClose()}
+    <IfModal
+      title="Batch edit media"
+      width={600}
+      onClose={onClose}
+      footer={
+        <>
+          <IfButton onClick={onClose}>Cancel</IfButton>
+          <IfButton variant="primary" onClick={save}>Save</IfButton>
+        </>
+      }
     >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="vault-batch-edit-title"
-        className="w-full max-w-[600px] rounded-lg border border-border bg-panel p-6 shadow-2xl"
-      >
-        <h2 id="vault-batch-edit-title" className="text-base font-medium">
-          Batch edit media
-        </h2>
-        <div className="mt-4 flex items-center gap-1 text-sm font-medium">
-          <span>Select criteria</span>
-          <span title="Select the criteria you want to batch-edit" className="text-fg-dim">
-            <Info size={14} aria-hidden />
-          </span>
-        </div>
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <button type="button" aria-pressed={all} onClick={() => setCriteria([])} className={chip(all)}>
-            All
-          </button>
-          <span aria-hidden className="h-4 w-px bg-border" />
-          {CRITERIA.map((c) => (
-            <button
-              key={c.key}
-              type="button"
-              aria-pressed={criteria.includes(c.key)}
-              onClick={() => toggle(c.key)}
-              className={chip(criteria.includes(c.key))}
-            >
-              {"chip" in c ? c.chip : c.label}
-            </button>
-          ))}
-        </div>
-        <div className="mt-5 border-t border-border pt-4">
-          <div className="mb-3 text-sm font-medium">Edit</div>
-          <div className="space-y-4">
-            {shown.map((c) => (
-              <div key={c.key} className="flex items-start gap-4">
-                <span className="w-32 shrink-0 pt-1.5 text-xs">{c.label}</span>
-                <MetaField
-                  field={c.key}
-                  label={c.label}
-                  value={values[c.key] ?? ""}
-                  onChange={(v) => setValues((cur) => ({ ...cur, [c.key]: v }))}
-                  folders={folders}
-                  multiline
-                  className="w-full rounded border border-border bg-bg px-2 py-1.5 text-xs"
-                />
-              </div>
-            ))}
-          </div>
-        </div>
-        <p className="mt-4 flex items-center gap-2 rounded bg-bg-elev-1 px-3 py-2 text-xs">
-          <Info size={14} aria-hidden className="shrink-0 text-fg-dim" />
-          Saving will update the details for all selected media
-        </p>
-        <div className="mt-5 flex justify-end gap-2">
-          <button type="button" onClick={onClose} className="rounded border border-border px-3 py-1.5 text-xs">
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={save}
-            className="rounded bg-accent px-3 py-1.5 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            Save
-          </button>
-        </div>
+      <div className="mb-3 flex items-center gap-1">
+        <span>Select criteria</span>
+        <span title="Select the criteria you want to batch-edit" className="text-muted">
+          <Info size={14} aria-hidden />
+        </span>
       </div>
-    </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="button" aria-pressed={all} onClick={() => setCriteria([])} className={chip(all)}>
+          All
+        </button>
+        <span aria-hidden className="h-4 w-px bg-border" />
+        {CRITERIA.map((c) => (
+          <button
+            key={c.key}
+            type="button"
+            aria-pressed={criteria.includes(c.key)}
+            onClick={() => toggle(c.key)}
+            className={chip(criteria.includes(c.key))}
+          >
+            {"chip" in c ? c.chip : c.label}
+          </button>
+        ))}
+      </div>
+      <div className="mt-6 border-t border-border pt-6">
+        {shown.map((c) => (
+          <div key={c.key} className="mb-6">
+            <IfLabel htmlFor={`batch-${c.key}`}>{c.label}</IfLabel>
+            <MetaField
+              id={`batch-${c.key}`}
+              field={c.key}
+              label={c.label}
+              value={values[c.key] ?? ""}
+              onChange={(v) => setValues((cur) => ({ ...cur, [c.key]: v }))}
+              folders={folders}
+              multiline
+              className={field(c.key)}
+            />
+          </div>
+        ))}
+      </div>
+      <p className="flex items-center gap-2 text-[12px] text-muted">
+        <Info size={14} aria-hidden className="shrink-0" />
+        Saving will update the details for all selected media
+      </p>
+    </IfModal>
   );
 }

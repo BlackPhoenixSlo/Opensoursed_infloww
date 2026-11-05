@@ -6,9 +6,9 @@
  * records (`/admin/stats/sales-records`), Fan reports' Top fans
  * (`/admin/stats/fan-report`), the Tips tab (`/admin/tips-list`) and Top
  * tippers (`/admin/top-tippers`). The caller builds the path and its query
- * string, `format=csv` included. `look="infloww"` draws Infloww's outline
- * button (`IfButton`) with the caller's label and glyph; the default is our
- * secondary button.
+ * string, `format=csv` included. Both looks are Infloww's outline button
+ * (`IfButton`) with the caller's label and glyph; `look="legacy"` (the
+ * default) also says "Starting…" while the click debounces.
  *
  * Why an `<a download>` anchor click, NOT fetch().blob():
  *   • fetch().blob() materializes the whole body in JS memory before
@@ -30,7 +30,6 @@ import { useState } from "react";
 import { Download, type LucideIcon } from "lucide-react";
 
 import { IfButton } from "@/components/ui/infloww";
-import { Button } from "@/components/ui/primitives";
 import { useActionAllowed } from "@/components/shell/useGrantedPages";
 import { resolveShareToken } from "@/lib/shareToken";
 
@@ -49,7 +48,7 @@ interface Props {
   label?: string;
   /** The glyph before it; the download arrow when absent. */
   icon?: LucideIcon;
-  /** `infloww`: Infloww's outline button (the Analytics pages); `legacy` (the default): ours. */
+  /** `legacy` (the default) shows "Starting…" while busy; `infloww` (the Analytics pages) keeps the label. */
   look?: "legacy" | "infloww";
 }
 
@@ -97,16 +96,8 @@ export default function CsvExportButton({
     );
   }
   return (
-    <Button
-      type="button"
-      variant="secondary"
-      size="sm"
-      onClick={onClick}
-      disabled={disabled || busy}
-      title={title}
-    >
-      <Icon size={14} className="inline-block mr-1" aria-hidden />
+    <IfButton icon={Icon} onClick={onClick} disabled={disabled || busy} title={title}>
       {busy ? "Starting…" : label}
-    </Button>
+    </IfButton>
   );
 }

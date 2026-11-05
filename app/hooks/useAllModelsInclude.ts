@@ -25,8 +25,8 @@
  * Surfaces (the composers' shared "which models" chip set; the top bar's
  * model filter that once also edited it is gone, and Messages Pro's All
  * Models no longer reads it):
- *   • MassMessageComposer, PostComposer and PremadeComposer all-models
- *     chip strips (toggle) and their recipient lists.
+ *   • MassMessageComposer and PostComposer all-models chip strips (toggle)
+ *     and their recipient lists.
  *   • AccountPicker "Post as:" options.
  */
 

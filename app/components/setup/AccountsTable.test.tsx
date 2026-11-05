@@ -226,7 +226,7 @@ describe("AccountsTable Creator avatar — no Display image picked", () => {
     relayGet.mockImplementation((path: string) => {
       if (path === "/admin/accounts") return Promise.resolve({ accounts, active_account_id: null });
       if (path.startsWith("/health")) return Promise.resolve({ ok: true, accounts: [] });
-      if (path === "/api/of/v2/users/me") return Promise.resolve({ avatar: "https://public.onlyfans.com/files/a/av.jpg" });
+      if (path === "/api/of/v2/users/me") return Promise.resolve({ id: "acct-of", avatar: "https://public.onlyfans.com/files/a/av.jpg" });
       return Promise.resolve({});
     });
   }

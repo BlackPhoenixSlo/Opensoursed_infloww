@@ -2,8 +2,10 @@
 
 import { PremadeForm } from "@/components/compose/PremadeForm";
 import type { Kind } from "@/components/compose/premadeRows";
+import { EDITOR_MODAL } from "@/components/automations/automationPage";
+import { IfModal } from "@/components/ui/infloww";
 
-/** Modal wrapper around PremadeForm in return-payload (compose) mode. */
+/** The ready-made rule's content dialog: PremadeForm's body and its Reset / Use in rule footer in an IfModal. */
 export function ComposeModal({
   kind,
   accountId,
@@ -20,31 +22,18 @@ export function ComposeModal({
   const title =
     kind === "auto_posts" ? "Compose auto posts" : "Compose premade mass";
   return (
-    <div className="fixed inset-0 z-50 bg-black/50 grid place-items-center p-4" onClick={onClose}>
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-[640px] max-h-[90vh] flex flex-col bg-panel border border-border rounded-xl shadow-2xl"
-      >
-        <header className="px-4 py-3 border-b border-border flex items-center justify-between">
-          <h2 className="text-sm font-semibold">{title}</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-fg-dim hover:text-fg text-lg leading-none w-11 h-11 -mr-2 -my-2 grid place-items-center shrink-0 md:w-auto md:h-auto md:mr-0 md:my-0 md:inline"
-            title="Close"
-          >
-            ×
-          </button>
-        </header>
-        <div className="flex-1 overflow-y-auto p-4">
-          <PremadeForm
-            kind={kind}
-            forcedAccountId={accountId}
-            initialPayload={initialPayload}
-            onComposePayload={onComposePayload}
-          />
-        </div>
-      </div>
-    </div>
+    <PremadeForm
+      kind={kind}
+      forcedAccountId={accountId}
+      initialPayload={initialPayload}
+      onComposePayload={onComposePayload}
+      frame={({ body, footer, dirty }) => (
+        // Escape never drops an edited draft; × and Cancel still close.
+        <IfModal width={722} title={title} onClose={onClose} keyboard={!dirty} className={EDITOR_MODAL}
+          footer={footer}>
+          {body}
+        </IfModal>
+      )}
+    />
   );
 }

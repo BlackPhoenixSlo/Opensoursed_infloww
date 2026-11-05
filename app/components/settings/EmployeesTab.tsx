@@ -11,7 +11,7 @@
  * on #151515 on the right. Picking a tree node filters the list to that group (the root, the Agency, is every group);
  * on a phone the tree folds into a group select above the filters.
  *
- * Title row: the picked node's name with the counts (our extra), "Manage roles & permissions →" (Role Settings, where
+ * Title row: the picked node's name with the counts (our extra), "Manage roles & permissions" (Role Settings, where
  * the Admin / Manager / Chatter / VA presets are edited; our extra), "Batch actions" (outlined; with nobody selected
  * it warns "Select at least one employee", as Infloww does) and "+ Add employee". One line of labelled filters: By
  * employee, By Creator, By status (Activated / Deactivated / Pending), By role (our extra), Reset; they apply as you

@@ -24,7 +24,7 @@ vi.mock("@/components/chat/VaultPicker", () => ({ VaultPicker: () => null }));
 
 import LinkMetaFields, { useLinkMetaFields } from "@/components/growth/LinkMetaFields";
 import { FunnelLaunchPanel } from "@/components/automations/FunnelLaunchPanel";
-import { PremadeForm } from "@/components/compose/PremadeComposer";
+import { PremadeForm } from "@/components/compose/PremadeForm";
 import { makeTestQueryClient } from "@/test-utils";
 
 function ListSelect() {

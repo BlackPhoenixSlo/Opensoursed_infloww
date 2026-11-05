@@ -15,7 +15,7 @@ import { useState } from "react";
 import { Megaphone } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 
-import { Button } from "@/components/ui/primitives";
+import { IfButton } from "@/components/ui/infloww";
 import { relay } from "@/lib/relay";
 
 interface DetectResult {
@@ -58,16 +58,13 @@ export default function GroupMassButton({ accountId, disabled }: Props) {
   };
 
   return (
-    <Button
-      type="button"
-      variant="secondary"
-      size="sm"
+    <IfButton
+      icon={Megaphone}
       onClick={onClick}
       disabled={disabled || busy}
       title="Collapse OF-native mass blasts (stored as per-fan rows) into one MASS row each"
     >
-      <Megaphone size={14} className="inline-block mr-1" aria-hidden />
       {busy ? "Grouping…" : "Group mass sends"}
-    </Button>
+    </IfButton>
   );
 }

@@ -2,7 +2,10 @@
 
 /** `infloww.tsx`'s modals (re-exported there): `IfModal`, `HbModal`, and the focus / Escape / modal-stack hook they share. */
 
-import { useEffect, useId, useRef, type ReactNode } from "react";
+import {
+  createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject,
+} from "react";
+import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 
 import { HB_HAIR, HB_TEXT } from "@/components/ui/ifSelect";
@@ -13,29 +16,105 @@ import { cn } from "@/lib/utils";
 
 const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
 
-/** Open modals, top last: only the top one answers Escape and traps Tab. */
-const modalStack: object[] = [];
+/** A modal layer: its element, read at event time (a portal's node mounts after the layer registers). */
+type Layer = { el: () => HTMLElement | null };
+/** Every registered layer. Which one is on top is read from the DOM when a key arrives, never from mount order:
+ *  a nested modal registers before the one around it. */
+const layers: Layer[] = [];
+/** Layer boxes leaving in this commit (cleared next microtask): an opener inside one is not given focus back. */
+const leaving = new Set<HTMLElement>();
+
+const elOf = (l: Layer) => l.el() as HTMLElement;
+const liveLayers = () => layers.filter((l) => l.el()?.isConnected);
+
+/** The top of `list` (all live): the latest in document order. A nested layer follows the one it is inside, and a
+ *  portal opened later is appended after the rest. */
+function topOf(list: Layer[]): Layer | null {
+  let top: Layer | null = null;
+  for (const l of list) {
+    if (!top || elOf(top).compareDocumentPosition(elOf(l)) & Node.DOCUMENT_POSITION_FOLLOWING) top = l;
+  }
+  return top;
+}
+
+/** Registers `layer` while mounted (a layout effect: its cleanup still sees the DOM). Returns "is it on top". */
+function useLayer(layer: Layer, onLeave: (wasTop: boolean, survivors: Layer[]) => void) {
+  const leaveRef = useRef(onLeave);
+  useLayoutEffect(() => {
+    leaveRef.current = onLeave;
+  });
+  useLayoutEffect(() => {
+    layers.push(layer);
+    return () => {
+      const el = layer.el();
+      // The ones staying: not this layer, nor one inside it (that leaves with it).
+      const survivors = liveLayers().filter((l) => l !== layer && !(el && el.contains(elOf(l))));
+      const wasTop = !!el?.isConnected && topOf([...survivors, layer]) === layer;
+      layers.splice(layers.indexOf(layer), 1);
+      if (el) {
+        leaving.add(el);
+        queueMicrotask(() => leaving.delete(el));
+      }
+      leaveRef.current(wasTop, survivors);
+    };
+  }, [layer]);
+  return useCallback(() => layers.includes(layer) && topOf(liveLayers()) === layer, [layer]);
+}
+
+/** Is `el` the box of the top modal layer now (a layer's own extra key handlers gate on it)? */
+export function isTopModal(el: HTMLElement | null): boolean {
+  const top = topOf(liveLayers());
+  return !!el && !!top && top.el() === el;
+}
 
 /**
- * The one dialog hook both modal looks share: focus moves into the box (unless a child already took it with
- * `autoFocus`), Tab and Shift+Tab cycle inside it, Escape closes when `keyboard`, and focus returns to the opener.
+ * The one dialog hook the modals and the image lightbox share: focus moves into the box (unless a child already
+ * took it with `autoFocus`), Tab and Shift+Tab cycle inside it, Escape closes when `keyboard`, all only while it is
+ * the top layer. On unmount, if this was the top, focus goes back to the opener when it is in the layer now on top
+ * (or no layer is left), else to that layer's box; under another layer it stays there. `ref`: the box's ref, when
+ * the caller needs it too.
  */
-function useModalFocus(onClose: () => void, keyboard: boolean) {
-  const boxRef = useRef<HTMLDivElement>(null);
+export function useModalFocus<T extends HTMLElement = HTMLDivElement>(
+  onClose: () => void, keyboard: boolean, ref?: RefObject<T | null>,
+) {
+  const ownRef = useRef<T>(null);
+  const boxRef = ref ?? ownRef;
   const closeRef = useRef(onClose);
   const keyboardRef = useRef(keyboard);
+  // Read at the first render, before a child's `autoFocus` moves it.
+  const [opener] = useState(() => {
+    // Server render: no DOM, no opener.
+    if (typeof document === "undefined" || typeof HTMLElement === "undefined") return null;
+    const at = document.activeElement;
+    return at instanceof HTMLElement && at !== document.body ? at : null;
+  });
+  const [layer] = useState<Layer>(() => ({ el: () => boxRef.current }));
+  const isTop = useLayer(layer, (wasTop, survivors) => {
+    const top = topOf(survivors);
+    const gone = (n: Node) => [...leaving].some((b) => b.contains(n));
+    // Back to the opener only where keys still work: no layer stays, or the opener is in the one on top.
+    if (wasTop && opener?.isConnected && !gone(opener) && (!top || elOf(top).contains(opener))) {
+      opener.focus();
+      return;
+    }
+    if (!top) return;
+    if (wasTop) { elOf(top).focus(); return; }
+    const at = document.activeElement;
+    // Focus left with this layer (or was never in one): into the top one staying.
+    if (!at || gone(at) || !survivors.some((l) => elOf(l).contains(at))) elOf(top).focus();
+  });
   useEffect(() => {
     closeRef.current = onClose;
     keyboardRef.current = keyboard;
   });
-  useEffect(() => {
-    const token = {};
-    modalStack.push(token);
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  useLayoutEffect(() => {
     const box = boxRef.current;
     if (box && !box.contains(document.activeElement)) box.focus();
     const onKey = (e: KeyboardEvent) => {
-      if (modalStack[modalStack.length - 1] !== token || !box) return;
+      if (!box || !isTop()) return;
+      // Focus in a portaled picker or popover outside the box (emoji, templates, Radix) is that widget's: leave its keys.
+      const at = document.activeElement;
+      if (at && at !== document.body && at !== document.documentElement && !box.contains(at)) return;
       if (e.key === "Escape" && keyboardRef.current) {
         e.preventDefault();
         closeRef.current();
@@ -44,18 +123,13 @@ function useModalFocus(onClose: () => void, keyboard: boolean) {
         if (!items.length) { e.preventDefault(); box.focus(); return; }
         const first = items[0];
         const last = items[items.length - 1];
-        const at = document.activeElement;
         if (e.shiftKey && (at === first || at === box)) { e.preventDefault(); last.focus(); }
         else if (!e.shiftKey && (at === last || !box.contains(at))) { e.preventDefault(); first.focus(); }
       }
     };
     document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("keydown", onKey);
-      modalStack.splice(modalStack.indexOf(token), 1);
-      if (opener?.isConnected) opener.focus();
-    };
-  }, []);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [isTop, boxRef]);
   return boxRef;
 }
 
@@ -75,6 +149,22 @@ type ModalProps = {
   className?: string;
 };
 
+/** An editor drawn inside a caller's `IfModal` puts its buttons in that modal's footer: the caller provides the
+ *  footer node it drew (a `display:contents` span in `footer`), the editor wraps its buttons in `EditorFooter`. */
+export const FooterSlotContext = createContext<HTMLElement | null | undefined>(undefined);
+
+/** The editor's buttons: portaled into the caller's footer slot (none drawn until it mounts), or inline under the
+ *  body when the editor stands alone. A submit button in it needs `form={id}`: its node is outside the form. */
+export function EditorFooter({ children }: { children: ReactNode }) {
+  const slot = useContext(FooterSlotContext);
+  if (slot === undefined) return <div className="mt-4 flex flex-wrap items-center justify-end gap-3">{children}</div>;
+  return slot ? createPortal(children, slot) : null;
+}
+
+/** IfModal's mask and box surfaces, for the few dialogs that stay on Radix (they add their own position / z). */
+export const IF_MODAL_MASK = "bg-black/70";
+export const IF_MODAL_BOX = "rounded-[10px] bg-[#1f1f1f] text-fg shadow-2xl outline-none [html[data-theme=light]_&]:bg-white";
+
 const widthStyle = (width: number) => ({ width: `min(${width}px, calc(100vw - 32px))` });
 
 /** Both modals' mask: it pops in (the mask fades, the box scales from 0.96, globals.css `pop-*`) and leaves on a copy
@@ -83,7 +173,7 @@ function ModalMask({ children }: { children: ReactNode }) {
   const maskRef = useRef<HTMLDivElement>(null);
   useExitGhost(true, maskRef);
   return (
-    <div ref={maskRef} className="pop-backdrop fixed inset-0 z-50 grid place-items-center overflow-y-auto bg-black/70 p-4">
+    <div ref={maskRef} className={cn("pop-backdrop fixed inset-0 z-50 grid place-items-center overflow-y-auto p-4", IF_MODAL_MASK)}>
       {children}
     </div>
   );
@@ -104,8 +194,7 @@ export function IfModal({ title, label, width = 520, footer, onClose, closable =
         aria-label={title ? undefined : label}
         tabIndex={-1}
         style={widthStyle(width)}
-        className={cn("pop-modal relative flex max-h-[calc(100vh-32px)] flex-col rounded-[10px] bg-[#1f1f1f] outline-none shadow-2xl",
-          "[html[data-theme=light]_&]:bg-white", className)}
+        className={cn("pop-modal relative flex max-h-[calc(100vh-32px)] flex-col", IF_MODAL_BOX, className)}
       >
         {closable && (
           <button type="button" aria-label="Close" onClick={onClose}
@@ -117,7 +206,7 @@ export function IfModal({ title, label, width = 520, footer, onClose, closable =
           <h2 id={titleId} className={cn("px-6 pt-[22px] text-[16px] font-semibold text-fg", closable && "pr-12")}>{title}</h2>
         )}
         <div className="min-h-0 flex-1 overflow-y-auto p-6 text-[14px] text-fg">{children}</div>
-        {footer && <div className="flex items-center justify-end gap-2 px-6 pb-5">{footer}</div>}
+        {footer && <div className="flex flex-wrap items-center justify-end gap-2 px-6 pb-5">{footer}</div>}
       </div>
     </ModalMask>
   );

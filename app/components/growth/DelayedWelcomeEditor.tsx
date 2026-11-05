@@ -29,7 +29,8 @@
 
 import { useState } from "react";
 
-import { Button, Input } from "@/components/ui/primitives";
+import { IfButton, IfHelp, IfInput, IfLearn, IfSwitch } from "@/components/ui/infloww";
+import { EditorFooter } from "@/components/ui/ifModal";
 import { useAutomationRules, useCreateRule, useUpdateRule } from "@/hooks/useAutomations";
 
 import {
@@ -138,38 +139,34 @@ export function DelayedWelcomeEditor({ accountId }: { accountId: string | null }
     }
   }
 
-  if (rulesQ.isLoading) return <p className="text-sm text-fg-dim">Loading…</p>;
+  if (rulesQ.isLoading) return <p className="text-[14px] text-fg-dim">Loading…</p>;
   return (
-    <div className="space-y-3 text-sm">
-      <p className="text-fg-dim">
-        Sends every new subscriber one welcome. Write it below; use {"{name}"} for the fan&apos;s name. Left empty,
-        it sends the welcome set up in Brain.
-        {!rule && " This Creator has none yet: Save creates it."}
-      </p>
-      <div className="flex flex-wrap items-end gap-4">
+    <div className="space-y-4 text-[14px]">
+      <div className="flex items-center justify-between gap-4">
+        <p className="text-fg-dim">
+          Sends every new subscriber one welcome.
+          {!rule && " This Creator has none yet: Save creates it."}
+        </p>
+        <IfLearn tip={<>
+          Write the welcome below; use {"{name}"} for the fan&apos;s name. Left empty, it sends the welcome set up in
+          Brain. The media, price and Auto-unsend go out with your message; the welcome set up in Brain keeps its own
+          image. The delay counts from the subscribe, checked as often as set here.
+        </>} />
+      </div>
+      <div className="flex flex-wrap items-center gap-6">
+        <IfSwitch label="Enabled" checked={enabled} onChange={(on) => edit({ enabled: on })} />
         <label className="flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={enabled}
-            onChange={(e) => edit({ enabled: e.target.checked })}
-            className="accent-accent"
-          />
-          Enabled
-        </label>
-        <label className="flex items-center gap-1.5">
           <span>Check every (minutes)</span>
-          <Input
+          <IfInput
             type="number"
             min={1}
             value={String(minutes)}
             onChange={(e) => edit({ minutes: Math.max(1, Number(e.target.value) || 1) })}
-            className="!w-20"
+            className="w-20"
           />
         </label>
       </div>
-      <p className="text-[11px] text-fg-dim">
-        It checks for new subscribers this often, so a new fan is welcomed within this many minutes.
-      </p>
+      <IfHelp className="-mt-2">A new fan is welcomed within this many minutes.</IfHelp>
       {/* Infloww's editor placeholder (index.9f50f370.js @15332026). */}
       <VariantsField
         id="dw-message"
@@ -188,36 +185,26 @@ export function DelayedWelcomeEditor({ accountId }: { accountId: string | null }
           delay
         />
       )}
-      <p className="text-[11px] text-fg-dim">
-        The media, price and Auto-unsend go out with your message; the welcome set up in Brain keeps its own image.
-        The delay counts from the subscribe, checked as often as above.
-      </p>
       {problem && <p className="text-warn">{problem}</p>}
 
       <FollowUpsField id="dw-fu" steps={cur.followUps} onChange={(followUps) => edit({ followUps })} />
-      <label className="flex items-center gap-2">
-        <input
-          type="checkbox"
-          checked={afterOf}
-          onChange={(e) => edit({ afterOf: e.target.checked })}
-          className="accent-accent"
-        />
-        OnlyFans&apos; welcome message is message 1: while it is on, send only the follow-ups
-      </label>
-      {afterOf && (
-        <p className="text-[11px] text-fg-dim">
-          Checked once per run on OnlyFans. While OnlyFans&apos; welcome message is off or empty, the welcome above goes
-          out as usual.
-          {!cur.followUps.some((f) => f.text.trim()) && " With no follow-up, a fan OnlyFans welcomes gets nothing from us."}
-        </p>
-      )}
-
-      <div className="flex items-center gap-3">
-        <Button size="sm" variant="primary" onClick={save} disabled={!accountId || saving || !!problem || invalid}>
-          {saving ? "Saving…" : "Save"}
-        </Button>
-        {msg && <span className="text-[11px] text-fg-dim">{msg}</span>}
+      <div>
+        <IfSwitch label="OnlyFans' welcome message is message 1: while it is on, send only the follow-ups"
+          checked={afterOf} onChange={(on) => edit({ afterOf: on })} />
+        {afterOf && (
+          <IfHelp>
+            Checked once per run on OnlyFans; while it is off or empty, the welcome above goes out as usual.
+            {!cur.followUps.some((f) => f.text.trim()) && " With no follow-up, a fan OnlyFans welcomes gets nothing from us."}
+          </IfHelp>
+        )}
       </div>
+
+      <EditorFooter>
+        {msg && <span className="mr-auto text-fg-dim">{msg}</span>}
+        <IfButton variant="primary" onClick={save} disabled={!accountId || saving || !!problem || invalid}>
+          {saving ? "Saving…" : "Save"}
+        </IfButton>
+      </EditorFooter>
     </div>
   );
 }

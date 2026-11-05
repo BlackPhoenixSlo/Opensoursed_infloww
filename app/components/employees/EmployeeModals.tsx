@@ -21,12 +21,12 @@
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { EllipsisVertical } from "lucide-react";
 
-import { Button } from "@/components/ui/primitives";
-import { IfModal } from "@/components/ui/infloww";
+import { IfButton, IfHelp, IfInput, IfLabel, IfModal, IfNativeSelect, IfSegmented } from "@/components/ui/infloww";
+import { EditorFooter, FooterSlotContext } from "@/components/ui/ifModal";
 import { AccessEditor } from "@/components/employees/EmployeeAccess";
 import {
   buildEmployeeRequest, canSaveEmployee, picksNoCreators, type SignIn,
@@ -42,27 +42,35 @@ export const ROLE_SETTINGS_HREF = "/settings/roles";
 export function ManageRolesLink({ className }: { className?: string }) {
   return (
     <Link href={ROLE_SETTINGS_HREF} className={cn("text-xs text-accent hover:underline whitespace-nowrap", className)}>
-      Manage roles &amp; permissions →
+      Manage roles &amp; permissions
     </Link>
   );
 }
 
-const INPUT = "w-full bg-bg border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:border-accent";
-const LABEL = "block text-xs font-medium text-fg-dim mb-1";
 
-/** Infloww's antd modal (`IfModal`, 440 wide, `wide` 640) while `open`; `onOpenChange(false)` closes it. */
-export function Modal({ open, onOpenChange, title, children, wide = false }: {
+/** Infloww's antd modal (`IfModal`, 440 wide, `wide` 640) while `open`; `onOpenChange(false)` closes it.
+ *  `footerSlot`: the form inside puts its buttons in the modal's footer (`EditorFooter`). */
+export function Modal({ open, onOpenChange, title, children, wide = false, footerSlot = false }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   title: string;
   children: React.ReactNode;
   wide?: boolean;
+  footerSlot?: boolean;
 }) {
+  const [slot, setSlot] = useState<HTMLElement | null>(null);
   if (!open) return null;
-  return <IfModal title={title} width={wide ? 640 : 440} onClose={() => onOpenChange(false)}>{children}</IfModal>;
+  return (
+    <IfModal title={title} width={wide ? 640 : 440} onClose={() => onOpenChange(false)}
+      footer={footerSlot ? <span ref={setSlot} className="contents" /> : undefined}>
+      {footerSlot ? <FooterSlotContext.Provider value={slot}>{children}</FooterSlotContext.Provider> : children}
+    </IfModal>
+  );
 }
 
-function Footer({ error, saving, canSave, label, onCancel }: {
+function Footer({ form, error, saving, canSave, label, onCancel }: {
+  /** The form's id: the footer sits outside it. */
+  form: string;
   /** The save mutation's error (null/undefined: none). */
   error: unknown;
   saving: boolean;
@@ -71,11 +79,11 @@ function Footer({ error, saving, canSave, label, onCancel }: {
   onCancel: () => void;
 }) {
   return (
-    <div className="mt-5 flex items-center justify-end gap-2">
-      {error != null && <span role="alert" className="mr-auto text-err text-xs">{errText(error, "save failed")}</span>}
-      <Button size="sm" variant="ghost" type="button" onClick={onCancel}>Cancel</Button>
-      <Button size="sm" type="submit" disabled={!canSave || saving}>{saving ? "Saving…" : label}</Button>
-    </div>
+    <EditorFooter>
+      {error != null && <span role="alert" className="mr-auto text-[12px] text-err">{errText(error, "save failed")}</span>}
+      <IfButton onClick={onCancel}>Cancel</IfButton>
+      <IfButton type="submit" form={form} variant="primary" disabled={!canSave || saving}>{saving ? "Saving…" : label}</IfButton>
+    </EditorFooter>
   );
 }
 
@@ -94,13 +102,13 @@ function RoleSelect({ id, roles, value, onChange }: {
 }) {
   return (
     <div>
-      <div className="flex items-baseline justify-between">
-        <label htmlFor={id} className={LABEL}>Role</label>
+      <div className="flex items-baseline justify-between gap-2">
+        <IfLabel htmlFor={id}>Role</IfLabel>
         <ManageRolesLink />
       </div>
-      <select id={id} value={value} onChange={(e) => onChange(e.target.value)} className={INPUT}>
+      <IfNativeSelect id={id} value={value} onChange={(e) => onChange(e.target.value)} className="w-full">
         {assignableRoles(roles).map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
-      </select>
+      </IfNativeSelect>
     </div>
   );
 }
@@ -118,16 +126,16 @@ function CreatorPicker({ creators, value, onChange }: {
   };
   return (
     <fieldset>
-      <legend className={LABEL}>Creators</legend>
-      <label className="flex items-center gap-2 text-sm mb-1.5">
+      <legend className="mb-2 block text-[14px] text-fg">Creators</legend>
+      <label className="mb-2 flex items-center gap-2">
         <input type="checkbox" checked={all} onChange={() => onChange(all ? [] : null)} />
         All creators
       </label>
       {!all && (
         <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 max-h-40 overflow-y-auto rounded-md border border-border p-2">
-          {creators.length === 0 && <span className="text-xs text-fg-dim">No creators yet.</span>}
+          {creators.length === 0 && <span className="text-[12px] text-muted">No creators yet.</span>}
           {creators.map((c) => (
-            <label key={c.id} className="flex items-center gap-2 text-sm min-w-0">
+            <label key={c.id} className="flex min-w-0 items-center gap-2">
               <input type="checkbox" checked={(value ?? []).includes(c.id)} onChange={() => flip(c.id)} />
               <span className="truncate">{c.nickname || c.name || c.id}</span>
             </label>
@@ -148,22 +156,23 @@ export interface InviteResp { token: string; expires_at: string; accept_path: st
 
 /** An invite's link to copy and send: from "+ Add employee" by invite link, or a pending row's Resend. */
 function InviteLink({ invite, onDone }: { invite: InviteResp; onDone: () => void }) {
+  const linkId = useId();
   const [copied, setCopied] = useState(false);
   const url = `${typeof window !== "undefined" ? window.location.origin : ""}${invite.accept_path}`;
   return (
-    <div className="space-y-3">
-      <p className="text-sm">
+    <div>
+      <p className="mb-4">
         Send this link to the new employee. They pick a username and password, and join your team with the role
         and creators you chose. It works once and expires {new Date(invite.expires_at).toLocaleString()}.
       </p>
+      <IfLabel htmlFor={linkId}>Invite link</IfLabel>
       <div className="flex items-center gap-2">
-        <input readOnly aria-label="Invite link" value={url} onFocus={(e) => e.currentTarget.select()}
-          className={cn(INPUT, "font-mono text-xs")} />
-        <Button size="sm" type="button" onClick={async () => {
+        <IfInput id={linkId} readOnly value={url} onFocus={(e) => e.currentTarget.select()} className="min-w-0 flex-1" />
+        <IfButton onClick={async () => {
           try { await navigator.clipboard.writeText(url); setCopied(true); } catch { /* select by hand */ }
-        }}>{copied ? "Copied" : "Copy"}</Button>
+        }}>{copied ? "Copied" : "Copy"}</IfButton>
       </div>
-      <div className="flex justify-end"><Button size="sm" type="button" onClick={onDone}>Done</Button></div>
+      <EditorFooter><IfButton variant="primary" onClick={onDone}>Done</IfButton></EditorFooter>
     </div>
   );
 }
@@ -171,7 +180,7 @@ function InviteLink({ invite, onDone }: { invite: InviteResp; onDone: () => void
 /** A pending invite's fresh link after Resend (the old link stops working). */
 export function InviteLinkModal({ invite, onClose }: { invite: InviteResp; onClose: () => void }) {
   return (
-    <Modal open onOpenChange={onClose} title="Invite link">
+    <Modal open onOpenChange={onClose} title="Invite link" footerSlot>
       <InviteLink invite={invite} onDone={onClose} />
     </Modal>
   );
@@ -188,7 +197,7 @@ export function EmployeeFormModal({ employee, roleId, roles, creators, groups, o
   onClose: () => void;
 }) {
   return (
-    <Modal open onOpenChange={onClose} title={employee ? "Edit employee" : "Add employee"} wide>
+    <Modal open onOpenChange={onClose} title={employee ? "Edit employee" : "Add employee"} wide footerSlot>
       <EmployeeForm
         employee={employee}
         initialRole={roleOrChatter(roles, roleId)}
@@ -209,6 +218,7 @@ function EmployeeForm({ employee, initialRole, roles, creators, groups, onDone }
   groups: EmployeeGroup[];
   onDone: () => void;
 }) {
+  const formId = useId();
   const qc = useQueryClient();
   const [signIn, setSignIn] = useState<SignIn>("create");
   const [name, setName] = useState(employee?.display_name ?? "");
@@ -241,50 +251,43 @@ function EmployeeForm({ employee, initialRole, roles, creators, groups, onDone }
   if (invite) return <InviteLink invite={invite} onDone={onDone} />;
 
   return (
-    <form onSubmit={(e) => { e.preventDefault(); if (canSave) saveM.mutate(); }} className="space-y-4">
+    <form id={formId} onSubmit={(e) => { e.preventDefault(); if (canSave) saveM.mutate(); }} className="space-y-4">
       {!employee && (
-        <div role="radiogroup" aria-label="How they sign in" className="flex gap-1 rounded-lg bg-bg p-1 border border-border">
-          {SIGN_IN.map((o) => (
-            <button key={o.key} type="button" role="radio" aria-checked={signIn === o.key}
-              onClick={() => setSignIn(o.key)}
-              className={cn("flex-1 rounded-md px-3 py-1.5 text-sm", signIn === o.key ? "bg-bg-elev-2 text-fg" : "text-fg-dim hover:text-fg")}>
-              {o.label}
-            </button>
-          ))}
-        </div>
+        <IfSegmented aria-label="How they sign in" value={signIn} onChange={setSignIn}
+          options={SIGN_IN.map((o) => ({ value: o.key, label: o.label }))} />
       )}
-      <div className="grid grid-cols-2 gap-4">
-        <div className={cn(employee && "col-span-2")}>
-          <label htmlFor="emp-name" className={LABEL}>Name</label>
-          <input id="emp-name" value={name} onChange={(e) => setName(e.target.value)} maxLength={64}
-            placeholder="Their name on your team" className={INPUT} />
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div className={cn(employee && "sm:col-span-2")}>
+          <IfLabel htmlFor="emp-name" required>Name</IfLabel>
+          <IfInput id="emp-name" value={name} onChange={(e) => setName(e.target.value)} maxLength={64}
+            placeholder="Their name on your team" className="w-full" />
         </div>
         {!employee && signIn !== "invite" && (
           <div>
-            <label htmlFor="emp-username" className={LABEL}>Username</label>
-            <input id="emp-username" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="off"
-              placeholder={signIn === "existing" ? "Their existing username" : "3-32 chars, a-z 0-9 . _ -"} className={INPUT} />
+            <IfLabel htmlFor="emp-username" required>Username</IfLabel>
+            <IfInput id="emp-username" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="off"
+              placeholder={signIn === "existing" ? "Their existing username" : "3-32 chars, a-z 0-9 . _ -"} className="w-full" />
           </div>
         )}
         {!employee && signIn === "create" && (
           <div>
-            <label htmlFor="emp-password" className={LABEL}>Password</label>
-            <input id="emp-password" type="password" value={password} onChange={(e) => setPassword(e.target.value)}
-              autoComplete="new-password" placeholder="At least 6 characters" className={INPUT} />
+            <IfLabel htmlFor="emp-password" required>Password</IfLabel>
+            <IfInput id="emp-password" type="password" value={password} onChange={(e) => setPassword(e.target.value)}
+              autoComplete="new-password" placeholder="At least 6 characters" className="w-full" />
           </div>
         )}
         <RoleSelect id="emp-role" roles={roles} value={role} onChange={setRole} />
         <div>
-          <label htmlFor="emp-group" className={LABEL}>Group</label>
-          <select id="emp-group" value={groupId} onChange={(e) => setGroupId(e.target.value)} className={INPUT}>
+          <IfLabel htmlFor="emp-group">Group</IfLabel>
+          <IfNativeSelect id="emp-group" value={groupId} onChange={(e) => setGroupId(e.target.value)} className="w-full">
             <option value="">No group</option>
             {groups.map((g) => <option key={g.id} value={String(g.id)}>{g.name}</option>)}
-          </select>
+          </IfNativeSelect>
         </div>
       </div>
       <CreatorPicker creators={creators} value={accountIds} onChange={setAccountIds} />
-      {noCreators && <p className="text-xs text-fg-dim">Pick at least one creator, or All creators.</p>}
-      <Footer error={saveM.error} saving={saveM.isPending} canSave={canSave}
+      {noCreators && <IfHelp className="-mt-2">Pick at least one creator, or All creators.</IfHelp>}
+      <Footer form={formId} error={saveM.error} saving={saveM.isPending} canSave={canSave}
         label={kind === "setup" ? "Save" : kind === "invite" ? "Create invite link" : "Add employee"} onCancel={onDone} />
     </form>
   );
@@ -298,7 +301,7 @@ export function RoleModal({ employee, roleId, roles, onClose }: {
   onClose: () => void;
 }) {
   return (
-    <Modal open onOpenChange={onClose} title="Set role">
+    <Modal open onOpenChange={onClose} title="Set role" footerSlot>
       <RoleForm employee={employee} initial={roleId} roles={roles} onDone={onClose} />
     </Modal>
   );
@@ -310,6 +313,7 @@ function RoleForm({ employee, initial, roles, onDone }: {
   roles: PermissionRole[];
   onDone: () => void;
 }) {
+  const formId = useId();
   const qc = useQueryClient();
   const [role, setRole] = useState(roleOrChatter(roles, initial));
   const saveM = useMutation({
@@ -321,11 +325,11 @@ function RoleForm({ employee, initial, roles, onDone }: {
   });
   const desc = roles.find((r) => r.id === role)?.description;
   return (
-    <form onSubmit={(e) => { e.preventDefault(); saveM.mutate(); }} className="space-y-2">
-      <p className="text-sm text-fg-dim mb-2">{employee.display_name}{employee.username ? ` (@${employee.username})` : ""}</p>
-      <RoleSelect id="role-only" roles={roles} value={role} onChange={setRole} />
-      {desc && <p className="text-xs text-fg-dim">{desc}</p>}
-      <Footer error={saveM.error} saving={saveM.isPending} canSave={role !== initial} label="Save" onCancel={onDone} />
+    <form id={formId} onSubmit={(e) => { e.preventDefault(); saveM.mutate(); }}>
+      <p className="mb-4 text-fg-dim">{employee.display_name}{employee.username ? ` (@${employee.username})` : ""}</p>
+      <RoleSelect id={`${formId}-role`} roles={roles} value={role} onChange={setRole} />
+      {desc && <IfHelp>{desc}</IfHelp>}
+      <Footer form={formId} error={saveM.error} saving={saveM.isPending} canSave={role !== initial} label="Save" onCancel={onDone} />
     </form>
   );
 }
@@ -333,13 +337,14 @@ function RoleForm({ employee, initial, roles, onDone }: {
 /** Reset password: the owner sets the Employee's new password. */
 export function ResetPasswordModal({ employee, onClose }: { employee: Employee; onClose: () => void }) {
   return (
-    <Modal open onOpenChange={onClose} title="Reset password">
+    <Modal open onOpenChange={onClose} title="Reset password" footerSlot>
       <PasswordForm employee={employee} onDone={onClose} />
     </Modal>
   );
 }
 
 function PasswordForm({ employee, onDone }: { employee: Employee; onDone: () => void }) {
+  const formId = useId();
   const [pw, setPw] = useState("");
   const [again, setAgain] = useState("");
   const saveM = useMutation({
@@ -347,33 +352,33 @@ function PasswordForm({ employee, onDone }: { employee: Employee; onDone: () => 
   });
   if (saveM.isSuccess) {
     return (
-      <div className="space-y-4">
-        <p className="text-sm">
+      <div>
+        <p>
           {employee.display_name}&rsquo;s password is changed. Give them the new one; it works from their next sign-in.
         </p>
-        <div className="flex justify-end"><Button size="sm" type="button" onClick={onDone}>Done</Button></div>
+        <EditorFooter><IfButton variant="primary" onClick={onDone}>Done</IfButton></EditorFooter>
       </div>
     );
   }
   const mismatch = again !== "" && again !== pw;
   return (
-    <form onSubmit={(e) => { e.preventDefault(); saveM.mutate(); }} className="space-y-3">
-      <p className="text-sm text-fg-dim">
+    <form id={formId} onSubmit={(e) => { e.preventDefault(); saveM.mutate(); }} className="space-y-4">
+      <p className="text-fg-dim">
         Set a new password for <span className="text-fg">{employee.display_name}</span>
         {employee.username ? <> (<span>@{employee.username}</span>)</> : null}.
       </p>
       <div>
-        <label htmlFor="new-password" className={LABEL}>New password</label>
-        <input id="new-password" type="password" value={pw} onChange={(e) => setPw(e.target.value)}
-          autoComplete="new-password" placeholder="At least 6 characters" className={INPUT} />
+        <IfLabel htmlFor={`${formId}-pw`} required>New password</IfLabel>
+        <IfInput id={`${formId}-pw`} type="password" value={pw} onChange={(e) => setPw(e.target.value)}
+          autoComplete="new-password" placeholder="At least 6 characters" className="w-full" />
       </div>
       <div>
-        <label htmlFor="new-password-again" className={LABEL}>Confirm password</label>
-        <input id="new-password-again" type="password" value={again} onChange={(e) => setAgain(e.target.value)}
-          autoComplete="new-password" className={INPUT} />
+        <IfLabel htmlFor={`${formId}-again`} required>Confirm password</IfLabel>
+        <IfInput id={`${formId}-again`} type="password" value={again} onChange={(e) => setAgain(e.target.value)}
+          autoComplete="new-password" className="w-full" />
+        {mismatch && <div className="mt-1 text-[12px] text-err">The passwords don&rsquo;t match.</div>}
       </div>
-      {mismatch && <p className="text-xs text-err">The passwords don&rsquo;t match.</p>}
-      <Footer error={saveM.error} saving={saveM.isPending} canSave={pw.length >= 6 && pw === again}
+      <Footer form={formId} error={saveM.error} saving={saveM.isPending} canSave={pw.length >= 6 && pw === again}
         label="Reset password" onCancel={onDone} />
     </form>
   );

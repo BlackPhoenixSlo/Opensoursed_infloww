@@ -11,10 +11,10 @@
  * media_files leaves the existing media untouched.
  */
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 
-import { Button, Input } from "@/components/ui/primitives";
+import { IfButton, IfHelp, IfInput, IfLabel, IfModal, IfTextArea } from "@/components/ui/infloww";
 import { sanitizePriceInput } from "@/lib/priceInput";
 import { postPlainText, type OFPost } from "@/hooks/usePosts";
 import { relay } from "@/lib/relay";
@@ -34,6 +34,8 @@ export default function EditPostModal({ post, accountId, onClose, onSaved }: Pro
   const [text, setText] = useState(initialText);
   const [price, setPrice] = useState(initialPrice);
   const [error, setError] = useState<string | null>(null);
+  const textId = useId();
+  const priceId = useId();
 
   const save = useMutation({
     mutationFn: async () => {
@@ -80,75 +82,35 @@ export default function EditPostModal({ post, accountId, onClose, onSaved }: Pro
     onError: (err: Error) => setError(err.message),
   });
 
+  const close = () => { if (!save.isPending) onClose(); };
   return (
-    <div
-      className="fixed inset-0 z-50 bg-black/50 grid place-items-center p-4"
-      onClick={() => { if (!save.isPending) onClose(); }}
+    <IfModal
+      title="Edit post"
+      width={520}
+      onClose={close}
+      footer={<>
+        <IfButton onClick={onClose} disabled={save.isPending}>Cancel</IfButton>
+        <IfButton variant="primary" onClick={() => { setError(null); save.mutate(); }} disabled={save.isPending}>
+          {save.isPending ? "Saving…" : "Save"}
+        </IfButton>
+      </>}
     >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-[520px] max-h-[90vh] flex flex-col bg-panel border border-border rounded-xl shadow-2xl"
-      >
-        <header className="px-4 py-3 border-b border-border flex items-center justify-between">
-          <h2 className="text-sm font-semibold">Edit post</h2>
-          <button
-            type="button"
-            onClick={() => { if (!save.isPending) onClose(); }}
-            className="text-fg-dim hover:text-fg text-lg leading-none"
-            title="Close"
-          >×</button>
-        </header>
-
-        <div className="flex-1 overflow-y-auto p-4 space-y-3">
-          <label className="flex flex-col gap-1">
-            <span className="text-[10px] uppercase tracking-wide text-fg-dim">Text</span>
-            <textarea
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              rows={5}
-              className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-sm text-fg focus:outline-none focus:border-accent resize-y"
-              placeholder="Post text…"
-            />
-          </label>
-
-          <label className="flex flex-col gap-1 w-40">
-            <span className="text-[10px] uppercase tracking-wide text-fg-dim">Price ($, 0 = free)</span>
-            <Input
-              value={price}
-              onChange={(e) => setPrice(sanitizePriceInput(e.target.value))}
-              inputMode="decimal"
-              placeholder="0"
-              className="text-sm"
-            />
-          </label>
-
-          <p className="text-[11px] text-fg-dim">
-            Edits the live OnlyFans post. Setting a price locks the post&apos;s existing media behind
-            the paywall (a text-only post can&apos;t be priced); price 0 makes it free again.
-          </p>
-
-          {error && (
-            <div className="p-2.5 text-sm text-err border border-err/30 bg-err/10 rounded-lg">
-              {error}
-            </div>
-          )}
+      <div className="space-y-4">
+        <div>
+          <IfLabel htmlFor={textId}>Text</IfLabel>
+          <IfTextArea id={textId} value={text} onChange={(e) => setText(e.target.value)} rows={5}
+            placeholder="Post text…" />
         </div>
 
-        <footer className="px-4 py-3 border-t border-border flex items-center justify-end gap-2">
-          <Button type="button" variant="secondary" size="sm" onClick={onClose} disabled={save.isPending}>
-            Cancel
-          </Button>
-          <Button
-            type="button"
-            variant="primary"
-            size="sm"
-            onClick={() => { setError(null); save.mutate(); }}
-            disabled={save.isPending}
-          >
-            {save.isPending ? "Saving…" : "Save"}
-          </Button>
-        </footer>
+        <div>
+          <IfLabel htmlFor={priceId}>Price (USD)</IfLabel>
+          <IfInput id={priceId} value={price} onChange={(e) => setPrice(sanitizePriceInput(e.target.value))}
+            inputMode="decimal" placeholder="0" className="w-40" />
+          <IfHelp>0 = free. A price locks the post&apos;s existing media behind the paywall.</IfHelp>
+        </div>
+
+        {error && <div role="alert" className="text-[14px] text-err">{error}</div>}
       </div>
-    </div>
+    </IfModal>
   );
 }

@@ -13,10 +13,8 @@ import type { VaultMedia } from "@/lib/relay";
 const run = (s: Row[], ...actions: RowsAction[]) => actions.reduce(rowsReducer, s);
 const row = (over: Partial<Row> = {}): Row => ({ ...blankRow(), ...over });
 const media = (id: number) => ({ id, type: "photo" }) as VaultMedia;
-const POSTS: RowCtx = { kind: "auto_posts", allModels: false };
-const MASS: RowCtx = { kind: "mass_premade", allModels: false };
-const POSTS_ALL: RowCtx = { kind: "auto_posts", allModels: true };
-const MASS_ALL: RowCtx = { kind: "mass_premade", allModels: true };
+const POSTS: RowCtx = { kind: "auto_posts" };
+const MASS: RowCtx = { kind: "mass_premade" };
 
 describe("rowsReducer", () => {
   const two = () => [row({ texts: ["a"] }), row({ texts: ["b"] })];
@@ -76,8 +74,6 @@ describe("rowToItem", () => {
     ["media + folder + count", { media: [media(1), media(2)], folderId: "5", mediaCount: "2.7" }, POSTS,
       { media_files: [1, 2], media_folder_id: 5, media_count: 2 }],
     ["media_count needs a pool", { mediaCount: "3" }, POSTS, {}],
-    ["all-models strips media", { texts: ["t"], media: [media(1)], folderId: "5", mediaCount: "2" },
-      POSTS_ALL, { text: "t" }],
     ["delay + price + hours_to_live", { delayMinutes: "30", price: "4.5", hoursToLive: "6" }, POSTS,
       { delay_minutes: 30, price: 4.5, hours_to_live: 6 }],
     ["garbage/zero knobs dropped", { delayMinutes: "x", price: "0", hoursToLive: "-1" }, POSTS, {}],
@@ -99,9 +95,6 @@ describe("rowToItem", () => {
       resend_count: 2, resend_after_hours: 24, exclude_replied_hours: 2, exclude_inbound_hours: 3,
       unread_limit: 10, recent_chat_hours: 5,
     }],
-    ["mass all-models keeps only system audiences", { includes: ["fans", "42"], excludes: ["following", "43"] },
-      MASS_ALL,
-      { online_only: true, user_lists: ["fans"], excluded_user_lists: ["following"] }],
   ])("%s", (_name, over, ctx, want) => {
     expect(rowToItem(row(over), ctx)).toEqual(want);
   });
@@ -111,9 +104,6 @@ describe("rowsToItems", () => {
   it("drops rows with no text and no media; folder-only counts", () => {
     const rows = [row({ texts: [" "] }), row({ texts: ["hi"] }), row({ folderId: "5" })];
     expect(rowsToItems(rows, POSTS)).toEqual([{ text: "hi" }, { media_folder_id: 5 }]);
-  });
-  it("all-models: a media-only row is dropped", () => {
-    expect(rowsToItems([row({ media: [media(1)] })], POSTS_ALL)).toEqual([]);
   });
 });
 
@@ -150,8 +140,6 @@ describe("itemToRow round-trip", () => {
   it.each<[string, Partial<Row>, RowCtx]>([
     ["posts full", FULL, POSTS],
     ["mass full", FULL, MASS],
-    ["posts all-models", FULL, POSTS_ALL],
-    ["mass all-models", FULL, MASS_ALL],
     ["one text", { texts: ["solo"] }, POSTS],
     ["mass blank (online off, no audience)", { includes: [], onlineOnly: false }, MASS],
     ["mass defaults", {}, MASS],
@@ -185,20 +173,17 @@ describe("buildPayload", () => {
   const NO_CYCLE: PostsCycle = { resendCount: "", resendAfterHours: "" };
   const CYCLE: PostsCycle = { resendCount: "3.5", resendAfterHours: "12" };
   const rows = [row({ texts: ["hi"], includes: [], onlineOnly: false })];
-  // Expected key order = origin/main's enqueueFor / buildComposePayload literals.
-  it.each<[string, Row[], PostsCycle, RowCtx, boolean | undefined, string | null]>([
-    ["no usable row → null", [row({ texts: [" "] })], CYCLE, POSTS, false, null],
-    ["posts enqueue", rows, CYCLE, POSTS, true,
-      '{"posts":[{"text":"hi"}],"dry_run":true,"resend_count":3,"resend_after_hours":12}'],
-    ["posts rule (no dry_run)", rows, CYCLE, POSTS, undefined,
+  // Expected key order = origin/main's buildComposePayload literals.
+  it.each<[string, Row[], PostsCycle, RowCtx, string | null]>([
+    ["no usable row → null", [row({ texts: [" "] })], CYCLE, POSTS, null],
+    ["posts rule", rows, CYCLE, POSTS,
       '{"posts":[{"text":"hi"}],"resend_count":3,"resend_after_hours":12}'],
-    ["posts cycle unset → dropped", rows, NO_CYCLE, POSTS, false, '{"posts":[{"text":"hi"}],"dry_run":false}'],
-    ["posts cycle needs count>0 AND hours", rows, { resendCount: "0", resendAfterHours: "12" }, POSTS, undefined,
+    ["posts cycle unset → dropped", rows, NO_CYCLE, POSTS, '{"posts":[{"text":"hi"}]}'],
+    ["posts cycle needs count>0 AND hours", rows, { resendCount: "0", resendAfterHours: "12" }, POSTS,
       '{"posts":[{"text":"hi"}]}'],
-    ["mass enqueue ignores the cycle", rows, CYCLE, MASS, false, '{"messages":[{"text":"hi"}],"dry_run":false}'],
-    ["mass rule", rows, CYCLE, MASS, undefined, '{"messages":[{"text":"hi"}]}'],
-  ])("%s", (_name, rs, cycle, ctx, dryRun, want) => {
-    const p = buildPayload(rs, cycle, ctx, dryRun);
+    ["mass rule ignores the cycle", rows, CYCLE, MASS, '{"messages":[{"text":"hi"}]}'],
+  ])("%s", (_name, rs, cycle, ctx, want) => {
+    const p = buildPayload(rs, cycle, ctx);
     expect(p === null ? null : JSON.stringify(p)).toBe(want);
   });
 });

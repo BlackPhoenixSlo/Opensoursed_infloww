@@ -16,8 +16,12 @@
 
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Braces } from "lucide-react";
 
+import { RawJsonModal } from "@/components/automations/RawJsonModal";
+import { IfButton } from "@/components/ui/infloww";
 import { relay, type RelayContext } from "@/lib/relay";
+import { cn } from "@/lib/utils";
 import { parseJsonObjectOr } from "@/lib/rawJsonReducer";
 
 const BG_CTX: RelayContext = { priority: "background" };
@@ -37,7 +41,7 @@ export function EditRawJsonButton({
   surface,
   accountId,
   className,
-  label = "{ } Edit raw JSON",
+  label = "Edit raw JSON",
 }: {
   surface: ConfigSurface;
   accountId: string | null;
@@ -47,18 +51,16 @@ export function EditRawJsonButton({
   const [open, setOpen] = useState(false);
   return (
     <>
-      <button
-        type="button"
+      <IfButton
+        variant="link"
+        icon={Braces}
         disabled={!accountId}
         onClick={() => setOpen(true)}
-        className={`hidden md:inline-block ${
-          className ??
-          "text-[11px] text-fg-dim hover:text-fg underline underline-offset-2 disabled:opacity-40 disabled:no-underline"
-        }`}
+        className={cn("hidden md:inline-flex", className)}
         title={accountId ? "Edit the raw JSON for this config" : "Pick an account first"}
       >
         {label}
-      </button>
+      </IfButton>
       {open && accountId && (
         <JsonConfigModal
           surface={surface}
@@ -104,14 +106,6 @@ function JsonConfigModal({
     }
   }, [q.data, dirty]);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   const save = useMutation({
     mutationFn: (config: unknown) =>
       relay.put(path, { account_id: accountId, config }),
@@ -138,86 +132,21 @@ function JsonConfigModal({
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 bg-black/50 grid place-items-center p-4"
-      onClick={onClose}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-[820px] max-h-[90vh] flex flex-col bg-panel border border-border rounded-xl shadow-2xl"
-      >
-        <header className="px-4 py-3 border-b border-border flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h2 className="text-sm font-semibold">Edit raw JSON — {label}</h2>
-            <p className="text-[11px] text-fg-dim truncate">
-              acct {accountId} · PUT {path}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-fg-dim hover:text-fg text-lg leading-none shrink-0 max-md:grid max-md:place-items-center max-md:w-11 max-md:h-11 max-md:-mr-2 max-md:-my-2"
-            title="Close"
-          >
-            ×
-          </button>
-        </header>
-
-        <div className="flex-1 overflow-y-auto p-4 min-h-0">
-          {q.isLoading ? (
-            <div className="text-fg-dim text-sm py-10 text-center">
-              Loading current config…
-            </div>
-          ) : q.isError ? (
-            <div className="text-err text-sm py-10 text-center">
-              Couldn&apos;t load this config.
-            </div>
-          ) : (
-            <textarea
-              value={text}
-              onChange={(e) => {
-                setDirty(true);
-                setText(e.target.value);
-                if (err) setErr(null);
-              }}
-              spellCheck={false}
-              className="w-full h-[52vh] rounded-lg bg-bg-elev-1 border border-border text-xs font-mono px-3 py-2 text-fg focus:outline-none focus:ring-2 focus:ring-accent/40 resize-none"
-              placeholder="{ }"
-            />
-          )}
-          {err && (
-            <div className="mt-2 text-xs text-err whitespace-pre-wrap">{err}</div>
-          )}
-        </div>
-
-        <footer className="px-4 py-3 border-t border-border flex items-center justify-between gap-2">
-          <button
-            type="button"
-            onClick={reformat}
-            disabled={q.isLoading || q.isError}
-            className="text-[11px] text-fg-dim hover:text-fg underline underline-offset-2 disabled:opacity-40"
-          >
-            Reformat
-          </button>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="text-xs px-3 py-1.5 rounded-lg border border-border text-fg-dim hover:text-fg"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={onSave}
-              disabled={save.isPending || q.isLoading || q.isError}
-              className="text-xs px-3 py-1.5 rounded-lg bg-accent text-white disabled:opacity-50"
-            >
-              {save.isPending ? "Saving…" : "Save"}
-            </button>
-          </div>
-        </footer>
-      </div>
-    </div>
+    <RawJsonModal
+      name={label}
+      subtitle={`acct ${accountId}`}
+      text={text}
+      onText={(t) => {
+        setDirty(true);
+        setText(t);
+        if (err) setErr(null);
+      }}
+      error={err}
+      status={q.isLoading ? "Loading current config…" : q.isError ? <span className="text-err">Couldn&apos;t load this config.</span> : undefined}
+      busy={save.isPending}
+      onReformat={reformat}
+      onSave={onSave}
+      onClose={onClose}
+    />
   );
 }

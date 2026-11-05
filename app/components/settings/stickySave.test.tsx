@@ -2,8 +2,9 @@
  * The pinned Save bar.
  *
  * The automation tabs are tall, so each tab grew a SECOND Save pinned to
- * the bottom of the viewport. The in-flow row stays exactly where it was; this
- * is additive.
+ * the bottom of the viewport. NudgeOnlineTab now lives in the Automated
+ * editor's dialog and has ONE Save, pinned as the dialog's footer (no in-flow
+ * twin); the gate cases below hold for that one control.
  *
  * Three properties are worth a test and two of them guard against writing
  * something the operator did not ask for:
@@ -68,7 +69,7 @@ vi.mock("@/hooks/useAccounts", async (importOriginal) => {
 
 import NudgeOnlineTab from "@/components/settings/NudgeOnlineTab";
 import { relay } from "@/lib/relay";
-import { inFlowSave, pinnedSave } from "@/test-utils";
+import { pinnedSave } from "@/test-utils";
 
 const relayGet = relay.get as unknown as Mock;
 const relayPut = relay.put as unknown as Mock;
@@ -107,17 +108,15 @@ describe("the pinned Save bar", () => {
     });
   }
 
-  it("is there on a tab that saves, alongside the in-flow row it duplicates", async () => {
+  it("is the tab's one Save: pinned, with no in-flow twin", async () => {
     loaded();
     render(<NudgeOnlineTab />, { wrapper });
 
-    // Both exist. The in-flow row was NOT relocated to make room for the pin.
     await waitFor(() => expect(pinnedSave(SAVE).button).not.toBeDisabled());
-    expect(screen.getAllByRole("button", { name: SAVE }).length).toBeGreaterThanOrEqual(2);
-    expect(inFlowSave(SAVE)).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: SAVE })).toEqual([pinnedSave(SAVE).button]);
   });
 
-  it("fires the SAME mutation as the in-flow button", async () => {
+  it("fires the config PUT", async () => {
     loaded();
     relayPut.mockResolvedValue({ ok: true });
     const user = userEvent.setup();
@@ -126,17 +125,7 @@ describe("the pinned Save bar", () => {
     await waitFor(() => expect(pinnedSave(SAVE).button).not.toBeDisabled());
     await user.click(pinnedSave(SAVE).button);
     await waitFor(() => expect(relayPut).toHaveBeenCalled());
-    const fromPin = relayPut.mock.calls.at(-1);
-
-    relayPut.mockClear();
-    await waitFor(() => expect(inFlowSave(SAVE)).not.toBeDisabled());
-    await user.click(inFlowSave(SAVE));
-    await waitFor(() => expect(relayPut).toHaveBeenCalled());
-    const fromRow = relayPut.mock.calls.at(-1);
-
-    // Same endpoint, same body — one handler, not two copies of the save logic.
-    expect(fromPin![0]).toEqual(fromRow![0]);
-    expect(fromPin![1]).toEqual(fromRow![1]);
+    expect(String(relayPut.mock.calls.at(-1)![0])).toMatch(/^\/admin\/nudge-config/);
   });
 });
 
@@ -186,9 +175,9 @@ describe("the pinned Save bar, on a tab whose form is behind a loading branch", 
     expect(relayPost).not.toHaveBeenCalled();  // the automation rule
   });
 
-  it("wakes up once the config lands, and then both controls agree", async () => {
+  it("wakes up once the config lands", async () => {
     // The mirror of the case above: the gate is a LOAD gate, not a permanent
-    // "off", and the pin and the in-flow row open together.
+    // "off".
     relayGet.mockImplementation(async (path: string) => {
       if (path.startsWith("/admin/nudge-config")) {
         return { account_id: ACCT, config: { enabled: true }, defaults: {} };
@@ -198,7 +187,6 @@ describe("the pinned Save bar, on a tab whose form is behind a loading branch", 
     render(<NudgeOnlineTab />, { wrapper });
 
     await waitFor(() => expect(pinnedSave(CREATE).button).not.toBeDisabled());
-    expect(inFlowSave(CREATE)).not.toBeDisabled();
   });
 });
 
@@ -240,11 +228,10 @@ describe("the pinned Save bar, against the automation-rule list", () => {
 
     // The FORM is on screen — so this case is about the rule list, not a
     // second helping of the config gate the cases above already pin.
-    await waitFor(() => expect(inFlowSave(CREATE)).toBeTruthy());
+    await waitFor(() => expect(screen.getByLabelText("Delay (min)")).toBeTruthy());
     expect(screen.queryByText(/Loading…/i)).toBeNull();
 
     expect(pinnedSave(CREATE).button).toBeDisabled();
-    expect(inFlowSave(CREATE)).toBeDisabled();
 
     // The wire, not the attribute.
     await user.click(pinnedSave(CREATE).button);
@@ -252,7 +239,7 @@ describe("the pinned Save bar, against the automation-rule list", () => {
     expect(relayPut).not.toHaveBeenCalled();   // the config blob
   });
 
-  it("survives a FAILED background refetch of that list — both controls stay live", async () => {
+  it("survives a FAILED background refetch of that list — Save stays live", async () => {
     // The mirror hazard, and the reason the gate reads `rulesQ.data !== undefined`
     // rather than `rulesQ.isSuccess`. That query polls every 30s and refetches on
     // window focus (hooks/useAutomations.ts), and a failed BACKGROUND refetch
@@ -288,7 +275,6 @@ describe("the pinned Save bar, against the automation-rule list", () => {
     expect(wedged).toHaveLength(1);
 
     expect(pinnedSave(CHANGES).button).not.toBeDisabled();
-    expect(inFlowSave(CHANGES)).not.toBeDisabled();
 
     // And it still saves — the gate is open on the wire, not just in the DOM.
     await user.click(pinnedSave(CHANGES).button);

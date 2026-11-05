@@ -303,7 +303,7 @@ describe("ManageEmployees", () => {
 
   it("links to Role Settings, where the role presets are edited", async () => {
     await loaded();
-    expect(screen.getByRole("link", { name: "Manage roles & permissions →" })).toHaveAttribute("href", "/settings/roles");
+    expect(screen.getByRole("link", { name: "Manage roles & permissions" })).toHaveAttribute("href", "/settings/roles");
   });
 
   it("has no tab strip and no views rail: the Organization Chart is the tree on the left", async () => {
@@ -705,7 +705,7 @@ describe("ManageEmployees", () => {
   it("+ Add employee makes the login with its name, role (Chatter by default), Creators and group in one write", async () => {
     await loaded();
     const dialog = openAdd();
-    expect(dialog.getByRole("link", { name: "Manage roles & permissions →" })).toHaveAttribute("href", "/settings/roles");
+    expect(dialog.getByRole("link", { name: "Manage roles & permissions" })).toHaveAttribute("href", "/settings/roles");
     const role = dialog.getByRole("combobox", { name: "Role" }) as HTMLSelectElement;
     expect(role.value).toBe("chatter");
     expect(within(role).getAllByRole("option").map((o) => o.textContent)).toEqual(["Admin", "Team Leader", "Chatter", "Creator", "Closer"]);
@@ -714,7 +714,8 @@ describe("ManageEmployees", () => {
 
     fireEvent.change(dialog.getByRole("textbox", { name: "Name" }), { target: { value: "Eve Five" } });
     fireEvent.change(dialog.getByRole("textbox", { name: "Username" }), { target: { value: "Eve.Five" } });
-    fireEvent.change(dialog.getByLabelText("Password"), { target: { value: "secret-1" } });
+    for (const l of ["Name", "Username", "Password"]) expect(dialog.getByText(l).closest("label")).toHaveTextContent(`${l}*`);
+    fireEvent.change(dialog.getByLabelText(/^Password/), { target: { value: "secret-1" } });
     choose(dialog.getByRole("combobox", { name: "Group" }), "Fixture Leads");
     fireEvent.click(dialog.getByRole("checkbox", { name: "All creators" }));
     // Limited to no Creator at all is not a choice: Save waits for one.
@@ -743,7 +744,7 @@ describe("ManageEmployees", () => {
 
     dialog = openAdd();
     fireEvent.click(dialog.getByRole("radio", { name: "Existing login" }));
-    expect(dialog.queryByLabelText("Password")).toBeNull();
+    expect(dialog.queryByLabelText(/^Password/)).toBeNull();
     fireEvent.change(dialog.getByRole("textbox", { name: "Username" }), { target: { value: "nobody" } });
     fireEvent.click(dialog.getByRole("button", { name: "Add employee" }));
     expect(await dialog.findByRole("alert")).toHaveTextContent("no chatter named 'nobody'");
@@ -800,11 +801,13 @@ describe("ManageEmployees", () => {
     fireEvent.click(openMore("Alpha One").getByRole("menuitem", { name: "Reset password" }));
     let dialog = within(screen.getByRole("dialog", { name: "Reset password" }));
     const submit = () => dialog.getByRole("button", { name: "Reset password" });
-    fireEvent.change(dialog.getByLabelText("New password"), { target: { value: "new-secret" } });
-    fireEvent.change(dialog.getByLabelText("Confirm password"), { target: { value: "new-secreT" } });
+    // Both fields required: the kit label's red * after each.
+    for (const l of ["New password", "Confirm password"]) expect(dialog.getByText(l).closest("label")).toHaveTextContent(`${l}*`);
+    fireEvent.change(dialog.getByLabelText(/^New password/), { target: { value: "new-secret" } });
+    fireEvent.change(dialog.getByLabelText(/^Confirm password/), { target: { value: "new-secreT" } });
     expect(dialog.getByText("The passwords don’t match.")).toBeInTheDocument();
     expect(submit()).toBeDisabled();
-    fireEvent.change(dialog.getByLabelText("Confirm password"), { target: { value: "new-secret" } });
+    fireEvent.change(dialog.getByLabelText(/^Confirm password/), { target: { value: "new-secret" } });
     fireEvent.click(submit());
     expect(await dialog.findByText(/password is changed/)).toBeInTheDocument();
     expect(writes()).toEqual([{ method: "POST", url: "/admin/employees/1/password", body: { password: "new-secret" } }]);
@@ -814,8 +817,8 @@ describe("ManageEmployees", () => {
     passwordRefusal = "this login also works for another agency; only its owner can reset it";
     fireEvent.click(openMore("Beta Two").getByRole("menuitem", { name: "Reset password" }));
     dialog = within(screen.getByRole("dialog", { name: "Reset password" }));
-    fireEvent.change(dialog.getByLabelText("New password"), { target: { value: "new-secret" } });
-    fireEvent.change(dialog.getByLabelText("Confirm password"), { target: { value: "new-secret" } });
+    fireEvent.change(dialog.getByLabelText(/^New password/), { target: { value: "new-secret" } });
+    fireEvent.change(dialog.getByLabelText(/^Confirm password/), { target: { value: "new-secret" } });
     fireEvent.click(submit());
     expect(await dialog.findByRole("alert")).toHaveTextContent("another agency");
   });

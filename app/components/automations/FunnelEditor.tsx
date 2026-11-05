@@ -22,9 +22,11 @@
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Plus } from "lucide-react";
 
-import { Button } from "@/components/ui/primitives";
-import { EmptyState, IF_TABLE, IfButton, IfInput, IfLearn, IfModal } from "@/components/ui/infloww";
-import { ConfirmDelete, EDITOR_MODAL, FieldLabel, SwitchRow, TABLE_EMPTY } from "@/components/automations/automationPage";
+import {
+  EmptyState, IF_TABLE, IfButton, IfHelp, IfInput, IfLabel, IfLearn, IfModal, IfSegmented, IfTextArea,
+  type IfOption,
+} from "@/components/ui/infloww";
+import { ConfirmDelete, EDITOR_MODAL, SwitchRow, TABLE_EMPTY } from "@/components/automations/automationPage";
 import { cn } from "@/lib/utils";
 import { FunnelLaunchPanel } from "@/components/automations/FunnelLaunchPanel";
 import { FunnelMediaPane } from "@/components/automations/FunnelMediaPane";
@@ -55,6 +57,11 @@ const WALKER_KIND = "reply_mass_funnel";
 const WALKER_EVERY_S = 120;
 
 // ── Single-funnel editor ────────────────────────────────────────────────
+
+const EDITOR_MODES: IfOption<"typed" | "raw">[] = [
+  { value: "typed", label: "Typed fields" },
+  { value: "raw", label: "Raw JSON" },
+];
 
 export function FunnelEditor({
   funnelId,
@@ -138,45 +145,37 @@ export function FunnelEditor({
       )}
     >
     <div className="space-y-4">
-      <div className="hidden justify-end md:flex">
-        <button
-          type="button"
-          onClick={() => dispatch({ type: draft.raw ? "close" : "open" })}
-          className="text-[14px] text-accent hover:text-accent-hover"
-        >
-          {draft.raw ? "← Typed fields" : "Edit raw JSON →"}
-        </button>
-      </div>
+      <IfSegmented
+        aria-label="Editor mode"
+        options={EDITOR_MODES}
+        value={draft.raw ? "raw" : "typed"}
+        onChange={(m) => dispatch({ type: m === "raw" ? "open" : "close" })}
+        className="max-md:hidden"
+      />
 
       {draft.raw ? (
-        <div className="space-y-2">
-          <textarea
+        <div>
+          <IfTextArea
+            aria-label="Funnel JSON"
             value={draft.text}
             onChange={(e) => dispatch({ type: "edit", text: e.target.value })}
             rows={16}
             spellCheck={false}
-            className="w-full rounded-lg bg-bg border border-border text-[11px] font-mono px-2 py-1.5 text-fg focus:outline-none focus:ring-2 focus:ring-accent/40"
+            className="font-mono text-[13px]"
             placeholder='{ "name": "…", "opening_message": "…", "steps": [] }'
           />
-          <div className="text-[10px] text-fg-dim leading-relaxed">
-            Edit the whole funnel body by hand —{" "}
-            <code className="text-accent">name</code>,{" "}
-            <code className="text-accent">opening_message</code>,{" "}
-            <code className="text-accent">description</code>, and the ordered{" "}
-            <code className="text-accent">steps</code> array (reply / paid_ppv).
-            PPV media stays per-model (set via the Media action), not here.
-          </div>
+          <IfHelp>The whole funnel body: name, opening_message, description and the ordered steps (reply / paid_ppv).</IfHelp>
         </div>
       ) : (
       <>
       {/* Header: name + description + opener. */}
       <div className="grid gap-4 sm:grid-cols-2">
         <div>
-          <FieldLabel htmlFor="funnel-name">Name</FieldLabel>
+          <IfLabel htmlFor="funnel-name" required>Name</IfLabel>
           <IfInput id="funnel-name" value={name} onChange={(e) => edit({ type: "header", patch: { name: e.target.value } })} placeholder="e.g. strokes" className="w-full" />
         </div>
         <div>
-          <FieldLabel htmlFor="funnel-description">Description (optional)</FieldLabel>
+          <IfLabel htmlFor="funnel-description">Description</IfLabel>
           <IfInput
             id="funnel-description"
             value={description}
@@ -187,28 +186,24 @@ export function FunnelEditor({
         </div>
       </div>
       <div>
-        <FieldLabel htmlFor="funnel-opening">Opening message</FieldLabel>
-        <textarea
+        <IfLabel htmlFor="funnel-opening" required>Opening message</IfLabel>
+        <IfTextArea
           id="funnel-opening"
           value={opening}
           onChange={(e) => edit({ type: "header", patch: { opening: e.target.value } })}
           rows={3}
           placeholder="The first message sent to the audience (the funnel opener)…"
-          className="w-full bg-bg border border-border rounded-md px-3 py-2 text-sm placeholder:text-muted focus:outline-none focus:border-accent resize-y"
         />
       </div>
 
       {/* Ordered step list. */}
-      <div className="space-y-2">
-        <div className="text-[11px] uppercase tracking-wide text-fg-dim">
-          Steps <span className="opacity-60">({steps.length})</span>
+      <div className="space-y-3">
+        <div>
+          <h3 className="text-[14px] font-medium text-fg">Steps ({steps.length})</h3>
+          {steps.length === 0 && (
+            <IfHelp>No follow-up steps yet: the opener sends and the funnel ends.</IfHelp>
+          )}
         </div>
-        {steps.length === 0 && (
-          <div className="text-[11px] text-fg-dim italic">
-            No follow-up steps yet — the opener sends and the funnel ends. Add a
-            reply step to chase a response, or a PPV step to sell.
-          </div>
-        )}
         {steps.map((s, i) => (
           <StepCard
             key={i}
@@ -225,13 +220,9 @@ export function FunnelEditor({
           />
         ))}
 
-        <div className="flex items-center gap-2">
-          <Button size="sm" variant="secondary" onClick={() => edit({ type: "addStep", kind: "reply" })}>
-            + Reply step
-          </Button>
-          <Button size="sm" variant="secondary" onClick={() => edit({ type: "addStep", kind: "ppv" })}>
-            + PPV step
-          </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <IfButton icon={Plus} onClick={() => edit({ type: "addStep", kind: "reply" })}>Reply step</IfButton>
+          <IfButton icon={Plus} onClick={() => edit({ type: "addStep", kind: "ppv" })}>PPV step</IfButton>
         </div>
       </div>
       </>
@@ -239,11 +230,7 @@ export function FunnelEditor({
 
       {draft.error && <div className="text-[12px] text-err whitespace-pre-wrap">{draft.error}</div>}
 
-      <p className="text-[12px] text-muted">
-        PPV media is set per model — close this and use the{" "}
-        <span className="text-fg">Media</span> action on the funnel to map each
-        model&apos;s vault content to its PPV steps.
-      </p>
+      <IfHelp>PPV media is set per model: save, then use the funnel&apos;s Media action.</IfHelp>
     </div>
     </IfModal>
   );
@@ -399,7 +386,7 @@ export function MassFunnelsTab({ accountId, frame = inlineFrame }: {
                         {rowErr?.id === f.id && <span className="mt-1 block text-[12px] text-err">{rowErr.msg}</span>}
                       </td>
                       <td className={cn(IF_TABLE.td, "whitespace-nowrap")}>{f.step_count}</td>
-                      <td className={cn(IF_TABLE.td, "max-w-[360px] truncate text-fg-dim")}>{f.description || f.opening_message}</td>
+                      <td className={cn(IF_TABLE.td, "w-full max-w-0 truncate text-fg-dim")}>{f.description || f.opening_message}</td>
                       <td className={cn(IF_TABLE.td, IF_TABLE.fixedRight, "z-[1] w-[220px] whitespace-nowrap")}>
                         <span className="inline-flex gap-4">
                           <button type="button" className={LINK} aria-expanded={mediaFor === f.id} onClick={() => openPanel("media", f.id)}>Media</button>

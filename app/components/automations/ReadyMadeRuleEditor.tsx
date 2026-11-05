@@ -3,15 +3,18 @@
 /** ReadyMadePanel's create / edit dialog for one saved ready-made rule. */
 
 import { useState } from "react";
+import { PenLine } from "lucide-react";
 
-import { IfButton, IfInput, IfModal, IfSelect, IfSwitch } from "@/components/ui/infloww";
-import { EDITOR_MODAL, FieldLabel } from "@/components/automations/automationPage";
+import { IfButton, IfHelp, IfInput, IfLabel, IfModal, IfSegmented, IfSelect, IfSwitch } from "@/components/ui/infloww";
+import { IF_FIELD } from "@/components/ui/ifSelect";
+import { EDITOR_MODAL } from "@/components/automations/automationPage";
 import { useCreateRule, useUpdateRule, type AutomationRule } from "@/hooks/useAutomations";
 import { canSubmit, useRawJson } from "@/lib/rawJsonReducer";
 import { PAYLOAD_RAW, withoutDryRun } from "@/lib/rulePayload";
 import { UNIT_S, splitInterval, type Unit } from "@/components/automations/ruleInterval";
 import type { Kind } from "@/components/compose/premadeRows";
 import { ComposeModal } from "@/components/automations/ComposeModal";
+import { cn } from "@/lib/utils";
 
 /** The words each rule kind is shown with. Auto Mass sends OF mass messages
  *  (`mass_premade` delegates to `send_mass_message`, OF's messages/queue), so
@@ -61,7 +64,7 @@ export const KIND_COPY: Record<Kind, {
 
 // ── Inline editor (create / edit a saved ready-made definition) ─────────
 
-/** One-line summary of a premade payload for the compose read-out. */
+/** One-line summary of a premade payload for the compose read-out: "3 posts · reposts ×2 · first caption…". */
 function summarize(payload: Record<string, unknown>): string | null {
   const posts = Array.isArray(payload.posts) ? payload.posts : null;
   const messages = Array.isArray(payload.messages) ? payload.messages : null;
@@ -71,6 +74,10 @@ function summarize(payload: Record<string, unknown>): string | null {
   const bits = [`${arr.length} ${noun}${arr.length === 1 ? "" : "s"}`];
   const rc = payload.resend_count;
   if (typeof rc === "number" && rc > 0) bits.push(`reposts ×${rc}`);
+  const first = arr[0] as { text?: unknown; texts?: unknown } | undefined;
+  const text = typeof first?.text === "string" ? first.text
+    : Array.isArray(first?.texts) && typeof first.texts[0] === "string" ? first.texts[0] : "";
+  if (text.trim()) bits.push(text.trim());
   return bits.join(" · ");
 }
 
@@ -150,17 +157,15 @@ export function ReadyMadeRuleEditor({
   }
 
   const ids = { name: `rm-${kind}-name`, every: `rm-${kind}-every` };
+  const items = KIND_COPY[kind].items;
   return (
     <IfModal
       width={722}
       title={editing ? `Edit · ${editing.name}` : `New ${KIND_COPY[kind].noun}`}
       onClose={onClose}
-      // The composer opens over this one: its Escape must not drop the draft.
-      closable={!composerOpen}
       className={EDITOR_MODAL}
       footer={(
         <>
-          <span className="mr-auto text-[12px] text-muted tabular-nums">= every {everySeconds}s</span>
           <IfButton onClick={onClose} disabled={busy}>Cancel</IfButton>
           <IfButton variant="primary" onClick={save} disabled={busy}>
             {busy ? "Saving…" : isEdit ? "Save changes" : "Create"}
@@ -171,7 +176,7 @@ export function ReadyMadeRuleEditor({
       <div className="space-y-6">
         <div className="grid gap-6 sm:grid-cols-2">
           <div>
-            <FieldLabel htmlFor={ids.name}>Name (optional)</FieldLabel>
+            <IfLabel htmlFor={ids.name}>Name</IfLabel>
             <IfInput
               id={ids.name}
               value={name}
@@ -182,7 +187,7 @@ export function ReadyMadeRuleEditor({
           </div>
 
           <div>
-            <FieldLabel htmlFor={ids.every}>Run every</FieldLabel>
+            <IfLabel htmlFor={ids.every}>Run every</IfLabel>
             <div className="flex items-center gap-2">
               <IfInput
                 id={ids.every}
@@ -202,64 +207,48 @@ export function ReadyMadeRuleEditor({
             </div>
           </div>
 
-          <IfSwitch label="Enabled" checked={enabled} onChange={setEnabled} />
-          <IfSwitch label={<>Dry run <span className="text-[12px] text-muted">(plan only)</span></>} aria-label="Dry run"
-            checked={dryRun} onChange={setDryRun} />
+          {/* wrapped like Dry run so the grid cell doesn't stretch it off its row */}
+          <div>
+            <IfSwitch label="Enabled" checked={enabled} onChange={setEnabled} />
+          </div>
+          <div>
+            <IfSwitch label="Dry run" checked={dryRun} onChange={setDryRun} />
+            <IfHelp>Plans each run; nothing is {kind === "auto_posts" ? "posted" : "sent"}.</IfHelp>
+          </div>
         </div>
 
-        {/* Compose the payload with the rich PremadeForm (return-payload mode), or
-         *  hand-edit the raw JSON directly (paste a big media_files pool, tweak a
-         *  field the form doesn't expose). */}
-        <div className="space-y-2 rounded-lg border border-border p-4">
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-[14px] text-fg">{KIND_COPY[kind].items}:</span>
-            <button
-              type="button"
-              onClick={() => dispatch({ type: raw.raw ? "close" : "open" })}
-              className="hidden text-[14px] text-accent hover:text-accent-hover md:inline"
-            >
-              {raw.raw ? "← Composer" : "Edit raw JSON →"}
-            </button>
+        {/* The payload: built with the rich PremadeForm (Composer), or hand-edited as JSON (paste a big
+         *  media_files pool, tweak a field the form doesn't expose). The Dry run switch owns `dry_run`. */}
+        <div>
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <IfLabel className="mb-0">{items}</IfLabel>
+            <IfSegmented
+              aria-label={`${items} editor`}
+              value={raw.raw ? "raw" : "composer"}
+              onChange={(v) => dispatch({ type: v === "raw" ? "open" : "close" })}
+              options={[{ value: "composer", label: "Composer" }, { value: "raw", label: "Raw JSON" }]}
+            />
           </div>
 
           {raw.raw ? (
-            <>
-              <textarea
-                value={raw.text}
-                onChange={(e) => dispatch({ type: "edit", text: e.target.value })}
-                rows={12}
-                spellCheck={false}
-                className="w-full rounded-md bg-bg border border-border text-[12px] font-mono px-2 py-1.5 text-fg focus:outline-none focus:border-accent"
-                placeholder={`{ "${kind === "auto_posts" ? "posts" : "messages"}": [ … ] }`}
-              />
-              <div className="text-[12px] text-muted leading-relaxed">
-                Edit the whole <code className="text-accent">
-                  {kind === "auto_posts" ? "{ posts: [ … ] }" : "{ messages: [ … ] }"}
-                </code>{" "}
-                payload by hand — e.g. paste a <code className="text-accent">media_files</code> list
-                and set <code className="text-accent">media_count</code>. The Dry-run switch above
-                owns <code className="text-accent">dry_run</code>, so leave it out here.
-              </div>
-            </>
+            <textarea
+              aria-label={`${items} JSON`}
+              value={raw.text}
+              onChange={(e) => dispatch({ type: "edit", text: e.target.value })}
+              rows={12}
+              spellCheck={false}
+              className={cn(IF_FIELD, "block w-full resize-y px-[11px] py-1 font-mono text-[13px] outline-none placeholder:text-muted focus:border-accent")}
+              placeholder={`{ "${kind === "auto_posts" ? "posts" : "messages"}": [ … ] }`}
+            />
           ) : (
-            <>
-              <div className="text-[12px] text-muted">
-                {summary ?? `No content yet — build this ${kind === "auto_posts" ? "feed" : "broadcast"} with the composer.`}
-              </div>
-              <IfButton variant={summary ? "default" : "primary"} onClick={() => setComposerOpen(true)}>
-                {summary ? "Re-compose" : "Compose…"}
+            <div className="flex items-center gap-4">
+              {summary
+                ? <span className="min-w-0 flex-1 truncate text-fg-dim">{summary}</span>
+                : <IfHelp className="mt-0 flex-1">No content yet</IfHelp>}
+              <IfButton icon={PenLine} onClick={() => setComposerOpen(true)}>
+                {summary ? "Edit content" : "Compose"}
               </IfButton>
-              {summary && (
-                <details className="pt-1">
-                  <summary className="text-[12px] text-accent cursor-pointer select-none">
-                    View JSON
-                  </summary>
-                  <pre className="mt-1 text-[12px] font-mono text-fg-dim bg-bg border border-border rounded-md p-2 overflow-x-auto whitespace-pre-wrap break-words max-h-64 overflow-y-auto">
-                    {JSON.stringify(composed, null, 2)}
-                  </pre>
-                </details>
-              )}
-            </>
+            </div>
           )}
         </div>
 

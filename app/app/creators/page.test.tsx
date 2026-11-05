@@ -150,7 +150,7 @@ describe("/creators — the creator table leads", () => {
     accounts = [{ id: "acct-o", nickname: "Oscar", platform: "onlyfans", has_session: true }];
     const base = relayGet.getMockImplementation()!;
     relayGet.mockImplementation((path: string, opts?: unknown) =>
-      path === "/api/of/v2/users/me" ? Promise.resolve({ username: "oscar_of", avatar: null }) : base(path, opts));
+      path === "/api/of/v2/users/me" ? Promise.resolve({ id: "acct-o", username: "oscar_of", avatar: null }) : base(path, opts));
     renderWithProviders(<Page />);
     await screen.findAllByText("Oscar");
     const i = within(table()).getAllByRole("columnheader").findIndex((h) => h.textContent === "Creator ID");

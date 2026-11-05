@@ -129,10 +129,5 @@ export function SaveRow({ save, onSave, disabled, warn }: {
 /** The 722px editor modals go (almost) full-screen below `sm`. */
 export const EDITOR_MODAL = "max-sm:h-[calc(100dvh-32px)]";
 
-/** A form label: 14px T1 with a colon (Infloww's form style). */
-export function FieldLabel({ children, htmlFor }: { children: ReactNode; htmlFor?: string }) {
-  return <label htmlFor={htmlFor} className="mb-2 block text-[14px] text-fg">{children}:</label>;
-}
-
 /** A wide table's empty state stays in view when the table scrolls sideways (antd's fixed empty row). */
 export const TABLE_EMPTY = "sticky left-0 min-h-[400px] max-w-[calc(100vw-32px)]";

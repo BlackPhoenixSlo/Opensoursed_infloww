@@ -50,7 +50,7 @@ clock-out on Creator 0, as `/clock-in` + `/clock-out` would leave it).
    row, no other) and the cache's `is_canceled` flips are exactly Creator 0's free, image-less, >= 4 h,
    unsendable rows; every other row (Creator 1's matching ones included) unchanged. Screenshots
    mass-bulk-unsend-trigger, mass-bulk-unsend-settled; the id sets in mass-bulk-unsend.json.
-2. Post (Messages dashboard > My feed > + New post): a typed $10 on a text-only post is refused
+2. Post (Messages dashboard > My feed > New post): a typed $10 on a text-only post is refused
    ("A paid post needs at least one image"); "Post from ALL models" hides the price row (all-models
    is text-only), Post is on, and each model's `POST /api/of/v2/posts` is free and text-only and
    reaches OF's wire (`POST /api2/v2/posts`) free with the text. The second Creator's POST is
@@ -174,7 +174,7 @@ clock-out on Creator 0, as `/clock-in` + `/clock-out` would leave it).
    rail's label reads "Name" (both pages save it through `sortOfFolders`). Screenshots vault-customize-trigger,
    vault-order-after-reload, vault-quick-reload-trigger, vault-quick-reload-settled, vault-sort-label-after-mirror.
 16. Premade composer (app/components/compose/premadeRows.ts `rowsReducer`, `rowToItem` / `rowsToItems`),
-   Creator 2 on Auto Post: New auto post > Compose…: Post 1 with variants A, B, C then B removed, $12,
+   Creator 2 on Auto Post: New auto post > Compose: Post 1 with variants A, B, C then B removed, $12,
    5 min; Post 2 ($3, 30 min) and Post 3 ($7, 45 min, 6 h to live) added, Post 2 removed -> the form shows
    Posts 1 and 3; Use in rule > Create POSTs one /admin/automation-rules whose posts[] are
    [{texts: [A, C], price 12, delay 5}, {text, price 7, delay 45, hours_to_live 6}], and GET
@@ -792,11 +792,11 @@ def _statuses(page, path: str) -> list[int]:
 
 
 async def _chips(page) -> dict:
-    """The system audience chips' states (SysChip: "+ " = included) and the Smart List's include pick."""
+    """The system audience chips' states (SysChip: "· included" hint = included) and the Smart List's include pick."""
     out = {}
     for label in ("All fans", "Following"):
         t = await page.get_by_role("button", name=re.compile(rf"^(\+ )?{label}")).first.inner_text()
-        out[label] = t.startswith("+ ")
+        out[label] = "· included" in t
     smart = page.get_by_role("button", name=SMART_LIST, exact=True)
     out["smart_shown"] = await smart.count() > 0
     out["smart_include"] = (await smart.first.get_attribute("aria-pressed")) == "true" if out["smart_shown"] else None
@@ -1135,7 +1135,7 @@ async def _post(ctx, page, chk) -> None:
 
     await page.route(lambda u: urlsplit(u).path == POSTS, posts)
     await page.goto(f"{ctx.app}/analytics/message-dashboard?tab=myfeed", wait_until="domcontentloaded")
-    await page.get_by_role("button", name="+ New post").click(timeout=WAIT_MS)
+    await page.get_by_role("button", name="New post", exact=True).click(timeout=WAIT_MS)
     ta = page.get_by_placeholder("What's on your feed today?")
     await ta.wait_for(timeout=WAIT_MS)
     btn = page.get_by_role("button", name="Post", exact=True)
@@ -1202,10 +1202,9 @@ async def _post(ctx, page, chk) -> None:
 
 
 TICKED_DUPES = """() => {
-  const h = [...document.querySelectorAll('h2')].find((e) => e.textContent === 'Duplicate media');
-  const modal = h && h.closest('.fixed');
-  return modal ? [...modal.querySelectorAll('button:not([disabled]) > img[alt^="media "]')]
-    .filter((img) => img.parentElement.textContent.includes('✓'))
+  const modal = [...document.querySelectorAll('[role="dialog"][aria-labelledby]')]
+    .find((d) => document.getElementById(d.getAttribute('aria-labelledby'))?.textContent === 'Duplicate media');
+  return modal ? [...modal.querySelectorAll('button[aria-pressed="true"]:not([disabled]) > img[alt^="media "]')]
     .map((img) => Number(img.alt.slice(6))) : [];
 }"""
 
@@ -1300,8 +1299,8 @@ async def _dupes_partial(ctx, page, chk) -> None:
         lines = await done_line.all_inner_texts()
         errors = await error_line.all_inner_texts()
         await ui.shot(ctx, page, "dupes-partial-failed")
-        await page.locator("header").filter(has_text="Duplicate media").get_by_role(
-            "button", name="Close", exact=True).click(timeout=10_000)
+        await page.get_by_role("dialog", name="Duplicate media").get_by_role(
+            "button", name="Done", exact=True).click(timeout=10_000)
     finally:
         await page.unroute(hide_path, hide)
     sizes = [len(h.get("media_ids") or []) for h in hides]
@@ -1503,7 +1502,7 @@ async def _nudge(ctx, page, chk) -> None:
         other_shown = await _wait_value(delay, other_delay, 30_000)
         status3 = await release_settled(page, hold, timeout_ms=30_000)
     await page.wait_for_timeout(1500)
-    saved_on_other = await dialog.get_by_text(re.compile(r"✓ Saved\.|Saved ✓")).count()
+    saved_on_other = await dialog.get_by_text(re.compile(r"^Saved\.$|Saved ✓")).count()
     await ui.shot(ctx, page, "nudge-switch-landed")
     await picker.select_option(aid)
     back = await _wait_value(delay, str(delay3), 30_000)
@@ -1523,7 +1522,7 @@ async def _nudge(ctx, page, chk) -> None:
         await route.fallback()
 
     await page.route(is_nudge, down_wire)
-    saved_q = dialog.get_by_text(re.compile(r"✓ Saved\.|Saved ✓"))
+    saved_q = dialog.get_by_text(re.compile(r"^Saved\.$|Saved ✓"))
     async with page.expect_response(lambda r: r.request.method == "PUT" and "/admin/nudge-config" in r.url,
                                     timeout=30_000) as put4:
         await save.click(timeout=10_000)
@@ -1688,7 +1687,7 @@ async def _nudge(ctx, page, chk) -> None:
     async with p3.expect_response(lambda r: r.request.method == "PUT" and is_nudge(r.url), timeout=30_000) as put_c:
         await s3.click(timeout=10_000)
     status_c = (await put_c.value).status
-    await dlg3.get_by_text(re.compile(r"✓ Saved\.")).first.wait_for(timeout=30_000)
+    await dlg3.get_by_text(re.compile(r"^Saved\.$")).first.wait_for(timeout=30_000)
     key_acked = await key_gone(p3)
     note_acked = await dlg3.get_by_text(restored_rx).count()
     await _painted(p3)
@@ -2176,28 +2175,28 @@ async def _premade(ctx, page, chk) -> None:
         await page.goto(f"{ctx.app}/growth/auto-post", wait_until="domcontentloaded")
         await ui.pick_creator(page, creator["nickname"], timeout_ms=WAIT_MS)
         await page.get_by_role("button", name="New auto post").first.click(timeout=WAIT_MS)
-        await page.get_by_role("button", name="Compose…").click(timeout=30_000)
+        await page.get_by_role("button", name="Compose", exact=True).click(timeout=30_000)
         form = page.locator("div").filter(has=page.get_by_role("heading", name="Compose auto posts", exact=True)).last
         ta = form.locator("textarea")
         price = form.get_by_placeholder("0 (free)")
         await ta.first.wait_for(timeout=WAIT_MS)
         # Post 1: three variants, the middle one removed; $12, 5 min.
         await ta.nth(0).fill("slop post one A")
-        await form.get_by_role("button", name=re.compile(r"^\+ add text variant")).first.click()
+        await form.get_by_role("button", name="Add variant").first.click()
         await ta.nth(1).fill("slop post one B")
-        await form.get_by_role("button", name=re.compile(r"^\+ add text variant")).first.click()
+        await form.get_by_role("button", name="Add variant").first.click()
         await ta.nth(2).fill("slop post one C")
         await form.get_by_title("Remove this variant").nth(1).click()
         await price.nth(0).fill("12")
         await form.get_by_placeholder("0 (now)").fill("5")
         # Post 2 (later removed) and Post 3.
         for text, cents, delay in (("slop post two", "3", "30"), ("slop post three", "7", "45")):
-            await form.get_by_role("button", name="+ Add another post").click()
+            await form.get_by_role("button", name="Add another post").click()
             await ta.last.fill(text)
             await price.last.fill(cents)
             await form.get_by_placeholder("e.g. 30").last.fill(delay)
         await form.get_by_placeholder("e.g. 6").last.fill("6")
-        await form.get_by_role("button", name="remove", exact=True).nth(1).click()
+        await form.get_by_role("button", name="Remove", exact=True).nth(1).click()
         await page.wait_for_timeout(300)
         shown = {"texts": [await t.input_value() for t in await ta.all()],
                  "prices": [await p.input_value() for p in await price.all()],
@@ -3707,7 +3706,7 @@ async def _fl_chips(panel) -> dict:
 
 
 def _fl_start_btn(page):
-    return page.get_by_role("button", name="▶ Start funnel")
+    return page.get_by_role("button", name="Start funnel")
 
 
 async def _fl_enabled(page, ms: int = 15_000) -> bool:
@@ -3806,10 +3805,10 @@ async def _funnel_media(ctx, page, chk) -> None:
     funnels = (await ctx.owner.get("/admin/funnels")).json()["funnels"]
     funnel = next(f for f in funnels if f["name"] == funnel_name)
     pane = page.locator("div").filter(has=heading).filter(has=page.get_by_role("button", name="Save media")).last
-    await pane.get_by_role("button", name="🖼 Pick media").first.click(timeout=WAIT_MS)  # the opener row is first
+    await pane.get_by_role("button", name="Pick media").first.click(timeout=WAIT_MS)  # the opener row is first
     await page.locator(f"[data-tile-id='{PPV_PICK}']").first.click(timeout=WAIT_MS)
     await page.get_by_role("button", name=re.compile(r"^Attach")).last.click(timeout=10_000)
-    await pane.get_by_role("button", name="🖼 1 picked").first.wait_for(timeout=10_000)
+    await pane.get_by_role("button", name="1 picked").first.wait_for(timeout=10_000)
     await pane.get_by_role("button", name="Save media").click(timeout=10_000)
     saved = pane.get_by_text(re.compile(r"^Saved for "))
     await saved.wait_for(timeout=30_000)

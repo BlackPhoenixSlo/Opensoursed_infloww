@@ -19,10 +19,12 @@
  * are shared with the Delayed welcome editor.
  */
 
-import { useState } from "react";
+import { useId, useState } from "react";
 
 import { ImportCaptionsButton } from "@/components/compose/ImportCaptionsButton";
-import { Button, Input, Textarea } from "@/components/ui/primitives";
+import { IF_TABLE, IfButton, IfHelp, IfInput, IfLabel, IfLearn, IfSwitch, IfTextArea } from "@/components/ui/infloww";
+import { EditorFooter } from "@/components/ui/ifModal";
+import { IF_FIELD } from "@/components/ui/ifSelect";
 import {
   useLifecycleMessageBuyers, useLifecycleMessageConfig, useSaveLifecycleMessageConfig,
   type LifecycleKind, type LifecycleMessage, type LifecycleMessageConfig,
@@ -30,6 +32,7 @@ import {
 import { useFreePageRefusal } from "@/hooks/usePaidPage";
 import { fmtCents } from "@/lib/format";
 import { mergeCaptions } from "@/lib/parseCaptions";
+import { cn } from "@/lib/utils";
 
 import { SmartMessageFields, collectExtras, extrasDraft, type ExtrasDraft } from "./SmartMessageFields";
 
@@ -39,7 +42,7 @@ const MAX_VARIANTS = 10;
 const MAX_FOLLOW_UPS = 5;
 const DELAY_MAX = 7 * 24 * 60;
 const DISCOUNT_PERCENTS = Array.from({ length: 12 }, (_, i) => (i + 1) * 5);
-const SELECT = "bg-bg border border-border rounded-lg px-3 py-2 text-sm disabled:opacity-50";
+const SELECT = cn(IF_FIELD, "h-8 px-2 disabled:opacity-50");
 
 /** Infloww's `isPaidAutoRules` (index.9f50f370.js @14441992): refused on a free page. */
 export const PAID_ONLY_KINDS: ReadonlySet<LifecycleKind> = new Set<LifecycleKind>([
@@ -87,9 +90,9 @@ export default function LifecycleMessageEditor({ accountId, kind }: {
   accountId: string | null; kind: LifecycleKind;
 }) {
   const q = useLifecycleMessageConfig(accountId, kind);
-  if (!accountId) return <p className="text-sm text-fg-dim">Pick a Creator first.</p>;
-  if (q.isError) return <p className="text-sm text-err">Couldn&apos;t load this Creator&apos;s message.</p>;
-  if (!q.data) return <p className="text-sm text-fg-dim">Loading…</p>;
+  if (!accountId) return <p className="text-[14px] text-fg-dim">Pick a Creator first.</p>;
+  if (q.isError) return <p className="text-[14px] text-err">Couldn&apos;t load this Creator&apos;s message.</p>;
+  if (!q.data) return <p className="text-[14px] text-fg-dim">Loading…</p>;
   return <Form key={kind} accountId={accountId} kind={kind} initial={q.data.config} />;
 }
 
@@ -114,36 +117,36 @@ export function VariantsField({ id, label, variants, placeholder, onChange }: {
   id: string; label: string; variants: string[]; placeholder?: string; onChange: (v: string[]) => void;
 }) {
   return (
-    <div className="space-y-1">
-      <label htmlFor={`${id}-0`} className="block text-sm">{label}</label>
+    <div className="space-y-2">
+      <IfLabel htmlFor={`${id}-0`} className="mb-0">{label}</IfLabel>
       {variants.map((v, i) => (
-        <div key={i} className="flex items-start gap-2">
-          <Textarea
+        <div key={i} className="flex items-start gap-3">
+          <IfTextArea
             id={`${id}-${i}`}
             aria-label={i ? `${label}, variant ${i + 1}` : undefined}
             value={v}
             maxLength={1000}
             placeholder={i === 0 ? placeholder : "Another way to say it"}
+            rows={3}
             onChange={(e) => onChange(variants.map((x, j) => (j === i ? e.target.value : x)))}
-            className="font-sans text-sm"
           />
           {variants.length > 1 && (
-            <Button type="button" size="sm" variant="ghost" onClick={() => onChange(variants.filter((_, j) => j !== i))}>
+            <IfButton variant="link" onClick={() => onChange(variants.filter((_, j) => j !== i))}>
               Remove
-            </Button>
+            </IfButton>
           )}
         </div>
       ))}
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-wrap items-center gap-4">
         {variants.length < MAX_VARIANTS && (
-          <Button type="button" size="sm" variant="secondary" onClick={() => onChange([...variants, ""])}>
+          <IfButton variant="link" onClick={() => onChange([...variants, ""])}>
             Add variant
-          </Button>
+          </IfButton>
         )}
         <ImportCaptionsButton current={variants} max={MAX_VARIANTS}
           onImport={(items) => onChange(mergeCaptions(variants, items).pool)} />
-        {variants.length > 1 && <span className="text-[11px] text-fg-dim">Each fan gets one of these at random.</span>}
       </div>
+      {variants.length > 1 && <IfHelp>Each fan gets one of these at random.</IfHelp>}
     </div>
   );
 }
@@ -156,41 +159,39 @@ export function FollowUpsField({ id, steps, onChange }: {
   return (
     <div className="space-y-2">
       {steps.map((f, i) => (
-        <div key={i} className="space-y-1 rounded-lg border border-border p-2">
-          <div className="flex flex-wrap items-center gap-2 text-sm">
+        <div key={i} className="space-y-2 rounded-md border border-border p-3">
+          <div className="flex flex-wrap items-center gap-2">
             <label htmlFor={`${id}-${i}-delay`}>Follow-up {i + 1}, if no reply after</label>
-            <Input
+            <IfInput
               id={`${id}-${i}-delay`}
               type="number"
               min={1}
               max={DELAY_MAX}
               value={f.delay}
               onChange={(e) => set(i, { delay: e.target.value })}
-              className="!w-[90px]"
+              className="w-[90px]"
             />
             <span>minute(s)</span>
-            <Button type="button" size="sm" variant="ghost" onClick={() => onChange(steps.filter((_, j) => j !== i))}>
+            <IfButton variant="link" className="ml-auto" onClick={() => onChange(steps.filter((_, j) => j !== i))}>
               Remove
-            </Button>
+            </IfButton>
           </div>
-          <Textarea
+          <IfTextArea
             aria-label={`Follow-up ${i + 1}`}
             value={f.text}
             maxLength={1000}
+            rows={2}
             onChange={(e) => set(i, { text: e.target.value })}
-            className="font-sans text-sm"
           />
-          {badDelay(f) && <p className="text-sm text-warn">The delay is a whole number of minutes from 1 to {DELAY_MAX}.</p>}
+          {badDelay(f) && <p className="text-warn">The delay is a whole number of minutes from 1 to {DELAY_MAX}.</p>}
         </div>
       ))}
       {steps.length < MAX_FOLLOW_UPS && (
-        <Button type="button" size="sm" variant="secondary" onClick={() => onChange([...steps, { text: "", delay: "60" }])}>
+        <IfButton variant="link" onClick={() => onChange([...steps, { text: "", delay: "60" }])}>
           Add follow-up
-        </Button>
+        </IfButton>
       )}
-      <p className="text-[11px] text-fg-dim">
-        Each follow-up waits its delay after the one before it. Once the fan replies, the rest are not sent.
-      </p>
+      <IfHelp className="mt-0">Each follow-up waits its delay after the one before; a reply stops the rest.</IfHelp>
     </div>
   );
 }
@@ -217,6 +218,8 @@ function badMonths(d: MessageDraft): boolean {
 function Form({ accountId, kind, initial }: {
   accountId: string; kind: LifecycleKind; initial: LifecycleMessageConfig;
 }) {
+  // One per mounted editor: the footer's Save (outside the form) submits this one.
+  const formId = useId();
   const copy = LIFECYCLE_COPY[kind];
   const save = useSaveLifecycleMessageConfig(accountId, kind);
   const freeRefusal = useFreePageRefusal(accountId);
@@ -245,8 +248,9 @@ function Form({ accountId, kind, initial }: {
     setMessages(messages.map((m, j) => (j === i ? { ...m, ...patch } : m)));
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 text-[14px]">
       <form
+        id={formId}
         className="space-y-4"
         onSubmit={(e) => {
           e.preventDefault();
@@ -254,53 +258,43 @@ function Form({ accountId, kind, initial }: {
           save.mutate({ enabled, messages: clean, ...(copy.hours ? { hours: n } : {}), ...collected });
         }}
       >
-        <div>
-          <h3 className="text-base font-semibold">{copy.title}</h3>
-          <p className="text-sm text-fg-dim">
+        <div className="flex items-center justify-between gap-4">
+          <h3 className="text-[14px] font-medium text-fg">{copy.title}</h3>
+          <IfLearn tip={<>
             {copy.blurb} Fans whose moment came before you turned this on are not chased. Skip-listed, paused and
             blacklisted fans are left out. Use {"{name}"} for the fan&apos;s name. Only the owner can turn it on.
-          </p>
-          {kind === "expired_message" && (
-            <p className="text-sm text-fg-dim">
-              The fan is followed first, unless his profile is paid. OnlyFans may still refuse a message to a fan
-              whose subscription ended.
-            </p>
-          )}
+            {kind === "expired_message" && (
+              " The fan is followed first, unless his profile is paid. OnlyFans may still refuse a message to a fan"
+              + " whose subscription ended."
+            )}
+          </>} />
         </div>
-        <label className="flex items-center gap-2 text-sm">
-          {/* On a free page it can be switched off, never on. */}
-          <input
-            type="checkbox"
-            checked={enabled}
-            disabled={!!refusal && !enabled}
-            onChange={(e) => setEnabled(e.target.checked)}
-          />
-          On
-        </label>
-        {refusal && <p className="text-sm text-warn">{refusal}</p>}
+        {/* On a free page it can be switched off, never on. */}
+        <IfSwitch label="On" checked={enabled} disabled={!!refusal && !enabled} onChange={setEnabled} />
+        {refusal && <p className="text-warn">{refusal}</p>}
         {copy.hours && (
-          <div className="flex flex-wrap items-center gap-2 text-sm">
+          <div className="flex flex-wrap items-center gap-2">
             <label htmlFor={`${id}-hours`}>{copy.hours.before}</label>
-            <Input
+            <IfInput
               id={`${id}-hours`}
               type="number"
               min={copy.hours.min}
               max={copy.hours.max}
               value={hours}
               onChange={(e) => setHours(e.target.value)}
-              className="!w-[90px]"
+              className="w-[90px]"
             />
             <span>{copy.hours.after}</span>
           </div>
         )}
         {messages.map((m, i) => (
-          <div key={i} className="space-y-3 rounded-lg border border-border p-3">
+          <div key={i} className="space-y-4 rounded-md border border-border p-4">
             <div className="flex items-center justify-between">
-              <span className="text-sm font-semibold">Message {i + 1}</span>
+              <span className="font-medium">Message {i + 1}</span>
               {messages.length > 1 && (
-                <Button type="button" size="sm" variant="ghost" onClick={() => setMessages(messages.filter((_, j) => j !== i))}>
+                <IfButton variant="link" onClick={() => setMessages(messages.filter((_, j) => j !== i))}>
                   Remove message
-                </Button>
+                </IfButton>
               )}
             </div>
             <VariantsField
@@ -312,15 +306,9 @@ function Form({ accountId, kind, initial }: {
             />
             <FollowUpsField id={`${id}-${i}-fu`} steps={m.followUps} onChange={(followUps) => setMessage(i, { followUps })} />
             {kind === "expiry_message" && (
-              <div className="flex flex-wrap items-center gap-2 text-sm">
-                <label className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={!!m.discount}
-                    onChange={(e) => setMessage(i, { discount: e.target.checked ? { percent: 10, months: "1" } : null })}
-                  />
-                  Give a renewal discount of
-                </label>
+              <div className="flex flex-wrap items-center gap-2">
+                <IfSwitch label="Give a renewal discount of" checked={!!m.discount}
+                  onChange={(on) => setMessage(i, { discount: on ? { percent: 10, months: "1" } : null })} />
                 <select
                   aria-label="Discount percent"
                   value={m.discount?.percent ?? 10}
@@ -331,7 +319,7 @@ function Form({ accountId, kind, initial }: {
                   {DISCOUNT_PERCENTS.map((p) => <option key={p} value={p}>{p}%</option>)}
                 </select>
                 <span>for</span>
-                <Input
+                <IfInput
                   aria-label="Discount months"
                   type="number"
                   min={1}
@@ -339,7 +327,7 @@ function Form({ accountId, kind, initial }: {
                   value={m.discount?.months ?? "1"}
                   disabled={!m.discount}
                   onChange={(e) => m.discount && setMessage(i, { discount: { ...m.discount, months: e.target.value } })}
-                  className="!w-[70px]"
+                  className="w-[70px]"
                 />
                 <span>month(s), set just before the message goes out</span>
                 {badMonths(m) && <p className="w-full text-warn">The discount runs 1 to 12 months.</p>}
@@ -348,11 +336,11 @@ function Form({ accountId, kind, initial }: {
           </div>
         ))}
         {messages.length < MAX_MESSAGES && (
-          <div className="flex items-center gap-3">
-            <Button type="button" size="sm" variant="secondary" onClick={() => setMessages([...messages, EMPTY])}>
+          <div>
+            <IfButton variant="link" onClick={() => setMessages([...messages, EMPTY])}>
               Add message
-            </Button>
-            {messages.length > 1 && <span className="text-[11px] text-fg-dim">Each fan gets one message at random.</span>}
+            </IfButton>
+            {messages.length > 1 && <IfHelp className="mt-0">Each fan gets one message at random.</IfHelp>}
           </div>
         )}
         <SmartMessageFields
@@ -362,21 +350,23 @@ function Form({ accountId, kind, initial }: {
           onChange={(patch) => setExtras((d) => ({ ...d, ...patch }))}
           frequency
         />
-        {problem && <p className="text-sm text-warn">{problem}</p>}
+        {problem && <p className="text-warn">{problem}</p>}
         {badHours && copy.hours && (
-          <p className="text-sm text-warn">Hours must be a whole number from {copy.hours.min} to {copy.hours.max}.</p>
+          <p className="text-warn">Hours must be a whole number from {copy.hours.min} to {copy.hours.max}.</p>
         )}
-        {missingText && <p className="text-sm text-warn">Write a message to turn this on.</p>}
-        {save.isError && <p className="text-sm text-err">Couldn&apos;t save: {save.error.message}</p>}
-        {save.isSuccess && !save.isPending && <p className="text-sm text-fg-dim">Saved.</p>}
-        <Button
-          type="submit"
-          variant="primary"
-          size="sm"
-          disabled={missingText || badHours || invalid || refused || !!problem || save.isPending}
-        >
-          {save.isPending ? "Saving…" : "Save"}
-        </Button>
+        {missingText && <p className="text-warn">Write a message to turn this on.</p>}
+        {save.isError && <p className="text-err">Couldn&apos;t save: {save.error.message}</p>}
+        <EditorFooter>
+          {save.isSuccess && !save.isPending && <span className="mr-auto text-fg-dim">Saved.</span>}
+          <IfButton
+            type="submit"
+            form={formId}
+            variant="primary"
+            disabled={missingText || badHours || invalid || refused || !!problem || save.isPending}
+          >
+            {save.isPending ? "Saving…" : "Save"}
+          </IfButton>
+        </EditorFooter>
       </form>
       <Buyers accountId={accountId} kind={kind} />
     </div>
@@ -386,33 +376,39 @@ function Form({ accountId, kind, initial }: {
 function Buyers({ accountId, kind }: { accountId: string; kind: LifecycleKind }) {
   const q = useLifecycleMessageBuyers(accountId, kind);
   return (
-    <section className="space-y-2">
-      <h4 className="text-sm font-semibold">Buyers</h4>
-      {q.isError && <p className="text-sm text-err">Couldn&apos;t load the buyers.</p>}
+    <section>
+      <h4 className="font-medium">Buyers</h4>
+      {q.isError && <p className="text-err">Couldn&apos;t load the buyers.</p>}
       {q.data && (
         <>
-          <p className="text-[11px] text-fg-dim">
+          <IfHelp className="mb-3">
             Fans this Trigger messaged who bought within {q.data.window_days} days of it (latest 200).
-          </p>
+          </IfHelp>
           {q.data.buyers.length === 0 ? (
-            <p className="text-sm text-fg-dim">No buyers yet.</p>
+            <p className="text-fg-dim">No buyers yet.</p>
           ) : (
-            <table className="w-full text-sm">
-              <thead className="text-left text-fg-dim">
-                <tr><th>Fan</th><th>Message</th><th>Spent</th><th>Purchases</th><th>Last purchase</th></tr>
-              </thead>
-              <tbody>
-                {q.data.buyers.map((b) => (
-                  <tr key={`${b.fan_id}-${b.sent_at}`}>
-                    <td>{b.name || (b.username ? `@${b.username}` : b.fan_id)}</td>
-                    <td>{b.message}</td>
-                    <td>{fmtCents(b.spent_cents)}</td>
-                    <td>{b.purchases}</td>
-                    <td>{new Date(b.last_purchase_at).toLocaleDateString()}</td>
+            <div className="overflow-x-auto">
+              <table className={IF_TABLE.table}>
+                <thead>
+                  <tr>
+                    {["Fan", "Message", "Spent", "Purchases", "Last purchase"].map((h) => (
+                      <th key={h} className={cn(IF_TABLE.th, IF_TABLE.thDivider)}>{h}</th>
+                    ))}
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {q.data.buyers.map((b) => (
+                    <tr key={`${b.fan_id}-${b.sent_at}`} className={IF_TABLE.row}>
+                      <td className={IF_TABLE.td}>{b.name || (b.username ? `@${b.username}` : b.fan_id)}</td>
+                      <td className={IF_TABLE.td}>{b.message}</td>
+                      <td className={IF_TABLE.td}>{fmtCents(b.spent_cents)}</td>
+                      <td className={IF_TABLE.td}>{b.purchases}</td>
+                      <td className={IF_TABLE.td}>{new Date(b.last_purchase_at).toLocaleDateString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </>
       )}

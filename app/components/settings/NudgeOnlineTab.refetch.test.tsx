@@ -154,7 +154,7 @@ describe("NudgeOnlineTab over its own save", () => {
 
     await release();
     await waitFor(() => expect(cfgState(qc, A)?.isInvalidated).toBe(true));
-    expect(screen.queryByText("✓ Saved.")).toBeNull();
+    expect(screen.queryByText("Saved.")).toBeNull();
     expect(screen.queryByText("Saved ✓")).toBeNull();
 
     fireEvent.change(picker, { target: { value: A } });
@@ -280,12 +280,12 @@ describe("NudgeOnlineTab over its own save", () => {
     await ready();
 
     fireEvent.click(saveButton());
-    await waitFor(() => expect(screen.getByText("✓ Saved.")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Saved.")).toBeTruthy());
     fireEvent.change(screen.getByDisplayValue(`acct-${A}`), { target: { value: B } });
     // Said where the form would be (not "Loading…" forever) and on the pinned bar.
     await waitFor(() => expect(screen.getAllByText(/Couldn't load this account's nudge settings/)).toHaveLength(2));
     expect(screen.queryByText("Loading…")).toBeNull();
-    expect(screen.queryByText("✓ Saved.")).toBeNull();
+    expect(screen.queryByText("Saved.")).toBeNull();
     expect(screen.queryByText("Saved ✓")).toBeNull();
   });
 });

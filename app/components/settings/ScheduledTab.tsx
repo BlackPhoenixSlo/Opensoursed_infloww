@@ -10,9 +10,9 @@
  */
 
 import { useMemo } from "react";
-import { Lock, Paperclip } from "lucide-react";
+import { Lock, Paperclip, RotateCw } from "lucide-react";
 
-import { Button, Card } from "@/components/ui/primitives";
+import { IfButton, IfCard, IfHelp } from "@/components/ui/infloww";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useCancelScheduled, useScheduledMessages } from "@/hooks/useScheduledMessages";
 import type { OFScheduledMessage } from "@/lib/relay";
@@ -35,32 +35,26 @@ export default function ScheduledTab() {
 
   return (
     <div className="space-y-4">
-      <Card>
-        <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
-          <div>
-            <h2 className="text-base font-semibold">Scheduled messages</h2>
-            <p className="text-xs text-fg-dim mt-0.5">
-              All queued sends across the agency. Cancel before they fire.
-            </p>
-          </div>
-          <Button size="sm" variant="secondary" onClick={refresh} disabled={isFetching}>
-            <span className={cn("inline-block mr-1", isFetching && "animate-spin")}>↻</span>
-            {isFetching ? "Refreshing…" : "Refresh"}
-          </Button>
-        </div>
+      <IfCard title="Scheduled messages" extra={(
+        <IfButton onClick={refresh} disabled={isFetching}>
+          <RotateCw className={cn("h-3.5 w-3.5", isFetching && "animate-spin")} aria-hidden />
+          {isFetching ? "Refreshing…" : "Refresh"}
+        </IfButton>
+      )}>
+        <IfHelp className="mb-4">All queued sends across the agency. Cancel before they fire.</IfHelp>
 
         {error && (
-          <div className="text-sm text-err mb-3">
+          <div className="text-[14px] text-err mb-3">
             Failed to load: {error.message}
           </div>
         )}
 
         {isLoading && rows.length === 0 && (
-          <div className="text-sm text-fg-dim">Loading…</div>
+          <div className="text-[14px] text-fg-dim">Loading…</div>
         )}
 
         {!isLoading && rows.length === 0 && (
-          <div className="text-xs text-fg-dim italic">Nothing queued.</div>
+          <div className="text-[14px] text-fg-dim">Nothing queued.</div>
         )}
 
         <div className="space-y-2">
@@ -78,7 +72,7 @@ export default function ScheduledTab() {
             />
           ))}
         </div>
-      </Card>
+      </IfCard>
     </div>
   );
 }
@@ -113,7 +107,7 @@ function ScheduledRow({
       busy && "opacity-60",
     )}>
       <div className="flex-1 min-w-0 space-y-1">
-        <div className="flex items-center gap-2 text-[11px] flex-wrap">
+        <div className="flex items-center gap-2 text-[12px] flex-wrap">
           <span className={cn(
             "px-1.5 py-0.5 rounded",
             overdue ? "bg-warn/15 text-warn" : "bg-accent/15 text-accent",
@@ -121,11 +115,11 @@ function ScheduledRow({
             {when ? when.toLocaleString() : "no time"}
             {overdue && " (overdue)"}
           </span>
-          <span className="text-fg-dim">acct {accountLabel}</span>
+          <span className="text-fg-dim">{accountLabel}</span>
           {isMass ? (
-            <span className="text-fg-dim">📢 mass ({massLabel})</span>
+            <span className="text-fg-dim">Mass ({massLabel})</span>
           ) : (
-            <span className="text-fg-dim">→ {directCount} fan{directCount === 1 ? "" : "s"}</span>
+            <span className="text-fg-dim">Direct to {directCount} fan{directCount === 1 ? "" : "s"}</span>
           )}
           {(m.mediaCount ?? 0) > 0 && (
             <span className="text-fg-dim inline-flex items-center gap-1">
@@ -138,13 +132,13 @@ function ScheduledRow({
             </span>
           )}
         </div>
-        <div className="text-sm whitespace-pre-wrap break-words line-clamp-3">
+        <div className="text-[14px] whitespace-pre-wrap break-words line-clamp-3">
           {htmlToText(m.text || "")}
         </div>
       </div>
-      <Button size="sm" variant="danger" onClick={onCancel} disabled={busy}>
+      <IfButton variant="link" onClick={onCancel} disabled={busy}>
         Cancel
-      </Button>
+      </IfButton>
     </div>
   );
 }

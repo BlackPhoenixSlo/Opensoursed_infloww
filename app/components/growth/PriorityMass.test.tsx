@@ -112,3 +112,87 @@ describe("PriorityMassComposer MASSDMEXCLUDE seed", () => {
     expect(body.excluded_user_lists).toEqual([]);
   });
 });
+
+describe("PriorityMassComposer — once touched, Escape stays off until it closes (a reverted edit too); × and Cancel always close", () => {
+  const escape = () => fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+  it("a custom exclusion ticked before the seeding lands stays an edit after it", async () => {
+    // The lists are cached (stale) and refetching: the seed waits, the cached lists are already tickable.
+    let land!: (v: unknown) => void;
+    lists = new Promise((r) => { land = r; });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    qc.setQueryData(["fan-lists", ACCOUNT], [VIP, MASSDM], { updatedAt: 0 });
+    const onClose = vi.fn();
+    render(
+      <QueryClientProvider client={qc}>
+        <PriorityMassComposer open onClose={onClose} initialAccountId={ACCOUNT} />
+      </QueryClientProvider>,
+    );
+    fireEvent.click(box("VIP", 1));
+    expect(box("MASSDMEXCLUDE", 1)).not.toBeChecked();
+    land({ list: [VIP, MASSDM], hasMore: false });
+    await waitFor(() => expect(box("MASSDMEXCLUDE", 1)).toBeChecked());
+    expect(box("VIP", 1)).toBeChecked();
+    escape();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+  it.each([["×", "Close"], ["Cancel", "Cancel"]])(
+    "typed then cleared: Escape still does nothing (declared), %s closes", async (_n, button) => {
+      const onClose = vi.fn();
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(
+        <QueryClientProvider client={qc}>
+          <PriorityMassComposer open onClose={onClose} initialAccountId={ACCOUNT} />
+        </QueryClientProvider>,
+      );
+      await waitFor(() => expect(box("MASSDMEXCLUDE", 1)).toBeChecked());
+      fireEvent.change(screen.getByLabelText("Message"), { target: { value: "hey" } });
+      fireEvent.change(screen.getByLabelText("Message"), { target: { value: "" } });
+      escape();
+      expect(onClose).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: button }));
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe("PriorityMassComposer — Escape never drops a typed draft", () => {
+  function open(onClose: () => void) {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <PriorityMassComposer open onClose={onClose} initialAccountId={ACCOUNT} />
+      </QueryClientProvider>,
+    );
+  }
+  const escape = () => fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+  it("clean: Escape closes", () => {
+    const onClose = vi.fn();
+    open(onClose);
+    escape();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+  it("dirty: Escape does nothing", () => {
+    const onClose = vi.fn();
+    open(onClose);
+    fireEvent.change(screen.getByLabelText("Message"), { target: { value: "hey" } });
+    escape();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+  it("seeded (MASSDMEXCLUDE pre-ticked) and untouched: Escape still closes", async () => {
+    const onClose = vi.fn();
+    open(onClose);
+    await waitFor(() => expect(box("MASSDMEXCLUDE", 1)).toBeChecked());
+    escape();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+  it.each([
+    ["an Include list", () => fireEvent.click(box("VIP", 0))],
+    ["the seeded exclude unticked", () => fireEvent.click(box("MASSDMEXCLUDE", 1))],
+  ])("only %s changed: Escape does nothing", async (_n, act) => {
+    const onClose = vi.fn();
+    open(onClose);
+    await waitFor(() => expect(box("MASSDMEXCLUDE", 1)).toBeChecked());
+    act();
+    escape();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+});

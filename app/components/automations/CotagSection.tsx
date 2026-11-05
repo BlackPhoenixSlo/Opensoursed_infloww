@@ -19,7 +19,7 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
-import { Button } from "@/components/ui/primitives";
+import { IfButton, IfHelp, IfInput, IfLabel, IfSwitch } from "@/components/ui/infloww";
 import { useAccountConfig, useSaveAccountConfig, type AccountConfigResp } from "@/hooks/useAccountConfig";
 
 import { relay } from "@/lib/relay";
@@ -38,9 +38,6 @@ interface FoundCreator {
 }
 
 const DEBOUNCE_MS = 250;
-
-const inputCls =
-  "w-full rounded-lg bg-bg-elev-1 border border-border text-sm px-2 py-1.5 text-fg focus:outline-none focus:ring-2 focus:ring-accent/40";
 
 export default function CotagSection({ accountId, tagVideos, username, onChange }: {
   accountId: string | null;
@@ -76,51 +73,48 @@ export default function CotagSection({ accountId, tagVideos, username, onChange 
   };
 
   return (
-    <div className="space-y-2">
-      <span className="text-[11px] uppercase tracking-wide text-fg-dim">
-        Co-performer tag
-      </span>
-      <p className="text-[11px] text-fg-dim">
-        Pick the co-creator automated sends @-tag (OF’s release-form rule) whenever the
-        attached media isn’t provably solo, or no one. Search any OnlyFans creator. Messages
-        and posts carry the tag once the creator has accepted this account’s tag request;
-        stories show the @handle either way.
-      </p>
-      <div className="space-y-1 max-w-xs">
-        <span className="block text-[11px] text-fg-dim">Co-creator to tag</span>
-        <div className="flex items-center gap-2 text-sm text-fg">
+    <div className="space-y-4 text-[14px]">
+      <div>
+        <h3 className="text-[14px] font-medium text-fg">Co-performer tag</h3>
+        <IfHelp>
+          The co-creator automated sends @-tag when the media isn’t provably solo (OF’s release-form
+          rule). Messages and posts carry it once the creator accepts this account’s tag request;
+          stories show the @handle either way.
+        </IfHelp>
+      </div>
+      <div className="max-w-sm">
+        <IfLabel htmlFor="cotag-search">Co-creator to tag</IfLabel>
+        <div className="mb-2 flex items-center gap-3 text-fg">
           <span data-testid="cotag-pick">{picked ? `@${picked}` : "No co-creator tag"}</span>
           {picked && (
-            <button type="button" className="text-[11px] text-fg-dim underline"
-              onClick={() => pick("")}>
-              Remove
-            </button>
+            <IfButton variant="link" onClick={() => pick("")}>Remove</IfButton>
           )}
         </div>
-        <input
+        <IfInput
+          id="cotag-search"
           type="search"
           aria-label="Search creators"
           placeholder="Search creators by name or @username"
-          className={inputCls}
+          className="w-full"
           value={raw}
           onChange={(e) => setRaw(e.target.value)}
         />
         {query && searchQ.isLoading && (
-          <span className="block text-[11px] text-fg-dim">Searching…</span>
+          <IfHelp>Searching…</IfHelp>
         )}
         {query && searchQ.isError && (
-          <span className="block text-[11px] text-err">
+          <IfHelp className="text-err">
             Couldn’t search OnlyFans creators. The saved pick is kept.
-          </span>
+          </IfHelp>
         )}
         {query && searchQ.isSuccess && found.length === 0 && (
-          <span className="block text-[11px] text-fg-dim">No creators found.</span>
+          <IfHelp>No creators found.</IfHelp>
         )}
         {query && found.length > 0 && (
-          <ul className="rounded-lg border border-border divide-y divide-border">
+          <ul className="mt-1 rounded-md border border-border divide-y divide-border">
             {found.map((f) => (
               <li key={f.username}>
-                <button type="button" className="w-full px-2 py-1.5 text-left text-sm text-fg hover:bg-bg-elev-1"
+                <button type="button" className="w-full px-3 py-[5px] text-left text-[14px] text-fg hover:bg-bg-elev-2"
                   onClick={() => pick(f.username)}>
                   @{f.username}{f.name ? ` (${f.name})` : ""}
                 </button>
@@ -129,24 +123,22 @@ export default function CotagSection({ accountId, tagVideos, username, onChange 
           </ul>
         )}
       </div>
-      <label
-        className="flex items-start gap-2 text-sm text-fg"
+      <div
+        className="flex items-start gap-3"
         title="For accounts whose videos feature a co-performer. The AI describe for a video is cut from stills, so a POV clip often reads as solo when the co-performer is plainly in it. With this on, every send that attaches a video carries the tag regardless of the describe verdict. Off (the default — most creators are solo), videos follow the describe verdict like photos do."
       >
-        <input
-          type="checkbox"
-          className="mt-0.5"
+        <IfSwitch
+          aria-label="Always tag videos"
           checked={tagVideos}
-          onChange={(e) => onChange({ cotag_tag_videos: e.target.checked })}
+          onChange={(v) => onChange({ cotag_tag_videos: v })}
         />
-        <span>
-          Always tag videos
-          <span className="block text-[11px] text-fg-dim">
-            For collab accounts: tag every video send, even ones the AI describe
-            read as solo. Photos still follow the describe verdict.
-          </span>
-        </span>
-      </label>
+        <div>
+          <div className="text-fg">Always tag videos</div>
+          <IfHelp className="mt-0">
+            Collab accounts: tag every video send, even ones read as solo. Photos follow the describe verdict.
+          </IfHelp>
+        </div>
+      </div>
     </div>
   );
 }
@@ -172,20 +164,20 @@ function CotagForm({ accountId, resp }: { accountId: string; resp: AccountConfig
   const cfg = resp.config;
   const dirty = Object.keys(patch).length > 0;
   return (
-    <div data-testid="cotag-card" className="rounded-lg border border-border p-3 space-y-2 text-sm">
+    <div data-testid="cotag-card" className="rounded-md border border-border p-4 space-y-4 text-[14px]">
       <CotagSection
         accountId={accountId}
         tagVideos={patch.cotag_tag_videos ?? cfg.cotag_tag_videos ?? false}
         username={patch.cotag_username ?? cfg.cotag_username ?? null}
         onChange={(p) => { setPatch((cur) => ({ ...cur, ...p })); if (!saveM.isIdle) saveM.reset(); }}
       />
-      <div className="flex items-center gap-2">
-        <Button size="sm" disabled={!dirty || saveM.isPending}
+      <div className="flex items-center justify-end gap-3 border-t border-border pt-4">
+        {saveM.isError && <p className="mr-auto text-[14px] text-err">{saveM.error.message || "Save failed"}</p>}
+        {saveM.isSuccess && !dirty && <p role="status" className="mr-auto text-[14px] text-ok">Saved.</p>}
+        <IfButton variant="primary" disabled={!dirty || saveM.isPending}
           onClick={() => saveM.mutate({ ...cfg, ...patch }, { onSuccess: () => setPatch({}) })}>
           {saveM.isPending ? "Saving…" : "Save co-creator tag"}
-        </Button>
-        {saveM.isError && <p className="text-sm text-err">{saveM.error.message || "Save failed"}</p>}
-        {saveM.isSuccess && !dirty && <p role="status" className="text-sm text-ok">Saved.</p>}
+        </IfButton>
       </div>
     </div>
   );

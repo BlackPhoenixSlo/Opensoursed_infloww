@@ -6,24 +6,26 @@
  * input leaves Idle mode, the button included.
  */
 
+import { createPortal } from "react-dom";
+
+import { IfButton, IfModal } from "@/components/ui/infloww";
 import { useIdleMode } from "@/hooks/useIdleMode";
 import { BRAND_NAME } from "@/lib/brand";
+
+const stay = () => {};
 
 export function IdleOverlay() {
   const idle = useIdleMode();
   if (!idle) return null;
-  return (
-    <div role="dialog" aria-modal="true" aria-labelledby="idle-title"
-      className="fixed inset-0 z-[80] grid place-items-center bg-black/60 p-4">
-      <div className="bg-panel border border-border rounded-lg shadow-xl p-6 max-w-sm text-center">
-        <h2 id="idle-title" className="text-sm font-semibold text-fg">
-          {BRAND_NAME} has gone idle due to inactivity
-        </h2>
-        <p className="mt-1 text-xs text-fg-dim">Live updates are paused until you return.</p>
-        <button type="button" className="mt-4 h-9 px-4 rounded-md bg-accent text-white text-xs font-semibold">
-          Return to {BRAND_NAME}
-        </button>
-      </div>
-    </div>
+  return createPortal(
+    // Over every other modal (theirs are z-50/60): the wrapper lifts IfModal's mask. On <body>, after every layer
+    // open under it, so it is also the top modal layer (keys go to it, not to a portaled picker under it).
+    <div className="relative z-[80]">
+      <IfModal title={`${BRAND_NAME} has gone idle due to inactivity`} width={416} closable={false} keyboard={false}
+        onClose={stay} footer={<IfButton variant="primary">Return to {BRAND_NAME}</IfButton>}>
+        <p className="text-fg-dim">Live updates are paused until you return.</p>
+      </IfModal>
+    </div>,
+    document.body,
   );
 }

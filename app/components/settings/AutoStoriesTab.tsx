@@ -21,12 +21,12 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { Images, Trash2 } from "lucide-react";
+import { Images, Plus, Trash2 } from "lucide-react";
 
-import { IfButton, IfInput, IfLearn, IfSelect } from "@/components/ui/infloww";
+import { IfButton, IfHelp, IfInput, IfLabel, IfLearn, IfSelect } from "@/components/ui/infloww";
 import { EditRuleJsonButton } from "@/components/automations/EditRuleJsonModal";
 import {
-  ConfirmDelete, FieldLabel, FormBlock, NoCreator, SwitchRow, useAutomationCreator,
+  ConfirmDelete, FormBlock, NoCreator, SwitchRow, useAutomationCreator,
 } from "@/components/automations/automationPage";
 import { PageFrame } from "@/components/shell/PageFrame";
 import { VaultPicker } from "@/components/chat/VaultPicker";
@@ -155,7 +155,7 @@ export default function AutoStoriesTab() {
     try {
       await runM.mutateAsync(rule.id);
       setRunMsg(
-        `✓ Posting ${n} ${n === 1 ? "story" : "stories"} from “${
+        `Posting ${n} ${n === 1 ? "story" : "stories"} from “${
           folders.find((f) => f.id === saved.folderId)?.name ?? "folder"
         }” now — it’ll appear on the account within ~30s.`,
       );
@@ -214,8 +214,7 @@ export default function AutoStoriesTab() {
   const actions = (
     <>
       {LEARN}
-      <EditRuleJsonButton accountId={accountId} kind="auto_stories" label="Edit raw JSON"
-        className="text-[14px] text-accent hover:text-accent-hover disabled:cursor-not-allowed disabled:opacity-50 max-sm:hidden" />
+      <EditRuleJsonButton accountId={accountId} kind="auto_stories" className="max-sm:hidden" />
     </>
   );
 
@@ -230,7 +229,7 @@ export default function AutoStoriesTab() {
       <div className="max-w-[720px] space-y-8">
         <FormBlock title="Source">
           <div>
-            <FieldLabel htmlFor="story-folder">Vault folder</FieldLabel>
+            <IfLabel htmlFor="story-folder">Vault folder</IfLabel>
             {foldersQ.isLoading ? (
               <Skeleton className="h-9 w-full" />
             ) : folders.length === 0 ? (
@@ -249,7 +248,7 @@ export default function AutoStoriesTab() {
 
           {/* Explicit image pool — combines with the folder above into one pool. */}
           <div>
-            <FieldLabel>…or pick specific images</FieldLabel>
+            <IfLabel>Or pick specific images</IfLabel>
             <div className="flex flex-wrap items-center gap-4">
               <IfButton icon={Images} onClick={() => setPickerOpen(true)}>
                 {form.mediaIds.length
@@ -262,10 +261,7 @@ export default function AutoStoriesTab() {
                 </button>
               )}
             </div>
-            <p className="mt-2 text-[12px] text-muted">
-              Folder + picked images form one pool; “Stories per run” photos are
-              sampled from it each time.
-            </p>
+            <IfHelp className="mt-2">Folder + picked images form one pool; “Stories per run” photos are sampled from it.</IfHelp>
           </div>
         </FormBlock>
 
@@ -302,20 +298,22 @@ export default function AutoStoriesTab() {
         <FormBlock title="Stories">
           <div className="grid gap-4 sm:grid-cols-3">
             <div>
-              <FieldLabel htmlFor="story-per-run">Stories per run</FieldLabel>
+              <IfLabel htmlFor="story-per-run">Stories per run</IfLabel>
               <IfInput id="story-per-run" type="number" min={1} className="w-full"
                 value={form.perRun} onChange={(e) => set("perRun", Number(e.target.value))} />
             </div>
             <div>
-              <FieldLabel htmlFor="story-ttl">Delete after (hours, 0 = keep)</FieldLabel>
+              <IfLabel htmlFor="story-ttl">Delete after</IfLabel>
               <IfInput id="story-ttl" type="number" min={0} className="w-full"
                 value={form.hoursToLive} onChange={(e) => set("hoursToLive", Number(e.target.value))} />
+              <IfHelp>hours · 0 = keep</IfHelp>
             </div>
             <div>
-              <FieldLabel htmlFor="story-max-runs">Total runs (blank = forever)</FieldLabel>
+              <IfLabel htmlFor="story-max-runs">Total runs</IfLabel>
               <IfInput id="story-max-runs" type="number" min={1} className="w-full" placeholder="∞"
                 value={form.maxRuns ?? ""}
                 onChange={(e) => set("maxRuns", e.target.value ? Number(e.target.value) : null)} />
+              <IfHelp>blank = forever</IfHelp>
             </div>
           </div>
         </FormBlock>
@@ -481,7 +479,7 @@ function TimesEditor({
           </button>
         </span>
       ))}
-      <IfButton onClick={() => onChange([...times, "12:00"])}>+ Add time</IfButton>
+      <IfButton icon={Plus} onClick={() => onChange([...times, "12:00"])}>Add time</IfButton>
     </div>
   );
 }

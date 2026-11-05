@@ -674,3 +674,56 @@ describe("VaultPicker range select and keyboard", () => {
     expect(confirmedIds(onConfirm)).toEqual([7002]);
   });
 });
+
+describe("VaultPicker as a modal layer", () => {
+  it("takes focus on open, keeps Tab inside, gives focus back to the opener on close", async () => {
+    function Host() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <button type="button" onClick={() => setOpen(true)}>Open vault</button>
+          <VaultPicker open={open} onClose={() => setOpen(false)} accountId="acct-1" fanId={null} initialSelectedIds={[]} onConfirm={() => {}} />
+        </>
+      );
+    }
+    renderWithProviders(<Host />);
+    const opener = screen.getByRole("button", { name: "Open vault" });
+    opener.focus();
+    fireEvent.click(opener);
+    const picker = screen.getByRole("dialog", { name: "Vault picker" });
+    expect(picker).toContainElement(document.activeElement as HTMLElement);
+    const items = Array.from(picker.querySelectorAll<HTMLElement>(
+      'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])'));
+    const last = items[items.length - 1];
+    last.focus();
+    expect(fireEvent.keyDown(last, { key: "Tab" })).toBe(false);
+    expect(items[0]).toHaveFocus();
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Vault picker" })).not.toBeInTheDocument();
+    expect(opener).toHaveFocus();
+  });
+
+  it("leaves Escape to a modal layer opened over it (the idle overlay); takes it again once that goes", async () => {
+    const { IfModal } = await import("@/components/ui/infloww");
+    const { createPortal } = await import("react-dom");
+    const onClose = vi.fn();
+    function Host() {
+      const [over, setOver] = useState(false);
+      return (
+        <>
+          <button type="button" onClick={() => setOver((v) => !v)}>Toggle over</button>
+          <VaultPicker open onClose={onClose} accountId="acct-1" fanId={null} initialSelectedIds={[]} onConfirm={() => {}} />
+          {over && createPortal(
+            <IfModal title="Gone idle" closable={false} keyboard={false} onClose={() => {}}>idle</IfModal>, document.body)}
+        </>
+      );
+    }
+    renderWithProviders(<Host />);
+    fireEvent.click(screen.getByRole("button", { name: "Toggle over" }));
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Toggle over" }));
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});

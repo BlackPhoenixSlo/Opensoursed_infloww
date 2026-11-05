@@ -16,8 +16,9 @@
  */
 
 import { useEffect, useMemo, useReducer } from "react";
+import { ChevronLeft, ChevronRight, Copy, Image as ImageIcon, Lock, LockOpen, X } from "lucide-react";
 
-import { Button, Card, Input } from "@/components/ui/primitives";
+import { IfButton, IfHelp, IfInput, IfLabel } from "@/components/ui/infloww";
 import { VaultPicker } from "@/components/chat/VaultPicker";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useVaultMediaByIds } from "@/hooks/useVaultMediaByIds";
@@ -114,41 +115,32 @@ export function FunnelMediaPane({
 
   if (!accountId) {
     return (
-      <Card className="p-4 text-sm text-warn border-accent/40">
+      <div className="rounded-md border border-border bg-panel p-4 text-[14px] text-warn">
         Pick a model (account) in the chips above to map its vault media.
-      </Card>
+      </div>
     );
   }
 
   return (
-    <Card className="p-4 space-y-3 border-accent/40">
-      <div className="flex items-center justify-between gap-3">
-        <h3 className="text-sm font-semibold text-fg">
-          Funnel media · {funnel.name}{" "}
-          <span className="text-fg-dim font-normal">for {accountName}</span>
-        </h3>
-        <button
-          type="button"
-          onClick={onClose}
-          className="text-fg-dim hover:text-fg text-sm"
-          aria-label="Close media editor"
-        >
-          ✕
-        </button>
+    <div className="space-y-4 rounded-md border border-border bg-panel p-4">
+      <div>
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="min-w-0 text-[14px] font-medium text-fg">
+            Funnel media · {funnel.name}{" "}
+            <span className="font-normal text-muted">for {accountName}</span>
+          </h3>
+          <IfButton variant="link" icon={X} aria-label="Close media editor" onClick={onClose}
+            className="w-8 text-muted hover:text-fg" />
+        </div>
+        <IfHelp>Media is per model: picked from {accountName}&apos;s vault. Switch the model to map another one.</IfHelp>
       </div>
 
-      <p className="text-[11px] text-fg-dim">
-        Vault media is per model — these ids are picked from{" "}
-        <span className="text-fg">{accountName}</span>&apos;s vault. The funnel
-        text is shared; switch the model to map another one&apos;s media.
-      </p>
-
       {fullQ.isLoading || mediaQ.isLoading ? (
-        <div className="text-sm text-fg-dim">Loading media…</div>
+        <div className="text-[14px] text-muted">Loading media…</div>
       ) : (
         <div className="space-y-3">
           {/* Opener media */}
-          <div className="space-y-1.5">
+          <div className="space-y-2">
             <MediaRow
               title="Opening message media"
               hint="Sent with the funnel opener (optional)."
@@ -168,59 +160,59 @@ export function FunnelMediaPane({
 
           {/* PPV step media */}
           {ppvSlots.length === 0 ? (
-            <div className="text-[11px] text-fg-dim italic">
-              This funnel has no PPV steps yet. Add a PPV step in the funnel
-              editor (and save), then attach its media here.
-            </div>
+            <IfHelp>No PPV steps yet: add one in the funnel editor and save, then attach its media here.</IfHelp>
           ) : (
             ppvSlots.map((slot) => {
               const d = steps[String(slot.stepNo)] ?? { ids: [], previewCount: 0 };
               const free = d.previewCount; // reducer keeps it ≤ ids.length
+              const freeId = `funnel-${funnel.id}-step-${slot.stepNo}-free`;
               return (
-                <div key={slot.stepNo} className="space-y-1.5">
+                <div key={slot.stepNo} className="space-y-2">
                   <MediaRow
                     title={slot.label}
                     hint="The paywalled vault media for this PPV step."
                     ids={d.ids}
                     onPick={() => dispatch({ type: "openPicker", target: slot.stepNo })}
-                    // Split clear: this wipes the MEDIA (and its teaser); the
-                    // "clear teaser" link below resets only the free-preview count.
+                    // Split clear: this wipes the MEDIA (and its teaser); "Clear teaser"
+                    // below resets only the free-preview count.
                     onClear={() => dispatch({ type: "setStep", stepNo: slot.stepNo, patch: { ids: [], previewCount: 0 } })}
-                    clearLabel="clear media"
+                    clearLabel="Clear media"
                   />
                   {d.ids.length > 0 && (
                     <>
-                      <label className="block text-[11px] text-fg-dim pl-1">
-                        Free preview — first
-                        <Input
-                          type="number"
-                          min={0}
-                          max={d.ids.length}
-                          value={String(d.previewCount)}
-                          // Raw count; the reducer clamps it to 0..ids.length.
-                          onChange={(e) =>
-                            dispatch({ type: "setStep", stepNo: slot.stepNo, patch: { previewCount: Number(e.target.value) || 0 } })
-                          }
-                          className="inline-block w-16 mx-1 align-middle"
-                        />
-                        of {d.ids.length}{" "}
-                        <span className="text-fg-dim/70">(max {d.ids.length})</span> shown
-                        free as a teaser
-                        {free === 0 && " — fully locked"}
-                        {free > 0 && (
-                          <button
-                            type="button"
-                            onClick={() => dispatch({ type: "setStep", stepNo: slot.stepNo, patch: { previewCount: 0 } })}
-                            className="ml-2 text-fg-dim hover:text-err underline"
-                          >
-                            clear teaser
-                          </button>
-                        )}
-                      </label>
+                      <div className="px-3">
+                        <IfLabel htmlFor={freeId}>Free preview</IfLabel>
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[14px] text-fg">
+                          <span>First</span>
+                          <IfInput
+                            id={freeId}
+                            type="number"
+                            min={0}
+                            max={d.ids.length}
+                            value={String(d.previewCount)}
+                            // Raw count; the reducer clamps it to 0..ids.length.
+                            onChange={(e) =>
+                              dispatch({ type: "setStep", stepNo: slot.stepNo, patch: { previewCount: Number(e.target.value) || 0 } })
+                            }
+                            className="w-20"
+                          />
+                          <span>of {d.ids.length} shown free</span>
+                          {free > 0 && (
+                            <IfButton variant="link"
+                              onClick={() => dispatch({ type: "setStep", stepNo: slot.stepNo, patch: { previewCount: 0 } })}>
+                              Clear teaser
+                            </IfButton>
+                          )}
+                        </div>
+                        <IfHelp className="flex items-center gap-1.5">
+                          <Lock aria-hidden className="h-3.5 w-3.5 shrink-0" />
+                          {free === 0 ? "Fully locked." : "The first ones go out free as a teaser; the rest stay locked."}
+                        </IfHelp>
+                      </div>
 
-                      {/* Thumbnail strip: the leading `free` images go out UNLOCKED
-                          (🔓), the rest stay paywalled (🔒). Reorder with ◀ ▶ to pick
-                          which ones are the free teaser (it's always the FIRST N). */}
+                      {/* Thumbnail strip: the leading `free` images go out UNLOCKED,
+                          the rest stay paywalled. Reorder to pick which ones are the
+                          free teaser (it's always the FIRST N). */}
                       <MediaStrip
                         ids={d.ids}
                         free={free}
@@ -232,13 +224,9 @@ export function FunnelMediaPane({
                       {/* Same set across steps is common: copy media + teaser to
                           every OTHER PPV step (teaser re-clamped per target). */}
                       {ppvSlots.length > 1 && (
-                        <button
-                          type="button"
-                          onClick={() => dispatch({ type: "copyToAll", fromStepNo: slot.stepNo, stepNos })}
-                          className="pl-1 text-[11px] text-accent hover:underline"
-                        >
-                          ⧉ Copy media to all PPV steps
-                        </button>
+                        <IfButton icon={Copy} onClick={() => dispatch({ type: "copyToAll", fromStepNo: slot.stepNo, stepNos })}>
+                          Copy media to all PPV steps
+                        </IfButton>
                       )}
                     </>
                   )}
@@ -249,16 +237,14 @@ export function FunnelMediaPane({
         </div>
       )}
 
-      <div className="flex items-center gap-2 pt-1">
-        <Button size="sm" variant="primary" onClick={save} disabled={saveM.isPending}>
+      <div className="flex flex-wrap items-center gap-2">
+        <IfButton variant="primary" onClick={save} disabled={saveM.isPending}>
           {saveM.isPending ? "Saving…" : "Save media"}
-        </Button>
-        <Button size="sm" variant="ghost" onClick={onClose} disabled={saveM.isPending}>
-          Close
-        </Button>
-        {done && <span className="text-xs text-ok">Saved for {accountName}.</span>}
+        </IfButton>
+        <IfButton onClick={onClose} disabled={saveM.isPending}>Close</IfButton>
+        {done && <span className="text-[12px] text-ok">Saved for {accountName}.</span>}
         {saveM.isError && (
-          <span className="text-xs text-err">
+          <span className="text-[12px] text-err">
             {(saveM.error as Error)?.message || "Save failed"}
           </span>
         )}
@@ -277,7 +263,7 @@ export function FunnelMediaPane({
           dispatch({ type: "pickConfirm", ids });
         }}
       />
-    </Card>
+    </div>
   );
 }
 
@@ -288,34 +274,28 @@ function MediaRow({
   ids,
   onPick,
   onClear,
-  clearLabel = "clear",
+  clearLabel = "Clear",
 }: {
   title: string;
   hint: string;
   ids: number[];
   onPick: () => void;
   onClear: () => void;
-  /** Text for the clear link — e.g. "clear media" when a teaser clear sits beside it. */
+  /** Text for the clear link — e.g. "Clear media" when a teaser clear sits beside it. */
   clearLabel?: string;
 }) {
   return (
-    <div className="flex items-start justify-between gap-3 border border-border rounded-md px-3 py-2">
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border px-3 py-2">
       <div className="min-w-0">
-        <div className="text-xs font-medium text-fg">{title}</div>
-        <div className="text-[11px] text-fg-dim">{hint}</div>
+        <div className="text-[14px] text-fg">{title}</div>
+        <div className="text-[12px] text-muted">{hint}</div>
       </div>
-      <div className="flex items-center gap-2 shrink-0">
-        <Button size="sm" variant="secondary" onClick={onPick}>
-          {ids.length ? `🖼 ${ids.length} picked` : "🖼 Pick media"}
-        </Button>
+      <div className="flex shrink-0 items-center gap-3">
+        <IfButton icon={ImageIcon} onClick={onPick}>
+          {ids.length ? `${ids.length} picked` : "Pick media"}
+        </IfButton>
         {ids.length > 0 && (
-          <button
-            type="button"
-            onClick={onClear}
-            className="text-[11px] text-fg-dim hover:text-err"
-          >
-            {clearLabel}
-          </button>
+          <IfButton variant="link" onClick={onClear}>{clearLabel}</IfButton>
         )}
       </div>
     </div>
@@ -323,8 +303,8 @@ function MediaRow({
 }
 
 /** A horizontal strip of media thumbnails for one slot, in SEND order. Each tile
- *  shows the image (or a "#id" badge until it resolves), a 🔓/🔒 free/locked flag
- *  when `free` is given (leading `free` = the teaser), and ◀ ▶ to reorder + ✕ to
+ *  shows the image (or a "#id" badge until it resolves), an open / closed lock
+ *  when `free` is given (leading `free` = the teaser), and left / right to reorder + × to
  *  drop it. Reordering matters: the first `free` images are the ones sent free. */
 function MediaStrip({
   ids,
@@ -334,14 +314,14 @@ function MediaStrip({
   onRemove,
 }: {
   ids: number[];
-  /** How many LEADING tiles are the free teaser (🔓); omit for opener media. */
+  /** How many LEADING tiles are the free teaser (unlocked); omit for opener media. */
   free?: number;
   thumbFor: (id: number) => string;
   onMove: (index: number, dir: -1 | 1) => void;
   onRemove: (index: number) => void;
 }) {
   return (
-    <div className="flex flex-wrap gap-2 pl-1">
+    <div className="flex flex-wrap gap-2">
       {ids.map((id, i) => {
         const src = thumbFor(id);
         const isFree = free != null && i < free;
@@ -367,13 +347,13 @@ function MediaStrip({
                   draggable={false}
                 />
               ) : (
-                <div className="h-16 w-16 flex items-center justify-center text-[10px] text-fg-dim">
+                <div className="h-16 w-16 flex items-center justify-center text-[12px] text-fg-dim">
                   #{id}
                 </div>
               )}
               {free != null && (
-                <span className="absolute top-0.5 left-0.5 text-[10px] leading-none drop-shadow">
-                  {isFree ? "🔓" : "🔒"}
+                <span className="absolute left-0.5 top-0.5 grid h-4 w-4 place-items-center rounded-full bg-black/55 text-white">
+                  {isFree ? <LockOpen aria-hidden className="h-2.5 w-2.5" /> : <Lock aria-hidden className="h-2.5 w-2.5" />}
                 </span>
               )}
               <button
@@ -383,7 +363,7 @@ function MediaStrip({
                 aria-label={`Remove media ${id}`}
                 title="Remove"
               >
-                ✕
+                <X aria-hidden className="h-3 w-3" />
               </button>
             </div>
             {/* Reorder controls — hover-revealed on desktop, always visible (and
@@ -393,22 +373,22 @@ function MediaStrip({
                 type="button"
                 onClick={() => onMove(i, -1)}
                 disabled={i === 0}
-                className="flex-1 text-[10px] text-white/90 disabled:opacity-30 hover:bg-white/10 leading-4"
+                className="flex flex-1 items-center justify-center text-white/90 disabled:opacity-30 hover:bg-white/10"
                 aria-label="Move left"
                 title="Move earlier"
               >
-                ◀
+                <ChevronLeft aria-hidden className="h-3.5 w-3.5" />
               </button>
-              <span className="text-[9px] text-white/60 leading-4 px-0.5">{i + 1}</span>
+              <span className="px-0.5 text-[12px] leading-4 text-white/60">{i + 1}</span>
               <button
                 type="button"
                 onClick={() => onMove(i, 1)}
                 disabled={i === ids.length - 1}
-                className="flex-1 text-[10px] text-white/90 disabled:opacity-30 hover:bg-white/10 leading-4"
+                className="flex flex-1 items-center justify-center text-white/90 disabled:opacity-30 hover:bg-white/10"
                 aria-label="Move right"
                 title="Move later"
               >
-                ▶
+                <ChevronRight aria-hidden className="h-3.5 w-3.5" />
               </button>
             </div>
           </div>

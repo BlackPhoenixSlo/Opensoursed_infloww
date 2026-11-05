@@ -13,8 +13,12 @@ import type { Dispatch } from "react";
 
 import { ListColumn, SYSTEM_AUDIENCES, SysChip, type FanList } from "@/components/audience/fanLists";
 import type { SmartList } from "@/hooks/useSmartLists";
+import { IfHelp, IfLabel } from "@/components/ui/infloww";
 
 import type { MassAction, MassForm } from "./massMessageReducer";
+
+/** A list column's heading (under the Audience label). */
+const SUB = "mb-1.5 text-[12px] text-fg-dim";
 
 export function AudiencePanel({
   form, dispatch, customLists, listsLoading, smartLists,
@@ -35,11 +39,9 @@ export function AudiencePanel({
   const hasSystem = Array.from(includes).some((id) => SYSTEM_AUDIENCES.some((b) => b.id === id));
 
   return (
-    <div className="border border-border rounded-md p-3 space-y-3">
-      <div className="text-[11px] uppercase tracking-wide text-fg-dim">
-        Audience <span className="text-err">*</span>
-      </div>
-      <div className="space-y-1.5">
+    <div className="space-y-3">
+      <div>
+        <IfLabel required>Audience</IfLabel>
         <div className="flex flex-wrap gap-1.5">
           {SYSTEM_AUDIENCES.map((b) => (
             // Include-only: OF ignores system audiences in `excludedLists`,
@@ -52,14 +54,12 @@ export function AudiencePanel({
             />
           ))}
         </div>
-        <div className="text-[10px] text-fg-dim">
-          Default: fans + following both included (click to toggle).
-        </div>
+        <IfHelp>Default: fans + following both included (click to toggle).</IfHelp>
       </div>
       {!allModels && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-border/60">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div>
-            <div className="text-[11px] text-fg-dim mb-1.5">Custom lists — include</div>
+            <div className={SUB}>Custom lists — include</div>
             <ListColumn
               lists={customLists}
               loading={listsLoading}
@@ -69,7 +69,7 @@ export function AudiencePanel({
             />
           </div>
           <div>
-            <div className="text-[11px] text-fg-dim mb-1.5">Custom lists — exclude</div>
+            <div className={SUB}>Custom lists — exclude</div>
             <ListColumn
               lists={customLists}
               loading={listsLoading}
@@ -82,7 +82,7 @@ export function AudiencePanel({
       )}
       {/* Smart Lists — saved dynamic segments, resolved to fan ids on send. */}
       {!allModels && smartLists.length > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-border/60">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <SmartListColumn
             title="Smart Lists — include"
             lists={smartLists}
@@ -100,7 +100,7 @@ export function AudiencePanel({
         </div>
       )}
       {!allModels && (includes.size > 0 || excludes.size > 0) && (
-        <div className="text-[11px] text-fg-dim border-t border-border/60 pt-2">
+        <div className="text-[12px] text-muted">
           Reach: {includeReach} fan{includeReach === 1 ? "" : "s"} from custom
           {hasSystem ? " + system audience" : ""}
           {excludes.size > 0 && ` — minus ${excludes.size} list${excludes.size === 1 ? "" : "s"}`}
@@ -123,7 +123,7 @@ function SmartListColumn({
 }) {
   return (
     <div>
-      <div className="text-[11px] text-fg-dim mb-1.5">{title}</div>
+      <div className={SUB}>{title}</div>
       <div className="flex flex-wrap gap-1.5">
         {lists.map((l) => (
           <button
@@ -131,7 +131,7 @@ function SmartListColumn({
             type="button"
             aria-pressed={selected.has(l.id)}
             onClick={() => onToggle(l.id)}
-            className={`px-2.5 py-1 rounded-full text-xs border transition-colors ${
+            className={`h-7 rounded-full border px-3 text-[12px] transition-colors ${
               selected.has(l.id) ? onClass : "bg-bg-elev-1 text-fg-dim border-border hover:text-fg"
             }`}
           >

@@ -9,6 +9,7 @@
  * applied; massMessageReducer `buildMassBody` forwards positive numbers only).
  */
 
+import { IfHelp, IfInput, IfLearn, IfSwitch } from "@/components/ui/infloww";
 import { ExtraTag } from "@/components/ui/primitives";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 
@@ -42,27 +43,27 @@ export function OnlineTargetingPanel({
     .some((v) => Number(v) > 0);
 
   return (
-    <div className="border border-accent/30 bg-accent/5 rounded-md p-3 space-y-3">
-      <div className="text-[11px] uppercase tracking-wide text-accent">
-        Online targeting
+    <section className="space-y-4 rounded-md border border-border p-4">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="text-[14px] font-medium text-fg">Online targeting</h3>
+        <IfLearn tip={<>
+          Unread / chatted-with ADD fans; the two excludes remove fans you touched recently. Counts are resolved by
+          the server at send time. With a threshold set, the audience is sent as at most 1,000 fan ids, and Expired
+          over reads Fans / Following as your expired fans and needs online-only off.
+        </>} />
       </div>
 
-      <label className="flex items-center gap-2 text-xs cursor-pointer select-none">
-        <input
-          type="checkbox"
-          checked={onlineOnly}
-          onChange={(e) => set("onlineOnly")(e.target.checked)}
-        />
-        <span className="font-medium">Only fans online right now</span>
-        <span className="text-fg-dim">(OF resolves at send time)</span>
+      <div className="flex flex-wrap items-center gap-2 text-[14px]">
+        <IfSwitch label="Only fans online right now" checked={onlineOnly} onChange={set("onlineOnly")} />
+        <span className="text-muted">(OF resolves at send time)</span>
         {onlineCount != null && (
           <span className="ml-auto text-accent" title="OnlyFans' online subscribers list, re-read every minute">
             {onlineCount} online now
           </span>
         )}
-      </label>
+      </div>
 
-      <div className="grid grid-cols-2 gap-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <NumField label="Total spent over" suffix="$" value={minTotalSpent}
           onChange={set("minTotalSpent")} placeholder="e.g. 50" />
         <NumField label="Tipped over" suffix="$" value={minTipped}
@@ -70,10 +71,10 @@ export function OnlineTargetingPanel({
         <NumField label="Subscribed over" suffix="N days" value={subscribedOverDays}
           onChange={set("subscribedOverDays")} placeholder="e.g. 30" />
         <NumField label="Expired over" suffix="N days" value={expiredOverDays}
-          onChange={set("expiredOverDays")} placeholder="online-only off" />
+          onChange={set("expiredOverDays")} placeholder="e.g. 60" />
       </div>
 
-      <div className="grid grid-cols-2 gap-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <NumField
           label="Include fans with unread msgs"
           suffix="up to N"
@@ -95,7 +96,7 @@ export function OnlineTargetingPanel({
           onChange={set("recentChatLimit")}
           placeholder="(optional)"
         />
-        <div />
+        <div className="max-sm:hidden" />
         <NumField
           label="Exclude I replied to"
           suffix="last N hrs"
@@ -112,7 +113,7 @@ export function OnlineTargetingPanel({
         />
       </div>
 
-      <div className="pt-2 border-t border-accent/20">
+      <div>
         <NumField
           label="Auto-unsend this broadcast after"
           suffix="N hrs"
@@ -122,23 +123,19 @@ export function OnlineTargetingPanel({
           extra={labelExtras}
         />
         {isScheduled && unsendAfterHours.trim() !== "" && (
-          <div className="text-[10px] text-warn mt-1">
+          <IfHelp className="text-warn">
             Auto-unsend applies to immediate sends only — ignored when scheduled.
-          </div>
+          </IfHelp>
         )}
       </div>
 
-      <div className="text-[10px] text-fg-dim leading-relaxed">
+      <IfHelp>
         {hasThresholds
-          ? <>Thresholds set: the audience is the fans on the lists above
-            {onlineOnly ? " who are online right now and" : " who"} clear every one,
-            sent as at most 1,000 fan ids. Expired over reads Fans / Following as
-            your expired fans. Online-only sends go now, not scheduled.</>
+          ? <>Thresholds set: fans on the lists above{onlineOnly ? " who are online right now and" : " who"} clear
+            every one. Online-only sends go now, not scheduled.</>
           : <>Audience = the lists above, filtered to online{onlineOnly ? "" : " (off)"}.</>}
-        {" "}Unread / chatted-with ADD fans; the two excludes remove fans you
-        touched recently. Counts are resolved by the server at send time.
-      </div>
-    </div>
+      </IfHelp>
+    </section>
   );
 }
 
@@ -156,18 +153,18 @@ function NumField({
   extra?: boolean;
 }) {
   return (
-    <label className="flex flex-col gap-1 text-[11px] text-fg-dim" title={extra ? EXTRA_LABEL : undefined}>
-      <span className="leading-tight">
-        {label} <span className="opacity-60">({suffix})</span>
+    <label className="flex flex-col gap-2 text-[14px] text-fg" title={extra ? EXTRA_LABEL : undefined}>
+      <span>
+        {label} <span className="text-muted">({suffix})</span>
         {extra && <> <ExtraTag /></>}
       </span>
-      <input
+      <IfInput
         type="text"
         inputMode="numeric"
         value={value}
         onChange={(e) => onChange(e.target.value.replace(/[^0-9.]/g, ""))}
         placeholder={placeholder}
-        className="bg-bg border border-border rounded-md px-2 py-1.5 text-base md:text-xs text-fg focus:outline-none focus:border-accent"
+        className="w-full max-md:text-base"
       />
     </label>
   );

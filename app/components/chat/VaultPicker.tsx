@@ -14,11 +14,13 @@
  * only their ids in send-payload form.
  */
 
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type ComponentProps, type RefObject } from "react";
 import { createPortal } from "react-dom";
-import { Library } from "lucide-react";
+import { Captions, Library, RefreshCw, Star, X, Zap } from "lucide-react";
 
-import { Button } from "@/components/ui/primitives";
+import { IfButton, IfSegmented, IfSwitch } from "@/components/ui/infloww";
+import { isTopModal, useModalFocus } from "@/components/ui/ifModal";
+import { IF_FIELD } from "@/components/ui/ifSelect";
 import { cn } from "@/lib/utils";
 
 import { useQueryClient } from "@tanstack/react-query";
@@ -52,6 +54,9 @@ export { progressiveVideoSrc, videoPosterFrames, isDrmVideo, isDrmOnlyVideo, Vau
 // Kept only for VaultTile + the drm test importers (review O1); delete when VaultTile moves to tilePreview.
 export { evenFrameIndex } from "./vaultTilePreview";
 export { aiCaptionFor, VaultAiCaptionOverlay, useCaptionOverlay, type CaptionSurface } from "./vaultAiCaption";
+
+/** The toolbar's selects on the kit's field box (the shared token keeps its layout bits). */
+const TOOL_SELECT = cn(VAULT_TOOLBAR_SELECT, IF_FIELD, "h-8 py-0 px-[11px]");
 
 const TYPE_CHIPS: Array<{ value: MediaType; label: string }> = [
   { value: "all",   label: "All"    },
@@ -95,8 +100,19 @@ export type VaultPickerProps = VaultPickerBaseProps & (
   | { messagesPro: true; sheet: VaultPickerSheetClassNames }
 );
 
+/** The open picker's dialog root, a modal layer like IfModal (the shared `useModalFocus`): focus moves in, Tab stays
+ *  inside, and goes back to the opener on close. Escape stays the picker's own handler (preview first). */
+function PickerDialog({ rootRef, onClose, className, ...rest }: ComponentProps<"div"> & {
+  rootRef: RefObject<HTMLDivElement | null>; onClose: () => void;
+}) {
+  useModalFocus<HTMLDivElement>(onClose, false, rootRef);
+  return <div ref={rootRef} role="dialog" aria-modal="true" tabIndex={-1} className={cn(className, "outline-none")} {...rest} />;
+}
+
 export function VaultPicker(props: VaultPickerProps) {
   const { open, onClose, accountId, fanId = null, initialSelectedIds, onConfirm } = props;
+  // The open picker's root (PickerDialog): a modal layer, so its Escape yields to a layer over it (the idle overlay).
+  const rootRef = useRef<HTMLDivElement>(null);
   /** The Messages Pro sheet's Geometry, or null for the slide-over. */
   const sheet = props.messagesPro ? props.sheet : null;
   const messagesPro = sheet !== null;
@@ -375,7 +391,7 @@ export function VaultPicker(props: VaultPickerProps) {
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
+      if (e.key !== "Escape" || !isTopModal(rootRef.current)) return;
       if (hoverPhoto) {
         closePhoto();
         return;
@@ -532,7 +548,10 @@ export function VaultPicker(props: VaultPickerProps) {
     // PostComposer / MassMessageComposer outer `onClick` that closes them.
     // Containing the events here keeps single-chat behavior identical and
     // fixes the "click a tile and the whole composer disappears" bug.
-    <div
+    <PickerDialog
+      rootRef={rootRef}
+      onClose={onClose}
+      aria-label="Vault picker"
       className={cn("fixed inset-0 z-[60] flex items-stretch", messagesPro && VAULT_SHEET.backdrop)}
       style={palette}
       onClick={(e) => e.stopPropagation()}
@@ -542,24 +561,25 @@ export function VaultPicker(props: VaultPickerProps) {
         type="button"
         onClick={onClose}
         aria-label="Close vault picker"
-        className="absolute inset-0 bg-black/40 cursor-default"
+        className="absolute inset-0 bg-black/70 cursor-default"
       />
       <div className={cn("relative bg-panel border-border flex flex-col shadow-2xl", sheet ? cn(VAULT_SHEET.panel, sheet.panel) : "ml-auto w-full max-w-3xl border-l")}>
-        <header className={cn("flex items-center justify-between px-4 py-3 border-b border-border", sheet?.pickerHead)}>
+        <header className={cn("flex items-center justify-between px-6 py-4 border-b border-border", sheet?.pickerHead)}>
           <div>
-            <h2 className={cn("text-base font-semibold inline-flex items-center gap-1.5", sheet?.pickerTitle)}>
+            <h2 className={cn("text-[16px] font-semibold inline-flex items-center gap-1.5", sheet?.pickerTitle)}>
               <Library size={16} aria-hidden />
               Vault
               {useLocalVault && (
                 <span
-                  className="text-[10px] font-medium text-ok inline-flex items-center gap-0.5"
+                  className="text-[12px] font-medium text-ok inline-flex items-center gap-0.5"
                   title="Served instantly from the local cache (Collect in the Vault manager)"
                 >
-                  ⚡ cached
+                  <Zap className="h-3 w-3" aria-hidden />
+                  cached
                 </span>
               )}
             </h2>
-            <p className="text-[11px] text-fg-dim">
+            <p className="text-[12px] text-muted">
               {/* Double-click has no touch equivalent; the phone copy points
                *  at the Attach button in the footer instead. */}
               <span className="hidden md:inline">{TILE_HINT} · {KEYBOARD_HINT}.</span>
@@ -572,37 +592,30 @@ export function VaultPicker(props: VaultPickerProps) {
             // At phone width the pane covers the whole backdrop, so this ✕ is
             // the only exit — it needs a real 44px box. inline-grid (not grid)
             // keeps the desktop header flex row measuring exactly as before.
-            className="text-fg-dim hover:text-fg text-base md:text-sm w-11 h-11 md:w-auto md:h-auto inline-grid place-items-center md:px-2 md:py-1"
+            className="text-muted hover:text-fg w-11 h-11 md:w-6 md:h-6 inline-grid place-items-center rounded"
             title="Close (Esc)"
+            aria-label="Close"
           >
-            ✕
+            <X className="h-4 w-4" aria-hidden />
           </button>
         </header>
 
         {/* Phone: one horizontally-scrollable row instead of a 4-line wrapped
          *  tower. md: restores the original wrap + visible overflow exactly. */}
-        <div className="flex items-center gap-1 px-4 py-2 border-b border-border bg-bg/40 flex-nowrap overflow-x-auto md:flex-wrap md:overflow-visible">
-          {TYPE_CHIPS.map((c) => (
-            <button
-              key={c.value}
-              type="button"
-              onClick={() => dispatch({ type: "setType", value: c.value })}
-              className={cn(
-                "shrink-0 px-3 py-1 rounded-full text-xs border transition-colors",
-                type === c.value
-                  ? "bg-accent/15 border-accent/40 text-[var(--inf-accent-text,var(--color-accent))]"
-                  : "bg-transparent border-border text-fg-dim hover:text-fg",
-              )}
-            >
-              {c.label}
-            </button>
-          ))}
+        <div className="flex items-center gap-1 px-6 py-2 border-b border-border bg-bg/40 flex-nowrap overflow-x-auto md:flex-wrap md:overflow-visible">
+          <IfSegmented
+            aria-label="Media type"
+            className="shrink-0"
+            value={type}
+            onChange={(value) => dispatch({ type: "setType", value })}
+            options={TYPE_CHIPS}
+          />
 
           {folderItems.length > 0 && (
             <select
               value={listId ?? ""}
               onChange={(e) => dispatch({ type: "setListId", value: e.target.value ? Number(e.target.value) : null })}
-              className={cn(VAULT_TOOLBAR_SELECT, "max-w-[9rem] md:max-w-none")}
+              className={cn(TOOL_SELECT, "max-w-[9rem] md:max-w-none")}
               title="Filter by folder"
             >
               {/* Restricted chatters have no "All folders" view — the
@@ -619,7 +632,7 @@ export function VaultPicker(props: VaultPickerProps) {
           <select
             value={sort}
             onChange={(e) => dispatch({ type: "setSort", value: e.target.value as Sort })}
-            className={VAULT_TOOLBAR_SELECT}
+            className={TOOL_SELECT}
             title="Sort order. Newest / Oldest are OF's; the stats sorts rank the loaded media by our send records."
           >
             <option value="newest">Newest</option>
@@ -628,20 +641,21 @@ export function VaultPicker(props: VaultPickerProps) {
           </select>
 
           {fanId != null && (
-            <label
-              className="shrink-0 ml-2 inline-flex items-center gap-1 text-[11px] text-fg-dim cursor-pointer select-none"
-              title="Hide content viewed or unlocked by fan, or posted on Creator's feed"
-            >
-              <input type="checkbox" checked={hideSeen} onChange={(e) => dispatch({ type: "setHideSeen", value: e.target.checked })} />
-              Hide seen
-            </label>
+            <span className="shrink-0 ml-2" title="Hide content viewed or unlocked by fan, or posted on Creator's feed">
+              <IfSwitch
+                checked={hideSeen}
+                onChange={(value) => dispatch({ type: "setHideSeen", value })}
+                label="Hide seen"
+                className="gap-2"
+              />
+            </span>
           )}
 
           {fanId != null && (
             <select
               value={lengthRange}
               onChange={(e) => dispatch({ type: "setLengthRange", value: e.target.value as DurationRange })}
-              className={VAULT_TOOLBAR_SELECT}
+              className={TOOL_SELECT}
               title="Filter by length"
             >
               {DURATION_RANGES.map((r) => (
@@ -657,16 +671,16 @@ export function VaultPicker(props: VaultPickerProps) {
               onChange={(e) => dispatch({ type: "setQueryInput", value: e.target.value })}
               placeholder={fanId != null ? "Search hashtag, note or caption" : "Search vault…"}
               title="Search your vault (OnlineFans-native full-text search)"
-              className="w-32 md:w-40 bg-bg border border-border rounded-md pl-2 pr-6 py-1 text-base md:text-xs focus:outline-none focus:border-accent"
+              className={cn(IF_FIELD, "h-8 w-40 md:w-60 pl-[11px] pr-7 text-base md:text-[14px] outline-none focus:border-accent placeholder:text-muted")}
             />
             {queryInput && (
               <button
                 type="button"
                 onClick={() => dispatch({ type: "clearQuery" })}
-                className="absolute right-1.5 top-1/2 -translate-y-1/2 text-fg-dim hover:text-fg leading-none"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-fg"
                 aria-label="Clear search"
               >
-                ×
+                <X className="h-3.5 w-3.5" aria-hidden />
               </button>
             )}
           </div>
@@ -674,21 +688,18 @@ export function VaultPicker(props: VaultPickerProps) {
           <div className="shrink-0 ml-auto flex items-center gap-3">
             {/* AI caption toggle — shows the mirror description + tags as a
              *  blurred bottom-half overlay on each thumb. Off by default here. */}
-            <button
-              type="button"
+            <IfButton
+              icon={Captions}
               onClick={() => setCaptionOn(!captionOn)}
               aria-pressed={captionOn}
               title={captionOn ? "Hide AI descriptions on thumbs" : "Show AI descriptions on thumbs"}
               className={cn(
-                "inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border transition-colors",
-                captionOn
-                  ? "bg-accent/15 border-accent/40 text-[var(--inf-accent-text,var(--color-accent))]"
-                  : "bg-transparent border-border text-fg-dim hover:text-fg",
+                "gap-1.5 px-[11px]",
+                captionOn && "border-accent/60 bg-accent/15 text-[var(--inf-accent-text,var(--color-accent))]",
               )}
             >
-              <span aria-hidden>📝</span>
-              <span>captions</span>
-            </button>
+              captions
+            </IfButton>
             {/* Wall-scan indicator: only render while coverage is
              *  incomplete so the user understands the blue "posted on
              *  wall" ring is still filling in. Once `fullyBackfilled`
@@ -698,26 +709,26 @@ export function VaultPicker(props: VaultPickerProps) {
               <span
                 // Desk-only diagnostic prose; it costs the phone a whole
                 // scroll-row of the filter bar. md:inline restores it.
-                className="hidden md:inline text-[11px] text-fg-dim italic"
+                className="hidden md:inline text-[12px] text-muted"
                 title="The 'posted on wall' ring is being filled in across vault opens. Older posts will get marked on subsequent picker opens."
               >
                 {wall.isFetching ? "scanning wall…" : "wall scan incomplete"}
               </span>
             )}
-            <button
-              type="button"
+            <IfButton
+              variant="link"
               onClick={() => { vault.refresh(); wall.refresh(); }}
-              className="inline-flex items-center gap-1 text-[11px] text-fg-dim hover:text-fg underline underline-offset-2"
+              className="gap-1.5"
             >
-              <span className={cn("inline-block no-underline", (vault.isFetching || wall.isFetching) && "animate-spin")}>↻</span>
-              <span>refresh</span>
-            </button>
+              <RefreshCw className={cn("h-3.5 w-3.5", (vault.isFetching || wall.isFetching) && "animate-spin")} aria-hidden />
+              refresh
+            </IfButton>
           </div>
         </div>
 
         {quickChips.length > 0 && (
-          <div className="flex items-center gap-1 px-4 py-1.5 border-b border-border bg-bg/30 flex-wrap text-[11px]">
-            <span className="text-fg-dim mr-1">Folders:</span>
+          <div className="flex items-center gap-1 px-6 py-1.5 border-b border-border bg-bg/30 flex-wrap text-[12px]">
+            <span className="text-muted mr-1">Folders</span>
             {/* Restricted chatters have no "All" — soft-denied by the backend. */}
             {!restricted && <button
               type="button"
@@ -751,7 +762,7 @@ export function VaultPicker(props: VaultPickerProps) {
                     : "bg-transparent border-border text-fg-dim hover:text-fg",
                 )}
               >
-                {f.source === "mru" && <span className="opacity-60 mr-0.5">★</span>}
+                {f.source === "mru" && <Star className="mr-0.5 inline h-3 w-3 align-[-2px] opacity-60" aria-hidden />}
                 {f.source === "global" && <span className="opacity-50 mr-0.5">•</span>}
                 {f.name}
               </button>
@@ -759,7 +770,7 @@ export function VaultPicker(props: VaultPickerProps) {
           </div>
         )}
 
-        <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3" onScroll={closePhoto}>
+        <div className="flex-1 min-h-0 overflow-y-auto px-6 py-3" onScroll={closePhoto}>
           {vault.isLoading && vault.items.length === 0 && (
             <div className="text-sm text-fg-dim text-center py-12">Loading vault…</div>
           )}
@@ -815,7 +826,7 @@ export function VaultPicker(props: VaultPickerProps) {
             ))}
           </div>
 
-          <div ref={sentinelRef} className="h-8 flex items-center justify-center text-[11px] text-fg-dim">
+          <div ref={sentinelRef} className="h-8 flex items-center justify-center text-[12px] text-muted">
             {vault.isFetchingNextPage ? "Loading more…" : vault.hasMore ? "" : (vault.items.length > 0 ? "End of vault." : "")}
           </div>
         </div>
@@ -823,17 +834,17 @@ export function VaultPicker(props: VaultPickerProps) {
         {/* pb safe-area: Attach/Cancel sit under the iOS home indicator on this
          *  `fixed inset-0` pane (viewportFit: cover). max() keeps the desktop
          *  0.75rem, since env() resolves to 0 there. Composer.tsx:469 precedent. */}
-        <footer className="border-t border-border px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] flex items-center gap-3 bg-panel">
-          <span className="text-xs text-fg-dim">
+        <footer className="border-t border-border px-6 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] flex items-center gap-3 bg-panel">
+          <span className="text-[12px] text-fg-dim">
             {selectedIds.size === 0
               ? "No items selected"
               : `${selectedIds.size} item${selectedIds.size === 1 ? "" : "s"} selected`}
           </span>
           <div className="ml-auto flex items-center gap-2">
-            <Button size="sm" variant="ghost" onClick={onClose}>Cancel</Button>
-            <Button size="sm" disabled={selectedIds.size === 0} onClick={confirm}>
+            <IfButton onClick={onClose}>Cancel</IfButton>
+            <IfButton variant="primary" disabled={selectedIds.size === 0} onClick={confirm}>
               Attach
-            </Button>
+            </IfButton>
           </div>
         </footer>
         {details && (
@@ -858,7 +869,7 @@ export function VaultPicker(props: VaultPickerProps) {
           onClose={() => setPreviewMedia(null)}
         />
       )}
-    </div>,
+    </PickerDialog>,
     document.body,
   );
 }

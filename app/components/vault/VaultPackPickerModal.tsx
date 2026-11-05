@@ -35,6 +35,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { AlertTriangle, X } from "lucide-react";
 
 import {
   mirrorFullSrc,
@@ -44,6 +45,7 @@ import {
   type PackCandidate,
 } from "@/hooks/useVaultCache";
 import { makeSlotGate } from "@/components/vault/slotGate";
+import { IfButton, IfModal, IfSegmented } from "@/components/ui/infloww";
 import { errText } from "@/lib/errText";
 
 /** Strictly below the relay's own VAULT_STILL_CONCURRENCY (6) so the pane can
@@ -151,7 +153,7 @@ function Tile({
     <div
       ref={ref}
       className={[
-        "flex flex-col rounded-lg border overflow-hidden bg-bg-subtle",
+        "flex flex-col rounded-md border overflow-hidden bg-bg-subtle",
         rung ? RUNG_STYLE[rung] ?? "border-fg-dim" : "border-border",
       ].join(" ")}
     >
@@ -170,30 +172,30 @@ function Tile({
           />
         ) : null}
         {(!loaded || failed) && (
-          <div className="absolute inset-0 grid place-items-center px-2 text-center text-[10px] text-fg-dim">
+          <div className="absolute inset-0 grid place-items-center px-2 text-center text-[12px] text-muted">
             {failed ? "no preview — judge from the text" : visible ? "loading…" : ""}
           </div>
         )}
         {isVideo && (
-          <span className="absolute left-1 top-1 rounded bg-black/70 px-1 text-[10px] text-white">
+          <span className="absolute left-1 top-1 rounded bg-black/70 px-1 text-[12px] text-white">
             {item.kind}
           </span>
         )}
         {rung && (
-          <span className="absolute right-1 top-1 rounded bg-black/70 px-1 text-[10px] text-white">
+          <span className="absolute right-1 top-1 rounded bg-black/70 px-1 text-[12px] text-white">
             {rung}
           </span>
         )}
       </div>
 
       {/* Pass A: reject on text alone, no pixels needed. */}
-      <p className="line-clamp-3 px-2 py-1 text-[10px] leading-snug text-fg-dim">
+      <p className="line-clamp-3 px-2 py-1 text-[12px] leading-snug text-fg-dim">
         {item.description || "—"}
       </p>
 
       {/* The reject takes only its glyph's width so the three rung labels get
           the rest — at 8 columns they truncate to nonsense otherwise. */}
-      <div className="mt-auto grid grid-cols-[1fr_1fr_1fr_auto] gap-px bg-border p-px text-[10px]">
+      <div className="mt-auto grid grid-cols-[1fr_1fr_1fr_auto] gap-px bg-border p-px text-[12px]">
         {rungs.map((r) => (
           <button
             key={r}
@@ -215,12 +217,13 @@ function Tile({
           type="button"
           onClick={() => onRule(item.media_id, null)}
           title="Not this category. Nothing is stored about a rejection."
+          aria-label="Reject"
           className={[
             "whitespace-nowrap px-1 py-1.5 transition-colors",
             rung === null ? "bg-bg-hover text-fg-dim" : "bg-bg hover:bg-err/20",
           ].join(" ")}
         >
-          ✕
+          <X className="h-3 w-3" aria-hidden />
         </button>
       </div>
     </div>
@@ -245,6 +248,8 @@ export default function VaultPackPickerModal({
   /** Non-empty while any request is in flight; shown once, in the status bar. */
   const [busy, setBusy] = useState("");
   const [note, setNote] = useState("");
+  /** Items the last publish left on OF that their rung no longer holds (the warning icon by the note). */
+  const [stale, setStale] = useState(0);
 
   const rungs = data?.rungs ?? [];
   // The shelf comes from the QUERY, not from the last save's response, so the
@@ -291,6 +296,7 @@ export default function VaultPackPickerModal({
     if (!dirty) return;
     setBusy("saving…");
     setNote("");
+    setStale(0);
     try {
       const verdicts = Object.entries(draft).map(([media_id, rung]) => ({
         media_id: Number(media_id),
@@ -310,7 +316,7 @@ export default function VaultPackPickerModal({
     return (
       `${res.name} → OF list ${res.of_list_id}: pushed ${res.pushed}` +
       (res.stale_on_of.length
-        ? ` · ⚠ ${res.stale_on_of.length} still on OF that this rung no longer holds`
+        ? ` · ${res.stale_on_of.length} still on OF that this rung no longer holds`
         : " · exact copy")
     );
   }
@@ -318,8 +324,11 @@ export default function VaultPackPickerModal({
   async function publish(folderId: number, name: string) {
     setBusy(`publishing ${name} to OF…`);
     setNote("");
+    setStale(0);
     try {
-      setNote(describe(await publishFolderToOf(accountId, folderId)));
+      const res = await publishFolderToOf(accountId, folderId);
+      setStale(res.stale_on_of.length);
+      setNote(describe(res));
       await qc.invalidateQueries({ queryKey: ["vault-pack-candidates", accountId, category] });
     } catch (e) {
       setNote(`publish failed: ${errText(e)}`);
@@ -340,11 +349,15 @@ export default function VaultPackPickerModal({
     const stocked = shelf.filter((f) => f.folder_id && f.count);
     if (!stocked.length) return;
     const done: string[] = [];
+    let staleN = 0;
     setNote("");
+    setStale(0);
     try {
       for (const f of stocked) {
         setBusy(`publishing ${f.name} to OF… (${done.length + 1}/${stocked.length})`);
-        done.push(describe(await publishFolderToOf(accountId, f.folder_id!)));
+        const res = await publishFolderToOf(accountId, f.folder_id!);
+        staleN += res.stale_on_of.length;
+        done.push(describe(res));
       }
       setNote(done.join(" · "));
     } catch (e) {
@@ -354,143 +367,133 @@ export default function VaultPackPickerModal({
           (done.length ? ` — landed: ${done.join(" · ")}` : ""),
       );
     } finally {
+      setStale(staleN);
       setBusy("");
       await qc.invalidateQueries({ queryKey: ["vault-pack-candidates", accountId, category] });
     }
   }
 
+  const publishTitle = dirty
+    ? "Save your verdicts first — publish ships the saved shelf"
+    : !stocked.length
+      ? "Nothing filed yet"
+      : `Create ${stocked.length} real folder(s) in the OnlyFans vault`;
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-      <div className="flex h-full w-full max-w-7xl flex-col rounded-xl border border-border bg-bg shadow-xl">
-        <header className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-3">
-          <h2 className="text-sm font-semibold">
-            Pack picker — {category}
-          </h2>
-          {/* Live tally — INCLUDES unsaved draft, which is why it is labelled.
-              The shelf below shows the SAVED counts, and the two legitimately
-              disagree until Save. */}
-          <span className="text-xs text-fg-dim">
-            {data ? `${data.candidates.length} candidates · decided` : "…"}
-            {rungs.map((r) => ` ${r} ${tally[r] ?? 0}`).join(" ·")}
+    <IfModal
+      title={`Pack picker — ${category}`}
+      // A work surface, not a form: an 8-column tile grid wants the screen.
+      width={1280}
+      className="h-[calc(100vh-32px)]"
+      onClose={onClose}
+      // Escape would drop unsaved verdicts; only the × closes while dirty.
+      keyboard={!dirty}
+      footer={
+        <div className="flex w-full flex-wrap items-center justify-end gap-2">
+          <span className="min-w-0 flex-1 basis-60 text-[12px] text-muted">
+            Nothing is written until Save, and nothing reaches OnlyFans until Publish.
           </span>
-
-          <div className="ml-auto flex items-center gap-2">
-            {["undecided", ...rungs, "all"].map((f) => (
-              <button
-                key={f}
-                type="button"
-                onClick={() => setFilter(f)}
-                className={[
-                  "rounded px-2 py-1 text-xs",
-                  filter === f ? "bg-accent text-white" : "bg-bg-subtle hover:bg-bg-hover",
-                ].join(" ")}
-              >
-                {f}
-              </button>
-            ))}
-            <button
-              type="button"
-              onClick={save}
-              disabled={!dirty || !!busy}
-              className="rounded bg-ok px-3 py-1 text-xs font-medium text-white disabled:opacity-40"
-            >
-              {dirty ? `Save ${dirty}` : "Saved"}
-            </button>
-
-            {/* The only control here that leaves the app. Amber, not green:
-                Save writes a row, THIS writes to her real OnlyFans vault.
-                Disabled while there are unsaved verdicts — publish reads the
-                SAVED shelf, so publishing dirty would silently ship the old
-                membership and look like it had shipped the new. */}
-            <button
-              type="button"
-              onClick={() => {
-                if (
-                  window.confirm(
-                    `Create ${stocked.length} REAL folder(s) in the OnlyFans vault?\n\n` +
-                      stocked.map((f) => `  ${f.name} — ${f.count} items`).join("\n") +
-                      `\n\nThis is visible in the OF app. Reversible, but a rebuild ` +
-                      `gets a new list id.`,
-                  )
-                ) {
-                  publishAll();
-                }
-              }}
-              disabled={!stocked.length || !!dirty || !!busy}
-              title={
-                dirty
-                  ? "Save your verdicts first — publish ships the saved shelf"
-                  : !stocked.length
-                    ? "Nothing filed yet"
-                    : `Create ${stocked.length} real folder(s) in the OnlyFans vault`
+          {/* The only control here that leaves the app. Amber, not green:
+              Save writes a row, THIS writes to her real OnlyFans vault.
+              Disabled while there are unsaved verdicts — publish reads the
+              SAVED shelf, so publishing dirty would silently ship the old
+              membership and look like it had shipped the new. */}
+          <IfButton
+            onClick={() => {
+              if (
+                window.confirm(
+                  `Create ${stocked.length} REAL folder(s) in the OnlyFans vault?\n\n` +
+                    stocked.map((f) => `  ${f.name} — ${f.count} items`).join("\n") +
+                    `\n\nThis is visible in the OF app. Reversible, but a rebuild ` +
+                    `gets a new list id.`,
+                )
+              ) {
+                publishAll();
               }
-              className="rounded bg-warn px-3 py-1 text-xs font-medium text-white disabled:opacity-40"
-            >
-              {allPublished ? "Re-publish to OF" : `Publish to OF${stocked.length ? ` (${stocked.length})` : ""}`}
-            </button>
-
-            <button type="button" onClick={onClose} className="px-2 text-fg-dim hover:text-fg">
-              ✕
-            </button>
-          </div>
-        </header>
-
-        {/* The shelf, always — publishing must not be reachable only in the
-            moment after a save. */}
-        <div className="flex flex-wrap items-center gap-3 border-b border-border bg-bg-subtle px-4 py-2 text-xs">
-          {shelf.map((f) => (
-            <span key={f.name} className="flex items-center gap-1">
-              <b>{f.name}</b> {f.count} saved
-              {f.of_list_id ? <span className="text-fg-dim">· on OF</span> : null}
-              <button
-                type="button"
-                onClick={() => f.folder_id && publish(f.folder_id, f.name)}
-                disabled={!f.folder_id || !f.count || !!busy}
-                title="Create this as a REAL folder in the OnlyFans vault"
-                className="rounded bg-bg px-1.5 py-0.5 hover:bg-bg-hover disabled:opacity-40"
-              >
-                {f.of_list_id ? "re-publish" : "publish to OF"}
-              </button>
-            </span>
-          ))}
-          <span className="ml-auto text-fg-dim">{busy || note}</span>
+            }}
+            disabled={!stocked.length || !!dirty || !!busy}
+            title={publishTitle}
+            className="border-warn/60 text-warn hover:border-warn hover:text-warn"
+          >
+            {allPublished ? "Re-publish to OF" : `Publish to OF${stocked.length ? ` (${stocked.length})` : ""}`}
+          </IfButton>
+          <IfButton onClick={onClose}>Done</IfButton>
+          <IfButton variant="primary" onClick={save} disabled={!dirty || !!busy}>
+            {dirty ? `Save ${dirty}` : "Saved"}
+          </IfButton>
         </div>
-
-        <div className="min-h-0 flex-1 overflow-y-auto p-3">
-          {isLoading && <p className="p-6 text-center text-sm text-fg-dim">loading candidates…</p>}
-          {error && (
-            <p className="p-6 text-center text-sm text-err">
-              {error instanceof Error ? error.message : "failed to load"}
-            </p>
-          )}
-          {data && shown.length === 0 && (
-            <p className="p-6 text-center text-sm text-fg-dim">
-              {filter === "undecided"
-                ? "Nothing left undecided. Switch to a rung to review what you filed."
-                : "Nothing here."}
-            </p>
-          )}
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8">
-            {shown.map((c) => (
-              <Tile
-                key={c.media_id}
-                accountId={accountId}
-                item={c}
-                rung={effective(c)}
-                rungs={rungs}
-                onRule={rule}
-              />
-            ))}
-          </div>
-        </div>
-
-        <footer className="border-t border-border px-4 py-2 text-[11px] text-fg-dim">
-          Tiles show the FULL frame, not the square thumb — the crop cuts off exactly
-          where feet are. Images load a few at a time on purpose. Nothing is written
-          until you press Save, and nothing is sent to OnlyFans until you press
-          “publish to OF”.
-        </footer>
+      }
+    >
+      <div className="flex flex-wrap items-center gap-3">
+        {/* Live tally — INCLUDES unsaved draft, which is why it is labelled.
+            The shelf below shows the SAVED counts, and the two legitimately
+            disagree until Save. */}
+        <span className="text-[12px] text-muted">
+          {data ? `${data.candidates.length} candidates · decided` : "…"}
+          {rungs.map((r) => ` ${r} ${tally[r] ?? 0}`).join(" ·")}
+        </span>
+        <IfSegmented
+          aria-label="Show"
+          className="ml-auto max-w-full overflow-x-auto"
+          value={filter}
+          onChange={setFilter}
+          options={["undecided", ...rungs, "all"].map((f) => ({ value: f, label: f }))}
+        />
       </div>
-    </div>
+
+      {/* The shelf, always — publishing must not be reachable only in the
+          moment after a save. */}
+      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md bg-bg-elev-1 px-3 py-2 text-[12px]">
+        {shelf.map((f) => (
+          <span key={f.name} className="flex items-center gap-1">
+            <b>{f.name}</b> {f.count} saved
+            {f.of_list_id ? <span className="text-muted">· on OF</span> : null}
+            <IfButton
+              variant="link"
+              onClick={() => f.folder_id && publish(f.folder_id, f.name)}
+              disabled={!f.folder_id || !f.count || !!busy}
+              title="Create this as a REAL folder in the OnlyFans vault"
+              className="h-auto px-1 text-[12px]"
+            >
+              {f.of_list_id ? "re-publish" : "publish to OF"}
+            </IfButton>
+          </span>
+        ))}
+        <span className="ml-auto flex items-center gap-1 text-muted">
+          {!busy && stale > 0 && (
+            <AlertTriangle className="h-3.5 w-3.5 text-warn" aria-hidden />
+          )}
+          {busy || note}
+        </span>
+      </div>
+
+      <div className="mt-3">
+        {isLoading && <p className="p-6 text-center text-muted">loading candidates…</p>}
+        {error && (
+          <p className="p-6 text-center text-err">
+            {error instanceof Error ? error.message : "failed to load"}
+          </p>
+        )}
+        {data && shown.length === 0 && (
+          <p className="p-6 text-center text-muted">
+            {filter === "undecided"
+              ? "Nothing left undecided. Switch to a rung to review what you filed."
+              : "Nothing here."}
+          </p>
+        )}
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8">
+          {shown.map((c) => (
+            <Tile
+              key={c.media_id}
+              accountId={accountId}
+              item={c}
+              rung={effective(c)}
+              rungs={rungs}
+              onRule={rule}
+            />
+          ))}
+        </div>
+      </div>
+    </IfModal>
   );
 }

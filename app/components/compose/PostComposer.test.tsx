@@ -34,6 +34,13 @@ vi.mock("@/hooks/useAllModelsInclude", () => {
   return { useAllModelsInclude: () => include };
 });
 vi.mock("@/components/chat/VaultPicker", () => ({ VaultPicker: () => null }));
+// Tagging as one button (the real picker searches OF): it tags one fixed creator.
+vi.mock("@/components/chat/TagCreatorsPicker", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/components/chat/TagCreatorsPicker")>()),
+  TagCreatorsPicker: ({ onChange }: { onChange: (v: { id: number; name: string; username: string; avatar: null }[]) => void }) => (
+    <button type="button" onClick={() => onChange([{ id: 9, name: "Co", username: "co", avatar: null }])}>Tag a creator</button>
+  ),
+}));
 
 afterEach(() => {
   cleanup();
@@ -185,5 +192,42 @@ describe("PostComposer — all-models fan-out", () => {
     fireEvent.change(ta, { target: { value: "edited" } });
     fireEvent.click(btn);
     expect(confirmSpy).toHaveBeenLastCalledWith("Post from 2 models?");
+  });
+});
+
+describe("PostComposer — once touched, Escape stays off until it closes (a reverted edit too); × and Cancel always close", () => {
+  const escape = () => fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+  it.each([["×", "Close"], ["Cancel", "Cancel"]])("typed then cleared: Escape still does nothing (declared), %s closes", (_n, button) => {
+    const onClose = vi.fn();
+    renderWithProviders(<PostComposer open onClose={onClose} />);
+    for (const value of ["hello", ""]) fireEvent.change(screen.getByPlaceholderText(TEXT), { target: { value } });
+    escape();
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: button }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("PostComposer — Escape never drops a typed draft", () => {
+  const escape = () => fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+  it("clean: Escape closes", () => {
+    const onClose = vi.fn();
+    renderWithProviders(<PostComposer open onClose={onClose} />);
+    escape();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+  it("dirty: Escape does nothing", () => {
+    const onClose = vi.fn();
+    renderWithProviders(<PostComposer open onClose={onClose} />);
+    fireEvent.change(screen.getByPlaceholderText("What's on your feed today?"), { target: { value: "hello" } });
+    escape();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+  it("only a tagged creator: Escape does nothing", () => {
+    const onClose = vi.fn();
+    renderWithProviders(<PostComposer open onClose={onClose} />);
+    fireEvent.click(screen.getByRole("button", { name: "Tag a creator" }));
+    escape();
+    expect(onClose).not.toHaveBeenCalled();
   });
 });

@@ -16,7 +16,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 
-import { renderWithProviders } from "@/test-utils";
+import { makeTestQueryClient, renderWithProviders } from "@/test-utils";
+import { relay } from "@/lib/relay";
 import { MassMessageComposer } from "@/components/compose/MassMessageComposer";
 import { MASS_ONE_GIF_ALL_MODELS } from "@/components/compose/massMessageReducer";
 import { PRICE_NOTE } from "@/lib/sendGuards";
@@ -180,7 +181,9 @@ describe("MassMessageComposer — a failed trailing GIF send never re-arms the b
     expect(alert.textContent).toContain("1 of 1 extra GIF send failed");
     expect(alert.textContent).toContain("GIF two — OF said no");
     expect(broadcast()).toHaveProperty("disabled", true);
-    expect(screen.getByRole("button", { name: "Close" })).toBeTruthy();
+    // The footer's Cancel reads Close (the modal's × is the other "Close").
+    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+    expect(screen.getAllByRole("button", { name: "Close" })).toHaveLength(2);
     expect(onClose).not.toHaveBeenCalled();
 
     fireEvent.click(broadcast());
@@ -238,5 +241,90 @@ describe("MassMessageComposer — all-models takes one GIF", () => {
 
     fireEvent.click(screen.getAllByRole("button", { name: "Remove GIF" })[1]);
     await waitFor(() => expect(btn).toHaveProperty("disabled", false));
+  });
+});
+
+describe("MassMessageComposer — once touched, Escape stays off until it closes (a reverted edit too); × always closes", () => {
+  const escape = () => fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+  const VIP = { id: 501, name: "VIP", type: "custom", usersCount: 3 };
+  const MASSDM = { id: 502, name: "MASSDMEXCLUDE", type: "custom", usersCount: 2 };
+  const box = (name: string, side: 0 | 1) => screen.getAllByRole("checkbox", { name: new RegExp(`^${name}`) })[side];
+  it("a custom exclusion ticked before the seeding lands stays an edit after it", async () => {
+    // acct1's lists are cached (stale) and refetching: the seed waits, the cached lists are already tickable.
+    let land!: (v: unknown) => void;
+    const pending = new Promise((r) => { land = r; });
+    const get = vi.mocked(relay.get);
+    get.mockImplementation(((path: string) => (path.startsWith("/api/of/v2/lists") ? pending : Promise.resolve([]))) as never);
+    try {
+      const qc = makeTestQueryClient();
+      qc.setQueryData(["fan-lists", "acct1"], [VIP, MASSDM], { updatedAt: 0 });
+      const onClose = vi.fn();
+      renderWithProviders(<MassMessageComposer forcedAccountId="acct1" onClose={onClose} />, qc);
+      fireEvent.click(box("VIP", 1));
+      expect(box("MASSDMEXCLUDE", 1)).not.toBeChecked();
+      land({ list: [VIP, MASSDM], hasMore: false });
+      await waitFor(() => expect(box("MASSDMEXCLUDE", 1)).toBeChecked());
+      expect(box("VIP", 1)).toBeChecked();
+      escape();
+      expect(onClose).not.toHaveBeenCalled();
+    } finally {
+      get.mockImplementation((async () => []) as never);
+    }
+  });
+  it("typed then cleared: Escape still does nothing (declared), × closes", () => {
+    const onClose = vi.fn();
+    renderWithProviders(<MassMessageComposer onClose={onClose} />);
+    typeText("hello");
+    typeText("");
+    escape();
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("MassMessageComposer — Escape never drops a typed draft", () => {
+  const escape = () => fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+  it("clean: Escape closes", () => {
+    const onClose = vi.fn();
+    renderWithProviders(<MassMessageComposer onClose={onClose} />);
+    escape();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+  it("dirty: Escape does nothing", () => {
+    const onClose = vi.fn();
+    renderWithProviders(<MassMessageComposer onClose={onClose} />);
+    typeText("hello");
+    escape();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+  /** Open, and wait for the seeding (the picker's first account, its lists read, the Smart Lists). */
+  async function seeded(onClose: () => void) {
+    renderWithProviders(<MassMessageComposer onClose={onClose} />);
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "Whales" })[0]).toBeTruthy());
+  }
+  it("seeded and untouched: Escape still closes", async () => {
+    const onClose = vi.fn();
+    await seeded(onClose);
+    escape();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+  it.each([
+    ["a Smart List", () => fireEvent.click(screen.getAllByRole("button", { name: "Whales" })[0])],
+    ["the audience (All fans off)", () => fireEvent.click(screen.getByRole("button", { name: /All fans/ }))],
+  ])("only %s set: Escape does nothing", async (_n, act) => {
+    const onClose = vi.fn();
+    await seeded(onClose);
+    act();
+    escape();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+  it("Mass Online: only a targeting limit set: Escape does nothing", async () => {
+    const onClose = vi.fn();
+    renderWithProviders(<MassMessageComposer mode="online" onClose={onClose} />);
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "Whales" })[0]).toBeTruthy());
+    fireEvent.change(screen.getByLabelText(/Include fans with unread msgs/), { target: { value: "50" } });
+    escape();
+    expect(onClose).not.toHaveBeenCalled();
   });
 });

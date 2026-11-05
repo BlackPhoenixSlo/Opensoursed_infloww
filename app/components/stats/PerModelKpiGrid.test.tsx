@@ -42,7 +42,7 @@ beforeEach(() => {
       return jsonRes({ per_model: [row("live", 1200), row("nosession", 3400), row("dead", 5600), row("gone", 780)] });
     }
     if (u.pathname === "/admin/accounts") return accounts();
-    if (u.pathname === "/api/of/v2/users/me") return jsonRes({ name: "Live One", username: "liveone", subscribePrice: 0 });
+    if (u.pathname === "/api/of/v2/users/me") return jsonRes({ id: "live", name: "Live One", username: "liveone", subscribePrice: 0 });
     if (u.pathname === "/api/of/v2/subscriptions/count/all") return jsonRes({ subscribers: { active: 42, all: 50, expired: 8 } });
     if (u.pathname === "/api/of/v2/subscriptions/subscribers/chart") return jsonRes({ subscribers: 7 });
     return jsonRes({ detail: "unmocked" }, 404);

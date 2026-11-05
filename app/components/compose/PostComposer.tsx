@@ -13,7 +13,8 @@
  *   • Polls — no captured curl yet; would be guesswork.
  */
 
-import { useCallback, useReducer, useRef, useState } from "react";
+import { useCallback, useId, useReducer, useRef, useState } from "react";
+import { Lock } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { usePlatformAccounts } from "@/hooks/useAccounts";
@@ -25,6 +26,8 @@ import { EmojiPickerButton, EmojiQuickRow, insertAtCursor } from "@/components/c
 import { TemplatePicker, type PickedTemplate } from "@/components/chat/TemplatePicker";
 import { TagCreatorsPicker, TaggedCreatorChips } from "@/components/chat/TagCreatorsPicker";
 import { recordSchedule } from "@/lib/scheduleHistory";
+import { EDITOR_MODAL } from "@/components/automations/automationPage";
+import { IfButton, IfHelp, IfInput, IfLabel, IfModal, IfTextArea } from "@/components/ui/infloww";
 
 import { sanitizePriceInput } from "@/lib/priceInput";
 
@@ -33,6 +36,7 @@ import { ScheduleField } from "./ScheduleField";
 import { FanOutResults, FanOutStatus } from "./FanOutResults";
 import { IncludeModelsChips } from "./IncludeModelsChips";
 import { fanOutLocked, includedTargets, runFanOut } from "./fanOut";
+import { isAudienceSeed, useTouched } from "./useTouched";
 import {
   buildPostBody, initPostForm, postComposerReducer, postFieldAction, postPrice, sendAccount, validatePost,
   type PostField, type PostForm,
@@ -65,7 +69,9 @@ export function PostComposer({
   // un-checked in any composer's chip strip is omitted from a broadcast here.
   const { isIncluded } = useAllModelsInclude();
   // The whole form (postComposerReducer).
-  const [form, dispatch] = useReducer(postComposerReducer, null, initPostForm);
+  const [form, rawDispatch] = useReducer(postComposerReducer, null, initPostForm);
+  // The user's dispatch: any action but the picker's first account touches the form (Escape then keeps it).
+  const { touched, dispatch } = useTouched(form, rawDispatch, isAudienceSeed);
   const { allModels, text, attached, price, previewCount, schedule, progress, results, taggedCreators } = form;
   // The account a one-account post goes to; null while all-models is on
   // (postComposerReducer `sendAccount`).
@@ -74,7 +80,7 @@ export function PostComposer({
   const locked = fanOutLocked(form);
   const set = <K extends PostField>(k: K) => (v: PostForm[K]) => dispatch(postFieldAction(k, v));
   // Stable: AccountPicker's auto-seed effect depends on it.
-  const setAccountId = useCallback((id: string) => dispatch({ type: "setAccount", id }), []);
+  const setAccountId = useCallback((id: string) => dispatch({ type: "setAccount", id }), [dispatch]);
   const [pickerOpen, setPickerOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   // A subscription page has no paid-post lane on OF, so the price field is not
@@ -117,8 +123,8 @@ export function PostComposer({
         posted();
         return true;
       }
-      const round = await runFanOut(targets, postTo, (p) => dispatch({ type: "progress", ...p }));
-      dispatch({ type: "results", v: round });
+      const round = await runFanOut(targets, postTo, (p) => rawDispatch({ type: "progress", ...p }));
+      rawDispatch({ type: "results", v: round });
       // A partial round: the models that took it show it now; the composer
       // stays open, locked, so the retry posts the same post to the failed ones.
       if (round.some((r) => r.ok)) posted();
@@ -150,6 +156,7 @@ export function PostComposer({
     setTimeout(() => textareaRef.current?.focus(), 0);
   }
 
+  const priceId = useId();
   if (!open) return null;
 
   const priceNum = postPrice(form, isPaidPage);
@@ -157,28 +164,37 @@ export function PostComposer({
   const isScheduled = !!schedule;
 
   return (
-    <div
-      className="fixed inset-0 z-50 bg-black/50 grid place-items-center p-0 sm:p-4"
-      onClick={close}
-    >
-      {/* min-h-0 / min-w-0: a grid item's auto minimum is its content, so on a
-       *  phone (h-full, no max-h) the panel grew past the screen and the body
-       *  never scrolled to the footer. Same fix as MassMessageComposer. */}
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="min-h-0 min-w-0 w-full h-full sm:h-auto max-w-none sm:max-w-[560px] max-h-none sm:max-h-[90vh] flex flex-col bg-panel border-0 sm:border border-border rounded-none sm:rounded-xl shadow-2xl"
+    <>
+      <IfModal
+        title="New post"
+        width={535}
+        className={EDITOR_MODAL}
+        onClose={close}
+        // Escape never drops a draft the user touched; × and Cancel still close.
+        keyboard={!touched}
+        footer={<>
+          <FanOutStatus
+            progress={progress} verb="Posting" invalid={invalid} error={create.error?.message ?? null} results={results}
+          />
+          <IfButton onClick={close} disabled={create.isPending}>Cancel</IfButton>
+          <IfButton
+            variant="primary"
+            onClick={() => {
+              if (allModels && !confirm(
+                `Post from ${targets.length} model${targets.length === 1 ? "" : "s"}?`,
+              )) return;
+              create.mutate();
+            }}
+            disabled={create.isPending || invalid !== null}
+            title={invalid ?? undefined}
+          >
+            {create.isPending
+              ? (isScheduled ? "Scheduling…" : "Posting…")
+              : (isScheduled ? "Schedule post" : "Post")}
+          </IfButton>
+        </>}
       >
-        <header className="px-4 py-3 border-b border-border flex items-center justify-between">
-          <h2 className="text-sm font-semibold">New post</h2>
-          <button
-            type="button"
-            onClick={close}
-            className="text-fg-dim hover:text-fg text-lg leading-none w-11 h-11 -mr-2 -my-2 grid place-items-center shrink-0 md:w-auto md:h-auto md:mr-0 md:my-0 md:inline"
-            title="Close"
-          >×</button>
-        </header>
-
-        <div className="flex-1 overflow-y-auto p-4 space-y-3">
+        <div className="space-y-4">
           <IncludeModelsChips
             noun="post" allModels={allModels} locked={locked}
             onAllModels={(on) => dispatch({ type: "setAllModels", on })}
@@ -186,17 +202,19 @@ export function PostComposer({
           />
 
           {/* The content — locked (disabled) once a model took the post. */}
-          <fieldset disabled={locked} className="min-w-0 space-y-3 disabled:opacity-60">
-          <div className="space-y-1.5">
-            <textarea
+          <fieldset disabled={locked} className="min-w-0 space-y-4 disabled:opacity-60">
+          <div className="space-y-2">
+            <IfTextArea
               ref={textareaRef}
               value={text}
               onChange={(e) => set("text")(e.target.value)}
               placeholder="What's on your feed today?"
               rows={5}
-              className="w-full bg-bg border border-border rounded-md px-3 py-2 text-base md:text-sm placeholder:text-muted focus:outline-none focus:border-accent resize-y"
+              className="max-md:text-base"
             />
-            <div className="flex items-center gap-1.5 flex-wrap">
+            {/* Escape in a picker's search box closes that picker, not the whole composer. */}
+            <div className="flex items-center gap-1.5 flex-wrap"
+              onKeyDown={(e) => { if (e.key === "Escape" && e.target instanceof HTMLInputElement) e.stopPropagation(); }}>
               <EmojiQuickRow onInsert={onEmoji} />
               <EmojiPickerButton align="left" onInsert={onEmoji} />
               <TemplatePicker
@@ -231,26 +249,29 @@ export function PostComposer({
 
           {/* All-models posts are text-only: no price (postComposerReducer). */}
           {!allModels && (
-            <>
-              <div className="flex items-center gap-2">
-                <label className="text-xs text-fg-dim shrink-0">Price (USD):</label>
-                <input
+            <div>
+              <IfLabel htmlFor={priceId}>Price (USD)</IfLabel>
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                <IfInput
+                  id={priceId}
                   type="text"
                   inputMode="decimal"
                   value={isPaidPage ? "" : price}
                   disabled={isPaidPage}
                   onChange={(e) => set("price")(sanitizePriceInput(e.target.value))}
                   placeholder={isPaidPage ? "free only" : "0 (free)"}
-                  className="flex-1 bg-bg border border-border rounded-md px-2 py-1.5 text-base md:text-xs focus:outline-none focus:border-accent disabled:opacity-40"
+                  className="w-40 has-[:disabled]:opacity-40 max-md:text-base"
                 />
-                <span className={isPPV ? "text-warn text-[11px]" : "text-fg-dim text-[11px]"}>
-                  {isPPV ? `🔒 PPV ${fmtPrice(Math.round(priceNum * 100))}` : "free"}
-                </span>
+                {isPPV ? (
+                  <span className="inline-flex items-center gap-1 text-[14px] text-warn">
+                    <Lock className="h-3.5 w-3.5" aria-hidden />PPV {fmtPrice(Math.round(priceNum * 100))}
+                  </span>
+                ) : (
+                  <span className="text-[14px] text-muted">Free</span>
+                )}
               </div>
-              {isPaidPage && (
-                <div className="text-[11px] text-fg-dim">{PAID_PAGE_NOTE}</div>
-              )}
-            </>
+              {isPaidPage && <IfHelp>{PAID_PAGE_NOTE}</IfHelp>}
+            </div>
           )}
 
           <ScheduleField
@@ -267,37 +288,7 @@ export function PostComposer({
             />
           )}
         </div>
-
-        <footer className="px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pb-3 border-t border-border flex items-center justify-end gap-2">
-          <FanOutStatus
-            progress={progress} verb="Posting" invalid={invalid} error={create.error?.message ?? null} results={results}
-          />
-          <button
-            type="button"
-            onClick={close}
-            disabled={create.isPending}
-            className="text-xs px-3 py-1.5 rounded border border-border hover:border-border-light text-fg-dim hover:text-fg disabled:opacity-50"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              if (allModels && !confirm(
-                `Post from ${targets.length} model${targets.length === 1 ? "" : "s"}?`,
-              )) return;
-              create.mutate();
-            }}
-            disabled={create.isPending || invalid !== null}
-            title={invalid ?? undefined}
-            className="text-xs px-4 py-1.5 rounded bg-accent text-white font-medium hover:bg-accent-hover disabled:opacity-50"
-          >
-            {create.isPending
-              ? (isScheduled ? "Scheduling…" : "Posting…")
-              : (isScheduled ? "Schedule post" : "Post")}
-          </button>
-        </footer>
-      </div>
+      </IfModal>
 
       <VaultPicker
         open={pickerOpen}
@@ -310,6 +301,6 @@ export function PostComposer({
           setPickerOpen(false);
         }}
       />
-    </div>
+    </>
   );
 }

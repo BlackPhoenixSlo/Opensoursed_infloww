@@ -16,7 +16,8 @@
  * closing it is the reset: nothing carries over to the next open.
  */
 
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useReducer, useRef, useState } from "react";
+import { Lock, X } from "lucide-react";
 
 import { usePlatformAccounts } from "@/hooks/useAccounts";
 import { onlineCountLabel, useOnlineSubscribers } from "@/hooks/useOnlineSubscribers";
@@ -33,6 +34,10 @@ import { useFanLists } from "@/components/audience/fanLists";
 import { massExcludeListId } from "@/components/audience/audienceReducer";
 import { useSensitiveHits } from "@/lib/sensitiveWords";
 import { SensitiveWordWarning } from "@/components/chat/SensitiveWordWarning";
+import { EDITOR_MODAL } from "@/components/automations/automationPage";
+import { IfButton, IfHelp, IfInput, IfLabel, IfModal, IfTextArea } from "@/components/ui/infloww";
+import { IF_FIELD } from "@/components/ui/ifSelect";
+import { cn } from "@/lib/utils";
 
 import { sanitizePriceInput } from "@/lib/priceInput";
 
@@ -44,9 +49,10 @@ import { MediaTray } from "./MediaTray";
 import { OnlineTargetingPanel } from "./OnlineTargetingPanel";
 import { ScheduleField } from "./ScheduleField";
 import { useMassSend } from "./useMassSend";
+import { isAudienceSeed, useTouched } from "./useTouched";
 import {
   confirmPrompt, effectivePrice, fieldAction, gifNote, initMassForm, massMessageReducer, validateMass,
-  type MassField, type MassForm,
+  type MassAction, type MassField, type MassForm,
 } from "./massMessageReducer";
 import { fmtPrice } from "@/lib/format";
 
@@ -67,6 +73,10 @@ interface MassMessageComposerProps {
   labelExtras?: boolean;
 }
 
+/** The form's automatic actions (no user edit): the audience seeding and the GIF strip opening. */
+const isMassSeed = (a: MassAction, s: MassForm) =>
+  isAudienceSeed(a, s) || (a.type === "field" && a.k === "gifPickerOpen");
+
 export function MassMessageComposer({
   onClose,
   mode = "standard",
@@ -83,7 +93,9 @@ export function MassMessageComposer({
   // X-Employee-Id header is opt-in per call, no global injector.
   const { current: currentEmployee } = useEmployee();
   // The whole form (massMessageReducer).
-  const [form, dispatch] = useReducer(massMessageReducer, forcedAccountId ?? null, initMassForm);
+  const [form, rawDispatch] = useReducer(massMessageReducer, forcedAccountId ?? null, initMassForm);
+  // The user's dispatch: anything but the seeding and the GIF strip's open/close touches the form (Escape keeps it).
+  const { touched, dispatch } = useTouched(form, rawDispatch, isMassSeed);
   const {
     allModels, accountId, text, attached, price, previewCount, lockedText, schedule, funnelId, progress, results,
     gifFailures, taggedCreators, pickedGifs, gifPickerOpen,
@@ -93,10 +105,10 @@ export function MassMessageComposer({
   // The one setter for plain fields: `set("price")(v)`.
   const set = useCallback(
     <K extends MassField>(k: K) => (v: MassForm[K]) => dispatch(fieldAction(k, v)),
-    [],
+    [dispatch],
   );
   // Stable: AccountPicker's auto-seed effect depends on it.
-  const setAccountId = useCallback((id: string) => dispatch({ type: "setAccount", id }), []);
+  const setAccountId = useCallback((id: string) => dispatch({ type: "setAccount", id }), [dispatch]);
   // Optional funnel: when set, the send_mass_message automation walks this
   // funnel's reply/PPV steps per replying fan after the opener lands. Resolved
   // server-side by funnel_id (send_mass_message._resolve_funnel) — only the
@@ -109,6 +121,8 @@ export function MassMessageComposer({
   const onlineCountQ = useOnlineSubscribers(online && !allModels ? accountId : null, 60_000);
   const onlineCount = onlineCountQ.data ? onlineCountLabel(onlineCountQ.data) : null;
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const priceId = useId();
+  const funnelSelectId = useId();
 
   // Shared with the PPV Library broadcast picker: one OF call (same cache key),
   // one definition of "custom list". `...listsQ` keeps the raw query fields
@@ -123,7 +137,7 @@ export function MassMessageComposer({
   // account's lists once they settle (guarded on !isFetching, not stale ones).
   useEffect(() => {
     if (!accountId || listsQ.isLoading || listsQ.isFetching) return;
-    dispatch({ type: "seedExclude", accountId, listId: massExcludeListId(listsQ.data ?? []) });
+    rawDispatch({ type: "seedExclude", accountId, listId: massExcludeListId(listsQ.data ?? []) });
     // allModels / seededFor: an audience reset re-arms the seed.
   }, [accountId, allModels, form.seededFor, listsQ.isLoading, listsQ.isFetching, listsQ.data]);
 
@@ -164,7 +178,7 @@ export function MassMessageComposer({
   });
 
   const send = useMassSend({
-    form, dispatch, online, included: broadcastAccounts.map((a) => a.id), invalid, employeeId: currentEmployee?.id,
+    form, dispatch: rawDispatch, online, included: broadcastAccounts.map((a) => a.id), invalid, employeeId: currentEmployee?.id,
     onClose,
   });
 
@@ -192,30 +206,36 @@ export function MassMessageComposer({
   const isScheduled = !!schedule;
 
   return (
-    <div
-      className="fixed inset-0 z-50 bg-black/50 grid place-items-center p-0 sm:p-4"
-      onClick={close}
-    >
-      {/* min-h-0 / min-w-0: a grid item's auto minimum is its content, so on a
-       *  phone (h-full, no max-h) the panel grew to the form's full height and
-       *  width, past the screen, and the body never scrolled to Send. */}
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="min-h-0 min-w-0 w-full h-full sm:h-auto max-w-none sm:max-w-[640px] max-h-none sm:max-h-[90vh] flex flex-col bg-panel border-0 sm:border border-border rounded-none sm:rounded-xl shadow-2xl"
+    <>
+      <IfModal
+        title={online ? "New Mass Online message" : "New mass message"}
+        width={722}
+        className={EDITOR_MODAL}
+        onClose={close}
+        // Escape never drops a draft the user touched; × and Cancel still close.
+        keyboard={!touched}
+        footer={<>
+          <FanOutStatus
+            progress={progress} verb="Sending" invalid={invalid} error={send.error?.message ?? null} results={results}
+          />
+          <IfButton onClick={onClose} disabled={send.isPending}>
+            {gifFailures ? "Close" : "Cancel"}
+          </IfButton>
+          <IfButton
+            variant="primary"
+            onClick={() => {
+              if (confirm(confirmPrompt(form, sendFrom.length))) send.mutate();
+            }}
+            disabled={send.isPending || invalid !== null}
+            title={invalid ?? undefined}
+          >
+            {send.isPending
+              ? (isScheduled ? "Scheduling…" : "Broadcasting…")
+              : (isScheduled ? "Schedule" : "Broadcast")}
+          </IfButton>
+        </>}
       >
-        <header className="px-4 py-3 border-b border-border flex items-center justify-between">
-          <h2 className="text-sm font-semibold">
-            {online ? "New Mass Online message" : "New mass message"}
-          </h2>
-          <button
-            type="button"
-            onClick={close}
-            className="text-fg-dim hover:text-fg text-lg leading-none w-11 h-11 -mr-2 -my-2 grid place-items-center shrink-0 md:w-auto md:h-auto md:mr-0 md:my-0 md:inline"
-            title="Close"
-          >×</button>
-        </header>
-
-        <div className="flex-1 overflow-y-auto p-4 space-y-3">
+        <div className="space-y-4">
           {/* All-models switch — pivots the modal between single-account
            *  mode (vault + custom-list audiences) and fan-out mode
            *  (uploads only + system audiences only). */}
@@ -226,21 +246,23 @@ export function MassMessageComposer({
           />
 
           {/* The content — locked (disabled) once a model sent the broadcast. */}
-          <fieldset disabled={locked} className="min-w-0 space-y-3 disabled:opacity-60">
-          <div className="space-y-1.5">
-            <textarea
+          <fieldset disabled={locked} className="min-w-0 space-y-4 disabled:opacity-60">
+          <div className="space-y-2">
+            <IfTextArea
               ref={textareaRef}
               value={text}
               onChange={(e) => set("text")(e.target.value)}
               placeholder="What's the broadcast?"
               rows={4}
-              className="w-full bg-bg border border-border rounded-md px-3 py-2 text-base md:text-sm placeholder:text-muted focus:outline-none focus:border-accent resize-y"
+              className="max-md:text-base"
             />
             <SensitiveWordWarning hits={sensitiveHits} />
             {/* Toolbar — same composer features as the chat: recent-
              *  emojis quick row, full emoji picker, GIF picker,
              *  saved-template picker, @-tag creators picker. */}
-            <div className="flex items-center gap-1.5 flex-wrap">
+            {/* Escape in a picker's search box closes that picker, not the whole composer. */}
+            <div className="flex items-center gap-1.5 flex-wrap"
+              onKeyDown={(e) => { if (e.key === "Escape" && e.target instanceof HTMLInputElement) e.stopPropagation(); }}>
               <EmojiQuickRow onInsert={onEmoji} />
               <EmojiPickerButton align="left" onInsert={onEmoji} />
               <GifPickerButton
@@ -268,8 +290,8 @@ export function MassMessageComposer({
               />
             )}
             {pickedGifs.length > 0 && (
-              <div className="flex items-center gap-1.5 flex-wrap bg-bg/60 border border-border rounded-md px-2 py-2">
-                <span className="text-[10px] uppercase tracking-wide text-fg-dim mr-1">gifs</span>
+              <div className="flex flex-wrap items-center gap-2 rounded-md border border-border p-2">
+                <span className="mr-1 text-[12px] text-fg-dim">GIFs</span>
                 {pickedGifs.map((g) => (
                   <div key={g.id} className="relative w-14 h-14 rounded-md overflow-hidden border border-border bg-bg-elev-1">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -277,14 +299,14 @@ export function MassMessageComposer({
                     <button
                       type="button"
                       onClick={() => dispatch({ type: "removeGif", id: g.id })}
-                      className="absolute top-0.5 right-0.5 w-6 h-6 md:w-4 md:h-4 rounded-full bg-black/70 text-white grid place-items-center text-[10px] opacity-80 hover:opacity-100"
+                      className="absolute top-0.5 right-0.5 w-6 h-6 md:w-4 md:h-4 rounded-full bg-black/70 text-white grid place-items-center opacity-80 hover:opacity-100"
                       aria-label="Remove GIF"
                     >
-                      ✕
+                      <X className="h-3 w-3" aria-hidden />
                     </button>
                   </div>
                 ))}
-                <span className="ml-auto text-[10px] text-fg-dim">
+                <span className="ml-auto text-[12px] text-muted">
                   {gifNote(form)}
                 </span>
               </div>
@@ -307,32 +329,38 @@ export function MassMessageComposer({
           )}
 
           {!allModels && (
-            <>
-              <div className="flex items-center gap-2">
-                <label className="text-xs text-fg-dim shrink-0">Price (USD):</label>
-                <input
+            <div>
+              <IfLabel htmlFor={priceId}>Price (USD)</IfLabel>
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                <IfInput
+                  id={priceId}
                   type="text"
                   inputMode="decimal"
                   value={price}
                   onChange={(e) => set("price")(sanitizePriceInput(e.target.value))}
                   placeholder="0 (free)"
-                  className="flex-1 bg-bg border border-border rounded-md px-2 py-1.5 text-base md:text-xs focus:outline-none focus:border-accent"
+                  className="w-40 max-md:text-base"
                 />
-                <span className={isPPV ? "text-warn text-[11px]" : "text-fg-dim text-[11px]"}>
-                  {isPPV ? `🔒 PPV ${fmtPrice(Math.round(priceToSend * 100))}` : "free"}
-                </span>
+                {isPPV ? (
+                  <span className="inline-flex items-center gap-1 text-[14px] text-warn">
+                    <Lock className="h-3.5 w-3.5" aria-hidden />PPV {fmtPrice(Math.round(priceToSend * 100))}
+                  </span>
+                ) : (
+                  <span className="text-[14px] text-muted">Free</span>
+                )}
+                {isPPV && (
+                  <label className="flex cursor-pointer select-none items-center gap-2 text-[14px] text-fg">
+                    <input
+                      type="checkbox"
+                      checked={lockedText}
+                      onChange={(e) => set("lockedText")(e.target.checked)}
+                      className="h-4 w-4 accent-accent"
+                    />
+                    Lock the text too (fan must pay to read)
+                  </label>
+                )}
               </div>
-              {isPPV && (
-                <label className="flex items-center gap-2 text-xs text-fg-dim cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={lockedText}
-                    onChange={(e) => set("lockedText")(e.target.checked)}
-                  />
-                  Lock the text too (fan must pay to read)
-                </label>
-              )}
-            </>
+            </div>
           )}
 
           <ScheduleField
@@ -344,27 +372,27 @@ export function MassMessageComposer({
           {/* Funnel — optional automated follow-up. Only the send_mass_message
            *  automation (compose-into-rule path) walks the steps; a one-off
            *  live OF-queue broadcast ignores it. */}
-          <div className="flex items-center gap-2">
-            <label className="text-xs text-fg-dim shrink-0">Funnel follow-up:</label>
+          <div>
+            <IfLabel htmlFor={funnelSelectId}>Funnel follow-up</IfLabel>
             <select
+              id={funnelSelectId}
               value={funnelId ?? ""}
               onChange={(e) => set("funnelId")(e.target.value ? Number(e.target.value) : null)}
-              className="min-w-0 flex-1 bg-bg border border-border rounded-md px-2 py-1.5 text-base md:text-xs focus:outline-none focus:border-accent"
+              className={cn(IF_FIELD, "h-8 w-full min-w-0 px-[11px] outline-none focus:border-accent")}
             >
-              <option value="">— none (just send the opener) —</option>
+              <option value="">None (just send the opener)</option>
               {(funnelsQ.data ?? []).map((f) => (
                 <option key={f.id} value={f.id}>
                   {f.name} ({f.step_count} step{f.step_count === 1 ? "" : "s"})
                 </option>
               ))}
             </select>
+            {funnelId != null && (
+              <IfHelp>
+                After this opener lands, the funnel walks its reply / PPV steps per replying fan.
+              </IfHelp>
+            )}
           </div>
-          {funnelId != null && (
-            <div className="text-[10px] text-fg-dim -mt-1">
-              After this opener lands, the funnel walks its reply / PPV steps per
-              replying fan (resolved by the automation, not this live send).
-            </div>
-          )}
 
           <AudiencePanel
             form={form}
@@ -388,13 +416,13 @@ export function MassMessageComposer({
 
           {/* The broadcast landed but these trailing GIF sends failed. */}
           {gifFailures && (
-            <div role="alert" className="border border-border rounded-md p-3 space-y-1 text-[11px]">
-              <div className="font-medium">
+            <div role="alert" className="space-y-1 rounded-md border border-border p-3 text-[12px]">
+              <div className="text-[14px] font-medium">
                 Broadcast sent — {gifFailures.length} of {pickedGifs.length - 1} extra GIF
                 send{pickedGifs.length === 2 ? "" : "s"} failed
               </div>
               {gifFailures.map((g) => (
-                <div key={g.id} className="text-err">✗ GIF {g.title || g.id} — {g.error}</div>
+                <div key={g.id} className="text-err">GIF {g.title || g.id} — {g.error}</div>
               ))}
             </div>
           )}
@@ -407,34 +435,7 @@ export function MassMessageComposer({
             />
           )}
         </div>
-
-        <footer className="px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pb-3 border-t border-border flex items-center justify-end gap-2">
-          <FanOutStatus
-            progress={progress} verb="Sending" invalid={invalid} error={send.error?.message ?? null} results={results}
-          />
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={send.isPending}
-            className="text-xs px-3 py-1.5 rounded border border-border hover:border-border-light text-fg-dim hover:text-fg disabled:opacity-50"
-          >
-            {gifFailures ? "Close" : "Cancel"}
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              if (confirm(confirmPrompt(form, sendFrom.length))) send.mutate();
-            }}
-            disabled={send.isPending || invalid !== null}
-            title={invalid ?? undefined}
-            className="text-xs px-4 py-1.5 rounded bg-accent text-white font-medium hover:bg-accent-hover disabled:opacity-50"
-          >
-            {send.isPending
-              ? (isScheduled ? "Scheduling…" : "Broadcasting…")
-              : (isScheduled ? "Schedule" : "Broadcast")}
-          </button>
-        </footer>
-      </div>
+      </IfModal>
 
       <VaultPicker
         open={pickerOpen}
@@ -447,7 +448,6 @@ export function MassMessageComposer({
           setPickerOpen(false);
         }}
       />
-    </div>
+    </>
   );
 }
-

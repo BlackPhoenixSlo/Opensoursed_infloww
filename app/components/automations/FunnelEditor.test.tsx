@@ -112,9 +112,9 @@ describe("Auto Funnel (MassFunnelsTab)", () => {
     renderWithProviders(<AutoFunnelPage />);
     fireEvent.click(within(screen.getByRole("banner")).getByRole("button", { name: "New funnel" }));
     const dialog = screen.getByRole("dialog", { name: "New funnel" });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Edit raw JSON →" }));
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Raw JSON" }));
     const area = within(dialog).getByPlaceholderText(/opening_message/);
-    const typed = () => within(dialog).getByRole("button", { name: "← Typed fields" });
+    const typed = () => within(dialog).getByRole("radio", { name: "Typed fields" });
     const create = () => within(dialog).getByRole("button", { name: "Create funnel" });
 
     fireEvent.change(area, { target: { value: JSON.stringify({ name: "n", opening_message: "o", steps: [{ messages: ["a"] }] }) } });
@@ -144,11 +144,11 @@ describe("Auto Funnel (MassFunnelsTab)", () => {
     renderWithProviders(<AutoFunnelPage />);
     fireEvent.click(within(screen.getByRole("banner")).getByRole("button", { name: "New funnel" }));
     const dialog = screen.getByRole("dialog", { name: "New funnel" });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Edit raw JSON →" }));
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Raw JSON" }));
     fireEvent.change(within(dialog).getByPlaceholderText(/opening_message/), { target: { value: JSON.stringify({
       name: "n", opening_message: "o", steps: [{ step: 7, type: "paid_ppv", messages: ["b"] }],
     }) } });
-    fireEvent.click(within(dialog).getByRole("button", { name: "← Typed fields" }));
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Typed fields" }));
     expect((dialog.querySelector("#funnel-name") as HTMLInputElement).value).toBe("n");
     fireEvent.click(within(dialog).getByRole("button", { name: "Create funnel" }));
     // Typed save keeps the step number; no price → none sent (server default).
@@ -171,7 +171,7 @@ describe("Auto Funnel (MassFunnelsTab)", () => {
 
   it("edit a gapped funnel in raw JSON: the buffer shows its ids and an edit saves them", async () => {
     const dialog = await openEdit();
-    fireEvent.click(within(dialog).getByRole("button", { name: "Edit raw JSON →" }));
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Raw JSON" }));
     const area = within(dialog).getByPlaceholderText(/opening_message/) as HTMLTextAreaElement;
     expect(JSON.parse(area.value).steps.map((s: { step: number }) => s.step)).toEqual([1, 7]);
     fireEvent.change(area, { target: { value: area.value.replace('"b"', '"b2"') } });
@@ -185,7 +185,7 @@ describe("Auto Funnel (MassFunnelsTab)", () => {
 
   it("typed add on a gapped funnel numbers the new step max + 1 (no collision)", async () => {
     const dialog = await openEdit();
-    fireEvent.click(within(dialog).getByRole("button", { name: "+ Reply step" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Reply step" }));
     const blanks = within(dialog).getAllByPlaceholderText("Message…").filter((el) => !(el as HTMLInputElement).value);
     fireEvent.change(blanks[0], { target: { value: "c" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));

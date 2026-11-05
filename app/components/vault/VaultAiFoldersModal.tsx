@@ -29,6 +29,7 @@
 
 import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { Copy, Send, Shirt, User } from "lucide-react";
 
 import {
   applyAiFolders,
@@ -39,6 +40,7 @@ import {
   type AiFolder,
   type ApplyAiFoldersResult,
 } from "@/hooks/useVaultCache";
+import { IfButton, IfHelp, IfLabel, IfLearn, IfModal, IfNativeSelect, IfSwitch } from "@/components/ui/infloww";
 import { errText } from "@/lib/errText";
 
 const TIER_STYLE: Record<string, string> = {
@@ -65,14 +67,14 @@ function FolderCard({
   const isScript = folder.source === "script";
 
   return (
-    <section className="rounded-lg border border-border bg-bg-elev-1">
+    <section className="rounded-md border border-border bg-bg-elev-1">
       <header className="px-3 py-2 flex items-start justify-between gap-3 border-b border-border">
         <div className="min-w-0">
-          <h3 className="text-xs font-semibold flex items-center gap-2">
-            <span>{folder.solo ? "👤" : isScript ? "👗" : "📤"}</span>
+          <h3 className="text-[14px] font-semibold flex items-center gap-2">
+            {(() => { const Icon = folder.solo ? User : isScript ? Shirt : Send; return <Icon className="h-3.5 w-3.5 shrink-0 text-muted" aria-hidden />; })()}
             <span className="truncate">{folder.name}</span>
           </h3>
-          <p className="text-[11px] text-fg-dim mt-0.5">
+          <p className="text-[12px] text-muted mt-0.5">
             {folder.purpose} · {folder.size} items ·{" "}
             {Object.entries(folder.kinds)
               .map(([k, n]) => `${n} ${k}`)
@@ -87,7 +89,7 @@ function FolderCard({
           {Object.entries(folder.tiers).map(([tier, n]) => (
             <span
               key={tier}
-              className={`px-1.5 py-0.5 rounded border text-[10px] ${
+              className={`px-1.5 py-0.5 rounded border text-[12px] ${
                 TIER_STYLE[tier] ?? TIER_STYLE.sfw
               }`}
             >
@@ -107,19 +109,19 @@ function FolderCard({
                 loading="lazy"
                 className="w-[74px] h-[74px] object-cover rounded border border-border"
               />
-              <span className="absolute top-0 left-0 px-1 rounded-br bg-black/70 text-[10px] tabular-nums">
+              <span className="absolute top-0 left-0 px-1 rounded-br bg-black/70 text-[12px] text-white tabular-nums">
                 {it.manual_order}
               </span>
               {multi.has(it.media_id) && (
                 <span
                   title="also in another folder — it keeps a separate position in each"
-                  className="absolute bottom-0 right-0 px-1 rounded-tl bg-black/70 text-[10px]"
+                  className="absolute bottom-0 right-0 grid place-items-center rounded-tl bg-black/70 p-0.5 text-white"
                 >
-                  ⧉
+                  <Copy className="h-3 w-3" aria-hidden />
                 </span>
               )}
             </div>
-            <figcaption className="mt-0.5 text-[10px] text-fg-dim truncate">
+            <figcaption className="mt-0.5 text-[12px] text-muted truncate">
               {it.closes ? "closes" : it.clothing_state}
             </figcaption>
           </figure>
@@ -130,7 +132,7 @@ function FolderCard({
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
-          className="w-full px-3 py-1.5 border-t border-border text-[11px] text-fg-dim hover:text-fg"
+          className="w-full px-3 py-1.5 border-t border-border text-[12px] text-accent hover:text-accent-hover"
         >
           {open ? "Show fewer" : `Show all ${folder.items.length}`}
         </button>
@@ -233,223 +235,197 @@ export default function VaultAiFoldersModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/50 md:grid md:place-items-center md:p-4" onClick={onClose}>
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="w-full h-full md:h-auto max-w-none md:max-w-[1100px] max-h-none md:max-h-[92vh] flex flex-col bg-panel border-0 md:border border-border rounded-none md:rounded-xl shadow-2xl"
-      >
-        <header className="px-4 py-3 border-b border-border flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h2 className="text-sm font-semibold">Build AI folders</h2>
-            <p className="text-[11px] text-fg-dim">
-              👗 scripts are one shoot, ordered tease → payoff. 📤 lanes are cut by
-              heat and by how much is covered. Every folder is named{" "}
-              <code className="text-fg">AI-</code> so you can tell them from your own.
-            </p>
-            {flagsMissing && (
-              <div className="mt-2 rounded-md border border-warn/50 bg-warn/10 px-3 py-2">
-                <p className="text-[11px] text-warn">
-                  <b>Run the flags pass first.</b> {flags!.missing} of {flags!.stills}{" "}
-                  stills have not been checked for what is actually on show, so the $10
-                  and $50 tiers would fall back to <code>clothing_state</code> — measured
-                  wrong on roughly 1 in 3 of the stills those tiers are built from. Takes
-                  ~3s per still and costs about $0.001 per 100. Anything described from
-                  now on is flagged in the same pass — this is a one-off catch-up on
-                  media described before that.
-                </p>
-                {sweeping ? (
-                  <p className="mt-2 text-[11px] text-warn tabular-nums">
-                    Checking… {sweep?.progress?.done ?? 0} of{" "}
-                    {sweep?.progress?.total ?? flags!.missing} done
-                    {!!sweep?.progress?.failed && ` · ${sweep.progress.failed} failed`}
-                    {" · "}
-                    <span className="text-warn/80">
-                      keeps running if you close this
-                    </span>
-                  </p>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={onRunFlags}
-                    disabled={busy}
-                    className="mt-2 px-2.5 py-1 rounded-md text-[11px] font-medium border border-warn/60 text-warn hover:bg-warn/20 disabled:opacity-40"
-                  >
-                    Check {flags!.missing} stills
-                  </button>
-                )}
-                {!sweeping && !!sweep?.progress?.error && (
-                  <p className="mt-1 text-[11px] text-err">
-                    Last run stopped: {sweep.progress.error}
-                  </p>
-                )}
-              </div>
-            )}
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-2 py-2.5 md:py-1 min-h-[44px] md:min-h-0 rounded-md text-xs text-fg-dim hover:text-fg"
-          >
-            Close
-          </button>
-        </header>
-
-        <div className="px-4 py-2.5 border-b border-border flex flex-wrap items-center gap-3 text-xs">
-          <label className="flex items-center gap-1.5">
-            <span className="text-fg-dim">Keep as scripts</span>
-            <select
-              value={keep}
-              onChange={(e) => {
-                setKeep(Number(e.target.value));
-                setResult(null);
-              }}
-              disabled={busy}
-              className="px-2 py-1 rounded-md bg-bg-elev-1 border border-border"
-            >
-              {KEEP_CHOICES.map((n) => (
-                <option key={n} value={n}>
-                  top {n} {n === 1 ? "shoot" : "shoots"}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="flex items-center gap-1.5" title="Also create these as real folders on OnlyFans, so they show in the OF app and the chat picker">
-            <input
-              type="checkbox"
-              checked={mirrorToOf}
-              onChange={(e) => {
-                setMirrorToOf(e.target.checked);
-                setResult(null);
-              }}
-              disabled={busy}
-            />
-            <span className={mirrorToOf ? "text-warn" : "text-fg-dim"}>
-              Also create on OnlyFans
-            </span>
-          </label>
-          <label
-            className="flex items-center gap-1.5"
-            title="Also cut each lane down to the items nobody else is in — AI-tease 10-solo is AI-tease 10 with every partner clip and photo taken out. The lanes themselves are unchanged."
-          >
-            <input
-              type="checkbox"
-              checked={solo}
-              onChange={(e) => {
-                setSolo(e.target.checked);
-                setResult(null);
-              }}
-              disabled={busy}
-            />
-            <span className={solo ? "text-accent" : "text-fg-dim"}>
-              👤 Solo cut of each lane
-            </span>
-          </label>
-          {plan.isFetching && <span className="text-fg-dim">planning…</span>}
-          {s && (
-            <span className="text-fg-dim">
-              {s.folders} folders ({s.scripts} scripts, {s.lanes} lanes
-              {s.solo_cuts > 0 && `, ${s.solo_cuts} solo`}) · {s.unique_media} media ·{" "}
-              {s.memberships} placements
-              {multi.size > 0 && ` · ⧉ ${multi.size} in more than one`}
-            </span>
-          )}
-        </div>
-        {/* An empty solo cut on a V1-described vault is CORRECT — `is_solo`
-            refuses to call an item solo without the evidence — and reads as
-            broken. Say which it is. */}
-        {soloGap && (
-          <div className="mx-4 mt-3 px-3 py-2 rounded-lg border border-accent/40 bg-accent/10 text-[11px] text-accent">
-            <b>{soloGap.unknown} of {soloGap.described} described items were never
-            asked who else is in them.</b>{" "}
-            Only the rich (B) describe prompt records that, so those items stay OUT of the
-            solo folders rather than being guessed into them — a partner clip in a solo
-            folder is the wrong thing sold under the wrong promise. Re-scan them with
-            prompt B to include them.
-          </div>
-        )}
-
-        {result && (
-          <div className="mx-4 mt-3 px-3 py-2 rounded-lg border border-ok/40 bg-ok/10 text-xs text-ok">
-            Created {result.new} new{" "}
-            {result.reused > 0 && `and refreshed ${result.reused} existing `}
-            {result.folders === 1 ? "folder" : "folders"} with {result.items} placements.
-            {result.of_mirrored != null && (
-              <span className="block text-ok/80">
-                {result.of_mirrored} mirrored to OnlyFans as real vault folders.
-              </span>
-            )}
-            {!!result.of_failed && (
-              <span className="block text-warn">
-                {result.of_failed} could not be created on OnlyFans — the folder still
-                exists here, press Rebuild to retry.
-              </span>
-            )}
-            {result.of_mirrored == null && (
-              <span className="block text-ok/80">
-                Internal folders only — nothing was written to OnlyFans.
-              </span>
-            )}
-            <span className="block text-ok/80">Nothing was sent.</span>
-          </div>
-        )}
-
-        {error && (
-          <div className="mx-4 mt-3 px-3 py-2 rounded-lg border border-err/40 bg-err/10 text-xs text-err">
-            {error}
-          </div>
-        )}
-
-        <div className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-3">
-          {plan.isLoading && <p className="text-xs text-fg-dim">Reading the vault…</p>}
-          {plan.isError && (
-            <p className="text-xs text-err">Could not build a plan for this account.</p>
-          )}
-          {plan.data && plan.data.folders.length === 0 && (
-            <p className="text-xs text-fg-dim">
-              Nothing to group yet — the vault needs to be collected and described first.
-            </p>
-          )}
-          {plan.data?.folders.map((f) => (
-            <FolderCard key={f.name} accountId={accountId} folder={f} multi={multi} />
-          ))}
-        </div>
-
-        <footer className="px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:pb-3 border-t border-border flex items-center justify-between gap-3">
-          <p className="text-[11px] text-fg-dim">
+    <IfModal
+      title="Build AI folders"
+      width={820}
+      onClose={onClose}
+      footer={
+        <div className="flex w-full flex-wrap items-center justify-end gap-2">
+          <span className="min-w-0 flex-1 basis-60 text-[12px] text-muted">
             {result
               ? "Re-running refreshes these folders rather than making duplicates."
               : mirrorToOf
                 ? "Creates real folders on this OnlyFans account. Nothing is sent."
                 : "Nothing has been created yet. Your own folders are never touched."}
-          </p>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-3 py-2.5 md:py-1.5 min-h-[44px] md:min-h-0 rounded-md text-xs border border-border hover:bg-bg-elev-1"
-            >
-              {result ? "Done" : "Cancel"}
-            </button>
-            <button
-              type="button"
-              onClick={onCreate}
-              disabled={busy || flagsMissing || !plan.data?.folders.length}
-              title={
-                flagsMissing
-                  ? "Run the flags pass first — the $10/$50 tiers would be built on an unreliable signal"
-                  : undefined
+          </span>
+          <IfButton onClick={onClose}>{result ? "Done" : "Cancel"}</IfButton>
+          <IfButton
+            variant="primary"
+            onClick={onCreate}
+            disabled={busy || flagsMissing || !plan.data?.folders.length}
+            title={
+              flagsMissing
+                ? "Run the flags pass first — the $10/$50 tiers would be built on an unreliable signal"
+                : undefined
+            }
+          >
+            {busy
+              ? "Creating…"
+              : result
+                ? "Rebuild"
+                : `Create ${s?.folders ?? 0} folders`}
+          </IfButton>
+        </div>
+      }
+    >
+      <IfHelp className="mt-0">
+        Scripts are one shoot, ordered tease to payoff; lanes are cut by heat and cover. Every folder is named AI- so you can tell it from your own.
+      </IfHelp>
+      {flagsMissing && (
+        <div className="mt-4 rounded-md border border-warn/50 bg-warn/10 px-3 py-2 text-warn">
+          <p className="flex flex-wrap items-center gap-x-2">
+            <b>Run the flags pass first.</b>
+            <span>{flags!.missing} of {flags!.stills} stills are unchecked, so the $10 and $50 tiers would be guessed.</span>
+            <IfLearn
+              tip={
+                <>
+                  Without the flags pass those tiers fall back to clothing_state — measured wrong on roughly 1 in 3
+                  of the stills they are built from. Takes ~3s per still and costs about $0.001 per 100. Anything
+                  described from now on is flagged in the same pass; this is a one-off catch-up.
+                </>
               }
-              className="px-3 py-2.5 md:py-1.5 min-h-[44px] md:min-h-0 rounded-md text-xs font-medium bg-accent text-black disabled:opacity-40"
             >
-              {busy
-                ? "Creating…"
-                : result
-                  ? "Rebuild"
-                  : `Create ${s?.folders ?? 0} folders`}
-            </button>
-          </div>
-        </footer>
+              Why
+            </IfLearn>
+          </p>
+          {sweeping ? (
+            <p className="mt-2 text-[12px] tabular-nums">
+              Checking… {sweep?.progress?.done ?? 0} of{" "}
+              {sweep?.progress?.total ?? flags!.missing} done
+              {!!sweep?.progress?.failed && ` · ${sweep.progress.failed} failed`}
+              {" · "}
+              <span className="text-warn/80">
+                keeps running if you close this
+              </span>
+            </p>
+          ) : (
+            <IfButton className="mt-2 border-warn/60 text-warn hover:border-warn hover:text-warn" onClick={onRunFlags} disabled={busy}>
+              Check {flags!.missing} stills
+            </IfButton>
+          )}
+          {!sweeping && !!sweep?.progress?.error && (
+            <p className="mt-1 text-[12px] text-err">
+              Last run stopped: {sweep.progress.error}
+            </p>
+          )}
+        </div>
+      )}
+
+      <div className="mt-4 flex flex-wrap items-end gap-x-6 gap-y-3">
+        <div>
+          <IfLabel htmlFor="ai-folders-keep">Keep as scripts</IfLabel>
+          <IfNativeSelect
+            id="ai-folders-keep"
+            value={keep}
+            onChange={(e) => {
+              setKeep(Number(e.target.value));
+              setResult(null);
+            }}
+            disabled={busy}
+          >
+            {KEEP_CHOICES.map((n) => (
+              <option key={n} value={n}>
+                top {n} {n === 1 ? "shoot" : "shoots"}
+              </option>
+            ))}
+          </IfNativeSelect>
+        </div>
+        <span className="flex h-8 items-center" title="Also create these as real folders on OnlyFans, so they show in the OF app and the chat picker">
+          <IfSwitch
+            checked={mirrorToOf}
+            onChange={(on) => {
+              setMirrorToOf(on);
+              setResult(null);
+            }}
+            disabled={busy}
+            label="Also create on OnlyFans"
+          />
+        </span>
+        <span className="flex h-8 items-center" title="Also cut each lane down to the items nobody else is in — AI-tease 10-solo is AI-tease 10 with every partner clip and photo taken out. The lanes themselves are unchanged.">
+          <IfSwitch
+            checked={solo}
+            onChange={(on) => {
+              setSolo(on);
+              setResult(null);
+            }}
+            disabled={busy}
+            label="Solo cut of each lane"
+          />
+        </span>
       </div>
-    </div>
+      {(plan.isFetching || s) && (
+        <IfHelp className="mt-3">
+          {plan.isFetching && "planning… "}
+          {s && (
+            <>
+              {s.folders} folders ({s.scripts} scripts, {s.lanes} lanes
+              {s.solo_cuts > 0 && `, ${s.solo_cuts} solo`}) · {s.unique_media} media ·{" "}
+              {s.memberships} placements
+              {multi.size > 0 && ` · ${multi.size} in more than one`}
+            </>
+          )}
+        </IfHelp>
+      )}
+      {/* An empty solo cut on a V1-described vault is CORRECT — `is_solo`
+          refuses to call an item solo without the evidence — and reads as
+          broken. Say which it is. */}
+      {soloGap && (
+        <div className="mt-4 flex flex-wrap items-center gap-x-2 rounded-md border border-accent/40 bg-accent/10 px-3 py-2 text-accent">
+          <b>{soloGap.unknown} of {soloGap.described} described items were never asked who else is in them,</b>
+          <span>so they stay out of the solo folders.</span>
+          <IfLearn
+            tip="Only the rich (B) describe prompt records that, so those items stay out rather than being guessed in — a partner clip in a solo folder is the wrong thing sold under the wrong promise. Re-scan them with prompt B to include them."
+          >
+            Why
+          </IfLearn>
+        </div>
+      )}
+
+      {result && (
+        <div className="mt-4 rounded-md border border-ok/40 bg-ok/10 px-3 py-2 text-ok">
+          Created {result.new} new{" "}
+          {result.reused > 0 && `and refreshed ${result.reused} existing `}
+          {result.folders === 1 ? "folder" : "folders"} with {result.items} placements.
+          {result.of_mirrored != null && (
+            <span className="block text-ok/80">
+              {result.of_mirrored} mirrored to OnlyFans as real vault folders.
+            </span>
+          )}
+          {!!result.of_failed && (
+            <span className="block text-warn">
+              {result.of_failed} could not be created on OnlyFans — the folder still
+              exists here, press Rebuild to retry.
+            </span>
+          )}
+          {result.of_mirrored == null && (
+            <span className="block text-ok/80">
+              Internal folders only — nothing was written to OnlyFans.
+            </span>
+          )}
+          <span className="block text-ok/80">Nothing was sent.</span>
+        </div>
+      )}
+
+      {error && (
+        <div className="mt-4 rounded-md border border-err/40 bg-err/10 px-3 py-2 text-err">
+          {error}
+        </div>
+      )}
+
+      <div className="mt-4 flex flex-col gap-3">
+        {plan.isLoading && <p className="text-muted">Reading the vault…</p>}
+        {plan.isError && (
+          <p className="text-err">Could not build a plan for this account.</p>
+        )}
+        {plan.data && plan.data.folders.length === 0 && (
+          <p className="text-muted">
+            Nothing to group yet — the vault needs to be collected and described first.
+          </p>
+        )}
+        {plan.data?.folders.map((f) => (
+          <FolderCard key={f.name} accountId={accountId} folder={f} multi={multi} />
+        ))}
+      </div>
+    </IfModal>
   );
 }

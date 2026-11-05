@@ -200,7 +200,7 @@ describe("NudgeOnlineTab's kept draft", () => {
 
     relayPut.mockImplementationOnce(async (_p: string, body: { config: Cfg }) => { server.cfg = body.config; return body; });
     fireEvent.click(saveButton());
-    await waitFor(() => expect(screen.getAllByText("✓ Saved.").length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getAllByText("Saved.").length).toBeGreaterThan(0));
     expect(screen.queryByText(RESTORED_NOTE)).toBeNull();
     await waitFor(() => expect(kept()).toBeNull());
   });

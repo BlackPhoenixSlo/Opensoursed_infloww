@@ -185,8 +185,8 @@ export const SM_EDITOR = {
   delayMinutes: { label: "minutes", sources: [`${J} @14901708`] },
   delayTail: { label: "automatically", sources: [`${J} @14901743`] },
   media: { label: "Media", sources: [`${J} @15275429`] },
-  // Followed in the bundle by a no-break space and the price.
-  price: { label: "Message price:$", sources: [`${J} @15307295`] },
+  // The bundle's "Message price:$" (then a no-break space and the price); a kit label above its field has no colon.
+  price: { label: "Message price", sources: [`${J} @15307295`] },
   priceMin: { label: "Minimum $3 USD", sources: [`${J} @15304458`] },
   autoUnsend: { label: "Auto-unsend", sources: [`${J} @14981346`] },
   unsend: { label: "Unsend messages", sources: [`${J} @14981830`] },

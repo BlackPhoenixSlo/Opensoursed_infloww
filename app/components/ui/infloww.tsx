@@ -6,7 +6,7 @@
  *
  * - The legacy antd set (`--tc-*` tokens): `InflowwPageHeader`, `IfCard`, `IfTabs`, `IfBody`, `IfInput`, `IfTextArea`,
  *   `IfSelect`, `IfSegmented`, `IfRangePicker`, `IfButton`, `IfLearn`, `IfCreatorSelect` (+ `useCreatorParam`),
- *   `IfModal`, `IfPager`, `IfSwitch`, `IF_TABLE`. Most Growth pages, the Dashboard, Employees, Custom proxy.
+ *   `IfModal`, `IfPager`, `IfSwitch`, `IfLabel`, `IfHelp`, `IF_TABLE`. Most Growth pages, the Dashboard, Employees, Custom proxy.
  * - The HB set (the new design system): `HbButton`, `HbFilter`/`HbSelect`, `HB_TABLE`, `HbPager`, `HbModal`, on the
  *   `bg-hb-bg` page body. Manage creators, Tracking links.
  *
@@ -34,7 +34,7 @@ import { cn } from "@/lib/utils";
 
 export type { EmptyKind } from "@/components/ui/emptyArt";
 // Split out, re-exported so importers keep `@/components/ui/infloww`.
-export { HbFilter, HbFilterLg, HbSelect, IfSelect, type IfOption } from "@/components/ui/ifSelect";
+export { HbFilter, HbFilterLg, HbSelect, IfNativeSelect, IfSelect, type IfOption } from "@/components/ui/ifSelect";
 export { HbPager, IfPager } from "@/components/ui/ifPager";
 export { HbModal, IfModal } from "@/components/ui/ifModal";
 
@@ -290,6 +290,27 @@ export const IfTextArea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes
   ),
 );
 IfTextArea.displayName = "IfTextArea";
+
+/** antd's vertical form label (label above the field, so no colon): 14px T1, 8px under it; `required` draws the red
+ *  asterisk after the text (the saved-replies editor's "Name *"). */
+export function IfLabel({ htmlFor, required, className, children }: {
+  htmlFor?: string;
+  required?: boolean;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <label htmlFor={htmlFor} className={cn("mb-2 block text-[14px] text-fg", className)}>
+      {children}
+      {required && <span aria-hidden className="ml-0.5 text-err">*</span>}
+    </label>
+  );
+}
+
+/** One quiet line of help under a field (antd's `extra`): 12px T3. */
+export function IfHelp({ className, children }: { className?: string; children: ReactNode }) {
+  return <div className={cn("mt-1 text-[12px] text-muted", className)}>{children}</div>;
+}
 
 /** antd's date range (250x32): "Start date → End date" with a calendar icon at the right, as one box (a `group`). Two
  *  native date inputs inside, transparent; an empty end that has no focus is a text box showing antd's 12px T3

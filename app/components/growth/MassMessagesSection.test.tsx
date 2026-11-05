@@ -180,13 +180,13 @@ async function mount(rules: unknown[]) {
   await waitFor(() => expect(client.isFetching() + client.isMutating()).toBe(0), SETTLE);
 }
 
-const classBox = (label: string) =>
-  screen.getByText(label).closest("label")!.querySelector("input[type=checkbox]") as HTMLInputElement;
+/** A class's switch, read as on/off. */
+const classOn = (label: string) =>
+  screen.getByRole("switch", { name: label }).getAttribute("aria-checked") === "true";
 
 async function setClass(label: string, on: boolean) {
-  const box = classBox(label);
-  if (box.checked !== on) await act(async () => { fireEvent.click(box); });
-  expect(box.checked).toBe(on);
+  if (classOn(label) !== on) await act(async () => { fireEvent.click(screen.getByRole("switch", { name: label })); });
+  expect(classOn(label)).toBe(on);
 }
 
 describe("the hourly Auto-unsend card on Smart Messages", () => {
@@ -241,9 +241,9 @@ describe("the hourly Auto-unsend card on Smart Messages", () => {
 
   it("a saved rule with an empty policy hydrates to every class off, a disabled Update and the reason", async () => {
     await mount([savedRule({})]);
-    expect(classBox("Free text-only").checked).toBe(false);
-    expect(classBox("With image / video").checked).toBe(false);
-    expect(classBox("PPV (priced)").checked).toBe(false);
+    expect(classOn("Free text-only")).toBe(false);
+    expect(classOn("With image / video")).toBe(false);
+    expect(classOn("PPV (priced)")).toBe(false);
 
     const update = screen.getByRole("button", { name: "Update" }) as HTMLButtonElement;
     expect(update.disabled).toBe(true);
@@ -400,7 +400,7 @@ describe("Smart Messages frame and Mass Messages tab (ticket 30)", () => {
     expect(within(panel).getByRole("heading", { name: "Mass messages" })).toBeTruthy();
     // Ours, each with the extra tag: the bulk-unsend toolbar and the list's own filters.
     extraTagBeside(within(panel).getByText(/^Bulk actions/));
-    extraTagBeside(within(panel).getByText("Hide unsent").closest("label")!);
+    extraTagBeside(within(panel).getByRole("switch", { name: "Hide unsent" }));
   });
 
   it("the sent history's Models chips, shown for two or more Creators, carry the extra tag", async () => {
@@ -537,7 +537,7 @@ describe("the OF child's sent list is the capture's table (ticket 55)", () => {
       id: 8, date: "2026-01-02T09:00:00Z", text: "", isFree: true, canUnsend: false, isCanceled: true,
       sentCount: 10, viewedCount: 2, mediaCount: 0,
     }]);
-    await act(async () => { fireEvent.click(screen.getByLabelText("Hide unsent")); });
+    await act(async () => { fireEvent.click(screen.getByRole("switch", { name: "Hide unsent" })); });
     const [row] = bodyRows(table);
     const c = cellsOf(table, row);
     expect(within(c["Status"]).getByText("Unsent")).toBeTruthy();

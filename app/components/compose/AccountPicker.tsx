@@ -10,11 +10,14 @@
  * composers reuse it and neither is "chat" exactly.
  */
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useId, useMemo } from "react";
 
 import { usePlatformAccounts } from "@/hooks/useAccounts";
 import { useAllModelsInclude } from "@/hooks/useAllModelsInclude";
 import { useScope } from "@/contexts/ScopeContext";
+import { IfLabel } from "@/components/ui/infloww";
+import { IF_FIELD } from "@/components/ui/ifSelect";
+import { cn } from "@/lib/utils";
 
 export function AccountPicker({
   value, onChange,
@@ -25,7 +28,7 @@ export function AccountPicker({
 
   // Filter the sender list by the All-Models include set — models the
   // user opted out of the aggregate on the left sidebar shouldn't show
-  // up as a "Post as:" option either. Pre-existing `value` is preserved
+  // up as a "Post as" option either. Pre-existing `value` is preserved
   // so a saved draft pointing at an excluded model still renders.
   const visibleAccounts = useMemo(
     () => accounts.filter((a) => isIncluded(a.id) || a.id === value),
@@ -41,13 +44,15 @@ export function AccountPicker({
     if (seed) onChange(seed);
   }, [value, scope, visibleAccounts, onChange]);
 
+  const id = useId();
   return (
-    <div className="flex items-center gap-2">
-      <label className="text-xs text-fg-dim">Post as:</label>
+    <div>
+      <IfLabel htmlFor={id}>Post as</IfLabel>
       <select
+        id={id}
         value={value ?? ""}
         onChange={(e) => onChange(e.target.value)}
-        className="min-w-0 flex-1 bg-bg border border-border rounded-md px-2 py-1.5 text-xs focus:outline-none focus:border-accent"
+        className={cn(IF_FIELD, "h-8 w-full px-[11px] outline-none focus:border-accent")}
       >
         {visibleAccounts.length === 0 && <option value="">(no active sessions)</option>}
         {visibleAccounts.map((a) => (

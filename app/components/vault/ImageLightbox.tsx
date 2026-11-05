@@ -18,8 +18,9 @@
  * pass none and get the honest message below instead of a broken image.
  */
 
-import { useEffect } from "react";
+import { X } from "lucide-react";
 
+import { useModalFocus } from "@/components/ui/ifModal";
 import { useStillLadder } from "@/hooks/useStillLadder";
 import { mirrorFullSrc } from "@/hooks/useVaultCache";
 
@@ -37,17 +38,17 @@ export default function ImageLightbox({
   onClose: () => void;
 }) {
   const still = useStillLadder([mirrorFullSrc(accountId, mediaId), ...fallbacks]);
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  // A modal layer over a queue's IfModal: Escape closes only this, Tab stays in it.
+  const boxRef = useModalFocus<HTMLDivElement>(onClose, true);
 
   return (
     <div
-      className="fixed inset-0 z-[60] bg-black/85 grid place-items-center p-4 cursor-zoom-out"
+      ref={boxRef}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Image"
+      tabIndex={-1}
+      className="fixed inset-0 z-[60] bg-black/85 grid place-items-center p-4 cursor-zoom-out outline-none"
       onClick={onClose}
     >
       {still.src ? (
@@ -70,10 +71,10 @@ export default function ImageLightbox({
       <button
         type="button"
         onClick={onClose}
-        className="absolute top-3 right-3 size-9 grid place-items-center rounded-full bg-black/60 text-white text-lg hover:bg-black/80"
+        className="absolute right-4 top-4 grid h-6 w-6 place-items-center rounded text-white/70 hover:text-white"
         aria-label="Close"
       >
-        ×
+        <X className="h-4 w-4" aria-hidden />
       </button>
     </div>
   );

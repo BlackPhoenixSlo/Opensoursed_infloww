@@ -15,9 +15,11 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { RotateCw } from "lucide-react";
 
-import { EmptyState, IF_TABLE } from "@/components/ui/infloww";
-import { Button, Card, ExtraTag } from "@/components/ui/primitives";
+import { EmptyState, IF_TABLE, IfButton, IfCard, IfHelp, IfSwitch } from "@/components/ui/infloww";
+import { IF_FIELD } from "@/components/ui/ifSelect";
+import { ExtraTag } from "@/components/ui/primitives";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import {
   useCancelMassMessage,
@@ -153,72 +155,56 @@ export default function MassMessagesTab() {
        *  An Inflowwww extra: Infloww has per-message Auto-unsend only, and no
        *  per-Creator sweep by message type (docs/spec/infloww-parity-round-2/
        *  phase-02b-auto-mass-messages.md). */}
-      <Card className="order-2 md:order-1">
-        <div className="mb-3">
-          <div className="flex items-center gap-2 flex-wrap">
-            <h2 className="text-base font-semibold">Auto-unsend (automation)</h2>
-            <ExtraTag />
-          </div>
-          <p className="text-xs text-fg-dim mt-0.5">
-            Runs hourly per model. Automatically unsends broadcasts older than the
-            chosen hours, by type — leave a type unchecked to keep those forever.
-          </p>
-        </div>
-        <div className="space-y-2.5">
+      <IfCard className="order-2 md:order-1"
+        title={<span className="flex items-center gap-2"><span>Auto-unsend (automation)</span><ExtraTag /></span>}>
+        <IfHelp className="mb-4">
+          Runs hourly per model: unsends broadcasts older than the chosen hours, by type; an unchecked type is kept.
+        </IfHelp>
+        <div className="space-y-3">
           {accounts.length === 0 && (
-            <div className="text-xs text-fg-dim italic">No active models.</div>
+            <div className="text-[14px] text-fg-dim">No active models.</div>
           )}
           {accounts.map((a) => (
             <AutoUnsendPanel key={a.id} accountId={a.id} label={a.nickname || a.id} />
           ))}
         </div>
-      </Card>
+      </IfCard>
 
-      <Card className="order-1 md:order-2">
-        <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
-          <div>
-            <h2 className="text-base font-semibold">Mass messages</h2>
-            <p className="text-xs text-fg-dim mt-0.5">
-              Broadcasts already sent. Cancel one to unsend it from EVERY recipient — no 24h edit window for mass sends.
-            </p>
-          </div>
-          <div className="flex items-center gap-2 flex-wrap">
-            {/* An Inflowwww extra: the list's own filters, where Infloww's
-             *  OF list has the filter bar above it. */}
-            <ExtraTag />
-            <label className="flex items-center gap-1.5 text-xs text-fg-dim cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={hideUnsent}
-                onChange={(e) => setHideUnsent(e.target.checked)}
-              />
-              Hide unsent
-            </label>
-            <select
-              className="text-xs bg-bg-elev-1 border border-border rounded px-2 py-1"
-              value={daysBack}
-              onChange={(e) => setDaysBack(Number(e.target.value))}
-            >
-              {RANGE_OPTIONS.map((o) => (
-                <option key={o.days} value={o.days}>{o.label}</option>
-              ))}
-            </select>
-            <Button size="sm" variant="secondary" onClick={refresh} disabled={refreshing}>
-              <span className={cn("inline-block mr-1", refreshing && "animate-spin")}>↻</span>
-              {refreshing ? "Refreshing…" : "Refresh"}
-            </Button>
-          </div>
+      <IfCard className="order-1 md:order-2" title="Mass messages" extra={(
+        <div className="flex items-center gap-3 flex-wrap justify-end">
+          {/* An Inflowwww extra: the list's own filters, where Infloww's
+           *  OF list has the filter bar above it. */}
+          <ExtraTag />
+          <IfSwitch label="Hide unsent" checked={hideUnsent} onChange={setHideUnsent} />
+          <select
+            aria-label="Sent in"
+            className={cn(IF_FIELD, "h-8 px-[11px]")}
+            value={daysBack}
+            onChange={(e) => setDaysBack(Number(e.target.value))}
+          >
+            {RANGE_OPTIONS.map((o) => (
+              <option key={o.days} value={o.days}>{o.label}</option>
+            ))}
+          </select>
+          <IfButton onClick={refresh} disabled={refreshing}>
+            <RotateCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} aria-hidden />
+            {refreshing ? "Refreshing…" : "Refresh"}
+          </IfButton>
         </div>
+      )}>
+        <IfHelp className="mb-4">
+          Broadcasts already sent. Cancel one to unsend it from EVERY recipient; mass sends have no 24h edit window.
+        </IfHelp>
 
         {accounts.length > 1 && (
-          <div className="flex items-center gap-1.5 flex-wrap mb-3">
-            <span className="text-[10px] uppercase tracking-wide text-fg-dim mr-1">Models</span>
+          <div className="flex items-center gap-2 flex-wrap mb-4">
+            <span className="text-[14px] text-fg-dim">Models</span>
             <ExtraTag />
             <button
               type="button"
               onClick={() => setSelectedModels(new Set())}
               className={cn(
-                "px-2.5 py-1 rounded-full text-xs border transition-colors",
+                "px-3 h-7 rounded-full text-[12px] border transition-colors",
                 selectedModels.size === 0
                   ? "bg-accent text-white border-accent"
                   : "bg-bg-elev-1 text-fg-dim border-border hover:text-fg hover:border-fg-dim",
@@ -241,7 +227,7 @@ export default function MassMessagesTab() {
                     })
                   }
                   className={cn(
-                    "px-2.5 py-1 rounded-full text-xs border transition-colors",
+                    "px-3 h-7 rounded-full text-[12px] border transition-colors",
                     active
                       ? "bg-accent text-white border-accent"
                       : "bg-bg-elev-1 text-fg-dim border-border hover:text-fg hover:border-fg-dim",
@@ -258,37 +244,36 @@ export default function MassMessagesTab() {
          *  doesn't fire a confirmation just to be told "nothing to do".
          *  An Inflowwww extra: Infloww's OF list unsends one row at a time,
          *  from its Actions column (capture growth-smart-messages#94). */}
-        <div className="hidden md:flex items-center gap-2 flex-wrap mb-3 pb-3 border-b border-border">
-          <span className="text-[11px] text-fg-dim mr-1">
-            Bulk actions ({counts.all} unsendable in view):
+        <div className="hidden md:flex items-center gap-2 flex-wrap mb-4 pb-4 border-b border-border">
+          <span className="text-[14px] text-fg-dim">
+            Bulk actions ({counts.all} unsendable in view)
           </span>
           <ExtraTag />
           {BULK_ACTIONS.map(({ action, label, confirm, title }) => (
-            <Button
+            <IfButton
               key={action}
-              size="sm"
-              variant="danger"
+              className="text-err hover:border-err hover:text-err"
               disabled={!!bulkRunning || counts[action] === 0}
               onClick={() => bulkCancel(action, confirm)}
               title={title}
             >
               {bulkRunning === action ? "Unsending…" : `${label} (${counts[action]})`}
-            </Button>
+            </IfButton>
           ))}
         </div>
 
         {error && (
-          <div className="text-sm text-err mb-3">
+          <div className="text-[14px] text-err mb-3">
             Failed to load: {error.message}
           </div>
         )}
         {refreshM.error && (
-          <div className="text-sm text-err mb-3">
+          <div className="text-[14px] text-err mb-3">
             Refresh failed: {refreshM.error.message}
           </div>
         )}
         {sending.map((q) => (
-          <div key={q.queueId} role="status" className="text-sm text-fg-dim mb-3">
+          <div key={q.queueId} role="status" className="text-[14px] text-fg-dim mb-3">
             {accountName(q.accountId)}: Sending…
           </div>
         ))}
@@ -365,7 +350,7 @@ export default function MassMessagesTab() {
             </tbody>
           </table>
         </div>
-      </Card>
+      </IfCard>
     </div>
   );
 }

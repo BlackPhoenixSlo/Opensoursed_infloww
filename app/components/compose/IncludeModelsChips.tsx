@@ -2,6 +2,8 @@
 
 import { usePlatformAccounts } from "@/hooks/useAccounts";
 import { useAllModelsInclude } from "@/hooks/useAllModelsInclude";
+import { IfHelp } from "@/components/ui/infloww";
+import { cn } from "@/lib/utils";
 import { AccountPicker } from "./AccountPicker";
 
 /** The composers' scope block (Mass + Post): the all-models switch with its
@@ -25,25 +27,23 @@ export function IncludeModelsChips({
   const includedCount = accounts.filter((a) => isIncluded(a.id)).length;
   return (
     <>
-      <label className="flex items-center gap-2 text-xs cursor-pointer select-none">
+      <label className="flex cursor-pointer select-none items-center gap-2 text-[14px] text-fg">
         <input
           type="checkbox"
           checked={allModels}
           disabled={locked}
           onChange={(e) => onAllModels(e.target.checked)}
+          className="h-4 w-4 accent-accent"
         />
-        <span className="font-medium">{`${noun === "post" ? "Post" : "Broadcast"} from ALL models`}</span>
-        <span className="text-fg-dim">
-          ({includedCount}/{accounts.length} included)
+        <span>
+          {`${noun === "post" ? "Post" : "Broadcast"} from ALL models`}{" "}
+          <span className="text-muted">({includedCount}/{accounts.length} included)</span>
         </span>
       </label>
 
       {allModels ? (
-        <>
-          <div className="text-[11px] text-fg-dim border border-dashed border-border rounded-md py-2 px-3">
-            {`All-models ${noun}s are text-only for now — uploads from computer are temporarily disabled.`}
-          </div>
-          <div className="flex flex-wrap gap-1.5">
+        <div>
+          <div className="flex flex-wrap gap-2">
             {accounts.map((a) => {
               const inc = isIncluded(a.id);
               return (
@@ -52,12 +52,10 @@ export function IncludeModelsChips({
                   type="button"
                   onClick={() => toggle(a.id)}
                   title={inc ? "Click to exclude from broadcast" : "Click to include"}
-                  className={
-                    "flex items-center gap-1.5 px-2 py-1 rounded-full text-[11px] border transition-colors " +
-                    (inc
-                      ? "bg-bg-elev-1 border-border text-fg"
-                      : "bg-bg border-border/60 text-fg-dim line-through opacity-60")
-                  }
+                  className={cn(
+                    "flex h-7 items-center gap-1.5 rounded-full border px-3 text-[12px] transition-colors",
+                    inc ? "border-border bg-bg-elev-1 text-fg hover:border-accent" : "border-border/60 bg-bg text-fg-dim line-through opacity-60",
+                  )}
                 >
                   <span
                     className="w-2 h-2 rounded-full shrink-0"
@@ -68,10 +66,11 @@ export function IncludeModelsChips({
               );
             })}
             {accounts.length === 0 && (
-              <span className="text-[11px] text-fg-dim">No active sessions.</span>
+              <span className="text-[12px] text-muted">No active sessions.</span>
             )}
           </div>
-        </>
+          <IfHelp>{`All-models ${noun}s are text-only for now — uploads from computer are temporarily disabled.`}</IfHelp>
+        </div>
       ) : (
         <AccountPicker value={accountId} onChange={onAccount} />
       )}

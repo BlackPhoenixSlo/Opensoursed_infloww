@@ -27,13 +27,12 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { useState } from "react";
 
+import { IfButton, IfLabel, IfNativeSelect } from "@/components/ui/infloww";
+import { IF_MODAL_BOX, IF_MODAL_MASK } from "@/components/ui/ifModal";
 import { occurrenceLabel, useClock, useMyShifts } from "@/lib/shifts";
 
 export const TIME_TRACKING_OFF = "Time tracking is off for your agency";
 
-const BUTTON =
-  "text-xs px-3 py-1.5 rounded-lg bg-bg-elev-1 hover:bg-bg-elev-2 border border-border disabled:opacity-50";
-const SELECT = "h-8 px-2 rounded-lg border border-border bg-bg text-sm";
 
 export default function ClockDialog({ onClose }: { onClose: () => void }) {
   const me = useMyShifts();
@@ -48,13 +47,15 @@ export default function ClockDialog({ onClose }: { onClose: () => void }) {
   const creatorName = (id: string | null) => accounts.find((a) => a.account_id === id)?.display_name ?? id ?? "a Creator";
 
   let body;
+  /** The pick-a-Creator case's primary, in the footer after Close (R7). */
+  let action = null;
   if (me.isPending) {
     body = <p className="text-sm text-fg-dim">Loading…</p>;
   } else if (me.isError) {
     body = (
       <p className="text-sm text-err flex items-center gap-2">
         {`Couldn't load your shifts: ${me.error.message}`}
-        <button type="button" className={BUTTON} onClick={() => void me.refetch()}>Retry</button>
+        <IfButton onClick={() => void me.refetch()}>Retry</IfButton>
       </p>
     );
   } else if (open.length > 0) {
@@ -65,10 +66,9 @@ export default function ClockDialog({ onClose }: { onClose: () => void }) {
             <span className="flex-1">
               {`Clocked in on ${creatorName(ev.account_id)} since ${occurrenceLabel(ev.in_utc)}`}
             </span>
-            <button type="button" className={BUTTON} disabled={busy}
-              onClick={() => void clock.clockOutNow(ev.clock_event_id)}>
+            <IfButton disabled={busy} onClick={() => void clock.clockOutNow(ev.clock_event_id)}>
               Clock out
-            </button>
+            </IfButton>
           </li>
         ))}
       </ul>
@@ -78,42 +78,44 @@ export default function ClockDialog({ onClose }: { onClose: () => void }) {
   } else {
     body = (
       <div className="space-y-3">
-        <label className="flex items-center gap-3 text-sm">
-          <span>Creator</span>
-          <select aria-label="Creator" className={SELECT} value={accountId}
+        <div>
+          <IfLabel htmlFor="clock-creator">Creator</IfLabel>
+          <IfNativeSelect id="clock-creator" aria-label="Creator" className="w-full" value={accountId}
             onChange={(e) => setPicked(e.target.value)}>
             {accounts.map((a) => (
               <option key={a.account_id} value={a.account_id}>{a.display_name}</option>
             ))}
-          </select>
-        </label>
+          </IfNativeSelect>
+        </div>
         {account && !account.time_tracking_enabled && (
           <p className="text-sm text-fg-dim">{TIME_TRACKING_OFF}</p>
         )}
-        <div className="flex justify-end">
-          <button type="button" className={BUTTON} disabled={busy || !account?.time_tracking_enabled}
-            onClick={() => void clock.clockInNow(accountId)}>
-            Clock in
-          </button>
-        </div>
       </div>
+    );
+    action = (
+      <IfButton variant="primary" disabled={busy || !account?.time_tracking_enabled}
+        onClick={() => void clock.clockInNow(accountId)}>
+        Clock in
+      </IfButton>
     );
   }
 
   return (
     <Dialog.Root open onOpenChange={(o) => { if (!o) onClose(); }}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-40 bg-black/50" />
+        {/* IfModal's look on Radix: the 70% mask, the kit box, title 22px 24px, body 24px, footer right. */}
+        <Dialog.Overlay className={`fixed inset-0 z-40 ${IF_MODAL_MASK}`} />
         <Dialog.Content
           aria-describedby={undefined}
-          className="fixed left-1/2 top-1/2 z-50 -translate-x-1/2 -translate-y-1/2 w-[26rem] max-w-[calc(100vw-32px)] p-5 rounded-lg border border-border bg-bg space-y-4 outline-none"
+          className={`fixed left-1/2 top-1/2 z-50 w-[416px] max-w-[calc(100vw-32px)] -translate-x-1/2 -translate-y-1/2 ${IF_MODAL_BOX}`}
         >
-          <Dialog.Title className="text-base font-semibold">Clock in and out</Dialog.Title>
-          {body}
-          <div className="flex justify-end">
+          <Dialog.Title className="px-6 pt-[22px] text-[16px] font-semibold">Clock in and out</Dialog.Title>
+          <div className="p-6 text-[14px]">{body}</div>
+          <div className="flex justify-end gap-2 px-6 pb-5">
             <Dialog.Close asChild>
-              <button type="button" className={BUTTON}>Close</button>
+              <IfButton>Close</IfButton>
             </Dialog.Close>
+            {action}
           </div>
         </Dialog.Content>
       </Dialog.Portal>

@@ -10,9 +10,10 @@
  */
 
 import { Eye, EyeOff } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
-import { Button, ExtraTag, Input, Textarea } from "@/components/ui/primitives";
+import { IfButton, IfHelp, IfInput, IfLabel, IfModal, IfNativeSelect, IfTextArea } from "@/components/ui/infloww";
+import { ExtraTag } from "@/components/ui/primitives";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 
 export type ProxyScheme = "http" | "https" | "socks5";
@@ -62,33 +63,15 @@ export interface BulkResp {
   errors: Array<{ line: number; text_redacted: string; reason: string }>;
 }
 
-/** Closes on Escape, as antd's Modal does by default (`keyboard: true`); #24 and #38 leave it on. */
-export function useEscape(onClose: () => void) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
-}
-
-/** #35: 32px inputs, 4px 11px, 6px corners; antd dark's #141414 field in a 1px #424242 border (page-parity 03). */
-const FIELD_BOX = "bg-[#141414] border border-[#424242] [html[data-theme=light]_&]:bg-white [html[data-theme=light]_&]:border-[#d9d9d9]";
-const FIELD_IN = `h-8 py-1 px-[11px] rounded-md ${FIELD_BOX}`;
-/** #8's button size, which the capture's footer buttons share; #27: at least 72px. */
-const FOOT_BTN = "h-8 py-0 px-[15px] min-w-[72px] rounded text-sm font-normal whitespace-nowrap";
-
+/** #34: the label 14px above its field, 8px under it; 24px under each field. A group (Type) gets a caption, not a
+ *  `<label>`, as it has no single control. */
 function Field({ id, label, extra, children }: { id?: string; label: string; extra?: boolean; children: React.ReactNode }) {
-  // #34: the label 14px above its field, 8px under it; 24px under each field. A group (Type) gets a caption, not a
-  // `<label>`, as it has no single control.
-  const Caption = id ? "label" : "div";
+  const caption = <>{label}{extra && <ExtraTag />}</>;
   return (
-    <div className="flex flex-col min-w-0 w-full mb-6">
-      <Caption htmlFor={id} className="flex items-center gap-2 pb-2 text-sm">
-        {label}
-        {extra && <ExtraTag />}
-      </Caption>
+    <div className="mb-6 flex w-full min-w-0 flex-col">
+      {id
+        ? <IfLabel htmlFor={id} className="flex items-center gap-2">{caption}</IfLabel>
+        : <div className="mb-2 text-[14px] text-fg">{caption}</div>}
       {children}
     </div>
   );
@@ -118,200 +101,174 @@ export default function AddProxyModal({
   const duplicate = problem?.startsWith("A proxy named") ? problem : null;
   const set = (patch: Partial<ProxyDraft>) => onDraft({ ...draft, ...patch });
   const [showPassword, setShowPassword] = useState(false);
-  useEscape(onClose);
   return (
-    // #26: the mask, rgba(0,0,0,0.7), layer 1000; #24: centred, and a mask click does not close it.
-    <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/70">
-      {/* #24, #25: 800px, at most the window less 32px, 10px corners, no close cross. */}
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="add-proxy-title"
-        className="w-[800px] max-w-[calc(100vw-32px)] rounded-[10px] overflow-hidden bg-[#1f1f1f] shadow-xl text-sm [html[data-theme=light]_&]:bg-white"
-      >
-        {/* #25: the header 22px 24px, the title 16px, weight 600. */}
-        <div id="add-proxy-title" className="px-6 py-[22px] text-base font-semibold">Add new proxy</div>
-
-        {/* #25: the body 16px, at most the window less 200px, scrolling. */}
-        <div className="p-4 max-h-[calc(100vh-200px)] overflow-auto">
-          {/* #28: Proxy label, 32 characters. Its host:port default is ours. */}
-          <Field id="add-proxy-label" label="Proxy label">
-            <Input
-              id="add-proxy-label"
-              className={FIELD_IN}
-              placeholder="Proxy label"
-              maxLength={32}
-              value={draftLabel(draft)}
-              onChange={(e) => set({ label: e.target.value, labelEdited: true })}
-              title={`${EXTRA_LABEL}\nDefaults to host:port, as the bulk paste labels its rows; the relay keys a proxy by its label`}
-              autoComplete="off"
-              autoFocus
-            />
-            {duplicate && <span className="pt-1 text-err text-xs">{duplicate}</span>}
-          </Field>
-
-          {/* #29, #36: Type radios http and socks (the relay's socks5), none chosen at first; https is ours. */}
-          <Field label="Type">
-            <div role="radiogroup" aria-label="Type" className="flex flex-wrap items-baseline">
-              {([["http", "http"], ["socks5", "socks"], ["https", "https"]] as const).map(([value, word]) => (
-                <label
-                  key={value}
-                  className="inline-flex items-baseline mr-2 cursor-pointer"
-                  title={value === "https" ? EXTRA_LABEL : undefined}
-                >
-                  <input
-                    type="radio"
-                    name="add-proxy-type"
-                    value={value}
-                    checked={draft.scheme === value}
-                    onChange={() => set({ scheme: value })}
-                    className="w-4 h-4 m-0 accent-accent"
-                  />
-                  <span className="px-2">{word}</span>
-                </label>
-              ))}
-            </div>
-          </Field>
-
-          {/* #30 to #32: IP address and Port side by side, 24px apart, each half. */}
-          <div className="flex gap-6">
-            <Field id="add-proxy-host" label="IP address">
-              <Input
-                id="add-proxy-host"
-                className={FIELD_IN}
-                placeholder="IP address"
-                value={draft.host}
-                onChange={(e) => set({ host: e.target.value })}
-                title={`${EXTRA_LABEL}\nAlso takes a hostname, as the relay does`}
-                autoComplete="off"
-              />
-            </Field>
-            <Field id="add-proxy-port" label="Port">
-              <Input
-                id="add-proxy-port"
-                className={FIELD_IN}
-                placeholder="e.g. 80"
-                inputMode="numeric"
-                value={draft.port}
-                onChange={(e) => set({ port: e.target.value.replace(/[^0-9]/g, "") })}
-                autoComplete="off"
-              />
-            </Field>
-          </div>
-
-          {/* #33: Username and Password, both optional. */}
-          <Field id="add-proxy-user" label="Username">
-            <Input
-              id="add-proxy-user"
-              className={FIELD_IN}
-              placeholder="Username"
-              value={draft.username}
-              onChange={(e) => set({ username: e.target.value })}
-              autoComplete="off"
-            />
-          </Field>
-          {/* #33: Input.Password, its eye at the right reveals the password on demand. */}
-          <Field id="add-proxy-pass" label="Password">
-            <div className="relative">
-              <Input
-                id="add-proxy-pass"
-                type={showPassword ? "text" : "password"}
-                className={`${FIELD_IN} pr-8`}
-                placeholder="Password"
-                value={draft.password}
-                onChange={(e) => set({ password: e.target.value })}
-                autoComplete="new-password"
-              />
-              <button
-                type="button"
-                aria-label={showPassword ? "Hide password" : "Show password"}
-                className="absolute right-[11px] top-1/2 -translate-y-1/2 text-fg-dim hover:text-fg"
-                onClick={() => setShowPassword((v) => !v)}
-              >
-                {showPassword ? <Eye size={14} aria-hidden /> : <EyeOff size={14} aria-hidden />}
-              </button>
-            </div>
-          </Field>
-          <Field id="add-proxy-notes" label="Notes" extra>
-            <Input
-              id="add-proxy-notes"
-              className={FIELD_IN}
-              placeholder="Notes"
-              value={draft.notes}
-              onChange={(e) => set({ notes: e.target.value })}
-              autoComplete="off"
-            />
-          </Field>
-          <div className="-mt-3 mb-6 text-[11px] text-fg-dim" title={EXTRA_LABEL}>
-            {EXTRA_LABEL}: credentials are stored in <code>service/proxies.json</code> in plain text (phase-1).
-          </div>
-
-          {/* Ours: the bundle adds one proxy at a time (#42); the relay's bulk add takes one proxy per line. */}
-          <section className="border-t border-white/6 pt-4 space-y-2 [html[data-theme=light]_&]:border-[#f0f0f0]" title={EXTRA_LABEL}>
-            <div className="flex items-center gap-2">
-              <label htmlFor="proxies-bulk" className="block text-sm">
-                Paste proxies (one per line)
-              </label>
-              <ExtraTag />
-            </div>
-            <Textarea
-              id="proxies-bulk"
-              rows={4}
-              className={`font-mono ${FIELD_BOX}`}
-              placeholder={"user:pass@host:port\nhost:port:user:pass"}
-              value={bulkText}
-              onChange={(e) => onBulkText(e.target.value)}
-              autoComplete="off"
-              spellCheck={false}
-            />
-            <div className="flex items-center gap-2">
-              <select
-                aria-label="Scheme"
-                value={bulkScheme}
-                onChange={(e) => onBulkScheme(e.target.value as ProxyScheme)}
-                className={`${FIELD_BOX} rounded-md px-2 py-1.5 text-sm focus:outline-none focus:border-accent`}
-              >
-                <option value="http">http</option>
-                <option value="https">https</option>
-                <option value="socks5">socks5</option>
-              </select>
-              <Button size="sm" onClick={onBulk} disabled={!bulkText.trim() || bulkPending}>
-                {bulkPending ? "Adding…" : "Add all"}
-              </Button>
-              {bulkError && <span className="text-err text-[11px]">{bulkError}</span>}
-            </div>
-            {bulkResult && (
-              <div className="text-xs space-y-1">
-                <div className="text-ok">
-                  Added {bulkResult.added.length}
-                  {bulkResult.added.length > 0 && `: ${bulkResult.added.map((a) => a.label).join(", ")}`}
-                </div>
-                {bulkResult.errors.map((e) => (
-                  <div key={e.line} className="text-err">
-                    Line {e.line}: {e.reason}
-                    {e.text_redacted && <span className="font-mono text-fg-dim"> ({e.text_redacted})</span>}
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
-        </div>
-
-        {/* #27: Cancel, then Add proxy, right-aligned 8px apart, the footer 11px 24px. */}
-        <div className="flex items-center justify-end gap-2 px-6 py-[11px]">
-          <Button variant="ghost" className={FOOT_BTN} onClick={onClose}>
-            Cancel
-          </Button>
-          <Button
-            className={FOOT_BTN}
-            onClick={onSave}
-            disabled={problem !== null || saving}
-            title={saving ? "saving…" : problem ?? undefined}
-          >
+    // #24: centred, 800px; no close cross (Escape still closes), and a mask click does not close it.
+    <IfModal
+      title="Add new proxy"
+      width={800}
+      closable={false}
+      keyboard
+      onClose={onClose}
+      footer={
+        // #27: Cancel, then Add proxy, right-aligned 8px apart.
+        <>
+          <IfButton onClick={onClose}>Cancel</IfButton>
+          <IfButton variant="primary" onClick={onSave} disabled={problem !== null || saving}
+            title={saving ? "saving…" : problem ?? undefined}>
             Add proxy
-          </Button>
+          </IfButton>
+        </>
+      }
+    >
+      {/* #28: Proxy label, 32 characters. Its host:port default is ours. */}
+      <Field id="add-proxy-label" label="Proxy label">
+        <IfInput
+          id="add-proxy-label"
+          placeholder="Proxy label"
+          maxLength={32}
+          value={draftLabel(draft)}
+          onChange={(e) => set({ label: e.target.value, labelEdited: true })}
+          title={`${EXTRA_LABEL}\nDefaults to host:port, as the bulk paste labels its rows; the relay keys a proxy by its label`}
+          autoComplete="off"
+          autoFocus
+        />
+        {duplicate && <IfHelp className="text-err">{duplicate}</IfHelp>}
+      </Field>
+
+      {/* #29, #36: Type radios http and socks (the relay's socks5), none chosen at first; https is ours. */}
+      <Field label="Type">
+        <div role="radiogroup" aria-label="Type" className="flex flex-wrap items-center gap-4">
+          {([["http", "http"], ["socks5", "socks"], ["https", "https"]] as const).map(([value, word]) => (
+            <label key={value} className="inline-flex cursor-pointer items-center gap-2"
+              title={value === "https" ? EXTRA_LABEL : undefined}>
+              <input
+                type="radio"
+                name="add-proxy-type"
+                value={value}
+                checked={draft.scheme === value}
+                onChange={() => set({ scheme: value })}
+                className="m-0 h-4 w-4 accent-accent"
+              />
+              {word}
+            </label>
+          ))}
         </div>
+      </Field>
+
+      {/* #30 to #32: IP address and Port side by side, 24px apart, each half; stacked on a phone. */}
+      <div className="flex flex-col sm:flex-row sm:gap-6">
+        <Field id="add-proxy-host" label="IP address">
+          <IfInput
+            id="add-proxy-host"
+            placeholder="IP address"
+            value={draft.host}
+            onChange={(e) => set({ host: e.target.value })}
+            title={`${EXTRA_LABEL}\nAlso takes a hostname, as the relay does`}
+            autoComplete="off"
+          />
+        </Field>
+        <Field id="add-proxy-port" label="Port">
+          <IfInput
+            id="add-proxy-port"
+            placeholder="e.g. 80"
+            inputMode="numeric"
+            value={draft.port}
+            onChange={(e) => set({ port: e.target.value.replace(/[^0-9]/g, "") })}
+            autoComplete="off"
+          />
+        </Field>
       </div>
-    </div>
+
+      {/* #33: Username and Password, both optional. */}
+      <Field id="add-proxy-user" label="Username">
+        <IfInput
+          id="add-proxy-user"
+          placeholder="Username"
+          value={draft.username}
+          onChange={(e) => set({ username: e.target.value })}
+          autoComplete="off"
+        />
+      </Field>
+      {/* #33: Input.Password, its eye at the right reveals the password on demand. */}
+      <Field id="add-proxy-pass" label="Password">
+        <div className="relative">
+          <IfInput
+            id="add-proxy-pass"
+            type={showPassword ? "text" : "password"}
+            className="w-full pr-8"
+            placeholder="Password"
+            value={draft.password}
+            onChange={(e) => set({ password: e.target.value })}
+            autoComplete="new-password"
+          />
+          <button
+            type="button"
+            aria-label={showPassword ? "Hide password" : "Show password"}
+            className="absolute right-[11px] top-1/2 -translate-y-1/2 text-muted hover:text-fg"
+            onClick={() => setShowPassword((v) => !v)}
+          >
+            {showPassword ? <Eye size={14} aria-hidden /> : <EyeOff size={14} aria-hidden />}
+          </button>
+        </div>
+      </Field>
+      <Field id="add-proxy-notes" label="Notes" extra>
+        <IfInput
+          id="add-proxy-notes"
+          placeholder="Notes"
+          value={draft.notes}
+          onChange={(e) => set({ notes: e.target.value })}
+          autoComplete="off"
+        />
+        <IfHelp>
+          <span title={EXTRA_LABEL}>Credentials are stored in service/proxies.json in plain text.</span>
+        </IfHelp>
+      </Field>
+
+      {/* Ours: the bundle adds one proxy at a time (#42); the relay's bulk add takes one proxy per line. */}
+      <section className="border-t border-border pt-6" title={EXTRA_LABEL}>
+        <div className="mb-2 flex items-center gap-2">
+          <IfLabel htmlFor="proxies-bulk" className="mb-0">Paste proxies (one per line)</IfLabel>
+          <ExtraTag />
+        </div>
+        <IfTextArea
+          id="proxies-bulk"
+          rows={4}
+          placeholder={"user:pass@host:port\nhost:port:user:pass"}
+          value={bulkText}
+          onChange={(e) => onBulkText(e.target.value)}
+          autoComplete="off"
+          spellCheck={false}
+        />
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <IfNativeSelect
+            aria-label="Scheme"
+            value={bulkScheme}
+            onChange={(e) => onBulkScheme(e.target.value as ProxyScheme)}
+          >
+            <option value="http">http</option>
+            <option value="https">https</option>
+            <option value="socks5">socks5</option>
+          </IfNativeSelect>
+          <IfButton onClick={onBulk} disabled={!bulkText.trim() || bulkPending}>
+            {bulkPending ? "Adding…" : "Add all"}
+          </IfButton>
+          {bulkError && <span className="text-[12px] text-err">{bulkError}</span>}
+        </div>
+        {bulkResult && (
+          <div className="mt-2 space-y-1 text-[12px]">
+            <div className="text-ok">
+              Added {bulkResult.added.length}
+              {bulkResult.added.length > 0 && `: ${bulkResult.added.map((a) => a.label).join(", ")}`}
+            </div>
+            {bulkResult.errors.map((e) => (
+              <div key={e.line} className="text-err">
+                Line {e.line}: {e.reason}
+                {e.text_redacted && <span className="text-muted"> ({e.text_redacted})</span>}
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    </IfModal>
   );
 }

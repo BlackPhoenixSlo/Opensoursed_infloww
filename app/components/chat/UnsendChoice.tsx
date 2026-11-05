@@ -19,6 +19,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { useActionAllowed } from "@/components/shell/useGrantedPages";
+import { IfButton, IfModal } from "@/components/ui/infloww";
 import type { OFMessage } from "@/lib/relay";
 import type { useUnsendMessage } from "@/hooks/useUnsendMessage";
 import { errText } from "@/lib/errText";
@@ -103,8 +104,8 @@ export function useUnsendChoice(unsender: Unsender): { onUnsend: ((msg: OFMessag
   return { onUnsend: allowed ? onUnsend : undefined, dialog };
 }
 
-/** The scope dialog: two options, this conversation preselected; Escape or
- *  a click on the backdrop cancels. */
+/** The scope dialog: two options, this conversation preselected; Cancel, ×
+ *  or Escape cancels. */
 function UnsendChoiceDialog({
   onChoose, onCancel,
 }: {
@@ -113,44 +114,38 @@ function UnsendChoiceDialog({
 }) {
   const [scope, setScope] = useState<UnsendScope>("chat");
 
-  // Mounted only while it asks. A `document` listener runs before the
-  // `window` ones of Find (`ChatSearch`) and the overlay Fan insights, and
-  // stops the key there (as `ChatGallery`), so one Escape closes only this.
+  // IfModal closes on Escape; this only stops the key at `document`, before
+  // the `window` ones of Find (`ChatSearch`) and the overlay Fan insights
+  // (as `ChatGallery`), so one Escape closes only this.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      e.stopPropagation();
-      onCancel();
+      if (e.key === "Escape") e.stopPropagation();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onCancel]);
+  }, []);
 
   const option = (value: UnsendScope, label: string) => (
-    <label className="flex items-center gap-2 cursor-pointer">
-      <input type="radio" name="unsend-scope" checked={scope === value} onChange={() => setScope(value)} />
+    <label className="flex cursor-pointer items-center gap-2">
+      <input type="radio" name="unsend-scope" checked={scope === value} onChange={() => setScope(value)}
+        className="h-4 w-4 accent-accent" />
       <span>{label}</span>
     </label>
   );
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/50" onClick={onCancel}>
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="Unsend message"
-        className="w-80 max-w-full rounded-lg border border-border bg-panel p-4 text-fg shadow-2xl space-y-3"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="font-semibold">Unsend message</div>
-        <div className="text-fg-dim">This message was part of a mass send. OF allows unsending within ~24h.</div>
+    <IfModal title="Unsend message" onClose={onCancel}
+      footer={
+        <>
+          <IfButton onClick={onCancel}>Cancel</IfButton>
+          <IfButton variant="primary" className="bg-err hover:bg-err/90" onClick={() => onChoose(scope)}>Unsend</IfButton>
+        </>
+      }>
+      <p className="text-fg-dim">This message was part of a mass send. OF allows unsending within ~24h.</p>
+      <div className="mt-4 flex flex-col gap-3">
         {option("chat", "Unsend from this conversation")}
         {option("all", "Unsend for all recipients")}
-        <div className="flex justify-end gap-3">
-          <button type="button" onClick={onCancel} className="text-fg-dim hover:text-fg">Cancel</button>
-          <button type="button" onClick={() => onChoose(scope)} className="text-err">Unsend</button>
-        </div>
       </div>
-    </div>
+    </IfModal>
   );
 }

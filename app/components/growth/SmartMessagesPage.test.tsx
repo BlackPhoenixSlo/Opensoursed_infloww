@@ -223,7 +223,7 @@ function stubReads({
       return Promise.resolve(slot ? [reply, slot] : [reply]);
     }
     if (p === "/api/of/v2/users/me") {
-      return Promise.resolve(of in subscribePrice ? { name: `${of} page`, subscribePrice: subscribePrice[of] } : {});
+      return Promise.resolve(of in subscribePrice ? { id: of, name: `${of} page`, subscribePrice: subscribePrice[of] } : { id: of });
     }
     if (p === SETTINGS) {
       return Promise.resolve({ replyOnSubscribe: !!ofOn[of] });
@@ -755,7 +755,7 @@ const welcomeEditor = () => {
   const d = screen.getByRole("dialog", { name: WELCOME });
   return {
     dialog: d,
-    enabled: within(d).getByRole("checkbox", { name: "Enabled" }) as HTMLInputElement,
+    enabled: within(d).getByRole("switch", { name: "Enabled" }),
     delay: within(d).getByRole("spinbutton", { name: "Check every (minutes)" }) as HTMLInputElement,
     message: within(d).getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement,
     save: within(d).getByRole("button", { name: "Save" }),
@@ -813,7 +813,7 @@ describe("the Delayed welcome row (ticket 43, bound to send_welcome by the 2026-
     // Not the OnlyFans welcome slot's editor.
     expect(within(e.dialog).queryByRole("heading", { name: "Welcome message" })).toBeNull();
     await waitFor(() => expect(welcomeEditor().save).not.toBeDisabled());
-    expect(e.enabled.checked).toBe(true);
+    expect(e.enabled).toBeChecked();
     expect(e.delay.value).toBe("10");
     expect(e.message.value).toBe("");
     expect(e.message.placeholder).toBe("Enter your message...");
@@ -875,7 +875,7 @@ describe("the Delayed welcome row (ticket 43, bound to send_welcome by the 2026-
     expect(within(e.dialog).getByText(EXTRA_LABEL).getAttribute("title")).toBe(EXTRA_LABEL);
     await waitFor(() => expect(welcomeEditor().save).not.toBeDisabled());
     // A new rule is off until the owner ticks it, with the Brain's 5-minute check.
-    expect(e.enabled.checked).toBe(false);
+    expect(e.enabled).not.toBeChecked();
     expect(e.delay.value).toBe("5");
 
     relayPost.mockResolvedValue({ id: 99 });
@@ -946,7 +946,7 @@ describe("the Purchased row and editor (ticket 44)", () => {
     expect(await within(dialog).findByRole("heading", { name: "Message on purchase" })).toBeTruthy();
     expect(callsTo(relayGet, `${PF_CONFIG}?account_id=${B.id}`).length).toBeGreaterThan(0);
     // Off by default, the message starting as Infloww's first default script; on with no text cannot be saved.
-    const on = within(dialog).getByRole("checkbox", { name: "On" });
+    const on = within(dialog).getByRole("switch", { name: "On" });
     expect(on).not.toBeChecked();
     expect((within(dialog).getByLabelText("Message") as HTMLTextAreaElement).value)
       .toBe("Thanks for your purchase, {name}! You're in for a treat!");
@@ -979,7 +979,7 @@ describe("the Purchased row and editor (ticket 44)", () => {
     await act(async () => { fireEvent.click(within(purchasedRow()!).getByRole("button", { name: FIXTURE_PURCHASE.text })); });
     const dialog = screen.getByRole("dialog", { name: PURCHASED });
     expect(await within(dialog).findByRole("heading", { name: "Message on purchase" })).toBeTruthy();
-    expect(within(dialog).getByRole("checkbox", { name: "On" })).toBeChecked();
+    expect(within(dialog).getByRole("switch", { name: "On" })).toBeChecked();
     expect((within(dialog).getByLabelText("Message") as HTMLTextAreaElement).value).toBe(FIXTURE_PURCHASE.text);
   });
 });
@@ -1035,9 +1035,9 @@ describe("the lifecycle Triggers, the Actions cell and Date created", () => {
     await act(async () => { fireEvent.click(within(rowOfTrigger(triggerLabels[4])!).getByRole("button", { name: "Come back, fixture" })); });
     const dialog = screen.getByRole("dialog", { name: triggerLabels[4] });
     expect(within(dialog).getByText(EXTRA_LABEL)).toBeTruthy();
-    expect(await within(dialog).findByRole("heading", { name: "Expired" })).toBeTruthy();
+    expect(await within(dialog).findByRole("heading", { name: "Expired", level: 3 })).toBeTruthy();
     expect(callsTo(relayGet, `${LM_CONFIG}?account_id=${A.id}&kind=expired_message`).length).toBeGreaterThan(0);
-    expect(within(dialog).getByRole("checkbox", { name: "On" })).toBeChecked();
+    expect(within(dialog).getByRole("switch", { name: "On" })).toBeChecked();
     const hours = within(dialog).getByLabelText("Fan’s subscription expired") as HTMLInputElement;
     expect(hours.value).toBe("48");
     // Infloww's bounds: Expired is 12..120 hours.
@@ -1066,12 +1066,12 @@ describe("the lifecycle Triggers, the Actions cell and Date created", () => {
     const dialog = screen.getByRole("dialog", { name: triggerLabels[6] });
     // The dialog's title and, once loaded, the editor's own heading share the name.
     expect((await within(dialog).findAllByRole("heading", { name: "Birthday" })).length).toBeGreaterThan(0);
-    await waitFor(() => expect(within(dialog).getByRole("checkbox", { name: "On" })).toBeTruthy());
-    expect(within(dialog).getByRole("checkbox", { name: "On" })).not.toBeChecked();
+    await waitFor(() => expect(within(dialog).getByRole("switch", { name: "On" })).toBeTruthy());
+    expect(within(dialog).getByRole("switch", { name: "On" })).not.toBeChecked();
     expect(within(dialog).queryByRole("spinbutton")).toBeNull();
     const text = within(dialog).getByLabelText("Message") as HTMLTextAreaElement;
     expect(text.value).toBe("It's your special day, {name}! Have a fantastic birthday!");
-    await act(async () => { fireEvent.click(within(dialog).getByRole("checkbox", { name: "On" })); });
+    await act(async () => { fireEvent.click(within(dialog).getByRole("switch", { name: "On" })); });
     expect(within(dialog).getByRole("button", { name: "Save" })).not.toBeDisabled();
     fireEvent.change(text, { target: { value: "" } });
     expect(within(dialog).getByRole("button", { name: "Save" })).toBeDisabled();
@@ -1125,7 +1125,7 @@ describe("the lifecycle Triggers, the Actions cell and Date created", () => {
       return dialog;
     };
     let dialog = await open();
-    expect(within(dialog).getByRole("checkbox", { name: "On" })).toBeChecked();
+    expect(within(dialog).getByRole("switch", { name: "On" })).toBeChecked();
     await act(async () => { fireEvent.click(within(dialog).getByRole("button", { name: "Close" })); });
 
     expectedWrites.push(`POST ${SWITCH}`);
@@ -1133,7 +1133,7 @@ describe("the lifecycle Triggers, the Actions cell and Date created", () => {
     await cancelRow(triggerLabels[5]);
     await waitFor(() => expect(client.isFetching()).toBe(0));
     dialog = await open();
-    await waitFor(() => expect(within(screen.getByRole("dialog", { name: triggerLabels[5] })).getByRole("checkbox", { name: "On" })).not.toBeChecked());
+    await waitFor(() => expect(within(screen.getByRole("dialog", { name: triggerLabels[5] })).getByRole("switch", { name: "On" })).not.toBeChecked());
   });
 
   it("on a free page, Expiring soon, Expired and Resubscribe are refused with Infloww's message, in the pop-up and the editor", async () => {
@@ -1155,8 +1155,8 @@ describe("the lifecycle Triggers, the Actions cell and Date created", () => {
 
     await act(async () => { fireEvent.click(within(rowOfTrigger(triggerLabels[4])!).getByRole("button", { name: "Come back, fixture" })); });
     const dialog = screen.getByRole("dialog", { name: triggerLabels[4] });
-    await within(dialog).findByRole("heading", { name: "Expired" });
-    expect(within(dialog).getByRole("checkbox", { name: "On" })).toBeDisabled();
+    await within(dialog).findByRole("heading", { name: "Expired", level: 3 });
+    expect(within(dialog).getByRole("switch", { name: "On" })).toBeDisabled();
     expect(within(dialog).getByText(refusal)).toBeTruthy();
   });
 
@@ -1338,7 +1338,7 @@ describe("the Smart Message settings on the Trigger editors and the list", () =>
     expect(await within(dialog).findByRole("heading", { name: "Message on purchase" })).toBeTruthy();
     const save = within(dialog).getByRole("button", { name: "Save" });
     // Infloww's floor on a price: under $3 cannot be saved.
-    const price = within(dialog).getByLabelText("Message price:$");
+    const price = within(dialog).getByLabelText("Message price");
     fireEvent.change(price, { target: { value: "2" } });
     expect(save).toBeDisabled();
     expect(within(dialog).getAllByText("Minimum $3 USD")).toHaveLength(2);
@@ -1383,14 +1383,14 @@ describe("the Smart Message settings on the Trigger editors and the list", () =>
     const dialog = screen.getByRole("dialog", { name: triggerLabels[6] });
     // The dialog's title and, once loaded, the editor's own heading share the name.
     expect((await within(dialog).findAllByRole("heading", { name: "Birthday" })).length).toBeGreaterThan(0);
-    await waitFor(() => expect(within(dialog).getByRole("checkbox", { name: "On" })).toBeTruthy());
+    await waitFor(() => expect(within(dialog).getByRole("switch", { name: "On" })).toBeTruthy());
     const save = within(dialog).getByRole("button", { name: "Save" });
     // No delay row on a lifecycle Trigger.
     expect(within(dialog).queryByLabelText("Send message to fans")).toBeNull();
-    fireEvent.change(within(dialog).getByLabelText("Message price:$"), { target: { value: "5" } });
+    fireEvent.change(within(dialog).getByLabelText("Message price"), { target: { value: "5" } });
     expect(within(dialog).getByText("Add media to set a price")).toBeTruthy();
     expect(save).toBeDisabled();
-    fireEvent.change(within(dialog).getByLabelText("Message price:$"), { target: { value: "" } });
+    fireEvent.change(within(dialog).getByLabelText("Message price"), { target: { value: "" } });
 
     fireEvent.click(within(within(dialog).getByRole("radiogroup", { name: "Effective" })).getByRole("radio", { name: "Scheduled date" }));
     fireEvent.change(within(dialog).getByLabelText("Effective date"), { target: { value: "2026-11-02T10:00" } });

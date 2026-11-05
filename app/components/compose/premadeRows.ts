@@ -5,11 +5,9 @@
  *   • `rowsReducer` owns every row edit (patch, audience chips, text-variant
  *     pool, add/remove, reset). A row and a row's text pool never drop below
  *     one entry.
- *   • `rowToItem` takes the `kind` and `allModels` explicitly: in all-models
- *     mode vault ids (images, folders, previews) and custom-list ids are
- *     per-account, so they are left out.
- *   • `buildPayload` is the ONE `{posts|messages:[…]}` payload the enqueue and
- *     "Use in rule" paths send: rows with no text and no media are dropped.
+ *   • `rowToItem` takes the `kind` explicitly.
+ *   • `buildPayload` is the ONE `{posts|messages:[…]}` payload "Use in rule"
+ *     stores: rows with no text and no media are dropped.
  *   • `payloadToRows` / `itemToRow` are the inverse (Re-compose seeds the form).
  */
 
@@ -183,12 +181,11 @@ function resendPair(countStr: string, hoursStr: string): { resend_count?: number
 
 export interface RowCtx {
   kind: Kind;
-  allModels: boolean;
 }
 
 /** Build the per-item payload entry from a row, dropping unset knobs. The
  *  text/image POOLS go to the backend, which randomises per fire. */
-export function rowToItem(r: Row, { kind, allModels }: RowCtx): Record<string, unknown> {
+export function rowToItem(r: Row, { kind }: RowCtx): Record<string, unknown> {
   const posts = kind === "auto_posts";
   const media = r.media.map((m) => m.id).filter((id): id is number => typeof id === "number");
   const texts = r.texts.map((t) => t.trim()).filter(Boolean);
@@ -196,15 +193,12 @@ export function rowToItem(r: Row, { kind, allModels }: RowCtx): Record<string, u
   // One variant → a plain `text`; many → a `texts` pool (random per fire).
   if (texts.length === 1) item.text = texts[0];
   else if (texts.length > 1) item.texts = texts;
-  // Images are per-account vault ids — omit them entirely in all-models mode.
-  if (!allModels) {
-    const folderId = r.folderId ? Number(r.folderId) : null;
-    if (media.length) item.media_files = media;        // pre-picked pool
-    if (folderId) item.media_folder_id = folderId;     // whole-folder pool
-    if (media.length || folderId) {
-      const mc = posNum(r.mediaCount);
-      if (mc) item.media_count = Math.floor(mc);       // sampled per fire (default 1)
-    }
+  const folderId = r.folderId ? Number(r.folderId) : null;
+  if (media.length) item.media_files = media;        // pre-picked pool
+  if (folderId) item.media_folder_id = folderId;     // whole-folder pool
+  if (media.length || folderId) {
+    const mc = posNum(r.mediaCount);
+    if (mc) item.media_count = Math.floor(mc);       // sampled per fire (default 1)
   }
   const delay = posNum(r.delayMinutes);
   if (delay) item.delay_minutes = delay;
@@ -216,8 +210,8 @@ export function rowToItem(r: Row, { kind, allModels }: RowCtx): Record<string, u
   if (Number.isFinite(price) && price > 0) item.price = price;
   // Free-preview pool (auto_posts + PAID only) — its picks become free teasers
   // on the paywalled post. Backend unions them into media_files so previews are
-  // always a valid subset. Per-account vault ids, so off in all-models mode.
-  if (posts && !allModels && Number.isFinite(price) && price > 0) {
+  // always a valid subset.
+  if (posts && Number.isFinite(price) && price > 0) {
     const pmedia = r.previewMedia
       .map((m) => m.id)
       .filter((id): id is number => typeof id === "number");
@@ -238,14 +232,9 @@ export function rowToItem(r: Row, { kind, allModels }: RowCtx): Record<string, u
     if (uah) item.unsend_after_hours = uah;
     Object.assign(item, resendPair(r.resendCount, r.resendAfterHours));
     // Audience (Mass Online parity): system + custom list ids → user_lists /
-    // excluded_user_lists; the hour/limit knobs resolve server-side. In
-    // all-models mode custom-list ids don't map across accounts, so keep only
-    // the system audiences (fans/following).
-    const sysIds = new Set(SYSTEM_AUDIENCES.map((a) => a.id));
-    const inc = allModels ? r.includes.filter((id) => sysIds.has(id)) : r.includes;
-    const exc = allModels ? r.excludes.filter((id) => sysIds.has(id)) : r.excludes;
-    if (inc.length) item.user_lists = inc;
-    if (exc.length) item.excluded_user_lists = exc;
+    // excluded_user_lists; the hour/limit knobs resolve server-side.
+    if (r.includes.length) item.user_lists = r.includes;
+    if (r.excludes.length) item.excluded_user_lists = r.excludes;
     const erh = posNum(r.excludeRepliedHours);
     if (erh) item.exclude_replied_hours = erh;
     const eih = posNum(r.excludeInboundHours);
@@ -260,8 +249,7 @@ export function rowToItem(r: Row, { kind, allModels }: RowCtx): Record<string, u
   return item;
 }
 
-/** The items both send paths use. In all-models mode media is stripped, so an
- *  item is valid on text alone. */
+/** The payload's items: a row needs text or media. */
 export function rowsToItems(rows: Row[], ctx: RowCtx): Record<string, unknown>[] {
   return rows
     .map((r) => rowToItem(r, ctx))
@@ -278,23 +266,18 @@ export interface PostsCycle {
 export type PremadePayload = {
   posts?: Record<string, unknown>[];
   messages?: Record<string, unknown>[];
-  dry_run?: boolean;
   resend_count?: number;
   resend_after_hours?: number;
 };
 
-/** The `{posts|messages:[…]}` payload both send paths use — null if no usable
- *  row. `dryRun` is the enqueue path's only (a rule stores its own dry-run
- *  knob); the cycle rides on auto_posts only, dropped when unset. */
-export function buildPayload(
-  rows: Row[], cycle: PostsCycle, ctx: RowCtx, dryRun?: boolean,
-): PremadePayload | null {
+/** The `{posts|messages:[…]}` payload — null if no usable row. A rule stores
+ *  its own dry-run knob; the cycle rides on auto_posts only, dropped when unset. */
+export function buildPayload(rows: Row[], cycle: PostsCycle, ctx: RowCtx): PremadePayload | null {
   const items = rowsToItems(rows, ctx);
   if (items.length === 0) return null;
-  const dry = dryRun === undefined ? {} : { dry_run: dryRun };
   return ctx.kind === "auto_posts"
-    ? { posts: items, ...dry, ...resendPair(cycle.resendCount, cycle.resendAfterHours) }
-    : { messages: items, ...dry };
+    ? { posts: items, ...resendPair(cycle.resendCount, cycle.resendAfterHours) }
+    : { messages: items };
 }
 
 /** Number/anything → the string an input expects ("" when unset), the inverse

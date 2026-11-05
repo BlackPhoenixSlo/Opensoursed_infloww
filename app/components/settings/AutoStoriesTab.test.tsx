@@ -86,7 +86,7 @@ describe("Auto Story (AutoStoriesTab)", () => {
     const enabled = screen.getByRole("switch", { name: "Enabled" });
     expect(dupe).toHaveAttribute("aria-checked", "true");
     expect(enabled).toHaveAttribute("aria-checked", "true");
-    expect(screen.getByLabelText("Stories per run:")).toHaveValue(2);
+    expect(screen.getByLabelText("Stories per run")).toHaveValue(2);
 
     fireEvent.click(dupe);
     fireEvent.click(enabled);

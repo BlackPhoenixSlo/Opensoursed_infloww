@@ -66,17 +66,19 @@ export function EmojiQuickRow({
   const row = useMemo(() => buildQuickRow(recents, slots), [recents, slots]);
 
   /** One quick-row button; `size` is the only difference between the rows. */
-  const quickBtn = (size: string) => (e: string) => (
-    <button
-      key={e}
-      type="button"
-      disabled={disabled}
-      onClick={() => { pushRecent(e); onInsert(e); }}
-      className={`${size} grid place-items-center rounded-md hover:bg-bg-elev-1 disabled:opacity-40 text-base`}
-    >
-      {e}
-    </button>
-  );
+  const quickBtn = (size: string) => function QuickBtn(e: string) {
+    return (
+      <button
+        key={e}
+        type="button"
+        disabled={disabled}
+        onClick={() => { pushRecent(e); onInsert(e); }}
+        className={`${size} grid place-items-center rounded-md hover:bg-bg-elev-1 disabled:opacity-40 text-base`}
+      >
+        {e}
+      </button>
+    );
+  };
 
   return (
     <>

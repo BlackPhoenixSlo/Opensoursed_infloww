@@ -23,6 +23,7 @@
 
 import { useMemo, useReducer } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { Check } from "lucide-react";
 
 import {
   hideDuplicates,
@@ -31,6 +32,7 @@ import {
   type DupeCluster,
   type DupeMember,
 } from "@/hooks/useVaultCache";
+import { IfButton, IfHelp, IfLabel, IfModal, IfNativeSelect } from "@/components/ui/infloww";
 import { errText } from "@/lib/errText";
 
 import {
@@ -80,6 +82,7 @@ function Tile({
       <button
         type="button"
         disabled={isOriginal}
+        aria-pressed={isOriginal ? undefined : !!checked}
         onClick={onToggle}
         className={[
           "relative block w-[126px] h-[126px] rounded-lg overflow-hidden border-2 transition-all",
@@ -104,23 +107,23 @@ function Tile({
               checked ? "bg-err text-white" : "bg-black/60 text-fg-dim",
             ].join(" ")}
           >
-            {checked ? "✓" : ""}
+            {checked && <Check className="h-3.5 w-3.5" aria-hidden />}
           </span>
         )}
       </button>
-      <figcaption className="mt-1 text-[10px] leading-tight text-fg-dim">
+      <figcaption className="mt-1 text-[12px] leading-tight text-muted">
         <span className="block text-fg-dim/90">#{m.media_id}</span>
         {fmtDate(m.created_at)}
         {m.send_count > 0 && (
           <span className="block text-warn">sent {m.send_count}×</span>
         )}
         {isOriginal ? (
-          <span className="mt-0.5 inline-block px-1.5 py-px rounded-full border border-ok/50 bg-ok/10 text-ok text-[9px] font-semibold">
+          <span className="mt-0.5 inline-block px-1.5 py-px rounded-full border border-ok/50 bg-ok/10 text-ok text-[12px] font-semibold">
             ORIGINAL · keep
           </span>
         ) : (
           <span
-            className={`mt-0.5 inline-block px-1.5 py-px rounded-full border text-[9px] font-semibold ${
+            className={`mt-0.5 inline-block px-1.5 py-px rounded-full border text-[12px] font-semibold ${
               BAND_STYLE[band] ?? BAND_STYLE.identical
             }`}
           >
@@ -185,188 +188,161 @@ export default function VaultDuplicatesModal({
     }
   }
 
+  const confirming = phase.kind === "confirming" || phase.kind === "hiding";
   return (
-    <div
-      className="fixed inset-0 z-50 bg-black/50 md:grid md:place-items-center md:p-4"
-      onClick={busy ? undefined : onClose}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="w-full h-full md:h-auto max-w-none md:max-w-[1100px] max-h-none md:max-h-[92vh] flex flex-col bg-panel border-0 md:border border-border rounded-none md:rounded-xl shadow-2xl"
-      >
-        <header className="px-4 py-3 border-b border-border flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h2 className="text-sm font-semibold">Duplicate media</h2>
-            <p className="text-[11px] text-fg-dim">
-              Green = original (first uploaded, always kept). Everything ticked in
-              red is removed from your OnlyFans vault.
-            </p>
-          </div>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={onClose}
-            className="px-2 py-2.5 md:py-1 min-h-[44px] md:min-h-0 rounded-md text-xs text-fg-dim hover:text-fg disabled:opacity-40"
-          >
-            Close
-          </button>
-        </header>
-
-        <div className="px-4 py-2.5 border-b border-border flex flex-wrap items-center gap-3 text-xs">
-          <label className="flex items-center gap-1.5">
-            <span className="text-fg-dim">Match strictness</span>
-            <select
-              value={threshold}
-              disabled={busy}
-              onChange={(e) => dispatch({ type: "threshold", v: Number(e.target.value) })}
-              className="px-2 py-1 rounded-md bg-bg-elev-1 border border-border disabled:opacity-40"
-            >
-              {THRESHOLDS.map((t) => (
-                <option key={t.v} value={t.v}>
-                  {t.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          {scan.isFetching && <span className="text-fg-dim">scanning…</span>}
-          {scan.data && (
+    <IfModal
+      title="Duplicate media"
+      width={820}
+      // No ×, no Escape while the removal is out (it cannot be stopped half way).
+      closable={!busy}
+      onClose={onClose}
+      footer={
+        <div className="flex w-full flex-wrap items-center justify-end gap-2">
+          {!confirming ? (
             <>
-              <span className="text-fg-dim">
-                {scan.data.sets} sets · {scan.data.removable} copies ·{" "}
-                {scan.data.scanned} items scanned
-              </span>
-              <span className="font-medium text-fg">
-                {selectedIds.length} selected for removal
-              </span>
-            </>
-          )}
-        </div>
-
-        {done && (
-          <div className={`mx-4 mt-3 px-3 py-2 rounded-lg border text-xs ${done.result.of_error ? "border-warn/40 bg-warn/10 text-warn" : "border-ok/40 bg-ok/10 text-ok"}`}>
-            <span>{doneText(done.result, done.total)}</span>
-            {Object.entries(done.result.refused).map(([why, ids]) => (
-              <span key={why} className="block text-warn">
-                refused ({why}): {ids.length}
-              </span>
-            ))}
-            {!!done.result.not_hidden?.length && (
-              <span className="block text-warn">
-                {done.result.not_hidden.length} not removed — re-scan and try again.
-              </span>
-            )}
-          </div>
-        )}
-
-        {error && (
-          <div className="mx-4 mt-3 px-3 py-2 rounded-lg border border-err/40 bg-err/10 text-xs text-err">
-            {error}
-          </div>
-        )}
-
-        <div className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-3">
-          {scan.isLoading && (
-            <p className="text-xs text-fg-dim">Hashing thumbnails…</p>
-          )}
-          {scan.data && clusters.length === 0 && (
-            <p className="text-xs text-fg-dim">No duplicates at this strictness.</p>
-          )}
-          {clusters.map((c) => {
-            const ids = c.dupes.map((d) => d.media_id);
-            return (
-              <section
-                key={c.original.media_id}
-                className="rounded-lg border border-border bg-bg-elev-1/40"
+              {/* "Done", not "Close": the kit's × already owns that name. */}
+              <IfButton onClick={onClose}>Done</IfButton>
+              <IfButton
+                variant="primary"
+                className="bg-err hover:bg-err/90"
+                disabled={selectedIds.length === 0}
+                onClick={() => dispatch({ type: "confirm", ids: selectedIds })}
               >
-                <div className="px-3 py-1.5 border-b border-border flex items-center gap-2 text-[11px]">
-                  <b className="text-fg">
-                    {c.dupes.length} duplicate{c.dupes.length === 1 ? "" : "s"}
-                  </b>
-                  <span
-                    className={`px-1.5 py-px rounded-full border text-[9px] font-semibold ${
-                      BAND_STYLE[c.band] ?? BAND_STYLE.identical
-                    }`}
-                  >
-                    {c.band}
-                  </span>
-                  <span className="text-fg-dim">
-                    {c.original.kind} · original uploaded{" "}
-                    {fmtDate(c.original.created_at)}
-                  </span>
-                  {c.sent_dupes > 0 && (
-                    <span className="text-warn">
-                      {c.sent_dupes} already sent
-                    </span>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => dispatch({ type: "toggleSet", ids })}
-                    className="ml-auto px-2 py-0.5 rounded-md border border-border hover:text-fg text-fg-dim"
-                  >
-                    {allOff(ids, deselected) ? "Select set" : "Keep all"}
-                  </button>
-                </div>
-                <div className="flex gap-2 overflow-x-auto px-3 py-3">
-                  <Tile accountId={accountId} m={c.original} isOriginal />
-                  <div className="w-px bg-border shrink-0 my-1" />
-                  {c.dupes.map((d) => (
-                    <Tile
-                      key={d.media_id}
-                      accountId={accountId}
-                      m={d}
-                      isOriginal={false}
-                      checked={!deselected.has(d.media_id)}
-                      onToggle={() => dispatch({ type: "toggle", id: d.media_id })}
-                    />
-                  ))}
-                </div>
-              </section>
-            );
-          })}
-        </div>
-
-        <footer className="px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:pb-3 border-t border-border flex flex-wrap items-center gap-3">
-          {phase.kind !== "confirming" && phase.kind !== "hiding" ? (
-            <button
-              type="button"
-              disabled={selectedIds.length === 0}
-              onClick={() => dispatch({ type: "confirm", ids: selectedIds })}
-              className="px-3 py-2.5 md:py-1.5 min-h-[44px] md:min-h-0 rounded-md text-xs font-medium border border-err/50 bg-err/10 text-err hover:bg-err/20 disabled:opacity-40"
-            >
-              Remove {selectedIds.length} {selectedIds.length === 1 ? "copy" : "copies"} from
-              OnlyFans…
-            </button>
+                Remove {selectedIds.length} {selectedIds.length === 1 ? "copy" : "copies"} from
+                OnlyFans…
+              </IfButton>
+            </>
           ) : (
             <>
-              <span className="text-xs text-err">
+              <span className="min-w-0 flex-1 basis-60 text-[12px] text-err">
                 Removes {phase.frozenIds.length} from your real vault. Originals are kept
                 and sent PPVs keep working — but OnlyFans has no undo.
               </span>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={doHide}
-                className="px-3 py-2.5 md:py-1.5 min-h-[44px] md:min-h-0 rounded-md text-xs font-semibold border border-err bg-err/20 text-err hover:bg-err/30 disabled:opacity-40"
-              >
+              <IfButton disabled={busy} onClick={() => dispatch({ type: "cancel" })}>
+                Cancel
+              </IfButton>
+              <IfButton variant="primary" className="bg-err hover:bg-err/90" disabled={busy} onClick={doHide}>
                 {phase.kind === "hiding"
                   ? `Removing ${phase.done}/${phase.frozenIds.length}…`
                   : "Yes, remove them"}
-              </button>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => dispatch({ type: "cancel" })}
-                className="px-2 py-2.5 md:py-1 min-h-[44px] md:min-h-0 rounded-md text-xs text-fg-dim hover:text-fg"
-              >
-                Cancel
-              </button>
+              </IfButton>
             </>
           )}
-          <span className="ml-auto text-[11px] text-fg-dim">
-            Uses OnlyFans&rsquo; own “Remove from vault” — media is hidden, not deleted.
-          </span>
-        </footer>
+        </div>
+      }
+    >
+      <IfHelp className="mt-0">
+        Green is the original (first upload, always kept); ticked red copies are hidden from your OnlyFans vault, not deleted.
+      </IfHelp>
+
+      <div className="mt-4 flex flex-wrap items-end gap-3">
+        <div>
+          <IfLabel htmlFor="dupes-threshold">Match strictness</IfLabel>
+          <IfNativeSelect
+            id="dupes-threshold"
+            value={threshold}
+            disabled={busy}
+            onChange={(e) => dispatch({ type: "threshold", v: Number(e.target.value) })}
+          >
+            {THRESHOLDS.map((t) => (
+              <option key={t.v} value={t.v}>
+                {t.label}
+              </option>
+            ))}
+          </IfNativeSelect>
+        </div>
+        {scan.isFetching && <span className="flex h-8 items-center text-muted">scanning…</span>}
+        {scan.data && (
+          <>
+            <span className="flex h-8 items-center text-muted">
+              {scan.data.sets} sets · {scan.data.removable} copies ·{" "}
+              {scan.data.scanned} items scanned
+            </span>
+            <span className="flex h-8 items-center font-medium text-fg">
+              {selectedIds.length} selected for removal
+            </span>
+          </>
+        )}
       </div>
-    </div>
+
+      {done && (
+        <div className={`mt-4 rounded-md border px-3 py-2 ${done.result.of_error ? "border-warn/40 bg-warn/10 text-warn" : "border-ok/40 bg-ok/10 text-ok"}`}>
+          <span>{doneText(done.result, done.total)}</span>
+          {Object.entries(done.result.refused).map(([why, ids]) => (
+            <span key={why} className="block text-warn">
+              refused ({why}): {ids.length}
+            </span>
+          ))}
+          {!!done.result.not_hidden?.length && (
+            <span className="block text-warn">
+              {done.result.not_hidden.length} not removed — re-scan and try again.
+            </span>
+          )}
+        </div>
+      )}
+
+      {error && (
+        <div className="mt-4 rounded-md border border-err/40 bg-err/10 px-3 py-2 text-err">
+          {error}
+        </div>
+      )}
+
+      <div className="mt-4 flex flex-col gap-3">
+        {scan.isLoading && (
+          <p className="text-muted">Hashing thumbnails…</p>
+        )}
+        {scan.data && clusters.length === 0 && (
+          <p className="text-muted">No duplicates at this strictness.</p>
+        )}
+        {clusters.map((c) => {
+          const ids = c.dupes.map((d) => d.media_id);
+          return (
+            <section
+              key={c.original.media_id}
+              className="rounded-md border border-border bg-bg-elev-1/40"
+            >
+              <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-1.5 text-[12px]">
+                <b className="text-fg">
+                  {c.dupes.length} duplicate{c.dupes.length === 1 ? "" : "s"}
+                </b>
+                <span
+                  className={`rounded-full border px-1.5 py-px text-[12px] font-semibold ${
+                    BAND_STYLE[c.band] ?? BAND_STYLE.identical
+                  }`}
+                >
+                  {c.band}
+                </span>
+                <span className="text-muted">
+                  {c.original.kind} · original uploaded{" "}
+                  {fmtDate(c.original.created_at)}
+                </span>
+                {c.sent_dupes > 0 && (
+                  <span className="text-warn">
+                    {c.sent_dupes} already sent
+                  </span>
+                )}
+                <IfButton variant="link" className="ml-auto h-6 text-[12px]" onClick={() => dispatch({ type: "toggleSet", ids })}>
+                  {allOff(ids, deselected) ? "Select set" : "Keep all"}
+                </IfButton>
+              </div>
+              <div className="flex gap-2 overflow-x-auto px-3 py-3">
+                <Tile accountId={accountId} m={c.original} isOriginal />
+                <div className="my-1 w-px shrink-0 bg-border" />
+                {c.dupes.map((d) => (
+                  <Tile
+                    key={d.media_id}
+                    accountId={accountId}
+                    m={d}
+                    isOriginal={false}
+                    checked={!deselected.has(d.media_id)}
+                    onToggle={() => dispatch({ type: "toggle", id: d.media_id })}
+                  />
+                ))}
+              </div>
+            </section>
+          );
+        })}
+      </div>
+    </IfModal>
   );
 }

@@ -47,9 +47,9 @@ describe("ProxiesTable paste proxies", () => {
     await waitFor(() => expect(relayGet).toHaveBeenCalledWith("/admin/proxies"));
     // The paste box sits in the Add new proxy modal (ticket 18).
     fireEvent.click(screen.getByRole("button", { name: "+ Add new proxy" }));
-    // page-parity 03: antd dark's modal (#1f1f1f) and fields (#141414 in a 1px #424242 border).
+    // page-parity 03: antd dark's modal (#1f1f1f); the kit's field box (IF_FIELD).
     expect(screen.getByRole("dialog", { name: "Add new proxy" })).toHaveClass("bg-[#1f1f1f]");
-    expect(screen.getByLabelText("Paste proxies (one per line)")).toHaveClass("bg-[#141414]", "border-[#424242]");
+    expect(screen.getByLabelText("Paste proxies (one per line)")).toHaveClass("bg-bg", "border-border");
 
     fireEvent.change(screen.getByLabelText("Paste proxies (one per line)"), { target: { value: text } });
     fireEvent.change(screen.getByLabelText("Scheme"), { target: { value: "socks5" } });

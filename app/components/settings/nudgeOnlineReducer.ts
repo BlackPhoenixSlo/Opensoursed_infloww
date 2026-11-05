@@ -188,7 +188,7 @@ export function pickedIds(selected: ReadonlySet<string> | null, all: readonly st
   return selected === null ? [...all] : all.filter((id) => selected.has(id));
 }
 
-/** Why "Apply + enable" refuses, or null to go. */
+/** Why "Apply and enable" refuses, or null to go. */
 export function rolloutBlock(
   s: Pick<NudgeOnlineState, "form" | "slots" | "base">, picked: readonly string[],
 ): string | null {

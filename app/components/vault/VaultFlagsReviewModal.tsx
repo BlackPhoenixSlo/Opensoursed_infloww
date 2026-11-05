@@ -37,6 +37,7 @@
 
 import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { AlertTriangle, Lock } from "lucide-react";
 
 import {
   gradeFlags,
@@ -46,6 +47,7 @@ import {
   type FlagsReviewItem,
 } from "@/hooks/useVaultCache";
 import ImageLightbox from "@/components/vault/ImageLightbox";
+import { IfButton, IfHelp, IfInput, IfModal } from "@/components/ui/infloww";
 import { errText } from "@/lib/errText";
 
 const REGIONS = ["breasts_vis", "vulva_vis", "anus_vis"] as const;
@@ -79,10 +81,10 @@ function Card({
   onSaved: (mediaId: number, corrected: number) => void;
 }) {
   const [picked, setPicked] = useState<Record<string, string>>({});
+  const [zoom, setZoom] = useState(false);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [zoom, setZoom] = useState(false);
 
   /** What the model said, unless the operator has tapped something else. */
   const shown = (region: string) => picked[region] ?? item.regions[region] ?? "";
@@ -107,7 +109,7 @@ function Card({
 
   return (
     <div
-      className={`rounded-lg border bg-bg-soft overflow-hidden flex flex-col ${
+      className={`rounded-md border bg-bg-soft overflow-hidden flex flex-col ${
         changed.length ? "border-warn/60" : "border-border"
       }`}
     >
@@ -129,8 +131,8 @@ function Card({
           const locked = item.locked.includes(region);
           return (
             <div key={region} className="flex items-center gap-1.5">
-              <span className="text-[10px] text-fg-dim w-12 shrink-0">
-                {locked ? "🔒 " : ""}
+              <span className="flex w-16 shrink-0 items-center gap-1 text-[12px] text-muted">
+                {locked && <Lock className="h-3 w-3" aria-label="locked" />}
                 {LABEL[region]}
               </span>
               <div className="flex gap-1 flex-1">
@@ -140,7 +142,7 @@ function Card({
                     type="button"
                     disabled={locked || busy}
                     onClick={() => setPicked((p) => ({ ...p, [region]: s }))}
-                    className={`flex-1 text-[10px] font-semibold py-1 rounded border disabled:opacity-40 ${stateClass(
+                    className={`flex-1 text-[12px] font-semibold py-1 rounded border disabled:opacity-40 ${stateClass(
                       s,
                       shown(region) === s,
                     )}`}
@@ -154,7 +156,7 @@ function Card({
         })}
 
         {named.length > 0 && (
-          <p className="text-[10.5px] text-fg-dim leading-snug">
+          <p className="text-[12px] text-muted leading-snug">
             {named.map(([r, v]) => (
               <span key={r} className="block">
                 {LABEL[r]}: <b className="text-fg">{v}</b>
@@ -163,38 +165,39 @@ function Card({
           </p>
         )}
 
-        <p className="text-[10.5px] text-fg-dim line-clamp-2 leading-snug">
+        <p className="text-[12px] text-fg-dim line-clamp-2 leading-snug">
           {item.description}
         </p>
-        <p className="text-[10px] text-fg-dim">
+        <p className="text-[12px] text-muted">
           #{item.media_id} · {item.kind} · {item.explicitness} · {item.clothing_state}
           {item.lanes.length > 0 && ` · ${item.lanes.join(", ")}`}
         </p>
         {item.iffy_why.length > 0 && (
           <ul className="space-y-0.5">
             {item.iffy_why.map((w) => (
-              <li key={w} className="text-[10.5px] text-warn/90 leading-snug">
-                ⚠ {w}
+              <li key={w} className="flex items-start gap-1 text-[12px] text-warn leading-snug">
+                <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" aria-hidden />
+                {w}
               </li>
             ))}
           </ul>
         )}
 
-        <input
+        <IfInput
           value={note}
           onChange={(e) => setNote(e.target.value)}
-          placeholder="anything odd? (optional)"
-          className="w-full bg-bg border border-border rounded px-2 py-1 text-[11px]"
+          placeholder="Anything odd?"
+          aria-label="Note"
+          className="w-full"
         />
 
-        <button
-          type="button"
+        <IfButton
           disabled={busy}
           onClick={save}
-          className={`mt-auto rounded-md px-2 py-1.5 text-[11px] font-medium border disabled:opacity-40 ${
+          className={`mt-auto w-full ${
             changed.length
-              ? "border-warn/60 bg-warn/15 text-warn hover:bg-warn/25"
-              : "border-ok/50 bg-ok/10 text-ok hover:bg-ok/20"
+              ? "border-warn/60 bg-warn/15 text-warn hover:border-warn hover:bg-warn/25 hover:text-warn"
+              : "border-ok/50 bg-ok/10 text-ok hover:border-ok hover:bg-ok/20 hover:text-ok"
           }`}
         >
           {busy
@@ -202,8 +205,8 @@ function Card({
             : changed.length
               ? `Fix ${changed.length} and continue`
               : "Looks right"}
-        </button>
-        {err && <p className="text-[10.5px] text-err">{err}</p>}
+        </IfButton>
+        {err && <p className="text-[12px] text-err">{err}</p>}
       </div>
     </div>
   );
@@ -245,79 +248,65 @@ export default function VaultFlagsReviewModal({
     acc?.accuracy != null ? `${(acc.accuracy * 100).toFixed(1)}%` : "not enough checked yet";
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/50 grid place-items-center p-4" onClick={onClose}>
-      <div
-        className="w-full max-w-6xl max-h-[90vh] overflow-auto rounded-xl border border-border bg-bg shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <header className="px-4 py-3 border-b border-border sticky top-0 bg-bg z-10 flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h2 className="text-sm font-semibold">Check the vision model</h2>
-            <p className="text-[11px] text-fg-dim">
-              Each card is already set to what the model thinks. <b>Tap only what is
-              wrong</b>, then save. A fix is permanent — no re-run can undo it. Pressing
-              “Looks right” is not a no-op either: it is what the accuracy below is
-              measured from.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-fg-dim hover:text-fg text-sm px-2 shrink-0"
-          >
-            ✕
-          </button>
-        </header>
+    <IfModal
+      title="Check the vision model"
+      width={820}
+      onClose={onClose}
+      footer={<IfButton onClick={onClose}>Done</IfButton>}
+    >
+      <IfHelp className="mt-0">
+        Each card shows what the model thinks. Tap only what is wrong, then save; “Looks right” counts toward the accuracy too.
+      </IfHelp>
+      <IfHelp>A fix is permanent — no re-run can undo it.</IfHelp>
+      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-muted">
+        <span>
+          model agrees with you <b className="text-fg">{pct}</b>
+          {acc?.answers ? ` (${acc.answers} answers)` : ""}
+        </span>
+        <span>
+          checked <b className="text-fg">{(acc?.graded_items ?? 0) + done.size}</b> /{" "}
+          {data?.total ?? "…"}
+        </span>
+        <span>prompt v{data?.prompt_version ?? "?"}</span>
+        <IfButton
+          variant="link"
+          onClick={() => setOnlyIffy((v) => !v)}
+          className="h-auto text-[12px]"
+          title="Measured on the graded vault: the badges flag 40 items to catch 11 of the 24 actually wrong — 28% precision, 46% recall. Good enough to sort by, NOT good enough to hide behind, which is why the full list is the default."
+        >
+          {onlyIffy
+            ? `only the ${data?.iffy ?? "…"} flagged — show all ${data?.total ?? ""}`
+            : `all ${data?.total ?? ""}, flagged first (${data?.iffy ?? "…"} flagged) — narrow`}
+        </IfButton>
+        {corrected > 0 && <span className="text-warn">{corrected} fixed just now</span>}
+        {!!acc?.graded_other_versions && (
+          <span title="Graded against an older prompt — not counted, because a score across two prompts measures neither.">
+            {acc.graded_other_versions} checked on an older prompt
+          </span>
+        )}
+      </div>
 
-        <div className="px-4 py-2 border-b border-border flex flex-wrap gap-4 text-[11px] text-fg-dim">
-          <span>
-            model agrees with you: <b className="text-fg">{pct}</b>
-            {acc?.answers ? ` (${acc.answers} answers)` : ""}
-          </span>
-          <span>
-            checked: <b className="text-fg">{(acc?.graded_items ?? 0) + done.size}</b> /{" "}
-            {data?.total ?? "…"}
-          </span>
-          <span>prompt v{data?.prompt_version ?? "?"}</span>
-          <button
-            type="button"
-            onClick={() => setOnlyIffy((v) => !v)}
-            className="underline underline-offset-2 hover:text-fg"
-            title="Measured on the graded vault: the badges flag 40 items to catch 11 of the 24 actually wrong — 28% precision, 46% recall. Good enough to sort by, NOT good enough to hide behind, which is why the full list is the default."
-          >
+      <div className="mt-4">
+        {isLoading && <p className="text-muted">Loading…</p>}
+        {error && <p className="text-err">{errText(error)}</p>}
+        {data && open.length === 0 && (
+          <p className="text-ok">
             {onlyIffy
-              ? `only the ${data?.iffy ?? "…"} flagged — show all ${data?.total ?? ""}`
-              : `all ${data?.total ?? ""}, flagged first (${data?.iffy ?? "…"} flagged) — narrow`}
-          </button>
-          {corrected > 0 && <span className="text-warn">{corrected} fixed just now</span>}
-          {!!acc?.graded_other_versions && (
-            <span title="Graded against an older prompt — not counted, because a score across two prompts measures neither.">
-              {acc.graded_other_versions} checked on an older prompt
-            </span>
-          )}
-        </div>
-
-        <div className="p-4">
-          {isLoading && <p className="text-[12px] text-fg-dim">Loading…</p>}
-          {error && (
-            <p className="text-[12px] text-err">
-              {errText(error)}
-            </p>
-          )}
-          {data && open.length === 0 && (
-            <p className="text-[12px] text-ok">
-              {onlyIffy
-                ? "Nothing left worth checking. Switch to “show all” for a full pass."
-                : "Nothing left in this batch — close and reopen for the next one."}
-            </p>
-          )}
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-3">
-            {open.map((it) => (
-              <Card key={it.media_id} accountId={accountId} item={it} onSaved={onSaved} />
-            ))}
-          </div>
+              ? "Nothing left worth checking. Switch to “show all” for a full pass."
+              : "Nothing left in this batch — close and reopen for the next one."}
+          </p>
+        )}
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-3">
+          {open.map((it) => (
+            <Card
+              key={it.media_id}
+              accountId={accountId}
+              item={it}
+              onSaved={onSaved}
+            />
+          ))}
         </div>
       </div>
-    </div>
+    </IfModal>
   );
 }

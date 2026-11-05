@@ -3,7 +3,7 @@
 /**
  * MediaTray — shared attachment strip for the New-post + Mass-message
  * modals. Renders thumbnails for already-attached vault media plus an
- * "add from vault" button (lucide Library).
+ * "Add from vault" button.
  *
  * Upload-from-computer is intentionally removed for now (the producer
  * pipeline has open bugs; revisit once those are fixed). Vault-pick +
@@ -11,13 +11,17 @@
  */
 
 import { Fragment } from "react";
-import { Library } from "lucide-react";
+import { ChevronLeft, ChevronRight, Image as ImageIcon, Minus, Plus, X } from "lucide-react";
 
 import { useReorder } from "@/hooks/useReorder";
 import { canBeFreePreview } from "@/lib/composeDraft";
 import { type VaultMedia } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
+import { IfButton } from "@/components/ui/infloww";
 import { cn } from "@/lib/utils";
+
+/** The free-previews stepper's −/+ buttons. */
+const STEP = "grid h-10 w-10 place-items-center rounded border border-border text-fg hover:border-accent hover:text-accent disabled:opacity-30 md:h-6 md:w-6";
 
 export function MediaTray({
   accountId, attached, onChange, onOpenVaultPicker,
@@ -54,20 +58,20 @@ export function MediaTray({
   return (
     <div className="space-y-1.5">
       {attached.length > 0 ? (
-        <div className="flex items-center gap-1.5 flex-wrap bg-bg/60 border border-border rounded-lg px-2 py-2">
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-border p-2">
           {showPpv && onPreviewCountChange && (
             <div
-              className="flex items-center gap-1 text-[10px] text-fg-dim mr-1"
+              className="mr-1 flex items-center gap-1.5 text-[12px] text-fg-dim"
               title="How many tiles are free previews. Drag a tile across the divider to flip its side."
             >
-              <span className="uppercase tracking-wide">previews</span>
+              <span>Free previews</span>
               <button
                 type="button"
                 onClick={() => onPreviewCountChange(Math.max(0, effectivePreviewCount - 1))}
                 disabled={effectivePreviewCount === 0}
-                className="w-10 h-10 md:w-4 md:h-4 text-base md:text-[10px] grid place-items-center rounded border border-border hover:bg-bg-elev-1 disabled:opacity-30"
+                className={STEP}
                 aria-label="Fewer free previews"
-              >−</button>
+              ><Minus className="h-3.5 w-3.5" aria-hidden /></button>
               <span className="tabular-nums text-fg">
                 {effectivePreviewCount}/{attached.length}
               </span>
@@ -75,9 +79,9 @@ export function MediaTray({
                 type="button"
                 onClick={() => onPreviewCountChange(Math.min(attached.length, effectivePreviewCount + 1))}
                 disabled={effectivePreviewCount >= attached.length}
-                className="w-10 h-10 md:w-4 md:h-4 text-base md:text-[10px] grid place-items-center rounded border border-border hover:bg-bg-elev-1 disabled:opacity-30"
+                className={STEP}
                 aria-label="More free previews"
-              >+</button>
+              ><Plus className="h-3.5 w-3.5" aria-hidden /></button>
             </div>
           )}
           {attached.map((m, idx) => {
@@ -95,13 +99,12 @@ export function MediaTray({
               <Fragment key={m.id}>
                 {showDivider && idx === effectivePreviewCount && (
                   <div
-                    className="flex flex-col items-center justify-center gap-0.5 h-16 px-1 text-[8px] font-semibold uppercase tracking-wide select-none border-l-2 border-r-2 border-dashed border-fg-dim/60"
+                    className="flex h-16 select-none flex-col items-center justify-center gap-1 border-x border-border px-1.5 text-[12px] leading-none"
                     title="Items left of this line are free previews; items right are PPV-locked"
                     aria-hidden
                   >
-                    <span className="text-fg-dim leading-none">free ↑</span>
-                    <span className="text-muted leading-none">/</span>
-                    <span className="text-err leading-none">paid ↓</span>
+                    <span className="inline-flex items-center text-fg-dim"><ChevronLeft className="h-3 w-3" />Free</span>
+                    <span className="inline-flex items-center text-err">Paid<ChevronRight className="h-3 w-3" /></span>
                   </div>
                 )}
                 <div
@@ -150,33 +153,21 @@ export function MediaTray({
                   <button
                     type="button"
                     onClick={() => remove(m.id)}
-                    className="absolute top-0.5 right-0.5 w-7 h-7 md:w-4 md:h-4 rounded-full bg-black/70 text-white grid place-items-center text-[10px] opacity-90"
+                    className="absolute top-0.5 right-0.5 w-7 h-7 md:w-4 md:h-4 rounded-full bg-black/70 text-white grid place-items-center opacity-90"
                     aria-label="Remove"
-                  >×</button>
+                  ><X className="h-3 w-3" aria-hidden /></button>
                 </div>
               </Fragment>
             );
           })}
-          <button
-            type="button"
-            onClick={onOpenVaultPicker}
-            disabled={!accountId}
-            className="w-16 h-16 rounded-md border border-dashed border-border hover:bg-bg-elev-1 text-fg-dim hover:text-fg grid place-items-center disabled:opacity-50"
-            title="Pick from vault"
-          >
-            <Library size={18} aria-hidden />
-          </button>
+          <IfButton icon={ImageIcon} onClick={onOpenVaultPicker} disabled={!accountId} title="Pick from vault">
+            Pick from vault
+          </IfButton>
         </div>
       ) : (
-        <button
-          type="button"
-          onClick={onOpenVaultPicker}
-          disabled={!accountId}
-          className="w-full text-xs text-fg-dim hover:text-fg border border-dashed border-border rounded-md py-3 hover:bg-bg-elev-1 disabled:opacity-50 inline-flex items-center justify-center gap-1.5"
-        >
-          <Library size={18} aria-hidden />
+        <IfButton icon={ImageIcon} onClick={onOpenVaultPicker} disabled={!accountId}>
           Add from vault
-        </button>
+        </IfButton>
       )}
     </div>
   );

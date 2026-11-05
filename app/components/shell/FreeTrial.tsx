@@ -21,7 +21,8 @@ import { X } from "lucide-react";
 import { useAppliedSettingsAfterMount } from "@/lib/appliedSettings";
 import { useUser } from "@/contexts/UserContext";
 import { useChatter } from "@/contexts/ChatterContext";
-import { Button } from "@/components/ui/primitives";
+import { IfButton } from "@/components/ui/infloww";
+import { IF_MODAL_BOX, IF_MODAL_MASK } from "@/components/ui/ifModal";
 import { InfoCircleSolid } from "@/components/shell/inflowwIcons";
 import { BUY_URL, trialDaysLeft } from "@/lib/freeTrial";
 import { subscribeToStorage } from "@/lib/storageSync";
@@ -101,33 +102,32 @@ export function FreeTrialExpiredModal() {
   return (
     <Dialog.Root open={expired && allowed && !closed} onOpenChange={(o) => { if (!o) setClosed(true); }}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-[60] bg-black/50" />
+        {/* IfModal's look (antd's modal), kept on Radix: the 70% mask, the kit box, the × 16px in. */}
+        <Dialog.Overlay className={`fixed inset-0 z-[60] ${IF_MODAL_MASK}`} />
         <Dialog.Content
-          className="fixed left-1/2 top-1/2 z-[60] -translate-x-1/2 -translate-y-1/2 w-[26rem] max-w-[calc(100vw-32px)] p-5 rounded-lg border border-border bg-bg space-y-4 outline-none"
+          className={`fixed left-1/2 top-1/2 z-[60] w-[416px] max-w-[calc(100vw-32px)] -translate-x-1/2 -translate-y-1/2 ${IF_MODAL_BOX}`}
         >
-          <div className="flex items-start justify-between gap-3">
-            <Dialog.Title className="text-base font-semibold">Free trial exceeded</Dialog.Title>
-            <Dialog.Close
-              className="-m-1 p-1 rounded text-fg-dim hover:text-fg hover:bg-bg-elev-1"
-              aria-label="Close"
-            >
-              <X aria-hidden className="w-4 h-4" />
-            </Dialog.Close>
-          </div>
-          <Dialog.Description className="text-sm text-fg-dim">
+          <Dialog.Title className="px-6 pr-12 pt-[22px] text-[16px] font-semibold">Free trial exceeded</Dialog.Title>
+          <Dialog.Close
+            className="absolute right-4 top-4 grid h-6 w-6 place-items-center rounded text-muted hover:text-fg"
+            aria-label="Close"
+          >
+            <X aria-hidden className="h-4 w-4" />
+          </Dialog.Close>
+          <Dialog.Description className="p-6 text-[14px] text-fg-dim">
             Your free trial has expired. Please{" "}
             <a href={BUY_URL} target="_blank" rel="noopener noreferrer" className="text-accent underline">
               click here to buy
             </a>
             .
           </Dialog.Description>
-          <div className="flex justify-end gap-2">
+          <div className="flex justify-end gap-2 px-6 pb-5">
             <Dialog.Close asChild>
-              <Button variant="secondary">Continue</Button>
+              <IfButton>Continue</IfButton>
             </Dialog.Close>
-            <Button onClick={() => window.open(BUY_URL, "_blank", "noopener,noreferrer")}>
+            <IfButton variant="primary" onClick={() => window.open(BUY_URL, "_blank", "noopener,noreferrer")}>
               Buy now
-            </Button>
+            </IfButton>
           </div>
         </Dialog.Content>
       </Dialog.Portal>

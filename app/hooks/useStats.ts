@@ -21,6 +21,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tansta
 
 import type { Gran } from "@/components/stats/chart";
 import { ssePoll } from "@/lib/events";
+import { fetchOwnProfile } from "@/hooks/useAccountAvatar";
 import { relay, type RelayContext } from "@/lib/relay";
 import { type FanId } from "@/lib/fanId";
 
@@ -607,18 +608,9 @@ export function useAccountProfile(accountId: string | null | undefined) {
   return useQuery<OfProfile | null>({
     queryKey: ["of-profile", accountId] as const,
     enabled: !!accountId,
-    queryFn: async () => {
-      try {
-        return await relay.get<OfProfile>(
-          "/api/of/v2/users/me",
-          { accountId: accountId!, priority: "background" },
-        );
-      } catch {
-        // Session expired / network blip / OF rate-limit — degrade
-        // silently to "no profile" and let the card fall back to ID.
-        return null;
-      }
-    },
+    // Shared with useAccountAvatar. Session expired / network blip / OF
+    // rate-limit / another Creator's body → null; the card falls back to ID.
+    queryFn: () => fetchOwnProfile<OfProfile>(accountId!),
     staleTime: 30 * 60_000,
     gcTime: 24 * 60 * 60_000,
     refetchOnWindowFocus: false,

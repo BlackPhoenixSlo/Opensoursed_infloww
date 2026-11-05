@@ -18,9 +18,9 @@
 
 import { useEffect, useReducer, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { Megaphone, X } from "lucide-react";
+import { Play, X } from "lucide-react";
 
-import { Button, Card, Input } from "@/components/ui/primitives";
+import { IfButton, IfHelp, IfInput, IfLabel, IfSwitch } from "@/components/ui/infloww";
 import { SYSTEM_AUDIENCES, useFanLists } from "@/components/audience/fanLists";
 import {
   MASS_EXCLUDE_LIST_NAME, audienceError, audienceReducer, buildAudiencePayload, initAudience, massExcludeListId,
@@ -159,60 +159,54 @@ export function FunnelLaunchPanel({
   const listItems = customLists.map((l) => ({ id: String(l.id), label: l.name ?? `List ${l.id}` }));
 
   return (
-    <Card className="p-4 space-y-4 border-accent/40">
+    <div className="space-y-4 rounded-md border border-border bg-panel p-4">
       <header className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <Megaphone size={16} className="text-accent" />
-          <h3 className="text-sm font-medium">Start funnel · {funnel.name}</h3>
-        </div>
-        <button type="button" onClick={onClose} className="text-fg-dim hover:text-fg">
-          <X size={16} />
-        </button>
+        <h3 className="min-w-0 truncate text-[14px] font-medium text-fg">Start funnel · {funnel.name}</h3>
+        <IfButton variant="link" icon={X} aria-label="Close" onClick={onClose} className="w-8 text-muted hover:text-fg" />
       </header>
 
-      <div className="text-[11px] text-fg-dim">
-        Sends this opener now, then auto-replies to fans who answer:
-        <div className="mt-1 rounded-md bg-bg border border-border px-3 py-2 text-fg text-xs">
+      <div>
+        <IfLabel>Opening message</IfLabel>
+        <div className="whitespace-pre-wrap rounded-md border border-border bg-bg px-[11px] py-1 text-[14px] text-fg">
           {funnel.opening_message}
         </div>
+        <IfHelp>Sent now; fans who answer are auto-walked through the steps.</IfHelp>
       </div>
 
       {!accountId && (
-        <div className="text-xs text-warn">Pick a model (account) in the chips above first.</div>
+        <div className="text-[12px] text-warn">Pick a model (account) in the chips above first.</div>
       )}
 
       {/* Include */}
-      <div className="space-y-1.5">
-        <div className="text-xs text-fg-dim">Send to (include)</div>
-        <ChipRow items={SYSTEM_AUDIENCES} side="in" />
-        {listItems.length > 0 && (
-          <ChipRow items={listItems} side="in" />
-        )}
+      <div>
+        <IfLabel>Send to (include)</IfLabel>
+        <div className="space-y-1.5">
+          <ChipRow items={SYSTEM_AUDIENCES} side="in" />
+          {listItems.length > 0 && (
+            <ChipRow items={listItems} side="in" />
+          )}
+        </div>
       </div>
 
       {/* Exclude: custom lists only — OF silently drops built-in names in
           excludedLists (fanLists.tsx), so an "All fans" exclude would over-send. */}
       {listItems.length > 0 && (
-        <div className="space-y-1.5">
-          <div className="text-xs text-fg-dim">Exclude</div>
+        <div>
+          <IfLabel>Exclude</IfLabel>
           <ChipRow items={listItems} side="out" />
+          <IfHelp>{MASS_EXCLUDE_LIST_NAME} is excluded by default; fans who already answered are skipped.</IfHelp>
         </div>
       )}
 
-      {/* Online + skip-recent */}
-      <div className="flex flex-wrap items-end gap-4">
-        <label className="flex items-center gap-2 cursor-pointer">
-          <input
-            type="checkbox"
-            className="h-4 w-4 accent-[var(--accent)]"
-            checked={onlineOnly}
-            onChange={(e) => { setDone(null); setOnlineOnly(e.target.checked); }}
-          />
-          <span className="text-xs">Online only</span>
-        </label>
-        <label className="space-y-1">
-          <div className="text-[11px] text-fg-dim">Skip fans I messaged in the last … hours</div>
-          <Input
+      <IfSwitch label="Online only" checked={onlineOnly} onChange={(on) => { setDone(null); setOnlineOnly(on); }}
+        className="flex" />
+
+      {/* Skip-recent + auto-unsend */}
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div>
+          <IfLabel htmlFor={`funnel-${funnel.id}-skip`}>Skip fans I messaged in the last … hours</IfLabel>
+          <IfInput
+            id={`funnel-${funnel.id}-skip`}
             type="number"
             min={0}
             className="w-28"
@@ -220,10 +214,12 @@ export function FunnelLaunchPanel({
             value={skipMessagedHours}
             onChange={(e) => { setDone(null); setSkipMessagedHours(e.target.value); }}
           />
-        </label>
-        <label className="space-y-1">
-          <div className="text-[11px] text-fg-dim">Auto-unsend opener after … hours</div>
-          <Input
+          <IfHelp>blank = skip no one</IfHelp>
+        </div>
+        <div>
+          <IfLabel htmlFor={`funnel-${funnel.id}-unsend`}>Auto-unsend opener after … hours</IfLabel>
+          <IfInput
+            id={`funnel-${funnel.id}-unsend`}
             type="number"
             min={0}
             className="w-28"
@@ -231,24 +227,20 @@ export function FunnelLaunchPanel({
             value={unsendHours}
             onChange={(e) => { setDone(null); setUnsendHours(e.target.value); }}
           />
-        </label>
+          <IfHelp>Unsent: new repliers stop enrolling; open chats keep going.</IfHelp>
+        </div>
       </div>
-      <p className="text-[11px] text-fg-dim -mt-1">
-        Fans who already answered this funnel are skipped automatically, and your{" "}
-        <span className="text-fg-dim font-medium">{MASS_EXCLUDE_LIST_NAME}</span>{" "}
-        list is excluded by default. When the opener is unsent, new repliers stop
-        enrolling — but anyone already chatting keeps going until they buy.
-      </p>
 
-      <div className="flex items-center gap-3 pt-1">
-        <Button variant="primary" onClick={confirmAndSend} disabled={send.isPending || !accountId || !seeded}>
-          {send.isPending ? "Sending…" : "▶ Start funnel"}
-        </Button>
-        {done && <span className="text-xs text-ok">{done}</span>}
+      <div className="flex flex-wrap items-center gap-3">
+        <IfButton variant="primary" icon={send.isPending ? undefined : Play} onClick={confirmAndSend}
+          disabled={send.isPending || !accountId || !seeded}>
+          {send.isPending ? "Sending…" : "Start funnel"}
+        </IfButton>
+        {done && <span className="text-[12px] text-ok">{done}</span>}
         {send.isError && (
-          <span className="text-xs text-err">{(send.error as Error)?.message || "Send failed"}</span>
+          <span className="text-[12px] text-err">{(send.error as Error)?.message || "Send failed"}</span>
         )}
       </div>
-    </Card>
+    </div>
   );
 }

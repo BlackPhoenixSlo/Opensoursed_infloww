@@ -19,12 +19,14 @@ import { useState } from "react";
 
 import { VaultPicker } from "@/components/chat/VaultPicker";
 import { MediaTray } from "@/components/compose/MediaTray";
-import { Input } from "@/components/ui/primitives";
+import { IF_FIELD } from "@/components/ui/ifSelect";
+import { IfHelp, IfInput, IfLabel } from "@/components/ui/infloww";
 import { useReportTimeZone } from "@/lib/appliedSettings";
 import { VAULT_PICK_MAX, readPrice } from "@/lib/ofMirrorChatShared";
 import { MIN_PRICE } from "@/lib/sendGuards";
 import { type VaultMedia } from "@/lib/relay";
 import { fromZonedInput, toZonedInput } from "@/lib/shifts";
+import { cn } from "@/lib/utils";
 
 import { SM_EDITOR as E } from "./smartMessagesControls";
 
@@ -194,9 +196,9 @@ export function SmartMessageFields({
   const paid = !!price && price >= MIN_PRICE;
 
   return (
-    <div className="space-y-4 text-sm">
-      <div className="space-y-1">
-        <span className="block">{E.media.label}</span>
+    <div className="space-y-4 text-[14px] text-fg">
+      <div>
+        <IfLabel>{E.media.label}</IfLabel>
         <MediaTray
           accountId={accountId}
           attached={draft.media}
@@ -212,56 +214,58 @@ export function SmartMessageFields({
             onConfirm={(picked) => { onChange({ media: picked.slice(0, VAULT_PICK_MAX) }); setPicking(false); }}
           />
         )}
-        <div className="flex items-center gap-2">
-          <label htmlFor={`${id}-price`}>{E.price.label}</label>
-          <Input
-            id={`${id}-price`}
-            inputMode="decimal"
-            placeholder="0"
-            value={draft.price}
-            onChange={(e) => onChange({ price: e.target.value })}
-            className="!w-[110px]"
-          />
-          <span className="text-fg-dim">{E.priceMin.label}</span>
-        </div>
+      </div>
+
+      <div>
+        <IfLabel htmlFor={`${id}-price`}>{E.price.label}</IfLabel>
+        <IfInput
+          id={`${id}-price`}
+          inputMode="decimal"
+          placeholder="0"
+          value={draft.price}
+          onChange={(e) => onChange({ price: e.target.value })}
+          className="w-[110px]"
+        />
+        <IfHelp>{E.priceMin.label}</IfHelp>
       </div>
 
       {delay && (
+        // Two groups: the range keeps "minutes automatically" beside its fields, wrapping only as a whole.
         <div className="flex flex-wrap items-center gap-2">
           <label htmlFor={`${id}-delay`}>{E.sendToFans.label}</label>
           <select
             id={`${id}-delay`}
             value={draft.delayOn ? "on" : "off"}
             onChange={(e) => onChange({ delayOn: e.target.value === "on" })}
-            className="bg-bg border border-border rounded-lg px-2 py-1"
+            className={cn(IF_FIELD, "h-8 px-[11px]")}
           >
             <option value="off">{E.delayNone.label}</option>
             <option value="on">{E.delayOn.label}</option>
           </select>
-          {draft.delayOn && (
-            <>
+          {draft.delayOn ? (
+            <div className="flex flex-wrap items-center gap-2">
               <span>{E.delayRandom.label}</span>
-              <Input aria-label="Delay from (minutes)" type="number" min={DELAY_MIN} max={DELAY_MAX} value={draft.delayA}
-                onChange={(e) => onChange({ delayA: e.target.value })} className="!w-[70px]" />
+              <IfInput aria-label="Delay from (minutes)" type="number" min={DELAY_MIN} max={DELAY_MAX} value={draft.delayA}
+                onChange={(e) => onChange({ delayA: e.target.value })} className="w-[70px]" />
               <span>{E.delayTilde.label}</span>
-              <Input aria-label="Delay to (minutes)" type="number" min={DELAY_MIN} max={DELAY_MAX} value={draft.delayB}
-                onChange={(e) => onChange({ delayB: e.target.value })} className="!w-[70px]" />
+              <IfInput aria-label="Delay to (minutes)" type="number" min={DELAY_MIN} max={DELAY_MAX} value={draft.delayB}
+                onChange={(e) => onChange({ delayB: e.target.value })} className="w-[70px]" />
               <span>{E.delayMinutes.label}</span>
-            </>
-          )}
-          <span>{E.delayTail.label}</span>
+              <span>{E.delayTail.label}</span>
+            </div>
+          ) : <span>{E.delayTail.label}</span>}
         </div>
       )}
 
       <fieldset className="space-y-2">
-        <legend className="font-medium">{E.scheduling.label}</legend>
+        <legend className="mb-2 font-medium">{E.scheduling.label}</legend>
         {frequency && (
           <div role="radiogroup" aria-label={E.frequency.label} className="space-y-1">
             <span className="block text-fg-dim">{E.frequency.label}</span>
             {(["once", "every"] as const).map((f) => (
               <label key={f} className="flex items-center gap-2">
                 <input type="radio" name={`${id}-frequency`} checked={draft.frequency === f}
-                  onChange={() => onChange({ frequency: f })} />
+                  onChange={() => onChange({ frequency: f })} className="accent-accent" />
                 {f === "once" ? E.once.label : E.every.label}
               </label>
             ))}
@@ -273,29 +277,31 @@ export function SmartMessageFields({
         <DateChoice id={`${id}-ends`} title={E.expiry.label} offLabel={E.never.label} tz={tz}
           on={draft.endsOn} iso={draft.endsAt}
           onChange={(on, iso) => onChange({ endsOn: on, endsAt: iso })} />
-        <p className="text-[11px] text-fg-dim">Times in {tz}.</p>
+        <IfHelp>Times in {tz}.</IfHelp>
       </fieldset>
 
-      <fieldset className="space-y-1">
-        <legend className="font-medium">{E.autoUnsend.label}</legend>
+      <fieldset className="space-y-2">
+        <legend className="mb-2 font-medium">{E.autoUnsend.label}</legend>
+        {/* A native checkbox: the editors' tests find it by role "checkbox". */}
         <label className="flex items-center gap-2">
-          <input type="checkbox" checked={draft.unsendOn} onChange={(e) => onChange({ unsendOn: e.target.checked })} />
+          <input type="checkbox" checked={draft.unsendOn} onChange={(e) => onChange({ unsendOn: e.target.checked })}
+            className="accent-accent" />
           {E.unsend.label}
         </label>
         {draft.unsendOn && (
           <div className="flex flex-wrap items-center gap-2">
             <span>{E.unsendLead.label}</span>
-            <Input aria-label="Unsend after (hours)" type="number" min={0} max={UNSEND_MAX_H} value={draft.unsendH}
-              onChange={(e) => onChange({ unsendH: e.target.value })} className="!w-[70px]" />
+            <IfInput aria-label="Unsend after (hours)" type="number" min={0} max={UNSEND_MAX_H} value={draft.unsendH}
+              onChange={(e) => onChange({ unsendH: e.target.value })} className="w-[70px]" />
             <span>{E.unsendHours.label}</span>
-            <Input aria-label="Unsend after (minutes)" type="number" min={0} max={59} value={draft.unsendM}
+            <IfInput aria-label="Unsend after (minutes)" type="number" min={0} max={59} value={draft.unsendM}
               disabled={whole(draft.unsendH) === UNSEND_MAX_H}
-              onChange={(e) => onChange({ unsendM: e.target.value })} className="!w-[70px]" />
+              onChange={(e) => onChange({ unsendM: e.target.value })} className="w-[70px]" />
             <span>{E.unsendMinutes.label}</span>
           </div>
         )}
         {draft.unsendOn && paid && (
-          <p className="text-[11px] text-warn">A paid message is never unsent: only a free one is.</p>
+          <IfHelp className="text-warn">A paid message is never unsent: only a free one is.</IfHelp>
         )}
       </fieldset>
     </div>
@@ -312,11 +318,11 @@ function DateChoice({ id, title, offLabel, tz, on, iso, onChange }: {
     <div role="radiogroup" aria-label={title} className="flex flex-wrap items-center gap-3">
       <span className="w-[70px] text-fg-dim">{title}</span>
       <label className="flex items-center gap-1.5">
-        <input type="radio" name={id} checked={!on} onChange={() => onChange(false, iso)} />
+        <input type="radio" name={id} checked={!on} onChange={() => onChange(false, iso)} className="accent-accent" />
         {offLabel}
       </label>
       <label className="flex items-center gap-1.5">
-        <input type="radio" name={id} checked={on} onChange={() => onChange(true, iso)} />
+        <input type="radio" name={id} checked={on} onChange={() => onChange(true, iso)} className="accent-accent" />
         {E.scheduledDate.label}
       </label>
       {on && (
@@ -325,7 +331,7 @@ function DateChoice({ id, title, offLabel, tz, on, iso, onChange }: {
           aria-label={`${title} date`}
           value={iso ? toZonedInput(iso, tz) : ""}
           onChange={(e) => onChange(true, fromZonedInput(e.target.value, tz))}
-          className="bg-bg border border-border rounded-lg px-2 py-1"
+          className={cn(IF_FIELD, "h-8 px-[11px]")}
         />
       )}
     </div>

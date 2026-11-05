@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { StrictMode, useState } from "react";
+import { createPortal } from "react-dom";
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { renderWithProviders } from "@/test-utils";
@@ -19,6 +20,7 @@ import {
   InflowwPageHeader, useCreatorParam,
 } from "./infloww";
 import { PageFrame } from "@/components/shell/PageFrame";
+import { EditorFooter, FooterSlotContext, useModalFocus } from "@/components/ui/ifModal";
 
 beforeEach(() => {
   replace.mockClear();
@@ -452,7 +454,7 @@ describe.each([
   ["IfModal", IfModal],
   ["HbModal", HbModal],
 ] as const)("%s", (_name, Modal) => {
-  function Harness({ closable = true }: { closable?: boolean }) {
+  function Harness({ closable = true, picker = false }: { closable?: boolean; picker?: boolean }) {
     const [open, setOpen] = useState(false);
     return (
       <>
@@ -461,6 +463,8 @@ describe.each([
           <Modal title="Create message" width={722} closable={closable} onClose={() => setOpen(false)}
             footer={<><button type="button">Cancel</button><button type="button">OK</button></>}>
             <input aria-label="Name" />
+            {/* A non-modal picker portaled to body, like the composers' emoji / template pickers. */}
+            {picker && createPortal(<div><input aria-label="Search emoji" /><button type="button">Smile</button></div>, document.body)}
           </Modal>
         )}
       </>
@@ -490,6 +494,218 @@ describe.each([
     }
     await userEvent.tab({ shift: true });
     expect(dialog).toContainElement(document.activeElement as HTMLElement);
+  });
+
+  it("leaves Tab and Escape to a portaled picker that holds focus", async () => {
+    render(<Harness picker />);
+    await userEvent.click(screen.getByRole("button", { name: "Open" }));
+    const dialog = screen.getByRole("dialog");
+    const search = screen.getByRole("textbox", { name: "Search emoji" });
+    expect(dialog).not.toContainElement(search);
+    search.focus();
+    await userEvent.tab();
+    expect(screen.getByRole("button", { name: "Smile" })).toHaveFocus();
+    search.focus();
+    expect(fireEvent.keyDown(search, { key: "Tab" })).toBe(true);
+    expect(fireEvent.keyDown(search, { key: "Escape" })).toBe(true);
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    // Back inside the box the trap holds again.
+    within(dialog).getByRole("textbox", { name: "Name" }).focus();
+    for (let i = 0; i < 6; i++) {
+      await userEvent.tab();
+      expect(dialog).toContainElement(document.activeElement as HTMLElement);
+    }
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("a modal layer on top (vault picker, lightbox) takes Escape and Tab; once it goes the trap is back", async () => {
+    function Layer() {
+      const ref = useModalFocus(() => {}, false);
+      return createPortal(<div ref={ref} tabIndex={-1} role="dialog" aria-label="Layer" />, document.body);
+    }
+    const onClose = vi.fn();
+    function Wrapped() {
+      const [layer, setLayer] = useState(false);
+      return (
+        <>
+          <Modal title="Create message" onClose={onClose} footer={<button type="button" onClick={() => setLayer((v) => !v)}>Layer</button>}>
+            <input aria-label="Name" />
+          </Modal>
+          {layer && <Layer />}
+        </>
+      );
+    }
+    render(<Wrapped />);
+    const dialog = screen.getByRole("dialog");
+    const toggle = within(dialog).getByRole("button", { name: "Layer" });
+    fireEvent.click(toggle);
+    toggle.focus();
+    // Last focusable: with a layer on top the wrap does not happen and Escape is not taken.
+    expect(fireEvent.keyDown(toggle, { key: "Tab" })).toBe(true);
+    expect(fireEvent.keyDown(toggle, { key: "Escape" })).toBe(true);
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.click(toggle);
+    toggle.focus();
+    expect(fireEvent.keyDown(toggle, { key: "Tab" })).toBe(false);
+    expect(dialog).toContainElement(document.activeElement as HTMLElement);
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([["plain", false], ["StrictMode", true]] as const)(
+    "nested modals mounted together (%s): Escape is the inner's; once it goes, the outer's", (_m, strict) => {
+      const outer = vi.fn();
+      const inner = vi.fn();
+      function Nested() {
+        const [showInner, setShowInner] = useState(true);
+        return (
+          <Modal title="Outer" onClose={outer} footer={<button type="button" onClick={() => setShowInner(false)}>Drop inner</button>}>
+            {showInner && <Modal title="Inner" onClose={inner}><input aria-label="Inner field" /></Modal>}
+          </Modal>
+        );
+      }
+      render(strict ? <StrictMode><Nested /></StrictMode> : <Nested />);
+      fireEvent.keyDown(document.activeElement as HTMLElement, { key: "Escape" });
+      expect(inner).toHaveBeenCalledTimes(1);
+      expect(outer).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: "Drop inner" }));
+      expect(screen.getByRole("dialog", { name: "Outer" })).toContainElement(document.activeElement as HTMLElement);
+      fireEvent.keyDown(document.activeElement as HTMLElement, { key: "Escape" });
+      expect(outer).toHaveBeenCalledTimes(1);
+      expect(inner).toHaveBeenCalledTimes(1);
+    });
+
+  it.each([["plain", false], ["StrictMode", true]] as const)(
+    "opened from outside, outer + inner together (%s): the inner going puts focus in the outer, its keys work", (_m, strict) => {
+      const outer = vi.fn();
+      function Page() {
+        const [open, setOpen] = useState(false);
+        const [inner, setInner] = useState(true);
+        return (
+          <>
+            <button type="button" onClick={() => setOpen(true)}>Open both</button>
+            <button type="button" onClick={() => setInner(false)}>Drop inner</button>
+            {open && (
+              <Modal title="Outer" onClose={outer} footer={<button type="button">Outer last</button>}>
+                <input aria-label="Outer field" />
+                {inner && <Modal title="Inner" onClose={() => setInner(false)}><input aria-label="Inner field" /></Modal>}
+              </Modal>
+            )}
+          </>
+        );
+      }
+      render(strict ? <StrictMode><Page /></StrictMode> : <Page />);
+      const openBoth = screen.getByRole("button", { name: "Open both" });
+      openBoth.focus();
+      fireEvent.click(openBoth);
+      // A background update drops the inner (fireEvent's click moves no focus).
+      fireEvent.click(screen.getByRole("button", { name: "Drop inner" }));
+      const box = screen.getByRole("dialog", { name: "Outer" });
+      expect(box).toContainElement(document.activeElement as HTMLElement);
+      const last = within(box).getByRole("button", { name: "Outer last" });
+      last.focus();
+      expect(fireEvent.keyDown(last, { key: "Tab" })).toBe(false);
+      expect(box).toContainElement(document.activeElement as HTMLElement);
+      expect(last).not.toHaveFocus();
+      fireEvent.keyDown(document.activeElement as HTMLElement, { key: "Escape" });
+      expect(outer).toHaveBeenCalledTimes(1);
+    });
+
+  it("a lower modal unmounting under an upper one leaves focus and Escape with the upper", async () => {
+    const upperClose = vi.fn();
+    function Two() {
+      const [lower, setLower] = useState(false);
+      const [upper, setUpper] = useState(false);
+      return (
+        <>
+          <button type="button" onClick={() => setLower(true)}>Open lower</button>
+          <button type="button" onClick={() => setLower(false)}>Drop lower</button>
+          {lower && (
+            <Modal title="Lower" onClose={() => setLower(false)}
+              footer={<button type="button" onClick={() => setUpper(true)}>Open upper</button>}>
+              <input aria-label="Lower field" />
+            </Modal>
+          )}
+          {upper && <Modal title="Upper" onClose={upperClose}><input aria-label="Upper field" /></Modal>}
+        </>
+      );
+    }
+    render(<Two />);
+    const opener = screen.getByRole("button", { name: "Open lower" });
+    opener.focus();
+    fireEvent.click(opener);
+    fireEvent.click(screen.getByRole("button", { name: "Open upper" }));
+    const upper = screen.getByRole("dialog", { name: "Upper" });
+    const field = within(upper).getByRole("textbox", { name: "Upper field" });
+    field.focus();
+    // A background update drops the lower modal (fireEvent's click moves no focus).
+    fireEvent.click(screen.getByRole("button", { name: "Drop lower" }));
+    expect(screen.queryByRole("dialog", { name: "Lower" })).not.toBeInTheDocument();
+    expect(field).toHaveFocus();
+    fireEvent.keyDown(field, { key: "Escape" });
+    expect(upperClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("a lower modal unmounting while focus sat in it moves focus into the upper, not to its opener", () => {
+    function Two() {
+      const [lower, setLower] = useState(false);
+      const [upper, setUpper] = useState(false);
+      return (
+        <>
+          <button type="button" onClick={() => setLower(true)}>Open lower</button>
+          {lower && (
+            <Modal title="Lower" onClose={() => setLower(false)}
+              footer={<><button type="button" onClick={() => setUpper(true)}>Open upper</button>
+                <button type="button" onClick={() => setLower(false)}>Drop me</button></>}>
+              <input aria-label="Lower field" />
+            </Modal>
+          )}
+          {upper && <Modal title="Upper" onClose={() => setUpper(false)}><input aria-label="Upper field" /></Modal>}
+        </>
+      );
+    }
+    render(<Two />);
+    const opener = screen.getByRole("button", { name: "Open lower" });
+    opener.focus();
+    fireEvent.click(opener);
+    fireEvent.click(screen.getByRole("button", { name: "Open upper" }));
+    const drop = screen.getByRole("button", { name: "Drop me" });
+    drop.focus();
+    fireEvent.click(drop);
+    expect(opener).not.toHaveFocus();
+    expect(screen.getByRole("dialog", { name: "Upper" })).toContainElement(document.activeElement as HTMLElement);
+  });
+
+  it("an editor's EditorFooter lands in the modal's footer slot, after the caller's Cancel; a submit there still submits", () => {
+    const onSubmit = vi.fn((e: React.FormEvent) => e.preventDefault());
+    function Editor() {
+      return (
+        <form id="ed-form" onSubmit={onSubmit}>
+          <input aria-label="Name" />
+          <EditorFooter><button type="submit" form="ed-form">Save</button></EditorFooter>
+        </form>
+      );
+    }
+    function Host() {
+      const [slot, setSlot] = useState<HTMLElement | null>(null);
+      return (
+        <Modal title="Edit" onClose={() => {}}
+          footer={<><button type="button">Cancel</button><span data-testid="slot" ref={setSlot} className="contents" /></>}>
+          <FooterSlotContext.Provider value={slot}><Editor /></FooterSlotContext.Provider>
+        </Modal>
+      );
+    }
+    render(<Host />);
+    const save = screen.getByRole("button", { name: "Save" });
+    expect(screen.getByTestId("slot")).toContainElement(save);
+    expect(screen.getByRole("textbox", { name: "Name" }).closest("form")).not.toContainElement(save);
+    fireEvent.click(save);
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    cleanup();
+    // Alone (no slot provided) the buttons sit inline under the body.
+    render(<Editor />);
+    expect(screen.getByRole("textbox", { name: "Name" }).closest("form")).toContainElement(screen.getByRole("button", { name: "Save" }));
   });
 
   it("closable=false draws no × and ignores Escape", async () => {
