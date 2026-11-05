@@ -117,6 +117,23 @@ describe("EmptyState", () => {
     render(<EmptyState text="No lists" action={<button type="button">Create list</button>} />);
     expect(screen.getByRole("button", { name: "Create list" })).toBeInTheDocument();
   });
+
+  it("art={false} drops the illustration and passes role / aria through", () => {
+    const { container } = render(
+      <EmptyState art={false} role="group" aria-label="Posts" text="No content yet" action={<button type="button">Compose</button>} />,
+    );
+    expect(container.querySelector("svg")).toBeNull();
+    expect(screen.getByRole("group", { name: "Posts" })).toHaveAttribute("data-empty-state", "data");
+    expect(screen.getByText("No content yet")).not.toHaveClass("mt-2");
+  });
+
+  it("help renders an IfHelp line between the text and the action", () => {
+    render(<EmptyState art={false} text="No content yet" help="Add one first." action={<button type="button">Compose</button>} />);
+    const help = screen.getByText("Add one first.");
+    expect(help).toHaveClass("text-[12px]", "text-muted");
+    expect(screen.getByText("No content yet").compareDocumentPosition(help) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(help.compareDocumentPosition(screen.getByRole("button", { name: "Compose" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
 });
 
 describe("IfCard", () => {

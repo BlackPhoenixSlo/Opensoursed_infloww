@@ -32,7 +32,7 @@ from .fans import FAN_ID_BASE
 MSG_ID_BASE = 9_000_980_000_000   # above threads' / followup_drip's / house_funnel's, below the relay's
 NEW_ID_OFFSET = 900_000
 QUESTION = "what are you up to rn?"
-_FIRST = ("Alex", "Ben", "Carl", "Dan", "Eli", "Finn", "Gus", "Hank", "Ivan", "Jack", "Kyle", "Liam")
+_FIRST = ("Alex", "Ben", "Carl", "Dan", "Wren", "Finn", "Gus", "Hank", "Ivan", "Jack", "Kyle", "Liam")
 _IN, _OUT = ("hey", "you up?", "nice pic", "lol", "send more"), ("hi babe", "miss you", "check inbox")
 
 

@@ -35,6 +35,10 @@ const rule = (id: number, kind: string, name: string) => ({
   is_enabled: true, next_due_at: null, has_pending_job: false, last_run: null,
 });
 
+/** The dialog's enabled primary (IfButton `bg-accent`) buttons: the editor wants exactly one live primary at a time. */
+const enabledPrimaries = (dialog: HTMLElement) =>
+  within(dialog).getAllByRole("button").filter((b) => b.classList.contains("bg-accent") && !b.hasAttribute("disabled"));
+
 beforeEach(() => {
   get.mockImplementation((path: string) => {
     if (path.startsWith("/admin/automation-rules")) {
@@ -77,5 +81,55 @@ describe("Auto Mass (ReadyMadePanel only=mass_premade)", () => {
     expect(within(dialog).getByText("Messages")).toBeTruthy();
     expect(within(dialog).getByRole("switch", { name: "Enabled" })).toHaveAttribute("aria-checked", "true");
     expect(within(dialog).getByRole("combobox", { name: "Interval unit" })).toHaveTextContent("hours");
+  });
+
+  it("empty editor: Compose is the one primary, Create waits for this kind's messages and a parseable buffer", async () => {
+    renderWithProviders(<ReadyMadePanel only="mass_premade" />);
+    await screen.findByText("Evening tease");
+    fireEvent.click(screen.getByRole("button", { name: "New auto mass" }));
+    const dialog = screen.getByRole("dialog", { name: "New auto mass message" });
+    const create = within(dialog).getByRole("button", { name: "Create" });
+    const group = within(dialog).getByRole("group", { name: "Messages" });
+    const compose = within(group).getByRole("button", { name: "Compose" });
+    expect(compose).toHaveClass("bg-accent");
+    expect(compose).toHaveAccessibleDescription("Add at least one message to enable Create.");
+    expect(create).toBeDisabled();
+    expect(enabledPrimaries(dialog)).toEqual([compose]);
+
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Raw JSON" }));
+    const ta = within(dialog).getByRole("textbox", { name: "Messages JSON" });
+    const cases: [string, boolean][] = [
+      ['{ "posts": [ { "text": "x" } ], "messages": [] }', false], // another kind's list is not content
+      ['{ "posts": [], "messages": [ { "text": "Hello" } ] }', true],
+      ['{ "messages": [ {', false], // unparseable: the last valid value is kept, Create still waits
+    ];
+    expect(ta).toHaveAccessibleDescription("Add at least one message to enable Create.");
+    for (const [text, enabled] of cases) {
+      fireEvent.change(ta, { target: { value: text } });
+      expect(create.hasAttribute("disabled"), text).toBe(!enabled);
+    }
+    expect(within(dialog).queryByText("Add at least one message to enable Create.")).toBeNull(); // last valid value has a message
+    fireEvent.change(ta, { target: { value: cases[1][0] } });
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Composer" }));
+    expect(within(dialog).getByText("1 message · Hello")).toBeTruthy();
+    expect(within(dialog).getByRole("button", { name: "Edit content" })).toBeTruthy();
+    expect(within(dialog).queryByRole("button", { name: "Compose" })).toBeNull();
+    expect(create).toBeEnabled();
+    expect(enabledPrimaries(dialog)).toEqual([create]);
+  });
+
+  it("editing a rule: emptied raw JSON names Save changes in the help and disables it", async () => {
+    renderWithProviders(<ReadyMadePanel only="mass_premade" />);
+    await screen.findByText("Evening tease");
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    const dialog = screen.getByRole("dialog", { name: "Edit · Evening tease" });
+    const save = within(dialog).getByRole("button", { name: "Save changes" });
+    expect(save).toBeEnabled();
+    expect(enabledPrimaries(dialog)).toEqual([save]);
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Raw JSON" }));
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Messages JSON" }), { target: { value: '{ "messages": [] }' } });
+    expect(save).toBeDisabled();
+    expect(within(dialog).getByText("Add at least one message to enable Save changes.")).toBeTruthy();
+    expect(enabledPrimaries(dialog)).toEqual([]); // raw view: no Compose, Save waits
   });
 });

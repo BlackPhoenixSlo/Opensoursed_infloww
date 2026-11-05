@@ -108,24 +108,28 @@ const ART_HEIGHT = { sm: 40, md: 90, lg: 100 } as const;
  * Infloww's `Empty$1` (`._empty-wrap_1iayr_1 img{height:100px;margin-bottom:8px}`, text T3): the illustration, 8px,
  * then a 14px #999 line, centred. `size="sm"` is the antd table's simple empty (40px art, 32px above and below);
  * `md` the 90px art Sensitive words uses. `kind="error"` with `onRetry` adds `AbnormalRequestError`'s primary "Retry"
- * 10px below; `action` puts any other button there. `data-empty-state` names it for slop's page sweep (an empty state
- * on screen before a page's first read answered is a false one).
+ * 10px below; `action` puts any other button there. `art={false}` drops the illustration (an empty box inside a form,
+ * e.g. a rule editor's "No content yet"); `help` adds an `IfHelp` line under the text; other div attributes (role, aria-*) pass through. `data-empty-state` names it
+ * for slop's page sweep (an empty state on screen before a page's first read answered is a false one).
  */
 export function EmptyState({
-  kind = "data", text = "No data", onRetry, action, size = "lg", className, textClassName,
-}: {
+  kind = "data", text = "No data", help, onRetry, action, size = "lg", art = true, className, textClassName, ...rest
+}: Omit<HTMLAttributes<HTMLDivElement>, "children"> & {
   kind?: EmptyKind;
   text?: ReactNode;
+  help?: ReactNode;
   onRetry?: () => void;
   action?: ReactNode;
   size?: keyof typeof ART_HEIGHT;
-  className?: string;
+  art?: boolean;
   textClassName?: string;
 }) {
   return (
-    <div data-empty-state={kind} className={cn("flex flex-col items-center justify-center text-center", size === "sm" && "py-8", className)}>
-      <EmptyArt kind={kind} height={ART_HEIGHT[size]} />
-      <p className={cn("text-[14px] text-muted", size === "md" ? "mt-2.5" : "mt-2", textClassName)}>{text}</p>
+    <div data-empty-state={kind} {...rest}
+      className={cn("flex flex-col items-center justify-center text-center", size === "sm" && "py-8", className)}>
+      {art && <EmptyArt kind={kind} height={ART_HEIGHT[size]} />}
+      <p className={cn("text-[14px] text-muted", art && (size === "md" ? "mt-2.5" : "mt-2"), textClassName)}>{text}</p>
+      {help && <IfHelp>{help}</IfHelp>}
       {kind === "error" && onRetry && (
         <IfButton variant="primary" className="mt-2.5" onClick={onRetry}>Retry</IfButton>
       )}

@@ -36,6 +36,10 @@ const rule = (id: number, name: string, extra: Record<string, unknown> = {}) => 
   is_enabled: true, next_due_at: null, has_pending_job: false, last_run: null, ...extra,
 });
 
+/** The dialog's enabled primary (IfButton `bg-accent`) buttons: the editor wants exactly one live primary at a time. */
+const enabledPrimaries = (dialog: HTMLElement) =>
+  within(dialog).getAllByRole("button").filter((b) => b.classList.contains("bg-accent") && !b.hasAttribute("disabled"));
+
 beforeEach(() => {
   accounts.list = [{ id: "acc-a", nickname: "Creator A", has_session: true }];
   get.mockImplementation((path: string) => {
@@ -113,6 +117,56 @@ describe("Auto Post (ReadyMadePanel only=auto_posts)", () => {
     const dialog = screen.getByRole("dialog", { name: "Edit · Morning feed" });
     expect(within(dialog).getByLabelText("Name")).toHaveValue("Morning feed");
     expect(within(dialog).getByLabelText("Run every")).toHaveValue(2);
+  });
+
+  it("empty editor: Compose is the one primary, Create waits for this kind's posts and a parseable buffer", async () => {
+    renderWithProviders(<ReadyMadePanel only="auto_posts" />);
+    await screen.findByText("Morning feed");
+    fireEvent.click(screen.getByRole("button", { name: "New auto post" }));
+    const dialog = screen.getByRole("dialog", { name: "New auto post" });
+    const create = within(dialog).getByRole("button", { name: "Create" });
+    const group = within(dialog).getByRole("group", { name: "Posts" });
+    const compose = within(group).getByRole("button", { name: "Compose" });
+    expect(compose).toHaveClass("bg-accent");
+    expect(compose).toHaveAccessibleDescription("Add at least one post to enable Create.");
+    expect(create).toBeDisabled();
+    expect(enabledPrimaries(dialog)).toEqual([compose]);
+
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Raw JSON" }));
+    const ta = within(dialog).getByRole("textbox", { name: "Posts JSON" });
+    const cases: [string, boolean][] = [
+      ['{ "messages": [ { "text": "x" } ], "posts": [] }', false], // another kind's list is not content
+      ['{ "messages": [], "posts": [ { "text": "Hello" } ] }', true],
+      ['{ "posts": [ {', false], // unparseable: the last valid value is kept, Create still waits
+    ];
+    expect(ta).toHaveAccessibleDescription("Add at least one post to enable Create.");
+    for (const [text, enabled] of cases) {
+      fireEvent.change(ta, { target: { value: text } });
+      expect(create.hasAttribute("disabled"), text).toBe(!enabled);
+    }
+    expect(within(dialog).queryByText("Add at least one post to enable Create.")).toBeNull(); // last valid value has a post
+    fireEvent.change(ta, { target: { value: cases[1][0] } });
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Composer" }));
+    expect(within(dialog).getByText("1 post · Hello")).toBeTruthy();
+    expect(within(dialog).getByRole("button", { name: "Edit content" })).toBeTruthy();
+    expect(within(dialog).queryByRole("button", { name: "Compose" })).toBeNull();
+    expect(create).toBeEnabled();
+    expect(enabledPrimaries(dialog)).toEqual([create]);
+  });
+
+  it("editing a rule: emptied raw JSON names Save changes in the help and disables it", async () => {
+    renderWithProviders(<ReadyMadePanel only="auto_posts" />);
+    await screen.findByText("Morning feed");
+    fireEvent.click(within(screen.getByText("Morning feed").closest("tr")!).getByRole("button", { name: "Edit" }));
+    const dialog = screen.getByRole("dialog", { name: "Edit · Morning feed" });
+    const save = within(dialog).getByRole("button", { name: "Save changes" });
+    expect(save).toBeEnabled();
+    expect(enabledPrimaries(dialog)).toEqual([save]);
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Raw JSON" }));
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Posts JSON" }), { target: { value: '{ "posts": [] }' } });
+    expect(save).toBeDisabled();
+    expect(within(dialog).getByText("Add at least one post to enable Save changes.")).toBeTruthy();
+    expect(enabledPrimaries(dialog)).toEqual([]); // raw view: no Compose, Save waits
   });
 
   it("shows the creator empty state when no Creator has a live session", () => {

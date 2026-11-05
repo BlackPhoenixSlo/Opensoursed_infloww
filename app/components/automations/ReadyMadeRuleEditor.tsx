@@ -5,7 +5,7 @@
 import { useState } from "react";
 import { PenLine } from "lucide-react";
 
-import { IfButton, IfHelp, IfInput, IfLabel, IfModal, IfSegmented, IfSelect, IfSwitch } from "@/components/ui/infloww";
+import { EmptyState, IfButton, IfHelp, IfInput, IfLabel, IfModal, IfSegmented, IfSelect, IfSwitch } from "@/components/ui/infloww";
 import { IF_FIELD } from "@/components/ui/ifSelect";
 import { EDITOR_MODAL } from "@/components/automations/automationPage";
 import { useCreateRule, useUpdateRule, type AutomationRule } from "@/hooks/useAutomations";
@@ -33,6 +33,12 @@ export const KIND_COPY: Record<Kind, {
   /** One item of the payload list, and the list's label. */
   item: string;
   items: string;
+  /** The payload's list key. */
+  key: "posts" | "messages";
+  /** The Name field's placeholder. */
+  namePlaceholder: string;
+  /** "nothing is …" (Dry run's help). */
+  done: string;
 }> = {
   auto_posts: {
     title: "Auto Post",
@@ -45,6 +51,9 @@ export const KIND_COPY: Record<Kind, {
     plural: "auto posts",
     item: "post",
     items: "Posts",
+    key: "posts",
+    namePlaceholder: "Auto posts",
+    done: "posted",
   },
   mass_premade: {
     title: "Auto Mass",
@@ -59,18 +68,20 @@ export const KIND_COPY: Record<Kind, {
     plural: "auto mass messages",
     item: "message",
     items: "Messages",
+    key: "messages",
+    namePlaceholder: "Auto mass",
+    done: "sent",
   },
 };
 
 // ── Inline editor (create / edit a saved ready-made definition) ─────────
 
-/** One-line summary of a premade payload for the compose read-out: "3 posts · reposts ×2 · first caption…". */
-function summarize(payload: Record<string, unknown>): string | null {
-  const posts = Array.isArray(payload.posts) ? payload.posts : null;
-  const messages = Array.isArray(payload.messages) ? payload.messages : null;
-  const arr = posts ?? messages;
+/** One-line summary of the kind's own list (`posts` | `messages`) for the compose read-out: "3 posts · reposts ×2 ·
+ *  first caption…". `null` = that list is empty — the one "has content" test (empty state, Create gate, save). */
+function summarize(payload: Record<string, unknown>, kind: Kind): string | null {
+  const { key, item: noun } = KIND_COPY[kind];
+  const arr = Array.isArray(payload[key]) ? (payload[key] as unknown[]) : null;
   if (!arr || arr.length === 0) return null;
-  const noun = posts ? "post" : "message";
   const bits = [`${arr.length} ${noun}${arr.length === 1 ? "" : "s"}`];
   const rc = payload.resend_count;
   if (typeof rc === "number" && rc > 0) bits.push(`reposts ×${rc}`);
@@ -118,17 +129,20 @@ export function ReadyMadeRuleEditor({
 
   const everySeconds = Math.round(intervalValue * UNIT_S[intervalUnit]);
   const busy = createM.isPending || updateM.isPending;
-  const summary = summarize(composed);
+  const copy = KIND_COPY[kind];
+  const summary = summarize(composed, kind);
+  // Create waits for content and a parseable raw buffer: Compose is the empty editor's one primary action.
+  const hasContent = summary !== null;
+  const submitLabel = isEdit ? "Save changes" : "Create";
+  /** The empty payload's help line (Composer and Raw JSON). */
+  const emptyHelp = `Add at least one ${copy.item} to enable ${submitLabel}.`;
 
   const fail = (error: string) => dispatch({ type: "fail", error });
 
   async function save() {
     if (!canSubmit(raw)) return; // the raw buffer's parse error is already shown
     if (everySeconds < 30) return fail("Interval must be at least 30 seconds.");
-    const arr = kind === "auto_posts" ? composed.posts : composed.messages;
-    if (!Array.isArray(arr) || arr.length === 0) {
-      return fail(`Compose at least one ${KIND_COPY[kind].item} first.`);
-    }
+    if (!hasContent) return fail(`Compose at least one ${copy.item} first.`); // guard: Create is disabled too
     const payload: Record<string, unknown> = { ...composed };
     if (dryRun) payload.dry_run = true;
     try {
@@ -156,19 +170,21 @@ export function ReadyMadeRuleEditor({
     }
   }
 
-  const ids = { name: `rm-${kind}-name`, every: `rm-${kind}-every` };
-  const items = KIND_COPY[kind].items;
+  const ids = {
+    name: `rm-${kind}-name`, every: `rm-${kind}-every`, items: `rm-${kind}-items`, emptyHelp: `rm-${kind}-empty-help`,
+  };
+  const items = copy.items;
   return (
     <IfModal
       width={722}
-      title={editing ? `Edit · ${editing.name}` : `New ${KIND_COPY[kind].noun}`}
+      title={editing ? `Edit · ${editing.name}` : `New ${copy.noun}`}
       onClose={onClose}
       className={EDITOR_MODAL}
       footer={(
         <>
           <IfButton onClick={onClose} disabled={busy}>Cancel</IfButton>
-          <IfButton variant="primary" onClick={save} disabled={busy}>
-            {busy ? "Saving…" : isEdit ? "Save changes" : "Create"}
+          <IfButton variant="primary" onClick={save} disabled={busy || !hasContent || !canSubmit(raw)}>
+            {busy ? "Saving…" : submitLabel}
           </IfButton>
         </>
       )}
@@ -181,7 +197,7 @@ export function ReadyMadeRuleEditor({
               id={ids.name}
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder={kind === "auto_posts" ? "Auto posts" : "Auto mass"}
+              placeholder={copy.namePlaceholder}
               className="w-full"
             />
           </div>
@@ -213,7 +229,7 @@ export function ReadyMadeRuleEditor({
           </div>
           <div>
             <IfSwitch label="Dry run" checked={dryRun} onChange={setDryRun} />
-            <IfHelp>Plans each run; nothing is {kind === "auto_posts" ? "posted" : "sent"}.</IfHelp>
+            <IfHelp>Plans each run; nothing is {copy.done}.</IfHelp>
           </div>
         </div>
 
@@ -221,7 +237,7 @@ export function ReadyMadeRuleEditor({
          *  media_files pool, tweak a field the form doesn't expose). The Dry run switch owns `dry_run`. */}
         <div>
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-            <IfLabel className="mb-0">{items}</IfLabel>
+            <IfLabel className="mb-0"><span id={ids.items}>{items}</span></IfLabel>
             <IfSegmented
               aria-label={`${items} editor`}
               value={raw.raw ? "raw" : "composer"}
@@ -231,24 +247,40 @@ export function ReadyMadeRuleEditor({
           </div>
 
           {raw.raw ? (
-            <textarea
-              aria-label={`${items} JSON`}
-              value={raw.text}
-              onChange={(e) => dispatch({ type: "edit", text: e.target.value })}
-              rows={12}
-              spellCheck={false}
-              className={cn(IF_FIELD, "block w-full resize-y px-[11px] py-1 font-mono text-[13px] outline-none placeholder:text-muted focus:border-accent")}
-              placeholder={`{ "${kind === "auto_posts" ? "posts" : "messages"}": [ … ] }`}
-            />
-          ) : (
+            <>
+              <textarea
+                aria-label={`${items} JSON`}
+                aria-describedby={hasContent ? undefined : ids.emptyHelp}
+                value={raw.text}
+                onChange={(e) => dispatch({ type: "edit", text: e.target.value })}
+                rows={12}
+                spellCheck={false}
+                className={cn(IF_FIELD, "block w-full resize-y px-[11px] py-1 font-mono text-[13px] outline-none placeholder:text-muted focus:border-accent")}
+                placeholder={`{ "${copy.key}": [ … ] }`}
+              />
+              {!hasContent && <IfHelp><span id={ids.emptyHelp}>{emptyHelp}</span></IfHelp>}
+            </>
+          ) : summary ? (
             <div className="flex items-center gap-4">
-              {summary
-                ? <span className="min-w-0 flex-1 truncate text-fg-dim">{summary}</span>
-                : <IfHelp className="mt-0 flex-1">No content yet</IfHelp>}
-              <IfButton icon={PenLine} onClick={() => setComposerOpen(true)}>
-                {summary ? "Edit content" : "Compose"}
-              </IfButton>
+              <span className="min-w-0 flex-1 truncate text-fg-dim">{summary}</span>
+              <IfButton icon={PenLine} onClick={() => setComposerOpen(true)}>Edit content</IfButton>
             </div>
+          ) : (
+            // Empty: Compose is the next step, so it gets the panel and the dialog's one live primary.
+            <EmptyState
+              art={false}
+              role="group"
+              aria-labelledby={ids.items}
+              className="rounded-md border border-border-light bg-bg-elev-1 px-4 py-5"
+              textClassName="text-fg"
+              text="No content yet"
+              help={<span id={ids.emptyHelp}>{emptyHelp}</span>}
+              action={(
+                <IfButton variant="primary" icon={PenLine} aria-describedby={ids.emptyHelp} onClick={() => setComposerOpen(true)}>
+                  Compose
+                </IfButton>
+              )}
+            />
           )}
         </div>
 
