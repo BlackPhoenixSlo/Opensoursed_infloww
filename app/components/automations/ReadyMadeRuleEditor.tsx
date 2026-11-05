@@ -190,9 +190,13 @@ export function ReadyMadeRuleEditor({
               {help}
             </>
           ) : !empty ? (
-            <div className="flex items-center gap-4">
-              <span className="min-w-0 flex-1 truncate text-fg-dim">{summary}</span>
-              <IfButton icon={PenLine} onClick={() => setComposerOpen(true)}>Edit content</IfButton>
+            // Same panel as the empty state; default variant keeps Create the dialog's one primary.
+            // Phone: stacked, 2-line summary, 44px full-width button.
+            <div role="group" aria-labelledby={ids.items} className="flex flex-col gap-3 rounded-md border border-border-light bg-bg-elev-1 px-4 py-4 sm:flex-row sm:items-center sm:gap-4">
+              <span className="min-w-0 flex-1 line-clamp-2 break-words text-fg sm:truncate">{summary}</span>
+              <IfButton size="lg" icon={PenLine} className="border-border-light max-sm:h-11 max-sm:w-full" onClick={() => setComposerOpen(true)}>
+                Edit content
+              </IfButton>
             </div>
           ) : (
             // Empty: Compose is the next step, so it gets the panel and the dialog's one live primary.
