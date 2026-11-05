@@ -40,7 +40,8 @@ import {
 } from "@/hooks/useAutomations";
 import { useAutomationRuns } from "@/hooks/useStats";
 import { RuleTable } from "@/components/automations/RuleTable";
-import { KIND_COPY, ReadyMadeRuleEditor } from "@/components/automations/ReadyMadeRuleEditor";
+import { ReadyMadeRuleEditor } from "@/components/automations/ReadyMadeRuleEditor";
+import { KIND_COPY } from "@/components/automations/readyMadeContent";
 import type { Kind } from "@/components/compose/premadeRows";
 
 /** The panel pinned to one rule kind: how My Automations > Auto Post

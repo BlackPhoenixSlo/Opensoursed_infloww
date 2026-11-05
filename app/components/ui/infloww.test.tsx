@@ -15,7 +15,7 @@ vi.mock("next/navigation", () => ({
 }));
 
 import {
-  EmptyState, HB_TABLE, HbButton, HbFilter, HbModal, HbPager, HbSelect, IF_TABLE, IfBody, IfButton, IfCard,
+  EmptyState, HB_TABLE, HbButton, HbFilter, HbModal, HbPager, HbSelect, IF_TABLE, IfBody, IfButton, IfCard, IfHelp,
   IfCreatorSelect, IfInput, IfLearn, IfModal, IfPager, IfRangePicker, IfSegmented, IfSelect, IfSwitch, IfTabs,
   InflowwPageHeader, useCreatorParam,
 } from "./infloww";
@@ -127,10 +127,16 @@ describe("EmptyState", () => {
     expect(screen.getByText("No content yet")).not.toHaveClass("mt-2");
   });
 
-  it("help renders an IfHelp line between the text and the action", () => {
-    render(<EmptyState art={false} text="No content yet" help="Add one first." action={<button type="button">Compose</button>} />);
+  it("a caller's attributes never clobber data-empty-state", () => {
+    render(<EmptyState role="group" aria-label="Posts" {...{ "data-empty-state": "x" }} />);
+    expect(screen.getByRole("group", { name: "Posts" })).toHaveAttribute("data-empty-state", "data");
+  });
+
+  it("help renders between the text and the action", () => {
+    render(<EmptyState art={false} text="No content yet" help={<IfHelp id="h">Add one first.</IfHelp>} action={<button type="button">Compose</button>} />);
     const help = screen.getByText("Add one first.");
     expect(help).toHaveClass("text-[12px]", "text-muted");
+    expect(help).toHaveAttribute("id", "h");
     expect(screen.getByText("No content yet").compareDocumentPosition(help) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(help.compareDocumentPosition(screen.getByRole("button", { name: "Compose" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });

@@ -3,6 +3,7 @@
 import { PremadeForm } from "@/components/compose/PremadeForm";
 import type { Kind } from "@/components/compose/premadeRows";
 import { EDITOR_MODAL } from "@/components/automations/automationPage";
+import { KIND_COPY } from "@/components/automations/readyMadeContent";
 import { IfModal } from "@/components/ui/infloww";
 
 /** The ready-made rule's content dialog: PremadeForm's body and its Reset / Use in rule footer in an IfModal. */
@@ -19,8 +20,7 @@ export function ComposeModal({
   onClose: () => void;
   onComposePayload: (payload: Record<string, unknown>) => void;
 }) {
-  const title =
-    kind === "auto_posts" ? "Compose auto posts" : "Compose premade mass";
+  const title = KIND_COPY[kind].composeTitle;
   return (
     <PremadeForm
       kind={kind}

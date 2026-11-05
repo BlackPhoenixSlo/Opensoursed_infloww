@@ -16,6 +16,15 @@ import type { VaultMedia } from "@/lib/relay";
 
 export type Kind = "auto_posts" | "mass_premade";
 
+/** Each kind's payload list: `{posts:[…]}` | `{messages:[…]}`. */
+export const LIST_KEY: Record<Kind, "posts" | "messages"> = { auto_posts: "posts", mass_premade: "messages" };
+
+/** The kind's own list in `payload` (`posts` | `messages`); not an array → `[]`. */
+export function listItems(payload: Record<string, unknown> | undefined, kind: Kind): unknown[] {
+  const arr = payload?.[LIST_KEY[kind]];
+  return Array.isArray(arr) ? arr : [];
+}
+
 /** OF built-in audiences usable across any account (sent as `userLists`). Same
  *  pair the Mass Online composer exposes. */
 export const SYSTEM_AUDIENCES: Array<{ id: string; label: string }> = [
@@ -275,9 +284,8 @@ export type PremadePayload = {
 export function buildPayload(rows: Row[], cycle: PostsCycle, ctx: RowCtx): PremadePayload | null {
   const items = rowsToItems(rows, ctx);
   if (items.length === 0) return null;
-  return ctx.kind === "auto_posts"
-    ? { posts: items, ...resendPair(cycle.resendCount, cycle.resendAfterHours) }
-    : { messages: items };
+  const cycleKnobs = ctx.kind === "auto_posts" ? resendPair(cycle.resendCount, cycle.resendAfterHours) : {};
+  return { [LIST_KEY[ctx.kind]]: items, ...cycleKnobs };
 }
 
 /** Number/anything → the string an input expects ("" when unset), the inverse
@@ -333,7 +341,7 @@ export function itemToRow(it: Record<string, unknown>): Row {
 /** Seed the repeating rows from a saved `{posts|messages:[…]}` payload (the
  *  inverse of buildPayload). Empty/missing → one blank row. */
 export function payloadToRows(payload: Record<string, unknown> | undefined, kind: Kind): Row[] {
-  const arr = kind === "auto_posts" ? payload?.posts : payload?.messages;
-  if (!Array.isArray(arr) || arr.length === 0) return [blankRow()];
+  const arr = listItems(payload, kind);
+  if (arr.length === 0) return [blankRow()];
   return arr.map((it) => itemToRow((it ?? {}) as Record<string, unknown>));
 }

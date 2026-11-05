@@ -18,7 +18,7 @@
 
 import {
   forwardRef, useCallback, useId, useRef, useState, useSyncExternalStore,
-  type ButtonHTMLAttributes, type HTMLAttributes, type InputHTMLAttributes, type TextareaHTMLAttributes, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent,
+  type ButtonHTMLAttributes, type HTMLAttributes, type InputHTMLAttributes, type LabelHTMLAttributes, type TextareaHTMLAttributes, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
 import { usePathname, useRouter } from "next/navigation";
@@ -109,7 +109,7 @@ const ART_HEIGHT = { sm: 40, md: 90, lg: 100 } as const;
  * then a 14px #999 line, centred. `size="sm"` is the antd table's simple empty (40px art, 32px above and below);
  * `md` the 90px art Sensitive words uses. `kind="error"` with `onRetry` adds `AbnormalRequestError`'s primary "Retry"
  * 10px below; `action` puts any other button there. `art={false}` drops the illustration (an empty box inside a form,
- * e.g. a rule editor's "No content yet"); `help` adds an `IfHelp` line under the text; other div attributes (role, aria-*) pass through. `data-empty-state` names it
+ * e.g. a rule editor's "No content yet"); `help` goes under the text (pass an `IfHelp` line); other div attributes (role, aria-*) pass through. `data-empty-state` names it
  * for slop's page sweep (an empty state on screen before a page's first read answered is a false one).
  */
 export function EmptyState({
@@ -125,11 +125,11 @@ export function EmptyState({
   textClassName?: string;
 }) {
   return (
-    <div data-empty-state={kind} {...rest}
+    <div {...rest} data-empty-state={kind}
       className={cn("flex flex-col items-center justify-center text-center", size === "sm" && "py-8", className)}>
       {art && <EmptyArt kind={kind} height={ART_HEIGHT[size]} />}
       <p className={cn("text-[14px] text-muted", art && (size === "md" ? "mt-2.5" : "mt-2"), textClassName)}>{text}</p>
-      {help && <IfHelp>{help}</IfHelp>}
+      {help}
       {kind === "error" && onRetry && (
         <IfButton variant="primary" className="mt-2.5" onClick={onRetry}>Retry</IfButton>
       )}
@@ -296,24 +296,22 @@ export const IfTextArea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes
 IfTextArea.displayName = "IfTextArea";
 
 /** antd's vertical form label (label above the field, so no colon): 14px T1, 8px under it; `required` draws the red
- *  asterisk after the text (the saved-replies editor's "Name *"). */
-export function IfLabel({ htmlFor, required, className, children }: {
-  htmlFor?: string;
+ *  asterisk after the text (the saved-replies editor's "Name *"). Label attributes (`htmlFor`, `id`) pass through. */
+export function IfLabel({ required, className, children, ...rest }: LabelHTMLAttributes<HTMLLabelElement> & {
   required?: boolean;
-  className?: string;
   children: ReactNode;
 }) {
   return (
-    <label htmlFor={htmlFor} className={cn("mb-2 block text-[14px] text-fg", className)}>
+    <label {...rest} className={cn("mb-2 block text-[14px] text-fg", className)}>
       {children}
       {required && <span aria-hidden className="ml-0.5 text-err">*</span>}
     </label>
   );
 }
 
-/** One quiet line of help under a field (antd's `extra`): 12px T3. */
-export function IfHelp({ className, children }: { className?: string; children: ReactNode }) {
-  return <div className={cn("mt-1 text-[12px] text-muted", className)}>{children}</div>;
+/** One quiet line of help under a field (antd's `extra`): 12px T3. Div attributes (`id` for aria-describedby) pass through. */
+export function IfHelp({ className, children, ...rest }: HTMLAttributes<HTMLDivElement> & { children: ReactNode }) {
+  return <div {...rest} className={cn("mt-1 text-[12px] text-muted", className)}>{children}</div>;
 }
 
 /** antd's date range (250x32): "Start date → End date" with a calendar icon at the right, as one box (a `group`). Two
