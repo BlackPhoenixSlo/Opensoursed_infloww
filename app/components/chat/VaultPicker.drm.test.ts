@@ -91,6 +91,16 @@ describe("vault video source resolution", () => {
     expect(videoPosterFrames(photo)).toEqual([]);
   });
 
+  it("resolves a gif to its .mp4 (OF stores a gif as a clip), never DRM", () => {
+    // service/tests/fixtures/of_media_shapes.json's gif: thumb jpg, full mp4.
+    const gif: VaultMedia = {
+      id: 3, type: "gif",
+      files: { thumb: { url: "https://cdn2.onlyfans.com/g/150x150_frame_0.jpg" }, full: { url: "https://cdn2.onlyfans.com/g/0i1n8it6_source.mp4" } },
+    };
+    expect(progressiveVideoSrc(gif)).toBe("https://cdn2.onlyfans.com/g/0i1n8it6_source.mp4");
+    expect(isDrmOnlyVideo(gif)).toBe(false);
+  });
+
   it("still flags DRM (via manifest) even when OF ships no poster frames", () => {
     // Edge case: a DRM file with an empty preview.options. It must still be
     // recognised as DRM (so the UI shows the locked state, not a broken

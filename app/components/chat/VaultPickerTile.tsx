@@ -20,6 +20,7 @@ import { type VaultMedia } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 import { notWiredTitle } from "./NotWired";
 import { aiCaptionFor, VaultAiCaptionOverlay } from "./vaultAiCaption";
+import { VaultGifLoop } from "./VaultGifLoop";
 import { cardAction } from "./VaultMediaDetails";
 import {
   VAULT_CARD_CHECK, VAULT_CARD_CHECK_UNDER_INFO, VAULT_CARD_FOOT, VAULT_CARD_GIF, VAULT_CARD_GREYED, VAULT_CARD_INFO,
@@ -104,6 +105,8 @@ export function VaultPickerTile({
   // and feeding it to <video>/`/img/scrub` is exactly what made
   // DRM items fail ("Couldn't load" + 502 storyboard build).
   const rawVideoSrc = progressiveVideoSrc(m);
+  // A gif is OF's short .mp4: it loops over the still while on screen (VaultGifLoop).
+  const gifSrc = m.type === "gif" && accountId ? proxyImage(rawVideoSrc, accountId, m.id) : "";
   // DRM (encrypted) videos have no progressive source; we slideshow
   // OF's own poster frames instead of the impossible ffmpeg scrub.
   // The 🔒 marker keys off the manifest (authoritative), so it
@@ -140,7 +143,7 @@ export function VaultPickerTile({
   const posterSrcFor = (u: string, idx: number) =>
     useCachedPoster
       ? `/admin/vault-ai/poster?account_id=${encodeURIComponent(accountId!)}&media_id=${m.id}&i=${idx}`
-      : proxyImage(u, accountId);
+      : proxyImage(u, accountId, m.id);
   const status = resolveStatus(fanEntry, onWall);
   // The Fan already has it (bought, or last sent free). Advisory:
   // the card stays selectable; the relay's 409 guards re-sales.
@@ -231,7 +234,7 @@ export function VaultPickerTile({
                 const img = e.currentTarget;
                 if (!img.dataset.fellback) {
                   img.dataset.fellback = "1";
-                  img.src = proxyImage(u, accountId);
+                  img.src = proxyImage(u, accountId, m.id);
                 }
               } : undefined}
               style={{ opacity: idx === pv.posterIdx ? 1 : 0 }}
@@ -270,7 +273,7 @@ export function VaultPickerTile({
           {pv.showScrub && Array.from({ length: SCRUB_FRAMES }).map((_, idx) => (
             <img
               key={`${m.id}-frame-${idx}`}
-              src={proxyScrubFrame(rawVideoSrc, accountId, idx, m.duration, hover.state.sid)}
+              src={proxyScrubFrame(rawVideoSrc, accountId, idx, m.duration, hover.state.sid, m.id)}
               alt=""
               aria-hidden={idx !== pv.scrubVisibleIdx}
               decoding="async"
@@ -321,6 +324,7 @@ export function VaultPickerTile({
           {m.type}
         </div>
       )}
+      {gifSrc && <VaultGifLoop src={gifSrc} className={blurCls} />}
       {greyed && <span data-testid="vault-card-greyed" aria-hidden className={VAULT_CARD_GREYED} />}
       {captionOn && cap && <VaultAiCaptionOverlay caption={cap} />}
       {m.type === "video" && (

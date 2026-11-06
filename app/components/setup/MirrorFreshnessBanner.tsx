@@ -37,6 +37,7 @@ export default function MirrorFreshnessBanner() {
   const liveRev = useQuery<LiveRev>({
     queryKey: ["live-rev"],
     queryFn: () => relay.get<LiveRev>("/admin/rev/live"),
+    // eslint-disable-next-line local/no-fixed-polling -- detects a deploy; relay restart kills SSE anyway
     refetchInterval: 15 * 60_000,
     staleTime: 60_000,
   });

@@ -20,7 +20,7 @@
  * same behaviour as the picker. Photos just render.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 
 import { isDrmOnlyVideo, progressiveVideoSrc } from "@/components/chat/VaultPicker";
@@ -92,6 +92,33 @@ function VaultInlineVideo({ src, poster }: { src: string; poster?: string }) {
   );
 }
 
+/** A gif (OF's short .mp4) in the details drawer: it loops, muted, over its
+ *  still as poster; the still alone if the clip fails. Keyed on the source by
+ *  its caller, so another selection starts afresh. */
+function VaultInlineGif({ src, poster, onPosterError, fallback }: {
+  src: string; poster: string | null; onPosterError: () => void; fallback: ReactNode;
+}) {
+  const [failed, setFailed] = useState(false);
+  if (failed) {
+    if (!poster) return fallback;
+    // eslint-disable-next-line @next/next/no-img-element
+    return <img src={poster} alt="" onError={onPosterError} className="w-full max-h-[30vh] object-contain" />;
+  }
+  return (
+    <video
+      data-gif-loop
+      src={src}
+      poster={poster || undefined}
+      autoPlay
+      muted
+      loop
+      playsInline
+      onError={() => setFailed(true)}
+      className="w-full max-h-[30vh] object-contain bg-black"
+    />
+  );
+}
+
 /** A voice note in the details drawer: the player, and nothing else.
  *
  *  Its own component because it shares NOTHING with the picture path below — no
@@ -110,7 +137,7 @@ function VaultAudioPreview({
   media: VaultMedia;
   accountId: string;
 }) {
-  const src = proxyImage(m.files?.full?.url, accountId);
+  const src = proxyImage(m.files?.full?.url, accountId, m.id);
   return (
     <div className="w-full rounded-lg bg-black px-3 py-4 grid gap-2 justify-items-center text-fg-dim">
       <span className="text-2xl leading-none" aria-hidden>🎤</span>
@@ -132,6 +159,7 @@ export default function VaultPreviewMedia({
   const rawSrc = isVideo ? progressiveVideoSrc(m) : null;
   const drmOnly = isVideo && isDrmOnlyVideo(m);
   const playable = isVideo && !!rawSrc && !drmOnly;
+  const gifSrc = m.type === "gif" ? progressiveVideoSrc(m) : null;
   const idNum = Number(m.id);
   const [zoom, setZoom] = useState(false);
 
@@ -148,6 +176,7 @@ export default function VaultPreviewMedia({
     proxyImage(
       m.files?.full?.url || m.files?.preview?.url || m.files?.thumb?.url,
       accountId,
+      m.id,
     ),
   ];
   const still = useStillLadder([photoFull, ...fallbacks]);
@@ -170,10 +199,13 @@ export default function VaultPreviewMedia({
 
   return (
     <div className="relative w-full rounded-lg overflow-hidden bg-black">
-      {playable ? (
+      {gifSrc ? (
+        <VaultInlineGif key={gifSrc} src={proxyImage(gifSrc, accountId, m.id)} poster={still.src}
+          onPosterError={still.onError} fallback={noPreview} />
+      ) : playable ? (
         <VaultInlineVideo
           key={rawSrc}
-          src={proxyImage(rawSrc, accountId)}
+          src={proxyImage(rawSrc, accountId, m.id)}
           // `still.src` and not the first rung: a poster url that has already
           // 404'd is a dead attribute the browser retries on every render.
           poster={still.src || undefined}

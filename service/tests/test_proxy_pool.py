@@ -664,6 +664,15 @@ def case_parse_pool_table():
         entries, errors = proxy_registry.parse_pool(text)
         assert (len(entries), len(errors)) == (n, n_err), (text, entries, errors)
         assert all(proxy_registry.is_reserved_label(e["label"]) for e in entries), entries
+    # POOL_TIER_BREAK items -> each entry's tier; a repeat keeps its first (best) tier; legacy entries: 0
+    for text, tiers in [("a.invalid:1,b.invalid:2", [0, 0]), ("a.invalid:1,|,b.invalid:2", [0, 1]),
+                        ("a.invalid:1\n | \nb.invalid:2,|,|,c.invalid:3", [0, 1, 3]), ("|,a.invalid:1", [1]),
+                        ("a.invalid:1,|,a.invalid:1,b.invalid:2", [0, 1])]:
+        assert [e["tier"] for e in proxy_registry.parse_pool(text)[0]] == tiers, text
+    _reset("a.invalid:1,b.invalid:2")
+    proxy_registry.sync_pool("a.invalid:1,|,b.invalid:2")
+    assert [p["tier"] for p in proxy_registry.pool_entries()] == [0, 1], "a kept entry takes its new tier"
+    assert [len(g) for g in proxy_registry._tiers([{"label": "x"}, {"label": "y", "tier": 1}])] == [1, 1]
     errors = proxy_registry.parse_pool("bad.invalid:x:u:secretpw")[1]
     assert len(errors) == 1 and "secretpw" not in errors[0], errors
 

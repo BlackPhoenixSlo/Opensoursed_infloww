@@ -14,6 +14,10 @@ so a target can never name a check that does not exist.
                        growth_route_not_blocked stays green (no lock is held across a page).
   sweep-no-429-retry   OF's 429 never retried (`retry_after` finds none: the walks' pages and the
                        name fill's lookups). The pacer kept.
+  tx-cadence-300       the ledger supervisor back on the old 300 s cadence
+                       (transaction_ingest._TICK_INTERVAL_S = 300 in the relay, as
+                       INGEST_TICK_INTERVAL_S=300 would set it): the same pages a pass at 3x the
+                       passes an hour, so tx_calls_budget goes red. Every page and row unchanged.
 """
 from __future__ import annotations
 
@@ -28,6 +32,7 @@ COUNTS = "walk_counts_match"
 NO_5XX = "no_5xx"
 USER_P95 = "user_read_p95"
 BG_P95 = "background_lookup_p95"
+TX_BUDGET = "tx_calls_budget"
 
 
 def _unpaced() -> None:
@@ -41,10 +46,17 @@ def _no_retry() -> None:
     of_pacing.retry_after = lambda _e: None
 
 
+def _tx_cadence_300() -> None:
+    import transaction_ingest
+    transaction_ingest._TICK_INTERVAL_S = 300.0
+
+
 def register(Fault) -> dict:
     return {
         # slop/run sweep-pacing --break
         "sweep-unpaced": Fault(_unpaced, (PAGES_SPACED, COUNTS)),
         # slop/run sweep-pacing --break --fault=sweep-no-429-retry --baseline=<green run>
         "sweep-no-429-retry": Fault(_no_retry, (RETRY_ONCE, TERMINAL, COUNTS)),
+        # slop/run sweep-pacing --break --fault=tx-cadence-300 --baseline=<green run>
+        "tx-cadence-300": Fault(_tx_cadence_300, (TX_BUDGET,)),
     }

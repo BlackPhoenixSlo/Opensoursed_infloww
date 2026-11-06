@@ -71,8 +71,9 @@ _FINGERPRINT_WINDOW = timedelta(seconds=300)
 # Scan state machine.
 _ROLLING_WINDOW_DAYS = 7
 _DEFAULT_BACKFILL_DAYS = 90
-_FAIL_BACKOFF_S = 600                   # auto-pause for 10 min after 3 real fails
-                                        # (a proxy CONNECT refusal never counts)
+_FAIL_BACKOFF_S = 1800                  # auto-pause 30 min after 3 real fails = two
+                                        # 900 s ticks skipped (below a tick it only
+                                        # relabelled); a proxy CONNECT refusal never counts
 _FAILS_BEFORE_PAUSE = 3
 
 

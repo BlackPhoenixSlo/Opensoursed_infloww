@@ -20,6 +20,10 @@ of CONNECTs was 7.7 % of attempts); a WebSocket upgrade keeps its tunnel.
 
 `connects` records every CONNECT in arrival order: {t, alive, dest} (alive False = refused).
 
+`egress_of(peer_port)`: the egress a loopback fake in this process (lib/of_wire.py) saw a request arrive from:
+"127.0.0.1:<proxy port>" when that peer port is an open tunnel's upstream socket, else "direct" (the address an
+OF signature's `AWS:SourceIp` names; lib/img_relay.py names the CDN side's egress the same way).
+
 Bypass, declared: SOCKS5, not HTTP CONNECT. lib/of_wire.py is plain http and curl
 tunnels only an https target through an HTTP proxy, so an HTTP proxy would never be
 asked a CONNECT to refuse. `refuse_s` (0.33 s) is measured: the gap between prod's
@@ -36,6 +40,12 @@ import time
 
 REFUSE_S = 0.33
 _LOOPBACK = ("127.0.0.1", "::1")
+_EGRESS: dict[int, int] = {}  # an open tunnel's upstream local port -> its proxy's port (every wire in the process)
+
+
+def egress_of(peer_port: int) -> str:
+    p = _EGRESS.get(int(peer_port))
+    return "direct" if p is None else f"127.0.0.1:{p}"
 
 
 async def _pipe(src: asyncio.StreamReader, dst: asyncio.StreamWriter, socks: tuple,
@@ -153,6 +163,8 @@ class ProxyWire:
                 return
             ur, uw = await asyncio.open_connection(host, port)
             u = uw.get_extra_info("socket")
+            up = u.getsockname()[1]
+            _EGRESS[up] = self.port
             with self.lock:
                 if not self.alive:  # killed meanwhile
                     return
@@ -168,6 +180,7 @@ class ProxyWire:
                 self._open.discard(c)
                 if u is not None:
                     self._open.discard(u)
+                    _EGRESS.pop(up, None)
             for w in (cw, uw):
                 if w is not None:
                     w.close()

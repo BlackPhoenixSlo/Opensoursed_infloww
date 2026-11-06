@@ -10,10 +10,11 @@ end of its `_wire`), for scenarios/2026-11-05-sweep-pacing.py. Inert until calle
          subscribers   lifecycle_messages.refresh_roster(aid, ax._make_client(aid), now=utcnow())
                        per Creator (the lifecycle sweep's roster crawl)
          tx_cycles     transaction_ingest.supervisor_cycle() `cycles` times back to back (the
-                       300 s supervisor's loop body over every live Creator); result: each
+                       ledger supervisor's loop body over every live Creator); result: each
                        cycle's {t0, t1}
-       Bypass, declared: the jobs' cadences (hourly / 30 min / 300 s) and prewarm_all's spread.
-  GET  /__slop/sweep-pacing/runs  {runs: [{n, job, account, t0, t1, error, result}], log: [{t, msg}]}
+       Bypass, declared: the jobs' cadences (hourly / 30 min / _TICK_INTERVAL_S) and prewarm_all's spread.
+  GET  /__slop/sweep-pacing/runs  {runs: [{n, job, account, t0, t1, error, result}], log: [{t, msg}],
+       tick_interval_s: transaction_ingest._TICK_INTERVAL_S (the supervisor's sleep this relay runs with)}
 """
 
 import asyncio
@@ -106,7 +107,9 @@ def wire(app, loopback, _relay) -> None:
 
     async def runs(request: Request) -> dict:
         loopback(request)
-        return {"runs": [dict(r) for r in _runs], "log": list(_log)}
+        import transaction_ingest
+        return {"runs": [dict(r) for r in _runs], "log": list(_log),
+                "tick_interval_s": transaction_ingest._TICK_INTERVAL_S}
 
     app.add_api_route("/__slop/sweep-pacing/knobs", knobs, methods=["POST"])
     app.add_api_route("/__slop/sweep-pacing/run", run, methods=["POST"])

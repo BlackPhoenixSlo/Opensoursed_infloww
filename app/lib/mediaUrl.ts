@@ -15,9 +15,16 @@ import { resolveShareToken } from "@/lib/shareToken";
  * the browser's IP doesn't match the account's proxy egress, so the image
  * 403s. `/img` tunnels the fetch via the right account's HTTP client.
  *
+ * `mediaId` (a vault media's id): the url may be signed for the account's
+ * OLD proxy IP, or expired; the relay then re-signs that media and retries.
+ *
  * Returns the original URL if either `url` or `accountId` is missing.
  */
-export function proxyImage(url: string | null | undefined, accountId: string | null | undefined): string {
+export function proxyImage(
+  url: string | null | undefined,
+  accountId: string | null | undefined,
+  mediaId?: number | null,
+): string {
   if (!url) return "";
   // Browser-local URLs (blob:/data:) aren't fetchable through the relay
   // — they're already in the browser, just pass them through.
@@ -27,6 +34,7 @@ export function proxyImage(url: string | null | undefined, accountId: string | n
   const params = new URLSearchParams();
   params.set("u", url);
   params.set("account_id", accountId);
+  if (mediaId != null) params.set("media_id", String(mediaId));
   if (tok) params.set("t", tok);
   return `/img?${params.toString()}`;
 }
@@ -51,6 +59,8 @@ export function proxyScrubFrame(
    *  exact hover session — a delayed cancel from a previous hover of
    *  the same video can't abort a freshly-started build. */
   sessionId?: string | null,
+  /** The vault media's id: a stale-signed url is re-signed by the relay (see proxyImage). */
+  mediaId?: number | null,
 ): string {
   if (!url || !accountId) return "";
   if (url.startsWith("blob:") || url.startsWith("data:")) return "";
@@ -63,6 +73,7 @@ export function proxyScrubFrame(
     params.set("dur", String(duration));
   }
   if (sessionId) params.set("sid", sessionId);
+  if (mediaId != null) params.set("media_id", String(mediaId));
   if (tok) params.set("t", tok);
   return `/img/scrub?${params.toString()}`;
 }

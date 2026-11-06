@@ -13,13 +13,18 @@ other scenario's relay is untouched (`OF.http` / `OF.timeout_s` re-raise the cli
        1. The fake CDN: a loopback ThreadingHTTPServer in the relay process (a thread per request). Per request,
           after `latency_s`: a seeded asset's bytes (`asset_bytes`, deterministic per host+path) with
           Content-Length; on a signed host (any but public.onlyfans.com) a URL without Policy + Signature +
-          Key-Pair-Id, or whose Policy's `exp` is past, is 403 AccessDenied (CloudFront's answer to an expired
-          signed URL; the Policy is CloudFront's custom one, `policy_b64` / `policy_exp`); an unseeded path 404.
+          Key-Pair-Id, whose Policy's `exp` is past, or whose Policy names an `AWS:SourceIp` other than the
+          request's egress, is 403 AccessDenied (CloudFront's answer; the Policy is CloudFront's custom one,
+          `policy_b64` / `policy_exp` / `policy_ip`); an unseeded path 404. A `.mp4` key's bytes are a real
+          12 s clip (`video_bytes`, ffmpeg testsrc 64x64 at 1 fps, size ignored), so /img/scrub's ffmpeg slices it.
+          A `Range: bytes=` header (one spec) gets that slice: 206 + Content-Range (416 past the end).
        2. curl_cffi at its wire: `relay._guard_curl_cffi()` first (curl_cffi goes past relay_guarded's socket guard;
           it refuses every non-loopback host from now on), then `curl_cffi.requests.Session.request` wrapped so a
           URL on a seeded CDN host (the assets' hosts) is sent to the fake instead (path + query kept, the original
-          host in `X-Slop-Cdn-Host`, and the session's cookies that curl would have sent to that host as a `Cookie`
-          header, since curl matches its jar against the loopback host otherwise). Every other URL is unchanged.
+          host in `X-Slop-Cdn-Host`, the egress in `X-Slop-Egress`: "127.0.0.1:<port>" of the proxy the call
+          names (its `proxies`, else the session's), else "direct"; and the session's cookies that curl would
+          have sent to that host as a `Cookie` header, since curl matches its jar against the loopback host
+          otherwise). Every other URL is unchanged.
           Both `/img` lanes go through it: the signed hosts on the Creator's `client.http` (this part's
           `OF.http`), the direct ones on `img_api._DIRECT_HTTP` (a bare curl_cffi Session, measured in source).
        3. `img_api._IMG_CACHE_DIR` (a module global read at call time) re-pointed to `$DEMO_SHOTS_TMP/img-cache`:
@@ -28,7 +33,7 @@ other scenario's relay is untouched (`OF.http` / `OF.timeout_s` re-raise the cli
   GET /__slop/img/calls?since=N&until=M  {calls}: every request the fake got, in arrival order, [N:M].
   GET /__slop/img/stats                  {n}: calls so far.
 
-Record per call: i, t (arrival, epoch s), key ("host/path"), host, path, range, cookie (a Cookie header came),
+Record per call: i, t (arrival, epoch s), key ("host/path"), host, path, range, egress, cookie (a Cookie header came),
 auth_id (its auth_id cookie), of_headers (user-id / x-bc / app-token / sign sent), ua, status, inflight (requests
 in the fake at arrival, this one included: its max over calls is the fake's peak concurrency), bytes. A call
 leaves `inflight` just before its last byte is written (a non-200: before its status line), so a relay slot can
@@ -43,9 +48,10 @@ of_client.DEFAULT_TIMEOUT_S, so `/img`'s signed-host path runs `_get_client(requ
 Bypasses (declared): the CDN is a loopback fake inside the relay process (shares its GIL); the bytes are seeded
 noise in a 1x1 JPEG's comment segments (`asset_bytes`: the browser decodes one grey pixel, the relay nothing);
 `latency_s` per request is a guess at OF's CDN through a proxy;
-the Signature is never verified, only the Policy's expiry; `pictures` serves a PNG as image/jpeg (browsers sniff); no Range / 206, no CDN 5xx; the session cookies and
-headers are synthetic (session-level here, where of_client sets them per request); there is no proxy between the
-Creator's client and the CDN.
+the Signature is never verified, only the Policy's expiry and SourceIp; the egress is the proxy curl was told to
+use (a header the wrap adds), not the peer address the fake sees; `pictures` serves a PNG as image/jpeg (browsers
+sniff); one-spec Range answered as CloudFront does (206 + Content-Range, 416 past the end), no CDN 5xx; the session cookies and headers are synthetic (session-level here, where
+of_client sets them per request).
 """
 
 import base64
@@ -53,6 +59,7 @@ import hashlib
 import json
 import os
 import random
+import re
 import threading
 import time
 from pathlib import Path
@@ -60,6 +67,7 @@ from urllib.parse import parse_qs, urlsplit
 
 CFG_FILE = "of-cdn.json"  # in $DEMO_SHOTS_TMP
 ORIG_HOST = "X-Slop-Cdn-Host"
+EGRESS = "X-Slop-Egress"
 ACCOUNT_HEADERS = ("user-id", "x-bc", "app-token")  # the OF account headers `creator_headers` sets
 OF_HEADERS = (*ACCOUNT_HEADERS, "sign")  # recorded per call (`of_headers`)
 _lock = threading.Lock()
@@ -190,14 +198,39 @@ def _leave() -> None:
         _state["inflight"] -= 1
 
 
+def video_bytes() -> bytes:
+    """A 12 s 64x64 clip at 1 fps (ffmpeg testsrc: a counter that changes every second), H.264 mp4."""
+    import subprocess
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        out = Path(d) / "clip.mp4"
+        subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc=duration=12:size=64x64:rate=1",
+                        "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out)], check=True, timeout=60)
+        return out.read_bytes()
+
+
 def _body(key: str, size: int) -> bytes:
     with _lock:
         b = _bytes.get(key)
     if b is None:
-        b = picture_bytes(key) if _cfg["pictures"] else asset_bytes(key, size)
+        b = video_bytes() if key.endswith(".mp4") else picture_bytes(key) if _cfg["pictures"] else asset_bytes(key, size)
         with _lock:
             _bytes[key] = b
     return b
+
+
+def _range(h: str | None, n: int):
+    """CloudFront's answer to one `Range: bytes=` spec on an n-byte object: (first, last), "unsatisfiable", or None
+    (no / unparsable header: the whole object, 200)."""
+    m = re.fullmatch(r"bytes=(\d*)-(\d*)", (h or "").strip())
+    if not m or not (m.group(1) or m.group(2)):
+        return None
+    if not m.group(1):
+        return (max(0, n - int(m.group(2))), n - 1) if int(m.group(2)) else "unsatisfiable"
+    a = int(m.group(1))
+    if a >= n:
+        return "unsatisfiable"
+    return a, min(n - 1, int(m.group(2))) if m.group(2) else n - 1
 
 
 def policy_b64(policy: dict) -> str:
@@ -213,15 +246,23 @@ def policy_exp(policy: str) -> float:
     return float(doc["Statement"][0]["Condition"]["DateLessThan"]["AWS:EpochTime"])
 
 
-def _expired(q: dict) -> bool:
-    """CloudFront's check, as far as this fake makes it: the three params present and the Policy's expiry ahead."""
+def policy_ip(policy: str) -> str | None:
+    """A CloudFront custom Policy's `IpAddress.AWS:SourceIp`, or None when it names none."""
+    raw = policy.translate(str.maketrans("-_~", "+=/"))
+    doc = json.loads(base64.b64decode(raw + "=" * (-len(raw) % 4)).decode())
+    return (doc["Statement"][0]["Condition"].get("IpAddress") or {}).get("AWS:SourceIp")
+
+
+def _denied(q: dict, egress: str) -> bool:
+    """CloudFront's check, as far as this fake makes it: the three params present, the Policy's expiry ahead and
+    its SourceIp (when it names one) the request's egress."""
     if not all(q.get(k) for k in ("Policy", "Signature", "Key-Pair-Id")):
         return True
     try:
-        exp = policy_exp(q["Policy"][0])
+        exp, ip = policy_exp(q["Policy"][0]), policy_ip(q["Policy"][0])
     except Exception:  # noqa: BLE001 — a Policy the fake cannot read is denied, as by CloudFront
         return True
-    return exp < time.time()
+    return exp < time.time() or (ip is not None and ip != egress)
 
 
 def _serve() -> int:
@@ -234,7 +275,8 @@ def _serve() -> int:
             key = f"{host}{p.path}"
             q = parse_qs(p.query)
             cookies = dict(c.strip().split("=", 1) for c in (self.headers.get("cookie") or "").split(";") if "=" in c)
-            rec = _record(key=key, host=host, path=p.path, range=self.headers.get("range"),
+            egress = self.headers.get(EGRESS) or "direct"
+            rec = _record(key=key, host=host, path=p.path, range=self.headers.get("range"), egress=egress,
                           cookie="cookie" in self.headers, auth_id=cookies.get("auth_id"),
                           ua=self.headers.get("user-agent"), of_headers=[h for h in OF_HEADERS if h in self.headers],
                           status=None, bytes=0)
@@ -250,17 +292,28 @@ def _serve() -> int:
                 asset = _cfg["assets"].get(key)
                 if asset is None:
                     status, body, ct = 404, b"<Error><Code>NoSuchKey</Code></Error>", "application/xml"
-                elif signed(host) and _expired(q):
+                elif signed(host) and _denied(q, egress):
                     status, body, ct = 403, b"<Error><Code>AccessDenied</Code></Error>", "application/xml"
                 else:
-                    status, body, ct = 200, _body(key, int(asset)), "image/jpeg"
+                    status, body = 200, _body(key, int(asset))
+                    ct = "video/mp4" if key.endswith(".mp4") else "image/jpeg"
+                part = _range(self.headers.get("range"), len(body)) if status == 200 else None
+                if part == "unsatisfiable":
+                    status, part, body = 416, f"bytes */{len(body)}", b""
+                elif part:
+                    a, b = part
+                    status, part, body = 206, f"bytes {a}-{b}/{len(body)}", body[a:b + 1]
                 rec.update(status=status, bytes=len(body))
-                if status != 200:  # the relay drops its slot on the status line alone
+                if status not in (200, 206):  # the relay drops its slot on the status line alone
                     leave()
                 self.send_response(status)
                 self.send_header("Content-Type", ct)
                 self.send_header("Content-Length", str(len(body)))
+                if part:
+                    self.send_header("Content-Range", part)
                 self.end_headers()
+                if not body:
+                    return
                 self.wfile.write(body[:-1])
                 leave()  # before the last byte: the relay cannot finish (and free its slot) before this
                 self.wfile.write(body[-1:])
@@ -296,6 +349,9 @@ def _route_curl() -> None:
             return None
         hdrs = dict(k.pop("headers", None) or {})
         hdrs[ORIG_HOST] = host
+        px = k.get("proxies") or getattr(session, "proxies", None) or {}
+        pu = urlsplit(str(px.get("https") or px.get("http") or ""))
+        hdrs[EGRESS] = f"{pu.hostname}:{pu.port}" if pu.hostname else "direct"
         jar = "; ".join(f"{c.name}={c.value}" for c in session.cookies.jar if _domain_match(host, c.domain))
         if jar:
             hdrs["Cookie"] = jar

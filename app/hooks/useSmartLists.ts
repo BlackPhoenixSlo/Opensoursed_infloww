@@ -102,6 +102,7 @@ export function useSmartLists(accountId: string | null) {
 export function useSmartListsPage(accountId: string | null) {
   return useQuery({
     ...listsQuery(accountId),
+    // eslint-disable-next-line local/no-fixed-polling -- stops when the job ends
     refetchInterval: (q) =>
       q.state.data?.lists.some((l) => l.is_active && (l.sync_state == null
         || l.sync_state === "syncing" || l.sync_state === "pending"))

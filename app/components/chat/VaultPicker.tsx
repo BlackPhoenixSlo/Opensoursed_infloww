@@ -27,6 +27,7 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { useChatterFolderAccess, useVaultLists, useVaultMedia } from "@/hooks/useVaultMedia";
 import { useThumbAutoRefresh } from "@/hooks/useThumbAutoRefresh";
+import { refreshVaultFromOf } from "@/hooks/vaultRefresh";
 import { searchOf, useMirrorItems, useVaultCacheSummary } from "@/hooks/useVaultCache";
 import { useFanVaultHistory } from "@/hooks/useFanVaultHistory";
 import { useVaultMediaStats } from "@/hooks/useVaultMediaStats";
@@ -185,8 +186,10 @@ export function VaultPicker(props: VaultPickerProps) {
         isPlaceholderData: false,
         error: null,
         loadMore: vaultMirror.loadMore,
-        refresh: vaultMirror.refetch,
-      } as typeof vaultLive)
+        // Refresh = what OF holds NOW, as Vault Pro's ↻: the mirror's urls carry the signature (and the proxy IP)
+        // of the Collect that wrote them, so re-reading the mirror alone changed nothing after a proxy move.
+        refresh: () => { void refreshVaultFromOf(qc, accountId!, listId).catch(() => false); },
+      } as Omit<typeof vaultLive, "refresh"> & { refresh: () => void })
     : vaultLive;
 
   // A broken thumbnail (an expired signed url) reloads the grid once per Creator per cooldown (reloadBrokenThumbs:

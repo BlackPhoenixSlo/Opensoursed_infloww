@@ -1,8 +1,9 @@
 """
 Background ingest supervisor for OF's /api2/v2/payouts/transactions ledger.
 
-Single async supervisor task per process. 5-min ticks (`_TICK_INTERVAL_S`).
-Sequential per-account inside one refresh tick. 0.4s inter-page sleep.
+Single async supervisor task per process. 15-min ticks (`_TICK_INTERVAL_S`).
+Up to _REFRESH_CONCURRENCY accounts at once inside one refresh tick, each paged
+at of_pacing's per-Creator pace.
 
 Drops X-Priority entirely (the request-context priority does not propagate
 to a background task — see library/db_data/12_transaction_ingest_synthesis.md §2
@@ -41,6 +42,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 import os
 import time
 from collections import Counter, defaultdict
@@ -95,12 +97,33 @@ def _env_float(name: str, default: float) -> float:
 
 
 # ── Knobs ────────────────────────────────────────────────────────────
-_TICK_INTERVAL_S = 300                  # 5 minutes (was 600 — too slow vs the 30m green tier ceiling)
+# Ledger supervisor cadence. 900 s (was 300): OF's ledger lands hours late (rows
+# measured 209/560/628 min after occurred_at), pending->cleared changes no total,
+# and provider_id dedup makes a re-read a no-op — so a 5-min full 7-day re-read
+# (~6 pages a Creator) was ~72 OF calls/h/account of waste; 900 s is ~24.
+# Green health tier = scanned within 30 min (tx_ingest_admin_api._tx_ingest_tier):
+# 15 min + cycle duration keeps a ~15 min margin. Fresh payments are the 30 s
+# fast poll's job (purchases feed), not this one. Env INGEST_TICK_INTERVAL_S,
+# clamped to [60 s (anti-spin), 1500 s (30 min green tier minus a ~5 min fleet
+# cycle)]; inf/nan -> default. soak/timing/knobs.py reads the literal default.
+_DEFAULT_TICK_INTERVAL_S = 900.0
+_MIN_TICK_INTERVAL_S = 60.0
+_MAX_TICK_INTERVAL_S = 1500.0
+
+
+def _tick_interval_s() -> float:
+    v = _env_float("INGEST_TICK_INTERVAL_S", _DEFAULT_TICK_INTERVAL_S)
+    if not math.isfinite(v):
+        v = _DEFAULT_TICK_INTERVAL_S
+    return min(_MAX_TICK_INTERVAL_S, max(_MIN_TICK_INTERVAL_S, v))
+
+
+_TICK_INTERVAL_S = _tick_interval_s()
 _PAGE_SLEEP_S = 0.4
 _PAGE_LIMIT = 100                       # OF max per request
 _BACKFILL_CONCURRENCY = 4               # synthesis review §4
 # Refresh ticks this many accounts at once: each pages at of_pacing's per-Creator pace (>= 1 s a
-# page), so serial, 50 Creators x 10 pages of 7 days would take ~570 s of a 300 s cadence
+# page), so serial, 50 Creators x 10 pages of 7 days would take ~570 s a cycle
 # (measured 114 s for 10 x 10, slop sweep-pacing medium). Creators never share a pacer.
 _REFRESH_CONCURRENCY = 4
 # Minimum gap between cycles, ALWAYS honoured — the anti-spin floor.
@@ -139,17 +162,22 @@ _ATTR_SWEEP_SINCE_DAYS = 14
 # stamping is idempotent). Deliberately its own knob — tuning the attribution
 # window above must not silently retune this safety gate.
 _POST_OWNERSHIP_SINCE_DAYS = 14
-_STALE_INFLIGHT_S = 900                 # 15 min — escape valve for crashed ticks (see _tick_locks comment)
+# Escape valve for crashed ticks (see the comment below _ONLINE_WINDOW_S). Below
+# the tick interval so the next supervisor visit (~one interval after the dead
+# stamp) always finds it stale and clears it; equal to it, that visit landed
+# either side of the threshold. 720 s at the 900 s default; never above 15 min.
+_STALE_INFLIGHT_S = min(900.0, 0.8 * _TICK_INTERVAL_S)
 
-# Re-entrant tick guard: if run_one_tick(aid) takes >600s the next supervisor
-# cycle would fire concurrently and double-write. Per-account asyncio.Lock.
+# Re-entrant tick guard: if run_one_tick(aid) outlasts the cycle gap the next
+# supervisor cycle (or the fast poll / a manual /run) would fire concurrently
+# and double-write. Per-account asyncio.Lock.
 _tick_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 # Cycle gate: only scan accounts whose owner (User) or linked chatter has
 # been active within the last _ONLINE_WINDOW_S seconds. last_seen_at is
 # bumped per-request with a ~5-min throttle (auth.py / chatters.py), so a
 # 10-min window covers the throttle slack without keeping a logged-out
-# dashboard's broken sessions burning OF proxy quota every 5 minutes.
+# dashboard's broken sessions burning OF proxy quota every fast-poll tick.
 _ONLINE_WINDOW_S = 600
 
 # A run_one_tick stamps current_status='refreshing'/'backfilling' at start
@@ -158,8 +186,8 @@ _ONLINE_WINDOW_S = 600
 # process dies between those points, the stamp persists in the DB and the
 # /run endpoint's 409 guard locks the account out permanently. _STALE_INFLIGHT_S
 # bounds how long a real in-flight stamp can be trusted before treating it
-# as a tombstone from a crashed prior holder. 15min >> typical tick duration
-# (under 60s steady-state, a few min during a fresh 90d backfill).
+# as a tombstone from a crashed prior holder. 720 s (default) >> typical tick
+# duration (under 60s steady-state, a few min during a fresh 90d backfill).
 
 # The pure half (kind catalog, row parsing, the page plan, the scan state
 # machine) lives in transaction_ingest_decide; every name stays importable
@@ -381,7 +409,7 @@ async def _synthesize_tip_message(
     Deliberately does NOT touch `chats` (preview/unread): a cold 90-day backfill
     replays old tips and must not resurrect the inbox badge; the message row
     alone satisfies "show the tip inline". Never advances live SSE either — the
-    5-min ledger poll isn't a live path (the WS pump owns that).
+    15-min ledger poll isn't a live path (the WS pump owns that).
     """
     # Flush so the autoincrement tx.id is populated for the synthetic id.
     await s.flush()
@@ -863,7 +891,7 @@ async def _after_commit_op(account_id: str, op: RowOp, stamp: tuple | None) -> N
     # promotes only happen on rows already inside the 7-day refresh
     # window — naturally bounded, AND exactly the update the drawer is
     # waiting on. Plain re-polls (no flip) stay silent — they happen every
-    # 5-min tick.
+    # 15-min tick.
     if op.broadcast is not None and op.parsed["fan_id"]:
         from events import announce_transaction
         await announce_transaction(
@@ -923,7 +951,7 @@ def _client_for(account_id: str) -> OFClient | None:
     """The pooled OFClient for `account_id`, or None if it cannot be built.
 
     Goes through `client_pool` rather than `OFClient.from_account` so the two
-    ingest ticks (300s scan, 30s fast tick) reuse one long-lived client per
+    ingest ticks (900s scan, 30s fast tick) reuse one long-lived client per
     account instead of building ~18k throwaway ones a day. Each throwaway
     started with an empty connection cache — a cold TLS handshake per call plus
     a pure-overhead x-hash GET, since of_client caches x-hash per instance. It
@@ -1366,7 +1394,7 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
 
 
 # ── Fast freshness poll (30s) ────────────────────────────────────────
-# Layered ON TOP of the 5-min supervisor: one tiny request per online/selling
+# Layered ON TOP of the 15-min supervisor: one tiny request per online/selling
 # account reading OF's purchases notification feed, so a PPV unlock flips
 # `messages.is_paid` within ~30s and the automations see the payment the tick
 # after the fan pays. The supervisor owns the ledger: the authoritative 7-day
@@ -1374,7 +1402,7 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
 #
 # This tick used to ALSO re-read the newest ledger page every 30s. The ledger
 # lands hours late (measured 209/560/628 min), so a 30s read of it bought no
-# freshness over the 5-min supervisor and cost 120 OF calls an hour per selling
+# freshness over the then 5-min supervisor and cost 120 OF calls an hour per selling
 # account (about 40% of its OF traffic). A DM tip is recorded instantly off the
 # WS pump (event_transcoder); a purchase is seen off the feed below.
 _FAST_TICK_INTERVAL_S = 30
@@ -1406,7 +1434,7 @@ async def run_fast_tick(account_id: str) -> dict:
     # wasted call — this loop exists so a SELLING automation learns about a
     # payment in seconds rather than minutes (see _fast_poll_account_ids), and
     # on Fansly the purchases feed IS the payment signal. Skipping it left
-    # Fansly sellers on the 5-minute supervisor cadence, still saying "waiting
+    # Fansly sellers on the 15-minute supervisor cadence, still saying "waiting
     # on your tip" to a fan who had already paid. The read is cheap here: one
     # un-paginated page, already TTL-cached in the shim.
     if fansly_backend.is_fansly(account_id):
@@ -1503,7 +1531,7 @@ async def _fast_poll_account_ids() -> set[str]:
 
       • a SELLING automation is enabled on the account — it may be sitting on an
         open offer right now, and the only fresh "he paid" signal is OF's
-        purchases notification. At 5-minute granularity the AI keeps saying "waiting on your tip"
+        purchases notification. At 15-minute granularity the AI keeps saying "waiting on your tip"
         and re-offering content the fan already bought, at 3am with nobody
         watching. This half does NOT depend on anyone being online.
       • somebody is actually looking at the account — dashboard freshness, the
@@ -1543,7 +1571,7 @@ async def _online_account_ids() -> set[str]:
     Non-admin principals stay scoped to their own accounts, so a multi-tenant
     box doesn't burn one agency's proxy because another agency is online.
 
-    ⚠️ FAST-POLL ONLY. The 5-minute supervisor deliberately does NOT consult
+    ⚠️ FAST-POLL ONLY. The 15-minute supervisor deliberately does NOT consult
     this: it is the sole writer of the `transactions` ledger that
     `fans.lifetime_spend_cents` — and therefore every automation's spend
     decision — is derived from, and automations run whether or not anyone is

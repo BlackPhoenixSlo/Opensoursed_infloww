@@ -663,6 +663,7 @@ export function useVaultCacheSummary(accountId: string | null) {
       relay.get<VaultCacheSummary>(
         `/admin/vault-ai/cache/summary?account_id=${encodeURIComponent(accountId!)}`,
       ),
+    // eslint-disable-next-line local/no-fixed-polling -- stops when the job ends
     refetchInterval: (q) => (q.state.data?.running ? 1500 : false),
     staleTime: 10_000,
   });
@@ -909,6 +910,8 @@ export function vaultTileThumb(
 ): string {
   return (
     m._thumb ||
+    // No media id here on purpose: a stale page of tiles reloads itself once
+    // (one listing call); a per-tile re-sign would be one OF call per tile.
     proxyImage(
       m.files?.thumb?.url || m.files?.squarePreview?.url || m.files?.preview?.url,
       accountId,

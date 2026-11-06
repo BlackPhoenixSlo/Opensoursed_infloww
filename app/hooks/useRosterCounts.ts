@@ -11,12 +11,14 @@
  * Backed by GET /admin/accounts/roster-counts, scoped to the signed-in
  * principal. Both principals get badges: an owner sees its own models, a
  * chatter sees the union across every linked owner (the same set its roster
- * strip already renders). Polls every 60s to match the chat-list cadence.
+ * strip already renders). SSE patches badges live; polls every 5 min (60s
+ * while SSE is down).
  */
 
 import { useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
+import { ssePoll } from "@/lib/events";
 import { relay, type OFChatItem } from "@/lib/relay";
 import { useOptionalUser } from "@/contexts/UserContext";
 import { useOptionalChatter } from "@/contexts/ChatterContext";
@@ -65,7 +67,7 @@ export function useRosterCounts(): Record<string, RosterCount> {
       );
     },
     enabled: !!user || !!chatter,
-    refetchInterval: 60_000,
+    refetchInterval: ssePoll(5 * 60_000, 60_000), // SSE: rosterDelta patches badges live
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });

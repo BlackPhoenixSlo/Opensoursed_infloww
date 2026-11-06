@@ -74,6 +74,12 @@ logged (password redacted) and blocks the sync (below).
 
 - Commas separate proxies, so a password can't contain one; put each proxy on its own
   line instead (newline-separated value).
+- Failover tiers (optional): an item that is just `|` starts the next tier, e.g.
+  `INFLOWW_PROXIES=isp1,isp2,isp3,|,dc1,dc2`. When a proxy is confirmed down
+  (docs/adr/0030) its accounts move to the least-used answering proxy of the first tier
+  that has one; a later tier only when no proxy in every earlier tier answers. No `|`: one
+  tier, as before. New logins (`/admin/proxy-pool/assign`) ignore tiers. A relay older than
+  this reads `|` as a bad line (the sync fails closed): deploy the code before the env.
 - If a password contains `$`, single-quote the value (`INFLOWW_PROXIES='host:port:user:pa$s'`)
   so the shell or compose doesn't expand it.
 - At startup the lines are seeded into the registry as system entries labelled

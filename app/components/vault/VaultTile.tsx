@@ -138,7 +138,7 @@ export default function VaultTile({
           // eslint-disable-next-line @next/next/no-img-element
           <img
             key={`pf-${idx}`}
-            src={proxyImage(u, accountId)}
+            src={proxyImage(u, accountId, m.id)}
             alt=""
             aria-hidden
             decoding="async"
@@ -153,7 +153,7 @@ export default function VaultTile({
           // eslint-disable-next-line @next/next/no-img-element
           <img
             key={`sf-${idx}`}
-            src={proxyScrubFrame(rawVideoSrc, accountId, idx, m.duration, hover.state.sid)}
+            src={proxyScrubFrame(rawVideoSrc, accountId, idx, m.duration, hover.state.sid, m.id)}
             alt=""
             aria-hidden
             decoding="async"

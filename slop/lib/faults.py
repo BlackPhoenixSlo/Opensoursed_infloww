@@ -448,6 +448,13 @@ def _proxy_failover_never_moves() -> None:
     proxy_health._failover = no_move
 
 
+def _pool_failover_ignores_tiers() -> None:
+    """The failover as before INFLOWW_PROXIES tiers: one group, the least-used answering proxy of the
+    whole pool (bug class: a Creator moved off an ISP proxy lands on an idler, worse DC one)."""
+    import proxies
+    proxies._tiers = lambda entries: [list(entries)]
+
+
 def _pool_assign_drops_unanswered_login() -> None:
     """The attach as review round 1 left it: a Creator on no pool proxy for whom no pick
     answers its probe gets a LookupError (409; a Browserbase login says "nothing was
@@ -864,6 +871,11 @@ FAULTS: dict[str, Fault] = {
     # slop/run proxy-failover --break (the scenario's FAULT)
     "proxy-failover-never-moves": Fault(_proxy_failover_never_moves, (
         "dead pool proxy: its Creators are on a healthy pool proxy within budget, reads and sends answer again",
+    )),
+    # slop/run proxy-failover --break --fault=pool-failover-ignores-tiers
+    "pool-failover-ignores-tiers": Fault(_pool_failover_ignores_tiers, (
+        "pool tiers: the dead tier-0 proxy's Creators all moved to the other tier-0 proxy, none to the idler "
+        "tier-1 one (INFLOWW_PROXIES `|`)",
     )),
     # slop/run proxy-failover --break --fault=pool-assign-drops-unanswered-login
     "pool-assign-drops-unanswered-login": Fault(_pool_assign_drops_unanswered_login, (

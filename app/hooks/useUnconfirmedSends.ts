@@ -33,6 +33,7 @@ export function useUnconfirmedSends(accountId: string) {
     },
     staleTime: 30_000,
     // An IN_FLIGHT ("Sending") row turns UNCONFIRMED or clears on its own.
+    // eslint-disable-next-line local/no-fixed-polling -- state flips on timeout, no row written
     refetchInterval: 60_000,
     refetchOnWindowFocus: true,
   });

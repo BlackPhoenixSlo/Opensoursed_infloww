@@ -107,6 +107,7 @@ export function useSweepStatus<T extends SweepStatus = SweepStatus>(
       relay.get<T>(
         `/admin/vault-ai/${kind}/status?account_id=${encodeURIComponent(accountId!)}`,
       ),
+    // eslint-disable-next-line local/no-fixed-polling -- stops when the job ends (pollWhileIdle: TODO verify)
     refetchInterval: (q) => (pollWhileIdle || q.state.data?.running ? POLL_MS : false),
     // Both override an app-wide default (providers.tsx) that is actively wrong
     // for a live counter. staleTime is 3 DAYS there: a mount would be served a

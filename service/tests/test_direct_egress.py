@@ -172,8 +172,9 @@ def _img(u: str) -> dict[str, list]:
 
         async def _fetch():   # draining releases the fetch slot the stream holds
             resp = await img_api.proxy_image(req, u=u)
-            async for _ in resp.body_iterator:
-                pass
+            if hasattr(resp, "body_iterator"):   # a FileResponse (a small Range answer, off disk) has none
+                async for _ in resp.body_iterator:
+                    pass
         asyncio.run(_fetch())
     finally:
         server._get_client, img_api._DIRECT_HTTP = saved

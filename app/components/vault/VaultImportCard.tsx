@@ -188,6 +188,7 @@ export default function VaultImportCard() {
     // Self-arming: poll while the run is live, and unconditionally for a short
     // window after a start — the route creates the record before it answers,
     // but the worker reaches its first item on a thread a moment later.
+    // eslint-disable-next-line local/no-fixed-polling -- stops when the job ends
     refetchInterval: (q) =>
       q.state.data?.running || Date.now() < forceUntilRef.current ? POLL_MS : false,
     staleTime: 0,

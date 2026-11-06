@@ -206,7 +206,7 @@ moved > 20%) and the map status. Exit 0 OK or only FLAKY, 1 a stable FAIL, 3 INF
 `slop/run nightly --apply-map=<nightly folder>` merges that folder's refreshed entries (its
 summary.json `map.mapped`) into `slop/map.json`, the others untouched: run it on a fresh branch from
 origin/main to ship the map PR. The schedule lives in the T3 app scheduler (02:00 local daily, a fresh
-thread per run) in a detached worktree of its own (never the main checkout):
+thread per run) in the detached worktree `~/oi-slop-nightly` (never the main checkout):
 update it to origin/main, `slop/run nightly --detach`, poll for `done`, report `summary.md`.
 
 ## Layout
@@ -929,7 +929,8 @@ A flow with a `README.<flow>.md` lists its scenarios there.
   send duplicated; revived, it takes the next Creator; all dead, nobody moves and a login
   is still saved and bound. Checks, timeline, bypasses and faults
   (`proxy-failover-never-moves`, `proxy-recheck-never-runs`,
-  `pool-assign-drops-unanswered-login`): the scenario's docstring.
+  `pool-assign-drops-unanswered-login`): the scenario's docstring. The pool is two failover tiers
+  (`w0,w1,|,w2`, 2026-11-07): `pool-failover-ignores-tiers` (one tier again) targets only the tier check.
   The rules are `service/proxy_health_decide.decide` since 2026-10-30; fault
   `proxy-decide-recheck-answer-ignored` breaks that function itself (relay side). The watcher claim hand-off
   (`lib/faults.py`): `proxy-watch-claim-released-late` (the claim released after the watcher returns) targets the

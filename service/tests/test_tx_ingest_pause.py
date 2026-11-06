@@ -5,7 +5,7 @@ transaction_ingest's failure backoff: what counts toward the auto-pause.
     case_proxy_refusal_is_not_counted   a proxy CONNECT 403 (curl 56, the
         transient IPRoyal DC refusal) never reached OF: the streak stays where
         it was and the account is not paused
-    case_three_real_failures_pause_10_min
+    case_three_real_failures_pause_30_min
     case_success_resets_the_streak
 
 Run: ./venv/bin/python service/tests/test_tx_ingest_pause.py
@@ -67,7 +67,7 @@ def case_proxy_refusal_is_not_counted():
     asyncio.run(go())
 
 
-def case_three_real_failures_pause_10_min():
+def case_three_real_failures_pause_30_min():
     async def go():
         await _reset()
         for _ in range(3):
@@ -76,7 +76,7 @@ def case_three_real_failures_pause_10_min():
         assert row.consecutive_failures == 3, row.consecutive_failures
         assert row.current_status == "paused", row.current_status
         left = (row.paused_until - datetime.utcnow()).total_seconds()
-        assert 590 < left <= 600, f"paused for {left:.0f}s, want 10 min"
+        assert 1790 < left <= 1800, f"paused for {left:.0f}s, want 30 min"
         assert await ti._is_paused(ACCT)
     asyncio.run(go())
 

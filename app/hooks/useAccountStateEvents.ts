@@ -71,7 +71,7 @@ function throttle(fn: () => void, ms: number) {
  *  re-arms each at its offline rate instead of waiting out the live one. */
 const SSE_POLLED: QueryKey[] = [
   ["scheduled-sends"], ["automation-rules"], ["stats", "automation-runs"],
-  ["app-errors", "recent"],
+  ["app-errors", "recent"], ["roster-counts"],
 ];
 
 export function useAccountStateEvents(): void {

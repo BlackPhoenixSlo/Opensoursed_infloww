@@ -39,6 +39,7 @@ export function useOnlineSubscribers(accountId: string | null, refetchInterval?:
       return { ids, hasMore: (!Array.isArray(resp) && !!resp?.hasMore) || ids.size >= ONLINE_PAGE };
     } : skipToken,
     staleTime: 30_000,
+    // eslint-disable-next-line local/no-fixed-polling -- caller's rate; OF online status has no relay event
     refetchInterval,
     retry: false,
   });

@@ -253,6 +253,7 @@ export function PriorityMassRuns() {
   const q = useQuery<RunsResp>({
     queryKey: runsKey(accountId),
     enabled: !!accountId,
+    // eslint-disable-next-line local/no-fixed-polling -- run progress is worker-written, no SSE event (TODO verify: poll only while a run is live)
     refetchInterval: 30_000,
     queryFn: () => relay.get<RunsResp>(`${ROUTE}?account_id=${encodeURIComponent(accountId!)}`),
   });

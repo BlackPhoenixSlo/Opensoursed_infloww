@@ -24,7 +24,10 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 
+import anyio.from_thread
+
 import admission
+import cdn_resign
 from img_api import _ALLOWED_CDN_SUFFIXES
 from relay_host import get_request_client as _get_client
 from relay_host import periodic as _periodic
@@ -205,6 +208,7 @@ def _storyboard_all_frames_present(h: str) -> bool:
 
 def _storyboard_download(
     request: Request, u: str, src_path: Path, session_id: str | None,
+    media_id: int | None = None,
 ) -> bool:
     """Pull the mp4 into src_path via the right account's HTTP client (so
     the URL's source-IP signature matches). Returns False on failure or
@@ -218,7 +222,11 @@ def _storyboard_download(
     `session_id` scopes the cancel to one hover session. If empty/None
     (old client, no sid supplied), the build runs without cancellation
     support — a missed cancel is strictly better than the alternative,
-    which was aborting unrelated builds."""
+    which was aborting unrelated builds.
+
+    `media_id` (the vault tile's) makes a 403 re-sign that media and retry
+    once (cdn_resign): the browser's url may be signed for the account's old
+    proxy IP or past its expiry."""
     global _storyboard_build_failures, _storyboard_total_cancelled, _storyboard_total_cancel_ignored
     # Fresh, session-scoped event. Drop it on exit (finally) so a late
     # cancel POST arriving after the build wraps up is a no-op — not a
@@ -226,7 +234,18 @@ def _storyboard_download(
     cancel_event = _storyboard_register_session(session_id) if session_id else None
     try:
         client = _get_client(request)
+        aid = str(getattr(client, "account_id", "") or "")
+        if media_id and aid:
+            u = cdn_resign.current(aid, u)
         r = client.http.get(u, timeout=client.timeout_s, stream=True)
+        if r.status_code == 403 and media_id and aid:
+            try: r.close()
+            except Exception: pass
+            # Sync route, so an anyio worker thread: hop to the loop for the by-id read.
+            fresh = anyio.from_thread.run(cdn_resign.resign, aid, media_id, u, client)
+            if fresh:
+                u = fresh
+                r = client.http.get(u, timeout=client.timeout_s, stream=True)
         if r.status_code not in (200, 206):
             log.warning("storyboard download non-2xx %d for %s", r.status_code, u[:120])
             _storyboard_build_failures += 1
@@ -372,6 +391,7 @@ def _ensure_storyboard_frame(
     request: Request, u: str, h: str, i: int,
     *, hint_duration: float | None = None,
     session_id: str | None = None,
+    media_id: int | None = None,
 ) -> bool:
     """Make sure frame `i` is on disk. Returns True if it is now.
 
@@ -418,7 +438,7 @@ def _ensure_storyboard_frame(
 
         # Download mp4 (skipped if a prior failed build left it around).
         if not src_path.is_file():
-            if not _storyboard_download(request, u, src_path, session_id):
+            if not _storyboard_download(request, u, src_path, session_id, media_id):
                 # On cancel/error, drop the partial bytes — incomplete
                 # mp4s aren't useful for extraction.
                 try: src_path.unlink(missing_ok=True)
@@ -477,13 +497,14 @@ def proxy_image_scrub(
     i: int = Query(..., ge=0, lt=_STORYBOARD_FRAMES, description="Frame index 0..11"),
     dur: float | None = Query(None, gt=0, description="Video duration in seconds (from VaultMedia.duration). When supplied, the relay skips its own ffprobe."),
     sid: str | None = Query(None, description="Per-hover session id. The matching /img/scrub/cancel POST carries the same value; the server scopes cancellation to this session so a stale cancel from a previous hover can't abort a fresh build."),
+    media_id: int | None = Query(None, description="The vault media `u` belongs to. When set, an upstream 403 (url signed for the account's old proxy IP, or expired) re-reads that media from OF and retries once with its fresh url for the same file."),
 ):
     """Returns the i-th frame of the 12-frame storyboard for video `u`.
     First call builds; subsequent calls serve from disk."""
     _check_cdn_url(u)
 
     h = _video_path_hash(u)
-    ok = _ensure_storyboard_frame(request, u, h, i, hint_duration=dur, session_id=sid)
+    ok = _ensure_storyboard_frame(request, u, h, i, hint_duration=dur, session_id=sid, media_id=media_id)
     if not ok:
         raise HTTPException(status_code=502, detail="storyboard build failed")
     frame_path = _storyboard_frame_path(h, i)

@@ -110,6 +110,7 @@ export default function BrowserbaseLoginCard({ onLinked, initialNickname = "", p
     queryKey: ["remote-login", jobId],
     queryFn: () => relay.get<RemoteLoginStatus>(jobPath(jobId!)),
     enabled: !!jobId,
+    // eslint-disable-next-line local/no-fixed-polling -- remote-login job has no SSE event; stops when the job ends
     refetchInterval: (q) => (q.state.data && TERMINAL.has(q.state.data.state) ? false : 1500),
   });
   const status = statusQ.data;

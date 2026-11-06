@@ -1541,18 +1541,18 @@ async def _start_event_pumps() -> None:
                                       first_after_s=vault_collect.FIRST_AFTER_S), name="vault-collect")
 
     # Phase F: poll OF's /api2/v2/payouts/transactions ledger so per-model
-    # stats include subs / tips / PPV unlocks / paid posts. 10-min ticks,
-    # sequential per-account refresh, parallel backfill (sem=4). See
+    # stats include subs / tips / PPV unlocks / paid posts. 15-min ticks
+    # (INGEST_TICK_INTERVAL_S), refresh + backfill 4 Creators at a time. See
     # service/transaction_ingest.py docstring.
     from transaction_ingest import (
         start_supervisor as _start_tx_ingest,
         start_fast_poll as _start_tx_fast,
     )
     _tx_ingest_task = asyncio.create_task(_start_tx_ingest(), name="tx-ingest-supervisor")
-    # 30s freshness poll layered on the 5-min supervisor: fetches just the last
-    # 10 transactions per online account so a PPV unlock / tip lands in the
-    # ledger within ~30s and the automations see it the next tick. Idempotent
-    # with the supervisor (shared per-account lock + provider_id dedup). Cancelled in _stop_event_pumps.
+    # 30s freshness poll layered on the 15-min supervisor: reads OF's purchases
+    # notification feed (no ledger read) per online/selling account so a PPV
+    # unlock flips messages.is_paid within ~30s and the automations see it the
+    # next tick. Shares the per-account lock with the supervisor. Cancelled in _stop_event_pumps.
     _tx_fast_task = asyncio.create_task(_start_tx_fast(), name="tx-ingest-fast-poll")
 
     # OnlyFans Statistics figures per Creator per UTC day (visitors, new subs,

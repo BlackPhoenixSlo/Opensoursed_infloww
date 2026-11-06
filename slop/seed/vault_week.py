@@ -3,7 +3,8 @@ OF's media dicts, one `auto:done` vault_cache_runs row), by SQL, from lib/vault_
 can start from a collected vault without waiting for the walk. Rows in vault_mirror.row_values' shape.
 
 `set_urls` rewrites stored urls the way the product does when it sees a media again (raw_json + the columns
-derived from it, together): `exp` in the past = OF's signature expired; a bumped `gen` = OF re-signed.
+derived from it, together): `exp` in the past = OF's signature expired; a bumped `gen` = OF re-signed; `egress`
+= signed for that egress (an earlier proxy's listing; wire `ip_bound`).
 """
 from __future__ import annotations
 
@@ -41,11 +42,12 @@ def mirror(w: World, wire, uids: list[str], *, phase: str = "auto:done") -> dict
     return out
 
 
-def set_urls(w: World, wire, aid: str, mids: list[int], *, exp: int | None = None, gen: int | None = None) -> int:
+def set_urls(w: World, wire, aid: str, mids: list[int], *, exp: int | None = None, gen: int | None = None,
+             egress: str | None = None) -> int:
     by_id = wire.vault(aid)["by_id"]
     rows = []
     for mid in mids:
-        m = wire.of_media(aid, by_id[mid], exp=exp, gen=gen)
+        m = wire.of_media(aid, by_id[mid], exp=exp, gen=gen, egress=egress)
         rows.append((m["files"]["thumb"]["url"], m["files"]["full"]["url"], json.dumps(m), aid, mid))
     con = w.sql()
     with con:

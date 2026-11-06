@@ -39,14 +39,18 @@ STALE_FRAC, DIRECT_FRAC = 0.10, 0.15
 assert threads.HISTORY_ID_BASE > MSG_ID_BASE + 10_000_000
 
 
-def sign(host: str, path: str, exp_epoch: int, gen: int = 0) -> str:
-    """`host/path` as OF hands it out: the signed hosts with a CloudFront-style query, the direct one bare."""
+def sign(host: str, path: str, exp_epoch: int, gen: int = 0, ip: str | None = None) -> str:
+    """`host/path` as OF hands it out: the signed hosts with a CloudFront-style query, the direct one bare. `ip`:
+    the Policy also names the egress that listed it (`IpAddress.AWS:SourceIp`, as OF's do; img_relay's egress
+    names, e.g. "127.0.0.1:<proxy port>" or "direct")."""
     if not signed(host):
         return f"https://{host}{path}"
     # CloudFront's custom Policy, as OF's CDN URLs carry it (its expiry what the relay and the fake CDN read).
-    policy = policy_b64({"Statement": [{"Resource": f"https://{host}{path}*",
-                                        "Condition": {"DateLessThan": {"AWS:EpochTime": exp_epoch}}}]})
-    sig = hashlib.sha256(f"slop:{path}:{exp_epoch}:{gen}".encode()).hexdigest()[:40]
+    cond: dict = {"DateLessThan": {"AWS:EpochTime": exp_epoch}}
+    if ip is not None:
+        cond["IpAddress"] = {"AWS:SourceIp": ip}
+    policy = policy_b64({"Statement": [{"Resource": f"https://{host}{path}*", "Condition": cond}]})
+    sig = hashlib.sha256(f"slop:{path}:{exp_epoch}:{gen}{'' if ip is None else ':' + ip}".encode()).hexdigest()[:40]
     return f"https://{host}{path}?Policy={policy}&Signature={sig}&Key-Pair-Id={KEY_PAIR_ID}"
 
 

@@ -171,7 +171,7 @@ def case_read_keys():
 
 # ── scan state machine ──────────────────────────────────────────────
 
-def case_third_failure_pauses_600_s():
+def case_third_failure_pauses_1800_s():
     s = ScanState()
     statuses = []
     for _ in range(3):
@@ -179,8 +179,8 @@ def case_third_failure_pauses_600_s():
         statuses.append(s.current_status)
     assert statuses == ["error", "error", "paused"], statuses
     assert s.consecutive_failures == 3
-    assert s.paused_until == NOW + timedelta(seconds=600), s.paused_until
-    assert d.is_paused(s, NOW + timedelta(seconds=599)) and not d.is_paused(s, NOW + timedelta(seconds=600))
+    assert s.paused_until == NOW + timedelta(seconds=1800), s.paused_until
+    assert d.is_paused(s, NOW + timedelta(seconds=1799)) and not d.is_paused(s, NOW + timedelta(seconds=1800))
 
 
 def case_proxy_refusal_is_not_counted():

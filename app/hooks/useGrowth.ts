@@ -93,6 +93,7 @@ export function useTrialLinks(accountId: string | null) {
     queryKey: [TRIAL_KEY, accountId],
     enabled: !!accountId,
     staleTime: 30_000,
+    // eslint-disable-next-line local/no-fixed-polling -- stops when the job ends
     refetchInterval: whileRefreshing,
     queryFn: () =>
       relay.get(`/admin/trial-links?account_id=${encodeURIComponent(accountId!)}`),
@@ -400,6 +401,7 @@ export function usePromotions(accountId: string | null) {
     queryKey: [PROMO_KEY, accountId],
     enabled: !!accountId,
     staleTime: 30_000,
+    // eslint-disable-next-line local/no-fixed-polling -- stops when the job ends
     refetchInterval: whileRefreshing,
     queryFn: () =>
       relay.get(`/admin/promotions?account_id=${encodeURIComponent(accountId!)}`),
@@ -520,6 +522,7 @@ export function useLinkFans(
     enabled: !!accountId && ofId != null,
     staleTime: 60_000,
     retry: false,
+    // eslint-disable-next-line local/no-fixed-polling -- stops when the job ends
     refetchInterval: (q) => (q.state.data?.refreshing ? 15_000 : false),
     queryFn: () => relay.get(`/admin/link-metrics/fans?${qs}`),
   });

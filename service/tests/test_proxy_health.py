@@ -286,10 +286,14 @@ def case_recheck_backoff_then_back_up():
     assert snap.get("failed_over", 0) == 0, "a custom proxy's Creators are never moved"
 
 
-def _pool(n: int = 3) -> list[str]:
-    """Three Inflowwww pool proxies; Creators 1..6 spread two per proxy."""
+def _pool(n: int = 3, tier_break: int | None = None) -> list[str]:
+    """Three Inflowwww pool proxies; Creators 1..6 spread two per proxy. `tier_break`: the env's
+    POOL_TIER_BREAK before that proxy (the ones from it on are the failover's next tier)."""
     proxies.REGISTRY_PATH = Path(tempfile.mkdtemp(prefix="proxyfail_")) / "proxies.json"
-    proxies.sync_pool(",".join(f"socks5://pool-{i}.invalid:{9000 + i}" for i in range(n)))
+    items = [f"socks5://pool-{i}.invalid:{9000 + i}" for i in range(n)]
+    if tier_break is not None:
+        items.insert(tier_break, proxies.POOL_TIER_BREAK)
+    proxies.sync_pool(",".join(items))
     labels = [p["label"] for p in proxies.pool_entries()]
     for i, aid in enumerate(("1", "2", "3", "4", "5", "6")):
         proxies.assign_account(labels[i % n], aid)
@@ -338,6 +342,24 @@ def case_failover_prefers_the_same_country():
     with _Watch(False, False, False, True, True, True, geo={b: "DE"}):   # the destination probes keep b in DE
         _fail(a)
     assert _on(c) == ["1", "3", "4", "6"] and _on(b) == ["2", "5"], "both went to the HU standby"
+
+
+def case_failover_prefers_the_first_tier_then_falls_back():
+    """INFLOWW_PROXIES `a,b,|,c`: a's Creators go to b (tier 0, busier) over an idle c (tier 1) while b
+    answers; with b dead too, to c. No break: one tier, least-used (case above)."""
+    a, b, c = _pool(tier_break=2)
+    assert [proxies.get_by_label(x)["tier"] for x in (a, b, c)] == [0, 0, 1]
+    for aid in ("3", "6"):
+        proxies.unbind_account(c, aid)
+    with _Watch(False, False, False, True, True, True) as w:
+        _fail(a)
+    assert _on(b) == ["1", "2", "4", "5"] and _on(c) == [], f"tier 0 first, though c is idle: {_on(b)} {_on(c)}"
+    assert c not in w.probed, f"tier 1 not probed while tier 0 answers: {w.probed}"
+    a, b, c = _pool(tier_break=2)
+    with _Watch(False, False, False, dead={b}) as w:
+        _fail(a)
+    assert _on(c) == ["1", "3", "4", "6"] and _on(b) == ["2", "5"], "tier 0 dead: tier 1"
+    assert w.probed.count(b) == 1, f"b probed once for the whole move: {w.probed}"
 
 
 def case_failover_skips_a_destination_that_does_not_answer():

@@ -447,6 +447,7 @@ export function useIngestHealth() {
         BG_CTX,
       ),
     staleTime: 30_000,
+    // eslint-disable-next-line local/no-fixed-polling -- ingest staleness grows with time, no event when a feed goes quiet
     refetchInterval: 60_000,
     refetchOnWindowFocus: true,
     placeholderData: keepPreviousData,

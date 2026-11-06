@@ -1,6 +1,6 @@
 """Background OnlyFans list walks, paced (service/of_pacing.py): the hourly link prewarm pass
 (link_metrics.prewarm_all: tracking links, trials, promotions), the lifecycle roster crawl
-(subscribers), two passes of the 300 s ledger supervisor (transaction_ingest.supervisor_cycle,
+(subscribers), two passes of the 900 s ledger supervisor (transaction_ingest.supervisor_cycle,
 payouts transactions) and a Growth page's claimer refresh (link_metrics.maybe_refresh) run at
 once, against OF's own rate limit, while `--users` chatters work half the Creators and their Fan
 List fills names in the background.
@@ -67,10 +67,19 @@ Checks (names in lib/sweep_pacing_faults.py):
   user_read_p95          the person's lookup p95 <= USER_READ_P95_MS (budget).
   background_lookup_p95  the name fill's lookup p95 <= BACKGROUND_LOOKUP_P95_MS (budget): it is
                          user-triggered, never paced (paced, it measured 11-13 s).
+  tx_calls_budget        per Creator, its payouts `transactions` GETs in a supervisor pass (the worst
+                         of the TX_CYCLES, 429 retries included) x 3600 / the relay's
+                         _TICK_INTERVAL_S (`tick_interval_s` in /__slop/sweep-pacing/runs) <=
+                         (ceil(rows / TX_PAGE) + 1) x 3600 / TX_TICK_S x TX_HEADROOM. INFERRED, not a
+                         measurement of the loop: pages per pass (measured) x 3600 / the interval
+                         constant; the passes run back to back here, so the real sleep is never
+                         observed, and tx-cadence-300 sets that same module var. A regression guard
+                         on pages-per-pass and the constant. 900 s passes; 300 s (3x the passes) does not.
+                         walk_counts_match's ledger half is the "earnings unchanged" invariant.
   stock "p95 within 1.25x (+50ms) of the last green run": both lookups (P95_VS_LAST).
 Pacing covers OF's API list pages only: CDN, media and /img fetches are not walks here.
-Measured, not checked: metric `tx_supervisor`, each supervisor pass's wall time and pages per
-Creator (the first fill, then the steady state).
+Measured: metric `tx_supervisor`, each supervisor pass's wall time and pages per Creator (the
+first fill, then the steady state); tx_calls_budget checks its pages per hour.
 
 Bypasses (declared):
   - OF's rate limit is a GUESS (lib/sweep_pacing_wire.py), not OF's measured policy: a token bucket
@@ -79,7 +88,7 @@ Bypasses (declared):
     The people's load is sized to that guess: a person's lookups + the name fill (~0.9/s per busy
     Creator) beside a paced walk (~0.9/s) stay under the refill. of_wire.py is not edited:
     the extension swaps its server's handler class for a subclass (harness side).
-  - The jobs' cadences (hourly prewarm_all with its spread, the 30 min lifecycle sweep, the 300 s
+  - The jobs' cadences (hourly prewarm_all with its spread, the 30 min lifecycle sweep, the 900 s
     ledger supervisor's sleep) are `POST /__slop/sweep-pacing/run` (lib/sweep_pacing_relay.py),
     which runs the production functions in fresh contexts (no request around them); the spread is
     compressed (above). USER_WINDOW_S, PAGE_GAP_S, JITTER_S and the 429 retry are the product's.
@@ -94,7 +103,8 @@ second, the single retry meets a second 429 and the roster crawls fail. A person
 meet GROWTH's empty bucket (no_429_on_user_reads, no_5xx), and GROWTH's refresh can lose the race
 for the retry (growth_refresh_walked): noise, not targets (red in some runs only, measured). sweep-no-429-retry
 (`--fault=`: gap kept, no retry) turns retry_once_per_429, terminal_429_keeps_mirror and
-walk_counts_match red. The lookups' p95s and growth_route_not_blocked stay.
+walk_counts_match red. The lookups' p95s and growth_route_not_blocked stay. tx-cadence-300
+(`--fault=`: the supervisor's interval 300 s, pages unchanged) turns tx_calls_budget red only.
 """
 from __future__ import annotations
 
@@ -111,7 +121,7 @@ from slop.actors import chatter
 from slop.lib.client import Recorder
 from slop.lib.procmon import pct
 from slop.lib.sweep_pacing_faults import (BG_P95, COUNTS, GROWTH, GROWTH_ROUTE, NO_429_USER, NO_5XX,
-                                          PAGES_SPACED, RETRY_ONCE, SKIPS, TERMINAL, USER_P95)
+                                          PAGES_SPACED, RETRY_ONCE, SKIPS, TERMINAL, TX_BUDGET, USER_P95)
 from slop.lib.sweep_pacing_wire import TOO_MANY, SweepWire
 from slop.seed import of_sessions, ts
 
@@ -132,6 +142,8 @@ USER_AT_S = tuple(round(3.0 + 1.6 * k, 1) for k in range(5))   # a person's look
 GROWTH_SETTLE_S = 2.5        # after GROWTH's Promotions page (3 reads), before the first burst (8)
 EARNINGS_N, EARNINGS_EVERY_S, EARNINGS_MAX_MS = 24, 0.5, 2_000
 TX_CYCLES = 2
+TX_PAGE = 100                # transaction_ingest._PAGE_LIMIT (OF's max a page)
+TX_TICK_S, TX_HEADROOM = 900, 1.5   # the cadence the budget is sized for, and its slack
 GROWTH_PROMOS, GROWTH_CLAIMED, GROWTH_CLAIMS = 250, 5, 100
 TERMINAL_SNAPSHOT = 120
 RUN_TIMEOUT_S = 900
@@ -511,12 +523,20 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     # ── the ledger supervisor's passes (measured) ───────────────────────────
     txrun = next((x for x in runs if x["job"] == "tx_cycles"), None)
     cycles = ((txrun or {}).get("result") or {}).get("cycles") or []
-    sup = []
+    sup, pass_pages = [], []
     for i, c in enumerate(cycles):
         pages = Counter(e["account"] for e in log if e["route"] == "transactions" and c["t0"] <= e["t"] <= c["t1"])
+        pass_pages.append(pages)
         sup.append({"pass": i + 1, "wall_s": round(c["t1"] - c["t0"], 1), "creators": len(pages),
                     "pages_per_creator": sorted(pages.values()), "pages": sum(pages.values())})
     ctx.metric("tx_supervisor", sup)
+    tick = got.get("tick_interval_s")
+    worst = {a: max((p.get(a, 0) for p in pass_pages), default=0) for a in aids}
+    tx_budget_h = (-(-n_tx // TX_PAGE) + 1) * 3600 / TX_TICK_S * TX_HEADROOM
+    per_h = {a: round(p * 3600 / tick, 1) for a, p in worst.items()} if tick else {}
+    ctx.check(TX_BUDGET, len(cycles) == TX_CYCLES and bool(per_h) and all(worst.values())
+              and all(v <= tx_budget_h for v in per_h.values()),
+              tick_interval_s=tick, pages_per_pass=worst, calls_per_hour=per_h, budget_per_hour=tx_budget_h)
     slow = sorted((x for x in user_relay if p95 is not None and x["ms"] >= p95), key=lambda x: x["t"])
     ctx.metric("user_lookups_at_or_over_p95", [{"s_into_walks": round(x["t"] - t_walks, 1), "ms": round(x["ms"]),
                                                "account": x["account"]} for x in slow])

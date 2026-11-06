@@ -18,6 +18,11 @@ DEAD_LINK = "thumbs_dead_link_refreshed_once"
 RESTRICTED = "thumbs_restricted_chatter_404"
 SCOPED = "vault_pro_restricted_chatter_scoped"
 PROXY = "proxy_change_invalidates"
+STALE_IP = "proxy_change_previews_resign"
+UI_HOVER = "ui_hover_scrub_after_proxy_change"
+GIF_TILES = "ui_gif_tiles_loop_while_on_screen"
+GIF_DETAILS = "ui_gif_details_loops_inline"
+GIF_CDN_ONCE = "ui_gif_clip_crosses_cdn_once"
 
 
 def _need(mod, *names: str) -> None:
@@ -80,6 +85,29 @@ def _thumb_no_resign() -> None:
     vault_stills.resolve_fresh = no_resign
 
 
+def _preview_no_resign() -> None:
+    """`/img` and `/img/scrub` never re-sign a 403'd url by its media id (service/cdn_resign): a url signed for the
+    account's old proxy IP stays dead until a full re-list, the 2026-11-06 AE bug."""
+    import cdn_resign
+
+    _need(cdn_resign, "resign", "current")
+
+    async def none(account_id, media_id, failed_u, client):
+        return None
+
+    cdn_resign.resign = none
+    cdn_resign.current = lambda account_id, u: u
+
+
+def _range_cache_off() -> None:
+    """`/img` never caches a small clip off a Range request (img_api's range cap 0): every <video> open of a gif
+    streams it through the account's proxy again, as before the small-clip range cache."""
+    import img_api
+
+    _need(img_api, "_IMG_RANGE_CACHE_MAX_BYTES")
+    img_api._IMG_RANGE_CACHE_MAX_BYTES = 0
+
+
 def _folder_gate_off() -> None:
     """The chatter folder gate answers "no restriction" on every mirror route (vault_ai_api: the listing, stills,
     search-of, the pack picker, disputes, flags review; vault: media-stats): a restricted chatter sees, counts and
@@ -102,7 +130,16 @@ def register(Fault) -> dict:
         "collect-unpaced": Fault(_unpaced, (PACING,)),
         "collect-ignores-user": Fault(_ignores_user, (SKIPS_BUSY,)),
         "thumb-keyed-by-signed-url": Fault(_thumb_keyed_by_signed_url, (ROTATION,)),
-        "thumb-no-resign": Fault(_thumb_no_resign, (DEAD_LINK,)),
+        # vault_stills.resolve_fresh is cdn_resign's by-id read too: the stale-IP previews go red with it.
+        "thumb-no-resign": Fault(_thumb_no_resign, (DEAD_LINK, STALE_IP, UI_HOVER)),
+        "preview-no-resign": Fault(_preview_no_resign, (STALE_IP, UI_HOVER)),
         # slop/run vault-thumbs --break --fault=vault-chatter-folder-gate-off: both gate checks go red.
         "vault-chatter-folder-gate-off": Fault(_folder_gate_off, (RESTRICTED, SCOPED)),
+        # slop/run vault-thumbs --break --fault=gif-shown-as-still: the gif autoplay reverted (VaultVideoPreview's
+        # progressiveVideoSrc answers null for a gif again), so tile and Media details show OF's still only.
+        "gif-shown-as-still": Fault(None, (GIF_TILES, GIF_DETAILS), browser=(
+            # next dev serves each module as a JS string (eval): quotes as \".
+            (r'(m\.type !== \\?"video\\?") && m\.type !== \\?"gif\\?"', r'\1'),)),
+        # slop/run vault-thumbs --break --fault=gif-range-cache-off: each picker open re-fetches its gifs.
+        "gif-range-cache-off": Fault(_range_cache_off, (GIF_CDN_ONCE,)),
     }

@@ -248,6 +248,7 @@ export function useMyShifts(enabled = true) {
     queryKey: MY_SHIFTS_KEY,
     queryFn: () => relay.get<MyShifts>("/admin/shifts/me"),
     enabled,
+    // eslint-disable-next-line local/no-fixed-polling -- reminder is time-driven, not change-driven
     refetchInterval: SHIFTS_POLL_MS,
     refetchOnWindowFocus: false,
   });
@@ -278,6 +279,7 @@ export function useClockedIn(enabled: boolean) {
     queryKey: ["shifts", "clocked-in"],
     queryFn: () => relay.get<ClockedIn>("/admin/shifts/clocked-in"),
     enabled,
+    // eslint-disable-next-line local/no-fixed-polling -- other chatters' clock events have no SSE event (TODO verify)
     refetchInterval: SHIFTS_POLL_MS,
     refetchOnWindowFocus: false,
   });
@@ -312,6 +314,7 @@ export function useClockStatus(enabled: boolean) {
     queryKey: CLOCK_STATUS_KEY,
     queryFn: () => relay.get<ClockStatus>("/admin/shifts/clock-status"),
     enabled,
+    // eslint-disable-next-line local/no-fixed-polling -- the read sweeps overdue events; auto clock out is time-driven
     refetchInterval: SHIFTS_POLL_MS,
     refetchOnWindowFocus: false,
   });

@@ -677,6 +677,7 @@ def probe_of(p: dict[str, Any], timeout_s: int = 15) -> dict[str, Any]:
 POOL_ENV = "INFLOWW_PROXIES"
 POOL_CLEAR = "none"        # the only env value that empties an existing pool
 POOL_LABEL_PREFIX = "infloww-"
+POOL_TIER_BREAK = "|"      # an item of its own in the env: the proxies after it are the next failover tier
 
 
 def is_pool(p: dict[str, Any] | None) -> bool:
@@ -702,12 +703,19 @@ def parse_pool(text: str | None) -> tuple[list[dict[str, Any]], list[str]]:
     kept (no cap). Returns (entries, errors): `errors` are lines that don't
     parse, with the redacted line, never a password. Each entry's label is `infloww-<hash>` of
     scheme/user/host/port (stable across password rotations, changes when the
-    proxy itself is swapped), so a removed proxy is told apart from a kept one."""
+    proxy itself is swapped), so a removed proxy is told apart from a kept one.
+    A POOL_TIER_BREAK item starts the next tier: each entry's `tier` is the
+    number of breaks before it (0 without any), the failover's preference
+    (`failover_pool`); a proxy listed twice keeps its first (best) tier."""
     entries: list[dict[str, Any]] = []
     errors: list[str] = []
+    tier = 0
     for raw in re.split(r"[\n,]", text or ""):
         line = raw.strip()
         if not line or line.startswith("#"):
+            continue
+        if line == POOL_TIER_BREAK:
+            tier += 1
             continue
         try:
             e = parse_proxy_line(line)
@@ -716,6 +724,7 @@ def parse_pool(text: str | None) -> tuple[list[dict[str, Any]], list[str]]:
             continue
         key = f"{e['scheme']}://{e.get('username') or ''}@{e['host']}:{e['port']}"
         e["label"] = POOL_LABEL_PREFIX + hashlib.sha256(key.encode()).hexdigest()[:8]
+        e["tier"] = tier
         if any(x["label"] == e["label"] for x in entries):
             continue
         entries.append(e)
@@ -766,7 +775,7 @@ def sync_pool(text: str | None, rng: random.Random | None = None) -> dict[str, A
                 kept.append(p)
             elif label in want and label not in seen:
                 e = want[label]
-                p.update({k: e.get(k) for k in ("host", "port", "scheme", "username", "password")})
+                p.update({k: e.get(k) for k in ("host", "port", "scheme", "username", "password", "tier")})
                 p.update({"pool": True, "user_id": None})
                 seen.add(label)
                 kept.append(p)
@@ -874,6 +883,14 @@ def _pick_answering(candidates: list[dict[str, Any]], data: dict[str, Any], aid:
 ATTACH_PROBES = 2
 
 
+def _tiers(entries: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """`entries` grouped by pool `tier` (POOL_TIER_BREAK in POOL_ENV), best
+    first; one group when the env has no break (an entry from before tiers: 0)."""
+    def tier(p: dict[str, Any]) -> int:
+        return int(p.get("tier") or 0)
+    return [[p for p in entries if tier(p) == t] for t in sorted({tier(p) for p in entries})]
+
+
 def _pool_entry_of(data: dict[str, Any], aid: str) -> dict[str, Any] | None:
     """The pool entry in `data` that `aid` is bound to, None when on none."""
     return next((p for p in data["proxies"] if is_pool(p) and aid in _ids_on(p)), None)
@@ -931,7 +948,8 @@ def failover_pool(label: str, *, bad: set[str], geo: Geo, verify: Verify,
                   rng: random.Random | None = None) -> list[str] | None:
     """Move every account on the bad pool proxy `label` to a pool proxy not in
     `bad` that answers right now (each to the least-used, same country first,
-    `_pick_answering`), then apply the moves in ONE registry write, so `save`
+    `_pick_answering`), from the best `_tiers` group with one that answers
+    (a later tier only when none in an earlier one does), then apply the moves in ONE registry write, so `save`
     evicts their clients and reconnects their chat sockets together. The
     destinations are probed outside the registry lock; the write re-reads the
     registry. Nothing is probed, nothing moves, and None is returned (not
@@ -949,8 +967,9 @@ def failover_pool(label: str, *, bad: set[str], geo: Geo, verify: Verify,
     checked: dict[str, bool] = {}
     plan: dict[str, str] = {}
     for aid in _ids_on(source):
-        target = _pick_answering(healthy, data, aid, rng, like=source, geo=geo, verify=verify,
-                                 checked=checked)
+        target = next((t for tier in _tiers(healthy)
+                       if (t := _pick_answering(tier, data, aid, rng, like=source, geo=geo, verify=verify,
+                                                checked=checked))), None)
         if target is None:
             break   # nobody answers: the rest stay too
         plan[aid] = target["label"]

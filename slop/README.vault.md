@@ -104,9 +104,17 @@ oracles, bypasses).
   `collect-ignores-user` (`collect_skips_busy`). Bypasses: fake OF + CDN at the wire, stills dirs by env, RELAY_ENV
   tick 2 s / first 1 s / GAP 1 s / USER_QUIET 20 s, the periodic started by the relay part, httpx pickers.
 - `2026-11-05-vault-thumbs`: `flat_agency` (`vault_thumbs_creators` 3 / 6 / 10, `vault_thumbs_items`), mirror by
-  SQL (`seed/vault_week`), collector off. Phases cold / second / rotation / dead link / restricted chatter / proxy
-  change; UI (small) two shots `vault-thumbs-trigger`, `vault-thumbs-settled`. Checks:
-  `thumbs_second_open_zero_cdn`, `thumbs_survive_rotation`, `thumbs_dead_link_refreshed_once`,
-  `thumbs_restricted_chatter_404`, `proxy_change_invalidates`. Faults: `thumb-keyed-by-signed-url` (default;
-  `thumbs_survive_rotation`), `thumb-no-resign` (`thumbs_dead_link_refreshed_once`). Bypasses: as above plus OF's
-  re-sign / expiry as mirror url rewrites (SQL) + the fake's gen, dead-link tiles fetched by id (persisted tiles).
+  SQL (`seed/vault_week`), collector off. `VaultWire(ip_bound, mp4)`: urls signed for the egress that listed them
+  (`AWS:SourceIp`, `proxy_wire.egress_of`), videos with a playable 240p clip; the fake CDN 403s a url through any
+  other egress. Phases cold / second / rotation / dead link / restricted chatter / proxy change / stale IP (mirror
+  video urls signed for proxy A, account on B: /img/scrub + poster with media_id re-sign once through B); UI
+  (small) shots `vault-thumbs-trigger`, `vault-thumbs-settled`, then a hover on a stale-IP video tile
+  `vault-hover-trigger`, `vault-hover-frames-a/-b`, then gifs (`vault-gif-*`). Checks: `thumbs_second_open_zero_cdn`,
+  `thumbs_survive_rotation`, `thumbs_dead_link_refreshed_once`, `thumbs_restricted_chatter_404`,
+  `proxy_change_invalidates`, `proxy_change_previews_resign`, `ui_hover_scrub_after_proxy_change`,
+  `ui_gif_tiles_loop_while_on_screen`, `ui_gif_details_loops_inline`, `ui_gif_clip_crosses_cdn_once` (each gif clip
+  one CDN call across every UI open: /img's small-clip Range cache). Faults: `thumb-keyed-by-signed-url`
+  (default; `thumbs_survive_rotation`), `thumb-no-resign` (`thumbs_dead_link_refreshed_once` + both stale-IP
+  checks), `preview-no-resign` (both stale-IP checks), `gif-range-cache-off` (`ui_gif_clip_crosses_cdn_once`). Bypasses: as above plus OF's re-sign / expiry / old-proxy
+  listing as mirror url rewrites (SQL) + the fake's gen, dead-link tiles fetched by id (persisted tiles), the CDN's
+  egress = the proxy curl was handed (a header), one ffmpeg testsrc clip for every mp4.

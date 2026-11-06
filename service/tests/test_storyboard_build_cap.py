@@ -90,7 +90,7 @@ def case_distinct_videos_are_capped():
     real_dl = storyboard._storyboard_download
     real_extract = storyboard._storyboard_extract_batch
 
-    def _fake_download(request, u, src_path, session_id=None):
+    def _fake_download(request, u, src_path, session_id=None, media_id=None):
         meter.enter(u)
         src_path.parent.mkdir(parents=True, exist_ok=True)
         src_path.write_bytes(b"fake-mp4")

@@ -370,6 +370,7 @@ export function useMoneyRailFeed({
       // re-read on return to a hidden tab only past LIST_STALE_MS.
       staleTime: LIST_STALE_MS,
       refetchOnWindowFocus: true,
+      // eslint-disable-next-line local/no-fixed-polling -- safety re-read of OF's feed for rows SSE missed (TODO verify: could be ssePoll)
       refetchInterval: LIST_SAFETY_POLL_MS,
       // Cold start: show this account's rows from the last session at once
       // (dimmed) while the real fetch runs, instead of blanking the rail.

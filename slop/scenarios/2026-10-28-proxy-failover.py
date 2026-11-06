@@ -21,10 +21,12 @@ The world: one Agency with 50 Creators (`one_agency`), each with a captured sess
 (seed/of_sessions.py) so the relay builds its REAL OFClient; OnlyFans is lib/of_wire.py on
 loopback (`OF_WIRE`), which also answers the probe's Cloudflare trace. The pool is POOL (3)
 proxies, each lib/proxy_wire.py on loopback, synced into the registry through
-`POST /__slop/proxy-pool` (the startup's own `proxies.sync_pool`). The owner puts ON_POOL
+`POST /__slop/proxy-pool` (the startup's own `proxies.sync_pool`), listed as two failover tiers
+(`w0,w1,|,w2`: POOL_TIER_BREAK after TIER0 proxies, as AE lists its ISP proxies before its DC ones). The owner puts ON_POOL
 (12, `--set on_pool=`) Creators on the Inflowwww proxy through the product's own
 `POST /admin/proxy-pool/assign` (least-used: 4 per proxy) and each reads `users/me` once
-through it. Then the proxy holding the first Creator dies, and for LOAD_S (`--set load_s=`)
+through it. Then the first tier-0 proxy dies (its Creators must move to the other tier-0 one, the
+tier-1 one only were none answering), and for LOAD_S (`--set load_s=`)
 `--users` people (seeded picks among the Creators on the pool, so about a third of them on
 the dead proxy) each read the Fan List with its manual refresh (`GET /api/of/v2/chats?refresh=1`,
 the one read that bypasses relay_cache; `users/me` is cached 60 s) once a second and send a DM
@@ -101,8 +103,10 @@ service/tests/test_proxy_health.py (case_failover_skips_a_destination_that_does_
 case_verify_pick_judges_by_probe_of_and_fills_the_region_once), and C_PROBE_OF plus
 --fault=proxy-confirm-probes-trace keep the watcher on probe_of here.
 
-Break-it-once: proxy-failover-never-moves (the move gone) turns only the failover check
-red; `--fault=proxy-recheck-never-runs` (no recheck, so no move either) turns the
+Break-it-once: proxy-failover-never-moves (the move gone) turns the failover check
+red (the tier check too: nobody moved);
+`--fault=pool-failover-ignores-tiers` (one tier: least-used across the whole pool, as before tiers)
+turns only the tier check red; `--fault=proxy-recheck-never-runs` (no recheck, so no move either) turns the
 failover and the recheck checks red; `--fault=pool-assign-drops-unanswered-login` (the attach
 refuses a Creator on no pool proxy when no pick answers) turns only the outage-login check red.
 The rules are a pure `service/proxy_health_decide.decide`; `--fault=proxy-decide-recheck-answer-ignored`
@@ -142,6 +146,7 @@ RELAY_ENV = {"PROXY_RECHECK_S": "2"}   # declared: 20 s doubling on prod, 2 s do
 P95_VS_LAST = (1.5, 100)
 P95_VS_LAST_MIN_N = 50
 POOL = 3
+TIER0 = 2              # w0, w1 tier 0; w2 (and the re-watch spare, appended later) tier 1
 ON_POOL = 12
 LOAD_S = 30.0          # people read and send through the outage and the move
 LOGIN_AT_S = 3.0       # the owner's login, into the outage
@@ -161,6 +166,8 @@ READ = "/api/of/v2/users/me"                      # the warm-up and the new Crea
 PEOPLE_READ = "/api/of/v2/chats?limit=5&refresh=1"  # the Fan List's manual refresh: bypasses relay_cache, reaches OF
 C_BIND = "pool: ON_POOL Creators bound least-used through /admin/proxy-pool/assign, each warm-up tunneled"
 C_MOVE = "dead pool proxy: its Creators are on a healthy pool proxy within budget, reads and sends answer again"
+C_TIER = ("pool tiers: the dead tier-0 proxy's Creators all moved to the other tier-0 proxy, none to the idler "
+          "tier-1 one (INFLOWW_PROXIES `|`)")
 C_SURF = "dead pool proxy: surfaced before the move (pool bad=1, proxy_down on exactly its Creators)"
 C_LOGIN = "login during the outage: bound once, to a healthy pool proxy, and never moved"
 C_SENDS = "sends never duplicated: each 200 once in OnlyFans' record, each 502 never, no text twice"
@@ -382,7 +389,8 @@ async def _run(ctx, w, reg: _Registry, wires: list[ProxyWire], on_pool: list[str
     back_ms = float(ctx.param("back_ms", BACK_MS))
 
     # ── the pool (the startup's sync, run now), ON_POOL Creators attached, each warmed through its proxy ──
-    text = ",".join(f"socks5://127.0.0.1:{p.port}" for p in wires)
+    items = [f"socks5://127.0.0.1:{p.port}" for p in wires]
+    text = ",".join(items[:TIER0] + ["|"] + items[TIER0:])   # proxies.POOL_TIER_BREAK
     r = await owner.post("/__slop/proxy-pool", json={"text": text})
     synced = r.status_code == 200 and r.json().get("size") == POOL
     by_port = {p.port: p for p in wires}
@@ -400,9 +408,10 @@ async def _run(ctx, w, reg: _Registry, wires: list[ProxyWire], on_pool: list[str
               synced=synced, assign=Counter(bound), per_proxy=dict(per_label), tunneled=tunneled,
               warm=Counter(x["status"] for x in warm))
 
-    # ── the proxy holding the first Creator dies; people read and send; the owner logs a Creator in ──
-    dead_label = binding[on_pool[0]]
-    dead_wire = label_wire[dead_label]
+    # ── the first tier-0 proxy dies; people read and send; the owner logs a Creator in ──
+    dead_wire = wires[0]
+    dead_label = next(lb for lb, wv in label_wire.items() if wv is dead_wire)
+    tier0 = sorted(lb for lb, wv in label_wire.items() if wv in wires[:TIER0] and lb != dead_label)
     dead = sorted(a for a in on_pool if binding[a] == dead_label)
     healthy = sorted(a for a in on_pool if binding[a] != dead_label)
     rng = w.rng("proxy_failover_people")
@@ -474,6 +483,11 @@ async def _run(ctx, w, reg: _Registry, wires: list[ProxyWire], on_pool: list[str
               and bool(after) and not after_bad, budget=True,
               moved_ms=round(t_moved, 1) if t_moved else None, budget_ms=failover_ms, now_on=now_on,
               after_move_calls=len(after), after_move_not_200=dict(after_bad))
+
+    moved = {a: lbl for a, lbl in now_on.items() if lbl != dead_label}
+    ctx.check(C_TIER, bool(moved) and all(lbl in tier0 for lbl in moved.values()),
+              moved=len(moved), on_tier0=sum(lbl in tier0 for lbl in moved.values()), tier0=tier0,
+              per_proxy=dict(Counter(final.get(a) for a in [*on_pool, login_aid])))
 
     before = [p for p in polls if not moved_at or p["t"] < moved_at[0]]
     surfaced = [p for p in before if p["bad"] == 1 and p["down"] == dead]

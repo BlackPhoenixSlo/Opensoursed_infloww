@@ -25,10 +25,11 @@ from typing import Any
 
 from curl_cffi import requests as curl_requests
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 import admission
+import cdn_resign
 from of_client import DEFAULT_TIMEOUT_S, IMPERSONATE, OF_CDN_SUFFIXES
 from relay_host import get_request_client as _get_client
 from relay_host import load_client as _load_client
@@ -151,14 +152,22 @@ def _img_hash_remember(account_id: str, u: str) -> str:
 #   - User A and user B viewing the same chat/profile both hit the same
 #     bytes — cross-session sharing without a CDN round-trip each.
 #
-# Only stores SMALL FULL responses. Range requests (browser <video>) and
-# 206 partials are never cached — partials would poison the cache, and
-# videos are huge. _IMG_CACHE_MAX_BYTES caps per-file size as a safety
-# net even when Content-Length isn't trustworthy.
+# Only stores WHOLE objects, never a partial. _IMG_CACHE_MAX_BYTES caps
+# per-file size for a plain GET as a safety net even when Content-Length
+# isn't trustworthy. A Range request (browser <video>) is served off disk
+# when the object is there (FileResponse answers the range: 206/416), and on
+# a miss caches the whole object when upstream's answer says it is at most
+# _IMG_RANGE_CACHE_MAX_BYTES (a vault GIF is an OF mp4 a <video> loops: one
+# proxy download instead of one per picker open). Anything bigger or of
+# unknown size streams through untouched — real videos are never buffered.
 _IMG_CACHE_DIR = Path(os.environ.get("IMG_CACHE_DIR", "/tmp/of-relay-img-cache"))
 _IMG_CACHE_MAX_BYTES = int(os.environ.get("IMG_CACHE_MAX_BYTES", str(2 * 1024 * 1024)))
+_IMG_RANGE_CACHE_MAX_BYTES = int(os.environ.get("IMG_RANGE_CACHE_MAX_BYTES", str(5 * 1024 * 1024)))
 _IMG_CACHE_TTL_S = int(os.environ.get("IMG_CACHE_TTL_S", str(7 * 24 * 60 * 60)))
 _IMG_CACHE_EVICT_INTERVAL_S = 30 * 60
+# Every /img answer's: a Creator's media, kept a week by the browser (see
+# `_stream_upstream`), never by a shared cache.
+_CACHE_CONTROL = "private, max-age=604800, stale-while-revalidate=86400, immutable"
 _img_cache_hits: int = 0
 _img_cache_misses: int = 0
 # Requests that missed on the first look, queued for a fetch slot, and found
@@ -506,11 +515,16 @@ def admin_streams() -> dict:
 
 
 @router.get("/img")
-async def proxy_image(request: Request, u: str = Query(..., description="Absolute OF CDN URL")):
+async def proxy_image(
+    request: Request,
+    u: str = Query(..., description="Absolute OF CDN URL"),
+    media_id: int | None = Query(None, description="The vault media `u` belongs to. When set, an upstream 403 (url signed for the account's old proxy IP, or expired) re-reads that media from OF and retries once with its fresh url for the same file."),
+):
     """Fetch `u` via the requesting account's OF client (so the source IP
     matches the URL's signed Policy) and stream the bytes back. The unsigned
     static hosts (`_DIRECT_CDN_HOST`) are the exception: they go out the
-    relay's own IP on `_DIRECT_HTTP`, with no cookies or account headers."""
+    relay's own IP on `_DIRECT_HTTP`, with no cookies or account headers.
+    With `media_id`, a 403 re-signs once (cdn_resign)."""
     # `async def`, every blocking step (disk, client load, the upstream GET) in
     # the threadpool, so a request queued for a slot holds no threadpool token
     # (#172, see `Lane.enter_async`). A comment: the docstring is OpenAPI's.
@@ -524,23 +538,27 @@ async def proxy_image(request: Request, u: str = Query(..., description="Absolut
 
     range_hdr = request.headers.get("range") or request.headers.get("Range")
 
-    # Disk-cache fast path: only safe when the client wants the WHOLE
-    # asset (no Range). Cached bytes are account-agnostic — once we have
-    # them, the upstream signature is irrelevant for serving them again.
-    # Skipped on Range because we don't store partials.
-    if not range_hdr:
-        global _img_cache_hits, _img_cache_misses
-        cached = await run_in_threadpool(_serve_if_cached, u, "HIT")
-        if cached is not None:
-            _img_cache_hits += 1
-            return cached
-        _img_cache_misses += 1
+    # Disk-cache fast path. Cached bytes are account-agnostic — once we have
+    # them, the upstream signature is irrelevant for serving them again. The
+    # store only holds whole objects, so a Range is answered from it too
+    # (FileResponse: 206 / 416), before any lane: a hit never queues.
+    global _img_cache_hits, _img_cache_misses
+    cached = await run_in_threadpool(_serve_if_cached, u, "HIT")
+    if cached is not None:
+        _img_cache_hits += 1
+        return cached
+    _img_cache_misses += 1
 
+    client = None
     if _DIRECT_CDN_HOST.fullmatch(host):
         http, timeout_s = _DIRECT_HTTP, DEFAULT_TIMEOUT_S
     else:
         client = await run_in_threadpool(_get_client, request)
         http, timeout_s = client.http, client.timeout_s
+    # The account whose url this is, when the caller named its vault media: only
+    # then can a 403 be re-signed (and a url re-signed earlier used up front).
+    resign_aid = str(getattr(client, "account_id", "") or "") if media_id else ""
+    fetch_u = cdn_resign.current(resign_aid, u) if resign_aid else u
 
     # Forward the browser's Range header so video <video> tags can seek.
     # Without this, the upstream always returns 200 with the whole file and
@@ -575,30 +593,48 @@ async def proxy_image(request: Request, u: str = Query(..., description="Absolut
     # change exists to prevent.
     r = None
     try:
-        if not range_hdr:
-            # Re-read the store INSIDE the slot, the same way vault_stills does.
-            # Forty tiles opening on one media all miss together, all queue here,
-            # and without this re-read each would then pay its own OF round-trip
-            # for bytes the first waiter has already written. The cap bounds how
-            # many run at once; this is what stops them being redundant.
-            cached = await run_in_threadpool(_serve_if_cached, u, "COLLAPSED")
-            if cached is not None:
-                global _img_cache_collapsed
-                # Not also counted as a hit: this request DID miss, and was already
-                # tallied as one above. `collapsed` is the separate story of how
-                # many of those misses the lane absorbed instead of forwarding.
-                _img_cache_collapsed += 1
-                held.exit()
-                return cached
+        # Re-read the store INSIDE the slot, the same way vault_stills does.
+        # Forty tiles opening on one media all miss together, all queue here,
+        # and without this re-read each would then pay its own OF round-trip
+        # for bytes the first waiter has already written. The cap bounds how
+        # many run at once; this is what stops them being redundant.
+        cached = await run_in_threadpool(_serve_if_cached, u, "COLLAPSED")
+        if cached is not None:
+            global _img_cache_collapsed
+            # Not also counted as a hit: this request DID miss, and was already
+            # tallied as one above. `collapsed` is the separate story of how
+            # many of those misses the lane absorbed instead of forwarding.
+            _img_cache_collapsed += 1
+            held.exit()
+            return cached
         try:
             r = await run_in_threadpool(
-                http.get, u, timeout=timeout_s, stream=True,
+                http.get, fetch_u, timeout=timeout_s, stream=True,
                 headers=upstream_headers or None)
+            if r.status_code == 403 and resign_aid:
+                stale, r = r, None
+                await run_in_threadpool(stale.close)
+                fetch_u = await cdn_resign.resign(resign_aid, media_id, fetch_u, client)
+                if fetch_u is None:
+                    raise HTTPException(status_code=403, detail="upstream non-2xx")
+                r = await run_in_threadpool(
+                    http.get, fetch_u, timeout=timeout_s, stream=True,
+                    headers=upstream_headers or None)
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"upstream fetch failed: {e}")
         # 206 (Partial Content) is the normal Range response — treat it as ok.
         if r.status_code not in (200, 206):
             raise HTTPException(status_code=r.status_code, detail="upstream non-2xx")
+        clip = _small_clip(r) if range_hdr else None
+        if clip is not None:
+            stale, r = r, None
+            resp = await run_in_threadpool(
+                _cache_clip, stale, clip, u,
+                lambda: http.get(fetch_u, timeout=timeout_s, stream=True))
+            held.exit()
+            return resp
         return _stream_upstream(
             r, u, held, range_hdr,
             account_id_hdr=request.headers.get("x-account-id") or "")
@@ -615,6 +651,64 @@ async def proxy_image(request: Request, u: str = Query(..., description="Absolut
         except RuntimeError:  # executor shut down: release here, exactly once
             _close_then_exit(r, held)
         raise
+
+
+_CONTENT_RANGE = re.compile(r"bytes (\d+)-(\d+)/(\d+)")
+
+
+def _small_clip(r: Any) -> bool | None:
+    """For upstream's answer to a Range request: whether that answer is the
+    WHOLE object (a 200, or a 206 `bytes 0-(n-1)/n` — what a <video> asks
+    first), when the object's size is known and at most
+    _IMG_RANGE_CACHE_MAX_BYTES. None (stream it through) otherwise."""
+    if r.status_code == 206:
+        m = _CONTENT_RANGE.fullmatch((r.headers.get("Content-Range") or "").strip())
+        if not m:
+            return None
+        n = int(m.group(3))
+        whole = m.group(1) == "0" and int(m.group(2)) == n - 1
+    else:
+        try:
+            n = int(r.headers.get("Content-Length") or 0)
+        except ValueError:
+            return None
+        whole = True
+    return whole if 0 < n <= _IMG_RANGE_CACHE_MAX_BYTES else None
+
+
+def _cache_clip(r: Any, whole: bool, u: str, refetch: Any) -> Response:
+    """Write a small clip to the disk cache whole, then answer the caller's
+    Range off disk (FileResponse). When `r` is only part of it (Safari probes
+    `bytes=0-1`), one more GET without Range (`refetch`) fetches the rest.
+    Closes every response it reads. Blocking: run in the threadpool, inside
+    the caller's lane slot. A failed disk write still answers: the whole clip
+    as a 200, which a <video> takes for any Range."""
+    try:
+        if not whole:
+            r.close()
+            r = refetch()
+            if r.status_code != 200:
+                raise HTTPException(status_code=502, detail="upstream non-2xx on the whole clip")
+        data = bytearray()
+        for chunk in r.iter_content(chunk_size=64 * 1024):
+            data.extend(chunk)
+            if len(data) > _IMG_RANGE_CACHE_MAX_BYTES:
+                raise HTTPException(status_code=502, detail="clip larger than upstream said")
+        ct = r.headers.get("Content-Type", "application/octet-stream")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"upstream fetch failed: {e}")
+    finally:
+        try:
+            r.close()
+        except Exception:
+            pass
+    if _img_cache_write(u, ct, bytes(data)):
+        hit = _serve_if_cached(u, "FILLED")
+        if hit is not None:
+            return hit
+    return Response(bytes(data), media_type=ct, headers={"Cache-Control": _CACHE_CONTROL, "X-Img-Cache": "MISS"})
 
 
 def _close_then_exit(r: Any, held: admission.Lane) -> None:
@@ -650,8 +744,7 @@ def _serve_cached(hit: tuple[Path, str], u: str, *, label: str) -> FileResponse:
         str(bin_p),
         media_type=ct_cached,
         headers={
-            "Cache-Control":
-                "private, max-age=604800, stale-while-revalidate=86400, immutable",
+            "Cache-Control": _CACHE_CONTROL,
             "X-Img-Cache": label,
         },
     )
@@ -685,8 +778,7 @@ def _stream_upstream(r: Any, u: str, held: admission.Lane,
     # instantly while silently refreshing in the background. `private`: a
     # signed-in Creator's media, so a CDN in front (deploy/ae/EDGE-CDN.md)
     # must never keep a copy for the next requester, whatever its cache rules.
-    cache_control = "private, max-age=604800, stale-while-revalidate=86400, immutable"
-    out_headers = {"Cache-Control": cache_control}
+    out_headers = {"Cache-Control": _CACHE_CONTROL}
     # Stable hash exposed back to the browser so the frontend can pivot
     # to /img/by-hash/<h> on subsequent renders — same image, same key,
     # even after OF rotates the upstream signature.

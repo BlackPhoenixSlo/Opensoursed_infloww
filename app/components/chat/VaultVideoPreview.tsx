@@ -18,7 +18,8 @@ import { proxyImage } from "@/lib/mediaUrl";
  *  scaled down to a small storyboard width for ffmpeg scrubbing, so pulling
  *  the 720p mp4 is wasted bandwidth. Fall back to 720p, then files.full. */
 export function progressiveVideoSrc(m: VaultMedia): string | null {
-  if (m.type !== "video") return null;
+  // A gif is OF's short .mp4 (no DRM): its `files.full` is the clip.
+  if (m.type !== "video" && m.type !== "gif") return null;
   return m.videoSources?.["240"] || m.videoSources?.["720"] || m.files?.full?.url || null;
 }
 
@@ -108,10 +109,11 @@ export function VaultVideoPreview({
       });
     }
   }, [rawSrc, media]);
-  const src = proxyImage(rawSrc, accountId);
+  const src = proxyImage(rawSrc, accountId, media.id);
   const poster = proxyImage(
     media.files?.preview?.url || media.files?.thumb?.url || null,
     accountId,
+    media.id,
   );
   const showError = !src || loadError;
   return (
@@ -134,7 +136,7 @@ export function VaultVideoPreview({
              *  steppable slideshow; the user can still attach/send it. */}
             <div className="relative">
               <img
-                src={proxyImage(drmFrames[frameIdx], accountId)}
+                src={proxyImage(drmFrames[frameIdx], accountId, media.id)}
                 alt={`Frame ${frameIdx + 1} of ${drmFrames.length}`}
                 className="max-w-[92vw] max-h-[88vh] rounded-md shadow-2xl bg-black object-contain"
               />

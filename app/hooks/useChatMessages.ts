@@ -283,6 +283,7 @@ export function useChatMessages({
     // structuralSharing keeps the reference stable when nothing changed.
     select: selectMessages,
     staleTime: prefetchWindowMs ?? STALE_MS,
+    // eslint-disable-next-line local/no-fixed-polling -- already SSE-aware: live/offline rate picked from sseConnected
     refetchInterval: enabled ? (sseConnected ? POLL_MS_REALTIME : POLL_MS_OFFLINE) : false,
     // Override the global `false`: with two windows showing the same
     // chat (inbox + popout), background-tab throttling slows the

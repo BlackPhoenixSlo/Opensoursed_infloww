@@ -196,10 +196,10 @@ def case_defaults_are_sane_and_fit_inside_the_healthcheck_start_period():
     assert tx._BOOT_GRACE_S > 0, "the supervisor ships with no grace at all"
     # Freshness is the fast poll's entire job, so its hold must stay the
     # smaller of the two — the supervisor can afford to be polite, it ticks
-    # every 5 min.
+    # every 15 min.
     assert tx._FAST_BOOT_GRACE_S <= tx._BOOT_GRACE_S, (
         f"the 30s freshness poll ({tx._FAST_BOOT_GRACE_S}s) is held LONGER than "
-        f"the 5-min supervisor ({tx._BOOT_GRACE_S}s) — that inverts their jobs")
+        f"the 15-min supervisor ({tx._BOOT_GRACE_S}s) — that inverts their jobs")
 
     text = _COMPOSE.read_text(encoding="utf-8")
     block = re.search(r"test:\s*\[\"CMD\",\s*\"curl\".*?/livez.*?\n(.*?)\n    labels:",
