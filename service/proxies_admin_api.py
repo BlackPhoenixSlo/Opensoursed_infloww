@@ -384,5 +384,5 @@ def admin_proxies_test(label: str) -> dict[str, Any]:
     proxy_registry.record_verification(
         label, ip=result.get("ip"), geo=result.get("geo"), ok=result.get("ok", False),
     )
-    proxy_health.record_probe(label, result)
+    proxy_health.note_trace(label, result)   # display only: health is probe_of's (proxy_health)
     return result

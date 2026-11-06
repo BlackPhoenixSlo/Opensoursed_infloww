@@ -6,7 +6,7 @@ import type { OFUserMini } from "@/lib/relay";
 import { stillUrl } from "@/lib/ofMedia";
 import { NOT_YET } from "@/lib/ofMirrorWrites";
 import { drawPostCard, stampMedia, viewerItems, visibleMedia, type CardViewer } from "@/lib/ofMirrorPostCard";
-import { applyMore, clock, dayOf, fill, fillGrid, linkUser, make, otherAvatar, photoGrid, plain, stamp, track, userHref, valid, type MorePages } from "@/lib/ofMirrorDom";
+import { applyMore, clock, dayOf, fill, fillGrid, linkUser, make, otherAvatar, photoGrid, plain, setOfText, stamp, track, userHref, valid, type MorePages } from "@/lib/ofMirrorDom";
 import { fullDay, type MirrorPost } from "@/lib/ofMirrorFeedsShared";
 
 /** dayjs's fromNow with OF's words (its UtilsTime's relativeTime: "seconds", "1 minute", "%d hours", ...) and thresholds. */
@@ -101,9 +101,8 @@ function postRows(doc: Document, tpl: Element, posts: MirrorPost[], img: (u: str
       el.querySelector(".b-post__text")?.remove();
       content?.classList.remove("m-post-has-text");
     } else if (holder) {
-      const para = (holder.querySelector("p")?.cloneNode(false) as HTMLElement | undefined) ?? doc.createElement("p");
-      para.textContent = text;
-      holder.replaceChildren(para);
+      // OF draws the post's markup (its Format text: bold, italic, colours, sizes), each paragraph as the capture's.
+      setOfText(holder, p.text ?? "", holder.querySelector("p"));
     }
     // OF's visible media: another creator's locked post shows only the files it can view (none: no picture).
     const still = stillUrl(visibleMedia(p)[0]);

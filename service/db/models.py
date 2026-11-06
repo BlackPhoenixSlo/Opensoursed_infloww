@@ -1096,11 +1096,38 @@ class SavedReply(Base):
     tags_json: Mapped[str | None] = mapped_column(Text)
     # Growth > Scripts' internal notes (chatter-facing, never sent).
     notes: Mapped[str | None] = mapped_column(Text)
+    # A Condition step's option text (Infloww's `conditional`, at most 150), e.g. "if he bought".
+    conditional: Mapped[str | None] = mapped_column(Text)
+    # Successful immediate chat sends that rode this script (`POST /admin/saved-replies/sent`).
+    sent_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     created_at: Mapped[datetime] = _ts_now()
     updated_at: Mapped[datetime] = _ts_now()
 
     __table_args__ = (
         Index("ix_saved_replies_account", "account_id", "updated_at"),
+    )
+
+
+class SavedReplySequence(Base):
+    """A Growth > Scripts sequence's own fields: list position ("Custom" sort), Created by, description and
+    dates, as Infloww keeps them. Joined to its steps by NAME (`saved_replies.script_id`); a sequence whose
+    scripts have no row here still works, its dates derived from its scripts. Kept in step with relabel
+    (rename / delete) and pruned once no script names it."""
+    __tablename__ = "saved_reply_sequences"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[str] = mapped_column(
+        String, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False,
+    )
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    position: Mapped[int | None] = mapped_column(Integer)
+    created_by: Mapped[str | None] = mapped_column(String)
+    description: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _ts_now()
+    updated_at: Mapped[datetime] = _ts_now()
+
+    __table_args__ = (
+        UniqueConstraint("account_id", "name", name="uq_saved_reply_sequences_account_name"),
     )
 
 

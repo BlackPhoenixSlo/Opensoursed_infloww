@@ -11,6 +11,8 @@ import type { OFUserMini } from "@/lib/relay";
 import { clockTime } from "@/lib/format";
 import { undoList } from "@/lib/ofMirrorUndo";
 import { initials } from "@/lib/ofMirrorAvatar";
+import { setOfHtml } from "@/lib/ofMirrorFormat";
+import { isOfHtml } from "@/lib/ofRichText";
 
 export type Part = "chats" | "chatList" | "thread" | "gallery" | "vaultLists" | "vaultMedia" | "userLists" | "listRow" | "listUsers" | "listPosts" | "subscribers" | "labels" | "posts" | "profileMedia" | "bookmarks" | "queue" | "notifications" | "transactions" | "payouts" | "referrals"
   | "home" | "stories" | "notificationCounts" | "pastStreams" | "promotions" | "events" | "profile";
@@ -82,7 +84,18 @@ export function linkUser(links: Iterable<Element>, href: string | null) {
 }
 export const sameId = (a: unknown, b: string | null | undefined) => b != null && String(a) === b;
 /** OF message text (HTML) as plain text, parsed inertly. */
-export const plain = (html: string | null | undefined) => (html ? (new DOMParser().parseFromString(html, "text/html").body.textContent ?? "").trim() : "");
+/** OF's text markup as one line of plain text: a paragraph's end and a <br> leave a space, so lines never run together. */
+export const plain = (html: string | null | undefined) =>
+  html ? (new DOMParser().parseFromString(html.replace(/<br\s*\/?>|<\/p\s*>/gi, "$& "), "text/html").body.textContent ?? "").trim() : "";
+/**
+ * A message's or post's text drawn into `holder` as OF draws it (its markup, v-html): through ofMirrorFormat's allow-list
+ * (setOfHtml: p, br, strong, em and spans with OF's colour and size classes; any other tag only its text, never live
+ * markup), a body without paragraphs as one. Each paragraph takes `proto`'s attributes (a capture's scoped `<p>`).
+ */
+export function setOfText(holder: Element, text: string, proto?: Element | null): void {
+  setOfHtml(holder, isOfHtml(text) ? text : `<p>${text}</p>`);
+  if (proto) for (const p of holder.querySelectorAll(":scope > p")) for (const a of proto.attributes) p.setAttribute(a.name, a.value);
+}
 /**
  * OF's text markup (a bio's `about`, a message's text; parsed inertly) as its plain lines: one per paragraph, a <br>
  * breaking a line; nl2br's "<br />\n" is one break, not two.

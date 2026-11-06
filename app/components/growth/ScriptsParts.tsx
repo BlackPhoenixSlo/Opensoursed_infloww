@@ -6,9 +6,9 @@
  * (`docs/infloww-layouts/growth-scripts.md`).
  */
 
-import { useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
-  ArrowRight, AtSign, ChevronDown, LayoutTemplate, List, MinusCircle, MoreHorizontal, Pencil, Plus, PlusSquare,
+  ArrowDown, ArrowRight, ArrowUp, AtSign, ChevronDown, LayoutTemplate, List, MinusCircle, MoreHorizontal, Pencil, Plus, PlusSquare,
   Share2, StickyNote, Tags, Trash2, Workflow, type LucideIcon,
 } from "lucide-react";
 
@@ -16,6 +16,8 @@ import { MediaStrip } from "@/components/settings/TemplateDraftEditor";
 import { OfRichText } from "@/components/chat/OfRichText";
 import { useOutsideClose } from "@/components/ui/Menu";
 import { EmptyState } from "@/components/ui/infloww";
+import type { SeqSort, SeqSortBy } from "@/components/growth/scriptsPageState";
+import { useRenderCap } from "@/hooks/useRenderCap";
 import { fmtPrice } from "@/lib/format";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import type { SavedReply } from "@/lib/relay";
@@ -170,9 +172,13 @@ export interface SidebarItem {
   fixed?: boolean;
 }
 
-/** The Tag and Sequence sidebar (#53 to #58): 248px, a search, then one row per entry with its script count. */
+const SEQ_SORTS: Array<[SeqSortBy, string]> = [["custom", "Custom"], ["recent", "Recent"], ["name", "Name"]];
+
+/** The Tag and Sequence sidebar (#53 to #58): 248px, a search, then one row per entry with its script count. The
+ *  Sequence sidebar sorts (Custom / Recent / Name; the one on again flips its order). Rows render in steps of 200
+ *  (`useRenderCap`), always through the selected one. */
 export function Sidebar({
-  kind, items, selected, onSelect, onRename, onDelete,
+  kind, items, selected, onSelect, onRename, onDelete, sort, onSort,
 }: {
   kind: "tag" | "sequence";
   items: SidebarItem[];
@@ -180,11 +186,17 @@ export function Sidebar({
   onSelect: (id: string) => void;
   onRename: (item: SidebarItem) => void;
   onDelete: (item: SidebarItem) => void;
+  sort?: SeqSort;
+  onSort?: (by: SeqSortBy) => void;
 }) {
   const [q, setQ] = useState("");
-  const shown = q.trim()
-    ? items.filter((i) => i.fixed || i.name.toLowerCase().includes(q.trim().toLowerCase()))
-    : items;
+  const needle = q.trim().toLowerCase();
+  const shown = useMemo(
+    () => (needle ? items.filter((i) => i.fixed || i.name.toLowerCase().includes(needle)) : items),
+    [items, needle],
+  );
+  const { cap, hasMore, more, sentinel } = useRenderCap(shown.length, `${kind}|${needle}`);
+  const upTo = Math.max(cap, shown.findIndex((i) => i.id === selected) + 1);
   return (
     <aside
       aria-label={kind === "tag" ? "Tags" : "Sequences"}
@@ -198,9 +210,30 @@ export function Sidebar({
         onChange={(e) => setQ(e.target.value)}
         className="w-full mb-2 rounded-md border border-border bg-transparent px-2 py-1 text-sm"
       />
+      {sort && onSort && (
+        <div role="group" aria-label="Sort sequences" className="mb-2 flex items-center gap-1 text-xs">
+          {SEQ_SORTS.map(([by, label]) => (
+            <button
+              key={by}
+              type="button"
+              aria-pressed={sort.by === by}
+              onClick={() => onSort(by)}
+              className={cn(
+                "h-6 px-2 rounded inline-flex items-center gap-0.5",
+                sort.by === by ? "bg-accent/15 text-accent" : "text-fg-dim hover:text-fg",
+              )}
+            >
+              {label}
+              {sort.by === by && (sort.order === "asc"
+                ? <ArrowUp size={12} aria-label="ascending" />
+                : <ArrowDown size={12} aria-label="descending" />)}
+            </button>
+          ))}
+        </div>
+      )}
       {shown.length === 0 && <EmptyState size="sm" text="No data" />}
-      <ul className="space-y-0.5 max-h-60 md:max-h-none overflow-y-auto">
-        {shown.map((i) => (
+      <ul className="space-y-0.5 max-h-60 md:max-h-[calc(100dvh-14rem)] overflow-y-auto">
+        {shown.slice(0, upTo).map((i) => (
           <li key={i.id}>
             <div
               role="button"
@@ -223,8 +256,22 @@ export function Sidebar({
             </div>
           </li>
         ))}
+        {hasMore && upTo < shown.length && (
+          <li ref={sentinel}>
+            <ShowMore left={shown.length - upTo} onClick={more} />
+          </li>
+        )}
       </ul>
     </aside>
+  );
+}
+
+/** A capped list's foot (`useRenderCap`): the scroll sentinel's button, for a click or no IntersectionObserver. */
+export function ShowMore({ left, onClick }: { left: number; onClick: () => void }) {
+  return (
+    <button type="button" onClick={onClick} className="w-full py-2 text-xs text-fg-dim hover:text-fg">
+      Show more ({left})
+    </button>
   );
 }
 
@@ -308,11 +355,13 @@ function ScriptChips({
 /** One script (#38 to #49): checkbox, name (or the step in a sequence), tags, then text, media, price, stats and
  *  notes, then the actions. Phone-wide the cells wrap under the name. */
 export function ScriptRow({
-  r, stepLabel, accountId, expanded, checked, onCheck, onEdit, onShare, onDelete, removeLabel, onOpenChip, busy,
+  r, stepLabel, last, accountId, expanded, checked, onCheck, onEdit, onShare, onDelete, removeLabel, onOpenChip, busy,
 }: {
   r: SavedReply;
   /** In a sequence, the 72px cell shows the step and the name moves above the text. */
   stepLabel?: string;
+  /** A sequence's last step: no line on to a next card. */
+  last?: boolean;
   accountId: string | null;
   expanded: boolean;
   checked: boolean;
@@ -339,7 +388,9 @@ export function ScriptRow({
   return (
     <li
       className={cn(
-        "flex flex-wrap sm:flex-nowrap items-start min-h-10 py-2 pl-4 pr-6 border-b border-border",
+        "flex flex-wrap sm:flex-nowrap items-start min-h-10 py-2 pl-4 pr-6",
+        // A sequence's steps are numbered cards joined by a line (Infloww's sequence view).
+        inSequence ? "relative mx-4 my-3 rounded-lg border border-border" : "border-b border-border",
         checked && "bg-accent/5",
         busy && "opacity-60",
       )}
@@ -352,14 +403,21 @@ export function ScriptRow({
         className="mt-3 shrink-0 accent-accent"
       />
       {/* #38, #40: a 118px name cell (72px holding the step in a sequence), 8px 16px padding, at most three lines. */}
-      <div
-        className={cn(
-          "shrink-0 px-4 py-2 text-sm font-medium break-words line-clamp-3",
-          inSequence ? "w-[72px]" : "w-[118px]",
-        )}
-      >
-        {inSequence ? stepLabel : r.title}
-      </div>
+      {inSequence ? (
+        <div className="relative self-stretch w-[72px] shrink-0 flex justify-center py-1">
+          <span
+            aria-label={`Step ${stepLabel}`}
+            className="z-[1] min-w-8 h-8 px-1 rounded-full bg-accent text-white text-xs font-semibold inline-flex items-center justify-center"
+          >
+            {stepLabel}
+          </span>
+          {!last && (
+            <span aria-hidden data-connector className="absolute left-1/2 top-9 -bottom-7 w-px bg-accent/50" />
+          )}
+        </div>
+      ) : (
+        <div className="shrink-0 w-[118px] px-4 py-2 text-sm font-medium break-words line-clamp-3">{r.title}</div>
+      )}
       {/* #41: the tags and sequences column. */}
       <div aria-label="Tags" className="w-[172px] shrink-0 px-4 py-2 text-sm">
         <ScriptChips r={r} onOpen={onOpenChip} />
@@ -383,7 +441,14 @@ export function ScriptRow({
         <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-fg-dim">
           {/* #44: the price, when the media is priced (`fmtPrice`, not the bundle's "$ 10.00"). */}
           {r.price > 0 && <span className="text-warn">{fmtPrice(Math.round(r.price * 100))}</span>}
-          {/* #45: sent, purchases and sales; the store keeps no statistics. */}
+          {/* #45: sent, purchases and sales. Sent: the chat sends that rode this script (`POST
+              /admin/saved-replies/sent`); purchases and sales are not kept. */}
+          {r.sent_count != null && (
+            <span aria-label="Sent" title="Chat sends of this script"
+              className="rounded border border-[#FF8A00]/40 bg-[#FF8A00]/10 px-1.5 text-[#FF8A00]">
+              Sent {r.sent_count}
+            </span>
+          )}
           <span aria-label="Stats" title={NOT_WIRED}>—</span>
           {tagged > 0 && (
             <span aria-label={`Tagged Creators: ${tagged}`} title={EXTRA_LABEL} className="inline-flex items-center gap-1">
@@ -396,6 +461,12 @@ export function ScriptRow({
           <div aria-label="Internal notes" title={r.notes} className="mt-1 flex items-center gap-1 text-xs text-fg-dim">
             <StickyNote size={12} aria-hidden className="shrink-0" />
             <span className="truncate">{r.notes}</span>
+          </div>
+        )}
+        {/* An imported step's condition (Infloww's "conditional"): when the chatter sends this option. */}
+        {r.conditional && (
+          <div aria-label="Condition" title={r.conditional} className="mt-1 text-xs text-fg-dim truncate">
+            If: {r.conditional}
           </div>
         )}
       </div>

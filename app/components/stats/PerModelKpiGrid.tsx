@@ -33,6 +33,7 @@ import { cn } from "@/lib/utils";
 import { fmtCents, fmtDateShort, fmtInt, fmtPrice } from "@/lib/format";
 import { proxyImage } from "@/lib/mediaUrl";
 import { useAccounts } from "@/hooks/useAccounts";
+import { useScreen } from "@/lib/screenBundle";
 import type { AccountMeta } from "@/lib/relay";
 import { sessionConnectivity, type Connectivity } from "@/lib/sessionConnectivity";
 import {
@@ -76,6 +77,8 @@ export function ofReadState(
 }
 
 export default function PerModelKpiGrid({ from, to }: Props) {
+  // The cards' per-Creator reads (users/me, fan counts, new fans) and per-model: one relay call (lib/screenBundle.ts).
+  useScreen({ kind: "dashboard", from, to });
   const q = usePerModel(from, to);
   const accountsQ = useAccounts();
 

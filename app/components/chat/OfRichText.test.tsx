@@ -18,8 +18,8 @@ describe("OfRichText", () => {
     ["plain text with an angle-bracket code, as written", "code <VIP20>", "code <VIP20>", null],
     ["plain text with an entity, as written", "a &amp; b", "a &amp; b", null],
     ["unformatted markup", "<p>a &amp; b</p><p>c</p>", "a & b\nc", null],
-    ["bold blue large", '<p><strong><span class="m-editor-fc__blue-1 m-editor-fs__l">Hey</span></strong> you</p>',
-      "Hey you", '<strong><span class="m-editor-fc__blue-1 m-editor-fs__l">Hey</span></strong> you'],
+    ["bold blue large", '<p><span class="m-editor-fs__l m-editor-fc__blue-1"><strong>Hey</strong></span> you</p>',
+      "Hey you", '<span class="m-editor-fs__l m-editor-fc__blue-1"><strong>Hey</strong></span> you'],
     ["folded blank line", "<p><em>a</em><br><br>b</p>", "a\n\nb", "<em>a</em>\n\nb"],
     ["foreign markup never rendered", '<p><strong>x</strong><img src=x onerror="alert(1)"><script>alert(2)</script></p>',
       "x", "<strong>x</strong>"],
@@ -66,12 +66,12 @@ describe("OfRichTextEditor", () => {
 
   it("loads a stored formatted script through the allow-list and lights its marks in the toolbar", () => {
     const { container } = render(
-      <OfRichTextEditor value={'<p><strong><span class="m-editor-fc__blue-1 m-editor-fs__l">x</span></strong></p>'} onChange={() => {}} />);
+      <OfRichTextEditor value={'<p><span class="m-editor-fs__l m-editor-fc__blue-1"><strong>x</strong></span></p>'} onChange={() => {}} />);
     const el = box(container);
-    expect(el.innerHTML).toBe('<p><strong><span class="m-editor-fc__blue-1 m-editor-fs__l">x</span></strong></p>');
+    expect(el.innerHTML).toBe('<p><span class="m-editor-fs__l m-editor-fc__blue-1"><strong>x</strong></span></p>');
     const sel = document.getSelection()!;
     const r = document.createRange();
-    r.setStart(el.querySelector("span")!.firstChild!, 1);
+    r.setStart(el.querySelector("strong")!.firstChild!, 1);
     sel.removeAllRanges();
     sel.addRange(r);
     act(() => { document.dispatchEvent(new Event("selectionchange")); });

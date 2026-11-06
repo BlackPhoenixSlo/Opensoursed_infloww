@@ -7,7 +7,7 @@ import { stillUrl } from "@/lib/ofMedia";
 import { basePage, keepQuery } from "@/lib/ofMirrorRow";
 import { NOT_YET } from "@/lib/ofMirrorWrites";
 import { applyWith, attachmentIcons, chatHref, dollars, fillIcons, icon, setIconName, GALLERY_PAGE, PINNED_PAGE, type ThreadMessage } from "@/lib/ofMirrorThread";
-import { clock, dayOf, dropClass, fill, handleOf, make, nameOf, plain, sameId, setAttr, setAvatar, setText, stamp, track, unit, valid, type MorePages } from "@/lib/ofMirrorDom";
+import { clock, dayOf, dropClass, fill, handleOf, make, nameOf, plain, sameId, setAttr, setAvatar, setOfText, setText, stamp, track, unit, valid, type MorePages } from "@/lib/ofMirrorDom";
 import type { MirrorData } from "@/lib/ofMirrorDataOf";
 
 const CHAT_MARKS = ["current", "m-muted", "m-muted-by-me", "m-muted-notifications", "m-unread", "m-unread-muted"];
@@ -333,9 +333,13 @@ export function applyThread(doc: Document, page: string, chat: string, thread: N
     else if (fan) setAvatar(avatar, fan, img);
     const holder = el.querySelector(".b-chat__message__text-holder");
     if (holder) {
-      const p = doc.createElement("p");
-      p.textContent = text || (!stills.length && !purchase && (m.mediaCount ?? m.media?.length ?? 0) > 0 ? "Media" : "");
-      holder.replaceChildren(p);
+      // OF draws the text's own markup (bold, italic, its colours and sizes; the mirrored stylesheet has the classes).
+      if (text) setOfText(holder, m.text ?? "");
+      else {
+        const p = doc.createElement("p");
+        p.textContent = !stills.length && !purchase && (m.mediaCount ?? m.media?.length ?? 0) > 0 ? "Media" : "";
+        holder.replaceChildren(p);
+      }
     }
     const time = el.querySelector(".b-chat__message__time > span");
     if (time) time.textContent = at ? ` ${clock(at)} ` : "";

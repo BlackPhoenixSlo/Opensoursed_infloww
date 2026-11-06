@@ -64,7 +64,7 @@ async def case_saved_replies_flag_removed_media():
 
     async def flagged() -> dict[str, list[int]]:
         resp = await saved_replies_api.admin_saved_replies_list(account_id=AID)
-        return {r["title"]: r["removed_media_ids"] for r in resp["list"]}
+        return {r["title"]: r["removed_media_ids"] for r in json.loads(resp.body)["list"]}
 
     # 103 was never mirrored: unknown is not deleted.
     assert await flagged() == {"two pics": [102], "text only": []}

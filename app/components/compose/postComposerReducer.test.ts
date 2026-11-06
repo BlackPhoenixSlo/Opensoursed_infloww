@@ -143,6 +143,8 @@ describe("validatePost — the one check (button, mutation)", () => {
     ["empty", { text: " " }, 2, false, "Add text or media"],
     ["media only", { text: "", attached: [media(1)] }, 2, false, null],
     ["invalid schedule", { schedule: "nope" }, 2, false, "Invalid schedule date"],
+    ["6501 plain characters", { text: "x".repeat(6501) }, 2, false, "Text is over 6500 characters"],
+    ["6500 formatted characters fit", { text: `<p><em>${"x".repeat(6500)}</em></p>` }, 2, false, null],
   ])("%s", (_n, over, broadcastCount, paidPage, want) => {
     expect(validatePost(form(over), { broadcastCount, paidPage })).toBe(want);
   });
@@ -191,5 +193,24 @@ describe("buildPostBody — the one body", () => {
     expect(buildPostBody(f, true)).toMatchObject({ price: 0 });
     expect(buildPostBody(f, true)).not.toHaveProperty("previews");
     expect(buildPostBody(f, false).price).toBeGreaterThan(0);
+  });
+});
+
+describe("OF rich text in the post composer (item 2)", () => {
+  const F = '<p><em>Hey</em> babe</p>';
+  it.each<[string, PostAction[], Partial<PostForm>]>([
+    ["OF: a formatted script keeps its markup, rich editor",
+      [{ type: "pickTemplate", t: tpl({ text: "Hey babe", displayText: F }), rich: true }],
+      { text: F, mode: { toolbar: false, rich: true } }],
+    ["Fansly: plain", [{ type: "pickTemplate", t: tpl({ text: "Hey babe", displayText: F }) }],
+      { text: "Hey babe", mode: { toolbar: false, rich: false } }],
+    ["Aa toggles the toolbar", [{ type: "aa" }], { mode: { toolbar: true, rich: true } }],
+  ])("%s", (_n, actions, want) => {
+    const s = run(form(), ...actions);
+    expect({ text: s.text, mode: s.mode }).toMatchObject(want);
+  });
+  it("the wire carries the markup", () => {
+    const s = run(form(), { type: "pickTemplate", t: tpl({ text: "Hey babe", displayText: F }), rich: true });
+    expect(buildPostBody(s, false).text).toBe(F);
   });
 });

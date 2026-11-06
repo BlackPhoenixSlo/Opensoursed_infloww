@@ -19,6 +19,7 @@ import {
   fromWallClock,
   LATER_MENU,
   laterHref,
+  editorBody,
   messageEditDraft,
   postEditDraft,
   queueStart,
@@ -894,6 +895,24 @@ describe("Edit: the composer's draft filled from the item", () => {
       price: 5,
     });
     expect(messageEditDraft({ id: 6002, text: "<p>Later</p>", scheduledAt: null, userLists: ["fans"] })).toEqual({ text: "Later", user_lists: ["fans"], save_for_later: true, edit_id: "6002" });
+  });
+});
+
+describe("editorBody: an item's OF rich text in its edit draft", () => {
+  const RICH = '<p><span class="m-editor-fc__blue-1"><strong>Hey</strong></span> babe</p><p><span class="m-editor-fs__l">Large line</span></p>';
+  it.each([
+    ["formatted rawText: plain lines + the markup", RICH, "x", { text: "Hey babe\nLarge line", html: RICH }],
+    ["unformatted markup: plain lines only", "<p>One</p><p>Two &amp; 3</p>", null, { text: "One\nTwo & 3" }],
+    ["plain rawText: as is", "Hi <3", "<p>Hi &lt;3</p>", { text: "Hi <3" }],
+    ["no rawText, formatted text", null, RICH, { text: "Hey babe\nLarge line", html: RICH }],
+    ["no rawText, plain text", null, "a &amp; b", { text: "a & b" }],
+  ])("%s", (_name, raw, text, want) => {
+    expect(editorBody(raw, text)).toEqual(want);
+  });
+
+  it("Edit message / Edit post of a formatted item: the draft holds the markup (the editor loads it formatted)", () => {
+    expect(messageEditDraft({ id: 7, rawText: RICH, scheduledAt: null, userLists: ["fans"] })).toMatchObject({ text: "Hey babe\nLarge line", html: RICH });
+    expect(postEditDraft({ id: 8, rawText: RICH, text: RICH })).toMatchObject({ text: "Hey babe\nLarge line", html: RICH });
   });
 });
 

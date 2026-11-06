@@ -1,6 +1,7 @@
 """Browser actor: Chromium signed in as the owner, loopback-only (every other
 host unresolvable), OnlyFans-live reads (/api/of/*) held pending so a screen
-shows what the relay's own DB serves (the Fan List's local seed), screenshot on
+shows what the relay's own DB serves (the Fan List's local seed), screen bundles
+(/admin/screens/*) answered 404 so their reads take those routes, screenshot on
 every visit.
 
 `owner_tabs` opens several tabs, each in its own browser context: production
@@ -37,6 +38,18 @@ document.addEventListener('DOMContentLoaded', () => { const s = document.createE
   document.documentElement.appendChild(s); });"""
 # Relay routes outside /api/of/ that are OnlyFans-live reads too: held like /api/of/*.
 OF_LIVE_PATHS = ("/admin/vault/wall-media",)
+SCREEN_BUNDLES = "/admin/screens/"   # one call per screen (service/screens_api.py): `screen_bundle_404`
+
+
+async def screen_bundle_404(r) -> bool:
+    """Declared bypass, for every page that holds OnlyFans reads: a screen bundle mixes OnlyFans reads with DB ones and
+    a whole request can only be held or not, so it answers 404 (app/lib/screenBundle.ts: a failed bundle) and every
+    read goes out on its own route as before the bundles: OnlyFans ones held, DB ones answered. The bundles
+    themselves: the screen-bundles (API) and clicks-first scenarios, on browsers of their own. True: answered."""
+    if not urlsplit(r.request.url).path.startswith(SCREEN_BUNDLES):
+        return False
+    await r.fulfill(status=404, content_type="application/json", body='{"detail":"Not Found"}')
+    return True
 SEND_PATH = re.compile(r"/api/of/v2/chats/\d+/messages")
 # precise-memory-info: without it performance.memory is bucketed and never moves.
 LAUNCH_ARGS = ["--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost",
@@ -196,6 +209,8 @@ async def _owner_page(browser, ctx, viewport, held, aborted, init_scripts=(), *,
                 else (r.request.method == "GET" and t.fullmatch(u.path))
                 for t in through):
             await r.continue_()
+        elif await screen_bundle_404(r):
+            pass
         elif u.path.startswith("/api/of/") or u.path in OF_LIVE_PATHS:
             held.append(r)  # never answered: OF is not reachable from a slop run
         else:

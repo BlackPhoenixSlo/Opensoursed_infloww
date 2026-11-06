@@ -28,6 +28,7 @@ import json
 
 import asyncio
 import atexit
+import collections
 import contextlib
 import functools
 from contextvars import ContextVar
@@ -39,6 +40,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from starlette.middleware.gzip import DEFAULT_EXCLUDED_CONTENT_TYPES as _GZIP_SKIP
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.gzip import GZipMiddleware
+from starlette.routing import Match
 from pydantic import BaseModel, Field, field_validator
 
 HERE = Path(__file__).resolve().parent
@@ -547,6 +549,21 @@ async def _deactivated_write_guard(request: Request, call_next):
 # ones reach the audit writer. The decorator-registered middlewares below
 # are added before this line, so we add this one via the imperative API to
 # control ordering explicitly.
+# Background admission (`_bg_admission`, beside the lanes). Added before every
+# gate, so it runs inside them all: only a signed-in request that reached its
+# own Creator waits for a background slot.
+async def _bg_admission_sync_route(request: Request, call_next):
+    """A background `/api/of/` read whose route is a sync `def` is admitted here,
+    on the loop, for the whole request (its thread borrows the slot)."""
+    if ((request.headers.get("x-priority") or "").lower() == "background"
+            and request.url.path.startswith("/api/of/") and _sync_route(request.method, request.url.path)):
+        async with _bg_admission(request):
+            return await call_next(request)
+    return await call_next(request)
+
+
+_http_hooks.add(_bg_admission_sync_route)
+
 _http_hooks.add(_audit_middleware)
 
 # Between audit and role: it runs after every gate has admitted the request
@@ -1977,7 +1994,7 @@ _EXECUTOR_THREADS = lane_config.resolve(
     max(_FLEET_ACCOUNTS, _accounts_on_disk()) * _ACCOUNT_LANE_TOTAL + _EXECUTOR_HEADROOM,
 )
 _account_lanes_lock = threading.Lock()
-_account_lanes: dict[str, tuple[threading.BoundedSemaphore, threading.BoundedSemaphore]] = {}
+_account_lanes: dict[str, tuple[threading.BoundedSemaphore, "_BgLane"]] = {}
 #
 # ── Lane accounting ────────────────────────────────────────────────────
 # The previous two counters (`_priority_total_waits`,
@@ -2006,6 +2023,13 @@ def _new_lane_stat() -> dict:
         "in_flight_peak": 0,
         "bg_in_flight": 0,
         "bg_in_flight_peak": 0,
+        # Background entries waiting for their slot: on the loop (no thread
+        # held, `_bg_admission`) vs a worker thread blocked in the acquire
+        # (a server-side caller already in a thread). Gauges + peaks.
+        "loop_waiting_background": 0,
+        "loop_waiting_background_peak": 0,
+        "threads_waiting_background": 0,
+        "threads_waiting_background_peak": 0,
     }
 
 
@@ -2033,7 +2057,9 @@ _LANE_STATS_FLUSH_S = 30.0
 _LANE_CUMULATIVE = ("calls", "calls_user", "calls_background",
                     "blocked_total", "blocked_background",
                     "wait_s_total", "wait_s_background")
-_LANE_MAXED = ("wait_s_max", "in_flight_peak", "bg_in_flight_peak")
+_LANE_MAXED = ("wait_s_max", "in_flight_peak", "bg_in_flight_peak",
+               "loop_waiting_background_peak", "threads_waiting_background_peak")
+_LANE_GAUGES = ("in_flight", "bg_in_flight", "loop_waiting_background", "threads_waiting_background")
 
 
 def _lane_stats_file() -> Path | None:
@@ -2084,8 +2110,8 @@ def _lane_row_combined(base: dict, live: dict) -> dict:
         out[k] = base[k] + live[k]
     for k in _LANE_MAXED:
         out[k] = max(base[k], live[k])
-    out["in_flight"] = live["in_flight"]
-    out["bg_in_flight"] = live["bg_in_flight"]
+    for k in _LANE_GAUGES:
+        out[k] = live[k]
     return out
 
 
@@ -2178,7 +2204,16 @@ def _lane_stat_rows(account_id: str) -> tuple[dict, dict]:
     return _lane_stats_all, st
 
 
-def _lane_acquire(sem: threading.BoundedSemaphore, account_id: str, which: str) -> float:
+def _lane_gauge(account_id: str, key: str, d: int) -> None:
+    """Move a waiting gauge (`_new_lane_stat`) and its peak."""
+    with _lane_stats_lock:
+        for st in _lane_stat_rows(account_id):
+            st[key] += d
+            if st[key] > st[key + "_peak"]:
+                st[key + "_peak"] = st[key]
+
+
+def _lane_acquire(sem, account_id: str, which: str) -> float:
     """Acquire `sem`, recording whether we had to wait and for how long.
 
     Behaviourally identical to a bare `sem.acquire()` — the non-blocking
@@ -2188,7 +2223,14 @@ def _lane_acquire(sem: threading.BoundedSemaphore, account_id: str, which: str) 
     if sem.acquire(blocking=False):
         return 0.0
     t0 = _time_mod.monotonic()
-    sem.acquire()
+    if which == "background":
+        _lane_gauge(account_id, "threads_waiting_background", 1)
+        try:
+            sem.acquire()
+        finally:
+            _lane_gauge(account_id, "threads_waiting_background", -1)
+    else:
+        sem.acquire()
     waited = _time_mod.monotonic() - t0
     ckey = "blocked_background" if which == "background" else "blocked_total"
     wkey = "wait_s_background" if which == "background" else "wait_s_total"
@@ -2232,7 +2274,188 @@ def _lane_exited(account_id: str, bg_held: bool) -> None:
     _lane_stats_flush()
 
 
-def _lanes_for(account_id: str) -> tuple[threading.BoundedSemaphore, threading.BoundedSemaphore]:
+class _BgLane:
+    """One Creator's background sub-cap, one count shared by the event loop and
+    worker threads (it was a threading semaphore, acquired in the worker).
+
+    That shape let a flood of background reads each take a worker thread FIRST and
+    then block on the sub-cap, so the thread pools filled with waiters and a user's
+    tap waited for a thread, not a lane. Now a background request waits for its slot
+    ON THE LOOP (`admit`, through `_bg_admission`) before any thread is taken, and
+    its worker borrows that slot (`_BgLease`). A server-side caller already in a
+    thread (`_priority_lane_background`) still blocks in `acquire()`, counted as
+    `threads_waiting_background`. One FIFO for both kinds, so the cap is exact and
+    neither starves the other. `acquire(blocking=False)` / `release()` keep the
+    semaphore's API (release past zero raises ValueError, as BoundedSemaphore)."""
+
+    def __init__(self, cap: int) -> None:
+        self.cap, self.held = cap, 0
+        self._lock = threading.Lock()
+        self._waiters: collections.deque = collections.deque()  # [granted, loop | None, Future | Event]
+
+    def _take(self) -> bool:
+        if self.held < self.cap and not self._waiters:
+            self.held += 1
+            return True
+        return False
+
+    def acquire(self, blocking: bool = True) -> bool:
+        with self._lock:
+            if self._take():
+                return True
+            if not blocking:
+                return False
+            w = [False, None, threading.Event()]
+            self._waiters.append(w)
+        w[2].wait()
+        return True
+
+    async def admit(self) -> bool:
+        """Take a slot, waiting on the loop. Returns whether it had to wait."""
+        loop = asyncio.get_running_loop()
+        with self._lock:
+            if self._take():
+                return False
+            w = [False, loop, loop.create_future()]
+            self._waiters.append(w)
+        try:
+            await w[2]
+        except BaseException:
+            with self._lock:
+                granted = w[0]
+                if not granted:
+                    self._waiters.remove(w)
+            if granted:  # handed over as we were cancelled: pass it on
+                self.release()
+            raise
+        return True
+
+    def release(self) -> None:
+        with self._lock:
+            if not self._waiters:
+                if self.held <= 0:
+                    raise ValueError("_BgLane released too many times")
+                self.held -= 1
+                return
+            w = self._waiters.popleft()
+            w[0] = True  # the slot moves to `w`: `held` stays
+        if w[1] is None:
+            w[2].set()
+            return
+        try:
+            w[1].call_soon_threadsafe(_bg_grant, w[2])
+        except RuntimeError:  # its loop is closed: nobody will take it
+            self.release()
+
+
+def _bg_grant(fut: asyncio.Future) -> None:
+    if not fut.done():  # cancelled meanwhile: `admit`'s handler passes the slot on
+        fut.set_result(None)
+
+
+_bg_lease_lock = threading.Lock()
+
+
+class _BgLease:
+    """A background slot the loop took for one flight or request (`_bg_admission`).
+    `_priority_lane` borrows it in the worker instead of acquiring; one borrower at
+    a time (a second, e.g. a parallel child, acquires as usual). Freed when the
+    owner left AND no worker holds it: a cancelled request whose thread is still on
+    OF keeps the slot until that thread is done."""
+
+    __slots__ = ("aid", "lane", "waited", "in_use", "closed")
+
+    def __init__(self, aid: str, lane: _BgLane, waited: float) -> None:
+        self.aid, self.lane, self.waited = aid, lane, waited
+        self.in_use = self.closed = False
+
+    def borrow(self, aid: str) -> bool:
+        with _bg_lease_lock:
+            if aid != self.aid or self.in_use or self.closed:
+                return False
+            self.in_use = True
+            return True
+
+    def take_wait(self) -> float:
+        w, self.waited = self.waited, 0.0
+        return w
+
+    def give_back(self) -> None:
+        with _bg_lease_lock:
+            self.in_use = False
+            free = self.closed
+        if free:
+            self.lane.release()
+
+    def close(self) -> None:
+        with _bg_lease_lock:
+            self.closed = True
+            free = not self.in_use
+        if free:
+            self.lane.release()
+
+
+_bg_lease: ContextVar[_BgLease | None] = ContextVar("bg_lease", default=None)
+
+
+@contextlib.asynccontextmanager
+async def _bg_admission(request: Request | None = None):
+    """Wait, on the event loop, for the Creator's background lane slot before a
+    background request's OF read takes a worker thread; a no-op for user priority,
+    for a request whose account does not resolve (it fails in the route as before)
+    and inside an admission for the same Creator. Entered by the coalesce leader and
+    relay_cache's sync fetch (relay_coalesce.admission), `_bg_admission_sync_route`
+    and the direct `to_thread(_proxy, ...)` background reads."""
+    req = request if request is not None else _request_ctx.get()
+    aid = None
+    if req is not None and (req.headers.get("x-priority") or "").lower() == "background":
+        try:
+            aid = _resolve_account_id(req)
+        except HTTPException:
+            aid = None
+    held = _bg_lease.get()
+    if aid is None or (held is not None and held.aid == aid and not held.closed):
+        yield
+        return
+    lane = _lanes_for(aid)[1]
+    t0 = _time_mod.monotonic()
+    _lane_gauge(aid, "loop_waiting_background", 1)
+    try:
+        queued = await lane.admit()
+    finally:
+        _lane_gauge(aid, "loop_waiting_background", -1)
+    waited = _time_mod.monotonic() - t0 if queued else 0.0
+    if queued:
+        with _lane_stats_lock:
+            for st in _lane_stat_rows(aid):
+                st["blocked_background"] += 1
+                st["wait_s_background"] += waited
+    lease = _BgLease(aid, lane, waited)
+    token = _bg_lease.set(lease)
+    try:
+        yield
+    finally:
+        _bg_lease.reset(token)
+        lease.close()
+
+
+@functools.lru_cache(maxsize=4096)
+def _sync_route(method: str, path: str) -> bool:
+    """The route `method path` matches is a sync `def`: it goes straight to the
+    threadpool (an `_account_ttl` route is async: its cache wrapper)."""
+    scope = {"type": "http", "method": method, "path": path, "root_path": ""}
+    for r in app.router.routes:
+        if r.matches(scope)[0] is Match.FULL:
+            call = getattr(getattr(r, "dependant", None), "call", None)
+            return call is not None and not asyncio.iscoroutinefunction(call)
+    return False
+
+
+relay_coalesce.priority_class = lambda: "background" if _current_priority() == "background" else "user"
+relay_coalesce.admission = lambda: _bg_admission()
+
+
+def _lanes_for(account_id: str) -> tuple[threading.BoundedSemaphore, "_BgLane"]:
     """Return (total, background) semaphores for `account_id`, creating
     them on first access."""
     with _account_lanes_lock:
@@ -2240,7 +2463,7 @@ def _lanes_for(account_id: str) -> tuple[threading.BoundedSemaphore, threading.B
         if pair is None:
             pair = (
                 threading.BoundedSemaphore(_ACCOUNT_LANE_TOTAL),
-                threading.BoundedSemaphore(_ACCOUNT_LANE_BACKGROUND),
+                _BgLane(_ACCOUNT_LANE_BACKGROUND),
             )
             _account_lanes[account_id] = pair
         return pair
@@ -2278,7 +2501,12 @@ def _priority_lane(account_id: str | None, priority: str | None = None):
         priority = _current_priority()
     bg_held = False
     waited = 0.0
-    if priority == "background":
+    lease = _bg_lease.get() if priority == "background" else None
+    if lease is not None and not lease.borrow(account_id):
+        lease = None
+    if lease is not None:  # the slot the loop admitted this request for (_bg_admission)
+        waited += lease.take_wait()
+    elif priority == "background":
         waited += _lane_acquire(background, account_id, "background")
         bg_held = True
     try:
@@ -2287,17 +2515,21 @@ def _priority_lane(account_id: str | None, priority: str | None = None):
         if bg_held:
             try: background.release()
             except ValueError: pass
+        if lease is not None:
+            lease.give_back()
         raise
-    _lane_entered(account_id, priority, waited, bg_held)
+    _lane_entered(account_id, priority, waited, bg_held or lease is not None)
     try:
         yield
     finally:
-        _lane_exited(account_id, bg_held)
+        _lane_exited(account_id, bg_held or lease is not None)
         try: total.release()
         except ValueError: pass
         if bg_held:
             try: background.release()
             except ValueError: pass
+        if lease is not None:
+            lease.give_back()
 
 
 POOL_PROXY_ERROR = f"{BRAND_NAME} proxy unreachable"
@@ -2753,6 +2985,10 @@ def admin_priority_lane_stats() -> dict:
             "in_flight_peak": st["in_flight_peak"],
             "bg_in_flight": st["bg_in_flight"],
             "bg_in_flight_peak": st["bg_in_flight_peak"],
+            "loop_waiting_background": st["loop_waiting_background"],
+            "loop_waiting_background_peak": st["loop_waiting_background_peak"],
+            "threads_waiting_background": st["threads_waiting_background"],
+            "threads_waiting_background_peak": st["threads_waiting_background_peak"],
             "saturated": st["in_flight"] >= _ACCOUNT_LANE_TOTAL,
         }
 
@@ -3145,8 +3381,9 @@ async def get_pinned(chat_id: int) -> dict[str, Any]:
 
     Cheap enough to call per open chat: one OF request, no pagination (see
     of_client.get_pinned_messages — `hasMore` lies on this filter)."""
-    rows = await asyncio.to_thread(
-        _proxy, lambda: _get_client().get_pinned_messages(chat_id))
+    async with _bg_admission():
+        rows = await asyncio.to_thread(
+            _proxy, lambda: _get_client().get_pinned_messages(chat_id))
     return {"list": rows}
 
 
@@ -4232,9 +4469,10 @@ async def of_mass_message_history(
     the /admin/mass-messages read path can serve subsequent opens off
     SQLite without an OF roundtrip."""
     import mass_broadcast_cache as cache
-    resp = await asyncio.to_thread(_proxy, lambda: _get_client().engagement_messages(
-        "group", start_date=startDate, end_date=endDate, limit=limit, offset=offset, query=query,
-    ))
+    async with _bg_admission():
+        resp = await asyncio.to_thread(_proxy, lambda: _get_client().engagement_messages(
+            "group", start_date=startDate, end_date=endDate, limit=limit, offset=offset, query=query,
+        ))
     # Best-effort write-through. Don't let a cache miss surface as a 502
     # — the upstream succeeded, the operator should still see the data.
     if isinstance(resp, dict):
@@ -5641,6 +5879,8 @@ import proxies_admin_api  # noqa: E402
 from accounts_admin_api import _ROSTER_SCAN_MAX  # noqa: E402  # list_chats' page-0 window = the badge's
 app.include_router(accounts_admin_api.router)
 app.include_router(proxies_admin_api.router)
+import screens_api  # noqa: E402  # /admin/screens/*: one call per screen (dashboard, inbox)
+app.include_router(screens_api.router)
 
 
 # ── Realtime: WS fan-out, stats ────────────────

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from datetime import datetime
 from typing import Any
 
@@ -165,6 +166,9 @@ async def mark_event_processed(
 # direction (SQL writes → JSON shims for back-compat) and eventually drop
 # the JSON files entirely.
 
+_SYNC_LOCK = threading.Lock()
+
+
 async def sync_from_disk() -> dict[str, int]:
     """Re-run the legacy → SQL importer. Idempotent. Fire-and-forget safe.
 
@@ -183,7 +187,9 @@ async def sync_from_disk() -> dict[str, int]:
         sync_url = DATABASE_URL.replace("+aiosqlite", "").replace("+asyncpg", "")
         eng = create_engine(sync_url)
         try:
-            with SyncSession(eng) as s:
+            # One at a time: two admin saves in a row (add a proxy, assign it) both inserted the new label
+            # (UNIQUE proxies.label, the 2nd sync lost). Each run re-reads disk, so serial runs converge.
+            with _SYNC_LOCK, SyncSession(eng) as s:
                 proxies_n = import_proxies(s, dry_run=False)
                 accounts_n, sessions_n = import_accounts_and_sessions(s, dry_run=False)
                 s.commit()

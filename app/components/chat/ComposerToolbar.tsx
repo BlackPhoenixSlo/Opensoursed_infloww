@@ -14,7 +14,8 @@
  *   (children: whatever sits between rows 2 and 3 — the reply strip, the PPV row)
  *   row 3, "Composer toolbar": Upload (the computer's file chooser), GIF,
  *     Vault, Schedule, @ Tag other Creators (the `tag` slot; it replaced
- *     "Mention this fan", TODO.md A5), "Aa" (Not wired: a click says why), Translate (its
+ *     "Mention this fan", TODO.md A5), "Aa" (OF's formatting toolbar: the `aa`
+ *     prop, OnlyFans accounts only; absent on Fansly), Translate (its
  *     popover, below), then a round Send at the right end
  *
  * It holds no send state. The Composer keeps every piece of draft state and
@@ -34,7 +35,6 @@ import { MP } from "@/lib/messagesPro";
 import { UPLOAD_ACCEPT } from "@/hooks/useComposerUploads";
 import { cn } from "@/lib/utils";
 import { MENU_PANEL } from "./MenuParts";
-import { NotWiredButton } from "./NotWired";
 import { useEffectiveTranslateMode } from "@/hooks/useTranslateMode";
 
 /** A button-row pill (Infloww's flat pill, `MP.composer.pill`, CP5,
@@ -114,12 +114,14 @@ export interface ComposerToolbarProps {
   /** Opens and closes the composer's outbound translation strip (the
    *  Translate popover's "Translate my messages"); without it the row hides. */
   onToggleOutbound?: () => void;
+  /** "Aa": OF's formatting toolbar shown (`on`) and its toggle; null (a Fansly account) draws no "Aa". */
+  aa?: { on: boolean; onToggle: () => void } | null;
 }
 
 export function ComposerToolbar({
   emoji, favourites, quick, input, ai, scripts, timed, gif, tag, children,
   vaultOn, ppvOpen, ppvHeld, vaultDisabled, scheduleOn, canSend, sendBlockedReason, sendLabel, inflight, disabled,
-  onTogglePpv, onUploadFiles, onVault, onCalendar, onSend, accountId, onToggleOutbound,
+  onTogglePpv, onUploadFiles, onVault, onCalendar, onSend, accountId, onToggleOutbound, aa,
 }: ComposerToolbarProps) {
   const fileRef = useRef<HTMLInputElement | null>(null);
   return (
@@ -208,15 +210,23 @@ export function ComposerToolbar({
           <CalendarDays aria-hidden className={MP.composer.toolbarIcon} />
         </button>
         {tag}
-        {/* Not wired: OnlyFans strips markup from DM text (spec, ASSUMPTION).
-         *  Drawn as Infloww's, in its neighbours' grey; a click says so. */}
-        <NotWiredButton
-          why="aa"
-          notePlace="bottom-full left-0 mb-1"
-          className={cn(TOOLBAR_ICON, MP.composer.aa, "text-[var(--inf-composer-glyph,var(--color-fg-dim))]")}
-        >
-          Aa
-        </NotWiredButton>
+        {/* OF's text formatting (docs/infloww-rich-text-rea.md §1): drawn as Infloww's, in its neighbours' grey,
+         *  accent while the toolbar shows. Its toolbar is OfRichTextEditor's, above the text. */}
+        {aa && (
+          <button
+            type="button"
+            onClick={aa.onToggle}
+            // The text keeps its caret: the press takes no focus.
+            onMouseDown={(e) => e.preventDefault()}
+            disabled={disabled}
+            aria-pressed={aa.on}
+            title={aa.on ? "Hide text formatting" : "Text formatting (bold, italic, colour, size)"}
+            className={cn(TOOLBAR_ICON, MP.composer.aa,
+              aa.on ? "text-[var(--inf-accent-text,var(--color-accent))] bg-accent/10" : "text-[var(--inf-composer-glyph,var(--color-fg-dim))]")}
+          >
+            Aa
+          </button>
+        )}
         <TranslatePopover accountId={accountId} onToggleOutbound={onToggleOutbound} />
         {/* Send bottom-aligned: 16px above the Composer's bottom, as the capture (C8). */}
         <div className="ml-auto self-end flex items-center gap-2">

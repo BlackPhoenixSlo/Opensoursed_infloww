@@ -31,6 +31,7 @@ import { ScriptTagsField } from "@/components/settings/ScriptTagsField";
 import { OfRichTextEditor, type OfRichTextEditorHandle } from "@/components/ui/OfRichTextEditor";
 import { isOfHtml, ofPlainText } from "@/lib/ofRichText";
 import { plainLength } from "@/lib/ofRichTextEditor";
+import { useOfRichAllowed } from "@/hooks/useOfRichAllowed";
 
 // Moved out; re-exported only for growth/ScriptsPage (off-limits to this change), which imports all three from here.
 export { extractError } from "@/components/settings/extractError";
@@ -130,6 +131,9 @@ export function TemplateDraftEditor({
   const [gifPickerOpen, setGifPickerOpen] = useState(false);
   /** Scripts' Text is OF's rich text editor (bold, italic, colour, size); its value is markup only when formatted. */
   const richRef = useRef<OfRichTextEditorHandle>(null);
+  // OF rich text only for an OnlyFans scope: a Fansly script is plain (a stored formatted one shows, and saves on
+  // its first edit, as its plain text).
+  const rich = useOfRichAllowed(accountId) && script;
   const priceNum = Number(draft.price);
   const belowMin = script && priceNote(priceNum) !== null;
   // Growth > Sensitive words: Infloww's script editor shows the hits under the
@@ -324,11 +328,12 @@ export function TemplateDraftEditor({
 
         <div className="space-y-1.5">
           {script && (
-            <label id="reply-text-label" onClick={() => richRef.current?.focus()} className={FIELD_LABEL}>
+            <label id="reply-text-label" htmlFor={rich ? undefined : "reply-textarea"}
+              onClick={() => richRef.current?.focus()} className={FIELD_LABEL}>
               Text<span aria-hidden className="text-err ml-0.5">*</span>
             </label>
           )}
-          {script ? (
+          {rich ? (
             <OfRichTextEditor
               ref={richRef}
               id="reply-textarea"
@@ -342,9 +347,10 @@ export function TemplateDraftEditor({
           ) : (
             <Textarea
               id={draft.kind === "reply" ? "reply-textarea" : "welcome-textarea"}
-              value={draft.text}
+              value={script && isOfHtml(draft.text) ? ofPlainText(draft.text) : draft.text}
               onChange={(e) => setDraft((d) => d && { ...d, text: e.target.value })}
-              placeholder="Template text"
+              maxLength={script ? SCRIPT_TEXT_MAX : undefined}
+              placeholder={script ? "Enter your message..." : "Template text"}
               className="min-h-24 text-sm font-sans"
             />
           )}

@@ -13,12 +13,46 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { relay, type SavedReply } from "@/lib/relay";
+import { relay, type SavedReply, type SavedReplySequenceMeta } from "@/lib/relay";
 
 const KEY = "saved-replies";
 
 interface ListResp {
   list: SavedReply[];
+}
+
+/** Each sequence's own fields (position, Created by, dates), where it has them. Under the list's key, so every
+ *  write that refetches the list refetches these too. */
+export function useSavedReplySequences(accountId: string | null) {
+  return useQuery<SavedReplySequenceMeta[]>({
+    queryKey: [KEY, accountId, "sequences"],
+    enabled: !!accountId,
+    queryFn: async () =>
+      (await relay.get<{ list: SavedReplySequenceMeta[] }>(
+        `/admin/saved-replies/sequences?account_id=${encodeURIComponent(accountId!)}`,
+      )).list ?? [],
+    staleTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: false,
+  });
+}
+
+/** Delete a selection in one request (`POST /admin/saved-replies/delete`), one refetch after. */
+export function useDeleteSavedReplies(accountId: string | null) {
+  const qc = useQueryClient();
+  return useMutation<{ deleted: number }, Error, number[]>({
+    mutationFn: (ids) =>
+      relay.post<{ deleted: number }>(
+        `/admin/saved-replies/delete?account_id=${encodeURIComponent(accountId ?? "")}`,
+        { ids },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: [KEY, accountId] }),
+  });
+}
+
+/** A chat send that rode script `id` went out: its send count + 1 (Growth > Scripts' orange box). Best effort,
+ *  never refetches the list (a scripted send would reload every script). */
+export function markScriptSent(id: number): Promise<unknown> {
+  return relay.post("/admin/saved-replies/sent", { id }).catch(() => undefined);
 }
 
 export function useSavedReplies(accountId: string | null) {

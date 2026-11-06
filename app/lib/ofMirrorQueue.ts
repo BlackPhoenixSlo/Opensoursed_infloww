@@ -40,6 +40,7 @@ import { relay, type OFMedia } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
 import { stillUrl } from "@/lib/ofMedia";
 import { plain } from "@/lib/ofMirrorData";
+import { hasOfFormatting, isOfHtml, ofPlainText } from "@/lib/ofRichText";
 import { valid } from "@/lib/ofMirrorDom";
 import { mirrorKey } from "@/lib/ofMirrorKeys";
 import { fromWallClock, QUEUE, useAgencyZone, wallClock, type QueueActions, type QueueKind } from "@/lib/ofMirrorFeedsShared";
@@ -538,7 +539,7 @@ export function postEditDraft(post: EditablePost, img: (url: string) => string =
   const labels = (post.labelStates ?? []).filter((l) => l.isAdded !== false && Number.isInteger(Number(l.id))).map((l) => Number(l.id));
   const at = valid(post.postedAt ?? undefined);
   return {
-    text: post.rawText ?? plain(post.text),
+    ...editorBody(post.rawText, post.text),
     tagged_users: [],
     media_files: media.map((m) => Number(m.id)),
     thumbs: media.map((m) => {
@@ -576,7 +577,7 @@ export function messageEditDraft(msg: QueuedMessage): MassDraft {
   const price = Number(msg.price) || 0;
   const at = valid(msg.scheduledAt ?? undefined);
   return {
-    text: msg.rawText ?? plain(msg.text),
+    ...editorBody(msg.rawText, msg.text),
     user_lists: (msg.userLists ?? []).map(String),
     ...(msg.userIds?.length ? { user_ids: msg.userIds.map(Number) } : {}),
     ...(msg.excludedLists?.length ? { excluded_user_lists: msg.excludedLists.map(String) } : {}),
@@ -585,6 +586,17 @@ export function messageEditDraft(msg: QueuedMessage): MassDraft {
     ...(at ? { scheduled_date: localIso(at) } : { save_for_later: true }),
     edit_id: String(msg.id),
   };
+}
+
+/**
+ * An item's text as an edit draft holds it: OF's `rawText` (else its `text`), when it is OF's markup (a paragraph), as
+ * its plain lines and, while formatted, the markup itself (`html`: the editor loads it through setOfHtml), so a
+ * formatted item edits formatted and no tag ever shows as text.
+ */
+export function editorBody(rawText: string | null | undefined, text: string | null | undefined): { text: string; html?: string } {
+  const raw = rawText ?? text ?? "";
+  if (!isOfHtml(raw)) return { text: rawText ?? plain(text) };
+  return { text: ofPlainText(raw), ...(hasOfFormatting(raw) ? { html: raw.trim() } : {}) };
 }
 
 /** The pages whose Scheduled events widget has OF's Add to queue "+" (New post's and Go live's schedule form). */

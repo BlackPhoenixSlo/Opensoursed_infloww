@@ -34,7 +34,7 @@ vi.mock("@/contexts/ScopeContext", () => {
 });
 vi.mock("@/hooks/useAccounts", () => {
   const accounts = [{ id: "acct1", nickname: "A", color: "#fff" }, { id: "acct2", nickname: "B", color: "#fff" }];
-  return { useActiveAccounts: () => accounts, usePlatformAccounts: () => accounts };
+  return { useActiveAccounts: () => accounts, usePlatformAccounts: () => accounts, fetchAccounts: async () => ({ accounts }) };
 });
 vi.mock("@/hooks/useAllModelsInclude", () => ({
   useAllModelsInclude: () => ({ isIncluded: () => true, toggle: vi.fn() }),

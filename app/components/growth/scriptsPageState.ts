@@ -22,7 +22,7 @@
  *     (`otherCreator`), but a run's end still frees its ids. Back on that Creator, its answers apply again.
  */
 
-import type { SavedReply } from "@/lib/relay";
+import type { SavedReply, SavedReplySequenceMeta } from "@/lib/relay";
 import { ofPlainText } from "@/lib/ofRichText";
 
 export type View = "tags" | "sequences" | "manage";
@@ -63,6 +63,13 @@ export interface Sort {
   order: SortOrder;
 }
 
+/** The Sequence sidebar's sort (Infloww's Custom / Recent / Name): Custom is the sequences' own order. */
+export type SeqSortBy = "custom" | "recent" | "name";
+export interface SeqSort {
+  by: SeqSortBy;
+  order: SortOrder;
+}
+
 export interface ScriptsPageState {
   view: View;
   /** The picked tag and sequence; null opens the first in the sidebar (ALL on Tag). */
@@ -79,6 +86,7 @@ export interface ScriptsPageState {
   /** The toolbar search; closed, it has no text. */
   search: { open: boolean; q: string };
   sort: Sort;
+  seqSort: SeqSort;
   /** The Creator the page shows (`reset`); null until the first pick. */
   account: string | null;
 }
@@ -108,7 +116,10 @@ export type Action =
   | { type: "searchQ"; q: string }
   | { type: "sortBy"; by: SortBy }
   | { type: "sortOrder"; order: SortOrder }
-  /** Another Creator (`account`): nothing of this one's carries over but the view, the sort and the busy ids. */
+  /** The Sequence sidebar's sort: picking the one already on flips its order; another starts ascending (Recent:
+   *  newest first). */
+  | { type: "seqSort"; by: SeqSortBy }
+  /** Another Creator (`account`): nothing of this one's carries over but the view, the sorts and the busy ids. */
   | { type: "reset"; account: string | null };
 
 export const INITIAL: ScriptsPageState = {
@@ -121,6 +132,7 @@ export const INITIAL: ScriptsPageState = {
   modal: null,
   search: { open: false, q: "" },
   sort: { by: "recent", order: "desc" },
+  seqSort: { by: "custom", order: "asc" },
   account: null,
 };
 
@@ -182,7 +194,8 @@ export function scriptsPageReducer(s: ScriptsPageState, a: Action): ScriptsPageS
     case "runStart":
       return { ...s, error: null, busy: new Set([...s.busy, ...a.ids]) };
     case "runEnd": {
-      const freed = { ...s, busy: new Set([...s.busy].filter((id) => !a.ids.includes(id))) };
+      const ended = new Set(a.ids);
+      const freed = { ...s, busy: new Set([...s.busy].filter((id) => !ended.has(id))) };
       if (otherCreator(s, a.account)) return freed;
       if (a.error != null) return { ...freed, error: a.error };
       return scriptsPageReducer(freed, { type: "check", ids: a.ids, on: false });
@@ -199,16 +212,23 @@ export function scriptsPageReducer(s: ScriptsPageState, a: Action): ScriptsPageS
       return { ...s, sort: { ...s.sort, by: a.by } };
     case "sortOrder":
       return { ...s, sort: { ...s.sort, order: a.order } };
+    case "seqSort": {
+      const order: SortOrder =
+        s.seqSort.by === a.by ? (s.seqSort.order === "asc" ? "desc" : "asc") : a.by === "recent" ? "desc" : "asc";
+      return { ...s, seqSort: { by: a.by, order } };
+    }
     case "reset":
       // `busy` stays: script ids are global DB ids, so the last Creator's never show on this one, and a run still
       // out on them keeps their rows waiting if the user comes back (no second POST); its `runEnd` frees them.
-      return { ...INITIAL, view: s.view, sort: s.sort, busy: s.busy, account: a.account };
+      return { ...INITIAL, view: s.view, sort: s.sort, seqSort: s.seqSort, busy: s.busy, account: a.account };
   }
 }
 
 /* ── derivations ─────────────────────────────────────────────────────────── */
 
-export const byName = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: "base" });
+/** Case-blind, numbers by value ("Seq 2" before "Seq 10"). */
+const collator = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
+export const byName = (a: string, b: string) => collator.compare(a, b);
 
 /** Each tag's script count: the pending tags at 0, then every tag a script carries. */
 export function tagCountsOf(replies: readonly SavedReply[], pending: readonly string[]): Map<string, number> {
@@ -221,8 +241,36 @@ export function tagCountsOf(replies: readonly SavedReply[], pending: readonly st
 /** Each sequence's scripts, in list order. */
 export function sequencesOf(replies: readonly SavedReply[]): Map<string, SavedReply[]> {
   const m = new Map<string, SavedReply[]>();
-  for (const r of replies) if (r.script_id) m.set(r.script_id, [...(m.get(r.script_id) ?? []), r]);
+  for (const r of replies) {
+    if (!r.script_id) continue;
+    const rows = m.get(r.script_id);
+    if (rows) rows.push(r);
+    else m.set(r.script_id, [r]);
+  }
   return m;
+}
+
+/** The Sequence sidebar in `sort`'s order. Custom: the sequences' own position (one without meta after them, by
+ *  name); Recent: last modified (`sequenceHeader`); Name. Ties go by name. */
+export function sequenceOrder(
+  names: Iterable<string>,
+  metas: ReadonlyMap<string, SavedReplySequenceMeta>,
+  sequences: ReadonlyMap<string, readonly SavedReply[]>,
+  sort: SeqSort,
+): string[] {
+  const dir = sort.order === "asc" ? 1 : -1;
+  const list = [...names];
+  if (sort.by === "name") return list.sort((a, b) => dir * byName(a, b));
+  if (sort.by === "custom") {
+    const pos = (n: string) => metas.get(n)?.position ?? Number.POSITIVE_INFINITY;
+    return list.sort((a, b) => {
+      const pa = pos(a);
+      const pb = pos(b);
+      return (pa === pb ? 0 : dir * (pa < pb ? -1 : 1)) || byName(a, b);
+    });
+  }
+  const modified = new Map(list.map((n) => [n, sequenceHeader(metas.get(n), sequences.get(n) ?? []).modified ?? ""]));
+  return list.sort((a, b) => dir * modified.get(a)!.localeCompare(modified.get(b)!) || byName(a, b));
 }
 
 /** A sequence's scripts in step order, each with its label: the step, or "step.option" when a step holds several. */
@@ -260,11 +308,33 @@ export function sequenceDates(rows: readonly SavedReply[]): { created?: string; 
   };
 }
 
+/** A sequence's header: Created by and Created on from its own fields when it has them (an import's), else its
+ *  first script's creation; Last modified on: the later of its own edit and its scripts'. */
+export function sequenceHeader(
+  meta: SavedReplySequenceMeta | undefined,
+  rows: readonly SavedReply[],
+): { createdBy?: string; created?: string; modified?: string } {
+  const d = sequenceDates(rows);
+  const modified = [meta?.updated_at ?? "", d.modified ?? ""].filter(Boolean).sort().at(-1);
+  return { createdBy: meta?.created_by || undefined, created: meta?.created_at || d.created, modified };
+}
+
+/** Each script's search text, lower-cased once per row object (a refetch brings new objects, so new text). */
+const haystacks = new WeakMap<SavedReply, string>();
+function haystackOf(r: SavedReply): string {
+  let h = haystacks.get(r);
+  if (h === undefined) {
+    h = [r.title, ofPlainText(r.text), r.notes, ...(r.tags ?? [])].map((v) => (v ?? "").toLowerCase()).join("\n");
+    haystacks.set(r, h);
+  }
+  return h;
+}
+
 /** Whether the search `q` finds the script: in its name, text, notes or tags, case-blind; no text finds all. */
 export function matchesSearch(r: SavedReply, q: string): boolean {
   const needle = q.trim().toLowerCase();
   if (!needle) return true;
-  return [r.title, ofPlainText(r.text), r.notes, ...(r.tags ?? [])].some((v) => (v ?? "").toLowerCase().includes(needle));
+  return haystackOf(r).includes(needle);
 }
 
 export interface ScriptListRow {

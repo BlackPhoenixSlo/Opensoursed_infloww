@@ -10,6 +10,8 @@
  * Escape closes it; a pick closes it and calls `onPick`. Every row is marked data-oi-wired (bindWrites' click fallback leaves it alone). Only one menu is open at a time.
  */
 
+import { OF_INSIGHTS_ATTR, OF_INSIGHTS_PX } from "@/lib/ofMirrorChrome";
+
 export interface MenuOption {
   value: string;
   label: string;
@@ -144,7 +146,8 @@ export function showMenu(doc: Document, anchor: Element, groups: MenuGroup[], on
     menu.setAttribute(DROPDOWN_SCOPE, "");
     doc.body.append(menu);
   } else {
-    const winWidth = win?.innerWidth ?? 1024;
+    // The Fan insights column lies over the frame's right edge: a menu stays left of it (else it opens under the column).
+    const winWidth = (win?.innerWidth ?? 1024) - (doc.documentElement.hasAttribute(OF_INSIGHTS_ATTR) ? OF_INSIGHTS_PX : 0);
     menu.style.cssText = `position:absolute;top:${r.bottom + (win?.scrollY ?? 0) + 4}px;left:0;min-width:220px;max-width:256px;z-index:1100;display:block`;
     // ...and its content box none of its own (OF's `.v-menu__content.m-dropdown-list[data-v-55f3fe86]`; the list draws it).
     if (sortMenu) menu.style.cssText += ";background:none;border:none;box-shadow:none;border-radius:0";
@@ -153,7 +156,7 @@ export function showMenu(doc: Document, anchor: Element, groups: MenuGroup[], on
     // dropdown instead (its right edge on the anchor's, as OF's sort menus).
     const width = menu.getBoundingClientRect().width || 220;
     const column = anchor.closest(".modal-content") ?? anchor.closest(".g-page__content, .l-wrapper__content, main");
-    const edge = column ? column.getBoundingClientRect().right : winWidth;
+    const edge = Math.min(column ? column.getBoundingClientRect().right : winWidth, winWidth);
     const x = r.left + width > edge ? r.right - width : r.left;
     menu.style.left = `${Math.max(8, Math.min(x, winWidth - width - 8)) + (win?.scrollX ?? 0)}px`;
     // As Vuetify's menus: one that would run past the window's foot moves up until it fits (never above the top).

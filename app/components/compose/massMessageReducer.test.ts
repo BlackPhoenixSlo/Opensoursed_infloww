@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { PickedTemplate } from "@/components/chat/TemplatePicker";
 import {
   buildMassBody, confirmPrompt, fieldAction, gifNote, gifOnlyForm, initMassForm, MASS_ALREADY_SENT,
-  MASS_ONE_GIF_ALL_MODELS, massMessageReducer, validateMass,
+  MASS_ONE_GIF_ALL_MODELS, massMessageReducer, TEXT_TOO_LONG, validateMass,
   type MassAction, type MassCtx, type MassForm,
 } from "@/components/compose/massMessageReducer";
 import type { TaggedCreatorChoice, VaultMedia } from "@/lib/relay";
@@ -273,6 +273,9 @@ describe("validateMass — the one check (button and mutation)", () => {
     ["all-models forces free (a typed price is moot)", { allModels: true, accountId: null, price: "1" }, {}, null],
     ["invalid price", { price: "abc" }, {}, "Invalid price"],
     ["invalid schedule", { schedule: "not a date" }, {}, "Invalid schedule date"],
+    ["6500 plain characters fit", { text: "x".repeat(6500) }, {}, null],
+    ["6501 do not", { text: "x".repeat(6501) }, {}, TEXT_TOO_LONG],
+    ["markup's tags are free: 6500 formatted characters fit", { text: `<p><strong>${"x".repeat(6500)}</strong></p>` }, {}, null],
   ])("%s", (_n, over, c, want) => {
     expect(validateMass(form(over), ctx(c))).toBe(want);
   });
@@ -380,5 +383,29 @@ describe("gifOnlyForm — a trailing GIF's own send", () => {
   });
   it("is a valid form on its own", () => {
     expect(validateMass(gifOnlyForm(full, gif("g2")), ctx())).toBeNull();
+  });
+});
+
+describe("OF rich text in the mass composer (item 2)", () => {
+  const F = '<p><span class="m-editor-fc__blue-1"><strong>Hey</strong></span> babe</p>';
+  it.each<[string, MassAction[], Partial<MassForm>]>([
+    ["OF: a formatted script keeps its markup and opens the rich editor",
+      [{ type: "pickTemplate", t: tpl({ text: "Hey babe", displayText: F }), rich: true }],
+      { text: F, mode: { toolbar: false, rich: true } }],
+    ["Fansly: its plain text, the textarea",
+      [{ type: "pickTemplate", t: tpl({ text: "Hey babe", displayText: F }), rich: false }],
+      { text: "Hey babe", mode: { toolbar: false, rich: false } }],
+    ["Aa on: toolbar + editor; a plain script keeps them", [{ type: "aa" }, { type: "pickTemplate", t: tpl(), rich: true }],
+      { text: "t", mode: { toolbar: true, rich: true } }],
+    ["Aa off with formatting: toolbar hides, editor stays", [{ type: "aa" }, { type: "field", k: "text", v: F }, { type: "aa" }],
+      { text: F, mode: { toolbar: false, rich: true } }],
+    ["Aa off, plain: textarea back", [{ type: "aa" }, { type: "aa" }], { mode: { toolbar: false, rich: false } }],
+  ])("%s", (_n, actions, want) => {
+    const s = run(form(), ...actions);
+    expect({ text: s.text, mode: s.mode }).toMatchObject(want);
+  });
+  it("the wire carries the markup", () => {
+    const s = run(form(), { type: "pickTemplate", t: tpl({ text: "Hey babe", displayText: F }), rich: true });
+    expect(buildMassBody(s, false).text).toBe(F);
   });
 });

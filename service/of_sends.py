@@ -930,9 +930,10 @@ class SendsMixin:
                    voting_correct_index: int | None = None,
                    label_ids=None) -> dict:
         """OF's post body (`MakeFeedPost getDataObject`): create_post's and
-        edit_post's, the one place our names become OF's keys."""
+        edit_post's, the one place our names become OF's keys. A formatted text
+        (OF's markup) leaves through the rich-text allow-list (of_text)."""
         body: dict = {
-            "text": text,
+            "text": of_text(text),
             "mediaFiles": media_files or [],
             "price": price,
         }
@@ -962,7 +963,7 @@ class SendsMixin:
                   media_files: list[int] | None = None) -> Any:
         """PUT /api2/v2/posts/{post_id}."""
         body: dict = {}
-        if text is not None:        body["text"] = text
+        if text is not None:        body["text"] = of_text(text)
         if price is not None:       body["price"] = price
         if media_files is not None: body["mediaFiles"] = media_files
         return self.put_json(f"{API_BASE}/posts/{post_id}", json_body=body)
@@ -998,7 +999,7 @@ class SendsMixin:
     def comment_on_post(self, post_id: int, text: str) -> Any:
         """POST /api2/v2/posts/{post_id}/comments."""
         return self.post_json(f"{API_BASE}/posts/{post_id}/comments",
-                              json_body={"text": text})
+                              json_body={"text": of_text(text)})
 
     def pin_post(self, post_id: int) -> Any:
         """POST /api2/v2/posts/{post_id}/pin?format=status — OF's web client's

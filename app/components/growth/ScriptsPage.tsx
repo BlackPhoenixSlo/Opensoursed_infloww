@@ -18,9 +18,13 @@
  *   (the bundle's `stepIndex`, @14238300). Each tag and sequence row renames and deletes. No tag or sequence (or no
  *   script at all on Tag) shows the bundle's sequence empty panel.
  * - The list (#34 to #50): the select-all box, the "Expand scripts" switch, then one row per script: name (the step
- *   number in a sequence, #38), its tag and sequence chips (#41, three then "+N"), text, media, price, stats (Not
- *   wired), internal notes (#46), then edit, share and delete, which removes the script from the open
- *   tag or sequence instead (#47, #49). A selection opens the bar (#51): Add to tag, and Delete or Remove.
+ *   number in a sequence, #38), its tag and sequence chips (#41, three then "+N"), text, media, price, stats (the
+ *   chat send count in an orange box; purchases and sales Not wired), internal notes (#46), then edit, share and
+ *   delete, which removes the script from the open tag or sequence instead (#47, #49). A selection opens the bar
+ *   (#51): Add to tag, and Delete (one request) or Remove. A sequence's steps are numbered cards joined by a line.
+ * - Scale (an imported Infloww library: ~700 sequences, ~10k scripts): the list and the sidebar render 200 rows at
+ *   a time (`useRenderCap`); the Sequence sidebar sorts Custom (the import's order, `GET
+ *   /admin/saved-replies/sequences`), Recent or Name; the sequence header adds Created by from the same read.
  *
  * Tags, notes and sequences are stored on the saved reply: `tags`, `notes`, and `script_id` + `script_step` (the
  * pair the chat composer's next-step suggestion follows). A tag exists while a script carries it; a new empty tag
@@ -36,18 +40,21 @@ import { useSavedReplyEditor, useScopedAccount } from "@/components/settings/Tem
 import { CopyScriptsDialog, ExcelImportDialog } from "@/components/growth/ScriptsImportDialogs";
 import { NameModal, ScriptEditModal } from "@/components/growth/ScriptModals";
 import {
-  MoreMenu, NOT_WIRED, ScriptRow, SequenceEmpty, Sidebar, type SidebarItem,
+  MoreMenu, NOT_WIRED, ScriptRow, SequenceEmpty, ShowMore, Sidebar, type SidebarItem,
 } from "@/components/growth/ScriptsParts";
 import { CreatorRail } from "@/components/shell/CreatorRail";
 import { EmptyState, IfSelect, InflowwPageHeader } from "@/components/ui/infloww";
 import { useActiveAccounts } from "@/hooks/useAccounts";
-import { useDeleteSavedReply, useRelabelSavedReplies } from "@/hooks/useSavedReplies";
+import { useRenderCap } from "@/hooks/useRenderCap";
+import {
+  useDeleteSavedReplies, useDeleteSavedReply, useRelabelSavedReplies, useSavedReplySequences,
+} from "@/hooks/useSavedReplies";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { cn } from "@/lib/utils";
 import {
   ALL, INITIAL, UNCATEGORIZED, activeEntry, byName, firstGap, kindOf, livePending, nextStep, scriptRows,
-  scriptsPageReducer, selectionOf, sequenceDates, sequencesOf, tagCountsOf, type EntryKind, type Modal,
-  type NamePrompt,
+  scriptsPageReducer, selectionOf, sequenceHeader, sequenceOrder, sequencesOf, tagCountsOf, type EntryKind,
+  type Modal, type NamePrompt,
 } from "@/components/growth/scriptsPageState";
 
 /** The Learn and Share boxes (#9, #10): 75px wide, 0 8px padding, 14px weight 500 T1, an 18px icon 4px from the
@@ -63,7 +70,9 @@ export default function ScriptsPage() {
     replyQ, replies, startNewReply, startEditReply, save,
   } = useSavedReplyEditor(accountId);
   const deleteM = useDeleteSavedReply(accountId);
+  const deleteManyM = useDeleteSavedReplies(accountId);
   const relabelM = useRelabelSavedReplies(accountId);
+  const metaQ = useSavedReplySequences(accountId);
 
   // The view, the open tag and sequence, the checked scripts, the page's new tags, the busy scripts and the last
   // error, the open overlay, the search and the sort: `scriptsPageState.ts`.
@@ -91,7 +100,11 @@ export default function ScriptsPage() {
   const tagCounts = useMemo(() => tagCountsOf(replies, pending), [replies, pending]);
   const tagNames = useMemo(() => [...tagCounts.keys()].sort(byName), [tagCounts]);
   const sequences = useMemo(() => sequencesOf(replies), [replies]);
-  const seqNames = useMemo(() => [...sequences.keys()].sort(byName), [sequences]);
+  const metas = useMemo(() => new Map((metaQ.data ?? []).map((m) => [m.name, m])), [metaQ.data]);
+  const seqNames = useMemo(
+    () => sequenceOrder(sequences.keys(), metas, sequences, page.seqSort),
+    [sequences, metas, page.seqSort],
+  );
   // The sidebars' order, as drawn: deleting the open entry opens its neighbour in it.
   const tagOrder = useMemo(() => [ALL, ...tagNames, UNCATEGORIZED], [tagNames]);
   const orderOf = (kind: EntryKind) => (kind === "tag" ? tagOrder : seqNames);
@@ -127,8 +140,10 @@ export default function ScriptsPage() {
   function deleteScripts(ids: number[]) {
     const one = ids.length === 1;
     if (!confirm(`${one ? "Delete script?" : `Delete ${ids.length} scripts?`}\n\nThis script will also be deleted from sequences that utilized this script.`)) return;
+    // A selection goes in one request (`POST /admin/saved-replies/delete`), one script by its own route.
     void run(ids, async () => {
-      for (const id of ids) await deleteM.mutateAsync(id);
+      if (one) await deleteM.mutateAsync(ids[0]);
+      else await deleteManyM.mutateAsync(ids);
     });
   }
 
@@ -206,20 +221,28 @@ export default function ScriptsPage() {
   const sideKind = kindOf(view);
 
   // ── render ──
-  const tagItems: SidebarItem[] = [
+  const tagItems: SidebarItem[] = useMemo(() => [
     { id: ALL, name: "All scripts", count: replies.length, fixed: true },
     ...tagNames.map((t) => ({ id: t, name: t, count: tagCounts.get(t) ?? 0 })),
     { id: UNCATEGORIZED, name: "Uncategorized", count: replies.filter((r) => !(r.tags ?? []).length).length, fixed: true },
-  ];
-  const seqItems: SidebarItem[] = seqNames.map((s) => ({ id: s, name: s, count: sequences.get(s)?.length ?? 0 }));
+  ], [replies, tagNames, tagCounts]);
+  const seqItems: SidebarItem[] = useMemo(
+    () => seqNames.map((s) => ({ id: s, name: s, count: sequences.get(s)?.length ?? 0 })),
+    [seqNames, sequences],
+  );
+  const { cap: listShown, hasMore: listHasMore, more: listMore, sentinel: listSentinel } = useRenderCap(
+    rows.length, `${view}|${activeTag}|${activeSeq}|${search.q}|${sort.by}|${sort.order}`,
+  );
   const showEmptyPanel =
     !replyQ.isLoading && !replyQ.error &&
     ((view === "sequences" && seqNames.length === 0) || (view === "tags" && replies.length === 0 && tagNames.length === 0));
 
   const activeSeqRows = activeSeq ? sequences.get(activeSeq) ?? [] : [];
   const gap = view === "sequences" && activeSeq ? firstGap(activeSeqRows) : null;
-  const fmt = (iso?: string | null) => (iso ? new Date(iso).toLocaleString() : "--");
-  const { created, modified } = sequenceDates(activeSeqRows);
+  // Day only, as Infloww's header ("Oct 13, 2026").
+  const fmt = (iso?: string | null) =>
+    iso ? new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "--";
+  const { createdBy, created, modified } = sequenceHeader(activeSeq ? metas.get(activeSeq) : undefined, activeSeqRows);
 
   const list = (
     <div className="flex-1 min-w-0">
@@ -238,6 +261,7 @@ export default function ScriptsPage() {
             </button>
           </div>
           <div className="mt-1 flex flex-wrap gap-x-4 text-xs text-fg-dim">
+            {createdBy && <span>Created by{"："}{createdBy}</span>}
             <span>Created on{"："}{fmt(created)}</span>
             <span>Last modified on{"："}{fmt(modified)}</span>
           </div>
@@ -335,11 +359,12 @@ export default function ScriptsPage() {
         <EmptyState size="sm" text="No data" />
       )}
       <ul aria-label="Scripts list">
-        {rows.map(({ r, stepLabel }) => (
+        {rows.slice(0, listShown).map(({ r, stepLabel }, i) => (
           <ScriptRow
             key={r.id}
             r={r}
             stepLabel={stepLabel}
+            last={i === rows.length - 1}
             accountId={accountId}
             expanded={expanded}
             checked={checked.has(r.id)}
@@ -352,6 +377,11 @@ export default function ScriptsPage() {
             busy={busy.has(r.id)}
           />
         ))}
+        {listHasMore && (
+          <li ref={listSentinel} className="list-none">
+            <ShowMore left={rows.length - listShown} onClick={listMore} />
+          </li>
+        )}
       </ul>
     </div>
   );
@@ -478,6 +508,8 @@ export default function ScriptsPage() {
               onSelect={(id) => dispatch({ type: "open", kind: sideKind, name: id })}
               onRename={(i) => openModal({ kind: "name", prompt: { kind: "rename", entry: sideKind, from: i.name } })}
               onDelete={(i) => deleteEntry(sideKind, i.name)}
+              sort={sideKind === "sequence" ? page.seqSort : undefined}
+              onSort={(by) => dispatch({ type: "seqSort", by })}
             />
             {list}
           </div>

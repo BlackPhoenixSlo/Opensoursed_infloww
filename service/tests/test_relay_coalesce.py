@@ -212,6 +212,115 @@ async def case_6_deepcopy_isolation() -> None:
     print("  case 6 OK — waiters hold independent deep copies")
 
 
+async def case_7_user_never_joins_background_led() -> None:
+    """A user read arriving while a background read of the same key is in flight
+    gets its own flight (not the background lane wait, retry or failure); a
+    background read joins a user-led one."""
+    relay_coalesce.reset_for_tests()
+    cls = {"v": "background"}
+    real = relay_coalesce.priority_class
+    relay_coalesce.priority_class = lambda: cls["v"]
+    try:
+        calls: list[str] = []
+        gate = asyncio.Event()
+
+        def fetcher(tag):
+            async def f():
+                calls.append(tag)
+                if tag == "bg":
+                    await gate.wait()
+                    raise RuntimeError("bg leader failed")
+                return {"by": tag}
+            return f
+
+        key = ("list_chats", "acct1", 10, 0)
+        bg = asyncio.create_task(relay_coalesce.coalesce(key, fetcher("bg")))
+        await asyncio.sleep(0.02)
+        cls["v"] = "user"
+        user = await asyncio.wait_for(relay_coalesce.coalesce(key, fetcher("user")), 1)
+        _check(user == {"by": "user"} and calls == ["bg", "user"], f"case 7: user joined bg: {calls} {user}")
+        gate.set()
+        try:
+            await bg
+            _check(False, "case 7: bg leader should have failed")
+        except RuntimeError:
+            pass
+        # background joins a user-led flight
+        calls.clear()
+        gate2 = asyncio.Event()
+
+        async def slow_user():
+            calls.append("user")
+            await gate2.wait()
+            return {"by": "user"}
+        cls["v"] = "user"
+        u = asyncio.create_task(relay_coalesce.coalesce(key, slow_user))
+        await asyncio.sleep(0.02)
+        cls["v"] = "background"
+        b = asyncio.create_task(relay_coalesce.coalesce(key, fetcher("bg")))
+        await asyncio.sleep(0.02)
+        gate2.set()
+        rs = await asyncio.gather(u, b)
+        _check(calls == ["user"] and rs == [{"by": "user"}] * 2, f"case 7: bg did not join user-led: {calls} {rs}")
+    finally:
+        relay_coalesce.priority_class = real
+    print("  case 7 OK — user never joins a background-led flight; background joins a user-led one")
+
+
+async def case_8_fresh_never_joins_a_started_run() -> None:
+    """coalesce_fresh: callers that arrive while run 1 is in flight do not get run 1 (it may predate their
+    own write); they all share run 2, which starts after run 1 ends. 1 + 10 callers -> 2 runs."""
+    relay_coalesce.reset_for_tests()
+    runs = 0
+    gates = [asyncio.Event(), asyncio.Event()]
+
+    async def fetcher():
+        nonlocal runs
+        runs += 1
+        n = runs
+        await gates[n - 1].wait()
+        return f"run{n}".encode()
+
+    key = ("saved_replies_list", "acct1")
+    first = asyncio.create_task(relay_coalesce.coalesce_fresh(key, fetcher))
+    await asyncio.sleep(0.02)
+    _check(runs == 1, f"case 8: run 1 not started ({runs})")
+    late = [asyncio.create_task(relay_coalesce.coalesce_fresh(key, fetcher)) for _ in range(10)]
+    await asyncio.sleep(0.02)
+    _check(runs == 1, f"case 8: run 2 started while run 1 is in flight ({runs})")
+    gates[0].set()
+    _check(await first == b"run1", "case 8: first caller did not get run 1")
+    await asyncio.sleep(0.02)
+    _check(runs == 2, f"case 8: run 2 did not start after run 1 ({runs})")
+    gates[1].set()
+    got = await asyncio.gather(*late)
+    _check(got == [b"run2"] * 10, f"case 8: late callers got {set(got)}")
+    _check(runs == 2, f"case 8: {runs} runs, want 2")
+    gates.append(asyncio.Event())
+    gates[2].set()
+    after = await asyncio.wait_for(relay_coalesce.coalesce_fresh(key, fetcher), 1)
+    _check(after == b"run3", f"case 8: a caller after both runs got {after!r}")
+    print("  case 8 OK — coalesce_fresh: late callers share the NEXT run, never a started one")
+
+
+async def case_9_fresh_exception_reaches_every_waiter() -> None:
+    relay_coalesce.reset_for_tests()
+    gate = asyncio.Event()
+
+    async def fetcher():
+        await gate.wait()
+        raise RuntimeError("db down")
+
+    key = ("saved_replies_list", "acct1")
+    waiters = [asyncio.create_task(relay_coalesce.coalesce_fresh(key, fetcher)) for _ in range(3)]
+    await asyncio.sleep(0.02)
+    gate.set()
+    got = await asyncio.gather(*waiters, return_exceptions=True)
+    _check(all(isinstance(g, RuntimeError) for g in got), f"case 9: {got}")
+    _check(not relay_coalesce._next and not relay_coalesce._running, "case 9: state left behind")
+    print("  case 9 OK — coalesce_fresh: an exception reaches every waiter, nothing left in flight")
+
+
 async def main() -> None:
     print("test_relay_coalesce.py — Stage B-2 coalescer")
     await case_1_dedup_identical()
@@ -220,6 +329,9 @@ async def main() -> None:
     await case_4_cancel_one_others_proceed()
     await case_5_sorted_ids_collide()
     await case_6_deepcopy_isolation()
+    await case_7_user_never_joins_background_led()
+    await case_8_fresh_never_joins_a_started_run()
+    await case_9_fresh_exception_reaches_every_waiter()
     print("ALL PASS")
 
 

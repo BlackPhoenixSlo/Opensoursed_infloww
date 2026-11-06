@@ -122,6 +122,34 @@ describe("applyScript: a Messages Pro script beside the chat", () => {
     expect(send(doc).disabled).toBe(false);
   });
 
+  // A Scripts picker row (TemplatePicker fromLocal): `text` the plain lines, `displayText` the row as saved.
+  const RICH = '<p><span class="m-editor-fc__blue-1"><strong>Hey</strong></span> babe</p><p><span class="m-editor-fs__l">Large line</span></p>';
+  const DIRTY = '<p onclick="x()"><b class="evil">Hey</b> <span class="m-editor-fc__blue-1 evil" style="color:red">babe</span><script>alert(1)</script><img src=x onerror="a()"></p>';
+  it.each([
+    ["formatted: shown formatted, sent as its markup", { text: "Hey babe\nLarge line", displayText: RICH }, RICH, RICH, ["Hey babe", "Large line"]],
+    ["foreign tags and classes: dropped by the allow-list on the way in", { text: "Hey babe", displayText: DIRTY }, DIRTY,
+      '<p><strong>Hey</strong> <span class="m-editor-fc__blue-1">babe</span></p>', ["Hey babe"]],
+    ["plain markup (no formatting): plain text", { text: "Just text", displayText: "<p>Just text</p>" }, undefined, "Just text", ["Just text"]],
+    ["plain text: plain text", { text: "Hi <3 & co", displayText: "Hi <3 & co" }, undefined, "Hi <3 & co", ["Hi <3 & co"]],
+    ["no displayText (an unsold PPV's Send to chat): plain text", { text: "Unlock me" }, undefined, "Unlock me", ["Unlock me"]],
+  ])("%s", async (_name, over, html, sent, lines) => {
+    const doc = loadPage("chat");
+    const storage = memoryStorage();
+    const h = handlers();
+    bindChat(doc, "messages/chat", ctxOf(h, storage));
+    applyScript(storage, ACCOUNT, CHAT, script(over), doc);
+    expect(loadChatDraft(storage, ACCOUNT, CHAT).html).toBe(html);
+    expect([...editor(doc).querySelectorAll(":scope > p")].map((p) => p.textContent)).toEqual(lines);
+    expect(editor(doc).querySelector("script, img, [onclick], [style], .evil")).toBeNull();
+    // OF's placeholder off, Send on: the editor is not empty.
+    expect(editor(doc).getAttribute("data-is-empty")).toBe("false");
+    expect(editor(doc).closest(".g-input__wrapper")?.classList.contains("m-empty")).toBe(false);
+    expect(send(doc).disabled).toBe(false);
+    send(doc).click();
+    await flush();
+    expect(h.send).toHaveBeenCalledWith(`/api/of/v2/chats/${CHAT}/messages`, { text: sent, price: 0, media_files: [] });
+  });
+
   it("a free script drops the price, previews and locked text; its GIF rides along", () => {
     const storage = memoryStorage();
     saveDraft(storage, draft({ text: "x", price: 9, previews: [1], locked_text: true }));

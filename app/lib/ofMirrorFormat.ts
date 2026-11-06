@@ -6,8 +6,11 @@
  * 202610091632): one `<p>` per paragraph, `<br>` inside one, Bold as `<strong>`, Italic as `<em>`, and Text Color and
  * Text Size as one `textStyle` mark, a `<span>` whose class holds OF's classes (`m-editor-fc__gray | __blue-1 |
  * __blue-2 | __default`, `m-editor-fs__lg | __l | __default | __s | __sm`); its sanitizer allows only strong, span, em, br
- * and p, and the class attribute. The marks' nesting order (strong, then em, then span) is ASSUMED from tiptap's schema
- * order (StarterKit's bold and italic before textStyle); OF's server reads the same tags either way.
+ * and p, and the class attribute. Nesting and class order are OF's wire (MEASURED, a chat send from onlyfans.com,
+ * 2026-11-06: `<p><span class="m-editor-fs__l m-editor-fc__blue-2"><strong>x</strong></span></p>`, echoed as is):
+ * the span outermost (tiptap's textStyle mark ranks above bold), size class before colour class; em inside strong
+ * (StarterKit's order, inferred). An outer mark stays open across the next run that shares it (ProseMirror's
+ * DOMSerializer), so `runsHtml` writes what OF's editor would.
  *
  * In the mirror's editor the browser's own editing commands do the work (bold, italic, foreColor, fontSize,
  * removeFormat), and `normalize` turns what they leave (b, i, font) into OF's markup at once, so the editor always holds
@@ -93,7 +96,8 @@ export function normalize(root: Element): void {
   for (const div of [...root.querySelectorAll(":scope > div")]) swap(div, "p");
 }
 
-interface Run {
+/** A run of equally marked text (`classes`: OF's size then colour class, space-separated), or a line break. */
+export interface Run {
   text: string;
   bold: boolean;
   italic: boolean;
@@ -111,7 +115,7 @@ function runsOf(p: Node): Run[] {
   const walk = (n: Node, bold: boolean, italic: boolean, color: string | null, size: string | null) => {
     if (n.nodeType === 3) {
       const text = n.textContent ?? "";
-      if (text) runs.push({ text, bold, italic, classes: [color, size].filter(Boolean).join(" ") });
+      if (text) runs.push({ text, bold, italic, classes: [size, color].filter(Boolean).join(" ") });
       return;
     }
     if (n.nodeType !== 1) return;
@@ -130,13 +134,26 @@ function runsOf(p: Node): Run[] {
 
 const sameMarks = (a: Run, b: Run) => !a.br && !b.br && a.bold === b.bold && a.italic === b.italic && a.classes === b.classes;
 
-function runHtml(r: Run): string {
-  if (r.br) return "<br>";
-  let h = escape(r.text);
-  if (r.classes) h = `<span class="${escapeAttr(r.classes)}">${h}</span>`;
-  if (r.italic) h = `<em>${h}</em>`;
-  if (r.bold) h = `<strong>${h}</strong>`;
-  return h;
+/**
+ * A paragraph's runs as OF's markup: per run its marks outermost first (span with its classes, strong, em); an open
+ * mark the next run also starts with stays open, the rest close (ProseMirror's DOMSerializer). A `<br>` closes all.
+ */
+export function runsHtml(runs: readonly Run[]): string {
+  let out = "";
+  const open: string[] = [];
+  for (const r of runs) {
+    const want = r.br ? [] : [r.classes ? `span ${r.classes}` : "", r.bold ? "strong" : "", r.italic ? "em" : ""].filter(Boolean);
+    let keep = 0;
+    while (keep < open.length && keep < want.length && open[keep] === want[keep]) keep++;
+    while (open.length > keep) out += `</${open.pop()!.split(" ")[0]}>`;
+    for (const m of want.slice(keep)) {
+      out += m.startsWith("span ") ? `<span class="${escapeAttr(m.slice(5))}">` : `<${m}>`;
+      open.push(m);
+    }
+    out += r.br ? "<br>" : escape(r.text);
+  }
+  while (open.length) out += `</${open.pop()!.split(" ")[0]}>`;
+  return out;
 }
 
 /** The editor's paragraphs (a bare text or inline child is one paragraph, as tiptap parses it). */
@@ -162,7 +179,7 @@ function paragraphs(root: Element): Node[] {
 
 /**
  * The editor as OF's post text (tiptap's getHTML): `<p>` per paragraph, an empty one `<p></p>`, each run of equally
- * marked text as `<strong><em><span class="...">text</span></em></strong>` (the marks it has). A trailing <br> that a
+ * marked text as `<span class="fs fc"><strong><em>text</em></strong></span>` (the marks it has, `runsHtml`). A trailing <br> that a
  * browser keeps in an empty paragraph is dropped.
  */
 export function ofHtml(root: Element): string {
@@ -176,7 +193,7 @@ export function ofHtml(root: Element): string {
         if (last && sameMarks(last, r)) last.text += r.text;
         else merged.push({ ...r });
       }
-      return `<p>${merged.map(runHtml).join("")}</p>`;
+      return `<p>${runsHtml(merged)}</p>`;
     })
     .join("");
 }
@@ -184,9 +201,13 @@ export function ofHtml(root: Element): string {
 /** Whether the editor holds any of OF's formatting (else the post goes as plain text, as before formatting existed). */
 export const hasFormatting = (root: Element): boolean => paragraphs(root).some((p) => runsOf(p).some((r) => !r.br && (r.bold || r.italic || !!r.classes)));
 
+/** Whose content is never text (dropped whole), as ofRichText's DROP_CONTENT. */
+const DROP_WHOLE = /^(SCRIPT|STYLE|TEMPLATE|NOSCRIPT|IFRAME|OBJECT|TEXTAREA|TITLE|HEAD)$/;
+
 /**
- * OF's markup (a saved draft's) back into `root`: only p, br, strong, em and span with OF's classes are kept (b and i as
- * strong and em); anything else is unwrapped to its text, so a draft can never inject markup into the frame.
+ * OF's markup (a saved draft's, a script's, a message's) back into `root`: only p, br, strong, em and span with OF's
+ * classes are kept (b and i as strong and em); anything else is unwrapped to its text (script, style and the like
+ * dropped whole), so it can never inject markup into the frame.
  */
 export function setOfHtml(root: Element, html: string): void {
   const doc = root.ownerDocument;
@@ -200,6 +221,7 @@ export function setOfHtml(root: Element, html: string): void {
       }
       if (n.nodeType !== 1) continue;
       const el = n as Element;
+      if (DROP_WHOLE.test(el.tagName)) continue; // never text (a script's code), as OF's sanitizer and the relay's drop it
       const tag = { P: "p", BR: "br", STRONG: "strong", B: "strong", EM: "em", I: "em", SPAN: "span" }[el.tagName];
       if (!tag) {
         clean(el, to);

@@ -129,7 +129,13 @@ concurrently and are recorded in arrival order.
 
 `extra_s[uid]` adds seconds to every /api2/ call of that Creator: a Creator whose proxy
 fails and is retried (bypass, declared: no proxy hop exists here, so the retries are
-modelled as their measured cost, not run).
+modelled as their measured cost, not run). `route_s[route]` adds seconds to every call on
+that route (route as recorded, e.g. `"GET /api2/v2/chats"`): a slow OF read beside fast ones;
+`route_jitter` j spreads it to route_s x uniform(1-j, 1+j) per call (seeded), so slow reads that start
+together do not keep answering together (a fixed time keeps every lane in phase: waves).
+`hold[(uid, route)]` is a list of seconds: each arriving call of that Creator on that route
+pops the first and waits that long more (the next N calls held, the rest as usual). Every
+call in `calls` also carries its arrival time `t0` and its query string `query`.
 
 OF's chat WebSocket (`wsUrl`, ws://127.0.0.1:<port>/ws3/<uid>; the relay's real
 of_ws pump connects here): the client's `{"act":"connect","token":…}` is answered
@@ -161,6 +167,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import re
 import threading
 import time
@@ -192,6 +199,10 @@ class FakeOF:
         self.otp: set[str] = set()
         self.fail: set[tuple[str, str]] = set()  # (Creator, route) answered 500 while armed
         self.extra_s: dict[str, float] = {}  # per Creator, seconds added to each /api2/ call
+        self.route_s: dict[str, float] = {}  # per route (as recorded), seconds added to each call on it
+        self.route_jitter = 0.0  # route_s x uniform(1 - j, 1 + j) per call
+        self._rng = random.Random(0)
+        self.hold: dict[tuple[str, str], list[float]] = {}  # (Creator, route) -> the next calls' extra seconds
         self.chats: dict[str, list[dict]] = {}  # per Creator, the chat list /api2/v2/chats pages through
         self.vault_lists: dict[str, list[dict]] = {}  # per Creator, its vault folders (OF's list items)
         self.vault_order: dict[str, list[int]] = {}   # per Creator, the last customOrder sorted
@@ -199,7 +210,7 @@ class FakeOF:
         self.messages: dict[str, dict[int, list[dict]]] = {}  # per Creator, fan -> OF's thread, newest first
         self.vault_media: dict[str, list[dict]] = {}  # per Creator, the vault page's media, newest first
         self.lock = threading.Lock()
-        self.calls: list[dict] = []          # every call, arrival order: {t, account, method, route, status}
+        self.calls: list[dict] = []          # every call, answer order: {t0, t, account, route, query, status}
         self.sends: dict[str, list[dict]] = {}  # per Creator, the messages OF accepted, in order (`t`: arrival)
         self.queue: dict[str, list[dict]] = {}  # per Creator, the mass-message wire bodies, in order (`t`, `id` added)
         self.posts: dict[str, list[dict]] = {}  # per Creator, the post-create wire bodies, in order (`t`, `id` added)
@@ -345,6 +356,7 @@ class FakeOF:
                 self.wfile.write(data)
 
             def _serve(self, method: str) -> None:
+                self._t0 = time.time()
                 n = int(self.headers.get("Content-Length") or 0)
                 raw = self.rfile.read(n) if n else b""
                 u = urlsplit(self.path)
@@ -362,7 +374,13 @@ class FakeOF:
                 if u.path.startswith("/api2/") and not all(self.headers.get(h) for h in ("Sign", "Time", "X-Hash")):
                     with fake.lock:
                         fake.unsigned += 1
-                time.sleep(fake.latency_s + (fake.extra_s.get(uid, 0.0) if u.path.startswith("/api2/") else 0.0))
+                with fake.lock:
+                    held = fake.hold.get((uid, route))
+                    slow = fake.route_s.get(route, 0.0)
+                    if slow and fake.route_jitter:
+                        slow *= 1 + fake._rng.uniform(-fake.route_jitter, fake.route_jitter)
+                    wait = fake.latency_s + slow + (held.pop(0) if held else 0.0)
+                time.sleep(wait + (fake.extra_s.get(uid, 0.0) if u.path.startswith("/api2/") else 0.0))
                 with fake.lock:
                     otp = uid in fake.otp
                 if u.path.startswith("/api2/") and otp:
@@ -540,7 +558,9 @@ class FakeOF:
 
             def _record(self, uid: str, route: str, status: int, body, ctype: str = "application/json") -> None:
                 with fake.lock:
-                    fake.calls.append({"t": time.time(), "account": uid, "route": route, "status": status})
+                    fake.calls.append({"t0": getattr(self, "_t0", None), "t": time.time(), "account": uid,
+                                       "route": route, "query": urlsplit(self.path).query, "status": status,
+                                       "cookie": bool(self.headers.get("Cookie"))})
                 self._send(status, body, ctype)
 
             def do_GET(self):  # noqa: N802

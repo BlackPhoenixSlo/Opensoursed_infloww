@@ -1,7 +1,7 @@
 /**
  * Messages Pro scripts from and onto a chat (roadmap W4 4.2):
  *   • `scriptDraftFromMessage` — "Save as script" on one of our bubbles turns
- *     the sent message back into a saved-reply draft (text, media, price,
+ *     the sent message back into a saved-reply draft (text, its OF formatting kept, media, price,
  *     free previews, GIF).
  *   • `scriptPickWarning` — the "Use script?" guard: what to warn about before
  *     a script lands in the composer for this Fan (media he already bought,
@@ -14,7 +14,7 @@ import type { PickedTemplate } from "@/components/chat/TemplatePicker";
 import type { OFMessage } from "@/lib/relay";
 import { vaultFilesFromChat } from "@/lib/vaultFiles";
 import { giphyUrl } from "@/lib/ofMedia";
-import { stripOFHtml } from "@/lib/ofHtml";
+import { hasOfFormatting, ofPlainText, sanitizeOfHtml } from "@/lib/ofRichText";
 
 export function scriptDraftFromMessage(msg: OFMessage): SavedReplyDraft {
   // Vault ids only: a saved reply stores numeric OF media ids. Free previews
@@ -26,9 +26,12 @@ export function scriptDraftFromMessage(msg: OFMessage): SavedReplyDraft {
   const price = msg.price && msg.price > 0 ? msg.price : 0;
   const previewSet = new Set(price > 0 ? msg.previews ?? [] : []);
   const ordered = [...media.filter((m) => previewSet.has(m.id)), ...media.filter((m) => !previewSet.has(m.id))];
-  const text = stripOFHtml(msg.text);
+  // A formatted message keeps its OF markup (allow-listed), so the script sends formatted; else its plain text.
+  const raw = msg.text ?? "";
+  const plain = ofPlainText(raw);
+  const text = hasOfFormatting(raw) ? sanitizeOfHtml(raw) : plain;
   return {
-    title: text.split("\n")[0].slice(0, 40) || null,
+    title: plain.split("\n")[0].slice(0, 40) || null,
     text,
     price,
     lockedText: price > 0 && !!msg.lockedText,

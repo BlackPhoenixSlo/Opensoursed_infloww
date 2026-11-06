@@ -26,7 +26,7 @@ vi.mock("@/contexts/ScopeContext", () => {
 });
 vi.mock("@/hooks/useAccounts", () => {
   const accounts = ["acct1", "acct2", "acct3"].map((id) => ({ id, nickname: id.toUpperCase(), color: "#fff" }));
-  return { useActiveAccounts: () => accounts, usePlatformAccounts: () => accounts };
+  return { useActiveAccounts: () => accounts, usePlatformAccounts: () => accounts, fetchAccounts: async () => ({ accounts }) };
 });
 vi.mock("@/hooks/useAllModelsInclude", () => {
   // acct3 is un-checked in the shared include set.

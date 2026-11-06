@@ -456,6 +456,20 @@ describe("applyData", () => {
   });
 });
 
+describe("a wall post's OF rich text (New post's Format text)", () => {
+  it.each([
+    ["formatted: drawn formatted", '<p><span class="m-editor-fc__blue-1"><strong>Hey</strong></span> babe</p><p><span class="m-editor-fs__l">Large line</span></p>',
+      '<p><span class="m-editor-fc__blue-1"><strong>Hey</strong></span> babe</p><p><span class="m-editor-fs__l">Large line</span></p>'],
+    ["foreign tags: their text only", '<p><img src=x onerror="a()"><script>alert(1)</script><i>it</i> <font color=red>f</font></p>', "<p><em>it</em> f</p>"],
+  ])("%s", (_name, text, html) => {
+    const doc = load("profile/index");
+    atFixtureNow(() => applyData(doc, "profile/index", { posts: [{ id: 903, text, postedAt: "2026-10-10T10:05:00", media: [] }] }, (u) => u));
+    const holder = posts(doc)[0].querySelector(".b-post__text .g-truncated-text > div")!;
+    expect(holder.innerHTML.replace(/ data-v-[\w-]+=""/g, "")).toBe(html);
+    expect(posts(doc)[0].querySelector("script, img[onerror], font")).toBeNull();
+  });
+});
+
 // Local times (no Z), so the dates read the same in every time zone.
 const POSTS: MirrorPost[] = [
   {
@@ -484,7 +498,7 @@ describe.each(["profile/index", "profile/state-more-menu"])("%s: the Creator's w
     expect(rows.map((r) => r.querySelector("div.b-post")!.classList.contains("m-pinned"))).toEqual([true, false]);
     expect(rows.map((r) => !!r.querySelector(".b-post__pinned"))).toEqual([true, false]);
     expect(rows.map((r) => r.querySelector(".b-post__text .g-truncated-text > div")!.innerHTML.replace(/ data-v-[\w-]+=""/g, ""))).toEqual([
-      "<p>Alpha One wall post</p>",
+      "<p>Alpha <strong>One</strong> wall post</p>", // OF draws the post's markup (b as OF's strong)
       "<p>Second synthetic post</p>",
     ]);
     const first = rows[0];

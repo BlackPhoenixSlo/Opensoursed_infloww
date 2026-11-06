@@ -27,6 +27,9 @@
  */
 
 import { applyTemplate, previewIdsFor, wireMedia } from "@/lib/composeDraft";
+import { hasOfFormatting, OF_TEXT_MAX } from "@/lib/ofRichText";
+import { plainLength } from "@/lib/ofRichTextEditor";
+import { PLAIN_MODE, richMode, type RichMode } from "@/lib/ofRichMode";
 import { localDatetimeToIso } from "@/lib/scheduleHistory";
 import type { PickedTemplate } from "@/components/chat/TemplatePicker";
 import type { TaggedCreatorChoice, VaultMedia } from "@/lib/relay";
@@ -38,7 +41,10 @@ export interface PostForm extends FanOutState {
   allModels: boolean;
   /** Kept while all-models is on (see the file header). */
   accountId: string | null;
+  /** Plain text, or OF markup while it holds formatting (the rich editor's value contract). */
   text: string;
+  /** "Aa" and whether the text box is OF's rich editor (lib/ofRichMode). */
+  mode: RichMode;
   attached: VaultMedia[];
   /** The price input, "" = free. */
   price: string;
@@ -57,7 +63,9 @@ export type PostAction =
   | { type: "appendText"; v: string }
   | { type: "setAccount"; id: string | null }
   | { type: "setAllModels"; on: boolean }
-  | { type: "pickTemplate"; t: PickedTemplate }
+  /** `rich`: the account takes OF markup (an OnlyFans one): a formatted script keeps it. */
+  | { type: "pickTemplate"; t: PickedTemplate; rich?: boolean }
+  | { type: "aa" }
   | FanOutAction;
 
 /** The `field` action for `k` (the cast is the one TS can't prove: a
@@ -70,7 +78,7 @@ export function postFieldAction<K extends PostField>(
 
 export function initPostForm(): PostForm {
   return {
-    allModels: false, accountId: null, text: "", attached: [], price: "", previewCount: 0,
+    allModels: false, accountId: null, text: "", mode: PLAIN_MODE, attached: [], price: "", previewCount: 0,
     schedule: "", taggedCreators: [], ...initFanOut(),
   };
 }
@@ -96,8 +104,12 @@ export function postComposerReducer(s: PostForm, a: PostAction): PostForm {
         : { ...s, accountId: a.id };
     case "setAllModels":
       return a.on === s.allModels ? s : { ...s, allModels: a.on, ...initFanOut() };
-    case "pickTemplate":
-      return applyTemplate(s, a.t);
+    case "pickTemplate": {
+      const n = applyTemplate(s, a.t, !!a.rich);
+      return { ...n, mode: richMode(s.mode, { type: "loaded", formatted: hasOfFormatting(n.text) }, !!a.rich) };
+    }
+    case "aa":
+      return { ...s, mode: richMode(s.mode, { type: "aa", formatted: hasOfFormatting(s.text) }) };
   }
 }
 
@@ -152,6 +164,7 @@ export function validatePost(f: PostForm, ctx: PostCtx): string | null {
   if (price > 0 && media.length === 0) return "A paid post needs at least one image";
   // All-models is text-only: media is no way out there.
   if (!f.text.trim() && media.length === 0) return f.allModels ? "Add text" : "Add text or media";
+  if (plainLength(f.text) > OF_TEXT_MAX) return `Text is over ${OF_TEXT_MAX} characters`;
   if (f.schedule && !localDatetimeToIso(f.schedule)) return "Invalid schedule date";
   return null;
 }

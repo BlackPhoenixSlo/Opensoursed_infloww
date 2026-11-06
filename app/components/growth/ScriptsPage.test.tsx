@@ -33,6 +33,7 @@ vi.mock("@/hooks/useAccounts", () => ({
     { id: "acc-a", nickname: "Creator A", has_session: true },
     { id: "acc-b", nickname: "Creator B", has_session: true },
   ],
+  fetchAccounts: async () => ({ accounts: [] }), // useOfRichAllowed's (never-run) queryFn
 }));
 
 import ScriptsPage from "@/components/growth/ScriptsPage";
@@ -760,7 +761,8 @@ describe("tags and sequences are stored on the scripts", () => {
     await screen.findByText("Hey there");
   }
   const sidebar = (name: string) => screen.getByRole("complementary", { name });
-  const titles = () => rows().map((r) => r.querySelector(".line-clamp-3")?.textContent);
+  // A script's name cell, or in a sequence its numbered step.
+  const titles = () => rows().map((r) => r.querySelector(".line-clamp-3, [aria-label^='Step ']")?.textContent);
 
   it("lists All scripts, each tag with its count, then Uncategorized; a tag shows only its scripts", async () => {
     await mountTagged();
@@ -1018,11 +1020,14 @@ describe("tags and sequences are stored on the scripts", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "OK" }));
     await waitFor(() => expect(post).toHaveBeenCalledTimes(1));
     expect(post.mock.calls[0]).toEqual([RELABEL, { kind: "tag", to: "Night", ids: [1, 2] }]);
-    // Select all, then Delete removes each.
+    // Select all, then Delete removes them in one request.
     fireEvent.click(screen.getByRole("button", { name: /All scripts/ }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Select all" }));
     fireEvent.click(within(screen.getByRole("toolbar", { name: "Selection" })).getByRole("button", { name: /Delete/ }));
-    await waitFor(() => expect(del).toHaveBeenCalledTimes(5));
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(2));
+    expect(post.mock.calls[1][0]).toBe("/admin/saved-replies/delete?account_id=acc-a");
+    expect([...post.mock.calls[1][1].ids].sort()).toHaveLength(5);
+    expect(del).not.toHaveBeenCalled();
   });
 
   it("Create new sequence asks for a name, then opens the editor on its step 1", async () => {
@@ -1049,5 +1054,74 @@ describe("tags and sequences are stored on the scripts", () => {
     pick("Sort by", "Name");
     pick("Sort order", "Ascending");
     expect(titles()).toEqual(["answer job", "ask fantasy", "ask location", "Greeting", "Unlock"]);
+  });
+});
+
+/* ── an imported library: sequence meta, sort, send count, 10k rows ─────── */
+
+describe("an imported library", () => {
+  const META = "/admin/saved-replies/sequences?account_id=acc-a";
+  const step = (id: number, seq: string, n: number, over: object = {}) => ({
+    id, account_id: "acc-a", title: `${seq} s${n}`, text: `${seq} text ${n}`, price: 0, locked_text: false, media: [],
+    script_id: seq, script_step: n, updated_at: "2026-09-01T00:00:00", created_at: "2026-09-01T00:00:00", ...over,
+  });
+  function mountLib(list: object[], metas: object[]) {
+    const reads = get.getMockImplementation()!;
+    get.mockImplementation((path: string, ctx?: { accountId?: string }) =>
+      path === LIST_A ? Promise.resolve({ list }) : path === META ? Promise.resolve({ list: metas }) : reads(path, ctx));
+    renderWithProviders(<ScriptsPage />);
+  }
+  const seqOrder = () =>
+    [...screen.getByRole("complementary", { name: "Sequences" }).querySelectorAll("li > [role='button'] span.truncate")]
+      .map((s) => s.textContent);
+
+  it("orders the Sequence sidebar Custom by default, then Name and Recent; the header shows Created by", async () => {
+    mountLib(
+      [step(1, "Seq 10", 1, { updated_at: "2026-10-05T00:00:00" }), step(2, "Seq 2", 1), step(3, "Seq 1", 1)],
+      [
+        { name: "Seq 10", position: 0, created_by: "Ana", description: null, created_at: "2025-01-02T00:00:00", updated_at: null },
+        { name: "Seq 2", position: 1, created_by: null, description: null, created_at: null, updated_at: null },
+      ],
+    );
+    await screen.findByText("Seq 10 text 1");
+    fireEvent.click(screen.getByRole("tab", { name: "Sequence" }));
+    await waitFor(() => expect(seqOrder()).toEqual(["Seq 10", "Seq 2", "Seq 1"]));
+    expect(screen.getByText(/Created by：Ana/)).toBeInTheDocument();
+    expect(screen.getByText("Created on：Jan 2, 2025")).toBeInTheDocument();
+    const sorts = screen.getByRole("group", { name: "Sort sequences" });
+    fireEvent.click(within(sorts).getByRole("button", { name: /Name/ }));
+    expect(seqOrder()).toEqual(["Seq 1", "Seq 2", "Seq 10"]);
+    fireEvent.click(within(sorts).getByRole("button", { name: /Recent/ }));
+    expect(seqOrder()[0]).toBe("Seq 10");
+  });
+
+  it("draws steps as numbered cards with a line to the next, and shows the send count in the stats", async () => {
+    mountLib([step(1, "S", 1, { sent_count: 3 }), step(2, "S", 2, { sent_count: 0, conditional: "if she asks" })], []);
+    await screen.findByText("S text 1");
+    fireEvent.click(screen.getByRole("tab", { name: "Sequence" }));
+    const [a, b] = rows();
+    expect(within(a).getByLabelText("Step 1")).toBeInTheDocument();
+    expect(a.querySelector("[data-connector]")).not.toBeNull();
+    expect(b.querySelector("[data-connector]")).toBeNull();
+    expect(within(a).getByLabelText("Sent")).toHaveTextContent("Sent 3");
+    expect(within(b).getByLabelText("Condition")).toHaveTextContent("If: if she asks");
+    // Purchases and sales stay not wired.
+    expect(within(a).getByLabelText("Stats")).toHaveAttribute("title", "not wired");
+  });
+
+  it("renders 10k scripts 200 at a time; Show more adds the next 200; search reaches the last one", async () => {
+    const list = Array.from({ length: 10_000 }, (_, i) => ({
+      id: i + 1, account_id: "acc-a", title: `t${i + 1}`, text: `body ${i + 1}`, price: 0, locked_text: false,
+      media: [], updated_at: "2026-09-01T00:00:00",
+    }));
+    mountLib(list, []);
+    await screen.findByText("body 1");
+    expect(rows()).toHaveLength(201); // 200 and the Show more row
+    fireEvent.click(screen.getByRole("button", { name: "Show more (9800)" }));
+    expect(rows()).toHaveLength(401);
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search scripts" }), { target: { value: "body 10000" } });
+    expect(rows()).toHaveLength(1);
+    expect(screen.getByText("body 10000")).toBeInTheDocument();
   });
 });

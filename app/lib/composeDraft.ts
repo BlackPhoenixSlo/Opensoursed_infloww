@@ -11,6 +11,8 @@
  *     without keeps the user's pick. Tagged creators are merged (placeholders
  *     by id). Fields a composer lacks (`lockedText`, `pickedGifs` on a post; `text`
  *     in the chat draft, whose text is the chat's own) are left absent.
+ *     `templateText`: a host with OF's rich editor (`rich`, an OnlyFans account) takes a formatted script's markup,
+ *     every other its plain text (a Fansly account never gets OF markup).
  *   • `canBeFreePreview` is THE free-preview rule: only a tile with a real
  *     vault id can be a free teaser. A fresh upload still carries a `_claim`
  *     (no id until OF resolves it): it rides as media but can't be referenced
@@ -22,6 +24,7 @@
 import type { PickedGif } from "@/components/chat/GifPicker";
 import { templateMediaToVault, type PickedTemplate } from "@/components/chat/TemplatePicker";
 import type { TaggedCreatorChoice, VaultMedia } from "@/lib/relay";
+import { hasOfFormatting } from "@/lib/ofRichText";
 
 export interface ComposeDraft {
   /** Absent on a draft whose text lives elsewhere (the chat's `useChatDraft`). */
@@ -48,8 +51,14 @@ function mergeTags(prev: TaggedCreatorChoice[], ids: number[]): TaggedCreatorCho
   return additions.length ? [...prev, ...additions] : prev;
 }
 
-/** The draft with template `t` applied (see the file header). */
-export function applyTemplate<D extends ComposeDraft>(draft: D, t: PickedTemplate): D {
+/** The text a picked template puts in: its OF markup when it is formatted and the host can hold it, else its plain
+ *  text. */
+export function templateText(t: Pick<PickedTemplate, "text" | "displayText">, rich: boolean): string {
+  return rich && hasOfFormatting(t.displayText) ? t.displayText.trim() : t.text;
+}
+
+/** The draft with template `t` applied (see the file header); `rich`: the host keeps its formatting. */
+export function applyTemplate<D extends ComposeDraft>(draft: D, t: PickedTemplate, rich = false): D {
   const paid = t.price > 0;
   const next: D = {
     ...draft,
@@ -58,7 +67,7 @@ export function applyTemplate<D extends ComposeDraft>(draft: D, t: PickedTemplat
     previewCount: t.previews.length,
     taggedCreators: mergeTags(draft.taggedCreators, t.taggedUsers),
   };
-  if (draft.text !== undefined) next.text = t.text;
+  if (draft.text !== undefined) next.text = templateText(t, rich);
   if (draft.lockedText !== undefined) next.lockedText = paid ? t.lockedText : false;
   if (draft.pickedGifs !== undefined) {
     const url = t.gifUrl ?? "";

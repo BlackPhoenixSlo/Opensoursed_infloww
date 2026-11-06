@@ -189,11 +189,14 @@ def register(Fault) -> dict:
         # app/components/compose/massMessageReducer.ts `pickTemplate`: a FREE template keeps the draft's price
         # and text lock (the pre-reducer bug), so the PAID template's $25 + lock survive. Only the free-template
         # check goes red: the gate and body checks retype the price themselves. Anchored on the mass reducer's
-        # own `pickTemplate` -> `addGif` case pair: lib/composeDraft.ts is shared (bundled in the Smart Messages
-        # chunk AND the dashboard's), and postComposerReducer.ts / chat/composerDraft.ts have a pickTemplate
-        # case too, but followed by other cases, so exactly one served file is rewritten.
+        # own `pickTemplate` -> `aa` -> `addGif` case run (its `const n = applyTemplate(s, a.t, !!a.rich)`):
+        # lib/composeDraft.ts is shared (bundled in the Smart Messages chunk AND the dashboard's), and
+        # postComposerReducer.ts has the same pickTemplate + aa cases but no `addGif` after them, and
+        # chat/composerDraft.ts no `const n`, so exactly one served file is rewritten. Spans up to 2000 chars: the
+        # served JS spells each import as a long Turbopack module path.
         "free-template-keeps-price": Fault(None, (MASS_FREE,), browser=(
-            (r'(case \\?"pickTemplate\\?":(?:\\n|\s)*return )([^;]*?\(s, a\.t\));((?:\\n|\s)*case \\?"addGif\\?":)',
+            (r'(const n = )([^;]*?\(s, a\.t, !!a\.rich\));((?:(?!pickTemplate)[\s\S]){0,2000}?case \\?"aa\\?":'
+             r'(?:(?!pickTemplate)[\s\S]){0,2000}?case \\?"addGif\\?":)',
              r"\1((n) => a.t.price > 0 ? n : { ...n, price: s.price, lockedText: s.lockedText })(\2);\3"),
         )),
         # slop/run 2026-10-29-state-reducers --break --fault=template-clears-picked-gifs

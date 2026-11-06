@@ -44,7 +44,8 @@ read and the Applied settings ride the IndexedDB snapshot, keyed by principal); 
 session-less Creator (no account on the host, so absent from `/admin/accounts`, as prod's
 800000779) sent no OnlyFans request from its card (each `/api/of/` request's
 `X-Account-Id`, from Playwright's request events) and wears its "Not connected" label,
-while every live Creator's card still read OF; never blank while the JS loads (2026-10-29,
+while on a first visit every live Creator's card still read OF (its own `/api/of/` read, or the
+screen bundle `/admin/screens/dashboard` naming it or, no `accounts=`, all; the bundle never names it either); never blank while the JS loads (2026-10-29,
 the owner: "paint the layout right away, then the numbers fill in"): on every Dashboard
 load whose JS comes over the network and on Messages Pro's first visit, the route's frame
 from the server's HTML (AuthGate's BootSkeleton: the earnings card's labels with a bar
@@ -98,7 +99,7 @@ import json
 import shutil
 import time
 from decimal import ROUND_HALF_UP, Decimal
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from playwright.async_api import async_playwright
 
@@ -216,6 +217,12 @@ def _money(cents: int) -> str:
     return f"{'-' if cents < 0 else ''}${int(d):,}"
 
 
+def _bundle_accounts(url: str) -> list[str] | None:
+    """The Creators a screen-bundle URL names (`accounts=`), None when it names none (all the caller's)."""
+    ids = parse_qs(urlsplit(url).query).get("accounts")
+    return [a for v in ids for a in v.split(",") if a] if ids else None
+
+
 def _path(url: str) -> str:
     u = urlsplit(url)
     return u.path + (f"?{u.query}" if u.query else "")
@@ -292,9 +299,13 @@ async def _visit(ctx, pw, edge, net: str, visit: str, udir, slow: str, path: str
         page = bctx.pages[0] if bctx.pages else await bctx.new_page()
         # Every OnlyFans request the page sends, with the Creator it names (X-Account-Id; Resource Timing has no
         # headers). Listening only: no route, so no request is held.
+        # The Dashboard's screen bundle (service/screens_api.py) reads every Creator it names (`accounts=`, else all
+        # the caller's) on the relay: kept apart, `bundle` = the Creators it named (None: all).
         of_sent: list[dict] = []
+        bundles: list[list[str] | None] = []
         page.on("request", lambda r: of_sent.append({"path": _path(r.url), "account": r.headers.get("x-account-id")})
-                if "/api/of/" in r.url else None)
+                if "/api/of/" in r.url else bundles.append(_bundle_accounts(r.url))
+                if "/admin/screens/dashboard" in r.url else None)
         cdp = await bctx.new_cdp_session(page)
         await cdp.send("Network.enable")
         if visit == "after-deploy":
@@ -335,7 +346,7 @@ async def _visit(ctx, pw, edge, net: str, visit: str, udir, slow: str, path: str
             last_n = n
             await asyncio.sleep(0.25)
         d = await page.evaluate(COLLECT_JS)
-        d["painted"], d["t_nav"], d["of_sent"] = painted, t_nav, of_sent
+        d["painted"], d["t_nav"], d["of_sent"], d["bundles"] = painted, t_nav, of_sent, bundles
         d["script_ms_to_total"] = round(perf.get("ScriptDuration", 0) * 1000)
         d["task_ms_to_total"] = round(perf.get("TaskDuration", 0) * 1000)
         await page.screenshot(path=str(ctx.out / "screenshots" / f"{shot}.png"))
@@ -695,11 +706,16 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     ctx.metric("of_requests_by_creator", of_by_visit)
     labelled = {k: any(o["label"] == "Not connected" and off in o["card"] for o in d["offline"])
                 for k, d in visits.items()}
-    ctx.check(C_OFFLINE, all(n.get(off, 0) == 0 for n in of_by_visit.values()) and all(labelled.values())
+    def asked(k: str, a: str) -> bool:   # the page asked OF for `a`: its own read, or a bundle naming it (or all)
+        return of_by_visit[k].get(a, 0) > 0 or any(b is None or a in b for b in visits[k].get("bundles", []))
+    named_off = {k: any(b is not None and off in b for b in d.get("bundles", [])) for k, d in visits.items()}
+    ctx.check(C_OFFLINE, all(n.get(off, 0) == 0 for n in of_by_visit.values()) and not any(named_off.values())
+              and all(labelled.values())
               # A visit with the saved snapshot paints the cards' last OF figures (app/components/providers.tsx
               # PERSIST_KEYS, 2026-11-05) and reads OF again only once they are stale, so only first visits must read.
-              and all(all(n.get(a, 0) > 0 for a in live) for k, n in of_by_visit.items() if k.endswith("-first")),
+              and all(all(asked(k, a) for a in live) for k in visits if k.endswith("-first")),
               offline_creator=off, of_requests=of_by_visit, labelled=labelled,
+              bundles={k: d.get("bundles", []) for k, d in visits.items()}, bundle_named_offline=named_off,
               labels={k: [o["label"] for o in d["offline"]] for k, d in visits.items()})
 
     # Never blank while the JS loads: the server's HTML draws the page's frame (the boot skeleton), so it is on screen

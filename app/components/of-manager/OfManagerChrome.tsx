@@ -14,7 +14,9 @@
  * over the view's right edge (the chat page leaves it the room, so OF keeps its wide layout): Messages Pro's FanDrawer,
  * pinned, in Infloww's palette, with the Scripts picker (TemplatePicker) over it: a picked script, or an unsold PPV's
  * "Send to chat", goes on the mirror's Chat draft (applyScript), shown in OF's composer in the frame. Below lg the
- * header's Fan insights button opens it as its slide-over instead. It is the chat's one Fan insights mount.
+ * header's Fan insights button opens it as its slide-over instead, and the Scripts picker sits in the header. A
+ * formatted script goes in formatted (OF's markup, as OF's own Format text leaves it). It is the chat's one Fan
+ * insights mount.
  */
 
 import Link from "next/link";
@@ -177,15 +179,22 @@ function Chrome({ children }: { children: React.ReactNode }) {
           {accounts.length > 0 && (
             <ScopeSelect accounts={accounts} onPicked={() => setViewKey((k) => k + 1)} className="ml-3 lg:hidden" />
           )}
+          {/* A phone's open chat needs the row for its Scripts and Fan insights buttons: the zone label gives way. */}
           {tz && (
-            <span className="mx-4 flex items-center gap-2 text-base text-fg-dim tabular-nums">
+            <span className={`mx-4 flex items-center gap-2 text-base text-fg-dim tabular-nums${insights ? " max-sm:hidden" : ""}`}>
               {tz}
               <span title="The time zone of this computer"><Info aria-hidden className="w-4 h-4" /></span>
             </span>
           )}
         </div>
         {viewTools && (
-          <div className="flex items-center gap-6">
+          <div className="shrink-0 flex items-center gap-6">
+            {/* Below lg the pinned column (and its Scripts) is gone: the picker sits here, for the frame's composer. */}
+            {insights && !desktop && (
+              <InflowwPalette className="contents">
+                <TemplatePicker accountId={insights.accountId} onPick={pick} messagesPro />
+              </InflowwPalette>
+            )}
             {insights && (
               <button
                 type="button"

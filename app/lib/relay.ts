@@ -13,6 +13,7 @@
 
 import { resolveShareToken } from "@/lib/shareToken";
 import { admissible, initialSchedule, scheduleReducer, type Action as ScheduleAction } from "@/lib/relaySchedule";
+import { screenJoin, screenRead, screenSettled } from "@/lib/screenBundle";
 import type { GiphyResponse } from "./relayTypes";
 export type * from "./relayTypes";
 export { SALARY_FREQUENCIES, toChoice } from "./relayTypes";
@@ -269,11 +270,28 @@ export async function request<T = unknown>(
   // cache, so the lock is never taken. Unscoped calls keep the browser's
   // default. A caller's own `init.cache` wins.
   const cache = headers.has("X-Account-Id") ? "no-store" : undefined;
+  // A read the open screen's bundle covers (lib/screenBundle.ts): its answer from that one call; a miss goes out below.
+  const method = (init?.method ?? "GET").toUpperCase();
+  const read = method === "GET" && !opts?.refresh && ctx?.employeeId == null && !headers.has("X-Employee-Id")
+    ? screenRead(url, ctx?.accountId ?? null) : null;
+  if (read) {
+    // The bundle runs every other Creator's reads as background on the relay: only the open one is the user's.
+    const bundle = (p: string) => {
+      const f = relayFocus();
+      return request(f ? `${p}${p.includes("?") ? "&" : "?"}focus=${encodeURIComponent(f)}` : p, { method: "GET" });
+    };
+    const o = await screenJoin(read, bundle, init?.signal);
+    if (o.kind === "body") return o.body as T;
+    if (o.kind === "error") {
+      return parseResponse<T>(new Response(JSON.stringify({ detail: o.detail }), { status: o.status }));
+    }
+  }
   const background = ctx?.priority === "background";
-  // A background OnlyFans GET waits for a slot (lib/relaySchedule.ts). Writes never queue; a user call never waits.
-  const release = background && url.startsWith("/api/of/") && (init?.method ?? "GET").toUpperCase() === "GET"
-    ? await admitBackground(ctx?.accountId ?? null, init?.signal)
-    : null;
+  // A background OnlyFans GET waits for the open screen's bundle, then for a slot (lib/relaySchedule.ts). Writes never
+  // queue; a user call never waits.
+  const bgRead = background && url.startsWith("/api/of/") && method === "GET";
+  if (bgRead) await screenSettled(init?.signal);
+  const release = bgRead ? await admitBackground(ctx?.accountId ?? null, init?.signal) : null;
   try {
     const priority = FETCH_PRIORITY ? { priority: background ? "low" : "high" } as RequestInit : undefined;
     const r = await fetch(url, { cache, ...priority, ...init, headers, credentials: "same-origin" });

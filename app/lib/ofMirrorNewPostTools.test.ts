@@ -76,11 +76,11 @@ describe("Format text: OF's composer markup", () => {
     expect(root.innerHTML).toBe('<p><strong>x</strong><em>y</em><span class="m-editor-fc__blue-2">z</span><span class="m-editor-fs__sm">s</span><span class="m-editor-fc__gray">g</span></p>');
   });
 
-  it("a saved draft's markup comes back with only OF's tags (no script, no attributes)", () => {
+  it("a saved draft's markup comes back with only OF's tags (no script and its code, no attributes)", () => {
     const root = document.createElement("div");
     setOfHtml(root, '<p onclick="x()"><strong>b</strong><script>alert(1)</script><span class="m-editor-fs__l evil">L</span><a href="https://example.com">t</a></p><p></p>');
-    expect(root.innerHTML).toBe('<p><strong>b</strong>alert(1)<span class="m-editor-fs__l">L</span>t</p><p><br></p>');
-    expect(ofHtml(root)).toBe('<p><strong>b</strong>alert(1)<span class="m-editor-fs__l">L</span>t</p><p></p>');
+    expect(root.innerHTML).toBe('<p><strong>b</strong><span class="m-editor-fs__l">L</span>t</p><p><br></p>');
+    expect(ofHtml(root)).toBe('<p><strong>b</strong><span class="m-editor-fs__l">L</span>t</p><p></p>');
   });
 
   it("only OF's exact class names survive: a lookalike or quote-carrying class never reaches the markup", () => {

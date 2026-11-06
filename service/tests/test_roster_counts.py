@@ -166,6 +166,42 @@ async def case_reconcile_pulls_of_read_state_into_local():
         assert m is not None and m.direction == "out", "outbound reply persisted"
 
 
+async def case_reconcile_runs_in_the_of_writer_never_backwards():
+    """Concurrent reconciles go through the OF-cache writer (one group commit, not one
+    write transaction each fighting for the lock); an OF page older than the local last
+    message still sets unread but never moves last_message_id back."""
+    import asyncio
+    from db import of_writer
+    from messages import reconcile_chats_from_of
+
+    A, B = "777", "778"
+    async with get_session() as s:
+        for aid in (A, B):
+            s.add(Account(id=aid, nickname=aid))
+        s.add(Chat(account_id=A, fan_id=20, last_message_id=2005, unread_count=0))
+        await s.commit()
+
+    def page(fan, lm_id, unread):
+        return [{"withUser": {"id": fan}, "unreadMessagesCount": unread,
+                 "lastMessage": {"id": lm_id, "fromUser": {"id": fan}, "text": "x",
+                                 "createdAt": "2026-06-21T12:00:00+00:00"}}]
+
+    of_writer.start()
+    try:
+        assert of_writer.running()
+        n = await asyncio.gather(reconcile_chats_from_of(A, page(20, 2001, 3)),
+                                 reconcile_chats_from_of(B, page(21, 2101, 1)))
+        assert n == [1, 1], n
+    finally:
+        await of_writer.stop()
+    async with get_session() as s:
+        a = await s.get(Chat, (A, 20))
+        assert a.unread_count == 3 and a.last_message_id == 2005, (a.unread_count, a.last_message_id)
+        b = await s.get(Chat, (B, 21))
+        assert b.unread_count == 1 and b.last_message_id == 2101, (b.unread_count, b.last_message_id)
+        assert (await s.get(Message, (B, 21, 2101))).direction == "in"
+
+
 async def case_roster_bust_recomputes_only_target():
     """`?bust=<aid>` force-recomputes ONE model, leaving the rest on cache.
 
@@ -415,6 +451,7 @@ _harness.run(
     case_compute_roster_count_from_of,
     case_roster_count_caps_at_window,
     case_reconcile_pulls_of_read_state_into_local,
+    case_reconcile_runs_in_the_of_writer_never_backwards,
     case_roster_bust_recomputes_only_target,
     case_assemble_tops_up_past_of_page_cap,
     case_assemble_empty_page_ends_pagination,

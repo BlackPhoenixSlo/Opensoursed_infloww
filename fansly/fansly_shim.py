@@ -44,16 +44,21 @@ log = logging.getLogger("of-relay.fansly.shim")
 
 
 def _guard_outbound(text):
-    """The relay's per-run automation word guard (of_client.OUTBOUND_TEXT_GUARD:
-    the account's banned + Agency sensitive words; masks or raises
+    """`text` as it may leave for Fansly: the relay's per-run automation word
+    guard (of_client.OUTBOUND_TEXT_GUARD: the Agency's sensitive words; raises
     OutboundWordsBlocked) — the same floor every OFClient send passes, so an
-    automation on a Fansly account cannot dodge it. Outside the relay (this
-    package run standalone) there is no guard."""
+    automation on a Fansly account cannot dodge it — then OF markup (a formatted
+    script, a scheduled or broadcast one, one copied from an OF Creator) as the
+    plain text its fan would read on OF: Fansly renders `content` literally, so
+    tags would show (Infloww escapes them instead; plain reads better).
+    Outside the relay (this package run standalone) there is neither."""
     try:
         from of_client import _guard_outbound as guard
+        from of_rich_text import has_html, of_plain
     except ImportError:
         return text
-    return guard(text)
+    text = guard(text)
+    return of_plain(text) if has_html(text) else text
 
 # How many vault-upload parts go up at once (see FanslyShimClient.upload_media).
 # A single stream to S3 is usually throttled well below the box's uplink, so on

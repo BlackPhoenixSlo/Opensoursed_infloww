@@ -14,12 +14,15 @@
  */
 import {
   forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState,
+  type ClipboardEvent as ReactClipboardEvent, type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { ChevronDown, RemoveFormatting } from "lucide-react";
 
 import { applyFormat, COLORS, setOfHtml, SIZES, type FormatCommand } from "@/lib/ofMirrorFormat";
-import { editorHtmlOf, editorValue, marksAt, NO_MARKS, plainLength, tidy, type Marks } from "@/lib/ofRichTextEditor";
+import {
+  editorHtmlOf, editorValue, formatAtCaret, marksAt, NO_MARKS, pastedOfHtml, plainLength, tidy, type Marks,
+} from "@/lib/ofRichTextEditor";
 import { cn } from "@/lib/utils";
 
 export interface OfRichTextEditorHandle {
@@ -37,7 +40,19 @@ type Props = {
   maxLength?: number;
   required?: boolean;
   "aria-labelledby"?: string;
+  "aria-label"?: string;
   className?: string;
+  /** The text area's own classes (a host's size and padding), over the default ones. */
+  inputClassName?: string;
+  /** Show the formatting toolbar (default). Hidden, the formatting stays and still renders (OF's "x": the toolbar
+   *  goes, the content is unchanged). */
+  toolbar?: boolean;
+  /** Not editable (a host's locked form). */
+  disabled?: boolean;
+  /** A host's keys (the chat's Enter to send), before the editor's own. */
+  onKeyDown?: (e: ReactKeyboardEvent<HTMLDivElement>) => void;
+  /** A host's paste first (the chat uploads a pasted image); one it prevents stops here. */
+  onPaste?: (e: ReactClipboardEvent<HTMLDivElement>) => void;
 };
 
 const keep = (e: ReactPointerEvent | React.MouseEvent) => e.preventDefault();
@@ -48,7 +63,10 @@ const TOOL = "inline-grid place-items-center rounded-md text-fg-dim hover:text-f
 const ON = "text-[#4166f6] bg-[#4166f6]/10 hover:text-[#4166f6]";
 
 export const OfRichTextEditor = forwardRef<OfRichTextEditorHandle, Props>(function OfRichTextEditor(
-  { value, onChange, id, placeholder, maxLength, required, className, ...aria },
+  {
+    value, onChange, id, placeholder, maxLength, required, className, inputClassName, toolbar = true, disabled,
+    onKeyDown, onPaste, ...aria
+  },
   ref,
 ) {
   const rootRef = useRef<HTMLDivElement>(null);
@@ -132,18 +150,7 @@ export const OfRichTextEditor = forwardRef<OfRichTextEditorHandle, Props>(functi
     const sel = restore();
     if (!root || !sel) return;
     if (!sel.isCollapsed) applyFormat(root, cmd);
-    else {
-      // No selection: arm the browser's typing style, so the next letters carry it (OF's stored mark).
-      const doc = root.ownerDocument;
-      exec(doc, "styleWithCSS", "false");
-      if (cmd.kind === "bold" || cmd.kind === "italic") exec(doc, cmd.kind);
-      else if (cmd.kind === "color") exec(doc, "foreColor", COLORS.find((c) => c.cls === cmd.cls)?.css || "#000001");
-      else if (cmd.kind === "size") exec(doc, "fontSize", SIZES.find((s) => s.cls === cmd.cls)?.font ?? "3");
-      else {
-        if (marks.bold) exec(doc, "bold");
-        if (marks.italic) exec(doc, "italic");
-      }
-    }
+    else formatAtCaret(root, sel, cmd); // no selection: OF's stored mark, the browser's typing style
     setMenu(null);
     emit();
     refreshMarks();
@@ -182,10 +189,34 @@ export const OfRichTextEditor = forwardRef<OfRichTextEditorHandle, Props>(functi
     },
   }), [emit, left, restore]);
 
-  /** Text from outside (paste, drop) goes in plain (no foreign markup; formatting is the toolbar's), cut to fit. */
+  /** Text from outside (a drop, a paste with no formatting) goes in plain, cut to fit. */
   const insertPlain = (text: string) => {
     text = text.slice(0, Math.max(0, left()));
     if (text) exec(rootRef.current?.ownerDocument, "insertText", text);
+  };
+  /** A paste keeps OF's formatting (OF's paste filter: its tags and classes, inline colours and sizes as classes); what
+   *  does not fit the limit, or has none, goes in as plain text. */
+  const paste = (html: string, text: string) => {
+    const root = rootRef.current;
+    const marked = html && root ? pastedOfHtml(html, root.ownerDocument) : null;
+    if (!root || !marked || plainLength(marked) > left()) return insertPlain(text);
+    // One paragraph goes in inline, at the caret; more split the paragraph as typed Enters would.
+    const one = /^<p>((?:(?!<\/?p>).)*)<\/p>$/s.exec(marked);
+    if (exec(root.ownerDocument, "insertHTML", one ? one[1] : marked)) return;
+    const sel = root.ownerDocument.getSelection();
+    if (!sel?.rangeCount) return;
+    const tpl = root.ownerDocument.createElement("template");
+    tpl.innerHTML = one ? one[1] : marked;
+    const r = sel.getRangeAt(0);
+    r.deleteContents();
+    const last = tpl.content.lastChild;
+    r.insertNode(tpl.content);
+    if (last) {
+      r.setStartAfter(last);
+      r.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(r);
+    }
   };
   const len = plainLength(value);
   const size = SIZES.find((s) => s.cls === marks.size) ?? SIZES.find((s) => s.cls === "m-editor-fs__default")!;
@@ -193,7 +224,7 @@ export const OfRichTextEditor = forwardRef<OfRichTextEditorHandle, Props>(functi
 
   return (
     <div className={cn("rounded-lg border border-border bg-bg focus-within:border-accent", className)}>
-      <div data-of-rt-toolbar="" role="toolbar" aria-label="Text formatting"
+      {toolbar && <div data-of-rt-toolbar="" role="toolbar" aria-label="Text formatting"
         className="relative flex flex-wrap items-center gap-0.5 border-b border-border px-1 py-0.5">
         <button type="button" title="Text size" aria-label={`Text size: ${size.label}`} aria-haspopup="menu" aria-expanded={menu === "size"}
           onPointerDown={keep} onMouseDown={keep} onClick={() => setMenu((m) => (m === "size" ? null : "size"))}
@@ -255,7 +286,7 @@ export const OfRichTextEditor = forwardRef<OfRichTextEditorHandle, Props>(functi
             ))}
           </div>
         )}
-      </div>
+      </div>}
       <div
         ref={rootRef}
         id={id}
@@ -267,18 +298,35 @@ export const OfRichTextEditor = forwardRef<OfRichTextEditorHandle, Props>(functi
         data-maxlength={maxLength}
         data-empty={len === 0 ? "true" : undefined}
         {...aria}
-        contentEditable
+        aria-disabled={disabled || undefined}
+        contentEditable={!disabled}
         suppressContentEditableWarning
         spellCheck
         onFocus={() => exec(rootRef.current?.ownerDocument, "defaultParagraphSeparator", "p")}
-        onInput={emit}
+        // An IME's composition is left alone (normalizing it would move its text under it): read once it ends.
+        onInput={(e) => {
+          if (!(e.nativeEvent as InputEvent).isComposing) emit();
+        }}
+        onCompositionEnd={emit}
         onBeforeInput={(e) => {
-          const t = (e.nativeEvent as InputEvent).inputType ?? "insertText";
-          if (t.startsWith("insert") && !room(((e.nativeEvent as InputEvent).data ?? " ").length)) e.preventDefault();
+          const ev = e.nativeEvent as InputEvent;
+          const t = ev.inputType ?? "insertText";
+          if (!ev.isComposing && t !== "insertCompositionText" && t.startsWith("insert") && !room((ev.data ?? " ").length)) {
+            e.preventDefault();
+          }
+        }}
+        onKeyDown={(e) => {
+          onKeyDown?.(e);
+          // Shift+Enter: a new line as a paragraph (OF's lines), never the "\n" a pre-wrap contenteditable types in.
+          if (e.defaultPrevented || e.key !== "Enter" || !e.shiftKey || e.nativeEvent.isComposing) return;
+          e.preventDefault();
+          if (room(1)) exec(rootRef.current?.ownerDocument, "insertParagraph");
         }}
         onPaste={(e) => {
+          onPaste?.(e);
+          if (e.defaultPrevented) return;
           e.preventDefault();
-          insertPlain(e.clipboardData.getData("text/plain"));
+          paste(e.clipboardData.getData("text/html"), e.clipboardData.getData("text/plain"));
         }}
         onDrop={(e) => {
           e.preventDefault();
@@ -300,6 +348,8 @@ export const OfRichTextEditor = forwardRef<OfRichTextEditorHandle, Props>(functi
           "whitespace-pre-wrap break-words outline-none [&_p]:min-h-[1lh]",
           "data-[empty=true]:before:pointer-events-none data-[empty=true]:before:absolute",
           "data-[empty=true]:before:text-muted data-[empty=true]:before:content-[attr(placeholder)]",
+          disabled && "cursor-not-allowed",
+          inputClassName,
         )}
       />
     </div>

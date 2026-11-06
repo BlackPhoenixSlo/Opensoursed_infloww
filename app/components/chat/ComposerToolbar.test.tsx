@@ -28,7 +28,7 @@
  * favourites, which the emoji picker shows first.
  *
  * Ticket 34 adds Upload (opens the Vault picker, as Vault does), @ "Mention"
- * (inserts the Fan's @username) and "Aa" (Not wired) to the bottom toolbar.
+ * (inserts the Fan's @username) and "Aa" (OF's formatting toolbar) to the bottom toolbar.
  * TODO.md A5 drops "Mention": the @ icon is "Tag other Creators" now.
  * On 2026-10-16 Upload opens the computer's file chooser instead (the
  * upload chips are pinned in `ComposerUpload.test.tsx`).
@@ -236,17 +236,21 @@ describe("Composer toolbar: Upload, @ and Aa", () => {
     expect(screen.queryByTitle(/Mention this fan/)).not.toBeInTheDocument();
   });
 
-  it('"Aa" is Not wired: aria-disabled, titled with its excuse, and a click shows it and changes nothing', async () => {
+  it('"Aa" toggles OF\'s formatting toolbar: pressed state, title, and the box becomes the rich editor', async () => {
     const user = userEvent.setup();
     await renderComposer();
 
     const aa = screen.getByRole("button", { name: "Aa" });
-    expect(aa).toHaveAttribute("aria-disabled", "true");
-    expect(aa).toHaveAttribute("title", `not wired: ${NOT_WIRED.aa}`);
+    expect(aa).not.toHaveAttribute("aria-disabled");
+    expect(aa).toHaveAttribute("aria-pressed", "false");
+    expect(aa).toHaveAttribute("title", "Text formatting (bold, italic, colour, size)");
     // Drawn at full strength in Infloww's glyph grey, not faded (page-parity 07 CP12).
     expect(aa).toHaveClass("text-[var(--inf-composer-glyph,var(--color-fg-dim))]");
     await user.click(aa);
-    expect(screen.getByRole("status")).toHaveTextContent(NOT_WIRED.aa);
+    expect(aa).toHaveAttribute("aria-pressed", "true");
+    expect(aa).toHaveAttribute("title", "Hide text formatting");
+    expect(screen.getByRole("toolbar", { name: "Text formatting" })).toBeInTheDocument();
+    expect(textbox()).not.toBeInstanceOf(HTMLTextAreaElement);
   });
 
   it("the AI pill is Infloww's teal-grey with a bot glyph, the Scripts pill its grey, and emoji a line smiley (page-parity 07 CP9, CP10)", async () => {

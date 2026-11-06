@@ -369,8 +369,9 @@ PAGE_MAP: dict[str, tuple[str, tuple[str, ...]]] = {
         "/api/of/v2/posts/top", "/api/of/v2/posts/tagged-friend-users",
         "/api/of/v2/messages/templates", _ME)),
     "/analytics/sales-records": ("Sales records", ("/admin/stats/sales-records", _BATCH_REASSIGN)),
+    # saved-replies/sent: the Composer counts a send that rode a script (Scripts' orange send box).
     "/messages-pro": ("Messages Pro", (
-        *_MASS, "/admin/account-config",
+        *_MASS, "/admin/account-config", "/admin/saved-replies/sent",
         "/admin/chats", "/admin/copilot", "/admin/do-not-mass", "/admin/messages",
         "/admin/paid-messages", "/admin/split-inbox", "/admin/translate", "/admin/vault/sends",
         "/api/of/v2/automation-restrict", "/api/of/v2/chats", "/api/of/v2/messages",
@@ -467,6 +468,7 @@ UNMAPPED: dict[str, str] = {
     "/lanes-panel": "operator lanes panel, no nav page",
     "/admin/accounts": "the shell's Creator switcher (ScopeSwitcher) and its recolor, the one write"
                        " a chatter may make here (chatters.py); the rest is owner-only",
+    "/admin/screens": "a screen's reads in one call (screens_api): each inner read is checked as its own route",
     "/admin/settings": "Settings blobs (owner-only) and the Applied settings read every session needs",
     "/admin/shifts/me": "the top bar's clock", "/admin/shifts/clock-in": "the top bar's clock",
     "/admin/shifts/clock-out": "the top bar's clock",
@@ -588,7 +590,7 @@ ACTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
         "POST /api/of/v2/payouts/requests", "PATCH /api/of/v2/payouts/requests")),
     "delete-post": ("Delete posts", ("DELETE /api/of/v2/posts/*",)),
     "delete-folder": ("Delete vault folders", ("DELETE /admin/vault-ai/of-folders/*",)),
-    "delete-script": ("Delete scripts", ("DELETE /admin/saved-replies/*",)),
+    "delete-script": ("Delete scripts", ("DELETE /admin/saved-replies/*", "POST /admin/saved-replies/delete")),
     "edit-shifts": ("Create, edit or cancel shifts", (
         "POST /admin/shifts", "PATCH /admin/shifts/*", "POST /admin/shifts/*/cancel")),
     "edit-clock": ("Edit or delete clock records", (

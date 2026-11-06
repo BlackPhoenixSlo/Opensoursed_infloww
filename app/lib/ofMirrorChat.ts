@@ -53,6 +53,7 @@ import { afterChatWrite } from "@/lib/ofMirrorKeys";
 import { collectSchedule, renderCalendar, tagsRoute, tagViewOf, type TagView } from "@/lib/ofMirrorPost";
 import { type bindComposer, GIF_ALONE } from "@/lib/ofMirrorComposer";
 import { hasFormatting, ofHtml, setOfHtml } from "@/lib/ofMirrorFormat";
+import { hasOfFormatting } from "@/lib/ofRichText";
 import { CHAT_VAULT } from "@/lib/ofMirrorRow";
 import { viewOf } from "@/lib/ofMirrorVault";
 import { GREY, message, minuteAhead, note, NOTE_STYLE, SELECT_MODEL, textOf, TOO_SOON } from "@/lib/ofMirrorWrites";
@@ -134,7 +135,10 @@ export const loadChatDraft = (storage: Storage, accountId: string, chat: string)
 
 /** A Messages Pro script or saved reply (TemplatePicker's PickedTemplate, the fields the Chat draft takes). */
 export interface PickedScript {
+  /** The plain text (a formatted script's markup with its tags gone, TemplatePicker's fromLocal). */
   text: string;
+  /** The script as saved: OF's markup when it was made formatted (TemplatePicker's displayText). */
+  displayText?: string;
   price: number;
   lockedText: boolean;
   media: { id: number }[];
@@ -155,7 +159,8 @@ export function applyScript(storage: Storage, accountId: string, chat: string, t
   const next: ChatDraft = {
     ...d,
     text: t.text,
-    html: undefined,
+    // A formatted script goes in formatted (the editor loads it through setOfHtml's allow-list; Send sends ofHtml).
+    html: t.displayText && hasOfFormatting(t.displayText) ? t.displayText.trim() : undefined,
     price: priced ? t.price : undefined,
     media_files: t.media.map((m) => m.id),
     // Blank on purpose: nothing draws a Chat draft's thumbs (its summary counts media), and a template's VaultMedia only

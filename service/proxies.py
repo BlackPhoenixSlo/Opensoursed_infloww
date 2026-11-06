@@ -638,6 +638,34 @@ def probe(p: dict[str, Any], timeout_s: int = 15) -> dict[str, Any]:
     return out
 
 
+def probe_of(p: dict[str, Any], timeout_s: int = 15) -> dict[str, Any]:
+    """`probe`, but through to OnlyFans: one GET of the x-hash endpoint
+    (of_client.HASH_BASE, what every client's warm-up already fetches; ~0.2 s,
+    answers without a session) with no cookies, no session headers and Chrome's
+    TLS profile, so nothing ties it to a Creator. Any HTTP answer means the
+    proxy opened the tunnel to OF: ok. The watcher's confirm and rechecks use
+    it, as a proxy can answer Cloudflare's trace yet refuse CONNECT to OF.
+    No ip/geo (the trace's `probe` keeps those). Same shape as `probe`."""
+    from curl_cffi import CurlInfo, requests as curl_requests
+    from of_client import HASH_BASE, IMPERSONATE   # lazy: of_client imports this module
+
+    routes = proxies_dict_for_requests(p)
+    out: dict[str, Any] = {"ok": False, "ip": None, "geo": None, "colo": None,
+                           "ttfb_ms": None, "error": None}
+    try:
+        with curl_requests.Session(impersonate=IMPERSONATE,
+                                   curl_infos=[CurlInfo.STARTTRANSFER_TIME]) as s:
+            r = s.get(f"{HASH_BASE}/", proxies=routes, timeout=timeout_s)
+        ttfb = r.infos.get(CurlInfo.STARTTRANSFER_TIME)
+        out.update(ok=True, ttfb_ms=round(ttfb * 1000) if isinstance(ttfb, (int, float)) else None)
+    except Exception as e:  # curl errors: refused CONNECT, timeout, TLS, DNS
+        out["error"] = f"proxy_probe_failed: {e}"
+        out["refused"] = isinstance(e, curl_requests.exceptions.ProxyError)
+    finally:
+        log.info("proxy_probe_of label=%s ok=%s", p.get("label") or "-", out["ok"])
+    return out
+
+
 # ── Inflowwww proxy pool ───────────────────────────────────────────────────
 # The proxies in the relay env (POOL_ENV), seeded into this
 # registry as system entries (`pool: true`, no owner) so OFClient's ordinary

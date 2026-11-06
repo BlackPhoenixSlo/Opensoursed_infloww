@@ -345,7 +345,54 @@ def main() -> None:
     assert out["persisted_to"] is None, f"case11: {out['persisted_to']}"
     assert out["overall"]["calls"] == 3, f"case11: {out['overall']}"
 
-    print("OK  11/11 priority-lane accounting cases passed")
+    # ── Case 12: loop-side admission (2026-11-05). A background slot taken on the
+    # loop is borrowed by the worker (no thread blocks), the count is shared with
+    # thread callers (exact cap, FIFO), a cancelled loop waiter gives its slot on,
+    # and a lease closed while its worker is on OF frees the slot only when the
+    # worker is done.
+    import asyncio
+    import contextvars
+
+    async def loop_side() -> None:
+        a = _aid("admit")
+        _total, bg = server._lanes_for(a)
+        for _ in range(CAP_BG):
+            assert not await bg.admit(), "case12: free slots must not queue"
+        assert not bg.acquire(blocking=False), "case12: the loop's slots must count against threads"
+        waiter = asyncio.create_task(bg.admit())
+        cancelled = asyncio.create_task(bg.admit())
+        await asyncio.sleep(0.01)
+        cancelled.cancel()
+        await asyncio.sleep(0.01)
+        bg.release()  # FIFO: the first waiter gets it, the cancelled one is skipped
+        assert await asyncio.wait_for(waiter, 1) is True, "case12: the queued admit never woke"
+        lease = server._BgLease(a, bg, 0.0)
+        ctx = contextvars.copy_context()
+        ctx.run(server._bg_lease.set, lease)
+        entered, go = threading.Event(), threading.Event()
+
+        def worker():
+            with server._priority_lane(a, priority="background"):
+                entered.set()
+                go.wait(5)
+        t = threading.Thread(target=lambda: ctx.run(worker))
+        t.start()
+        assert entered.wait(2), "case12: a worker with the loop's slot blocked in the lane"
+        st = _stat(a)
+        assert st["threads_waiting_background"] == 0 and st["bg_in_flight"] == 1, f"case12 gauges: {st}"
+        lease.close()  # the owner left while its worker is still on OF: slot kept
+        assert bg.held == CAP_BG, f"case12: slot freed under a running worker: {bg.held}"
+        go.set()
+        t.join(5)
+        assert bg.held == CAP_BG - 1, f"case12: slot not freed after the worker: {bg.held}"
+        bg.release()  # the first admit's slot (the lease held the waiter's)
+        assert bg.held == 0 and not bg._waiters, f"case12: lane not whole: {bg.held} {bg._waiters}"
+        st = _stat(a)
+        assert st["calls_background"] == 1 and st["blocked_background"] == 0, f"case12 counters: {st}"
+
+    asyncio.run(loop_side())
+
+    print("OK  12/12 priority-lane accounting cases passed")
 
 
 if __name__ == "__main__":

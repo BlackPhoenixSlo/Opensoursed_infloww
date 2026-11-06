@@ -103,6 +103,11 @@ FLOW_SIZES: dict[str, tuple[int, int, int]] = {
     "os_ping_creators": (10, 20, 20), "os_ping_frames": (12, 24, 40),
     # slow-connections: seed/chat_media.py CDN assets, the picker Creator's OF vault page items
     "slow_conn_chat_assets": (40, 120, 400), "slow_conn_vault_media": (48, 200, 1_000),
+    # rich-text-sends: Creators made Fansly accounts (the last ones), formatted-script sends to their fans
+    "rich_text_fansly_creators": (1, 3, 3), "rich_text_sends": (100, 2_000, 5_000),
+    # scripts-library: an Infloww library's sequences on one Creator, ~17 steps each like the real one (44
+    # sequences / 764 scripts, 2026-11-06): medium ≈ 2.3x it (~1.7k scripts), huge ≈ 7x
+    "scripts_library_sequences": (24, 100, 300),
     # sweep-pacing: OF's side per Creator: promotions (under the prewarm's 12-page cap), active
     # subscribers (50 a page), ledger rows of the last 6 days
     "sweep_pacing_promos": (350, 1_150, 1_150), "sweep_pacing_subscribers": (500, 2_400, 5_000),

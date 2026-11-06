@@ -26,16 +26,17 @@ import { useSmartLists } from "@/hooks/useSmartLists";
 import { useFunnels } from "@/hooks/useFunnels";
 import { useEmployee } from "@/contexts/EmployeeContext";
 import { VaultPicker } from "@/components/chat/VaultPicker";
-import { EmojiPickerButton, EmojiQuickRow, insertAtCursor } from "@/components/chat/EmojiBar";
+import { EmojiPickerButton, EmojiQuickRow } from "@/components/chat/EmojiBar";
 import { GifPickerButton, GifPickerStrip } from "@/components/chat/GifPicker";
 import { TemplatePicker, type PickedTemplate } from "@/components/chat/TemplatePicker";
 import { TagCreatorsPicker, TaggedCreatorChips } from "@/components/chat/TagCreatorsPicker";
 import { useFanLists } from "@/components/audience/fanLists";
 import { massExcludeListId } from "@/components/audience/audienceReducer";
 import { useSensitiveHits } from "@/lib/sensitiveWords";
+import { isOfHtml, ofPlainText } from "@/lib/ofRichText";
 import { SensitiveWordWarning } from "@/components/chat/SensitiveWordWarning";
 import { EDITOR_MODAL } from "@/components/automations/automationPage";
-import { IfButton, IfHelp, IfInput, IfLabel, IfModal, IfTextArea } from "@/components/ui/infloww";
+import { IfButton, IfHelp, IfInput, IfLabel, IfModal } from "@/components/ui/infloww";
 import { IF_FIELD } from "@/components/ui/ifSelect";
 import { cn } from "@/lib/utils";
 
@@ -46,6 +47,8 @@ import { FanOutResults, FanOutStatus } from "./FanOutResults";
 import { IncludeModelsChips } from "./IncludeModelsChips";
 import { fanOutLocked, includedTargets } from "./fanOut";
 import { MediaTray } from "./MediaTray";
+import { useOfRichAllowed } from "@/hooks/useOfRichAllowed";
+import { AaButton, ComposeTextBox, type ComposeTextBoxHandle } from "./ComposeTextBox";
 import { OnlineTargetingPanel } from "./OnlineTargetingPanel";
 import { ScheduleField } from "./ScheduleField";
 import { useMassSend } from "./useMassSend";
@@ -120,7 +123,9 @@ export function MassMessageComposer({
   // Mass Online panel is open for one account. "20+" on a full page.
   const onlineCountQ = useOnlineSubscribers(online && !allModels ? accountId : null, 60_000);
   const onlineCount = onlineCountQ.data ? onlineCountLabel(onlineCountQ.data) : null;
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const textRef = useRef<ComposeTextBoxHandle | null>(null);
+  // OF rich text: OnlyFans accounts only (all-models: the platform's, whose accounts these all are).
+  const allowRich = useOfRichAllowed(allModels ? null : accountId);
   const priceId = useId();
   const funnelSelectId = useId();
 
@@ -168,7 +173,7 @@ export function MassMessageComposer({
 
   // Growth > Sensitive words: like Infloww's mass message and Smart Message
   // editors, a listed word in the text is shown under it and refuses the send.
-  const sensitiveHits = useSensitiveHits(text, allModels ? null : accountId);
+  const sensitiveHits = useSensitiveHits(isOfHtml(text) ? ofPlainText(text) : text, allModels ? null : accountId);
 
   // The one validity check — the footer button, its reason line and the send
   // mutation all read this result (massMessageReducer `validateMass`).
@@ -187,19 +192,16 @@ export function MassMessageComposer({
   }
 
   function onEmoji(em: string) {
-    const ta = textareaRef.current;
-    if (!ta) {
-      dispatch({ type: "appendText", v: em });
-      return;
-    }
-    insertAtCursor(ta, text, em, set("text"));
+    if (textRef.current) textRef.current.insert(em);
+    else dispatch({ type: "appendText", v: em });
   }
 
   function onPickTemplate(t: PickedTemplate) {
     // Snapshot semantics (lib/composeDraft applyTemplate): text, media,
     // preview count, price + lock and GIF are replaced wholesale.
-    dispatch({ type: "pickTemplate", t });
-    setTimeout(() => textareaRef.current?.focus(), 0);
+    // An OnlyFans account keeps a formatted script's markup; Fansly gets its plain text.
+    dispatch({ type: "pickTemplate", t, rich: allowRich });
+    setTimeout(() => textRef.current?.focus(), 0);
   }
 
   const isPPV = priceToSend > 0;
@@ -248,13 +250,15 @@ export function MassMessageComposer({
           {/* The content — locked (disabled) once a model sent the broadcast. */}
           <fieldset disabled={locked} className="min-w-0 space-y-4 disabled:opacity-60">
           <div className="space-y-2">
-            <IfTextArea
-              ref={textareaRef}
+            <ComposeTextBox
+              ref={textRef}
               value={text}
-              onChange={(e) => set("text")(e.target.value)}
+              onChange={set("text")}
               placeholder="What's the broadcast?"
               rows={4}
-              className="max-md:text-base"
+              rich={allowRich && form.mode.rich}
+              toolbar={form.mode.toolbar}
+              disabled={locked}
             />
             <SensitiveWordWarning hits={sensitiveHits} />
             {/* Toolbar — same composer features as the chat: recent-
@@ -265,6 +269,7 @@ export function MassMessageComposer({
               onKeyDown={(e) => { if (e.key === "Escape" && e.target instanceof HTMLInputElement) e.stopPropagation(); }}>
               <EmojiQuickRow onInsert={onEmoji} />
               <EmojiPickerButton align="left" onInsert={onEmoji} />
+              {allowRich && <AaButton on={form.mode.toolbar} onToggle={() => dispatch({ type: "aa" })} />}
               <GifPickerButton
                 open={gifPickerOpen}
                 onToggle={() => set("gifPickerOpen")(!gifPickerOpen)}

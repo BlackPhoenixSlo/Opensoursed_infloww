@@ -26,6 +26,11 @@ Plus the harness primitives every P4 automation depends on:
   case_a_failed_run_retries_unless_its_rule_went_off_mid_run:
       a rule's failed run requeues its job with the backoff; switched off
       mid-run, the job ends cancelled (RULE_OFF_REASON), never requeued.
+  case_a_refused_one_shot_waits_out_the_proxy_unless_a_write_may_have_landed:
+      a one-shot run the proxy refused before any write reached OF requeues
+      PROXY_RETRY_MINUTES out ("proxy_retry:<n> (...)") for PROXY_RETRIES
+      retries, then ends 'error' "proxy_refused (...)"; one whose earlier write
+      OF accepted keeps today's park ('error', "may have sent"), never resent.
   case_orphaned_one_shot_parks_sweep_requeues:
       the boot heal: orphaned running one-shots (scheduled_send, mass_premade,
       send_mass_message) end 'error' ("interrupted, may have sent"), an
@@ -839,6 +844,81 @@ async def case_a_failed_run_retries_unless_its_rule_went_off_mid_run():
         assert "OF refused the write" in job.last_error, job.last_error
 
 
+async def case_a_refused_one_shot_waits_out_the_proxy_unless_a_write_may_have_landed():
+    """job_queue._park_failed_job's `refused` path (run_decide.defers_refusal), on the real
+    kinds: a refused broadcast (send_mass_message) with nothing sent is retried after the refusal
+    wait, its refusals counted apart from an earlier other failure; a composer
+    scheduled_send (a chatter's DM) keeps the 60 s retry; once a write was accepted, the
+    send-once park wins."""
+    from curl_cffi.requests.exceptions import ProxyError
+    from automation_registry import _REGISTRY
+    import run_decide
+    aid = "acc_refused_one_shot"
+    await _seed_account(aid)
+    mode = {"accept_first": False, "other_first": False}
+
+    def _refuse():
+        raise ProxyError("CONNECT tunnel failed, response 403")
+
+    async def _send(account_id, payload, *, run_id):
+        if mode.pop("other_first", False):
+            raise RuntimeError("OF answered garbage")   # not a refusal: the plain retry
+        if mode["accept_first"]:
+            await ax.of_write_paced(account_id, lambda: {"id": 1}, min_gap_s=0,
+                                    send_purpose="not_fan_dm")
+        await ax.of_write_paced(account_id, _refuse, min_gap_s=0, send_purpose="not_fan_dm")
+
+    saved = {k: _REGISTRY[k] for k in ("send_mass_message", "scheduled_send")}
+    _REGISTRY.update({k: _send for k in saved})
+    payload = {"fan_id": 1, "text": "hi"}
+    try:
+        kind = "send_mass_message"
+        mode["other_first"] = True
+        job_id = await enqueue_job(aid, kind, payload=payload)
+        res = await run_once(aid, kind)
+        async with get_session() as s:
+            job = await s.get(ScheduledJob, job_id)
+            assert job.status == "pending" and not job.last_error.startswith(run_decide.PROXY_RETRY), job.last_error
+            job.run_at = datetime.utcnow()
+        for n in range(1, run_decide.PROXY_RETRIES + 2):
+            t0 = datetime.utcnow()
+            res = await run_once(aid, kind)
+            assert res["status"] == "error" and res["job_id"] == job_id, res
+            async with get_session() as s:
+                job = await s.get(ScheduledJob, job_id)
+                assert job.attempts == n + 1, (n, job.attempts)
+                if n <= run_decide.PROXY_RETRIES:
+                    assert job.status == "pending", (n, job.status)
+                    assert job.run_at >= t0 + timedelta(minutes=run_decide.PROXY_RETRY_MINUTES) - timedelta(seconds=1), job.run_at
+                    assert job.last_error.startswith(f"{run_decide.PROXY_RETRY}:{n} ("), job.last_error
+                    job.run_at = datetime.utcnow()   # due again: the next claim takes it
+                else:   # 4 refusals after the other failure: its attempt ate none of them
+                    assert job.status == "error", job.status
+                    assert job.last_error.startswith(f"{run_decide.PROXY_REFUSED} ("), job.last_error
+                    assert "403" in job.last_error, job.last_error
+
+        kind = "scheduled_send"   # a chatter's DM: the plain retry, never the long wait
+        job_id = await enqueue_job(aid, kind, payload=payload)
+        t0 = datetime.utcnow()
+        res = await run_once(aid, kind)
+        assert res["status"] == "error" and res["job_id"] == job_id, res
+        async with get_session() as s:
+            job = await s.get(ScheduledJob, job_id)
+            assert job.status == "pending" and not job.last_error.startswith(run_decide.PROXY_RETRY), job.last_error
+            assert job.run_at <= t0 + timedelta(seconds=run_decide.JOB_RETRY_BACKOFF_S + 5), job.run_at
+
+        mode["accept_first"] = True   # OF took a write, then the proxy refused: send once
+        job_id = await enqueue_job(aid, "send_mass_message", payload=payload)
+        res = await run_once(aid, "send_mass_message")
+        assert res["status"] == "error" and res["job_id"] == job_id, res
+        async with get_session() as s:
+            job = await s.get(ScheduledJob, job_id)
+            assert job.status == "error", job.status
+            assert job.last_error.startswith(run_decide.MAY_HAVE_SENT), job.last_error
+    finally:
+        _REGISTRY.update(saved)
+
+
 async def case_orphaned_one_shot_parks_sweep_requeues():
     """_reconcile_orphans (boot heal), run_decide.one_shot_family: a one-shot send a
     dead process left running may already be on OF, so it is parked, never
@@ -1402,6 +1482,7 @@ _harness.run(
     case_unknown_kind_errors,
     case_unknown_kind_consumes_ghost_job,
     case_a_failed_run_retries_unless_its_rule_went_off_mid_run,
+    case_a_refused_one_shot_waits_out_the_proxy_unless_a_write_may_have_landed,
     case_orphaned_one_shot_parks_sweep_requeues,
     case_supervisor_drain_runs_due_job,
     case_rule_materializes_job,

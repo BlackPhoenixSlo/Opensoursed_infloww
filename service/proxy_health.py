@@ -13,16 +13,17 @@ Two signals, one state per proxy label (in memory; a restart starts clean):
     three of those fit inside any CONNECT-403 blip. Any call that gets an
     answer resets the count. A timeout is not counted: it can't be told
     apart from a slow OF.
-  * The probe (`proxies.probe`): one GET of Cloudflare's
-    `https://1.1.1.1/cdn-cgi/trace` through the proxy, which answers the
-    egress ip, its country (`loc`) and the Cloudflare colo, and gives the
-    time to first byte. No OnlyFans call, no third-party key. It runs from
-    the Test button (`/admin/proxies/{label}/test`), as the confirm and
+  * The probe (`proxies.probe_of`): one GET of OnlyFans' x-hash endpoint
+    through the proxy, no cookies, no session, Chrome's TLS. Any HTTP answer:
+    the proxy tunnels to OF. Health is judged by it alone: the confirm and
     recheck below, before a new binding or a move (`verify_pick`), and
     periodically only when PROXY_HEALTH_INTERVAL_S is set (opt-in, off by
-    default). It only ever goes through proxies in the registry: never an
-    ad-hoc URL, never the relay's own connection. A failed probe counts one
-    error too.
+    default). A failed probe counts one error too. Cloudflare's trace
+    (`proxies.probe`: egress ip, country, colo) is display and region only
+    (`note_trace`: the Test button, a new binding's first region), never
+    counted: a proxy can answer it yet refuse CONNECT to OF (2026-11-06).
+    Probes only ever go through proxies in the registry: never an ad-hoc
+    URL, never the relay's own connection.
 
 The states (`snapshot()["state"]`):
 
@@ -345,15 +346,18 @@ def last_geo(p: dict[str, Any]) -> str | None:
         return (_state.get(p.get("label") or "") or {}).get("geo")
 
 
-def verify_pick(p: dict[str, Any], timeout_s: int = 15) -> bool:
+def verify_pick(p: dict[str, Any], timeout_s: int = 15, region: bool = True) -> bool:
     """The destination check before a NEW binding (a login's attach step,
     Browserbase's bind) or a move (`_failover`, a held Creator re-picked):
     one probe through the pick, counted like the Test button's. False = pass
-    it over: nobody is moved onto a proxy that does not answer right now."""
+    it over: nobody is moved onto a proxy that does not answer right now.
+    `region=False` (a login's attach, which waits on it): no region trace, at most one probe a pick."""
     label = p.get("label") or ""
-    result = proxies.probe(p, timeout_s=timeout_s)
+    result = proxies.probe_of(p, timeout_s=timeout_s)
     if label:
         record_probe(label, result)
+        if region and result.get("ok") and last_geo(p) is None:   # the region (failover's `like`): one uncounted trace
+            note_trace(label, proxies.probe(p, timeout_s=timeout_s))
     return bool(result.get("ok"))
 
 
@@ -381,21 +385,42 @@ def assign_pool(account_id: str, rng: random.Random | None = None) -> tuple[dict
     answers (least-used not bad) or every pool proxy is bad (least-used).
     LookupError: the pool is empty."""
     return proxies.assign_pool(account_id, bad=down_labels(), due=_due_labels(), geo=last_geo,
-                               verify=lambda p: verify_pick(p, timeout_s=ATTACH_PROBE_TIMEOUT_S),
+                               verify=lambda p: verify_pick(p, timeout_s=ATTACH_PROBE_TIMEOUT_S, region=False),
                                rng=rng)
 
 
 def record_probe(label: str, result: dict[str, Any]) -> None:
-    """Keep a probe's trace fields; count its outcome (the Test button, the
-    periodic probe, `verify_pick`). A watcher's own probes go through `_probe` instead."""
+    """Keep a `proxies.probe_of` result; count its outcome (the periodic probe,
+    `verify_pick`). A watcher's own probes go through `_probe` instead."""
     _keep_probe(label, result)
     record(label, bool(result.get("ok")), result.get("error"))
+
+
+_TRACE_KEYS = ("ip", "geo", "colo")
+
+
+def note_trace(label: str, result: dict[str, Any]) -> None:
+    """Keep the Cloudflare trace's ip/geo/colo (the Test button, a new
+    binding's region) for display and the region; never counted: health is
+    judged by `proxies.probe_of` alone, so a Test click on a proxy refusing
+    OF does not bring it back."""
+    if not result.get("ok"):
+        return
+    with _lock:
+        st = _state.setdefault(label, ph.blank())
+        st["probe"] = {**(st.get("probe") or {}), **{k: result.get(k) for k in _TRACE_KEYS}}
+        if result.get("geo"):
+            st["geo"] = result["geo"]
 
 
 def _keep_probe(label: str, result: dict[str, Any]) -> None:
     with _lock:
         st = _state.setdefault(label, ph.blank())
+        prev = st.get("probe") or {}
         st["probe"] = {k: result.get(k) for k in ("ok", "ip", "geo", "colo", "ttfb_ms", "error")}
+        for k in _TRACE_KEYS:   # probe_of has no ip/geo: the last trace's stay
+            if st["probe"][k] is None:
+                st["probe"][k] = prev.get(k)
         st["probed_at"] = _now()
         if result.get("ok") and result.get("geo"):
             st["geo"] = result["geo"]   # the last country seen: kept through a failed probe (failover's region)
@@ -411,7 +436,7 @@ def _probe(label: str) -> bool | None:
     if p is None:
         _step(label, ph.Gone)
         return None
-    result = proxies.probe(p)
+    result = proxies.probe_of(p)
     _keep_probe(label, result)
     return bool(result.get("ok"))
 
@@ -534,7 +559,7 @@ def probe_all() -> int:
     """Probe every proxy a Creator is on, one at a time. Returns how many."""
     n = 0
     for p in probe_targets():
-        record_probe(p["label"], proxies.probe(p))
+        record_probe(p["label"], proxies.probe_of(p))
         n += 1
     return n
 

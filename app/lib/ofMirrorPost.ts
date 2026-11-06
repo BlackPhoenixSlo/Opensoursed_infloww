@@ -88,6 +88,7 @@ import { ofMeQuery, type OfMe } from "@/lib/ofMirrorIdentity";
 import { floatLabel } from "@/lib/ofMirrorSettings";
 import { FIELDS, LIST_SORTS, markTypeTabs, TYPES, vaultHref, viewOf } from "@/lib/ofMirrorVault";
 import { applyFormat, COLORS, hasFormatting, ofHtml, setOfHtml, SIZES, type FormatCommand } from "@/lib/ofMirrorFormat";
+import { formatAtCaret, tidy } from "@/lib/ofRichTextEditor";
 import { closeMenu, ORDER_GROUP, showMenu } from "@/lib/ofMirrorMenu";
 import { GREY, localIso, message, note, NOTE_STYLE, QUEUE, READ_ONLY, schedulePill, SELECT_MODEL, textOf } from "@/lib/ofMirrorWrites";
 import { useAgencyZone, wallClock } from "@/lib/ofMirrorFeedsShared";
@@ -880,8 +881,9 @@ export function mediaTaker(
  * The Format text panel (new-post/state-format-text, OF's TextEditorToolbar): Bold, Italic and Clear Formatting format
  * the editor's selection; Text Color and Text Size open OF's lists (ofMirrorMenu) and format it with the picked one.
  * The editor then holds OF's own markup (ofMirrorFormat), which is the post's text (bindPost saves it as the draft's
- * `html`). A press on the panel keeps the editor's selection; with nothing selected a tool says "Select some text to
- * format". All-Creators: the select-a-model note. Returns an unbind.
+ * `html`). A press on the panel keeps the editor's selection; on a caret a tool arms what the next letters carry (OF's
+ * stored mark, `formatAtCaret`), and what the browser types for it becomes OF's markup at once (`tidy`); with no caret
+ * in the editor a tool says "Select some text to format". All-Creators: the select-a-model note. Returns an unbind.
  */
 const bindFormat: DialogBinder = (doc, ctx) => {
   const editor = doc.querySelector<HTMLElement>(EDITOR);
@@ -904,19 +906,31 @@ export function bindFormatPanel(doc: Document, editor: HTMLElement, panel: HTMLE
     const sel = doc.getSelection();
     if (sel?.rangeCount && editor.contains(sel.getRangeAt(0).commonAncestorContainer)) saved = sel.getRangeAt(0).cloneRange();
   };
-  const apply = (cmd: FormatCommand) => {
+  const apply = (cmd: FormatCommand): boolean => {
     const why = blocked();
-    if (why) return note(doc, panel, why);
-    if (saved) {
+    if (why) {
+      note(doc, panel, why);
+      return false;
+    }
+    const sel = doc.getSelection();
+    // Put the editor's selection back only when it left: a selection change drops the browser's armed typing style
+    // (a size picked, then Bold, on a caret: both stay armed).
+    if (saved && !(sel?.rangeCount && editor.contains(sel.anchorNode))) {
       editor.focus();
-      const sel = doc.getSelection();
       sel?.removeAllRanges();
       sel?.addRange(saved);
     }
-    if (!applyFormat(editor, cmd)) return note(doc, panel, "Select some text to format");
+    const caret = !!sel?.rangeCount && sel.isCollapsed && editor.contains(sel.anchorNode);
+    if (!(caret ? formatAtCaret(editor, sel!, cmd) : applyFormat(editor, cmd))) {
+      note(doc, panel, "Select some text to format");
+      return false;
+    }
     onSelection();
     editor.dispatchEvent(new Event("input", { bubbles: true }));
+    return true;
   };
+  // A letter typed under an armed tool comes as the browser's b / i / font: OF's markup before anyone reads it.
+  const onInput = () => tidy(editor);
   const onDown = (ev: MouseEvent) => {
     const t = ev.target as Element | null;
     if (t?.closest && panel.contains(t) && !t.closest("a[href]")) ev.preventDefault();
@@ -933,7 +947,7 @@ export function bindFormatPanel(doc: Document, editor: HTMLElement, panel: HTMLE
       ev.preventDefault();
       const options = COLORS.map((c) => ({ value: c.cls, label: c.label, className: c.cls }));
       showMenu(doc, color, [{ name: "color", radio: false, options }], (_, cls) => {
-        apply({ kind: "color", cls });
+        if (!apply({ kind: "color", cls })) return;
         const swatch = color.querySelector(".b-text-colour");
         if (swatch) swatch.className = `b-text-colour ${cls}`;
       });
@@ -945,15 +959,16 @@ export function bindFormatPanel(doc: Document, editor: HTMLElement, panel: HTMLE
       const current = SIZES.find((x) => x.label === shown?.textContent?.trim())?.cls ?? "m-editor-fs__default";
       const options = SIZES.map((x) => ({ value: x.cls, label: x.label, className: x.cls }));
       showMenu(doc, size, [{ name: "size", radio: false, value: current, options }], (_, cls) => {
-        apply({ kind: "size", cls });
-        if (shown) shown.textContent = SIZES.find((x) => x.cls === cls)?.label ?? "Default";
+        if (apply({ kind: "size", cls }) && shown) shown.textContent = SIZES.find((x) => x.cls === cls)?.label ?? "Default";
       });
     }
   };
   doc.addEventListener("selectionchange", onSelection);
   doc.addEventListener("mousedown", onDown);
   doc.addEventListener("click", onClick);
+  editor.addEventListener("input", onInput);
   return () => {
+    editor.removeEventListener("input", onInput);
     doc.removeEventListener("selectionchange", onSelection);
     doc.removeEventListener("mousedown", onDown);
     doc.removeEventListener("click", onClick);

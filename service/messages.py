@@ -711,84 +711,82 @@ async def reconcile_chats_from_of(account_id: str, of_chats: list[dict]) -> int:
 
     Monotonic-on-message_id makes the last-message advance safe against a
     concurrent WS write landing a newer inbound mid-reconcile; unread_count is set
-    every time because read state isn't monotonic. Best-effort: own session,
+    every time because read state isn't monotonic. Best-effort: the OF-cache writer,
     swallows errors — a sync hiccup must never break the inbox response it rides on.
     """
-    from attribution import adopt_thread_placeholders  # local: circular import
-
-    own = str(account_id)
-    touched = 0
+    from db import of_writer  # noqa: PLC0415
     try:
-        async with get_session() as s:
-            for c in of_chats:
-                wu = c.get("withUser") or {}
-                fan_id = wu.get("id")
-                if fan_id is None:
-                    continue
-                unread = int(c.get("unreadMessagesCount") or 0)
-                lm = c.get("lastMessage") or {}
-                lm_id = lm.get("id")
-                from_id = (lm.get("fromUser") or {}).get("id")
-
-                # (a) Ensure the last message exists locally WITH its direction so
-                #     the roster's last_message_id→direction join can classify it.
-                #     do_nothing: never clobber a fuller row the WS/scrape wrote.
-                if lm_id is not None and from_id is not None:
-                    direction = "out" if str(from_id) == own else "in"
-                    await s.execute(
-                        sqlite_insert(Message)
-                        .values(account_id=own, fan_id=int(fan_id),
-                                message_id=int(lm_id), direction=direction,
-                                body=(lm.get("text") or ""),
-                                created_at=_iso(lm.get("createdAt")) or datetime.utcnow())
-                        .on_conflict_do_nothing(
-                            index_elements=["account_id", "fan_id", "message_id"])
-                    )
-                    # Fastest place we ever see OF's real id for an un-echoed
-                    # optimistic send: this rides the inbox poll (60-90s) where
-                    # the scrape is hours behind. Folding the stub in here keeps
-                    # the thread from showing the PPV twice for a whole afternoon,
-                    # and keeps the real row from reading as a human send. Gated
-                    # on an OUTBOUND last message so an all-inbound inbox page
-                    # doesn't pay a lookup per chat for something that can only
-                    # ever pair with an outbound row.
-                    if direction == "out":
-                        await adopt_thread_placeholders(
-                            s, account_id=own, fan_id=int(fan_id))
-
-                # (b) unread_count = OF truth, unconditionally (create row if new).
-                await s.execute(
-                    sqlite_insert(Chat)
-                    .values(account_id=own, fan_id=int(fan_id), unread_count=unread)
-                    .on_conflict_do_update(
-                        index_elements=["account_id", "fan_id"],
-                        set_={"unread_count": unread})
-                )
-
-                # (c) Advance the chat's last message forward-only.
-                if lm_id is not None:
-                    preview = (lm.get("text") or "")[:120]
-                    await s.execute(
-                        sqlite_insert(Chat)
-                        .values(account_id=own, fan_id=int(fan_id),
-                                last_message_id=int(lm_id),
-                                last_message_at=_iso(lm.get("createdAt")),
-                                last_message_preview=preview)
-                        .on_conflict_do_update(
-                            index_elements=["account_id", "fan_id"],
-                            set_={"last_message_id": int(lm_id),
-                                  "last_message_at": _iso(lm.get("createdAt")),
-                                  "last_message_preview": preview},
-                            where=(Chat.last_message_id.is_(None))
-                                  | (Chat.last_message_id < int(lm_id)),
-                        )
-                    )
-                touched += 1
-            await s.commit()
+        return await of_writer.write(_reconcile_chats, (str(account_id), of_chats))
     except Exception:
         log.warning("reconcile_chats_from_of(%s) failed — best-effort", account_id,
                     exc_info=True)
-    return touched
+        return 0
+
+
+async def _reconcile_chats(conn, items: list) -> list:
+    """of_writer op for `reconcile_chats_from_of`: each item is (account_id, OF chats page).
+    Three executemany statements per page, so the OF-cache transaction (group-committed with
+    every other reconcile and DM queued meanwhile) holds the write lock for a few round-trips,
+    not three per chat; 50 Creators' inbox reads at once used to queue 50 such transactions
+    on SQLite's busy timeout."""
+    from attribution import adopt_thread_placeholders  # local: circular import
+
+    out = []
+    for own, of_chats in items:
+        msgs, unread, last, outbound = [], [], [], []
+        for c in of_chats:
+            fan_id = (c.get("withUser") or {}).get("id")
+            if fan_id is None:
+                continue
+            fan_id = int(fan_id)
+            lm = c.get("lastMessage") or {}
+            lm_id = lm.get("id")
+            from_id = (lm.get("fromUser") or {}).get("id")
+            # (a) the last message WITH its direction, so the roster's last_message_id→direction
+            #     join can classify it; do_nothing: never clobber a fuller row the WS/scrape wrote.
+            if lm_id is not None and from_id is not None:
+                direction = "out" if str(from_id) == own else "in"
+                msgs.append(dict(account_id=own, fan_id=fan_id, message_id=int(lm_id),
+                                 direction=direction, body=(lm.get("text") or ""),
+                                 created_at=_iso(lm.get("createdAt")) or datetime.utcnow()))
+                # Fastest place we ever see OF's real id for an un-echoed optimistic send (the
+                # scrape is hours behind): fold the stub in, only behind an OUTBOUND last message.
+                if direction == "out":
+                    outbound.append(fan_id)
+            # (b) unread_count = OF truth, unconditionally (create row if new).
+            unread.append(dict(account_id=own, fan_id=fan_id,
+                               unread_count=int(c.get("unreadMessagesCount") or 0)))
+            # (c) advance the chat's last message forward-only.
+            if lm_id is not None:
+                last.append(dict(account_id=own, fan_id=fan_id, last_message_id=int(lm_id),
+                                 last_message_at=_iso(lm.get("createdAt")),
+                                 last_message_preview=(lm.get("text") or "")[:120]))
+        if msgs:
+            await conn.execute(sqlite_insert(Message).on_conflict_do_nothing(
+                index_elements=["account_id", "fan_id", "message_id"]), msgs)
+        if outbound:
+            s = AsyncSession(bind=conn, expire_on_commit=False)
+            try:
+                for fan_id in outbound:
+                    await adopt_thread_placeholders(s, account_id=own, fan_id=fan_id)
+                await s.flush()
+            finally:
+                await s.close()
+        if unread:
+            ins = sqlite_insert(Chat)
+            await conn.execute(ins.on_conflict_do_update(
+                index_elements=["account_id", "fan_id"],
+                set_={"unread_count": ins.excluded.unread_count}), unread)
+        if last:
+            ins = sqlite_insert(Chat)
+            ex = ins.excluded
+            await conn.execute(ins.on_conflict_do_update(
+                index_elements=["account_id", "fan_id"],
+                set_={"last_message_id": ex.last_message_id, "last_message_at": ex.last_message_at,
+                      "last_message_preview": ex.last_message_preview},
+                where=(Chat.last_message_id.is_(None)) | (Chat.last_message_id < ex.last_message_id)), last)
+        out.append(len(unread))
+    return out
 
 
 @router.post("/admin/messages/{account_id}/{fan_id}/mark-read")

@@ -142,10 +142,13 @@ ADR-0030. `service/proxy_health.py` keeps one state per proxy label, in memory (
 starts clean), fed by proxied OF calls (`of_client._proxy_retry`: a final `ProxyError`
 after the full 5-try policy, or a refused connect (curl 7), counts one error; a read
 someone waits on, 2 tries in ~1 s, never counts: three of them fit in any blip; any
-answer resets the count; a timeout counts nothing) and by probes (one GET of
-Cloudflare's `https://1.1.1.1/cdn-cgi/trace` through the proxy, a few KB; the Test
-button, the confirm and recheck below, every new binding or move, and the opt-in
-periodic pass `PROXY_HEALTH_INTERVAL_S`, floor 600 s; a failed probe counts one error).
+answer resets the count; a timeout counts nothing) and by probes (`proxies.probe_of`:
+one GET of OnlyFans' x-hash endpoint through the proxy, no cookies, no session, Chrome
+TLS; the confirm and recheck below, every new binding or move (`verify_pick`), and the
+opt-in periodic pass `PROXY_HEALTH_INTERVAL_S`, floor 600 s; a failed probe counts one
+error). Cloudflare's `https://1.1.1.1/cdn-cgi/trace` (egress ip, country) is display and
+region only, never counted: the Test button, and once when a binding or move meets a proxy
+of unknown country; a proxy can answer it yet refuse CONNECT to OF (2026-11-06).
 
 | state | meaning |
 | --- | --- |

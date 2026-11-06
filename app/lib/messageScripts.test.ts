@@ -45,6 +45,19 @@ describe("scriptDraftFromMessage (Save as script, roadmap W4 4.2)", () => {
   });
 });
 
+describe("Save as script keeps OF formatting (item 4)", () => {
+  const F = '<p><span class="m-editor-fc__blue-1"><strong>Hey</strong></span> babe</p><p>line two</p>';
+  it.each<[string, string, string, string]>([
+    ["formatted: sanitized markup, plain title", F, F, "Hey babe"],
+    ["formatted with junk: allow-listed", `<p><em>x</em><img src=y onerror="z()"></p>`, "<p><em>x</em></p>", "x"],
+    ["unformatted markup: plain", "<p>a &amp; b</p><p>c</p>", "a & b\nc", "a & b"],
+    ["plain: as is", "hey <3", "hey <3", "hey <3"],
+  ])("%s", (_n, text, want, title) => {
+    const d = scriptDraftFromMessage(sent({ text }));
+    expect([d.text, d.title]).toEqual([want, title]);
+  });
+});
+
 describe("scriptPickWarning (the 'Use script?' guard)", () => {
   const media = [{ id: 1, type: "photo" }, { id: 2, type: "photo" }];
 

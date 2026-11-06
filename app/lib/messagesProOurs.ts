@@ -367,6 +367,9 @@ export const OURS = {
     notice: "gap-2 px-2.5 py-1.5 rounded-md border text-[11px]",
     /** The input's border (none) and its growth cap, 192px. */
     input: "max-h-48 border-0",
+    /** Row 2 as OF's rich editor ("Aa", a formatted script): the textarea's one-line start and 16px at every width,
+     *  over the editor's own taller, smaller-text default. */
+    richInput: "min-h-0 md:text-base",
     /** The free ↑ / paid ↓ divider between attachments: 42px tall, padding
      *  0 4px, 8px / 600 with wide tracking, 2px dashed sides. */
     divider: "gap-0.5 h-[42px] px-1 text-[8px] font-semibold tracking-wide border-l-2 border-r-2",

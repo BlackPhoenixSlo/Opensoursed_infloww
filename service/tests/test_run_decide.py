@@ -10,7 +10,7 @@ _park_failed_job reads the attempts and the liveness). No DB, no loop:
                                binds its rule_id; Run-now (rule_id, untagged) on a disabled rule
                                binds None (a one-shot); a rule-less job binds None.
   case_park_table:             rule off -> Cancelled whatever the attempts; else
-                               Retry(JOB_RETRY_BACKOFF_S)
+                               Retry(backoff_s, default JOB_RETRY_BACKOFF_S)
                                below max_attempts, Error at/over it; no rule (None) never
                                cancels.
   case_outcome_table:          ok / words_blocked -> (guard status or ok, done, err), never
@@ -98,6 +98,29 @@ def case_park_table():
     for attempts, live, mx, want in rows:
         got = park(attempts, live, mx)
         assert got == want, (attempts, live, mx, got, want)
+    # A refused job's park (job_queue: PROXY_RETRY_MINUTES out, PROXY_RETRIES + 1 attempts).
+    assert park(3, None, 4, 300) == Retry(300)
+    assert park(4, True, 4, 300) == Error()
+    assert park(1, False, 4, 300) == Cancelled()
+
+
+def case_defers_refusal_table():
+    """Only a one-shot broadcast the proxy refused with nothing at OF waits out the proxy."""
+    from run_decide import ONE_SHOT_KINDS, PROXY_DEFER_KINDS, defers_refusal, proxy_tries
+    assert PROXY_DEFER_KINDS <= ONE_SHOT_KINDS, "only one-shots wait out the proxy"
+    rows = [
+        ("send_mass_message", True, "none", True),
+        ("mass_premade", True, "none", True),
+        ("scheduled_send", True, "none", False),        # a chatter's DM: the plain retry
+        ("send_mass_message", False, "none", False),    # not a refusal
+        ("send_mass_message", True, "accepted", False),  # OF may have it: send once parks
+        ("send_mass_message", True, "unanswered", False),
+    ]
+    for kind, refused, wrote, want in rows:
+        assert defers_refusal(kind, refused, wrote) is want, (kind, refused, wrote)
+    for reason, n in (("proxy_retry:2", 2), ("proxy_retry:3 (ProxyError(...))", 3), ("proxy_refused (x)", 0),
+                      ("RuntimeError()", 0), (None, 0), ("proxy_retry:x", 0)):
+        assert proxy_tries(reason) == n, (reason, n)
 
 
 def case_outcome_table():

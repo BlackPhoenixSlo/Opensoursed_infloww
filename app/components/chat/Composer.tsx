@@ -25,6 +25,14 @@
  * Attaching media (a Vault pick, an upload, a drop, a paste) opens the PPV
  * row with its price, whose free previews stepper then shows inline; a price
  * of 0 (or none) sends the media free (TODO.md A2, A3).
+ *
+ * "Aa" (OnlyFans accounts only, `useOfRichAllowed`) shows OF's formatting
+ * toolbar and puts the text in OF's rich editor (`OfRichTextEditor`), as OF's
+ * and Infloww's composers do; a formatted script picked opens there, formatted.
+ * Otherwise the plain textarea, byte-identical to before. The rich editor keeps
+ * Enter / Shift+Enter, "/" search, emoji and AI inserts at the caret and the
+ * per-chat draft (text + markup, lib/chatDrafts); the send carries the markup
+ * while there is formatting, else the plain text (composerDraft `richText`).
  */
 
 import { useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
@@ -41,6 +49,7 @@ import { isUploadable, useComposerUploads } from "@/hooks/useComposerUploads";
 import { useReorder } from "@/hooks/useReorder";
 import { EXECUTOR_MAX_MINUTES, type SendOutcome } from "@/hooks/useSendMessage";
 import { useQueueKeys } from "@/hooks/useQueueKeys";
+import { markScriptSent } from "@/hooks/useSavedReplies";
 
 import dynamic from "next/dynamic";
 
@@ -49,12 +58,15 @@ import { EmojiFavouritesButton, QuickEmojiRow } from "./EmojiFavourites";
 import { CopilotPicker } from "./CopilotPicker";
 import { GifPickerButton, GifPickerStrip } from "./GifPicker";
 import { TemplatePicker, type PickedTemplate } from "./TemplatePicker";
-import { OfRichText } from "./OfRichText";
-import { isOfHtml, ofPreviewText } from "@/lib/ofRichText";
+import { isOfHtml, OF_TEXT_MAX, ofPreviewText } from "@/lib/ofRichText";
+import { editorPlain } from "@/lib/ofRichTextEditor";
+import { PLAIN_MODE, richMode } from "@/lib/ofRichMode";
+import { OfRichTextEditor, type OfRichTextEditorHandle } from "@/components/ui/OfRichTextEditor";
+import { useOfRichAllowed } from "@/hooks/useOfRichAllowed";
 import { TagCreatorsPicker, TaggedCreatorChips, type TaggedCreatorChoice } from "./TagCreatorsPicker";
 import {
-  EMPTY_DRAFT, afterRefusedSchedule, buildSendArgs, richText, canBeFreePreview, canSend, composerDraft, composerView,
-  type FullDraft, type SendArgs,
+  EMPTY_DRAFT, afterRefusedSchedule, buildSendArgs, richFromEditor, richText, canBeFreePreview, canSend, composerDraft,
+  composerView, sentReplyId, type FullDraft, type SendArgs,
 } from "./composerDraft";
 import { gifPlan, scheduledToast } from "./composerSubmit";
 import { ComposerToolbar } from "./ComposerToolbar";
@@ -146,8 +158,13 @@ export function Composer({
   // The rest of the draft — price, lock, media, previews, schedule, tags,
   // GIFs (./composerDraft). Lock-text is opt-in (asks #6 + #17); the
   // one-time migration toast below explains the change to returning users.
-  // A picked formatted script's markup survives a chat switch with the draft text (lib/chatDrafts).
-  const [draft, act] = useReducer(composerDraft, null, () => ({ ...EMPTY_DRAFT, rich: readChatRich(accountId, fanId) }));
+  // OF rich text: OnlyFans accounts only (a Fansly account never authors OF markup).
+  const allowRich = useOfRichAllowed(accountId);
+  // The draft's markup survives a chat switch with its text (lib/chatDrafts), and reopens in the rich editor.
+  const [draft, act] = useReducer(composerDraft, null, () => {
+    const rich = allowRich ? readChatRich(accountId, fanId) : null;
+    return { ...EMPTY_DRAFT, rich, mode: richMode(PLAIN_MODE, { type: "loaded", formatted: !!rich }) };
+  });
   useEffect(() => { writeChatRich(accountId, fanId, draft.rich); }, [accountId, fanId, draft.rich]);
   const { price, priceOpen, lockedText, attached, scheduleOpen, scheduleAt, taggedCreators, pickedGifs } = draft;
   // The whole draft as last rendered, for a refused schedule that settles
@@ -176,6 +193,11 @@ export function Composer({
   const { offers: refusedOffers } = useRefusedOffers();
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const editorRef = useRef<OfRichTextEditorHandle | null>(null);
+  // The text box on show: the rich editor ("Aa", a formatted draft), else the textarea.
+  const richOn = allowRich && draft.mode.rich;
+  // Only one is mounted (a ref is null once unmounted), so this reads the box on show even from a stale closure.
+  const focusInput = () => (editorRef.current ? editorRef.current.focus() : textareaRef.current?.focus());
   // Per-fan vault history — drives the green "BOUGHT" badge so the chatter
   // can see at a glance which attached tiles the fan already paid for (and
   // can avoid charging again).
@@ -248,7 +270,10 @@ export function Composer({
     // A typed price > 0 makes it PPV; a Timed message's delay wins over the
     // explicit "at". The first GIF rides on this send, the rest go as
     // GIF-only sends below (gifPlan).
-    const args = buildSendArgs(draft, { text: body, delayMinutes: opts?.delayMinutes, now });
+    // A translation sent in the draft's place is plain text (its strip says so); so is every Fansly send.
+    const args = buildSendArgs(draft, {
+      text: body, delayMinutes: opts?.delayMinutes, now, plainOnly: !allowRich || opts?.text !== undefined,
+    });
     const { trailing: trailingGifs } = gifPlan(pickedGifs);
     // Infloww's send-rate guard: a send at once within 3 s of the model's last
     // one (any of its Fans) stays in the composer, with OF's reason above it.
@@ -273,7 +298,7 @@ export function Composer({
       const pending = uploads.handOff();
       if (pending.length > 0) args.uploads = pending;
     }
-    textareaRef.current?.focus();
+    focusInput();
     const picked = refused.draft.script;
     let sent: SendOutcome | undefined | void;
     try {
@@ -302,6 +327,12 @@ export function Composer({
     // Advance the Script if the just-sent message rode a step of one (the
     // draft's `script`, set by its template pick).
     scripts.advance(picked);
+    // A send at once that rode a saved reply counts toward its send count
+    // once OF took it (a schedule is not counted: it has not gone out).
+    const replyId = sentReplyId(refused.draft);
+    if (replyId != null && sent && !args.scheduledAt) {
+      void sent.settled.then((ended) => (ended.sent ? markScriptSent(replyId) : undefined));
+    }
     // Fan out additional GIFs as standalone sends. Each carries only its
     // own giphyId — no text, no attachments — to mirror OF web behavior.
     // Behind a send still waiting on its files they wait too, off the
@@ -333,7 +364,8 @@ export function Composer({
   // so this gives them a typing cursor the same frame the chat opens —
   // no extra click needed.
   useEffect(() => {
-    textareaRef.current?.focus();
+    focusInput();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per mount
   }, []);
 
   // No auto-seed: 0 previews is a legitimate choice on PPV (sends
@@ -353,7 +385,7 @@ export function Composer({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- once per mount
   }, []);
 
-  function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+  function onKeyDown(e: React.KeyboardEvent<HTMLElement>) {
     // An IME's Enter picks its candidate: no key here sends or moves on.
     if (isImeComposing(e)) return;
     // The open "/" list picks its first match on this Enter (TemplatePicker),
@@ -375,7 +407,22 @@ export function Composer({
     submit({ text: translated, advance });
   }
 
+  /** The rich editor's value (markup while formatted, else plain): the draft's text and markup. */
+  function onRichChange(value: string) {
+    const next = richFromEditor(value, editorPlain);
+    setText(next.text);
+    act({ type: "setRich", rich: next.rich });
+    if (next.text !== slashClosedFor) setSlashClosedFor(null);
+  }
+
+  /** "Aa": the toolbar on (the text into the rich editor) or off; the caret stays in the text box. */
+  function onAa() {
+    act({ type: "aa" });
+    setTimeout(focusInput, 0);
+  }
+
   function onEmoji(em: string) {
+    if (editorRef.current) return editorRef.current.insert(em);
     const ta = textareaRef.current;
     if (!ta) {
       setText((t) => t + em);
@@ -416,7 +463,7 @@ export function Composer({
   /** An image pasted into the input uploads instead of inserting text. A
    *  clipboard that also holds text (spreadsheet cells, rich text, which carry
    *  a picture of themselves) pastes the text. */
-  function onPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+  function onPaste(e: React.ClipboardEvent<HTMLElement>) {
     if (Array.from(e.clipboardData?.types ?? []).includes("text/plain")) return;
     const files = Array.from(e.clipboardData?.files ?? []).filter(isUploadable);
     if (files.length === 0 || uploadDisabled) return;
@@ -427,6 +474,7 @@ export function Composer({
   function onPickSuggestion(suggestion: string) {
     // An AI Copilot suggestion goes in at the cursor for the chatter to edit;
     // it is sent only when they press Send.
+    if (editorRef.current) return editorRef.current.insert(suggestion);
     const ta = textareaRef.current;
     if (ta) insertAtCursor(ta, text, suggestion, setText);
     else setText((t) => (t ? `${t} ${suggestion}` : suggestion));
@@ -447,9 +495,10 @@ export function Composer({
     // Template = snapshot: text, media, previews, price and GIF replace the
     // draft's, so the FREE-first order baked in at save time survives. Its
     // Script step rides on the draft, so the send advances the Script.
+    // A formatted one opens in the rich editor, formatted (OnlyFans only; Fansly gets its plain text).
     setText(t.text);
-    act({ type: "pickTemplate", t });
-    setTimeout(() => textareaRef.current?.focus(), 0);
+    act({ type: "pickTemplate", t, rich: allowRich });
+    setTimeout(focusInput, 0);
   }
 
   // Publish the imperative API to the parent's ref while we're mounted.
@@ -518,19 +567,9 @@ export function Composer({
             </div>
           )}
           <SensitiveWordWarning hits={sensitiveHits} />
-          {draft.rich && (richText(draft, text) != null ? (
-            // The picked script's formatting, as the fan will see it; it goes out while the text is untouched.
-            <div data-rich-preview="" className={cn(MP.ours.Composer.notice, "block bg-bg-elev-1 border-border text-fg")}>
-              <div className="text-xs uppercase tracking-wide text-fg-dim mb-0.5">Formatted · the fan sees</div>
-              <OfRichText raw={draft.rich.html} className="text-sm break-words" />
-            </div>
-          ) : (
-            <div data-rich-dropped="" className="text-xs text-fg-dim">
-              Edited: the script&apos;s formatting is dropped, this sends as plain text.
-            </div>
-          ))}
           <TimedReminderNotice accountId={accountId} fanId={fanId} />
-          <OutboundTranslationStrip t={outbound} onUse={setText} onSend={sendTranslation} canSend={view.canSend} />
+          <OutboundTranslationStrip t={outbound} onUse={setText} onSend={sendTranslation} canSend={view.canSend}
+            formatted={richOn && richText(draft, text) != null} />
           {scripts.nextSteps.map((nextStep) => (
             <div
               key={nextStep.key}
@@ -585,7 +624,23 @@ export function Composer({
           emoji={<EmojiPickerButton onInsert={onEmoji} disabled={disabled} align="left" triggerClassName={MP.composer.buttonRowButton} messagesPro />}
           favourites={<EmojiFavouritesButton disabled={disabled} />}
           quick={<QuickEmojiRow onInsert={onEmoji} disabled={disabled || blocked} />}
-          input={
+          input={richOn ? (
+            <OfRichTextEditor
+              ref={editorRef}
+              value={richText(draft, text) ?? text}
+              onChange={onRichChange}
+              toolbar={draft.mode.toolbar}
+              disabled={disabled}
+              onKeyDown={onKeyDown}
+              onPaste={onPaste}
+              maxLength={OF_TEXT_MAX}
+              placeholder={placeholder ?? 'Press "/" + keyword to quickly search scripts'}
+              aria-label="Message"
+              // The textarea's box (row 2, 16px), growing to max-h-48 then scrolling; the toolbar wraps above it.
+              className="w-full min-w-0 rounded-none border-0 bg-transparent"
+              inputClassName={cn(MP.composer.input, MP.ours.Composer.input, MP.ours.Composer.richInput)}
+            />
+          ) : (
             <textarea
               ref={textareaRef}
               value={text}
@@ -604,7 +659,7 @@ export function Composer({
               // on one line so it never grows the row.
               className={cn(MP.composer.input, MP.ours.Composer.input, "w-full bg-transparent placeholder:text-muted placeholder:truncate focus:outline-none resize-none overflow-y-auto")}
             />
-          }
+          )}
           ai={<CopilotPicker key={`${accountId}:${fanId}`} accountId={accountId} fanId={fanId} onPick={onPickSuggestion} />}
           scripts={
             <TemplatePicker
@@ -662,6 +717,7 @@ export function Composer({
           onSend={() => submit()}
           accountId={accountId}
           onToggleOutbound={outbound.toggle}
+          aa={allowRich ? { on: draft.mode.toolbar, onToggle: onAa } : null}
         >
           {quoted && (
             <div className={MP.ours.Composer.reply}>

@@ -23,6 +23,7 @@ import { useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState }
 import { createPortal } from "react-dom";
 import { MessageCircle } from "lucide-react";
 
+import { useRenderCap } from "@/hooks/useRenderCap";
 import { useSavedReplies } from "@/hooks/useSavedReplies";
 import { useTemplates } from "@/hooks/useTemplates";
 import { isImeComposing } from "@/lib/ime";
@@ -65,6 +66,9 @@ export interface PickedTemplate {
    *  next-in-script bubble. */
   scriptId?: string | null;
   scriptStep?: number | null;
+  /** The saved reply's id (local only): a send that rode it bumps its send
+   *  count (`markScriptSent`). */
+  replyId?: number;
   /** Ids inside `media` deleted from the vault since the script was saved
    *  (local only), for the composer's "Use script?" warning. */
   removedMediaIds?: number[];
@@ -111,6 +115,7 @@ export function fromLocal(r: SavedReply): PickedTemplate {
     gifUrl: r.gif_url ?? null,
     scriptId: r.script_id ?? null,
     scriptStep: r.script_step ?? null,
+    replyId: r.id,
     removedMediaIds: r.removed_media_ids ?? [],
   };
 }
@@ -133,6 +138,17 @@ export interface TemplatePickerProps {
   slashQuery?: string | null;
   /** Called when the "/" search list closes (Escape, a pick, a press outside). */
   onSlashClose?: () => void;
+}
+
+/** A row's search text (title, body, script id), lower-cased once per row. */
+const haystacks = new WeakMap<PickedTemplate, string>();
+function haystackOf(t: PickedTemplate): string {
+  let h = haystacks.get(t);
+  if (h === undefined) {
+    h = [t.title, t.text, t.scriptId].map((v) => (v ?? "").toLowerCase()).join("\n");
+    haystacks.set(t, h);
+  }
+  return h;
 }
 
 /** Returns true when the template carries no photo/video/audio attachment.
@@ -177,6 +193,12 @@ export function TemplatePicker({
   const [coords, setCoords] = useState<PopoverCoords | null>(null);
   const tplQ = useTemplates(open ? accountId : null);
   const replyQ = useSavedReplies(open ? accountId : null);
+  // Each open reads the list again: a cached one can be a restored snapshot that predates a script just saved on the
+  // Scripts page (its save only marks the closed picker's query stale). The cached rows show meanwhile.
+  const refetchReplies = replyQ.refetch;
+  useEffect(() => {
+    if (open && accountId) void refetchReplies({ cancelRefetch: false });
+  }, [open, accountId, refetchReplies]);
 
   // Reset + focus search when opening so picker is keyboard-first. "/"
   // search leaves focus in the Composer input.
@@ -227,26 +249,23 @@ export function TemplatePicker({
 
   // Welcome first (it's most-often used as the high-leverage reply),
   // then saved replies — newest-edit first as the local API returns.
-  const welcome = (tplQ.data ?? []).find((t) => t.template === "reply_on_subscribe");
-  const ofRows: PickedTemplate[] = welcome ? [fromOF(welcome)] : [];
-  const localRows: PickedTemplate[] = (replyQ.data ?? []).map(fromLocal);
-  const allItems = [...ofRows, ...localRows];
-  const visibleByImageFilter = hideImageTemplates
-    ? allItems.filter(templateHasNoImageMedia)
-    : allItems;
+  // Memoized on the queries' data: a library runs to 10k scripts.
+  const { allItems, visibleByImageFilter } = useMemo(() => {
+    const welcome = (tplQ.data ?? []).find((t) => t.template === "reply_on_subscribe");
+    const all = [...(welcome ? [fromOF(welcome)] : []), ...(replyQ.data ?? []).map(fromLocal)];
+    return { allItems: all, visibleByImageFilter: hideImageTemplates ? all.filter(templateHasNoImageMedia) : all };
+  }, [tplQ.data, replyQ.data, hideImageTemplates]);
   const hiddenCount = hideImageTemplates ? allItems.length - visibleByImageFilter.length : 0;
 
-  // Search across title, body text, and script id — case-insensitive.
+  // Search across title, body text, and script id — case-insensitive, over
+  // the whole list (only the rendering is capped, below).
+  const q = search.trim().toLowerCase();
   const items = useMemo(() => {
-    const q = search.trim().toLowerCase();
     if (!q) return visibleByImageFilter;
-    return visibleByImageFilter.filter((t) => {
-      if (t.title && t.title.toLowerCase().includes(q)) return true;
-      if (t.text && t.text.toLowerCase().includes(q)) return true;
-      if (t.scriptId && t.scriptId.toLowerCase().includes(q)) return true;
-      return false;
-    });
-  }, [search, visibleByImageFilter]);
+    return visibleByImageFilter.filter((t) => haystackOf(t).includes(q));
+  }, [q, visibleByImageFilter]);
+  // 200 rows at a time, more as the list's foot scrolls in.
+  const { cap, hasMore, more, sentinel } = useRenderCap(items.length, `${open}|${q}`);
 
   // "/" search: the Composer input keeps focus, so its Enter and Escape are
   // heard here as they bubble; keys from anywhere else are left alone. The
@@ -353,7 +372,7 @@ export function TemplatePicker({
                 {hiddenCount} template{hiddenCount === 1 ? "" : "s"} hidden — contain images, not supported here.
               </div>
             )}
-            {items.map((t, i) => (
+            {items.slice(0, cap).map((t, i) => (
               <button
                 key={`${t.source}:${t.title ?? i}:${i}`}
                 type="button"
@@ -403,6 +422,13 @@ export function TemplatePicker({
                 <div className="text-sm md:text-xs text-fg line-clamp-2"><OfRichText raw={t.displayText} /></div>
               </button>
             ))}
+            {hasMore && (
+              <div ref={sentinel}>
+                <button type="button" onClick={more} className="w-full py-2 text-xs text-fg-dim hover:text-fg">
+                  Show more ({items.length - cap})
+                </button>
+              </div>
+            )}
           </div>
         </div>,
         document.body,

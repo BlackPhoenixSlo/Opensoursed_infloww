@@ -44,9 +44,10 @@ The one POST on it, by exception:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import threading
-from typing import Any, Awaitable, Callable, TypeVar
+from typing import Any, AsyncContextManager, Awaitable, Callable, TypeVar
 
 T = TypeVar("T")
 
@@ -59,6 +60,19 @@ _inflight: dict[tuple, asyncio.Future] = {}
 # only joiners do. Read via `/admin/coalesce/stats`.
 _coalesced_hits: dict[str, int] = {}
 _first_calls: dict[str, int] = {}
+
+# Two hooks server.py installs at import (defaults: one class, no admission), so
+# this module stays importable alone and never imports server:
+#   priority_class()  "user" | "background", the request's (X-Priority). A user
+#                     read never joins a background-led flight: it would inherit
+#                     the background lane wait, the 5-try retry and its failure.
+#                     A background read may join a user-led one (same class first).
+#   admission()       an async context manager the LEADER enters around its fetch:
+#                     a background read waits for its Creator's background lane on
+#                     the event loop, before any worker thread is taken (server.
+#                     _bg_admission). Joiners never take a slot.
+priority_class: Callable[[], str] = lambda: "user"
+admission: Callable[[], AsyncContextManager] = contextlib.nullcontext
 
 # Guards `_coalesced_hits` and `_first_calls`. The `_inflight` dict is
 # only mutated from inside the event loop, so it doesn't need a lock.
@@ -81,8 +95,8 @@ def stats() -> dict[str, Any]:
         return {
             "coalesced_hits": dict(_coalesced_hits),
             "first_calls": dict(_first_calls),
-            "inflight": len(_inflight),
-            "inflight_keys": [k[0] for k in _inflight.keys()],
+            "inflight": len(_inflight) + len(_running),
+            "inflight_keys": [k[0] for k in (*_inflight.keys(), *_running.keys())],
         }
 
 
@@ -93,7 +107,9 @@ async def coalesce(key: tuple, fetcher: Callable[[], Awaitable[T]]) -> T:
     another waiter's response.
 
     Exceptions from the fetcher propagate to ALL waiters via
-    `future.set_exception(e)`.
+    `future.set_exception(e)`; no waiter retries on its own.
+
+    The flight key is `key` + the caller's `priority_class()` (above).
 
     The fetcher runs in a detached `asyncio.create_task` so that
     cancellation of the original awaiter does NOT abort the upstream
@@ -105,8 +121,11 @@ async def coalesce(key: tuple, fetcher: Callable[[], Awaitable[T]]) -> T:
     chatters on different OF accounts would share a response."""
     assert isinstance(key, tuple) and len(key) >= 1, "key must be a non-empty tuple"
     namespace = str(key[0])
-
-    existing = _inflight.get(key)
+    cls = priority_class()
+    existing = _inflight.get(key + (cls,))
+    if existing is None and cls == "background":
+        existing = _inflight.get(key + ("user",))
+    key = key + (cls,)
     if existing is not None:
         _bump_hit(namespace)
         # `shield` so a cancelled waiter doesn't propagate `.cancel()` to
@@ -121,7 +140,8 @@ async def coalesce(key: tuple, fetcher: Callable[[], Awaitable[T]]) -> T:
 
     async def _run() -> None:
         try:
-            value = await fetcher()
+            async with admission():
+                value = await fetcher()
             if not fut.done():
                 fut.set_result(value)
         except BaseException as e:  # noqa: BLE001 — propagate ALL to waiters
@@ -142,9 +162,51 @@ async def coalesce(key: tuple, fetcher: Callable[[], Awaitable[T]]) -> T:
     return copy.deepcopy(result)
 
 
+# `coalesce_fresh`: per key, the run callers arriving now join (not started yet) and the run in progress.
+_next: dict[tuple, asyncio.Future] = {}
+_running: dict[tuple, asyncio.Future] = {}
+
+
+async def coalesce_fresh(key: tuple, fetcher: Callable[[], Awaitable[T]]) -> T:
+    """`coalesce` for a read that must see every write committed before the call (a local-DB list read
+    right after the caller's own PUT): a caller never joins a run that already started; it joins, or
+    starts, the NEXT run, which begins once the current one ends. N concurrent callers cost at most two
+    runs. Every waiter gets the SAME object (no deepcopy), so return an immutable value (encoded bytes).
+    Detached and shielded like `coalesce`; an exception reaches every waiter of that run."""
+    assert isinstance(key, tuple) and len(key) >= 1, "key must be a non-empty tuple"
+    namespace = str(key[0])
+    fut = _next.get(key)
+    if fut is not None:
+        _bump_hit(namespace)
+        return await asyncio.shield(fut)
+    fut = _next[key] = asyncio.get_running_loop().create_future()
+    fut.add_done_callback(lambda f: f.cancelled() or f.exception())  # no "never retrieved" if all left
+    _bump_first(namespace)
+
+    async def _run() -> None:
+        prev = _running.get(key)
+        if prev is not None:
+            await asyncio.wait([prev])
+        if _next.get(key) is fut:
+            _next.pop(key)  # started: later callers make the next run
+        _running[key] = fut
+        try:
+            fut.set_result(await fetcher())
+        except BaseException as e:  # noqa: BLE001 — propagate ALL to waiters
+            fut.set_exception(e)
+        finally:
+            if _running.get(key) is fut:
+                _running.pop(key)
+
+    asyncio.create_task(_run())
+    return await asyncio.shield(fut)
+
+
 def reset_for_tests() -> None:
     """Wipe state. Only call from test scripts."""
     _inflight.clear()
+    _next.clear()
+    _running.clear()
     with _stats_lock:
         _coalesced_hits.clear()
         _first_calls.clear()

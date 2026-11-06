@@ -14,10 +14,11 @@ import { cn } from "@/lib/utils";
 function Run({ r }: { r: OfRun }): ReactNode {
   if ("br" in r) return "\n";
   let n: ReactNode = r.text;
-  const cls = [r.color, r.size].filter(Boolean).join(" ");
-  if (cls) n = <span className={cls}>{n}</span>;
+  // OF's own nesting (its wire, lib/ofMirrorFormat): span outermost, size class first.
   if (r.italic) n = <em>{n}</em>;
   if (r.bold) n = <strong>{n}</strong>;
+  const cls = [r.size, r.color].filter(Boolean).join(" ");
+  if (cls) n = <span className={cls}>{n}</span>;
   return n;
 }
 

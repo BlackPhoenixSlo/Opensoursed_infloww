@@ -25,14 +25,24 @@ bypasses).
   per Creator: 2 stall, 1 refuse_once, 1 plain. Phase B: 2 hang per Creator; once every run slot holds a send OF
   took and has not answered, the relay is SIGKILLed, OF answers normally, the relay restarts on the same DB and
   the boot heal's `reconciled_orphans` line is awaited. Phase C, per Creator: one ECHO send OF takes and answers
-  with a 502 echoing its rate-limit text. Checks: `ONCE` ("OF holds exactly 1 message per job"),
-  `SETTLED`, `PARKED`, `REFUSED`, `ECHO_5XX` (each ECHO send one OF message, job error "may have sent", never
+  with a 502 echoing its rate-limit text. Phase D: two `send_mass_message` jobs (`POST /admin/automation/enqueue`)
+  whose proxy refuses the CONNECT (`lib/automation_relay.py` `send_fail`, `of-mass.jsonl`): Creator 0's once,
+  Creator 1's every time. Checks: `ONCE` ("OF holds exactly 1 message per job"),
+  `SETTLED`, `PARKED`, `REFUSED`, `REFUSED_DM_PLAIN` (a refused composer DM keeps the plain retry, never
+  `proxy_retry`), `REFUSED_DEFERRED` (the once-refused broadcast reads `proxy_retry:1` in
+  `GET /admin/system/runs`, due 5 min after the refusal, then OF takes it once; the owner made site admin and
+  that wait skipped by SQL, declared), `REFUSED_TERMINAL` (the always-refused one reads `proxy_retry:1..3`,
+  ends error `proxy_refused` after 4 refusals), `REFUSED_RUN_CLOSED` (their mass runs read `refused` / `ok`,
+  none `running`), `ECHO_5XX` (each ECHO send one OF message, job error "may have sent", never
   resent) (`lib/send_once_faults.py`), and the scenario's own "SIGKILL landed with every
   running send taken by OF and unanswered (>= one per run slot)"; budgets: `POST` / `GET
   /api/of/v2/scheduled-sends` p95 and schedule -> OF took it p95 (plain, phase A), all in the scenario, also vs
   the last green run. Faults: `send-once-retries-after-accept` (default; `run_decide.ONE_SHOT_KINDS` emptied: the pre-fix
   lane; targets `ONCE`, `ECHO_5XX`), `rate-limit-text-sniff` (`of_write.is_rate_limited` on the text alone, the
-  pre-fix gate; `ECHO_5XX`, `ONCE`). No knobs of its own: the
+  pre-fix gate; `ECHO_5XX`, `ONCE`), `refused-job-not-deferred` (run_once's `proxy_refused` always False:
+  the plain 60 s retry; `REFUSED_DEFERRED`, `REFUSED_TERMINAL`), `composer-send-deferred` (scheduled_send in
+  `run_decide.PROXY_DEFER_KINDS`; `REFUSED_DM_PLAIN`), `mass-refused-run-left-running` (no close of the refused
+  run; `REFUSED_RUN_CLOSED`). No knobs of its own: the
   per-Creator plan is fixed, load scales by `--users` and the profile's Creators.
 
 ## The KILL phase (follow-up drip, house funnel)

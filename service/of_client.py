@@ -36,7 +36,7 @@ import of_pacing
 import proxy_health
 import proxies as proxy_registry
 from of_origin import OF_API_ORIGIN
-from of_rich_text import is_of_html, of_plain, sanitize_of_html
+from of_rich_text import has_html, is_of_html, of_plain, sanitize_of_html
 from of_signer import sign
 
 # Dedicated logger so proxy/upstream errors are filterable from the rest
@@ -166,21 +166,21 @@ def _cookie_domain(domain: str | None) -> str:
 
 
 def _guard_outbound(text):
-    """`text` as the guard leaves it (masked), or the guard's exception (blocked).
+    """`text` as the guard leaves it, or the guard's exception (blocked).
 
-    OF markup (a formatted script) is sanitized first and the guard reads its
-    plain text once, so a banned word can neither hide behind tags nor mask a
-    class name. Unmasked: the sanitized markup goes. Masked: the masked plain
-    text goes (its formatting dropped; masking inside the tags is not worth it)."""
+    Markup (a formatted script, any HTML tag: of_rich_text.has_html) is read as
+    the fan reads it, once, so a banned word can neither hide behind tags nor
+    trip on a class name; it goes on unchanged and the send's own boundary
+    (`_wrap_text_as_p` / `of_text`, the Fansly shim's plain text) sanitizes it.
+    Block mode only: `load_banned_words` pins it, so a markup body is never
+    masked."""
     guard = OUTBOUND_TEXT_GUARD.get()
     if guard is None:
         return text
-    if not (isinstance(text, str) and is_of_html(text)):
+    if not has_html(text):
         return guard(text)
-    markup = sanitize_of_html(text)
-    plain = of_plain(markup)
-    guarded = guard(plain)
-    return markup if guarded == plain else guarded
+    guard(of_plain(text))
+    return text
 
 
 def _short_path(url: str) -> str:

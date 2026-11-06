@@ -226,6 +226,37 @@ async def case_run():
         assert stats["mass_run_id"] == mr.id and stats["recipients"] == 2, stats
 
 
+async def case_a_refused_post_closes_its_minted_run():
+    """The proxy refused the queue POST (OF never saw it): the run minted for it ends
+    RUN_REFUSED, not 'running' forever; the job waits out the proxy (proxy_retry:1).
+    A POST OF may have taken (a read timeout), or any other non-proxy failure (a connect
+    timeout: surely not sent, not the proxy), keeps its run as it is."""
+    from curl_cffi.requests.exceptions import ConnectTimeout, ProxyError, ReadTimeout
+    from automations.send_mass_message import RUN_REFUSED
+    import run_decide
+    for aid, err, want_run, want_err in (
+            ("acc_mass_refused", ProxyError("CONNECT tunnel failed, response 403"), RUN_REFUSED,
+             f"{run_decide.PROXY_RETRY}:1 ("),
+            ("acc_mass_timeout", ReadTimeout("Operation timed out"), "running", run_decide.MAY_HAVE_SENT),
+            ("acc_mass_noconn", ConnectTimeout("Connection timed out"), "running", None)):
+        await _seed_account(aid)
+
+        class _Fails(FakeClient):
+            def send_mass_message(self, text, **kw):
+                raise err
+        _use_fake(_Fails())
+        job_id = await enqueue_job(aid, "send_mass_message", payload={"text": "hi", "included_users": [2001]})
+        res = await run_once(aid, "send_mass_message")
+        assert res["status"] == "error", res
+        async with get_session() as s:
+            runs = (await s.execute(select(MassRun).where(MassRun.account_id == aid))).scalars().all()
+            assert [r.status for r in runs] == [want_run], (aid, [r.status for r in runs])
+            assert (runs[0].completed_at is not None) == (want_run == RUN_REFUSED), runs[0].completed_at
+            job = await s.get(ScheduledJob, job_id)
+            assert (job.last_error.startswith(want_err) if want_err
+                    else not job.last_error.startswith(run_decide.PROXY_RETRY)), (aid, job.last_error)
+
+
 # ── case_echoed_real_rows — OF echoes per-fan ids → real rows ─────────
 
 async def case_echoed_real_rows():
@@ -1195,4 +1226,5 @@ _harness.run(
     case_dry_run_online_refuses_a_list,
     case_dry_run_ignores_queued_dry_runs,
     case_dry_pending_ids_mirror_pending_send_fan_ids,
+    case_a_refused_post_closes_its_minted_run,
 )

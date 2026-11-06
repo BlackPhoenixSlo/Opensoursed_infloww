@@ -93,6 +93,32 @@ describe("Messages from OF's captured responses (app/lib/__fixtures__/of)", () =
   });
 });
 
+describe("OF's rich text in the mirror chat (bubbles and the chat list's last message)", () => {
+  const FAN = 9001;
+  const MODEL = 1001;
+  const RICH = '<p><span class="m-editor-fc__blue-1"><strong>Hey</strong></span> babe</p><p><span class="m-editor-fs__l">Large line</span></p>';
+  const msg = (id: number, text: string, from = FAN): OFMessage => ({ id, text, fromUser: { id: from }, createdAt: `2026-11-05T10:0${id}:00Z`, media: [] }) as unknown as OFMessage;
+  const holder = (doc: Document, id: number) => doc.querySelector(`[data-oi-msg="${id}"] .b-chat__message__text-holder`)!;
+  it.each([
+    ["sent formatted (the Creator's): OF's markup kept", MODEL, RICH, RICH],
+    ["received formatted (a fan's)", FAN, '<p><span class="m-editor-fc__blue-2"><strong>fan</strong></span> says <em>hi</em></p>', '<p><span class="m-editor-fc__blue-2"><strong>fan</strong></span> says <em>hi</em></p>'],
+    ["plain OF text (entities, <br>): one paragraph", FAN, "a &amp; b<br />c &lt;3", "<p>a &amp; b<br>c &lt;3</p>"],
+    ["foreign markup: only its text, scripts gone", FAN, '<p onclick="x()"><b>bo</b><img src=x onerror="a()"><script>alert(1)</script><a href="//e">ld</a> <span class="evil m-editor-fs__sm" style="color:red">s</span></p>', '<p><strong>bo</strong>ld <span class="m-editor-fs__sm">s</span></p>'],
+  ])("%s", (_name, from, text, html) => {
+    const doc = load("messages/chat");
+    applyData(doc, "messages/chat", { chat: String(FAN), chats: [], thread: { fan: { id: FAN, name: "Fan", username: "fan" } as OFUserMini, messages: [msg(1, text, from)] } }, (u) => u);
+    expect(holder(doc, 1).innerHTML).toBe(html);
+    expect(doc.querySelector(".b-chat__messages-wrapper script, .b-chat__messages-wrapper img[onerror]")).toBeNull();
+  });
+
+  it("the chat list's last message: a formatted one as its words, paragraphs a space apart, no tag", () => {
+    const doc = load("messages/index");
+    const chats = [{ withUser: { id: FAN, name: "Fan", username: "fan" }, lastMessage: { text: RICH, createdAt: "2026-11-05T10:00:00Z" } }] as unknown as OFChatItem[];
+    applyData(doc, "messages/index", { chats }, (u) => u);
+    expect(texts(doc, ".b-chats__item__last-message__content")).toEqual(["Hey babe Large line"]);
+  });
+});
+
 describe("the chat list's rows and their partners (chatRowsOf, pendingPartners)", () => {
   const bare = (id: number) => ({ withUser: { id } }) as OFChatItem;
   const named = (id: number) => ({ id, name: `Name ${id}`, username: `u${id}` });

@@ -481,6 +481,14 @@ def _proxy_recheck_never_runs() -> None:
         "slop fault proxy-recheck-never-runs: %s not rechecked", label)
 
 
+def _proxy_confirm_probes_trace() -> None:
+    """The watcher's confirm and rechecks back on Cloudflare's trace (the pre-fix probe): a proxy
+    that answers the trace yet refuses CONNECT to OF is never confirmed bad (bug class: the probe
+    tests another host than the one failing)."""
+    import proxies
+    proxies.probe_of = proxies.probe
+
+
 def _proxy_decide_recheck_answer_ignored() -> None:
     """service/proxy_health_decide.decide (the shell calls it as `ph.decide` at each step) reads an
     answering recheck as a failed one (a reducer that lost the up transition): a revived proxy nobody
@@ -620,14 +628,26 @@ _DASHBOARD_TOTAL_NOT_SAVED = """(() => {
 # app/components/stats/PerModelKpiGrid.tsx: the Per-model cards blind to which Creators have a session, as before
 # 2026-10-28. `GET /admin/accounts` reaches the page as a 503 (the request itself still goes out and answers), so the
 # cards take their failed-list path and send every Creator's OnlyFans reads, the session-less one's included (404
-# Unknown account_id), with no "Not connected" label.
+# Unknown account_id), with no "Not connected" label. The Dashboard's screen bundle (app/lib/screenBundle.ts) carries
+# the list too: its `accounts` answers as that read's 503 error there.
 _DASHBOARD_OFFLINE_CREATOR_READS_OF = """(() => {
   const real = window.fetch;
+  const detail = 'slop fault: accounts unavailable';
   window.fetch = function (input, init) {
     const url = typeof input === 'string' ? input : (input && input.url) || String(input);
     const p = real.apply(this, arguments);
-    if (new URL(url, location.href).pathname !== '/admin/accounts') return p;
-    return p.then(() => new Response(JSON.stringify({ detail: 'slop fault: accounts unavailable' }),
+    const path = new URL(url, location.href).pathname;
+    if (path === '/admin/screens/dashboard') {
+      return p.then(async (r) => {
+        if (!r.ok) return r;
+        const body = await r.json();
+        delete body.accounts;
+        body.errors = [...(body.errors || []), { accountId: null, read: 'accounts', status: 503, detail: { detail } }];
+        return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      });
+    }
+    if (path !== '/admin/accounts') return p;
+    return p.then(() => new Response(JSON.stringify({ detail }),
       { status: 503, headers: { 'Content-Type': 'application/json' } }));
   };
 })();"""
@@ -856,6 +876,10 @@ FAULTS: dict[str, Fault] = {
         "revived proxy: the recheck brings it back within budget and the next new Creator lands on the least-used "
         "proxy (the revived one, once its Creators moved) and reads through it",
     )),
+    # slop/run proxy-failover --break --fault=proxy-confirm-probes-trace
+    "proxy-confirm-probes-trace": Fault(_proxy_confirm_probes_trace, (
+        "the watcher's confirm and rechecks probe OnlyFans' x-hash endpoint with no account and no cookie (proxies.probe_of)",
+    )),
     # slop/run proxy-failover --break --fault=proxy-decide-recheck-answer-ignored
     "proxy-decide-recheck-answer-ignored": Fault(_proxy_decide_recheck_answer_ignored, (
         "revived proxy: the recheck brings it back within budget and the next new Creator lands on the least-used "
@@ -872,7 +896,8 @@ FAULTS: dict[str, Fault] = {
     # slop/run proxy-failover --break --fault=proxy-recheck-unwatches-at-threshold: the recheck-gap check
     "proxy-recheck-unwatches-at-threshold": Fault(_proxy_recheck_unwatches_at_threshold, (
         "recheck-gap: a bad proxy an answer brings back while its watcher sleeps before a recheck, then "
-        "DOWN_AFTER failed Tests before it wakes, is confirmed bad again by that watcher within budget",
+        "DOWN_AFTER failed sends before it wakes, is confirmed bad again by that watcher within budget; "
+        "a Test click while it is bad leaves it bad",
     )),
     # ── end proxy watcher claim hand-off ──
     # slop/run session-health-otp --break (the scenario's FAULT)

@@ -104,7 +104,8 @@ class _Watch:
         self.dead = set(dead)
 
     def __enter__(self):
-        self._real = (proxy_health._spawn, proxy_health._sleep, proxies.probe, proxy_health._now)
+        self._real = (proxy_health._spawn, proxy_health._sleep, proxies.probe, proxy_health._now,
+                      proxies.probe_of)
         proxy_health._spawn = lambda fn, name: fn()
         _CLOCK[0] = time.time()
         proxy_health._now = lambda: _CLOCK[0]
@@ -114,18 +115,26 @@ class _Watch:
             _advance(s)
         proxy_health._sleep = _sleep
 
+        # The health probe (probe_of: no ip/geo, its real shape) answers from the script; the trace
+        # (`note_trace`'s region, uncounted) always answers with `geo` and is logged apart.
         def _probe(p, timeout_s=15):
             self.probed.append(p["label"])
             ok = False if p["label"] in self.dead else (self.answers.pop(0) if self.answers else True)
-            return ({"ok": True, "ip": "203.0.113.7", "geo": self.geo.get(p["label"], "HU"), "colo": "BUD",
-                     "ttfb_ms": 80, "error": None}
+            return ({"ok": True, "ip": None, "geo": None, "colo": None, "ttfb_ms": 80, "error": None}
                     if ok else {"ok": False, "ip": None, "geo": None, "colo": None, "ttfb_ms": None,
                                 "error": "proxy_probe_failed: CONNECT tunnel failed, response 403", "refused": True})
-        proxies.probe = _probe
+
+        def _trace(p, timeout_s=15):
+            self.traced.append(p["label"])
+            return {"ok": True, "ip": "203.0.113.7", "geo": self.geo.get(p["label"], "HU"), "colo": "BUD",
+                    "ttfb_ms": 80, "error": None}
+        self.traced = []
+        proxies.probe_of, proxies.probe = _probe, _trace
         return self
 
     def __exit__(self, *_):
-        proxy_health._spawn, proxy_health._sleep, proxies.probe, proxy_health._now = self._real
+        (proxy_health._spawn, proxy_health._sleep, proxies.probe, proxy_health._now,
+         proxies.probe_of) = self._real
 
 
 def _fail(label: str, n: int = proxy_health_decide.DOWN_AFTER) -> None:
@@ -238,7 +247,7 @@ def case_confirm_that_answers_is_a_blip():
         assert 0 < w.slept[0] <= proxy_health.CONFIRM_GAP_S, f"the confirm waited out a blip first: {w.slept}"
         snap = proxy_health.snapshot("hu-1")
         assert not snap["down"] and snap["errors"] == 0 and snap["state"] == "healthy", snap
-        assert snap["probe"]["geo"] == "HU", "the confirm's trace is kept"
+        assert snap["probe"]["ttfb_ms"] == 80 and snap["probe"]["ok"], "the confirm's probe result is kept"
 
 
 def case_confirm_waits_and_a_blip_that_ends_meanwhile_probes_nothing():
@@ -287,7 +296,7 @@ def _pool(n: int = 3) -> list[str]:
     proxy_health._state.clear()
     proxy_health._watchers.clear()
     proxy_health._tele.clear()
-    proxy_health.verify_pick = _REAL_VERIFY   # probes go through _Watch's scripted proxies.probe
+    proxy_health.verify_pick = _REAL_VERIFY   # probes go through _Watch's scripted proxies.probe_of
     return labels
 
 
@@ -338,6 +347,9 @@ def case_failover_skips_a_destination_that_does_not_answer():
         _fail(a)
     assert _on(c) == ["1", "3", "4", "6"] and _on(b) == ["2", "5"], "both went to c; nobody onto b"
     assert w.probed.count(b) == 1, f"b probed once for the whole move: {w.probed}"
+    # The reviewer's repro: b answers the trace (_Watch's always does) yet refuses OF. Its destination check is
+    # probe_of, so it is passed over and counted, and no second move off it follows.
+    assert b not in w.traced and proxy_health._state[b]["errors"] >= 1, (w.traced, proxy_health._state.get(b))
     snap = proxy_health.snapshot(b)
     assert snap["state"] == "suspect" and snap["errors"] == 1, f"b's failed probe counts: {snap}"
 
@@ -524,16 +536,16 @@ def case_assign_pool_loses_a_race_with_a_concurrent_failover():
 
 
 def _through_during_the_confirm(then=lambda: None):
-    """A `proxies.probe` wrapper (inside `_Watch`): on the confirm probe, an OF call through the proxy
+    """A `proxies.probe_of` wrapper (inside `_Watch`): on the confirm probe, an OF call through the proxy
     answers first, then `then()` runs, then the probe answers as scripted."""
-    inner = proxies.probe
+    inner = proxies.probe_of
 
     def _probe(p, timeout_s=15):
         proxy_health.record(p["label"], True)
         then()
-        proxies.probe = inner   # once
+        proxies.probe_of = inner   # once
         return inner(p, timeout_s)
-    proxies.probe = _probe
+    proxies.probe_of = _probe
 
 
 def _new_streak_confirmed_after_its_gap(w, ev) -> None:
@@ -814,7 +826,7 @@ def case_a_watcher_that_raises_releases_its_claim():
 
             def _boom(p, timeout_s=15):
                 raise RuntimeError("probe blew up")
-            proxies.probe = _boom
+            proxies.probe_of = _boom
             _fail("hu-1")
             assert not proxy_health._watchers, "the dead watcher's claim is released"
             _fail("hu-1", 1)
@@ -901,10 +913,11 @@ def case_routes_carry_health():
     assert out["colo"] == "BUD", out
     assert proxies.get_by_label("hu-1")["verified_geo"] == "HU", "the Test button still records"
     rows = {p["label"]: p for p in proxies_admin_api.admin_proxies_list()["proxies"]}
-    assert rows["hu-1"]["health"]["probe"]["ttfb_ms"] == 80, rows["hu-1"]["health"]
+    assert rows["hu-1"]["health"]["probe"] == {"ip": "203.0.113.7", "geo": "HU", "colo": "BUD"}, \
+        rows["hu-1"]["health"]
     assert rows["spare"]["health"] == {"down": False, "errors": 0, "state": "healthy", "inflight": 0, "inflight_peak": 0,
                                        "refusals": {"window_s": 600.0, "refused": 0, "calls": 0, "pct": 0.0}}, rows["spare"]
-    assert rows["hu-1"]["health"]["refusals"]["calls"] == 1, "the Test probe is one attempt in the window"
+    assert rows["hu-1"]["health"]["refusals"]["calls"] == 0, "the Test trace is display only: never counted"
     assert rows["hu-1"]["health"]["state"] == "healthy"
 
 
@@ -940,12 +953,12 @@ def case_periodic_probe_is_opt_in():
 def case_probe_all_only_creator_proxies():
     _registry()
     probed: list[str] = []
-    real = proxies.probe
-    proxies.probe = lambda p, timeout_s=15: probed.append(p["label"]) or {"ok": True}
+    real = proxies.probe_of
+    proxies.probe_of = lambda p, timeout_s=15: probed.append(p["label"]) or {"ok": True}
     try:
         assert proxy_health.probe_all() == 1
     finally:
-        proxies.probe = real
+        proxies.probe_of = real
     assert probed == ["hu-1"], "the unbound proxy is not probed"
 
 
@@ -1180,6 +1193,54 @@ def case_flap_hysteresis_probe_class_and_bad_reason():
     assert proxy_health.refusals("hu-1") == {"window_s": 600.0, "refused": 1, "calls": 2, "pct": 50.0}
     proxy_health._state["hu-1"] = {**proxy_health_decide.blank(), "down": True}
     assert proxy_health.snapshot("hu-1")["bad_reason"] == "down"
+
+
+# ── one health probe: probe_of; the trace is display and region only ──
+def case_a_test_click_never_brings_a_down_proxy_back():
+    _registry()
+    import proxies_admin_api
+    proxy_health._state["hu-1"] = {**proxy_health_decide.blank(), "down": True, "errors": 3}
+    real = proxies.probe
+    proxies.probe = lambda p, timeout_s=15: {"ok": True, "ip": "203.0.113.7", "geo": "HU", "colo": "BUD",
+                                             "ttfb_ms": 80, "error": None}
+    try:
+        assert proxies_admin_api.admin_proxies_test("hu-1")["ok"], "the Test button still shows the trace"
+    finally:
+        proxies.probe = real
+    snap = proxy_health.snapshot("hu-1")
+    assert snap["down"] and snap["errors"] == 3 and snap["refusals"]["calls"] == 0, snap
+    assert snap["probe"]["geo"] == "HU" and proxy_health._state["hu-1"]["geo"] == "HU", "ip/geo kept for display"
+
+
+def case_a_probe_of_result_keeps_the_last_trace_ip_and_geo():
+    proxy_health._state.pop("hu-1", None)
+    proxy_health.note_trace("hu-1", {"ok": True, "ip": "203.0.113.7", "geo": "HU", "colo": "BUD"})
+    proxy_health._keep_probe("hu-1", {"ok": False, "ip": None, "geo": None, "colo": None, "ttfb_ms": None,
+                                      "error": "proxy_probe_failed: CONNECT 403", "refused": True})
+    pr = proxy_health.snapshot("hu-1")["probe"]
+    assert pr["ok"] is False and (pr["ip"], pr["geo"], pr["colo"]) == ("203.0.113.7", "HU", "BUD"), pr
+    proxy_health.note_trace("hu-1", {"ok": False, "ip": None, "geo": None, "colo": None})
+    assert proxy_health.snapshot("hu-1")["probe"]["geo"] == "HU", "a failed trace changes nothing"
+
+
+def case_verify_pick_judges_by_probe_of_and_fills_the_region_once():
+    a, b, c = _pool()
+    with _Watch(True, True, False) as w:
+        assert proxy_health.verify_pick(proxies.get_by_label(a))
+        assert proxy_health.verify_pick(proxies.get_by_label(a))
+        assert not proxy_health.verify_pick(proxies.get_by_label(b)), "refuses OF: passed over"
+    assert w.probed == [a, a, b] and w.traced == [a], f"one trace, for a's unknown region: {w.traced}"
+    assert proxy_health.last_geo(proxies.get_by_label(a)) == "HU"
+    assert proxy_health._state[b]["errors"] == 1, "the failed destination check counts"
+
+
+
+def case_a_login_attach_never_waits_on_the_region_trace():
+    a, b, c = _pool()
+    with _Watch(True) as w:   # every geo unknown: a failover's verify would trace once
+        p, kept = proxy_health.assign_pool("7", random.Random(1))
+    assert w.probed == [p["label"]] and w.traced == [], f"attach: one probe_of, no trace: {w.traced}"
+    assert proxy_health.last_geo(p) is None
 
 
 if __name__ == "__main__":

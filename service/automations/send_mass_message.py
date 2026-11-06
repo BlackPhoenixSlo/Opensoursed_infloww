@@ -73,6 +73,7 @@ import automation_executor as ax  # shared _make_client seam (tests patch ax._ma
 from automation_registry import register
 from automations import send_mass_decide as smd
 from automations._pools import int_list
+from of_client import proxy_refused
 from automations._wordfilter import (  # compliance word filter
     banned_hit_summary, filter_banned, load_banned_words,
 )
@@ -81,6 +82,7 @@ from db.models import FunnelAccountMedia, ListMember, MassMessageFunnel, MassRun
 from event_transcoder import _parse_iso, _to_cents
 
 log = logging.getLogger("of-relay.automation.send_mass_message")
+RUN_REFUSED = "refused"   # a mass_runs status: the proxy refused its POST
 
 
 async def _opener_media(funnel_id: int, account_id: str, s=None) -> tuple[list[int], list[int]]:
@@ -205,6 +207,14 @@ async def _dry_run(account_id: str, run_id: int, p: smd.Plan, client, pol,
     log.info("send_mass_message DRY RUN account=%s run=%s would_send=%s",
              account_id, run_id, None if would_send is None else len(would_send))
     return {**smd.dry_run_result(p, would_send), **stats}
+
+
+async def _close_refused_run(mass_run_id: int) -> None:
+    """A minted run whose POST the proxy refused: OF never saw it (RUN_REFUSED)."""
+    async with get_session() as s:
+        mr = await s.get(MassRun, mass_run_id)
+        if mr is not None and mr.status == "running":
+            mr.status, mr.completed_at = RUN_REFUSED, datetime.utcnow()
 
 
 @register("send_mass_message")
@@ -427,23 +437,31 @@ async def _run(account_id: str, payload: dict, *, run_id: int) -> dict:
         # previous OF write (resends/drips/parallel sends never crowd OF's 10s
         # window), with the async retry as a backstop. The wait is
         # asyncio.sleep — loop/threads stay free.
-        result = await ax.of_write_paced(
-            account_id,
-            lambda: client.send_mass_message(
-                text=text,
-                user_lists=list(p.user_lists),
-                included_users=p.recipients,
-                excluded_users=sorted(p.excl_set),
-                excluded_user_lists=list(p.excluded_user_lists),
-                price=p.price,
-                media_files=p.media_files,
-                previews=p.previews,
-                filters=p.filters,
-                online_only=p.online_only,
-            ),
-            send_purpose="fenced",
-            before_write=_mint,
-        )
+        try:
+            result = await ax.of_write_paced(
+                account_id,
+                lambda: client.send_mass_message(
+                    text=text,
+                    user_lists=list(p.user_lists),
+                    included_users=p.recipients,
+                    excluded_users=sorted(p.excl_set),
+                    excluded_user_lists=list(p.excluded_user_lists),
+                    price=p.price,
+                    media_files=p.media_files,
+                    previews=p.previews,
+                    filters=p.filters,
+                    online_only=p.online_only,
+                ),
+                send_purpose="fenced",
+                before_write=_mint,
+            )
+        except Exception as e:
+            # The proxy refused it (CONNECT 403: OF never saw it): the minted run ends
+            # RUN_REFUSED, not 'running' forever. Any other
+            # error keeps its run as it is (the pre-existing behaviour).
+            if mass_run_id and proxy_refused(e):
+                await _close_refused_run(mass_run_id)
+            raise
     # OF's queue id — needed by callers that schedule a forever-window unsend
     # (mass_premade, the relay auto-unsend timer). NOT persisted on mass_runs.
     queue_id = result.get("id") if isinstance(result, dict) else None

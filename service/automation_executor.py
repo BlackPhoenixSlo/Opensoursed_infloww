@@ -61,7 +61,7 @@ from db.models import (
     ScheduledJob,
 )
 
-from of_client import OUTBOUND_TEXT_GUARD, OFClient
+from of_client import OUTBOUND_TEXT_GUARD, OFClient, proxy_refused
 import client_pool  # the relay's one OFClient pool (fd discipline lives there)
 import accounts as account_registry  # platform lookup (OF vs Fansly) for _make_client
 from automation_registry import (get_automation, canonical_kind,
@@ -935,7 +935,11 @@ async def run_once(
             status, job_status, err = run_decide.outcome(
                 "exception", None, err, once=once, wrote=write.state)
             _log_parked(job_status, account_id, kind, run_id, job_id, write.state)
-            await _finalize_run(run_id, status, None, err, job_id=job_id, job_status=job_status)
+            # A one-shot broadcast the proxy refused, nothing of it at OF: the job
+            # waits out the burst (run_decide.defers_refusal, job_queue._park_failed_job).
+            refused = run_decide.defers_refusal(kind, proxy_refused(e), write.state)
+            await _finalize_run(run_id, status, None, err, job_id=job_id,
+                                job_status=job_status, refused=refused)
             return {"status": "error", "run_id": run_id, "job_id": job_id, "error": err}
         finally:
             OUTBOUND_TEXT_GUARD.reset(guard_token)

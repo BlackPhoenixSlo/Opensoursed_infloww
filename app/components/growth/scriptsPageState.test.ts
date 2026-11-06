@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import type { SavedReply } from "@/lib/relay";
+import type { SavedReply, SavedReplySequenceMeta } from "@/lib/relay";
 
 import {
-  ALL, INITIAL, UNCATEGORIZED, activeEntry, firstGap, kindOf, livePending, matchesSearch, neighbour, nextStep,
-  scriptRows, scriptsPageReducer, selectionOf, sequenceDates, sequenceSteps, sequencesOf, tagCountsOf,
-  type Action, type ScriptsPageState, type SortBy, type SortOrder, type View,
+  ALL, INITIAL, UNCATEGORIZED, activeEntry, byName, firstGap, kindOf, livePending, matchesSearch, neighbour,
+  nextStep, scriptRows, scriptsPageReducer, selectionOf, sequenceDates, sequenceHeader, sequenceOrder,
+  sequenceSteps, sequencesOf, tagCountsOf,
+  type Action, type ScriptsPageState, type SeqSort, type SeqSortBy, type SortBy, type SortOrder, type View,
 } from "./scriptsPageState";
 
 const TAGS = [ALL, "Night", "Opener", "VIP", UNCATEGORIZED];
@@ -352,6 +353,82 @@ describe("nextStep and sequenceDates", () => {
   ])("%s", (_n, rows, step, dates) => {
     expect(nextStep(rows)).toBe(step);
     expect(sequenceDates(rows)).toEqual({ created: undefined, modified: undefined, ...dates });
+  });
+});
+
+const meta = (name: string, over: Partial<SavedReplySequenceMeta> = {}): SavedReplySequenceMeta => ({
+  name, position: 0, created_by: null, description: null, created_at: null, updated_at: null, ...over,
+});
+
+describe("sequenceHeader", () => {
+  const rows = [sr(1, { created_at: "2026-09-02", updated_at: "2026-09-05" }), sr(2, { created_at: "2026-09-01" })];
+  it.each<[string, SavedReplySequenceMeta | undefined, SavedReply[], ReturnType<typeof sequenceHeader>]>([
+    ["no meta: the scripts' dates, no author", undefined, rows,
+      { createdBy: undefined, created: "2026-09-01", modified: "2026-09-05" }],
+    ["meta dates win for Created on; Last modified is the later", meta("A", {
+      created_by: "Ana", created_at: "2025-01-01", updated_at: "2025-02-01" }), rows,
+      { createdBy: "Ana", created: "2025-01-01", modified: "2026-09-05" }],
+    ["a meta edit after the scripts' is Last modified", meta("A", { updated_at: "2026-10-01" }), rows,
+      { createdBy: undefined, created: "2026-09-01", modified: "2026-10-01" }],
+    ["empty everything", undefined, [], { createdBy: undefined, created: undefined, modified: undefined }],
+  ])("%s", (_n, m, r, want) => expect(sequenceHeader(m, r)).toEqual(want));
+});
+
+describe("sequenceOrder", () => {
+  const metas = new Map([
+    ["Seq 10", meta("Seq 10", { position: 1 })],
+    ["Seq 2", meta("Seq 2", { position: 2, updated_at: "2026-01-01" })],
+    ["b", meta("b", { position: 0 })],
+  ]);
+  const seqs = new Map<string, SavedReply[]>([
+    ["Seq 10", [sr(1, { updated_at: "2026-05-01" })]],
+    ["Seq 2", [sr(2, { updated_at: "2025-01-01" })]],
+    ["b", [sr(3, { updated_at: "2026-03-01" })]],
+    ["a", [sr(4, { updated_at: "2026-04-01" })]],
+  ]);
+  const names = ["Seq 2", "a", "Seq 10", "b"];
+  it.each<[SeqSort, string[]]>([
+    [{ by: "custom", order: "asc" }, ["b", "Seq 10", "Seq 2", "a"]],
+    [{ by: "custom", order: "desc" }, ["a", "Seq 2", "Seq 10", "b"]],
+    [{ by: "name", order: "asc" }, ["a", "b", "Seq 2", "Seq 10"]],
+    [{ by: "name", order: "desc" }, ["Seq 10", "Seq 2", "b", "a"]],
+    [{ by: "recent", order: "desc" }, ["Seq 10", "a", "b", "Seq 2"]],
+    [{ by: "recent", order: "asc" }, ["Seq 2", "b", "a", "Seq 10"]],
+  ])("%j", (sort, want) => expect(sequenceOrder(names, metas, seqs, sort)).toEqual(want));
+
+  it.each<[string, string, number]>([
+    ["Step 2", "Step 10", -1], ["step 1", "STEP 1", 0], ["b", "a", 1],
+  ])("byName(%s, %s) is %i", (a, b, sign) => expect(Math.sign(byName(a, b))).toBe(sign));
+
+  it("no meta at all: Custom is by name, numbers by value", () => {
+    expect(sequenceOrder(["x 10", "x 9", "X 1"], new Map(), new Map(), INITIAL.seqSort)).toEqual(["X 1", "x 9", "x 10"]);
+  });
+});
+
+describe("seqSort", () => {
+  it.each<[string, SeqSort, SeqSortBy, SeqSort]>([
+    ["Custom is the default; picking it again flips", INITIAL.seqSort, "custom", { by: "custom", order: "desc" }],
+    ["another sort starts ascending", { by: "custom", order: "desc" }, "name", { by: "name", order: "asc" }],
+    ["Recent starts newest first", INITIAL.seqSort, "recent", { by: "recent", order: "desc" }],
+    ["Recent again flips to oldest first", { by: "recent", order: "desc" }, "recent", { by: "recent", order: "asc" }],
+  ])("%s", (_n, from, by, want) => {
+    expect(scriptsPageReducer(st({ seqSort: from }), { type: "seqSort", by }).seqSort).toEqual(want);
+  });
+
+  it("survives another Creator", () => {
+    const s = scriptsPageReducer(st({ seqSort: { by: "name", order: "desc" } }), { type: "reset", account: "b" });
+    expect(s.seqSort).toEqual({ by: "name", order: "desc" });
+  });
+});
+
+describe("sequencesOf at scale", () => {
+  it("groups 10k scripts over 700 sequences in list order, linear time", () => {
+    const rows = Array.from({ length: 10_000 }, (_, i) => sr(i, { script_id: `S${i % 700}`, script_step: i }));
+    const t = performance.now();
+    const m = sequencesOf(rows);
+    expect(performance.now() - t).toBeLessThan(200);
+    expect(m.size).toBe(700);
+    expect(m.get("S5")!.map((r) => r.id).slice(0, 3)).toEqual([5, 705, 1405]);
   });
 });
 

@@ -18,6 +18,7 @@ from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from of_rich_text import of_plain
 from db.models import Employee, Fan, MassBroadcastCache, MassMessageFunnel, MassRun, Message
 
 
@@ -329,7 +330,7 @@ def _csv_row(row: Any, account_nicknames: dict[str, str]) -> list[Any]:
         row.of_display_name or "",
         row.direction,
         row.created_at.isoformat() if row.created_at else "",
-        (row.body or "")[:2000],
+        of_plain(row.body)[:2000],  # OF markup: the text a fan read, cut after the tags are gone
         row.media_count,
         row.price_cents,
         "" if row.is_paid is None else ("true" if row.is_paid else "false"),

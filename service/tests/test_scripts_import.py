@@ -129,6 +129,18 @@ def case_bad_and_duplicate_rows_fail_with_a_reason_and_the_rest_import():
     assert sorted(x["title"] for x in _list(OWNER_A)) == ["Taken", "edge", "ok"]
 
 
+def case_a_markup_cell_is_sanitized_and_its_length_is_what_a_fan_reads():
+    _wipe()
+    rows = [["name", "text"],
+            ["rich", "<p><strong onclick=x>" + "t" * 1000 + "</strong><script>y</script></p>"],
+            ["rich long", "<p>" + "t" * 1001 + "</p>"],
+            ["only tags", "<p><img src=x></p>"]]
+    body = _import(OWNER_A, _book({"Tag": rows})).json()
+    assert (body["success_count"], {(f["row"], f["reason"]) for f in body["failed"]}) == (
+        1, {(3, "text longer than 1000 characters"), (4, "text is required")}), body
+    assert [x["text"] for x in _list(OWNER_A)] == ["<p><strong>" + "t" * 1000 + "</strong></p>"]
+
+
 def case_a_sheet_over_1000_rows_or_a_non_xlsx_or_empty_file_is_refused():
     _wipe()
     big = [["name", "text"]] + [[f"n{i}", "t"] for i in range(1001)]

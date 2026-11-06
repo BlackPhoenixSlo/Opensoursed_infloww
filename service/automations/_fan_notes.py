@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import logging
 import re
@@ -9,6 +10,7 @@ from datetime import datetime
 
 from db.engine import get_session
 from db.models import Fan
+from of_rich_text import is_of_html
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 log = logging.getLogger("of-relay.automation.common")
@@ -174,7 +176,9 @@ def substitute_placeholders(text: str, fan, *, name: str | None = None) -> str:
     empty/None we fall back to a soft 'babe' rather than leaving a hole like
     'morning sleepyhead  ☀️'. Unknown placeholders are left untouched. An EMPTY
     fact (no city/pet/…) collapses its placeholder to '' (the surrounding copy is
-    written to read fine without it)."""
+    written to read fine without it). In an OF markup template (a formatted
+    Smart Message) each value is HTML-escaped, so a fact like `<em>X</em>` is
+    text, never formatting; a plain template keeps the values' bytes."""
     def _get(attr: str) -> str:
         if fan is None:
             return ""
@@ -208,9 +212,10 @@ def substitute_placeholders(text: str, fan, *, name: str | None = None) -> str:
         "{pet}": pet,
     }
     out = text or ""
+    markup = is_of_html(out)
     for k, v in repl.items():
         if k in out:
-            out = out.replace(k, v)
+            out = out.replace(k, html.escape(v, quote=False) if markup else v)
     # Tidy any double spaces left by an empty fact, but keep newlines.
     return re.sub(r"[ \t]{2,}", " ", out).strip()
 

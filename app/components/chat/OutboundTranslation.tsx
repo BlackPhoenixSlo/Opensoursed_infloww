@@ -100,12 +100,14 @@ export function outboundTranslationKey(
 
 /** The strip in the composer's notice stack. */
 export function OutboundTranslationStrip({
-  t, onUse, onSend, canSend,
+  t, onUse, onSend, canSend, formatted = false,
 }: {
   t: OutboundTranslation;
   onUse: (s: string) => void;
   onSend: (s: string) => void;
   canSend: boolean;
+  /** The draft holds OF formatting: the translation is plain text, so its strip says the formatting goes. */
+  formatted?: boolean;
 }) {
   const selectId = useId();
   if (!t.open) return null;
@@ -149,6 +151,11 @@ export function OutboundTranslationStrip({
       <button type="button" onClick={t.toggle} aria-label="Close translation" title="Close (Alt+T)" className="shrink-0 text-fg-dim hover:text-fg">
         <X aria-hidden className="size-3.5" />
       </button>
+      {formatted && (
+        <span data-translation-plain="" className="basis-full text-fg-dim">
+          The translation is plain text: Use or Send translation drops the formatting.
+        </span>
+      )}
     </section>
   );
 }

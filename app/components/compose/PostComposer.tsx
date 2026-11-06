@@ -22,16 +22,18 @@ import { useAllModelsInclude } from "@/hooks/useAllModelsInclude";
 import { usePaidPage, PAID_PAGE_NOTE } from "@/hooks/usePaidPage";
 import { relay } from "@/lib/relay";
 import { VaultPicker } from "@/components/chat/VaultPicker";
-import { EmojiPickerButton, EmojiQuickRow, insertAtCursor } from "@/components/chat/EmojiBar";
+import { EmojiPickerButton, EmojiQuickRow } from "@/components/chat/EmojiBar";
 import { TemplatePicker, type PickedTemplate } from "@/components/chat/TemplatePicker";
 import { TagCreatorsPicker, TaggedCreatorChips } from "@/components/chat/TagCreatorsPicker";
 import { recordSchedule } from "@/lib/scheduleHistory";
 import { EDITOR_MODAL } from "@/components/automations/automationPage";
-import { IfButton, IfHelp, IfInput, IfLabel, IfModal, IfTextArea } from "@/components/ui/infloww";
+import { IfButton, IfHelp, IfInput, IfLabel, IfModal } from "@/components/ui/infloww";
 
 import { sanitizePriceInput } from "@/lib/priceInput";
 
 import { MediaTray } from "./MediaTray";
+import { useOfRichAllowed } from "@/hooks/useOfRichAllowed";
+import { AaButton, ComposeTextBox, type ComposeTextBoxHandle } from "./ComposeTextBox";
 import { ScheduleField } from "./ScheduleField";
 import { FanOutResults, FanOutStatus } from "./FanOutResults";
 import { IncludeModelsChips } from "./IncludeModelsChips";
@@ -82,7 +84,9 @@ export function PostComposer({
   // Stable: AccountPicker's auto-seed effect depends on it.
   const setAccountId = useCallback((id: string) => dispatch({ type: "setAccount", id }), [dispatch]);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const textRef = useRef<ComposeTextBoxHandle | null>(null);
+  // OF rich text: OnlyFans accounts only (all-models: the platform's, whose accounts these all are).
+  const allowRich = useOfRichAllowed(accountId);
   // A subscription page has no paid-post lane on OF, so the price field is not
   // an option there and its price reads as 0 (postComposerReducer `postPrice`)
   // — a typed or template price can't block or ride into the post. The relay
@@ -141,19 +145,16 @@ export function PostComposer({
   }
 
   function onEmoji(em: string) {
-    const ta = textareaRef.current;
-    if (!ta) {
-      dispatch({ type: "appendText", v: em });
-      return;
-    }
-    insertAtCursor(ta, text, em, set("text"));
+    if (textRef.current) textRef.current.insert(em);
+    else dispatch({ type: "appendText", v: em });
   }
 
   function onPickTemplate(t: PickedTemplate) {
     // Snapshot semantics (lib/composeDraft applyTemplate): text, media,
     // preview count and price are replaced wholesale.
-    dispatch({ type: "pickTemplate", t });
-    setTimeout(() => textareaRef.current?.focus(), 0);
+    // An OnlyFans account keeps a formatted script's markup; Fansly gets its plain text.
+    dispatch({ type: "pickTemplate", t, rich: allowRich });
+    setTimeout(() => textRef.current?.focus(), 0);
   }
 
   const priceId = useId();
@@ -204,19 +205,22 @@ export function PostComposer({
           {/* The content — locked (disabled) once a model took the post. */}
           <fieldset disabled={locked} className="min-w-0 space-y-4 disabled:opacity-60">
           <div className="space-y-2">
-            <IfTextArea
-              ref={textareaRef}
+            <ComposeTextBox
+              ref={textRef}
               value={text}
-              onChange={(e) => set("text")(e.target.value)}
+              onChange={set("text")}
               placeholder="What's on your feed today?"
               rows={5}
-              className="max-md:text-base"
+              rich={allowRich && form.mode.rich}
+              toolbar={form.mode.toolbar}
+              disabled={locked}
             />
             {/* Escape in a picker's search box closes that picker, not the whole composer. */}
             <div className="flex items-center gap-1.5 flex-wrap"
               onKeyDown={(e) => { if (e.key === "Escape" && e.target instanceof HTMLInputElement) e.stopPropagation(); }}>
               <EmojiQuickRow onInsert={onEmoji} />
               <EmojiPickerButton align="left" onInsert={onEmoji} />
+              {allowRich && <AaButton on={form.mode.toolbar} onToggle={() => dispatch({ type: "aa" })} />}
               <TemplatePicker
                 accountId={accountId}
                 onPick={onPickTemplate}

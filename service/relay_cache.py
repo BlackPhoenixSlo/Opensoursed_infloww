@@ -42,9 +42,12 @@ from __future__ import annotations
 
 import asyncio
 import heapq
+import itertools
 import logging
 import time
 from typing import Any, Awaitable, Callable
+
+import relay_coalesce
 
 log = logging.getLogger("of-relay.relay_cache")
 
@@ -77,14 +80,29 @@ _registry_lock = asyncio.Lock()
 # queued on the key's lock while that fetch failed gets that failure instead
 # of going upstream again after it, so single-flight holds on errors too (as
 # relay_coalesce's): N readers of a Creator behind a dead proxy wait for one
-# failure, not N in a row. Decided: the FIRST caller's retry policy decides
-# the outcome for every caller queued behind it (an interactive first caller's
-# 2 tries fail a background waiter fast; a background first caller's 5 tries
-# make an interactive waiter wait them out, as it already was, queued). Only
-# reads go through here, and a background read is re-polled anyway. Each
+# failure, not N in a row. Locks and failures are per priority class
+# (relay_coalesce.priority_class): a user read never queues behind, or takes
+# the failure of, a background read of the same key (its lane wait and 5
+# tries); the classes share the cache entry. Within a class the FIRST caller's
+# retry policy decides for every caller queued behind it. Only reads go
+# through here, and a background read is re-polled anyway. Each
 # waiter raises its own copy (`_fresh`), so tracebacks don't pile onto one
 # shared instance. Swept with the key's lock.
 _failed: dict[tuple[str, str, tuple], tuple[BaseException, float]] = {}
+
+
+# Write fence: per key, the start order of the fetch whose value is cached. Two
+# classes can fetch one key at once; the one that STARTED later wins, whichever
+# finishes last. Swept with the cache.
+_fetch_seq = itertools.count()
+_written: dict[tuple[str, str, tuple], int] = {}
+
+
+def _lock_key(key: tuple[str, str, tuple]) -> tuple[str, str, tuple]:
+    """The single-flight key: `key` for a user read, `key` + the class for a
+    background one (same namespace/account slots, so invalidate_account sees it)."""
+    cls = relay_coalesce.priority_class()
+    return key if cls == "user" else (key[0], key[1], (*key[2], ("priority", cls)))
 
 
 def _fresh(e: BaseException) -> BaseException:
@@ -167,6 +185,9 @@ def _maintain(keep: tuple[str, str, tuple]) -> None:
     for k in list(_failed):
         if k not in _locks:
             _failed.pop(k, None)
+    for k in list(_written):
+        if k not in _cache:
+            _written.pop(k, None)
     low_water = int(_MAX_ENTRIES * _LOW_WATER_RATIO)
     # Only a cap crossing evicts, and always down to low water even when the
     # sweep alone got under the cap: else the next crossing is a few misses away.
@@ -267,11 +288,12 @@ async def _fetch_locked(
     namespace, account_id, _extras = key
     # Miss path: acquire per-key lock so N concurrent callers on the
     # same cold key produce ONE upstream fetch.
-    lock = await _get_or_make_lock(key)
+    lkey = _lock_key(key)
+    lock = await _get_or_make_lock(lkey)
     arrived = time.monotonic()
     async with lock:
         # The fetch we queued behind failed: its error is ours too (see _failed).
-        failed = _failed.get(key)
+        failed = _failed.get(lkey)
         if failed is not None and failed[1] >= arrived:
             log.info("relay_cache %s account=%s: a queued caller gets the failure of the fetch it waited on "
                      "(%s; that first caller's retry policy decided it)",
@@ -289,22 +311,28 @@ async def _fetch_locked(
 
         _record_miss(namespace)
         gen0 = _pair_gen.get((namespace, account_id), 0)
+        seq0 = next(_fetch_seq)
         try:
             if asyncio.iscoroutinefunction(fetcher):
                 value = await fetcher()
             else:
-                value = await asyncio.to_thread(fetcher)
+                # A sync fetcher takes a worker thread: a background read waits
+                # for its Creator's background lane first, on the loop.
+                async with relay_coalesce.admission():
+                    value = await asyncio.to_thread(fetcher)
         except Exception as e:
-            _failed[key] = (e, time.monotonic())
+            _failed[lkey] = (e, time.monotonic())
             raise
-        _failed.pop(key, None)
+        _failed.pop(lkey, None)
 
         # Latest-wins: skip the write-back if an invalidation landed while we
         # were upstream — our snapshot predates it. The caller still gets the
         # value it fetched; the NEXT reader misses and re-fetches post-change
-        # state. (See _pair_gen.)
-        if _pair_gen.get((namespace, account_id), 0) == gen0:
+        # state. (See _pair_gen.) Also skip it when the other class's fetch of
+        # this key started after ours and already wrote (_written).
+        if _pair_gen.get((namespace, account_id), 0) == gen0 and seq0 > _written.get(key, -1):
             _cache[key] = (value, time.monotonic() + float(ttl_seconds))
+            _written[key] = seq0
         _maintain(keep=key)
         return value
 

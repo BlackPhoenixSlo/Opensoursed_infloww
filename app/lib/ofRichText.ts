@@ -6,7 +6,7 @@
  * markup) is `ofMirrorFormat`; this is the reading side. The relay's send boundary keeps the same allow-list
  * (service/of_rich_text.py).
  */
-import { COLORS, SIZES } from "@/lib/ofMirrorFormat";
+import { COLORS, SIZES, runsHtml } from "@/lib/ofMirrorFormat";
 
 const COLOR_CLASSES: ReadonlySet<string> = new Set(COLORS.map((c) => c.cls));
 const SIZE_CLASSES: ReadonlySet<string> = new Set(SIZES.map((s) => s.cls));
@@ -19,21 +19,43 @@ export type OfRun =
 export type OfDoc = OfRun[][];
 
 const NAMED: Record<string, string> = { nbsp: " ", amp: "&", lt: "<", gt: ">", quot: "\"", apos: "'" };
+/** Where there is no DOM (SSR, node): the named entities a pasted or OF-sent body commonly holds. */
+const NAMED_NO_DOM: Record<string, string> = {
+  hellip: "\u2026", rsquo: "\u2019", lsquo: "\u2018", rdquo: "\u201d", ldquo: "\u201c", sbquo: "\u201a",
+  bdquo: "\u201e", mdash: "\u2014", ndash: "\u2013", bull: "\u2022", middot: "\u00b7", laquo: "\u00ab",
+  raquo: "\u00bb", copy: "\u00a9", reg: "\u00ae", trade: "\u2122", euro: "\u20ac", pound: "\u00a3",
+  yen: "\u00a5", cent: "\u00a2", deg: "\u00b0", times: "\u00d7", divide: "\u00f7", hearts: "\u2665",
+  star: "\u2606", iexcl: "\u00a1", iquest: "\u00bf", shy: "\u00ad", zwj: "\u200d", zwnj: "\u200c",
+};
+let decoder: HTMLTextAreaElement | null | undefined;
+/** A named entity the basics lack: the browser's own table (a textarea is RCDATA: nothing in it is parsed as a
+ *  tag; only the one `&name;` goes in), else the no-DOM list; unknown stays as written. */
+function decodeNamed(m: string, name: string): string {
+  if (decoder === undefined) decoder = typeof document !== "undefined" ? document.createElement("textarea") : null;
+  if (!decoder) return NAMED_NO_DOM[name] ?? NAMED_NO_DOM[name.toLowerCase()] ?? m;
+  decoder.innerHTML = m;
+  // A whole entity is one or two code units; more is a legacy prefix decoded alone (`&notanentity;` -> `¬anentity;`).
+  return decoder.value.length <= 2 ? decoder.value : m;
+}
 
-/** HTML entities decoded once (named basics, decimal and hex); an unknown one stays as written. */
+/** HTML entities decoded once (every named one the browser knows, decimal and hex); an unknown one stays as
+ *  written. The basics (`&nbsp;` as a plain space) never depend on the DOM. */
 export function decodeEntities(s: string): string {
-  return s.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e: string) => {
+  return s.replace(/&(#x[0-9a-f]+|#\d+|[a-z][a-z0-9]*);/gi, (m, e: string) => {
     if (e[0] === "#") {
       const n = e[1] === "x" || e[1] === "X" ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
       return Number.isFinite(n) && n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : m;
     }
-    return NAMED[e.toLowerCase()] ?? m;
+    return NAMED[e.toLowerCase()] ?? decodeNamed(m, e);
   });
 }
 
 /** Whose content is never text (dropped whole). */
 const DROP_CONTENT = /^(script|style|template|noscript|iframe|object|textarea|title|head)$/i;
-const TAG = /<(\/?)([a-zA-Z][a-zA-Z0-9-]*)([^>]*)>|<!--[\s\S]*?-->/g;
+/** A tag whose attributes may quote a `>` (`<span title="a>b">`), or a comment. */
+const TAG = /<(\/?)([a-zA-Z][a-zA-Z0-9-]*)((?:[^>"']|"[^"]*"|'[^']*')*)>|<!--[\s\S]*?-->/g;
+/** Blocks that end a line: OF's `<p>`, and what a paste or another editor leaves (the relay maps them to `<p>`). */
+const BLOCK = /^(p|div|li|h[1-6])$/;
 const CLASS_ATTR = /\bclass\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i;
 
 /** Whether `s` is OF markup rather than plain text: it starts with a paragraph (OF's and our editor's output; the
@@ -100,9 +122,11 @@ export function parseOfHtml(html: string): OfDoc {
       if (!closing) open().push({ br: true });
       continue;
     }
-    if (tag === "p" || tag === "div") {
+    if (BLOCK.test(tag)) {
       stack.length = 0; // a paragraph closes every mark left open in the last one
-      para = closing ? null : (doc.push([]), doc[doc.length - 1]);
+      // A block opened inside one still empty (`<div><p>`, `<li><p>`) is the same line, not a blank one before it.
+      if (closing) para = null;
+      else if (!para || para.length) para = (doc.push([]), doc[doc.length - 1]);
       continue;
     }
     if (closing) {
@@ -145,9 +169,9 @@ export function ofPlainText(s: string): string {
     s
       .replace(/<(script|style|template|noscript|iframe|object|textarea|title|head)\b[\s\S]*?<\/\1\s*>/gi, "")
       .replace(/<!--[\s\S]*?-->/g, "")
-      .replace(/<br\s*\/?>/gi, "\n")
-      .replace(/<\/(p|div)\s*>/gi, "\n")
-      .replace(/<\/?[a-zA-Z][^>]*>/g, ""),
+      .replace(/<br(?:\s(?:[^>"']|"[^"]*"|'[^']*')*)?\/?>/gi, "\n")
+      .replace(/<\/(p|div|li|h[1-6])\s*>/gi, "\n")
+      .replace(/<\/?[a-zA-Z](?:[^>"']|"[^"]*"|'[^']*')*>/g, ""),
   ).trim();
 }
 
@@ -161,6 +185,20 @@ const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replac
 export const plainToOfHtml = (s: string): string => s.split("\n").map((l) => `<p>${esc(l)}</p>`).join("");
 
 /** Infloww's save step (`replaceParagraphsWithBreaks`): blank paragraphs between two paragraphs fold into the first
- *  as two `<br>` each, since OF's chat draws an empty `<p>` with no height. */
+ *  as `<br>`s, since OF's chat draws an empty `<p>` with no height. n blank lines fold into n + 1 `<br>` (the
+ *  paragraph's own line end plus one per blank line), so plain -> markup -> plain keeps every blank line (Infloww
+ *  writes 2n, which adds one per extra blank line). */
 export const foldBlankParagraphs = (html: string): string =>
-  html.replace(/<\/p>((?:<p><\/p>)+)<p>/g, (_m, blanks: string) => "<br>".repeat((blanks.length / 7) * 2));
+  html.replace(/<\/p>((?:<p><\/p>)+)<p>/g, (_m, blanks: string) => "<br>".repeat(blanks.length / 7 + 1));
+
+/** OF's text limit (its composer's CharacterCount): counted on the plain text the fan reads, in every editor. */
+export const OF_TEXT_MAX = 6500;
+
+/** Paragraphs of runs as OF markup, in OF's wire nesting (span > strong > em, size class first: `runsHtml`). */
+export const ofDocToHtml = (doc: OfDoc): string =>
+  doc.map((p) => `<p>${runsHtml(p.map((r) => ("br" in r ? { text: "", bold: false, italic: false, classes: "", br: true }
+    : { text: r.text, bold: r.bold, italic: r.italic, classes: [r.size, r.color].filter(Boolean).join(" ") })))}</p>`).join("");
+
+/** Any markup through the allow-list (`parseOfHtml`): OF's tags and classes kept, every other tag dropped to its text,
+ *  li / div / h1-h6 as paragraphs (as the relay's send boundary does). */
+export const sanitizeOfHtml = (html: string): string => ofDocToHtml(parseOfHtml(html));

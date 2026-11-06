@@ -15,6 +15,9 @@ throttling (12 / 4 Mbit/s, CPU x2), OnlyFans on lib/of_wire.py (`of_ms` a call, 
 A phone (390x844, touch, iPhone user agent) on one browser profile, each visit a new browser process:
   dash-first    `/` with nothing cached: settled time, request counts
   dash-reload   `/` again: the Per-model cards' fan counts from the saved snapshot (C_SNAPSHOT)
+  dash-slow     `/` again, the page's clock SLOW_SHIFT_S ahead (the snapshot past its 30 min staleTime: every card
+                refetches), the relay restarted, Creator 0's OF +SLOW_EXTRA_S (> the bundle's 2 s deadline): the cards
+                keep the snapshot, one follow-up bundle fetches Creator 0 (C_PARTIAL)
   dash-leave    `/` cold on a profile of its own, OF slow (LEAVE_OF_MS a call), then S4S settings by the phone's
                 menu as the first fan-count read goes out: the Dashboard's waiting fan-count / new-fan reads are
                 dropped, none sent after it unmounted (C_ABORT)
@@ -23,6 +26,10 @@ A phone (390x844, touch, iPhone user agent) on one browser profile, each visit a
                 the relay restarted (its OF caches cold), so every Creator's chat list and badge loads again; as soon
                 as the saved rows show, the owner taps the Nth row: tap -> OnlyFans' message of that Fan painted
                 (C_CLICK, budget), while at least `creators` - 1 Creators' chat lists are still loading (C_LOADING)
+dash-first and mp-first read through the screen bundles (app/lib/screenBundle.ts, service/screens_api.py): 0
+per-Creator OnlyFans reads of what the bundle carries (BUNDLE_OF; the money rail's feeds keep their own routes), one
+bundle each (C_BUNDLE). dash-leave and mp-click-N run the per-Creator path on purpose
+(the page answers /admin/screens/* 404, as a failed bundle: `no_bundle`), the path PR A's queue governs.
 Every page request's start / end, its `X-Priority`, `X-Account-Id` and fetch priority (CDP) give C_CAP: no Creator
 (but the tapped one) with more than PER_CREATOR background OnlyFans reads on the wire at once. Screenshots per visit: `<visit>-trigger` (the reload's first paint
 of the cards; the tapped row) and `<visit>` (settled). Side effects: the painted fan counts equal OF's
@@ -34,6 +41,8 @@ Budget: C_CLICK, the median tap -> Thread over the `CLICKS` taps, at most CLICK_
 Break-it-once (lib/clicks_first_faults.py):
   relay-scheduler-bypassed  a Creator's lane never fills (every background read at once, as before): C_CAP, C_ABORT
   badge-keys-unpersisted    the four keys left out of the snapshot (as before): C_SNAPSHOT
+  screen-bundle-unused      every bundle 404 (main before the bundles): C_BUNDLE, C_PARTIAL; its dash-first /
+                            mp-first numbers are the per-Creator "before" in this same harness
 
 `--no-ui`: nothing to measure without the browser (the change is the app's alone): every check SKIPs.
 
@@ -42,7 +51,8 @@ throttling; Chromium stands in for Safari, and `navigator.connection` is hidden 
 the app judges the link by its own round trips, as on the owner's iPhone); OF answers are lib/of_wire.py's (one
 message per Thread, badges 0; dash-leave's calls take LEAVE_OF_MS); the 30 s wait before each tap visit stands in
 for the owner coming back later; under `relay-scheduler-bypassed` the app's JS chunks come patched from the app on
-loopback (actors/ui.py `_patched` origin), not over the WAN.
+loopback (actors/ui.py `_patched` origin), not over the WAN; dash-slow's clock shift is Playwright's (the page's
+Date only); dash-leave / mp-click-N's bundle 404 is a page route (`no_bundle`).
 """
 from __future__ import annotations
 
@@ -51,12 +61,18 @@ import json
 import sqlite3
 import statistics
 import time
+from collections import Counter
 from urllib.parse import urlsplit
 
 from playwright.async_api import async_playwright
 
 from slop.actors.ui import LAUNCH_ARGS, _client_fault, _patched
-from slop.lib.clicks_first_faults import PER_CREATOR, C_ABORT, C_CAP, C_SNAPSHOT
+from slop.lib.clicks_first_faults import PER_CREATOR, C_ABORT, C_BUNDLE, C_CAP, C_PARTIAL, C_SNAPSHOT
+
+# The per-Creator /api/of reads the screen bundles replace (service/screens_api.py): Dashboard's three, Pro's two.
+BUNDLE_OF = frozenset(("/api/of/v2/users/me", "/api/of/v2/subscriptions/count/all",
+                       "/api/of/v2/subscriptions/subscribers/chart", "/api/of/v2/chats",
+                       "/api/of/v2/users/notifications/count"))
 from slop.lib.faults import FAULTS
 from slop.lib.wan import WanEdge
 from slop.seed import agency, earnings, fans, of_sessions, threads
@@ -75,6 +91,10 @@ CLICKS = 3
 LEAVE_OF_MS = 2_000  # OF's answer time during dash-leave: a slow moment (prod's tail), so reads still wait at the switch
 LEAVE_TO = "/share-for-share/settings"  # Dashboard -> a page with no OF reads, by the sidebar
 STALE_S = 32  # the chat list's and the badges' staleTime is 30 s
+SLOW_ROUTES = ("GET /api2/v2/users/me", "GET /api2/v2/subscriptions/count/all",
+               "GET /api2/v2/subscriptions/subscribers/chart")   # dash-slow: the bundle's 3 reads
+SLOW_SHIFT_S = 31 * 60  # dash-slow: past the Dashboard keys' 30 min staleTime (useStats.ts)
+SLOW_EXTRA_S = 3.0  # dash-slow: Creator 0's OF answer time on top of of_ms; the bundle's deadline is 2 s
 # Median tap -> OF's message of that Fan painted. Before (origin/main 3425c6598, this scenario, small): 777 ms, one OF
 # call (500 ms) + one round trip; budget = that + 30% tolerance (CPU noise on a shared host).
 CLICK_BUDGET_MS = 1_000
@@ -105,6 +125,8 @@ PROBE_JS = r"""(() => {
     const fans = [...document.querySelectorAll('dt')].filter((d) => d.textContent.trim() === 'Fans')
       .map((d) => ((d.nextElementSibling || {}).textContent || '').trim());
     if (fans.length && fans.every((t) => /^[\d,]+$/.test(t)) && !S.fans) { S.fans = fans; requestAnimationFrame(() => mark('fans')); }
+    // a card that showed its count and then lost it (a spinner, a dash, the card gone)
+    if (S.fans && location.pathname === S.path && (fans.length < S.fans.length || !fans.every((t) => /^[\d,]+$/.test(t)))) mark('blank');
     const b = document.querySelector('[data-msg-id]');
     if ('click' in S.marks && b && !S.bubble) { S.bubble = b.getAttribute('data-msg-id'); requestAnimationFrame(() => mark('bubble')); }
     // OnlyFans' own message (lib/of_wire.py: id 8000000 + Fan id % 1e6; saved rows have other ids)
@@ -201,9 +223,11 @@ async def _quiet(page, quiet_s: float = 3.0, cap_s: float = 90.0) -> None:
         await asyncio.sleep(0.25)
 
 
-async def _visit(ctx, pw, edge, udir, name: str, path: str, *, first: bool, act=None, early: bool = False) -> dict:
+async def _visit(ctx, pw, edge, udir, name: str, path: str, *, first: bool, act=None, early: bool = False,
+                 no_bundle: bool = False, shift_s: float = 0.0) -> dict:
     """One visit of `path` in a new browser process on profile `udir`; `act(page, net)` runs once the page painted
-    (`early`: at once, the page still loading)."""
+    (`early`: at once, the page still loading). `no_bundle`: /admin/screens/* answers 404 (the per-Creator path);
+    `shift_s`: the page's clock that far ahead."""
     down, up, cpu = NET
     fault = FAULTS.get(ctx.fault or "")
     bctx = await pw.chromium.launch_persistent_context(
@@ -218,6 +242,11 @@ async def _visit(ctx, pw, edge, udir, name: str, path: str, *, first: bool, act=
             await bctx.add_init_script(js)
         if patches := _client_fault(ctx):
             await bctx.route("**/_next/static/**/*.js", lambda r: _patched(r, ctx, patches, origin=ctx.app))
+        if no_bundle:
+            await bctx.route("**/admin/screens/**", lambda r: r.fulfill(
+                status=404, content_type="application/json", body='{"detail":"slop: per-Creator path"}'))
+        if shift_s:
+            await bctx.clock.set_system_time(time.time() + shift_s)
         page = bctx.pages[0] if bctx.pages else await bctx.new_page()
         cdp = await bctx.new_cdp_session(page)
         net.attach(cdp)
@@ -255,11 +284,22 @@ async def _visit(ctx, pw, edge, udir, name: str, path: str, *, first: bool, act=
     return d
 
 
+def _bundles(d: dict) -> tuple[list[str], list[str]]:
+    """The visit's screen bundles (CDP): first-page ones (no `accounts=`, cursor 0) and follow-ups (`accounts=`)."""
+    sb = [r["path"] for r in d["net"] if r["path"].startswith("/admin/screens/")]
+    return ([p for p in sb if "accounts=" not in p and "cursor=" not in p.replace("cursor=0", "")],
+            [p for p in sb if "accounts=" in p])
+
+
 def _summary(d: dict) -> dict:
     res = [e for e in d["res"] if "/perflog/" not in e["name"]]
     of = [e for e in res if "/api/of/" in e["name"]]
     net_of = [r for r in d["net"] if r["path"].startswith("/api/of/")]
-    return {"settled_ms": round(max((e["end"] for e in res), default=0)),
+    paint = d["marks"].get("fans", d["marks"].get("rows"))
+    plain, follow = _bundles(d)
+    return {"bundles": len(plain), "follow_ups": len(follow),
+            "relay_before_paint": None if paint is None else sum(1 for e in res if e["start"] < paint),
+            "of_before_paint": None if paint is None else sum(1 for e in of if e["start"] < paint),"settled_ms": round(max((e["end"] for e in res), default=0)),
             "of_settled_ms": round(max((e["end"] for e in of), default=0)),
             "relay_requests": len(res), "of_requests": len(of),
             "of_background": sum(1 for r in net_of if r["bg"]), "of_user": sum(1 for r in net_of if not r["bg"]),
@@ -288,12 +328,13 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     clicks = ctx.param("clicks", CLICKS)
     ctx.metric("world", {"creators": len(cs), "of_ms": round(fake.latency_s * 1000), "rtt_ms": rtt, "net": NET,
                          "clicks": clicks})
-    checks = (C_CAP, C_SNAPSHOT, C_CLICK, C_LOADING, C_THREAD, C_ABORT, C_PAINT)
+    checks = (C_CAP, C_SNAPSHOT, C_CLICK, C_LOADING, C_THREAD, C_ABORT, C_PAINT, C_BUNDLE, C_PARTIAL)
     if not ctx.ui:
         for c in checks:
             ctx.skip(c, "--no-ui: no browser (the change is the app's alone)")
         return
 
+    slow = cs[0]["id"]
     edge = await asyncio.to_thread(WanEdge, ctx.stack, rtt)
     v: dict[str, dict] = {}
     udir = ctx.stack.tmp / "chrome-phone"
@@ -336,9 +377,31 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
             v["dash-reload"] = await _visit(ctx, pw, edge, udir, "dash-reload", "/", first=False)
             await asyncio.to_thread(ctx.stack.crash_relay)
             await asyncio.to_thread(ctx.stack.start_relay)
+            n_slow = len(fake.calls)
+            fake.extra_s[slow] = SLOW_EXTRA_S
+            v["dash-slow"] = await _visit(ctx, pw, edge, udir, "dash-slow", "/", first=False, shift_s=SLOW_SHIFT_S)
+            # the mirror: once Creator 0's late reads answered, the next bundle has it complete with no OF call
+            # its 3 Dashboard reads (users/me, count/all, chart), answered: /api2/ only (the relay's restart
+            # also fetches the signing /hash under the Creator's id, undelayed); calls log on completion
+            t_end = time.time() + 30
+            while time.time() < t_end and len({c["route"] for c in fake.calls[n_slow:] if c["account"] == slow
+                                               and c["route"] in SLOW_ROUTES and c["status"] == 200}) < 3:
+                await asyncio.sleep(0.25)
+            fake.extra_s.pop(slow, None)
+            n_after = len(fake.calls)
+            plain = _bundles(v["dash-slow"])[0]
+            r = await ctx.owner.get(plain[0] if plain else "/admin/screens/dashboard")
+            after_body = r.json() if r.status_code == 200 else None
+            slow_after = {"status": r.status_code,
+                          "row": next((c for c in (after_body or {}).get("creators", []) if c["id"] == slow), None),
+                          "of_calls": sum(1 for c in fake.calls[n_after:] if c["account"] == slow
+                                          and c["route"].startswith("GET /api2/")),
+                          "of_calls_during_visit": sum(1 for c in fake.calls[n_slow:n_after] if c["account"] == slow)}
+            await asyncio.to_thread(ctx.stack.crash_relay)
+            await asyncio.to_thread(ctx.stack.start_relay)
             fake.latency_s = LEAVE_OF_MS / 1000
             v["dash-leave"] = await _visit(ctx, pw, edge, ctx.stack.tmp / "chrome-leave", "dash-leave", "/",
-                                           first=True, act=leave, early=True)
+                                           first=True, act=leave, early=True, no_bundle=True)
             fake.latency_s = ctx.param("of_ms", OF_MS) / 1000
             await asyncio.to_thread(ctx.stack.crash_relay)
             await asyncio.to_thread(ctx.stack.start_relay)
@@ -349,7 +412,7 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
                 await asyncio.to_thread(ctx.stack.start_relay)
                 await asyncio.sleep(max(0.0, STALE_S - (time.time() - t_last)))
                 v[f"mp-click-{i}"] = await _visit(ctx, pw, edge, udir, f"mp-click-{i}", "/messages-pro",
-                                                  first=False, act=tap(i))
+                                                  first=False, act=tap(i), no_bundle=True)
     finally:
         edge.close()
     for k, d in v.items():
@@ -358,12 +421,33 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     summ = {k: _summary(d) for k, d in v.items()}
     ctx.metric("visits", summ)
     cols = ("painted_ms", "settled_ms", "of_settled_ms", "relay_requests", "of_requests", "of_background", "of_user",
-            "max_bg_inflight")
+            "max_bg_inflight", "bundles", "follow_ups", "relay_before_paint", "of_before_paint")
     ctx.note(f"per visit at {rtt} ms RTT (ms from navigation start; counts = fetches the page sent):",
              f"{'visit':14} " + " ".join(f"{c[:15]:>15}" for c in cols),
              *(f"{k:14} " + " ".join(f"{str(s[c]):>15}" for c in cols) for k, s in summ.items()))
 
     bad5 = [(k, r["path"], r["status"]) for k, d in v.items() for r in d["net"] if (r["status"] or 0) >= 500]
+    # One call per screen: none of the bundle's reads per Creator on the bundle visits (the money rail's
+    # feeds keep their own routes: `own_routes`, reported only).
+    def of_base(d: dict) -> Counter:
+        return Counter(r["path"].split("?")[0] for r in d["net"] if r["path"].startswith("/api/of/"))
+    per = {k: {"of_paths": Counter({p: n for p, n in of_base(v[k]).items() if p in BUNDLE_OF}),
+               "own_routes": Counter({p: n for p, n in of_base(v[k]).items() if p not in BUNDLE_OF}),
+               "bundles": summ[k]["bundles"], "follow_ups": summ[k]["follow_ups"]} for k in ("dash-first", "mp-first")}
+    ctx.check(C_BUNDLE, all(not x["of_paths"] and x["bundles"] == 1 and x["follow_ups"] <= 1 for x in per.values()),
+              **{k: {**x, "of_paths": dict(x["of_paths"]), "own_routes": dict(x["own_routes"])}
+                 for k, x in per.items()})
+    # A slow Creator: the snapshot stays, one follow-up, no fan-out, the mirror updated.
+    d = v["dash-slow"]
+    plain, follow = _bundles(d)
+    of_reads = [r["path"] for r in d["net"] if r["path"].split("?")[0] in BUNDLE_OF]
+    row = slow_after["row"] or {}
+    ctx.check(C_PARTIAL, d["painted"] and "blank" not in d["marks"] and len(plain) == 1 and len(follow) <= 1
+              and not of_reads and slow_after["status"] == 200 and not row.get("stale", True)
+              and row.get("subscriberCounts") is not None and slow_after["of_calls"] == 0,
+              painted_ms=round(d["marks"].get("fans", -1)), blank_ms=d["marks"].get("blank"), bundles=plain,
+              follow_ups=follow, of_reads=of_reads[:6], slow_creator=slow, after=slow_after)
+
     ctx.check(C_PAINT, all(d["painted"] for k, d in v.items() if k != "dash-leave") and not bad5,
               unpainted=[k for k, d in v.items() if not d["painted"] and k != "dash-leave"], status_5xx=bad5[:8])
 

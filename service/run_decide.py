@@ -3,7 +3,7 @@ The scheduled-jobs lane's decisions as pure functions (the shells:
 automation_executor.run_once / _reconcile_orphans and job_queue._park_failed_job):
 
     bind_claim(payload_json, job_rule_id, rule_live) -> Drop(rule_id) | Bind(rule_id | None)
-    park(attempts, rule_live, max_attempts) -> Cancelled | Retry(backoff_s) | Error
+    park(attempts, rule_live, max_attempts, backoff_s) -> Cancelled | Retry(backoff_s) | Error
     outcome(kind, guard_status, err, once=, wrote=) -> (run_status, job_status, error_text)
     sends_once(kind) / one_shot_family(): the send-once kinds (ONE_SHOT_KINDS)
 
@@ -104,14 +104,15 @@ class Error:
     """Out of attempts: left 'error' for inspection."""
 
 
-def park(attempts: int, rule_live: bool | None, max_attempts: int) -> Cancelled | Retry | Error:
+def park(attempts: int, rule_live: bool | None, max_attempts: int,
+         backoff_s: float = JOB_RETRY_BACKOFF_S) -> Cancelled | Retry | Error:
     """A failed job: a retry must not outlive its rule (`rule_live` False: the
     operator switched it OFF or deleted it while this attempt ran; None: the
-    job has no rule); else retry while attempts remain."""
+    job has no rule); else retry `backoff_s` out while attempts remain."""
     if rule_live is False:
         return Cancelled()
     if attempts < max_attempts:
-        return Retry(JOB_RETRY_BACKOFF_S)
+        return Retry(backoff_s)
     return Error()
 
 
@@ -147,6 +148,35 @@ _PARK_REASON: dict[WriteState, str] = {
     "accepted": f"{MAY_HAVE_SENT}: OnlyFans took the send, then the run failed; not resent",
     "unanswered": f"{MAY_HAVE_SENT}: the OnlyFans send got no answer; not resent",
 }
+
+
+# A proxy refusal (of_client.proxy_refused) nothing of which reached OF: the budget and the
+# wait every lane shares (a refused job here). A send refused `n` times reads `proxy_retry:<n>`; out of retries, `proxy_refused`.
+PROXY_REFUSED = "proxy_refused"
+PROXY_RETRY = "proxy_retry"
+PROXY_RETRIES = 3
+PROXY_RETRY_MINUTES = 5
+# The one-shots a refusal parks PROXY_RETRY_MINUTES out (job_queue._park_failed_job): the broadcasts.
+# Not scheduled_send: a chatter's DM with a delay (the composer's), whose 5-minute wait would land it
+# behind the chat's later messages; it keeps the plain JOB_RETRY_BACKOFF_S retry. Nor the sweeps.
+PROXY_DEFER_KINDS: frozenset[str] = frozenset({"mass_premade", "send_mass_message"})
+
+
+def defers_refusal(kind: str, refused: bool, wrote: WriteState) -> bool:
+    """A failed `kind` run waits out the proxy (PROXY_RETRY_MINUTES, PROXY_RETRIES): the proxy
+    refused it (`refused`), no write of it may have reached OF (`wrote` "none": a resend cannot
+    double send), and it is a one-shot broadcast (PROXY_DEFER_KINDS, one-shots only: a subset of
+    ONE_SHOT_KINDS, test_run_decide pins it; not re-read through ONE_SHOT_KINDS, so the slop fault
+    emptying that one leaves this alone)."""
+    return refused and wrote == "none" and canonical_kind(kind) in PROXY_DEFER_KINDS
+
+
+def proxy_tries(reason: str | None) -> int:
+    """How many proxy retries a send already had: `proxy_retry:<n>`, alone (a send's
+    reason) or followed by " (<error>)" (a job's last_error); else 0."""
+    head, _, rest = (reason or "").partition(":")
+    n = rest.split(" ", 1)[0]
+    return int(n) if head == PROXY_RETRY and n.isdigit() else 0
 
 
 def sends_once(kind: str) -> bool:

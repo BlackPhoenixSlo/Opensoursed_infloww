@@ -480,7 +480,9 @@ async def desktop(ctx, account_id: str, fans: list[dict]) -> list[dict]:
 
             async def hold(r):
                 path = urlsplit(r.request.url).path
-                if path.startswith("/api/of/") or path in ui.OF_LIVE_PATHS:
+                if await ui.screen_bundle_404(r):
+                    pass
+                elif path.startswith("/api/of/") or path in ui.OF_LIVE_PATHS:
                     held.append(r)  # as actors/ui: OF is not reachable from a slop run
                     if closing:
                         await r.abort()

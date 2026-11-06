@@ -738,8 +738,24 @@ export interface SavedReply {
   tags?: string[];
   /** Growth > Scripts' internal notes, never sent. */
   notes?: string | null;
+  /** A Condition step option's text (Infloww's `conditional`), e.g. "if he bought". */
+  conditional?: string | null;
+  /** Immediate chat sends that rode this script (`POST /admin/saved-replies/sent`). */
+  sent_count?: number;
   created_at?: string | null;
   updated_at?: string | null;
+}
+
+/** A Growth > Scripts sequence's own fields (`GET /admin/saved-replies/sequences`); a sequence without one is
+ *  still a sequence (its scripts' `script_id`). */
+export interface SavedReplySequenceMeta {
+  name: string;
+  /** Infloww's custom list order (the sidebar's "Custom" sort). */
+  position: number | null;
+  created_by: string | null;
+  description: string | null;
+  created_at: string | null;
+  updated_at: string | null;
 }
 
 /** A message queued for future delivery via OF's /messages/queue.

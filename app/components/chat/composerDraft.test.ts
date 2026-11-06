@@ -5,7 +5,7 @@ import { PRICE_NOTE } from "@/lib/sendGuards";
 
 import {
   EMPTY_DRAFT, FAILED_UPLOAD_NOTE, afterRefusedSchedule, buildSendArgs, canSend, composerDraft, composerView,
-  effectivePreviewCount, isEmptyDraft, isScheduling, richText, sendBlockedReason,
+  effectivePreviewCount, isEmptyDraft, isScheduling, richText, sendBlockedReason, sentReplyId,
   type ComposerDraft, type DraftAction, type SendCtx, type ViewCtx,
 } from "./composerDraft";
 import type { PickedTemplate } from "./TemplatePicker";
@@ -32,7 +32,7 @@ const STEP = { scriptId: "s1", scriptStep: 2 };
 const FULL = draft({
   price: "12", priceOpen: true, lockedText: true, attached: [media(1), media(2)], previewCount: 1,
   scheduleOpen: true, scheduleAt: LATER, taggedCreators: [tag(7)], pickedGifs: [gif("g1")], script: STEP,
-  rich: { html: "<p><em>hey</em></p>", plain: "hey" },
+  rich: { html: "<p><em>hey</em></p>", plain: "hey" }, mode: { toolbar: true, rich: true }, replyId: 42,
 });
 
 describe("composerDraft", () => {
@@ -62,10 +62,11 @@ describe("composerDraft", () => {
     ["reorder", draft({ attached: [media(1), media(2)] }), [{ type: "reorder", attached: [media(2), media(1)] }],
       { attached: [media(2), media(1)] }],
     ["clearPpv empties the row, keeps tags, the Script step and its markup", FULL, [{ type: "clearPpv" }],
-      { ...EMPTY_DRAFT, taggedCreators: [tag(7)], script: STEP, rich: FULL.rich }],
-    ["dropScript (the FM bubble's AI draft) forgets the Script step only", FULL, [{ type: "dropScript" }],
-      { script: null }],
-    ["sent empties everything, the Script step too", FULL, [{ type: "sent" }], EMPTY_DRAFT],
+      { ...EMPTY_DRAFT, taggedCreators: [tag(7)], script: STEP, rich: FULL.rich, mode: FULL.mode, replyId: 42 }],
+    ["dropScript (the FM bubble's AI draft) forgets the Script step and its saved reply only", FULL,
+      [{ type: "dropScript" }], { script: null, replyId: null }],
+    ["sent empties everything, the Script step too; \"Aa\" stays on", FULL, [{ type: "sent" }],
+      { ...EMPTY_DRAFT, mode: { toolbar: true, rich: true } }],
     ["restore is the snapshot", draft({ price: "3" }), [{ type: "restore", snapshot: FULL }], FULL],
   ])("%s", (_name, start, actions, want) => {
     expect(run(start, ...actions)).toEqual({ ...start, ...want });
@@ -88,6 +89,7 @@ describe("composerDraft", () => {
       const s = run(FULL, {
         type: "pickTemplate",
         t: tpl({ price: 9, lockedText: true, media: [media(5), media(6)], previews: [5], taggedUsers: [7, 8], gifId: "g9", gifUrl: "u9", title: "T" }),
+        rich: true,
       });
       expect(s).toEqual({
         ...FULL,
@@ -96,6 +98,7 @@ describe("composerDraft", () => {
         pickedGifs: [{ id: "g9", thumbUrl: "u9", fullUrl: "u9", title: "T" }],
         script: null, // no Script on this template: the old step goes
         rich: null, // nor formatting: the old markup goes
+        replyId: null, // nor a saved reply id (an OF row's shape): the old one goes
       });
     });
     it.each<[string, Partial<PickedTemplate>, ComposerDraft["script"]]>([
@@ -196,14 +199,55 @@ describe("buildSendArgs", () => {
   });
 });
 
+describe("sentReplyId: the saved reply a send counts for", () => {
+  const picked = (over: Partial<PickedTemplate>) => run(FULL, { type: "pickTemplate", t: tpl(over) });
+  it.each<[string, ComposerDraft, number | null]>([
+    ["a picked saved reply", picked({ replyId: 7 }), 7],
+    ["a sequence step", picked({ replyId: 8, scriptId: "Welcome", scriptStep: 2 }), 8],
+    ["the OF welcome (no id)", picked({ source: "of" }), null],
+    ["a typed message", EMPTY_DRAFT, null],
+    ["after the send", run(picked({ replyId: 7 }), { type: "sent" }), null],
+  ])("%s", (_n, d, want) => expect(sentReplyId(d)).toBe(want));
+});
+
 describe("a formatted script's markup (rich)", () => {
-  const HTML = '<p><strong><span class="m-editor-fc__blue-1">Hey</span></strong> babe</p>';
-  const picked = (over: Partial<PickedTemplate> = {}) => run(EMPTY_DRAFT, { type: "pickTemplate", t: tpl(over) });
+  const HTML = '<p><span class="m-editor-fc__blue-1"><strong>Hey</strong></span> babe</p>';
+  const picked = (over: Partial<PickedTemplate> = {}, rich = true) =>
+    run(EMPTY_DRAFT, { type: "pickTemplate", t: tpl(over), rich });
   it.each<[string, Partial<PickedTemplate>, ComposerDraft["rich"]]>([
     ["formatted script keeps its markup", { text: "Hey babe", displayText: HTML }, { html: HTML, plain: "Hey babe" }],
     ["plain script has none", { text: "hi", displayText: "hi" }, null],
     ["unformatted markup has none", { text: "hi", displayText: "<p>hi</p>" }, null],
   ])("pick: %s", (_n, t, want) => expect(picked(t).rich).toEqual(want));
+  it.each<[string, boolean, string, ComposerDraft["rich"], ComposerDraft["mode"]]>([
+    ["OF: formatted opens the rich editor with its markup", true, HTML, { html: HTML, plain: "Hey babe" }, { toolbar: false, rich: true }],
+    ["Fansly: formatted goes in plain, no markup, no editor", false, HTML, null, { toolbar: false, rich: false }],
+    ["OF: plain script stays in the textarea", true, "hi", null, { toolbar: false, rich: false }],
+  ])("pick mode: %s", (_n, allowed, displayText, rich, mode) => {
+    const s = picked({ text: "Hey babe", displayText }, allowed);
+    expect([s.rich, s.mode]).toEqual([rich, mode]);
+  });
+  const R = { html: HTML, plain: "Hey babe" };
+  it.each<[string, ComposerDraft, DraftAction[], ComposerDraft["mode"], ComposerDraft["rich"]]>([
+    ["Aa on: toolbar + rich editor", EMPTY_DRAFT, [{ type: "aa" }], { toolbar: true, rich: true }, null],
+    ["Aa off, no formatting: back to the textarea", EMPTY_DRAFT, [{ type: "aa" }, { type: "aa" }], { toolbar: false, rich: false }, null],
+    ["Aa off, formatting kept (OF): toolbar hides, editor + markup stay", EMPTY_DRAFT,
+      [{ type: "aa" }, { type: "setRich", rich: R }, { type: "aa" }], { toolbar: false, rich: true }, R],
+    ["an edit dropping the formatting stays in the editor", draft({ rich: R, mode: { toolbar: false, rich: true } }),
+      [{ type: "setRich", rich: null }], { toolbar: false, rich: true }, null],
+    ["sent: the toolbar stays on, the box empties", EMPTY_DRAFT,
+      [{ type: "aa" }, { type: "setRich", rich: R }, { type: "sent" }], { toolbar: true, rich: true }, null],
+    ["sent with Aa off: back to the textarea", draft({ rich: R, mode: { toolbar: false, rich: true } }),
+      [{ type: "sent" }], { toolbar: false, rich: false }, null],
+  ])("mode: %s", (_n, start, actions, mode, rich) => {
+    const s = run(start, ...actions);
+    expect([s.mode, s.rich]).toEqual([mode, rich]);
+  });
+  it.each<[string, boolean | undefined, string]>([
+    ["OF formatted sends markup", false, HTML],
+    ["plainOnly (Fansly, a translation) sends plain", true, "Hey babe"],
+  ])("buildSendArgs: %s", (_n, plainOnly, want) =>
+    expect(buildSendArgs(draft({ rich: R }), { text: "Hey babe", now: NOW, plainOnly }).text).toBe(want));
 
   const d = draft({ rich: { html: HTML, plain: "Hey babe" } });
   it.each<[string, string, string | null]>([
@@ -267,7 +311,8 @@ describe("afterRefusedSchedule", () => {
   });
   it("only what `sent` leaves is empty: every draft field counts", () => {
     expect(isEmptyDraft(run(FULL, { type: "sent" }))).toBe(true);
-    for (const k of Object.keys(EMPTY_DRAFT) as (keyof ComposerDraft)[]) {
+    // `mode` is the box's look (rich editor or textarea), not content.
+    for (const k of (Object.keys(EMPTY_DRAFT) as (keyof ComposerDraft)[]).filter((k) => k !== "mode")) {
       expect(FULL[k], k).not.toEqual(EMPTY_DRAFT[k]);
       expect(isEmptyDraft({ ...EMPTY_DRAFT, [k]: FULL[k] }), k).toBe(false);
     }

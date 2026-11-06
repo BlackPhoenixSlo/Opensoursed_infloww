@@ -23,7 +23,6 @@ export const NOT_WIRED = {
   priority: "Starring a fan needs a route to OnlyFans we don't have, so for now every fan is a priority. The Priority chip in the list shows who OnlyFans already starred.",
   pin: "Pinning a chat needs a route to OnlyFans we don't have, so your favourite scrolls like everyone else. The Pinned chip lists the chats OnlyFans already pinned.",
   rowClose: "Infloww draws this × on every row. Nobody has found out what it does, including us.",
-  aa: "OnlyFans strips formatting from DMs, so this would only be decoration. It is already decoration.",
   report: "OnlyFans' report form wants a captcha the relay cannot solve. Block works, and is quieter.",
   onlineStats: "No page counts online-fan blasts on their own yet. Mass message statistics, one row up, is real.",
   releaseForm: "OnlyFans lists no release forms to the relay. Get it signed the old-fashioned way.",

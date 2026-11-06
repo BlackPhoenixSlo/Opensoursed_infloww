@@ -275,12 +275,32 @@ its sales from /api/of/* chat-media reads ui.py holds; vitest (FanDrawer.scrub.t
    service/of_rich_text.py). UI: Growth > Scripts > More > Add script, RT_LINES typed, "Hey" Bold + Light blue
    and line 2 Large through the toolbar, OK: the saved_replies row is RT_MARKUP and the row renders it; the same
    on a 390x844 phone context by taps (the toolbar wraps, 44px tools, no sideways scroll). Messages Pro: the
-   desktop script picked in the chat shows its "Formatted" preview, Enter -> OF's wire gets RT_MARKUP; a typed
-   plain message -> plain `<p>` text; a fan's formatted DM (pump frame) renders formatted (colour, weight) in
-   its bubble. Screenshots rich-script-desktop-*, rich-script-phone-*, rich-send-*; `rich-text.json`.
+   desktop script picked in the chat opens formatted in the rich editor (no second preview, "Aa" off), Enter ->
+   OF's wire gets RT_MARKUP and the textarea is back; "Aa" -> RT_LINES typed (Shift+Enter) and formatted in its
+   toolbar, Enter -> RT_MARKUP again, the toolbar stays; "Aa" off, a typed plain message -> plain `<p>` text; a
+   fan's formatted DM (pump frame) renders formatted (colour, weight) in its bubble. Phone 390x844: the "Aa" send
+   by taps, the toolbar wrapping with 44px tools and the box on screen. Mass composer: the script picked stays
+   formatted, Broadcast -> OF's queue wire gets RT_MARKUP (phone: "Aa" + pick, formatted, fits). Fansly (the
+   account stamped `platform: fansly` in the browser's /admin/accounts answer, a declared wire fake; the relay
+   still sends as OF): no "Aa", the script goes in plain and is sent plain. Screenshots rich-script-*,
+   rich-send-*, rich-aa-*, rich-aa-phone-*, rich-mass-*, rich-mass-phone-*, rich-fansly-{desktop,phone}-*;
+   `rich-text.json`.
    Volume (after the browser, and `--no-ui`): `--users` operators at once, each a dirty formatted body (foreign
    tags, attributes, classes, a script) and a plain one, as a chat send and as a mass message: OF's wire holds
    every one byte-exact as the allow-list leaves it (expected written by hand), plain stays plain.
+26. OF Manager rich text (lib/ofm_rich_text_faults.py; app/lib/ofMirrorChat.ts applyScript, ofMirrorDataChats,
+   ofMirrorFormat). OFM_TITLE (RT_MARKUP) seeded through POST /admin/saved-replies. Desktop: the chat
+   (`?chat=<fan>&account=`), the Scripts column's pick fills OF's editor formatted (computed blue-1, 20px, bold
+   heavier than the line), Send -> OF's wire RT_MARKUP, the sent bubble formatted; OFM_PLAIN picked after -> plain
+   `<p>`; a fan's OFM_FAN bubble formatted and the chat list's last message its words. New message (Users tab, one
+   fan) and New post (Format text page): "Hey" Bold + Light blue, line 2 Large through OF's panel -> OF's queue /
+   posts wire RT_MARKUP. Phone 390x844 (touch): the header's Scripts picker, the chat send and New post the same;
+   New message's composer is not shown at 390 (OF's step2; recorded, not judged). The chat typed with its own
+   Format text toolbar (OFM_CHAT_TYPED): desktop RT_LINES formatted by selection -> RT_MARKUP; desktop and phone
+   Large + Bold on an empty caret, then OFM_CARET_TEXT typed -> OFM_CARET_WIRE (OF's span > strong), the bubble
+   Large and bold. Screenshots ofm-{chat,chat-typed,mass,post}-{desktop,phone}-{trigger,settled}; `ofm-rich-text.json`. Bypasses (declared): the chat
+   list, a chat's row, its thread (OFM_FAN, then OF's wire sends to that fan) and /users/list are answered at the
+   browser's wire from the relay's own chats; the word selection is set by script.
 `--set only=<section>[,...]` (SECTIONS keys, `mass-volume`, `rich-volume`) runs just those while iterating; the
 rest SKIP as "not selected".
 
@@ -431,7 +451,8 @@ checks),
 `refused-schedule-lost-on-switch` (a refusal
 after a chat switch is put back into the closed chat, not offered), `trailing-gif-before-upload` (lib/composer_faults.py:
 the trailing GIF stops waiting on the send's uploads: only the PPV send check), `rich-text-unsanitized`
-(lib/rich_text_faults.py: the send boundary's allow-list is identity: only the rich text volume check); each turns
+(lib/rich_text_faults.py: the send boundary's allow-list is identity: only the rich text volume check), `rich-pick-plain`
+(Composer's script pick drops the formatting: only the rich text chat send check); each turns
 only its own checks red.
 Rich text bypasses (declared): the word selections are set by script (a drag / long-press select on a contenteditable
 is the one gesture Playwright cannot make); the toolbar is clicked / tapped for real. OF's /chats is answered at the
@@ -474,7 +495,10 @@ from slop.lib.reducers_faults import (ADMIN_EMPTY, ADMIN_GATE, ADMIN_ROSTER_FAIL
 from slop.lib.nudge_faults import NUDGE_ABA, NUDGE_ACK_LOST, NUDGE_TAB_CLOSED
 from slop.lib.mass_unsend_faults import MASS_BULK_UNSEND
 from slop.lib.composer_faults import PPV_SEND_BODY
-from slop.lib.rich_text_faults import RT_BUBBLE, RT_SCRIPT_DESKTOP, RT_SCRIPT_PHONE, RT_SEND, RT_VOLUME
+from slop.lib.rich_text_faults import (RT_AA, RT_AA_PHONE, RT_BUBBLE, RT_FANSLY, RT_MASS, RT_SCRIPT_DESKTOP,
+                                      RT_SCRIPT_PHONE, RT_SEND, RT_VOLUME)
+from slop.lib.ofm_rich_text_faults import (OFM_BUBBLE, OFM_CHAT_DESKTOP, OFM_CHAT_PHONE, OFM_CHAT_TYPED, OFM_MASS,
+                                           OFM_POST)
 from slop.seed import agency_notifications, mass_broadcast_cache, of_sessions, ts
 
 PROFILE = "agency_inbox"
@@ -524,7 +548,8 @@ SECTIONS = {
     "shimmer": (PICKER_SHIMMER,),
     "scripts": (SCRIPTS_RENAME, SCRIPTS_BAR_BUSY, SCRIPTS_REMOVE_OK, SCRIPTS_REMOVE_FAIL, SCRIPTS_SWITCH_CLEARS),
     "session": (SESSION_NET_KEEP, SESSION_401_OUT, SESSION_BOOT_OUT),
-    "rich-text": (RT_SCRIPT_DESKTOP, RT_SCRIPT_PHONE, RT_SEND, RT_BUBBLE),
+    "rich-text": (RT_SCRIPT_DESKTOP, RT_SCRIPT_PHONE, RT_SEND, RT_AA, RT_AA_PHONE, RT_MASS, RT_FANSLY, RT_BUBBLE),
+    "ofm-rich-text": (OFM_CHAT_DESKTOP, OFM_CHAT_PHONE, OFM_CHAT_TYPED, OFM_BUBBLE, OFM_MASS, OFM_POST),
 }
 # Reducer fixes this scenario cannot drive on the real path; each reports SKIP with why.
 UNREACHED = {
@@ -4340,12 +4365,12 @@ async def _mass_volume(ctx) -> None:
 RT_TITLE_DESKTOP = "slop rich desktop"
 RT_TITLE_PHONE = "slop rich phone"
 RT_LINES = ("Hey babe", "Large line")  # "Hey": Bold + Light blue; line 2: Large
-# What the editor saves for RT_LINES so formatted (lib/ofMirrorFormat normalize: OF's nesting, strong > span).
-RT_MARKUP = ('<p><strong><span class="m-editor-fc__blue-1">Hey</span></strong> babe</p>'
+# What the editor saves for RT_LINES so formatted (lib/ofMirrorFormat runsHtml: OF's wire nesting, span > strong).
+RT_MARKUP = ('<p><span class="m-editor-fc__blue-1"><strong>Hey</strong></span> babe</p>'
              '<p><span class="m-editor-fs__l">Large line</span></p>')
 RT_PLAIN_SEND = "slop rt plain <3 & co"
 RT_PLAIN_WIRE = "<p>slop rt plain &lt;3 &amp; co</p>"  # of_client._wrap_text_as_p, as before this change
-RT_FAN = '<p><strong><span class="m-editor-fc__blue-2">slop rt fan</span></strong> says <em>hi</em></p>'
+RT_FAN = '<p><span class="m-editor-fc__blue-2"><strong>slop rt fan</strong></span> says <em>hi</em></p>'
 RT_FAN_ID = fan_dm.INJECT_ID_BASE + 777_001
 PHONE = (390, 844)
 SELECT_WORD = """(el, word) => {
@@ -4431,7 +4456,7 @@ async def _rt_make_script(ctx, page, title: str, shot: str, tap: bool) -> dict:
 
 
 def _rt_row_ok(row: str | None) -> bool:
-    return bool(row) and '<strong><span class="m-editor-fc__blue-1">Hey</span></strong>' in row \
+    return bool(row) and '<span class="m-editor-fc__blue-1"><strong>Hey</strong></span>' in row \
         and '<span class="m-editor-fs__l">Large line</span>' in row
 
 
@@ -4443,6 +4468,17 @@ async def _rich_text(ctx, page, chk) -> None:
     aid = accts[0]["id"]  # the Creator the Scripts page and the picker open on (useScopedAccount)
     c = next(x for x in ctx.world.data["creators"] if x["id"] == aid)
     out: dict = {"account": aid}
+    errs: list = []
+    page.on("pageerror", lambda e: errs.append(f"pageerror: {e}"))
+    page.on("console", lambda m: errs.append(f"console.{m.type}: {m.text}"[:2000]) if m.type == "error" else None)
+    (ctx.out / "rich-text-console.json").write_text("[]")
+    try:
+        await _rich_text_body(ctx, page, chk, aid, c, out)
+    finally:
+        (ctx.out / "rich-text-console.json").write_text(json.dumps(errs, indent=2))
+
+
+async def _rich_text_body(ctx, page, chk, aid, c, out) -> None:
 
     d = await _rt_make_script(ctx, page, RT_TITLE_DESKTOP, "rich-script-desktop", tap=False)
     saved = _saved_text(ctx, aid, RT_TITLE_DESKTOP)
@@ -4503,21 +4539,72 @@ async def _rich_text(ctx, page, chk) -> None:
         await _creator_tab(page, c)
         await page.locator("[data-chat-row]").filter(has_text=f"@{fan['username']}").first.click(timeout=WAIT_MS)
         box = page.get_by_placeholder(INPUT, exact=True)
-        await box.wait_for(timeout=WAIT_MS)
-        await _pick_template(page, RT_TITLE_DESKTOP)
-        preview = page.locator("[data-rich-preview] [data-of-rich]")
-        await preview.first.wait_for(timeout=15_000)
-        out["preview_html"] = await preview.first.inner_html()
-        out["box_after_pick"] = await box.input_value()
-        await _painted(page)
-        await ui.shot(ctx, page, "rich-send-trigger")
-        await box.press("Enter")
-        await _until(lambda: len(wire()) >= 1, 30)
-        await page.wait_for_function("(el) => el.value === ''", arg=await box.element_handle(), timeout=15_000)
-        await page.wait_for_timeout(3_500)  # Infloww's send-rate guard: 3 s between a model's sends (claimSendGap)
-        await box.fill(RT_PLAIN_SEND)
-        await box.press("Enter")
-        await _until(lambda: len(wire()) >= 2, 30)
+        ta, ed = box.and_(page.locator("textarea")), box.and_(page.locator("[contenteditable]"))
+        fmt_bar = page.get_by_role("toolbar", name="Text formatting")
+        aa = page.get_by_role("button", name="Aa", exact=True)
+        await ta.wait_for(timeout=WAIT_MS)
+        errs: dict = {}
+
+        async def step(name, fn):
+            """One step; a failure is its own check's (recorded, the box emptied) so the next steps still run."""
+            try:
+                await fn()
+            except Exception as e:  # noqa: BLE001
+                errs[name] = f"{type(e).__name__}: {e}"[:600]
+                await page.keyboard.press("Escape")
+                for loc in (ta, ed):
+                    if await loc.count():
+                        await loc.fill("")
+                await page.wait_for_timeout(3_500)
+
+        async def pick():
+            # 1. The desktop script picked: the box is the rich editor, formatted, no second preview, "Aa" still off.
+            await _pick_template(page, RT_TITLE_DESKTOP)
+            await ed.locator("span.m-editor-fc__blue-1 strong").first.wait_for(timeout=15_000)
+            out["pick"] = {"editor_html": await ed.inner_html(),
+                           "dup_preview": await page.locator("[data-rich-preview]").count(),
+                           "toolbar": await fmt_bar.count(), "aa_pressed": await aa.get_attribute("aria-pressed")}
+            await _painted(page)
+            await ui.shot(ctx, page, "rich-send-trigger")
+            n = len(wire())
+            await ed.press("Enter")
+            await _until(lambda: len(wire()) > n, 30)
+            out["pick"]["wire"] = wire()[n:]
+            out["pick"]["browser_text"] = browser_sends[-1].get("text") if browser_sends else None
+            await ta.wait_for(timeout=15_000)  # sent with "Aa" off: back to the plain textarea, empty
+            out["pick"]["after_send_box"] = await ta.input_value()
+            await page.wait_for_timeout(3_500)  # Infloww's send-rate guard: 3 s between a model's sends (claimSendGap)
+
+        async def aa_send():
+            # 2. "Aa": type two lines (Shift+Enter), "Hey" Bold + Light blue, line 2 Large, Enter.
+            out["aa"] = await _rt_aa_compose(page, ed, fmt_bar, aa, tap=False)
+            await _painted(page)
+            await ui.shot(ctx, page, "rich-aa-trigger")
+            n = len(wire())
+            await ed.press("Enter")
+            await _until(lambda: len(wire()) > n, 30)
+            out["aa"]["wire"] = wire()[n:]
+            out["aa"]["browser_text"] = browser_sends[-1].get("text") if browser_sends else None
+            await page.wait_for_function("(el) => el.textContent === ''", arg=await ed.element_handle(), timeout=15_000)
+            out["aa"] |= {"after_send_toolbar": await fmt_bar.count(), "after_send_editor": await ed.count()}
+            await _painted(page)
+            await ui.shot(ctx, page, "rich-aa-settled")
+            await page.wait_for_timeout(3_500)
+            # 3. "Aa" off: the plain textarea back.
+            await aa.click()
+            await ta.wait_for(timeout=10_000)
+
+        async def plain():
+            # 4. A typed plain message (the box is the textarea: "Aa" off, or never on).
+            await ta.fill(RT_PLAIN_SEND)
+            n = len(wire())
+            await ta.press("Enter")
+            await _until(lambda: len(wire()) > n, 30)
+            out["plain"] = {"wire": wire()[n:], "browser_text": browser_sends[-1].get("text") if browser_sends else None}
+
+        await step("pick", pick)
+        await step("aa", aa_send)
+        await step("plain", plain)
         r = await fan_dm.inject(ctx.owner, aid, {"api2_chat_message": {
             **fan_dm.frame(RT_FAN_ID, fan, "x")["api2_chat_message"], "text": RT_FAN}})
         out["frame_status"] = r.status_code
@@ -4526,31 +4613,686 @@ async def _rich_text(ctx, page, chk) -> None:
             await bubble.first.wait_for(timeout=30_000)
             out["bubble_html"] = await bubble.first.inner_html()
             out["bubble_style"] = await bubble.first.locator("span.m-editor-fc__blue-2").evaluate(
-                "(s) => { const c = getComputedStyle(s), b = getComputedStyle(s.closest('strong'));"
+                "(s) => { const c = getComputedStyle(s), b = getComputedStyle(s.querySelector('strong') || s.closest('strong'));"
                 " return { color: c.color, weight: b.fontWeight }; }")
         except PwTimeout:
             out["bubble_html"] = None
         sent_bubble = page.locator("[data-of-rich]").filter(has_text="Large line")
         out["sent_bubbles"] = await sent_bubble.count()
-        await asyncio.sleep(1.0)  # a third send would land here
+        out["sent_bubble_html"] = await sent_bubble.last.inner_html() if out["sent_bubbles"] else None
+        await asyncio.sleep(1.0)  # a stray extra send would land here
         await _painted(page)
         await ui.shot(ctx, page, "rich-send-settled")
         got = wire()
         fives = [u for st, u in page.slop["statuses"][n_status:] if st >= 500]
-        out |= {"fan": fan["id"], "browser_sends": browser_sends, "of_wire_texts": got, "relay_5xx": fives[:5]}
-        chk(RT_SEND, got == [RT_MARKUP, RT_PLAIN_WIRE] and out["box_after_pick"] == "\n".join(RT_LINES)
-            and _rt_row_ok(out["preview_html"]) and len(browser_sends) == 2 and not fives,
-            of_wire=got, want=[RT_MARKUP, RT_PLAIN_WIRE], browser_sends=browser_sends, preview=out["preview_html"],
-            box=out["box_after_pick"])
+        out |= {"fan": fan["id"], "browser_sends": browser_sends, "of_wire_texts": got, "relay_5xx": fives[:5],
+                "step_errors": errs}
+        pk, a_, pl = out.get("pick") or {}, out.get("aa") or {}, out.get("plain") or {}
+        chk(RT_SEND, "pick" not in errs and "plain" not in errs and len(got) == 3
+            and pk.get("wire") == [RT_MARKUP] and pk.get("browser_text") == RT_MARKUP
+            and pl.get("wire") == [RT_PLAIN_WIRE] and pl.get("browser_text") == RT_PLAIN_SEND
+            and _rt_row_ok(pk.get("editor_html")) and pk.get("dup_preview") == 0 and pk.get("toolbar") == 0
+            and pk.get("after_send_box") == "" and out["sent_bubbles"] >= 1 and _rt_row_ok(out["sent_bubble_html"])
+            and not fives,
+            of_wire=got, want=[RT_MARKUP, "(Aa send)", RT_PLAIN_WIRE], pick=pk, plain=pl,
+            errors={k: v for k, v in errs.items() if k in ("pick", "plain")},
+            sent_bubble=out["sent_bubble_html"], relay_5xx=fives[:5])
+        chk(RT_AA, "aa" not in errs and a_.get("wire") == [RT_MARKUP] and a_.get("browser_text") == RT_MARKUP
+            and a_.get("toolbar") == 1 and a_.get("pressed") == "true" and a_.get("after_send_toolbar") == 1
+            and a_.get("after_send_editor") == 1,
+            want=RT_MARKUP, aa=a_, error=errs.get("aa"))
         style = out.get("bubble_style") or {}
         chk(RT_BUBBLE, out["frame_status"] == 200 and bool(out["bubble_html"])
-            and '<strong><span class="m-editor-fc__blue-2">slop rt fan</span></strong> says <em>hi</em>'
+            and '<span class="m-editor-fc__blue-2"><strong>slop rt fan</strong></span> says <em>hi</em>'
             in out["bubble_html"] and style.get("color") == "rgb(27, 152, 224)" and int(style.get("weight", 0)) >= 600,
             bubble=out["bubble_html"], style=style, frame_status=out["frame_status"])
     finally:
         (ctx.out / "rich-text.json").write_text(json.dumps(out, indent=2, default=str))
         for pat, fn in routes:
             await page.unroute(pat, fn)
+
+    browser = page.context.browser
+    await _rt_chat_phone(ctx, browser, c, view, fan, chk, out)
+    await _rt_mass(ctx, page, browser, aid, chk, out)
+    await _rt_fansly(ctx, browser, c, view, fan, chk, out)
+    (ctx.out / "rich-text.json").write_text(json.dumps(out, indent=2, default=str))
+
+
+async def _rt_aa_compose(page, ed, fmt_bar, aa, tap: bool) -> dict:
+    """"Aa" on, RT_LINES typed (Shift+Enter between), "Hey" Bold + Light blue, line 2 Large, through the toolbar
+    (taps on a phone). The word selection is set by script (bypass, declared: as in `_rt_make_script`)."""
+    press = (lambda loc: loc.tap(timeout=10_000)) if tap else (lambda loc: loc.click(timeout=10_000))
+    await press(aa)
+    await fmt_bar.wait_for(timeout=10_000)
+    await ed.wait_for(timeout=10_000)
+    await press(ed)
+    await page.keyboard.type(RT_LINES[0])
+    await page.keyboard.press("Shift+Enter")
+    await page.keyboard.type(RT_LINES[1])
+    assert await ed.evaluate(SELECT_WORD, "Hey"), "no 'Hey' to select"
+    await press(fmt_bar.get_by_role("button", name="Bold", exact=True))
+    await press(fmt_bar.get_by_role("button", name="Text color", exact=True))
+    await press(fmt_bar.get_by_role("menuitemradio", name="Light blue", exact=True))
+    assert await ed.evaluate(SELECT_WORD, RT_LINES[1]), "no line 2 to select"
+    await press(fmt_bar.get_by_role("button", name=re.compile("^Text size")))
+    await press(fmt_bar.get_by_role("menuitemradio", name="Large", exact=True))
+    return {"toolbar": await fmt_bar.count(), "pressed": await aa.get_attribute("aria-pressed"),
+            "editor_html": await ed.inner_html()}
+
+
+# A phone composer: no sideways scroll, the formatting tools >= 44 px, the text box on screen; "Aa"'s size as drawn
+# (the chat's is its toolbar row's 34 px icon box, MP.composer.toolbarButton, as every icon beside it).
+PHONE_COMPOSER_FIT = """([tb, aa, ed]) => ({
+  page: [document.documentElement.scrollWidth, window.innerWidth],
+  toolbar: [tb.scrollWidth, tb.clientWidth],
+  small: [...tb.querySelectorAll(':scope > button')].map((b) => b.getBoundingClientRect())
+    .filter((r) => r.height < 44 || r.width < 44).length,
+  aa: [Math.round(aa.getBoundingClientRect().width), Math.round(aa.getBoundingClientRect().height)],
+  box: [Math.round(ed.getBoundingClientRect().top), Math.round(ed.getBoundingClientRect().bottom), window.innerHeight],
+})"""
+
+
+def _rt_fit_ok(fit: dict | None) -> bool:
+    f = fit or {}
+    box = f.get("box") or [0, 1, 0]
+    return (f.get("page", [1, 0])[0] <= f.get("page", [0, 0])[1] and f.get("toolbar", [1, 0])[0] <= f.get("toolbar", [0, 0])[1]
+            and f.get("small") == 0 and box[0] >= 0 and box[1] <= box[2])
+
+
+async def _rt_phone(ctx, browser, through=THROUGH, init=()):
+    phone = await ui._owner_page(browser, ctx, PHONE, [], [], (TOURS_SEEN, *init), through=through, touch=True)
+    phone.context.set_default_navigation_timeout(WAIT_MS)
+    phone.on("dialog", lambda d: asyncio.ensure_future(d.accept()))
+    return phone
+
+
+async def _rt_open_chat_phone(ctx, phone, c, view, fan, sends: list | None = None) -> None:
+    async def chats(route):
+        if route.request.method != "GET":
+            return await route.fallback()
+        _aid, off, lim, _plain, rows = _chats_query(route.request, view)
+        await _serve_chats(route, rows, off, lim)
+
+    async def send(route):
+        if route.request.method != "POST":
+            return await route.fallback()
+        if sends is not None:
+            sends.append(route.request.post_data_json)
+        await route.continue_()
+
+    await phone.route(lambda u: urlsplit(u).path == "/api/of/v2/chats", chats)
+    await phone.route(lambda u: urlsplit(u).path == f"/api/of/v2/chats/{fan['id']}/messages", send)
+    await phone.goto(f"{ctx.app}/messages-pro", wait_until="domcontentloaded")
+    tab = phone.get_by_role("tab", name=c["nickname"])
+    try:
+        await tab.first.tap(timeout=30_000)
+    except PwTimeout:
+        pass  # a phone without the Creator tabs lists every Creator's chats
+    await phone.locator("[data-chat-row]").filter(has_text=f"@{fan['username']}").first.tap(timeout=WAIT_MS)
+
+
+async def _rt_chat_phone(ctx, browser, c, view, fan, chk, out) -> None:
+    """Phone portrait: "Aa" tapped, the formatted message tapped together, Enter -> OF's wire gets RT_MARKUP; the
+    toolbar wraps (no sideways scroll), every tool and "Aa" >= 44 px, the text box on screen with the toolbar up."""
+    aid = c["id"]
+    with ctx.of_wire.lock:
+        n_wire = len(ctx.of_wire.sends.get(aid, []))
+    res: dict = {}
+    phone = await _rt_phone(ctx, browser)
+    try:
+        await phone.wait_for_timeout(3_500)  # the desktop's last send on this model: the 3 s send gap
+        await _rt_open_chat_phone(ctx, phone, c, view, fan)
+        box = phone.get_by_placeholder(INPUT, exact=True)
+        ed = box.and_(phone.locator("[contenteditable]"))
+        fmt_bar = phone.get_by_role("toolbar", name="Text formatting")
+        aa = phone.get_by_role("button", name="Aa", exact=True)
+        await box.wait_for(timeout=WAIT_MS)
+        res = await _rt_aa_compose(phone, ed, fmt_bar, aa, tap=True)
+        res["fit"] = await phone.evaluate(PHONE_COMPOSER_FIT, [await fmt_bar.element_handle(), await aa.element_handle(),
+                                                               await ed.element_handle()])
+        await _painted(phone)
+        await ui.shot(ctx, phone, "rich-aa-phone-trigger")
+        await ed.press("Enter")
+        await _until(lambda: len(ctx.of_wire.sends.get(aid, [])) > n_wire, 30)
+        await phone.locator("[data-of-rich]").filter(has_text="Large line").last.wait_for(timeout=30_000)
+        await _painted(phone)
+        await ui.shot(ctx, phone, "rich-aa-phone-settled")
+    finally:
+        await phone.context.close()
+    with ctx.of_wire.lock:
+        got = [m.get("text") for m in ctx.of_wire.sends.get(aid, [])[n_wire:] if str(m["fan_id"]) == str(fan["id"])]
+    res["of_wire"] = got
+    out["aa_phone"] = res
+    chk(RT_AA_PHONE, got == [RT_MARKUP] and _rt_fit_ok(res.get("fit")) and res.get("pressed") == "true",
+        of_wire=got, want=[RT_MARKUP], fit=res.get("fit"), pressed=res.get("pressed"))
+
+
+async def _rt_mass(ctx, page, browser, aid: str, chk, out) -> None:
+    """Mass message composer: the desktop script picked keeps its formatting (rich editor), Broadcast -> OF's
+    queue wire gets RT_MARKUP. Phone: "Aa" tapped shows the wrapping toolbar, the picked script formatted."""
+    n_q = len(_wire(ctx, "queue").get(aid, []))
+    bodies: list = []
+
+    async def queue(route):
+        if route.request.method == "POST":
+            bodies.append(route.request.post_data_json)
+        await route.fallback()
+
+    res: dict = {}
+    is_queue = lambda u: urlsplit(u).path == QUEUE  # noqa: E731 — unroute needs the same object
+    await page.route(is_queue, queue)
+    try:
+        await _open_create_message(ctx, page, re.compile(r"^OF mass message"))
+        box = page.get_by_placeholder("What's the broadcast?", exact=True)
+        ed = box.and_(page.locator("[contenteditable]"))
+        await box.wait_for(timeout=WAIT_MS)
+        tpl_btn = page.get_by_title("Insert saved template").first
+        await page.wait_for_function("(b) => b && !b.disabled", arg=await tpl_btn.element_handle(), timeout=30_000)
+        sel = page.locator("select:has(option[value])").first
+        if await sel.input_value() != aid:
+            await sel.select_option(aid)
+        res["aa_shown"] = await page.get_by_role("button", name="Aa", exact=True).count()
+        await _pick_template(page, RT_TITLE_DESKTOP)
+        await ed.locator("span.m-editor-fc__blue-1 strong").first.wait_for(timeout=15_000)
+        res["editor_html"] = await ed.inner_html()
+        await _painted(page)
+        await ui.shot(ctx, page, "rich-mass-trigger")
+        await page.get_by_role("button", name="Broadcast", exact=True).click(timeout=10_000)
+        await _until(lambda: len(_wire(ctx, "queue").get(aid, [])) > n_q, 30)
+        await page.wait_for_timeout(500)
+        await _painted(page)
+        await ui.shot(ctx, page, "rich-mass-settled")
+    finally:
+        await page.unroute(is_queue, queue)
+    sent = _wire(ctx, "queue").get(aid, [])[n_q:]
+    res |= {"of_wire": [m.get("text") for m in sent], "browser": [b.get("text") for b in bodies]}
+
+    phone = await _rt_phone(ctx, browser)
+    try:
+        await _open_create_message(ctx, phone, re.compile(r"^OF mass message"))
+        box = phone.get_by_placeholder("What's the broadcast?", exact=True)
+        await box.wait_for(timeout=WAIT_MS)
+        tpl_btn = phone.get_by_title("Insert saved template").first
+        await phone.wait_for_function("(b) => b && !b.disabled", arg=await tpl_btn.element_handle(), timeout=30_000)
+        sel = phone.locator("select:has(option[value])").first
+        if await sel.input_value() != aid:
+            await sel.select_option(aid)
+        aa = phone.get_by_role("button", name="Aa", exact=True)
+        await aa.tap(timeout=10_000)
+        fmt_bar = phone.get_by_role("toolbar", name="Text formatting")
+        await fmt_bar.wait_for(timeout=10_000)
+        await ui.shot(ctx, phone, "rich-mass-phone-trigger")
+        await _pick_template(phone, RT_TITLE_DESKTOP)
+        ed = box.and_(phone.locator("[contenteditable]"))
+        await ed.locator("span.m-editor-fc__blue-1 strong").first.wait_for(timeout=15_000)
+        res["phone"] = {"editor_html": await ed.inner_html(), "fit": await phone.evaluate(PHONE_COMPOSER_FIT, [
+            await fmt_bar.element_handle(), await aa.element_handle(), await ed.element_handle()])}
+        await _painted(phone)
+        await ui.shot(ctx, phone, "rich-mass-phone-settled")
+    finally:
+        await phone.context.close()
+    out["mass"] = res
+    ph = res.get("phone") or {}
+    chk(RT_MASS, res["of_wire"] == [RT_MARKUP] and res["browser"] == [RT_MARKUP] and res["aa_shown"] == 1
+        and _rt_row_ok(res["editor_html"]) and _rt_row_ok(ph.get("editor_html")) and _rt_fit_ok(ph.get("fit"))
+        and min((ph.get("fit") or {}).get("aa") or [0]) >= 44,
+        of_wire=res["of_wire"], want=[RT_MARKUP], browser=res["browser"], phone=ph)
+
+
+def _fansly_accounts(aid: str):
+    """GET /admin/accounts with Creator `aid` stamped Fansly (the relay's own field, as a Fansly login writes it):
+    a fake at the browser's wire, declared (a real Fansly account would send through the Fansly shim)."""
+    async def handler(route):
+        if route.request.method != "GET":
+            return await route.fallback()
+        r = await route.fetch()
+        body = await r.json()
+        for a in body.get("accounts", []):
+            if a.get("id") == aid:
+                a["platform"] = "fansly"
+        await route.fulfill(response=r, body=json.dumps(body))
+    return (lambda u: urlsplit(u).path == "/admin/accounts", handler)
+
+
+async def _rt_fansly(ctx, browser, c, view, fan, chk, out) -> None:
+    """A Fansly account (the sidebar on Fansly): no "Aa", no toolbar; the formatted script goes in as its plain
+    text in the textarea and is sent plain (no OF markup reaches the wire). Desktop sends; the phone picks."""
+    aid = c["id"]
+    init = ("localStorage.setItem('chatterly:platform', 'fansly');",)
+    res: dict = {}
+    for label, viewport, tap in (("desktop", VIEWPORT, False), ("phone", PHONE, True)):
+        sends: list = []
+        with ctx.of_wire.lock:
+            n_wire = len(ctx.of_wire.sends.get(aid, []))
+        pg = await (_rt_phone(ctx, browser, init=init) if tap else ui._owner_page(
+            browser, ctx, viewport, [], [], (TOURS_SEEN, *init), through=THROUGH))
+        try:
+            pg.context.set_default_navigation_timeout(WAIT_MS)
+            await pg.route(*_fansly_accounts(aid))
+            if tap:
+                await _rt_open_chat_phone(ctx, pg, c, view, fan)
+            else:
+                await pg.wait_for_timeout(3_500)  # the send gap after the phone's send on this model
+                await _rt_open_chat_phone_desktop(ctx, pg, c, view, fan, sends)
+            box = pg.get_by_placeholder(INPUT, exact=True)
+            ta = box.and_(pg.locator("textarea"))
+            await ta.wait_for(timeout=WAIT_MS)
+            r = {"aa": await pg.get_by_role("button", name="Aa", exact=True).count()}
+            await _pick_template(pg, RT_TITLE_DESKTOP)
+            r["box"] = await _wait_value(ta, "\n".join(RT_LINES))
+            r["editor"] = await box.and_(pg.locator("[contenteditable]")).count()
+            r["toolbar"] = await pg.get_by_role("toolbar", name="Text formatting").count()
+            await _painted(pg)
+            await ui.shot(ctx, pg, f"rich-fansly-{label}-trigger")
+            if not tap:
+                await ta.press("Enter")
+                await _until(lambda: len(ctx.of_wire.sends.get(aid, [])) > n_wire, 30)
+                await pg.wait_for_function("(el) => el.value === ''", arg=await ta.element_handle(), timeout=15_000)
+                with ctx.of_wire.lock:
+                    r["of_wire"] = [m.get("text") for m in ctx.of_wire.sends.get(aid, [])[n_wire:]]
+                r["browser"] = [b.get("text") for b in sends]
+            await _painted(pg)
+            await ui.shot(ctx, pg, f"rich-fansly-{label}-settled")
+        finally:
+            await pg.context.close()
+        res[label] = r
+    out["fansly"] = res
+    d, p = res["desktop"], res["phone"]
+    plain = "\n".join(RT_LINES)
+    chk(RT_FANSLY, all(x["aa"] == 0 and x["box"] == plain and x["editor"] == 0 and x["toolbar"] == 0 for x in (d, p))
+        and d["browser"] == [plain] and len(d["of_wire"]) == 1 and "m-editor" not in d["of_wire"][0]
+        and "<strong>" not in d["of_wire"][0], desktop=d, phone=p, want_box=plain)
+
+
+async def _rt_open_chat_phone_desktop(ctx, pg, c, view, fan, sends: list) -> None:
+    """`_rt_open_chat_phone` with clicks (a desktop context has no touch)."""
+    async def chats(route):
+        if route.request.method != "GET":
+            return await route.fallback()
+        _aid, off, lim, _plain, rows = _chats_query(route.request, view)
+        await _serve_chats(route, rows, off, lim)
+
+    async def send(route):
+        if route.request.method != "POST":
+            return await route.fallback()
+        sends.append(route.request.post_data_json)
+        await route.continue_()
+
+    await pg.route(lambda u: urlsplit(u).path == "/api/of/v2/chats", chats)
+    await pg.route(lambda u: urlsplit(u).path == f"/api/of/v2/chats/{fan['id']}/messages", send)
+    await pg.goto(f"{ctx.app}/messages-pro", wait_until="domcontentloaded")
+    await _creator_tab(pg, c)
+    await pg.locator("[data-chat-row]").filter(has_text=f"@{fan['username']}").first.click(timeout=WAIT_MS)
+
+
+# ── OF Manager (the OF mirror) rich text (lib/ofm_rich_text_faults.py) ──
+OFM_TITLE = "slop ofm rich"  # the formatted script (RT_MARKUP), seeded through POST /admin/saved-replies
+OFM_FAN = '<p><span class="m-editor-fc__blue-2"><strong>slop ofm fan</strong></span> says <em>hi</em></p>'
+OFM_PLAIN = {"title": "slop ofm plain", "text": "slop ofm plain text"}  # seeded here: the scripts section deletes FREE_TPL
+OFM_FREE_WIRE = f"<p>{OFM_PLAIN['text']}</p>"  # OFM_PLAIN picked: plain text, of_client wraps it as OF's <p>
+OFM_FRAME = "iframe[src*='/of-mirror/pages/']"
+OFM_EDITOR = "[contenteditable][aria-label='Textbox field']"
+OFM_SEND = "button[at-attr='send_btn']"
+OFM_POST_BTN = "button[at-attr='submit_post']"
+OFM_MASS_ROW = ".b-chats__scroller label.b-rows-lists__item"
+OFM_CARET_TEXT = "slop typed big"  # typed after Large + Bold on an empty caret in the chat's Format text toolbar
+OFM_CARET_WIRE = f'<p><span class="m-editor-fs__l"><strong>{OFM_CARET_TEXT}</strong></span></p>'  # OF's wire shape
+# The caret-typed bubble: OF's Large (20px) and bold heavier than the line's text, no tag shown as text.
+OFM_CARET_LOOK = """(root) => { const l = root.querySelector('span.m-editor-fs__l'), b = l && l.querySelector('strong');
+  return { large: l ? getComputedStyle(l).fontSize : null, weight: Number(b ? getComputedStyle(b).fontWeight : 0),
+           base: Number(getComputedStyle(root.querySelector('p') || root).fontWeight),
+           tags: /&lt;|<\\/?(p|strong|span)\\b/.test(root.textContent ?? '') }; }"""
+OFM_MODEL_ID = 1  # the Creator's own OF id in a served thread (any id but the fan's: the mirror's "sent" side)
+# The formatted spans' computed look (OF's app.css in the mirror): blue-1 #00aff0, blue-2 #1b98e0, fs__l 20px.
+OFM_LOOK = """(root) => { const q = (s) => root.querySelector(s); const cs = (el) => el && getComputedStyle(el);
+  const b1 = q('span.m-editor-fc__blue-1'), b2 = q('span.m-editor-fc__blue-2'), l = q('span.m-editor-fs__l');
+  return { blue1: cs(b1)?.color ?? null, blue2: cs(b2)?.color ?? null,
+           weight: Number(cs((b1 || b2)?.querySelector('strong') || (b1 || b2)?.closest('strong'))?.fontWeight ?? 0),
+           base: Number(cs((b1 || b2)?.closest('p'))?.fontWeight ?? 0), large: cs(l)?.fontSize ?? null,
+           tags: /&lt;|<\\/?(p|strong|span)\\b/.test(root.textContent ?? '') }; }"""
+
+
+def _ofm_look_ok(look: dict | None, blue: str = "blue1") -> bool:
+    want = {"blue1": "rgb(0, 175, 240)", "blue2": "rgb(27, 152, 224)"}[blue]
+    # OF's own app.css draws <strong> at 500 over its 400 text: bold is heavier than the line's text.
+    return bool(look) and look[blue] == want and look["weight"] > look["base"] and not look["tags"] \
+        and (blue == "blue2" or look["large"] == "20px")
+
+
+# The OF Manager header row: its left group's content ends before the tools start, the tools inside the viewport.
+OFM_HEADER_FIT = """() => { const row = document.querySelector('[data-testid=of-manager-chrome] > div:not(style)');
+  const [left, right] = [row.children[0], row.children[1]], l = left.getBoundingClientRect(), r = right.getBoundingClientRect();
+  return { left_end: Math.round(l.left + left.scrollWidth), tools_start: Math.round(r.left), tools_end: Math.round(r.right),
+           width: innerWidth, scripts: !!right.querySelector('[title="Insert saved template"]') }; }"""
+
+
+# The frame on a phone: no horizontal scroll, OF's Send fully inside it; `wide` = what sticks out past the right edge.
+OFM_FRAME_FIT = """() => { const de = document.documentElement, cw = de.clientWidth;
+  const send = document.querySelector("button[at-attr='send_btn']")?.getBoundingClientRect();
+  const wide = [...document.querySelectorAll('body *')].filter((el) => el.getBoundingClientRect().right > cw + 1
+    && el.getBoundingClientRect().width > 0).slice(0, 6).map((el) => `${el.tagName.toLowerCase()}.${[...el.classList].join('.')}`);
+  return { scroll_w: de.scrollWidth, client_w: cw, scroll_x: scrollX,
+           send_left: send ? Math.round(send.left) : null, send_right: send ? Math.round(send.right) : null, wide }; }"""
+
+
+def _ofm_fit_ok(f: dict | None) -> bool:
+    return bool(f) and f["scroll_w"] <= f["client_w"] and f["scroll_x"] == 0 and f["send_right"] is not None \
+        and f["send_left"] >= 0 and f["send_right"] <= f["client_w"]
+
+
+def _ofm_header_ok(h: dict | None) -> bool:
+    return bool(h) and h["left_end"] <= h["tools_start"] and h["tools_end"] <= h["width"]
+
+
+async def _frame_settled(loc) -> None:
+    """The frame's own CSS transitions done (OF fades its placeholder over 0.1 s): `_painted` sees only the app's."""
+    await loc.evaluate("() => Promise.all(document.getAnimations().filter((a) => a instanceof CSSTransition)"
+                       ".map((a) => a.finished.catch(() => null)))")
+
+
+async def _ofm_routes(ctx, page, aid: str, view: dict, fan_rx: dict) -> None:
+    """The mirror's OF reads at the browser's wire: the chat list (`view`, `fan_rx`'s row last-messaged OFM_FAN), one
+    chat's row, and a thread: `fan_rx`'s OFM_FAN, then every chat send OF's wire took for that fan (sent side). The
+    chat send itself goes on to the relay (lib/of_wire.py)."""
+    rows = {str(r["withUser"]["id"]): r for r in view[aid]}
+    t0 = datetime.now(timezone.utc).replace(microsecond=0)
+
+    def thread(fan: str) -> list[dict]:
+        msgs = [{"id": 9_900_001, "text": OFM_FAN, "fromUser": {"id": fan_rx["id"]}, "media": [], "mediaCount": 0,
+                 "isFree": True, "price": 0, "createdAt": (t0 - timedelta(minutes=5)).isoformat()}] \
+            if fan == str(fan_rx["id"]) else []
+        with ctx.of_wire.lock:
+            sent = [m for m in ctx.of_wire.sends.get(aid, []) if str(m["fan_id"]) == fan]
+        msgs += [{"id": 9_900_100 + i, "text": m.get("text"), "fromUser": {"id": OFM_MODEL_ID}, "media": [],
+                  "mediaCount": 0, "isFree": True, "price": 0, "createdAt": (t0 + timedelta(seconds=i)).isoformat()}
+                 for i, m in enumerate(sent)]
+        return msgs[::-1]  # OF's order=desc
+
+    async def handler(route):
+        req = route.request
+        path = urlsplit(req.url).path
+        parts = path.split("/")  # "", api, of, v2, chats, <fan>, messages
+        if req.method == "POST" and len(parts) == 7 and parts[6] == "messages":
+            return await route.continue_()  # the chat send: to the relay, whose OFClient sends to lib/of_wire.py
+        if req.method != "GET":
+            return await route.fallback()
+        if path == "/api/of/v2/chats":
+            _aid, off, lim, _plain, got = _chats_query(req, view)
+            return await _serve_chats(route, got, off, lim)
+        if path == "/api/of/v2/users/list":  # the partners' names, by id (OF's /users/list answer)
+            ids = parse_qs(urlsplit(req.url).query).get("ids", [])
+            return await route.fulfill(status=200, content_type="application/json",
+                                       body=json.dumps({i: rows[i]["withUser"] for i in ids if i in rows}))
+        if len(parts) == 6 and parts[5] in rows:
+            return await route.fulfill(status=200, content_type="application/json", body=json.dumps(rows[parts[5]]))
+        if len(parts) == 7 and parts[6] == "messages" and parts[5] in rows:
+            return await route.fulfill(status=200, content_type="application/json",
+                                       body=json.dumps({"list": thread(parts[5]), "hasMore": False}))
+        await route.fallback()
+
+    pat = lambda u: urlsplit(u).path.startswith(("/api/of/v2/chats", "/api/of/v2/users/list"))  # noqa: E731
+    await page.route(pat, handler)
+
+
+async def _ofm_format(frame, editor, tap: bool) -> str:
+    """RT_LINES typed in OF's editor, the Format text panel open: "Hey" Bold + Light blue, line 2 Large (OF's menus).
+    The word selection is set by script (bypass, declared, as section 25). Returns the editor's markup."""
+    press = (lambda loc: loc.tap(timeout=10_000)) if tap else (lambda loc: loc.click(timeout=10_000))
+    await press(editor)
+    await editor.press_sequentially(RT_LINES[0])
+    await editor.press("Enter")
+    await editor.press_sequentially(RT_LINES[1])
+    panel = frame.locator("[data-oi-format-panel], .js-text-editor-toolbar").first
+    if not await panel.is_visible():
+        await press(frame.locator("button[aria-label='Format Text']").first)
+        await panel.wait_for(timeout=15_000)
+    menu = frame.locator(".menuable__content__active .v-list-item")  # ofMirrorMenu showMenu's list
+    assert await editor.evaluate(SELECT_WORD, "Hey"), "no 'Hey' to select"
+    await press(panel.locator("[aria-label='Bold']").first)
+    await press(panel.locator("[aria-label='Text Color']").first)
+    await press(menu.filter(has_text=re.compile(r"^\s*Light blue\s*$")).first)
+    assert await editor.evaluate(SELECT_WORD, RT_LINES[1]), "no line 2 to select"
+    await press(panel.locator("[aria-label='Text Size']").first)
+    await press(menu.filter(has_text=re.compile(r"^\s*Large\s*$")).first)
+    return await editor.inner_html()
+
+
+async def _ofm_surfaces(ctx, page, aid: str, fans: list[dict], *, tap: bool, tag: str, out: dict) -> None:
+    """One viewport's OF Manager surfaces: the chat (a formatted script picked, sent; on desktop a plain one after it),
+    New message (Users tab, one fan, formatted text, Send) and New post (Format text, Post)."""
+    press = (lambda loc: loc.tap(timeout=10_000)) if tap else (lambda loc: loc.click(timeout=10_000))
+    frame = page.frame_locator(OFM_FRAME)
+    editor = frame.locator(OFM_EDITOR).first
+    o = out.setdefault(tag, {})
+    fan = fans[0]
+
+    def wire_sends() -> list[str]:
+        with ctx.of_wire.lock:
+            return [m.get("text") for m in ctx.of_wire.sends.get(aid, []) if str(m["fan_id"]) == str(fan["id"])]
+
+    async def chat() -> None:
+        # Chat: the Scripts picker (desktop: the pinned column; phone: the header) -> OF's editor -> Send.
+        await page.goto(f"{ctx.app}/of-manager/messages/chat?chat={fan['id']}&account={aid}", wait_until="domcontentloaded")
+        await editor.wait_for(timeout=WAIT_MS)
+        if tag == "desktop":
+            fan_bubble = frame.locator(".b-chat__message__text-holder").filter(has_text="slop ofm fan").first
+            await fan_bubble.wait_for(timeout=30_000)
+            # Read once its style is computed (the thread's first paint can be swapped out by a refetch's).
+            for _ in range(20):
+                o["fan_bubble_html"] = await fan_bubble.inner_html()
+                o["fan_bubble_look"] = await fan_bubble.evaluate(OFM_LOOK)
+                if o["fan_bubble_look"]["blue2"]:
+                    break
+                await page.wait_for_timeout(500)
+            last = frame.locator(".b-chats__item__last-message__content").filter(has_text="slop ofm fan")
+            o["list_last"] = (await last.first.text_content()).strip() if await last.count() else None
+        await _pick_template(page, OFM_TITLE)
+        await frame.locator(OFM_EDITOR).filter(has_text=RT_LINES[1]).first.wait_for(timeout=15_000)
+        o["chat_editor_html"] = await editor.inner_html()
+        o["chat_editor_look"] = await editor.evaluate(OFM_LOOK)
+        o["header"] = await page.evaluate(OFM_HEADER_FIT)
+        await _painted(page)
+        await _frame_settled(editor)
+        o["fit_trigger"] = await frame.locator("html").evaluate(f"(_) => ({OFM_FRAME_FIT})()")
+        await ui.shot(ctx, page, f"ofm-chat-{tag}-trigger")
+        n0 = len(wire_sends())
+        await press(frame.locator(OFM_SEND).first)
+        await _until(lambda: len(wire_sends()) > n0, 30)
+        sent = frame.locator(".b-chat__message__text-holder").filter(has_text="Large line").first
+        try:
+            await sent.wait_for(timeout=30_000)
+            o["sent_bubble_html"] = await sent.inner_html()
+            o["sent_bubble_look"] = await sent.evaluate(OFM_LOOK)
+        except PwTimeout:
+            o["sent_bubble_html"] = None
+        await _painted(page)
+        await _frame_settled(editor)
+        o["fit_settled"] = await frame.locator("html").evaluate(f"(_) => ({OFM_FRAME_FIT})()")
+        await ui.shot(ctx, page, f"ofm-chat-{tag}-settled")
+        if tag == "desktop":  # a plain script after it stays plain
+            await page.wait_for_timeout(3_500)
+            await _pick_template(page, OFM_PLAIN["title"])
+            await frame.locator(OFM_EDITOR).filter(has_text=OFM_PLAIN["text"]).first.wait_for(timeout=15_000)
+            o["plain_editor_html"] = await editor.inner_html()
+            n1 = len(wire_sends())
+            await press(frame.locator(OFM_SEND).first)
+            await _until(lambda: len(wire_sends()) > n1, 30)
+        o["chat_wire"] = wire_sends()
+        await chat_typed()
+
+    async def chat_typed() -> None:
+        # The chat's own Format text toolbar, typed (no script): desktop formats selected words (RT_LINES, as New
+        # message / New post), then both arm Large + Bold on an empty caret and type (OF's stored mark). Each Send's
+        # wire, and the sent bubble's look.
+        n0 = len(wire_sends())
+        await page.wait_for_timeout(3_500)  # the last send's "Sent" note gone
+        panel = frame.locator("[data-oi-format-panel]").first
+        menu = frame.locator(".menuable__content__active .v-list-item")
+        if tag == "desktop":
+            o["typed_editor_html"] = await _ofm_format(frame, editor, tap)
+            n = len(wire_sends())
+            await press(frame.locator(OFM_SEND).first)
+            await _until(lambda: len(wire_sends()) > n, 30)
+            await page.wait_for_timeout(3_500)
+        await press(editor)
+        if not await panel.is_visible():
+            await press(frame.locator("button[aria-label='Format Text']").first)
+            await panel.wait_for(timeout=15_000)
+        await press(panel.locator("[aria-label='Text Size']").first)
+        await press(menu.filter(has_text=re.compile(r"^\s*Large\s*$")).first)
+        await press(panel.locator("[aria-label='Bold']").first)
+        await editor.press_sequentially(OFM_CARET_TEXT)
+        o["caret_editor_html"] = await editor.inner_html()
+        await _painted(page)
+        await _frame_settled(editor)
+        await ui.shot(ctx, page, f"ofm-chat-typed-{tag}-trigger")
+        n = len(wire_sends())
+        await press(frame.locator(OFM_SEND).first)
+        await _until(lambda: len(wire_sends()) > n, 30)
+        sent = frame.locator(".b-chat__message__text-holder").filter(has_text=OFM_CARET_TEXT).first
+        try:
+            await sent.wait_for(timeout=30_000)
+            o["caret_bubble_html"] = await sent.inner_html()
+            o["caret_bubble_look"] = await sent.evaluate(OFM_CARET_LOOK)
+        except PwTimeout:
+            o["caret_bubble_html"] = None
+        await _painted(page)
+        await _frame_settled(editor)
+        await ui.shot(ctx, page, f"ofm-chat-typed-{tag}-settled")
+        o["typed_wire"] = wire_sends()[n0:]
+
+    async def mass() -> None:
+        # New message: Users tab, the first fan ticked, the text formatted in OF's Format text panel, Send (confirm).
+        with ctx.of_wire.lock:
+            nq = len(ctx.of_wire.queue.get(aid, []))
+        await page.goto(f"{ctx.app}/of-manager/messages/send?list=users&account={aid}", wait_until="domcontentloaded")
+        row = frame.locator(f"{OFM_MASS_ROW}:visible").first
+        await row.wait_for(timeout=WAIT_MS)
+        await press(row)
+        try:
+            await editor.wait_for(timeout=30_000)
+        except PwTimeout:  # the phone's New message: OF's composer side is not shown at 390 px (reported, not judged)
+            o["mass_composer_hidden"] = await frame.locator(".b-chats__conversations").first.evaluate(
+                "(el) => ({ display: getComputedStyle(el).display, width: el.getBoundingClientRect().width })")
+            await ui.shot(ctx, page, f"ofm-mass-{tag}-trigger")
+            await ui.shot(ctx, page, f"ofm-mass-{tag}-settled")
+            o["mass_wire"] = None
+            return
+        o["mass_editor_html"] = await _ofm_format(frame, editor, tap)
+        await _painted(page)
+        await _frame_settled(editor)
+        await ui.shot(ctx, page, f"ofm-mass-{tag}-trigger")
+        await press(frame.locator(OFM_SEND).first)
+        await _until(lambda: len(_wire(ctx, "queue").get(aid, [])) > nq, 30)
+        await page.wait_for_timeout(1_000)
+        await _painted(page)
+        await _frame_settled(editor)
+        await ui.shot(ctx, page, f"ofm-mass-{tag}-settled")
+        o["mass_wire"] = [m.get("text") for m in _wire(ctx, "queue").get(aid, [])[nq:]]
+
+    # Each surface on its own: one that cannot complete is recorded and the next still runs.
+    for name, step in (("chat", chat), ("mass", mass),
+                       ("post", lambda: _ofm_post(ctx, page, aid, frame, editor, tap, tag, o))):
+        try:
+            await step()
+        except Exception as e:  # noqa: BLE001 — judged by the checks from what was recorded
+            o[f"{name}_error"] = f"{type(e).__name__}: {e}"[:600]
+            await ui.shot(ctx, page, f"failed-ofm-{tag}-{name}")
+
+
+async def _ofm_post(ctx, page, aid: str, frame, editor, tap: bool, tag: str, o: dict) -> None:
+    """New post: Format text (OF's panel page), the text formatted, Post."""
+    press = (lambda loc: loc.tap(timeout=10_000)) if tap else (lambda loc: loc.click(timeout=10_000))
+    with ctx.of_wire.lock:
+        np_ = len(ctx.of_wire.posts.get(aid, []))
+    await page.goto(f"{ctx.app}/of-manager/new-post/state-format-text?account={aid}", wait_until="domcontentloaded")
+    await editor.wait_for(timeout=WAIT_MS)
+    o["post_editor_html"] = await _ofm_format(frame, editor, tap)
+    await _painted(page)
+    await _frame_settled(editor)
+    await ui.shot(ctx, page, f"ofm-post-{tag}-trigger")
+    await press(frame.locator(OFM_POST_BTN).first)
+    await _until(lambda: len(_wire(ctx, "posts").get(aid, [])) > np_, 30)
+    await page.wait_for_timeout(1_000)
+    await _painted(page)
+    await _frame_settled(editor)
+    await ui.shot(ctx, page, f"ofm-post-{tag}-settled")
+    o["post_wire"] = [m.get("text") for m in _wire(ctx, "posts").get(aid, [])[np_:]]
+
+
+async def _ofm_rich_text(ctx, page, chk) -> None:
+    """Section ofm-rich-text: OF Manager's chat, New message and New post keep OF's rich text, desktop and phone."""
+    accts = [a for a in (await ctx.owner.get("/admin/accounts")).json().get("accounts", [])
+             if a.get("has_session") and a.get("is_active", True)]
+    aid = accts[0]["id"]
+    c = next(x for x in ctx.world.data["creators"] if x["id"] == aid)
+    r = await ctx.owner.request("POST", f"/admin/saved-replies?account_id={aid}",
+                                json={"title": OFM_TITLE, "text": RT_MARKUP, "price": 0, "locked_text": False})
+    r.raise_for_status()
+    r = await ctx.owner.request("POST", f"/admin/saved-replies?account_id={aid}",
+                                json={**OFM_PLAIN, "price": 0, "locked_text": False})
+    r.raise_for_status()
+    view = await _chat_view(ctx, [c])
+    fan_d, fan_p = view[aid][1]["withUser"], view[aid][2]["withUser"]
+    view[aid][1] = {**view[aid][1], "lastMessage": {**(view[aid][1].get("lastMessage") or {}), "text": OFM_FAN}}
+    out: dict = {"account": aid, "fans": {"desktop": fan_d["id"], "phone": fan_p["id"]}}
+    errs: dict = {}
+    fives: list = []
+    try:
+        # Each viewport in a fresh context: the run's page holds a Scripts list cached before OFM_TITLE was saved.
+        for tag, size, fan, touch in (("desktop", VIEWPORT, fan_d, False), ("phone", PHONE, fan_p, True)):
+            tab = await ui._owner_page(page.context.browser, ctx, size, [], [], through=THROUGH, touch=touch)
+            try:
+                await tab.context.add_init_script(TOURS_SEEN)
+                tab.context.set_default_navigation_timeout(WAIT_MS)
+                tab.on("dialog", lambda dl: asyncio.ensure_future(dl.accept()))
+                await _ofm_routes(ctx, tab, aid, view, fan_d)
+                try:
+                    await _ofm_surfaces(ctx, tab, aid, [fan], tap=touch, tag=tag, out=out)
+                except Exception as e:  # noqa: BLE001 — judged below from what was recorded
+                    errs[tag] = f"{type(e).__name__}: {e}"[:600]
+                    await ui.shot(ctx, tab, f"failed-ofm-{tag}")
+                fives += [u for st, u in tab.slop["statuses"] if st >= 500][:5]
+            finally:
+                await tab.context.close()
+        d, p = out.get("desktop", {}), out.get("phone", {})
+        out |= {"errors": errs, "relay_5xx": fives}
+        chk(OFM_CHAT_DESKTOP, d.get("chat_editor_html") == RT_MARKUP and _ofm_look_ok(d.get("chat_editor_look"))
+            and d.get("chat_wire") == [RT_MARKUP, OFM_FREE_WIRE] and _ofm_look_ok(d.get("sent_bubble_look"))
+            and "<span" not in (d.get("plain_editor_html") or "<span") and not fives,
+            chat_wire=d.get("chat_wire"), want=[RT_MARKUP, OFM_FREE_WIRE], editor=d.get("chat_editor_html"),
+            editor_look=d.get("chat_editor_look"), sent_bubble=d.get("sent_bubble_html"),
+            sent_look=d.get("sent_bubble_look"), plain_editor=d.get("plain_editor_html"),
+            error=errs.get("desktop") or d.get("chat_error"))
+        chk(OFM_CHAT_PHONE, p.get("chat_editor_html") == RT_MARKUP and _ofm_look_ok(p.get("chat_editor_look"))
+            and p.get("chat_wire") == [RT_MARKUP] and _ofm_look_ok(p.get("sent_bubble_look")) and not fives
+            and _ofm_header_ok(p.get("header")) and p["header"]["scripts"]
+            and _ofm_fit_ok(p.get("fit_trigger")) and _ofm_fit_ok(p.get("fit_settled")),
+            chat_wire=p.get("chat_wire"), want=[RT_MARKUP], editor=p.get("chat_editor_html"), header=p.get("header"),
+            fit=[p.get("fit_trigger"), p.get("fit_settled")],
+            editor_look=p.get("chat_editor_look"), sent_look=p.get("sent_bubble_look"),
+            error=errs.get("phone") or p.get("chat_error"))
+        caret_ok = lambda o: (lambda lk: bool(lk) and lk["large"] == "20px" and lk["weight"] > lk["base"]  # noqa: E731
+                              and not lk["tags"])(o.get("caret_bubble_look"))
+        chk(OFM_CHAT_TYPED, d.get("typed_wire") == [RT_MARKUP, OFM_CARET_WIRE] and p.get("typed_wire") == [OFM_CARET_WIRE]
+            and caret_ok(d) and caret_ok(p) and not fives,
+            desktop=d.get("typed_wire"), phone=p.get("typed_wire"), want={"desktop": [RT_MARKUP, OFM_CARET_WIRE],
+            "phone": [OFM_CARET_WIRE]}, editors=[d.get("typed_editor_html"), d.get("caret_editor_html"),
+            p.get("caret_editor_html")], bubbles=[d.get("caret_bubble_html"), p.get("caret_bubble_html")],
+            looks=[d.get("caret_bubble_look"), p.get("caret_bubble_look")], error=[d.get("chat_error"), p.get("chat_error")])
+        chk(OFM_BUBBLE, _ofm_look_ok(d.get("fan_bubble_look"), "blue2")
+            and d.get("fan_bubble_html") == OFM_FAN and d.get("list_last") == "slop ofm fan says hi",
+            bubble=d.get("fan_bubble_html"), look=d.get("fan_bubble_look"), list_last=d.get("list_last"))
+        chk(OFM_MASS, d.get("mass_wire") == [RT_MARKUP] and not fives,
+            desktop=d.get("mass_wire"), phone=p.get("mass_wire"), phone_composer_hidden=p.get("mass_composer_hidden"),
+            want=[RT_MARKUP],
+            editors=[d.get("mass_editor_html"), p.get("mass_editor_html")], errors=errs, error=d.get("mass_error"))
+        chk(OFM_POST, d.get("post_wire") == [RT_MARKUP] and p.get("post_wire") == [RT_MARKUP] and not fives,
+            desktop=d.get("post_wire"), phone=p.get("post_wire"), want=[RT_MARKUP],
+            editors=[d.get("post_editor_html"), p.get("post_editor_html")], errors=errs,
+            error=[d.get("post_error"), p.get("post_error")])
+    finally:
+        (ctx.out / "ofm-rich-text.json").write_text(json.dumps(out, indent=2, default=str))
 
 
 def _rt_dirty(i: int) -> tuple[str, str]:
@@ -4704,7 +5446,8 @@ async def run(ctx) -> None:
                          ("clock", _clock), ("vault", _vault), ("premade", _premade),
                          ("fanlist", _fanlist), ("chat-refused", _chat_refused), ("chat-ppv", _chat_ppv), ("bell", _bell), ("vaultmanage", _vaultmanage),
                          ("redescribe", _redescribe), ("shimmer", _shimmer), ("scripts", _scripts),
-                         ("session", _session), ("rich-text", _rich_text)):
+                         ("session", _session), ("rich-text", _rich_text),
+                         ("ofm-rich-text", _ofm_rich_text)):
             if not picked(name):
                 for c in SECTIONS[name]:
                     ctx.skip(c, f"not selected (only={','.join(sorted(only))})")

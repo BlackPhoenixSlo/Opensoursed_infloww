@@ -78,8 +78,13 @@ Combining: **M**
 - Empty selection: sets the stored mark so the next typed text carries it.
 - Nesting: `ClassName` precedes `StarterKit` in the extension list, so tiptap ranks the span mark outside bold/italic:
   `<span class="m-editor-fc__blue-1"><strong>💖REVERSE RIDING POV💖</strong></span>` (**I** from tiptap mark ranking; the
-  paste filter `j8` also moves class/style off `<em>/<strong>` onto a wrapping `<span>`, **M**). This is the opposite of
-  the order `ofMirrorFormat.ts` ASSUMES for OF (strong > em > span); markup is equivalent for rendering.
+  paste filter `j8` also moves class/style off `<em>/<strong>` onto a wrapping `<span>`, **M**).
+- OF's own wire (**M**, owner's HAR of onlyfans.com, 2026-11-06): a chat send `POST /api2/v2/chats/:id/messages` with
+  `"text":"<p><span class=\"m-editor-fs__l m-editor-fc__blue-2\"><strong>safgsfg</strong></span></p>"` → 200, echoed
+  byte for byte (`isMarkdownDisabled:true`): **OF DMs keep formatting**; span outside strong, size class first. Every
+  serializer here writes that shape (`ofMirrorFormat.runsHtml`; the relay's allow-list orders classes the same way). With
+  both classes, their order likely follows which was applied last (`removeClassNamePattern` then append, **I**); size
+  first is the canonical one we write.
 
 Clear formatting (`clearFormatting`, SPA in `useOnlyfansEditor$1`): **M**
 - With a selection: `clearNodes().unsetAllMarks()` (drops bold, italic, size+colour span; lists/headings → paragraph).
@@ -162,8 +167,8 @@ it **M**; it simply wraps/shrinks in a narrow window **I**.
 ## Contrast with `app/lib/ofMirrorFormat.ts`
 
 - Same tags, classes, colours, sizes and paste matrix as documented there; confirmed in Infloww's copy and OF's cached build. **M**
-- Differences: Infloww's span is a separate `className` mark, not `textStyle` (**M**); likely nesting span > strong > em,
-  not strong > em > span (**I**); Infloww folds blank paragraphs into `<br><br>` on script save (**M**).
+- Differences: Infloww's span is a separate `className` mark, not `textStyle` (**M**); nesting span > strong > em, as OF's
+  wire (**M**, HAR above) and `ofMirrorFormat` now write; Infloww folds blank paragraphs into `<br><br>` on script save (**M**).
 
 ## Where this app keeps the formatting (2026-11-05)
 

@@ -22,15 +22,21 @@
  *     an upload still transcoding (`_claim`) and an uploaded item's own files
  *     and blob preview; media with a suggested price set the price to the
  *     highest of them and open the PPV row.
- *   • A formatted template (OF's rich text: bold, italic, colour, size) keeps
- *     its markup in `rich` beside the plain text the Composer shows; the send
- *     carries the markup while the text is still that plain text
- *     (`richText`), so an edit falls back to plain with no edited flag to keep.
+ *   • OF's rich text (bold, italic, colour, size): the text's markup lives in
+ *     `rich` beside its plain text (the Composer's `text`, what the Fan List,
+ *     "/" search, translation and sensitive words read); the send carries the
+ *     markup while the text is still that plain text (`richText`), so text
+ *     replaced from outside (Use translation) goes plain with no flag to keep.
+ *     The rich editor's edits set it (`setRich`); a formatted template sets
+ *     it only where the account takes OF markup (`pickTemplate`'s `rich`: an
+ *     OnlyFans account, never Fansly). "Aa" (`aa`) and the box it puts the
+ *     text in are `mode`, lib/ofRichMode's state machine.
  *   • Blob previews are a side effect and stay out of it (useBlobPreviews).
  */
 
 import { applyTemplate, canBeFreePreview } from "@/lib/composeDraft";
-import { hasOfFormatting } from "@/lib/ofRichText";
+import { hasOfFormatting, isOfHtml } from "@/lib/ofRichText";
+import { PLAIN_MODE, richMode, type RichMode } from "@/lib/ofRichMode";
 import type { VaultMedia } from "@/lib/relay";
 import { parsePrice, sanitizePriceInput } from "@/lib/priceInput";
 import { priceNote } from "@/lib/sendGuards";
@@ -86,17 +92,32 @@ export interface ComposerDraft {
   pickedGifs: PickedGif[];
   /** The Script step this draft was loaded from; its send advances the Script. */
   script: { scriptId: string; scriptStep: number } | null;
-  /** A formatted template's OF markup and the plain text it was picked as. */
+  /** The text's OF markup and the plain text it reads as (a formatted template's, or the rich editor's). */
   rich: { html: string; plain: string } | null;
+  /** "Aa" and whether the text is in the rich editor (lib/ofRichMode). */
+  mode: RichMode;
+  /** The saved reply this draft was picked from: its send counts toward the script's send count (`sentReplyId`). */
+  replyId: number | null;
 }
 
 export const EMPTY_DRAFT: ComposerDraft = {
   price: "", priceOpen: false, lockedText: false, attached: [], previewCount: 0,
-  scheduleOpen: false, scheduleAt: "", taggedCreators: [], pickedGifs: [], script: null, rich: null,
+  scheduleOpen: false, scheduleAt: "", taggedCreators: [], pickedGifs: [], script: null, rich: null, replyId: null,
+  mode: PLAIN_MODE,
 };
 
+/** The saved reply whose send count a send of `d` bumps: the picked one. */
+export function sentReplyId(d: ComposerDraft): number | null {
+  return d.replyId ?? null;
+}
+
 export type DraftAction =
-  | { type: "pickTemplate"; t: PickedTemplate }
+  /** `rich`: the chat's account takes OF markup (OnlyFans), so a formatted template keeps it. */
+  | { type: "pickTemplate"; t: PickedTemplate; rich?: boolean }
+  /** "Aa" pressed. */
+  | { type: "aa" }
+  /** The rich editor's value changed: its markup (null: plain, no markup). */
+  | { type: "setRich"; rich: { html: string; plain: string } | null }
   | { type: "pickVault"; picked: VaultMedia[] }
   /** Uploads that landed; an id already attached is not added twice. */
   | { type: "uploaded"; media: VaultMedia[] }
@@ -125,8 +146,15 @@ export function composerDraft(s: ComposerDraft, a: DraftAction): ComposerDraft {
     case "pickTemplate": {
       const { scriptId, scriptStep } = a.t;
       const script = scriptId && typeof scriptStep === "number" ? { scriptId, scriptStep } : null;
-      const rich = hasOfFormatting(a.t.displayText) ? { html: a.t.displayText.trim(), plain: a.t.text } : null;
-      return { ...applyTemplate(s, a.t), priceOpen: a.t.price > 0, script, rich };
+      const rich = a.rich && hasOfFormatting(a.t.displayText) ? { html: a.t.displayText.trim(), plain: a.t.text } : null;
+      const mode = richMode(s.mode, { type: "loaded", formatted: !!rich }, !!a.rich);
+      return { ...applyTemplate(s, a.t), priceOpen: a.t.price > 0, script, rich, mode, replyId: a.t.replyId ?? null };
+    }
+    case "aa":
+      return { ...s, mode: richMode(s.mode, { type: "aa", formatted: s.rich != null }) };
+    case "setRich": {
+      const mode = richMode(s.mode, { type: "edited", formatted: a.rich != null });
+      return a.rich?.html === s.rich?.html && mode === s.mode ? s : { ...s, rich: a.rich, mode };
     }
     case "pickVault": {
       const byId = new Map(s.attached.map((m) => [m.id, m]));
@@ -179,28 +207,37 @@ export function composerDraft(s: ComposerDraft, a: DraftAction): ComposerDraft {
     case "setTags":
       return { ...s, taggedCreators: a.tags };
     case "clearPpv":
-      // Tags are not in the PPV row, and the Script step and formatting ride on the text: all stay.
-      return { ...EMPTY_DRAFT, taggedCreators: s.taggedCreators, script: s.script, rich: s.rich };
+      // Tags are not in the PPV row, and the Script step, formatting and saved reply ride on the text: all stay.
+      return { ...EMPTY_DRAFT, taggedCreators: s.taggedCreators, script: s.script, rich: s.rich, mode: s.mode, replyId: s.replyId };
     case "dropScript":
-      return { ...s, script: null };
+      return { ...s, script: null, replyId: null };
     case "sent":
-      return EMPTY_DRAFT;
+      return { ...EMPTY_DRAFT, mode: richMode(s.mode, { type: "sent" }) };
     case "restore":
+      // The snapshot's text goes back in: formatted, into the rich editor; "Aa" stays as the chatter has it now.
       return a.snapshot;
   }
 }
 
-/** Nothing on the draft: what `sent` leaves. */
+/** Nothing on the draft: what `sent` leaves ("Aa" is the box's, not the draft's). */
 export function isEmptyDraft(d: ComposerDraft): boolean {
   return (
     d.price === "" && !d.priceOpen && !d.lockedText && d.attached.length === 0 && d.previewCount === 0 &&
     !d.scheduleOpen && d.scheduleAt === "" && d.taggedCreators.length === 0 && d.pickedGifs.length === 0 &&
-    d.script == null && d.rich == null
+    d.script == null && d.rich == null && d.replyId == null
   );
 }
 
-/** The picked template's markup while `text` is still the plain text it was picked as (trim aside), else null:
- *  the chatter typed over it, so it sends as the plain text it shows. */
+/** The rich editor's value as the Composer's text and markup: markup (formatted, or plain text that reads as
+ *  markup) keeps `rich`, plain text clears it. */
+export function richFromEditor(value: string, plainOf: (html: string) => string): { text: string; rich: ComposerDraft["rich"] } {
+  if (!isOfHtml(value)) return { text: value, rich: null };
+  const plain = plainOf(value);
+  return { text: plain, rich: { html: value, plain } };
+}
+
+/** The draft's markup while `text` is still the plain text it was set with (trim aside), else null: the text was
+ *  replaced from outside (Use translation), so it sends as the plain text it shows. */
 export function richText(d: ComposerDraft, text: string): string | null {
   return d.rich && d.rich.plain.trim() === text.trim() ? d.rich.html : null;
 }
@@ -316,9 +353,10 @@ export function composerView(d: ComposerDraft, ctx: ViewCtx) {
  *  already past sends at once. Only the first GIF rides along. */
 export function buildSendArgs(
   d: ComposerDraft,
-  opts: { text: string; delayMinutes?: number; now: number },
+  opts: { text: string; delayMinutes?: number; now: number; plainOnly?: boolean },
 ): SendArgs {
-  const args: SendArgs = { text: richText(d, opts.text) ?? opts.text };
+  // `plainOnly`: a Fansly account, or a translation sent in the draft's place, never sends OF markup.
+  const args: SendArgs = { text: (!opts.plainOnly && richText(d, opts.text)) || opts.text };
   const price = paidPrice(d);
   if (price != null) {
     args.price = price;

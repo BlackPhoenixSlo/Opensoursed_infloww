@@ -58,16 +58,17 @@ async def _finalize_run(
     *,
     job_id: int | None = None,
     job_status: str = "done",
+    refused: bool = False,
 ) -> None:
     """Close the run row and, in the same transaction, the job it ran (if
-    any): `job_status` is written as-is, or run_decide.JOB_RETRY parks a failure. One
-    commit, so `rule_run_finished` never reaches a client that would still
-    read the job as running."""
+    any): `job_status` is written as-is, or run_decide.JOB_RETRY parks a failure
+    (`refused`: see _park_failed_job). One commit, so `rule_run_finished` never
+    reaches a client that would still read the job as running."""
     async with get_session() as s:
         # The job first: a missing run row must not leave it running.
         if job_id is not None:
             if job_status == run_decide.JOB_RETRY:
-                await _park_failed_job(s, job_id, error_text or "")
+                await _park_failed_job(s, job_id, error_text or "", refused=refused)
             else:
                 await _write_job(s, job_id, job_status, error_text)
         run = await s.get(AutomationRun, run_id)
@@ -322,15 +323,29 @@ async def _mark_job_failure(job_id: int, err: str) -> None:
         await _park_failed_job(s, job_id, err)
 
 
-async def _park_failed_job(s, job_id: int, err: str) -> None:
+async def _park_failed_job(s, job_id: int, err: str, *, refused: bool = False) -> None:
     """Park a failed job. Retry (status back to 'pending' with a backoff) while
-    attempts remain; otherwise leave it 'error' for inspection."""
+    attempts remain; otherwise leave it 'error' for inspection.
+
+    `refused`: run_decide.defers_refusal (a one-shot broadcast the proxy refused,
+    nothing of it at OF). It waits out the refusal burst like any refused send:
+    PROXY_RETRY_MINUTES out, up to PROXY_RETRIES retries, `last_error`
+    "proxy_retry:<n> (...)", then 'error' "proxy_refused (...)". `n` counts the
+    refusals in a row (the previous last_error's), apart from `attempts`: an earlier
+    other failure eats none of them; a later other failure is judged on `attempts`
+    (the refusals included) as before."""
     err = scrub_pool_secrets(err)
     job = await s.get(ScheduledJob, job_id)
     if job is None:  # pragma: no cover
         return
     _announce_scheduled_send(s, job)
-    job.last_error = err[:500]
+    prev_error, job.last_error = job.last_error, err[:500]
+    attempts = job.attempts or 0
+    if refused:
+        attempts = run_decide.proxy_tries(prev_error) + 1
+        budget, backoff_s = run_decide.PROXY_RETRIES + 1, run_decide.PROXY_RETRY_MINUTES * 60
+    else:
+        budget, backoff_s = _MAX_JOB_ATTEMPTS, run_decide.JOB_RETRY_BACKOFF_S
     # A retry must not outlive its rule: the operator switched it OFF (or
     # deleted it) while this attempt ran — don't requeue work they stopped.
     # Row rule_id first, run_once reads the tag first: kept as before the move.
@@ -338,15 +353,19 @@ async def _park_failed_job(s, job_id: int, err: str) -> None:
     # both (webhook_dispatch tags `_rule_id` on a rule-less row).
     rid = job.rule_id or run_decide.payload_rule_id(job.payload_json)
     live = None if rid is None else await _rule_is_live(s, rid)
-    match decision := run_decide.park(job.attempts or 0, live, _MAX_JOB_ATTEMPTS):
+    match decision := run_decide.park(attempts, live, budget, backoff_s):
         case run_decide.Cancelled():
             job.status = JOB_CANCELLED
             job.last_error = f"{RULE_OFF_REASON} ({err})"[:500]
         case run_decide.Retry(backoff_s=backoff_s):
             job.status = "pending"
             job.run_at = datetime.utcnow() + timedelta(seconds=backoff_s)
+            if refused:
+                job.last_error = f"{run_decide.PROXY_RETRY}:{attempts} ({err})"[:500]
         case run_decide.Error():
             job.status = "error"
+            if refused:
+                job.last_error = f"{run_decide.PROXY_REFUSED} ({err})"[:500]
         case _:
             assert_never(decision)
 
