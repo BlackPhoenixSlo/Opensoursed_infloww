@@ -140,7 +140,12 @@ async def admin_vault_sends_backfill(body: _VaultBackfillBody = Body(...)) -> di
                 inserted += 1
         if inserted:
             await s.commit()
-    return {"ok": True, "inserted": inserted, "skipped": skipped}
+    if not inserted:
+        return {"ok": True, "inserted": 0, "skipped": skipped}
+    # The fan's new history (GET /admin/vault/fan-history's body): the chat open sets it instead of reading it
+    # again, one round trip less (every page granting /admin/vault/sends grants fan-history: permissions._PICKER).
+    history = await admin_vault_fan_history(account_id=body.account_id, fan_id=body.fan_id)
+    return {"ok": True, "inserted": inserted, "skipped": skipped, "history": history}
 
 
 def _parse_of_iso(s: Any) -> datetime | None:

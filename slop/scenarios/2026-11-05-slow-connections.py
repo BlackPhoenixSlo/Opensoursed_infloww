@@ -25,11 +25,17 @@ perf log's 10 s beacon aside):
              #260 one /admin/screens/inbox, OF's per Creator before; /admin/chats/recent, by-ids, spend-batch);
              settled adds useUnreadMessagesPrefetch's idle thread reads (seconds of them), recorded in the table
              and metrics, not judged
-  thread     tap the first row (the opened Fan): its messages
+  thread     tap the first row (the opened Fan): its messages (its local reads: one /admin/screens/chat since the
+             chat-open bundle; per route before)
   vault      the composer's Vault button: the picker's tiles (live OF path: /api/of/v2/vault/media, thumbs via /img)
   send       type a line, tap Send: the bubble, and OF's POST
   receive    `--users` Fans DM through `/__slop/of-ws-frame` (fan_dm.serial: per Creator one frame in flight), then
              the opened Fan: settled = its frames handed to the relay -> their bubbles on the page
+  dashboard-again  last, at least AGAIN_AFTER_S after the first visit (the relay's 60 s OF caches expired, as a
+             phone coming back): one Creator's OF fan count changed (`fan_counts`), the page's clock AGAIN_SHIFT_S
+             ahead (the saved snapshot past the cards' 30 min staleTime: every card reads again), `/` typed: every
+             Per-model card's fan count shown (key: the cards painted, the snapshot's counts or the bundle's), then
+             C_AGAIN: the painted counts converge to OF's (the changed one's new count)
 Screenshots `screenshots/<profile>-<flow>-trigger.png` (the screen the user acts on; dashboard: just after the
 navigation commits; receive: the open thread before the first frame) and `-settled.png`; every request per flow
 (path, status, bytes, ms) in `net-<profile>.json`.
@@ -42,7 +48,13 @@ chats), capped at the 200 rows drawn); the thread's bubbles == OF's thread (seed
 oldest first; the picker's tiles, scrolled to the end, == the seeded vault; every /img 200; the send side effect (OF
 got exactly one POST with that text); receive: every DM in the DB (`/admin/messages`), each thread's DMs in send
 order, the opened Fan's DM visible, and frame -> SSE p95 (the manager's /events listener, harness side) <= SSE_P95_MS
-(budget). Each profile starts on a cold relay (`_cold_relay`), after one untimed warm-up load of `/` before the first
+(budget); the thread's reads: no route GET twice (`THREAD_ONCE`: attribution, fan-history were 3x / 2x) and its
+local reads (seed, Fan, attribution, fan-history, scheduled sends, saved replies, sensitive words) in one
+/admin/screens/chat, none per route (`THREAD_BUNDLE`); its waves (request start clusters > WAVE_GAP_MS apart) and
+duplicates in the table and metrics. After receive the open thread is left alone `idle_s` (`--set idle_s=0`: none;
+untimed): OnlyFans re-signs the opened thread's photo URLs at its start (`_resign`: a REST refresh's new Policy /
+Signature, same host + path) and the tab returns once half way (a `visibilitychange`); its requests per minute, in
+total and /img, by route, in the table and metrics (`idle`). Each profile starts on a cold relay (`_cold_relay`), after one untimed warm-up load of `/` before the first
 (`_warm_up`: the Next server's first render is not the phone's to pay); creators, thread, vault and send start once
 the network went `DRAIN_MS` quiet (untimed: past the Fan List's idle prefetch and Next's link prefetch, so a flow
 counts only its own requests). TARGET_MS (the post-fix aims) is recorded in the table and metrics; checked only where
@@ -56,10 +68,15 @@ shared with dashboard-load (its two-line crash + start keeps the /img disk cache
 re-arms both).
 
 `--no-ui`: the browser checks SKIP; the relay half of receive runs (`--users` Fans x `per_fan`, frame -> SSE p95).
-Break-it-once: net-si-budget-forced (lib/net_faults.py): si's budgets applied to every profile; only the far
+Break-it-once: chat-bundle-drops-attribution (lib/chat_open_faults.py; `--fault=`, on jp): the bundle never reads
+attribution, so only THREAD_ONCE and THREAD_BUNDLE go red. net-si-budget-forced (lib/net_faults.py): si's budgets applied to every profile; only the far
 profiles' budgets measured at >= 2x si's go red (the rest, and receive's one budget, are not its targets). For a wire
 profile: `slop/run slow-conn --net=jp-lossy --break --fault=net-lossy-si-budget-forced` (si's budgets on jp-lossy;
-targets its flows measured >= 2x si's).
+targets its flows measured >= 2x si's). Serve-stale: `--net=jp --break --fault=screen-bundle-stale-unmarked`
+(lib/screens_faults.py: a last value served without `refreshing`, so no follow-up; targets C_AGAIN only). Inline
+boot (C_INLINE: a document load of the Dashboard or Messages Pro fetches none of the reads its HTML carries,
+app/lib/inlineBoot.server.ts): `--net=jp --break --fault=inline-boot-relay-refuses-server` (the Next server's reads
+answered 503: the page falls back to its own fetches; targets C_INLINE only).
 
 Wire profiles (`--net=jp-lossy` / `--net=jp-lossy-bad`, never in the default set; the run stops at once, naming
 `sudo slop/install-netloss`, without the helper; one wire run per machine, lib/net.py `wire_lock`): real TCP through
@@ -84,7 +101,12 @@ WS frame hook (`/__slop/of-ws-frame`), not OF's socket; Chromium, not WebKit. Se
 throttle does not reach a worker's own fetches, and app/public/sw-images.js fetches every /img: measured 25-45 ms
 each under jp-bad), so /img rides the page's throttled line as a cold worker cache's fetches would. Receive's frame
 -> bubble does not see the round trip: CDP holds only a response's headers, so events on the open /events stream
-arrive unthrottled (measured ~120 ms on every profile); a real phone adds about half an RTT."""
+arrive unthrottled (measured ~120 ms on every profile); a real phone adds about half an RTT. The idle window's tab
+return is a `visibilitychange` on a page that stays visible (a headless tab cannot be hidden); its re-sign is the
+fake's (`fake.messages`), once. The phone's zone is `ZONE` (Tokyo for the far profiles, the Next server in the
+laptop's), and its context gets the `chatterly_tz` cookie the sign-in page's boot script would have left (the session
+cookies are injected, not typed there). A document load's HTML: `html_ttfb_ms` its first byte, `html_end_ms` its
+stream's end (net-<profile>.json, the table)."""
 from __future__ import annotations
 
 import asyncio
@@ -94,14 +116,17 @@ import re
 import shutil
 import time
 from datetime import datetime
+from urllib.parse import parse_qs, urlsplit
 
 from playwright.async_api import async_playwright
 
 from slop.actors import fan_dm, manager
 from slop.actors.ui import LAUNCH_ARGS, track
-from slop.lib.img_relay import arm_run
+from slop.lib.chat_open_faults import THREAD_BUNDLE, THREAD_ONCE
+from slop.lib.img_relay import arm_run, policy_exp, signed
 from slop.lib.net import DEFAULT_PROFILES, HELPER, INSTALL, PROFILES, Meter, calibrate, emulate, is_wire, wired
 from slop.lib.net_faults import LOSSY_SI_FORCED, SI_FORCED, budget_check
+from slop.lib.screens_faults import C_AGAIN, C_INLINE
 from slop.lib.wan import WanEdge
 from slop.seed import agency, chat_media, fans, of_sessions, threads
 from slop.seed import creators as creators_seed
@@ -115,7 +140,12 @@ CREATORS = 13
 OF_MS = 300      # a guess between the fake's 50 ms and prod's cold 0.9-1.3 s (dashboard-load's docstring)
 CDN_MS = 50
 PER_FAN = 2      # DMs per Fan in receive: two, so a thread's order can be wrong
-FLOWS = ("dashboard", "creators", "fan-list", "thread", "vault", "send", "receive")
+FLOWS = ("dashboard", "creators", "fan-list", "thread", "vault", "send", "receive", "dashboard-again")
+# dashboard-again: past the relay's OF caches (screens_api CACHE_TTL_S, users/me's 60 s) and the cards' staleTime.
+AGAIN_AFTER_S = 65
+AGAIN_SHIFT_S = 31 * 60
+AGAIN_BUMP = 1_000       # the changed Creator's new count: + this (every seeded count is < 1000: none collides)
+AGAIN_WAIT_MS = 20_000   # after settled, how long C_AGAIN waits for the counts to converge
 FANLIST_PAGE, FANLIST_RENDER = 25, 200   # useChatList PAGE_SIZE, fanListPaging ROW_RENDER_STEP
 # Before creators, thread, vault and send (untimed): network quiet this long, past Next's link prefetch and the
 # Fan List's unread prefetch (useUnreadMessagesPrefetch: an idle tier starts 2.5 s after the last input, then
@@ -129,6 +159,12 @@ THREAD_PAGE = 30                          # useChatMessages PAGE_SIZE: the threa
 FIRST_PAGE = tuple(re.compile(x) for x in (r"^/api/of/v2/chats(\?|$)", r"^/admin/screens/inbox",
                                            r"^/admin/chats/recent", r"^/admin/fans/\d+/by-ids",
                                            r"^/admin/fans/\d+/spend-batch"))
+# The phone's zone per profile (the far ones are the AE client's Tokyo phone, si the owner's; the Next server runs in
+# the laptop's), and the cookie the sign-in page's boot script leaves with it (app/app/layout.tsx: the browser's zone
+# for the server's inline Dashboard bundle): the session cookies are injected, not typed on that page.
+ZONE: dict[str, str] = {"si": "Europe/Ljubljana"}
+ZONE_FAR = "Asia/Tokyo"
+TZ_COOKIE = "chatterly_tz"
 IPHONE_UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 "
              "(KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1")
 # Ready ms per profile x flow: the small run 20261105T184058Z-...-345a (cold relay per profile; its measured ready
@@ -209,8 +245,15 @@ RECEIVE_MS = 800  # frame -> bubble, any profile (CDP leaves the open /events st
 # with /admin/screens/dashboard, and 13 x OF's chat list with /admin/screens/inbox. Receive's per DM delivered (its
 # refetches follow the DMs and where they land, so a fixed cap tracks --users and the scale; measured 27-34 for 42
 # DMs at small, 40 at medium, 20261105T172951Z-...-dde2): one read per DM + 25 %.
-REQ_MAX: dict[str, int] = {"dashboard": 52, "creators": 16, "fan-list": 140, "thread": 30, "vault": 73, "send": 6}
+REQ_MAX: dict[str, int] = {"dashboard": 52, "creators": 16, "fan-list": 140, "thread": 30, "vault": 73, "send": 6,
+                           "dashboard-again": 52}   # again: 39-45 measured (20261106T112352Z-...-de4d)
 REQ_PER_DM = 1.25
+IDLE_S = 60  # the open thread left alone this long after receive (calls/min; `--set idle_s=0`: none)
+WAVE_GAP_MS = 100  # a thread request starting this long after the previous start opens a new wave (dependent reads)
+# A thread open's local (relay DB) reads: the chat bundle's, so none goes out on its own (GETs; mark-read is a POST).
+THREAD_LOCAL = tuple(re.compile(x) for x in (
+    r"^/admin/messages/\d+/\d+(\?|/attribution|$)", r"^/admin/fans/\d+/\d+(\?|$)", r"^/admin/vault/fan-history",
+    r"^/api/of/v2/scheduled-sends\?", r"^/admin/saved-replies\?", r"^/admin/sensitive-words"))
 PACED_GAP_MS = 2_000  # judged time this far past the key: the table note names the flow (key = the paint)
 # Where each flow should land after the fixes (recorded; checked only where met, RECEIVE_LIMIT_MS below): si as
 # measured (the owner's "instant"); a far profile = si + 2 RTT (one for the request, one for its data, nothing serial
@@ -244,13 +287,90 @@ C_THREAD_ORDER = "receive: each thread's DMs in send order"
 C_VISIBLE = "receive: the opened Fan's DM shows in the open thread"
 C_SSE_ALL = "receive: every DM reached the manager's /events"
 C_NO_5XX = "no request the page sent was answered 5xx"
-UI_CHECKS = (C_ROWS, C_CREATORS, C_CREATORS_LINK, C_ORDER, C_VAULT, C_IMG, C_SEND, C_VISIBLE, C_RECEIVE)
+C_HTML_PRIVATE = ("a signed-in document load's HTML (it carries that user's inline answers) is never stored: Cache-Control "
+                  "private and no-store")
+UI_CHECKS = (C_HTML_PRIVATE, C_ROWS, C_CREATORS, C_CREATORS_LINK, C_ORDER, C_VAULT, C_IMG, C_SEND, C_VISIBLE, C_RECEIVE, C_AGAIN,
+             C_INLINE, THREAD_ONCE, THREAD_BUNDLE)
+# C_INLINE: per document-load flow, the reads its HTML carries (app/lib/inlineBoot.server.ts inlinePaths; a bundle's
+# follow-up, `accounts=`, is the browser's own). Every profile has the zone cookie (ZONE), so the Dashboard's too.
+_ME = (r"^/auth/me$", r"^/chatter/me$")
+INLINE_READS: dict[str, tuple[re.Pattern, ...]] = {
+    "dashboard": tuple(re.compile(x) for x in (*_ME, r"^/admin/settings/applied$",
+                                                 r"^/admin/screens/dashboard\?(?!.*accounts=)")),
+    "fan-list": tuple(re.compile(x) for x in (*_ME, r"^/admin/screens/inbox\?cursor=0$")),
+}
+INLINE_READS["dashboard-again"] = INLINE_READS["dashboard"]
 
 ROWS_JS = "() => [...document.querySelectorAll('table tbody tr')].filter(r => r.cells.length > 1).length"
+FANS_JS = ("() => [...document.querySelectorAll('dt')].filter(d => d.textContent.trim() === 'Fans')"
+           ".map(d => ((d.nextElementSibling || {}).textContent || '').trim())")
+CARDS_JS = f"() => {{ const f = ({FANS_JS})(); return f.length > 0 && f.every(t => /^[\\d,]+$/.test(t)); }}"
+# dashboard-again: when a card first painted the changed Creator's new count (epoch ms), from the document's start.
+CONV_JS = r"""(() => { const want = %d; const chk = () => { if (window.__conv) return;
+  for (const d of document.querySelectorAll('dt')) if (d.textContent.trim() === 'Fans'
+    && Number(((d.nextElementSibling || {}).textContent || '').replace(/,/g, '')) === want) {
+    window.__conv = performance.timeOrigin + performance.now(); return; } };
+  new MutationObserver(chk).observe(document, {subtree: true, childList: true, characterData: true}); })()"""
 SEEN_JS = r"""() => { if (window.__seen) return; window.__seen = {};
   const mark = () => { for (const e of document.querySelectorAll('[data-msg-id]'))
     if (!(e.dataset.msgId in window.__seen)) window.__seen[e.dataset.msgId] = Date.now(); };
   mark(); new MutationObserver(mark).observe(document.body, {childList: true, subtree: true}); }"""
+
+
+def _route(path: str) -> str:
+    """A request's route for the idle table: the query dropped, ids (digit runs) as {n}."""
+    return re.sub(r"\d+", "{n}", path.split("?", 1)[0])
+
+
+def _idle(win: list[dict], seconds: float) -> dict:
+    """The idle window's requests (SSE and beacon aside) per minute, in total, /img, and by route."""
+    reqs = [q for q in win if Meter._counted(q)]
+    img = [q for q in reqs if q["path"].startswith("/img")]
+    per = 60 / seconds
+    by: dict[str, int] = {}
+    for q in reqs:
+        by[_route(q["path"])] = by.get(_route(q["path"]), 0) + 1
+    return {"seconds": seconds, "requests": len(reqs), "per_min": round(len(reqs) * per, 1), "img": len(img),
+            "img_per_min": round(len(img) * per, 1),
+            "by_route": dict(sorted(by.items(), key=lambda kv: -kv[1])[:30])}
+
+
+def _thread_reads(reqs: list[dict]) -> dict:
+    """The thread open's reads: routes GET more than once (/img aside), the bundle calls, local reads per route, and
+    waves (start clusters)."""
+    gets = [q for q in reqs if q.get("method", "GET") == "GET" and not q["path"].startswith("/img")]
+    by: dict[str, int] = {}
+    for q in gets:
+        by[q["path"].split("?", 1)[0]] = by.get(q["path"].split("?", 1)[0], 0) + 1
+    starts = sorted(q["start"] for q in reqs if q.get("start") is not None)
+    waves = sum(1 for i, t in enumerate(starts) if i == 0 or t - starts[i - 1] > WAVE_GAP_MS)
+    return {"dupes": {k: v for k, v in by.items() if v > 1},
+            "bundle": sum(1 for q in gets if q["path"].startswith("/admin/screens/chat")),
+            "local": [q["path"][:160] for q in gets if any(rx.match(q["path"]) for rx in THREAD_LOCAL)],
+            "waves": waves}
+
+
+def _resign(url: str, gen: int) -> str:
+    """`url` as OF re-signs it on a later page (a REST refresh): same host + path, its expiry, a new Signature."""
+    u = urlsplit(url)
+    if not signed(u.hostname or ""):
+        return url
+    exp = int(policy_exp(parse_qs(u.query)["Policy"][0]))
+    return chat_media.sign(u.hostname, u.path, exp, gen=gen)
+
+
+def _resign_thread(fake, opened: dict, gen: int) -> int:
+    """Every photo URL in OF's opened thread re-signed (`fake.messages`, in place); answers how many."""
+    n = 0
+    with fake.lock:
+        for m in fake.messages[opened["account_id"]][opened["id"]]:
+            for med in m.get("media") or []:
+                for f in (med.get("files") or {}).values():
+                    if isinstance(f, dict) and f.get("url"):
+                        new = _resign(f["url"], gen)
+                        n += new != f["url"]
+                        f["url"] = new
+    return n
 
 
 def _iso(db_ts: str) -> str:
@@ -309,6 +429,22 @@ def _vault(w, n: int) -> tuple[list[dict], dict]:
     return items, assets
 
 
+async def _shot(page, path: str) -> None:
+    """A screenshot; once more 200 ms later when Chromium has no frame yet (right after a navigation commits:
+    "Unable to capture screenshot", 20261106T111729Z-2026-11-05-slow-connections-3e1c)."""
+    try:
+        await page.screenshot(path=path)
+    except Exception as e:  # noqa: BLE001
+        if "Unable to capture screenshot" not in str(e):
+            raise
+        await asyncio.sleep(0.2)
+        await page.screenshot(path=path)
+
+
+def _fans(texts: list[str]) -> list[int | None]:
+    return [int(t.replace(",", "")) if re.fullmatch(r"[\d,]+", t) else None for t in texts]
+
+
 def req_check(p: str, f: str) -> str:
     return f"{p}: {f} requests within cap"
 
@@ -316,7 +452,9 @@ def req_check(p: str, f: str) -> str:
 def _budget(p: str, f: str) -> int | None:
     if is_wire(p):
         return WIRE_BUDGET_MS[p].get(f)
-    return BUDGET_MS[p].get(f, RECEIVE_LIMIT_MS.get(p, RECEIVE_MS))
+    if f == "receive":
+        return RECEIVE_LIMIT_MS.get(p, RECEIVE_MS)
+    return BUDGET_MS[p].get(f)
 
 
 def cal_check(p: str) -> str:
@@ -453,11 +591,14 @@ async def _profile(ctx, browser, edge, prof: str, plan: dict) -> dict:
     shots = ctx.out / "screenshots"
     # Service workers blocked: CDP's throttle is the page's, and sw-images.js fetches every /img itself (measured
     # 25-45 ms each under jp-bad's 400 ms, 20261105T145426Z-...-b98f).
+    zone = ZONE.get(prof, ZONE_FAR)
     bctx = await browser.new_context(viewport={"width": 390, "height": 844}, device_scale_factor=3, is_mobile=True,
-                                     has_touch=True, user_agent=IPHONE_UA, service_workers="block")
+                                     has_touch=True, user_agent=IPHONE_UA, service_workers="block", timezone_id=zone)
     track(ctx, bctx)  # the pages for slop/map.json (--changed), as dashboard-load's own contexts
     await bctx.add_cookies([{"name": c.name, "value": c.value, "url": edge.url, "expires": time.time() + 86400}
-                            for c in ctx.owner.c.cookies.jar])
+                            for c in ctx.owner.c.cookies.jar]
+                           + [{"name": TZ_COOKIE, "value": zone.replace("/", "%2F"), "url": edge.url,
+                               "expires": time.time() + 86400}])
     out: dict = {"flows": {}, "found": {}, "relay": plan["relay"]}
     try:
         page = await bctx.new_page()
@@ -473,13 +614,13 @@ async def _profile(ctx, browser, edge, prof: str, plan: dict) -> dict:
                 d = await meter.settled(page, "body", idle_ms=DRAIN_MS, timeout_ms=plan["timeout_ms"])
                 drained = d["requests"]
             if shot_before:
-                await page.screenshot(path=str(shots / f"{prof}-{name}-trigger.png"))
+                await _shot(page, str(shots / f"{prof}-{name}-trigger.png"))
             meter.mark()
             how = await act()
             if not shot_before:
-                await page.screenshot(path=str(shots / f"{prof}-{name}-trigger.png"))
+                await _shot(page, str(shots / f"{prof}-{name}-trigger.png"))
             r = await meter.settled(page, key, idle_ms=idle_ms, timeout_ms=plan["timeout_ms"])
-            await page.screenshot(path=str(shots / f"{prof}-{name}-settled.png"))
+            await _shot(page, str(shots / f"{prof}-{name}-settled.png"))
             r["how"] = how
             r["ready_ms"] = r["settled_ms"]
             if first_page:  # ready: the key shown and the first page's reads answered (the prefetch tail aside)
@@ -489,9 +630,15 @@ async def _profile(ctx, browser, edge, prof: str, plan: dict) -> dict:
                 r["first_page_requests"] = len(fp)
             if drain:
                 r["drained_requests"] = drained
+            html = next((q for q in meter.window() if q["kind"] == "html"), None)
+            if html:  # a document load: its first byte (the shell) and its last (the stream's end)
+                r["html_ttfb_ms"] = html["resp"]
+                r["html_end_ms"] = html["end"]
+                r["html_cache_control"] = html.get("cache_control")
             r["reqs"] = [{"path": q["path"][:300], "method": q["method"], "kind": q["kind"], "status": q["status"],
                           "bytes": q["bytes"], "start": q["start"],
                           "ms": None if q["end"] is None else q["end"] - q["start"],
+                          "ttfb": None if q["resp"] is None else q["resp"] - q["start"],
                           "cached": q["cached"], "failed": q["failed"]} for q in meter.window()]
             out["flows"][name] = r
             return r
@@ -500,6 +647,8 @@ async def _profile(ctx, browser, edge, prof: str, plan: dict) -> dict:
             await page.goto(edge.url + "/", wait_until="commit", timeout=plan["timeout_ms"])
             return "typed"
         await flow("dashboard", goto, '[data-control="total"] [data-figure]', shot_before=False)
+        t_dash = time.time()
+        out["found"]["fans_first"] = await page.evaluate(FANS_JS)
         n_rows = min(CREATORS_PAGE, len(plan["creators"]))
         out["found"]["drawer_error"] = await _drawer(page, "Creators")
         await flow("creators", lambda: _nav(page, "/creators"), f"() => ({ROWS_JS})() >= {n_rows}", drain=True)
@@ -572,6 +721,16 @@ async def _profile(ctx, browser, edge, prof: str, plan: dict) -> dict:
         out["flows"]["receive"] = r
         out["burst"] = b
 
+        # The open thread left alone `idle_s` (untimed, every profile): what it calls by itself (polls, presence,
+        # /img refetches); the /events stream and the beacon aside, as in every flow.
+        if plan["idle_s"]:
+            meter.mark()
+            resigned = _resign_thread(ctx.of_wire, plan["opened"], gen=1 + plan["profiles"].index(prof))
+            await page.wait_for_timeout(plan["idle_s"] * 500)
+            await page.evaluate("() => document.dispatchEvent(new Event('visibilitychange'))")  # the tab returns
+            await page.wait_for_timeout(plan["idle_s"] * 500)
+            out["idle"] = {**_idle(meter.window(), plan["idle_s"]), "resigned_urls": resigned}
+
         # The picker scrolled to the end, untimed and last: on jp-bad it takes long enough (medium: 200 tiles at
         # 1 Mbit/s) that the timed flows after it would meet useChatList's 90 s poll (measured: 13 head reads in
         # receive, 20261105T160900Z-...-710f). A step waits for the network's quiet: the next page queues behind tiles.
@@ -588,6 +747,35 @@ async def _profile(ctx, browser, edge, prof: str, plan: dict) -> dict:
             await meter.settled(page, "body", timeout_ms=plan["timeout_ms"])
         out["found"]["vault_tiles"] = await dlg.locator("[data-tile-id]").count()
         await close_vault()
+
+        # dashboard-again (untimed set-up): the relay's OF caches expired, one painted Creator's count changed at OF.
+        await asyncio.sleep(max(0.0, AGAIN_AFTER_S - (time.time() - t_dash)))
+        count = lambda aid: ctx.of_wire.fan_counts.get(aid, int(aid) % 900 + 100)  # noqa: E731  lib/of_wire.py's
+        first = set(_fans(out["found"]["fans_first"]))
+        bumped = next((c["id"] for c in plan["creators"] if count(c["id"]) in first), None)
+        if bumped is not None:
+            with ctx.of_wire.lock:
+                ctx.of_wire.fan_counts[bumped] = count(bumped) + AGAIN_BUMP
+
+        async def again():
+            await bctx.add_init_script(CONV_JS % (count(bumped) if bumped is not None else -1))
+            await bctx.clock.set_system_time(time.time() + AGAIN_SHIFT_S)
+            await page.goto(edge.url + "/", wait_until="commit", timeout=plan["timeout_ms"])
+            return "typed"
+        r = await flow("dashboard-again", again, CARDS_JS, shot_before=False, drain=True)
+        want = sorted(count(c["id"]) for c in plan["creators"])
+        conv = f"() => {{ const f = ({FANS_JS})(); return f.length > 0 && f.every(t => {json.dumps(want)}.includes(" \
+               f"Number(t.replace(/,/g, '')))) && f.some(t => Number(t.replace(/,/g, '')) === " \
+               f"{count(bumped) if bumped is not None else -1}); }}"
+        try:  # every count OF's: then the changed one's first paint, from the trigger
+            await page.wait_for_function(conv, timeout=AGAIN_WAIT_MS)
+            at = await page.evaluate("() => window.__conv || null")
+            r["converged_ms"] = round(at - AGAIN_SHIFT_S * 1000 - meter.t0 * 1000) if at else None  # the page's clock
+        except Exception:  # noqa: BLE001  judged by C_AGAIN
+            r["converged_ms"] = None
+        await page.screenshot(path=str(shots / f"{prof}-dashboard-again-converged.png"))
+        out["found"]["again"] = {"bumped": bumped, "new_count": count(bumped) if bumped is not None else None,
+                                 "fans": await page.evaluate(FANS_JS), "converged_ms": r["converged_ms"]}
     finally:
         await bctx.close()
     return out
@@ -655,7 +843,8 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
         ctx.skip(C_NO_5XX, "--no-ui: no browser")
         return
 
-    plan = {"creators": cs, "opened": opened, "chunks": chunks,
+    plan = {"creators": cs, "opened": opened, "chunks": chunks, "idle_s": ctx.param("idle_s", IDLE_S),
+            "profiles": profiles,
             "timeout_ms": ctx.param("timeout_ms", WIRE_TIMEOUT_MS if any(map(is_wire, profiles)) else 120_000)}
     edge = await asyncio.to_thread(WanEdge, ctx.stack, 0)
     res: dict[str, dict] = {}
@@ -692,13 +881,14 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
             rows.append(f"{p:10} {f:10} {str(r.get('ready_ms')):>7} {str(r.get('settled_ms')):>8} "
                         f"{str(r.get('key_ms')):>6} {str(r.get('requests')):>5} "
                         f"{round((r.get('bytes') or 0) / 1024, 1):>7} {str(_budget(p, f) or '-'):>7} "
-                        f"{str(TARGET_MS.get(p, {}).get(f) or '-'):>7}  "
+                        f"{str(TARGET_MS.get(p, {}).get(f) or '-'):>7} "
+                        f"{str(r.get('html_ttfb_ms', '-')):>5}/{str(r.get('html_end_ms', '-')):<5} "
                         f"{r.get('how')}")
     ctx.note("ms from the trigger: key = the key shown, settled = it + the network 1.5 s quiet, ready = what the "
              "budget judges (settled; fan-list: the rows + the first page's reads, its prefetch tail aside; receive: "
              "frame -> bubble, key the first DM's, ready = settled the last's), KB on the wire:",
              f"{'profile':10} {'flow':10} {'ready':>7} {'settled':>8} {'key':>6} {'reqs':>5} {'KB':>7} "
-             f"{'budget':>7} {'target':>7}",
+             f"{'budget':>7} {'target':>7} {'html ttfb/end':13}",
              *rows)
     # Where settled trails the paint by seconds (jp-bad dashboard: #237's per-Creator background queue paces the
     # badge / roster reads after the figure shows), the paint time a fix thread wants is the key column; named here.
@@ -710,9 +900,20 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
         ctx.note(f"judged (ready) > key + {PACED_GAP_MS} ms (the budget judges the key + network idle):", *paced)
     ctx.metric("flows", {p: {f: {k: res[p]["flows"].get(f, {}).get(k) for k in
                                  ("ready_ms", "settled_ms", "key_ms", "requests", "bytes", "by_kind", "pending",
-                                  "how")}
+                                  "how", "converged_ms", "html_ttfb_ms", "html_end_ms")}
                              for f in FLOWS} for p in profiles})
     ctx.metric("target_ms", TARGET_MS)
+    reads = {p: _thread_reads(res[p]["flows"].get("thread", {}).get("reqs", [])) for p in profiles}
+    ctx.metric("thread_reads", reads)
+    ctx.note("thread open: waves, routes read twice, /admin/screens/chat calls, local reads per route:",
+             *(f"{p:10} waves {d['waves']}  dupes {d['dupes'] or '-'}  bundle {d['bundle']}  local {len(d['local'])}"
+               for p, d in reads.items()))
+    idle = {p: res[p].get("idle") for p in profiles}
+    ctx.metric("idle", idle)
+    ctx.note("open thread left alone (idle_s): requests/min total, /img, top routes:",
+             *(f"{p:10} {d['per_min']:>6} {d['img_per_min']:>6}  "
+               + ", ".join(f"{k} {v}" for k, v in list(d["by_route"].items())[:8])
+               for p, d in idle.items() if d))
     # Request durations per profile x flow (every profile; the wire profiles' question: minute-long requests?).
     req_ms = {p: {f: _req_ms(res[p]["flows"].get(f, {})) for f in FLOWS} for p in profiles}
     ctx.metric("req_ms", req_ms)
@@ -733,6 +934,10 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     bad_order = {p: {"want": res[p]["found"]["thread_want"], "got": res[p]["found"].get("thread_ids")}
                  for p in profiles if res[p]["found"].get("thread_ids") != res[p]["found"]["thread_want"]}
     ctx.check(C_ORDER, not bad_order, wrong=bad_order, urls={p: res[p]["found"].get("thread_url") for p in profiles})
+    ctx.check(THREAD_ONCE, not any(d["dupes"] for d in reads.values()),
+              dupes={p: d["dupes"] for p, d in reads.items() if d["dupes"]})
+    ctx.check(THREAD_BUNDLE, all(d["bundle"] == 1 and not d["local"] for d in reads.values()),
+              bundle={p: d["bundle"] for p, d in reads.items()}, local={p: d["local"] for p, d in reads.items()})
     bad_v = {p: res[p]["found"].get("vault_tiles") for p in profiles if res[p]["found"].get("vault_tiles") != n_vault}
     ctx.check(C_VAULT, not bad_v, want=n_vault, got=bad_v)
     # A tile the page itself cancelled (MediaTile aborts on unmount: ERR_ABORTED, no answer) is not an answer.
@@ -750,6 +955,21 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     five = [(p, f, q["status"], q["path"][:120]) for p in profiles for f, r in res[p]["flows"].items()
             for q in r.get("reqs", []) if (q["status"] or 0) >= 500]
     ctx.check(C_NO_5XX, not five, n=len(five), bad=five[:10])
+    again = {p: res[p]["found"].get("again", {}) for p in profiles}
+    ctx.check(C_AGAIN, all(a.get("bumped") is not None and a.get("converged_ms") is not None for a in again.values()),
+              again=again, cards_ms={p: res[p]["flows"].get("dashboard-again", {}).get("key_ms") for p in profiles})
+
+    fetched = {f"{p} {f}": paths for p in profiles for f, rxs in INLINE_READS.items()
+               if (paths := [q["path"][:120] for q in res[p]["flows"].get(f, {}).get("reqs", [])
+                             if q["method"] == "GET" and any(rx.match(q["path"]) for rx in rxs)])}
+    ctx.check(C_INLINE, not fetched, fetched=fetched,
+              html={p: {f: [res[p]["flows"].get(f, {}).get(k) for k in ("html_ttfb_ms", "html_end_ms")]
+                        for f in INLINE_READS} for p in profiles})
+
+    cc = {f"{p} {f}": r.get("html_cache_control") for p in profiles for f, r in res[p]["flows"].items()
+          if "html_ttfb_ms" in r}
+    ctx.check(C_HTML_PRIVATE, bool(cc) and all(v and "private" in v and "no-store" in v for v in cc.values()),
+              cache_control=cc)
 
     sent = [r for p in profiles for r in res[p]["burst"]["sent"]]
     recs_n = (ctx.users + 1) * PER_FAN * len(profiles)  # + the opened Fan, after each burst
@@ -787,11 +1007,12 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
                 continue
             for f in FLOWS:
                 r = res[p]["flows"].get(f, {})
-                lim = _budget("si", f) if lossy_forced else WIRE_BUDGET_MS[p][f]
+                lim = _budget("si", f) if lossy_forced else WIRE_BUDGET_MS[p].get(f)
                 v = r.get("ready_ms")
-                ctx.check(budget_check(p, f), v is not None and v <= lim, budget=True, key_ms=r.get("key_ms"),
-                          ready_ms=v, limit_ms=lim, settled_ms=r.get("settled_ms"), pending=r.get("pending"),
-                          req_max_ms=req_ms[p][f]["max"])
+                if lim is not None:  # dashboard-again: no wire budget yet (recorded)
+                    ctx.check(budget_check(p, f), v is not None and v <= lim, budget=True, key_ms=r.get("key_ms"),
+                              ready_ms=v, limit_ms=lim, settled_ms=r.get("settled_ms"), pending=r.get("pending"),
+                              req_max_ms=req_ms[p][f]["max"])
                 cap = int(REQ_PER_DM_WIRE * len(res[p]["burst"]["sent"])) if f == "receive" else REQ_MAX[f]
                 ctx.check(req_check(p, f), (r.get("requests") or 0) <= cap, requests=r.get("requests"), limit=cap,
                           by_kind=r.get("by_kind"))

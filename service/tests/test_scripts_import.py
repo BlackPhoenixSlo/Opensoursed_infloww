@@ -21,11 +21,11 @@ import io  # noqa: E402
 import zipfile  # noqa: E402
 from xml.sax.saxutils import escape  # noqa: E402
 
-from sqlalchemy import delete  # noqa: E402
+from sqlalchemy import delete, select  # noqa: E402
 
 import _agency_fixtures as fx  # noqa: E402
 from db.engine import get_session  # noqa: E402
-from db.models import Account, SavedReply  # noqa: E402
+from db.models import Account, SavedReply, SavedReplySequence, UserAccount  # noqa: E402
 import employees  # noqa: E402
 import permissions  # noqa: E402
 from xlsx_io import read_xlsx  # noqa: E402
@@ -276,6 +276,106 @@ def case_copy_never_puts_two_scripts_at_one_sequence_step():
                    "b1": (None, None), "b3": ("Night", 3)}, got
     for acc in (A, B, c):
         _wipe(acc)
+
+
+# ── Share to all creators + sequence meta + all-models overview ──────
+
+def _mk_creator(aid: str, owner_user: str) -> None:
+    """A fresh owned Creator (registry meta + Account row + user_accounts link) so the
+    principal's roster (`owned_account_ids`) picks it up."""
+    fx.account_registry.upsert_account(aid, nickname=f"creator_{aid}", color="#aaaaaa")
+
+    async def go() -> None:
+        async with get_session() as s:
+            if await s.get(Account, aid) is None:
+                s.add(Account(id=aid, nickname=f"creator_{aid}", color="#aaaaaa"))
+            if (await s.execute(select(UserAccount).where(
+                    UserAccount.user_id == IDS[owner_user], UserAccount.account_id == aid))
+                ).scalar_one_or_none() is None:
+                s.add(UserAccount(user_id=IDS[owner_user], account_id=aid))
+    asyncio.run(go())
+
+
+def _seq_metas(client, acc: str) -> dict[str, dict]:
+    r = client.get(f"/admin/saved-replies/sequences?account_id={acc}")
+    assert r.status_code == 200, r.text
+    return {m["name"]: m for m in r.json()["list"]}
+
+
+def case_share_to_all_resolves_the_owned_roster_and_carries_sequence_meta():
+    """`all_creators` resolves the targets to the principal's full owned roster server-side
+    (no `to_account_ids` needed), copies price/media-free, carries the sequence header, and a
+    re-share adds 0 rows (the no-dup proof). Sequence meta is idempotent on (account_id, name)."""
+    src, d1, d2 = "1000010", "1000011", "1000012"
+    for aid in (src, d1, d2):
+        _mk_creator(aid, "agency_a_owner")
+
+    async def seed() -> None:
+        async with get_session() as s:
+            for aid in (src, d1, d2):
+                await s.execute(delete(SavedReply).where(SavedReply.account_id == aid))
+                await s.execute(delete(SavedReplySequence).where(SavedReplySequence.account_id == aid))
+            s.add(SavedReplySequence(account_id=src, name="NightD", position=3,
+                                     created_by="07", description="warm-up"))
+            s.add(SavedReply(account_id=src, title="n1", text="hey", script_id="NightD",
+                             script_step=1, tags_json='["Openers"]'))
+            s.add(SavedReply(account_id=src, title="n2", text="then", script_id="NightD",
+                             script_step=2, media_json='[{"id": 9, "type": "photo"}]', price_cents=500))
+    asyncio.run(seed())
+
+    r = OWNER_A.post("/admin/saved-replies/copy",
+                     json={"from_account_ids": [src], "all_creators": True})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert set(body) == {"copied", "skipped", "media_dropped", "sequence_dropped"}, body
+    # Every other creator got both scripts, media/price dropped, the sequence header carried.
+    for dst in (d1, d2):
+        got = {x["title"]: x for x in _list(OWNER_A, dst)}
+        assert set(got) == {"n1", "n2"}, (dst, got)
+        assert (got["n1"]["script_id"], got["n1"]["script_step"], got["n1"]["tags"]) == ("NightD", 1, ["Openers"])
+        assert (got["n2"]["media"], got["n2"]["price"]) == ([], 0), got["n2"]
+        meta = _seq_metas(OWNER_A, dst).get("NightD")
+        assert meta and (meta["position"], meta["created_by"], meta["description"]) == (3, "07", "warm-up"), meta
+    # Re-share: 0 rows added (true no-op), and no duplicate meta row.
+    r2 = OWNER_A.post("/admin/saved-replies/copy",
+                      json={"from_account_ids": [src], "all_creators": True})
+    assert r2.status_code == 200 and r2.json()["copied"] == 0, r2.text
+    for dst in (d1, d2):
+        assert len(_list(OWNER_A, dst)) == 2
+        assert list(_seq_metas(OWNER_A, dst)) == ["NightD"]
+
+
+def case_overview_lists_each_sequence_and_tag_per_account():
+    """GET /admin/saved-replies/overview: a lean matrix of sequence step counts and tag
+    script counts per owned Creator (no bodies). Only the principal's creators appear."""
+    src, d1, d2 = "1000010", "1000011", "1000012"
+    for aid in (src, d1, d2):
+        _mk_creator(aid, "agency_a_owner")
+
+    async def seed() -> None:
+        async with get_session() as s:
+            for aid in (src, d1, d2):
+                await s.execute(delete(SavedReply).where(SavedReply.account_id == aid))
+                await s.execute(delete(SavedReplySequence).where(SavedReplySequence.account_id == aid))
+            # d1: SeqX (2 steps), one tagged VIP; a loose VIP script.
+            s.add(SavedReply(account_id=d1, title="x1", text="a", script_id="SeqX", script_step=1,
+                             tags_json='["VIP"]'))
+            s.add(SavedReply(account_id=d1, title="x2", text="b", script_id="SeqX", script_step=2))
+            # d2: SeqX (1 step); two loose VIP scripts.
+            s.add(SavedReply(account_id=d2, title="y1", text="c", script_id="SeqX", script_step=1))
+            s.add(SavedReply(account_id=d2, title="v1", text="d", tags_json='["VIP"]'))
+            s.add(SavedReply(account_id=d2, title="v2", text="e", tags_json='["VIP"]'))
+    asyncio.run(seed())
+
+    r = OWNER_A.get("/admin/saved-replies/overview")
+    assert r.status_code == 200, r.text
+    ov = r.json()
+    acc_ids = {a["id"] for a in ov["accounts"]}
+    assert {src, d1, d2} <= acc_ids and B not in acc_ids, acc_ids
+    seqx = next(s for s in ov["sequences"] if s["name"] == "SeqX")
+    assert seqx["per_account"] == {d1: 2, d2: 1}, seqx
+    vip = next(t for t in ov["tags"] if t["name"] == "VIP")
+    assert vip["per_account"] == {d1: 1, d2: 2}, vip
 
 
 # ── The xlsx reader ──────────────────────────────────────────────────

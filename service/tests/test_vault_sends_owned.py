@@ -101,7 +101,10 @@ def case_owner_writes_own_account() -> None:
     r = _send(c, ACC_A, 3)
     assert r.status_code == 200 and r.json() == {"ok": True, "inserted": 2}, r.text
     r = _backfill(c, ACC_A, 4)
-    assert r.status_code == 200 and r.json() == {"ok": True, "inserted": 3, "skipped": 0}, r.text
+    body = r.json() if r.status_code == 200 else {}
+    # Rows inserted: the fan's new history rides along (GET /admin/vault/fan-history's body).
+    assert {k: body.get(k) for k in ("ok", "inserted", "skipped")} == {"ok": True, "inserted": 3, "skipped": 0} \
+        and set(body["history"]["by_media"]) >= {"201", "202", "203"}, r.text
     assert _rows(ACC_A) == before + 5
 
 

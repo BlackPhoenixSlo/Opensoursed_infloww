@@ -48,7 +48,6 @@ vault-thumbs-no-auto-refresh (client; THUMBS_RELOAD), vault-sync-no-coalesce (re
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import time
 from datetime import datetime
@@ -56,7 +55,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from slop.actors import ui
 from slop.lib.hold import recorded
-from slop.lib.img_relay import arm_run
+from slop.lib.img_relay import arm_run, policy_exp
 from slop.lib.vault_wire import HOST, VaultWire, path as cdn_path
 from slop.lib.vault_refresh_faults import (REFRESH_FAIL_SHOWN, REFRESH_FOLDER, REFRESH_MEDIA, REFRESH_WIRE,
                                            SYNC_COALESCED, SYNC_LOAD, THUMBS_RELOAD)
@@ -117,7 +116,7 @@ async def _cdn_calls(ctx, since: int = 0) -> list[dict]:
 
 def _exp(url: str) -> float:
     q = parse_qs(urlsplit(url).query)
-    return float(json.loads(base64.urlsafe_b64decode(q["Policy"][0] + "==").decode())["exp"])
+    return policy_exp(q["Policy"][0])
 
 
 async def run(ctx) -> None:

@@ -231,6 +231,7 @@ def case_the_relay_registers_every_hook_in_one_layer_in_the_documented_order():
     assert names == [
         "_cap_vault_batch_body",
         "_persist_unhandled_errors",
+        "_no_store_by_default",          # a CDN in front never keeps a relay answer
         "_api_access_log",
         "_share_token_gate",
         "_account_context",

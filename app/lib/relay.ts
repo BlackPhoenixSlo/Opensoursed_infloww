@@ -13,6 +13,7 @@
 
 import { resolveShareToken } from "@/lib/shareToken";
 import { admissible, initialSchedule, scheduleReducer, type Action as ScheduleAction } from "@/lib/relaySchedule";
+import { takeInline } from "@/lib/inlineBoot";
 import { prefetchScreen, screenJoin, screenRead, screenSettled, type Screen } from "@/lib/screenBundle";
 import type { GiphyResponse } from "./relayTypes";
 export type * from "./relayTypes";
@@ -289,7 +290,10 @@ export async function request<T = unknown>(
   const release = bgRead ? await admitBackground(ctx?.accountId ?? null, init?.signal) : null;
   try {
     const priority = FETCH_PRIORITY ? { priority: background ? "low" : "high" } as RequestInit : undefined;
-    const r = await fetch(url, { cache, ...priority, ...init, headers, credentials: "same-origin" });
+    // A document load's first GET of an unscoped read the HTML carried (lib/inlineBoot.ts): that answer, once.
+    const inline = method === "GET" && !headers.has("X-Account-Id") && !headers.has("X-Employee-Id")
+      ? takeInline(url) : null;
+    const r = (inline && await inline) ?? await fetch(url, { cache, ...priority, ...init, headers, credentials: "same-origin" });
     return await parseResponse<T>(r);
   } finally {
     release?.();
@@ -304,9 +308,9 @@ function bundleGet(p: string): Promise<unknown> {
   return request(f ? `${p}${p.includes("?") ? "&" : "?"}focus=${encodeURIComponent(f)}` : p, { method: "GET" });
 }
 
-/** Start `s`'s bundle now (a document load of its route: lib/screenEntry.ts). */
-export function prefetchScreenBundle(s: Screen): void {
-  prefetchScreen(s, bundleGet);
+/** Start `s`'s bundle now (a document load of its route: lib/screenEntry.ts; a chat open); its body, null if failed. */
+export function prefetchScreenBundle(s: Screen): Promise<unknown> {
+  return prefetchScreen(s, bundleGet);
 }
 
 /** A GET answered with a file (a payout invoice), or a POST of JSON `body` (the reports' Excel export): its bytes

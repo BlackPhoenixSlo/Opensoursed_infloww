@@ -254,7 +254,7 @@ ADDED = _ins(SRC, 14, "def fresh():\n    return 2\n\n")  # added on main after t
      [], {"s-clock": "flow"}, []),
     ("desktop: the scenarios clicking notifications", {}, {"A": ["desktop/lib/notify.js"]}, [], {"s-vault": "flow"},
      []),
-    ("slop/lib .mjs: the scenarios running app_ts", {}, {"A": ["slop/lib/app_ts.mjs"]}, [], {"s-vault": "flow"},
+    ("slop/lib .mjs: the scenarios running app_ts", {}, {"A": ["slop/lib/focus_ts.mjs"]}, [], {"s-vault": "flow"},
      []),
     ("fetch-guard.cjs: every browser scenario", {}, {"A": ["scripts/demo-shots/fetch-guard.cjs"]}, [],
      {n: "layout" for n in BROWSER}, []),

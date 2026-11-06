@@ -504,7 +504,7 @@ def proxy_image_scrub(
         frame_path,
         media_type="image/jpeg",
         headers={
-            "Cache-Control": "public, max-age=604800, immutable",
+            "Cache-Control": "private, max-age=604800, immutable",
             "X-Img-Hash": h,
         },
     )

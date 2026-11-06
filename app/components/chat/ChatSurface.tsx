@@ -21,6 +21,7 @@ import { proxyImage } from "@/lib/mediaUrl";
 import { messagesPaintKey, useChatMessages } from "@/hooks/useChatMessages";
 import { fetchOlderSeed, mergeSeedIntoMessages, useChatMessagesLocal } from "@/hooks/useChatMessagesLocal";
 import { useChatAttribution } from "@/hooks/useChatAttribution";
+import { useChatScreen } from "@/hooks/useChatScreen";
 import { OPEN_DIALOG, OS_EDGE_PX, useSwipe } from "@/hooks/useSwipe";
 import { useSendMessage, type SendStatus } from "@/hooks/useSendMessage";
 import { useLikeMessage } from "@/hooks/useLikeMessage";
@@ -54,6 +55,7 @@ import { quoteFromMessage, type QuotedReply } from "./ReplyStrip";
 import { useUnsendChoice } from "./UnsendChoice";
 import { chatDrawerReducer, initialChatDrawer } from "./chatDrawer";
 import { newBackfillIds } from "./jumpAnchor";
+import { attributionAsks } from "./attributionRefresh";
 import { useJumpToMessage } from "./useJumpToMessage";
 import { useMarkChatRead } from "./useMarkChatRead";
 
@@ -125,6 +127,8 @@ export function ChatSurface({
 }) {
   const { current: currentEmployee } = useEmployee();
   const qc = useQueryClient();
+  // This open's local reads in one relay call (first, during render: the hooks below join it).
+  useChatScreen(accountId, fanId);
   const { refreshOne: refreshRosterOne } = useRosterCountActions();
 
   // Fan insights, and the header's Notes / Edit name focus requests (chatDrawer).
@@ -476,8 +480,12 @@ export function ChatSurface({
         items,
       })
       .then((r) => {
-        const resp = r as { inserted?: number } | undefined;
-        if ((resp?.inserted ?? 0) > 0) {
+        const resp = r as { inserted?: number; history?: { by_media?: unknown } } | undefined;
+        if ((resp?.inserted ?? 0) === 0) return;
+        // The new history comes with the answer (vault_sends_api): set it, no second read.
+        if (resp?.history && typeof resp.history === "object") {
+          qc.setQueryData(["vault-history", accountId, fanId], { ...resp.history, by_media: resp.history.by_media ?? {} });
+        } else {
           qc.invalidateQueries({ queryKey: ["vault-history", accountId, fanId] });
         }
       })
@@ -611,24 +619,20 @@ export function ChatSurface({
   // useChatMessages but our attribution map is still cached. Rather than
   // shortening staleTime (which would re-fetch even on idle chats), we
   // piggyback on the chat-message arrival itself — invalidate ONLY when
-  // a new outbound id appears that isn't in the map. Idle chats pay
-  // nothing; active chats pay one fetch per teammate-send observed.
-  // (ownerUserId is hydrated synchronously above.)
+  // an outbound message newer than the map isn't in it, once per id
+  // (attributionRefresh.ts). Idle chats pay nothing; active chats pay one
+  // fetch per teammate-send observed. (ownerUserId is hydrated synchronously above.)
+  const attributionAsked = useRef<Set<string>>(new Set());
+  useEffect(() => { attributionAsked.current = new Set(); }, [accountId, fanId]);
+  const attributionAt = attributionQ.dataUpdatedAt;
   useEffect(() => {
     if (!accountId || fanId == null || ownerUserId == null) return;
     if (!attributionMap) return;
-    let needsRefresh = false;
-    for (const m of mergedMessages) {
-      if (m.fromUser?.id !== ownerUserId) continue;
-      if ((m._tempId ?? 0) < 0) continue;
-      const idNum = typeof m.id === "number" ? m.id : Number(m.id);
-      if (!Number.isFinite(idNum) || idNum <= 0) continue;
-      if (!(String(idNum) in attributionMap)) { needsRefresh = true; break; }
-    }
-    if (needsRefresh) {
-      qc.invalidateQueries({ queryKey: ["msg-attribution", accountId, fanId] });
-    }
-  }, [accountId, fanId, ownerUserId, mergedMessages, attributionMap, qc]);
+    const ask = attributionAsks(mergedMessages, ownerUserId, attributionMap, attributionAt, attributionAsked.current);
+    if (ask.length === 0) return;
+    for (const id of ask) attributionAsked.current.add(id);
+    qc.invalidateQueries({ queryKey: ["msg-attribution", accountId, fanId] });
+  }, [accountId, fanId, ownerUserId, mergedMessages, attributionMap, attributionAt, qc]);
 
   const fanUsername = chat.withUser.username || profile?.username || fanQ.data?.of_username;
   const headerName = decodeHtmlEntities(

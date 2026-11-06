@@ -15,11 +15,12 @@ C_PARTIAL = ("a slow Creator (OF +3 s, bundle deadline 2 s): every card keeps it
              "page sends 1 bundle + at most 1 follow-up and 0 per-Creator OnlyFans reads; the late read landed in the "
              "relay's cache (the next bundle has that Creator complete, no OnlyFans call)")
 C_ENTRY = ("a document load sends its screen bundle with the auth probe, the Dashboard its Applied settings read too: on "
-           "dash-first, dash-reload and mp-first they leave before /auth/me answers (not a round trip or two after it)")
+           "dash-first, dash-reload and mp-first they come with the HTML (inline boot) or leave before /auth/me answers (not "
+           "a round trip or two after it)")
 
 # app/components/auth/AuthGate.tsx before 2026-11-06: the screen bundle and the Applied settings read wait for the auth
 # probe (the bundle for its screen's first card, the settings for the principal in their query key). Emulated at the
-# page's fetch: both are held until /auth/me has answered.
+# page's fetch: both are held until /auth/me has answered (the page's own: with it, the HTML's inline boot is off).
 AFTER_PROBE_JS = """(() => {
   const f = window.fetch;
   let probed;
@@ -39,19 +40,28 @@ AFTER_PROBE_JS = """(() => {
   };
 })();"""
 
-# app/lib/screenBundle.ts unused (the app before 2026-11-05, or the relay without /admin/screens/*): every bundle
-# answers 404, so each read goes out per Creator as before.
-BUNDLE_UNUSED_JS = """(() => {
-  const f = window.fetch;
-  window.fetch = function (input, init) {
-    const u = typeof input === 'string' ? input : (input && input.url) || String(input);
-    if (u.includes('/admin/screens/')) {
-      return Promise.resolve(new Response('{"detail":"slop: no screen bundles"}',
-        { status: 404, headers: { 'content-type': 'application/json' } }));
-    }
-    return f.apply(this, arguments);
-  };
-})();"""
+
+
+def _bundles_unused() -> None:
+    """app/lib/screenBundle.ts unused (the app before 2026-11-05, or the relay without /admin/screens/*): every bundle
+    answers 404, to the browser and to the HTML's inline boot alike, so each read goes out per Creator as before."""
+    import server
+    from starlette.responses import JSONResponse
+
+    async def gone(request, call_next):
+        if request.url.path.startswith("/admin/screens/"):
+            return JSONResponse({"detail": "slop: no screen bundles"}, status_code=404)
+        return await call_next(request)
+
+    server._http_hooks.add(gone)
+
+
+def _html_reads_refused() -> None:
+    """The app before the HTML's inline boot (2026-11-06): the page fetches /auth/me, the bundle and the settings
+    itself (lib/screens_faults.py's `inline-boot-relay-refuses-server`: the Next server's reads get a 503)."""
+    import importlib
+    importlib.import_module(f"{__package__}.screens_faults" if __package__ else "screens_faults") \
+        ._inline_boot_relay_refuses_server()
 
 # app/components/providers.tsx before 2026-11-05: the per-Creator badge and roster keys (of-profile, of-sub-counts,
 # of-new-fans, of-notif-count) left out of the saved snapshot, so a reload reads every Creator again before a card
@@ -81,7 +91,7 @@ def register(Fault) -> dict:
         # slop/run clicks-first --break --fault=badge-keys-unpersisted
         "badge-keys-unpersisted": Fault(None, (C_SNAPSHOT,), browser_js=_KEYS_UNPERSISTED),
         # slop/run clicks-first --break --fault=screen-bundle-unused: the per-Creator fan-out (main before PR B)
-        "screen-bundle-unused": Fault(None, (C_BUNDLE, C_PARTIAL), browser_js=BUNDLE_UNUSED_JS),
+        "screen-bundle-unused": Fault(_bundles_unused, (C_BUNDLE, C_PARTIAL)),
         # slop/run clicks-first --break --fault=screen-bundle-after-probe: the bundle and settings behind /auth/me
-        "screen-bundle-after-probe": Fault(None, (C_ENTRY,), browser_js=AFTER_PROBE_JS),
+        "screen-bundle-after-probe": Fault(_html_reads_refused, (C_ENTRY,), browser_js=AFTER_PROBE_JS),
     }

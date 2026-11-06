@@ -8,7 +8,7 @@ answer a screen's whole first paint in one call:
 
   GET /admin/screens/dashboard?from=&to=&accounts=&deadline_ms=
       {settings, accounts, perModel, creators: [{id, profile, subscriberCounts, newFans, asOf, stale}],
-       errors, asOf}
+       refreshing: [{accountId, read}], errors, asOf}
   GET /admin/screens/inbox?cursor=&accounts=&deadline_ms=
       {accounts, notificationCounts: {aid: body}, chats: {aid: body}, nextCursorByAccount: {aid: int|null},
        stale: [aid], errors, asOf}
@@ -39,6 +39,13 @@ queued at the deadline runs on too (reported late): no Creator is skipped on eve
 dispatch capped process-wide (`_FETCH_SLOTS`), so 200 Dashboards cost OF one read per
 Creator, not 200.
 
+Serve-stale (the Dashboard's OF reads, `STALE_READS`): a read whose last value for this principal, Creator and query
+is under STALE_MAX_S old answers with it at once, after its gate (never a value the gate would refuse now), and runs
+behind the answer through the same path (`_shared`: single-flight, its priority, lanes, caches), its value the next
+last one. Such reads are listed in `refreshing` (their Creator's `asOf` is the value's age); the client's one
+follow-up (`accounts=`, which never serves a last value) brings the new value. Bounded (STALE_ENTRIES, oldest out),
+in memory only, keyed by the principal: never another session's.
+
 Errors: `[{accountId, read, status, detail}]`, the status and detail the per-Creator route
 would have answered (403 role / not yours, 404, 409, 502 OF, 503 no session, 504). The client
 maps an errored read to what its hook shows on a failed fetch today (profile and counts null,
@@ -50,6 +57,7 @@ import asyncio
 import json
 import logging
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlencode
@@ -79,9 +87,13 @@ SHARE_S = 1.0              # a finished read's result reused by identical reads 
 CACHE_TTL_S = 60.0         # its two caches (counts, chart); the client keeps them 30 min
 CHATS_PAGE = 25            # useChatList's PAGE_SIZE = the roster badge's window (_ROSTER_SCAN_MAX)
 PER_MODEL_CARD = "/#card-per-model"
+STALE_READS = ("profile", "subscriberCounts", "newFans")   # served from the last value, re-read behind (docstring)
+STALE_MAX_S = 30 * 60.0    # the cards' own staleTime (hooks/useStats.ts): older is read before answering
+STALE_ENTRIES = 4096       # last values kept, process-wide (13 Creators x 3 reads x ~100 principals)
 _FETCH_SLOTS = asyncio.Semaphore(FETCH_SLOTS)
 _SHARED: dict[tuple, asyncio.Future] = {}   # identical reads in flight (`_shared`)
 _INFLIGHT: set[asyncio.Task] = set()   # reads past their bundle's deadline, kept alive until done
+_LAST: OrderedDict[tuple, tuple[float, Any]] = OrderedDict()   # (`_read_key`) -> (epoch s, the read's last value)
 
 
 @dataclass
@@ -91,6 +103,7 @@ class _Read:
     path: str                 # the per-Creator route it stands for
     query: dict[str, Any]
     call: Callable[[], Awaitable[Any]]
+    reuse: bool = False       # may answer from its last value (STALE_READS, not a follow-up)
 
 
 @dataclass
@@ -100,6 +113,7 @@ class _Done:
     status: int | None = None     # None = ok
     detail: Any = None
     at: float = 0.0               # epoch s it finished
+    refreshing: bool = False      # the last value, the read running behind it
 
 
 _PASSED = object()
@@ -155,6 +169,10 @@ async def _serve(outer: Request, read: _Read, sem: asyncio.Semaphore) -> _Done:
             refused = await _gate(inner)
             if refused is not None:
                 return _Done(read, status=refused[0], detail=refused[1], at=time.time())
+            last = _LAST.get(_read_key(read)) if read.reuse else None
+            if last is not None and time.time() - last[0] <= STALE_MAX_S:
+                _keep(asyncio.ensure_future(_shared(read, inner)))   # behind the answer, this Request's context
+                return _Done(read, value=last[1], at=last[0], refreshing=True)
             return _Done(read, value=await _shared(read, inner), at=time.time())
         except HTTPException as e:
             return _Done(read, status=e.status_code, detail=e.detail, at=time.time())
@@ -170,14 +188,24 @@ def _principal() -> tuple:
     return (u.id if u else None, c.id if c else None)
 
 
+def _read_key(read: _Read) -> tuple:
+    return (_principal(), read.name, read.aid, tuple(sorted((k, str(v)) for k, v in read.query.items())))
+
+
+def _remember(key: tuple, value: Any) -> None:
+    _LAST[key] = (time.time(), value)
+    _LAST.move_to_end(key)
+    while len(_LAST) > STALE_ENTRIES:
+        _LAST.popitem(last=False)
+
+
 async def _shared(read: _Read, inner: StarletteRequest) -> Any:
     """Identical reads run once per SHARE_S: same principal, read, Creator, query and priority
     (190 owner phones opening Messages Pro in the same second cost what one does: list_chats
     annotates its page with 3 DB reads per call, cache hit or not; Per-model stats aggregate the
     ledger). Each caller has passed its own gate first; a success is reused for SHARE_S after it
     finishes (on top of list_chats' own 10 min cache), an error never."""
-    key = (_principal(), read.name, read.aid, tuple(sorted((k, str(v)) for k, v in read.query.items())),
-           inner.headers.get("x-priority"))
+    key = (*_read_key(read), inner.headers.get("x-priority"))
     task = _SHARED.get(key)
     if task is None:
         task = asyncio.ensure_future(read.call())   # copies this context: the inner Request in _request_ctx
@@ -188,6 +216,8 @@ async def _shared(read: _Read, inner: StarletteRequest) -> Any:
             if t.cancelled() or t.exception() is not None:
                 drop()                                   # an error is never served to the next caller
             else:
+                if read.name in STALE_READS:
+                    _remember(k[:-1], t.result())
                 asyncio.get_running_loop().call_later(SHARE_S, drop)
         task.add_done_callback(_forget)
     return await asyncio.shield(task)
@@ -326,17 +356,18 @@ async def dashboard_screen(
     if card and accounts is None:
         reads.append(_Read("perModel", None, "/admin/stats/per-model", {"from": from_, "to": to},
                            lambda: stats_per_model.per_model(from_=from_, to=to, account_id=None, engagement=False)))
+    reuse = accounts is None   # a follow-up (`accounts=`) is the client's refresh: never a last value
     for aid in ids:
-        reads.append(_Read("profile", aid, "/api/of/v2/users/me", {}, lambda: srv.users_me()))
+        reads.append(_Read("profile", aid, "/api/of/v2/users/me", {}, lambda: srv.users_me(), reuse))
         if card:
             reads.append(_Read("subscriberCounts", aid, "/api/of/v2/subscriptions/count/all", {},
                                lambda aid=aid: _cached("screen_sub_counts", aid, (),
-                                                       srv.of_subscription_counts_all)))
+                                                       srv.of_subscription_counts_all), reuse))
             reads.append(_Read("newFans", aid, "/api/of/v2/subscriptions/subscribers/chart",
                                {"start": from_, "end": to},
                                lambda aid=aid: _cached("screen_subs_chart", aid, (from_, to, None),
                                                        lambda: srv.of_subscribers_chart(start=from_, end=to,
-                                                                                        by=None))))
+                                                                                        by=None)), reuse))
     done, late = await _run(request, reads, _deadline(started, deadline_ms))
     errors += [_error(d) for d in done if d.status is not None and d.read.aid is not None]
     errors += [_late(r) for r in late if r.aid is not None]
@@ -351,6 +382,7 @@ async def dashboard_screen(
         "accounts": acc,
         "perModel": pm.value if pm is not None and pm.status is None else None,
         "creators": _per_creator(ids, done, late, fields),
+        "refreshing": [{"accountId": d.read.aid, "read": d.read.name} for d in done if d.refreshing],
         "errors": errors,
         "asOf": int(time.time() * 1000),
     }

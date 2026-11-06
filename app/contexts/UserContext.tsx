@@ -36,6 +36,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { readAuthSnapshot, writeAuthSnapshot } from "@/lib/authSnapshot";
 import { clearSendStash } from "@/lib/sendStash";
 import { clearRefusedOffers } from "@/components/chat/refusedOffers";
+import { clearInline, takeInline } from "@/lib/inlineBoot";
 import { clearPersistedCache } from "@/lib/rqPersister";
 import { forgetPush } from "@/lib/webPush";
 import { isTwoFactorChallenge, postAuthJSON, TwoFactorRequired, type TwoFactorChallenge } from "@/lib/twoFactor";
@@ -128,6 +129,7 @@ const UserContext = createContext<UserContextValue | null>(null);
  *  waiting on its files) and refused schedules' drafts. Shared between
  *  UserContext + ChatterContext, as `wipeIdentityStorage` is. */
 export function clearIdentityMemory(): void {
+  clearInline();
   clearSendStash();
   clearRefusedOffers();
 }
@@ -204,7 +206,8 @@ const ME_SLOW_MS = 3_000;
 /** One GET /auth/me, as what it ended in. Never rejects. */
 async function readMe(): Promise<MeOutcome> {
   try {
-    const r = await fetch("/auth/me", {
+    const inline = takeInline("/auth/me");
+    const r = (inline && await inline) ?? await fetch("/auth/me", {
       credentials: "same-origin",
       headers: { Accept: "application/json" },
       signal: AbortSignal.timeout(ME_TIMEOUT_MS),

@@ -18,6 +18,9 @@
  *    render of the same image we hit /img/by-hash/<h> as a stable cache
  *    key — survives OF signature rotation between /messages refreshes.
  *
+ * 3. ONE LOAD PER IMAGE. Bytes are kept by a signature-blind identity (lib/imgBlobs.ts): a re-signed URL (a poll,
+ *    a tab return) or a remount paints the loaded bytes with no request, and the chat open's preload lands here.
+ *
  * Priority: `eager` tiles fire immediately with fetchpriority="high".
  * The rest wait until an IntersectionObserver sees the placeholder enter
  * a 200px-rootMargin window, then fire with fetchpriority="low".
@@ -25,6 +28,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { sameUserId } from "@/lib/fanId";
+import { cachedImg, imgIdentity, rememberImg } from "@/lib/imgBlobs";
 import { MP } from "@/lib/messagesPro";
 import { cn } from "@/lib/utils";
 
@@ -71,14 +75,22 @@ export function MediaTile({
   const [failed, setFailed] = useState(false);
   const placeholderRef = useRef<HTMLDivElement | null>(null);
 
+  // The bytes' identity: the same image across OnlyFans' re-signed URLs (else the URL itself).
+  const identity = proxiedUrl ? imgIdentity(proxiedUrl) ?? proxiedUrl : "";
+  // The newest signature (a lazy tile starts after a re-sign with it); a failed load retries on a new one only.
+  const urlRef = useRef(proxiedUrl);
+  urlRef.current = proxiedUrl;
+  const failedAt = useRef<string | null>(null);
+  const retry = failed && failedAt.current !== proxiedUrl ? proxiedUrl : "";
+
   useEffect(() => {
     if (!proxiedUrl) return;
     const ctrl = new AbortController();
     let cancelled = false;
-    let createdBlobUrl: string | null = null;
     let io: IntersectionObserver | null = null;
 
-    const fetchOnce = async (urlToFetch: string, allowFallback: boolean): Promise<void> => {
+    // The object URL of the bytes, or null (failed or aborted). The cache (lib/imgBlobs.ts) owns it.
+    const fetchOnce = async (urlToFetch: string, allowFallback: boolean): Promise<string | null> => {
       const resp = await fetch(urlToFetch, {
         signal: ctrl.signal,
         // Supported on Chromium/Safari/FF 132+; older browsers ignore it
@@ -92,36 +104,37 @@ export function MediaTile({
         // /img?u= URL repopulates the hash and serves fresh bytes.
         if (allowFallback && (resp.status === 404 || resp.status === 410)) {
           if (mediaId != null) mediaIdToHash.delete(String(mediaId));
-          await fetchOnce(proxiedUrl, false);
-          return;
+          return fetchOnce(urlRef.current, false);
         }
-        if (!cancelled) setFailed(true);
-        return;
+        return null;
       }
       const hash = resp.headers.get("x-img-hash");
       if (hash && mediaId != null) mediaIdToHash.set(String(mediaId), hash);
-      const blob = await resp.blob();
-      if (cancelled) return;
-      createdBlobUrl = URL.createObjectURL(blob);
-      setBlobUrl(createdBlobUrl);
+      return URL.createObjectURL(await resp.blob());
+    };
+
+    const load = async (): Promise<string | null> => {
+      const knownHash = mediaId != null ? mediaIdToHash.get(String(mediaId)) : undefined;
+      const initial = knownHash
+        ? rewriteToByHash(urlRef.current, knownHash)
+        : urlRef.current;
+      return fetchOnce(initial, /* allowFallback */ knownHash != null);
     };
 
     const start = async () => {
-      try {
-        const knownHash = mediaId != null ? mediaIdToHash.get(String(mediaId)) : undefined;
-        const initial = knownHash
-          ? rewriteToByHash(proxiedUrl, knownHash)
-          : proxiedUrl;
-        await fetchOnce(initial, /* allowFallback */ knownHash != null);
-      } catch (e) {
-        // AbortError is the common case (chat switch, scroll-away).
-        // It's not an error, don't paint the failed state.
-        if (e instanceof DOMException && e.name === "AbortError") return;
-        if (!cancelled) setFailed(true);
-      }
+      // Another tile's (or the preload's) load of the same bytes first; failed or aborted: our own.
+      const shared = cachedImg(identity);
+      let url = shared ? await shared : null;
+      if (cancelled) return;
+      if (!url) url = await rememberImg(identity, load());
+      // AbortError (chat switch, scroll-away) is not a failure: don't paint the failed state.
+      if (cancelled) return;
+      if (url) { setBlobUrl(url); setFailed(false); return; }
+      failedAt.current = urlRef.current;
+      setFailed(true);
     };
 
-    if (eager) {
+    if (eager || cachedImg(identity)) {
       start();
     } else if (placeholderRef.current) {
       io = new IntersectionObserver(
@@ -147,13 +160,11 @@ export function MediaTile({
       cancelled = true;
       ctrl.abort();
       io?.disconnect();
-      if (createdBlobUrl) URL.revokeObjectURL(createdBlobUrl);
     };
-    // Deliberately exclude fallbackUrl from deps: changing it shouldn't
-    // restart a successful load. proxiedUrl + mediaId + eager fully
-    // capture the identity of what's being fetched.
+    // Deliberately exclude fallbackUrl and proxiedUrl from deps: a re-signed URL is the same bytes (`identity`),
+    // so it shouldn't restart a successful load.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [proxiedUrl, mediaId, eager]);
+  }, [identity, mediaId, eager, retry]);
 
   if (failed) {
     return (

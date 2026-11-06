@@ -7,10 +7,13 @@
  * the last answer this browser saw (`rememberDashboardEntry`, written by the Dashboard), else the browser's zone and
  * Monday (the settings' defaults). A wrong guess is one bundle nobody joins (another key): the cards start their own
  * as before. `grid: false` (the session's role hides the Per-model cards): no guess, nothing would join it.
+ *
+ * The server makes the same guess for the HTML's inline boot (lib/inlineBoot.server.ts) from two cookies: the saved
+ * entry (`ENTRY_COOKIE`, written with it) and the browser's zone (`TZ_COOKIE`, the root layout's boot script).
  */
 import { DEFAULT_PERIOD, isPeriod } from "@/components/home/dashboardControls";
 import { periodWindow } from "@/lib/dateRange";
-import type { Screen } from "@/lib/screenBundle";
+import type { Screen } from "@/lib/screenKey";
 import type { WeekStart } from "@/lib/shifts";
 
 export interface DashboardEntry {
@@ -21,6 +24,11 @@ export interface DashboardEntry {
 }
 
 const KEY = "chatterly:dashboard-entry";
+/** The saved entry's copy for the server (lib/inlineBoot.server.ts). */
+export const ENTRY_COOKIE = "chatterly_entry";
+/** The browser's IANA zone, written on every document load (app/layout.tsx): a null `tz` means it. */
+export const TZ_COOKIE = "chatterly_tz";
+const YEAR_S = 365 * 24 * 3600;
 const GUESS: DashboardEntry = { tz: null, weekStart: "monday", grid: true };
 
 /** The screen a document load of `pathname?search` opens and its bundle; null: none. */
@@ -34,9 +42,10 @@ export function entryScreen(pathname: string, search: string, hint: DashboardEnt
   return { kind: "dashboard", from, to };
 }
 
-export function readDashboardEntry(): DashboardEntry | null {
+/** A saved entry (`raw`: its JSON); null: none or junk. */
+export function parseDashboardEntry(raw: string | null | undefined): DashboardEntry | null {
   try {
-    const v = JSON.parse(window.localStorage.getItem(KEY) ?? "null");
+    const v = JSON.parse(raw ?? "null");
     return v && typeof v === "object" && (v.weekStart === "monday" || v.weekStart === "sunday")
       ? { tz: typeof v.tz === "string" ? v.tz : null, weekStart: v.weekStart, grid: v.grid !== false } : null;
   } catch {
@@ -44,8 +53,20 @@ export function readDashboardEntry(): DashboardEntry | null {
   }
 }
 
-export function rememberDashboardEntry(e: DashboardEntry): void {
+export function readDashboardEntry(): DashboardEntry | null {
   try {
-    window.localStorage.setItem(KEY, JSON.stringify(e));
+    return parseDashboardEntry(window.localStorage.getItem(KEY));
+  } catch {
+    return null;
+  }
+}
+
+export function rememberDashboardEntry(e: DashboardEntry): void {
+  const v = JSON.stringify(e);
+  try {
+    window.localStorage.setItem(KEY, v);
   } catch { /* storage off: the next load guesses */ }
+  try {
+    document.cookie = `${ENTRY_COOKIE}=${encodeURIComponent(v)}; path=/; max-age=${YEAR_S}; samesite=lax`;
+  } catch { /* cookies off: the server guesses no bundle */ }
 }

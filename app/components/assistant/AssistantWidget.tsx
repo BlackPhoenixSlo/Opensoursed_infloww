@@ -68,7 +68,7 @@ import { useScope } from "@/contexts/ScopeContext";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { relay, type AccountMeta } from "@/lib/relay";
 import { cn } from "@/lib/utils";
-import { AnswerText } from "./AnswerText";
+import { lazyModule, useLazyModule } from "@/lib/lazyModule";
 import { BRAND_NAME } from "@/lib/brand";
 import {
   assistantReducer, initialAssistantState, settledFrom, settledFromError,
@@ -260,6 +260,10 @@ function LauncherIcon() {
  *  `page`: the same content filling /help-center's white frame (Infloww's
  *  HelpPage: full bleed, no page header), in a centred 720px column, with no
  *  close button (the sidebar is the way out). */
+/** The answer renderer (markdown + tab links, with every page's tab table behind it): out of the shell's first load,
+ *  fetched when a panel opens. */
+const answerText = lazyModule(() => import("./AnswerText"));
+
 export function AssistantPanel({
   variant,
   onClose,
@@ -268,6 +272,7 @@ export function AssistantPanel({
   onClose?: () => void;
 }) {
   const { turns, userName, accountId, accounts, scoped, setPicked, ask } = useAssistant();
+  const answer = useLazyModule(answerText);
   const [draft, setDraft] = useState("");
   const listRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
@@ -389,7 +394,7 @@ export function AssistantPanel({
                   {/* The answer is markdown (the manual is), and the tab names in
                       it are real destinations — AnswerText renders both. No
                       `whitespace-pre-wrap` here: it owns its own block layout. */}
-                  <AnswerText text={t.answer} muted={!!t.error} />
+                  {answer && <answer.AnswerText text={t.answer} muted={!!t.error} />}
                 </div>
               )}
             </div>
@@ -405,7 +410,7 @@ export function AssistantPanel({
               one thing worth pointing at is where to connect one. */}
           {!accountId && (
             <div className="px-1 text-[11px] leading-4 text-muted">
-              <AnswerText text={NO_ACCOUNT_HINT} />
+              {answer && <answer.AnswerText text={NO_ACCOUNT_HINT} />}
             </div>
           )}
           {/* In all-models scope nothing on screen names an account, but the

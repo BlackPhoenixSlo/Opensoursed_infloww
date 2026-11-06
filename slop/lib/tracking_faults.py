@@ -16,6 +16,8 @@ EARNINGS = ("OF tracking links: every link of each Creator listed, per link earn
 CLAIMERS = ("OF tracking links: claimers single-flight: one claimers walk per link with subscribers (every page "
             "once) under concurrent owners and across a recompute, none for a zero-subscriber or created link")
 CREATED = "OF tracking links: the Create dialog's POST answers 200 with OF's new link, for every Creator"
+CLIENT_IP = ("tracking links: behind a CDN (EDGE_PROXIES=cloudflare), every click the storm stored holds the fan's "
+             "own address (its CF-Connecting-IP), never the Cloudflare server's or the proxy's")
 
 
 def _click_lost_1_in_20() -> None:
@@ -73,6 +75,14 @@ def _spend_first_link() -> None:
     ota._spend = ns["_spend"]
 
 
+def _cdn_header_ignored() -> None:
+    """EDGE_PROXIES dropped (bug class: the CDN's client header is not read, as before deploy/ae/EDGE-CDN.md):
+    every click behind Cloudflare is stored with the Cloudflare server's address. Only CLIENT_IP targets it."""
+    import client_addr
+
+    client_addr.EDGE_PROXIES = ()
+
+
 def register(Fault) -> dict:
     return {
         # slop/run tracking-links-clicks --break (the scenario's FAULT)
@@ -80,4 +90,5 @@ def register(Fault) -> dict:
         # slop/run tracking-links-clicks --break --fault=<name>
         "of-tracking-claimers-no-memo": Fault(_claimers_no_memo, (CLAIMERS,)),
         "of-tracking-spend-first-link": Fault(_spend_first_link, (EARNINGS,)),
+        "client-addr-cdn-header-ignored": Fault(_cdn_header_ignored, (CLIENT_IP,)),
     }

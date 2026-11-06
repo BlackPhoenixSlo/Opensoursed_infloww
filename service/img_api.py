@@ -651,7 +651,7 @@ def _serve_cached(hit: tuple[Path, str], u: str, *, label: str) -> FileResponse:
         media_type=ct_cached,
         headers={
             "Cache-Control":
-                "public, max-age=604800, stale-while-revalidate=86400, immutable",
+                "private, max-age=604800, stale-while-revalidate=86400, immutable",
             "X-Img-Cache": label,
         },
     )
@@ -682,8 +682,10 @@ def _stream_upstream(r: Any, u: str, held: admission.Lane,
     # the browser doesn't re-fetch bytes we still have on disk. Once we've
     # fetched the bytes, the upstream signature is irrelevant for serving
     # them again. SWR window of 1 day lets the SW serve a stale copy
-    # instantly while silently refreshing in the background.
-    cache_control = "public, max-age=604800, stale-while-revalidate=86400, immutable"
+    # instantly while silently refreshing in the background. `private`: a
+    # signed-in Creator's media, so a CDN in front (deploy/ae/EDGE-CDN.md)
+    # must never keep a copy for the next requester, whatever its cache rules.
+    cache_control = "private, max-age=604800, stale-while-revalidate=86400, immutable"
     out_headers = {"Cache-Control": cache_control}
     # Stable hash exposed back to the browser so the frontend can pivot
     # to /img/by-hash/<h> on subsequent renders — same image, same key,

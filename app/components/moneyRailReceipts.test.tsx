@@ -17,7 +17,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { lastOutboundOf, replyStateOf } from "@/components/MoneyRail";
+import { lastOutboundOf, replyStateOf } from "@/components/useMoneyRailFeed";
 
 const ACCT = "700237824869654528";
 const MSG = "900805852249276416";        // real id; Number() rounds it to ...400

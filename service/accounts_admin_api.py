@@ -39,7 +39,7 @@ import proxy_health
 import relay_cache
 import sign_rules
 import vault_cache
-from auth import assert_account_owned
+from auth import assert_account_owned, require_actor_account_ids
 from chatters import get_request_chatter as _get_request_chatter
 from relay_host import assemble_chats_page as _assemble_chats_page
 from relay_host import chats_window_fetched_at as _chats_window_fetched_at
@@ -60,6 +60,23 @@ router = APIRouter()
 
 
 # ── Admin ──────────────────────────────────────────────────────
+
+def owned_account_ids() -> list[str]:
+    """The signed-in principal's FULL owned Creator roster as ids — the same
+    non-watcher set GET /admin/accounts lists (registry accounts clamped to the
+    principal's `account_ids`), owner or chatter (union across linked owners), in
+    registry order. Not session-scoped: every Creator the principal holds, even
+    ones with no captured session or deactivated. Empty when nobody is signed in
+    (the ALLOW_ANONYMOUS_ADMIN escape hatch yields None → []).
+
+    Share-to-all and the all-models overview resolve their targets through this;
+    each id it returns is in the principal's set, so `assert_account_owned`
+    passes for every one."""
+    ids = require_actor_account_ids()
+    if ids is None:
+        return []
+    return [str(a["id"]) for a in account_registry.list_accounts() if a.get("id") in ids]
+
 
 @router.post("/admin/reload-session")
 def reload_session(account_id: str | None = Query(None)) -> dict[str, Any]:

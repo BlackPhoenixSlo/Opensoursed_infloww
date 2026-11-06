@@ -24,6 +24,8 @@ export type CreatorPick = {
   value: string | null;
   onChange: (accountId: string) => void;
   onAll?: () => void;
+  /** Relabels the "All creators" row/pick (Scripts' "All models"), default "All creators". */
+  allLabel?: string;
   /** No "All creators" row: the page always works on one creator. */
   noAll?: boolean;
   /** Watcher accounts, shown after the creators as non-selectable rows. */
@@ -38,7 +40,7 @@ export function CreatorRail({ creators, top = "48px", className, children }: {
   className?: string;
   children: ReactNode;
 }) {
-  const { accounts, value, onChange, onAll, noAll, watchers } = creators;
+  const { accounts, value, onChange, onAll, allLabel, noAll, watchers } = creators;
   return (
     // `.h-chat` on the column subtracts the header (`top`) too.
     <div className="flex min-h-0 min-w-0 flex-1" style={{ ["--shell-top" as string]: `calc(var(--chrome-top) + ${top})` }}>
@@ -46,7 +48,7 @@ export function CreatorRail({ creators, top = "48px", className, children }: {
         accounts={accounts}
         value={value}
         onChange={onChange}
-        all={onAll && { on: value === null, pick: onAll }}
+        all={onAll && { on: value === null, pick: onAll, label: allLabel }}
         noAll={noAll}
         watchers={watchers}
         className="md:flex w-[260px] border-r border-border"
@@ -54,7 +56,7 @@ export function CreatorRail({ creators, top = "48px", className, children }: {
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {accounts.length > 0 && (
           <div className="border-b border-border px-4 py-2 md:hidden">
-            <IfCreatorSelect accounts={accounts} value={value} onChange={onChange} onAll={onAll} watchers={watchers} />
+            <IfCreatorSelect accounts={accounts} value={value} onChange={onChange} onAll={onAll} allLabel={allLabel} watchers={watchers} />
           </div>
         )}
         <div className={cn("min-w-0 flex-1", className)}>{children}</div>

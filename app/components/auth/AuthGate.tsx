@@ -31,20 +31,25 @@
  */
 
 import { useEffect } from "react";
+import dynamic from "next/dynamic";
 import { usePathname } from "next/navigation";
 
 import { useUser } from "@/contexts/UserContext";
 import { gateScreen } from "@/contexts/userSessionReducer";
 import { useChatter } from "@/contexts/ChatterContext";
 import Landing from "@/components/auth/Landing";
-import ChatterLogin from "@/components/auth/ChatterLogin";
-import ShareReport from "@/components/growth/ShareReport";
 import BootSkeleton from "@/components/shell/BootSkeleton";
 import { EmptyState } from "@/components/ui/infloww";
 import type { AuthBanner } from "@/contexts/userSessionReducer";
 import { prefetchAppliedSettings } from "@/lib/appliedSettings";
 import { prefetchScreenBundle } from "@/lib/relay";
 import { entryScreen, readDashboardEntry } from "@/lib/screenEntry";
+
+// The invite page and a share link's report: only their own paths draw them, which render on the server, so
+// next/dynamic (it preloads their chunks from the HTML) keeps them out of every other first load. <Landing> stays
+// static: a dead session or a banner puts it up client-side, at once.
+const ChatterLogin = dynamic(() => import("@/components/auth/ChatterLogin"));
+const ShareReport = dynamic(() => import("@/components/growth/ShareReport"));
 
 const BANNER_TEXT: Record<AuthBanner, string> = {
   blocked: "Proxy blocked (403)",

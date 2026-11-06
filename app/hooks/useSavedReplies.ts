@@ -188,6 +188,8 @@ export function useImportSavedReplies(accountId: string | null) {
 export interface SavedReplyCopy {
   fromAccountIds: string[];
   toAccountIds: string[];
+  /** Share to the principal's full owned Creator roster (resolved server-side); `toAccountIds` is then ignored. */
+  allCreators?: boolean;
   ids?: number[];
 }
 
@@ -199,13 +201,32 @@ export interface SavedReplyCopyResult {
   sequence_dropped: number;
 }
 
+/** All-models view (`GET /admin/saved-replies/overview`): a lean coverage matrix — per owned Creator, each
+ *  sequence's step count and each tag's script count (no script bodies). */
+export interface ScriptsOverview {
+  accounts: Array<{ id: string; nickname?: string | null }>;
+  sequences: Array<{ name: string; per_account: Record<string, number> }>;
+  tags: Array<{ name: string; per_account: Record<string, number> }>;
+}
+
+export function useScriptsOverview(enabled = true) {
+  return useQuery<ScriptsOverview>({
+    queryKey: [KEY, "overview"],
+    enabled,
+    queryFn: () => relay.get<ScriptsOverview>("/admin/saved-replies/overview"),
+    staleTime: 60 * 1000,
+    refetchOnWindowFocus: false,
+  });
+}
+
 export function useCopySavedReplies() {
   const qc = useQueryClient();
   return useMutation<SavedReplyCopyResult, Error, SavedReplyCopy>({
-    mutationFn: ({ fromAccountIds, toAccountIds, ids }) =>
+    mutationFn: ({ fromAccountIds, toAccountIds, allCreators, ids }) =>
       relay.post<SavedReplyCopyResult>("/admin/saved-replies/copy", {
         from_account_ids: fromAccountIds,
         to_account_ids: toAccountIds,
+        all_creators: allCreators ?? false,
         ids,
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: [KEY] }),

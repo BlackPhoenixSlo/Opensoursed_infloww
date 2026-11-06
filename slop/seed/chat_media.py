@@ -18,12 +18,11 @@ assets: {"host/path": {host, path, size, sha256, account_id, media_id, variant, 
 """
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 from datetime import timedelta, timezone
 
-from slop.lib.img_relay import asset_bytes, signed
+from slop.lib.img_relay import asset_bytes, policy_b64, signed
 
 from . import World, threads, ts
 
@@ -44,7 +43,9 @@ def sign(host: str, path: str, exp_epoch: int, gen: int = 0) -> str:
     """`host/path` as OF hands it out: the signed hosts with a CloudFront-style query, the direct one bare."""
     if not signed(host):
         return f"https://{host}{path}"
-    policy = base64.urlsafe_b64encode(json.dumps({"exp": exp_epoch}).encode()).decode().rstrip("=")
+    # CloudFront's custom Policy, as OF's CDN URLs carry it (its expiry what the relay and the fake CDN read).
+    policy = policy_b64({"Statement": [{"Resource": f"https://{host}{path}*",
+                                        "Condition": {"DateLessThan": {"AWS:EpochTime": exp_epoch}}}]})
     sig = hashlib.sha256(f"slop:{path}:{exp_epoch}:{gen}".encode()).hexdigest()[:40]
     return f"https://{host}{path}?Policy={policy}&Signature={sig}&Key-Pair-Id={KEY_PAIR_ID}"
 

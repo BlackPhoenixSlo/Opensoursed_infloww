@@ -126,6 +126,20 @@ export function normalizeChats(resp: OFChatsResp, accountId: string): OFChatItem
   });
 }
 
+export const ENRICH_TTL_MS = 10 * 60_000;
+const enrichedAt = new Map<string, number>();
+
+/** `ids` not enriched for `accountId` in the last ENRICH_TTL_MS (`seen`: `account|id` → when). */
+export function unenriched(
+  ids: FanId[], accountId: string, now: number, seen: Map<string, number> = enrichedAt,
+): FanId[] {
+  if (seen.size > 50_000) seen.clear();
+  return ids.filter((id) => {
+    const at = seen.get(`${accountId}|${id}`);
+    return at == null || now - at >= ENRICH_TTL_MS;
+  });
+}
+
 /** OF's /chats only returns `{withUser: {id, _view}}`. We enrich names/
  *  avatars in two passes:
  *
@@ -151,7 +165,10 @@ export async function enrichWithUsers(
   qc: QueryClient,
 ): Promise<OFChatItem[]> {
   if (chats.length === 0) return chats;
-  const ids = Array.from(new Set(chats.map((c) => c.withUser.id))).filter(Boolean);
+  // A fan named in the last ENRICH_TTL_MS keeps its cached profile: each 90 s list poll re-sent by-ids for every
+  // row (measured: by-ids 13 of an idle open chat's 27 calls/min).
+  const now = Date.now();
+  const ids = unenriched(Array.from(new Set(chats.map((c) => c.withUser.id))).filter(Boolean), accountId, now);
   if (ids.length === 0) return chats;
 
   const byId = new Map<FanId, {
@@ -266,6 +283,7 @@ export async function enrichWithUsers(
     }
   }
 
+  for (const id of byId.keys()) enrichedAt.set(`${accountId}|${id}`, now);
   return chats.map((c) => {
     const u = byId.get(c.withUser.id);
     if (!u) return c;

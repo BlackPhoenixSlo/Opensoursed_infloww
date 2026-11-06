@@ -39,13 +39,18 @@ document.addEventListener('DOMContentLoaded', () => { const s = document.createE
 # Relay routes outside /api/of/ that are OnlyFans-live reads too: held like /api/of/*.
 OF_LIVE_PATHS = ("/admin/vault/wall-media",)
 SCREEN_BUNDLES = "/admin/screens/"   # one call per screen (service/screens_api.py): `screen_bundle_404`
+# On a browser whose bundles 404 (`screen_bundle_404`): the relay answers 404 to the bundle the Next server reads for
+# its HTML too (app/lib/inlineBoot.server.ts forwards the page's cookies; lib/relay.py `_wire_inline_boot`).
+NO_BUNDLES_COOKIE = "slop_no_bundles"
 
 
 async def screen_bundle_404(r) -> bool:
     """Declared bypass, for every page that holds OnlyFans reads: a screen bundle mixes OnlyFans reads with DB ones and
     a whole request can only be held or not, so it answers 404 (app/lib/screenBundle.ts: a failed bundle) and every
     read goes out on its own route as before the bundles: OnlyFans ones held, DB ones answered. The bundles
-    themselves: the screen-bundles (API) and clicks-first scenarios, on browsers of their own. True: answered."""
+    themselves: the screen-bundles (API) and clicks-first scenarios, on browsers of their own. True: answered.
+    The HTML's inline bundle (the Next server's read, past this route): 404 at the relay for a browser carrying
+    NO_BUNDLES_COOKIE (set where this route is installed)."""
     if not urlsplit(r.request.url).path.startswith(SCREEN_BUNDLES):
         return False
     await r.fulfill(status=404, content_type="application/json", body='{"detail":"Not Found"}')
@@ -189,7 +194,8 @@ async def _owner_page(browser, ctx, viewport, held, aborted, init_scripts=(), *,
                                      service_workers="block" if ctx.net else "allow")
     host = urlsplit(app or ctx.app).hostname
     await bctx.add_cookies([{"name": c.name, "value": c.value, "domain": host, "path": "/"}
-                            for c in (http or ctx.owner).c.cookies.jar])
+                            for c in (http or ctx.owner).c.cookies.jar]
+                           + [{"name": NO_BUNDLES_COOKIE, "value": "1", "domain": host, "path": "/"}])
     fault = FAULTS.get(ctx.fault or "")
     for js in (INIT_JS, *init_scripts, *((fault.browser_js,) if fault and fault.browser_js else ())):
         await bctx.add_init_script(js)

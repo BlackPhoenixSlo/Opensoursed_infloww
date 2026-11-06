@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-  bundlePath, classify, FOLLOW_DEADLINE_MS, FOLLOW_MS, followPath, KEEP_MS, outcome, prefetchScreen, resetScreenBundles, screenJoin, screenRead, screenSettled, setScreen, type Read, type Screen,
+  bundlePath, classify, FOLLOW_DEADLINE_MS, FOLLOW_MS, followPath, KEEP_MS, onScreenRefreshed, outcome, prefetchScreen, resetScreenBundles, screenJoin, screenRead, screenSettled, setScreen, type Read, type Screen,
 } from "./screenBundle";
 
 const DASH: Screen = { kind: "dashboard", from: "2026-10-01T00:00:00Z", to: "2026-11-01T00:00:00Z" };
@@ -197,6 +197,31 @@ describe("screenJoin", () => {
     expect(four).toEqual({ kind: "body", body: { list: [] } });
     expect(bell4).toEqual({ kind: "miss" });   // still late after the follow-up: per Creator
     expect(get.mock.calls.map((c) => c[0])).toEqual(["/admin/screens/inbox?cursor=0", followPath("inbox|0", ["2", "4"])]);
+  });
+
+  it("serve-stale: a refreshing read answers at once, ONE follow-up; a changed value names its key, whose refetch gets the follow-up's", async () => {
+    setScreen(DASH);
+    const stale = { ...DASH_BODY, errors: [],
+      refreshing: [{ accountId: "1", read: "subscriberCounts" }, { accountId: "1", read: "profile" }] };
+    const follow = { creators: [{ id: "1", profile: { id: 1 }, subscriberCounts: { subscribers: { all: 6 } } }],
+      errors: [], refreshing: [] };
+    const get = vi.fn(async (p: string) => (p.includes("accounts=") ? follow : stale));
+    const keys: unknown[] = [];
+    onScreenRefreshed((k) => keys.push(k));
+    const counts = screenRead("/api/of/v2/subscriptions/count/all", "1")!;
+    expect(await screenJoin(counts, get)).toEqual({ kind: "body", body: { subscribers: { all: 5 } } });
+    expect(await screenJoin(screenRead("/api/of/v2/users/me", "1")!, get)).toEqual({ kind: "body", body: { id: 1 } });
+    await vi.waitFor(() => expect(keys).toEqual([["of-sub-counts", "1"]]));   // the profile came back the same
+    expect(await screenJoin(counts, get)).toEqual({ kind: "body", body: { subscribers: { all: 6 } } });
+    expect(get.mock.calls.map((c) => c[0])).toEqual([bundlePath(DK), followPath(DK, ["1"])]);
+  });
+
+  it("serve-stale: no refreshing read joined (the cards' snapshot is fresh): no follow-up", async () => {
+    setScreen(DASH);
+    const get = vi.fn(async (_p: string) => ({ ...DASH_BODY, errors: [], refreshing: [{ accountId: "1", read: "subscriberCounts" }] }));
+    await screenJoin(screenRead(`/admin/stats/per-model?${q({ from: DASH.from!, to: DASH.to! })}`, null)!, get);
+    await new Promise((res) => setTimeout(res, FOLLOW_MS + 50));
+    expect(get).toHaveBeenCalledTimes(1);
   });
 
   it("a failed follow-up is a miss", async () => {

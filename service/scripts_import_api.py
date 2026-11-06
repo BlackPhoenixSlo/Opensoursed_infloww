@@ -46,7 +46,7 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Body, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
-from sqlalchemy import delete as sa_delete, select
+from sqlalchemy import delete as sa_delete, func, select
 
 from auth import assert_account_owned
 from db.engine import get_session
@@ -159,49 +159,146 @@ _AccountId = Annotated[str, Field(min_length=1)]
 
 class _CopyBody(BaseModel):
     from_account_ids: list[_AccountId] = Field(..., min_length=1, max_length=_MAX_COPY_SOURCES)
-    to_account_ids: list[_AccountId] = Field(..., min_length=1)
+    # The targets to share to. Omitted/empty is only valid with `all_creators`, which
+    # resolves the targets SERVER-SIDE to the principal's full owned Creator roster.
+    to_account_ids: list[_AccountId] = Field(default_factory=list)
+    # Share to every Creator the principal owns (the full roster, not session-only).
+    all_creators: bool = False
     # The scripts to copy; omitted copies every script of the sources.
     ids: list[int] | None = None
 
 
 @router.post("/copy")
 async def copy_scripts(body: _CopyBody = Body(...)) -> dict[str, Any]:
-    for acc in {*body.from_account_ids, *body.to_account_ids}:
+    """Share (from a Creator to others) / Import (from others to this Creator).
+
+    Dedup is a true no-op on a re-share: per target it builds `have` from the target's
+    held script keys (title, case-blind, or "\\0"+text for an untitled one) and skips any
+    source whose key is already there (and the source account itself), adding keys mid-run
+    so two sources can't both land. `all_creators` resolves the targets to the owned roster
+    (`owned_account_ids`); each resolved id still passes `assert_account_owned`.
+
+    Share-to-all is COMMITTED PER TARGET Creator, so a failure part-way leaves the finished
+    targets persisted and a re-run is a no-op for them (the lightest correct "job": the UI
+    disables the Confirm button for the single request's life — no separate task table). A
+    copied row that introduces a sequence (`script_id`) the target lacks also carries that
+    sequence's header: a `SavedReplySequence` upsert, idempotent on unique (account_id, name)
+    — never a blind insert, and the target's other sequences are not reordered."""
+    from_ids = list(dict.fromkeys(body.from_account_ids))
+    if body.all_creators:
+        from accounts_admin_api import owned_account_ids
+        targets = owned_account_ids()
+    else:
+        targets = list(dict.fromkeys(body.to_account_ids))
+    if not targets:
+        raise HTTPException(status_code=422, detail="no target creators")
+    for acc in {*from_ids, *targets}:
         assert_account_owned(acc)
     copied = skipped = media_dropped = sequence_dropped = 0
     async with get_session() as s:
-        q = select(SavedReply).where(SavedReply.account_id.in_(body.from_account_ids)).order_by(SavedReply.id)
+        q = (select(SavedReply)
+             .where(SavedReply.account_id.in_(from_ids))
+             .order_by(SavedReply.id))
         if body.ids is not None:
             q = q.where(SavedReply.id.in_(body.ids))
-        sources = (await s.execute(q)).scalars().all()
-        for target in dict.fromkeys(body.to_account_ids):
-            held = (await s.execute(select(SavedReply).where(SavedReply.account_id == target))).scalars().all()
+        # Materialise before the per-target commits so no row is accessed detached.
+        sources = [{"account_id": r.account_id, "title": r.title, "text": r.text,
+                    "gif_id": r.gif_id, "gif_url": r.gif_url, "script_id": r.script_id,
+                    "script_step": r.script_step, "tags_json": r.tags_json, "notes": r.notes,
+                    "has_media": bool(json.loads(r.media_json or "[]"))}
+                   for r in (await s.execute(q)).scalars().all()]
+        # The source sequences' headers (first source to name a sequence wins), carried to a
+        # target that lacks the sequence.
+        src_metas: dict[str, SavedReplySequence] = {}
+        for m in (await s.execute(select(SavedReplySequence).where(
+                SavedReplySequence.account_id.in_(from_ids)).order_by(SavedReplySequence.id))).scalars():
+            src_metas.setdefault(m.name, m)
+        for target in dict.fromkeys(targets):
+            held = (await s.execute(select(SavedReply).where(
+                SavedReply.account_id == target))).scalars().all()
             have = {_key(r.title) if r.title else "\0" + r.text for r in held}
             steps = {(r.script_id, r.script_step) for r in held if r.script_id}
+            # Sequence names the target already keeps a header for: the meta upsert's idempotency.
+            meta_names = set((await s.execute(select(SavedReplySequence.name).where(
+                SavedReplySequence.account_id == target))).scalars())
+            seeded: set[str] = set()
             for src in sources:
-                k = _key(src.title) if src.title else "\0" + src.text
-                if src.account_id == target or k in have:
+                k = _key(src["title"]) if src["title"] else "\0" + src["text"]
+                if src["account_id"] == target or k in have:
                     skipped += 1
                     continue
                 have.add(k)
-                if json.loads(src.media_json or "[]"):
+                if src["has_media"]:
                     media_dropped += 1
-                script_id, script_step = src.script_id, src.script_step
+                script_id, script_step = src["script_id"], src["script_step"]
                 if script_id and (script_id, script_step) in steps:
                     script_id = script_step = None
                     sequence_dropped += 1
                 elif script_id:
                     steps.add((script_id, script_step))
                 s.add(SavedReply(
-                    account_id=target, title=src.title, text=src.text,
-                    gif_id=src.gif_id, gif_url=src.gif_url,
+                    account_id=target, title=src["title"], text=src["text"],
+                    gif_id=src["gif_id"], gif_url=src["gif_url"],
                     script_id=script_id, script_step=script_step,
-                    tags_json=src.tags_json, notes=src.notes,
+                    tags_json=src["tags_json"], notes=src["notes"],
                 ))
                 copied += 1
-        await s.commit()
+                # The surviving sequence the target lacks a header for: carry it once.
+                if script_id and script_id not in meta_names and script_id not in seeded:
+                    seeded.add(script_id)
+                    sm = src_metas.get(script_id)
+                    if sm is not None:
+                        s.add(SavedReplySequence(
+                            account_id=target, name=script_id, description=sm.description,
+                            created_by=sm.created_by, position=sm.position))
+            await s.commit()
     return {"copied": copied, "skipped": skipped, "media_dropped": media_dropped,
             "sequence_dropped": sequence_dropped}
+
+
+@router.get("/overview")
+async def saved_replies_overview() -> dict[str, Any]:
+    """All-models view (read-only): per owned Creator, each sequence's step count and each
+    tag's script count, by SQL GROUP BY only — no script text/bodies loaded.
+
+    Shape: {accounts:[{id, nickname}], sequences:[{name, per_account:{id:count}}],
+    tags:[{name, per_account:{id:count}}]}. A tag is counted once per script that carries it
+    (a script in two tags counts in both). Same /admin/saved-replies prefix, so the Scripts Role gate applies; every
+    account is resolved through `owned_account_ids`, each owned."""
+    from accounts_admin_api import owned_account_ids
+    import accounts as account_registry
+    import relay_coalesce
+    ids = owned_account_ids()
+    for aid in ids:
+        assert_account_owned(aid)
+    accounts = [{"id": aid, "nickname": (account_registry.get_account(aid) or {}).get("nickname")}
+                for aid in ids]
+    if not ids:
+        return {"accounts": accounts, "sequences": [], "tags": []}
+
+    async def _load() -> dict[str, Any]:
+        async with get_session() as s:
+            seq_rows = (await s.execute(
+                select(SavedReply.account_id, SavedReply.script_id, func.count())
+                .where(SavedReply.account_id.in_(ids), SavedReply.script_id.is_not(None))
+                .group_by(SavedReply.account_id, SavedReply.script_id))).all()
+            tag_rows = (await s.execute(
+                select(SavedReply.account_id, SavedReply.tags_json, func.count())
+                .where(SavedReply.account_id.in_(ids))
+                .group_by(SavedReply.account_id, SavedReply.tags_json))).all()
+        sequences: dict[str, dict[str, int]] = {}
+        for aid, name, n in seq_rows:
+            sequences.setdefault(name, {})[aid] = n
+        tags: dict[str, dict[str, int]] = {}
+        for aid, tags_json, n in tag_rows:
+            for t in json.loads(tags_json or "[]"):
+                per = tags.setdefault(t, {})
+                per[aid] = per.get(aid, 0) + n
+        return {"accounts": accounts,
+                "sequences": [{"name": nm, "per_account": per} for nm, per in sorted(sequences.items())],
+                "tags": [{"name": nm, "per_account": per} for nm, per in sorted(tags.items())]}
+
+    return await relay_coalesce.coalesce_fresh(("saved_replies_overview", tuple(sorted(ids))), _load)
 
 
 # ── Bulk import (an Infloww library in JSON) ─────────────────────────

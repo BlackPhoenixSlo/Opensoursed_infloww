@@ -52,6 +52,7 @@ import { perfBoot } from "@/lib/perfLog";
 import { registerImageSW } from "@/lib/registerImageSW";
 import { listenNotificationClicks } from "@/lib/webPush";
 import { createIdbPersister, LEGACY_LOCALSTORAGE_KEY, persistQueryClientLazily } from "@/lib/rqPersister";
+import { onScreenRefreshed } from "@/lib/screenBundle";
 
 // Bump when the persisted cache shape changes (added/removed fields on
 // OFChatItem, etc.) so old persisted snapshots get nuked on read instead
@@ -191,6 +192,10 @@ export default function Providers({ children }: { children: React.ReactNode }) {
     perfBoot();
     return unlistenPush;
   }, []);
+
+  // A screen bundle answered a card from the relay's last value and its follow-up has another: that card reads
+  // again (its refetch joins the follow-up's body, lib/screenBundle.ts).
+  useEffect(() => onScreenRefreshed((queryKey) => { void queryClient.invalidateQueries({ queryKey }); }), [queryClient]);
 
   useEffect(() => {
     if (typeof window === "undefined") {

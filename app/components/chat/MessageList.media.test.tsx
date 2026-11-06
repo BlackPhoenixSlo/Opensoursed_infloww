@@ -14,6 +14,7 @@ vi.mock("@/lib/relay", async (orig) =>
 import { renderWithProviders } from "@/test-utils";
 import { MessageList } from "@/components/chat/MessageList";
 import type { OFMedia } from "@/lib/relay";
+import { resetImgBlobs } from "@/lib/imgBlobs";
 import { relayGet, resetComposerHarness, routeRelay } from "./composerTestHarness";
 import { baseProps, msg } from "./messageListTestHarness";
 
@@ -54,6 +55,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  resetImgBlobs();  // the /img cache is module-wide: a never-settling load would be joined by the next test
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   fetchSpy.mockClear();

@@ -125,8 +125,11 @@ export function MoreMenu({
   );
 }
 
-/** A sidebar row's Rename / Delete menu (#58; Share is Not wired, so it is left out). */
-function RowMenu({ label, onRename, onDelete }: { label: string; onRename: () => void; onDelete: () => void }) {
+/** A sidebar row's Share / Rename / Delete menu (#58). Share copies this entry's scripts to other Creators
+ *  (or all of them) — the header Share's per-row twin. */
+function RowMenu({
+  label, onShare, onRename, onDelete,
+}: { label: string; onShare?: () => void; onRename: () => void; onDelete: () => void }) {
   const { open, setOpen, ref } = useOutsideClose();
   const triggerRef = useRef<HTMLButtonElement>(null);
   const close = () => {
@@ -150,6 +153,12 @@ function RowMenu({ label, onRename, onDelete }: { label: string; onRename: () =>
       </button>
       {open && (
         <div role="menu" aria-label={`${label} menu`} className={cn(MENU_PANEL, "right-0 w-32")}>
+          {onShare && (
+            <button type="button" role="menuitem" className={cn(MENU_ITEM, MENU_HOVER)}
+              onClick={() => { close(); onShare(); }}>
+              Share
+            </button>
+          )}
           <button type="button" role="menuitem" className={cn(MENU_ITEM, MENU_HOVER)}
             onClick={() => { close(); onRename(); }}>
             Rename
@@ -178,12 +187,13 @@ const SEQ_SORTS: Array<[SeqSortBy, string]> = [["custom", "Custom"], ["recent", 
  *  Sequence sidebar sorts (Custom / Recent / Name; the one on again flips its order). Rows render in steps of 200
  *  (`useRenderCap`), always through the selected one. */
 export function Sidebar({
-  kind, items, selected, onSelect, onRename, onDelete, sort, onSort,
+  kind, items, selected, onSelect, onShare, onRename, onDelete, sort, onSort,
 }: {
   kind: "tag" | "sequence";
   items: SidebarItem[];
   selected: string | null;
   onSelect: (id: string) => void;
+  onShare?: (item: SidebarItem) => void;
   onRename: (item: SidebarItem) => void;
   onDelete: (item: SidebarItem) => void;
   sort?: SeqSort;
@@ -249,7 +259,8 @@ export function Sidebar({
               <div className="flex items-center gap-2">
                 <span className="flex-1 min-w-0 truncate text-sm font-medium">{i.name}</span>
                 {!i.fixed && (
-                  <RowMenu label={i.name} onRename={() => onRename(i)} onDelete={() => onDelete(i)} />
+                  <RowMenu label={i.name} onShare={onShare && (() => onShare(i))}
+                    onRename={() => onRename(i)} onDelete={() => onDelete(i)} />
                 )}
               </div>
               <div className="text-xs text-fg-dim">{i.count} {i.count === 1 ? "script" : "scripts"}</div>

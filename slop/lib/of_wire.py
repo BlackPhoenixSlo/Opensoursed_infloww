@@ -46,7 +46,8 @@ concurrently and are recorded in arrival order.
                                            wire body kept per Creator in order (`posts`);
                                            the answer's shape is a guess (`id` is read)
   GET  /api2/v2/subscriptions/count/all    the fan counts (`subscribers.active/all/expired`,
-                                           fixed per Creator): the Dashboard's Per-model cards
+                                           fixed per Creator, or `fan_counts[uid]` as a scenario
+                                           set): the Dashboard's Per-model cards
   GET  /api2/v2/subscriptions/subscribers/chart
                                            OF's Subscriptions chart, no new fans (`subscribers` 0)
   GET  /api2/v2/payouts/referrals/chart    Statements › Referrals, $0 (`total` 0): the
@@ -209,6 +210,7 @@ class FakeOF:
         self.vault_sorts: dict[str, list[dict]] = {}  # per Creator, every /vault/lists/sort body, in order
         self.messages: dict[str, dict[int, list[dict]]] = {}  # per Creator, fan -> OF's thread, newest first
         self.vault_media: dict[str, list[dict]] = {}  # per Creator, the vault page's media, newest first
+        self.fan_counts: dict[str, int] = {}  # per Creator, `subscribers.active` (else id % 900 + 100)
         self.lock = threading.Lock()
         self.calls: list[dict] = []          # every call, answer order: {t0, t, account, route, query, status}
         self.sends: dict[str, list[dict]] = {}  # per Creator, the messages OF accepted, in order (`t`: arrival)
@@ -414,7 +416,7 @@ class FakeOF:
                 if method == "GET" and u.path == "/api2/v2/users/notifications/count":
                     return self._record(uid, route, 200, {"all": 0, "subscribed": 0, "purchases": 0, "tip": 0})
                 if method == "GET" and u.path == "/api2/v2/subscriptions/count/all":
-                    n = int(uid or 0) % 900 + 100
+                    n = fake.fan_counts.get(uid, int(uid or 0) % 900 + 100)
                     return self._record(uid, route, 200, {"subscribers": {"active": n, "all": 2 * n, "expired": n},
                                                           "subscriptions": {"active": 0, "all": 0, "expired": 0}})
                 if method == "GET" and u.path == "/api2/v2/subscriptions/subscribers/chart":

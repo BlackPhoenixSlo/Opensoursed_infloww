@@ -32,10 +32,19 @@ Checks (names in lib/scripts_library_faults.py):
                  last sequence's step 1.
   UI_SEND        /messages-pro chat: picker search for a sequence's step 1, pick, Enter -> the send goes out,
                  "Next in “<seq>” · step 2" shows, and that row's sent_count is 1 (API).
+  SHARE_ALL      POST /admin/saved-replies/copy {from:[aid], all_creators:true} resolves the owner's whole Creator
+                 roster SERVER-SIDE and copies the library to every other owned Creator (each then holds >= the
+                 source's coverage), carrying each new sequence's header (position / created_by); 4-key response.
+  SHARE_ALL_NOOP a second identical share copies 0 (per-target dedup is a true no-op); coverage unchanged.
+  ALL_MODELS_VIEW GET /admin/saved-replies/overview lists every owned Creator and, per sequence / tag name, each
+                 Creator's count == that Creator's own stored rows (an independent per-account read-back of the lean
+                 projection).
 p95 vs the last green run on the serial and concurrent list reads (volume tag).
 
 FAULT `scripts-bulk-drops-last-step`: the import loses each sequence's last step (`_ordered_steps` trimmed):
 IMPORT_COUNTS, READ_BACK, UI_STEPS and UI_TAGS go red; the re-import, sidebar, load and send checks stay green.
+A second fault `scripts-share-drops-a-creator` (`--fault=`): `owned_account_ids` loses its last Creator, so
+SHARE_ALL and ALL_MODELS_VIEW go red while SHARE_ALL_NOOP stays green.
 Bypass, declared: OF's own /me is held by the slop browser, so the chat's creator id is preset in localStorage
 (`of-owner:<account>`), as fm-auto-reply-walk does.
 """
@@ -52,8 +61,9 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from slop.actors import ui
-from slop.lib.scripts_library_faults import (IMPORT_COUNTS, LIST_LOAD, LIST_P95, READ_BACK, REIMPORT_NOOP,
-                                             UI_SEND, UI_SIDEBAR, UI_STEPS, UI_TAGS)
+from slop.lib.scripts_library_faults import (ALL_MODELS_VIEW, IMPORT_COUNTS, LIST_LOAD, LIST_P95, READ_BACK,
+                                             REIMPORT_NOOP, SHARE_ALL, SHARE_ALL_NOOP, UI_SEND, UI_SIDEBAR,
+                                             UI_STEPS, UI_TAGS)
 from slop.seed.agency import PASSWORD
 
 PROFILE = "agency_inbox"
@@ -320,6 +330,9 @@ async def run(ctx) -> None:
     ctx.metric("scripts_library", {"rows": len(rows), "sequences": n, "import_s": import_s,
                                    "list_bytes": len(json.dumps(body))})
 
+    # 4. Share-to-all + the all-models overview (API; the library lives only on `aid` so far).
+    await _share_and_overview(ctx, aid, accounts, by_seq, metas, want_rows)
+
     if not ctx.app:
         for c in (UI_SIDEBAR, UI_STEPS, UI_TAGS, UI_SEND):
             ctx.skip(c, "--no-ui")
@@ -328,6 +341,89 @@ async def run(ctx) -> None:
     await _ui_page(ctx, seqs, seqs if real else [seqs[n // 2]], truth, {k: len(v) for k, v in by_seq.items()}, views)
     fans = [t["fan_id"] for t in w.data["threads"] if str(t["account_id"]) == aid]
     await _ui_send(ctx, aid, fans[0] if fans else None, seqs[0], by_seq)
+
+
+COPY = f"{LIST}/copy"
+OVERVIEW = f"{LIST}/overview"
+
+
+async def _coverage(client, aid: str) -> tuple[dict[str, int], dict[str, int]]:
+    """A Creator's own coverage straight off GET /admin/saved-replies: {sequence script_id: step rows} and
+    {tag: scripts carrying it} — the lean overview's counts worked out independently (the library is FM-free, so
+    every row counts, matching the endpoint's FM filter)."""
+    rows = (await client.get(LIST, params={"account_id": aid})).json().get("list", [])
+    seqs: dict[str, int] = {}
+    tags: dict[str, int] = {}
+    for x in rows:
+        if x.get("script_id"):
+            seqs[x["script_id"]] = seqs.get(x["script_id"], 0) + 1
+        for t in x.get("tags") or []:
+            tags[t] = tags.get(t, 0) + 1
+    return seqs, tags
+
+
+def _expect(roster: list[str], cov: dict[str, tuple[dict[str, int], dict[str, int]]]) -> tuple[dict, dict]:
+    """The overview's expected per-account maps (name -> {account: count}) from each Creator's own coverage."""
+    seqs: dict[str, dict[str, int]] = {}
+    tags: dict[str, dict[str, int]] = {}
+    for t in roster:
+        sq, tg = cov[t]
+        for name, c in sq.items():
+            seqs.setdefault(name, {})[t] = c
+        for name, c in tg.items():
+            tags.setdefault(name, {})[t] = c
+    return seqs, tags
+
+
+async def _share_and_overview(ctx, aid: str, accounts: list[dict], by_seq: dict[str, list[dict]],
+                              src_metas: dict[str, dict], want_rows: int) -> None:
+    roster = [str(a["id"]) for a in accounts]
+    others = [t for t in roster if t != aid]
+    # Copy keeps one script per (sequence, step), so an option step (N.1 / N.2 share a `script_step`) lands once on a
+    # target: the copyable coverage is the source's DISTINCT steps per sequence, not its total rows.
+    aid_seqs = {k: len({r["script_step"] for r in v}) for k, v in by_seq.items()}
+    aid_tags = (await _coverage(ctx.owner, aid))[1]
+
+    # SHARE_ALL: resolve the roster server-side (to=[] with all_creators) and copy to every other Creator.
+    share = (await ctx.owner.post(COPY, json={"from_account_ids": [aid], "all_creators": True})).json()
+    keys_ok = set(share) == {"copied", "skipped", "media_dropped", "sequence_dropped"}
+    cov = {t: await _coverage(ctx.owner, t) for t in roster}
+    # Every other Creator now holds at least the source's coverage (they began without these run-unique names).
+    spread_bad = [t for t in others
+                  if any(cov[t][0].get(nm, 0) < c for nm, c in aid_seqs.items())
+                  or any(cov[t][1].get(nm, 0) < c for nm, c in aid_tags.items())]
+    # A new sequence's header rode along: a sampled sequence's meta on an other Creator == the source's.
+    sample = next(iter(aid_seqs), None)
+    src_meta = src_metas.get(sample) if sample else None
+    meta_ok = False
+    if sample and src_meta and others:
+        tmetas = {m["name"]: m for m in (await ctx.owner.get(
+            f"{LIST}/sequences", params={"account_id": others[0]})).json().get("list", [])}
+        tm = tmetas.get(sample)
+        meta_ok = bool(tm and tm.get("position") == src_meta.get("position")
+                       and tm.get("created_by") == src_meta.get("created_by")
+                       and tm.get("description") == src_meta.get("description"))
+    ctx.check(SHARE_ALL, keys_ok and share.get("copied") == want_rows * len(others) and not spread_bad and meta_ok,
+              response=share, roster=len(roster), others=len(others), want_rows=want_rows,
+              spread_bad=spread_bad[:5], meta_sequence=sample, meta_ok=meta_ok)
+
+    # ALL_MODELS_VIEW: the lean overview == an independent per-account read-back over the whole roster.
+    exp_seq, exp_tag = _expect(roster, cov)
+    ov = (await ctx.owner.get(OVERVIEW)).json()
+    ov_acc = {a["id"] for a in ov.get("accounts", [])}
+    ov_seq = {s["name"]: s["per_account"] for s in ov.get("sequences", [])}
+    ov_tag = {s["name"]: s["per_account"] for s in ov.get("tags", [])}
+    ctx.check(ALL_MODELS_VIEW, ov_acc == set(roster) and ov_seq == exp_seq and ov_tag == exp_tag,
+              accounts=len(ov_acc), roster=len(roster),
+              missing_accounts=sorted(set(roster) - ov_acc), extra_accounts=sorted(ov_acc - set(roster)),
+              seq_match=ov_seq == exp_seq, tag_match=ov_tag == exp_tag, sequences=len(ov_seq), tags=len(ov_tag))
+
+    # SHARE_ALL_NOOP: a second identical share copies nothing and leaves the overview unchanged.
+    reshare = (await ctx.owner.post(COPY, json={"from_account_ids": [aid], "all_creators": True})).json()
+    ov2 = (await ctx.owner.get(OVERVIEW)).json()
+    ov2_seq = {s["name"]: s["per_account"] for s in ov2.get("sequences", [])}
+    ctx.check(SHARE_ALL_NOOP, reshare.get("copied") == 0 and ov2_seq == ov_seq,
+              response=reshare, coverage_unchanged=ov2_seq == ov_seq)
 
 
 _SIDEBAR = """(label) => { const a = document.querySelector(`aside[aria-label="${label}"]`);

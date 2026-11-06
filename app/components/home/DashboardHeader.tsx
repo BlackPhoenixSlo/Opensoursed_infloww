@@ -78,7 +78,7 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import {
   control, DEFAULT_BASIS, DEFAULT_PERIOD, isPeriod, PERIOD_TABS, type Basis, type DashboardControlKey,
 } from "@/components/home/dashboardControls";
-import { netMissingNote } from "@/components/home/reportsMath";
+import { netMissingNote } from "@/components/home/netMissingNote";
 
 /** Referrals' tile title when OnlyFans' referrals read failed for some Creators, or all. */
 export const REFERRALS_UNAVAILABLE = "OnlyFans referrals are unavailable for some creators, counted as $0.00";

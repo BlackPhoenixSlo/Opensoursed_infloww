@@ -11,14 +11,16 @@
  *   stays on its own account (ADR-0008), so a copied script arrives without it, and the result says how many lost it.
  */
 
-import { useRef, useState } from "react";
+import { useReducer, useRef, useState } from "react";
 import { CheckCircle2, Download, Upload } from "lucide-react";
 
 import { IfButton, IfModal } from "@/components/ui/infloww";
 import { useCopySavedReplies, useImportSavedReplies, type SavedReplyCopyResult } from "@/hooks/useSavedReplies";
+import {
+  buildPayload, canSubmit, copyDialogReducer, COPY_DIALOG_INITIAL, MAX_SOURCES,
+} from "@/components/growth/copyDialogState";
 import type { AccountMeta } from "@/lib/relay";
 
-const MAX_SOURCES = 5;
 const creatorName = (a: AccountMeta) => a.nickname || a.name || a.id;
 
 export function ExcelImportDialog({ accountId, onClose }: { accountId: string | null; onClose: () => void }) {
@@ -112,17 +114,20 @@ export function CopyScriptsDialog({
   onClose: () => void;
   onCopied?: () => void;
 }) {
-  const [picked, setPicked] = useState<string[]>([]);
+  const [state, dispatch] = useReducer(copyDialogReducer, COPY_DIALOG_INITIAL);
+  const { picked, allCreators } = state;
   const copy = useCopySavedReplies();
   const others = accounts.filter((a) => a.id !== accountId);
   const importing = mode === "import";
   const full = importing && picked.length >= MAX_SOURCES;
 
   const submit = () => {
-    if (!accountId || picked.length === 0) return;
-    copy.mutate(importing
-      ? { fromAccountIds: picked, toAccountIds: [accountId] }
-      : { fromAccountIds: [accountId], toAccountIds: picked, ids }, { onSuccess: () => onCopied?.() });
+    if (!accountId || !canSubmit(state, mode)) return;
+    const p = buildPayload(state, { mode, accountId, ids });
+    copy.mutate(
+      { fromAccountIds: p.from_account_ids, toAccountIds: p.to_account_ids, allCreators: p.all_creators, ids: p.ids },
+      { onSuccess: () => onCopied?.() },
+    );
   };
 
   if (copy.data) {
@@ -142,7 +147,7 @@ export function CopyScriptsDialog({
       onClose={onClose}
       footer={<>
         <IfButton onClick={onClose} disabled={copy.isPending}>Cancel</IfButton>
-        <IfButton variant="primary" disabled={picked.length === 0 || copy.isPending} onClick={submit}>
+        <IfButton variant="primary" disabled={!canSubmit(state, mode) || copy.isPending} onClick={submit}>
           {copy.isPending ? "Copying…" : "Confirm"}
         </IfButton>
       </>}
@@ -155,10 +160,24 @@ export function CopyScriptsDialog({
             : "Every script of this Creator is shared."}
         {" "}Media is not copied between Creators; a script name the Creator already has is skipped.
       </p>
+      {/* Share only: send to every Creator you own (the server resolves the full roster). Re-sharing is a no-op
+          (a name the Creator already holds is skipped), so the Confirm button is the only guard a repeat needs. */}
+      {!importing && (
+        <label className="mb-2 flex items-center gap-2">
+          <input
+            type="checkbox"
+            className="accent-accent"
+            checked={allCreators}
+            disabled={copy.isPending}
+            onChange={(e) => dispatch({ type: "toggleAll", on: e.target.checked })}
+          />
+          <span>Share to all creators{others.length > 0 && ` (${others.length})`}</span>
+        </label>
+      )}
       {others.length === 0 ? (
         <p className="text-fg-dim">No other Creator.</p>
       ) : (
-        <ul aria-label="Creators" className="max-h-64 space-y-1 overflow-y-auto">
+        <ul aria-label="Creators" className={allCreators ? "max-h-64 space-y-1 overflow-y-auto opacity-50" : "max-h-64 space-y-1 overflow-y-auto"}>
           {others.map((a) => {
             const on = picked.includes(a.id);
             return (
@@ -168,10 +187,8 @@ export function CopyScriptsDialog({
                     type="checkbox"
                     className="accent-accent"
                     checked={on}
-                    disabled={!on && full}
-                    onChange={(e) =>
-                      setPicked((p) => (e.target.checked ? [...p, a.id] : p.filter((x) => x !== a.id)))
-                    }
+                    disabled={allCreators || copy.isPending || (!on && full)}
+                    onChange={(e) => dispatch({ type: "toggle", id: a.id, on: e.target.checked })}
                   />
                   <span className="truncate">{creatorName(a)}</span>
                 </label>

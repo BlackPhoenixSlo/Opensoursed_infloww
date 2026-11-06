@@ -1,8 +1,9 @@
 import type { Metadata, Viewport } from "next";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import localFont from "next/font/local";
 
 import Providers from "@/components/providers";
+import InlineBoot from "@/components/InlineBoot";
 import AuthGate from "@/components/auth/AuthGate";
 import AppShell from "@/components/shell/AppShell";
 import { ImpersonationBanner } from "@/components/ImpersonationBanner";
@@ -13,6 +14,9 @@ import { MoneyRail } from "@/components/MoneyRail";
 import { AssistantProvider, AssistantWidget } from "@/components/assistant/AssistantWidget";
 
 import { BRAND_ICONS, BRAND_NAME } from "@/lib/brand";
+import { BOOT_PATH_HEADER } from "@/lib/inlineBoot";
+import { inlinePaths, startInline } from "@/lib/inlineBoot.server";
+import { ENTRY_COOKIE, TZ_COOKIE } from "@/lib/screenEntry";
 
 import "./globals.css";
 
@@ -86,6 +90,15 @@ const SHELL_BOOT_SCRIPT = `
 try {
   var s = window.fasttShell;
   if (s && s.isDesktop === true && s.platform === 'darwin') document.documentElement.setAttribute('data-shell', 'mac');
+} catch (_e) {}
+`;
+
+// The browser's zone for the server (lib/screenEntry.ts TZ_COOKIE): the next document load's inline Dashboard
+// bundle (lib/inlineBoot.server.ts) cuts its days as this browser would.
+const TZ_BOOT_SCRIPT = `
+try {
+  var z = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if (z) document.cookie = '${TZ_COOKIE}=' + encodeURIComponent(z) + '; path=/; max-age=31536000; samesite=lax';
 } catch (_e) {}
 `;
 
@@ -171,6 +184,16 @@ export default async function RootLayout({
 }: Readonly<{ children: React.ReactNode }>) {
   const jar = await cookies();
   const signedIn = SESSION_COOKIES.some((n) => jar.has(n));
+  // A document load of the Dashboard or Messages Pro: its first relay answers start now, in this response
+  // (lib/inlineBoot.server.ts); not awaited, so the shell streams at once. Never for a browser with no session.
+  const h = await headers();
+  const inline = signedIn
+    ? startInline(
+      inlinePaths(h.get(BOOT_PATH_HEADER), jar.get(ENTRY_COOKIE)?.value, jar.get(TZ_COOKIE)?.value),
+      h.get("cookie"),
+      process.env.RELAY_URL || "http://127.0.0.1:8787",
+    )
+    : null;
   // The font variable lets us reference --font-ui from Tailwind's
   // `font-sans` token (configured in globals.css @theme).
   return (
@@ -183,9 +206,11 @@ export default async function RootLayout({
          *  end up unreachable in dev mode. */}
         <script dangerouslySetInnerHTML={{ __html: THEME_BOOT_SCRIPT }} />
         <script dangerouslySetInnerHTML={{ __html: SHELL_BOOT_SCRIPT }} />
+        <script dangerouslySetInnerHTML={{ __html: TZ_BOOT_SCRIPT }} />
         <script dangerouslySetInnerHTML={{ __html: VVH_BOOT_SCRIPT }} />
         <script dangerouslySetInnerHTML={{ __html: PINCH_BLOCK_BOOT_SCRIPT }} />
         <script dangerouslySetInnerHTML={{ __html: CHUNK_ERROR_BOOT_SCRIPT }} />
+        <InlineBoot data={inline} />
         <Providers>
           <AuthGate signedIn={signedIn}>
             {/* One help conversation for the corner dock and /help-center. */}

@@ -16,6 +16,8 @@ redirected secrets and sessions, CHATTERLY_TEST_MODE) plus loopback-only hooks.
        records every pool wait as at least 80 ms (recording only, nothing sleeps).
   POST /__slop/coverage-save  under `slop/run --map` (coverage.py runs the relay) write the
        data collected so far (lib/procmon.py every 5 s, cli once before teardown); 404 otherwise.
+  GET  /__slop/server-reads, POST /__slop/screens-404 {on}  the HTML's inline boot: the reads
+       the Next server sent, and bundles 404 for every caller (`_wire_inline_boot`).
   POST /__slop/telemetry-flush  emit service/db/write_telemetry's JSON line now
        (reason "flush"; its shutdown line, early), so the counts are in relay.log.
   POST /__slop/browserbase  {api, chunk_url_tpl, job_window_s?}  points the served Browserbase
@@ -925,8 +927,59 @@ def _wire(app) -> None:
     app.add_api_route("/__slop/of-ws-frame", of_ws_frame, methods=["POST"])
     app.add_api_route("/__slop/stats", stats, methods=["GET"])
     app.add_api_route("/__slop/telemetry-flush", telemetry_flush, methods=["POST"])
+    _wire_inline_boot(app, _loopback, server)
     for m in PLUGINS:
         m.wire(app, _loopback, _SELF)
+
+
+def _wire_inline_boot(app, _loopback, server) -> None:
+    """The HTML's inline boot (app/lib/inlineBoot.server.ts) seen from the relay, outermost hook (no product code):
+
+      GET  /__slop/server-reads   the reads the Next server sent for a document's HTML (Node's fetch: user agent
+           `node` / `undici*`; the browser's own calls through the rewrites keep its user agent), each
+           {path (+query), status, t0, t1} in wall-clock seconds, since this relay's start.
+      POST /__slop/screens-404 {on}  every /admin/screens/* answers 404 (the per-Creator path), for the browser and
+           the Next server alike: a page route would only reach the browser's calls.
+      The Next server's /admin/screens/* read for a browser with the `slop_no_bundles=1` cookie (actors/ui.py
+      NO_BUNDLES_COOKIE: its page route 404s the bundles) answers 404 too.
+    """
+    import time as _time
+
+    from fastapi import Request
+    from starlette.responses import JSONResponse
+
+    reads: list[dict] = []
+    screens_404 = {"on": False}
+
+    async def inline_hook(request, call_next):
+        t0 = _time.time()
+        path = request.url.path
+        ua = request.headers.get("user-agent", "")
+        server_read = ua == "node" or ua.startswith("undici")
+        no_bundles = server_read and "slop_no_bundles=1" in request.headers.get("cookie", "")
+        if (screens_404["on"] or no_bundles) and path.startswith("/admin/screens/"):
+            resp = JSONResponse({"detail": "slop: per-Creator path"}, status_code=404)
+        else:
+            resp = await call_next(request)
+        if server_read:
+            q = request.url.query
+            reads.append({"path": path + (f"?{q}" if q else ""), "status": resp.status_code,
+                          "t0": t0, "t1": _time.time()})
+        return resp
+
+    server._http_hooks.add(inline_hook)
+
+    async def server_reads(request: Request) -> dict:
+        _loopback(request)
+        return {"reads": reads}
+
+    async def set_screens_404(request: Request) -> dict:
+        _loopback(request)
+        screens_404["on"] = bool((await request.json()).get("on"))
+        return dict(screens_404)
+
+    app.add_api_route("/__slop/server-reads", server_reads, methods=["GET"])
+    app.add_api_route("/__slop/screens-404", set_screens_404, methods=["POST"])
 
 
 def _wire_pumps(app, _loopback, server) -> None:

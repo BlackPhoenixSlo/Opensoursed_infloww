@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { amountFrom, anchorFor, clampToViewport, lastOutboundOf, replyStateOf } from "./MoneyRail";
+import { amountFrom } from "./MoneyRailRow";
+import { lastOutboundOf, replyStateOf } from "./useMoneyRailFeed";
+import { anchorFor, clampToViewport } from "./useRailDock";
 import { distinctPayers, mergeMoneyRows, payerIdOf, type MergedItem } from "./useMoneyRailFeed";
 import { initialRailDock, railDockReducer, type RailDockState } from "./useRailDock";
 import type { CachedNotification } from "@/lib/notifSettings";

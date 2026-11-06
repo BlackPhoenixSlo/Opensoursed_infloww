@@ -38,6 +38,7 @@ import {
 
 import { clearIdentityMemory, wipeIdentityStorage } from "@/contexts/UserContext";
 import { chatterAccountsQuery } from "@/lib/chatterAccounts";
+import { takeInline } from "@/lib/inlineBoot";
 import { forgetPush } from "@/lib/webPush";
 import { isTwoFactorChallenge, postAuthJSON, TwoFactorRequired, type TwoFactorChallenge } from "@/lib/twoFactor";
 
@@ -147,7 +148,8 @@ export function ChatterProvider({ children }: { children: React.ReactNode }) {
   const meQ = useQuery<ChatterMeDTO | null>({
     queryKey: ["chatter", "self"],
     queryFn: async () => {
-      const r = await fetch("/chatter/me", {
+      const inline = takeInline("/chatter/me");
+      const r = (inline && await inline) ?? await fetch("/chatter/me", {
         credentials: "same-origin",
         headers: { Accept: "application/json" },
       });

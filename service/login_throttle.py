@@ -28,11 +28,12 @@ from __future__ import annotations
 import ipaddress
 import logging
 import math
-import os
 import time
 from dataclasses import dataclass
 
 from fastapi import HTTPException, Request
+
+import client_addr
 
 NAME_CAPACITY = 5
 NAME_REFILL_S = 60.0
@@ -42,33 +43,11 @@ IP_CAPACITY = 20
 IP_REFILL_S = 30.0
 # Above this many tracked keys, full buckets (nothing to remember) are dropped.
 _PRUNE_AT = 10_000
-# The peers whose X-Forwarded-For is believed: IPs or CIDRs, comma-separated in
-# env TRUSTED_PROXIES, which replaces the default. The default is loopback and
-# the private ranges (RFC 1918, IPv6 unique-local and link-local), which hold
-# every docker network, so the relay's proxies are trusted whatever their
-# container names. Empty means the default: trusting no proxy would put every
-# user in the proxy's one bucket.
-_DEFAULT_TRUSTED = "127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,fe80::/10"
-
-
-def _parse_trusted(raw: str) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
-    out = []
-    for entry in (raw.strip() or _DEFAULT_TRUSTED).split(","):
-        if entry.strip():
-            try:
-                out.append(ipaddress.ip_network(entry.strip(), strict=False))
-            except ValueError:
-                raise ValueError(f"TRUSTED_PROXIES: {entry.strip()!r} is not an IP or CIDR") from None
-    return tuple(out) or _parse_trusted(_DEFAULT_TRUSTED)
-
-
-TRUSTED_PROXIES = _parse_trusted(os.environ.get("TRUSTED_PROXIES", ""))
 
 log = logging.getLogger("of-relay.login_throttle")
 _clock = time.monotonic
 # key -> (tokens, last refill time)
 _buckets: dict[tuple[str, ...], tuple[float, float]] = {}
-_warned: set[str] = set()
 
 
 def _limits(key: tuple[str, ...]) -> tuple[int, float]:
@@ -82,65 +61,17 @@ def _level(key: tuple[str, ...], now: float) -> float:
     return min(float(cap), tokens + (now - at) / refill)
 
 
-def _ip(raw: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
-    """`raw` as an address (a :port and IPv4-mapped IPv6 unwrapped), else None."""
-    if raw.startswith("[") and "]" in raw:
-        raw = raw[1:raw.index("]")]
-    elif raw.count(":") == 1:
-        raw = raw.split(":")[0]
-    try:
-        ip = ipaddress.ip_address(raw)
-    except ValueError:
-        return None
-    return (ip.ipv4_mapped or ip) if ip.version == 6 else ip
-
-
-def _bucket_key(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str:
+def _bucket_key(ip: client_addr.Addr) -> str:
     """An IPv4 client by its address, an IPv6 one by its /64 (one host's usual share)."""
     return str(ipaddress.ip_network(f"{ip}/64", strict=False)) if ip.version == 6 else str(ip)
 
 
-def _is_trusted_proxy(peer: str) -> bool:
-    ip = _ip(peer)
-    return ip is not None and any(ip in net for net in TRUSTED_PROXIES)
-
-
 def client_ip(request: Request) -> str:
-    """The sign-in's client IP (`_bucket_key`): the socket peer, or the LAST
-    X-Forwarded-For entry when the peer is in TRUSTED_PROXIES and the entry
-    parses as an address.
-
-    The relay is reached through a proxy: the Next app (`/auth/*` and
-    `/chatter/*` rewrites in next.config.ts, on the compose network) and,
-    in prod, Traefik straight from the n8n_default network (the relay's
-    Traefik labels in docker-compose.yml route /auth/ and /chatter/ to it).
-    Next adds the browser's socket address only when the header is absent and
-    never appends, and its rewrite passes the header on unchanged. Traefik (its
-    untrusted clients' forwarded headers are dropped) sets the header to the
-    client's address, and the cloudflared tunnel appends it after whatever the
-    client sent. Either way the last entry is the one our proxy wrote. A peer
-    outside TRUSTED_PROXIES (a public address reaching the relay directly) has
-    its header ignored and is the client itself (warned once per peer).
-
-    The remaining gap: the default trusts every private address, so any other
-    container on a docker network the relay shares (n8n_default) can still
-    spoof the header and escape the IP and per-IP username buckets (the
-    per-username bucket still holds it). Setting TRUSTED_PROXIES to the
-    proxies' own addresses closes it.
-    """
-    peer = request.client.host if request.client else "unknown"
-    peer_ip = _ip(peer)
-    peer_key = _bucket_key(peer_ip) if peer_ip is not None else peer
-    last = request.headers.get("x-forwarded-for", "").split(",")[-1].strip()
-    if not last:
-        return peer_key
-    if not _is_trusted_proxy(peer):
-        if peer not in _warned:
-            _warned.add(peer)
-            log.warning("sign-in X-Forwarded-For from %s ignored: not in TRUSTED_PROXIES", peer)
-        return peer_key
-    forwarded = _ip(last)
-    return _bucket_key(forwarded) if forwarded is not None else peer_key
+    """The sign-in's client key (`_bucket_key`) of client_addr.client_address:
+    the socket peer, the address our proxy wrote in X-Forwarded-For, or the
+    CDN's CF-Connecting-IP (EDGE_PROXIES); see there."""
+    addr = client_addr.client_address(request)
+    return addr if isinstance(addr, str) else _bucket_key(addr)
 
 
 @dataclass
@@ -177,6 +108,7 @@ def take(request: Request, username: str) -> Attempt:
     short = [(k, lv) for k, lv in zip(keys, levels) if lv < 1]
     if short:
         wait = max(math.ceil((1 - lv) * _limits(k)[1]) for k, lv in short)
+        log.warning("sign-in throttled ip=%s buckets=%s retry_after=%ss", ip, ",".join(k[0] for k, _ in short), wait)
         raise HTTPException(
             status_code=429,
             detail={
@@ -204,4 +136,4 @@ def _wait_words(seconds: int) -> str:
 def reset() -> None:
     """Forget every bucket (tests)."""
     _buckets.clear()
-    _warned.clear()
+    client_addr.reset()

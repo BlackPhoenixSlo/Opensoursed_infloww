@@ -64,7 +64,7 @@ describe("AuthGate on /login", () => {
 });
 
 describe("AuthGate on /chatter-login", () => {
-  it("renders the bare invite page, not the shell, even for a signed-in owner", () => {
+  it("renders the bare invite page, not the shell, even for a signed-in owner", async () => {
     mockPath = "/chatter-login";
     mockUser = me({ user: { user_id: "u1", username: "owner" }, boot: "settled" });
     render(
@@ -73,7 +73,8 @@ describe("AuthGate on /chatter-login", () => {
       </QueryClientProvider>,
     );
     expect(screen.queryByText("SHELL")).toBeNull();
-    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Back for another shift?");
+    // Its own chunk (next/dynamic; the server-rendered page preloads it).
+    expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Back for another shift?");
   });
 });
 

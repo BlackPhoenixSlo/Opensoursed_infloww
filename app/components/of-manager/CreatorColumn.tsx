@@ -70,8 +70,9 @@ export function CreatorColumn(props: {
   onPicked?: () => void;
   value?: string | null;
   onChange?: (accountId: string) => void;
-  /** A controlled column's "All creators" pick; `on` while it is the pick. */
-  all?: { on: boolean; pick: () => void };
+  /** A controlled column's "All creators" pick; `on` while it is the pick. `label` relabels the row (Scripts'
+   *  "All models"), default "All creators". */
+  all?: { on: boolean; pick: () => void; label?: string };
   /** A controlled column with no "All creators" row at all (pages that always work on one creator). */
   noAll?: boolean;
   /** Watcher accounts: dimmed rows after the creators, never picked (a page that passes them). OF Manager's
@@ -109,8 +110,9 @@ function ColumnBody({ accounts, value, onChange, all, noAll = false, watchers, g
   accounts: AccountMeta[];
   value?: string | null;
   onChange: (accountId: string) => void;
-  /** The "All creators" pick (OF Manager's, or a controlled column's); without it the menu only closes. */
-  all?: { on: boolean; pick: () => void };
+  /** The "All creators" pick (OF Manager's, or a controlled column's); without it the menu only closes. `label`
+   *  relabels the row, default "All creators". */
+  all?: { on: boolean; pick: () => void; label?: string };
   /** No "All creators" row. */
   noAll?: boolean;
   /** Watcher accounts after the creators, not pickable. */
@@ -247,7 +249,7 @@ function ColumnBody({ accounts, value, onChange, all, noAll = false, watchers, g
           aria-expanded={menuOpen}
           className="w-full h-16 flex items-center justify-between px-4 text-sm text-[var(--ofm-blue)]"
         >
-          <span className="truncate">{groups?.value || "All creators"}</span>
+          <span className="truncate">{groups?.value || all?.label || "All creators"}</span>
           <ChevronDown aria-hidden className="w-3 h-3 shrink-0 text-[#8c8c8c]" />
         </button>
         {menuOpen && (
@@ -257,7 +259,7 @@ function ColumnBody({ accounts, value, onChange, all, noAll = false, watchers, g
               className={cn("w-full text-left px-3 h-9 text-sm hover:bg-[var(--ofm-hover)]", (!all || all.on) && "text-[var(--ofm-blue)]")}
               onClick={() => { setMenuOpen(false); all?.pick(); }}
             >
-              All creators
+              {all?.label || "All creators"}
             </button>
             {groups?.tags.map((t) => (
               <button

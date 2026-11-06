@@ -1,8 +1,8 @@
 """Screen bundles' break-it-once faults (service/screens_api.py; its routes look `_deadline`,
 `_narrow` and `_gate` up on the module at call time, so the patch is what the real
 /admin/screens/* routes run). lib/faults.py merges `register(Fault)` into FAULTS. The check
-names live here and scenarios/2026-11-05-screen-bundles.py imports them, so a target can
-never name a check that does not exist.
+names live here and scenarios/2026-11-05-screen-bundles.py (and slow-connections, C_AGAIN) imports
+them, so a target can never name a check that does not exist.
 """
 from __future__ import annotations
 
@@ -13,6 +13,9 @@ C_SCOPE = ("scope: a restricted chatter naming Creators not its own, and an owne
 
 C_PRIORITY = ("priority: a user bundle with focus=Creator 1 leaves every other Creator background (only "
               "Creator 1 user-active in lane stats); a tap on Creator 2 meanwhile never waited for a lane")
+C_AGAIN = "dashboard-again: the Per-model cards' fan counts converge to OF's (one Creator's changed since the first visit)"
+C_INLINE = ("inline boot: each document load of the Dashboard / Messages Pro fetched none of /auth/me, /chatter/me, "
+            "the Dashboard's Applied settings and its screen bundle itself (they came with its HTML)")
 C_NO_SKIP = ("no skip: a cold inbox bundle answered at 300 ms; every (Creator, read) still reached OF "
              "and the next bundle is complete with no OF call")
 
@@ -68,6 +71,41 @@ def _screen_bundle_ignores_scope() -> None:
     screens_api._gate = role_only
 
 
+def _screen_bundle_stale_unmarked() -> None:
+    """Serve-stale without its mark: a last value answers but `refreshing` stays empty, so the client never
+    follows up and a card the relay answered stale keeps the old count (30 min staleTime)."""
+    import screens_api
+
+    real = screens_api._Done
+
+    def unmarked(*a, **kw):
+        kw["refreshing"] = False
+        return real(*a, **kw)
+
+    screens_api._Done = unmarked
+
+
+# The reads the Next server starts for a document load's HTML (app/lib/inlineBoot.server.ts inlinePaths).
+_INLINE_PATHS = ("/auth/me", "/chatter/me", "/admin/settings/applied", "/admin/screens/dashboard", "/admin/screens/inbox")
+
+
+def _inline_boot_relay_refuses_server() -> None:
+    """The relay unreachable from the Next server (a bad RELAY_URL, the compose network split): every read the root
+    layout starts for the HTML (Node's fetch, `user-agent: node`) gets a 503, the browser's own calls (through the
+    rewrites, its iPhone user agent) do not. The page must render as before the inline boot: the browser fetches them
+    itself, one round trip later; only the inline check sees it."""
+    import server
+    from starlette.responses import Response
+
+    async def refuse_node(request, call_next):
+        ua = request.headers.get("user-agent", "")
+        if request.url.path.startswith(_INLINE_PATHS) and (ua == "node" or ua.startswith("undici")):
+            return Response("relay unreachable (slop fault)", status_code=503)
+        return await call_next(request)
+
+    server._http_hooks.add(refuse_node)
+
+
 def register(Fault) -> dict:
     return {
         # slop/run 2026-11-05-screen-bundles --break   (the scenario's FAULT)
@@ -75,4 +113,8 @@ def register(Fault) -> dict:
         # slop/run 2026-11-05-screen-bundles --break --fault=screen-bundle-ignores-scope
         "screen-bundle-ignores-scope": Fault(_screen_bundle_ignores_scope, (C_SCOPE,)),
         "screen-bundle-user-priority": Fault(_screen_bundle_user_priority, (C_PRIORITY,)),
+        # slop/run 2026-11-05-slow-connections --net=jp --break --fault=screen-bundle-stale-unmarked
+        "screen-bundle-stale-unmarked": Fault(_screen_bundle_stale_unmarked, (C_AGAIN,)),
+        # slop/run 2026-11-05-slow-connections --net=jp --break --fault=inline-boot-relay-refuses-server
+        "inline-boot-relay-refuses-server": Fault(_inline_boot_relay_refuses_server, (C_INLINE,)),
     }

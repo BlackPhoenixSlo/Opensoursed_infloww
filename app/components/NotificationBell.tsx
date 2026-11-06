@@ -54,7 +54,7 @@
  * Fan's messages, so the field is the one place the reply is retried.
  */
 
-import { Fragment, useCallback, useEffect, useMemo, useReducer, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import { useQueries } from "@tanstack/react-query";
 import Link from "next/link";
 import { Bell } from "lucide-react";
@@ -63,10 +63,9 @@ import { useScope } from "@/contexts/ScopeContext";
 import { useActiveAccounts } from "@/hooks/useAccounts";
 import { useNotificationSettings } from "@/hooks/useNotificationSettings";
 import { useOfNotifCount } from "@/hooks/useOfNotifCount";
-import { useChatMessages } from "@/hooks/useChatMessages";
-import { useSendMessage } from "@/hooks/useSendMessage";
 import { MoneyRailRestoreButton } from "@/components/MoneyRail";
 import { relay } from "@/lib/relay";
+import { lazyModule, useLazyModule } from "@/lib/lazyModule";
 import { proxyImage } from "@/lib/mediaUrl";
 import { cn } from "@/lib/utils";
 import { EmptyState } from "@/components/ui/infloww";
@@ -836,10 +835,16 @@ export function Row({
   );
 }
 
+/** The quick-reply field and the Fan's message + send hooks behind it: out of the shell's first load (the bell is in
+ *  every page's top bar), fetched once a reply-able row shows. */
+const quickReplyField = lazyModule(() => import("./NotificationQuickReply"));
+
 /** A message notification's "Reply" toggle; the field, and with it the Fan's
  *  message hook, is mounted only while open. */
 function QuickReply({ accountId, fanId, name }: { accountId: string; fanId: FanId; name: string }) {
   const [open, setOpen] = useState(false);
+  // Fetched once a reply-able row is on screen, so a "Reply" tap finds it in.
+  const field = useLazyModule(quickReplyField);
   return (
     <div className="pr-3 pb-2 pl-12">
       <button
@@ -850,60 +855,8 @@ function QuickReply({ accountId, fanId, name }: { accountId: string; fanId: FanI
       >
         Reply
       </button>
-      {open && <QuickReplyField accountId={accountId} fanId={fanId} name={name} />}
+      {open && field && <field.QuickReplyField accountId={accountId} fanId={fanId} name={name} />}
     </div>
-  );
-}
-
-function QuickReplyField({ accountId, fanId, name }: { accountId: string; fanId: FanId; name: string }) {
-  const [text, setText] = useState("");
-  const [sending, setSending] = useState(false);
-  const [outcome, setOutcome] = useState<{ ok: true } | { ok: false; reason: string } | null>(null);
-  const handle = useChatMessages({ accountId, fanId });
-  const sender = useSendMessage({ accountId, fanId, hookHandle: handle });
-
-  const submit = async (e: FormEvent) => {
-    e.preventDefault();
-    const body = text.trim();
-    if (!body || sending) return;
-    setSending(true);
-    setOutcome(null);
-    const result = await sender.send({ text: body });
-    setSending(false);
-    if (!result || result.failure) {
-      // The field is where this reply is retried: the failed bubble's Retry
-      // in the Thread belongs to another instance of the hook, which holds
-      // no copy of this send, so the bubble goes.
-      if (result) sender.cancelOptimistic(result.tempId);
-      setOutcome({ ok: false, reason: result?.failure?.reason || "Send failed." });
-    } else {
-      setText("");
-      setOutcome({ ok: true });
-    }
-  };
-
-  return (
-    <form onSubmit={submit} className="mt-1 flex flex-col gap-1">
-      <div className="flex gap-1.5">
-        <input
-          type="text"
-          aria-label={`Reply to ${name}`}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          disabled={sending}
-          className="min-w-0 flex-1 h-8 px-2 rounded-md border border-border bg-bg-elev-1 text-xs text-fg"
-        />
-        <button
-          type="submit"
-          disabled={sending || !text.trim()}
-          className="h-8 px-3 rounded-md bg-accent text-white text-xs font-semibold disabled:opacity-50"
-        >
-          Send
-        </button>
-      </div>
-      {outcome?.ok && <div role="status" className="text-xs text-ok">Sent</div>}
-      {outcome && !outcome.ok && <div role="alert" className="text-xs text-err">{outcome.reason}</div>}
-    </form>
   );
 }
 

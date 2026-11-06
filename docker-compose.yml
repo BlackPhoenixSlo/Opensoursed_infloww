@@ -177,9 +177,14 @@ services:
       # card's start call fails with "BROWSERBASE_API_KEY is not set".
       BROWSERBASE_API_KEY: "${BROWSERBASE_API_KEY:-}"
       BROWSERBASE_PROJECT_ID: "${BROWSERBASE_PROJECT_ID:-}"
-      # Sign-in throttle (service/login_throttle.py): the IPs/CIDRs whose
-      # X-Forwarded-For is believed. Unset or empty = loopback + private ranges.
+      # Client address (service/client_addr.py: sign-in throttle, tracking
+      # clicks): the IPs/CIDRs whose X-Forwarded-For is believed. Unset or
+      # empty = loopback + private ranges.
       # TRUSTED_PROXIES: "${TRUSTED_PROXIES:-}"
+      # A CDN in front of Traefik (deploy/ae/EDGE-CDN.md): `cloudflare` makes
+      # its CF-Connecting-IP the client when the request came from Cloudflare.
+      # Unset = the header is never read.
+      EDGE_PROXIES: "${EDGE_PROXIES:-}"
     volumes:
       # The SQLite event store: a DIRECTORY, not the file. SQLite keeps its
       # -wal and -shm beside the DB; with only the file mounted (until

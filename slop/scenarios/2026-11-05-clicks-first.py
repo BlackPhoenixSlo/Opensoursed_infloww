@@ -42,10 +42,11 @@ Budget: C_CLICK, the median tap -> Thread over the `CLICKS` taps, at most CLICK_
 Break-it-once (lib/clicks_first_faults.py):
   relay-scheduler-bypassed  a Creator's lane never fills (every background read at once, as before): C_CAP, C_ABORT
   badge-keys-unpersisted    the four keys left out of the snapshot (as before): C_SNAPSHOT
-  screen-bundle-unused      every bundle 404 (main before the bundles): C_BUNDLE, C_PARTIAL; its dash-first /
+  screen-bundle-unused      every bundle 404 at the relay (main before the bundles): C_BUNDLE, C_PARTIAL; its dash-first /
                             mp-first numbers are the per-Creator "before" in this same harness
-  screen-bundle-after-probe the bundle and the Applied settings read held until /auth/me answered (main before
-                            2026-11-06, emulated at the page's fetch): C_ENTRY
+  screen-bundle-after-probe the bundle and the Applied settings read held until /auth/me answered, and no inline
+                            boot (main before 2026-11-06, emulated at the page's fetch; the relay 503s the Next
+                            server's reads): C_ENTRY
 
 `--no-ui`: nothing to measure without the browser (the change is the app's alone): every check SKIPs.
 
@@ -55,7 +56,9 @@ the app judges the link by its own round trips, as on the owner's iPhone); OF an
 message per Thread, badges 0; dash-leave's calls take LEAVE_OF_MS); the 30 s wait before each tap visit stands in
 for the owner coming back later; under `relay-scheduler-bypassed` the app's JS chunks come patched from the app on
 loopback (actors/ui.py `_patched` origin), not over the WAN; dash-slow's clock shift is Playwright's (the page's
-Date only); dash-leave / mp-click-N's bundle 404 is a page route (`no_bundle`).
+Date only); dash-leave / mp-click-N's bundle 404 is the relay's harness hook (`no_bundle`, `/__slop/screens-404`,
+browser and Next server alike); the zone cookie (ZONE) is set on the first visit's context, as the sign-in page would
+leave it. Reads the HTML brought (inline boot) are the relay's log of the Next server's reads (`/__slop/server-reads`).
 """
 from __future__ import annotations
 
@@ -96,6 +99,11 @@ LEAVE_TO = "/share-for-share/settings"  # Dashboard -> a page with no OF reads, 
 STALE_S = 32  # the chat list's and the badges' staleTime is 30 s
 SLOW_ROUTES = ("GET /api2/v2/users/me", "GET /api2/v2/subscriptions/count/all",
                "GET /api2/v2/subscriptions/subscribers/chart")   # dash-slow: the bundle's 3 reads
+# The phone's zone, and the cookie the sign-in page's boot script leaves with it (app/app/layout.tsx TZ_BOOT_SCRIPT):
+# the HTML's inline boot guesses the Dashboard's bundle key from it (bypass: set on the first visit's context).
+ZONE, TZ_COOKIE = "Europe/Ljubljana", "chatterly_tz"
+# The reads the HTML's inline boot sends from the Next server (app/lib/inlineBoot.server.ts).
+INLINE_READS = ("/auth/me", "/chatter/me", "/admin/settings/applied", "/admin/screens/")
 SLOW_SHIFT_S = 31 * 60  # dash-slow: past the Dashboard keys' 30 min staleTime (useStats.ts)
 SLOW_EXTRA_S = 3.0  # dash-slow: Creator 0's OF answer time on top of of_ms; the bundle's deadline is 2 s
 # Median tap -> OF's message of that Fan painted. Before (origin/main 3425c6598, this scenario, small): 777 ms, one OF
@@ -235,19 +243,20 @@ async def _visit(ctx, pw, edge, udir, name: str, path: str, *, first: bool, act=
     fault = FAULTS.get(ctx.fault or "")
     bctx = await pw.chromium.launch_persistent_context(
         str(udir), args=[*LAUNCH_ARGS, *edge.chrome_args], viewport={"width": 390, "height": 844},
-        device_scale_factor=3, is_mobile=True, has_touch=True, user_agent=IPHONE_UA)
+        device_scale_factor=3, is_mobile=True, has_touch=True, user_agent=IPHONE_UA, timezone_id=ZONE)
     net = Net(urlsplit(edge.url).netloc)
     try:
         if first:
             await bctx.add_cookies([{"name": c.name, "value": c.value, "url": edge.url,
-                                     "expires": time.time() + 30 * 86400} for c in ctx.owner.c.cookies.jar])
+                                     "expires": time.time() + 30 * 86400} for c in ctx.owner.c.cookies.jar]
+                                   + [{"name": TZ_COOKIE, "value": ZONE.replace("/", "%2F"), "url": edge.url,
+                                       "expires": time.time() + 30 * 86400}])
         for js in (PROBE_JS, *((fault.browser_js,) if fault and fault.browser_js else ())):
             await bctx.add_init_script(js)
         if patches := _client_fault(ctx):
             await bctx.route("**/_next/static/**/*.js", lambda r: _patched(r, ctx, patches, origin=ctx.app))
-        if no_bundle:
-            await bctx.route("**/admin/screens/**", lambda r: r.fulfill(
-                status=404, content_type="application/json", body='{"detail":"slop: per-Creator path"}'))
+        if no_bundle:  # at the relay: the HTML's inline bundle (the Next server's read) 404s too
+            await ctx.owner.post("/__slop/screens-404", json={"on": True})
         if shift_s:
             await bctx.clock.set_system_time(time.time() + shift_s)
         page = bctx.pages[0] if bctx.pages else await bctx.new_page()
@@ -258,6 +267,7 @@ async def _visit(ctx, pw, edge, udir, name: str, path: str, *, first: bool, act=
             "offline": False, "latency": 0, "downloadThroughput": down * 1000 / 8,
             "uploadThroughput": up * 1000 / 8, "connectionType": "cellular4g"})
         await cdp.send("Emulation.setCPUThrottlingRate", {"rate": cpu})
+        t_nav = time.time()
         await page.goto(edge.url + path, wait_until="commit", timeout=120_000)
         done = "fans" if path == "/" else "rows"
         painted, extra = True, {}
@@ -283,15 +293,29 @@ async def _visit(ctx, pw, edge, udir, name: str, path: str, *, first: bool, act=
         await asyncio.sleep(1.0)
     finally:
         await bctx.close()
-    d.update(painted=painted, net=list(net.reqs.values()), **(extra or {}))
+        if no_bundle:
+            await ctx.owner.post("/__slop/screens-404", json={"on": False})
+    # what came with the HTML: the Next server's reads for this document (relay-side log; reset by a relay restart)
+    reads = (await ctx.owner.get("/__slop/server-reads")).json()["reads"]
+    inline = [x for x in reads if x["t0"] >= t_nav - 0.05 and x["path"].startswith(INLINE_READS)]
+    d.update(painted=painted, net=list(net.reqs.values()), inline=inline, **(extra or {}))
     return d
 
 
 def _bundles(d: dict) -> tuple[list[str], list[str]]:
-    """The visit's screen bundles (CDP): first-page ones (no `accounts=`, cursor 0) and follow-ups (`accounts=`)."""
+    """The visit's screen bundles (CDP): first-page ones (no `accounts=`, cursor 0) and follow-ups (`accounts=`). With
+    no first-page one of its own, the page took the HTML's (inline boot); with one, the server's key guess missed."""
     sb = [r["path"] for r in d["net"] if r["path"].startswith("/admin/screens/")]
-    return ([p for p in sb if "accounts=" not in p and "cursor=" not in p.replace("cursor=0", "")],
-            [p for p in sb if "accounts=" in p])
+    plain = [p for p in sb if "accounts=" not in p and "cursor=" not in p.replace("cursor=0", "")]
+    if not plain:
+        plain = [x["path"] for x in d.get("inline", ()) if x["path"].startswith("/admin/screens/") and x["status"] < 500]
+    return plain, [p for p in sb if "accounts=" in p]
+
+
+def _took_inline(d: dict, pre: str) -> bool:
+    """`pre`'s read came with the HTML: the server answered it (< 500) and the page never fetched it itself."""
+    return (not any(r["path"].startswith(pre) for r in d["net"])
+            and any(x["path"].startswith(pre) and x["status"] < 500 for x in d.get("inline", ())))
 
 
 def _summary(d: dict) -> dict:
@@ -440,16 +464,20 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     ctx.check(C_BUNDLE, all(not x["of_paths"] and x["bundles"] == 1 and x["follow_ups"] <= 1 for x in per.values()),
               **{k: {**x, "of_paths": dict(x["of_paths"]), "own_routes": dict(x["own_routes"])}
                  for k, x in per.items()})
-    # A document load: the bundle (the Dashboard: and its Applied settings read) leaves with the auth probe.
+    # A document load: the bundle (the Dashboard: and its Applied settings read) leaves with the auth probe, or all
+    # come with the HTML (inline boot: the server sent them at once). A read of the page's own after an inline probe:
+    # not ok (nothing to compare it with; the zone cookie is set, so the server's guess should have it).
     def entry(d: dict, dash: bool) -> dict:
         first = lambda pre: min((r["t0"] for r in d["net"] if r["path"].startswith(pre)), default=None)  # noqa: E731
         me = [r["end"] for r in d["net"] if r["path"].split("?")[0] == "/auth/me" and r["end"] is not None]
-        o = {"auth_me_end": round(min(me) - d["origin"]) if me else None,
-             "bundle_t0": first("/admin/screens/"), "settings_t0": first("/admin/settings/applied")}
-        want = ("bundle_t0", "settings_t0") if dash else ("bundle_t0",)
-        o["ok"] = bool(me) and all(o[k] is not None and o[k] < min(me) for k in want)
-        for k in ("bundle_t0", "settings_t0"):
-            o[k] = None if o[k] is None else round(o[k] - d["origin"])
+        pre = {"bundle": "/admin/screens/", "settings": "/admin/settings/applied"}
+        o = {"auth_me_end": round(min(me) - d["origin"]) if me else None, "auth_me_inline": _took_inline(d, "/auth/me"),
+             **{f"{k}_t0": first(p) for k, p in pre.items()}, **{f"{k}_inline": _took_inline(d, p) for k, p in pre.items()}}
+        want = ("bundle", "settings") if dash else ("bundle",)
+        o["ok"] = (bool(me) or o["auth_me_inline"]) and all(
+            o[f"{k}_inline"] or (bool(me) and o[f"{k}_t0"] is not None and o[f"{k}_t0"] < min(me)) for k in want)
+        for k in pre:
+            o[f"{k}_t0"] = None if o[f"{k}_t0"] is None else round(o[f"{k}_t0"] - d["origin"])
         return o
     ent = {k: entry(v[k], k.startswith("dash")) for k in ("dash-first", "dash-reload", "mp-first")}
     ctx.check(C_ENTRY, all(e["ok"] for e in ent.values()), **ent)

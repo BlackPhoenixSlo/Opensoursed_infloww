@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { periodWindow } from "./dateRange";
-import { entryScreen, readDashboardEntry, rememberDashboardEntry, type DashboardEntry } from "./screenEntry";
+import { ENTRY_COOKIE, entryScreen, parseDashboardEntry, readDashboardEntry, rememberDashboardEntry, type DashboardEntry } from "./screenEntry";
 
 const TOKYO: DashboardEntry = { tz: "Asia/Tokyo", weekStart: "sunday", grid: true };
 
@@ -43,5 +43,11 @@ describe("dashboard entry storage", () => {
     expect(readDashboardEntry()).toBeNull();
     window.localStorage.setItem("chatterly:dashboard-entry", JSON.stringify({ tz: 3, weekStart: "friday" }));
     expect(readDashboardEntry()).toBeNull();
+  });
+
+  it("the saved entry's copy for the server (lib/inlineBoot.server.ts): a cookie, the same JSON", () => {
+    rememberDashboardEntry(TOKYO);
+    const raw = document.cookie.split("; ").find((c) => c.startsWith(`${ENTRY_COOKIE}=`))!.slice(ENTRY_COOKIE.length + 1);
+    expect(parseDashboardEntry(decodeURIComponent(raw))).toEqual(TOKYO);
   });
 });

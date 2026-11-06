@@ -499,11 +499,13 @@ const ALL_CREATORS = "";
 /** The legacy header's creator picker: 160x32 on `--tc-select-creator-b` #1E1E1E, a 20px avatar with the online dot,
  *  the name, a chevron. Pair it with `useCreatorParam` so the page body reads the same pick. `onAll` adds "All
  *  creators" first, picked while `value` is null. */
-export function IfCreatorSelect({ accounts, value, onChange, onAll, watchers, searchable, disabled, className }: {
+export function IfCreatorSelect({ accounts, value, onChange, onAll, allLabel, watchers, searchable, disabled, className }: {
   accounts: AccountMeta[];
   value: string | null | undefined;
   onChange: (accountId: string) => void;
   onAll?: () => void;
+  /** Relabels the "All creators" option (Scripts' "All models"), default "All creators". */
+  allLabel?: string;
   /** Watcher accounts, listed after the creators as disabled options (`CreatorRail`'s `watchers`). */
   watchers?: WatcherMeta[];
   searchable?: boolean;
@@ -511,7 +513,7 @@ export function IfCreatorSelect({ accounts, value, onChange, onAll, watchers, se
   className?: string;
 }) {
   const byId = new Map(accounts.map((a) => [a.id, a]));
-  const all: IfOption[] = onAll ? [{ value: ALL_CREATORS, text: "All creators", label: "All creators" }] : [];
+  const all: IfOption[] = onAll ? [{ value: ALL_CREATORS, text: allLabel ?? "All creators", label: allLabel ?? "All creators" }] : [];
   const options: IfOption[] = [...all, ...accounts.map((a) => ({
     value: a.id,
     text: creatorName(a),
@@ -546,7 +548,7 @@ export function IfCreatorSelect({ accounts, value, onChange, onAll, watchers, se
       triggerClassName="h-8 rounded-md bg-[#1e1e1e] px-2 text-[14px] text-fg [html[data-theme=light]_&]:bg-bg-elev-1"
       menuClassName="border border-border bg-panel"
       renderValue={(o) => {
-        if (o?.value === ALL_CREATORS && onAll) return "All creators";
+        if (o?.value === ALL_CREATORS && onAll) return allLabel ?? "All creators";
         const a = o && byId.get(o.value);
         return a ? (
           <span className="flex min-w-0 items-center gap-2">

@@ -1,4 +1,4 @@
-{"openapi_sha1": "0a8cac935bb23c2494f20d74d0305989d1f0aad7",
+{"openapi_sha1": "63a196c741fa6b7627a1a1122aea5e30ef6a6cca",
  "routes": [
   ["GET,HEAD", "/openapi.json", "openapi"],
   ["GET,HEAD", "/docs", "swagger_ui_html"],
@@ -176,6 +176,7 @@
   ["GET", "/admin/saved-replies/import-template", "import_template"],
   ["POST", "/admin/saved-replies/import", "import_scripts"],
   ["POST", "/admin/saved-replies/copy", "copy_scripts"],
+  ["GET", "/admin/saved-replies/overview", "saved_replies_overview"],
   ["POST", "/admin/saved-replies/bulk", "bulk_import"],
   ["GET", "/admin/shifts", "list_occurrences"],
   ["POST", "/admin/shifts", "create_shift"],
@@ -533,6 +534,7 @@
   ["POST", "/admin/proxies/{label}/test", "admin_proxies_test"],
   ["GET", "/admin/screens/dashboard", "dashboard_screen"],
   ["GET", "/admin/screens/inbox", "inbox_screen"],
+  ["GET", "/admin/screens/chat", "chat_screen"],
   ["GET", "/events", "sse_events"],
   ["GET", "/admin/events/stats", "event_stats"],
   ["GET", "/admin/saved-replies", "admin_saved_replies_list"],

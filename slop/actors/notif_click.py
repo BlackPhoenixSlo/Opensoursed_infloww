@@ -511,6 +511,7 @@ async def desktop(ctx, account_id: str, fans: list[dict]) -> list[dict]:
             pcdp = await main.context.new_cdp_session(main)
             for ck in ctx.owner.c.cookies.jar:
                 await pcdp.send("Network.setCookie", {"name": ck.name, "value": ck.value, "url": ctx.app + "/"})
+            await pcdp.send("Network.setCookie", {"name": ui.NO_BUNDLES_COOKIE, "value": "1", "url": ctx.app + "/"})
             await main.evaluate(f"() => {{ {SETTINGS_JS} }}")
             await main.goto(f"{ctx.app}/", wait_until="domcontentloaded")
             await main.get_by_role("button", name="Notifications").first.wait_for(timeout=120_000)

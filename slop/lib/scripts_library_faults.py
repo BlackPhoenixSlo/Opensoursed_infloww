@@ -19,6 +19,13 @@ UI_STEPS = ("scripts page: a deep sequence opened from the sidebar shows its ste
             "(labels N / N.M), notes shown, header Created by / Created on as the dump")
 UI_SEND = ("chat: picking a sequence's step 1 from the template picker and sending it offers step 2 next, and the "
            "row's sent_count is 1 (DB via API)")
+SHARE_ALL = ("scripts share-to-all: POST /copy all_creators resolves the owner's full Creator roster server-side and "
+             "copies the source library to every other owned Creator (each gains >= the source's coverage), carrying "
+             "each new sequence's header (position / created by)")
+SHARE_ALL_NOOP = ("scripts share-to-all: re-sharing the same library to all creators copies nothing (per-target dedup "
+                  "is a true no-op) and the coverage is unchanged")
+ALL_MODELS_VIEW = ("scripts all-models view: GET /admin/saved-replies/overview lists every owned Creator and, per "
+                   "sequence / tag name, each Creator's count == that Creator's own stored rows (lean, read-only)")
 
 
 def _drop_last_step() -> None:
@@ -30,8 +37,20 @@ def _drop_last_step() -> None:
     scripts_import_api._ordered_steps = lambda steps: real(steps)[:-1]
 
 
+def _share_drops_a_creator() -> None:
+    """Share-to-all and the all-models view both resolve the roster through `accounts_admin_api.owned_account_ids`;
+    this drops its last Creator, so share-to-all skips one Creator and the overview omits it (the class of a roster
+    resolver that loses a tenant)."""
+    import accounts_admin_api
+
+    real = accounts_admin_api.owned_account_ids
+    accounts_admin_api.owned_account_ids = lambda: real()[:-1]
+
+
 def register(Fault) -> dict:
     return {
         # slop/run scripts-library --break --baseline=<green folder>
         "scripts-bulk-drops-last-step": Fault(_drop_last_step, (IMPORT_COUNTS, READ_BACK, UI_STEPS, UI_TAGS)),
+        # slop/run scripts-library --break --fault=scripts-share-drops-a-creator --baseline=<green folder>
+        "scripts-share-drops-a-creator": Fault(_share_drops_a_creator, (SHARE_ALL, ALL_MODELS_VIEW)),
     }

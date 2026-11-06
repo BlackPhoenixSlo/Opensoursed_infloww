@@ -22,6 +22,7 @@ from datetime import datetime  # noqa: E402
 
 import _agency_fixtures as fx  # noqa: E402
 import account_security as sec  # noqa: E402
+import client_addr  # noqa: E402
 import employees  # noqa: E402
 import login_throttle  # noqa: E402
 from db.engine import get_session  # noqa: E402
@@ -244,19 +245,19 @@ def case_the_ip_bucket_stops_spraying_across_usernames():
 
 
 def case_trusted_proxies_default_to_loopback_and_private_ranges():
-    trusted = login_throttle._is_trusted_proxy
+    trusted = client_addr._is_trusted_proxy
     for peer in ("127.0.0.1", "::1", "10.1.2.3", "172.18.0.5", "192.168.1.9", "fd00::7", "fe80::1",
                  "::ffff:172.18.0.5"):
         assert trusted(peer), peer
     for peer in ("203.0.113.5", "172.32.0.1", "2001:db8::1", "testclient", "unknown"):
         assert not trusted(peer), peer
     # Empty or blank means the default, never "no proxy"; a bad entry names the env.
-    assert login_throttle._parse_trusted("") == login_throttle._parse_trusted("  ") \
-        == login_throttle._parse_trusted(login_throttle._DEFAULT_TRUSTED)
-    assert login_throttle._parse_trusted("10.0.0.7, 192.168.0.0/16") == (
+    assert client_addr._parse_trusted("") == client_addr._parse_trusted("  ") \
+        == client_addr._parse_trusted(client_addr._DEFAULT_TRUSTED)
+    assert client_addr._parse_trusted("10.0.0.7, 192.168.0.0/16") == (
         ipaddress.ip_network("10.0.0.7/32"), ipaddress.ip_network("192.168.0.0/16"))
     try:
-        login_throttle._parse_trusted("10.0.0.7,proxy-host")
+        client_addr._parse_trusted("10.0.0.7,proxy-host")
         raise AssertionError("parsed")
     except ValueError as e:
         assert "TRUSTED_PROXIES" in str(e) and "proxy-host" in str(e), e

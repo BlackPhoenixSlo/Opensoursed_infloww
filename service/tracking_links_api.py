@@ -36,6 +36,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 
+import client_addr
 from auth import assert_account_owned
 from db.engine import get_session
 from db.models import TrackingClick, TrackingLink
@@ -106,7 +107,7 @@ async def follow_tracking_link(slug: str, request: Request):
                 tracking_link_id=link_id,
                 referer=(request.headers.get("referer") or None),
                 user_agent=(request.headers.get("user-agent") or None),
-                ip=(request.client.host if request.client else None),
+                ip=(str(client_addr.client_address(request)) if request.client else None),
             ))
             await s2.execute(
                 update(TrackingLink)

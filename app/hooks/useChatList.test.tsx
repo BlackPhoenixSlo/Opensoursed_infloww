@@ -640,3 +640,12 @@ describe("shareChatPages: rows shared by (account, fan), not by index", () => {
     expect(shareChatPages(prev, data([row(1), row(2)]))).toBe(prev);
   });
 });
+
+describe("unenriched", () => {
+  it("skips a fan named in the last ENRICH_TTL_MS, per Creator", async () => {
+    const { unenriched, ENRICH_TTL_MS } = await import("./useChatList");
+    const seen = new Map([["A|1", 1000], ["A|2", 1000 - ENRICH_TTL_MS]]);
+    expect(unenriched([1, 2, 3], "A", 1000, seen)).toEqual([2, 3]);
+    expect(unenriched([1], "B", 1000, seen)).toEqual([1]);
+  });
+});

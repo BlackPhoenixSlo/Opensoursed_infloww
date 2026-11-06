@@ -37,6 +37,7 @@ import { ArrowLeft, BookOpen, List, MinusCircle, Plus, Search, Share2, Trash2, W
 
 import { SCRIPT_NAME_MAX, SCRIPT_TAG_MAX, TemplateDraftEditor, extractError } from "@/components/settings/TemplateDraftEditor";
 import { useSavedReplyEditor, useScopedAccount } from "@/components/settings/TemplatesTab";
+import { AllModelsView } from "@/components/growth/AllModelsView";
 import { CopyScriptsDialog, ExcelImportDialog } from "@/components/growth/ScriptsImportDialogs";
 import { NameModal, ScriptEditModal } from "@/components/growth/ScriptModals";
 import {
@@ -79,6 +80,9 @@ export default function ScriptsPage() {
   const [page, dispatch] = useReducer(scriptsPageReducer, INITIAL);
   const { view, checked, busy, error, modal, search, sort } = page;
   const [expanded, setExpanded] = useState(false);
+  // The "All models" coverage matrix (CreatorRail's All pick), read-only, across every owned Creator. A single
+  // boolean (CLAUDE.md: single booleans stay useState; no new reducer).
+  const [allModels, setAllModels] = useState(false);
   const namePrompt = modal?.kind === "name" ? modal.prompt : null;
   const openModal = (m: Modal) => dispatch({ type: "openModal", modal: m });
   const closeModal = () => dispatch({ type: "closeModal" });
@@ -86,6 +90,7 @@ export default function ScriptsPage() {
   // Another Creator: nothing of this one's (draft, selection, new tags, open tag or sequence, error, overlay, search)
   // carries over; an answer to what was done on it is dropped while the page shows another (`account`).
   const pickCreator = (id: string) => {
+    setAllModels(false);
     setAccountId(id);
     setDraft(null);
     dispatch({ type: "reset", account: id });
@@ -219,6 +224,12 @@ export default function ScriptsPage() {
   }
 
   const sideKind = kindOf(view);
+
+  /** A sidebar entry's script ids, for its per-row Share: a tag's tagged scripts, a sequence's steps. */
+  const shareIdsOf = (kind: EntryKind, name: string): number[] =>
+    kind === "tag"
+      ? replies.filter((r) => (r.tags ?? []).includes(name)).map((r) => r.id)
+      : (sequences.get(name) ?? []).map((r) => r.id);
 
   // ── render ──
   const tagItems: SidebarItem[] = useMemo(() => [
@@ -423,7 +434,17 @@ export default function ScriptsPage() {
         }
       />
 
-      <CreatorRail creators={{ accounts, value: accountId, onChange: pickCreator }} className="flex flex-col">
+      <CreatorRail
+        creators={{
+          accounts, value: allModels ? null : accountId, onChange: pickCreator,
+          onAll: () => setAllModels(true), allLabel: "All models",
+        }}
+        className="flex flex-col"
+      >
+        {allModels ? (
+          <AllModelsView accounts={accounts} />
+        ) : (
+        <>
         {/* #18: 56px tall, 0 24px padding, a 1px bottom border; on a phone 12px, wrapping the right box under the tabs. */}
         <div className="min-h-14 px-3 sm:px-6 py-2 sm:py-0 flex flex-wrap items-center gap-y-2 border-b border-border">
           {view === "manage" ? (
@@ -506,6 +527,7 @@ export default function ScriptsPage() {
               items={sideKind === "tag" ? tagItems : seqItems}
               selected={sideKind === "tag" ? activeTag : activeSeq}
               onSelect={(id) => dispatch({ type: "open", kind: sideKind, name: id })}
+              onShare={(i) => openModal({ kind: "share", ids: shareIdsOf(sideKind, i.name) })}
               onRename={(i) => openModal({ kind: "name", prompt: { kind: "rename", entry: sideKind, from: i.name } })}
               onDelete={(i) => deleteEntry(sideKind, i.name)}
               sort={sideKind === "sequence" ? page.seqSort : undefined}
@@ -513,6 +535,8 @@ export default function ScriptsPage() {
             />
             {list}
           </div>
+        )}
+        </>
         )}
       </CreatorRail>
 

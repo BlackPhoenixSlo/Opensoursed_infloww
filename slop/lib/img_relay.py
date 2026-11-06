@@ -14,7 +14,7 @@ other scenario's relay is untouched (`OF.http` / `OF.timeout_s` re-raise the cli
           after `latency_s`: a seeded asset's bytes (`asset_bytes`, deterministic per host+path) with
           Content-Length; on a signed host (any but public.onlyfans.com) a URL without Policy + Signature +
           Key-Pair-Id, or whose Policy's `exp` is past, is 403 AccessDenied (CloudFront's answer to an expired
-          signed URL); an unseeded path 404.
+          signed URL; the Policy is CloudFront's custom one, `policy_b64` / `policy_exp`); an unseeded path 404.
        2. curl_cffi at its wire: `relay._guard_curl_cffi()` first (curl_cffi goes past relay_guarded's socket guard;
           it refuses every non-loopback host from now on), then `curl_cffi.requests.Session.request` wrapped so a
           URL on a seeded CDN host (the assets' hosts) is sent to the fake instead (path + query kept, the original
@@ -200,15 +200,28 @@ def _body(key: str, size: int) -> bytes:
     return b
 
 
+def policy_b64(policy: dict) -> str:
+    """A custom Policy as CloudFront puts it in a URL: base64 with `+=/` as `-_~`."""
+    raw = base64.b64encode(json.dumps(policy, separators=(",", ":")).encode()).decode()
+    return raw.translate(str.maketrans("+=/", "-_~"))
+
+
+def policy_exp(policy: str) -> float:
+    """A CloudFront custom Policy's expiry (`Statement[0].Condition.DateLessThan["AWS:EpochTime"]`, epoch s)."""
+    raw = policy.translate(str.maketrans("-_~", "+=/"))
+    doc = json.loads(base64.b64decode(raw + "=" * (-len(raw) % 4)).decode())
+    return float(doc["Statement"][0]["Condition"]["DateLessThan"]["AWS:EpochTime"])
+
+
 def _expired(q: dict) -> bool:
-    """CloudFront's check, as far as this fake makes it: the three params present and the Policy's exp ahead."""
+    """CloudFront's check, as far as this fake makes it: the three params present and the Policy's expiry ahead."""
     if not all(q.get(k) for k in ("Policy", "Signature", "Key-Pair-Id")):
         return True
     try:
-        exp = json.loads(base64.urlsafe_b64decode(q["Policy"][0] + "==").decode())["exp"]
+        exp = policy_exp(q["Policy"][0])
     except Exception:  # noqa: BLE001 — a Policy the fake cannot read is denied, as by CloudFront
         return True
-    return float(exp) < time.time()
+    return exp < time.time()
 
 
 def _serve() -> int:

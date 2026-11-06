@@ -28,7 +28,7 @@ slop/run all --map                               # rebuild slop/map.json (clean 
 slop/run inbox --no-wait                         # INFRA at once if no gate slot is free or admission fails
 SLOP_MAX_LOAD=6 SLOP_LOCK_WAIT_S=600 slop/run inbox   # the machine gate's load cap (default 12) and slot wait (3600 s)
 python3 ~/.slop/gate.py status                   # slot holders, who queues, load, machine threads, would admission pass
-python3 ~/.slop/gate.py run -- venv/bin/python -m pytest tests/test_send_mass.py   # any other heavy work, same gate
+python3 ~/.slop/gate.py run -- venv/bin/python service/tests/test_screens_api.py   # any other heavy work, same gate
 slop/run nightly --detach                        # the daily full sweep in the background (below: Nightly)
 ```
 
@@ -206,7 +206,7 @@ moved > 20%) and the map status. Exit 0 OK or only FLAKY, 1 a stable FAIL, 3 INF
 `slop/run nightly --apply-map=<nightly folder>` merges that folder's refreshed entries (its
 summary.json `map.mapped`) into `slop/map.json`, the others untouched: run it on a fresh branch from
 origin/main to ship the map PR. The schedule lives in the T3 app scheduler (02:00 local daily, a fresh
-thread per run) in the detached worktree `~/oi-slop-nightly` (never the main checkout):
+thread per run) in a detached worktree of its own (never the main checkout):
 update it to origin/main, `slop/run nightly --detach`, poll for `done`, report `summary.md`.
 
 ## Layout

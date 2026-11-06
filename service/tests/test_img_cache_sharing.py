@@ -26,6 +26,9 @@ Cases:
       service/automations/unsend_messages.py contains ZERO cache code — the
       plan explicitly removes the unsend→cache coupling.
 
+  case_a_served_image_is_private_so_no_cdn_keeps_it:
+      a cache hit says `private`: a CDN in front must never keep a copy.
+
 Run: ./venv/bin/python service/tests/test_img_cache_sharing.py  (exit 0 = pass)
 """
 from __future__ import annotations
@@ -136,7 +139,18 @@ def case_unsend_is_cache_free():
     assert not hits, f"unsend_messages.py must contain zero cache code; found {hits}"
 
 
+def case_a_served_image_is_private_so_no_cdn_keeps_it():
+    """A Creator's media is per signed-in user: the browser may keep it a week,
+    a shared cache in front (deploy/ae/EDGE-CDN.md) never, whatever its rules."""
+    url = "https://cdn2.onlyfans.com/files/p/pp/private-asset/source.jpg?Signature=p"
+    img_api._img_cache_write(url, "image/jpeg", b"mine")
+    cc = img_api._serve_if_cached(url, "HIT").headers["cache-control"]
+    assert cc.startswith("private, max-age=604800"), cc
+    assert "public" not in cc, cc
+
+
 _harness.run(
+    case_a_served_image_is_private_so_no_cdn_keeps_it,
     case_resigned_url_shares_entry,
     case_key_is_account_agnostic,
     case_send_to_many_writes_once,

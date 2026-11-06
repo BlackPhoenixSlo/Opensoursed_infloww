@@ -12,7 +12,7 @@
  *
  * MoneyRail.test.ts covers the pure helpers and cannot see any of this.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, screen, waitFor } from "@testing-library/react";
 import { focusManager } from "@tanstack/react-query";
 
@@ -111,6 +111,17 @@ async function flush(): Promise<void> {
     await new Promise((r) => setTimeout(r, 0));
   });
 }
+
+// The panel is its own chunk (MoneyRail.tsx's lazyModule), fetched the first time a gate passes. Load it once
+// through that path, so flush()'s one turn still covers the panel mounting and fetching on every test below.
+beforeAll(async () => {
+  seedRelay();
+  writeSettings(DEFAULT_SETTINGS);
+  route.pathname = "/messages-pro";
+  renderWithProviders(<MoneyRail />);
+  await screen.findByTitle("Expand");
+  cleanup();
+});
 
 beforeEach(() => {
   window.localStorage.clear();

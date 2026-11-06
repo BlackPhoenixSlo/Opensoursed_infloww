@@ -26,9 +26,9 @@
 import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { FlowButton, FlowModal, T } from "@/components/setup/creatorFlow";
 import { useScope } from "@/contexts/ScopeContext";
 import { useAccounts } from "@/hooks/useAccounts";
+import { lazyModule, useLazyModule } from "@/lib/lazyModule";
 import { firstPage, isPlatformPage, platformOfPath } from "@/lib/nav";
 import {
   accountPlatform, getPlatform, onPlatformChange, setPlatform, usePlatform, type Platform,
@@ -43,6 +43,8 @@ import {
 // for ~300 ms (its Suspense reveal throttle), a blank screen between the two.
 const loadAddCreatorModal = () => import("@/components/setup/AddCreatorModal").then((m) => m.default);
 type AddCreatorModalType = Awaited<ReturnType<typeof loadAddCreatorModal>>;
+// The prompt's own modal kit, out of the first load the same way (lib/lazyModule): fetched once the prompt is due.
+const creatorFlow = lazyModule(() => import("@/components/setup/creatorFlow"));
 
 export const FANSLY_LOGIN_TITLE = "Fansly Login";
 /** components-view0042, as the brief quotes it (the key's locale chunk is not on disk). */
@@ -116,13 +118,15 @@ export default function PlatformGate() {
   useEffect(() => {
     if (prompt) load();
   }, [prompt, load]);
+  const flow = useLazyModule(creatorFlow, prompt);
   // Every close path drops a pending "Log in", so a load that lands later opens nothing.
   const dismiss = () => { setLogin("idle"); setDismissed(pathname); };
 
   if (login === "pending" && AddCreatorModal) {
     return <AddCreatorModal extInstalled={null} at="fansly" onClose={dismiss} />;
   }
-  if (!prompt) return null;
+  if (!prompt || !flow) return null;
+  const { FlowButton, FlowModal, T } = flow;
   return (
     <FlowModal
       title={FANSLY_LOGIN_TITLE}

@@ -857,6 +857,18 @@ async def _api_access_log(request: Request, call_next):
 
 
 @_http_hooks.add
+async def _no_store_by_default(request: Request, call_next):
+    """A reply that names no Cache-Control is `no-store`: the relay's answers are
+    per signed-in user, so a CDN in front (deploy/ae/EDGE-CDN.md) must never keep
+    one, even under a site-wide "cache everything" rule. Routes that set their
+    own (/img, /events, the stills) keep it. Browsers see no change: none of
+    these replies carries the Last-Modified a heuristic cache would need."""
+    response = await call_next(request)
+    response.headers.setdefault("cache-control", "no-store")
+    return response
+
+
+@_http_hooks.add
 async def _persist_unhandled_errors(request: Request, call_next):
     """Catch unhandled server-side exceptions, persist a row in app_errors
     (so /admin/errors surfaces them), then re-raise so FastAPI's default
@@ -5881,6 +5893,8 @@ app.include_router(accounts_admin_api.router)
 app.include_router(proxies_admin_api.router)
 import screens_api  # noqa: E402  # /admin/screens/*: one call per screen (dashboard, inbox)
 app.include_router(screens_api.router)
+import chat_screen_api  # noqa: E402  # /admin/screens/chat: a thread open's local reads in one call
+app.include_router(chat_screen_api.router)
 
 
 # ── Realtime: WS fan-out, stats ────────────────

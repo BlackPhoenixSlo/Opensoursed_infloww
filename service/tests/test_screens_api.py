@@ -73,6 +73,7 @@ class FakeOF:
 
     def __init__(self, aid: str, slow_s: float = 0.0, fail: set[str] | None = None) -> None:
         self.aid, self.slow_s, self.fail = aid, slow_s, fail or set()
+        self.more_fans = 0   # OF's fan count moved since (serve-stale)
 
     def _call(self, name: str, body):
         with LOCK:
@@ -87,7 +88,7 @@ class FakeOF:
         return self._call("me", {"id": int(self.aid), "username": f"u{self.aid}", "name": f"C {self.aid}"})
 
     def subscription_counts_all(self):
-        n = int(self.aid) % 97
+        n = int(self.aid) % 97 + self.more_fans
         return self._call("counts", {"subscribers": {"active": n, "all": 2 * n, "expired": n}})
 
     def subscribers_chart(self, start=None, end=None, by=None):
@@ -122,6 +123,7 @@ def _use(**fakes: FakeOF) -> None:
     import screens_api
     relay_cache._cache.clear()
     screens_api._SHARED.clear()   # a finished read is reused for SHARE_S: never across cases
+    screens_api._LAST.clear()     # nor a last value (serve-stale)
 
 
 server._load_client = lambda aid: FAKES[aid]
@@ -378,5 +380,83 @@ def case_a_warm_cache_never_reaches_a_caller_without_that_creator():
     assert got["creators"] == [] and got["errors"] == [
         {"accountId": B1, "read": "*", "status": 404, "detail": "not on this screen"}], got
     assert CALLS[n:] == [], CALLS[n:]
+
+
+
+# ── Serve-stale: the last value at once, the read behind it ───────────────
+
+def _active(c: dict) -> int:
+    return c["subscriberCounts"]["subscribers"]["active"]
+
+
+def case_the_last_value_answers_at_once_and_the_follow_up_has_the_new_one():
+    """Past the relay's caches (cleared: their 60 s TTL passed), A1's OF slow and its fan count moved: the bundle
+    answers at once with the last values (`refreshing`, asOf their age), the reads run behind it through the same
+    single-flight path, and the client's follow-up (`accounts=`, never a last value) has the new count."""
+    import relay_cache
+    import screens_api
+    _use(a1=FakeOF(A1), a2=FakeOF(A2))
+    first = _dash(OWNER_A)
+    assert first["refreshing"] == [] and first["errors"] == [], first
+    old = _active(_by_id(first)[A1])
+    relay_cache._cache.clear()
+    screens_api._SHARED.clear()   # SHARE_S passed too
+    FAKES[A1].slow_s, FAKES[A1].more_fans = 1.0, 5
+    t0 = time.monotonic()
+    got = _dash(OWNER_A)
+    took = time.monotonic() - t0
+    assert took < 0.5, f"waited {took:.2f}s for OF behind a last value"
+    assert _active(_by_id(got)[A1]) == old and not _by_id(got)[A1]["stale"], got["creators"]
+    assert {(e["accountId"], e["read"]) for e in got["refreshing"]} == {
+        (a, r) for a in (A1, A2) for r in ("profile", "subscriberCounts", "newFans")}, got["refreshing"]
+    assert _by_id(got)[A1]["asOf"] <= first["asOf"], (got["creators"], first["asOf"])
+    follow = _dash(OWNER_A, accounts=f"{A1},{A2}", deadline_ms=5000)
+    assert follow["refreshing"] == [] and _active(_by_id(follow)[A1]) == old + 5, follow
+    assert CALLS.count((A1, "counts")) == 2, CALLS   # the first, then one behind the answer the follow-up joined
+    again = _dash(OWNER_A)
+    assert _active(_by_id(again)[A1]) == old + 5 and again["refreshing"], again
+
+
+def case_a_last_value_is_only_its_own_principals():
+    """Keyed by the session's principal: the same Creators' last values are never another principal's answer
+    (a chatter of the Agency, the other Agency's owner): each reads them as on a first visit."""
+    _use(a1=FakeOF(A1), a2=FakeOF(A2), b1=FakeOF(B1))
+    assert _dash(OWNER_A)["refreshing"] == []
+    assert _dash(OWNER_A)["refreshing"], "the owner's own second bundle: its last values"
+    chatter = _dash(CHATTER_A)
+    assert chatter["refreshing"] == [] and [c["id"] for c in chatter["creators"]] == [A1, A2], chatter
+    other = _dash(_one_loop(fx.login_owner("agency_b_owner")))
+    assert other["refreshing"] == [] and [c["id"] for c in other["creators"]] == [B1], other
+
+
+def case_a_last_value_never_outlives_its_gate():
+    """The gate runs before any last value: a chatter whose role loses the Dashboard gets the route's own 403,
+    not the counts it saw a moment ago."""
+    _use(a1=FakeOF(A1), a2=FakeOF(A2))
+    warm = _dash(CHATTER_A)
+    assert _by_id(warm)[A1]["subscriberCounts"] is not None, warm
+    _role({"/messages-pro": True})
+    try:
+        got = _dash(CHATTER_A)
+        errs = {(e["accountId"], e["read"]): e["status"] for e in got["errors"]}
+        assert errs[A1, "subscriberCounts"] == 403 and _by_id(got)[A1]["subscriberCounts"] is None, got
+        assert not any(e["read"] == "subscriberCounts" for e in got["refreshing"]), got["refreshing"]
+    finally:
+        _reset_roles()
+
+
+def case_last_values_are_bounded_and_age_out():
+    import screens_api
+    _use(a1=FakeOF(A1), a2=FakeOF(A2))
+    real = screens_api.STALE_ENTRIES, screens_api.STALE_MAX_S
+    try:
+        screens_api.STALE_ENTRIES = 2
+        _dash(OWNER_A)
+        assert len(screens_api._LAST) == 2, list(screens_api._LAST)
+        screens_api.STALE_ENTRIES, screens_api.STALE_MAX_S = real[0], 0.0
+        _dash(OWNER_A)
+        assert _dash(OWNER_A)["refreshing"] == [], "older than STALE_MAX_S: read before answering"
+    finally:
+        screens_api.STALE_ENTRIES, screens_api.STALE_MAX_S = real
 
 _harness.run()

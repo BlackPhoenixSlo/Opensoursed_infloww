@@ -262,14 +262,17 @@ class Meter:
         if rid not in self.reqs:
             self.order.append(rid)
         self.reqs[rid] = {"path": path, "method": e["request"]["method"], "kind": _kind(u.path, e.get("type", "")),
-                          "start": self._wall(e["timestamp"]), "end": None, "status": None, "bytes": 0,
+                          "start": self._wall(e["timestamp"]), "end": None, "resp": None, "status": None, "bytes": 0,
                           "cached": False, "failed": None}
 
     def _resp(self, e: dict) -> None:
         r = self.reqs.get(e["requestId"])
         if r is not None:
             r["status"] = e["response"]["status"]
+            r["resp"] = self._wall(e["timestamp"])  # its headers: the first byte (end: the last)
             r["cached"] = bool(e["response"].get("fromDiskCache") or e["response"].get("fromMemoryCache"))
+            if r["kind"] == "html":  # a document's caching (a signed-in page's HTML carries that user's answers)
+                r["cache_control"] = {k.lower(): v for k, v in e["response"].get("headers", {}).items()}.get("cache-control")
 
     def _done(self, e: dict) -> None:
         r = self.reqs.get(e["requestId"])
@@ -292,7 +295,8 @@ class Meter:
             if r["start"] < self.t0:
                 continue
             out.append({**r, "start": round((r["start"] - self.t0) * 1000),
-                        "end": None if r["end"] is None else round((r["end"] - self.t0) * 1000)})
+                        "end": None if r["end"] is None else round((r["end"] - self.t0) * 1000),
+                        "resp": None if r["resp"] is None else round((r["resp"] - self.t0) * 1000)})
         return out
 
     @staticmethod

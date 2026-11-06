@@ -12,7 +12,9 @@ OnlyFans' /campaigns side is lib/tracking_relay.py (`of-campaigns.json`).
 Load (`--users` anonymous clients, no cookie, redirects not followed): `clicks` GET /t/<slug>, open loop at
 `rate` clicks/s (click k leaves at k / rate on client k % users; `--rate=0`: a closed loop, every client
 clicking back to back, which measures the relay's saturation, not a fan's latency), links drawn from the seed
-with uneven weights, each click a referer / user agent. Meanwhile owners (max(3, users // 10), each its own
+with uneven weights, each click a referer / user agent and the headers Cloudflare would add (`RELAY_ENV`
+EDGE_PROXIES=cloudflare): X-Forwarded-For a Cloudflare server (`CF_HOPS`), CF-Connecting-IP the client's own
+address (100.64.x.y). Meanwhile owners (max(3, users // 10), each its own
 pool of 4; owner i at home on Creator i % n): wave 1, one Creator after another, every owner opens its
 earnings at once (`GET /admin/of-tracking-links/earnings`: the first open, a cold computation that walks
 every claimers page, with the others waiting on the per-account lock; in the budgeted row); the owner creates
@@ -22,7 +24,8 @@ OF list and earnings at once) and opens one link's Details (`/{campaign_id}/fans
 storm ends (1-3 s think, 70 % on its home Creator: `/admin/tracking-links`, `/{id}/analytics`, the Links
 list, a Details).
 
-Checks (lib/tracking_faults.py): CLICKS (rows, click_count, list == seeded + the 302s answered), REDIRECT,
+Checks (lib/tracking_faults.py): CLICKS (rows, click_count, list == seeded + the 302s answered), CLIENT_IP (every
+stored storm click's ip is one of the clients' own addresses, none a Cloudflare or proxy address), REDIRECT,
 BY_DAY (per UTC day: seeded + the 302s answered that day; a 302 sent before UTC midnight and answered after
 may count on either day), CREATED, EARNINGS (every link of each Creator
 listed, the created ones at zero; the oracle derived here from the seed: each tracked sale of a claimer goes
@@ -46,7 +49,9 @@ digits) so the recorder folds them into one `GET /t/:id` row; the past clicks, l
 ledger are SQL in the product's shape (the WS rows' message ids name no `messages` row); the big link's
 free-trial claimers are OF ids with no `fans` row; the clients are httpx, not browsers (no referer chain, no
 redirect followed: the target is off-host); the click rate is the scenario's (100 / 250 clicks/s small /
-medium, a guess at a bio-link burst). Break-it-once: tracking-click-lost-1-in-20 (CLICKS, BY_DAY);
+medium, a guess at a bio-link burst); the Cloudflare hop is its headers alone: the clients reach the relay
+straight from loopback (a trusted proxy, as the Next app is), no Traefik or Next in between. Break-it-once: tracking-click-lost-1-in-20 (CLICKS, BY_DAY);
+--fault=client-addr-cdn-header-ignored (CLIENT_IP);
 --fault=of-tracking-claimers-no-memo (CLAIMERS); --fault=of-tracking-spend-first-link (EARNINGS).
 """
 from __future__ import annotations
@@ -62,12 +67,14 @@ import httpx
 
 from slop.actors import ui
 from slop.lib.client import Http
-from slop.lib.tracking_faults import BY_DAY, CLAIMERS, CLICKS, CREATED, EARNINGS, REDIRECT
+from slop.lib.tracking_faults import BY_DAY, CLAIMERS, CLICKS, CLIENT_IP, CREATED, EARNINGS, REDIRECT
 from slop.seed import tracking_campaigns
 
 PROFILE = "agency_inbox"
 UI = True
 FAULT = "tracking-click-lost-1-in-20"
+RELAY_ENV = {"EDGE_PROXIES": "cloudflare"}   # the fans come through Cloudflare (deploy/ae/EDGE-CDN.md)
+CF_HOPS = tuple(f"162.158.88.{i}" for i in range(1, 9))   # Cloudflare servers (inside its published ranges)
 T_P95_MS = 150
 EARNINGS_P95_MS = 2000
 P95_VS_LAST = (1.5, 100)
@@ -168,10 +175,16 @@ async def run(ctx) -> None:
     def today() -> str:
         return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
+    ip_of = {id(h): f"100.64.{i // 250}.{i % 250 + 1}" for i, h in enumerate(fans)}   # a phone's CGNAT address each
+
+    def fan_ip(h: Http) -> str:
+        return ip_of[id(h)]
+
     async def click(h: Http, slug: str, ref: str | None, ua: str) -> None:
         sent = today()
+        edge = {"x-forwarded-for": CF_HOPS[sum(map(ord, slug)) % len(CF_HOPS)], "cf-connecting-ip": fan_ip(h)}
         try:
-            r = await h.get(f"/t/{slug}", headers={"user-agent": ua, **({"referer": ref} if ref else {})})
+            r = await h.get(f"/t/{slug}", headers={"user-agent": ua, **edge, **({"referer": ref} if ref else {})})
             answers.append((slug, r.status_code, r.headers.get("location"), sent, today()))
         except httpx.HTTPError:
             pass   # Http recorded it as a 599 (the stock no-5xx check); no answer, so no click expected
@@ -246,6 +259,8 @@ async def run(ctx) -> None:
     con = w.sql()
     try:
         stored = dict(con.execute("SELECT tracking_link_id, COUNT(*) FROM tracking_clicks GROUP BY 1").fetchall())
+        storm_ips = Counter(ip for (ip,) in con.execute(   # the seed's clicks are 203.0.113.x
+            "SELECT ip FROM tracking_clicks WHERE ip IS NULL OR ip NOT LIKE '203.0.113.%'"))
         counter = dict(con.execute("SELECT id, click_count FROM tracking_links").fetchall())
     finally:
         con.close()
@@ -275,6 +290,10 @@ async def run(ctx) -> None:
             off[l["slug"]] = {"want": want, "rows": got[0], "click_count": got[1], "listed": got[2]}
     ctx.check(CLICKS, not off, links=len(links), sent=n_clicks, redirected=sum(st == 302 for _, st, *_ in answers),
               lost=lost, off=len(off), sample=dict(list(off.items())[:5]))
+    fan_ips = {fan_ip(h) for h in fans}
+    foreign = {ip: n for ip, n in storm_ips.items() if ip not in fan_ips}
+    ctx.check(CLIENT_IP, bool(storm_ips) and not foreign, stored=storm_ips.total(), fans=len(fan_ips),
+              foreign=dict(list(foreign.items())[:5]))
     bad_redirect = [(s, st, loc) for s, st, loc, *_ in answers if st != 302 or loc != by_slug[s]["target"]]
     ctx.check(REDIRECT, bool(answers) and not bad_redirect, sent=n_clicks, answers=len(answers),
               bad=len(bad_redirect), sample=bad_redirect[:5])
