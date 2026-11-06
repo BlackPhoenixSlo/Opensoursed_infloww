@@ -1,16 +1,28 @@
 #!/usr/bin/env bash
 # slop/run <scenario|all> [--scale=small|medium|huge] [--users=N] [--seed=N] [--break] [--no-ui] [--timeout=S] [--set k=v]
+#          --changed [--dry] (only the scenarios the diff reaches, slop/map.json) | <target> --map (rebuild it)
+#          nightly [--dry] [--phases=all,volume,map] [--smoke] [--detach] [--apply-map=F] (daily full sweep)
 # Throwaway loopback stack per scenario; evidence in slop/evidence/<stamp>-<scenario>/ (latest -> newest).
 set -euo pipefail
+# The machine gate (README "The machine gate"): outside one, re-exec this under ~/.slop/gate.py
+# (it sets SLOP_GATED for us). Listings take no lock; a missing gate is lib/cli.py's loud INFRA.
+# nightly never holds it: each of its child slop/run's queues for it in turn.
+if [ -z "${SLOP_GATED:-}" ] && [ -f "$HOME/.slop/gate.py" ] && [ "${1:-}" != nightly ]; then
+  skip=; nw=
+  for a in "$@"; do case "$a" in --list|--dry|-h|--help) skip=1;; --no-wait) nw=--no-wait;; esac; done
+  [ -n "$skip" ] || exec python3 "$HOME/.slop/gate.py" run $nw -- "$0" "$@"
+fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # A linked worktree (git worktree add) has no venv/ or node_modules of its own: link the
 # main checkout's, the ones it has, where the worktree has none (never over a real dir).
 MAIN="$(dirname "$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || echo "$ROOT/.git")")"
 if [ "$MAIN" != "$ROOT" ]; then
-  for d in venv app/node_modules web/node_modules; do
+  for d in venv app/node_modules web/node_modules desktop/node_modules; do
     if [ ! -e "$ROOT/$d" ] && [ ! -L "$ROOT/$d" ] && [ -d "$MAIN/$d" ]; then
       ln -s "$MAIN/$d" "$ROOT/$d" && echo "slop: worktree: linked $d -> $MAIN/$d" >&2
     fi
   done
 fi
+# nightly as a module, not cli.py: the venv's gate hook re-execs any cli.py run under the gate
+[ "${1:-}" = nightly ] && cd "$ROOT" && shift && exec "$ROOT/venv/bin/python" -u -m slop.lib.nightly "$@"
 exec "$ROOT/venv/bin/python" -u "$ROOT/slop/lib/cli.py" "$@"

@@ -49,7 +49,7 @@ describe("useAccountAvatar", () => {
     const { result } = renderHook(() => useAccountAvatar(accountId), { wrapper });
     await waitFor(() => expect(result.current.isFetched).toBe(true));
     expect(pickAvatarUrl(result.current.data)).toBe(want);
-    expect(relayGet).toHaveBeenCalledWith("/api/of/v2/users/me", expect.objectContaining({ accountId }));
+    expect(relayGet).toHaveBeenCalledWith("/api/of/v2/users/me", expect.objectContaining({ accountId }), expect.any(AbortSignal));
   });
 
   it("every row gets its own picture, even when the relay answers one Creator for all", async () => {

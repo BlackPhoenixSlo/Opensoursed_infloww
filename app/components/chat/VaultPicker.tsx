@@ -26,6 +26,7 @@ import { cn } from "@/lib/utils";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { useChatterFolderAccess, useVaultLists, useVaultMedia } from "@/hooks/useVaultMedia";
+import { useThumbAutoRefresh } from "@/hooks/useThumbAutoRefresh";
 import { searchOf, useMirrorItems, useVaultCacheSummary } from "@/hooks/useVaultCache";
 import { useFanVaultHistory } from "@/hooks/useFanVaultHistory";
 import { useVaultMediaStats } from "@/hooks/useVaultMediaStats";
@@ -150,17 +151,17 @@ export function VaultPicker(props: VaultPickerProps) {
   const restricted = !!folderAccessQ.data?.restricted;
 
   // ── Cache-first vault source (ADDITION — normal live search is preserved) ──
-  // Once an OWNER has "Collect"-ed this account's vault into the local mirror,
-  // serve the grid + search straight from it: instant open, infinite-scroll
-  // FROM CACHE, and local (of_terms-aware) search. Falls back to the normal
-  // live-OF path when there's no cache — or for a restricted chatter, whose
-  // /admin/vault-ai/* endpoints are owner-gated anyway (so the summary 403s →
-  // cachedCount 0 → live path). Both hooks always mount; only the enabled one
-  // fetches, so this adds a fast path without touching the live one.
+  // Once this account's vault is FULLY in the local mirror (`complete`: a full
+  // background walk or a manual Collect finished), serve the grid + search
+  // straight from it: instant open, infinite-scroll FROM CACHE, and local
+  // (of_terms-aware) search. A partial mirror (first pages only) or a missing
+  // `complete` stays on the live-OF path. A restricted chatter takes the
+  // mirror too: the server applies their folder limits on the mirror routes.
+  // Both hooks always mount; only the enabled one fetches.
   const qc = useQueryClient();
   const cacheSummary = useVaultCacheSummary(open ? accountId : null);
   const cachedCount = cacheSummary.data?.count ?? 0;
-  const useLocalVault = open && !restricted && cachedCount > 0;
+  const useLocalVault = open && cacheSummary.data?.complete === true && cachedCount > 0;
   const vaultLive = useVaultMedia({
     accountId, type, listId, sort: ofSort, query,
     // Fire the live OF path immediately whenever we're NOT on the cache path.
@@ -187,6 +188,10 @@ export function VaultPicker(props: VaultPickerProps) {
         refresh: vaultMirror.refetch,
       } as typeof vaultLive)
     : vaultLive;
+
+  // A broken thumbnail (an expired signed url) reloads the grid once per Creator per cooldown (reloadBrokenThumbs:
+  // the mirror's items, or the live listing past the relay's cache); reopening the picker resets the tiles only.
+  const thumbs = useThumbAutoRefresh(open ? accountId : null, useLocalVault ? "mirror" : "live");
 
   // Harvest OF's own vault search for the current query and fold it into the
   // mirror index (of_terms) so cache search ⊇ OF search — same as the manager.
@@ -822,6 +827,7 @@ export function VaultPicker(props: VaultPickerProps) {
                 onAttach={confirmWith}
                 onPreview={setPreviewMedia}
                 onDetails={setDetails}
+                thumbs={thumbs}
               />
             ))}
           </div>

@@ -31,6 +31,14 @@ Known X-Employee-Id read sites (grep `service/`):
 Allowlist lives in `service/server.py` next to each wrapped endpoint —
 this is an explicit per-endpoint list, NOT a `@coalesce` decorator that
 auto-applies to GETs. A blanket decorator is a footgun for attribution.
+
+The one POST on it, by exception:
+  • `vault_sync` (service/vault_ai_api.py, POST /admin/vault-ai/sync, keyed
+    account + folder): Vault Pro's Refresh. It sends nothing to OF (GETs of
+    vault/media only, upserted into the mirror idempotently), reads no
+    employee attribution and answers no per-caller data (page / item counts
+    of the shared walk), so a second press during a walk joins it instead
+    of paying OF for the same pages.
 """
 
 from __future__ import annotations

@@ -90,6 +90,52 @@ describe("ProxiesTable proxy health", () => {
   });
 });
 
+describe("ProxiesTable refusal rate", () => {
+  it("shows refusing N% over the window next to the health text, only when the provider refused a call", async () => {
+    const refusals = (refused: number, calls: number, pct: number) => ({ window_s: 600, refused, calls, pct });
+    relayGet.mockResolvedValue({
+      proxies: [{
+        label: "hu-1", host: "p.invalid", port: 8080, scheme: "http", assigned_accounts: [], verified_ip: "203.0.113.7",
+        health: { state: "healthy", errors: 0, refusals: refusals(32, 100, 32.4), inflight: 2, inflight_peak: 6 },
+      }, {
+        label: "hu-2", host: "q.invalid", port: 8080, scheme: "http", assigned_accounts: [], verified_ip: "203.0.113.8",
+        health: { state: "healthy", errors: 0, refusals: refusals(0, 40, 0) },
+      }, {
+        label: "hu-3", host: "r.invalid", port: 8080, scheme: "http", assigned_accounts: [], verified_ip: "203.0.113.9",
+        health: { state: "bad", bad_reason: "down", errors: 3, bad_since: 1_800_000_000, refusals: refusals(9, 20, 45) },
+      }, {
+        label: "hu-4", host: "s.invalid", port: 8080, scheme: "http", assigned_accounts: [], verified_ip: "203.0.113.10",
+        health: { state: "bad", bad_reason: "flapping", errors: 0, bad_since: 1_800_000_000,
+                  next_recheck_at: 1_800_000_060, refusals: refusals(27, 100, 27.2) },
+      }, {
+        label: "hu-5", host: "t.invalid", port: 8080, scheme: "http", assigned_accounts: [], verified_ip: "203.0.113.11",
+        health: { state: "bad", bad_reason: "flapping", errors: 0, bad_since: 1_800_000_000,
+                  next_recheck_at: 1_800_000_060, refusals: { window_s: 600, refused: 0, calls: 3, pct: 0 } },
+      }, {
+        label: "hu-6", host: "u.invalid", port: 8080, scheme: "http", assigned_accounts: [], verified_ip: "203.0.113.12",
+        health: { state: "healthy", errors: 0, refusals: { window_s: 45, refused: 9, calls: 30, pct: 30 } },
+      }],
+      pool: { size: 0, account_ids: [] },
+      accounts: [],
+    });
+    render(<ProxiesTable />, { wrapper });
+    await screen.findByText("hu-1");
+    expect(screen.getByText("203.0.113.7 · refusing 32% (10 min)")).toBeInTheDocument();
+    expect(screen.getByText("203.0.113.8")).toBeInTheDocument();
+    expect(screen.getByText(/unreachable since .* \(3 refused\) — rechecking · refusing 45% \(10 min\)/)).toBeInTheDocument();
+    // Bad from flapping: the rate is the reason, in plain words; no "unreachable", no "(0 refused)".
+    expect(screen.getByText(/^refusing 27% \(10 min\) since .* — recheck at .*$/)).toBeInTheDocument();
+    expect(screen.queryByText(/0 refused/)).not.toBeInTheDocument();
+    expect(screen.getAllByText(/unreachable/)).toHaveLength(1);
+    // Flap-bad with nothing refused left in the window: no "refusing 0%".
+    expect(screen.getByText(/^was refusing — recheck at .*$/)).toBeInTheDocument();
+    expect(screen.queryByText(/refusing 0%/)).not.toBeInTheDocument();
+    // A window under a minute reads in seconds, never "(0 min)".
+    expect(screen.getByText("203.0.113.12 · refusing 30% (45 s)")).toBeInTheDocument();
+    expect(screen.getAllByText(/refusing \d/)).toHaveLength(4);
+  });
+});
+
 describe("ProxiesTable delete of a proxy in use", () => {
   it("shows the Relay's 409 message naming the Creators that use it", async () => {
     relayGet.mockResolvedValue({

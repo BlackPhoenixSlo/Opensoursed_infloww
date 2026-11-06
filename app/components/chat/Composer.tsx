@@ -34,7 +34,7 @@ import { MP } from "@/lib/messagesPro";
 import { type VaultMedia } from "@/lib/relay";
 import { type FanId } from "@/lib/fanId";
 import { isImeComposing } from "@/lib/ime";
-import { useChatDraft } from "@/lib/chatDrafts";
+import { readChatRich, useChatDraft, writeChatRich } from "@/lib/chatDrafts";
 import { useFanVaultHistory } from "@/hooks/useFanVaultHistory";
 import { scriptPickWarning } from "@/lib/messageScripts";
 import { isUploadable, useComposerUploads } from "@/hooks/useComposerUploads";
@@ -49,9 +49,11 @@ import { EmojiFavouritesButton, QuickEmojiRow } from "./EmojiFavourites";
 import { CopilotPicker } from "./CopilotPicker";
 import { GifPickerButton, GifPickerStrip } from "./GifPicker";
 import { TemplatePicker, type PickedTemplate } from "./TemplatePicker";
+import { OfRichText } from "./OfRichText";
+import { isOfHtml, ofPreviewText } from "@/lib/ofRichText";
 import { TagCreatorsPicker, TaggedCreatorChips, type TaggedCreatorChoice } from "./TagCreatorsPicker";
 import {
-  EMPTY_DRAFT, afterRefusedSchedule, buildSendArgs, canBeFreePreview, canSend, composerDraft, composerView,
+  EMPTY_DRAFT, afterRefusedSchedule, buildSendArgs, richText, canBeFreePreview, canSend, composerDraft, composerView,
   type FullDraft, type SendArgs,
 } from "./composerDraft";
 import { gifPlan, scheduledToast } from "./composerSubmit";
@@ -144,7 +146,9 @@ export function Composer({
   // The rest of the draft — price, lock, media, previews, schedule, tags,
   // GIFs (./composerDraft). Lock-text is opt-in (asks #6 + #17); the
   // one-time migration toast below explains the change to returning users.
-  const [draft, act] = useReducer(composerDraft, EMPTY_DRAFT);
+  // A picked formatted script's markup survives a chat switch with the draft text (lib/chatDrafts).
+  const [draft, act] = useReducer(composerDraft, null, () => ({ ...EMPTY_DRAFT, rich: readChatRich(accountId, fanId) }));
+  useEffect(() => { writeChatRich(accountId, fanId, draft.rich); }, [accountId, fanId, draft.rich]);
   const { price, priceOpen, lockedText, attached, scheduleOpen, scheduleAt, taggedCreators, pickedGifs } = draft;
   // The whole draft as last rendered, for a refused schedule that settles
   // after the chatter has typed on (`afterRefusedSchedule`); null once the
@@ -514,6 +518,17 @@ export function Composer({
             </div>
           )}
           <SensitiveWordWarning hits={sensitiveHits} />
+          {draft.rich && (richText(draft, text) != null ? (
+            // The picked script's formatting, as the fan will see it; it goes out while the text is untouched.
+            <div data-rich-preview="" className={cn(MP.ours.Composer.notice, "block bg-bg-elev-1 border-border text-fg")}>
+              <div className="text-xs uppercase tracking-wide text-fg-dim mb-0.5">Formatted · the fan sees</div>
+              <OfRichText raw={draft.rich.html} className="text-sm break-words" />
+            </div>
+          ) : (
+            <div data-rich-dropped="" className="text-xs text-fg-dim">
+              Edited: the script&apos;s formatting is dropped, this sends as plain text.
+            </div>
+          ))}
           <TimedReminderNotice accountId={accountId} fanId={fanId} />
           <OutboundTranslationStrip t={outbound} onUse={setText} onSend={sendTranslation} canSend={view.canSend} />
           {scripts.nextSteps.map((nextStep) => (
@@ -536,7 +551,7 @@ export function Composer({
               </span>
               <span className="flex-1 min-w-0 text-fg-dim truncate">
                 {nextStep.title ? <strong className="text-fg mr-1">{nextStep.title}:</strong> : null}
-                {nextStep.text}
+                {isOfHtml(nextStep.text) ? ofPreviewText(nextStep.text) : nextStep.text}
               </span>
               <button
                 type="button"

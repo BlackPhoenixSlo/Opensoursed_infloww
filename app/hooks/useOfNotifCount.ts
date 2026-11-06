@@ -17,8 +17,10 @@ interface NotifCountResp { all?: number }
 export function useOfNotifCount(accountId: string | null) {
   const q = useQuery<number>({
     queryKey: ["of-notif-count", accountId],
+    // A badge: background (queued behind clicks, lib/relaySchedule), dropped when its screen goes (signal).
     queryFn: accountId
-      ? async () => Number((await relay.get<NotifCountResp>("/api/of/v2/users/notifications/count", { accountId }))?.all) || 0
+      ? async ({ signal }) => Number((await relay.get<NotifCountResp>(
+        "/api/of/v2/users/notifications/count", { accountId, priority: "background" }, signal))?.all) || 0
       : skipToken,
     staleTime: 30_000,
     retry: false,

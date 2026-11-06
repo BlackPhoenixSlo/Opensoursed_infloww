@@ -49,7 +49,7 @@ describe("SubscriptionBundles", () => {
     expect(rows()[0].textContent).toContain("total for 3 months");
     expect(rows()[0].textContent).toContain("-15%");
     expect(rows()[1].textContent).not.toContain("%");
-    expect(get).toHaveBeenCalledWith("/api/of/v2/users/me", { accountId: "a1" });
+    expect(get).toHaveBeenCalledWith("/api/of/v2/users/me", { accountId: "a1", priority: "background" }, expect.any(AbortSignal));
     expect(screen.getByText("Offer several months of subscription as a discounted bundle.")).toBeTruthy();
   });
 

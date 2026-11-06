@@ -47,6 +47,12 @@ PY = Path(os.environ.get("SLOP_PY") or ROOT / "venv/bin/python")
 DEMO = ROOT / "scripts/demo-shots"
 RESTORE = ("tsconfig.json", "next-env.d.ts")
 APP_LOCK = ROOT / "app/.next/slop.lock"
+CHILD_NICE = 10  # every process the stack starts (README "The machine gate")
+
+
+def nice_child() -> None:
+    """preexec_fn: this child at nice CHILD_NICE (absolute; never lower than it already is)."""
+    os.setpriority(os.PRIO_PROCESS, 0, max(CHILD_NICE, os.getpriority(os.PRIO_PROCESS, 0)))
 
 
 def _lock_app() -> int:
@@ -180,7 +186,7 @@ class Stack:
             self._relay_envs.append(env)
             if self.boxes:  # what deploy's shard .env carries (and restic backs up)
                 (t / ".env").write_text("".join(f"{k}={env[k]}\n" for k in ("SESSION_SECRET", "CHATTER_SESSION_SECRET")))
-            p = self._spawn([str(PY), str(Path(__file__).with_name("relay.py"))], env, self._log("relay", i), cwd=ROOT)
+            p = self._spawn(self.relay_cmd(), env, self._log("relay", i), cwd=ROOT)
             self.shard_pids.append(p.pid)
             waits.append((f"relay {self.shard_ids[i]}" if self.shards > 1 else "relay",
                           f"{self.shard_urls[i]}/livez", 60 if self.shards == 1 else 180, p))
@@ -257,7 +263,14 @@ class Stack:
         return t
 
     def relay_cmd(self) -> list[str]:
-        return [str(PY), str(Path(__file__).with_name("relay.py"))]
+        """How a relay starts. Under `slop/run --map` (env SLOP_COVERAGE=<dir>) it runs under coverage.py,
+        lines only, one data file per process in <dir> (lib/covmap.py reads them)."""
+        relay = str(Path(__file__).with_name("relay.py"))
+        cov = os.environ.get("SLOP_COVERAGE")
+        if not cov:
+            return [str(PY), relay]
+        return [str(PY), "-m", "coverage", "run", "--parallel-mode", f"--data-file={cov}/.coverage",
+                f"--source={ROOT / 'service'},{ROOT / 'slop'},{DEMO}", f"--omit={ROOT / 'slop/evidence'}/*", relay]
 
     def _prod_app(self, nenv: dict[str, str], i: int) -> None:
         """`next build` (the Dockerfile's `pnpm build`) into .next/slop-prod against this run's relay,
@@ -274,7 +287,8 @@ class Stack:
         try:
             with open(self.logdir / "next-build.log", "w") as fh:
                 r = subprocess.run(["node", "node_modules/next/dist/bin/next", "build", "--turbopack"], env=nenv,
-                                   cwd=ROOT / "app", stdout=fh, stderr=subprocess.STDOUT, timeout=900)
+                                   cwd=ROOT / "app", stdout=fh, stderr=subprocess.STDOUT, timeout=900,
+                                   preexec_fn=nice_child)
                 fh.write(f"\nslop: next build exit {r.returncode} in {time.time() - t0:.1f}s\n")
         finally:
             for f, b in kept.items():
@@ -302,14 +316,15 @@ class Stack:
 
     def start_relay(self, i: int = 0, timeout: int = 60) -> None:
         """Start relay `i` again on the same DB, port and env; its log appends to relay.log."""
-        p = self._spawn([str(PY), str(Path(__file__).with_name("relay.py"))], self._relay_envs[i],
+        p = self._spawn(self.relay_cmd(), self._relay_envs[i],
                         self._log("relay", i), cwd=ROOT, mode="a")
         self.shard_pids[i] = p.pid
         self._wait(f"relay {self.shard_ids[i]}", f"{self.shard_urls[i]}/livez", timeout, p)
 
     def _spawn(self, cmd, env, log, cwd, mode: str = "w") -> subprocess.Popen:
         fh = open(self.logdir / log, mode)
-        p = subprocess.Popen(cmd, env=env, cwd=cwd, stdout=fh, stderr=subprocess.STDOUT, start_new_session=True)
+        p = subprocess.Popen(cmd, env=env, cwd=cwd, stdout=fh, stderr=subprocess.STDOUT, start_new_session=True,
+                             preexec_fn=nice_child)
         self.procs.append(p)
         return p
 

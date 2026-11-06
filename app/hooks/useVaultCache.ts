@@ -3,7 +3,7 @@
 /**
  * useVaultCache — the local whole-vault mirror ("Collect all").
  *
- *   summary  → GET  /admin/vault-ai/cache/summary   {count, running, last_run}
+ *   summary  → GET  /admin/vault-ai/cache/summary   {count, running, complete, last_run}
  *   collect  → POST /admin/vault-ai/collect          starts a sweep
  *   status   → GET  /admin/vault-ai/collect/status   progress (polled while running)
  *   items    → GET  /admin/vault-ai/items            read the mirror (instant local search)
@@ -631,6 +631,9 @@ export interface VaultCacheSummary {
   account_id: string;
   count: number;
   running: boolean;
+  /** True once a full background walk or a manual Collect finished. Missing → false:
+   *  a partial mirror must not switch the picker to the DB path. */
+  complete?: boolean;
   last_run: { id: number; status: string; total_seen: number; finished_at: string | null } | null;
 }
 
@@ -979,10 +982,11 @@ export function vaultGridKeys(accountId: string | null): readonly (readonly unkn
 /** Invalidate all of them. One call, so a caller cannot refresh four of five.
  *
  *  Then the query snapshot (rqPersister) is saved now, not on its throttle: a reload right after a vault write
- *  restores this cache (any edit made before the call, the lists marked stale), not the one from before the write. */
-export function invalidateVaultGrid(qc: QueryClient, accountId: string | null): void {
-  for (const queryKey of vaultGridKeys(accountId)) {
-    void qc.invalidateQueries({ queryKey });
-  }
+ *  restores this cache (any edit made before the call, the lists marked stale), not the one from before the write.
+ *  Resolves once the mounted ones refetched; callers that only mark stale may drop it. */
+export function invalidateVaultGrid(qc: QueryClient, accountId: string | null): Promise<void> {
+  const refetched = vaultGridKeys(accountId).map((queryKey) => qc.invalidateQueries({ queryKey }));
   flushPersistedCache();
+  return Promise.all(refetched).then(() => undefined);
 }
+

@@ -32,9 +32,11 @@ export interface AccountAvatar {
 
 /** One Creator's own `/users/me`, or null (failed read, or a body for
  *  anyone else). The queryFn of `["of-profile", accountId]`. */
-export async function fetchOwnProfile<T extends { id?: number | string }>(accountId: string): Promise<T | null> {
+export async function fetchOwnProfile<T extends { id?: number | string }>(
+  accountId: string, signal?: AbortSignal,
+): Promise<T | null> {
   try {
-    const me = await relay.get<T>("/api/of/v2/users/me", { accountId, priority: "background" });
+    const me = await relay.get<T>("/api/of/v2/users/me", { accountId, priority: "background" }, signal);
     return me && String(me.id) === accountId ? me : null;
   } catch {
     return null;
@@ -45,7 +47,7 @@ export function useAccountAvatar(accountId: string | null | undefined) {
   return useQuery<AccountAvatar | null>({
     queryKey: ["of-profile", accountId] as const,
     enabled: !!accountId,
-    queryFn: () => fetchOwnProfile<AccountAvatar>(accountId!),
+    queryFn: ({ signal }) => fetchOwnProfile<AccountAvatar>(accountId!, signal),
     staleTime: Infinity,
     gcTime: 24 * 60 * 60_000,
     refetchOnWindowFocus: false,

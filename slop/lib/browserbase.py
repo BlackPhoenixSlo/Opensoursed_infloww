@@ -49,7 +49,7 @@ import tempfile
 import threading
 import time
 import urllib.request
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -198,7 +198,7 @@ class World:
         self.captcha_frames = 0                       # loads of the hidden reCAPTCHA frame
         self.sessions: dict[str, dict] = {}           # sid -> {proc, cdp, dir, released}
         self._lock = threading.Lock()
-        self._servers: list[ThreadingHTTPServer] = []
+        self._servers: list[HTTPServer] = []
 
     # ── lifecycle ──
     def __enter__(self) -> "World":
@@ -206,13 +206,13 @@ class World:
         subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", str(key),
                         "-out", str(cert), "-days", "2", "-subj", "/CN=onlyfans.com",
                         "-addext", "subjectAltName=DNS:onlyfans.com"], check=True, capture_output=True)
-        of = ThreadingHTTPServer(("127.0.0.1", 0), self._of_handler())
+        from slop.lib.bounded_server import BoundedHTTPServer  # lazy, as nice_child below
+        of = BoundedHTTPServer(("127.0.0.1", 0), self._of_handler())
         tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         tls.load_cert_chain(cert, key)
         of.socket = tls.wrap_socket(of.socket, server_side=True)
-        api = ThreadingHTTPServer(("127.0.0.1", 0), self._api_handler())
+        api = BoundedHTTPServer(("127.0.0.1", 0), self._api_handler())
         for s in (of, api):
-            s.daemon_threads = True
             threading.Thread(target=s.serve_forever, daemon=True).start()
             self._servers.append(s)
         self.of_port, self.api_port = of.server_address[1], api.server_address[1]
@@ -229,13 +229,15 @@ class World:
 
     # ── the remote browser ──
     def _launch(self) -> dict:
+        from slop.lib.stack import nice_child  # lazy: keeps this module's imports stdlib
         sid = f"slopbb{len(self.sessions) + 1:02d}"
         cdp, d = _free_port(), Path(tempfile.mkdtemp(prefix=f"{sid}-", dir=self.tmp))
         proc = subprocess.Popen([
             self.chromium, "--headless=new", f"--remote-debugging-port={cdp}", "--remote-debugging-address=127.0.0.1",
             f"--user-data-dir={d}", "--no-first-run", "--no-default-browser-check", "--ignore-certificate-errors",
             f"--host-resolver-rules=MAP onlyfans.com 127.0.0.1:{self.of_port}, MAP * ~NOTFOUND, EXCLUDE 127.0.0.1",
-            "--window-size=1280,800", "about:blank"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            "--window-size=1280,800", "about:blank"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            preexec_fn=nice_child)
         deadline = time.time() + 20
         while True:
             try:

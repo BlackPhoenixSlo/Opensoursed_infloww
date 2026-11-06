@@ -2,7 +2,8 @@
 decision `_proxy_retry` makes after each failed attempt, as a table; plus the
 wiring: `_proxy_retry` sleeps what it says, records proxy_health what it says,
 and `_http_call` reads `of_client.INTERACTIVE_RETRY` at call time (slop's
-faults reassign it).
+faults reassign it). Pauses are equal jitter: the table pins rng to 1.0 (the
+ceiling); the jitter table pins other draws; _Spy pins of_client.random.
 
 A bare OFClient via __new__ with a fake fn, so nothing reaches the network.
 
@@ -26,9 +27,9 @@ from of_client import (  # noqa: E402
 F, I = FULL_RETRY, INTERACTIVE_RETRY
 NOCOUNT = FULL_RETRY._replace(counts=False)
 
-# (policy, attempt, exc_kind, proxied) -> expected
+# (policy, attempt, exc_kind, proxied) -> expected, at rng() == 1.0 (the ceiling)
 TABLE = [
-    # ProxyError: retried with a doubling pause (the sticky IP: same session)...
+    # ProxyError: retried with a doubling ceiling (the sticky IP: same session)...
     (F, 0, "proxy", True, Retry(0.4)),
     (F, 1, "proxy", True, Retry(0.8)),
     (F, 2, "proxy", True, Retry(1.6)),
@@ -54,14 +55,37 @@ TABLE = [
 
 def case_retry_step_table():
     for policy, attempt, kind, proxied, want in TABLE:
-        got = retry_step(policy, attempt, kind, proxied)
+        got = retry_step(policy, attempt, kind, proxied, rng=lambda: 1.0)
         assert type(got) is type(want) and got == want, (policy, attempt, kind, proxied, got, want)
 
 
 def case_full_pauses_double_over_five_tries():
     pauses = [s.pause for a in range(F.tries)
-              if isinstance(s := retry_step(F, a, "proxy", True), Retry)]
+              if isinstance(s := retry_step(F, a, "proxy", True, rng=lambda: 1.0), Retry)]
     assert pauses == [0.4, 0.8, 1.6, 3.2], pauses
+
+
+# (policy, attempt, rng draw) -> pause: uniform in [ceiling/2, ceiling).
+JITTER = [
+    (F, 0, 0.0, 0.2),
+    (F, 0, 0.5, 0.3),
+    (F, 3, 0.0, 1.6),
+    (F, 3, 0.5, 2.4),
+    (F, 3, 0.25, 2.0),
+    (I, 0, 0.0, 0.1),
+    (I, 0, 0.5, 0.15),
+]
+
+
+def case_retry_step_equal_jitter_table():
+    for policy, attempt, draw, want in JITTER:
+        got = retry_step(policy, attempt, "proxy", True, rng=lambda d=draw: d)
+        assert isinstance(got, Retry) and abs(got.pause - want) < 1e-9, (policy, attempt, draw, got, want)
+    # The default rng (random.random): always inside [ceiling/2, ceiling), never lockstep.
+    pauses = {retry_step(F, 3, "proxy", True).pause for _ in range(200)}
+    assert all(1.6 <= p < 3.2 for p in pauses) and len(pauses) > 100, sorted(pauses)[:5]
+    # Attempt counts are untouched: still Raise on the last try, whatever the draw.
+    assert retry_step(F, 4, "proxy", True, rng=lambda: 0.0) == Raise(True)
 
 
 def _bare(proxy_url="http://u:p@host:1234"):
@@ -73,16 +97,20 @@ def _bare(proxy_url="http://u:p@host:1234"):
 
 
 class _Spy:
-    """Captures of_client.time.sleep and of_client.proxy_health.record."""
+    """Captures of_client.time.sleep and of_client.proxy_health.record; pins
+    the jitter draw to 1.0 so a sleep is its ceiling."""
     def __enter__(self):
         self.sleeps, self.records = [], []
         self._sleep, self._record = of_client.time.sleep, of_client.proxy_health.record
+        self._random = of_client.random
         of_client.time.sleep = self.sleeps.append
         of_client.proxy_health.record = lambda *a: self.records.append(a)
+        of_client.random = types.SimpleNamespace(random=lambda: 1.0)
         return self
 
     def __exit__(self, *_):
         of_client.time.sleep, of_client.proxy_health.record = self._sleep, self._record
+        of_client.random = self._random
 
 
 def _raising(exc, calls):

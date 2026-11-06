@@ -140,12 +140,13 @@ const backgroundFetches = new Set<string>();
  *  still fresh; never throws. If the chat opens while this is in flight,
  *  useChatMessages cancels it and refetches on the user lane — unless
  *  `yieldOnOpen` is false: a Fan List hover or press is the open's own
- *  warm-up, so the click joins it (one request, not two). */
+ *  warm-up, so the click joins it (one request, not two). `user`: a press's
+ *  warm-up, the click's own read, rides the user lane. */
 export function prefetchChatMessages(
   qc: QueryClient,
   accountId: string,
   fanId: FanId,
-  { staleTime = STALE_MS, yieldOnOpen = true }: { staleTime?: number; yieldOnOpen?: boolean } = {},
+  { staleTime = STALE_MS, yieldOnOpen = true, user = false }: { staleTime?: number; yieldOnOpen?: boolean; user?: boolean } = {},
 ): Promise<void> {
   const queryKey = ["messages", accountId, fanId] as const;
   const hash = hashKey(queryKey);
@@ -154,7 +155,7 @@ export function prefetchChatMessages(
     queryFn: async ({ signal }) => {
       if (yieldOnOpen) backgroundFetches.add(hash);
       try {
-        const { list } = await fetchHeadPage(accountId, fanId, { priority: "background", signal });
+        const { list } = await fetchHeadPage(accountId, fanId, { priority: user ? undefined : "background", signal });
         return mergeTopPage(qc.getQueryData<OFMessage[]>(queryKey) || [], list);
       } finally {
         if (yieldOnOpen) backgroundFetches.delete(hash);

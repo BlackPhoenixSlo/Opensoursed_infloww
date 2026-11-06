@@ -166,6 +166,8 @@ export default function VaultMediaToolbar({
   typeCounts,
   loadedCount,
   onRefresh,
+  refreshing = false,
+  refreshNote = null,
   onSelectAll,
   selectMode,
   onToggleSelect,
@@ -181,6 +183,10 @@ export default function VaultMediaToolbar({
   /** Files loaded in the grid; Select all shows while at most 40 are (#65). */
   loadedCount: number;
   onRefresh: () => void;
+  /** A Refresh is in flight: the icon spins and the button waits. */
+  refreshing?: boolean;
+  /** The last Refresh fell short (OnlyFans unreachable, or the refresh failed): said beside the button. */
+  refreshNote?: string | null;
   onSelectAll: () => void;
   selectMode: boolean;
   onToggleSelect: () => void;
@@ -268,8 +274,10 @@ export default function VaultMediaToolbar({
         </div>
         {/* #63 to #68: the media tools, 32px tall; icons in 28px boxes. */}
         <div className="h-8 shrink-0 flex items-center">
-          <button type="button" aria-label="Refresh" title="Refresh" onClick={onRefresh} disabled={disabled} className={iconBox}>
-            <RotateCw size={18} aria-hidden />
+          {refreshNote && <span role="status" className="mr-2 text-[12px] text-warn">{refreshNote}</span>}
+          <button type="button" aria-label="Refresh" title="Refresh" onClick={onRefresh} disabled={disabled || refreshing}
+            aria-busy={refreshing} className={iconBox}>
+            <RotateCw size={18} aria-hidden className={cn(refreshing && "animate-spin")} />
           </button>
           {loadedCount <= 40 && (
             <button

@@ -348,7 +348,12 @@ def case_list_hides_pool():
         body = r.json()
         for needle in [*pool_labels, "pool-1.invalid", "pool-2.invalid", "pool-3.invalid", PW]:
             assert needle not in r.text, f"pool field {needle!r} leaked into GET /admin/proxies"
+        rows = body["pool"].pop("proxies")
         assert body["pool"] == {"size": 3, "account_ids": [mine], "bad": 0}, body["pool"]
+        # Only the pool proxy the viewer is on, by slot, refusal telemetry only.
+        assert len(rows) == 1 and rows[0]["slot"] in (1, 2, 3), rows
+        # An Agency's owner: no error count, no in-flight counts (the relay's whole traffic: the site owner's).
+        assert set(rows[0]["health"]) == {"state", "down", "refusals"}, rows
     assert "mine" in {p["label"] for p in OWNER_A.get("/admin/proxies").json()["proxies"]}
 
 

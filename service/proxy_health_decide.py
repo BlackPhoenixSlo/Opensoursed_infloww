@@ -13,6 +13,7 @@ lock performs the effects in order, then the watcher's next move. Each event
 is one of the shell's lock sections:
 
   CallOk / CallErr   record(): an OF call or a probe through the proxy answered / failed
+  FlapBad            the flap knob (PROXY_FLAP_BAD_PCT, default 20, 0 = off): the window's refusal rate crossed it
   ConfirmDue         the confirm's wait is over (owns every confirm wait: the gap from the streak's first error)
   ConfirmResult      the confirm probe's answer, for the streak its Confirm named
   RecheckWait        arm the next recheck (stamp next_recheck_at; base = recheck_s(), read at each arm)
@@ -63,6 +64,15 @@ State = Optional[dict[str, Any]]
 @dataclass(frozen=True)
 class CallOk:
     now: float
+    flapping: bool = False    # flap knob on and the window's refusal rate still >= HALF of it (hysteresis, shell)
+
+
+@dataclass(frozen=True)
+class FlapBad:
+    now: float
+    watching: bool
+    pct: float                # the window's refusal rate, for the log
+    calls: int
 
 
 @dataclass(frozen=True)
@@ -99,6 +109,7 @@ class RecheckDue:
 @dataclass(frozen=True)
 class RecheckResult:
     ok: bool
+    flapping: bool = False    # as CallOk's: read after the probe's own sample is in the window
 
 
 @dataclass(frozen=True)
@@ -112,7 +123,7 @@ class FailedOver:
     moved: tuple[str, ...]
 
 
-Event = Union[CallOk, CallErr, ConfirmDue, ConfirmResult, RecheckWait, RecheckDue, RecheckResult, Gone,
+Event = Union[CallOk, FlapBad, CallErr, ConfirmDue, ConfirmResult, RecheckWait, RecheckDue, RecheckResult, Gone,
               FailedOver]
 
 
@@ -179,7 +190,7 @@ def blank() -> dict[str, Any]:
 
 
 _UP = {"errors": 0, "first_error_at": None, "down": False, "rechecks_failed": 0, "next_recheck_at": None,
-       "rechecking": False}
+       "rechecking": False, "flap": False}
 
 
 def failover_due(st: State) -> bool:
@@ -209,9 +220,23 @@ def _resume(st: State) -> tuple[list[Effect], Next]:
 def decide(st: State, ev: Event) -> tuple[State, list[Effect], Next]:
     if isinstance(ev, CallOk):
         cur = st if st is not None else blank()
+        if cur.get("flap") and ev.flapping:
+            # Flap-bad (FlapBad): a flapping proxy answers most calls; only the rate dropping below half the
+            # knob brings it up (`flapping` is that hysteresis, read by the shell).
+            return {**cur, "errors": 0, "first_error_at": None}, [], None
         if cur["down"]:
             return {**cur, **_UP}, [Log(logging.WARNING, "proxy %s is back up"), Announce(False)], None
         return {**cur, **_UP}, [], None
+
+    if isinstance(ev, FlapBad):
+        # The flap knob (PROXY_FLAP_BAD_PCT, on by default): refusing too often is bad without the confirm, as the proxy answers
+        # a single probe most of the time. Then the usual rechecks, failover_due and no fail-back.
+        cur = st if st is not None else blank()
+        if cur["down"] or cur["errors"] >= DOWN_AFTER:
+            return st, [], None   # bad already, or a DOWN_AFTER streak's confirm owns it: no second transition
+        nxt = {**cur, "down": True, "flap": True, "bad_since": ev.now, "rechecks_failed": 0}
+        return nxt, [Log(logging.WARNING, "proxy %s is DOWN (refusing %.0f%% of %d calls)", (ev.pct, ev.calls)),
+                     Announce(True), *([] if ev.watching else [Watch()])], None
 
     if isinstance(ev, CallErr):
         cur = st if st is not None else blank()
@@ -239,6 +264,9 @@ def decide(st: State, ev: Event) -> tuple[State, list[Effect], Next]:
             effects, then = _resume(nxt)
             return nxt, [Log(logging.INFO, "proxy %s: %d errors in a row but the probe answers; not marked bad",
                              (DOWN_AFTER,)), *effects], then
+        if st["down"]:
+            # Bad already (FlapBad landed while this confirm probed): no second announce, bad_since kept.
+            return (st, *_resume(st))
         if not st["errors"] or st["streak"] != ev.streak:
             # A call got through during the probe (it reset the streak this confirm was for): not bad
             # (ADR 0030). A new streak at DOWN_AFTER since: the same watcher waits it out and confirms it.
@@ -265,7 +293,7 @@ def decide(st: State, ev: Event) -> tuple[State, list[Effect], Next]:
         # Written whatever happened during the probe (as before): an answer brings it up and is announced
         # even when a call already did; a failure counts even when a call brought it back meanwhile.
         cur = {**(st or blank()), "rechecking": False}
-        if ev.ok:
+        if ev.ok and not (cur.get("flap") and ev.flapping):
             nxt: State = {**cur, **_UP} if st is not None else None
             effects, then = _resume(nxt)
             return nxt, [Log(logging.WARNING, "proxy %s is back up (recheck)"), Announce(False), *effects], then

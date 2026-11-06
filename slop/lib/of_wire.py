@@ -24,6 +24,14 @@ concurrently and are recorded in arrival order.
                                            `proxies.TRACE_URL` here under OF_WIRE), so a
                                            proxy's confirm and recheck probes go through
                                            the fake proxy to loopback, never to 1.1.1.1
+  GET  /api2/v2/chats/{fan}/messages       a thread's history, `messages[uid][fan]` (OF message items, newest
+                                           first) once a scenario set `messages[uid]` (an unset fan:
+                                           empty; a POST below joins it and heads its chat in
+                                           `chats[uid]`, `head_chat`),
+                                           else one text from the Fan (id 8_000_000 + fan % 1e6,
+                                           `hasMore` false: the Thread a click opens);
+                                           `limit` (default 10), `id` = older than (before_id),
+                                           `hasMore`
   POST /api2/v2/chats/{fan}/messages       OF's new message (id, text, createdAt,
                                            fromUser), recorded per Creator in order
                                            with its wire body (`body`)
@@ -48,9 +56,11 @@ concurrently and are recorded in arrival order.
   GET  /api2/v2/campaigns                  the tracking links: `campaigns[uid]` as a scenario set
                                            it (else none), `offset` / `limit` (bare: 10), deleted
                                            ones only with `with_deleted`, `hasMore`
-  GET  /api2/v2/promotions, /vault/media, /posts, /users/{id}/posts
+  GET  /api2/v2/promotions, /posts, /users/{id}/posts
                                            empty pages (`{"list": [], "hasMore": false}`):
-                                           the page sweep's offers, vault, feed
+                                           the page sweep's offers, feed
+  GET  /api2/v2/vault/media                the vault page: `vault_media[uid]` (OF media items, newest first)
+                                           as a scenario set it, else empty; `offset` / `limit` (default 24)
   GET  /api2/v2/vault/lists                the Creator's vault folders, `vault_lists[uid]` (a
                                            scenario sets them; none: an empty page), in the
                                            custom order last sorted (`vault_order[uid]`; folders
@@ -143,6 +153,9 @@ The Creator is the request's signed `User-ID` header (the hash CDN's `u=`).
 Bypass, declared: the `Sign` / `Time` / `X-Hash` headers are only checked to be
 present (`unsigned` counts calls without them), never verified; `LATENCY_S`
 (50 ms per call) is a guess at OF's latency.
+
+`extra_routes`: handlers a flow adds (lib/vault_wire.py), tried after the latency /
+OTP / `fail` gates and before the built-in routes.
 """
 from __future__ import annotations
 
@@ -153,9 +166,10 @@ import threading
 import time
 from collections import Counter
 from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlsplit
 
+from slop.lib.bounded_server import BoundedHTTPServer
 from slop.lib.of_wire_upload import UploadWire
 
 LATENCY_S = 0.05
@@ -182,6 +196,8 @@ class FakeOF:
         self.vault_lists: dict[str, list[dict]] = {}  # per Creator, its vault folders (OF's list items)
         self.vault_order: dict[str, list[int]] = {}   # per Creator, the last customOrder sorted
         self.vault_sorts: dict[str, list[dict]] = {}  # per Creator, every /vault/lists/sort body, in order
+        self.messages: dict[str, dict[int, list[dict]]] = {}  # per Creator, fan -> OF's thread, newest first
+        self.vault_media: dict[str, list[dict]] = {}  # per Creator, the vault page's media, newest first
         self.lock = threading.Lock()
         self.calls: list[dict] = []          # every call, arrival order: {t, account, method, route, status}
         self.sends: dict[str, list[dict]] = {}  # per Creator, the messages OF accepted, in order (`t`: arrival)
@@ -193,10 +209,13 @@ class FakeOF:
         self.lists: dict[str, list[dict]] = {}  # per Creator, its custom fan lists (OF's list items), made order
         self.list_users: dict[int, list[int]] = {}  # list id -> its members, added order
         self.upload = UploadWire(self)  # the media upload's routes and records (lib/of_wire_upload.py)
+        # a flow's own routes, consulted before the built-ins: fn(h, method, u, uid, route, raw) -> True when
+        # it answered (h._record). lib/vault_wire.py is one.
+        self.extra_routes: list = []
         self.unmodelled: Counter = Counter()
         self.unsigned = 0
         self._ids = iter(range(9_000_000_000, 10**12))
-        self._srv: ThreadingHTTPServer | None = None
+        self._srv: BoundedHTTPServer | None = None
         self.ws_connects: list[dict] = []  # arrival order: {t, account, token_ok}
         self._ws_open: dict[str, set] = {}  # account -> its open server-side sockets
         self._ws_loop: asyncio.AbstractEventLoop | None = None
@@ -208,8 +227,7 @@ class FakeOF:
         return f"http://127.0.0.1:{self._srv.server_address[1]}"
 
     def __enter__(self) -> "FakeOF":
-        self._srv = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
-        self._srv.daemon_threads = True
+        self._srv = BoundedHTTPServer(("127.0.0.1", 0), self._handler())
         threading.Thread(target=self._srv.serve_forever, daemon=True).start()
         up = threading.Event()
         threading.Thread(target=self._ws_main, args=(up,), daemon=True).start()
@@ -261,6 +279,16 @@ class FakeOF:
             loop.run_forever()
         finally:
             loop.close()
+
+    def head_chat(self, uid: str, fan: int, msg: dict) -> None:
+        """`msg` is the chat's last message now: OF lists that chat first (call under `lock`)."""
+        rows = self.chats.setdefault(uid, [])
+        old = next((c for c in rows if c["withUser"]["id"] == fan), None)
+        if old is not None:
+            rows.remove(old)
+        last = {k: msg.get(k) for k in ("id", "text", "fromUser", "isFree", "price", "createdAt")}
+        base = old or {"withUser": {"id": fan, "_view": "s"}, "unreadMessagesCount": 0}
+        rows.insert(0, {**base, "lastMessage": last})
 
     def drop_ws(self, account_ids) -> int:
         """Close these Creators' open sockets (OF ends them). Returns how many."""
@@ -343,6 +371,9 @@ class FakeOF:
                     failing = (uid, route) in fake.fail
                 if failing:
                     return self._record(uid, route, 500, FAIL_BODY)
+                for extra in fake.extra_routes:
+                    if extra(self, method, u, uid, route, raw):
+                        return
                 if method == "GET" and u.path == "/api2/v2/users/me":
                     return self._record(uid, route, 200, {"id": int(uid or 0), "username": f"u{uid}",
                                                           "name": f"Creator {uid}", "isPerformer": True,
@@ -355,6 +386,13 @@ class FakeOF:
                         chats = list(fake.chats.get(uid, ()))
                     return self._record(uid, route, 200, {"list": chats[off:off + lim],
                                                           "hasMore": off + lim < len(chats), "nextOffset": off + lim})
+                if method == "GET" and (m := _SEND.fullmatch(u.path)) and uid not in fake.messages:
+                    # A chat's messages page: one text from the Fan (the thread a click opens). A Creator whose
+                    # threads a scenario modelled (`messages[uid]`) is answered from them below instead.
+                    fan = int(m.group(1))
+                    return self._record(uid, route, 200, {"list": [{
+                        "id": 8_000_000 + fan % 1_000_000, "text": "hey", "fromUser": {"id": fan}, "isFree": True,
+                        "price": 0, "media": [], "createdAt": "2026-11-05T10:00:00+00:00"}], "hasMore": False})
                 if method == "GET" and u.path == "/api2/v2/users/notifications/count":
                     return self._record(uid, route, 200, {"all": 0, "subscribed": 0, "purchases": 0, "tip": 0})
                 if method == "GET" and u.path == "/api2/v2/subscriptions/count/all":
@@ -395,7 +433,14 @@ class FakeOF:
                         if body.get("sort") == "custom" and isinstance(body.get("customOrder"), list):
                             fake.vault_order[uid] = [int(x) for x in body["customOrder"]]
                     return self._record(uid, route, 200, {"success": True})
-                if method == "GET" and u.path in ("/api2/v2/promotions", "/api2/v2/vault/media"):
+                if method == "GET" and u.path == "/api2/v2/vault/media":
+                    q = parse_qs(u.query)
+                    off, lim = int((q.get("offset") or ["0"])[0]), int((q.get("limit") or ["24"])[0])
+                    with fake.lock:
+                        media = list(fake.vault_media.get(uid, ()))
+                    page = {"list": media[off:off + lim], "hasMore": off + lim < len(media)}
+                    return self._record(uid, route, 200, page)
+                if method == "GET" and u.path == "/api2/v2/promotions":
                     return self._record(uid, route, 200, {"list": [], "hasMore": False})
                 if method == "GET" and (u.path == "/api2/v2/posts" or re.fullmatch(r"/api2/v2/users/\d+/posts", u.path)):
                     return self._record(uid, route, 200, {"list": [], "hasMore": False})
@@ -465,6 +510,14 @@ class FakeOF:
                         fake.unsends.setdefault(uid, []).append({"t": time.time(), "id": int(qm.group(1))})
                     return self._record(uid, route, 200, {"success": True})
                 m = _SEND.fullmatch(u.path)
+                if method == "GET" and m and uid in fake.messages:
+                    q = parse_qs(u.query)
+                    lim, before = int((q.get("limit") or ["10"])[0]), (q.get("id") or [None])[0]
+                    with fake.lock:
+                        rows = list(fake.messages.get(uid, {}).get(int(m.group(1)), ()))
+                    if before is not None:
+                        rows = [x for x in rows if int(x["id"]) < int(before)]
+                    return self._record(uid, route, 200, {"list": rows[:lim], "hasMore": len(rows) > lim})
                 if method == "POST" and m:
                     body = json.loads(raw or b"{}")
                     with fake.lock:
@@ -475,6 +528,9 @@ class FakeOF:
                                "isFree": True, "lockedText": False}
                         fake.sends.setdefault(uid, []).append({"fan_id": int(m.group(1)), "t": time.time(), **msg,
                                                                "body": body})
+                        if uid in fake.messages:  # a modelled thread: OF's next reads have it on top
+                            fake.messages[uid].setdefault(int(m.group(1)), []).insert(0, msg)
+                            fake.head_chat(uid, int(m.group(1)), msg)
                     return self._record(uid, route, 200, msg)
                 if fake.upload.handle(self, method, u, uid, route, raw):
                     return

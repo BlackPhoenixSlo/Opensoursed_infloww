@@ -10,6 +10,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 EVIDENCE = Path(__file__).resolve().parents[1] / "evidence"
+FOLDER_LINE = "slop: folder {path}"  # printed by every run (lib/cli.py), parsed by lib/nightly.py
+
+
+def parse_folder_line(line: str) -> Path | None:
+    head = FOLDER_LINE.split("{path}")[0]
+    return Path(line[len(head):].strip()) if line.startswith(head) else None
 
 
 def run_dir(scenario: str, tag: str) -> Path:

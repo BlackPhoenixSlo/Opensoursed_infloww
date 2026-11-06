@@ -42,6 +42,34 @@ function writeChatDraft(accountId: string, fanId: FanId, text: string): void {
   window.dispatchEvent(new Event(EVENT));
 }
 
+/** A picked formatted script's markup beside the chat's draft text (`mp:draft-rich:<accountId>:<fanId>`), so a chat
+ *  switch and back still sends it formatted. Read back only while the stored text is still that script's plain
+ *  text (else the draft was edited: it sends plain). */
+export interface ChatRich { html: string; plain: string }
+export const chatRichKey = (accountId: string, fanId: FanId) => `mp:draft-rich:${accountId}:${fanId}`;
+
+export function readChatRich(accountId: string | null, fanId: FanId | null): ChatRich | null {
+  if (!accountId || fanId == null || typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(chatRichKey(accountId, fanId));
+    const r = raw ? (JSON.parse(raw) as ChatRich) : null;
+    if (!r || typeof r.html !== "string" || typeof r.plain !== "string") return null;
+    return readChatDraft(accountId, fanId).trim() === r.plain.trim() ? r : null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeChatRich(accountId: string | null, fanId: FanId | null, rich: ChatRich | null): void {
+  if (!accountId || fanId == null || typeof window === "undefined") return;
+  try {
+    if (rich) window.sessionStorage.setItem(chatRichKey(accountId, fanId), JSON.stringify(rich));
+    else window.sessionStorage.removeItem(chatRichKey(accountId, fanId));
+  } catch {
+    return; // storage full or blocked: the markup lives only in the composer
+  }
+}
+
 /** The composer's text state, restored from and saved to the chat's draft.
  *  Without a chat (a mass composer) it is plain state. The Composer remounts
  *  per chat (MessagesPro keys ChatSurface by Creator and Fan), so the draft

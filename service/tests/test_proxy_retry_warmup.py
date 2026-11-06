@@ -51,7 +51,8 @@ class _Resp:
 def case_xhash_retries_then_succeeds():
     """Transient ProxyError on the first 2 attempts → retried, 3rd succeeds.
     The >=1200ms wall time proves the 0.4s + 0.8s _proxy_retry pauses actually
-    ran (i.e. this isn't the old fast-fail path)."""
+    ran (i.e. this isn't the old fast-fail path); the jitter draw is pinned to
+    1.0, so each pause is its ceiling."""
     calls = {"n": 0}
 
     def flaky_get(url, **kw):
@@ -61,8 +62,12 @@ def case_xhash_retries_then_succeeds():
         return _Resp()
 
     c = _bare_client(types.SimpleNamespace(get=flaky_get))
+    real_random, of_client.random = of_client.random, types.SimpleNamespace(random=lambda: 1.0)
     t0 = time.monotonic()
-    h = c._ensure_x_hash()
+    try:
+        h = c._ensure_x_hash()
+    finally:
+        of_client.random = real_random
     dt = (time.monotonic() - t0) * 1000
     assert h == "HASHVAL", h
     assert calls["n"] == 3, calls["n"]
@@ -86,25 +91,28 @@ def case_xhash_cached_after_first_fetch():
 def case_xhash_persistent_failure_raises_after_five():
     """A genuinely dead/blocked proxy still surfaces (we don't retry forever)
     — exactly `tries` attempts with doubling pauses, then the ProxyError
-    propagates."""
-    calls = {"n": 0}
-    pauses = []
+    propagates. The jitter draw pinned to 1.0 (each pause its ceiling) and to
+    0.0 (its floor, half: a refusal burst still spends >= 3 s before giving up)."""
+    for draw, want in ((1.0, [0.4, 0.8, 1.6, 3.2]), (0.0, [0.2, 0.4, 0.8, 1.6])):
+        calls = {"n": 0}
+        pauses = []
 
-    def always_fail(url, **kw):
-        calls["n"] += 1
-        raise requests.exceptions.ProxyError(_PROXY_403)
+        def always_fail(url, **kw):
+            calls["n"] += 1
+            raise requests.exceptions.ProxyError(_PROXY_403)
 
-    c = _bare_client(types.SimpleNamespace(get=always_fail))
-    real_sleep = of_client.time.sleep
-    of_client.time.sleep = pauses.append
-    try:
-        c._ensure_x_hash()
-        assert False, "should have raised ProxyError"
-    except requests.exceptions.ProxyError:
-        assert calls["n"] == 5, calls["n"]
-        assert pauses == [0.4, 0.8, 1.6, 3.2], pauses
-    finally:
-        of_client.time.sleep = real_sleep
+        c = _bare_client(types.SimpleNamespace(get=always_fail))
+        real_sleep, real_random = of_client.time.sleep, of_client.random
+        of_client.time.sleep = pauses.append
+        of_client.random = types.SimpleNamespace(random=lambda d=draw: d)
+        try:
+            c._ensure_x_hash()
+            assert False, "should have raised ProxyError"
+        except requests.exceptions.ProxyError:
+            assert calls["n"] == 5, (draw, calls["n"])
+            assert pauses == want, (draw, pauses)
+        finally:
+            of_client.time.sleep, of_client.random = real_sleep, real_random
 
 
 def case_egress_ip_retries_then_succeeds():

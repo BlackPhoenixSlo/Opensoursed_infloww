@@ -16,20 +16,36 @@ slop/run all --no-ui                             # every scenario, skip next dev
 slop/run inbox --set per_fan=20 --seed=7         # scenario params, another deterministic world
 slop/run big-model --dms-per-min=50,100,200       # any --knob=value is a scenario param too
 slop/run big-model --profile                      # + per-stage stack profile of the relay
+slop/run fan-list-chips --net=jp                  # every page actors/ui.py opens on a lib/net.py phone network
 slop/run big-model --break --fault=access-log-writer-spin-waits --baseline=slop/evidence/<run-dir>
                                                  # break-it-once with another fault than the scenario's
-SLOP_PY=/usr/local/bin/python slop/run ...       # another Python for the relay
+SLOP_PY=/usr/local/bin/python slop/run ...       # another Python for the relay (with `coverage` for --map)
 slop/run all --timeout=600                       # wall clock per scenario run (default 1800 s, 0 = none)
+slop/run --changed                               # only the scenarios the diff reaches (slop/map.json), cheapest first
+slop/run --changed --dry                         # print and record the pick, run nothing; other knobs as for `all`
+slop/run --changed --budget=0                    # no time cap on the shared/layout tail (default 15 min)
+slop/run all --map                               # rebuild slop/map.json (clean tree; coverage on, slower)
+slop/run inbox --no-wait                         # INFRA at once if no gate slot is free or admission fails
+SLOP_MAX_LOAD=6 SLOP_LOCK_WAIT_S=600 slop/run inbox   # the machine gate's load cap (default 12) and slot wait (3600 s)
+python3 ~/.slop/gate.py status                   # slot holders, who queues, load, machine threads, would admission pass
+python3 ~/.slop/gate.py run -- venv/bin/python -m pytest tests/test_vault_sync.py   # any other heavy work, same gate
+slop/run nightly --detach                        # the daily full sweep in the background (below: Nightly)
 ```
+
+One machine gate: every `slop/run` from any checkout, worktree or repo takes one of
+`SLOP_MAX_RUNS` (6) slots of `~/.slop/gate.py`, then waits for admission (load and threads);
+never hand-roll a `lockf` or an `until load < N` loop around it, and gate other heavy work with
+`gate.py run --` ("The machine gate" below).
 
 Needs the repo's `venv/` (FastAPI, uvicorn, httpx, Playwright with Chromium) and
 `node` with `app/node_modules` for UI scenarios (`web/node_modules` for fleet-200's
-landing build). In a linked worktree (`git worktree add`), `slop/run` links each one
+landing build, `desktop/node_modules` for notif_click's Electron). In a linked worktree (`git worktree add`), `slop/run` links each one
 it lacks to the main checkout's on the first call (`slop/run --list` is enough), so
 `venv/bin/python` for service tests works there too. Exit code: 0 every scenario passed
 (SKIP is not a pass, but not a failure), 1 a check failed, 3 infra (the stack did not
-come up, the scenario crashed, or it ran past `--timeout`). With `--break`: 0 CAUGHT,
-1 NOT CAUGHT, 3 INCONCLUSIVE.
+come up, the scenario crashed, or it ran past `--timeout`), 75 the machine gate gave up (slot
+or admission) or its thread guard killed the run (`thread-guard.txt` in its evidence folder). With `--break`:
+0 CAUGHT, 1 NOT CAUGHT, 3 INCONCLUSIVE.
 
 `--timeout` bounds each scenario run from stack start to teardown (a hung browser
 close or teardown included). Past it, SIGALRM cancels the scenario, its finally blocks
@@ -72,35 +88,163 @@ The load must not depend on the fault: actors pick what to do from the seed, not
 what the faulted route answered, else the fault also changes the load and a latency
 budget goes red as noise.
 
+## Which scenarios to run
+
+`slop/run all` is ~37 min with `--no-ui`, ~65+ with UI (small, measured from the runs' `seconds`).
+`slop/run --changed` runs only the scenarios the diff can reach, from `slop/map.json`, which runs
+built: no list to curate. `all` stays for deploys and harness-wide changes.
+
+- `slop/run <target> --map` runs the scenarios under coverage.py (`COVERAGE_CORE=sysmon`, lines
+  only; the relay's Python, `SLOP_PY` if set, needs `coverage` installed too): every relay the stack
+  starts (`lib/stack.py` `relay_cmd()`, env `SLOP_COVERAGE`), saved every 5 s (`POST
+  /__slop/coverage-save`, lib/procmon.py) and once before teardown, so a SIGKILLed relay keeps its
+  data; and the harness process (`slop/` only) from just before the scenario is imported, plus the
+  slop modules already loaded in the process (an earlier scenario of the same `all --map` imported
+  them: listed with no functions). Its browsers record every main-frame path they navigate to
+  (`actors/ui.track`: owner_browser, owner_tabs, chatter_tab, popups, and the contexts dashboard-load
+  and fleet-200 open themselves) in `ui-pages.json`; actors' plain HTTP calls to an app or the fleet
+  edge (`lib/client.py` `Recorder.urls`) record their paths in `http-pages.json` (a `route.ts` such as
+  `/site-auth` reached with no browser). Then the scenario's map entry is replaced: `{"sha", "built",
+  "seconds", "scale", "ui", "py": {file: [functions whose body ran]}, "pages": [browser and HTTP
+  paths], "http_pages": [HTTP only], "volume"}` (functions qualified `Class.method` / `outer.inner`,
+  from `ast` over the file at `sha`; a file is listed when any of its lines ran). A `--no-ui` run of
+  a UI scenario keeps the old entry's pages. An INFRA run keeps the old entry; entries of deleted
+  scenarios go. `--map` refuses a dirty tree under service/ slop/ scripts/ app/ deploy/fleet/
+  desktop/ (the sha must be the code that ran) and runs with `map: true` in `params`, so a coverage
+  run is never another run's p95 or break baseline; its budget reds do not block the map. Not with
+  `--break` or `--changed`.
+- `slop/run --changed [--dry]` diffs the tree now (branch commits, staged, uncommitted and untracked
+  files) against `git merge-base HEAD origin/main` (else `main`; `--since=<ref>` overrides it,
+  `--since=map` diffs against each entry's sha: drift since the sweep), so a clean main picks
+  nothing (`git diff -U0 --no-renames`: a rename is its old path deleted, every line touched, and
+  its new path added) under service/ slop/ scripts/demo-shots/ app/ deploy/fleet/ desktop/. The map
+  is matched by function name against the file at the entry's sha; the header prints the base and
+  the map's age in commits, with a WARN to `slop/run all --map` past 200. It picks
+  (`lib/selection.py`, pure, tables in `lib/test_selection.py`):
+  - Python: a changed line inside a function body picks the scenarios that ran that function; one at
+    module level, on a decorator or signature (they run when the enclosing body runs: module level
+    for a top-level def, the outer function for a nested one), or inside a function the base or the
+    map's sha did not have (a new or renamed function, an override) picks every scenario that lists
+    the file. Blank lines and module comments pick nothing; an inserted line is judged where it lands.
+  - App: a changed file picks the scenarios whose recorded pages match a route (`page`/`route`,
+    `(group)` dropped, `[x]` one segment) or layout prefix that imports it (the walk of
+    `app/test-import-graph.ts`, side-effect `import "./x.css"` and `.js` specifiers of `.ts` sources
+    too); the root layout's and `middleware.ts`'s trees, `globals.css`, `app/fonts/`, `public/` and app
+    config (`next.config.*`, `package.json`, ...) pick every scenario a browser drove; a deleted app
+    file picks every scenario with pages. Tooling (`*.config.*` other than next/postcss, vitest,
+    eslint, `next-env.d.ts`) is ignored.
+  - Other runtime files: `scripts/demo-shots/fetch-guard.cjs` every scenario a browser drove;
+    `deploy/fleet/**` the scenarios listing `lib/box.py` or `lib/edge.py`; `desktop/**` those listing
+    `actors/notif_click.py`; `slop/lib/*.mjs` those listing `lib/app_ts.py`; any other non-.py file
+    under service/ or slop/ (json, sql, `slop/run`, ...) every scenario, `shared`, with a WARN.
+  - A scenario whose own file changed is always picked.
+
+  Each reason has a tier, the scenario's is its best: `own` (its file changed), `flow` (through a
+  function, module-level hunk, route or runner at most 15% of the mapped scenarios run / list /
+  visit: the flow's own code), `shared` (more of them), `layout` (the root layout / middleware tree,
+  globals.css, fonts, public/, app config, fetch-guard, a deleted app file). A route reason beats a
+  layout one. They run tier first, then by estimated seconds: the newest green non-`--map` run at
+  this scale and UI in `evidence/`, else the map's (coverage-mode, slower); the summary says which
+  (`est: evidence|map`). `own` and `flow` always run, `shared` and `layout` only while the estimate
+  (own/flow included) stays within `--budget=MIN` (default 15, 0 = no cap): from the first that would
+  pass it the rest print as `SKIP (budget)`, are never counted green and leave the exit code alone.
+  With `--no-ui`, a pick whose every reason is a page a browser visited prints as `SKIP (needs
+  UI)`, same rules. A scenario mapped with `P95_VS_LAST`, `CPU_BUDGET_PCT` or `POOL_GATE` is tagged
+  `volume` (in the pick and `--list`): its `--scale=medium --users=200 --no-ui` matters only when it is
+  an `own`/`flow` pick; `--break --baseline=<its green folder>` is for every `own` pick that declares
+  `FAULT` (`--changed --break` refuses: break is per scenario, by name). It prints each pick with its
+  estimate, tier, tag and reasons, the base shas and how far behind HEAD, the WARNs (`uncovered`: a
+  changed file under those roots that reaches no mapped scenario; `not executed by any scenario:
+  file::func`: a body hunk in a function no scenario ran; `deleted app file`; `non-.py runtime file`;
+  never a failure, run that flow yourself) and `WARN unmapped`, writes
+  `evidence/<stamp>-changed-<hex>/pick.{json,txt}`, then runs the picks with the other knobs as `all`
+  would, and repeats the skips and WARNs after the last run. Docs (`*.md`), `web/`, tests
+  (`*.test.*`, `service/tests/`, `test_*.py`) and files outside those roots (`requirements.txt`) are
+  ignored. No map: exit 2.
+- Staleness: the pick is conservative against an old sha (every change since it counts, committed or
+  not), but code added after it is in no entry: a new function or override picks every scenario
+  listing its file (module level); a new file is `uncovered`. Refresh with `slop/run all --map` (UI
+  on) when `--list` shows shas far behind or many unmapped.
+- Not mapped: the Electron app `actors/notif_click` drives (its pages are in no `ui-pages.json`;
+  `desktop/**` edits pick its scenarios), app code reached only through `lib/app_ts.py` node scripts
+  (`*.mjs` edits pick them; their app imports do not), and subprocesses the relay runs (only the relay
+  process itself is under coverage). Harness modules `slop/run` imports before coverage starts
+  (`lib/cli.py`, `lib/covmap.py`, `lib/selection.py`, ...) have no module-level coverage: listed by the
+  sys.modules pass, but their functions are `not executed` unless a scenario calls them. A fault's
+  own code runs only under `--break` (a no-fault relay no longer loads `lib/faults.py`), so a
+  `*_faults.py` edit is `uncovered`: run that flow's `--break`. `--list` shows each scenario's mapped
+  seconds and sha (or `unmapped`).
+
+**Nightly.** `slop/run nightly [--dry] [--phases=all,volume,map] [--smoke] [--detach]`
+(`lib/nightly.py`, tables in `lib/test_nightly.py`) is the daily full sweep, notifications
+and Electron included: phase `all` (every scenario, small, UI on), `volume` (every map entry tagged
+`volume` at `--scale=medium --users=200 --no-ui`), `map` (`--map` for each unmapped scenario; every
+scenario when the newest map sha is > 100 commits behind HEAD, any map sha is not an ancestor of HEAD, or
+it is Sunday). Each scenario is its own
+`slop/run <name> <knobs>`, its verdict that run's exit code (0 OK, 1 FAIL, 3 INFRA, 2 refused = INFRA
+with its printed reason, 1 without invariants.json = INFRA; invariants.json only names the failed checks); a FAIL in `all` or `volume`
+re-runs once (green = `FLAKY`, INFRA stays INFRA); a `--map` run red only on budgets is `RED (coverage)` (counted as ok).
+The machine gate owns admission: the nightly parent never holds it (`slop/run` starts it as `venv/bin/python
+-m slop.lib.nightly`, untouched by the venv hook; an inherited `SLOP_GATE*` is dropped with `slop: nightly:
+ignoring inherited SLOP_GATED`); each child `slop/run` takes its own gate slot (queues when none is free), env without `SLOP_GATE*`, with
+`SLOP_LOCK_WAIT_S=7200`; a child's gate exit 75 = INFRA with the gate's `INFRA: <reason>`. plan.txt
+records `python3 ~/.slop/gate.py status` at the start, summary.md the children's total gate wait. First
+`app/node_modules` must be this worktree's own install: a symlink, a missing dir or a
+`pnpm-lock.yaml` sha256 other than `app/node_modules/.slop-lock-sha` runs `gate.py run -- pnpm install
+--frozen-lockfile` (in a slot, same env; output in run.log, cap 7200 s slot wait + 1200 s install; failure, timeout or gate exit 75:
+the night INFRA). The driver itself runs at nice 10 and spawns nothing heavy outside a gated child. Runs under `caffeinate -i`. `--smoke` = os-ping-push +
+inbox-unread-fan-burst, notifications-feed-volume, the unmapped. `--dry` prints the plan only.
+`--detach` prints the folder and returns. Evidence: `evidence/<stamp>-nightly-<hex>/`: `plan.txt`,
+`run.log`, `status.json` (pid, phase, scenario, done/total), `summary.json`, `summary.md`, `map.json`
+(the map phase's result; the worktree's `slop/map.json` is restored), `done` (the exit code, written
+last, also after SIGTERM or a crash). No `done` and `ps -o lstart= -p <pid>` not printing status.json's
+`pid_lstart` (the pid died, e.g. the Mac rebooted mid-run, or was reused since) = INFRA. Read `summary.md`:
+line 1 `NIGHTLY OK|RED|INFRA <stamp>: ok/flaky/fail/infra/skip of n`, walls and load, per phase the
+non-OK rows (all rows when <= 10) with run folder (a re-run's too), failed checks or INFRA reason, then
+changes vs the previous finished (`done`) nightly of the same phases and smoke (newly red / green, p95_vs_last_green keys
+moved > 20%) and the map status. Exit 0 OK or only FLAKY, 1 a stable FAIL, 3 INFRA.
+`slop/run nightly --apply-map=<nightly folder>` merges that folder's refreshed entries (its
+summary.json `map.mapped`) into `slop/map.json`, the others untouched: run it on a fresh branch from
+origin/main to ship the map PR. The schedule lives in the T3 app scheduler (02:00 local daily, a fresh
+thread per run) in the detached worktree `~/oi-slop-nightly` (never the main checkout):
+update it to origin/main, `slop/run nightly --detach`, poll for `done`, report `summary.md`.
+
 ## Layout
 
 | Path | Role |
 |---|---|
 | `run` | The single entrypoint (bash, then `lib/cli.py`). |
-| `lib/stack.py` | A throwaway stack for each scenario: the relay on a temp SQLite DB, plus `next dev` if the scenario has UI. Uses free loopback ports and restores `app/tsconfig.json` and `next-env.d.ts` on exit (a file that did not exist before the run is deleted, not restored; a run without `next dev` touches neither). Points `TYPESAFE_BASE_URL` at the relay's loopback fake (a flow's relay part serves it, and points the DeepSeek provider at its own); `SLOP_LIVE=1` instead passes the caller's `TYPESAFE_API_KEY` / `DEEPSEEK_API_KEY` and allows only `api.typesafe.ai` and `api.deepseek.com` off-host. `shards=N` (a fleet): N relays, each with its own temp dir (`sNN/`: DB, sessions, off-host log), port, process group and SESSION_SECRET, logs `relay-sNN.log`; `next dev` only on the scenario's `APPS` shard indexes (`next-sNN.log`), or on its `UI_APPS` when the run has UI. `boxes={name: (shard indexes)}` (a scenario's `BOXES`, with `SHARDS_PER_BOX`) lays the shards out as the boxes do: `<box>/shards/sNN/` with `data/chatterly.db`, `service/` (sessions, secrets, off-host log) and a `.env` with the session secrets, as `oi-backup` reads them. `kill_group(pid)` SIGKILLs any process group it started; `stop_relay(i, grace_s)` stops relay `i` as `docker stop` does (SIGTERM to its group, SIGKILL past the grace) and returns when it exited and how long it took. A scenario's `RELAY_ENV` dict is added to every relay's env (lib/cli.py). `relay_cmd()`, `relay_env_of(i)`, `spawn(cmd, env, log)` and `wait_ready(...)` start another relay (another box's) the stack still reaps and collects off-host logs from. `SLOP_PY` picks the relay's Python. `app_mode="prod"` (a scenario's `APP_MODE`, one shard) serves the app as production does instead: `next build --turbopack` into `app/.next/slop-prod` against this run's relay (the rewrites bake `RELAY_URL` in; ~15 s, `next-build.log`), then `next start`; the build's edits to `tsconfig.json` / `next-env.d.ts` are put back at once. In a worktree, Turbopack refuses `slop/run --list`'s symlinked `app/node_modules`: the run stops and names the fix (an APFS clone, `cp -cR`). A stack with `next dev` takes an exclusive per-checkout lock (`app/.next/slop.lock`, flock): a second one refuses with INFRA and names the holder, since both would share `app/.next/slop*` and rewrite `app/tsconfig.json`. |
+| `lib/stack.py` | A throwaway stack for each scenario: the relay on a temp SQLite DB, plus `next dev` if the scenario has UI. Uses free loopback ports and restores `app/tsconfig.json` and `next-env.d.ts` on exit (a file that did not exist before the run is deleted, not restored; a run without `next dev` touches neither). Points `TYPESAFE_BASE_URL` at the relay's loopback fake (a flow's relay part serves it, and points the DeepSeek provider at its own); `SLOP_LIVE=1` instead passes the caller's `TYPESAFE_API_KEY` / `DEEPSEEK_API_KEY` and allows only `api.typesafe.ai` and `api.deepseek.com` off-host. `shards=N` (a fleet): N relays, each with its own temp dir (`sNN/`: DB, sessions, off-host log), port, process group and SESSION_SECRET, logs `relay-sNN.log`; `next dev` only on the scenario's `APPS` shard indexes (`next-sNN.log`), or on its `UI_APPS` when the run has UI. `boxes={name: (shard indexes)}` (a scenario's `BOXES`, with `SHARDS_PER_BOX`) lays the shards out as the boxes do: `<box>/shards/sNN/` with `data/chatterly.db`, `service/` (sessions, secrets, off-host log) and a `.env` with the session secrets, as `oi-backup` reads them. `kill_group(pid)` SIGKILLs any process group it started; `stop_relay(i, grace_s)` stops relay `i` as `docker stop` does (SIGTERM to its group, SIGKILL past the grace) and returns when it exited and how long it took. A scenario's `RELAY_ENV` dict is added to every relay's env (lib/cli.py). `relay_cmd()`, `relay_env_of(i)`, `spawn(cmd, env, log)` and `wait_ready(...)` start another relay (another box's) the stack still reaps and collects off-host logs from. `SLOP_PY` picks the relay's Python. `app_mode="prod"` (a scenario's `APP_MODE`, one shard) serves the app as production does instead: `next build --turbopack` into `app/.next/slop-prod` against this run's relay (the rewrites bake `RELAY_URL` in; ~15 s, `next-build.log`), then `next start`; the build's edits to `tsconfig.json` / `next-env.d.ts` are put back at once. In a worktree, Turbopack refuses `slop/run --list`'s symlinked `app/node_modules`: the run stops and names the fix (an APFS clone, `cp -cR`). A stack with `next dev` takes an exclusive per-checkout lock (`app/.next/slop.lock`, flock): a second one refuses with INFRA and names the holder, since both would share `app/.next/slop*` and rewrite `app/tsconfig.json` (two `slop/run`s from one checkout can each hold a `~/.slop/gate.py` slot and meet it). Every process it starts runs at nice 10 (`nice_child`, also used by litestream and Browserbase's Chromium). |
+| `lib/gate.py`, `lib/pw-node` | The machine gate ("The machine gate"): `machine_gate(wait, evidence)` around each scenario run in `lib/cli.py`, loading `~/.slop/gate.py` (not in git; missing is INFRA, `SLOP_GATE=off` runs ungated); `pw-node`, Playwright's driver node at nice 10. |
 | `lib/relay.py` | Runs `scripts/demo-shots/relay_guarded.py` (network guards, redirected secrets and sessions, `CHATTERLY_TEST_MODE`), starts the production persist worker, adds loopback-only `/__slop/*` hooks (below) and answers OnlyFans' side of `OFClient.send_message` (and `get_messages` from `of-truth.jsonl`; OF Statistics' `earnings_chart` / `my_profile_stats` / `subscribers_chart` from `of-statistics.json`, each read 0.3 s, counted as `of_earnings_reads`; `me()` from `of-me.json`). `POST /__slop/of-stats-tick` runs one `of_stats_daily` pass now. A flow's relay part, `lib/<flow>_relay.py` when present, adds to the offline OnlyFans (its `OF` class joins `_OfflineOF`'s bases) and wires its own hooks (`wire(app, loopback, relay)`, at the end of `_wire`). `SLOP_SUPERVISOR=1` starts the real automation supervisor (`CHATTERLY_TEST_MODE` skips it otherwise). Passes `UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN` (5, as the Dockerfile) to uvicorn. Applies `SLOP_FAULT`. `relay_guarded.py` points the proxy registry (`proxies.REGISTRY_PATH`) at the temp dir's `proxies.json`, so a proxy added through `/admin/proxies` never touches the checkout's; `POST /__slop/proxy-pool {text}` runs the startup's own `proxies.sync_pool` (the fake proxies' ports exist only once the relay is up) and evicts the pooled clients; under `OF_WIRE` it points `proxies.TRACE_URL` (the proxy probe's Cloudflare trace) at `lib/of_wire.py`'s `/cdn-cgi/trace`. |
 | `lib/automation_relay.py` | The automation lane's relay part (loaded before every flow's part that builds on it): its offline OnlyFans client (`ax._make_client` without `OF_API_ORIGIN`: `me()`, sends, and with `of-mass.json` OF's mass messages, recipient crawl and in-process user lists) and a loopback DeepSeek fake (send_followup's nudge; a flow adds its prompts through `ANSWERS`, its client methods through `WALKER_MIXINS`; module docstring). |
-| `lib/of_wire.py` | OnlyFans' API at its wire, on loopback (`FakeOF`, a stdlib `ThreadingHTTPServer` in the harness process, a thread per request): what the relay's REAL `OFClient` (curl_cffi, signed headers) reaches when a scenario sets `OF_WIRE = True`. `lib/cli.py` starts it and points the relay's `OF_API_ORIGIN` (the product's loopback-only seam, ADR 0024) at it. Answers the hash CDN, the signing chunk (`/static/prod/f/<rev>/2313.js`, `lib/browserbase.py`'s synthetic one, so a paste-curl `POST /admin/session/bootstrap` derives its rules), `GET /api2/v2/users/me` (with the WS ticket, `wsUrl` + `wsAuthToken`), `GET /api2/v2/chats` (empty), `GET /api2/v2/users/notifications/count` (all zero), the Dashboard's per-Creator reads `GET /api2/v2/subscriptions/count/all`, `subscriptions/subscribers/chart`, `payouts/referrals/chart` and `users/notifications` (empty or zero; subscriber counts from the Creator id), `GET /api2/v2/vault/lists` (a scenario's `vault_lists[uid]`, in the last sorted custom order), `POST /api2/v2/vault/lists/sort` (recorded, `customOrder` kept), `GET /api2/v2/campaigns` (`campaigns[creator]` as a scenario set it, paged by `offset` / `limit`, deleted ones only with `with_deleted`), `POST /api2/v2/chats/{fan}/messages` (kept per Creator, in order), `POST /api2/v2/messages/queue` and `POST /api2/v2/posts` (wire bodies kept per Creator, in order: `queue`, `posts`), the empty fans / following rosters `GET /api2/v2/subscriptions/subscribers` and `subscriptions/subscribes`, `GET /api2/v2/vault/media/{id}` (`vault[creator][id]` as a scenario set it, else OF's 404 "Media Not Found"), OF's custom fan lists (`GET`/`POST /api2/v2/lists`, `GET /api2/v2/lists/{id}/users`, `POST`/`DELETE .../users/{user}`: per Creator `lists`, members in `list_users`; a mass send's Auto_Exclude sync), and Cloudflare's `GET /cdn-cgi/trace` (the proxy probe's, through the fake proxy to loopback, never 1.1.1.1); any other path is a counted 404 (`unmodelled`). The module docstring is the route table. Serves OF's chat WebSocket too (`websockets`, its own thread and loop): `{"act":"connect"}` is answered `{"connected":true,"v":"5.4.0"}` as OF does, then nothing is pushed; `ws_connects` records each connect, `drop_ws(ids)` ends those Creators' sockets (the pump reconnects through `/users/me`). `set_otp(ids)` makes those Creators' every `/api2/` call answer 400 with OF's code-101 `otpState` body; `fail` (a set of (Creator, route label)) answers that Creator's calls on that route 500 while armed (OF failing one model of a fan-out). Every `/api2/` call waits `latency_s`, plus `extra_s[creator]` for that Creator (a slow proxy, e.g. retries on CONNECT 403). Records every call (`calls`: time, Creator, route, status) in arrival order. Its media upload is `lib/of_wire_upload.py` (`FakeOF.upload`; `README.upload.md`). |
+| `lib/of_wire.py` | OnlyFans' API at its wire, on loopback (`FakeOF`, a stdlib `ThreadingHTTPServer` in the harness process, a thread per request): what the relay's REAL `OFClient` (curl_cffi, signed headers) reaches when a scenario sets `OF_WIRE = True`. `lib/cli.py` starts it and points the relay's `OF_API_ORIGIN` (the product's loopback-only seam, ADR 0024) at it. Answers the hash CDN, the signing chunk (`/static/prod/f/<rev>/2313.js`, `lib/browserbase.py`'s synthetic one, so a paste-curl `POST /admin/session/bootstrap` derives its rules), `GET /api2/v2/users/me` (with the WS ticket, `wsUrl` + `wsAuthToken`), `GET /api2/v2/chats` (empty, or a scenario's `chats[uid]`, paged by `offset` / `limit`), `GET /api2/v2/chats/{fan}/messages` (a scenario's `messages[uid][fan]`, newest first, paged by `limit` / `id` = older than, `hasMore`; a Creator with no `messages[uid]`: one text from the Fan, id 8_000_000 + fan % 1e6), `GET /api2/v2/vault/media` (a scenario's `vault_media[uid]`, paged by `offset` / `limit`, default 24), `GET /api2/v2/users/notifications/count` (all zero), the Dashboard's per-Creator reads `GET /api2/v2/subscriptions/count/all`, `subscriptions/subscribers/chart`, `payouts/referrals/chart` and `users/notifications` (empty or zero; subscriber counts from the Creator id), `GET /api2/v2/vault/lists` (a scenario's `vault_lists[uid]`, in the last sorted custom order), `POST /api2/v2/vault/lists/sort` (recorded, `customOrder` kept), `GET /api2/v2/campaigns` (`campaigns[creator]` as a scenario set it, paged by `offset` / `limit`, deleted ones only with `with_deleted`), `POST /api2/v2/chats/{fan}/messages` (kept per Creator, in order), `POST /api2/v2/messages/queue` and `POST /api2/v2/posts` (wire bodies kept per Creator, in order: `queue`, `posts`), the empty fans / following rosters `GET /api2/v2/subscriptions/subscribers` and `subscriptions/subscribes`, `GET /api2/v2/vault/media/{id}` (`vault[creator][id]` as a scenario set it, else OF's 404 "Media Not Found"), OF's custom fan lists (`GET`/`POST /api2/v2/lists`, `GET /api2/v2/lists/{id}/users`, `POST`/`DELETE .../users/{user}`: per Creator `lists`, members in `list_users`; a mass send's Auto_Exclude sync), and Cloudflare's `GET /cdn-cgi/trace` (the proxy probe's, through the fake proxy to loopback, never 1.1.1.1); any other path is a counted 404 (`unmodelled`). The module docstring is the route table. Serves OF's chat WebSocket too (`websockets`, its own thread and loop): `{"act":"connect"}` is answered `{"connected":true,"v":"5.4.0"}` as OF does, then nothing is pushed; `ws_connects` records each connect, `drop_ws(ids)` ends those Creators' sockets (the pump reconnects through `/users/me`). `set_otp(ids)` makes those Creators' every `/api2/` call answer 400 with OF's code-101 `otpState` body; `fail` (a set of (Creator, route label)) answers that Creator's calls on that route 500 while armed (OF failing one model of a fan-out). Every `/api2/` call waits `latency_s`, plus `extra_s[creator]` for that Creator (a slow proxy, e.g. retries on CONNECT 403). Records every call (`calls`: time, Creator, route, status) in arrival order. Its media upload is `lib/of_wire_upload.py` (`FakeOF.upload`; `README.upload.md`). |
 | `lib/proxy_wire.py` | A Creator's proxy at its wire, on loopback (`ProxyWire`, a SOCKS5 server, a thread per connection): bound through the product's own `POST /admin/proxies` + `/admin/proxies/assign`, it tunnels the relay's REAL `OFClient` to `lib/of_wire.py`. `kill()` ends the open tunnels and answers each later CONNECT, after `refuse_s` (0.33 s, measured from prod's `proxy_error_retry` gaps), with SOCKS5 reply 0x02, which curl_cffi raises as `ProxyError` like prod's CONNECT 403, so the product's retry, proxy_health and 502 run unchanged. `revive()` lets CONNECTs through again. Records every CONNECT (`connects`: t, alive, dest; the probe's trace CONNECTs too, which the relay logs as `proxy_probe`). A pool of them is synced through `POST /__slop/proxy-pool` (`lib/relay.py`). Declared: SOCKS5, not HTTP CONNECT (curl tunnels only an https target through an HTTP proxy, and the fake OF is http). |
 | `lib/wan.py` | A phone's way to the app, all on loopback: `WanEdge(stack, rtt_ms)` puts nghttpx (TLS, HTTP/2, as Traefik) in front of the stack's app and a `DelayProxy` (each byte held half the RTT each way, order kept; a new connection one RTT before its first byte) in front of that, so a fresh connection pays connect + TLS 1.3 + request = 3 RTTs, as a live deployment measured. `edge.url` is `https://localhost:<port>`; launch Chromium with `edge.chrome_args` (the per-run self-signed cert's SPKI pinned), not `ignore_https_errors`: Chromium caches nothing from an origin with a certificate error. Bandwidth and CPU are Chromium's throttling (CDP); no loss, no TCP slow start. Edge access log `edge-access.log`. |
+| `lib/net.py`, `lib/net_faults.py` | Named phone networks (`PROFILES`: si 25 ms; jp 250 ms; jp-mobile 250 ms, 1.6 / 0.75 Mbit/s; jp-bad 400 ms, 1 / 1 Mbit/s) and `emulate(cdp, profile)` (CDP `Network.emulateNetworkConditions`: latency per request, no handshake RTTs or slow start, unlike `lib/wan.py`'s DelayProxy); `Meter(cdp)` (every request a page sends: `mark()`, `window()`, `await settled(page, key)` = key shown + the network `idle_ms` quiet, the /events stream and the perf-log beacon (`/admin/perflog/`, a 10 s timer) aside). `--net=<profile>` (`ctx.net`, recorded in the params so `--baseline` must match) throttles every page `actors/ui.py` opens and blocks its service workers; unset, nothing changes. Caveat: `actors/ui.py`'s `route("**/*")` turns Chromium's HTTP cache off, so a throttled page there refetches every chunk and image a real phone would have cached (slow-connections drives raw Playwright behind `lib/wan.py`'s edge for that reason). `dashboard-load` is exempt: it keeps its own `NETS` over `lib/wan.py`. CDP's `packetLoss` is WebRTC only; loss is the wire profiles' (`jp-lossy`, `jp-lossy-bad`: dummynet, "Wire mode: packet loss" below; slow-connections only, never in `DEFAULT_PROFILES` until their budgets exist). CDP's throttle is the page's: a service worker's own fetches and events on an open stream ride unthrottled. `net_faults.py`: slow-connections' `net-si-budget-forced` and its budget check names. |
 | `lib/browserbase.py` | The outside world of a served Browserbase login, on loopback: `World(tmp, accounts={email: uid}, otp=, password=, chromium=, autosubmit={email})` runs Browserbase's API (`POST /v1/sessions` launches a fresh local Chromium and answers its CDP URL as `connectUrl`; `/debug` answers a live-view stand-in page that shows that Chromium's tab; release stops it) and OnlyFans' site over a self-signed TLS server (login form, "Signing in…" for `SIGNIN_MS`, 2FA prompt with a decoy first form, "Verifying…" with no field for `VERIFY_MS` after a code, `/my/chats/` with a signed request and a stand-in of OF's signing module, `/api2/v2/users/me`). Every page carries a hidden reCAPTCHA frame (served from the fake site). An `autosubmit` account's 2FA field sends its form itself on the last digit. Chromium maps `onlyfans.com` to the fake site and every other host to NOTFOUND. Records `calls`, `logins`, `otp_tries`, `otp_sends` (code and how it was sent: `click`, `enter` or `auto`), `decoys`, `captcha_frames`, `sessions`. `paste_curl(uid, rev)` is the curl the owner copies from DevTools for a Creator (the body of `POST /admin/session/bootstrap`). |
 | `lib/app_ts.py` | The app's own TypeScript in node, for a check that rests on client logic (`app/lib/`, `app/hooks/`), also in a `--no-ui` run: `await run(ctx, script, payload)` starts `node lib/app_ts.mjs`, which loads the app's modules through vite's SSR loader (vitest's vite, the app's `@/` alias, no config) and calls `script`'s `run(load, input)` with the JSON `payload`; it returns the script's JSON output. The run's client fault rewrites the modules as they load (above). About 0.5 s per call; its vite cache goes to the run's temp dir. |
 | `lib/faults.py` | Break-it-once faults: each patches a real product function inside the throwaway relay (or, `browser=`, the app's served JS in the browser actor) and lists the check names it `targets`. A flow's own faults live in `lib/<flow>_faults.py` (`register(Fault)` returns them by name) and join `FAULTS` when the module is present; a name defined twice stops the run. A fault with `browser_js=` (JS) is instead an init script in every page `actors/ui` opens, for a bug in the app's browser code; with `desktop=` (JS), code the Electron wrapper of `actors/notif_click` runs before `desktop/main.js`, for a bug in the desktop app. |
 | `lib/procmon.py` | Relay CPU and RSS every 1 s, each interval tagged with `rec.stage`: the whole process from `ps` (its process group; passes 100% when executor threads run SQLite outside the GIL; read from `/proc` where `ps` is missing, e.g. inside the relay image calibrate.sh uses) and the event-loop thread alone from `GET /__slop/loop-cpu` (`time.thread_time()`; the one-core ceiling). `follow(pgid, relay_http)` switches it to a relay's new process (a shard that moved boxes). Writes `resources.json`, a per-stage table in `summary.txt` (process CPU mean / p95 / max %, 100% = one core; cores; loop CPU mean / p95; RSS max / end) and, when the scenario sets `CPU_BUDGET_PCT`, the budget check `relay process CPU mean <= N% of one core in every stage`. Pool columns: `spills` (the pool's own counter) and the pool-wait p95 / max (time inside the pool's checkout, a histogram from `lib/relay.py` with half-open buckets: bucket 100 is [75,100) ms, and the p95 is that exclusive upper bound); with `POOL_GATE = {"spills": 0, "wait_p95_ms": 100}` the scenario gets the decision-5 pool gate check. Every gate site calls one predicate, `pool_bent(spills, wait_p95_ms, gate)`: bent on a spill or a p95 bucket over 100 (bucket 100 holds "< 100 ms"; no checkout timed passes). Per stage it also counts the `/__slop/loop-cpu` polls: `polls` (attempted), `polls_lost` (raised or non-200: the relay may have reset its histogram, so those waits are gone) and `pool_missing` (answered without the wait histogram or the spill counter); a scenario treats any lost or missing poll as no pool data (chatter-crowd: `nodata`, INFRA). Each `resources.json` interval also carries its span, `t_pre` / `t_post` (epoch s) and `mono_pre` / `mono_post` (monotonic s), taken just before the first sample's reads and just after the last's, and the loop thread's run-queue numbers from the relay's `sched`: `q_run_delay_ms` (time runnable but waiting for a CPU) and `q_slices` (timeslices), schedstat deltas, `null` off Linux, context only (never gated). A fleet run has one monitor per shard (`resources-sNN.json`, one table, the CPU budget over every shard). With `--profile`, tells the relay's sampler the stage and saves `profile-<stage>.txt` (loop thread and other threads: top self functions or SQL statements, self lines, cumulative), `profile-<stage>-{loop,threads}.collapsed` (flamegraph input) and `profile.json`; `summary.txt` gets the top 10 of the peak-CPU stage. |
 | `lib/client.py` | Timed HTTP client. Every actor call is recorded (route, status, latency), so the stock invariants need no extra code. Set `ctx.rec.stage` to also keep calls per load stage (`ctx.rec.summary(stage)`); `ctx.rec.timeline` keeps every call with its end time. Idle keep-alive connections are reused only under 2 s (`KEEPALIVE_EXPIRY_S`): httpx's 5 s default equals uvicorn's and gets requests reset after a relay stall. |
+| `lib/selection.py`, `lib/covmap.py`, `map.json` | `--changed` / `--map` (above): the pure pick, the git / coverage / import-graph I/O, the map (committed). |
+| `lib/nightly.py` | `slop/run nightly` (above): plan, preflight, phases as `slop/run` subprocesses, the digest. |
 | `lib/report.py` | Invariants, metrics and the evidence writer. `ctx.check(..., budget=True)` labels a latency budget (a miss is still FAIL); `ctx.check(name, None)` or `ctx.skip(name, reason)` records SKIP (no samples, `--no-ui`), shown and never a pass. `ctx.note(...)` adds lines (e.g. a per-stage table) to `summary.txt`. |
 | `lib/hold.py` | A page's save held at the browser's wire: `async with held(page, match, method) as h` records each `method` body (`h.bodies`), holds the first until `h.release` (`h.seen` once it arrived), always released on exit; `release_settled(page, h, refetch=, save=)` lets it through and waits for its response, the refetch GET and the Save button enabled again. `with recorded(page, method, path) as sent` records every such request unaltered (`url`, `body`, `status`: None until answered, `failed: <reason>` if it failed before an answer). |
-| `lib/cli.py` | Discovers scenarios, handles the knobs, adds the stock invariants, and runs the break-it-once logic. A scenario that crashes leaves `scenario-traceback.txt`. `OF_WIRE = True` starts `lib/of_wire.py` for the run (`ctx.of_wire`) and sets the relay's `OF_API_ORIGIN` to it. `EXPECTED_TRACEBACKS = ((marker, text), ...)`: a relay Traceback whose preceding log line holds `marker` and whose exception line holds `text` is the product logging an error the scenario provokes on purpose, not an unexpected one. |
+| `lib/cli.py` | Discovers scenarios, handles the knobs, takes the machine gate per scenario run (`lib/gate.py`; harness at nice 10), adds the stock invariants, and runs the break-it-once logic. A scenario that crashes leaves `scenario-traceback.txt`. `OF_WIRE = True` starts `lib/of_wire.py` for the run (`ctx.of_wire`) and sets the relay's `OF_API_ORIGIN` to it. `EXPECTED_TRACEBACKS = ((marker, text), ...)`: a relay Traceback whose preceding log line holds `marker` and whose exception line holds `text` is the product logging an error the scenario provokes on purpose, not an unexpected one. |
 | `seed/` | One seeder per entity: `agency` (real `POST /auth/register`, `n` Agencies), `creators` (optional owner per Creator), `fans` (one size, or a size per Creator), `threads`, `agency_notifications` (one unread owner row per Creator, as `notify` files them, without its SSE push), `chatters` (employees via the real `POST /admin/chatters/invite` + `POST /chatter/register`; `account_ids=` per username is the invite's Employee setup, the Creators that chatter may work), `earnings` (OF Statistics' daily net per Creator and category in `<tmp>/of-statistics.json`, plus the `transactions` rows the ledger caught: a trickle before the Creator was connected, most of it since, some sales today; `accounts.created_at` = the connection day), `of_sessions` (a captured session file per Creator, `session_wire.json` in the bootstrap's shape with `lib/browserbase.py`'s synthetic signing rules, and `latest.json` pointed at it, so the relay builds a REAL `OFClient`; only for an `OF_WIRE` run). Sizes come from `seed.SCALES`. A World's `stream` gives a fleet shard its own RNG streams and `user_prefix` its own usernames. |
 | `seed/profiles/` | Named world shapes that only compose seeders: `agency_inbox`, `agency_pool` (`agency_inbox` with at least 7 Creators at every scale: more than the 4 run slots), `multi_agency_big_models` (5 Agencies, 20 Creators, 3 big), `one_agency` (one relay: one Agency with 50 Creators, 9 big, plus a neighbour Agency with 1 Creator and no chatters). |
 | `actors/` | Simulated people: `fan_dm` (fans DMing: `serial`, the pump's shape, one frame in flight per Creator, optional `rate`; `say`, given lines per fan, serial per Creator; `burst`, many in flight per Creator; or open-loop `Paced` DMs/minute with tips, PPV purchases and typing), `chatter` (head page, thread, mark read, reply; `Crowd`: employee mode, each chatter its own `POST /chatter/login` cookie, own `/events` stream and the request pattern of a real chatter tab (tab open, chat open, send, 60 s polls, perflog), human-paced, only its assigned Creators), `manager` (SSE listener with arrival times, each chat message's (account, fan) and every event's `__account_id`; `states=(types)` also keeps those `state` events as (type, fields, `__account_id`), batch frames unwrapped; ready on the stream's first body line, the subscriber is registered by then; `ended` if the stream died; plus inbox reads), `ui` (signed-in Chromium, screenshots; `owner_browser(..., through=, send=)` lets exact `/api/of/` paths or compiled GET path patterns, and the chat send, through to the relay; `close_popup(opener, pop)` closes a window the page opened, its held `/api/of/` reads aborted first (Chromium lets paused requests through when their page closes); `touch=True` is a phone's context (touch input, mobile viewport) and `swipe(page, x0, y0, x1, y1, cancel=, via=, legs=, mid=, hold_ms=)` one finger as Chromium touch input (CDP, each event stamped with the finger's own time); `touch_log`/`touches` log the touch events the page sees, `sheet_probe(page, sel, pt)`/`sheet_read` record one sheet gesture (release, off screen, unmount, touchstarts, clicks); `chatter_tab` signs in as a chatter and lets its chat send through; `owner_tabs` + `PROBE_JS` for SSE receipt/handler time, long tasks, heap, rows, marker text), `reports` (owners reading the Dashboard's earnings card and Creator reports' Overview with the app's own report reads, human think time), `notif_click` (the owner clicking a fan DM's notification from each place it shows, in headless Chromium and in the real Electron app (temp userData, never the user's profile; SKIP without the binary); each click must leave one Messages Pro window, never reloaded, with a Fan that had no tab now active, stored and its chat open; its bypasses are in the module docstring), `clock` (chatters clocking in and out on their own logins: a clock-in storm, the top bar's day; `README.shifts.md`). `fan_dm.serial(..., ids=)` shares one message-id counter across calls; `phase=` staggers each Creator's open-loop start; `stop=` (an Event) ends an open-ended flood and `out=` receives records as they are sent. |
-| `lib/<flow>_faults.py`, `lib/*_ts.mjs`, `lib/pump_relay.py`, `seed/mass_broadcast_cache.py`, no flow README | A scenario's own faults (its check names, `register(Fault)`), node scripts (`lib/app_ts.py`), relay part or seeder, named in its entry below: `chats_cache_faults` + `chats_cache_ts.mjs`, `events_wants_faults`, `group_faults`: big-model-dm-flood; `composer_faults`, `nudge_faults`, `mass_unsend_faults`, `seed/mass_broadcast_cache.py`, `fanout_ts.mjs`: state-reducers; `egress_faults`: dead-proxy-interactive-reads and session-health-otp; `employees_faults`: employees-management; `mobile_faults`, `msglist_faults`: mobile-gestures; `scope_faults`: scoped-reads-fanout; `w7_faults`: runtime-switches; `pump_relay.py` (`/__slop/pump-crash`): session-health-otp; `fan_list_faults` + `fan_list_ts.mjs`: fan-list-chips. |
+| `lib/<flow>_faults.py`, `lib/*_ts.mjs`, `lib/pump_relay.py`, `seed/mass_broadcast_cache.py`, no flow README | A scenario's own faults (its check names, `register(Fault)`), node scripts (`lib/app_ts.py`), relay part or seeder, named in its entry below: `chats_cache_faults` + `chats_cache_ts.mjs`, `events_wants_faults`, `group_faults`: big-model-dm-flood; `composer_faults`, `nudge_faults`, `mass_unsend_faults`, `seed/mass_broadcast_cache.py`, `fanout_ts.mjs`: state-reducers; `egress_faults`: dead-proxy-interactive-reads and session-health-otp; `employees_faults`: employees-management; `mobile_faults`, `msglist_faults`: mobile-gestures; `scope_faults`: scoped-reads-fanout; `w7_faults`: runtime-switches; `pump_relay.py` (`/__slop/pump-crash`): session-health-otp; `fan_list_faults` + `fan_list_ts.mjs`: fan-list-chips; `net_faults`: slow-connections. |
 | `scenarios/` | One file per feature or task: `YYYY-MM-DD-<feature-slug>.py`. |
 | `README.<flow>.md` | A flow kept in files of its own (its relay part, faults, seeders, actors, scenarios) documents them there, beside this one. |
-| `evidence/` | Gitignored. One folder per run, with `latest` pointing at the newest. |
+| `evidence/` | Gitignored. One folder per run, with `latest` pointing at the newest; `<stamp>-changed-<hex>/` per `--changed` pick. |
 
 ## How a run works
 
+0. The machine gate (`~/.slop/gate.py` via `lib/gate.py`, "The machine gate" below): the
+   run takes a slot, waits for admission (1-min load under `SLOP_MAX_LOAD`, machine threads under
+   `SLOP_MAX_THREADS_MACHINE`) and the start stagger, then runs at nice 10 under the thread guard.
 1. `lib/stack.py` boots the guarded relay on a fresh temp DB (and `next dev` if `UI = True`).
 2. The scenario calls `ctx.build("<profile>")`. The profile composes seeders. The owner
    is registered through the real API, and bulk rows are written into the temp DB
@@ -115,6 +259,63 @@ budget goes red as noise.
    `next.log`, `relay-offhost-refused.jsonl`, `resources.json` (relay CPU/RSS per stage),
    `screenshots/*.png` and, with `--profile`, `profile-*`. `params` in
    `metrics.json` records the knobs plus `git_sha` and `git_dirty`.
+
+### The machine gate
+
+Several sessions starting slop runs at once (2-3 stacks, Chromium, 200 users each) took a
+16-core host to load 14-17 and starved the owner's apps; on 2026-11-05 six at once
+kernel-panicked it three times (`Spinlock timeout`; the panicked tasks were Python processes
+with 5-7k threads). So the machine has ONE gate, `~/.slop/gate.py`: up to `SLOP_MAX_RUNS` (6) runs
+at once, admission by load < 12 and machine threads < 12000, 20 s stagger; per-run thread guard
+1500/4000. One stdlib file every repo
+and harness shares, outside this repo (`~/.slop` is its own git repo; never copy it in).
+`slop/run` re-execs itself under `gate.py run` (so the slot is held for the whole invocation,
+every scenario of `all` / `--changed` / `--break` / `--map`), and `lib/cli.py` also enters it
+in-process per scenario run (`lib/gate.py`), a no-op inside `slop/run`'s gate but the gate for a
+direct `venv/bin/python slop/lib/cli.py`; if `~/.slop/gate.py` is missing the run is INFRA and
+says how to restore it. Re-entrant: the holder exports `SLOP_GATED=1` and `SLOP_GATE_PID`, and a
+gate entered under a live `SLOP_GATE_PID` (a nested `slop/run`, a harness that re-execs itself)
+does nothing; a detached child that outlives its holder gates itself again. Older checkouts and
+worktrees, whose `slop/run` predates this, are covered by the main venv's hook
+(`python3 ~/.slop/gate.py install-venv-hook venv`: `slop_gate.pth` + `slop_gate_hook.py` in its
+site-packages; worktrees link that venv): `venv/bin/python .../slop/lib/cli.py` outside a gate
+re-execs itself under `gate.py run`.
+
+| Step | What |
+|---|---|
+| Slot | Each `slop/run` (inside it, each scenario run, each half of a `--break` pair too) takes one of `SLOP_MAX_RUNS` (default 6) slots, a non-blocking flock: slot 0 is `~/.slop/machine.lock` (the single lock before slots, so gates still running that code compete for slot 0 only), slot i is `~/.slop/slots/<i>.lock`, tried 1..N-1 first. Slot 0 also needs `/tmp/slop-machine.lock` free (the lock before `~/.slop`, so checkouts still on that code queue with us; only the in-process gate holds it, since `gate.py run`'s child may be such a checkout's harness, which takes it itself). Held from before the stack starts until after teardown; a killed run's slot dies with its process (never `/tmp/slop-heavy.lock`: sessions hold that one with `lockf` around `slop/run`, so taking it inside would deadlock). The slot file names the holder: pid, repo, branch, command, start (UTC). No slot free: queue first-come first-served (`~/.slop/queue/<pid>.json`), retry every slot every 2 s, print `gate: waiting Ns for one of N slots (SLOP_MAX_RUNS): slot 0: pid N (alive), repo ..., ...` at once and every 30 s. `SLOP_LOCK_WAIT_S` (default 3600 s) caps the wait. |
+| Admission | With the slot held it waits, polling every 5 s and printing load and threads, while the 1-min load (`os.getloadavg()`) is at or over `SLOP_MAX_LOAD` (default 12, 16 cores) or the machine's threads (every readable process) are at or over `SLOP_MAX_THREADS_MACHINE` (default 12000), at most `SLOP_LOAD_TIMEOUT` s (default 1800). Then the stagger: no start within `SLOP_START_STAGGER_S` (default 20) of another slot's start, so runs don't boot `next` / Chromium in the same second. |
+| Nice | The harness renices itself to 10 (never lower), so everything it starts inherits it (see Niceness). |
+| Thread guard | Every 2 s, from libproc (no `ps` per tick), the thread count of every process in the run's tree (the harness, its descendants, and their process groups). A process over `SLOP_MAX_THREADS_PROC` (default 1500) or the tree over `SLOP_MAX_THREADS_TOTAL` (default 4000): SIGKILL the tree, `thread-guard.txt` (top processes by threads, their command lines) in the run's evidence folder, `INFRA: thread guard: ...`, exit 75. The machine over 1.5 x `SLOP_MAX_THREADS_MACHINE`: a warning every 30 s, no kill (those threads may be another run's). |
+
+Gave up (slot or admission) is INFRA with a one-line reason (`INFRA: ...` from `slop/run`'s gate, exit 75; `machine gate: ...` in the report from `lib/cli.py`'s); `--no-wait` makes
+it INFRA at once when no slot is free or admission fails. `metrics.json` `params`
+records `lock_wait_s` (seconds in the gate, the whole `slop/run`'s inside `slop/run`) and `load_at_start`; they are facts of the run,
+never compared when matching a baseline. `--list`, `--dry`, `--changed --dry` and `--help` take no slot.
+The per-checkout `app/.next/slop.lock` (below) stays: two runs from one checkout can now hold two slots, and it refuses the second.
+`deploy/fleet/calibrate.sh`'s containers run with `SLOP_GATE=off` (three runs at once on
+purpose, on a box measured on purpose).
+
+```sh
+python3 ~/.slop/gate.py status            # slots + holders, queue, load 1/5/15, machine threads, would admission pass, top 10
+python3 ~/.slop/gate.py run [--no-wait] [--evidence DIR] -- <cmd...>   # any heavy non-slop work (a big pytest,
+                                          # a build, codex): same slots, admission, nice 10, thread guard;
+                                          # exits with <cmd>'s code, 75 for INFRA
+```
+
+Another harness hooks in with `exec python3 ~/.slop/gate.py run -- "$0.real" "$@"` (a wrapper
+script), or in-process: load the file with `importlib.util.spec_from_file_location` and run
+under `with gate.Gate(cmd=..., no_wait=False, evidence_dir=<run folder>) as g:` (as `lib/gate.py`
+does). At most `SLOP_MAX_RUNS` gated runs per machine at a time, across every session, worktree and repo.
+
+Niceness: the harness (and its in-process fakes: fake OF, the wan edge, fake CDNs) runs at
+nice 10; every process the stack starts (relays, `next dev` / `next build` / `next start`,
+litestream, Browserbase's Chromium) at nice 10 (`lib/stack.py` `nice_child`), and Playwright's
+driver, so every Chromium it launches, at nice 10 via `PLAYWRIGHT_NODEJS_PATH=lib/pw-node`.
+Docker containers (edge, boxes, MinIO) run in Docker's VM and are not reniced. Latency
+budgets, p95-vs-last-green and CPU budgets are not biased by this (inferred): under the
+lock a run is the only slop work on the host, and nice only matters when cores are
+contended, i.e. when the owner's foreground apps want them, which is the point.
 
 The relay is ready when `/livez` answers below 500 (`/health` is 503 without an OF
 account, which a slop stack never has); `next dev` when `/login` does.
@@ -141,6 +342,16 @@ account, which a slop stack never has); `next dev` when `/login` does.
   guess); `POST /__slop/of-stats-tick` runs one `of_stats_daily.tick(pause_s=0)` pass,
   bypassing the hourly timer, the 300 s boot grace and the pause between reads.
 - **`/api/of/*` is held in the browser.** OF-live reads never answer (below).
+- **OF's rate limit and paged lists (`lib/sweep_pacing_wire.py`, sweep-pacing).** Harness side, on
+  `lib/of_wire.py`'s server without editing it (the server's handler class swapped for a subclass):
+  paged promotions, subscribers, payouts transactions and `/users/list`, and OF's 429 ("Please allow 1
+  seconds") from a token bucket per Creator across those four routes, 10 deep, refilled 2 a second (a
+  GUESS at OF's policy, not measured: a page's own burst fits, a paced walk never drains it, back-to-back
+  pages do), plus injected
+  429s (once, or k times in a row) and a promotion's claimer pages. `lib/sweep_pacing_relay.py` runs the
+  production functions (the prewarm pass, roster crawl, ledger supervisor pass) on request instead of
+  their hourly / 30 min / 300 s cadences, and compresses of_pacing's busy knobs and the prewarm spread
+  (never the pacer gap or the 429 retry).
 - **A Creator's proxy at its wire (`lib/proxy_wire.py`, Layout above).** A SOCKS5 proxy
   on loopback, not OF's HTTP CONNECT; a killed one refuses the way prod's dead proxies do,
   so the product's retry, `proxy_health` and 502 run unchanged. A scenario's `RELAY_ENV`
@@ -288,6 +499,42 @@ merged into `SCALES`: the scenario reads its default from `w.size` and its knob 
 slug after the date, snake_case, + what (`s4s-requests-race`: `s4s_requests_burst`). In
 the scenario file instead: durations, rates and latency budgets even when per scale.
 
+## Wire mode: packet loss
+
+CDP throttling is per request: no handshake RTTs, no retransmits, the open /events stream untouched, so it
+cannot show head-of-line blocking (100+ requests on one h2 connection over a lossy cell). The wire profiles of
+`lib/net.py` (`jp-lossy` 250 ms, 1.6 / 0.75 Mbit/s, 2 % loss each way; `jp-lossy-bad` 400 ms, 1 / 1 Mbit/s, 5 %)
+shape real TCP with macOS dummynet instead, and CDP emulation is off for them (nothing counted twice).
+
+- **Where:** lo0, IPv4, only TCP to / from the port the browser dials (slow-connections: `lib/wan.py`'s DelayProxy
+  in front of nghttpx; the edge -> app hop, the relay and the harness's own calls are unshaped). Two fixed pipes,
+  7401 up (to the port) and 7402 down (from it), each half the RTT, its bandwidth and the loss; rules match `out`
+  only (a loopback packet passes pf twice); MSS clamped to 1460 on that port (lo0's 16 KB MTU would make a lost
+  packet 11x bigger). Rules sit in the sub-anchor `com.apple/slop-netloss`, which `/etc/pf.conf`'s
+  `dummynet-anchor "com.apple/*"` already evaluates: the main ruleset is never reloaded or flushed. pf is enabled
+  with `pfctl -E` (a reference; token in `/var/run/slop-netloss.state`), so `off` leaves pf as it found it.
+- **When:** switched on per profile after its cold relay, off when the profile ends (`finally` + `atexit`); a
+  SIGKILLed run's state is switched off by the next `slop/run` under the machine lock (`net.wire_off_stale`, recorded
+  as `net_wire_stale` in the params), unless a live wire run holds the wire lock. The pipes and anchor are
+  machine-wide while the machine gate runs several slots at once, so a wire run holds its own flock,
+  `/tmp/slop-netloss.lock` (`net.wire_lock`, `wire_lock_wait_s` in the params), from before its stack until after
+  teardown: one wire run per machine; past `SLOP_LOCK_WAIT_S` it is INFRA.
+- **One-time install (root, the owner):** `sudo slop/install-netloss`. It writes exactly two files:
+  `/usr/local/libexec/slop-netloss` (a copy of `lib/netloss_helper.sh`, root:wheel 0755, every parent dir checked
+  root-owned and not group/other writable) and `/etc/sudoers.d/slop-netloss` (`<you> ALL=(root) NOPASSWD:
+  /usr/local/libexec/slop-netloss`, 0440, `visudo -cf` before it lands). Never a NOPASSWD on a repo file. The
+  helper takes only `on <port[,port]> <rtt_ms> <plr> <down_kbit> <up_kbit>` (ports 1024-65535, at most 4; RTT <=
+  2000; plr <= 0.2; 0 or 64-100000 kbit), `off`, `status`; `--dry-run on|off` validates and prints the rules and
+  commands, with a `pfctl -nf` syntax check, without root. A changed helper must be re-installed: the harness refuses
+  an installed copy that differs from the repo's. `slop/install-netloss --print` shows what it would write.
+- **Undo:** `sudo slop/install-netloss --uninstall` (shaping off, both files removed). By hand: `sudo
+  /usr/local/libexec/slop-netloss off`, then delete the two files.
+- **Without the helper:** `--net=jp-lossy*` stops at once with one line naming the install command (exit 3); every
+  other profile and `slop/run all` are unaffected (their checks for the wire profiles SKIP).
+- **Declared:** a fault at the wire boundary, outside `service/` and the app (no bypass inside either): per-packet
+  random loss, fixed delay, a drop-tail queue of dummynet's default 50 slots; no jitter, no reordering, no
+  radio-state wake-up, no loss bursts; the phone's TCP is macOS's loopback stack, not iOS's.
+
 ## Safety
 
 Every run uses a temp DB, a temp `sessions/` and a redirected secret store. The relay
@@ -335,6 +582,8 @@ A flow with a `README.<flow>.md` lists its scenarios there.
 - Vault Pro > Add media's pick list (`2026-10-30-vault-import-reducer`, plus a restricted chatter's picker):
   `README.vault.md`.
 - Vault Pro at 20k (`2026-11-01-vault-pro-20k`, paging, filters, duplicates, hide): `README.vault.md`.
+- Vault Refresh (`2026-11-05-vault-refresh`, Refresh shows what was made on OF, the picker reloads broken thumbs,
+  concurrent syncs): `README.vault.md`.
 - Vault Pro's AI describe sweep (`2026-11-01-vault-describe-sweep`, describe-all, flags-all, cache, escalation,
   cost): `README.vault.md`.
 - The fan-info sweep at volume (`2026-11-02-fan-info-sweep`, Run now on every Creator, pinned language, kept
@@ -683,6 +932,16 @@ A flow with a `README.<flow>.md` lists its scenarios there.
   (`lib/faults.py`): `proxy-watch-claim-released-late` (the claim released after the watcher returns) targets the
   re-watch and pool-wide outage checks, `proxy-recheck-unwatches-at-threshold` (the recheck phase's old not-bad
   exit) only the recheck-gap check.
+- `2026-11-05-proxy-refusals`: a flapping proxy (prod 2026-11: alive, the provider refusing ~a third of
+  CONNECTs): one of 3 `lib/proxy_wire.py` pool proxies and the owner's custom one (4 Creators) refuse
+  `refuse_share` (0.3) of CONNECTs while 200 people read and send; the rate shows on `GET /admin/proxies`
+  (within 5 of the fake's own count) and as "refusing N% (10 min)" in the Proxies table; at the relay's
+  own defaults (flap knob `PROXY_FLAP_BAD_PCT` 20, window 600 s, on since 2026-11-05; no knob env, only
+  `PROXY_RECHECK_S=2`) the pool one goes bad, its 2 Creators move, nothing lost, then it is standby and
+  nobody moves back; the custom one stays bad through 60 s at 16 % (never flips, badge "proxy refusing")
+  and clears once refusals stop. The off switch (`PROXY_FLAP_BAD_PCT=0`):
+  `case_flap_knob_on_by_default_zero_turns_it_off`. Faults (`lib/proxy_refusals_faults.py`):
+  `flap-knob-ignored` (default `--break`), `refusal-window-blind`; checks, budgets, bypasses: the docstring.
 - `2026-10-28-dashboard-load`: the owner opens the Dashboard on a phone ~190 ms from the
   host (production build behind `lib/wan.py`, OnlyFans on `lib/of_wire.py`): Total
   earnings paints from the saved snapshot before any answer and never waits on OF, the
@@ -816,3 +1075,51 @@ A flow with a `README.<flow>.md` lists its scenarios there.
   non-default Creators with the default Creator's body. Checks: no row shows another Creator's picture,
   every Creator answered as itself shows its own (all distinct), rows == /admin/accounts. Fault
   `avatar-keeps-other-creators-body` (`lib/creator_avatars_faults.py`, client: the identity guard reverted).
+- `2026-11-05-clicks-first`: the owner's iPhone 250 ms from the host (production build behind `lib/wan.py`, LTE
+  throttling, OnlyFans on `lib/of_wire.py`, 13 Creators): Dashboard and Messages Pro settled time and request
+  counts per visit; no Creator (but the tapped one) with more than 2 background OF reads on the wire (the per-Creator lane in
+  `app/lib/relaySchedule.ts`);
+  a reload paints every Per-model card's fan count from the saved snapshot; leaving the Dashboard mid-load drops
+  its queued reads; a tapped Thread paints within budget while the other Creators' chat lists load (relay
+  restarted, snapshot stale). Faults (`lib/clicks_first_faults.py`: `relay-scheduler-bypassed`,
+  `badge-keys-unpersisted`), budget, bypasses: the scenario's docstring.
+- `2026-11-05-slow-connections`: the owner's phone far from the host (AE client in Tokyo, 250 ms). 13 Creators
+  (`--creators=`), production build behind `lib/wan.py`'s TLS + h2 edge at 0 ms, OF and its CDN faked at the wire;
+  per `lib/net.py` profile (all four, or `--net=X`) a cold relay (restarted, /img cache wiped; one untimed warm-up of `/` before the first, so si's dashboard
+  does not pay Next's first render) and one fresh phone
+  context time dashboard (cold), creators, fan-list,
+  thread, vault picker, send and receive (`--users` Fans DM, the opened Fan's frame -> bubble) from trigger to
+  settled; `screenshots/<profile>-<flow>-trigger|settled.png`, every request in `net-<profile>.json`. Checks: budgets
+  per profile x flow (`BUDGET_MS`, green baseline + max(30 %, 2 RTT, 500 ms load jitter), the run and measured value beside each; names
+  carry no number, the ms is in the detail and the table; fan-list judged at ready = rows + the first page's reads,
+  its prefetch tail only a column; receive one `RECEIVE_MS` for every profile; `TARGET_MS` recorded, not checked),
+  requests per flow (receive's per DM delivered, `REQ_PER_DM`), exactly `--users` Fans per burst (else INFRA), creators by the
+  drawer's link, Fan List rows, thread order, vault tiles, /img 200, the send's one OF POST, receive nothing dropped /
+  order kept / visible, frame -> /events p95. `--no-ui`: the relay half of receive. Wire profiles (`--net=jp-lossy`, `--net=jp-lossy-bad`, "Wire mode: packet
+  loss"): the same flows and correctness checks over dummynet on the edge's port, budgets PLACEHOLDERS (skipped until
+  phase 2 sets them), request p50 / p95 / max per flow recorded (`req_ms`), `net-wire-<profile>.txt` and a `wire RTT
+  calibrated` check (TCP connect median vs the profile's RTT). Fault `net-si-budget-forced`
+  (`lib/net_faults.py`: si's budgets everywhere; targets the far budgets measured >= 2x si's). Service workers are
+  blocked (CDP does not throttle sw-images.js's fetches); creators, thread, vault and send start after an untimed 5 s
+  network quiet (Next's link prefetch, the Fan List's idle prefetch). `lib/img_relay.py`'s CDN bytes are a decodable 1x1 JPEG padded to size: Chromium
+  cancels an image that will not decode after ~1.5 KB, so noise bytes never crossed a capped line in full.
+- `2026-11-05-sweep-pacing` (`OF_WIRE`): every Creator's background OF list walks at once (prewarm pass,
+  roster crawl, two ledger supervisor passes, a Growth page's claimer refresh, a second prewarm pass) against
+  a guessed OF 429 limit while `--users` chatters and the Fan List's background name lookups work half the
+  Creators. Checks: walk pages spaced >= 1 s per Creator across jobs, one same-page retry per 429, zero 429s
+  on a person's reads, the prewarm skips a Creator with a read < 10 s ago and walks it next pass, the Growth
+  refresh walks its claimers, the Growth earnings read never waits on a walk, a twice-429'd page fails the
+  walk and keeps the mirror, counts match OF, no 5xx, both lookups' p95. Faults
+  `sweep-unpaced`, `sweep-no-429-retry` (`lib/sweep_pacing_faults.py`). Details: the scenario's docstring.
+
+## Fake servers: thread budget
+
+The harness's fake HTTP servers (`lib/of_wire.py`, `lib/push_wire.py`, `lib/browserbase.py`) are
+`lib/bounded_server.py`'s `BoundedHTTPServer` (drop-in for `ThreadingHTTPServer`): a
+request runs on a pooled daemon worker (at most `SLOP_SERVER_WORKERS`, default 512, started on demand), an idle
+keep-alive connection waits in one selector thread (an fd, no thread). Past the ceiling requests queue, never refused,
+and the first such one logs `all N workers busy`. `lib/proxy_wire.py` tunnels and `lib/wan.py`'s DelayProxy run on one
+asyncio loop thread each. Why: the relay keeps a keep-alive connection per (account x worker thread), and a thread per
+connection reached 2.7k threads at --scale=small and 5-7k at 200 users, which kernel-panicked the host (2026-11-05).
+The fakes inside the relay (`lib/*_relay.py`) keep `ThreadingHTTPServer`: measured, a relay peaked at 273 threads,
+almost all its idle executor. New harness fakes: no `ThreadingHTTPServer`, no thread per connection.

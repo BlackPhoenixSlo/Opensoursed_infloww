@@ -3,7 +3,8 @@ Prod 2026-10-28: a proxy answering CONNECT 403 made the Fan List (`/chats`), the
 (`/users/notifications`) and a thread (`/chats/{fan}/messages`) run OFClient's full
 proxy retry, 5 tries with 0.4-3.2 s pauses, so each read took ~7 s to its 502. Now
 `server._proxy` marks a request that is not `X-Priority: background` interactive and
-its GETs take 2 tries with one 0.2 s pause; background work and every write keep 5.
+its GETs take 2 tries with one pause; background work and every write keep 5. Pauses are
+equal jitter (of_client.retry_step: half to all of the 0.2 / 0.4-3.2 s ceilings).
 
 The world: one Agency with 50 Creators (`one_agency`), each with a captured session
 (seed/of_sessions.py), so the relay builds its REAL OFClient; OnlyFans is lib/of_wire.py
@@ -23,14 +24,16 @@ lib/of_wire.py models).
 
 Invariants: the binding went through and the warm-up tunneled; every read of a dead
 Creator answered 502 `proxy_unreachable` (none dropped: users' reads + background reads);
-interactive dead reads p95 <= INTERACTIVE_MS (budget); every background dead read still
-took >= BG_MIN_MS (the 5-try pauses alone); per upstream call, the relay's own
+interactive dead reads p95 <= INTERACTIVE_MS (budget); every background dead read took
+5 refused CONNECTs plus the pauses' 3 s floor at least (half their 6 s ceiling) and at
+most those plus the 6 s ceiling plus BG_SLACK_MS; per upstream call, the relay's own
 `proxy_error_retry` / `proxy_error` lines show 2 tries for an interactive route and 5 for
 the background one, and the dead proxy saw exactly that many refused CONNECTs (plus one
 per `proxy_probe` line, should proxy_health probe it); a read someone waits on never
 counts toward marking the proxy bad: EARLY_S after the death, with DOWN_AFTER or more
-interactive reads already failed and no 5-try chain able to end yet, the proxy's
-`health` (GET /admin/proxies) reads 0 errors; after the background reads it reads one
+interactive reads already failed, the proxy's `health` (GET /admin/proxies) reads no more
+errors than background chains had ended by then (jittered pauses let some end inside
+5 s) and is not `bad`; after the background reads it reads one
 error each and still `suspect` (the confirm waits CONFIRM_GAP_S, 30 s, past a blip); every
 healthy Creator's read answered 200 meanwhile; lib/of_wire.py saw only signed calls it
 models. p95 of the healthy reads vs the last green run.
@@ -91,12 +94,13 @@ P95_VS_LAST_MIN_N = 30
 DEAD = 5
 HEALTHY = 10
 INTERACTIVE_MS = 1500   # a read someone waits on, dead proxy, request to 502
-BG_MIN_MS = 6000        # 0.4 + 0.8 + 1.6 + 3.2 s: the full policy's pauses alone
+BG_PAUSE_CAP_MS = 6000  # 0.4 + 0.8 + 1.6 + 3.2 s: the full policy's jittered pauses' ceiling (floor: half)
+BG_SLACK_MS = 1500      # relay + loopback overhead on top (a guess)
 FAN = 4242              # the thread a person opens on a dead Creator
 LABEL = "slop-dead"
 ARRIVE_S = 5.0          # people open their Creator over this window (seeded times)
 THINK_S = 1.0           # the owner's pause between adding the proxy and binding Creators
-EARLY_S = 5.0           # the health read after the death: before any 5-try chain can end (6 s + 5 tries)
+EARLY_S = 5.0           # the health read after the death, while most 5-try chains still retry
 DOWN_AFTER = 3          # service/proxy_health.py: counted failures that would start the confirm
 TORN = 5                # proxied Creators whose first client is built while proxies.json is rewritten
 SETTLE_S = 3.0          # the binds' SQL mirror syncs (db/import_legacy reads proxies.json) end before the rewrites
@@ -257,7 +261,8 @@ async def _run(ctx, w, proxy: ProxyWire, dead: list[str], healthy: list[str], to
     async def early() -> tuple[float, dict]:
         await asyncio.sleep(max(0.0, killed_at + EARLY_S - time.time()))
         t = time.time()
-        return t, await health()
+        h = await health()
+        return t, h, time.time()
     early_task = asyncio.create_task(early())
     bg = [asyncio.create_task(_read(dead_http, BG_READ, a, "background", {"X-Priority": "background"}))
           for a in dead]
@@ -275,7 +280,7 @@ async def _run(ctx, w, proxy: ProxyWire, dead: list[str], healthy: list[str], to
 
     people = [x for rs in await asyncio.gather(*(person(a, at) for a, at in zip(picks, offsets))) for x in rs]
     bgs = await asyncio.gather(*bg)
-    early_at, early_health = await early_task
+    early_at, early_health, early_read_at = await early_task
     after_health = await health()
     ctx.rec.stage = None
     for h in (dead_http, live_http):
@@ -304,8 +309,12 @@ async def _run(ctx, w, proxy: ProxyWire, dead: list[str], healthy: list[str], to
         ctx.skip(C_FAST, "no person opened a dead Creator (--users too low)")
 
     bms = [x["ms"] for x in bgs]
-    ctx.check(C_BG, bool(bms) and min(bms) >= BG_MIN_MS, min_ms=round(min(bms), 1) if bms else None,
-              max_ms=round(max(bms), 1) if bms else None, floor_ms=BG_MIN_MS, n=len(bms))
+    refused_ms = 5 * proxy.refuse_s * 1000
+    floor_ms = refused_ms + BG_PAUSE_CAP_MS / 2
+    ceil_ms = refused_ms + BG_PAUSE_CAP_MS + BG_SLACK_MS
+    ctx.check(C_BG, bool(bms) and floor_ms <= min(bms) and max(bms) <= ceil_ms,
+              min_ms=round(min(bms), 1) if bms else None, max_ms=round(max(bms), 1) if bms else None,
+              floor_ms=floor_ms, ceil_ms=ceil_ms, n=len(bms))
 
     # Per upstream call, the relay's own lines: N-1 `proxy_error_retry ... attempt=k/N <route>`
     # then one `proxy_error ... url=<route>`; the proxy refused exactly sum(N) CONNECTs.
@@ -329,13 +338,14 @@ async def _run(ctx, w, proxy: ProxyWire, dead: list[str], healthy: list[str], to
               probe_connects=probes)
 
     failed_early = sum(1 for x in inter if x["end"] <= early_at)
-    bg_early = sum(1 for x in bgs if x["end"] <= early_at)
+    # A chain records its failure just before its 502 lands: ended by the read's answer (+0.5 s).
+    bg_early = sum(1 for x in bgs if x["end"] <= early_read_at + 0.5)
     if failed_early < DOWN_AFTER:   # nothing to tell apart yet (few people, or reads slower than the budget)
         ctx.skip(C_COUNT, f"only {failed_early} interactive reads had failed {EARLY_S} s after the death "
                           f"(need {DOWN_AFTER})")
     else:
-        ctx.check(C_COUNT, bg_early == 0 and early_health.get("errors") == 0
-                  and early_health.get("state") == "healthy"
+        ctx.check(C_COUNT, (early_health.get("errors") or 0) <= bg_early
+                  and early_health.get("state") in ("healthy", "suspect")
                   and (after_health.get("errors") or 0) >= len(dead) and after_health.get("state") == "suspect",
                   interactive_failed_before=failed_early, background_ended_before=bg_early,
                   at_s=round(early_at - killed_at, 2), early=early_health.get("state"),
@@ -362,6 +372,9 @@ async def _run(ctx, w, proxy: ProxyWire, dead: list[str], healthy: list[str], to
         "killed_at": round(killed_at, 3), "people_done_at": round(max((x["end"] for x in people), default=0), 3),
         "healthy_ms": {"n": len(lms), "p50": pct(lms, 0.5), "p95": pct(lms, 0.95)},
         "upstream_calls": dict(calls), "refused_connects": len(refused)})
+    # The relay's own refusal telemetry at the end (evidence only; the refusal scenario checks it).
+    end_health = await health()
+    ctx.metric("dead_proxy_health", {k: end_health.get(k) for k in ("refusals", "inflight", "inflight_peak")})
     ctx.metric("http_dead", dead_rec.summary())
     ctx.metric("p95_vs_last_green", {"healthy reads": pct(lms, 0.95)} if lms else {})
     ctx.metric("p95_vs_last_green_n", {"healthy reads": len(lms)})

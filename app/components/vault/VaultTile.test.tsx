@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import VaultTile from "@/components/vault/VaultTile";
+import type { ThumbRetry } from "@/hooks/useThumbAutoRefresh";
 import type { VaultMedia } from "@/lib/relay";
 
 const ACCT = "8000149";
@@ -37,7 +38,9 @@ const PICTURE_FILES = {
   full: { url: OF_URL },
 };
 
-const mount = (m: VaultMedia) => render(<VaultTile media={m} accountId={ACCT} />);
+/** A grid with nothing broken: every src as is. */
+const THUMBS: ThumbRetry = { thumbFor: (_id, src) => src, onBroken: () => {} };
+const mount = (m: VaultMedia) => render(<VaultTile media={m} accountId={ACCT} thumbs={THUMBS} />);
 
 afterEach(cleanup);
 
@@ -110,7 +113,7 @@ describe("VaultTile hover preview", () => {
   const tileEl = () => screen.getByTitle(/^#7 · video/);
 
   function hover(accountId: string | null = ACCT, pointerType = "mouse") {
-    const view = render(<VaultTile media={VIDEO} accountId={accountId} />);
+    const view = render(<VaultTile media={VIDEO} accountId={accountId} thumbs={THUMBS} />);
     fireEvent.pointerEnter(tileEl(), { pointerType });
     act(() => { vi.advanceTimersByTime(400); });
     return view;
@@ -136,7 +139,7 @@ describe("VaultTile hover preview", () => {
   });
 
   it("no frames before the dwell", () => {
-    render(<VaultTile media={VIDEO} accountId={ACCT} />);
+    render(<VaultTile media={VIDEO} accountId={ACCT} thumbs={THUMBS} />);
     fireEvent.pointerEnter(tileEl(), { pointerType: "mouse" });
     act(() => { vi.advanceTimersByTime(399); });
     expect(frames()).toHaveLength(0);

@@ -104,6 +104,7 @@ from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import automation_executor as ax        # _make_client / of_write_paced / lease seams
+import of_pacing
 import smart_message_extras as extras
 from attribution import write_outbound_attribution
 from audiences import _page_all_checked
@@ -274,9 +275,13 @@ async def refresh_roster(account_id: str, client, *, now: datetime,
     route, `POST /admin/roster/{account_id}/crawl`). Returns what happened, for
     the run stats. One crawl per account at a time: the lifecycle sweep and
     smart_list_sync both call this, and two interleaved crawls would stamp
-    different seen_at."""
+    different seen_at. The sweeps' crawl is a background walk (of_pacing: paced per
+    Creator, OF's 429 retried once); the admin run-now is a person's and pages as before."""
     async with _roster_locks.setdefault(str(account_id), asyncio.Lock()):
-        return await _refresh_roster(account_id, client, now=now, force=force)
+        if force:
+            return await _refresh_roster(account_id, client, now=now, force=True)
+        return await of_pacing.walk(account_id, "subscribers", lambda: _refresh_roster(
+            account_id, client, now=now))
 
 
 async def _refresh_roster(account_id: str, client, *, now: datetime,

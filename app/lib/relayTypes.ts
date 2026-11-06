@@ -66,6 +66,9 @@ export interface AccountMeta {
    *  moved to a healthy one after two failed rechecks (docs/adr/0030); one on a custom proxy, or with no
    *  standby, stays and wears this flag. */
   proxy_down: boolean;
+  /** With `proxy_down`: "down" (unreachable) or "flapping" (refusing too many calls: the
+   *  PROXY_FLAP_BAD_PCT knob, on by default; 0 = off). */
+  proxy_bad_reason?: "down" | "flapping";
   /** "watcher" on a watcher account (GET /admin/accounts' `watchers`, a chatter's roster row): a fan account that
    *  reads what the Creators send, no Creator. Absent on a Creator. */
   role?: "watcher" | null;
@@ -97,6 +100,14 @@ export interface ProxyHealth {
   bad_since?: number | null;
   next_recheck_at?: number | null;
   probe?: { ok?: boolean; ip?: string | null; geo?: string | null; colo?: string | null; ttfb_ms?: number | null; error?: string | null };
+  /** Why it is bad: "down" (refused calls in a row, confirmed by a probe) or "flapping" (the
+   *  PROXY_FLAP_BAD_PCT refusal rate, on by default). Only while bad or rechecking. */
+  bad_reason?: "down" | "flapping";
+  /** Attempts the provider refused (CONNECT 403) of all made through it in the last `window_s` seconds. */
+  refusals?: { window_s: number; refused: number; calls: number; pct: number };
+  /** OF calls through it in flight now, and the most at once since the relay started. */
+  inflight?: number;
+  inflight_peak?: number;
 }
 
 export interface ProxyMeta {
@@ -648,8 +659,9 @@ export interface VaultList {
   photosCount?: number;
   gifsCount?: number;
   audiosCount?: number;
-  /** OF's covers for the folder row: its newest (up to three) media, each `{type, url}` (a signed 300x300 still). */
-  medias?: { type?: string; url?: string | null }[] | null;
+  /** OF's covers for the folder row: its newest (up to three) media, each `{type, url}` (a signed 300x300 still).
+   *  `fetchAllVaultLists` rewrites them to stable thumb urls (by `id`) or drops them. */
+  medias?: { id?: number | string; type?: string; url?: string | null }[] | null;
 }
 
 export interface VaultListsResp {

@@ -397,6 +397,8 @@ describe("AccountsTable — deactivate / activate a creator", () => {
           accounts: [
             { id: "acct-on", nickname: "Onna", has_session: true, is_active: true, proxy_down: true },
             { id: "acct-ok", nickname: "Okko", has_session: true, is_active: true, proxy_down: false },
+            { id: "acct-fl", nickname: "Flor", has_session: true, is_active: true, proxy_down: true,
+              proxy_bad_reason: "flapping" },
           ],
           active_account_id: "acct-on",
         });
@@ -407,6 +409,8 @@ describe("AccountsTable — deactivate / activate a creator", () => {
     render(<AccountsTable />, { wrapper });
     await screen.findAllByText("Onna");
     expect(screen.getAllByText("proxy unreachable")).toHaveLength(1);
+    // Bad for refusing too many calls (the flap knob): plain words for what it does.
+    expect(screen.getAllByText("proxy refusing")).toHaveLength(1);
   });
 
   it("filters on Account status", async () => {

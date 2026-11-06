@@ -1,4 +1,4 @@
-{"openapi_sha1": "4481ef7bc56039b9364932375a29db07d106c94e",
+{"openapi_sha1": "349979e1b4a62885014bf2fcad5c9f43cb6f6eae",
  "routes": [
   ["GET,HEAD", "/openapi.json", "openapi"],
   ["GET,HEAD", "/docs", "swagger_ui_html"],
@@ -99,6 +99,7 @@
   ["POST", "/admin/vault-ai/collect", "start_collect"],
   ["GET", "/admin/vault-ai/collect/status", "collect_status"],
   ["GET", "/admin/vault-ai/cache/summary", "cache_summary"],
+  ["POST", "/admin/vault-ai/sync", "sync_from_of"],
   ["GET", "/admin/vault-ai/thumb", "vault_thumb"],
   ["GET", "/admin/vault-ai/image", "vault_image"],
   ["GET", "/admin/vault-ai/poster", "vault_poster"],

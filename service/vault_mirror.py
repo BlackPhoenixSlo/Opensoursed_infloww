@@ -30,12 +30,23 @@ import logging
 from datetime import datetime
 from typing import Any
 
+from sqlalchemy import func, literal, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from db.models import VaultItem
 from isotime import parse_iso
 
 log = logging.getLogger("of-relay.vault_mirror")
+
+
+def in_of_folders(folder_ids):
+    """SQL: the mirror row is in one of these OF folders (`of_folder_ids`, the
+    JSON list `row_values` writes). An exact json_each match — a LIKE on the JSON
+    text matched 12 inside 123. The chatter folder gate's one predicate: every
+    mirror route scopes a restricted chatter with it
+    (chatters.allowed_folder_ids_for_chatter answers which folders)."""
+    je = func.json_each(func.coalesce(VaultItem.of_folder_ids, "[]")).table_valued("value")
+    return select(literal(1)).select_from(je).where(je.c.value.in_(list(folder_ids))).exists()
 
 
 def has_still(kind: str | None) -> bool:

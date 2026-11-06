@@ -19,6 +19,7 @@ import {
 import { tilePreview } from "@/components/chat/vaultTilePreview";
 import { HOVER_DELAY_MS, SCRUB_FRAMES, useHoverPreview } from "@/hooks/useHoverPreview";
 import { vaultTileThumb } from "@/hooks/useVaultCache";
+import { type ThumbRetry } from "@/hooks/useThumbAutoRefresh";
 import { type VaultMedia } from "@/lib/relay";
 import { proxyImage, proxyScrubFrame } from "@/lib/mediaUrl";
 import { fmtDuration } from "@/lib/format";
@@ -48,6 +49,8 @@ export interface VaultTileProps {
   /** Force the AI caption overlay on/off. When omitted, follows the persisted
    *  manager toggle (default ON). */
   aiCaption?: boolean;
+  /** The grid's thumbnail retry (useThumbAutoRefresh): the src to show, and a failed load reported back. */
+  thumbs: ThumbRetry;
 }
 
 export default function VaultTile({
@@ -62,6 +65,7 @@ export default function VaultTile({
   showOrder,
   onOrder,
   aiCaption,
+  thumbs,
 }: VaultTileProps) {
   const [managerCaptionOn] = useCaptionOverlay("manager");
   const captionOn = aiCaption ?? managerCaptionOn;
@@ -70,8 +74,10 @@ export default function VaultTile({
   // what the tile shows is tilePreview's read of it, as in the picker.
   const hover = useHoverPreview(HOVER_DELAY_MS);
 
-  // "" for a media with no picture (a voice note) — the placeholder renders.
-  const thumb = vaultTileThumb(m, accountId);
+  // "" for a media with no picture (a voice note), or a broken one waiting for the grid's reload — the placeholder
+  // renders.
+  const base = vaultTileThumb(m, accountId);
+  const thumb = thumbs.thumbFor(m.id, base);
   const dur = fmtDuration(m.duration);
   const isVideo = m.type === "video";
   const rawVideoSrc = isVideo ? progressiveVideoSrc(m) : null;
@@ -120,6 +126,7 @@ export default function VaultTile({
           aria-hidden
           loading="lazy"
           decoding="async"
+          onError={() => thumbs.onBroken(m.id, thumb)}
           className="absolute inset-0 w-full h-full object-cover"
         />
       ) : (

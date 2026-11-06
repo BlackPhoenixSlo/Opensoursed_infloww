@@ -34,6 +34,9 @@ SCALES: dict[str, dict[str, int | float]] = {
 # A flow's own sizes, key: (small, medium, huge). Read by that scenario; its CLI knob overrides.
 # Key prefix rule: slop/README.md "Scales".
 FLOW_SIZES: dict[str, tuple[int, int, int]] = {
+    # vault-collect / vault-thumbs (the vault week cache)
+    "vault_collect_creators": (6, 16, 40), "vault_collect_items": (400, 600, 2_000),
+    "vault_thumbs_creators": (3, 6, 10), "vault_thumbs_items": (120, 300, 1_000),
     # priority-mass-5k
     "priority_mass_roster_a": (400, 7_000, 7_000),
     # welcome-burst
@@ -98,6 +101,12 @@ FLOW_SIZES: dict[str, tuple[int, int, int]] = {
     "auto_exclude_control_members": (400, 1_000, 3_000),
     # os-ping-push: Creators in multi_agency_big_models (5 Agencies), steady-phase frames per Creator
     "os_ping_creators": (10, 20, 20), "os_ping_frames": (12, 24, 40),
+    # slow-connections: seed/chat_media.py CDN assets, the picker Creator's OF vault page items
+    "slow_conn_chat_assets": (40, 120, 400), "slow_conn_vault_media": (48, 200, 1_000),
+    # sweep-pacing: OF's side per Creator: promotions (under the prewarm's 12-page cap), active
+    # subscribers (50 a page), ledger rows of the last 6 days
+    "sweep_pacing_promos": (350, 1_150, 1_150), "sweep_pacing_subscribers": (500, 2_400, 5_000),
+    "sweep_pacing_transactions": (400, 1_000, 2_000),
 }
 for _i, _scale in enumerate(("small", "medium", "huge")):
     SCALES[_scale].update({k: v[_i] for k, v in FLOW_SIZES.items()})

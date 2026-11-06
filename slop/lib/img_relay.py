@@ -6,8 +6,9 @@ it: without the file `POST /__slop/img/arm` is a 409 that changes nothing, and n
 other scenario's relay is untouched (`OF.http` / `OF.timeout_s` re-raise the client build error, as
 `_OfflineOF.__getattr__` did before this part existed: unarmed, nothing here can reach curl).
 
-  arm_run(http, tmp, assets, latency_s)  (harness side) writes `of-cdn.json` {latency_s, assets: {"host/path": size}},
-       POSTs the arm hook and answers its body.
+  arm_run(http, tmp, assets, latency_s, pictures=False)  (harness side) writes `of-cdn.json` {latency_s, pictures,
+       assets: {"host/path": size}}, POSTs the arm hook and answers its body. `pictures`: every asset's bytes are a
+       real picture (`picture_bytes`, a small PNG; size ignored) so a browser draws it and vault_stills keeps it.
   POST /__slop/img/arm   (loopback; 409 without the file or under SLOP_LIVE=1)
        1. The fake CDN: a loopback ThreadingHTTPServer in the relay process (a thread per request). Per request,
           after `latency_s`: a seeded asset's bytes (`asset_bytes`, deterministic per host+path) with
@@ -40,8 +41,9 @@ user-id, x-bc and app-token, so a check can tell an account's request from `_DIR
 of_client.DEFAULT_TIMEOUT_S, so `/img`'s signed-host path runs `_get_client(request).http` unchanged.
 
 Bypasses (declared): the CDN is a loopback fake inside the relay process (shares its GIL); the bytes are seeded
-noise, not JPEGs (the relay never decodes them); `latency_s` per request is a guess at OF's CDN through a proxy;
-the Signature is never verified, only the Policy's expiry; no Range / 206, no CDN 5xx; the session cookies and
+noise in a 1x1 JPEG's comment segments (`asset_bytes`: the browser decodes one grey pixel, the relay nothing);
+`latency_s` per request is a guess at OF's CDN through a proxy;
+the Signature is never verified, only the Policy's expiry; `pictures` serves a PNG as image/jpeg (browsers sniff); no Range / 206, no CDN 5xx; the session cookies and
 headers are synthetic (session-level here, where of_client sets them per request); there is no proxy between the
 Creator's client and the CDN.
 """
@@ -62,7 +64,7 @@ ACCOUNT_HEADERS = ("user-id", "x-bc", "app-token")  # the OF account headers `cr
 OF_HEADERS = (*ACCOUNT_HEADERS, "sign")  # recorded per call (`of_headers`)
 _lock = threading.Lock()
 _calls: list[dict] = []
-_cfg: dict = {"assets": {}, "hosts": set(), "latency_s": 0.0}
+_cfg: dict = {"assets": {}, "hosts": set(), "latency_s": 0.0, "pictures": False}
 _state = {"port": None, "armed": False, "inflight": 0}
 _bytes: dict[str, bytes] = {}
 _sessions: dict[str, object] = {}
@@ -77,9 +79,50 @@ def _on() -> bool:
     return bool(os.environ.get("DEMO_SHOTS_TMP")) and _file().is_file()
 
 
+# A 1x1 grey JPEG (PIL, quality 50): asset_bytes pads it with COM segments, so a browser decodes the whole body.
+_JPEG_1PX = base64.b64decode(
+    "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDABALDA4MChAODQ4SERATGCgaGBYWGDEjJR0oOjM9PDkzODdASFxOQERXRTc4UG1RV19iZ2hnPk1xeXBk"
+    "eFxlZ2P/2wBDARESEhgVGC8aGi9jQjhCY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2P/wAARCAABAAED"
+    "ASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKB"
+    "kaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZ"
+    "mqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQF"
+    "BgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5"
+    "OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX"
+    "2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwAooooA/9k=")
+
+
 def asset_bytes(key: str, size: int) -> bytes:
-    """The CDN's bytes for asset `key` ("host/path"): deterministic noise (harness and fake agree)."""
-    return random.Random(int(hashlib.sha256(key.encode()).hexdigest()[:16], 16)).randbytes(size)
+    """The CDN's bytes for asset `key` ("host/path"): exactly `size`, deterministic (harness and fake agree): a 1x1
+    JPEG whose COM segments carry seeded noise (bare noise below its size). Not bare noise: Chromium cancels an
+    image whose first chunk will not decode, so over a capped line only ~1.5 KB of it crossed (measured 2026-11-05:
+    12 noise tiles of 100 KB in 435 ms at 1.6 Mbit/s, these in 6285 ms)."""
+    rng = random.Random(int(hashlib.sha256(key.encode()).hexdigest()[:16], 16))
+    pad = size - len(_JPEG_1PX)
+    if pad < 4:
+        return rng.randbytes(size)
+    out = [b"\xff\xd8"]
+    while pad:
+        n = min(pad, 65_537)  # a COM segment: FF FE, a 2-byte length (itself included, <= 65535), then the data
+        if pad - n in (1, 2, 3):
+            n = pad - 4
+        out.append(b"\xff\xfe" + (n - 2).to_bytes(2, "big") + rng.randbytes(n - 4))
+        pad -= n
+    out.append(_JPEG_1PX[2:])
+    return b"".join(out)
+
+
+def picture_bytes(key: str) -> bytes:
+    """A real picture for asset `key`: a 16x16 PNG in one colour from the key (harness and fake agree)."""
+    import struct
+    import zlib
+    rgb = hashlib.sha256(key.encode()).digest()[:3]
+    raw = b"".join(b"\x00" + rgb * 16 for _ in range(16))
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 16, 16, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
 
 
 def signed(host: str) -> bool:
@@ -94,10 +137,10 @@ def creator_headers(account_id: str) -> dict[str, str]:
     return {"User-Agent": f"SlopCreatorUA/{account_id}", **dict(zip(ACCOUNT_HEADERS, vals, strict=True))}
 
 
-async def arm_run(http, tmp: Path, assets: dict, latency_s: float) -> dict:
+async def arm_run(http, tmp: Path, assets: dict, latency_s: float, pictures: bool = False) -> dict:
     """Harness side: `assets` {"host/path": {size, ...}} into the config file, then the arm hook."""
     (Path(tmp) / CFG_FILE).write_text(json.dumps({
-        "latency_s": latency_s, "assets": {k: a["size"] for k, a in assets.items()}}))
+        "latency_s": latency_s, "pictures": pictures, "assets": {k: a["size"] for k, a in assets.items()}}))
     r = await http.post("/__slop/img/arm")
     if r.status_code != 200:
         raise RuntimeError(f"slop: img arm hook answered {r.status_code}: {r.text[:200]}")
@@ -151,7 +194,7 @@ def _body(key: str, size: int) -> bytes:
     with _lock:
         b = _bytes.get(key)
     if b is None:
-        b = asset_bytes(key, size)
+        b = picture_bytes(key) if _cfg["pictures"] else asset_bytes(key, size)
         with _lock:
             _bytes[key] = b
     return b
@@ -257,7 +300,7 @@ def _arm() -> dict:
     with _lock:
         assets = d.get("assets") or {}
         _cfg.update(assets=assets, hosts={k.split("/", 1)[0] for k in assets},
-                    latency_s=float(d.get("latency_s") or 0))
+                    latency_s=float(d.get("latency_s") or 0), pictures=bool(d.get("pictures")))
     cache = Path(os.environ["DEMO_SHOTS_TMP"]) / "img-cache"
     cache.mkdir(parents=True, exist_ok=True)
     img_api._IMG_CACHE_DIR = cache

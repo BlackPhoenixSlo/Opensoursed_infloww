@@ -204,7 +204,7 @@ describe("ChatHeader", () => {
         offersWith({ subscribedOn: true }, 0);
         renderHeader();
         menu = await openAvatarMenu(user);
-        await waitFor(() => expect(relayGet).toHaveBeenCalledWith(ME, expect.anything()));
+        await waitFor(() => expect(relayGet).toHaveBeenCalledWith(ME, expect.anything(), expect.anything()));
         await waitFor(() => expect(offersRow(menu)).toHaveAttribute("aria-disabled", "true"));
         expect(relayPut).not.toHaveBeenCalled();
       });

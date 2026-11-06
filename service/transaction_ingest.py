@@ -58,6 +58,7 @@ import client_pool
 from db import of_writer, write_telemetry
 from db.engine import get_session
 import fansly_backend
+import of_pacing
 import fansly_revenue
 from db.models import (
     Account,
@@ -71,8 +72,7 @@ from db.models import (
     User,
     UserAccount,
 )
-from curl_cffi.requests.exceptions import ProxyError
-from of_client import OFClient
+from of_client import OFClient, proxy_refused
 import ownership
 import purchase_notifications
 from tip_ledger import TIP_LEDGER_PREFIX
@@ -99,6 +99,10 @@ _TICK_INTERVAL_S = 300                  # 5 minutes (was 600 — too slow vs the
 _PAGE_SLEEP_S = 0.4
 _PAGE_LIMIT = 100                       # OF max per request
 _BACKFILL_CONCURRENCY = 4               # synthesis review §4
+# Refresh ticks this many accounts at once: each pages at of_pacing's per-Creator pace (>= 1 s a
+# page), so serial, 50 Creators x 10 pages of 7 days would take ~570 s of a 300 s cadence
+# (measured 114 s for 10 x 10, slop sweep-pacing medium). Creators never share a pacer.
+_REFRESH_CONCURRENCY = 4
 # Minimum gap between cycles, ALWAYS honoured — the anti-spin floor.
 # Both loops below sleep `interval - elapsed` so the inter-scan GAP stays
 # constant regardless of cycle duration (that fix is why they sleep at end
@@ -1039,22 +1043,10 @@ async def _clear_stale_inflight() -> int:
         return len(rows)
 
 
-def _is_proxy_refusal(exc: BaseException) -> bool:
-    """The proxy refused the CONNECT tunnel (curl 56, e.g. IPRoyal DC's
-    transient 403; OFClient._proxy_retry already retried it). The request
-    never reached OF, so it says nothing about the account or its session."""
-    seen: set[int] = set()
-    e: BaseException | None = exc
-    while e is not None and id(e) not in seen:
-        seen.add(id(e))
-        if isinstance(e, ProxyError) and "CONNECT tunnel failed" in str(e):
-            return True
-        e = e.__cause__ or e.__context__
-    return False
-
-
 async def _record_failure(account_id: str, exc: Exception) -> None:
-    refusal = _is_proxy_refusal(exc)
+    # A proxy refusal (of_client.proxy_refused; _proxy_retry already retried
+    # it) never reached OF: it says nothing about the account or its session.
+    refusal = proxy_refused(exc)
     async with get_session() as s:
         row = await _scan_state(s, account_id)
         state = scan_after_failure(_scan_facts(row), refusal, datetime.utcnow(),
@@ -1281,7 +1273,7 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
                     offset += len(rows)
                     await asyncio.sleep(_PAGE_SLEEP_S)
             except Exception as e:
-                if not _is_proxy_refusal(e):  # a refusal logs one line in _record_failure
+                if not proxy_refused(e):  # a refusal logs one line in _record_failure
                     log.warning("ingest_tx_scan_failed account=%s", account_id, exc_info=True)
                 await _record_failure(account_id, e)
                 finalized = True
@@ -1396,6 +1388,13 @@ _FAST_PAGE_LIMIT = 10
 # most five threads to the shared executor.
 _FAST_POLL_CONCURRENCY = 5
 _FAST_POLL_STAGGER_S = 0.2
+
+
+async def supervised_tick(account_id: str, mode: str) -> dict:
+    """The supervisor's tick for one account: `run_one_tick` as a background walk
+    (of_pacing: its pages at the shared per-Creator pace, OF's 429 retried once).
+    The admin /run stays unpaced."""
+    return await of_pacing.walk(account_id, "transactions", lambda: run_one_tick(account_id, mode=mode))
 
 
 async def run_fast_tick(account_id: str) -> dict:
@@ -1614,13 +1613,68 @@ async def backfill_after_reactivation(account_id: str, deactivated_at: datetime)
     return True
 
 
+async def supervisor_cycle() -> None:
+    """One pass over every live account (start_supervisor's loop body): refresh
+    ticks _REFRESH_CONCURRENCY accounts at once, then backfills _BACKFILL_CONCURRENCY."""
+    account_ids = await _live_account_ids()
+    # NO online gate here. This loop is not a dashboard convenience —
+    # it is the only writer of the `transactions` ledger, and
+    # `event_transcoder` bumps `fans.lifetime_spend_cents` off those
+    # rows. The AUTOMATIONS run 24/7 with no online gate of their own
+    # (automation_executor never consults one) and read that number to
+    # decide real money questions: the whale gate
+    # (max_lifetime_spend_cents), welcome_chatter_for_info's hand-to-human
+    # gate. Gating the producer on "is a human watching" while the
+    # consumers never stop meant that with every dashboard closed, a fan
+    # who had already blown past the whale cap still read as $0 and the
+    # AI kept selling to him. Freshness for a watching human is what the
+    # 30s fast poll is for — THAT one keeps the online gate.
+    refresh_aids: list[str] = []
+    backfill_aids: list[str] = []
+    for aid in account_ids:
+        if await _is_paused(aid):
+            continue
+        if (await _decide_mode(aid)) == "backfill":
+            backfill_aids.append(aid)
+        else:
+            refresh_aids.append(aid)
+
+    rsem = asyncio.Semaphore(_REFRESH_CONCURRENCY)
+
+    async def _rf(aid: str) -> None:
+        async with rsem:
+            try:
+                await supervised_tick(aid, "refresh")
+            except Exception as e:
+                log.warning("ingest_tx_scan failed account=%s", aid, exc_info=True)
+                await _record_failure(aid, e)
+
+    await asyncio.gather(*(_rf(a) for a in refresh_aids))
+
+    if backfill_aids:
+        sem = asyncio.Semaphore(_BACKFILL_CONCURRENCY)
+
+        async def _bf(aid: str) -> None:
+            async with sem:
+                try:
+                    await supervised_tick(aid, "backfill")
+                except Exception as e:
+                    log.warning(
+                        "ingest_tx_backfill failed account=%s",
+                        aid, exc_info=True,
+                    )
+                    await _record_failure(aid, e)
+
+        await asyncio.gather(*(_bf(a) for a in backfill_aids))
+
+
 async def start_supervisor() -> None:
     """Async supervisor loop. Mirror of `_perflog_evictor_loop` shape
     (service/server.py:1374-1394): sleep inside try, return on
     CancelledError, log + continue on other exceptions.
 
-    Refresh ticks strictly sequential (SQLite WAL serializes writes anyway,
-    and we want bounded concurrent OF load). Backfill ticks may run up to
+    Refresh ticks run up to _REFRESH_CONCURRENCY at once (bounded concurrent
+    OF load; each Creator paced on its own). Backfill ticks may run up to
     _BACKFILL_CONCURRENCY in parallel — synthesis review §4: a 30-account
     cold-start drops from ~100min to ~25min."""
     log.info(
@@ -1654,52 +1708,7 @@ async def start_supervisor() -> None:
     while True:
         try:
             cycle_started = time.monotonic()
-            account_ids = await _live_account_ids()
-            # NO online gate here. This loop is not a dashboard convenience —
-            # it is the only writer of the `transactions` ledger, and
-            # `event_transcoder` bumps `fans.lifetime_spend_cents` off those
-            # rows. The AUTOMATIONS run 24/7 with no online gate of their own
-            # (automation_executor never consults one) and read that number to
-            # decide real money questions: the whale gate
-            # (max_lifetime_spend_cents), welcome_chatter_for_info's hand-to-human
-            # gate. Gating the producer on "is a human watching" while the
-            # consumers never stop meant that with every dashboard closed, a fan
-            # who had already blown past the whale cap still read as $0 and the
-            # AI kept selling to him. Freshness for a watching human is what the
-            # 30s fast poll is for — THAT one keeps the online gate.
-            refresh_aids: list[str] = []
-            backfill_aids: list[str] = []
-            for aid in account_ids:
-                if await _is_paused(aid):
-                    continue
-                if (await _decide_mode(aid)) == "backfill":
-                    backfill_aids.append(aid)
-                else:
-                    refresh_aids.append(aid)
-
-            for aid in refresh_aids:
-                try:
-                    await run_one_tick(aid, mode="refresh")
-                except Exception as e:
-                    log.warning("ingest_tx_scan failed account=%s", aid, exc_info=True)
-                    await _record_failure(aid, e)
-
-            if backfill_aids:
-                sem = asyncio.Semaphore(_BACKFILL_CONCURRENCY)
-
-                async def _bf(aid: str) -> None:
-                    async with sem:
-                        try:
-                            await run_one_tick(aid, mode="backfill")
-                        except Exception as e:
-                            log.warning(
-                                "ingest_tx_backfill failed account=%s",
-                                aid, exc_info=True,
-                            )
-                            await _record_failure(aid, e)
-
-                await asyncio.gather(*(_bf(a) for a in backfill_aids))
-
+            await supervisor_cycle()
             elapsed = time.monotonic() - cycle_started
             await asyncio.sleep(max(_MIN_CYCLE_GAP_S, _TICK_INTERVAL_S - elapsed))
         except asyncio.CancelledError:

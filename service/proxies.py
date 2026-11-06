@@ -631,6 +631,8 @@ def probe(p: dict[str, Any], timeout_s: int = 15) -> dict[str, Any]:
             out["error"] = "proxy_probe_failed: no ip in the trace"
     except Exception as e:  # curl errors: refused CONNECT, timeout, TLS, DNS
         out["error"] = f"proxy_probe_failed: {e}"
+        # The refused CONNECT alone (ProxyError, as of_client._attempt): proxy_health's refusal window.
+        out["refused"] = isinstance(e, curl_requests.exceptions.ProxyError)
     finally:
         log.info("proxy_probe label=%s ok=%s", p.get("label") or "-", out["ok"])
     return out

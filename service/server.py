@@ -95,6 +95,7 @@ import vault_ai_api  # noqa: E402  # an import's per-file details -> mirror rows
 import gdrive  # noqa: E402  # the Drive key's reader, for the import card's on/off flag
 import relay_cache  # noqa: E402  # in-process TTL cache for hot-path OF endpoints (Stage C will wire call-sites)
 import of_promos  # noqa: E402  # `to_cents`, OF's dollars to our cents
+import of_pacing  # noqa: E402  # background walks: the per-Creator pacer, 429 retry, busy signal
 import relay_coalesce  # noqa: E402  # in-flight dedup for idempotent OF GETs (Stage B-2)
 import chats_page  # noqa: E402  # one logical page of OF /chats (inbox, badge)
 import db_retention  # noqa: E402  # DB retention loops (raw_json, audit, optimize, payload cap)
@@ -1208,10 +1209,13 @@ def _on_proxy_switched(account_ids: list[str]) -> None:
     """proxies.save's hook, for every write that changes an account's egress
     (Change proxy, Inflowwww proxy, No proxy, a proxy edit, the pool sync):
     the pooled client goes and a live chat socket reconnects, so REST and the
-    WS leave from the same IP from now on, not after the next relay restart."""
+    WS leave from the same IP from now on, not after the next relay restart.
+    OF's signed vault urls are bound to the egress IP too, so the account's
+    cached vault pages read as misses from now on (vault_cache.mark_stale)."""
     for aid in account_ids:
         _invalidate_client(aid)
         _reroute_account_pump(aid)
+        vault_cache.mark_stale(aid)
 
 
 proxy_registry.on_switch(_on_proxy_switched)
@@ -1498,6 +1502,14 @@ async def _start_event_pumps() -> None:
     asyncio.create_task(_periodic(
         "link figures prewarm", link_metrics.PREWARM_PAUSE_S, link_metrics.prewarm_all,
         first_after_s=600), name="link-figures-prewarm")
+
+    # Vault week cache: one Creator at a time, paced ≥5 s between OF calls on the
+    # background lane — folder list, each dropdown folder's first page, All's
+    # first two pages, one full walk, top-100 thumbs (vault_collect docstring).
+    import vault_collect
+    if vault_collect.ENABLED:
+        asyncio.create_task(_periodic("vault collect", vault_collect.TICK_S, vault_collect.tick,
+                                      first_after_s=vault_collect.FIRST_AFTER_S), name="vault-collect")
 
     # Phase F: poll OF's /api2/v2/payouts/transactions ledger so per-model
     # stats include subs / tips / PPV unlocks / paid posts. 10-min ticks,
@@ -2188,6 +2200,12 @@ def _lane_acquire(sem: threading.BoundedSemaphore, account_id: str, which: str) 
 
 
 def _lane_entered(account_id: str, priority: str, waited: float, bg_held: bool) -> None:
+    # A user-priority (not background) lane entry made from a real request: the relay's one
+    # "a person is on this Creator" signal (of_pacing.note_user). The vault collector stays off
+    # such an account; the hourly link prewarm skips it this pass. Server-side jobs without a
+    # request (and without priority="background") are not a user. RAM-only: a restart reads as "quiet".
+    if priority != "background" and _request_ctx.get() is not None:
+        of_pacing.note_user(account_id)
     with _lane_stats_lock:
         for st in _lane_stat_rows(account_id):
             st["calls"] += 1
@@ -3163,12 +3181,17 @@ async def list_users(
     # IDs must be sorted in the key — two requests with [1,2,3] vs [3,2,1]
     # should coalesce. The OF response is keyed by user-id string anyway,
     # so per-waiter slicing is order-insensitive.
-    key = ("list_users", aid, view, tuple(sorted(ids)))
+    # Priority in the key: a person's read never waits behind a background one's 429 retry.
+    background = _current_priority() == "background"
+    key = ("list_users", aid, view, background, tuple(sorted(ids)))
+
+    async def _read():
+        return await asyncio.to_thread(_proxy, lambda: _get_client().list_users(ids, view=view))
 
     async def _fetch():
-        resp = await asyncio.to_thread(
-            _proxy, lambda: _get_client().list_users(ids, view=view)
-        )
+        # A page's own background name fill (X-Priority: background, e.g. 8 batches at once) is
+        # user-triggered: never paced, only OF's 429 retried once (of_pacing); a person's read is not.
+        resp = await (of_pacing.retry_429(aid, _read) if background else _read())
         if isinstance(resp, list):
             resp = {}
         # Overlay runs INSIDE the fetcher so coalesced waiters see the
@@ -3870,25 +3893,11 @@ def of_post_comments(post_id: int, limit: int = Query(20, ge=1, le=50), offset: 
 
 # ── Vault ──────────────────────────────────────────────────────
 
-def vault_media_cache_key(*, type: str = "all", list_id: int | None = None,
-                          offset: int = 0, limit: int = 24, sort: str = "desc",
-                          field: str = "recent", q_norm: str = "",
-                          before: str | None = None) -> str:
-    """THE cache key for a /vault/media request — the single place its format
-    lives. tests/test_chatter_access seeds vault_cache through this helper, so
-    a format change (like the `query=` part vault search added) can never
-    silently strand a stale literal and turn the suite red again."""
-    # `before` (Go to date) only when set, so every existing key stays as it was.
-    return (f"media:type={type}|list={list_id}|offset={offset}|limit={limit}"
-            f"|sort={sort}|field={field}|query={q_norm}"
-            + (f"|before={before}" if before else ""))
-
-
-def vault_lists_cache_key(*, view: str = "main", limit: int = 10, offset: int = 0,
-                          q_norm: str = "") -> str:
-    """THE cache key for a /vault/lists request — same single-home rule.
-    The folder search (`q_norm`) only when set, so the plain key is unchanged."""
-    return f"lists:view={view}|limit={limit}|offset={offset}" + (f"|query={q_norm}" if q_norm else "")
+# THE cache keys for /vault/media and /vault/lists live in vault_cache, shared
+# with the background collector (vault_collect) so the pages it warms are the
+# pages these routes read. Re-exported under their old names for the tests.
+vault_media_cache_key = vault_cache.vault_media_cache_key
+vault_lists_cache_key = vault_cache.vault_lists_cache_key
 
 
 @app.get("/api/of/v2/vault/media")

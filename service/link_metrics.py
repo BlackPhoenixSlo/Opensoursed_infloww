@@ -7,8 +7,9 @@ the OnlyFans fan list the link's claimers go into through OF's own add-to-list.
 
 The same machinery as of_tracking_api's tracking-link earnings: OF's claimers
 list per link x our `transactions` ledger, in TRACKED_STATUSES, by the same
-kind buckets, one walk at a time per account (the same per-account lock, so the
-tracking-link and trial/promo walks never hit OF at once). What differs:
+kind buckets, one walk at a time per account (the same per-account walk lock,
+of_tracking_api.walk_lock, so the tracking-link and trial/promo walks never hit OF
+at once; the Growth routes never take it). What differs:
 
   * The claimers are OF's /subscriptions/subscribers?filter[trial_id|promoId]
     (OFClient.offer_claims). Each fan carries subscribedOnData: subscribeAt
@@ -37,7 +38,9 @@ tracking-link and trial/promo walks never hit OF at once). What differs:
     hour, so a page opens on figures from the last hour. It re-reads a
     link's claimers only when its count moved (tracking links too) and
     honours the OF failure back-off; its worst-case OF call budget is on
-    `prewarm`.
+    `prewarm`. A Creator with a person's read in the last
+    of_pacing.USER_WINDOW_S (10 s) is skipped this pass and walked the next
+    (its page then opens on figures up to about two passes old).
   * Lifetime sums (Details only) are re-read with the walk. A link whose
     count did not move is re-walked in the background when its Details are
     opened past _STALE_S after the last walk; the list figures come from the
@@ -111,9 +114,10 @@ from auth import assert_account_owned
 from db.engine import get_session
 from db.models import LinkClaimer, LinkMeta, PromoCampaign, PromoListSetting, Transaction
 from isotime import iso_z
+import of_pacing
 import of_tracking_api
 from of_promos import fetch_of_promos, fetch_of_trials, safe_int, to_cents
-from of_tracking_api import _BUCKET, _LOCKS, _MetaFields, _blank, _parse_of_time
+from of_tracking_api import _BUCKET, _WALK_LOCKS, _MetaFields, _blank, _parse_of_time
 
 log = logging.getLogger("of-relay.link_metrics")
 
@@ -146,7 +150,9 @@ def _now() -> datetime:
 
 
 def _lock(account_id: str) -> asyncio.Lock:
-    return _LOCKS.setdefault(account_id, asyncio.Lock())
+    """The account's walk lock (of_tracking_api.walk_lock): one OF walk at a time. No Growth
+    route waits on it; the list and Details routes only read whether it is held."""
+    return _WALK_LOCKS.setdefault(account_id, asyncio.Lock())
 
 
 # ── The walk ──────────────────────────────────────────────────────────
@@ -241,7 +247,7 @@ Link = tuple[int, int, "int | None"]   # (of_id, OF's claim count, our promo cam
 
 async def refresh(account_id: str, kind: str, links: list[Link]) -> dict[str, int]:
     """Re-walk the links whose OF claim count moved since their last walk, one
-    at a time under the account's lock; mark the rest checked. An OF failure
+    at a time under the account's walk lock; mark the rest checked. An OF failure
     stops the pass (most likely a 429) and backs off; what was walked stays."""
     walked = checked = 0
     async with _lock(account_id):
@@ -280,8 +286,8 @@ async def refresh(account_id: str, kind: str, links: list[Link]) -> dict[str, in
 
 
 async def _refresh_task(account_id: str, kind: str, links: list[Link]) -> None:
-    try:
-        await refresh(account_id, kind, links)
+    try:   # a background walk (of_pacing): paced per Creator, OF's 429 retried once
+        await of_pacing.walk(account_id, "link_refresh", lambda: refresh(account_id, kind, links))
     finally:
         _REFRESHING.discard((account_id, kind))
 
@@ -339,8 +345,14 @@ def links_of_promos(fetched: list[dict], mirrors: Iterable[PromoCampaign],
 
 
 async def prewarm(account_id: str) -> None:
+    """`_prewarm` as a background walk (of_pacing): OF's pages for the account at
+    its shared per-Creator pace, OF's 429 retried once."""
+    await of_pacing.walk(account_id, "link_prewarm", lambda: _prewarm(account_id))
+
+
+async def _prewarm(account_id: str) -> None:
     """Read one account's link figures ahead of any page, by the page's rules:
-    the same per-account lock, pacing and OF failure back-off, and a link's
+    the same per-account walk lock, pacing and OF failure back-off, and a link's
     claimers are re-read only when OF's count for it moved.
 
     OF calls per account per pass, worst case (the list reads always run):
@@ -378,19 +390,31 @@ async def prewarm_all() -> None:
     over _PREWARM_SPREAD_S with jitter (no burst of every account at once, and
     no shared minute OF could line the accounts up by). An account whose
     session is marked dead is skipped: its OF reads could only fail. So is a
-    deactivated Creator: it gets no OF call."""
+    deactivated Creator: it gets no OF call.
+
+    A Creator with a person's read in the last of_pacing.USER_WINDOW_S (10 s)
+    is skipped in its turn (one `bg_walk_skip` line) and walked next pass: no
+    waiting, so a pass never runs late. The pacer alone keeps the walks off
+    OF's limit; this only keeps a pass's burst off a person's own reads."""
     live = [m["id"] for m in account_registry.list_accounts()
             if m.get("has_session") and m.get("platform") == "onlyfans"]
     gap = _PREWARM_SPREAD_S / max(len(live), 1)
     for i, aid in enumerate(live):
         if i:
             await asyncio.sleep(gap * random.uniform(0.5, 1.5))
-        if aid in await dead_session_map() or await is_deactivated(aid):
+        if of_pacing.user_active(aid):
+            log.info("bg_walk_skip account=%s kind=link_prewarm", aid)
             continue
-        try:
-            await prewarm(aid)
-        except Exception:
-            log.info("link_metrics prewarm failed account=%s", aid, exc_info=True)
+        await _prewarm_live(aid)
+
+
+async def _prewarm_live(aid: str) -> None:
+    if aid in await dead_session_map() or await is_deactivated(aid):
+        return
+    try:
+        await prewarm(aid)
+    except Exception:
+        log.info("link_metrics prewarm failed account=%s", aid, exc_info=True)
 
 
 # ── Figures: claimers x ledger ────────────────────────────────────────
@@ -558,7 +582,7 @@ async def link_fans(account_id: str = Query(...), kind: str = Query(..., pattern
     gross and net; null without subscribeAt) and OF's lifetime sums (net;
     null without subscribedOnData). A link never walked, or whose claim count
     (`count`, from the list row) moved, is walked now, unless a refresh holds
-    the account's lock (then the cache, with `refreshing`)."""
+    the account's walk lock (then the cache, with `refreshing`)."""
     assert_account_owned(account_id)
     refreshing = False
     async with get_session() as s:
@@ -611,7 +635,7 @@ async def _walk_one(account_id: str, kind: str, of_id: int, count: int | None,
 
 def _rewalk_later(account_id: str, kind: str, of_id: int, count: int | None, campaign_id: int | None) -> bool:
     """Queue one background re-walk of the link (Details' stale Lifetime). Not
-    while the account's lock is held (a walk is on OF already) or inside an OF
+    while the account's walk lock is held (a walk is on OF already) or inside an OF
     failure's back-off; once per link at a time. True while one is queued."""
     key = (account_id, kind, of_id)
     if key in _REWALKING:
@@ -626,8 +650,8 @@ def _rewalk_later(account_id: str, kind: str, of_id: int, count: int | None, cam
 
 
 async def _rewalk_task(account_id: str, kind: str, of_id: int, count: int | None, campaign_id: int | None) -> None:
-    try:
-        await _walk_one(account_id, kind, of_id, count, campaign_id)
+    try:   # a background walk (of_pacing), as _refresh_task
+        await of_pacing.walk(account_id, "link_rewalk", lambda: _walk_one(account_id, kind, of_id, count, campaign_id))
     except Exception:
         _FAILED_AT[(account_id, kind)] = time.monotonic()
         log.info("link_metrics stale re-walk failed account=%s %s=%s", account_id, kind, of_id, exc_info=True)
@@ -693,9 +717,9 @@ async def _promo_list_is(account_id: str, list_id: str) -> bool:
 
 
 async def sync_lists(account_id: str, kind: str, client, counts: dict[int, int]) -> int:
-    """With the account's lock held: OF's add-to-list for each of the kind's
-    links with a List whose claim count (`counts`, from OF's list read) grew
-    past the last add. Paced; the first OF error stops the pass (raised).
+    """With the account's walk lock held (of_tracking_api's earnings read: its
+    _LOCKS): OF's add-to-list for each of the kind's links with a List whose
+    claim count (`counts`, from OF's list read) grew past the last add. Paced; the first OF error stops the pass (raised).
     `client` None: one is made only if an add is due. Promotions follow the
     account's one setting (off: nothing)."""
     if _list_backoff(account_id):
@@ -736,7 +760,7 @@ def _known_count(account_id: str, kind: str, m: LinkMeta) -> int:
 
 
 async def _list_add_task(account_id: str, kind: str, of_id: int) -> None:
-    """A save's first add-to-list, in the background under the account's lock
+    """A save's first add-to-list, in the background under the account's walk lock
     (a walk may hold it). Skipped if the List was cleared or added meanwhile;
     a failure leaves it due, so the next refresh / earnings read retries after
     the back-off. The queue mark covers only the wait for the lock: a save
@@ -925,7 +949,7 @@ async def get_promo_list(account_id: str = Query(...)) -> dict[str, Any]:
 
 async def _promo_list_task(account_id: str) -> None:
     """A save that turned the promotion List on or changed it: one pass now,
-    under the account's lock, on each promotion's last-read claim count. The
+    under the account's walk lock, on each promotion's last-read claim count. The
     queue mark covers only the wait for the lock: a save after that queues one
     more pass, whose mark this task leaves alone."""
     released = False

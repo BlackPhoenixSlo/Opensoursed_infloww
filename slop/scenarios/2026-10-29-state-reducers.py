@@ -14,7 +14,9 @@ real `POST /admin/saved-replies` (PAID: $25, text locked; FREE: no price) and
 `POST /admin/smart-lists`, each Creator's OF session file (seed/of_sessions), and Creator 0's
 vault mirror by SQL (`vault_items`, as a collect plus `vault_dupes.ensure_hashes` write them: a
 set of 3 byte-identical copies, a set of 2 whose hashes are 3 bits apart, 2 loners); Creator 2's the same way (one
-set of 252 byte-identical items: 251 copies). Every Creator's OF tracking links on OF's wire (`FakeOF.campaigns`,
+set of 252 byte-identical items: 251 copies). Each seeded mirror gets the finished `vault_cache_runs` row a manual
+Collect leaves (`_seed_collect_run`): `cache/summary` answers `complete` true, so the picker lists from the mirror
+(since 96d1aa972 a mirror without a finished walk lists live, and OF is held at the browser's wire here). Every Creator's OF tracking links on OF's wire (`FakeOF.campaigns`,
 lib/of_wire.py) with their Source through the real `PUT /admin/link-meta/batch`; Creator 0's
 auto-follow record by SQL (`follow_ping_state`, one row per fan, as `auto_follow.stamp_ping` writes it). Clock records: time tracking on (real `PUT /admin/settings/time-tracking`),
 one Employee (real `POST /admin/employees`) and its one closed Clock event by SQL (3 h to 2 h ago, a manual
@@ -269,6 +271,18 @@ its sales from /api/of/* chat-media reads ui.py holds; vitest (FanDrawer.scrub.t
    retry (its form rebuilt with round 1's results) goes to Creator 1 only, with the original text; OF's
    wire ends with one mass message per operator per Creator; one `mass_runs` row per send. Budget: an
    operator's round 1, start to its last send answered, p95 <= `MASS_FANOUT_P95_MS`. `mass-volume.json`.
+25. OF rich text (lib/rich_text_faults.py; app/components/ui/OfRichTextEditor.tsx, components/chat/OfRichText.tsx,
+   service/of_rich_text.py). UI: Growth > Scripts > More > Add script, RT_LINES typed, "Hey" Bold + Light blue
+   and line 2 Large through the toolbar, OK: the saved_replies row is RT_MARKUP and the row renders it; the same
+   on a 390x844 phone context by taps (the toolbar wraps, 44px tools, no sideways scroll). Messages Pro: the
+   desktop script picked in the chat shows its "Formatted" preview, Enter -> OF's wire gets RT_MARKUP; a typed
+   plain message -> plain `<p>` text; a fan's formatted DM (pump frame) renders formatted (colour, weight) in
+   its bubble. Screenshots rich-script-desktop-*, rich-script-phone-*, rich-send-*; `rich-text.json`.
+   Volume (after the browser, and `--no-ui`): `--users` operators at once, each a dirty formatted body (foreign
+   tags, attributes, classes, a script) and a plain one, as a chat send and as a mass message: OF's wire holds
+   every one byte-exact as the allow-list leaves it (expected written by hand), plain stays plain.
+`--set only=<section>[,...]` (SECTIONS keys, `mass-volume`, `rich-volume`) runs just those while iterating; the
+rest SKIP as "not selected".
 
 A UI step that cannot complete is FAIL for each check of its section not yet recorded, with a
 `failed-<section>` picture.
@@ -416,7 +430,12 @@ only the partial-failure check), `fanlist-load-more-click-no-op` (Load more asks
 checks),
 `refused-schedule-lost-on-switch` (a refusal
 after a chat switch is put back into the closed chat, not offered), `trailing-gif-before-upload` (lib/composer_faults.py:
-the trailing GIF stops waiting on the send's uploads: only the PPV send check); each turns only its own checks red.
+the trailing GIF stops waiting on the send's uploads: only the PPV send check), `rich-text-unsanitized`
+(lib/rich_text_faults.py: the send boundary's allow-list is identity: only the rich text volume check); each turns
+only its own checks red.
+Rich text bypasses (declared): the word selections are set by script (a drag / long-press select on a contenteditable
+is the one gesture Playwright cannot make); the toolbar is clicked / tapped for real. OF's /chats is answered at the
+browser's wire as in 18c; the chat sends go browser -> relay -> OF's wire unchanged.
 """
 from __future__ import annotations
 
@@ -455,6 +474,7 @@ from slop.lib.reducers_faults import (ADMIN_EMPTY, ADMIN_GATE, ADMIN_ROSTER_FAIL
 from slop.lib.nudge_faults import NUDGE_ABA, NUDGE_ACK_LOST, NUDGE_TAB_CLOSED
 from slop.lib.mass_unsend_faults import MASS_BULK_UNSEND
 from slop.lib.composer_faults import PPV_SEND_BODY
+from slop.lib.rich_text_faults import RT_BUBBLE, RT_SCRIPT_DESKTOP, RT_SCRIPT_PHONE, RT_SEND, RT_VOLUME
 from slop.seed import agency_notifications, mass_broadcast_cache, of_sessions, ts
 
 PROFILE = "agency_inbox"
@@ -504,6 +524,7 @@ SECTIONS = {
     "shimmer": (PICKER_SHIMMER,),
     "scripts": (SCRIPTS_RENAME, SCRIPTS_BAR_BUSY, SCRIPTS_REMOVE_OK, SCRIPTS_REMOVE_FAIL, SCRIPTS_SWITCH_CLEARS),
     "session": (SESSION_NET_KEEP, SESSION_401_OUT, SESSION_BOOT_OUT),
+    "rich-text": (RT_SCRIPT_DESKTOP, RT_SCRIPT_PHONE, RT_SEND, RT_BUBBLE),
 }
 # Reducer fixes this scenario cannot drive on the real path; each reports SKIP with why.
 UNREACHED = {
@@ -535,6 +556,9 @@ MASS_VOLUME_P95 = (f"mass fan-out at volume: an operator's all-models Broadcast 
                    f"Creator's send answered (each after OF's wire took it), p95 <= {MASS_FANOUT_P95_MS} ms")
 MASS_VOLUME_RUNS = ("mass fan-out at volume: every queue POST the relay took left its mass_runs row (one per send, "
                     "per Creator: attribution kept under the load)")
+# The --no-ui parts (run after the browser): name -> (fn, its checks).
+VOLUME_PARTS = {"mass-volume": ("_mass_volume", (MASS_VOLUME, MASS_VOLUME_RUNS, MASS_VOLUME_P95)),
+                "rich-volume": ("_rich_volume", (RT_VOLUME,))}
 SMART_LIST = "slop whales"
 QUEUE = "/api/of/v2/messages/queue"
 POSTS = "/api/of/v2/posts"
@@ -616,14 +640,25 @@ def _seed_vault(w, aid: str) -> list[int]:
 
 def _insert_vault_items(w, aid: str, rows: list[tuple[int, datetime, str]]) -> None:
     """`vault_items` rows (media_id, created_at, content_hash) as a collect plus `vault_dupes.ensure_hashes` write
-    them: photos, never sent, untagged."""
+    them: photos, never sent, untagged; and the collect's finished run."""
     con = w.sql()
     with con:
         con.executemany(
             "INSERT INTO vault_items (account_id, media_id, kind, tags, send_count, created_at, content_hash,"
             " content_hash_kind, updated_at) VALUES (?, ?, 'photo', '[]', 0, ?, ?, ?, ?)",
             [(aid, mid, ts(created), h, HASH_KIND, ts(w.now)) for mid, created, h in rows])
+        _seed_collect_run(con, w, aid, len(rows))
     con.close()
+
+
+def _seed_collect_run(con, w, aid: str, total: int) -> None:
+    """The `vault_cache_runs` row a finished manual Collect leaves (status done, phase done; seed/vault_live.py's
+    shape): `vault_ai_api.full_walk_done` -> `cache/summary` `complete` true, the picker's mirror path."""
+    started = w.now - timedelta(hours=2)
+    con.execute("INSERT INTO vault_cache_runs(account_id, status, phase, total_seen, upserted, pages_done, started_at,"
+                " finished_at) VALUES (?,?,?,?,?,?,?,?)",
+                (aid, "done", "done", total, total, max(1, -(-total // 100)), ts(started),
+                 ts(started + timedelta(minutes=2))))
 
 
 HIDE_BATCH = 250  # app/hooks/useVaultCache.ts HIDE_BATCH: ids per hide request
@@ -656,6 +691,7 @@ def _seed_picker_video(w, aid: str) -> dict:
         con.execute("INSERT INTO vault_items (account_id, media_id, kind, tags, send_count, created_at, raw_json, updated_at)"
                     " VALUES (?, ?, 'video', '[]', 0, ?, ?, ?)",
                     (aid, PICKER_VIDEO, ts(w.now - timedelta(days=3)), json.dumps(raw), ts(w.now)))
+        _seed_collect_run(con, w, aid, 1)
     con.close()
     return raw
 
@@ -4300,6 +4336,290 @@ async def _mass_volume(ctx) -> None:
               operators=users, creators=len(creators))
 
 
+# ── OF rich text (lib/rich_text_faults.py) ──
+RT_TITLE_DESKTOP = "slop rich desktop"
+RT_TITLE_PHONE = "slop rich phone"
+RT_LINES = ("Hey babe", "Large line")  # "Hey": Bold + Light blue; line 2: Large
+# What the editor saves for RT_LINES so formatted (lib/ofMirrorFormat normalize: OF's nesting, strong > span).
+RT_MARKUP = ('<p><strong><span class="m-editor-fc__blue-1">Hey</span></strong> babe</p>'
+             '<p><span class="m-editor-fs__l">Large line</span></p>')
+RT_PLAIN_SEND = "slop rt plain <3 & co"
+RT_PLAIN_WIRE = "<p>slop rt plain &lt;3 &amp; co</p>"  # of_client._wrap_text_as_p, as before this change
+RT_FAN = '<p><strong><span class="m-editor-fc__blue-2">slop rt fan</span></strong> says <em>hi</em></p>'
+RT_FAN_ID = fan_dm.INJECT_ID_BASE + 777_001
+PHONE = (390, 844)
+SELECT_WORD = """(el, word) => {
+  const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  for (let n = w.nextNode(); n; n = w.nextNode()) {
+    const i = n.data.indexOf(word);
+    if (i < 0) continue;
+    const r = document.createRange(); r.setStart(n, i); r.setEnd(n, i + word.length);
+    const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+    document.dispatchEvent(new Event("selectionchange"));
+    return true;
+  }
+  return false;
+}"""
+# The phone toolbar: no sideways scroll (page or toolbar), every tool >= 44 px tall and wide.
+PHONE_FIT = """(tb) => ({
+  page: [document.documentElement.scrollWidth, window.innerWidth],
+  toolbar: [tb.scrollWidth, tb.clientWidth],
+  small: [...tb.querySelectorAll(':scope > button')].map((b) => b.getBoundingClientRect())
+    .filter((r) => r.height < 44 || r.width < 44).length,
+})"""
+
+
+def _saved_text(ctx, aid: str, title: str) -> str | None:
+    con = ctx.world.sql()
+    try:
+        row = con.execute("SELECT text FROM saved_replies WHERE account_id=? AND title=? ORDER BY id DESC LIMIT 1",
+                          (aid, title)).fetchone()
+        return row[0] if row else None
+    finally:
+        con.close()
+
+
+async def _rt_row_html(page, title: str) -> str | None:
+    """The Scripts list row's rendered text (OfRichText's root) once it is formatted, else None."""
+    rich = page.get_by_role("list", name="Scripts list").locator("li").filter(has_text=title).locator("[data-of-rich]")
+    try:
+        await rich.first.wait_for(timeout=30_000)
+    except PwTimeout:
+        return None
+    return await rich.first.inner_html()
+
+
+async def _rt_make_script(ctx, page, title: str, shot: str, tap: bool) -> dict:
+    """Growth > Scripts > More > Add script: RT_LINES typed, "Hey" Bold + Light blue, line 2 Large, all through
+    the editor's toolbar (taps on the phone), OK. The word selection is set by script: a drag/long-press select is
+    the one gesture Playwright cannot make on a contenteditable (bypass, declared)."""
+    press = (lambda loc: loc.tap(timeout=10_000)) if tap else (lambda loc: loc.click(timeout=10_000))
+    await page.goto(f"{ctx.app}/growth/scripts", wait_until="domcontentloaded")
+    await page.get_by_role("list", name="Scripts list").wait_for(timeout=WAIT_MS)
+    more = page.get_by_role("button", name="More", exact=True).and_(page.locator("[aria-haspopup=menu]"))
+    await press(more.last)
+    await press(page.get_by_role("menuitem", name="Add script"))
+    dlg = page.get_by_role("dialog", name="Add script")
+    await dlg.locator("#script-name").fill(title)
+    ed = dlg.get_by_role("textbox", name=re.compile("^Text"))
+    tb = dlg.get_by_role("toolbar", name="Text formatting")
+    await press(ed)
+    await page.keyboard.type(RT_LINES[0])
+    await page.keyboard.press("Enter")
+    await page.keyboard.type(RT_LINES[1])
+    fit = await tb.evaluate(PHONE_FIT) if tap else None
+    assert await ed.evaluate(SELECT_WORD, "Hey"), "no 'Hey' to select"
+    await press(tb.get_by_role("button", name="Bold", exact=True))
+    await press(tb.get_by_role("button", name="Text color", exact=True))
+    await press(tb.get_by_role("menuitemradio", name="Light blue", exact=True))
+    assert await ed.evaluate(SELECT_WORD, RT_LINES[1]), "no line 2 to select"
+    await press(tb.get_by_role("button", name=re.compile("^Text size")))
+    await press(tb.get_by_role("menuitemradio", name="Large", exact=True))
+    assert await ed.evaluate(SELECT_WORD, "Hey"), "no 'Hey' to reselect"
+    await _painted(page)
+    pressed = {"bold": await tb.get_by_role("button", name="Bold", exact=True).get_attribute("aria-pressed"),
+               "size": (await tb.get_by_role("button", name=re.compile("^Text size")).inner_text()).strip()}
+    await ui.shot(ctx, page, f"{shot}-trigger")
+    editor_html = await ed.inner_html()
+    await press(dlg.get_by_role("button", name="OK", exact=True))
+    await dlg.wait_for(state="hidden", timeout=15_000)
+    row = await _rt_row_html(page, title)
+    await page.locator("[role=dialog]").wait_for(state="detached", timeout=10_000)  # the modal's fade-out done
+    await _painted(page)
+    await ui.shot(ctx, page, f"{shot}-settled")
+    return {"fit": fit, "pressed": pressed, "editor_html": editor_html, "row_html": row}
+
+
+def _rt_row_ok(row: str | None) -> bool:
+    return bool(row) and '<strong><span class="m-editor-fc__blue-1">Hey</span></strong>' in row \
+        and '<span class="m-editor-fs__l">Large line</span>' in row
+
+
+async def _rich_text(ctx, page, chk) -> None:
+    """Section rich-text: a formatted script on desktop and on a phone, sent from Messages Pro; a fan's formatted
+    message received."""
+    accts = [a for a in (await ctx.owner.get("/admin/accounts")).json().get("accounts", [])
+             if a.get("has_session") and a.get("is_active", True)]
+    aid = accts[0]["id"]  # the Creator the Scripts page and the picker open on (useScopedAccount)
+    c = next(x for x in ctx.world.data["creators"] if x["id"] == aid)
+    out: dict = {"account": aid}
+
+    d = await _rt_make_script(ctx, page, RT_TITLE_DESKTOP, "rich-script-desktop", tap=False)
+    saved = _saved_text(ctx, aid, RT_TITLE_DESKTOP)
+    out["desktop"] = {**d, "saved": saved}
+    chk(RT_SCRIPT_DESKTOP, saved == RT_MARKUP and _rt_row_ok(d["row_html"]) and d["pressed"]["bold"] == "true",
+        saved=saved, want=RT_MARKUP, row=d["row_html"], pressed=d["pressed"])
+
+    phone = await ui._owner_page(page.context.browser, ctx, PHONE, [], [], touch=True)
+    try:
+        await phone.context.add_init_script(TOURS_SEEN)
+        phone.context.set_default_navigation_timeout(WAIT_MS)
+        p = await _rt_make_script(ctx, phone, RT_TITLE_PHONE, "rich-script-phone", tap=True)
+    finally:
+        await phone.context.close()
+    saved_p = _saved_text(ctx, aid, RT_TITLE_PHONE)
+    out["phone"] = {**p, "saved": saved_p}
+    fit = p["fit"] or {}
+    chk(RT_SCRIPT_PHONE, saved_p == RT_MARKUP and _rt_row_ok(p["row_html"])
+        and fit.get("page", [1, 0])[0] <= fit.get("page", [0, 0])[1]
+        and fit.get("toolbar", [1, 0])[0] <= fit.get("toolbar", [0, 0])[1] and fit.get("small") == 0,
+        saved=saved_p, want=RT_MARKUP, row=p["row_html"], fit=fit)
+
+    # ── Messages Pro: pick the desktop script, send; a typed plain message; a fan's formatted DM ──
+    view = await _chat_view(ctx, [c])
+    fan = view[aid][0]["withUser"]
+    send_path = f"/api/of/v2/chats/{fan['id']}/messages"
+    browser_sends: list = []
+
+    async def chats(route):
+        req = route.request
+        if req.method != "GET":
+            return await route.fallback()
+        _aid, off, lim, _plain, rows = _chats_query(req, view)
+        await _serve_chats(route, rows, off, lim)
+
+    async def send(route):
+        req = route.request
+        if req.method != "POST":
+            return await route.fallback()
+        browser_sends.append(req.post_data_json)
+        await route.continue_()  # to the relay, whose OFClient sends to lib/of_wire.py
+
+    routes = ((lambda u: urlsplit(u).path == "/api/of/v2/chats", chats),
+              (lambda u: urlsplit(u).path == send_path, send))
+    for pat, fn in routes:
+        await page.route(pat, fn)
+    with ctx.of_wire.lock:
+        n_wire = len(ctx.of_wire.sends.get(aid, []))
+    n_status = len(page.slop["statuses"])
+
+    def wire() -> list[str]:
+        with ctx.of_wire.lock:
+            return [m.get("text") for m in ctx.of_wire.sends.get(aid, [])[n_wire:]
+                    if str(m["fan_id"]) == str(fan["id"])]
+
+    try:
+        await page.goto(f"{ctx.app}/messages-pro", wait_until="domcontentloaded")
+        await _creator_tab(page, c)
+        await page.locator("[data-chat-row]").filter(has_text=f"@{fan['username']}").first.click(timeout=WAIT_MS)
+        box = page.get_by_placeholder(INPUT, exact=True)
+        await box.wait_for(timeout=WAIT_MS)
+        await _pick_template(page, RT_TITLE_DESKTOP)
+        preview = page.locator("[data-rich-preview] [data-of-rich]")
+        await preview.first.wait_for(timeout=15_000)
+        out["preview_html"] = await preview.first.inner_html()
+        out["box_after_pick"] = await box.input_value()
+        await _painted(page)
+        await ui.shot(ctx, page, "rich-send-trigger")
+        await box.press("Enter")
+        await _until(lambda: len(wire()) >= 1, 30)
+        await page.wait_for_function("(el) => el.value === ''", arg=await box.element_handle(), timeout=15_000)
+        await page.wait_for_timeout(3_500)  # Infloww's send-rate guard: 3 s between a model's sends (claimSendGap)
+        await box.fill(RT_PLAIN_SEND)
+        await box.press("Enter")
+        await _until(lambda: len(wire()) >= 2, 30)
+        r = await fan_dm.inject(ctx.owner, aid, {"api2_chat_message": {
+            **fan_dm.frame(RT_FAN_ID, fan, "x")["api2_chat_message"], "text": RT_FAN}})
+        out["frame_status"] = r.status_code
+        bubble = page.locator("[data-of-rich]").filter(has_text="slop rt fan")
+        try:
+            await bubble.first.wait_for(timeout=30_000)
+            out["bubble_html"] = await bubble.first.inner_html()
+            out["bubble_style"] = await bubble.first.locator("span.m-editor-fc__blue-2").evaluate(
+                "(s) => { const c = getComputedStyle(s), b = getComputedStyle(s.closest('strong'));"
+                " return { color: c.color, weight: b.fontWeight }; }")
+        except PwTimeout:
+            out["bubble_html"] = None
+        sent_bubble = page.locator("[data-of-rich]").filter(has_text="Large line")
+        out["sent_bubbles"] = await sent_bubble.count()
+        await asyncio.sleep(1.0)  # a third send would land here
+        await _painted(page)
+        await ui.shot(ctx, page, "rich-send-settled")
+        got = wire()
+        fives = [u for st, u in page.slop["statuses"][n_status:] if st >= 500]
+        out |= {"fan": fan["id"], "browser_sends": browser_sends, "of_wire_texts": got, "relay_5xx": fives[:5]}
+        chk(RT_SEND, got == [RT_MARKUP, RT_PLAIN_WIRE] and out["box_after_pick"] == "\n".join(RT_LINES)
+            and _rt_row_ok(out["preview_html"]) and len(browser_sends) == 2 and not fives,
+            of_wire=got, want=[RT_MARKUP, RT_PLAIN_WIRE], browser_sends=browser_sends, preview=out["preview_html"],
+            box=out["box_after_pick"])
+        style = out.get("bubble_style") or {}
+        chk(RT_BUBBLE, out["frame_status"] == 200 and bool(out["bubble_html"])
+            and '<strong><span class="m-editor-fc__blue-2">slop rt fan</span></strong> says <em>hi</em>'
+            in out["bubble_html"] and style.get("color") == "rgb(27, 152, 224)" and int(style.get("weight", 0)) >= 600,
+            bubble=out["bubble_html"], style=style, frame_status=out["frame_status"])
+    finally:
+        (ctx.out / "rich-text.json").write_text(json.dumps(out, indent=2, default=str))
+        for pat, fn in routes:
+            await page.unroute(pat, fn)
+
+
+def _rt_dirty(i: int) -> tuple[str, str]:
+    """Operator i's formatted body as a careless paste leaves it, and what OF's allow-list keeps of it (by hand,
+    never by the product's own function)."""
+    dirty = (f'<p onclick="x()"><b>slop rt {i}</b> <span class="m-editor-fc__blue-1 evil" style="color:red">blue'
+             f'</span><img src=x onerror="a()"><script>alert({i})</script><br/><i>it</i> '
+             f'<span class="m-editor-fs__lg">big</span> &lt;3 &amp;</p><p><font color=red>f</font>'
+             f'<a href="//e">link</a></p>')
+    clean = (f'<p><strong>slop rt {i}</strong> <span class="m-editor-fc__blue-1">blue</span><br><em>it</em> '
+             f'<span class="m-editor-fs__lg">big</span> &lt;3 &amp;</p><p>flink</p>')
+    return dirty, clean
+
+
+async def _rich_volume(ctx) -> None:
+    """--users operators at once, each on a Creator (round-robin) and one of its fans: a formatted chat send and
+    a plain one (POST /api/of/v2/chats/{fan}/messages), a formatted mass message and a plain one (POST
+    /api/of/v2/messages/queue, user_ids [fan]), through the relay's real routes to OF's wire. Its own session
+    (the owner's cookies) holds a connection per operator, so a request's time is the relay's, never a wait for a
+    client-side connection; p95 is kept apart for plain and formatted bodies."""
+    creators = ctx.world.data["creators"]
+    users = max(1, ctx.users)
+    plans = []
+    for i in range(users):
+        c = creators[i % len(creators)]
+        fans = distinct(ctx.world.data["fans"][c["id"]])
+        plans.append((i, c["id"], fans[(i // len(creators)) % len(fans)]["id"]))
+    statuses: list[tuple[str, int, float]] = []  # (kind "formatted"/"plain", status, ms)
+    http = ctx.owner.share(limits=users + 10)
+
+    async def post(kind: str, path: str, aid: str, body: dict) -> None:
+        t0 = time.perf_counter()
+        r = await http.post(path, headers={"X-Account-Id": aid}, json=body)
+        statuses.append((kind, r.status_code, (time.perf_counter() - t0) * 1000))
+
+    async def operator(i: int, aid: str, fan: int) -> None:
+        dirty, _ = _rt_dirty(i)
+        plain = f"slop rt plain {i} <3 & co"
+        # Half the operators go plain first, so neither kind always lands at the front of the burst.
+        kinds = [("formatted", dirty), ("plain", plain)][:: 1 if i % 2 == 0 else -1]
+        for path, extra in ((f"/api/of/v2/chats/{fan}/messages", {}), ("/api/of/v2/messages/queue", {"user_ids": [fan]})):
+            for kind, text in kinds:
+                await post(kind, path, aid, {"text": text, **extra})
+
+    with ctx.of_wire.lock:
+        n_send = {a: len(v) for a, v in ctx.of_wire.sends.items()}
+        n_queue = {a: len(v) for a, v in ctx.of_wire.queue.items()}
+    try:
+        await asyncio.gather(*(operator(*p) for p in plans))
+    finally:
+        await http.aclose()
+    with ctx.of_wire.lock:
+        sends = [m.get("text") or "" for a, v in ctx.of_wire.sends.items() for m in v[n_send.get(a, 0):]]
+        queue = [m.get("text") or "" for a, v in ctx.of_wire.queue.items() for m in v[n_queue.get(a, 0):]]
+    want_sends = sorted(t for i in range(users) for t in (_rt_dirty(i)[1], f"<p>slop rt plain {i} &lt;3 &amp; co</p>"))
+    want_queue = sorted(t for i in range(users) for t in (_rt_dirty(i)[1], f"slop rt plain {i} <3 & co"))
+    got_sends = sorted(t for t in sends if "slop rt" in t)
+    got_queue = sorted(t for t in queue if "slop rt" in t)
+    bad = [s for s in statuses if not 200 <= s[1] < 300]
+    wrong = sorted(set(got_sends) - set(want_sends))[:3] + sorted(set(got_queue) - set(want_queue))[:3]
+    ctx.check(RT_VOLUME, got_sends == want_sends and got_queue == want_queue and not bad and len(statuses) == 4 * users,
+              operators=users, sends=len(got_sends), queue=len(got_queue), want_each=2 * users,
+              non_2xx=bad[:5], unexpected=wrong, sample_want=_rt_dirty(0)[1])
+    ms = {k: [s[2] for s in statuses if s[0] == k] for k in ("plain", "formatted")}
+    ctx.metric("rich_volume", {"operators": users, "requests": len(statuses),
+                               **{f"{k}_p95_ms": _p95(v) for k, v in ms.items()},
+                               **{f"{k}_max_ms": max(v) if v else None for k, v in ms.items()}})
+
+
 async def run(ctx) -> None:
     w = await ctx.build(PROFILE)
     # A second Agency (real POST /auth/register), so "(N of N)" and "(0 of N)" differ by more than one row.
@@ -4342,11 +4662,25 @@ async def run(ctx) -> None:
 
     for name, why in UNREACHED.items():
         ctx.skip(name, why)
+    # `--set only=rich-text,rich-volume`: just those sections / volume parts (iterating; a done run selects none).
+    only = {x for x in str(ctx.param("only", "")).split(",") if x}
+    if only - SECTIONS.keys() - VOLUME_PARTS.keys():
+        raise SystemExit(f"slop: only= names no section: {sorted(only - SECTIONS.keys() - VOLUME_PARTS.keys())}")
+    picked = lambda name: not only or name in only  # noqa: E731
+
+    async def volume() -> None:
+        for name, (fn, checks) in VOLUME_PARTS.items():
+            if picked(name):
+                await globals()[fn](ctx)
+            else:
+                for c in checks:
+                    ctx.skip(c, f"not selected (only={','.join(sorted(only))})")
+
     if ctx.app is None:
         for checks in SECTIONS.values():
             for c in checks:
                 ctx.skip(c, "--no-ui")
-        await _mass_volume(ctx)
+        await volume()
         ctx.metric("of_wire", ctx.of_wire.snapshot())
         return
 
@@ -4370,9 +4704,13 @@ async def run(ctx) -> None:
                          ("clock", _clock), ("vault", _vault), ("premade", _premade),
                          ("fanlist", _fanlist), ("chat-refused", _chat_refused), ("chat-ppv", _chat_ppv), ("bell", _bell), ("vaultmanage", _vaultmanage),
                          ("redescribe", _redescribe), ("shimmer", _shimmer), ("scripts", _scripts),
-                         ("session", _session)):
+                         ("session", _session), ("rich-text", _rich_text)):
+            if not picked(name):
+                for c in SECTIONS[name]:
+                    ctx.skip(c, f"not selected (only={','.join(sorted(only))})")
+                continue
             await _section(ctx, page, name, lambda chk, fn=fn: fn(ctx, page, chk))
         ctx.metric("held_of_reads", len(page.slop["held_of_reads"]))
         ctx.metric("offhost_aborted", len(page.slop["offhost_aborted"]))
-    await _mass_volume(ctx)  # after the browser: its queue sends stay out of the mass sections' counts
+    await volume()  # after the browser: its queue sends stay out of the mass sections' counts
     ctx.metric("of_wire", ctx.of_wire.snapshot())

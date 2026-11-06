@@ -27,7 +27,9 @@ import json
 import threading
 import time
 from dataclasses import dataclass, field
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
+
+from slop.lib.bounded_server import BoundedHTTPServer
 from ipaddress import ip_address
 
 MAX_EXP_S = 24 * 3600
@@ -125,8 +127,7 @@ class PushWire:
             def log_message(self, *a):
                 pass
 
-        self._srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
-        self._srv.daemon_threads = True
+        self._srv = BoundedHTTPServer(("127.0.0.1", 0), H)
         self.origin = f"http://127.0.0.1:{self._srv.server_address[1]}"
 
     def __enter__(self) -> "PushWire":

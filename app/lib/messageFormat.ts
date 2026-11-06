@@ -11,24 +11,11 @@
  *  unit price (its real cents, "$9.99" / "$10"). */
 export { fmtCents, fmtPrice } from "@/lib/format";
 
-/** OF bodies arrive wrapped in <p>…</p>; trim the common cases for a denser
- *  preview. A full parser pass isn't worth it for short previews. */
-export function stripHtml(s: string): string {
-  return s.replace(/<\/?p[^>]*>/gi, "").replace(/<br\s*\/?>/gi, " ").trim();
-}
+import { ofPlainText, ofPreviewText } from "@/lib/ofRichText";
 
-/** OF HTML body → plain text keeping its line breaks (<br> and </p> → "\n"), tags dropped, the common entities
- *  decoded, trimmed. Whitespace inside is kept as is (`stripHtmlPreview` collapses it). */
-export function htmlToText(s: string): string {
-  return s
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/p\s*>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, "\"")
-    .replace(/&#39;/g, "'")
-    .trim();
-}
+/** A one-line preview of an OF body (every tag dropped, entities decoded, whitespace collapsed): lib/ofRichText. */
+export const stripHtml = ofPreviewText;
+
+/** OF HTML body → plain text keeping its line breaks (<br> and </p> → "\n"), tags dropped, entities decoded,
+ *  trimmed: lib/ofRichText's `ofPlainText`. */
+export const htmlToText = ofPlainText;

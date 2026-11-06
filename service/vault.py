@@ -19,8 +19,10 @@ from fastapi import APIRouter, Query
 from sqlalchemy import case, func, or_, select
 
 from db.engine import get_session
-from db.models import Message, VaultSend
+from db.models import Message, VaultItem, VaultSend
 from auth import assert_account_owned
+from chatters import allowed_folder_ids_for_chatter
+from vault_mirror import in_of_folders
 
 log = logging.getLogger("of-relay.vault")
 router = APIRouter()
@@ -45,6 +47,9 @@ async def vault_media_stats(account_id: str = Query(...)) -> dict[str, Any]:
     row. A 1:1 row recorded without its message id that a purchase later
     flipped drops out too: an undercount, never an inflation."""
     assert_account_owned(account_id)
+    # A restricted chatter gets the media in its folders only — the mirror's
+    # folders, the listing's rule; a media the mirror has no row for is out too.
+    allowed = await allowed_folder_ids_for_chatter(account_id)
     fan = VaultSend.fan_id
     on_mass = (select(Message.message_id)
                .where(Message.account_id == VaultSend.account_id,
@@ -52,9 +57,7 @@ async def vault_media_stats(account_id: str = Query(...)) -> dict[str, Any]:
                       Message.message_id == VaultSend.message_id,
                       Message.mass_run_id.is_not(None))
                .exists())
-    async with get_session() as s:
-        rows = (await s.execute(
-            select(
+    stmt = (select(
                 VaultSend.media_id,
                 func.count(func.distinct(fan)),
                 func.count(func.distinct(case((VaultSend.price_cents > 0, fan)))),
@@ -62,9 +65,13 @@ async def vault_media_stats(account_id: str = Query(...)) -> dict[str, Any]:
                 func.max(VaultSend.sent_at),
             )
             .where(VaultSend.account_id == account_id, ~on_mass,
-                   or_(VaultSend.message_id.is_not(None), VaultSend.was_purchased.is_not(True)))
-            .group_by(VaultSend.media_id)
-        )).all()
+                   or_(VaultSend.message_id.is_not(None), VaultSend.was_purchased.is_not(True))))
+    if allowed is not None:
+        stmt = stmt.where(select(VaultItem.media_id).where(
+            VaultItem.account_id == VaultSend.account_id, VaultItem.media_id == VaultSend.media_id,
+            in_of_folders(allowed)).exists())
+    async with get_session() as s:
+        rows = (await s.execute(stmt.group_by(VaultSend.media_id))).all()
     return {"by_media": {
         str(mid): {
             "sent": int(sent),

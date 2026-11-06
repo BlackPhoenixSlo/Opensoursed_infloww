@@ -23,6 +23,8 @@ browser process (fresh connections):
   return        everything cached (the immutable chunks, the query cache, the snapshot)
   after-deploy  the query cache and snapshot kept, the HTTP cache cleared (new chunk
                 names after a deploy: the owner's 10:51:28 visit, DCL 5.4 s)
+`--net` (lib/net.py) does not apply here: these visits keep their own `NETS` over lib/wan.py's
+per-connection RTT (handshakes paid), which CDP's per-request latency would double-count.
 Then Messages Pro (`/messages-pro`) once per network on a profile of its own (`mp-first`:
 nothing cached), until its Fan List shows rows.
 The relay restarts before each network's first visit (its OF caches cold, as on the
@@ -100,7 +102,7 @@ from urllib.parse import urlsplit
 
 from playwright.async_api import async_playwright
 
-from slop.actors.ui import LAUNCH_ARGS
+from slop.actors.ui import LAUNCH_ARGS, track
 from slop.lib.faults import FAULTS
 from slop.lib.wan import WanEdge
 from slop.seed import agency, earnings, fans, of_sessions, threads
@@ -142,7 +144,7 @@ C_NOWAIT = "Total earnings painted before the slow-proxy Creator's OnlyFans read
 C_SAVED = ("a visit with the saved query cache painted the saved Total before its revenue read answered, "
            "the figure the settled page shows")
 C_OFFLINE = ("the session-less Creator's card sent no OnlyFans request and shows 'Not connected'; "
-             "every live Creator's card read OF")
+             "on a first visit every live Creator's card read OF")
 
 
 C_FRAME = ("Dashboard loads whose JS comes over the network (first, after-deploy): the page's frame (the earnings "
@@ -277,6 +279,7 @@ async def _visit(ctx, pw, edge, net: str, visit: str, udir, slow: str, path: str
     bctx = await pw.chromium.launch_persistent_context(
         str(udir), args=[*LAUNCH_ARGS, *edge.chrome_args], viewport={"width": 390, "height": 844},
         device_scale_factor=3, is_mobile=True, has_touch=True, user_agent=IPHONE_UA)
+    track(ctx, bctx)
     try:
         if visit in ("first", "mp-first"):
             # The owner's session as "Remember me (always)" leaves it: a persistent cookie, so it survives the
@@ -453,6 +456,7 @@ async def _sweep(ctx, pw, edge, routes: list[str]) -> dict:
         bctx = await browser.new_context(viewport={"width": 390, "height": 844}, device_scale_factor=scale,
                                          is_mobile=True, has_touch=True, user_agent=IPHONE_UA)
         await bctx.add_cookies(cookies)
+        track(ctx, bctx)
         for js in (SWEEP_JS, *((fault.browser_js,) if fault and fault.browser_js and C_SWEEP in fault.targets else ())):
             await bctx.add_init_script(js)
         return bctx
@@ -692,7 +696,9 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     labelled = {k: any(o["label"] == "Not connected" and off in o["card"] for o in d["offline"])
                 for k, d in visits.items()}
     ctx.check(C_OFFLINE, all(n.get(off, 0) == 0 for n in of_by_visit.values()) and all(labelled.values())
-              and all(all(n.get(a, 0) > 0 for a in live) for n in of_by_visit.values()),
+              # A visit with the saved snapshot paints the cards' last OF figures (app/components/providers.tsx
+              # PERSIST_KEYS, 2026-11-05) and reads OF again only once they are stale, so only first visits must read.
+              and all(all(n.get(a, 0) > 0 for a in live) for k, n in of_by_visit.items() if k.endswith("-first")),
               offline_creator=off, of_requests=of_by_visit, labelled=labelled,
               labels={k: [o["label"] for o in d["offline"]] for k, d in visits.items()})
 

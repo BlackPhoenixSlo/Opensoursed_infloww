@@ -38,7 +38,7 @@ import { useIsChatterOnly } from "@/components/shell/useIsChatterOnly";
 import { MP } from "@/lib/messagesPro";
 import { ofMeQuery } from "@/lib/ofMe";
 import { cn } from "@/lib/utils";
-import { describeLoadError, relay, type OFChatItem } from "@/lib/relay";
+import { describeLoadError, relay, setRelayFocus, type OFChatItem } from "@/lib/relay";
 import { proxyImage } from "@/lib/mediaUrl";
 import { type FanId, lastMessageFromFan } from "@/lib/fanId";
 import { isUnreadChat } from "@/lib/chatUnread";
@@ -140,17 +140,17 @@ export function FanList({
   // nobody opened — and the click that follows would queue behind the
   // hovers that preceded it. Only a click waits on 'user'
   // ([useChatList.ts:260-264]). A click landing mid-prefetch joins it
-  // (`yieldOnOpen: false`) and so inherits the background lane; that is the
-  // accepted trade — it is the same request either way, already in flight.
+  // (`yieldOnOpen: false`): a hover's on the background lane, a press's on the
+  // user lane (a press is the click's start, `pressRow`).
   const prefetchTimerRef = useRef<number | null>(null);
   // The selection whose row was last scrolled into view. A selection's row
   // scrolls (nearest edge) the first time it renders, then never again for
   // that selection, so the list doesn't jump on every render.
   const scrolledSelectionRef = useRef<string | null>(null);
   const PREFETCH_DWELL_MS = 120;
-  const prefetchMessages = useCallback((aid: string, fid: FanId) => {
+  const prefetchMessages = useCallback((aid: string, fid: FanId, user = false) => {
     if (!aid || !fid) return;
-    void prefetchChatMessages(qc, aid, fid, { yieldOnOpen: false });
+    void prefetchChatMessages(qc, aid, fid, { yieldOnOpen: false, user });
   }, [qc]);
   // Vault prefetch on hover. TanStack treats prefetchQuery as a no-op
   // when the query is still fresh (staleTime), so this is cheap to fire
@@ -181,10 +181,17 @@ export function FanList({
   }, [qc]);
   // Warm one Fan: the thread and the Vault. A press calls it at once (the
   // tap IS the intent, so no dwell); hover and focus call it after the dwell.
-  const prefetchRowNow = useCallback((aid: string, fid: FanId) => {
-    prefetchMessages(aid, fid);
+  const prefetchRowNow = useCallback((aid: string, fid: FanId, user = false) => {
+    prefetchMessages(aid, fid, user);
     prefetchVault(aid);
   }, [prefetchMessages, prefetchVault]);
+  // A press is the click's start: its thread read is the user's (the click joins it, so on the background lane it
+  // would wait behind the Creator's own chat list and badges), and its Creator becomes the relay queue's focus
+  // (app/lib/relaySchedule.ts), so the rest of that Creator's reads never wait behind other Creators'.
+  const pressRow = useCallback((aid: string, fid: FanId) => {
+    setRelayFocus(aid);
+    prefetchRowNow(aid, fid, true);
+  }, [prefetchRowNow]);
   const scheduleRowPrefetch = useCallback((aid: string, fid: FanId) => {
     if (prefetchTimerRef.current != null) window.clearTimeout(prefetchTimerRef.current);
     prefetchTimerRef.current = window.setTimeout(() => {
@@ -791,7 +798,7 @@ export function FanList({
               onSelect={selectRow}
               schedulePrefetch={scheduleRowPrefetch}
               cancelPrefetch={cancelRowPrefetch}
-              prefetchNow={prefetchRowNow}
+              prefetchNow={pressRow}
               selectedRowRef={revealSelectedRow}
               picked={picks?.has(chatRowKey(c))}
               onTogglePick={picks ? togglePick : undefined}

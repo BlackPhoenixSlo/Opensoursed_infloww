@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 
 import { MediaStrip } from "@/components/settings/TemplateDraftEditor";
+import { OfRichText } from "@/components/chat/OfRichText";
 import { useOutsideClose } from "@/components/ui/Menu";
 import { EmptyState } from "@/components/ui/infloww";
 import { fmtPrice } from "@/lib/format";
@@ -367,7 +368,7 @@ export function ScriptRow({
         {inSequence && r.title && <div className="text-sm font-medium mb-0.5">{r.title}</div>}
         {/* #42: two lines, then the row's arrow or the Expand scripts switch lifts the clamp. */}
         <div className="flex items-start gap-2">
-          <p className={cn("flex-1 text-sm whitespace-pre-wrap break-words", !open && "line-clamp-2")}>{r.text}</p>
+          <OfRichText as="p" raw={r.text} className={cn("flex-1 text-sm whitespace-pre-wrap break-words", !open && "line-clamp-2")} />
           <button
             type="button"
             aria-label="Expand script"

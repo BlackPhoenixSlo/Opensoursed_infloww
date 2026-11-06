@@ -10,8 +10,12 @@ API:
     await put(account_id, query_key, payload)  -> None         (write-through)
     await invalidate(account_id)               -> int          (rows deleted)
 
-The TTL is read from `CHATTERLY_VAULT_CACHE_TTL_SECONDS` (default 86400
-= 1 day). Vault content changes are creator-driven and all mutation
+TTL is per key prefix. Folder lists (`lists:`) keep for
+`CHATTERLY_VAULT_CACHE_TTL_SECONDS` (default 604800 = 7 days); every other
+key (media pages, media-by-id) for min(that, 72000 = 20 h), because those
+payloads carry OF's signed urls and a cache older than ~20 h hands out links
+that 403. A proxy change also stales the account's rows (`mark_stale`): the
+signed urls are bound to the egress IP. Vault content changes are creator-driven and all mutation
 paths (/api/of/v2/upload, vault list/folder edits) call
 `invalidate(account_id)` so the cache cannot serve a stale row after a
 write the relay performed. External edits (e.g. the creator deleting
@@ -71,13 +75,48 @@ log = logging.getLogger("of-relay.vault_cache")
 _pending_invalidations: dict[str, datetime] = {}
 
 
-def _ttl_seconds() -> int:
-    raw = os.environ.get("CHATTERLY_VAULT_CACHE_TTL_SECONDS", "86400")
+LISTS_TTL_DEFAULT_S = 604800   # 7 d — folder lists carry no row-level signed urls worth guarding
+MEDIA_TTL_CAP_S = 72000        # 20 h — signed media urls are never served older than this
+
+
+def vault_media_cache_key(*, type: str = "all", list_id: int | None = None,
+                          offset: int = 0, limit: int = 24, sort: str = "desc",
+                          field: str = "recent", q_norm: str = "",
+                          before: str | None = None) -> str:
+    """THE cache key for a /vault/media request — the single place its format
+    lives. The route (server.py) and the background collector (vault_collect)
+    both build keys here, so a page the collector warms is the page the picker
+    reads."""
+    # `before` (Go to date) only when set, so every existing key stays as it was.
+    return (f"media:type={type}|list={list_id}|offset={offset}|limit={limit}"
+            f"|sort={sort}|field={field}|query={q_norm}"
+            + (f"|before={before}" if before else ""))
+
+
+def vault_lists_cache_key(*, view: str = "main", limit: int = 10, offset: int = 0,
+                          q_norm: str = "") -> str:
+    """THE cache key for a /vault/lists request — same single-home rule.
+    The folder search (`q_norm`) only when set, so the plain key is unchanged."""
+    return f"lists:view={view}|limit={limit}|offset={offset}" + (f"|query={q_norm}" if q_norm else "")
+
+
+def _ttl_seconds(query_key: str = "") -> int:
+    """TTL for this key. The env sets the lists TTL; anything else (media pages,
+    by-id reads: signed urls) is capped at MEDIA_TTL_CAP_S. 0 disables."""
+    raw = os.environ.get("CHATTERLY_VAULT_CACHE_TTL_SECONDS", str(LISTS_TTL_DEFAULT_S))
     try:
-        v = int(raw)
-        return v if v > 0 else 0
+        v = max(int(raw), 0)
     except ValueError:
-        return 86400
+        v = LISTS_TTL_DEFAULT_S
+    return v if query_key.startswith("lists:") else min(v, MEDIA_TTL_CAP_S)
+
+
+def mark_stale(account_id: str) -> None:
+    """Make every row cached so far for `account_id` read as a miss. Sync and
+    DB-free, for the sync proxy-switch hook (server._on_proxy_switched): a proxy
+    change re-binds the egress IP, and OF's signed urls are IP-bound. RAM-only
+    like `_pending_invalidations`; after a restart the 20 h media cap bounds it."""
+    _pending_invalidations[account_id] = datetime.utcnow()
 
 
 async def get(account_id: str, query_key: str) -> dict[str, Any] | None:
@@ -88,11 +127,11 @@ async def get(account_id: str, query_key: str) -> dict[str, Any] | None:
     A DB failure is reported as a miss: the caller then fetches upstream
     and serves real data, which is the whole point of a cache being
     optional."""
-    ttl = _ttl_seconds()
+    ttl = _ttl_seconds(query_key)
     if ttl == 0:
         return None
     cutoff = datetime.utcnow() - timedelta(seconds=ttl)
-    # A failed invalidate for this account raises the bar past the TTL, so
+    # A failed invalidate (or a `mark_stale`) raises the bar past the TTL, so
     # rows the mutation should have deleted are not served.
     pending = _pending_invalidations.get(account_id)
     if pending is not None and pending > cutoff:

@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import proxy_health_decide as ph  # noqa: E402
 from proxy_health_decide import (  # noqa: E402
     DOWN_AFTER, FAILOVER_AFTER_RECHECKS, RECHECK_MAX_S, Announce, ArmRecheck, CallErr, CallOk, Confirm, ConfirmDue,
-    ConfirmResult, Failover, FailedOver, Gone, Recheck, RecheckDue, RecheckResult, RecheckWait, Unwatch, Wait, Watch,
+    ConfirmResult, Failover, FailedOver, FlapBad, Gone, Recheck, RecheckDue, RecheckResult, RecheckWait, Unwatch, Wait, Watch,
     decide)
 
 try:
@@ -305,6 +305,36 @@ def test_failed_over_only_stamps():
     assert decide(None, FailedOver(now=1.0, moved=("a",)))[0]["failed_over"] == 1
 
 
+# ── the flap knob (PROXY_FLAP_BAD_PCT): flap-bad stays bad while `flapping` (the shell's hysteresis: the
+# window's rate still >= HALF the knob; FlapBad itself fires at >= the knob) ──
+_FLAP_DOWN = {**_st(), "down": True, "flap": True, "bad_since": 1.0, "rechecks_failed": FAILOVER_AFTER_RECHECKS - 1, "rechecking": True}
+
+
+@table("before, ev, kinds, then, down, failed", [
+    # flap-bad, rate still >= X/2: an answer or a passing recheck does not bring it up
+    (_FLAP_DOWN, CallOk(now=1.0, flapping=True), [], None, True, FAILOVER_AFTER_RECHECKS - 1),
+    (_FLAP_DOWN, RecheckResult(ok=True, flapping=True), ["Failover"], ArmRecheck(), True, FAILOVER_AFTER_RECHECKS),
+    # rate dropped below X/2: back up as usual (standby, nobody moved back)
+    (_FLAP_DOWN, CallOk(now=1.0, flapping=False), ["Announce(False)"], None, False, 0),
+    (_FLAP_DOWN, RecheckResult(ok=True, flapping=False), ["Announce(False)", "Unwatch"], None, False, 0),
+    # a proxy confirmed bad the usual way (no flap mark) ignores the rate
+    ({**_FLAP_DOWN, "flap": False}, CallOk(now=1.0, flapping=True), ["Announce(False)"], None, False, 0),
+    ({**_FLAP_DOWN, "flap": False}, RecheckResult(ok=True, flapping=True), ["Announce(False)", "Unwatch"], None,
+     False, 0),
+])
+def test_flap_bad_clears_only_when_the_rate_drops(before, ev, kinds, then, down, failed):
+    st, effects, nxt = decide(before, ev)
+    assert (_kinds(effects), nxt) == (kinds, then), (effects, nxt)
+    assert st["down"] is down and st["rechecks_failed"] == failed and st["flap"] is (down and before["flap"])
+
+
+def test_flap_bad_then_the_watcher_rechecks():
+    """FlapBad skips the confirm: its watcher's first step (ConfirmDue) goes straight to the rechecks."""
+    st, effects, _ = decide(_st(), FlapBad(now=5.0, watching=False, pct=33.0, calls=20))
+    assert Watch() in effects and st["down"] and st["bad_since"] == 5.0
+    assert decide(st, ConfirmDue(now=6.0, gap=30.0))[2] == ArmRecheck()
+
+
 # ── every state × every event: the whole transition table, pinned as it is ──
 # The shapes decide tells apart. down: bad, its next recheck armed; rechecking: a recheck in flight whose
 # failure is the FAILOVER_AFTER_RECHECKS-th; due: in flight, failover already due; failed_over: just failed
@@ -332,6 +362,8 @@ EVENTS = {   # one clock for all: now=110, the streak began at 100, the confirm 
     "recheck_wait": RecheckWait(now=110.0, base=10.0), "recheck_due": RecheckDue(),
     "recheck_ok": RecheckResult(ok=True), "recheck_bad": RecheckResult(ok=False),
     "gone": Gone(), "failed_over": FailedOver(now=110.0, moved=("a",)),
+    "flap_bad": FlapBad(now=110.0, watching=False, pct=40.0, calls=30),
+    "flap_bad_watching": FlapBad(now=110.0, watching=True, pct=40.0, calls=30),
 }
 
 
@@ -353,6 +385,15 @@ RECHECK_IN_FLIGHT = {"rechecking": True, "next_recheck_at": None}
 RECHECK_FAILED_1 = {"rechecking": False, "rechecks_failed": 1}
 RECHECK_FAILED_PAST_DUE = {"rechecking": False, "rechecks_failed": FAILOVER_AFTER_RECHECKS + 1}
 FAILED_OVER_ONE = {"failed_over_at": 110.0, "failed_over": 1}                # FailedOver(moved=("a",))
+FLAPPED = {"down": True, "flap": True, "bad_since": 110.0, "rechecks_failed": 0}   # FlapBad: bad, no confirm
+_FLAP_ROWS = [(s, "flap_bad", ["Log", "Announce(True)", "Watch"], None, FLAPPED)
+              for s in ("none", "healthy", "suspect", "threshold")] + \
+             [(s, "flap_bad_watching", ["Log", "Announce(True)"], None, FLAPPED)
+              for s in ("none", "healthy", "suspect", "threshold")] + \
+             [(s, e, [], None, {}) for s in ("down", "rechecking", "due", "failed_over")   # already bad: nothing
+              for e in ("flap_bad", "flap_bad_watching")]
+_FLAP_ROWS = [r for r in _FLAP_ROWS if r[0] != "threshold"] + [   # a DOWN_AFTER streak's confirm owns it
+    ("threshold", "flap_bad", [], None, {}), ("threshold", "flap_bad_watching", [], None, {})]
 MATRIX = [
     # state, event, effects, next, write: state' == {**(state or blank()), **write}; write None = no entry
     # ── none ──
@@ -426,7 +467,7 @@ MATRIX = [
     ("down", "confirm_ok", ["Log"], ArmRecheck(), CONFIRM_RESET),   # kept: stays down
     # kept: re-announced, bad_since and rechecks_failed reset; unreachable (one watcher per label, its
     # confirm before its rechecks; a bad proxy starts none). Same for rechecking, due, failed_over.
-    ("down", "confirm_bad", ["Log", "Announce(True)"], ArmRecheck(), CONFIRMED_BAD),
+    ("down", "confirm_bad", [], ArmRecheck(), {}),   # bad already (e.g. FlapBad mid-confirm): no second bad
     ("down", "recheck_wait", [], Wait(10.0, RecheckDue), {"next_recheck_at": 120.0}),
     ("down", "recheck_due", [], Recheck(), RECHECK_IN_FLIGHT),
     ("down", "recheck_ok", ["Log", "Announce(False)", "Unwatch"], None, ph._UP),
@@ -439,7 +480,7 @@ MATRIX = [
     ("rechecking", "call_err_watching", [], None, MORE_ERR),
     ("rechecking", "confirm_due", [], ArmRecheck(), {}),
     ("rechecking", "confirm_ok", ["Log"], ArmRecheck(), CONFIRM_RESET),
-    ("rechecking", "confirm_bad", ["Log", "Announce(True)"], ArmRecheck(), CONFIRMED_BAD),   # kept: as down
+    ("rechecking", "confirm_bad", [], ArmRecheck(), {}),   # as down
     ("rechecking", "recheck_wait", [], Wait(20.0, RecheckDue), {"next_recheck_at": 130.0}),
     ("rechecking", "recheck_due", [], Recheck(), RECHECK_IN_FLIGHT),
     ("rechecking", "recheck_ok", ["Log", "Announce(False)", "Unwatch"], None, ph._UP),
@@ -453,7 +494,7 @@ MATRIX = [
     ("due", "call_err_watching", [], None, MORE_ERR),
     ("due", "confirm_due", [], ArmRecheck(), {}),
     ("due", "confirm_ok", ["Log"], ArmRecheck(), CONFIRM_RESET),
-    ("due", "confirm_bad", ["Log", "Announce(True)"], ArmRecheck(), CONFIRMED_BAD),   # kept: as down
+    ("due", "confirm_bad", [], ArmRecheck(), {}),   # as down
     ("due", "recheck_wait", [], Wait(40.0, RecheckDue), {"next_recheck_at": 150.0}),
     ("due", "recheck_due", [], Recheck(), RECHECK_IN_FLIGHT),
     ("due", "recheck_ok", ["Log", "Announce(False)", "Unwatch"], None, ph._UP),
@@ -466,13 +507,14 @@ MATRIX = [
     ("failed_over", "call_err_watching", [], None, MORE_ERR),
     ("failed_over", "confirm_due", [], ArmRecheck(), {}),
     ("failed_over", "confirm_ok", ["Log"], ArmRecheck(), CONFIRM_RESET),
-    ("failed_over", "confirm_bad", ["Log", "Announce(True)"], ArmRecheck(), CONFIRMED_BAD),   # kept: as down
+    ("failed_over", "confirm_bad", [], ArmRecheck(), {}),   # as down
     ("failed_over", "recheck_wait", [], Wait(40.0, RecheckDue), {"next_recheck_at": 150.0}),
     ("failed_over", "recheck_due", [], Recheck(), RECHECK_IN_FLIGHT),
     ("failed_over", "recheck_ok", ["Log", "Announce(False)", "Unwatch"], None, ph._UP),
     ("failed_over", "recheck_bad", ["Failover"], ArmRecheck(), RECHECK_FAILED_PAST_DUE),
     ("failed_over", "gone", ["Log", "Unwatch"], None, None),
     ("failed_over", "failed_over", ["Log"], None, {"failed_over_at": 110.0, "failed_over": 3}),
+    *_FLAP_ROWS,
 ]
 
 
@@ -488,7 +530,8 @@ def test_matrix_is_exhaustive():
     import typing
     assert FAILOVER_AFTER_RECHECKS == 2, "the recheck delays and Failover cells above assume it"
     assert ph._UP == {"errors": 0, "first_error_at": None, "down": False, "rechecks_failed": 0,
-                      "next_recheck_at": None, "rechecking": False}, "the matrix's answer cells write ph._UP"
+                      "next_recheck_at": None, "rechecking": False, "flap": False}, \
+        "the matrix's answer cells write ph._UP"
     assert {type(e) for e in EVENTS.values()} == set(typing.get_args(ph.Event)), "an event class is missing"
     cells = [(s, e) for s, e, *_ in MATRIX]
     assert len(cells) == len(set(cells)), "one row per state × event"

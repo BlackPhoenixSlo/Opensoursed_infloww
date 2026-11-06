@@ -24,6 +24,9 @@ class Recorder:
         self.by_stage: dict[str, dict[str, list[tuple[int, float]]]] = defaultdict(lambda: defaultdict(list))
         # Every call as (end epoch s, route, status, ms), for checks over a time window.
         self.timeline: list[tuple[float, str, int, float]] = []
+        # Every (host:port, path) answered: lib/cli.py keeps the app's and the edge's in the run's
+        # http pages (a route handler reached without a browser, slop/map.json).
+        self.urls: set[tuple[str, str]] = set()
 
     def add(self, route: str, status: int, ms: float) -> None:
         self.calls[route].append((status, ms))
@@ -77,6 +80,7 @@ class Http:
                                    f"(cause {e.__cause__ or e.__context__!r}; stage {self.rec.stage})")
             raise
         self.rec.add(self.prefix + label(method, path), r.status_code, (time.perf_counter() - t0) * 1000)
+        self.rec.urls.add((f"{r.request.url.host}:{r.request.url.port}", r.request.url.path))
         if r.status_code >= 400 and len(self.rec.errors) < 50:
             self.rec.errors.append(f"{self.prefix}{method} {path} -> {r.status_code} {r.text[:200]}")
         return r

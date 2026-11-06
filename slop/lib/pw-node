@@ -1,0 +1,5 @@
+#!/bin/sh
+# Playwright's driver node (PLAYWRIGHT_NODEJS_PATH, set by lib/cli.py) at nice 10, so the Chromium it
+# launches is too (README "The machine gate"). SLOP_PW_NODE: the real node.
+renice 10 -p $$ >/dev/null 2>&1
+exec "$SLOP_PW_NODE" "$@"

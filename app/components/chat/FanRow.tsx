@@ -21,6 +21,7 @@ import type { OFChatItem, OFUserMini } from "@/lib/relay";
 import type { FanSpend } from "@/hooks/useFanSpend";
 import { cn, decodeHtmlEntities, fmtRelTime, interpretSubStatus } from "@/lib/utils";
 import { clockTime, fmtSpend } from "@/lib/format";
+import { ofPreviewText } from "@/lib/ofRichText";
 import { proxyImage } from "@/lib/mediaUrl";
 import { type FanId, sameUserId } from "@/lib/fanId";
 import { isUnreadChat } from "@/lib/chatUnread";
@@ -430,13 +431,9 @@ function previewText(c: OFChatItem): string {
     lm.isTip ? "💰 " :
     (lm.isFree === false || lm.lockedText) ? "🔒 " :
     "";
-  if (lm.text) return prefix + marker + stripHtml(lm.text);
+  if (lm.text) return prefix + marker + ofPreviewText(lm.text);
   if (lm.mediaCount) return `${prefix}${marker || "📎 "}${lm.mediaCount} media`;
   return (prefix + marker).trim();
-}
-
-function stripHtml(s: string): string {
-  return s.replace(/<[^>]+>/g, "").trim();
 }
 
 

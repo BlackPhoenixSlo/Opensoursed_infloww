@@ -259,7 +259,8 @@ export function Bubble({
                 </span>
               )}
               <TranslatableText raw={msg.text} translation={translation}
-                                textClassName={isPPV ? MP.messageList.ppvTitle : undefined} />
+                                textClassName={isPPV ? MP.messageList.ppvTitle : undefined}
+                                onAccent={side === "right" && !isPPV && !msg.isTip && !scheduled} />
             </span>
           )}
           {msg.media?.length ? <MediaStrip msg={msg} locked={locked} accountId={accountId} fanId={fanId} isOutgoing={ours} eagerMediaIds={eagerMediaIds} /> : null}

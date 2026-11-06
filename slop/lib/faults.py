@@ -965,7 +965,7 @@ FAULTS: dict[str, Fault] = {
     # slop/run 2026-10-28-dashboard-load --break --fault=dashboard-offline-creator-reads-of
     "dashboard-offline-creator-reads-of": Fault(None, (
         "the session-less Creator's card sent no OnlyFans request and shows 'Not connected'; "
-        "every live Creator's card read OF",
+        "on a first visit every live Creator's card read OF",
     ), browser_js=_DASHBOARD_OFFLINE_CREATOR_READS_OF),
     # slop/run 2026-10-28-dashboard-load --break --fault=boot-skeleton-not-drawn: the two first-paint checks.
     "boot-skeleton-not-drawn": Fault(None, (

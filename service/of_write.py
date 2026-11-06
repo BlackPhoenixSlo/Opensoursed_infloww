@@ -19,7 +19,7 @@ from contextvars import ContextVar
 from curl_cffi.const import CurlECode
 from curl_cffi.requests import exceptions as curl_exc
 
-from of_client import OUTBOUND_TEXT_GUARD, OFDeniedError
+from of_client import OUTBOUND_TEXT_GUARD, OFDeniedError, proxy_refused
 import dm_rate
 import run_slot
 from write_gate import WriteGate
@@ -163,12 +163,13 @@ async def of_write_paced(account_id, fn, *, min_gap_s: float = _OF_WRITE_GAP_S,
 def _may_have_sent(e: BaseException) -> bool:
     """Whether OnlyFans may have taken the write attempt that raised `e` (send once).
     Surely not: refused before it left the box (OFDeniedError, a deactivated Creator's
-    too), the proxy never opened the tunnel (ProxyError), the connection never opened
+    too), the proxy refused before the tunnel opened (of_client.proxy_refused: `e` or its
+    `raise ... from` cause is a ProxyError), the connection never opened
     (ConnectTimeout, curl's couldn't-connect: of_client._proxy_retry's own split), or
     OF answered 4xx (its rate-limit 400 included). Anything else may
     have: a read timeout, a dropped connection, a 5xx, a cancel while the call was out
     (its worker thread runs on), anything unknown."""
-    if isinstance(e, (OFDeniedError, curl_exc.ProxyError, curl_exc.ConnectTimeout)):
+    if proxy_refused(e) or isinstance(e, (OFDeniedError, curl_exc.ConnectTimeout)):
         return False
     if isinstance(e, curl_exc.ConnectionError) and getattr(e, "code", None) == CurlECode.COULDNT_CONNECT:
         return False

@@ -52,10 +52,12 @@ export interface OfMe {
   tipsEnabled?: boolean | null;
 }
 
-/** The "who am I" query (`/users/me`) for one Creator: every reader shares its one cache entry and request. */
+/** The "who am I" query (`/users/me`) for one Creator: every reader shares its one cache entry and request.
+ *  Background (lib/relaySchedule: the opened Creator's first, clicks never wait), dropped with its screen. */
 export const ofMeQuery = (accountId: string | null) => ({
   queryKey: ["of-me", accountId],
-  queryFn: () => relay.get<OfMe>("/api/of/v2/users/me", { accountId }),
+  queryFn: ({ signal }: { signal?: AbortSignal }) =>
+    relay.get<OfMe>("/api/of/v2/users/me", { accountId, priority: "background" }, signal),
   enabled: !!accountId,
   staleTime: 5 * 60 * 1000,
   retry: false,

@@ -121,6 +121,14 @@ const PERSIST_KEYS: ReadonlyArray<readonly string[]> = [
                     //   sum, keyed by principal): a return visit paints the
                     //   last Total at once, then refreshes it. Its siblings
                     //   under "dashboard" stay in memory.
+  // Per-Creator OF badges and roster figures: without them every reload read
+  // all 13 Creators again before a card or tab showed a number (2026-11-05,
+  // AE: 57 calls on a cold Dashboard). Now a reload paints the last ones and
+  // reads them again in the background once stale (their own staleTime).
+  ["of-profile"],     // users/me: card name, paid/free, avatars
+  ["of-sub-counts"],  // Per-model cards' fan counts
+  ["of-new-fans"],    // Per-model cards' new fans (keyed by window)
+  ["of-notif-count"], // Creator tabs' / OF Manager's notification badges
 ];
 
 export function shouldPersistKey(queryKey: readonly unknown[]): boolean {

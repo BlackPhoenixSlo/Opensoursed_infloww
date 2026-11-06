@@ -113,6 +113,7 @@ class ProcMon:
         self.profile_errors: list[str] = []
         self.nested_at: dict = {}  # top stacks of nested DB checkouts (lib/relay.py _db_probe)
         self._fresh = False  # the next sample starts a new series (follow())
+        self._ticks = 0  # samples taken (a coverage save every 5th under --map)
         self._lost = 0  # polls by samples that left no interval (process not seen): counted lost, next interval
 
     def follow(self, pgid: int, relay_http) -> None:
@@ -192,6 +193,9 @@ class ProcMon:
                 self._fresh = False
             if self.profile and stage != self.profile_stage:
                 await self._tell_profiler(stage)
+            self._ticks += 1
+            if os.environ.get("SLOP_COVERAGE") and self._ticks % 5 == 0:
+                await self.save_coverage()
             try:
                 await asyncio.wait_for(self._stop.wait(), INTERVAL_S)
             except asyncio.TimeoutError:
@@ -223,6 +227,13 @@ class ProcMon:
             return r.json() if r.status_code == 200 else None
         except Exception:  # noqa: BLE001 — a lost poll: counted per interval (polls_lost)
             return None
+
+    async def save_coverage(self) -> None:
+        """`slop/run --map`: the relay writes its coverage data so far (a SIGKILLed relay keeps it)."""
+        try:
+            await self.http.post("/__slop/coverage-save")
+        except Exception:  # noqa: BLE001 — a lost save: the next one, or the relay's exit, writes it
+            pass
 
     async def _tell_profiler(self, stage: str | None) -> None:
         try:

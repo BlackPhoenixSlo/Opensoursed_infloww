@@ -84,15 +84,26 @@ def admin_proxies_list() -> dict[str, Any]:
     by_aid = {a["id"]: a for a in accounts}
     enriched = []
     pool_ids: list[str] = []
+    pool_rows: list[dict[str, Any]] = []
     pool_size = pool_bad = 0
     down = proxy_health.down_labels()
+    # In-flight counts are the relay's whole traffic through a proxy (every Agency on it): the site owner's only.
+    site_owner = user is None or getattr(user, "is_admin", False)
+    hidden = () if site_owner else ("inflight", "inflight_peak")
     for p in proxies_list:
         if proxy_registry.is_pool(p):
             # Never listed: only the count, how many are bad (proxy_health), and
             # the viewer's accounts on one (`proxy_down` on /admin/accounts says which are down).
             pool_size += 1
-            pool_ids += [aid for aid in proxy_registry._ids_on(p) if aid in by_aid]
+            mine = [aid for aid in proxy_registry._ids_on(p) if aid in by_aid]
+            pool_ids += mine
             pool_bad += p.get("label") in down
+            if p.get("label") and (user is None or mine):
+                # Refusal telemetry of the pool proxies the viewer is on, by `slot` (1-based place in the
+                # pool): no label (a hash of host and user), no host, no probe ip.
+                h = proxy_health.snapshot(p["label"])
+                pool_rows.append({"slot": pool_size, "health": {
+                    k: h[k] for k in ("state", "down", "refusals", "inflight", "inflight_peak") if k not in hidden}})
             continue
         if user is not None:
             pu = p.get("user_id")
@@ -114,13 +125,13 @@ def admin_proxies_list() -> dict[str, Any]:
         out["assigned_account"] = bound[0] if bound else None
         out["assigned_account_id"] = bound[0]["id"] if bound else None
         out["url"] = proxy_registry.proxy_url(p)
-        out["health"] = proxy_health.snapshot(p["label"])
+        out["health"] = {k: v for k, v in proxy_health.snapshot(p["label"]).items() if k not in hidden}
         enriched.append(out)
     return {
         "proxies": enriched,
         # Inflowwww proxy pool: how many the relay holds, and which of the
         # viewer's accounts are on one. Hosts and credentials stay here.
-        "pool": {"size": pool_size, "account_ids": pool_ids, "bad": pool_bad},
+        "pool": {"size": pool_size, "account_ids": pool_ids, "bad": pool_bad, "proxies": pool_rows},
         # Slim account list shaped the way the picker wants it.
         "accounts": [{
             "id": a["id"], "nickname": a.get("nickname"),

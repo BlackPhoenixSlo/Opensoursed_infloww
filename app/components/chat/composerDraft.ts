@@ -22,10 +22,15 @@
  *     an upload still transcoding (`_claim`) and an uploaded item's own files
  *     and blob preview; media with a suggested price set the price to the
  *     highest of them and open the PPV row.
+ *   • A formatted template (OF's rich text: bold, italic, colour, size) keeps
+ *     its markup in `rich` beside the plain text the Composer shows; the send
+ *     carries the markup while the text is still that plain text
+ *     (`richText`), so an edit falls back to plain with no edited flag to keep.
  *   • Blob previews are a side effect and stay out of it (useBlobPreviews).
  */
 
 import { applyTemplate, canBeFreePreview } from "@/lib/composeDraft";
+import { hasOfFormatting } from "@/lib/ofRichText";
 import type { VaultMedia } from "@/lib/relay";
 import { parsePrice, sanitizePriceInput } from "@/lib/priceInput";
 import { priceNote } from "@/lib/sendGuards";
@@ -81,11 +86,13 @@ export interface ComposerDraft {
   pickedGifs: PickedGif[];
   /** The Script step this draft was loaded from; its send advances the Script. */
   script: { scriptId: string; scriptStep: number } | null;
+  /** A formatted template's OF markup and the plain text it was picked as. */
+  rich: { html: string; plain: string } | null;
 }
 
 export const EMPTY_DRAFT: ComposerDraft = {
   price: "", priceOpen: false, lockedText: false, attached: [], previewCount: 0,
-  scheduleOpen: false, scheduleAt: "", taggedCreators: [], pickedGifs: [], script: null,
+  scheduleOpen: false, scheduleAt: "", taggedCreators: [], pickedGifs: [], script: null, rich: null,
 };
 
 export type DraftAction =
@@ -118,7 +125,8 @@ export function composerDraft(s: ComposerDraft, a: DraftAction): ComposerDraft {
     case "pickTemplate": {
       const { scriptId, scriptStep } = a.t;
       const script = scriptId && typeof scriptStep === "number" ? { scriptId, scriptStep } : null;
-      return { ...applyTemplate(s, a.t), priceOpen: a.t.price > 0, script };
+      const rich = hasOfFormatting(a.t.displayText) ? { html: a.t.displayText.trim(), plain: a.t.text } : null;
+      return { ...applyTemplate(s, a.t), priceOpen: a.t.price > 0, script, rich };
     }
     case "pickVault": {
       const byId = new Map(s.attached.map((m) => [m.id, m]));
@@ -171,8 +179,8 @@ export function composerDraft(s: ComposerDraft, a: DraftAction): ComposerDraft {
     case "setTags":
       return { ...s, taggedCreators: a.tags };
     case "clearPpv":
-      // Tags are not in the PPV row, and the Script step rides on the text: both stay.
-      return { ...EMPTY_DRAFT, taggedCreators: s.taggedCreators, script: s.script };
+      // Tags are not in the PPV row, and the Script step and formatting ride on the text: all stay.
+      return { ...EMPTY_DRAFT, taggedCreators: s.taggedCreators, script: s.script, rich: s.rich };
     case "dropScript":
       return { ...s, script: null };
     case "sent":
@@ -187,8 +195,14 @@ export function isEmptyDraft(d: ComposerDraft): boolean {
   return (
     d.price === "" && !d.priceOpen && !d.lockedText && d.attached.length === 0 && d.previewCount === 0 &&
     !d.scheduleOpen && d.scheduleAt === "" && d.taggedCreators.length === 0 && d.pickedGifs.length === 0 &&
-    d.script == null
+    d.script == null && d.rich == null
   );
+}
+
+/** The picked template's markup while `text` is still the plain text it was picked as (trim aside), else null:
+ *  the chatter typed over it, so it sends as the plain text it shows. */
+export function richText(d: ComposerDraft, text: string): string | null {
+  return d.rich && d.rich.plain.trim() === text.trim() ? d.rich.html : null;
 }
 
 /** A Composer's whole draft: the text and the rest. */
@@ -304,7 +318,7 @@ export function buildSendArgs(
   d: ComposerDraft,
   opts: { text: string; delayMinutes?: number; now: number },
 ): SendArgs {
-  const args: SendArgs = { text: opts.text };
+  const args: SendArgs = { text: richText(d, opts.text) ?? opts.text };
   const price = paidPrice(d);
   if (price != null) {
     args.price = price;

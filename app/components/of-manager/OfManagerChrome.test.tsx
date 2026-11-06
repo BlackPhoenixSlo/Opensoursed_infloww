@@ -61,7 +61,7 @@ describe("OfManagerChrome", () => {
     expect(screen.getByRole("heading", { name: "Home" })).toBeInTheDocument();
     expect(screen.getAllByTestId("of-creator-row")).toHaveLength(2);
     await waitFor(() => expect(screen.getAllByText("99+")).toHaveLength(2));
-    expect(get).toHaveBeenCalledWith("/api/of/v2/users/notifications/count", { accountId: "1" });
+    expect(get).toHaveBeenCalledWith("/api/of/v2/users/notifications/count", { accountId: "1", priority: "background" });
     expect(screen.getByText("OF view")).toBeInTheDocument();
   });
 

@@ -267,6 +267,8 @@ async def admin_accounts_list(response: Response) -> dict[str, Any]:
         a["is_active"] = a.get("id") not in off
         a["proxy_down"] = bool(down) and (
             (proxy_registry.get_for_account(a["id"]) or {}).get("label") in down)
+        if a["proxy_down"]:   # why: "down" (unreachable) or "flapping" (the refusal-rate knob PROXY_FLAP_BAD_PCT, on by default)
+            a["proxy_bad_reason"] = proxy_health.snapshot(proxy_registry.get_for_account(a["id"])["label"]).get("bad_reason", "down")
     active = account_registry.get_active_account_id()
     if active not in {a.get("id") for a in all_accounts}:
         active = all_accounts[0]["id"] if all_accounts else None

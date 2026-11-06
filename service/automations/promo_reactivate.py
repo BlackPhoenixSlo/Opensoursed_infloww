@@ -41,6 +41,7 @@ from automation_registry import register
 from ._common import bool_knob
 from db.engine import get_session
 from db.models import PromoCampaign
+import of_pacing
 from of_promos import extract_created_promo, fetch_of_promos, normalise_of_promo, promo_type_body
 
 log = logging.getLogger("of-relay.automation.promo_reactivate")
@@ -92,7 +93,9 @@ async def run(account_id: str, payload: dict, *, run_id: int) -> dict:
     # account) and page 1 alone would show an older-but-LIVE promo as absent,
     # i.e. "expired", i.e. re-create it.
     managed_ids = {int(r.of_promo_id) for r in managed if r.of_promo_id is not None}
-    live = await fetch_of_promos(account_id, need_ids=managed_ids)
+    # A background walk (of_pacing): paging to an older managed promo can take pages.
+    live = await of_pacing.walk(account_id, "promo_reactivate",
+                                lambda: fetch_of_promos(account_id, need_ids=managed_ids))
     if live is None:
         log.info("promo_reactivate: OF unreachable account=%s — standing down", account_id)
         return {"managed": len(managed), "reactivated": 0,

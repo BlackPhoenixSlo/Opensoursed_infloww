@@ -610,7 +610,7 @@ export function useAccountProfile(accountId: string | null | undefined) {
     enabled: !!accountId,
     // Shared with useAccountAvatar. Session expired / network blip / OF
     // rate-limit / another Creator's body → null; the card falls back to ID.
-    queryFn: () => fetchOwnProfile<OfProfile>(accountId!),
+    queryFn: ({ signal }) => fetchOwnProfile<OfProfile>(accountId!, signal),
     staleTime: 30 * 60_000,
     gcTime: 24 * 60 * 60_000,
     refetchOnWindowFocus: false,
@@ -643,11 +643,11 @@ export function useOfSubscriberCounts(accountId: string | null | undefined) {
   return useQuery<OfSubscriberCounts | null>({
     queryKey: ["of-sub-counts", accountId] as const,
     enabled: !!accountId,
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       try {
         const r = await relay.get<{ subscribers?: Record<string, number> }>(
           "/api/of/v2/subscriptions/count/all",
-          { accountId: accountId!, priority: "background" },
+          { accountId: accountId!, priority: "background" }, signal,
         );
         const s = r?.subscribers ?? {};
         return {
@@ -685,7 +685,7 @@ export function useOfNewFans(
   return useQuery<number | null>({
     queryKey: ["of-new-fans", accountId, from, to] as const,
     enabled: !!accountId,
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       try {
         const qs = new URLSearchParams();
         if (from) qs.set("start", from);
@@ -695,7 +695,7 @@ export function useOfNewFans(
           subscribes?: Array<{ count?: number }>;
         }>(
           `/api/of/v2/subscriptions/subscribers/chart?${qs.toString()}`,
-          { accountId: accountId!, priority: "background" },
+          { accountId: accountId!, priority: "background" }, signal,
         );
         if (typeof r?.subscribers === "number") return r.subscribers;
         // Fallback: sum the per-day subscriber-count series.

@@ -17,9 +17,14 @@ import { NOT_WIRED } from "./NotWired";
 
 vi.mock("@/lib/relay", async (orig) =>
   (await import("./composerTestHarness")).mockRelayModule(await orig()));
-// An owner session, as the Thread runs it: the chatter folder gate stays off.
-vi.mock("@/contexts/UserContext", () => ({ useUser: () => ({ user: { username: "owner" } }) }));
-vi.mock("@/contexts/ChatterContext", () => ({ useChatter: () => ({ chatter: null }) }));
+// An owner session by default, as the Thread runs it: the chatter folder gate
+// stays off. A test swaps in a chatter-only session (user null, chatter set).
+const session = vi.hoisted(() => ({
+  user: { username: "owner" } as { username: string } | null,
+  chatter: null as { id: number } | null,
+}));
+vi.mock("@/contexts/UserContext", () => ({ useUser: () => ({ user: session.user }) }));
+vi.mock("@/contexts/ChatterContext", () => ({ useChatter: () => ({ chatter: session.chatter }) }));
 
 /* ── the spec's fixtures (synthetic) ────────────────────────────────────── */
 
@@ -81,6 +86,8 @@ let fanHistoryReply: () => unknown;
 /** The mirror's item count: above 0, the picker serves the grid from the
  *  mirror (`/admin/vault-ai/items`) instead of the live OnlyFans path. */
 let mirrorCount: number;
+/** The summary's `complete`: only a FULL mirror switches the picker to it. */
+let mirrorComplete: boolean | undefined;
 /** The live vault page; a test swaps it for media with files. */
 let mediaReply: VaultMedia[];
 
@@ -88,9 +95,12 @@ beforeEach(() => {
   resetComposerHarness();
   fanHistoryReply = () => FAN_HISTORY;
   mirrorCount = 0;
+  mirrorComplete = true;
+  session.user = { username: "owner" };
+  session.chatter = null;
   mediaReply = MEDIA;
   vi.stubGlobal("IntersectionObserver", observerStub);
-  routeRelay("/admin/vault-ai/cache/summary", () => ({ account_id: "acct-1", count: mirrorCount, running: false, last_run: null }));
+  routeRelay("/admin/vault-ai/cache/summary", () => ({ account_id: "acct-1", count: mirrorCount, complete: mirrorComplete, running: false, last_run: null }));
   routeRelay("/api/of/v2/vault/lists", () => ({ list: [], hasMore: false }));
   routeRelay("/api/of/v2/vault/media", () => ({ list: mediaReply, hasMore: false }));
   routeRelay("/admin/vault/fan-history", () => fanHistoryReply());
@@ -162,6 +172,36 @@ describe("VaultPicker with a Fan in scope", () => {
     // Debounced: no request per keystroke, then one for the whole term.
     expect(searches()).toEqual([]);
     await waitFor(() => expect(searches()).toEqual([expect.stringContaining("query=beach")]));
+  });
+});
+
+describe("VaultPicker source: mirror only once it is complete", () => {
+  const paths = () => requestedPaths().map((p) => p.split("?")[0]);
+
+  it.each([
+    ["false", false],
+    ["missing", undefined],
+  ])("a partial mirror (complete %s, count > 0) stays on the live OF path", async (_l, complete) => {
+    mirrorCount = 5;
+    mirrorComplete = complete;
+    renderPicker(42);
+    await waitFor(() => expect(card(7002)).toBeInTheDocument());
+    expect(paths()).toContain("/api/of/v2/vault/media");
+    expect(paths()).not.toContain("/admin/vault-ai/items");
+  });
+
+  it("a complete mirror serves a restricted chatter too (the server applies the folder limits)", async () => {
+    session.user = null;
+    session.chatter = { id: 3 };
+    routeRelay("/chatter/me/folder-access", () => ({
+      account_id: "acct-1", restricted: true, folders: [{ folder_id: 9, folder_name: "Allowed" }],
+    }));
+    mirrorCount = 5;
+    renderPicker(42);
+    // Only the mirror's copy carries AI tags; the live grid (which may fire
+    // once before the summary lands) never does.
+    await waitFor(() => expect(within(card(7001)).getByRole("list", { name: "Tags" })).toBeInTheDocument());
+    expect(paths()).toContain("/admin/vault-ai/items");
   });
 });
 

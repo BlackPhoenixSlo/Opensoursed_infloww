@@ -8,6 +8,8 @@ import type { OFMessage } from "@/lib/relay";
 import type { BubbleTranslation } from "@/hooks/useTranslations";
 import { cn } from "@/lib/utils";
 import { MP } from "@/lib/messagesPro";
+import { isOfHtml, ofPlainText } from "@/lib/ofRichText";
+import { OfRichText } from "./OfRichText";
 
 /** A Date divider's label (Phase 4 spec T4, F5): "Today" on `now`'s local
  *  day, the short month and day ("Sep 29") on another day of `now`'s year,
@@ -120,22 +122,9 @@ export function resolveSide(
   return ownerUserId != null && m.fromUser?.id === ownerUserId ? "right" : "left";
 }
 
-/** OF returns message bodies as HTML — strip tags AND decode the most
- *  common entities so bubbles render as plain text without leaking
- *  `<br>` / `&amp;` artifacts. We avoid `dangerouslySetInnerHTML` so
- *  malformed input from OF can never inject markup into our chat. */
-export function stripHtml(s: string): string {
-  return s
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/p\s*>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, "\"")
-    .replace(/&#39;/g, "'");
-}
+/** OF returns message bodies as HTML: the bubble's plain text (lines kept, every tag dropped, entities decoded),
+ *  the translate layer's key. lib/ofRichText's `ofPlainText`; formatted bodies render through `OfRichText`. */
+export const stripHtml = ofPlainText;
 
 // Per-language color for the "(es)" tag — same code, same color everywhere so
 // a chatter learns "amber = Spanish" at a glance. Unknown codes fall back to sky.
@@ -152,17 +141,22 @@ const LANG_TAG_COLOR: Record<string, string> = {
  *  detected language isn't English, render "(es)" (colored by language) + the
  *  English text; the original stays one hover away in the title tooltip.
  *  English / untranslated / toggle-off all render the plain original. */
-export function TranslatableText({ raw, translation, textClassName }: {
+export function TranslatableText({ raw, translation, textClassName, onAccent }: {
   raw: string;
   translation?: BubbleTranslation | null;
   /** On the text span only, never the language tag: a PPV's title weight (ML11). */
   textClassName?: string;
+  /** The bubble is our accent fill (OfRichText's coloured-run chip). */
+  onAccent?: boolean;
 }) {
   const original = stripHtml(raw);
   const t = translation;
   const show = !!t?.text && t.lang !== "en"
     && t.text.trim().toLowerCase() !== original.trim().toLowerCase();
-  if (!show) return <span className={textClassName}>{original}</span>;
+  // The original as the fan sees it: OF's formatting kept (plain bodies render exactly as plain text did).
+  // Not OF markup: the plain text as the bubble always drew it (tags dropped, entities decoded).
+  if (!show && !isOfHtml(raw)) return <span className={textClassName}>{original}</span>;
+  if (!show) return <OfRichText raw={raw} className={cn(textClassName, onAccent && "of-rt-on-accent")} />;
   return (
     <>
       <span

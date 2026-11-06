@@ -173,7 +173,7 @@ function ModalMask({ children }: { children: ReactNode }) {
   const maskRef = useRef<HTMLDivElement>(null);
   useExitGhost(true, maskRef);
   return (
-    <div ref={maskRef} className={cn("pop-backdrop fixed inset-0 z-50 grid place-items-center overflow-y-auto p-4", IF_MODAL_MASK)}>
+    <div ref={maskRef} className={cn("pop-backdrop fixed inset-x-0 top-0 z-50 grid h-[var(--vvh,100dvh)] place-items-center overflow-y-auto p-4", IF_MODAL_MASK)}>
       {children}
     </div>
   );
@@ -194,7 +194,7 @@ export function IfModal({ title, label, width = 520, footer, onClose, closable =
         aria-label={title ? undefined : label}
         tabIndex={-1}
         style={widthStyle(width)}
-        className={cn("pop-modal relative flex max-h-[calc(100vh-32px)] flex-col", IF_MODAL_BOX, className)}
+        className={cn("pop-modal relative flex max-h-[calc(var(--vvh,100dvh)-32px)] flex-col", IF_MODAL_BOX, className)}
       >
         {closable && (
           <button type="button" aria-label="Close" onClick={onClose}

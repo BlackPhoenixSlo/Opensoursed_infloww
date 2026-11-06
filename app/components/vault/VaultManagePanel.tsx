@@ -15,7 +15,7 @@
 
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 
-import { useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Square } from "lucide-react";
 
 import { EmptyState, IfModal } from "@/components/ui/infloww";
@@ -55,8 +55,11 @@ import {
   invalidateVaultGrid,
   mirrorItemsKey,
 } from "@/hooks/useVaultCache";
+import { refreshVaultFromOf } from "@/hooks/vaultRefresh";
+import { useThumbAutoRefresh } from "@/hooks/useThumbAutoRefresh";
 import { describeSweepText, sweepAbortedNote, useVaultSweep } from "@/hooks/useVaultSweep";
 import { type VaultList, type VaultMedia } from "@/lib/relay";
+import { type FanId } from "@/lib/fanId";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/Skeleton";
@@ -341,6 +344,16 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
     invalidateVaultGrid(qc, accountId);
   }
 
+  // Refresh (↻): fresh from OnlyFans (folders, the open folder's media), not just a re-read of the relay's cache.
+  // Spins until the reloaded grid is in (the button is disabled meanwhile); says so when OF could not be reached
+  // (the grid shows the saved vault) or the sync failed otherwise.
+  const ofRefresh = useMutation({ mutationFn: (folder: FanId | null) => refreshVaultFromOf(qc, accountId, folder) });
+  const refreshNote = ofRefresh.isPending ? null
+    : ofRefresh.isError ? "Refresh failed"
+    : ofRefresh.data === false ? "Couldn't reach OnlyFans, showing saved vault" : null;
+  // Broken thumbnails (an expired signed url) reload the listing that hands them out, once per cooldown.
+  const thumbs = useThumbAutoRefresh(accountId, useLocal ? "mirror" : "live");
+
   const deps: ManageDeps = {
     accountId,
     qc,
@@ -423,7 +436,9 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
             onType={(value) => dispatchBrowse({ type: "mediaType", value })}
             typeCounts={typeCounts}
             loadedCount={items.length}
-            onRefresh={refreshAll}
+            onRefresh={() => ofRefresh.mutate(ofFolderId)}
+            refreshing={ofRefresh.isPending}
+            refreshNote={refreshNote}
             onSelectAll={() => dispatchBrowse({ type: "selectAll", ids: items.map((m) => m.id) })}
             selectMode={selectMode}
             onToggleSelect={() => dispatchBrowse({ type: "toggleSelectMode" })}
@@ -472,6 +487,7 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
                       onCheck={() => dispatchBrowse({ type: "toggle", id: m.id })}
                       showOrder={usingFolder}
                       onOrder={(m, value) => setOrder(m, value, { accountId, qc, ofFolderId })}
+                      thumbs={thumbs}
                     />
                   ))}
                 </div>

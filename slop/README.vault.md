@@ -23,9 +23,29 @@ oracles, bypasses).
 | `scenarios/2026-11-01-vault-pro-20k.py` | Vault Pro at 20k; its `_oracle` (what `GET /duplicates` must answer at a strictness, from the planted copies). |
 | `scenarios/2026-11-01-vault-describe-sweep.py` | The describe sweep. |
 | `scenarios/2026-10-30-vault-import-reducer.py` | Add media's pick list and the restricted chatter's picker. |
+| `lib/vault_wire.py` | OnlyFans' vault at its wire for the vault flows (week cache, Refresh): `VaultWire(fake, seed, items, sizes=)` joins `of_wire.FakeOF.extra_routes`; per Creator (made on first sight of its User-ID) `items` media in 6 folders; `/vault/lists`, `/vault/media` (list / type / sort / offset / limit), `/vault/media/{id}` (re-signed); urls signed by `seed/chat_media.sign`; `assets()` for `img_relay.arm_run`, `rotate()`, `add(uid, name, k)` (a folder + k media made on OF now); records `fake.vault_calls`. |
+| `lib/vault_collect_relay.py` | With RELAY_ENV `SLOP_VAULT_STILLS=1`: vault_stills / storyboard dirs into `$DEMO_SHOTS_TMP/vault-stills/`, the collector's periodic started (test mode skips `_start_event_pumps`). |
+| `lib/vault_collect_faults.py` | The week-cache flows' check names and faults (below). |
+| `seed/vault_week.py` | `mirror(w, wire, uids)`: vault_items + one `auto:done` run as the collector leaves them; `set_urls` (expire / re-sign). |
+| `seed/profiles/flat_agency.py` | One Agency, N Creators (`w.data["flat_creators"]`), each with an OF session right away. |
+| `scenarios/2026-11-05-vault-collect.py` | The background collector under load. |
+| `scenarios/2026-11-05-vault-thumbs.py` | Durable picker thumbs. |
+| `seed/vault_live.py` | Vault Refresh's world by SQL from `lib/vault_wire.py`'s vaults: mirror Creators get `seed/vault_week.mirror` + the relay's folder list cached 2 h ago (LISTS_KEY); live Creators the picker's page 1 cached 2 h ago with thumbs expired 1 h ago (PICKER_KEY); every vault call LATENCY_S. |
+| `lib/vault_refresh_faults.py` | Vault Refresh's check names and faults (below). |
+| `scenarios/2026-11-05-vault-refresh.py` | Vault Pro's Refresh and the picker's broken-thumb reload. |
 
 ## Scenarios
 
+- `2026-11-05-vault-refresh`: `OF_WIRE` (`seed/of_sessions`) + `lib/vault_wire.py`, `agency_pool` plus `seed/vault_live`, `lib/img_relay.py`
+  armed with `pictures`. UI: Vault Pro on Creator 0 (desktop) and 1 (phone): a folder + 5 media made on OF after
+  load, Refresh (screenshots `vault-refresh-<dev>-trigger` / `-settled`), then Refresh with OF's vault listing failing
+  (`-fail`: the "Couldn't reach OnlyFans" note); the chat Vault picker on Creator 2 / 3 with page 1 cached and its
+  thumbs 403 (its invalidate held for `picker-thumbs-<dev>-trigger`, then `-settled`). Stage `sync` (also --no-ui):
+  150 media made on OF per load Creator (4+), `--users` concurrent `POST /admin/vault-ai/sync`. Checks
+  (`lib/vault_refresh_faults.py`): `REFRESH_FOLDER`, `REFRESH_MEDIA`, `REFRESH_WIRE`, `REFRESH_FAIL_SHOWN`, `THUMBS_RELOAD`,
+  `SYNC_LOAD`, `SYNC_COALESCED`; budget sync p95 and vs the last green run. Faults: `vault-refresh-cache-only`
+  (default, client: the pre-fix Refresh), `vault-refresh-fail-silent` (client: a failed sync reads as ok),
+  `vault-thumbs-no-auto-refresh` (client), `vault-sync-no-coalesce` (relay; `--no-ui`).
 - `2026-11-01-vault-pro-20k`: `agency_inbox` plus `seed/vault_items`: Creator 0 the big vault (`--vault_items=`,
   capped at `COLLECT_CAP`), every other a twentieth (at least 50). Stage `read`: `--users` owner sessions
   (`ctx.owner.share`) take tasks off one shared list, 1-3 s think after each: every 40-item page of every items
@@ -76,3 +96,17 @@ oracles, bypasses).
   (`lib/picker_faults.py`) turns only that check red. Relay-side fault `vault-import-status-drops-items`
   (`lib/vault_import_faults.py`: the status route's `items` lose the run's last one, the counts unchanged) turns
   only `RUN_ITEMS` red.
+- `2026-11-05-vault-collect`: `flat_agency` (`vault_collect_creators` 6 / 16 / 40, `vault_collect_items` 400 /
+  600 / 2,000), `OF_WIRE` + `lib/vault_wire.py`, CDN armed. 60% of Creators busy (pickers with refresh=1,
+  chatters, fan DMs), the rest quiet; one relay stop/start mid-walk. Checks: `collect_pacing`,
+  `collect_one_at_a_time`, `collect_skips_busy`, `collect_fills_mirror`, `collect_thumbs_warm`, `collect_resume`,
+  `user_read_p95` (+ stock p95 vs last green). Faults: `collect-unpaced` (default; `collect_pacing`),
+  `collect-ignores-user` (`collect_skips_busy`). Bypasses: fake OF + CDN at the wire, stills dirs by env, RELAY_ENV
+  tick 2 s / first 1 s / GAP 1 s / USER_QUIET 20 s, the periodic started by the relay part, httpx pickers.
+- `2026-11-05-vault-thumbs`: `flat_agency` (`vault_thumbs_creators` 3 / 6 / 10, `vault_thumbs_items`), mirror by
+  SQL (`seed/vault_week`), collector off. Phases cold / second / rotation / dead link / restricted chatter / proxy
+  change; UI (small) two shots `vault-thumbs-trigger`, `vault-thumbs-settled`. Checks:
+  `thumbs_second_open_zero_cdn`, `thumbs_survive_rotation`, `thumbs_dead_link_refreshed_once`,
+  `thumbs_restricted_chatter_404`, `proxy_change_invalidates`. Faults: `thumb-keyed-by-signed-url` (default;
+  `thumbs_survive_rotation`), `thumb-no-resign` (`thumbs_dead_link_refreshed_once`). Bypasses: as above plus OF's
+  re-sign / expiry as mirror url rewrites (SQL) + the fake's gen, dead-link tiles fetched by id (persisted tiles).

@@ -556,7 +556,7 @@ function ConnectivityCell({ account, conn }: { account: AccountMeta; conn: Conne
       )}
       {account.proxy_down && (
         <Badge color="err" title={PROXY_DOWN_TITLE}>
-          proxy unreachable
+          {account.proxy_bad_reason === "flapping" ? "proxy refusing" : "proxy unreachable"}
         </Badge>
       )}
     </span>

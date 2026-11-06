@@ -12,6 +12,7 @@
  */
 
 import { resolveShareToken } from "@/lib/shareToken";
+import { admissible, initialSchedule, scheduleReducer, type Action as ScheduleAction } from "@/lib/relaySchedule";
 import type { GiphyResponse } from "./relayTypes";
 export type * from "./relayTypes";
 export { SALARY_FREQUENCIES, toChoice } from "./relayTypes";
@@ -184,6 +185,65 @@ export function describeLoadError(
   return `Couldn't refresh: ${raw || "unknown error"}`;
 }
 
+// ── Background read queue (rules: lib/relaySchedule.ts) ─────────────────────
+// This runner only dispatches: a background OF read waits for `admissible` to name it, then holds its slot until
+// its body is read. The browser's own link estimate (navigator.connection, where there is one) feeds the starved-link cap.
+let schedule = initialSchedule;
+let nextJobId = 1;
+const admitted = new Map<number, () => void>();
+
+function dispatchSchedule(a: ScheduleAction): void {
+  schedule = scheduleReducer(schedule, a);
+  const ids = admissible(schedule);
+  if (!ids.length) return;
+  schedule = scheduleReducer(schedule, { type: "start", ids });
+  for (const id of ids) { admitted.get(id)?.(); admitted.delete(id); }
+}
+
+/** Wait for a background slot; resolves with the release. Aborted while waiting: rejects, the slot never taken. */
+function admitBackground(accountId: string | null, signal?: AbortSignal | null): Promise<() => void> {
+  signal?.throwIfAborted();
+  const id = nextJobId++;
+  const release = () => dispatchSchedule({ type: "done", id });
+  return new Promise((resolve, reject) => {
+    const onAbort = () => { admitted.delete(id); release(); reject(signal!.reason); };
+    admitted.set(id, () => { signal?.removeEventListener("abort", onAbort); resolve(release); });
+    signal?.addEventListener("abort", onAbort, { once: true });
+    dispatchSchedule({ type: "enqueue", job: { id, accountId } });
+  });
+}
+
+/** The Creator the user has open (Messages Pro's chat, else its scoped Creator, or a pressed Fan row; null: none):
+ *  its background reads never wait. */
+export function setRelayFocus(accountId: string | null): void {
+  dispatchSchedule({ type: "focus", accountId });
+}
+
+/** The Creator `setRelayFocus` named last. */
+export function relayFocus(): string | null {
+  return schedule.focus;
+}
+
+type NetInfo = EventTarget & { effectiveType?: string; saveData?: boolean };
+if (typeof navigator !== "undefined") {
+  const conn = (navigator as Navigator & { connection?: NetInfo }).connection;
+  if (conn) {
+    const read = () => dispatchSchedule({ type: "net", effectiveType: conn.effectiveType, saveData: conn.saveData });
+    read();
+    conn.addEventListener?.("change", read);
+  }
+}
+
+/** fetch's `priority` hint where the browser has it (Chromium, Safari 17.2+); nothing elsewhere. */
+const FETCH_PRIORITY = (() => {
+  // Chromium reads `priority` from the init but has no Request.prototype.priority: probe the read.
+  let read = false;
+  try {
+    new Request("data:,", { get priority() { read = true; return "low"; } } as RequestInit);
+  } catch { /* no Request (SSR) or a bad init: no hint */ }
+  return read;
+})();
+
 /**
  * Core fetch wrapper. Most callers use the verb helpers (get/post/patch/delete)
  * but `request()` is here for the long tail of mixed verbs / streaming bodies.
@@ -209,8 +269,18 @@ export async function request<T = unknown>(
   // cache, so the lock is never taken. Unscoped calls keep the browser's
   // default. A caller's own `init.cache` wins.
   const cache = headers.has("X-Account-Id") ? "no-store" : undefined;
-  const r = await fetch(url, { cache, ...init, headers, credentials: "same-origin" });
-  return parseResponse<T>(r);
+  const background = ctx?.priority === "background";
+  // A background OnlyFans GET waits for a slot (lib/relaySchedule.ts). Writes never queue; a user call never waits.
+  const release = background && url.startsWith("/api/of/") && (init?.method ?? "GET").toUpperCase() === "GET"
+    ? await admitBackground(ctx?.accountId ?? null, init?.signal)
+    : null;
+  try {
+    const priority = FETCH_PRIORITY ? { priority: background ? "low" : "high" } as RequestInit : undefined;
+    const r = await fetch(url, { cache, ...priority, ...init, headers, credentials: "same-origin" });
+    return await parseResponse<T>(r);
+  } finally {
+    release?.();
+  }
 }
 
 

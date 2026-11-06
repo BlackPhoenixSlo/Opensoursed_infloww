@@ -266,7 +266,7 @@ export function applyFormat(editor: HTMLElement, cmd: FormatCommand): boolean {
   return ok;
 }
 
-function textOffsets(root: Element, sel: Selection): [number, number] | null {
+export function textOffsets(root: Element, sel: Selection): [number, number] | null {
   if (!sel.rangeCount) return null;
   const r = sel.getRangeAt(0);
   if (!root.contains(r.commonAncestorContainer)) return null;
@@ -279,7 +279,7 @@ function textOffsets(root: Element, sel: Selection): [number, number] | null {
   return [upTo(r.startContainer, r.startOffset), upTo(r.endContainer, r.endOffset)];
 }
 
-function restoreOffsets(root: Element, sel: Selection, [start, end]: [number, number]): void {
+export function restoreOffsets(root: Element, sel: Selection, [start, end]: [number, number]): void {
   const doc = root.ownerDocument;
   const walk = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const range = doc.createRange();

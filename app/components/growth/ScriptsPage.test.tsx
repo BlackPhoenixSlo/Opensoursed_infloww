@@ -119,6 +119,12 @@ async function mount() {
 
 const rows = () => screen.getAllByRole("listitem").filter((li) => li.closest("[aria-label='Scripts list']"));
 const textbox = () => screen.getByPlaceholderText("Enter your message...");
+/** Types into the script's rich Text field (a contenteditable: one paragraph per line). */
+const typeBody = (v: string) => {
+  const el = textbox();
+  el.innerHTML = v.split("\n").map((l) => `<p>${l}</p>`).join("");
+  fireEvent.input(el);
+};
 const nameBox = () => screen.getByPlaceholderText("Enter name");
 const openMore = () => fireEvent.click(screen.getByRole("button", { name: "More" }));
 const writes = () => post.mock.calls.length + put.mock.calls.length + patch.mock.calls.length + del.mock.calls.length;
@@ -325,7 +331,7 @@ describe("the saved replies are the scripts", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: "Add script" }));
     expect(screen.getByRole("dialog", { name: "Add script" })).toBeInTheDocument();
     fireEvent.change(nameBox(), { target: { value: "New one" } });
-    fireEvent.change(textbox(), { target: { value: "A new one" } });
+    typeBody("A new one");
     fireEvent.click(screen.getByRole("button", { name: "OK" }));
     await waitFor(() => expect(post).toHaveBeenCalledTimes(1));
     expect(post.mock.calls[0][0]).toBe(LIST_A);
@@ -338,8 +344,8 @@ describe("the saved replies are the scripts", () => {
     fireEvent.click(within(rows()[1]).getByRole("button", { name: "Edit" }));
     expect(screen.getByRole("dialog", { name: "Edit script" })).toBeInTheDocument();
     expect(nameBox()).toHaveValue("Unlock");
-    expect(textbox()).toHaveValue("Unlock this one");
-    fireEvent.change(textbox(), { target: { value: "Unlock it now" } });
+    expect(textbox()).toHaveTextContent("Unlock this one");
+    typeBody("Unlock it now");
     fireEvent.click(screen.getByRole("button", { name: "OK" }));
     await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
     expect(put.mock.calls[0][0]).toBe("/admin/saved-replies/2");
@@ -404,7 +410,7 @@ describe("the script editor is the capture's 535px modal (#72 to #79)", () => {
     expectInOrder([
       within(dialog).getByLabelText(/^Name/),
       within(dialog).getByLabelText("Tags"),
-      within(dialog).getByLabelText(/^Text/),
+      within(dialog).getByRole("textbox", { name: /^Text/ }),
       within(dialog).getByLabelText("Message price"),
       within(dialog).getByLabelText("Internal notes"),
     ]);
@@ -416,10 +422,10 @@ describe("the script editor is the capture's 535px modal (#72 to #79)", () => {
     expectInCapture("growth-scripts#75", "Yn=6500");
     expect(nameBox()).toHaveAttribute("maxLength", "64");
     expect(nameBox()).toBeRequired();
-    expect(textbox()).toHaveAttribute("maxLength", "6500");
+    expect(textbox()).toHaveAttribute("data-maxlength", "6500");
     expect(textbox()).toBeRequired();
     const save = within(dialog).getByRole("button", { name: "OK" });
-    fireEvent.change(textbox(), { target: { value: "Body only" } });
+    typeBody("Body only");
     expect(save).toBeDisabled();
     fireEvent.change(nameBox(), { target: { value: "Named" } });
     expect(save).toBeEnabled();
@@ -429,7 +435,7 @@ describe("the script editor is the capture's 535px modal (#72 to #79)", () => {
     const dialog = await openAdd();
     expectInCapture("growth-scripts#77", "Minimum $3 USD");
     fireEvent.change(nameBox(), { target: { value: "Named" } });
-    fireEvent.change(textbox(), { target: { value: "Pay me" } });
+    typeBody("Pay me");
     const price = within(dialog).getByLabelText("Message price");
     fireEvent.change(price, { target: { value: "2" } });
     expect(within(dialog).getByText("Minimum $3 USD")).toBeInTheDocument();
@@ -444,7 +450,7 @@ describe("the script editor is the capture's 535px modal (#72 to #79)", () => {
     expectInCapture("growth-scripts#74", "Select or create a tag");
     expectInCapture("growth-scripts#79", "maxLength:256");
     fireEvent.change(nameBox(), { target: { value: "ask name" } });
-    fireEvent.change(textbox(), { target: { value: "what's your name?" } });
+    typeBody("what's your name?");
     const tags = within(dialog).getByLabelText("Tags");
     expect(tags).toHaveAttribute("maxLength", "32");
     fireEvent.change(tags, { target: { value: "Opener" } });
@@ -496,7 +502,7 @@ describe("the saved-reply editor's own controls follow the bundle's script modal
     const dialog = await openEdit(0);
     const picker = within(dialog).getByRole("button", { name: "Emoji picker" });
     expect(picker.closest(`[title="${EXTRA_LABEL}"]`)).toBeNull();
-    expectInOrder([within(dialog).getByLabelText(/^Text/), picker, within(dialog).getByLabelText("Message price")]);
+    expectInOrder([within(dialog).getByRole("textbox", { name: /^Text/ }), picker, within(dialog).getByLabelText("Message price")]);
   });
 
   it("shows the stored Sequence and Step, labelled Inflowwww extra, and an edit keeps them", async () => {
@@ -725,7 +731,7 @@ describe("the creator control scopes every read and write", () => {
     openMore();
     fireEvent.click(screen.getByRole("menuitem", { name: "Add script" }));
     fireEvent.change(nameBox(), { target: { value: "B one" } });
-    fireEvent.change(textbox(), { target: { value: "For B" } });
+    typeBody("For B");
     fireEvent.click(screen.getByRole("button", { name: "OK" }));
     await waitFor(() => expect(post).toHaveBeenCalledTimes(1));
     expect(post.mock.calls[0][0]).toBe(LIST_B);

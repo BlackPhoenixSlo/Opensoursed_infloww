@@ -14,6 +14,8 @@ from __future__ import annotations
 import sys
 from typing import Awaitable, Callable
 
+import of_pacing  # a stdlib leaf: no cycle
+
 
 def loaded_server():
     """The server module already in sys.modules (possibly mid-import), or None.
@@ -88,6 +90,12 @@ def server_module_name() -> str:
 
 def priority_lane_background(account_id: str):
     return live_server()._priority_lane_background(account_id)
+
+
+def last_user_activity_at(account_id: str) -> float | None:
+    """monotonic() of the account's last user-priority lane entry, or None (of_pacing's map:
+    the relay's one user-activity signal)."""
+    return of_pacing.last_user_at(account_id)
 
 
 def invalidate_client(account_id: str | None = None):

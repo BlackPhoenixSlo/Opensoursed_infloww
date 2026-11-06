@@ -37,14 +37,18 @@ OF's answer) at `send_s`; `cancel_begin` / `cancel_done` after `cancel_s`. A Cre
 `cancel_fail` ({account: "proxy" | "of"}, re-read every call) gets `cancel_refused`
 instead and the cancel raises: "proxy" as curl_cffi's ProxyError after `proxy_s` (the
 proxy's CONNECT 403 once OFClient._proxy_retry's ~6 s of retries ran out; OF never sees
-it), "of" as OF's own error (OFAPIError, a 400) after `cancel_s`. A kill
+it), "of" as OF's own error (OFAPIError, a 400) after `cancel_s`. A Creator in
+`send_fail` ({account: "proxy"}, re-read every call) gets `send_refused` instead of
+`send_begin` and the send raises the same ProxyError after `proxy_s` (OF never sees it). A kill
 between `send_accepted` and `send_returned` is OF accepting a mass the relay never
 heard back about. Blocking sleeps, in the caller's worker thread as the real curl.
 With the same file: `subscribers` / `following` answer empty pages (a send's
 recipient crawl), and OF's user lists (`get_lists`, `create_list`, `list_users_in`,
 `add_user_to_list`, `remove_user_from_list`: buyer lists, a send's Auto_Exclude) live
 in this relay process (`_of_lists` / `_of_members`, ids from _OF_LIST_BASE + 1 up),
-`list_s` (0.3 s) a call; a restarted relay finds no list and makes them again.
+`list_s` (0.3 s) a call; a restarted relay finds no list and makes them again. A
+Creator in `lists_fail` ({account: n}) gets its first n `get_lists` refused (a
+`lists_refused` line each, counted from the journal, then OF's 500 as OFAPIError).
 """
 
 import json
@@ -134,6 +138,11 @@ class _Walker:
         cfg = self._mass_cfg()
         send_s, frac = float(cfg.get("send_s", 1.0)), float(cfg.get("accept_at", 0.5))
         token = f"{self.account_id}:{time.time_ns()}:{threading.get_ident()}"
+        if (cfg.get("send_fail") or {}).get(self.account_id) == "proxy":
+            from curl_cffi.requests.exceptions import ProxyError
+            time.sleep(float(cfg.get("proxy_s", 6.0)))
+            self._mass_line("send_refused", token=token, text=text, by="proxy")
+            raise ProxyError("Failed to perform, curl: (56) CONNECT tunnel failed, response 403")
         self._mass_line("send_begin", token=token, text=text)
         time.sleep(send_s * frac)
         at = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -162,6 +171,15 @@ class _Walker:
 
     def get_lists(self, *, limit=20, offset=0, **_kw) -> dict:
         self._list_op()
+        n = int((self._mass_cfg().get("lists_fail") or {}).get(str(self.account_id), 0))
+        with _mass_lock:
+            refuse = n and sum(1 for r in _mass_rows() if r["op"] == "lists_refused"
+                               and r["account_id"] == self.account_id) < n
+            if refuse:
+                self._mass_line("lists_refused")
+        if refuse:
+            from of_client import OFAPIError
+            raise OFAPIError("500 for https://onlyfans.com/api2/v2/lists\nInternal Server Error")
         mine = _of_lists.setdefault(self.account_id, [])
         return {"list": mine[offset:offset + limit], "hasMore": offset + limit < len(mine)}
 

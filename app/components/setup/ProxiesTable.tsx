@@ -435,17 +435,27 @@ function Pager({ page, pageCount, onPage, pageSize, onPageSize }: {
 }
 
 /** The capture's state (#14) from the latest test, else the relay's health (a proxy it holds bad is Unavailable,
- *  whatever the stored verification says), else the stored verification; the detail under it is ours. */
+ *  whatever the stored verification says), else the stored verification; the detail under it is ours, with
+ *  "refusing 32% (10 min)" after it while the provider refused any call in the window. */
 export function proxyStatus(proxy: ProxyMeta, test?: TestResult): { on: boolean; detail: string } {
   if (test) return test.ok ? { on: true, detail: test.ip ?? "" } : { on: false, detail: test.error || "failed" };
   const h = proxy.health;
+  const r = h?.refusals;
+  const span = r ? (r.window_s < 60 ? `${Math.round(r.window_s)} s` : `${Math.round(r.window_s / 60)} min`) : "";
+  const rate = r ? `refusing ${Math.round(r.pct)}% (${span})` : "";
+  const refusing = r && r.refused > 0 ? ` · ${rate}` : "";
   if (h && (h.state === "bad" || h.state === "rechecking")) {
     const since = h.bad_since ? ` since ${new Date(h.bad_since * 1000).toLocaleTimeString()}` : "";
     const next = h.state === "rechecking" ? "rechecking now" : h.next_recheck_at
       ? `recheck at ${new Date(h.next_recheck_at * 1000).toLocaleTimeString()}` : "rechecking";
-    return { on: false, detail: `unreachable${since} (${h.errors} refused) — ${next}` };
+    // Bad for refusing too often (the flap knob): the rate is the reason, not a count of refusals in a row.
+    if (h.bad_reason === "flapping") {
+      return { on: false, detail: r && r.refused > 0 ? `${rate}${since} — ${next}` : `was refusing — ${next}` };
+    }
+    return { on: false, detail: `unreachable${since} (${h.errors} refused) — ${next}${refusing}` };
   }
-  return proxy.verified_ip ? { on: true, detail: proxy.verified_ip } : { on: false, detail: "unverified — run Test" };
+  return proxy.verified_ip ? { on: true, detail: proxy.verified_ip + refusing }
+    : { on: false, detail: "unverified — run Test" + refusing };
 }
 
 /** #12: the bundle's type words, http and socks (the relay's socks5); the relay's https is ours. */

@@ -58,13 +58,15 @@ def _dead_client(x_hash="HASH"):
 
 
 class _Pauses:
+    """Captures the retry pauses, the jitter draw pinned to 1.0 (each pause its ceiling)."""
     def __enter__(self):
-        self.seen, self._real = [], of_client.time.sleep
+        self.seen, self._real, self._random = [], of_client.time.sleep, of_client.random
         of_client.time.sleep = self.seen.append
+        of_client.random = types.SimpleNamespace(random=lambda: 1.0)
         return self.seen
 
     def __exit__(self, *_):
-        of_client.time.sleep = self._real
+        of_client.time.sleep, of_client.random = self._real, self._random
 
 
 def _call(c, method, *, interactive):

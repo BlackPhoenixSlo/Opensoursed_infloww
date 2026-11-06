@@ -31,7 +31,7 @@ import {
 
 import { useScope, type Scope } from "@/contexts/ScopeContext";
 import { eventBus } from "@/lib/events";
-import { relay, type OFChatItem, type OFChatsResp, type OFUserMini } from "@/lib/relay";
+import { relay, relayFocus, type OFChatItem, type OFChatsResp, type OFUserMini } from "@/lib/relay";
 import { compareFanIds, fanIdFromParam, type FanId } from "@/lib/fanId";
 import { perfDelivered, perfError, perfLog, perfOpId, perfPaintPending } from "@/lib/perfLog";
 import { usePlatformAccounts } from "./useAccounts";
@@ -391,10 +391,13 @@ async function fetchPage(
   // hasMore as true if ANY account reported hasMore — that's the safe choice
   // since we want the user to be able to fetch more from the accounts that
   // still have data.
+  // The opened Creator's page is the user's; every other Creator's waits in the background queue
+  // (lib/relaySchedule), so a click never sits behind twelve Creators' lists.
+  const focus = relayFocus();
   const results = await Promise.allSettled(
     accounts.map(async (acc) => {
       const r = await relay.get<OFChatsResp>(
-        path, { accountId: acc.id, priority }, signal, { refresh },
+        path, { accountId: acc.id, priority: acc.id === focus ? priority : "background" }, signal, { refresh },
       );
       const raw = normalizeChats(r, acc.id);
       void enrichWithUsers(raw, acc.id, qc).catch(() => {});

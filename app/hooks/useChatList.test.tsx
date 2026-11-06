@@ -22,7 +22,7 @@ import { act, cleanup, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-vi.mock("@/lib/relay", () => ({ relay: { get: vi.fn() } }));
+vi.mock("@/lib/relay", () => ({ relay: { get: vi.fn() }, relayFocus: () => null }));
 vi.mock("@/lib/perfLog", () => ({
   perfOpId: () => "op-test",
   perfLog: vi.fn(),

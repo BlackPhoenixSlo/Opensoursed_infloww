@@ -7,6 +7,8 @@ import contextlib
 import importlib
 import importlib.util
 import json
+import os
+import secrets
 import signal
 import subprocess
 import sys
@@ -17,14 +19,20 @@ from pathlib import Path
 SLOP = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SLOP.parent))  # so `slop.seed...` and `slop.actors...` import
 
+from slop.lib import covmap, gate, selection  # noqa: E402
 from slop.lib.client import Http, Recorder  # noqa: E402
 from slop.lib.faults import FAULTS  # noqa: E402
+from slop.lib import net  # noqa: E402
+from slop.lib.net import PROFILES  # noqa: E402
 from slop.lib.procmon import ProcMon, pool_bent, render  # noqa: E402
-from slop.lib.report import EVIDENCE, Report, run_dir  # noqa: E402
+from slop.lib.report import EVIDENCE, FOLDER_LINE, Report, run_dir  # noqa: E402
 from slop.lib.stack import Stack  # noqa: E402
 from slop.seed import SCALES, World  # noqa: E402
 
 SCEN = SLOP / "scenarios"
+# params that are facts of the run, not knobs: never compared when matching a baseline
+RUN_FACTS = ("git_sha", "git_dirty", "lock_wait_s", "load_at_start", "wire_lock_wait_s", "net_wire_stale")
+MAP_STALE = 200  # --changed: WARN when slop/map.json's sha is more commits behind HEAD than this
 
 
 def scenarios() -> dict[str, Path]:
@@ -63,6 +71,7 @@ class Ctx:
         self.scale, self.users, self.seed = args.scale, args.users, args.seed
         self.relay, self.app, self.out = stack.relay, stack.app, report.out
         self.params, self.ui, self.fault, self.fleet = params, ui, fault, fleet
+        self.net = args.net  # lib/net.py profile actors/ui.py throttles every page to (--net)
         self.shards = [Shard(stack, i, rec, args) for i in range(stack.shards)] if stack.shards > 1 else []
         if self.shards:
             self.owner, self.world = self.shards[0].owner, self.shards[0].world
@@ -77,6 +86,7 @@ class Ctx:
         self.browser_fault_hits: dict[str, int] = {}
         self.browser_fault_files: dict[str, int] = {}
         self.app_ts_fault_files: dict[str, int] = {}
+        self.ui_pages: set[str] = set()  # main-frame paths the browsers navigated to (actors/ui.track)
 
     def param(self, key: str, default):
         v = self.params.get(key, default)
@@ -120,7 +130,7 @@ def _stock_checks(report: Report, rec: Recorder, out: Path, mod=None) -> None:
 # Knobs that must match for a previous run to be "the same run" (baseline, last green).
 def _same_knobs(have: dict, want: dict) -> dict:
     diff = {k: (have.get(k), v) for k, v in want.items() if have.get(k) != v}
-    diff |= {k: (have[k], None) for k in have if k not in want and k not in ("git_sha", "git_dirty")}
+    diff |= {k: (have[k], None) for k in have if k not in want and k not in RUN_FACTS}
     return diff
 
 
@@ -128,6 +138,21 @@ def _world(metrics: dict) -> tuple:
     """The seeded world a run's p95s depend on: its profile and Creator count (metric `seed`)."""
     seed = metrics.get("seed") or {}
     return seed.get("profile"), seed.get("creators")
+
+
+def _green_runs(scenario: str, exclude: Path | None = None):
+    """(run dir, metrics.json) of `scenario`'s earlier runs, newest first: no infra, every check
+    pass/skip (the p95-vs-last-green baseline and --changed's estimates)."""
+    for d in sorted(EVIDENCE.glob(f"*-{scenario}-*"), reverse=True):
+        if d == exclude or d.is_symlink() or not d.is_dir():
+            continue
+        try:
+            meta = json.loads((d / "metrics.json").read_text())
+            checks = json.loads((d / "invariants.json").read_text())
+        except (OSError, ValueError):
+            continue
+        if not meta.get("infra") and all(c.get("status") in ("pass", "skip") for c in checks):
+            yield d, meta
 
 
 def _p95_vs_last_green(report: Report, out: Path, tol, min_n: int = 0) -> None:
@@ -146,25 +171,16 @@ def _p95_vs_last_green(report: Report, out: Path, tol, min_n: int = 0) -> None:
     if not cur:
         report.skip(name, "scenario recorded no p95_vs_last_green metric")
         return
-    want = {k: v for k, v in report.params.items() if k not in ("git_sha", "git_dirty")}
+    want = {k: v for k, v in report.params.items() if k not in RUN_FACTS}
     world = _world(report.metrics)
     last = None
-    for d in sorted(EVIDENCE.glob(f"*-{report.scenario}-*"), reverse=True):
-        if d == out or d.is_symlink() or not d.is_dir():
-            continue
-        try:
-            meta = json.loads((d / "metrics.json").read_text())
-            checks = json.loads((d / "invariants.json").read_text())
-        except (OSError, ValueError):
-            continue
-        if (meta.get("infra") or _same_knobs(meta.get("params", {}), want) or _world(meta) != world
-                or not meta.get("p95_vs_last_green")):
+    for d, meta in _green_runs(report.scenario, out):
+        if _same_knobs(meta.get("params", {}), want) or _world(meta) != world or not meta.get("p95_vs_last_green"):
             continue
         if min_n and not meta.get("p95_vs_last_green_n"):
             continue
-        if all(c.get("status") in ("pass", "skip") for c in checks):
-            last = (d, meta["p95_vs_last_green"], meta.get("p95_vs_last_green_n") or {})
-            break
+        last = (d, meta["p95_vs_last_green"], meta.get("p95_vs_last_green_n") or {})
+        break
     if last is None:
         report.skip(name, "no earlier green run with these knobs and world: this run is the baseline")
         return
@@ -195,24 +211,37 @@ def _tracebacks(log: Path, expected: tuple[tuple[str, str], ...] = ()) -> tuple[
     """(unexpected, expected) Tracebacks. Expected: the line before names an
     OFFLINE_MARKERS cause, or matches a scenario's EXPECTED_TRACEBACKS pair
     (marker in the line before, text in the traceback's last line: the error a
-    scenario's fake makes OnlyFans answer)."""
+    scenario's fake makes OnlyFans answer). A chained traceback ("During handling
+    of the above exception") is judged per exception: an OFFLINE marker clears
+    only its first; each later one must match a pair itself (the marker in the
+    line before the chain, its text in that exception)."""
     if not log.exists():
         return 0, 0
     lines = log.read_text(errors="replace").splitlines()
     unexpected = offline = 0
+    end = 0   # the line after the last traceback block counted
     for i, line in enumerate(lines):
-        if line.startswith("Traceback"):
+        if line.startswith("Traceback") and i >= end:
             prev = lines[i - 1] if i else ""
-            j = i + 1
-            while j < len(lines) and (lines[j].startswith((" ", "\t")) or not lines[j].strip()
-                                      or lines[j].startswith(("During handling", "The above exception"))
-                                      or lines[j].startswith("Traceback")):
-                j += 1
-            last = "\n".join(lines[j:j + 2])  # the exception line (an OFAPIError's body is on the next)
-            if any(m in prev for m in OFFLINE_MARKERS) or any(m in prev and t in last for m, t in expected):
-                offline += 1
-            else:
-                unexpected += 1
+            j, excs = i + 1, []
+            while True:
+                while j < len(lines) and (lines[j].startswith((" ", "\t")) or not lines[j].strip()
+                                          or lines[j].startswith("Traceback")):
+                    j += 1
+                excs.append("\n".join(lines[j:j + 2]))  # the exception line (an OFAPIError's body is on the next)
+                k = j + 1
+                while k < len(lines) and not lines[k].strip():
+                    k += 1
+                if k >= len(lines) or not lines[k].startswith(("During handling", "The above exception")):
+                    break
+                j = k + 1
+            end = j + 1
+            for n, exc in enumerate(excs):
+                if (n == 0 and any(m in prev for m in OFFLINE_MARKERS)) \
+                        or any(m in prev and t in exc for m, t in expected):
+                    offline += 1
+                else:
+                    unexpected += 1
     return unexpected, offline
 
 
@@ -336,31 +365,101 @@ def _deadline(seconds: int):
 def run_one(name: str, path: Path, args, params, *, fault: str | None = None, tag: str = "") -> Report:
     """One scenario run on its own stack, at most `--timeout` seconds. `report.infra` is
     set when the stack or the scenario itself broke, or it timed out (no verdict possible)."""
+    out = run_dir(name, tag)
+    cov = _harness_coverage(out) if args.map else None  # before the scenario module is imported
     mod = load(path)
     ui, shards = _knobs(mod, args, params)
-    out = run_dir(name, tag)
     p = {"scenario": name, "scale": args.scale, "users": args.users, "seed": args.seed, "ui": ui,
          "fault": fault, **({"shards": shards} if shards > 1 else {}),
-         **({"profile": True} if args.profile else {}), **_git(), **params}
+         **({"profile": True} if args.profile else {}), **({"map": True} if args.map else {}),
+         **({"net": args.net} if args.net else {}), **_git(), **params}
     report, rec = Report(name, out, p), Recorder()
     print(f"slop: {name} scale={args.scale} users={args.users} seed={args.seed} ui={ui} fault={fault}"
           f"{f' shards={shards}' if shards > 1 else ''} -> {out}")
+    print(FOLDER_LINE.format(path=out))
+    if cov:
+        print("slop: --map: relay and harness under coverage.py (slower): a budget or p95 red here is not "
+              "the product's, and does not block the map update")
     t0, live = time.time(), {}
-    with _deadline(args.timeout):
-        try:
-            asyncio.run(_run_stack(name, mod, out, report, rec, args, params, ui, shards, fault, t0, live))
-        except ScenarioTimeout:
-            signal.alarm(0)
-            stack = live.get("stack")
-            if stack is not None and stack.tmp.exists():  # its teardown never finished: finish it
-                stack.__exit__(None, None, None)
-            _infra_first(report, f"timed out after {args.timeout}s (slop/run --timeout); stack torn down, run moves on")
-            report.check("scenario finished within --timeout", False, timeout_s=args.timeout)
+    try:
+        with gate.machine_gate(wait=not args.no_wait, evidence=out) as g:  # one gate slot: held until teardown
+            report.params.update(g)
+            stale = net.wire_off_stale()  # a killed run's dummynet shaping (machine-wide), unless a live wire run's
+            if stale:
+                print(f"slop: {stale}")
+                report.params["net_wire_stale"] = stale
+            with net.wire_lock(args.net) as wire_wait_s:  # a wire profile: one such run per machine
+                if net.is_wire(args.net):
+                    report.params["wire_lock_wait_s"] = wire_wait_s
+                t0 = time.time()
+                with _deadline(args.timeout):
+                    try:
+                        asyncio.run(_run_stack(name, mod, out, report, rec, args, params, ui, shards, fault, t0, live))
+                    except ScenarioTimeout:
+                        signal.alarm(0)
+                        stack = live.get("stack")
+                        if stack is not None and stack.tmp.exists():  # its teardown never finished: finish it
+                            stack.__exit__(None, None, None)
+                        _infra_first(report, f"timed out after {args.timeout}s (slop/run --timeout); stack torn down, "
+                                             "run moves on")
+                        report.check("scenario finished within --timeout", False, timeout_s=args.timeout)
+    except gate.Busy as e:
+        _infra_first(report, f"machine gate: {e}")
+    except net.WireBusy as e:
+        _infra_first(report, f"wire lock: {e}")
     _stock_checks(report, rec, out, mod)
     report.metric("seconds", round(time.time() - t0, 1))
     report.write(rec.summary(), rec.errors)
+    pages = sorted(live["ctx"].ui_pages) if "ctx" in live else []
+    http_pages = sorted({p for hp, p in rec.urls if hp in live.get("app_hosts", ())})
+    (out / "ui-pages.json").write_text(json.dumps(pages, indent=1) + "\n")
+    if http_pages:
+        (out / "http-pages.json").write_text(json.dumps(http_pages, indent=1) + "\n")
     print((out / "summary.txt").read_text())
+    if cov:
+        _map_update(name, report, cov, out, args, ui, pages, http_pages,
+                    keep_pages=bool(getattr(mod, "UI", False)) and not ui,
+                    volume=any(hasattr(mod, a) for a in ("P95_VS_LAST", "CPU_BUDGET_PCT", "POOL_GATE")))
     return report
+
+
+def _harness_coverage(out: Path):
+    """--map: this process under coverage.py from here (slop/ only), and every relay the stack starts
+    (lib/stack.py relay_cmd reads SLOP_COVERAGE). Data files land in <run>/cov/."""
+    import coverage
+    d = out / "cov"
+    d.mkdir(exist_ok=True)
+    os.environ["SLOP_COVERAGE"] = str(d)
+    cov = coverage.Coverage(data_file=str(d / ".coverage.harness"), data_suffix=True, config_file=False,
+                            source=[str(SLOP)], omit=[f"{EVIDENCE}/*"])
+    cov.start()
+    return cov
+
+
+def _map_update(name: str, report: Report, cov, out: Path, args, ui: bool, pages: list[str], http_pages: list[str],
+                *, keep_pages: bool, volume: bool) -> None:
+    cov.stop()
+    cov.save()
+    os.environ.pop("SLOP_COVERAGE", None)
+    if report.infra:
+        print(f"slop: WARN --map: {name} hit INFRA; its slop/map.json entry is kept as it was")
+        return
+    root = SLOP.parent.resolve()
+    mods = set()
+    for m in list(sys.modules.values()):  # loaded by an earlier scenario of this process too
+        try:
+            rel = Path(getattr(m, "__file__", None) or "").resolve().relative_to(root).as_posix()
+        except (ValueError, OSError):
+            continue
+        if rel.startswith("slop/") and rel.endswith(".py") and not rel.startswith("slop/evidence/"):
+            mods.add(rel)
+    e = covmap.update(name, out / "cov", sha=args.map_sha, seconds=report.metrics.get("seconds"),
+                      scale=args.scale, ui=ui, pages=pages, volume=volume, names=set(scenarios()),
+                      http_pages=http_pages, modules=sorted(mods), keep_pages=keep_pages)
+    print(f"slop: --map: {name} @ {args.map_sha[:7]}: {len(e['py'])} Python files, "
+          f"{sum(map(len, e['py'].values()))} functions, {len(e['pages'])} pages ({len(e['http_pages'])} over "
+          f"HTTP{'; no UI this run: the old browser pages kept' if keep_pages else ''}) -> "
+          f"{covmap.MAP.relative_to(SLOP.parent)}")
 
 
 async def _run_stack(name, mod, out, report, rec, args, params, ui, shards, fault, t0, live) -> None:
@@ -388,6 +487,10 @@ async def _run_stack(name, mod, out, report, rec, args, params, ui, shards, faul
                   f"{f', {shards} shards, apps on ' + ','.join(stack.shard_ids[i] for i in stack.apps) if shards > 1 else ''}"
                   f"{', edge ' + fleet.edge_url if fleet and fleet.edge_url else ''})")
             ctx = Ctx(name, stack, report, rec, args, params, ui=ui, fault=fault, fleet=fleet)
+            live["ctx"] = ctx
+            # An actor's plain HTTP call to the app or the edge reaches an app path (a route.ts).
+            live["app_hosts"] = {u.split("//", 1)[-1] for u in (*stack.app_urls.values(), stack.app,
+                                                                   fleet and fleet.edge_url) if u}
             ctx.of_wire = of_wire
             pids = [(s.id, s.pid, s.url) for s in ctx.shards] or [(None, stack.relay_pid, stack.relay)]
             hooks = [Http(url, Recorder()) for _, _, url in pids]  # /__slop/loop-cpu and /profile: not actor calls
@@ -406,6 +509,9 @@ async def _run_stack(name, mod, out, report, rec, args, params, ui, shards, faul
                 (out / "scenario-traceback.txt").write_text(traceback.format_exc())
             finally:
                 _client_fault_applied(report, ctx, fault)
+                if args.map:  # the relays' data so far: a relay SIGKILLed at teardown keeps it
+                    for m in mons.values():
+                        await m.save_coverage()
                 for m in mons.values():
                     await m.stop()
                 if ctx.shards:
@@ -486,7 +592,7 @@ def _load_baseline(d: Path, name: str, ui: bool, args, params, shards: int = 1) 
     bp = meta.get("params", {})
     want = {"scenario": name, "scale": args.scale, "users": args.users, "seed": args.seed, "ui": ui,
             "fault": None, **({"shards": shards} if shards > 1 else {}),
-            **({"profile": True} if args.profile else {}), **params}
+            **({"profile": True} if args.profile else {}), **({"net": args.net} if args.net else {}), **params}
     diff = _same_knobs(bp, want)
     if diff:
         return {}, f"baseline {d} was run with other knobs (have, want): {diff}"
@@ -555,9 +661,108 @@ def break_one(name: str, path: Path, args, params) -> str:
     return verdict
 
 
+def _estimates(names, doc: dict, args) -> tuple[dict[str, float | None], str]:
+    """Seconds per scenario: its newest green non---map run at this scale and UI (evidence), else
+    its map entry's (coverage-mode, slower). And which source(s) gave them."""
+    secs, src = {}, set()
+    for n in names:
+        e = doc["scenarios"].get(n) or {}
+        ui = bool(e.get("ui")) and not args.no_ui
+        hit = next((m.get("seconds") for _, m in _green_runs(n) if m.get("seconds")
+                    and (m.get("params") or {}).get("scale") == args.scale and bool((m.get("params") or {}).get("ui")) == ui
+                    and not (m.get("params") or {}).get("map") and not (m.get("params") or {}).get("fault")), None)
+        secs[n] = hit if hit is not None else e.get("seconds")
+        src.add("evidence" if hit is not None else "map")
+    return secs, "|".join(sorted(src)) or "-"
+
+
+def _changed(all_s: dict[str, Path], args) -> tuple[dict[str, Path], list[str], list[str], list[str]] | None:
+    """--changed: the pick (README "Which scenarios to run"), printed and kept in
+    evidence/<stamp>-changed-<hex>/pick.{json,txt}; tier then cheapest first, the shared/layout
+    tail capped by --budget; under --no-ui, picks only a browser page reached are skipped.
+    -> (to run, skipped by budget, skipped for needing UI, WARN lines), or None: no map."""
+    doc = covmap.load_map()
+    if not doc["scenarios"]:
+        print(f"slop: --changed needs {covmap.MAP.relative_to(SLOP.parent)} (missing or empty): build it with "
+              "slop/run all --map")
+        return None
+    g = covmap.gather(doc, args.since)
+    picks, warns = selection.pick(doc, g["hunks"], g["app_edges"], g["changed"], g["untracked"], g["deleted"])
+    picks = {n: r for n, r in picks.items() if n in all_s}
+    no_ui = sorted(n for n, r in picks.items() if args.no_ui and selection.needs_ui(r))
+    secs, est_src = _estimates(picks, doc, args)
+    vol = {n: bool((doc["scenarios"].get(n) or {}).get("volume")) for n in picks}
+    run, skipped = selection.plan({n: r for n, r in picks.items() if n not in no_ui}, secs, args.budget * 60)
+    changed = sorted(set(g["untracked"]) | {f for fs in g["changed"].values() for f in fs})
+    unmapped = sorted(n for n in all_s if n not in doc["scenarios"])
+    head = covmap.git("rev-parse", "HEAD").strip()
+    dirty = bool(covmap.git("status", "--porcelain").strip())
+    age = max(g["map_age"].values(), default=0)
+    base = f"{g['base'][:7]} ({g['base_how']})" if g["base"] else f"each map sha ({g['base_how']})"
+    ages = ", ".join(f"{s[:7]} {n}" for s, n in g["map_age"].items())
+    lines = [f"slop: --changed vs {base}; map sha(s) commits behind HEAD {head[:7]}: {ages}; "
+             f"{len(changed)} changed file(s) under {' '.join(covmap.DIFF_ROOTS)}"]
+    if age > MAP_STALE:
+        lines.append(f"slop: WARN map is {age} commits old: rebuild with slop/run all --map")
+    w = max(map(len, picks), default=0)
+
+    def row(n: str) -> str:
+        est = "%5.0fs" % secs[n] if secs[n] is not None else "    ?s"
+        rs = [r for _, r in picks[n]]
+        return (f"{n:<{w}}  {est}  {selection.tier(picks[n]):<6} {'volume' if vol[n] else '      '}  "
+                + "; ".join(rs[:2]) + (f" (+{len(rs) - 2} more)" if len(rs) > 2 else ""))
+    lines += [f"  {row(n)}" for n in run]
+    lines += [f"  SKIP (budget) {row(n)}" for n in skipped]
+    lines += [f"  SKIP (needs UI) {row(n)}" for n in no_ui]
+    warn_lines = [f"slop: WARN {x}" for x in warns]
+    lines += warn_lines
+    if unmapped:
+        lines.append(f"slop: WARN unmapped (picked only when their own file changes): {', '.join(unmapped)}")
+    est = sum(secs[n] or 0 for n in run)
+    cap = f"--budget={args.budget:g} min" if args.budget else "no budget"
+    lines.append(f"slop: --changed picks {len(run)} of {len(all_s)} scenarios (~{est / 60:.0f} min, est: {est_src}); "
+                 f"{len(skipped)} skipped by budget ({cap})" + (f"; {len(no_ui)} need UI (--no-ui)" if no_ui else "")
+                 if picks else f"slop: --changed picks nothing ({len(changed)} changed file(s))")
+    out = EVIDENCE / f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-changed-{secrets.token_hex(2)}"
+    out.mkdir(parents=True)
+    lines.append(f"slop: pick -> {out.relative_to(SLOP.parent)}" + (" (dry: nothing run)" if args.dry else ""))
+    print("\n".join(lines))
+    (out / "pick.txt").write_text("\n".join(lines) + "\n")
+
+    def entry(n: str) -> dict:
+        return {"scenario": n, "seconds": secs[n], "tier": selection.tier(picks[n]), "volume": vol[n],
+                "reasons": [{"tier": t, "reason": r} for t, r in picks[n]]}
+    (out / "pick.json").write_text(json.dumps({
+        "git_sha": head, "git_dirty": dirty, "dry": args.dry, "budget_min": args.budget, "estimates": est_src,
+        "no_ui": args.no_ui, "base": {"sha": g["base"], "how": g["base_how"]},
+        "maps": {sha: {"behind_head": n} for sha, n in g["map_age"].items()},
+        "run": [entry(n) for n in run], "skipped_by_budget": [entry(n) for n in skipped],
+        "skipped_needs_ui": [entry(n) for n in no_ui], "warnings": warns, "unmapped": unmapped,
+        "changed_files": changed}, indent=1) + "\n")
+    return {n: all_s[n] for n in run}, skipped, no_ui, warn_lines
+
+
+def _nice() -> None:
+    """A run never starves the owner's foreground apps: this harness (and its in-process fakes),
+    Playwright's driver and so Chromium (lib/pw-node), the stack's processes (lib/stack.py): all at
+    nice 10, as the machine gate sets it. Absolute values, never lower than the caller's."""
+    os.setpriority(os.PRIO_PROCESS, 0, max(10, os.getpriority(os.PRIO_PROCESS, 0)))
+    if "SLOP_PW_NODE" not in os.environ:
+        try:
+            from playwright._impl._driver import compute_driver_executable
+        except ImportError:  # the relay image (deploy/fleet/calibrate.sh): no browser there
+            return
+        os.environ["SLOP_PW_NODE"] = compute_driver_executable()[0]  # honours a caller's PLAYWRIGHT_NODEJS_PATH
+        os.environ["PLAYWRIGHT_NODEJS_PATH"] = str(SLOP / "lib" / "pw-node")
+
+
 def main() -> int:
-    ap = argparse.ArgumentParser(prog="slop/run")
-    ap.add_argument("target", nargs="?", default="all", help="scenario stem or any substring of it, or all")
+    if sys.argv[1:2] == ["nightly"]:  # the daily full sweep: its own knobs (lib/nightly.py)
+        from slop.lib import nightly
+        return nightly.main(sys.argv[2:], scenarios())
+    ap = argparse.ArgumentParser(prog="slop/run", epilog="slop/run nightly --help: the daily full sweep (README \"Nightly\")")
+    ap.add_argument("target", nargs="?", default=None, help="scenario stem (an exact name runs only that one) or any "
+                    "substring of it, or all (default all; omitted with --changed), or nightly")
     ap.add_argument("--scale", choices=list(SCALES), default="small")
     ap.add_argument("--users", type=int, default=20, help="concurrent simulated users per actor pool")
     ap.add_argument("--seed", type=int, default=1)
@@ -571,14 +776,32 @@ def main() -> int:
     ap.add_argument("--profile", action="store_true",
                     help="run a stack sampler in the relay; per-stage profile-<stage>.txt in the evidence")
     ap.add_argument("--no-ui", action="store_true", help="skip Playwright/next dev even if the scenario has UI")
+    ap.add_argument("--net", choices=list(PROFILES), default=None,
+                    help="throttle every browser page actors/ui.py opens to this lib/net.py phone network (wire "
+                         "profiles jp-lossy*: slow-connections only, dummynet via sudo slop/install-netloss)")
     ap.add_argument("--shards", type=int, default=None,
                     help="a fleet: N relays behind the real Caddy edge (lib/edge.py); default the scenario's SHARDS")
     ap.add_argument("--timeout", type=int, default=1800, metavar="SECONDS",
                     help="wall clock per scenario run (stack up to teardown); past it the run is INFRA and "
                          "the next one starts. 0 = none. Default 1800 (the slowest green run, big-model "
                          "medium/200, takes ~830 s)")
+    ap.add_argument("--no-wait", action="store_true",
+                    help="INFRA at once when no gate slot is free or admission (SLOP_MAX_LOAD, "
+                         "SLOP_MAX_THREADS_MACHINE) fails, instead of waiting (up to SLOP_LOCK_WAIT_S)")
     ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE", help="scenario param")
     ap.add_argument("--list", action="store_true")
+    ap.add_argument("--map", action="store_true",
+                    help="run under coverage.py and record the pages visited; update slop/map.json's entry of "
+                         "each scenario run (needs a clean tree under service/ slop/ scripts/ app/)")
+    ap.add_argument("--changed", action="store_true",
+                    help="run only the scenarios this branch's diff (vs merge-base with origin/main) can reach, cheapest first")
+    ap.add_argument("--dry", action="store_true", help="with --changed: print and record the pick, run nothing")
+    ap.add_argument("--since", metavar="REF",
+                    help="with --changed: diff against REF instead of `git merge-base HEAD origin/main`; "
+                         "--since=map diffs against slop/map.json's sha (drift since the sweep)")
+    ap.add_argument("--budget", type=float, default=15, metavar="MIN",
+                    help="with --changed: own/flow picks always run; shared/layout ones only while the mapped "
+                         "estimate stays within MIN minutes (default 15, 0 = no cap)")
     args, extra = ap.parse_known_args()
     # Any other `--some-knob=value` is a scenario param, same as `--set some_knob=value`.
     for e in extra:
@@ -588,13 +811,56 @@ def main() -> int:
         args.set.append(f"{k.replace('-', '_')}={v}")
     all_s = scenarios()
     if args.list:
-        print("\n".join(all_s))
+        mapped = covmap.load_map()["scenarios"]
+        w = max(map(len, all_s))
+        for n in all_s:
+            e = mapped.get(n)
+            print(f"{n:<{w}}  " + (f"{e.get('seconds') or 0:>6.0f}s  {e['sha'][:7]}{'  volume' if e.get('volume') else ''}"
+                                   if e else "        unmapped"))
         return 0
-    picked = all_s if args.target == "all" else {k: v for k, v in all_s.items() if args.target in k}
+    if args.changed and args.target:
+        ap.error("--changed picks the scenarios itself: drop the target")
+    if args.changed and args.break_it:
+        ap.error("--break is per scenario, by name: slop/run <scenario> --break --baseline=<its green run folder>")
+    if args.dry and not args.changed:
+        ap.error("--dry needs --changed")
+    if args.since and not args.changed:
+        ap.error("--since needs --changed")
+    if args.map and (args.changed or args.break_it):
+        ap.error("--map runs the scenarios as they are: not with --changed or --break")
+    if args.map:
+        dirty = covmap.dirty_for_map()
+        if dirty:
+            print("slop: --map needs a clean tree under service/ slop/ scripts/ app/ (the map's sha must be the "
+                  f"code that ran): commit or stash these first:\n{dirty}")
+            return 2
+        args.map_sha = covmap.git("rev-parse", "HEAD").strip()
+        os.environ["COVERAGE_CORE"] = "sysmon"  # 3.12's low-overhead core (lines only), relays and harness
+    tail: list[str] = []
+    if args.changed:
+        got = _changed(all_s, args)
+        if got is None:
+            return 2
+        picked, skipped, no_ui, warn_lines = got
+        tail = [f"slop: {len(skipped)} skipped by budget (not run, not green): {', '.join(skipped)}"] if skipped else []
+        tail += [f"slop: {len(no_ui)} SKIP (needs UI) (--no-ui; not run, not green): {', '.join(no_ui)}"] if no_ui else []
+        tail += warn_lines
+        if args.dry or not picked:
+            if tail and not args.dry:
+                print("\n".join(tail))
+            return 0
+    else:
+        target = args.target or "all"
+        picked = (all_s if target == "all" else {target: all_s[target]} if target in all_s
+                  else {k: v for k, v in all_s.items() if target in k})
     if not picked:
         print(f"slop: no scenario matches {args.target!r}; have: {', '.join(all_s)}")
         return 2
     params = dict(kv.split("=", 1) for kv in args.set)
+    if net.is_wire(args.net) and (why := net.wire_problem()):  # before any stack: one line, the install command
+        print(f"slop: --net={args.net}: {why}")
+        return 3
+    _nice()
     if args.fault and not args.break_it:
         ap.error("--fault needs --break")
     if args.baseline and not (args.break_it and len(picked) == 1):
@@ -609,6 +875,8 @@ def main() -> int:
     reports = {n: run_one(n, p, args, params) for n, p in picked.items()}
     for n, r in reports.items():
         print(f"slop: {'INFRA' if r.infra else 'OK  ' if r.ok else 'FAIL'} {n}" + (f": {r.infra}" if r.infra else ""))
+    if tail:
+        print("\n".join(tail))
     if any(r.infra for r in reports.values()):
         return 3
     return 0 if all(r.ok for r in reports.values()) else 1

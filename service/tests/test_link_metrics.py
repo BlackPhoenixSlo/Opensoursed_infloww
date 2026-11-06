@@ -405,7 +405,7 @@ def case_refresh_waits_for_the_account_lock():
         await task
         assert len(f.claim_calls) == 1
     asyncio.run(go())
-    lm._LOCKS.pop(aid, None)
+    lm._WALK_LOCKS.pop(aid, None)
 
 
 def case_details_while_locked_returns_cache_flagged():
@@ -418,7 +418,7 @@ def case_details_while_locked_returns_cache_flagged():
     asyncio.run(hold())
     d = _fans(aid, "trial", 52, count=1)
     assert d["refreshing"] is True and d["fans"] == [] and f.claim_calls == []
-    lm._LOCKS.pop(aid, None)
+    lm._WALK_LOCKS.pop(aid, None)
     d = _fans(aid, "trial", 52, count=1)
     assert [x["fan_id"] for x in d["fans"]] == [870_101], "unlocked: walked on demand"
 
@@ -832,7 +832,7 @@ def case_list_of_error_stops_the_pass_and_backs_off():
         async with lm._lock(aid):
             return await lm.sync_lists(aid, "trial", None, {211: 1, 212: 1})
     assert asyncio.run(sync2()) == 2 and [c[2] for c in f.list_calls[-2:]] == [211, 212], f.list_calls
-    lm._LOCKS.pop(aid, None)
+    lm._WALK_LOCKS.pop(aid, None)
 
 
 def case_list_on_a_tracking_link_follows_its_subscribers():
@@ -1160,7 +1160,7 @@ def case_promo_list_is_per_account():
         async with lm._lock(b):
             return await lm.sync_lists(b, "promo", FakeOF(), {301: 5})
     assert asyncio.run(sync()) == 0, "b's pass never reads a's setting"
-    lm._LOCKS.pop(b, None)
+    lm._WALK_LOCKS.pop(b, None)
     # Each on its own list, with the same OnlyFans promotion ids: every add carries its own account's list.
     fa, fb = FakeOF(), FakeOF()
     for fk in (fa, fb):
@@ -1220,7 +1220,7 @@ def case_stale_rewalk_not_while_locked_or_backed_off():
     asyncio.run(hold())
     d = _fans(aid, "trial", 231, count=1)
     assert d["refreshing"] is False and not _spawned and len(f.claim_calls) == 1, "a walk holds the lock: no second"
-    lm._LOCKS.pop(aid, None)
+    lm._WALK_LOCKS.pop(aid, None)
     import time
     lm._FAILED_AT[(aid, "trial")] = time.monotonic()
     d = _fans(aid, "trial", 231, count=1)
@@ -1260,7 +1260,7 @@ def case_accounts_never_mix():
         async with lm._lock(a2):
             return await lm.sync_lists(a2, "trial", f, {111: 9})
     assert asyncio.run(sync()) == 0 and len(f.list_calls) == 1, "a2's pass never adds a1's links"
-    lm._LOCKS.pop(a2, None)
+    lm._WALK_LOCKS.pop(a2, None)
     seen = []
     real = lm.assert_account_owned
     lm.assert_account_owned = seen.append
@@ -1339,6 +1339,69 @@ def case_prewarm_reads_every_kind_and_the_page_opens_from_cache():
     of_tracking_api._CLAIMERS_CACHE.clear()
 
 
+def case_walks_never_hold_the_growth_lock_across_an_of_call():
+    """The Growth routes' lock (of_tracking_api._LOCKS) is free during every OF read and pause
+    of a background walk (prewarm, refresh); the walk is single-flight on the walk lock instead,
+    a link being re-read serves its cached fans, and the earnings read answers while a walk runs."""
+    import of_tracking_api as ota
+
+    held: list[tuple[str, bool, bool]] = []   # (OF call, _LOCKS held, walk lock held)
+
+    class Track(FakeOF):
+        subs = 1
+        aid = ""
+        probe = False
+        during: list = []
+
+        def _note(self, what):
+            lk, wl = ota._LOCKS.get(self.aid), ota._WALK_LOCKS.get(self.aid)
+            held.append((what, bool(lk and lk.locked()), bool(wl and wl.locked())))
+
+        def tracking_links(self, *, limit=None, offset=0, with_deleted=False):
+            self._note("campaigns")
+            return {"list": [{"id": 4646, "campaignCode": 1, "campaignName": "IG", "createdAt": _of_time(_T0),
+                              "countTransitions": 10, "countSubscribers": self.subs}][offset:], "hasMore": False}
+
+        def campaign_claimers(self, campaign_id, *, limit=50, offset=0):
+            self._note("claimers")
+            c = {"id": 4646, "createdAt": _of_time(_T0), "countSubscribers": self.subs}
+            if self.probe:
+                self.during.append(ota._claimers_cached(self, self.aid, c))   # a Growth read mid-walk
+            return {"list": [{"id": 960_000 + self.subs}][offset:], "hasMore": False}
+
+        def offer_claims(self, offer_id, kind, *, limit=20, offset=0):
+            self._note(kind)
+            return super().offer_claims(offer_id, kind, limit=limit, offset=offset)
+    aid = _acct()
+    f = _use(Track())
+    f.aid = aid
+    f.trial(131, [_fan(960_101)])
+    f.promo(132, [_fan(960_102)])
+    ota._COMPUTED.clear()
+    ota._CLAIMERS_CACHE.clear()
+    asyncio.run(ota._compute(aid))            # a person's read: under _LOCKS, by design
+    assert ota._CLAIMERS_CACHE[(aid, 4646)][2][0]["fan_id"] == 960_001
+    held.clear()
+    f.probe = True
+    f.subs = 2                                # moved: the prewarm re-reads it
+    asyncio.run(lm.prewarm(aid))
+    assert {w for w, _l, _wl in held} == {"campaigns", "claimers", "trial", "promo"}, held
+    assert not [h for h in held if h[1]], f"_LOCKS held across an OF call: {held}"
+    assert all(wl for _w, _l, wl in held if _w in ("campaigns", "claimers", "trial")), held
+    assert [x[0]["fan_id"] for x in f.during] == [960_001], ("mid-walk, the cached fans", f.during)
+    assert ota._CLAIMERS_CACHE[(aid, 4646)][2][0]["fan_id"] == 960_002, "merged after the walk"
+    assert aid not in ota._COMPUTED and not ota._CLAIMERS_WALKING, "memo dropped, nothing left walking"
+
+    async def earnings_while_walking():
+        async with ota.walk_lock(aid):
+            return await asyncio.wait_for(ota._compute(aid), 2)
+    assert asyncio.run(earnings_while_walking()) is not None, "the earnings read never waits on a walk"
+    ota._COMPUTED.clear()
+    ota._CLAIMERS_CACHE.clear()
+    ota._WALK_LOCKS.pop(aid, None)
+    ota._LOCKS.pop(aid, None)
+
+
 def case_links_of_promos_folds_earlier_rearms_into_their_campaign():
     from types import SimpleNamespace
     fetched = [{"of_promo_id": 122, "subscriber_count": 3}, {"of_promo_id": 123, "subscriber_count": 2},
@@ -1412,6 +1475,7 @@ _harness.run(
     case_stale_rewalk_not_while_locked_or_backed_off,
     case_accounts_never_mix,
     case_prewarm_reads_every_kind_and_the_page_opens_from_cache,
+    case_walks_never_hold_the_growth_lock_across_an_of_call,
     case_links_of_promos_folds_earlier_rearms_into_their_campaign,
     case_prewarm_all_skips_dead_sessions_and_non_onlyfans_accounts,
 )

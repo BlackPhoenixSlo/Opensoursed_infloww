@@ -189,7 +189,9 @@ blips (0 to 32 s, both proxies, every chain ending in a success;
 
 What the operator sees: `GET /admin/proxies` carries `health` per custom proxy
 (`state`, `down`, `errors`, `last_error`, `last_error_at`, `bad_since`, `next_recheck_at`,
-`probe`, `failed_over`, `failed_over_at`) and `pool.bad`;
+`probe`, `failed_over`, `failed_over_at`, `bad_reason`, `refusals`, `inflight`, `inflight_peak`), `pool.bad`
+and `pool.proxies` (`[{slot, health: {state, down, refusals, inflight?, inflight_peak?}}]`
+for the pool proxies the viewer is on; `slot` is the place in the pool, never the label or host);
 `GET /admin/accounts` carries `proxy_down`. The Proxies table reads "unreachable since
 <time> (<n> refused) — recheck at <time>" and the Accounts table badges the Creator
 "proxy unreachable". Down and up changes publish the `proxy_switched` account-state event
@@ -197,6 +199,42 @@ with `down`, so open tabs refetch both lists. The relay log carries `proxy <labe
 (confirmed by probe)`, `<n> Creator(s) moved to healthy pool proxies`, `nobody moved (no
 pool proxy answers)`, `proxy_probe label=<label> ok=<bool>` (every probe), `is back up
 (recheck)`.
+
+Refusals: `health.refusals = {window_s, refused, calls, pct}` counts every `_proxy_retry`
+attempt and probe through the proxy over the last `PROXY_FLAP_WINDOW_S` seconds (default
+600): a refused CONNECT (ProxyError) is refused, an answer is a call, other failures are
+left out. `inflight` is OF calls through it right now, `inflight_peak` the most at once
+since the relay started (counting only, no cap). The chat WebSocket and /img's raw CDN gets
+skip `_proxy_retry` and are not in either. The Proxies table adds "refusing 32% (10 min)"
+after the health text when anything was refused.
+
+Flap knob, ON by default: `PROXY_FLAP_BAD_PCT` = X, default 20 (`PROXY_FLAP_BAD_PCT=0` turns it off).
+The owner accepted the IP change on 2026-11-05 ("switching IPs is fine"), so a flapping proxy leaves
+rotation on its own and its Creators move once. Measured on prod 2026-11, per attempt on user
+requests: 30 % refused on 52339bd6, 17 % on 8ce1b29a; inferred similar for background traffic. An
+offline replay of the defaults over that record (ADR 0030 Consequences) flags those two, 2273023d
+only briefly, the four clean proxies never. With the knob on:
+
+- Goes bad (log `proxy <label> is DOWN (refusing <n>% of <m> calls)`, no confirm probe) when
+  at least 20 attempts are in the window, at least X % were refused, and the refusals fall in
+  at least 3 different tenths of the window (by default: refused in 3 different minutes of
+  the last 10). A short full outage is not flapping: it takes the 30 s confirm path. A proxy
+  already down, or with a refused-calls streak awaiting its confirm, is left to that path.
+- Stays bad while at least X/2 % are refused and the last refusal is under window/5 old (2
+  min by default): a passing recheck still counts as failed, so the failover goes ahead. It
+  comes back (standby) when the share drops below X/2 % or it has been quiet for 2 minutes;
+  once its Creators moved away its window drains, so it comes back, by design.
+- The failover never moves anyone onto a proxy that is itself still flapping by that rule,
+  even when its probe answers; none left: nobody moves, retried at the next failed recheck.
+
+`health.bad_reason` is `"flapping"` (or `"down"` from the confirm path) and `/admin/accounts`
+carries `proxy_bad_reason`: the Proxies table reads "refusing 27% (10 min) since <time> —
+recheck at <time>" ("was refusing — recheck at <time>" once nothing refused is left in the
+window), the Accounts badge "proxy refusing" instead of "proxy unreachable". A window under a
+minute reads in seconds ("(45 s)"). `inflight`/`inflight_peak` are shown to the site owner
+only; an Agency's pool rows carry `state`, `down`, `refusals`. To stop the automatic moves
+(each one changes the IP OnlyFans sees), set `PROXY_FLAP_BAD_PCT=0` and restart the relay; the
+rate stays visible either way.
 
 Not done, on purpose: no fail-back, no per-call rotation, no automatic replacement of a
 proxy that stays dead (replace its env entry; the sync rebinds its Creators).

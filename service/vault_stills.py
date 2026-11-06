@@ -66,7 +66,10 @@ THUMB_DIR = Path(os.environ.get("VAULT_THUMB_DIR", "/tmp/of-relay-vault-thumbs")
 POSTER_DIR = Path(os.environ.get("VAULT_POSTER_DIR", "/tmp/of-relay-vault-posters"))
 IMAGE_DIR = Path(os.environ.get("VAULT_IMAGE_DIR", "/tmp/of-relay-vault-images"))
 
-_HEADERS = {"Cache-Control": "public, max-age=604800"}
+# `private`: the stills routes are per-user gated (chatter folder limits,
+# vault_ai_api._assert_media_visible), so the browser may keep them but a shared
+# cache must not hand one user's allowed tile to another.
+_HEADERS = {"Cache-Control": "private, max-age=604800"}
 
 # What a media dict yields for one store. Same callable is used against the url we
 # already have AND against a re-signed payload — the picking rule cannot differ

@@ -1204,7 +1204,7 @@ describe("FanList", () => {
     expect(warm.aborted).toBe(false);
   });
 
-  it("pressing a row warms its thread over what is cached, on the background lane: a paged history stays", async () => {
+  it("pressing a row warms its thread over what is cached, on the user lane (the click's start): a paged history stays", async () => {
     serveChats(CHATS);
     const fan = FANS[2];
     routeRelay(`/api/of/v2/chats/${fan.id}/messages`, () => ({
@@ -1220,7 +1220,18 @@ describe("FanList", () => {
     fireEvent.pointerDown(await rowOf("Fixture Fan Three"));
     await vi.waitFor(() => expect(client.getQueryData<{ id: number }[]>(key)?.map((m) => m.id)).toEqual([10, 900]));
     expect(relayGet.mock.calls.find(([path]) => path.includes(`/chats/${fan.id}/messages`))?.[1])
-      .toMatchObject({ priority: "background" });
+      .toMatchObject({ priority: undefined });
+  });
+
+  it("resting the pointer on a row warms its thread on the background lane (a hover is not a click)", async () => {
+    serveChats(CHATS);
+    const fan = FANS[2];
+    routeRelay(`/api/of/v2/chats/${fan.id}/messages`, () => ({ list: [], hasMore: false }));
+    renderWithProviders(<FanList selected={null} onSelect={vi.fn()} />);
+
+    fireEvent.mouseEnter(await rowOf("Fixture Fan Three"));
+    await vi.waitFor(() => expect(relayGet.mock.calls.find(([path]) => path.includes(`/chats/${fan.id}/messages`))?.[1])
+      .toMatchObject({ priority: "background" }));
   });
 
   it("pressing a row and then clicking it reads its thread once: the opened chat joins the press's warm-up", async () => {

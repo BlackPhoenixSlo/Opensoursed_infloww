@@ -44,7 +44,7 @@ import { useScope } from "@/contexts/ScopeContext";
 import { MP } from "@/lib/messagesPro";
 import { FAN_TAB_PARAM, setFanTabOpener } from "@/lib/notificationLink";
 import { cn } from "@/lib/utils";
-import { relay, type OFChatItem, type OFUserMini } from "@/lib/relay";
+import { relay, setRelayFocus, type OFChatItem, type OFUserMini } from "@/lib/relay";
 import { sameUserId, type FanId } from "@/lib/fanId";
 
 /** How long "Fan tab limit reached (100)" shows after a notification outside the panel. */
@@ -75,6 +75,12 @@ export function MessagesPro({ deepLink }: { deepLink?: MessagesProDeepLink } = {
   const accounts = usePlatformAccounts();
   const { pickAll } = usePickAllModels();
   const { scope, setScope } = useScope();
+  // The opened Creator (the open chat's, else the scoped one): its background reads never wait (lib/relaySchedule).
+  const focusAccountId = selected?.accountId ?? (scope.kind === "model" ? scope.accountId : null);
+  useEffect(() => {
+    setRelayFocus(focusAccountId);
+    return () => setRelayFocus(null);
+  }, [focusAccountId]);
 
   // While Online Fans is on, the scoped Creator's OnlyFans online list (one
   // page, latest activity first): those Fans count as online alongside the

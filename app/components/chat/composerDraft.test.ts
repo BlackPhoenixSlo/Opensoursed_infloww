@@ -5,7 +5,7 @@ import { PRICE_NOTE } from "@/lib/sendGuards";
 
 import {
   EMPTY_DRAFT, FAILED_UPLOAD_NOTE, afterRefusedSchedule, buildSendArgs, canSend, composerDraft, composerView,
-  effectivePreviewCount, isEmptyDraft, isScheduling, sendBlockedReason,
+  effectivePreviewCount, isEmptyDraft, isScheduling, richText, sendBlockedReason,
   type ComposerDraft, type DraftAction, type SendCtx, type ViewCtx,
 } from "./composerDraft";
 import type { PickedTemplate } from "./TemplatePicker";
@@ -32,6 +32,7 @@ const STEP = { scriptId: "s1", scriptStep: 2 };
 const FULL = draft({
   price: "12", priceOpen: true, lockedText: true, attached: [media(1), media(2)], previewCount: 1,
   scheduleOpen: true, scheduleAt: LATER, taggedCreators: [tag(7)], pickedGifs: [gif("g1")], script: STEP,
+  rich: { html: "<p><em>hey</em></p>", plain: "hey" },
 });
 
 describe("composerDraft", () => {
@@ -60,8 +61,8 @@ describe("composerDraft", () => {
       [{ type: "uploaded", media: [media(1, { type: "video" }), media(2)] }], { attached: [media(1), media(2)] }],
     ["reorder", draft({ attached: [media(1), media(2)] }), [{ type: "reorder", attached: [media(2), media(1)] }],
       { attached: [media(2), media(1)] }],
-    ["clearPpv empties the row, keeps tags and the Script step", FULL, [{ type: "clearPpv" }],
-      { ...EMPTY_DRAFT, taggedCreators: [tag(7)], script: STEP }],
+    ["clearPpv empties the row, keeps tags, the Script step and its markup", FULL, [{ type: "clearPpv" }],
+      { ...EMPTY_DRAFT, taggedCreators: [tag(7)], script: STEP, rich: FULL.rich }],
     ["dropScript (the FM bubble's AI draft) forgets the Script step only", FULL, [{ type: "dropScript" }],
       { script: null }],
     ["sent empties everything, the Script step too", FULL, [{ type: "sent" }], EMPTY_DRAFT],
@@ -94,6 +95,7 @@ describe("composerDraft", () => {
         taggedCreators: [tag(7), { id: 8, name: "user8", username: "", avatar: null }],
         pickedGifs: [{ id: "g9", thumbUrl: "u9", fullUrl: "u9", title: "T" }],
         script: null, // no Script on this template: the old step goes
+        rich: null, // nor formatting: the old markup goes
       });
     });
     it.each<[string, Partial<PickedTemplate>, ComposerDraft["script"]]>([
@@ -192,6 +194,28 @@ describe("buildSendArgs", () => {
   ])("%s", (_name, over, opts, want) => {
     expect(buildSendArgs(draft(over), { text: "hey", now: NOW, ...opts })).toEqual(want);
   });
+});
+
+describe("a formatted script's markup (rich)", () => {
+  const HTML = '<p><strong><span class="m-editor-fc__blue-1">Hey</span></strong> babe</p>';
+  const picked = (over: Partial<PickedTemplate> = {}) => run(EMPTY_DRAFT, { type: "pickTemplate", t: tpl(over) });
+  it.each<[string, Partial<PickedTemplate>, ComposerDraft["rich"]]>([
+    ["formatted script keeps its markup", { text: "Hey babe", displayText: HTML }, { html: HTML, plain: "Hey babe" }],
+    ["plain script has none", { text: "hi", displayText: "hi" }, null],
+    ["unformatted markup has none", { text: "hi", displayText: "<p>hi</p>" }, null],
+  ])("pick: %s", (_n, t, want) => expect(picked(t).rich).toEqual(want));
+
+  const d = draft({ rich: { html: HTML, plain: "Hey babe" } });
+  it.each<[string, string, string | null]>([
+    ["untouched sends the markup", "Hey babe", HTML],
+    ["untouched modulo edge spaces", "  Hey babe ", HTML],
+    ["edited falls back to plain", "Hey babe!", null],
+  ])("send: %s", (_n, text, want) => {
+    expect(richText(d, text)).toBe(want);
+    expect(buildSendArgs(d, { text, now: NOW }).text).toBe(want ?? text);
+  });
+  it("no rich on a typed message", () => expect(richText(EMPTY_DRAFT, "x")).toBeNull());
+  it("a draft holding a script's markup is not empty", () => expect(isEmptyDraft(d)).toBe(false));
 });
 
 describe("composerView", () => {

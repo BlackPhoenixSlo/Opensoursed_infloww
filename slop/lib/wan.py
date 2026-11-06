@@ -20,9 +20,9 @@ Loopback only: both listen on 127.0.0.1.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
-import queue
 import shutil
 import socket
 import subprocess
@@ -43,7 +43,8 @@ def _free_port() -> int:
 
 
 class DelayProxy:
-    """TCP on 127.0.0.1:`port` to `upstream`, each direction `one_way_s` late, order kept."""
+    """TCP on 127.0.0.1:`port` to `upstream`, each direction `one_way_s` late, order kept. Every
+    connection runs on one asyncio loop thread (it was 4 threads per connection)."""
 
     def __init__(self, upstream: tuple[str, int], one_way_s: float):
         self.upstream, self.d = upstream, one_way_s
@@ -53,63 +54,69 @@ class DelayProxy:
         self.sock.listen(64)
         self.port = self.sock.getsockname()[1]
         self.connections = 0
-        self._stop = False
-        threading.Thread(target=self._accept, name="wan-accept", daemon=True).start()
+        self._loop = asyncio.new_event_loop()
+        up = threading.Event()
 
-    def _accept(self) -> None:
-        while not self._stop:
-            try:
-                c, _ = self.sock.accept()
-            except OSError:
-                return
-            self.connections += 1
-            threading.Thread(target=self._conn, args=(c,), daemon=True).start()
+        def main() -> None:
+            asyncio.set_event_loop(self._loop)
+            self._server = self._loop.run_until_complete(asyncio.start_server(self._conn, sock=self.sock, backlog=64))
+            up.set()
+            self._loop.run_forever()
 
-    def _conn(self, c: socket.socket) -> None:
-        time.sleep(2 * self.d)  # SYN out, SYN-ACK back: the client's first byte leaves one RTT later
+        threading.Thread(target=main, name="wan-loop", daemon=True).start()
+        if not up.wait(10):
+            raise SystemExit("slop: the WAN delay proxy did not start")
+
+    async def _conn(self, cr: asyncio.StreamReader, cw: asyncio.StreamWriter) -> None:
+        self.connections += 1
+        await asyncio.sleep(2 * self.d)  # SYN out, SYN-ACK back: the client's first byte leaves one RTT later
         try:
-            u = socket.create_connection(self.upstream)
+            ur, uw = await asyncio.open_connection(*self.upstream)
         except OSError:
-            c.close()
+            cw.close()
             return
-        for s in (c, u):
-            s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        self._pipe(c, u)
-        self._pipe(u, c)
+        for w in (cw, uw):
+            w.get_extra_info("socket").setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        try:
+            await asyncio.gather(self._pipe(cr, uw), self._pipe(ur, cw))
+        finally:
+            cw.close()
+            uw.close()
 
-    def _pipe(self, src: socket.socket, dst: socket.socket) -> None:
-        q: queue.Queue = queue.Queue()
+    async def _pipe(self, src: asyncio.StreamReader, dst: asyncio.StreamWriter) -> None:
+        q: asyncio.Queue = asyncio.Queue()
+        loop = asyncio.get_running_loop()
 
-        def read() -> None:
+        async def read() -> None:
             while True:
                 try:
-                    data = src.recv(65536)
+                    data = await src.read(65536)
                 except OSError:
                     data = b""
-                q.put((time.monotonic() + self.d, data))
+                q.put_nowait((loop.time() + self.d, data))
                 if not data:
                     return
 
-        def write() -> None:
+        async def write() -> None:
             while True:
-                due, data = q.get()
-                wait = due - time.monotonic()
+                due, data = await q.get()
+                wait = due - loop.time()
                 if wait > 0:
-                    time.sleep(wait)
+                    await asyncio.sleep(wait)
                 try:
                     if not data:
-                        dst.shutdown(socket.SHUT_WR)
+                        if dst.can_write_eof():
+                            dst.write_eof()
                         return
-                    dst.sendall(data)
+                    dst.write(data)
+                    await dst.drain()
                 except OSError:
                     return
 
-        threading.Thread(target=read, daemon=True).start()
-        threading.Thread(target=write, daemon=True).start()
+        await asyncio.gather(read(), write())
 
     def close(self) -> None:
-        self._stop = True
-        self.sock.close()
+        self._loop.call_soon_threadsafe(self._server.close)
 
 
 class WanEdge:

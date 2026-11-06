@@ -9,7 +9,14 @@ plain HTTP/1.1, where Chromium's 6-connections-per-host cap would let 5 open SSE
 streams starve every other request. `PROBE_JS` instruments a tab without touching
 app code: SSE receipt time per chat message id (`rx`), the app's handler time per
 SSE event, long tasks (>50 ms), heap, rendered Fan List rows, and a text watcher
-for marker DMs (`watch` / `seen`)."""
+for marker DMs (`watch` / `seen`).
+
+`--net=<profile>` (ctx.net): every page `_owner_page` opens (owner_browser, owner_tabs, chatter_tab, touch
+contexts) is throttled to that lib/net.py phone network through a CDP session of its own (`page.slop["cdp"]`,
+open for the page's life); unset, nothing changes. A popup the page opens is not throttled. Two caveats: the
+context's `route("**/*")` turns Chromium's HTTP cache off (Playwright), so a throttled page refetches every chunk and
+image a real phone would have cached; and a service worker's own fetches ride unthrottled (CDP's conditions are the
+page's), so `--net` blocks service workers (app/public/sw-images.js fetches every /img)."""
 from __future__ import annotations
 
 import asyncio
@@ -21,6 +28,7 @@ from urllib.parse import urlsplit
 from playwright.async_api import async_playwright
 
 from slop.lib.faults import FAULTS
+from slop.lib.net import PROFILES, emulate
 
 # Light theme; hide Next's dev overlay so screenshots show only the app.
 INIT_JS = """try { localStorage.setItem('chatterly:theme', 'light'); } catch (e) {}
@@ -108,15 +116,18 @@ def _client_fault(ctx) -> tuple:
     return tuple((re.compile(rx), rx, rep) for rx, rep in f.browser) if f else ()
 
 
-async def _patched(r, ctx, patches) -> None:
+async def _patched(r, ctx, patches, origin: str | None = None) -> None:
     """Serve the app's JS with the client fault's rewrites; count each rewrite's matches
     (ctx.browser_fault_hits, which lib/cli.py requires to be > 0 for every rewrite) and the
     files they hit (ctx.browser_fault_files). A file that cannot be fetched (the page moved
-    on mid-load) is aborted, never served unpatched."""
+    on mid-load) is aborted, never served unpatched. `origin`: fetch the file from there
+    (lib/wan.py's TLS edge: Playwright's own fetch does not trust its certificate, so a
+    WanEdge scenario reads the chunk from the app, ctx.app, on loopback)."""
     hits = ctx.browser_fault_hits
     files = ctx.browser_fault_files
     try:
-        resp = await r.fetch()
+        u = urlsplit(r.request.url)
+        resp = await (r.fetch(url=f"{origin}{u.path}{'?' + u.query if u.query else ''}") if origin else r.fetch())
         body = await resp.text()
     except Exception:  # noqa: BLE001
         try:
@@ -133,6 +144,23 @@ async def _patched(r, ctx, patches) -> None:
     await r.fulfill(response=resp, body=body)
 
 
+def track(ctx, bctx) -> None:
+    """Record every path (no query) a main frame of `bctx`'s pages navigates to, popups and later
+    tabs too, in `ctx.ui_pages` (lib/cli.py: the run's ui-pages.json, slop/map.json's `pages`)."""
+    seen = ctx.ui_pages
+
+    def on_nav(page, frame) -> None:
+        u = urlsplit(frame.url)
+        if frame == page.main_frame and u.scheme in ("http", "https"):
+            seen.add(u.path or "/")
+
+    def on_page(page) -> None:
+        page.on("framenavigated", lambda f: on_nav(page, f))
+    bctx.on("page", on_page)
+    for p in bctx.pages:
+        on_page(p)
+
+
 async def _owner_page(browser, ctx, viewport, held, aborted, init_scripts=(), *, http=None, app=None,
                       send=False, through=(), scale=1, touch=False):
     """A tab signed in as `http`'s session (default the owner's) on `app` (default ctx.app).
@@ -144,7 +172,8 @@ async def _owner_page(browser, ctx, viewport, held, aborted, init_scripts=(), *,
     scale factor (2 for a zoomed crop). `touch`: a phone's context (touch input, mobile
     viewport), for `tap` and `swipe`."""
     bctx = await browser.new_context(viewport={"width": viewport[0], "height": viewport[1]},
-                                     device_scale_factor=scale, has_touch=touch, is_mobile=touch)
+                                     device_scale_factor=scale, has_touch=touch, is_mobile=touch,
+                                     service_workers="block" if ctx.net else "allow")
     host = urlsplit(app or ctx.app).hostname
     await bctx.add_cookies([{"name": c.name, "value": c.value, "domain": host, "path": "/"}
                             for c in (http or ctx.owner).c.cookies.jar])
@@ -173,10 +202,19 @@ async def _owner_page(browser, ctx, viewport, held, aborted, init_scripts=(), *,
             await r.continue_()
 
     await bctx.route("**/*", route)
+    track(ctx, bctx)
     page = await bctx.new_page()
+    cdp = None
+    if ctx.net:
+        if PROFILES[ctx.net].get("wire"):
+            raise RuntimeError(f"--net={ctx.net}: a wire profile shapes an edge port (lib/net.py wired); "
+                               "only slow-connections drives one")
+        cdp = await bctx.new_cdp_session(page)
+        await emulate(cdp, ctx.net)
     statuses: list[tuple[int, str]] = []
     page.on("response", lambda resp: statuses.append((resp.status, resp.url)))
-    page.slop = {"held_of_reads": held, "offhost_aborted": aborted, "statuses": statuses, "crashed": None}
+    page.slop = {"held_of_reads": held, "offhost_aborted": aborted, "statuses": statuses, "crashed": None,
+                 "cdp": cdp}
     page.on("crash", lambda _p: page.slop.update(crashed=time.time() * 1000))
     return page
 

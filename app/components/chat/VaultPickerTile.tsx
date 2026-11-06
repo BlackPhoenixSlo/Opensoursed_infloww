@@ -10,6 +10,7 @@ import { type MouseEvent } from "react";
 
 import { type FanVaultEntry } from "@/hooks/useFanVaultHistory";
 import { SCRUB_FRAMES, type useHoverPreview } from "@/hooks/useHoverPreview";
+import { type ThumbRetry } from "@/hooks/useThumbAutoRefresh";
 import { vaultTileThumb } from "@/hooks/useVaultCache";
 import { type VaultMediaStat } from "@/hooks/useVaultMediaStats";
 import { type FanId } from "@/lib/fanId";
@@ -82,18 +83,22 @@ export interface VaultPickerTileProps {
   onAttach: (m: VaultMedia) => void;
   onPreview: (m: VaultMedia) => void;
   onDetails: (d: { media: VaultMedia; atHistory: boolean }) => void;
+  /** The picker's thumbnail retry (useThumbAutoRefresh): the src to show, and a failed load reported back. */
+  thumbs: ThumbRetry;
 }
 
 export function VaultPickerTile({
   m, selected, accountId, fanId, sheetTile, useLocalVault, blurCls, captionOn,
   fanEntry, stat, onWall, wallCents, hover, photoHover, firstTileRef,
-  onTileClick, onAttach, onPreview, onDetails,
+  onTileClick, onAttach, onPreview, onDetails, thumbs,
 }: VaultPickerTileProps) {
   const closePhoto = photoHover.close;
   // Permanent cached thumb on the mirror path, proxied OF url on the
   // live one, "" for a media with no picture at all (a voice note) —
-  // in which case the `{m.type}` placeholder below renders.
-  const thumb = vaultTileThumb(m, accountId);
+  // in which case the `{m.type}` placeholder below renders; so does a broken one waiting for the picker's reload.
+  const base = vaultTileThumb(m, accountId);
+  const thumb = thumbs.thumbFor(m.id, base);
+  const onThumbFail = () => thumbs.onBroken(m.id, thumb);
   // The playable mp4 — null for DRM-only videos. We do NOT fall
   // back to files.preview.url here: that's a static poster JPEG,
   // and feeding it to <video>/`/img/scrub` is exactly what made
@@ -193,6 +198,7 @@ export function VaultPickerTile({
               // we don't flood OF with off-screen fetches.
               loading={useLocalVault ? "eager" : "lazy"}
               decoding="async"
+              onError={onThumbFail}
               className={cn(
                 "absolute inset-0 w-full h-full object-cover",
                 blurCls,
@@ -307,6 +313,7 @@ export function VaultPickerTile({
           alt=""
           loading={useLocalVault ? "eager" : "lazy"}
           decoding="async"
+          onError={onThumbFail}
           className={cn("w-full h-full object-cover", blurCls)}
         />
       ) : (

@@ -66,6 +66,7 @@ def _registry() -> None:
     proxies.assign_account("hu-1", "102")
     proxy_health._state.clear()
     proxy_health._watchers.clear()
+    proxy_health._tele.clear()
     proxy_health.verify_pick = lambda p, **_: True   # a new binding's probe: answers unless a case scripts it
 
 
@@ -119,7 +120,7 @@ class _Watch:
             return ({"ok": True, "ip": "203.0.113.7", "geo": self.geo.get(p["label"], "HU"), "colo": "BUD",
                      "ttfb_ms": 80, "error": None}
                     if ok else {"ok": False, "ip": None, "geo": None, "colo": None, "ttfb_ms": None,
-                                "error": "proxy_probe_failed: CONNECT tunnel failed, response 403"})
+                                "error": "proxy_probe_failed: CONNECT tunnel failed, response 403", "refused": True})
         proxies.probe = _probe
         return self
 
@@ -197,7 +198,10 @@ def case_probe_reads_the_trace_through_the_proxy():
 def case_probe_failures_are_not_ok():
     _registry()
     out = _probe_with(curl_requests.exceptions.ProxyError("CONNECT tunnel failed, response 407"))
-    assert out["ok"] is False and "407" in out["error"], out
+    assert out["ok"] is False and "407" in out["error"] and out["refused"] is True, out
+    from curl_cffi.const import CurlECode
+    out = _probe_with(curl_requests.exceptions.Timeout("Operation timed out", CurlECode.OPERATION_TIMEDOUT))
+    assert out["ok"] is False and out["refused"] is False, "a timeout is not a refused CONNECT"
     out = _probe_with(_resp(status=502))
     assert out["ok"] is False and "502" in out["error"], out
     out = _probe_with(_resp(text="<html>captive portal</html>"))
@@ -282,6 +286,7 @@ def _pool(n: int = 3) -> list[str]:
         proxies.assign_account(labels[i % n], aid)
     proxy_health._state.clear()
     proxy_health._watchers.clear()
+    proxy_health._tele.clear()
     proxy_health.verify_pick = _REAL_VERIFY   # probes go through _Watch's scripted proxies.probe
     return labels
 
@@ -338,16 +343,38 @@ def case_failover_skips_a_destination_that_does_not_answer():
 
 
 def case_failover_retried_after_no_destination_answered():
-    """F2: the first failover finds no destination answering (a blip on the
-    standbys too) and moves nobody; the next failed recheck tries again."""
+    """F2 (knob off, PROXY_FLAP_BAD_PCT=0): the first failover finds no destination answering (a blip on
+    the standbys too) and moves nobody; the next failed recheck tries again."""
     a, b, c = _pool()
-    # a: confirm, recheck 1, recheck 2 fail; failover 1: b, c fail; recheck 3 fails;
-    # failover 2: b, c answer; recheck 4 passes.
-    with _Watch(False, False, False, False, False, False, True, True, True) as w:
-        _fail(a)
+    os.environ[proxy_health.FLAP_PCT_ENV] = "0"
+    try:
+        # a: confirm, recheck 1, recheck 2 fail; failover 1: b, c fail; recheck 3 fails;
+        # failover 2: b, c answer; recheck 4 passes.
+        with _Watch(False, False, False, False, False, False, True, True, True) as w:
+            _fail(a)
+    finally:
+        os.environ.pop(proxy_health.FLAP_PCT_ENV, None)
     assert _on(a) == [] and sorted(_on(b) + _on(c)) == ["1", "2", "3", "4", "5", "6"], (_on(a), w.probed)
     snap = proxy_health.snapshot(a)
     assert snap["failed_over"] == 2 and snap["state"] == "healthy", snap
+
+
+def case_failover_skips_a_destination_that_refused_a_probe_until_quiet():
+    """F2 with the knob at its default (20): a standby whose probe was refused inside the last window/5
+    (2 min) is `flapping` and skipped even when its next probe answers (no IP change onto a blipping
+    proxy); once quiet that long, the next failover moves."""
+    a, b, c = _pool()
+    os.environ.pop(proxy_health.FLAP_PCT_ENV, None)
+    _bad(a, due=True)
+    with _Watch(False, False, True, True) as w:          # the fake watcher owns the clock (_advance)
+        assert proxy_health._failover(a) == [] and sorted(w.probed) == sorted([b, c]), w.probed
+        assert proxy_health.flapping(b) and proxy_health.flapping(c), "a refused probe: flapping"
+        assert proxy_health._failover(a) == [], "answering now, but refused a probe just now: skipped"
+        assert _on(a) == ["1", "4"] and len(w.probed) == 2, w.probed
+        _advance(proxy_health.window_s() / 5 + 1)
+        assert not proxy_health.flapping(b) and not proxy_health.flapping(c), "quiet for window/5"
+        moved = proxy_health._failover(a)
+    assert sorted(moved) == ["1", "4"] and _on(a) == [], (moved, _on(a))
 
 
 def case_failover_of_an_empty_or_custom_proxy_probes_nothing():
@@ -607,14 +634,17 @@ def case_proxies_list_counts_bad_pool():
     import server
     import proxies_admin_api
     real_user, real_list = server._get_request_user, server.account_registry.list_accounts
-    server._get_request_user = lambda: types.SimpleNamespace(id="o", account_ids={"1", "2", "3", "4", "5", "6"})
+    server._get_request_user = lambda: types.SimpleNamespace(id="o", account_ids={"1", "2", "3", "4", "5", "6"},
+                                                             is_admin=True)
     server.account_registry.list_accounts = lambda **_: [{"id": str(i)} for i in range(1, 7)]
     try:
         proxy_health._state[a] = {**proxy_health_decide.blank(), "down": True}
         out = proxies_admin_api.admin_proxies_list()
     finally:
         server._get_request_user, server.account_registry.list_accounts = real_user, real_list
+    rows = out["pool"].pop("proxies")
     assert out["pool"] == {"size": 3, "account_ids": out["pool"]["account_ids"], "bad": 1}, out["pool"]
+    assert [r["slot"] for r in rows] == [1, 2, 3] and [r["health"]["down"] for r in rows] == [True, False, False], rows
     assert out["proxies"] == [], "pool entries stay unlisted"
 
 
@@ -872,7 +902,9 @@ def case_routes_carry_health():
     assert proxies.get_by_label("hu-1")["verified_geo"] == "HU", "the Test button still records"
     rows = {p["label"]: p for p in proxies_admin_api.admin_proxies_list()["proxies"]}
     assert rows["hu-1"]["health"]["probe"]["ttfb_ms"] == 80, rows["hu-1"]["health"]
-    assert rows["spare"]["health"] == {"down": False, "errors": 0, "state": "healthy"}, rows["spare"]
+    assert rows["spare"]["health"] == {"down": False, "errors": 0, "state": "healthy", "inflight": 0, "inflight_peak": 0,
+                                       "refusals": {"window_s": 600.0, "refused": 0, "calls": 0, "pct": 0.0}}, rows["spare"]
+    assert rows["hu-1"]["health"]["refusals"]["calls"] == 1, "the Test probe is one attempt in the window"
     assert rows["hu-1"]["health"]["state"] == "healthy"
 
 
@@ -915,6 +947,239 @@ def case_probe_all_only_creator_proxies():
     finally:
         proxies.probe = real
     assert probed == ["hu-1"], "the unbound proxy is not probed"
+
+
+# ── refusal telemetry and the flap knob ──
+def _refused_then(n: int):
+    """A raw call refused `n` times (ProxyError), then answering."""
+    left = [n]
+
+    def fn():
+        if left[0]:
+            left[0] -= 1
+            raise curl_requests.exceptions.ProxyError("CONNECT tunnel failed, response 403")
+        return types.SimpleNamespace(ok=True)
+    return fn
+
+
+def case_refusal_window_counts_every_attempt_and_prunes():
+    _registry()
+    clock, real_now = [1000.0], proxy_health._now
+    proxy_health._now = lambda: clock[0]
+    try:
+        c = _bare_client(lambda url, **kw: None)
+        OFClient._proxy_retry(c, _refused_then(2), policy=RetryPolicy(3, 0.0, False))   # refused, refused, ok
+        from curl_cffi.const import CurlECode
+
+        def _timeout():
+            raise curl_requests.exceptions.Timeout("Operation timed out", CurlECode.OPERATION_TIMEDOUT)
+        try:
+            OFClient._proxy_retry(c, _timeout)
+        except curl_requests.exceptions.Timeout:
+            pass
+        assert proxy_health.refusals("hu-1") == {"window_s": 600.0, "refused": 2, "calls": 3, "pct": 66.7}, \
+            "every attempt, whatever the policy; a timeout is left out"
+        assert proxy_health.snapshot("hu-1")["refusals"]["calls"] == 3
+        clock[0] += 599
+        assert proxy_health.refusals("hu-1")["calls"] == 3
+        clock[0] += 2
+        assert proxy_health.refusals("hu-1") == {"window_s": 600.0, "refused": 0, "calls": 0, "pct": 0.0}, "pruned"
+        os.environ[proxy_health.FLAP_WINDOW_ENV] = "60"
+        try:
+            assert proxy_health.refusals("hu-1")["window_s"] == 60.0
+        finally:
+            os.environ.pop(proxy_health.FLAP_WINDOW_ENV, None)
+        real_cap, proxy_health._WINDOW_CAP = proxy_health._WINDOW_CAP, 5
+        try:
+            for i in range(8):
+                proxy_health._sample("hu-1", i < 3)   # 3 refused then 5 ok: the cap keeps the last 5
+            assert proxy_health.refusals("hu-1")["refused"] == 0 and proxy_health.refusals("hu-1")["calls"] == 5
+        finally:
+            proxy_health._WINDOW_CAP = real_cap
+    finally:
+        proxy_health._now = real_now
+
+
+def case_inflight_counts_concurrent_attempts():
+    import threading
+    _registry()
+    n, gate = 5, threading.Barrier(5 + 1)
+    seen = []
+
+    def fn():
+        gate.wait(5)        # all n inside fn
+        gate.wait(5)        # the main thread has read inflight
+        return types.SimpleNamespace(ok=True)
+    c = _bare_client(lambda url, **kw: None)
+    threads = [threading.Thread(target=OFClient._proxy_retry, args=(c, fn)) for _ in range(n)]
+    for t in threads:
+        t.start()
+    gate.wait(5)
+    seen.append(proxy_health.snapshot("hu-1")["inflight"])
+    gate.wait(5)
+    for t in threads:
+        t.join(5)
+    snap = proxy_health.snapshot("hu-1")
+    assert seen == [n] and snap["inflight"] == 0 and snap["inflight_peak"] == n, (seen, snap)
+    assert snap["refusals"]["calls"] == n
+    bare = _bare_client(lambda url, **kw: None)
+    bare.proxy_label = None
+    OFClient._proxy_retry(bare, lambda: types.SimpleNamespace(ok=True))
+    assert set(proxy_health._tele) == {"hu-1"}, "a client with no proxy label counts nothing"
+
+
+def case_flap_knob_on_by_default_zero_turns_it_off():
+    """Env unset: the knob is FLAP_PCT_DEFAULT (20, the owner's 2026-11-05 call): the 20th attempt at >= 20 %,
+    refusals in 3 tenths of the window, marks the pool proxy bad (bad_reason "flapping"). PROXY_FLAP_BAD_PCT=0
+    turns it off: the same window marks nothing and `flapping` is False."""
+    a, b, c = _pool()
+    os.environ.pop(proxy_health.FLAP_PCT_ENV, None)
+    assert proxy_health.flap_bad_pct() == proxy_health.FLAP_PCT_DEFAULT == 20.0
+    with _Events() as ev, _Watch():
+        _spread_refusals(a, 15, 4)                               # 19 attempts, 21 %: too few to judge
+        assert not proxy_health.snapshot(a)["down"] and ev.seen == []
+        spawned = []
+        proxy_health._spawn = lambda fn, name: spawned.append(fn)   # the watcher as a thread: not run here
+        proxy_health._sample(a, True)                            # the 20th, 25 %: bad
+        snap = proxy_health.snapshot(a)
+        assert snap["state"] == "bad" and snap["bad_reason"] == "flapping" and len(spawned) == 1, snap
+        assert [(e[1]["account_id"], e[1]["down"]) for e in ev.seen] == [("1", True), ("4", True)], ev.seen
+    a, b, c = _pool()
+    os.environ[proxy_health.FLAP_PCT_ENV] = "0"
+    try:
+        assert proxy_health.flap_bad_pct() == 0.0
+        with _Events() as ev, _Watch():
+            _spread_refusals(a, 0, 50)
+        snap = proxy_health.snapshot(a)
+        assert snap["refusals"]["pct"] == 100.0 and not snap["down"] and snap["state"] == "healthy", snap
+        assert ev.seen == [] and not proxy_health.flapping(a)
+    finally:
+        os.environ.pop(proxy_health.FLAP_PCT_ENV, None)
+
+
+def _spread_refusals(label: str, ok: int, refused: int, buckets: int = 3) -> None:
+    """`ok` answers, then `refused` refusals spread over `buckets` tenths of the window (the clock moves)."""
+    for _ in range(ok):
+        proxy_health._sample(label, False)
+    for i in range(refused):
+        if i and i % max(refused // buckets, 1) == 0:
+            _advance(proxy_health.window_s() / 10)
+        proxy_health._sample(label, True)
+
+
+def case_flap_knob_marks_bad_fails_over_and_clears_below_half():
+    """PROXY_FLAP_BAD_PCT=30: the 20th attempt at >= 30 %, refusals in 3 tenths of the window, marks the pool
+    proxy bad (no confirm; bad_reason "flapping"); each recheck probe answers, but while the rate (its own sample
+    counted) stays >= 15 % (half: hysteresis) with a refusal in the last 2 min it is a failed one: the second
+    moves its Creators (the existing failover); 21 % still fails; the first under 15 % brings it back."""
+    a, b, c = _pool()
+    os.environ[proxy_health.FLAP_PCT_ENV] = "30"
+    os.environ[proxy_health.RECHECK_ENV] = "5"
+    try:
+        with _Events() as ev, _Watch() as w:
+            _spread_refusals(a, 13, 6)                           # 19 attempts, 31.6 %: too few to judge
+            assert not proxy_health.snapshot(a)["down"] and ev.seen == []
+            spawned = []
+            proxy_health._spawn = lambda fn, name: spawned.append(fn)   # as a thread: after the announce
+            proxy_health._sample(a, True)                        # the 20th, 35 %: bad
+            snap = proxy_health.snapshot(a)
+            assert snap["state"] == "bad" and snap["bad_reason"] == "flapping" and len(spawned) == 1, snap
+            assert [(e[1]["account_id"], e[1]["down"]) for e in ev.seen] == [("1", True), ("4", True)], ev.seen
+
+            def oks(n):
+                return lambda: [proxy_health._sample(a, False) for _ in range(n)]
+            # rechecks: 7/21 33 %, 7/22 32 % (failover), +10 ok: 7/33 21 % (>= 15: still bad), +15 ok: 7/49 14 %
+            proxy_health._sleep = _then(None, None, oks(10), oks(15))
+            spawned[0]()
+    finally:
+        os.environ.pop(proxy_health.FLAP_PCT_ENV, None)
+        os.environ.pop(proxy_health.RECHECK_ENV, None)
+    assert w.probed.count(a) == 4, w.probed
+    assert _on(a) == [], "moved at the second failed recheck"
+    snap = proxy_health.snapshot(a)
+    assert snap["state"] == "healthy" and "bad_reason" not in snap and snap["refusals"] == {
+        "window_s": 600.0, "refused": 7, "calls": 49, "pct": 14.3}, snap
+    assert snap["failed_over"] == 2, snap
+
+
+def case_flap_blip_or_down_streak_is_not_flap_bad():
+    """A short full outage (25 refusals at 100 % inside 10 s: one or two tenths of the window) is the ADR path's
+    (the 30 s confirm), never FlapBad; nor is a proxy with a DOWN_AFTER streak open (its confirm owns it)."""
+    _registry()
+    os.environ[proxy_health.FLAP_PCT_ENV] = "30"
+    try:
+        with _Events() as ev, _Watch():
+            for _ in range(25):
+                proxy_health._sample("hu-1", True)
+                _advance(0.4)
+            assert not proxy_health.snapshot("hu-1")["down"] and ev.seen == [], "a blip: no FlapBad"
+            proxy_health._state["hu-1"] = {**proxy_health_decide.blank(), "errors": proxy_health_decide.DOWN_AFTER}
+            proxy_health._watchers.add("hu-1")   # its confirm is under way
+            _spread_refusals("hu-1", 0, 9)
+            assert not proxy_health.snapshot("hu-1")["down"] and ev.seen == [], "the streak's confirm owns it"
+    finally:
+        os.environ.pop(proxy_health.FLAP_PCT_ENV, None)
+
+
+def case_flap_failover_never_moves_onto_a_flapping_proxy():
+    """Herd guard: every pool proxy refusing (b, c at 25 %: under the knob, so not bad, but over half of it) and
+    a goes flap-bad: its failover finds no destination (their probes would answer) and nobody moves."""
+    a, b, c = _pool()
+    os.environ[proxy_health.FLAP_PCT_ENV] = "30"
+    os.environ[proxy_health.RECHECK_ENV] = "5"
+    try:
+        with _Events(), _Watch() as w:
+            spawned = []
+            proxy_health._spawn = lambda fn, name: spawned.append(fn)
+            _spread_refusals(a, 13, 7)
+            assert proxy_health.snapshot(a)["bad_reason"] == "flapping"
+            for other in (b, c):
+                _spread_refusals(other, 15, 5, buckets=1)
+            assert proxy_health.flapping(b) and not proxy_health.snapshot(b)["down"]
+            spawned[0]()
+    finally:
+        os.environ.pop(proxy_health.FLAP_PCT_ENV, None)
+        os.environ.pop(proxy_health.RECHECK_ENV, None)
+    assert _on(a) == ["1", "4"], "nobody moved onto a flapping proxy"
+    assert b not in w.probed and c not in w.probed, w.probed
+    assert proxy_health.snapshot(a).get("failed_over", 0) == 0
+
+
+def case_flap_hysteresis_probe_class_and_bad_reason():
+    """Still flapping down to X/2 % with a refusal in the last window/5, never marked bad below X; knob off:
+    never flapping, even at 100 %; a probe timeout is in neither column, a refused one is; outage-bad reads "down"."""
+    _registry()
+    os.environ[proxy_health.FLAP_PCT_ENV] = "30"
+    try:
+        for refused, flapping in ((2, False), (3, True), (5, True)):   # of 20: 10 %, 15 % (= half), 25 %
+            proxy_health._tele.clear()
+            for i in range(20):
+                proxy_health._sample("hu-1", i < refused)
+            assert proxy_health.flapping("hu-1") is flapping, refused
+            assert not proxy_health.snapshot("hu-1")["down"], "under X: never marked bad"
+        real = proxy_health._now
+        proxy_health._now = lambda: real() + proxy_health.window_s() / 5 + 1
+        try:
+            assert not proxy_health.flapping("hu-1"), "quiet for window/5: no longer flapping"
+        finally:
+            proxy_health._now = real
+    finally:
+        os.environ[proxy_health.FLAP_PCT_ENV] = "0"
+    try:
+        proxy_health._tele.clear()
+        for _ in range(30):
+            proxy_health._sample("hu-1", True)
+        assert not proxy_health.flapping("hu-1"), "knob off (0): never flapping"
+    finally:
+        os.environ.pop(proxy_health.FLAP_PCT_ENV, None)
+    proxy_health._tele.clear()
+    proxy_health._keep_probe("hu-1", {"ok": False, "error": "proxy_probe_failed: Operation timed out", "refused": False})
+    assert proxy_health.refusals("hu-1")["calls"] == 0, "a probe timeout is not a refusal"
+    proxy_health._keep_probe("hu-1", {"ok": False, "error": "proxy_probe_failed: CONNECT 403", "refused": True})
+    proxy_health._keep_probe("hu-1", {"ok": True})
+    assert proxy_health.refusals("hu-1") == {"window_s": 600.0, "refused": 1, "calls": 2, "pct": 50.0}
+    proxy_health._state["hu-1"] = {**proxy_health_decide.blank(), "down": True}
+    assert proxy_health.snapshot("hu-1")["bad_reason"] == "down"
 
 
 if __name__ == "__main__":

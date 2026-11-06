@@ -32,6 +32,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 import vault_ai_brief
 from db.engine import get_session
 from db.models import VaultFolder, VaultFolderItem, VaultItem
+from vault_mirror import in_of_folders
 
 # Every folder this module makes is the OPERATOR's, not the pipeline's. This one
 # string is what keeps `vault_scripts`' reaper off them: it retires only rows
@@ -160,9 +161,12 @@ async def _shelf(s, account_id: str, cat: Category,
     return out
 
 
-async def candidates(account_id: str, cat: Category, limit: int = 600) -> dict[str, Any]:
+async def candidates(account_id: str, cat: Category, limit: int = 600, *,
+                     allowed: frozenset[int] | None = None) -> dict[str, Any]:
     """Every candidate for a category, each carrying the rung it is filed on now,
-    plus the shelf those rungs currently make.
+    plus the shelf those rungs currently make. `allowed`
+    (chatters.allowed_folder_ids_for_chatter): a restricted chatter's OF folders —
+    only candidates in them; None = the whole vault.
 
     The description rides along because roughly half the set is rejectable on
     text alone — "walks away from the camera on a paved street" is not a feet
@@ -191,7 +195,7 @@ async def candidates(account_id: str, cat: Category, limit: int = 600) -> dict[s
             if folder_id in by_id
         }
 
-        items = (await s.execute(
+        stmt = (
             select(VaultItem.media_id, VaultItem.kind, VaultItem.ai_fields_json)
             .where(
                 VaultItem.account_id == account_id,
@@ -201,8 +205,11 @@ async def candidates(account_id: str, cat: Category, limit: int = 600) -> dict[s
                     func.coalesce(VaultItem.ai_fields_json, "").like(f'%"{cat.term}"%'),
                 ),
             )
-            .order_by(VaultItem.media_id)
-            .limit(max(1, min(int(limit), 2000)))
+        )
+        if allowed is not None:
+            stmt = stmt.where(in_of_folders(allowed))
+        items = (await s.execute(
+            stmt.order_by(VaultItem.media_id).limit(max(1, min(int(limit), 2000)))
         )).all()
 
     out = [

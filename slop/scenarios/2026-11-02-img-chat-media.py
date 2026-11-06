@@ -49,7 +49,8 @@ relay threads at cold's peak, stale /admin/streams max 21.1 ms.
 Bypasses (declared):
   - OnlyFans' CDN is lib/img_relay.py's loopback fake (module docstring), reached through the product's own
     curl_cffi sessions (rewritten at curl_cffi's request wire): CDN_LATENCY_S per request (0.1 s, a guess at OF's
-    CDN through a proxy); bytes are seeded noise; only the Policy's expiry is checked; no Range, no CDN 5xx.
+    CDN through a proxy); bytes are seeded noise in a 1x1 JPEG; only the Policy's expiry is checked; no Range, no
+    CDN 5xx.
   - The Creators have no OF session: `_OfflineOF` (lib/relay.py) answers `client.http` with img_relay's per-Creator
     curl_cffi session (impersonate as of_client, synthetic auth_id / sess cookies and account headers), no proxy.
   - `img_api._IMG_CACHE_DIR` is re-pointed into the run's temp dir at arm (never the laptop's /tmp default).

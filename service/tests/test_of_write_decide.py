@@ -12,6 +12,9 @@ echoing that text may be a message OF created, so it is never sent again.
                                answer False.
   case_may_have_sent_table:    mark + 502 -> True; mark with no response -> True; mark + 400
                                -> False.
+  case_proxy_refused_table:    a ProxyError (curl 5/56/97: before the tunnel), terminal or
+                               `raise from` -> unreached, not sent; a refusal only in
+                               __context__, or the text without a ProxyError -> may have sent.
   case_carrier_retry_table:    the carrier create answered mark + 502 -> raised after one
                                create (never re-posted); mark + 400 -> waited and re-posted.
 
@@ -78,6 +81,55 @@ def case_may_have_sent_table():
     ]
     for e, want in rows:
         assert of_write._may_have_sent(e) is want, (repr(e), want)
+
+
+def _raised(make):
+    """The exception `make` raises, with Python's own __context__/__cause__."""
+    try:
+        make()
+    except Exception as e:  # noqa: BLE001 — the one we want
+        return e
+    raise AssertionError("no raise")
+
+
+def _refused():
+    raise curl.exceptions.ProxyError(_CONNECT_403)
+
+
+def _after_refusal():   # a refusal caught, then the retry's own write timed out
+    try:
+        _refused()
+    except curl.exceptions.ProxyError:
+        raise curl.exceptions.ReadTimeout("Operation timed out after 30000 ms")
+
+
+def _from_refusal():
+    try:
+        _refused()
+    except curl.exceptions.ProxyError as e:
+        raise RuntimeError("send failed") from e
+
+
+_CONNECT_403 = "Failed to perform, curl: (56) CONNECT tunnel failed, response 403"
+
+
+def case_proxy_refused_table():
+    """One classifier (of_client.proxy_refused) behind of_write's send once
+    (`_may_have_sent`).
+    Only a ProxyError, terminal or its `raise ... from` cause, is unreached;
+    an earlier refusal in `__context__` says nothing of the error that ended it."""
+    rows = [   # (exception, unreached)
+        (curl.exceptions.ProxyError(_CONNECT_403), True),
+        (_raised(_refused), True),
+        (curl.exceptions.ProxyError("curl: (5) Could not resolve proxy: px"), True),
+        (curl.exceptions.ProxyError("curl: (56) Proxy CONNECT aborted"), True),
+        (curl.exceptions.ProxyError("curl: (97) Can't complete SOCKS5 connection"), True),
+        (_raised(_after_refusal), False),
+        (_raised(_from_refusal), True),
+        (RuntimeError(_CONNECT_403), False),          # the text alone is not a ProxyError
+    ]
+    for e, unreached in rows:
+        assert of_write._may_have_sent(e) is (not unreached), (repr(e), repr(e.__context__))
 
 
 def _carrier(fails):

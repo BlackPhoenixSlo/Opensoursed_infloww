@@ -1,0 +1,176 @@
+"""service/of_pacing.py — background OnlyFans list walks: paced per Creator, one retry on
+OF's 429; and the relay's one "a person is on this Creator" signal (the hourly link prewarm
+and the vault collector read it).
+
+Why (measured on AE, 18 h to 2026-11-05): OF answered "Too many requests. Please allow 1
+seconds" 281 times, every one to a background walk (promotions 121, /users/list 148,
+payouts 11), none to a click. The walks paged as fast as OF answered.
+
+  walk(account_id, kind, run)
+      Runs `run()` as a background walk: inside it, every OFClient GET goes through
+      `paced` (OFClient.get_json calls it). No claim: every walker is single-flight by
+      its own lock or loop already (/tmp/wp2-inventory.md names each).
+  paced(account_id, call)          (sync, in the walk's worker thread)
+      Outside a walk: `call()` as before. Inside: the Creator's pacer, then `call()`; on
+      OF's 429 it waits what OF asks and sends the SAME request once more. A second 429
+      raises as before: a failed page, never an empty one.
+  retry_429(account_id, call)      (async)
+      The 429 retry alone, for a request a person's page sends itself (`X-Priority:
+      background` /users/list name fill, server.py): user-triggered, so never paced. The
+      wait is on the loop, outside the OF lane.
+  note_user(account_id) / last_user_at(account_id) / user_active(account_id)
+      A person's request for the Creator (server._lane_entered: a non-background lane entry
+      made from a real request; the Promotions page) / its monotonic time (vault_collect, via
+      relay_host.last_user_activity_at) / one in the last USER_WINDOW_S (10 s):
+      link_metrics.prewarm_all skips that Creator this pass and walks it the next; no waiting.
+      No walk holds the lock the Growth page's reads take (of_tracking_api._LOCKS) across an
+      OF call or a pause.
+
+The pacer is ONE per Creator, shared by every job: a background GET leaves PAGE_GAP_S
+(+ 0..JITTER_S) after the Creator's previous one, whichever walk sent it, so two jobs'
+1 s loops cannot burst together. Pages only: CDN, media and /img fetches never come here.
+User reads never do either: no walk, no pause, no retry. Stdlib only (a leaf: of_client
+imports it).
+
+Limits, as built (kept on purpose):
+  * Not fair between jobs: every waiter wakes and asks again, the first to ask gets the slot;
+    a long walk can delay another job's pages on the same Creator, never break them.
+  * Walks take no relay lane: they call the OF client directly in a worker thread
+    (link_metrics' asyncio.to_thread(walk, client, ...), promo_reactivate, the
+    roster / ledger / auto-exclude crawls), so server.py's "<= 2 background per Creator" lane
+    cap does not bound them, and a paced page sleeps IN that thread (time.sleep in `paced`).
+    Threads asleep at once on a 50-Creator box, counted from the code (inferred): link prewarm 1
+    (serial pass); Growth refresh / Details re-walk / list adds <= 1 per Creator (walk lock),
+    only Creators whose Growth page was opened; ledger supervisor 4 (refresh 4, then backfill 4);
+    roster crawl <= 8 (inside automation runs: run_slot.auto_runs(50) = 6 + 2 operator);
+    promo_reactivate shares those 8 slots; auto-exclude <= 1 per Creator with a big list due
+    (single-flight per Creator, no global cap). Worst case
+    ~1 + 50 + 4 + 8 + 50 = 113 of the 378-thread default executor (server._EXECUTOR_THREADS).
+  * Only reads are paced: OFClient.get_json is the one seam wrapped. Writes inside a walk
+    (link_metrics.sync_lists' add-to-list, audiences' batch list adds) are not, by the owner's
+    rule that writes are never throttled; sync_lists keeps its own 0.4 s gap between adds.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import random
+import re
+import threading
+import time
+from contextvars import ContextVar
+from dataclasses import dataclass
+from typing import Any, Awaitable, Callable
+
+log = logging.getLogger("of-relay.of_pacing")
+
+PAGE_GAP_S = 1.0          # OF: "Please allow 1 seconds"
+JITTER_S = 0.3
+RETRY_DEFAULT_S = 1.0     # a 429 whose text names no wait
+RETRY_MAX_S = 10.0
+USER_WINDOW_S = 10.0      # link_metrics.prewarm_all skips a Creator with a person's read this recent
+
+_ALLOW = re.compile(r"allow\s+(\d+(?:\.\d+)?)\s*sec", re.I)
+
+
+@dataclass
+class _Walk:
+    account_id: str
+    kind: str
+
+
+_WALK: ContextVar[_Walk | None] = ContextVar("of_pacing_walk", default=None)
+_lock = threading.Lock()
+_next_at: dict[str, float] = {}       # Creator -> monotonic time its next background GET may leave
+_last_user: dict[str, float] = {}     # Creator -> monotonic time of its last user request
+
+
+def note_user(account_id: Any) -> None:
+    if account_id:
+        _last_user[str(account_id)] = time.monotonic()
+
+
+def last_user_at(account_id: Any) -> float | None:
+    return _last_user.get(str(account_id))
+
+
+def user_active(account_id: Any, now: float | None = None) -> bool:
+    t = _last_user.get(str(account_id))
+    return t is not None and (time.monotonic() if now is None else now) - t < USER_WINDOW_S
+
+
+def parse_allow(text: str | None) -> float:
+    """OF's asked wait ("Please allow N seconds"), RETRY_DEFAULT_S when it names none,
+    never above RETRY_MAX_S."""
+    m = _ALLOW.search(text or "")
+    return min(max(float(m.group(1)), 0.0) if m else RETRY_DEFAULT_S, RETRY_MAX_S)
+
+
+def retry_after(exc: BaseException) -> float | None:
+    """The wait OF asks for when `exc` is its 429 (an OFAPIError's response, or
+    server._proxy's 502 whose detail carries upstream_status 429), else None."""
+    detail = getattr(exc, "detail", None)
+    if isinstance(detail, dict):
+        return parse_allow(str(detail.get("upstream_body") or "")) if detail.get("upstream_status") == 429 else None
+    resp = getattr(exc, "response", None)
+    if getattr(resp, "status_code", None) != 429:
+        return None
+    return parse_allow(getattr(resp, "text", "") or "")
+
+
+def _turn(account_id: str) -> float:
+    """0.0 when the Creator's next background GET may leave now (its departure is stamped:
+    the next one leaves PAGE_GAP_S + jitter after it), else the seconds to wait and ask again.
+    Stamped on departure, not booked ahead: a sender that woke late never lets the next one
+    leave right behind it."""
+    with _lock:
+        now = time.monotonic()
+        at = _next_at.get(account_id, 0.0)
+        if at > now:
+            return at - now
+        _next_at[account_id] = now + PAGE_GAP_S + random.uniform(0.0, JITTER_S)
+        return 0.0
+
+
+def _wait_turn(account_id: str) -> None:
+    while (d := _turn(account_id)) > 0:
+        time.sleep(d)
+
+
+def paced(account_id: Any, call: Callable[[], Any]) -> Any:
+    w = _WALK.get()
+    if w is None:
+        return call()
+    aid = str(account_id or w.account_id)
+    _wait_turn(aid)
+    try:
+        return call()
+    except Exception as e:
+        wait = retry_after(e)
+        if wait is None:
+            raise
+    # Outside the except: OF's second 429 is the page's own error, not one "during handling" the first.
+    log.info("bg_walk_429_retry account=%s kind=%s wait_s=%.1f", aid, w.kind, wait)
+    time.sleep(wait)
+    _wait_turn(aid)
+    return call()
+
+
+async def retry_429(account_id: Any, call: Callable[[], Awaitable[Any]]) -> Any:
+    try:
+        return await call()
+    except Exception as e:
+        wait = retry_after(e)
+        if wait is None:
+            raise
+    log.info("bg_request_429_retry account=%s wait_s=%.1f", account_id, wait)
+    await asyncio.sleep(wait)
+    return await call()
+
+
+async def walk(account_id: Any, kind: str, run: Callable[[], Awaitable[Any]]) -> Any:
+    tok = _WALK.set(_Walk(str(account_id), kind))
+    try:
+        return await run()
+    finally:
+        _WALK.reset(tok)   # the caller's context never sees the walk

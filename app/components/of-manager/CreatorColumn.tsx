@@ -332,7 +332,8 @@ function CreatorRow({ account, active, unread, onPick, collapsed = false, prefet
   const countQ = useQuery<number>({
     queryKey: ["of-notif-count", account.id],
     queryFn: account.id && online
-      ? async () => Number((await relay.get<{ all?: number }>("/api/of/v2/users/notifications/count", { accountId: account.id }))?.all) || 0
+      ? async ({ signal }) => Number((await relay.get<{ all?: number }>(
+        "/api/of/v2/users/notifications/count", { accountId: account.id, priority: "background" }, signal))?.all) || 0
       : skipToken,
     staleTime: 60_000,
     retry: false,

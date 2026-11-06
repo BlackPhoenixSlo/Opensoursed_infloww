@@ -14,6 +14,8 @@ redirected secrets and sessions, CHATTERLY_TEST_MODE) plus loopback-only hooks.
        Harness-side faults honoured here (lib/faults.py, never service/):
        `loop-cpu-polls-dropped` answers every 4th poll 503; `pool-wait-floor-80ms`
        records every pool wait as at least 80 ms (recording only, nothing sleeps).
+  POST /__slop/coverage-save  under `slop/run --map` (coverage.py runs the relay) write the
+       data collected so far (lib/procmon.py every 5 s, cli once before teardown); 404 otherwise.
   POST /__slop/telemetry-flush  emit service/db/write_telemetry's JSON line now
        (reason "flush"; its shutdown line, early), so the counts are in relay.log.
   POST /__slop/browserbase  {api, chunk_url_tpl, job_window_s?}  points the served Browserbase
@@ -665,10 +667,11 @@ def _wire(app) -> None:
     import events
     import events_persist
     import event_transcoder
-    import faults
     import server
 
-    faults.apply(os.environ.get("SLOP_FAULT") or None)
+    if os.environ.get("SLOP_FAULT"):  # only a fault run loads lib/faults.py (and every *_faults.py): under
+        import faults                  # --map a no-fault relay must not list them as reached (README)
+        faults.apply(os.environ["SLOP_FAULT"])
     # The hooks are not product requests: the real pump hands a frame to
     # _broadcast_event with no HTTP request around it, so no `actions` audit row
     # (one write transaction per injected frame) either.
@@ -816,6 +819,20 @@ def _wire(app) -> None:
             raise HTTPException(status_code=503, detail="slop fault loop-cpu-polls-dropped")
         return {"thread_s": time.thread_time(), "mono_s": time.monotonic(), "db": db(), "sched": _schedstat()}
 
+    async def coverage_save(request: Request) -> dict:
+        """`slop/run --map` (lib/stack.py runs the relay under coverage.py): write what ran so far, so a
+        relay the scenario SIGKILLs (crash_relay, kill_group) still leaves its data. 404 otherwise."""
+        _loopback(request)
+        try:
+            import coverage
+            cov = coverage.Coverage.current()
+        except ImportError:
+            cov = None
+        if cov is None:
+            raise HTTPException(status_code=404, detail="relay not under coverage (slop/run --map)")
+        cov.save()
+        return {"saved": True}
+
     import asyncio
 
     import automation_executor as ax
@@ -902,6 +919,7 @@ def _wire(app) -> None:
     app.add_api_route("/__slop/automation-tick", automation_tick, methods=["POST"])
     app.add_api_route("/__slop/fake/calls", fake_calls, methods=["GET"])
     app.add_api_route("/__slop/loop-cpu", loop_cpu, methods=["GET"])
+    app.add_api_route("/__slop/coverage-save", coverage_save, methods=["POST"])
     app.add_api_route("/__slop/profile", profile_stage, methods=["POST"])
     app.add_api_route("/__slop/profile", profile_dump, methods=["GET"])
     app.add_api_route("/__slop/of-ws-frame", of_ws_frame, methods=["POST"])

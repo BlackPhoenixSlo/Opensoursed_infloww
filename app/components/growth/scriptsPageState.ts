@@ -23,6 +23,7 @@
  */
 
 import type { SavedReply } from "@/lib/relay";
+import { ofPlainText } from "@/lib/ofRichText";
 
 export type View = "tags" | "sequences" | "manage";
 export type EntryKind = "tag" | "sequence";
@@ -263,7 +264,7 @@ export function sequenceDates(rows: readonly SavedReply[]): { created?: string; 
 export function matchesSearch(r: SavedReply, q: string): boolean {
   const needle = q.trim().toLowerCase();
   if (!needle) return true;
-  return [r.title, r.text, r.notes, ...(r.tags ?? [])].some((v) => (v ?? "").toLowerCase().includes(needle));
+  return [r.title, ofPlainText(r.text), r.notes, ...(r.tags ?? [])].some((v) => (v ?? "").toLowerCase().includes(needle));
 }
 
 export interface ScriptListRow {

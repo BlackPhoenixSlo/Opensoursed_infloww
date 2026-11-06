@@ -362,7 +362,9 @@ export function useMoneyRailFeed({
   const listQueries = useQueries({
     queries: queryDefs.map(({ aid, type }) => ({
       queryKey: ["notif-list", aid, type] as const,
-      queryFn: async () => parseList(await relay.get(notifPath(type), { accountId: aid })),
+      // A feed, not a click: background (app/lib/relaySchedule.ts), dropped when the rail unmounts.
+      queryFn: async ({ signal }) =>
+        parseList(await relay.get(notifPath(type), { accountId: aid, priority: "background" }, signal)),
       enabled: hydrated,
       // OF CALL BUDGET (header): SSE keeps these live; OF is
       // re-read on return to a hidden tab only past LIST_STALE_MS.

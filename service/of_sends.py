@@ -654,7 +654,7 @@ class SendsMixin:
         '2026-06-01T18:00:00+00:00'. Returns the queue entry:
         `{id, date, isReady, isDone, total, pending, canUnsend, ...}`."""
         body = {
-            "text": text,
+            "text": of_text(text),
             "lockedText": locked_text,
             "mediaFiles": media_files or [],
             "price": price,
@@ -730,7 +730,7 @@ class SendsMixin:
         is subtracted from `userIds` here (OF has no per-user exclude field)."""
         excl_ids = {int(u) for u in (excluded_users or [])}
         body: dict = {
-            "text": text,
+            "text": of_text(text),
             "lockedText": locked_text,
             "mediaFiles": media_files or [],
             "price": price,
@@ -837,7 +837,7 @@ class SendsMixin:
             merged_filters["online"] = 1
         excl_ids = {int(u) for u in (excluded_users or [])}
         body: dict = {
-            "text": text,
+            "text": of_text(text),
             "lockedText": locked_text,
             "mediaFiles": media_files or [],
             "price": price,
@@ -1389,3 +1389,4 @@ from of_client import (  # noqa: E402
     API_BASE, OFAPIError, _CoTagRetry, _guard_outbound, _wrap_text_as_p,
     _write_tag_block, log_of,
 )
+from of_rich_text import of_text  # noqa: E402

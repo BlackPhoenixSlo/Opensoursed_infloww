@@ -198,7 +198,15 @@ _CLAIMERS_FAILED: dict[tuple[str, int], float] = {}
 # refetch) reuses it instead of re-reading every OF page; one at a time per account.
 _COMPUTED_TTL = 60.0
 _COMPUTED: dict[str, tuple[float, "_Computed"]] = {}
-_LOCKS: dict[str, asyncio.Lock] = {}
+_LOCKS: dict[str, asyncio.Lock] = {}   # _compute's; a walk takes it only to merge what it read
+# One background OF walk per account at a time (prewarm here; link_metrics' refreshes, re-walks
+# and list adds). The Growth routes never take it: no paced page or sleep holds _LOCKS.
+_WALK_LOCKS: dict[str, asyncio.Lock] = {}
+_CLAIMERS_WALKING: set[tuple[str, int]] = set()   # links a prewarm is re-reading now
+
+
+def walk_lock(account_id: str) -> asyncio.Lock:
+    return _WALK_LOCKS.setdefault(account_id, asyncio.Lock())
 
 
 def _parse_of_time(v: Any) -> datetime | None:
@@ -246,14 +254,15 @@ def _fetch_claimers(client, campaign_id: int) -> list[dict]:
 def _claimers_cached(client, account_id: str, c: dict) -> list[dict]:
     """The link's fans from cache, refetched past the TTL or as soon as OF's
     countSubscribers moves. Zero subscribers: no fans, no OF call. A recent OF
-    failure re-raises without calling OF again."""
+    failure re-raises without calling OF again. A link a prewarm is re-reading
+    right now: its cached fans (the walk's merge drops the memo after)."""
     cid = safe_int(c.get("id"))
     subs = safe_int(c.get("countSubscribers"))
     if subs <= 0:
         return []
     key = (account_id, cid)
     hit = _CLAIMERS_CACHE.get(key)
-    if hit and hit[0] == subs and time.monotonic() - hit[1] < _CLAIMERS_TTL:
+    if hit and (key in _CLAIMERS_WALKING or (hit[0] == subs and time.monotonic() - hit[1] < _CLAIMERS_TTL)):
         return hit[2]
     failed_at = _CLAIMERS_FAILED.get(key)
     if failed_at is not None and time.monotonic() - failed_at < _CLAIMERS_FAIL_TTL:
@@ -395,7 +404,8 @@ async def _compute(account_id: str) -> _Computed | None:
 
 async def _sync_lists(account_id: str, client, campaigns: list[dict]) -> None:
     """The Edit dialog's List: OF's add-to-list again for a link whose countSubscribers grew past the last add
-    (link_metrics.sync_lists; under the account's lock, paced, an OF error backs the account off)."""
+    (link_metrics.sync_lists; under _LOCKS from _compute, the walk lock from prewarm; paced, an OF error backs the
+    account off)."""
     from link_metrics import sync_lists   # link_metrics imports this module
     try:
         await sync_lists(account_id, "campaign", client,
@@ -404,16 +414,36 @@ async def _sync_lists(account_id: str, client, campaigns: list[dict]) -> None:
         log.info("of-tracking list add failed account=%s", account_id, exc_info=True)
 
 
+def _read_moved(client, account_id: str, moved: list[dict]) -> dict[tuple[str, int], tuple[int, list[dict] | None]]:
+    """prewarm's claimer re-reads, holding no lock: {key: (countSubscribers, fans)}, fans None where
+    OF failed. Skipped as `_claimers_cached` skips them: no createdAt, no subscribers, failed recently."""
+    out: dict[tuple[str, int], tuple[int, list[dict] | None]] = {}
+    for c in moved:
+        cid, subs = safe_int(c.get("id")), safe_int(c.get("countSubscribers"))
+        key = (account_id, cid)
+        failed_at = _CLAIMERS_FAILED.get(key)
+        if (not cid or subs <= 0 or _parse_of_time(c.get("createdAt")) is None
+                or (failed_at is not None and time.monotonic() - failed_at < _CLAIMERS_FAIL_TTL)):
+            continue
+        try:
+            out[key] = (subs, _fetch_claimers(client, cid))
+        except Exception:
+            log.info("of-tracking claimers failed account=%s id=%s", account_id, cid, exc_info=True)
+            out[key] = (subs, None)
+    return out
+
+
 async def prewarm(account_id: str) -> bool:
-    """link_metrics.prewarm_all's tracking-link pass, under the account's lock:
-    OF's /campaigns read, the claimers re-read only for a link whose
-    countSubscribers moved since its cached read, then the List adds. A link
-    whose count held keeps its claimers, renewed (an expired _CLAIMERS_TTL alone
-    costs no OF call here); one never read since boot waits for its page. A link
-    OF failed on within _CLAIMERS_FAIL_TTL is not retried. False when OF's
-    /campaigns read failed."""
-    lock = _LOCKS.setdefault(account_id, asyncio.Lock())
-    async with lock:
+    """link_metrics.prewarm_all's tracking-link pass, one walk per account
+    (walk_lock): OF's /campaigns read, the claimers re-read only for a link
+    whose countSubscribers moved since its cached read, then the List adds. A
+    link whose count held keeps its claimers, renewed (an expired _CLAIMERS_TTL
+    alone costs no OF call here); one never read since boot waits for its page.
+    A link OF failed on within _CLAIMERS_FAIL_TTL is not retried. No OF read or
+    pause holds _LOCKS: the Growth routes keep answering from the cache (a link
+    being re-read serves its cached fans), and the re-read fans are merged
+    under _LOCKS at the end. False when OF's /campaigns read failed."""
+    async with walk_lock(account_id):
         client = await asyncio.to_thread(ax._make_client, account_id)
         campaigns = await asyncio.to_thread(_read_all, client)
         if campaigns is None:
@@ -429,7 +459,22 @@ async def prewarm(account_id: str) -> bool:
                 _CLAIMERS_CACHE[key] = (hit[0], now, hit[2])
             else:
                 moved.append(c)
-        await asyncio.to_thread(_gather, client, account_id, moved)
+        keys = {(account_id, safe_int(c.get("id"))) for c in moved}
+        _CLAIMERS_WALKING.update(keys)
+        try:
+            got = await asyncio.to_thread(_read_moved, client, account_id, moved)
+            async with _LOCKS.setdefault(account_id, asyncio.Lock()):
+                now = time.monotonic()
+                for key, (subs, fans) in got.items():
+                    if fans is None:
+                        _CLAIMERS_FAILED[key] = now
+                    else:
+                        _CLAIMERS_FAILED.pop(key, None)
+                        _CLAIMERS_CACHE[key] = (subs, now, fans)
+                if got:
+                    _COMPUTED.pop(account_id, None)
+        finally:
+            _CLAIMERS_WALKING.difference_update(keys)
         await _sync_lists(account_id, client, campaigns)
         return True
 

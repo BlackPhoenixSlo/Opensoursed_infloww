@@ -1,0 +1,65 @@
+#!/bin/bash
+# One-time root install of the slop harness's packet-loss helper (README "Wire mode: packet loss").
+#   sudo slop/install-netloss              install / update (re-run after slop/lib/netloss_helper.sh changes)
+#   sudo slop/install-netloss --uninstall  shaping off, then both files removed
+#   slop/install-netloss --print           what it would write (no root)
+# Installs exactly two files:
+#   /usr/local/libexec/slop-netloss       a copy of slop/lib/netloss_helper.sh, root:wheel 0755
+#   /etc/sudoers.d/slop-netloss           "<you> ALL=(root) NOPASSWD: /usr/local/libexec/slop-netloss", root:wheel
+#                                         0440, checked with visudo -cf before it is moved in
+# The NOPASSWD grant is for that one root-owned path, never a file in the repo (a user-writable file run as root
+# is root for anyone who can edit it). Nothing else on the machine changes until a run calls the helper's `on`.
+set -euo pipefail
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+umask 022
+
+SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/netloss_helper.sh"
+DEST=/usr/local/libexec/slop-netloss
+SUDOERS=/etc/sudoers.d/slop-netloss
+USR="${SUDO_USER:-}"
+
+die() { echo "install-netloss: $*" >&2; exit 1; }
+
+case "${1:-}" in
+  --print)
+    echo "would install $SRC -> $DEST (root:wheel 0755)"
+    echo "would write $SUDOERS (root:wheel 0440):"
+    echo "  ${USR:-$(id -un)} ALL=(root) NOPASSWD: $DEST"
+    exit 0 ;;
+  --uninstall)
+    [ "$(id -u)" = 0 ] || die "run with sudo: sudo $0 --uninstall"
+    [ ! -x "$DEST" ] || "$DEST" off || true
+    rm -f "$SUDOERS" "$DEST"
+    rmdir /usr/local/libexec 2>/dev/null || true
+    echo "install-netloss: removed $SUDOERS and $DEST (shaping off)"
+    exit 0 ;;
+  "") ;;
+  *) die "usage: sudo $0 [--uninstall] | $0 --print" ;;
+esac
+
+[ "$(id -u)" = 0 ] || die "run with sudo: sudo $0"
+[ -n "$USR" ] && [ "$USR" != root ] || die "run through sudo from your own account (SUDO_USER is empty or root)"
+case "$USR" in *[!a-zA-Z0-9._-]*) die "unexpected user name '$USR'";; esac
+[ -f "$SRC" ] || die "no $SRC"
+grep -Eq '^[#@]includedir[[:space:]]+(/private)?/etc/sudoers\.d' /etc/sudoers \
+  || die "/etc/sudoers does not include /etc/sudoers.d; add '#includedir /private/etc/sudoers.d' with visudo first"
+
+install -d -o root -g wheel -m 0755 /usr/local/libexec
+# Every directory above the helper must be root-owned and writable by root alone, else its owner could swap the file.
+d=/usr/local/libexec
+while [ "$d" != / ]; do
+  read -r mode owner < <(stat -f '%Lp %Su' "$d")
+  [ "$owner" = root ] || die "$d is owned by $owner, not root: the helper would not be safe there"
+  [ $((8#$mode & 8#022)) = 0 ] || die "$d is group/other writable ($mode): the helper would not be safe there"
+  d=$(dirname "$d")
+done
+
+tmp=$(mktemp /tmp/slop-netloss.XXXXXX)
+trap 'rm -f "$tmp"' EXIT
+install -o root -g wheel -m 0755 "$SRC" "$DEST"
+printf '%s ALL=(root) NOPASSWD: %s\n' "$USR" "$DEST" > "$tmp"
+visudo -cf "$tmp" >/dev/null || die "visudo rejected the sudoers line; nothing written to $SUDOERS"
+install -o root -g wheel -m 0440 "$tmp" "$SUDOERS"
+visudo -c >/dev/null || { rm -f "$SUDOERS"; die "sudoers failed its check with $SUDOERS in place; removed it"; }
+echo "install-netloss: $DEST (root:wheel 0755) and $SUDOERS ($USR, NOPASSWD for that path only)"
+sudo -u "$USR" sudo -n "$DEST" status

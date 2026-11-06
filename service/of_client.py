@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import tempfile
 import threading
 import time
@@ -31,9 +32,11 @@ from curl_cffi.const import CurlECode
 
 import accounts as account_registry
 import live_rev
+import of_pacing
 import proxy_health
 import proxies as proxy_registry
 from of_origin import OF_API_ORIGIN
+from of_rich_text import is_of_html, of_plain, sanitize_of_html
 from of_signer import sign
 
 # Dedicated logger so proxy/upstream errors are filterable from the rest
@@ -59,16 +62,16 @@ INTERACTIVE_READ: ContextVar[bool] = ContextVar("of_interactive_read", default=F
 
 class RetryPolicy(NamedTuple):
     """How `_proxy_retry` treats a refused proxy: `tries` attempts with pauses
-    `pause_s` doubling, and whether its final failure `counts` toward
+    equal-jittered (half to all of `pause_s` doubling), and whether its final failure `counts` toward
     proxy_health's DOWN_AFTER."""
     tries: int
     pause_s: float
     counts: bool
 
 
-# Everything by default: 5 tries, 0.4-3.2 s pauses (~6 s). Its final failure counts.
+# Everything by default: 5 tries, pauses jittered in [b/2, b) for b = 0.4-3.2 s (3-6 s). Its final failure counts.
 FULL_RETRY = RetryPolicy(5, 0.4, True)
-# A read someone waits on: 2 tries, one 0.2 s pause. Its failure does NOT count
+# A read someone waits on: 2 tries, one 0.1-0.2 s pause. Its failure does NOT count
 # toward marking the proxy bad: it gives up inside ~1 s, so three of them land
 # within any of prod's 0-32 s CONNECT-403 blips (docs/adr/0030).
 INTERACTIVE_RETRY = RetryPolicy(2, 0.2, False)
@@ -84,19 +87,41 @@ class Raise(NamedTuple):
     count_health: bool
 
 
+def proxy_refused(exc: BaseException) -> bool:
+    """The proxy refused before the tunnel opened (curl_cffi raises ProxyError
+    only then: curl 5 resolve-proxy, 97 proxy/SOCKS handshake, 56 on CONNECT,
+    e.g. IPRoyal's 403 once `_proxy_retry` gave up), so the call never got to OF.
+    Read off `exc` and its `raise ... from` causes only, never `__context__`:
+    an error merely raised while handling a refusal is about its own call,
+    which may have reached OF (send once)."""
+    seen: set[int] = set()
+    e: BaseException | None = exc
+    while e is not None and id(e) not in seen:
+        seen.add(id(e))
+        if isinstance(e, requests.exceptions.ProxyError):
+            return True
+        e = e.__cause__
+    return False
+
+
 # The three failures `_proxy_retry` tells apart (see retry_step).
 ExcKind = Literal["proxy", "couldnt_connect", "connection"]
 
 
-def retry_step(policy: RetryPolicy, attempt: int, exc_kind: ExcKind, proxied: bool) -> Retry | Raise:
+def retry_step(policy: RetryPolicy, attempt: int, exc_kind: ExcKind, proxied: bool,
+               rng: Callable[[], float] | None = None) -> Retry | Raise:
     """`_proxy_retry`'s decision after 0-based `attempt` failed. `exc_kind`:
-    "proxy" (ProxyError: retried with a doubling pause until the last try, whose
-    failure counts under a `counts` policy), "couldnt_connect" (curl 7: never
+    "proxy" (ProxyError: retried until the last try, whose failure counts under
+    a `counts` policy; the pause is equal jitter: half the doubling ceiling
+    `b = pause_s * 2**attempt` plus `rng()` (default `random.random`, [0, 1))
+    times the other half, so accounts behind one refusing proxy do not retry in
+    lockstep, yet a burst cannot burn all tries at once), "couldnt_connect" (curl 7: never
     retried; counts only on a proxied client under a `counts` policy) or
     "connection" (any other ConnectionError: raised, never counted)."""
     if exc_kind == "proxy":
         if attempt < policy.tries - 1:
-            return Retry(policy.pause_s * 2 ** attempt)
+            b = policy.pause_s * 2 ** attempt
+            return Retry(b / 2 + (rng or random.random)() * b / 2)
         return Raise(policy.counts)
     if exc_kind == "couldnt_connect":
         return Raise(bool(policy.counts and proxied))
@@ -141,9 +166,21 @@ def _cookie_domain(domain: str | None) -> str:
 
 
 def _guard_outbound(text):
-    """`text` as the guard leaves it (masked), or the guard's exception (blocked)."""
+    """`text` as the guard leaves it (masked), or the guard's exception (blocked).
+
+    OF markup (a formatted script) is sanitized first and the guard reads its
+    plain text once, so a banned word can neither hide behind tags nor mask a
+    class name. Unmasked: the sanitized markup goes. Masked: the masked plain
+    text goes (its formatting dropped; masking inside the tags is not worth it)."""
     guard = OUTBOUND_TEXT_GUARD.get()
-    return guard(text) if guard is not None else text
+    if guard is None:
+        return text
+    if not (isinstance(text, str) and is_of_html(text)):
+        return guard(text)
+    markup = sanitize_of_html(text)
+    plain = of_plain(markup)
+    guarded = guard(plain)
+    return markup if guarded == plain else guarded
 
 
 def _short_path(url: str) -> str:
@@ -283,9 +320,10 @@ def _wrap_text_as_p(text: str) -> str:
     if not text:
         return text
     stripped = text.strip()
-    # Already HTML? Don't double-wrap.
-    if stripped.startswith("<p") or stripped.startswith("<P"):
-        return text
+    # Already HTML (OF's rich text: a picked formatted script)? Don't
+    # double-wrap; keep only OF's own tags and classes (of_rich_text).
+    if is_of_html(stripped):
+        return sanitize_of_html(text)
     # Internal newlines → <br>, then wrap the whole thing.
     escaped = (
         stripped
@@ -706,11 +744,28 @@ class _Transport:
         except Exception:
             return "?"
 
+    def _attempt(self, fn):
+        """One try of `fn`, counted in proxy_health's per-label telemetry: in flight
+        while it runs (a streaming get only until its headers arrive), then refused
+        (ProxyError), ok (an answer) or left out (any other failure)."""
+        label = self.proxy_label
+        proxy_health.attempt_start(label)
+        refused = None
+        try:
+            r = fn()
+            refused = False
+            return r
+        except requests.exceptions.ProxyError:
+            refused = True
+            raise
+        finally:
+            proxy_health.attempt_end(label, refused)
+
     def _proxy_retry(self, fn, *, what: str = "", policy: RetryPolicy = FULL_RETRY):
         """Run a raw curl_cffi call `fn`, retrying the transient datacenter
-        CONNECT 403 (IPRoyal DC) as `policy` says: its tries, and a pause that
-        doubles between attempts. FULL_RETRY (the default) pauses 0.4, 0.8,
-        1.6, 3.2 s (~6 s over 5 tries), as these outages can outlast a few
+        CONNECT 403 (IPRoyal DC) as `policy` says: its tries, and an equal-jittered
+        pause whose ceiling doubles between attempts. FULL_RETRY (the default)
+        pauses half to all of 0.4, 0.8, 1.6, 3.2 s (3-6 s over 5 tries), as these outages can outlast a few
         hundred ms; INTERACTIVE_RETRY gives up after 2 tries (~1 s) for a
         read someone waits on. Retries run against the SAME self.http
         session — no proxy lookup, no rebuild, no rotation — so OF still sees
@@ -724,11 +779,13 @@ class _Transport:
         connect" (7) on a proxied client (curl_cffi raises it as
         ConnectionError, not ProxyError; with a proxy set the only host curl
         connects to is the proxy, so it refused or is gone; not retried: a
-        refused port answers at once). Only under a policy that `counts`."""
+        refused port answers at once). Only under a policy that `counts`.
+        Every attempt (`_attempt`) also feeds proxy_health's refusal window and
+        inflight counters, whatever the policy."""
         tries = policy.tries
         for attempt in range(tries):
             try:
-                return fn()
+                return self._attempt(fn)
             # One clause for both: ProxyError is not a ConnectionError in
             # curl_cffi (siblings under RequestException), so the isinstance
             # below dispatches exactly as two ordered except clauses would.
@@ -754,6 +811,10 @@ class _Transport:
                 raise
 
     def get_json(self, path_or_url: str, **kw) -> Any:
+        # Inside a background walk: the Creator's pacer and OF's 429 retried once (of_pacing).
+        return of_pacing.paced(getattr(self, "account_id", None), lambda: self._get_json(path_or_url, **kw))
+
+    def _get_json(self, path_or_url: str, **kw) -> Any:
         r = self.get(path_or_url, **kw)
         if not r.ok:
             raise OFAPIError(

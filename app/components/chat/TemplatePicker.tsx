@@ -33,6 +33,8 @@ import { useInflowwPalette } from "./InflowwPalette";
 import { PILL, PILL_ICON, PILL_LABEL } from "./ComposerToolbar";
 import { fmtPrice } from "@/lib/format";
 import { htmlToText } from "@/lib/messageFormat";
+import { isOfHtml } from "@/lib/ofRichText";
+import { OfRichText } from "./OfRichText";
 
 /** Unified shape so Composer doesn't care where the row came from. */
 export interface PickedTemplate {
@@ -90,7 +92,8 @@ function fromOF(t: OFMessageTemplate): PickedTemplate {
 export function fromLocal(r: SavedReply): PickedTemplate {
   return {
     source: "local",
-    text: r.text,
+    // A formatted script's markup stays in `displayText` (the composer sends it while the text is untouched).
+    text: isOfHtml(r.text) ? htmlToText(r.text) : r.text,
     displayText: r.text,
     mediaCount: r.media?.length ?? 0,
     price: r.price ?? 0,
@@ -397,7 +400,7 @@ export function TemplatePicker({
                     </span>
                   )}
                 </div>
-                <div className="text-sm md:text-xs text-fg line-clamp-2">{t.text}</div>
+                <div className="text-sm md:text-xs text-fg line-clamp-2"><OfRichText raw={t.displayText} /></div>
               </button>
             ))}
           </div>

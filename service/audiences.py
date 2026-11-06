@@ -25,6 +25,7 @@ from db.models import (
     Blacklist, Fan, FunnelResponder, FunnelState, List as ListModel, ListMember,
     MassRun, Message, NudgeState, ScheduledJob, SubscriberSnapshot, Transaction,
 )
+import of_pacing
 import of_paging
 from fans import _NON_REVENUE_STATUSES
 
@@ -967,9 +968,9 @@ class _ResumableLists:
         for i in range(AE_PAGE_TRIES):
             try:
                 page = self._c.list_users_in(list_id, **kw)
-            except Exception:  # noqa: BLE001 — retried, the last one raises
-                if i == AE_PAGE_TRIES - 1:
-                    raise
+            except Exception as e:  # noqa: BLE001 — retried, the last one raises
+                if i == AE_PAGE_TRIES - 1 or of_pacing.retry_after(e) is not None:
+                    raise   # OF's 429: of_pacing already sent it twice (a failed page)
                 time.sleep(1.0 + i)
                 continue
             self.pages += 1
@@ -1056,7 +1057,9 @@ async def _refresh_auto_exclude(account_id: str, client) -> aed.RefreshStats | N
 
 async def _run_auto_exclude_refresh(account_id: str, client) -> None:
     try:
-        await _refresh_auto_exclude(account_id, client)
+        # A background walk (of_pacing): the crawl at the shared per-Creator pace, OF's 429
+        # retried once. Single-flight: _ae_refreshes. Lock holds never pace: GETs only.
+        await of_pacing.walk(account_id, "auto_exclude", lambda: _refresh_auto_exclude(account_id, client))
     except Exception:  # noqa: BLE001 — the next due send schedules another
         log.warning("auto_exclude refresh failed account=%s", account_id, exc_info=True)
 

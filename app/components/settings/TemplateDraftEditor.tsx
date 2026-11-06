@@ -12,7 +12,7 @@
  * hosts share.
  */
 
-import { useState, type Dispatch, type SetStateAction } from "react";
+import { useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { Library } from "lucide-react";
 
 import { VaultPicker } from "@/components/chat/VaultPicker";
@@ -28,6 +28,9 @@ import { priceNote } from "@/lib/sendGuards";
 import { SensitiveWordWarning } from "@/components/chat/SensitiveWordWarning";
 import { cn } from "@/lib/utils";
 import { ScriptTagsField } from "@/components/settings/ScriptTagsField";
+import { OfRichTextEditor, type OfRichTextEditorHandle } from "@/components/ui/OfRichTextEditor";
+import { isOfHtml, ofPlainText } from "@/lib/ofRichText";
+import { plainLength } from "@/lib/ofRichTextEditor";
 
 // Moved out; re-exported only for growth/ScriptsPage (off-limits to this change), which imports all three from here.
 export { extractError } from "@/components/settings/extractError";
@@ -125,13 +128,15 @@ export function TemplateDraftEditor({
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [gifPickerOpen, setGifPickerOpen] = useState(false);
+  /** Scripts' Text is OF's rich text editor (bold, italic, colour, size); its value is markup only when formatted. */
+  const richRef = useRef<OfRichTextEditorHandle>(null);
   const priceNum = Number(draft.price);
   const belowMin = script && priceNote(priceNum) !== null;
   // Growth > Sensitive words: Infloww's script editor shows the hits under the
   // text and disables Save until it is clean.
-  const sensitiveHits = useSensitiveHits(draft.text, accountId);
+  const sensitiveHits = useSensitiveHits(isOfHtml(draft.text) ? ofPlainText(draft.text) : draft.text, accountId);
   const saveDisabled =
-    !draft.text.trim() || saving || sensitiveHits.length > 0 ||
+    !draft.text.trim() || saving || sensitiveHits.length > 0 || (script && plainLength(draft.text) > SCRIPT_TEXT_MAX) ||
     (script && (!draft.title.trim() || belowMin || (!!draft.scriptId.trim() && !/^\d+$/.test(draft.scriptStep.trim()))));
   const saveButton = (
     <Button size="sm" onClick={onSave} disabled={saveDisabled}>
@@ -319,19 +324,30 @@ export function TemplateDraftEditor({
 
         <div className="space-y-1.5">
           {script && (
-            <label htmlFor="reply-textarea" className={FIELD_LABEL}>
+            <label id="reply-text-label" onClick={() => richRef.current?.focus()} className={FIELD_LABEL}>
               Text<span aria-hidden className="text-err ml-0.5">*</span>
             </label>
           )}
-          <Textarea
-            id={draft.kind === "reply" ? "reply-textarea" : "welcome-textarea"}
-            value={draft.text}
-            onChange={(e) => setDraft((d) => d && { ...d, text: e.target.value })}
-            required={script}
-            maxLength={script ? SCRIPT_TEXT_MAX : undefined}
-            placeholder={script ? "Enter your message..." : "Template text"}
-            className="min-h-24 text-sm font-sans"
-          />
+          {script ? (
+            <OfRichTextEditor
+              ref={richRef}
+              id="reply-textarea"
+              aria-labelledby="reply-text-label"
+              value={draft.text}
+              onChange={(text) => setDraft((d) => d && { ...d, text })}
+              required
+              maxLength={SCRIPT_TEXT_MAX}
+              placeholder="Enter your message..."
+            />
+          ) : (
+            <Textarea
+              id={draft.kind === "reply" ? "reply-textarea" : "welcome-textarea"}
+              value={draft.text}
+              onChange={(e) => setDraft((d) => d && { ...d, text: e.target.value })}
+              placeholder="Template text"
+              className="min-h-24 text-sm font-sans"
+            />
+          )}
           <SensitiveWordWarning hits={sensitiveHits} />
           {/* Editor toolbar — emoji is universal; tag-creators only for
            *  local replies since OF welcome templates don't carry
@@ -339,6 +355,7 @@ export function TemplateDraftEditor({
           <div className="flex items-center gap-1.5 flex-wrap">
             <EmojiQuickRow
               onInsert={(em) => {
+                if (richRef.current) return richRef.current.insert(em);
                 const ta = document.getElementById(
                   draft.kind === "reply" ? "reply-textarea" : "welcome-textarea",
                 ) as HTMLTextAreaElement | null;
@@ -354,6 +371,7 @@ export function TemplateDraftEditor({
             <EmojiPickerButton
               align="left"
               onInsert={(em) => {
+                if (richRef.current) return richRef.current.insert(em);
                 const ta = document.getElementById(
                   draft.kind === "reply" ? "reply-textarea" : "welcome-textarea",
                 ) as HTMLTextAreaElement | null;

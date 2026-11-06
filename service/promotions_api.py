@@ -29,6 +29,7 @@ from auth import assert_account_owned
 from db.engine import get_session
 from db.models import PromoCampaign
 from isotime import iso_plain
+import of_pacing
 from of_mirror import delete_mirrored, merge_mirrors
 from of_promos import (extract_created_promo, fetch_of_promos, normalise_of_promo,
                        promo_type_body, promo_type_store)
@@ -41,6 +42,7 @@ router = APIRouter()
 @router.get("/admin/promotions")
 async def list_promotions(account_id: str = Query(...)) -> dict[str, Any]:
     assert_account_owned(account_id)
+    of_pacing.note_user(account_id)   # a person on the Promotions page: the hourly prewarm defers the account
     async with get_session() as s:
         mirrors = (await s.execute(
             select(PromoCampaign).where(PromoCampaign.account_id == account_id)

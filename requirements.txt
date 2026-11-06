@@ -50,3 +50,5 @@ playwright==1.63.0
 http-ece==1.2.1
 py-vapid==1.9.6
 cryptography==50.0.2
+# slop/run --map only (slop/README.md "Which scenarios to run"): the relay under coverage.py.
+coverage==7.17.2
