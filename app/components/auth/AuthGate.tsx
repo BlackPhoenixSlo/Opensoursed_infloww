@@ -26,9 +26,11 @@
  *
  * While the probes run, a browser that holds a session cookie (`signedIn`, read by the root layout on the server)
  * sees the route's BootSkeleton, from the server's HTML on, instead of a blank page; one without sees nothing until
- * the probes answer, so a signed-out visitor never sees the app's frame flash before the landing.
+ * the probes answer, so a signed-out visitor never sees the app's frame flash before the landing. Such a browser's
+ * Dashboard or Messages Pro screen bundle starts with the probes, and the Dashboard's Applied settings read.
  */
 
+import { useEffect } from "react";
 import { usePathname } from "next/navigation";
 
 import { useUser } from "@/contexts/UserContext";
@@ -40,6 +42,9 @@ import ShareReport from "@/components/growth/ShareReport";
 import BootSkeleton from "@/components/shell/BootSkeleton";
 import { EmptyState } from "@/components/ui/infloww";
 import type { AuthBanner } from "@/contexts/userSessionReducer";
+import { prefetchAppliedSettings } from "@/lib/appliedSettings";
+import { prefetchScreenBundle } from "@/lib/relay";
+import { entryScreen, readDashboardEntry } from "@/lib/screenEntry";
 
 const BANNER_TEXT: Record<AuthBanner, string> = {
   blocked: "Proxy blocked (403)",
@@ -50,6 +55,15 @@ export default function AuthGate({ children, signedIn = false }: { children: Rea
   const { user, boot, banner, formUp, retry } = useUser();
   const { chatter, loading: chatterLoading, reprobe } = useChatter();
   const pathname = usePathname();
+  // A document load of a bundled screen starts its bundle alongside the probes, not after them, and the Dashboard
+  // its Applied settings read too: its days wait on it (lib/screenEntry.ts, lib/appliedSettings.ts).
+  useEffect(() => {
+    if (!signedIn) return;
+    const s = entryScreen(window.location.pathname, window.location.search, readDashboardEntry());
+    if (window.location.pathname === "/") prefetchAppliedSettings();
+    if (s) prefetchScreenBundle(s);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the document's first route only
+  }, []);
 
   // The sign-in form is bare for everyone: a signed-in owner can still sign in
   // as someone else, and the submit's router.replace(next) lands in the shell.

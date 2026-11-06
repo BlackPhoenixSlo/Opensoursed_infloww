@@ -13,7 +13,7 @@
 
 import { resolveShareToken } from "@/lib/shareToken";
 import { admissible, initialSchedule, scheduleReducer, type Action as ScheduleAction } from "@/lib/relaySchedule";
-import { screenJoin, screenRead, screenSettled } from "@/lib/screenBundle";
+import { prefetchScreen, screenJoin, screenRead, screenSettled, type Screen } from "@/lib/screenBundle";
 import type { GiphyResponse } from "./relayTypes";
 export type * from "./relayTypes";
 export { SALARY_FREQUENCIES, toChoice } from "./relayTypes";
@@ -275,12 +275,7 @@ export async function request<T = unknown>(
   const read = method === "GET" && !opts?.refresh && ctx?.employeeId == null && !headers.has("X-Employee-Id")
     ? screenRead(url, ctx?.accountId ?? null) : null;
   if (read) {
-    // The bundle runs every other Creator's reads as background on the relay: only the open one is the user's.
-    const bundle = (p: string) => {
-      const f = relayFocus();
-      return request(f ? `${p}${p.includes("?") ? "&" : "?"}focus=${encodeURIComponent(f)}` : p, { method: "GET" });
-    };
-    const o = await screenJoin(read, bundle, init?.signal);
+    const o = await screenJoin(read, bundleGet, init?.signal);
     if (o.kind === "body") return o.body as T;
     if (o.kind === "error") {
       return parseResponse<T>(new Response(JSON.stringify({ detail: o.detail }), { status: o.status }));
@@ -301,6 +296,18 @@ export async function request<T = unknown>(
   }
 }
 
+
+/** A screen bundle's GET (lib/screenBundle.ts). It runs every other Creator's reads as background on the relay: only
+ *  the open one is the user's. */
+function bundleGet(p: string): Promise<unknown> {
+  const f = relayFocus();
+  return request(f ? `${p}${p.includes("?") ? "&" : "?"}focus=${encodeURIComponent(f)}` : p, { method: "GET" });
+}
+
+/** Start `s`'s bundle now (a document load of its route: lib/screenEntry.ts). */
+export function prefetchScreenBundle(s: Screen): void {
+  prefetchScreen(s, bundleGet);
+}
 
 /** A GET answered with a file (a payout invoice), or a POST of JSON `body` (the reports' Excel export): its bytes
  *  and name. Errors as `RelayError`; a JSON answer (no file) is an error too, as the caller cannot save it. */

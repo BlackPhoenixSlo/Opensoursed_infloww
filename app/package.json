@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --webpack -p 3001",
+    "dev": "NEXT_PUBLIC_BRAND_NAME=${NEXT_PUBLIC_BRAND_NAME:-OfmSaasDev} next dev --webpack -p 3001",
     "build": "next build --turbopack",
     "start": "next start -p 3001",
     "lint": "eslint",

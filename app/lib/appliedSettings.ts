@@ -54,11 +54,31 @@ export interface AppliedSettings {
 /** The query key prefix every Blob tab save invalidates. */
 export const APPLIED_SETTINGS_KEY = ["applied-settings"] as const;
 
+/** How long a document load's early read (`prefetchAppliedSettings`) may stand in for the query's first fetch. */
+const BOOT_KEEP_MS = 10_000;
+let boot: { at: number; p: Promise<AppliedSettings> } | null = null;
+
+/** A Dashboard document load starts the unscoped read with the auth probe (AuthGate): the query key needs the principal, which
+ *  /auth/me answers a round trip later, and the Dashboard's days (then every card's read) wait on this answer. The
+ *  query's first unscoped fetch takes it, once. */
+export function prefetchAppliedSettings(): void {
+  const p = relay.get<AppliedSettings>("/admin/settings/applied");
+  p.catch(() => {});  // the query that takes it sees the error; untaken, nobody does
+  boot = { at: Date.now(), p };
+}
+
+function takeBoot(): Promise<AppliedSettings> | null {
+  const b = boot;
+  boot = null;
+  return b && Date.now() - b.at < BOOT_KEEP_MS ? b.p : null;
+}
+
 /** The read for the Creator `accountId` (null: none in scope), as the principal `principalId` sees it. */
 function appliedQuery(principalId: string, accountId: string | null) {
   return {
     queryKey: [...APPLIED_SETTINGS_KEY, principalId, accountId],
-    queryFn: () => relay.get<AppliedSettings>("/admin/settings/applied", { accountId }),
+    queryFn: () => (accountId == null && takeBoot())
+      || relay.get<AppliedSettings>("/admin/settings/applied", { accountId }),
     staleTime: 60_000,
     refetchOnWindowFocus: false,
     // A newly picked Creator's read shows the last answer until it lands, so

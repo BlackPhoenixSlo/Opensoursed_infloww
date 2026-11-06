@@ -28,7 +28,8 @@ A phone (390x844, touch, iPhone user agent) on one browser profile, each visit a
                 (C_CLICK, budget), while at least `creators` - 1 Creators' chat lists are still loading (C_LOADING)
 dash-first and mp-first read through the screen bundles (app/lib/screenBundle.ts, service/screens_api.py): 0
 per-Creator OnlyFans reads of what the bundle carries (BUNDLE_OF; the money rail's feeds keep their own routes), one
-bundle each (C_BUNDLE). dash-leave and mp-click-N run the per-Creator path on purpose
+bundle each (C_BUNDLE), sent with the auth probe on a document load, the Dashboard's Applied settings read too (C_ENTRY:
+app/components/auth/AuthGate.tsx, lib/screenEntry.ts). dash-leave and mp-click-N run the per-Creator path on purpose
 (the page answers /admin/screens/* 404, as a failed bundle: `no_bundle`), the path PR A's queue governs.
 Every page request's start / end, its `X-Priority`, `X-Account-Id` and fetch priority (CDP) give C_CAP: no Creator
 (but the tapped one) with more than PER_CREATOR background OnlyFans reads on the wire at once. Screenshots per visit: `<visit>-trigger` (the reload's first paint
@@ -43,6 +44,8 @@ Break-it-once (lib/clicks_first_faults.py):
   badge-keys-unpersisted    the four keys left out of the snapshot (as before): C_SNAPSHOT
   screen-bundle-unused      every bundle 404 (main before the bundles): C_BUNDLE, C_PARTIAL; its dash-first /
                             mp-first numbers are the per-Creator "before" in this same harness
+  screen-bundle-after-probe the bundle and the Applied settings read held until /auth/me answered (main before
+                            2026-11-06, emulated at the page's fetch): C_ENTRY
 
 `--no-ui`: nothing to measure without the browser (the change is the app's alone): every check SKIPs.
 
@@ -67,7 +70,7 @@ from urllib.parse import urlsplit
 from playwright.async_api import async_playwright
 
 from slop.actors.ui import LAUNCH_ARGS, _client_fault, _patched
-from slop.lib.clicks_first_faults import PER_CREATOR, C_ABORT, C_BUNDLE, C_CAP, C_PARTIAL, C_SNAPSHOT
+from slop.lib.clicks_first_faults import PER_CREATOR, C_ABORT, C_BUNDLE, C_CAP, C_ENTRY, C_PARTIAL, C_SNAPSHOT
 
 # The per-Creator /api/of reads the screen bundles replace (service/screens_api.py): Dashboard's three, Pro's two.
 BUNDLE_OF = frozenset(("/api/of/v2/users/me", "/api/of/v2/subscriptions/count/all",
@@ -328,7 +331,7 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     clicks = ctx.param("clicks", CLICKS)
     ctx.metric("world", {"creators": len(cs), "of_ms": round(fake.latency_s * 1000), "rtt_ms": rtt, "net": NET,
                          "clicks": clicks})
-    checks = (C_CAP, C_SNAPSHOT, C_CLICK, C_LOADING, C_THREAD, C_ABORT, C_PAINT, C_BUNDLE, C_PARTIAL)
+    checks = (C_CAP, C_SNAPSHOT, C_CLICK, C_LOADING, C_THREAD, C_ABORT, C_PAINT, C_BUNDLE, C_PARTIAL, C_ENTRY)
     if not ctx.ui:
         for c in checks:
             ctx.skip(c, "--no-ui: no browser (the change is the app's alone)")
@@ -437,6 +440,19 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     ctx.check(C_BUNDLE, all(not x["of_paths"] and x["bundles"] == 1 and x["follow_ups"] <= 1 for x in per.values()),
               **{k: {**x, "of_paths": dict(x["of_paths"]), "own_routes": dict(x["own_routes"])}
                  for k, x in per.items()})
+    # A document load: the bundle (the Dashboard: and its Applied settings read) leaves with the auth probe.
+    def entry(d: dict, dash: bool) -> dict:
+        first = lambda pre: min((r["t0"] for r in d["net"] if r["path"].startswith(pre)), default=None)  # noqa: E731
+        me = [r["end"] for r in d["net"] if r["path"].split("?")[0] == "/auth/me" and r["end"] is not None]
+        o = {"auth_me_end": round(min(me) - d["origin"]) if me else None,
+             "bundle_t0": first("/admin/screens/"), "settings_t0": first("/admin/settings/applied")}
+        want = ("bundle_t0", "settings_t0") if dash else ("bundle_t0",)
+        o["ok"] = bool(me) and all(o[k] is not None and o[k] < min(me) for k in want)
+        for k in ("bundle_t0", "settings_t0"):
+            o[k] = None if o[k] is None else round(o[k] - d["origin"])
+        return o
+    ent = {k: entry(v[k], k.startswith("dash")) for k in ("dash-first", "dash-reload", "mp-first")}
+    ctx.check(C_ENTRY, all(e["ok"] for e in ent.values()), **ent)
     # A slow Creator: the snapshot stays, one follow-up, no fan-out, the mirror updated.
     d = v["dash-slow"]
     plain, follow = _bundles(d)

@@ -21,9 +21,10 @@ perf log's 10 s beacon aside):
              prefetches a link once it shows): the table's first page rows
   fan-list   /messages-pro loaded in the page (the nav opens it as its own window, a phone's new tab: a new
              document, the HTTP cache warm): Fan List rows (All scope: every Creator's first page); judged at
-             ready = the rows shown and the first page's reads answered (`FIRST_PAGE`: OF's chat list per
-             Creator, /admin/chats/recent, by-ids, spend-batch); settled adds useUnreadMessagesPrefetch's idle
-             thread reads (seconds of them), recorded in the table and metrics, not judged
+             ready = the rows shown and the first page's reads answered (`FIRST_PAGE`: the chat list, since
+             #260 one /admin/screens/inbox, OF's per Creator before; /admin/chats/recent, by-ids, spend-batch);
+             settled adds useUnreadMessagesPrefetch's idle thread reads (seconds of them), recorded in the table
+             and metrics, not judged
   thread     tap the first row (the opened Fan): its messages
   vault      the composer's Vault button: the picker's tiles (live OF path: /api/of/v2/vault/media, thumbs via /img)
   send       type a line, tap Send: the bubble, and OF's POST
@@ -33,18 +34,20 @@ Screenshots `screenshots/<profile>-<flow>-trigger.png` (the screen the user acts
 navigation commits; receive: the open thread before the first frame) and `-settled.png`; every request per flow
 (path, status, bytes, ms) in `net-<profile>.json`.
 
-Checks: per profile x flow, ready (settled; fan-list above) <= BUDGET_MS (budget; receive: one RECEIVE_MS for every
-profile, the stream is not throttled) and requests <= REQ_MAX (receive's REQ_PER_DM per DM delivered; bytes: metrics
-and the table); each profile's burst has exactly `--users` Fans (else INFRA); the creators flow went by the drawer's
-link; the Fan List rows == the expected first page (sum over Creators of min(25, its chats), capped at the 200 rows
-drawn); the thread's bubbles == OF's thread (seeded, then earlier profiles' lines), oldest first; the picker's
-tiles, scrolled to the end, == the seeded vault; every /img 200; the send side effect (OF got exactly one POST with
-that text); receive: every DM in the DB (`/admin/messages`), each thread's DMs in send order, the opened Fan's DM
-visible, and frame -> SSE p95 (the manager's /events listener, harness side) <= SSE_P95_MS (budget). Each profile
-starts on a cold relay (`_cold_relay`), after one untimed warm-up load of `/` before the first (`_warm_up`: the Next
-server's first render is not the phone's to pay); creators, thread, vault and send start once the network went
-`DRAIN_MS` quiet (untimed: past the Fan List's idle prefetch and Next's link prefetch, so a flow counts only its own
-requests). TARGET_MS (the post-fix aims) is recorded in the table and metrics, never checked.
+Checks: per profile x flow, ready (settled; fan-list above) <= BUDGET_MS (budget; receive: RECEIVE_LIMIT_MS per
+profile, else RECEIVE_MS: the stream is not throttled) and requests <= REQ_MAX (receive's REQ_PER_DM per DM
+delivered; bytes: metrics and the table); each profile's burst has exactly `--users` Fans (else INFRA); the creators
+flow went by the drawer's link; the Fan List rows == the expected first page (sum over Creators of min(25, its
+chats), capped at the 200 rows drawn); the thread's bubbles == OF's thread (seeded, then earlier profiles' lines),
+oldest first; the picker's tiles, scrolled to the end, == the seeded vault; every /img 200; the send side effect (OF
+got exactly one POST with that text); receive: every DM in the DB (`/admin/messages`), each thread's DMs in send
+order, the opened Fan's DM visible, and frame -> SSE p95 (the manager's /events listener, harness side) <= SSE_P95_MS
+(budget). Each profile starts on a cold relay (`_cold_relay`), after one untimed warm-up load of `/` before the first
+(`_warm_up`: the Next server's first render is not the phone's to pay); creators, thread, vault and send start once
+the network went `DRAIN_MS` quiet (untimed: past the Fan List's idle prefetch and Next's link prefetch, so a flow
+counts only its own requests). TARGET_MS (the post-fix aims) is recorded in the table and metrics; checked only where
+a post-fix run met it with the budgets' jitter headroom (receive on jp, jp-mobile: RECEIVE_LIMIT_MS); the rest keep
+BUDGET_MS, gaps there.
 
 Raw Playwright behind lib/wan.py's edge, not actors/ui.py's owner_browser: that context routes every request
 (`route("**/*")`: Chromium's HTTP cache off, so each flow would refetch every chunk a phone keeps) and holds
@@ -120,10 +123,12 @@ FANLIST_PAGE, FANLIST_RENDER = 25, 200   # useChatList PAGE_SIZE, fanListPaging 
 DRAIN_MS = 5_000
 CREATORS_PAGE = 10                        # AccountsTable's default page size
 THREAD_PAGE = 30                          # useChatMessages PAGE_SIZE: the thread's first page
-# The Fan List's first page (All scope): per Creator OF's chat list, its Fans' rows and spend; then the relay's
-# recent-chat merge. Its rows show before the last of these lands (the spend column fills in).
-FIRST_PAGE = tuple(re.compile(x) for x in (r"^/api/of/v2/chats(\?|$)", r"^/admin/chats/recent",
-                                           r"^/admin/fans/\d+/by-ids", r"^/admin/fans/\d+/spend-batch"))
+# The Fan List's first page (All scope): the chat list (since #260 one /admin/screens/inbox bundle; before it OF's
+# per Creator), its Fans' rows and spend; then the relay's recent-chat merge. Its rows show before the last of these
+# lands (the spend column fills in).
+FIRST_PAGE = tuple(re.compile(x) for x in (r"^/api/of/v2/chats(\?|$)", r"^/admin/screens/inbox",
+                                           r"^/admin/chats/recent", r"^/admin/fans/\d+/by-ids",
+                                           r"^/admin/fans/\d+/spend-batch"))
 IPHONE_UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 "
              "(KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1")
 # Ready ms per profile x flow: the small run 20261105T184058Z-...-345a (cold relay per profile; its measured ready
@@ -134,6 +139,16 @@ IPHONE_UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit
 # paint, so on a capped line settled trails the key by seconds (jp-bad dashboard: 13 x users/me, count/all,
 # subscribers/chart after the figure): settled stays the judged time (key + network idle); the table's key column
 # and its paced-tail note show the paint.
+# Post-fix (#236 #237 #250 #257 #260 on main 4a38e8da8), ready ms -> after the arrow: jp 20261106T084241Z-...-a70b,
+# jp-mobile 20261106T084409Z-...-1ab7 (small, host load 2.0-2.5). A flow switches to TARGET_MS only when the post-fix
+# value + the same headroom fits it; none of these does (the gap after "T"), so BUDGET_MS stays. fan-list's TARGET is
+# a settled aim (si's 3250 = its prefetch tail), looser than its ready budget: kept. si, jp-bad limits untouched; post-
+# fix (20261106T085336Z-...-0fa0, default set): si 890 / 449 / 569 / 444 / 1042 / 429, receive 112; jp-bad 6025 /
+# 1612 / 3350 / 1333 / 9468 / 1290, receive 140 (dashboard / creators / fan-list / thread / vault / send).
+# Bundle first (a document load sends the screen bundle, and the Dashboard its Applied settings read, with /auth/me:
+# AuthGate, app/lib/screenEntry.ts): the second arrow, jp 20261106T092005Z-...-5370, jp-mobile
+# 20261106T092123Z-...-bb1f; dashboard and fan-list budgets re-cut from them by the rule above. Still short of T with
+# the headroom, so BUDGET_MS stays the check.
 BUDGET_MS: dict[str, dict[str, int]] = {
     "si": {"dashboard": 1_550,        # 1002
            "creators": 1_000,         # 452
@@ -141,18 +156,18 @@ BUDGET_MS: dict[str, dict[str, int]] = {
            "thread": 1_200,           # 695
            "vault": 1_900,            # 1351
            "send": 950},              # 426
-    "jp": {"dashboard": 2_950,        # 2246
-           "creators": 1_450,         # 935
-           "fan-list": 1_650,         # 1101
-           "thread": 1_350,           # 834
-           "vault": 1_800,            # 1285
-           "send": 1_400},            # 878
-    "jp-mobile": {"dashboard": 6_050, # 4651
-                  "creators": 1_650,  # 1114
-                  "fan-list": 2_650,  # 2033
-                  "thread": 1_600,    # 1064
-                  "vault": 7_900,     # 6055
-                  "send": 1_450},     # 950
+    "jp": {"dashboard": 1_800,        # 2246 -> 1815 -> 1258, +500 = 1758 > T 1500
+           "creators": 1_450,         # 935 -> 889, +500 = 1400 > T 1000
+           "fan-list": 1_450,         # 1101 -> 1165 -> 907 (settled 3725; T 3750)
+           "thread": 1_350,           # 834 -> 888, +500 = 1400 > T 1200
+           "vault": 1_800,            # 1285 -> 1237, +500 = 1750 > T 1700
+           "send": 1_400},            # 878 -> 890, +500 = 1400 > T 1000
+    "jp-mobile": {"dashboard": 4_600, # 4651 -> 4060 -> 3503, +1051 = 4554 > T 3750
+                  "creators": 1_650,  # 1114 -> 1082, +500 = 1600 > T 1150
+                  "fan-list": 2_400,  # 2033 -> 2128 -> 1820 (settled 4519; T 4600)
+                  "thread": 1_600,    # 1064 -> 1207, +500 = 1750 > T 1550
+                  "vault": 7_900,     # 6055 -> 5936, +1781 = 7750 > T 6600
+                  "send": 1_450},     # 950 -> 917, +500 = 1450 > T 1000
     "jp-bad": {"dashboard": 13_000,   # 9973
                "creators": 2_500,     # 1699
                "fan-list": 5_600,     # 4292
@@ -187,16 +202,19 @@ REQ_PER_DM_WIRE = 2.0  # receive's requests per DM under loss (measured 23-57 fo
 WIRE_TIMEOUT_MS = 300_000  # a flow's wait under a wire profile (the phone saw a 118 s call)
 CAL_TOL_MS, CAL_TOL = 40, 0.2  # wire RTT calibrated: median TCP connect within max(40 ms, 20 % of RTT)
 RECEIVE_MS = 800  # frame -> bubble, any profile (CDP leaves the open /events stream alone): 20261105T184058Z-...-345a's
-# max 251 + max(30 %, 500 ms) (no RTT to add; 500 ms the load-jitter floor)
-# Requests per flow at most (any profile): the small baselines' max x 1.3. Receive's per DM delivered (its
+# max 251 + max(30 %, 500 ms) (no RTT to add; 500 ms the load-jitter floor). si, jp-bad (not rerun post-fix) still.
+# Requests per flow at most (any profile): the small baselines' max x 1.3. dashboard, fan-list from the post-fix
+# runs (a70b, 1ab7, jp-lossy 20261106T084549Z-...-63ef: 40 and 107 on each; was 79 and 119 on every profile,
+# 20261106T061250Z-...-0266): #260's bundles replace 13 x users/me, count/all, subscribers/chart + stats/per-model
+# with /admin/screens/dashboard, and 13 x OF's chat list with /admin/screens/inbox. Receive's per DM delivered (its
 # refetches follow the DMs and where they land, so a fixed cap tracks --users and the scale; measured 27-34 for 42
 # DMs at small, 40 at medium, 20261105T172951Z-...-dde2): one read per DM + 25 %.
-REQ_MAX: dict[str, int] = {"dashboard": 103, "creators": 16, "fan-list": 153, "thread": 30, "vault": 73, "send": 6}
+REQ_MAX: dict[str, int] = {"dashboard": 52, "creators": 16, "fan-list": 140, "thread": 30, "vault": 73, "send": 6}
 REQ_PER_DM = 1.25
 PACED_GAP_MS = 2_000  # judged time this far past the key: the table note names the flow (key = the paint)
-# Where each flow should land after the fixes (recorded, never checked): si as measured (the owner's "instant");
-# a far profile = si + 2 RTT (one for the request, one for its data, nothing serial beyond) + its bytes at the
-# line's speed (jp-mobile 1.6, jp-bad 1 Mbit/s), from the same baselines.
+# Where each flow should land after the fixes (recorded; checked only where met, RECEIVE_LIMIT_MS below): si as
+# measured (the owner's "instant"); a far profile = si + 2 RTT (one for the request, one for its data, nothing serial
+# beyond) + its bytes at the line's speed (jp-mobile 1.6, jp-bad 1 Mbit/s), from the same baselines.
 TARGET_MS: dict[str, dict[str, int]] = {
     "si": {"dashboard": 1_000, "creators": 500, "fan-list": 3_250, "thread": 700, "vault": 1_200, "send": 500,
            "receive": 150},
@@ -207,6 +225,9 @@ TARGET_MS: dict[str, dict[str, int]] = {
     "jp-bad": {"dashboard": 5_350, "creators": 1_550, "fan-list": 5_400, "thread": 1_850, "vault": 9_800,
                "send": 1_300, "receive": 1_050},
 }
+# Receive met its TARGET post-fix (with RECEIVE_MS's headroom, 500 ms): jp 129 + 500 = 650 <= 650 (a70b), jp-mobile
+# 134 + 500 = 650 <= 700 (1ab7); max over every jp / jp-mobile run in slop/evidence/ 136. Others: RECEIVE_MS.
+RECEIVE_LIMIT_MS: dict[str, int] = {p: TARGET_MS[p]["receive"] for p in ("jp", "jp-mobile")}
 SSE_P95_MS = 500   # frame handed to the relay -> on the manager's /events (inbox-unread's E2E budget)
 SSE_CHECK = "receive: frame -> /events p95 within budget"
 
@@ -295,7 +316,7 @@ def req_check(p: str, f: str) -> str:
 def _budget(p: str, f: str) -> int | None:
     if is_wire(p):
         return WIRE_BUDGET_MS[p].get(f)
-    return BUDGET_MS[p].get(f, RECEIVE_MS)
+    return BUDGET_MS[p].get(f, RECEIVE_LIMIT_MS.get(p, RECEIVE_MS))
 
 
 def cal_check(p: str) -> str:
@@ -745,8 +766,9 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
               n=len(e2e))
     rcv = {p: res[p]["flows"]["receive"].get("ready_ms") for p in profiles if not is_wire(p)}
     if rcv:  # a wire profile's /events rides the shaped line: its own receive budget (below), not RECEIVE_MS
-        ctx.check(C_RECEIVE, all(v is not None and v <= RECEIVE_MS for v in rcv.values()), budget=True,
-                  ready_ms=rcv, limit_ms=RECEIVE_MS)
+        lim = {p: RECEIVE_LIMIT_MS.get(p, RECEIVE_MS) for p in rcv}
+        ctx.check(C_RECEIVE, all(v is not None and v <= lim[p] for p, v in rcv.items()), budget=True,
+                  ready_ms=rcv, limit_ms=lim)
     else:
         ctx.skip(C_RECEIVE, WIRE_SKIP)
 

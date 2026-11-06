@@ -27,6 +27,10 @@ VENV="venv/bin/uvicorn"
 NEXT_PORT="${NEXT_PORT:-3001}"
 NEXT_PIDFILE="/tmp/of-inbox.pid"
 NEXT_LOGFILE="/tmp/of-inbox.log"
+# Local dev says OfmSaasDev, never a live name (live stacks set theirs via
+# their Docker builds); lib/brand.ts and service/brand.py read these.
+export BRAND_NAME="${BRAND_NAME:-OfmSaasDev}"
+export NEXT_PUBLIC_BRAND_NAME="${NEXT_PUBLIC_BRAND_NAME:-$BRAND_NAME}"
 
 if [[ ! -x "$VENV" ]]; then
   echo "[start] $VENV not found — create the venv first:"

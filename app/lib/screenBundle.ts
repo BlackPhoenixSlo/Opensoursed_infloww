@@ -14,7 +14,8 @@
  * background one through the scheduler (lib/relaySchedule.ts, the focused Creator first).
  *
  * Who starts a bundle: a read only the screen's burst makes (fan counts, new fans, per-model; the bell, a chat page),
- * never a shared one (users/me, the accounts list, Applied settings), which only joins one already going. A screen
+ * never a shared one (users/me, the accounts list, Applied settings), which only joins one already going; or a
+ * document load of the screen's route (`prefetchScreen`, lib/screenEntry.ts), with the auth probe. A screen
  * whose keys are all fresh (the saved snapshot) fires no read, so no bundle. A bundle's answers serve joins for
  * KEEP_MS after it lands (cards that mount a moment later), never longer: a refetch after a write reads its route.
  */
@@ -204,6 +205,21 @@ function abortable<T>(p: Promise<T>, signal?: AbortSignal | null): Promise<T> {
   });
 }
 
+function start(key: string, get: (path: string) => Promise<unknown>): Flight {
+  const flight: Flight = { key, done: null, p: Promise.resolve(null), follow: null };
+  flight.p = get(bundlePath(key)).catch(() => null).finally(() => { flight.done = Date.now(); });
+  flights.set(key, flight);
+  return flight;
+}
+
+/** Start `s`'s bundle now unless one is live: a document load starts it with the auth probe (lib/screenEntry.ts),
+ *  not three round trips later when the screen's first starter mounts; the screen's reads join it as any flight. A
+ *  guess another screen's key never joins (a miss: that screen starts its own). */
+export function prefetchScreen(s: Screen, get: (path: string) => Promise<unknown>): void {
+  const key = screenKey(s);
+  if (!live(key, Date.now())) start(key, get);
+}
+
 /** The read `url` for `accountId` would be, if the open screen's bundle covers it (sync: no await for the rest). */
 export function screenRead(url: string, accountId: string | null): Read | null {
   return current ? classify(url, accountId, current) : null;
@@ -223,11 +239,7 @@ export async function screenJoin(
   }
   if (!f) {
     if (!read.starter) return MISS;
-    const key = read.bundle ?? "inbox|0";
-    const flight: Flight = { key, done: null, p: Promise.resolve(null), follow: null };
-    flight.p = get(bundlePath(key)).catch(() => null).finally(() => { flight.done = Date.now(); });
-    flights.set(key, flight);
-    f = flight;
+    f = start(read.bundle ?? "inbox|0", get);
   }
   const o = outcome(await abortable(f.p, signal), read);
   if (o.kind !== "late") return o;

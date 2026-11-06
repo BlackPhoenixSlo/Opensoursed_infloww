@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-  bundlePath, classify, FOLLOW_DEADLINE_MS, FOLLOW_MS, followPath, KEEP_MS, outcome, resetScreenBundles, screenJoin, screenRead, screenSettled, setScreen, type Read, type Screen,
+  bundlePath, classify, FOLLOW_DEADLINE_MS, FOLLOW_MS, followPath, KEEP_MS, outcome, prefetchScreen, resetScreenBundles, screenJoin, screenRead, screenSettled, setScreen, type Read, type Screen,
 } from "./screenBundle";
 
 const DASH: Screen = { kind: "dashboard", from: "2026-10-01T00:00:00Z", to: "2026-11-01T00:00:00Z" };
@@ -204,6 +204,25 @@ describe("screenJoin", () => {
     const get = vi.fn(async (p: string) => { if (p.includes("accounts=")) throw new Error("502"); return DASH_BODY; });
     expect(await screenJoin(screenRead("/api/of/v2/subscriptions/count/all", "2")!, get)).toEqual({ kind: "miss" });
     expect(get).toHaveBeenCalledTimes(2);
+  });
+
+  it("prefetchScreen: started before the screen opens, its reads (shared ones too) join it; another key: its own", async () => {
+    const lands = new Map<string, (b: unknown) => void>();
+    const get = vi.fn((p: string) => new Promise((r) => { lands.set(p, r); }));
+    const OTHER: Screen = { kind: "dashboard", from: "2026-01-01", to: null };
+    prefetchScreen(DASH, get);
+    prefetchScreen(DASH, get);                       // live: not twice
+    prefetchScreen(OTHER, get);                      // a wrong guess: a flight nobody on DASH joins
+    expect(get.mock.calls.map((c) => c[0])).toEqual([bundlePath(DK), "/admin/screens/dashboard?from=2026-01-01"]);
+    setScreen(DASH);
+    const accounts = screenJoin(screenRead("/admin/accounts", null)!, get);
+    const profile = screenJoin(screenRead("/api/of/v2/users/me", "1")!, get);
+    const counts = screenJoin(screenRead("/api/of/v2/subscriptions/count/all", "1")!, get);
+    lands.get(bundlePath(DK))!(DASH_BODY);
+    expect(await profile).toEqual({ kind: "body", body: { id: 1 } });
+    expect(await counts).toEqual({ kind: "body", body: { subscribers: { all: 5 } } });
+    expect(await accounts).toEqual({ kind: "body", body: DASH_BODY.accounts });
+    expect(get).toHaveBeenCalledTimes(2);           // they joined the prefetch: no bundle of their own
   });
 
   it("no open screen: nothing is a bundle read", () => {

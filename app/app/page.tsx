@@ -17,7 +17,7 @@
  */
 
 import { Loader2 } from "lucide-react";
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 
 import DashboardHeader, {
   DashboardPeriodProvider, DashboardPeriodTabs, EmployeeSalesCard, useDashboardPeriod, WHITE,
@@ -30,6 +30,7 @@ import { useUser } from "@/contexts/UserContext";
 import { useAppliedSettings } from "@/lib/appliedSettings";
 import { cardKey, DASHBOARD_CARDS, type DashboardCardId } from "@/lib/dashboardCards";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
+import { rememberDashboardEntry } from "@/lib/screenEntry";
 import { useTimesheet } from "@/lib/shifts";
 import { cn } from "@/lib/utils";
 
@@ -78,6 +79,7 @@ function useCardAllowed(): (id: DashboardCardId) => boolean {
  *  With dense placement a card fills the first cell it fits, so the right column's cards sit beside My shifts. */
 function DashboardGrid() {
   const allowed = useCardAllowed();
+  useRememberEntry(allowed("per-model"));
   return (
     <>
       <div data-testid="dashboard-toolbar" className="mb-4 flex flex-wrap items-center justify-end gap-3">
@@ -95,6 +97,18 @@ function DashboardGrid() {
       </div>
     </>
   );
+}
+
+/** What the next document load starts its bundle by (lib/screenEntry.ts): the Applied settings' days and whether
+ *  this session draws the Per-model cards, once they answered. */
+function useRememberEntry(grid: boolean): void {
+  const q = useAppliedSettings();
+  const prefs = q.data && !q.isPlaceholderData ? q.data.preferences : null;
+  const tz = prefs?.report_tz ?? null;
+  const weekStart = prefs?.week_start ?? null;
+  useEffect(() => {
+    if (weekStart) rememberDashboardEntry({ tz, weekStart, grid });
+  }, [tz, weekStart, grid]);
 }
 
 const SCHEDULED_TIP = "Number of hours worked based on shift schedule";

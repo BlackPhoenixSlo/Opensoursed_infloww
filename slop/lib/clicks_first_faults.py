@@ -14,6 +14,30 @@ C_BUNDLE = ("one call per screen: dash-first and mp-first send 0 per-Creator Onl
 C_PARTIAL = ("a slow Creator (OF +3 s, bundle deadline 2 s): every card keeps its saved fan count (never blank), the "
              "page sends 1 bundle + at most 1 follow-up and 0 per-Creator OnlyFans reads; the late read landed in the "
              "relay's cache (the next bundle has that Creator complete, no OnlyFans call)")
+C_ENTRY = ("a document load sends its screen bundle with the auth probe, the Dashboard its Applied settings read too: on "
+           "dash-first, dash-reload and mp-first they leave before /auth/me answers (not a round trip or two after it)")
+
+# app/components/auth/AuthGate.tsx before 2026-11-06: the screen bundle and the Applied settings read wait for the auth
+# probe (the bundle for its screen's first card, the settings for the principal in their query key). Emulated at the
+# page's fetch: both are held until /auth/me has answered.
+AFTER_PROBE_JS = """(() => {
+  const f = window.fetch;
+  let probed;
+  const answered = new Promise((r) => { probed = r; });
+  window.fetch = function (input, init) {
+    const u = typeof input === 'string' ? input : (input && input.url) || String(input);
+    if (u.includes('/auth/me')) {
+      const p = f.apply(this, arguments);
+      p.finally(probed);
+      return p;
+    }
+    if (u.includes('/admin/screens/') || u.includes('/admin/settings/applied')) {
+      const self = this, args = arguments;
+      return answered.then(() => f.apply(self, args));
+    }
+    return f.apply(this, arguments);
+  };
+})();"""
 
 # app/lib/screenBundle.ts unused (the app before 2026-11-05, or the relay without /admin/screens/*): every bundle
 # answers 404, so each read goes out per Creator as before.
@@ -58,4 +82,6 @@ def register(Fault) -> dict:
         "badge-keys-unpersisted": Fault(None, (C_SNAPSHOT,), browser_js=_KEYS_UNPERSISTED),
         # slop/run clicks-first --break --fault=screen-bundle-unused: the per-Creator fan-out (main before PR B)
         "screen-bundle-unused": Fault(None, (C_BUNDLE, C_PARTIAL), browser_js=BUNDLE_UNUSED_JS),
+        # slop/run clicks-first --break --fault=screen-bundle-after-probe: the bundle and settings behind /auth/me
+        "screen-bundle-after-probe": Fault(None, (C_ENTRY,), browser_js=AFTER_PROBE_JS),
     }

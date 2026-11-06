@@ -1090,9 +1090,11 @@ A flow with a `README.<flow>.md` lists its scenarios there.
   restarted, snapshot stale). Screen bundles (`app/lib/screenBundle.ts`): dash-first / mp-first send 0
   per-Creator OF reads, one bundle each; dash-slow (clock +31 min, Creator 0's OF +3 s > the 2 s deadline) keeps
   every card's saved count, 1 bundle + 1 follow-up, the late read in the relay's cache; dash-leave / mp-click-N
-  take the per-Creator path on purpose (bundles 404 by page route). Faults (`lib/clicks_first_faults.py`:
-  `relay-scheduler-bypassed`, `badge-keys-unpersisted`, `screen-bundle-unused`: its dash-first / mp-first are the
-  per-Creator "before"), budget, bypasses: the scenario's docstring.
+  take the per-Creator path on purpose (bundles 404 by page route); a document load (dash-first, dash-reload,
+  mp-first) sends the bundle (the Dashboard also the Applied settings read) before /auth/me answers (`AuthGate`, `lib/screenEntry.ts`).
+  Faults (`lib/clicks_first_faults.py`: `relay-scheduler-bypassed`, `badge-keys-unpersisted`, `screen-bundle-unused`:
+  its dash-first / mp-first are the per-Creator "before"; `screen-bundle-after-probe`: both held behind /auth/me at the
+  page's fetch), budget, bypasses: the scenario's docstring.
 - `2026-11-05-relay-admission` (no UI, `OF_WIRE`, volume): nothing a person taps waits behind background reads.
   `--users` chatters (real logins, 13 of the Agency's 50 Creators each) tap open fan / send / users/me once per
   Creator, first quiet, then while each keeps 4 background chat-list reads in flight per Creator (OF answers
@@ -1122,7 +1124,7 @@ A flow with a `README.<flow>.md` lists its scenarios there.
   settled; `screenshots/<profile>-<flow>-trigger|settled.png`, every request in `net-<profile>.json`. Checks: budgets
   per profile x flow (`BUDGET_MS`, green baseline + max(30 %, 2 RTT, 500 ms load jitter), the run and measured value beside each; names
   carry no number, the ms is in the detail and the table; fan-list judged at ready = rows + the first page's reads,
-  its prefetch tail only a column; receive one `RECEIVE_MS` for every profile; `TARGET_MS` recorded, not checked),
+  its prefetch tail only a column; receive `RECEIVE_MS`, jp / jp-mobile their met `TARGET_MS` (`RECEIVE_LIMIT_MS`); `TARGET_MS` recorded, checked only where a post-fix run met it with that headroom),
   requests per flow (receive's per DM delivered, `REQ_PER_DM`), exactly `--users` Fans per burst (else INFRA), creators by the
   drawer's link, Fan List rows, thread order, vault tiles, /img 200, the send's one OF POST, receive nothing dropped /
   order kept / visible, frame -> /events p95. `--no-ui`: the relay half of receive. Wire profiles (`--net=jp-lossy`, `--net=jp-lossy-bad`, "Wire mode: packet
