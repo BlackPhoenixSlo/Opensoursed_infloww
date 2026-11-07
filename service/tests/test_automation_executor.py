@@ -15,10 +15,9 @@ Plus the harness primitives every P4 automation depends on:
       inserts 0 (no dupes) and still records an ok run.
   case_scrape_all_chats_sweep:
       no chat_ids in the payload → list_chats sweep; withUser supplies identity.
-  case_scrape_sweep_skips_unread_chats:
-      a full sweep fetches no chat OF lists as unread (unreadMessagesCount > 0
-      or hasUnread), records chats_skipped_unread + full_sweep; a fan_ids job
-      still reads the chat it names.
+  case_scrape_full_sweep_mark_only_on_empty_payload:
+      only a `{}` run stamps full_sweep (sweep_cadence's anchor), not fan_ids or
+      {"limit": 50}; unread chats are read like any other.
   case_fan_lease_acquire_block_steal:
       a live lease blocks a second automation; an expired one can be stolen;
       release frees it. The per-(account, fan) send guard (one send per cycle).
@@ -359,55 +358,35 @@ async def case_scrape_sweep_paginates_all_chats():
         assert len(msgs) == 23, len(msgs)
 
 
-# ── A full sweep leaves unread chats alone (a read marks them read on OF) ──
+# ── Only a `{}` sweep is a full sweep (sweep_cadence's anchor); unread chats are read too ──
 
-async def case_scrape_sweep_skips_unread_chats():
-    aid, read, unread, has_unread = "acc_scrape_unread", 4101, 4102, 4103
+async def case_scrape_full_sweep_mark_only_on_empty_payload():
+    aid, read, unread = "acc_scrape_unread", 4101, 4102
     await _seed_account(aid)
     chats = {c: [_of_msg(c * 10, True, "hi", "2026-06-04T10:00:00+00:00", fan_id=c)]
-             for c in (read, unread, has_unread)}
+             for c in (read, unread)}
     fetched: list[int] = []
 
     class UnreadClient(FakeClient):
         def list_chats(self, **kw) -> dict:
             page = super().list_chats(**kw)
             for row in page["list"]:
-                cid = row["withUser"]["id"]
-                row["unreadMessagesCount"] = 2 if cid == unread else 0
-                row["hasUnread"] = cid == has_unread
+                row["unreadMessagesCount"] = 2 if row["withUser"]["id"] == unread else 0
             return page
 
         def get_messages(self, chat_id, **kw) -> dict:
             fetched.append(int(chat_id))
             return super().get_messages(chat_id, **kw)
 
-    fake = UnreadClient(chats)
-    ax._make_client = lambda account_id: fake  # type: ignore[attr-defined]
-    await enqueue_job(aid, "scrape_chats", payload={})
-    res = await run_once(aid, "scrape_chats")
-    assert res["status"] == "ok", res
-    assert res["chats_scanned"] == 1 and res["chats_skipped_unread"] == 2, res
-    assert res["full_sweep"] is True, res
-    assert set(fetched) == {read}, fetched
-
-    # A per-fan job is unchanged: it reads the chat it names, unread or not.
-    fetched.clear()
-    await enqueue_job(aid, "scrape_chats", payload={"fan_ids": [unread]})
-    res = await run_once(aid, "scrape_chats")
-    assert res["status"] == "ok" and set(fetched) == {unread}, (res, fetched)
-    assert "full_sweep" not in res and "chats_skipped_unread" not in res, res
-
-    # A capped listing is no full sweep (sweep_cadence never anchors on it); a chat
-    # listed read whose fan the pump stored an inbound from after the listing is
-    # left alone too (no extra OF call).
-    fetched.clear()
-    async with get_session() as s:
-        s.add(Message(account_id=aid, fan_id=read, message_id=99_000_001, direction="in",
-                      body="new", created_at=datetime.utcnow() + timedelta(minutes=1)))
-    await enqueue_job(aid, "scrape_chats", payload={"limit": 50})
-    res = await run_once(aid, "scrape_chats")
-    assert res["status"] == "ok" and fetched == [], (res, fetched)
-    assert res["chats_skipped_unread"] == 3 and "full_sweep" not in res, res
+    ax._make_client = lambda account_id: UnreadClient(chats)  # type: ignore[attr-defined]
+    for payload, want_fetched, full in (({}, {read, unread}, True),
+                                        ({"fan_ids": [unread]}, {unread}, False),
+                                        ({"limit": 50}, {read, unread}, False)):
+        fetched.clear()
+        await enqueue_job(aid, "scrape_chats", payload=payload)
+        res = await run_once(aid, "scrape_chats")
+        assert res["status"] == "ok" and set(fetched) == want_fetched, (payload, res, fetched)
+        assert res.get("full_sweep", False) is full, (payload, res)
 
 
 # ── Long convo: both ends (asc-forward + desc-backward), never the middle ──
@@ -1541,7 +1520,7 @@ _harness.run(
     case_scrape_fast_skip,
     case_scrape_all_chats_sweep,
     case_scrape_sweep_paginates_all_chats,
-    case_scrape_sweep_skips_unread_chats,
+    case_scrape_full_sweep_mark_only_on_empty_payload,
     case_scrape_long_convo_both_ends,
     case_scrape_desc_catch_up_no_refetch_start,
     case_fan_lease_acquire_block_steal,

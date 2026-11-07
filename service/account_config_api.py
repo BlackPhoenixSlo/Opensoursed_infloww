@@ -34,7 +34,7 @@ import llm_client
 import media_cotag
 from auth import assert_account_owned
 from automations._common import (  # what a NULL `model` runs, + the pinnable keys
-    DEFAULT_MODEL, MODEL_PURPOSES, PURPOSE_DEFAULT_MODELS)
+    DEFAULT_MODEL, MODEL_PURPOSES, PURPOSE_DEFAULT_MODELS, purpose_default)
 from automations._persona import (MODEL_NOTES_TEMPLATE, PERSONA_FACT_FIELDS,
                                   PERSONA_FACTS_OPERATOR_ONLY)
 from brain_defaults import brain_defaults
@@ -278,9 +278,9 @@ async def get_account_config(account_id: str = Query(...)) -> dict[str, Any]:
         # comment says it defends against — so serving the map verbatim would
         # put the dead id in the box and lie a second, quieter way. What the
         # editor shows is what the next call will run.
+        # Per ACCOUNT: help_assistant runs Opus where an Anthropic key resolves.
         "purpose_defaults": {
-            p: (m if m in llm_client.MODELS else DEFAULT_MODEL)
-            for p, m in PURPOSE_DEFAULT_MODELS.items()
+            p: await purpose_default(account_id, p) for p in PURPOSE_DEFAULT_MODELS
         },
         "languages": list(LANGUAGES),
         # The creator-canon field contract, served the same way as slots /

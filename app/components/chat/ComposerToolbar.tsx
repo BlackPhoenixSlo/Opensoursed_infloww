@@ -320,7 +320,7 @@ function TranslatePopover({ accountId, onToggleOutbound }: { accountId: string |
         aria-expanded={open}
         aria-controls={open ? id : undefined}
         aria-label="Translate"
-        title="Translate"
+        title="Translate: fan messages into English, or your reply into the fan's language"
         className={cn(TOOLBAR_ICON, open || translateOn ? "text-[var(--inf-accent-text,var(--color-accent))]" : "text-fg-dim hover:text-fg")}
       >
         <Languages aria-hidden className={MP.composer.toolbarIcon} />
@@ -360,7 +360,7 @@ function TranslatePopover({ accountId, onToggleOutbound }: { accountId: string |
             <button
               type="button"
               disabled={locked}
-              title={locked ? TURNED_OFF : "Alt+T"}
+              title={locked ? TURNED_OFF : "Write in English, send in the fan's language (Alt+T)"}
               onClick={() => { setOpen(false); onToggleOutbound(); }}
               className={cn(POP_ROW, "w-full text-left hover:bg-bg-elev-1 disabled:opacity-40 disabled:cursor-not-allowed")}
             >

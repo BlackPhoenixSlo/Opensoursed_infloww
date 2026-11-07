@@ -60,6 +60,13 @@ os.environ.setdefault("CHATTER_SESSION_SECRET", "test-chatter-secret-not-for-pro
 os.environ.setdefault("ADMIN_PASSWORD", "test-admin-password")
 # Fake LLM keys so llm_client construction never reads the real ones in tests.
 os.environ.setdefault("DEEPSEEK_API_KEY", "test-deepseek-key")
+# An Anthropic key that RESOLVES moves help_assistant's default to Claude Opus
+# (_model_pick.KEYED_PURPOSE_DEFAULTS), so a developer's real one in
+# service/.env would change what tests see. Pre-set empty (load_dotenv never
+# overrides) and, in bootstrap(), cut `_api_key`'s file fallback for these.
+_HERMETIC_KEYS = ("ANTHROPIC_API_KEY", "HELP_ASSISTANT_ANTHROPIC_KEY")
+for _k in _HERMETIC_KEYS:
+    os.environ.setdefault(_k, "")
 # Web Push (push_send): a generated VAPID key lands in the temp dir, never service/secrets.
 os.environ.setdefault("VAPID_KEY_FILE", str(Path(tempfile.gettempdir()) / f"vapid_test_{uuid.uuid4().hex}.pem"))
 
@@ -89,6 +96,17 @@ def bootstrap() -> None:
     except Exception:
         # A suite that cannot import the store must not fail to bootstrap.
         pass
+
+    import llm_providers
+    _file_backed = llm_providers._api_key
+
+    def _api_key(env_name: str) -> str:
+        if env_name in _HERMETIC_KEYS:   # store, then env — never service/.env
+            import secrets_store
+            return (secrets_store.stored(env_name)
+                    or os.environ.get(env_name, "")).strip()
+        return _file_backed(env_name)
+    llm_providers._api_key = _api_key
 
     asyncio.run(init_db())
 

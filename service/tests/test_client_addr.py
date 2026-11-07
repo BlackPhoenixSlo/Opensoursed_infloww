@@ -90,6 +90,21 @@ def case_a_request_that_skipped_cloudflare_cannot_forge_the_header():
         assert addr(PHONE_B, CF_V4, PHONE_A) == PHONE_B
 
 
+def case_through_the_tunnel_the_phone_is_the_client():
+    """cloudflared on the host hands Traefik the request from 127.0.0.1, so
+    Traefik's X-Forwarded-For is loopback; `cloudflare-tunnel` believes the
+    header there too. A hit on the public IP still keys by its sender."""
+    nets = client_addr._parse_edge("cloudflare-tunnel")
+    assert len(nets) == len(client_addr.CLOUDFLARE.split(",")) + 2, len(nets)
+    with edge("cloudflare-tunnel"):
+        assert addr(NEXT_PEER, "127.0.0.1", PHONE_A) == PHONE_A             # tunnel -> Traefik -> Next -> relay
+        assert addr(NEXT_PEER, "::1", PHONE_A) == PHONE_A
+        assert addr(NEXT_PEER, CF_V4, PHONE_A) == PHONE_A                   # orange cloud without the tunnel
+        assert addr(NEXT_PEER, PHONE_B, PHONE_A) == PHONE_B                 # straight to the IP: forged header ignored
+    with edge("cloudflare"):
+        assert addr(NEXT_PEER, "127.0.0.1", PHONE_A) == "127.0.0.1"         # plain mode stays as it was
+
+
 class _Lines(logging.Handler):
     def __init__(self):
         super().__init__()

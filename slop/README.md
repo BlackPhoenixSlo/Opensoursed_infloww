@@ -28,7 +28,7 @@ slop/run all --map                               # rebuild slop/map.json (clean 
 slop/run inbox --no-wait                         # INFRA at once if no gate slot is free or admission fails
 SLOP_MAX_LOAD=6 SLOP_LOCK_WAIT_S=600 slop/run inbox   # the machine gate's load cap (default 12) and slot wait (3600 s)
 python3 ~/.slop/gate.py status                   # slot holders, who queues, load, machine threads, would admission pass
-python3 ~/.slop/gate.py run -- venv/bin/python service/tests/test_screens_api.py   # any other heavy work, same gate
+python3 ~/.slop/gate.py run -- venv/bin/python -m pytest tests/test_webhook_dispatch.py   # any other heavy work, same gate
 slop/run nightly --detach                        # the daily full sweep in the background (below: Nightly)
 ```
 
@@ -206,7 +206,7 @@ moved > 20%) and the map status. Exit 0 OK or only FLAKY, 1 a stable FAIL, 3 INF
 `slop/run nightly --apply-map=<nightly folder>` merges that folder's refreshed entries (its
 summary.json `map.mapped`) into `slop/map.json`, the others untouched: run it on a fresh branch from
 origin/main to ship the map PR. The schedule lives in the T3 app scheduler (02:00 local daily, a fresh
-thread per run) in a detached worktree of its own (never the main checkout):
+thread per run) in the detached worktree `~/oi-slop-nightly` (never the main checkout):
 update it to origin/main, `slop/run nightly --detach`, poll for `done`, report `summary.md`.
 
 ## Layout
@@ -1156,11 +1156,10 @@ A flow with a `README.<flow>.md` lists its scenarios there.
   Details: the scenario's docstring.
 - `2026-11-07-chat-sweep-cadence` (`OF_WIRE`): full chat sweeps (`scrape_chats` `{}`) on
   `service/sweep_cadence.py`'s cadence, not one per relay start. Seeded backlog of duplicate sweeps, 4 relay
-  restarts, sweeps run against OF's chat lists (some chats unread). Checks: <= 1 open sweep per Creator, the
-  backlog collapses to its oldest, a new one only >= 4 h after the last, none for a deactivated / session-dead
-  Creator, a sweep never reads an unread chat. `lib/sweep_cadence_relay.py` (`POST /__slop/sweep-cadence-tick`:
-  one cadence pass in place of its 300 s timer). Faults `sweep-enqueued-every-pass` (default `--break`),
-  `sweep-reads-unread-chats` (`lib/sweep_cadence_faults.py`). Details: the scenario's docstring.
+  restarts, sweeps run against OF's chat lists. Checks: <= 1 open sweep per Creator, the backlog collapses to
+  its oldest, a new one only >= 4 h after the last, none for a deactivated / session-dead Creator.
+  `lib/sweep_cadence_relay.py` (`POST /__slop/sweep-cadence-tick`: one cadence pass in place of its 300 s
+  timer). Fault `sweep-enqueued-every-pass` (`lib/sweep_cadence_faults.py`). Details: the scenario's docstring.
 - `2026-11-05-screen-bundles`: one relay call per screen (`service/screens_api.py`: GET
   /admin/screens/dashboard, /admin/screens/inbox). `one_agency` (50 Creators + neighbour) with
   captured sessions, OF on `lib/of_wire.py` (400 ms a call), each Creator's chat list its seeded Fans

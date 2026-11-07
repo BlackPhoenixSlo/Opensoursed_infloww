@@ -21,7 +21,8 @@ from ._skiplist import (  # noqa: F401
     source_self_heal_set,
 )
 from ._model_pick import (  # noqa: F401
-    DEFAULT_MODEL, MODEL_PURPOSES, PURPOSE_DEFAULT_MODELS, resolve_model,
+    DEFAULT_MODEL, JSON_OBJECT_PURPOSES, MODEL_PURPOSES, PURPOSE_DEFAULT_MODELS,
+    model_fits, purpose_default, resolve_model,
 )
 from ._prompt_rules import (  # noqa: F401
     BIO_CONSISTENCY_GUARDRAIL, LIVE_PROOF_GUARDRAIL, NO_NARRATION_RULE,
@@ -111,7 +112,7 @@ __all__ = [
     "DEFAULT_MODEL",
     "MODEL_PURPOSES",
     "PURPOSE_DEFAULT_MODELS",
-    "resolve_model",
+    "resolve_model", "purpose_default", "model_fits", "JSON_OBJECT_PURPOSES",
     "BIO_CONSISTENCY_GUARDRAIL",
     "LIVE_PROOF_GUARDRAIL",
     "NO_NARRATION_RULE",

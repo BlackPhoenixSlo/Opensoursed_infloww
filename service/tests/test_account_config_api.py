@@ -379,6 +379,81 @@ async def case_a_round_trip_save_does_not_materialize_the_default():
 
 
 
+class _no_anthropic_key:
+    """Blank every Anthropic credential for the block. `llm_providers._api_key`
+    falls back to reading service/.env, so a developer's real key there would
+    otherwise flip help_assistant to Opus under the test."""
+
+    def __init__(self, house: str = "", fallback: str = ""):
+        self.vals = {"ANTHROPIC_API_KEY": house,
+                     "HELP_ASSISTANT_ANTHROPIC_KEY": fallback}
+
+    def __enter__(self):
+        import llm_providers
+        self.real = llm_providers._api_key
+        llm_providers._api_key = lambda env: (
+            self.vals[env] if env in self.vals else self.real(env))
+        return self
+
+    def __exit__(self, *a):
+        import llm_providers
+        llm_providers._api_key = self.real
+        return False
+
+
+async def case_help_assistant_default_is_opus_only_where_anthropic_is_keyed():
+    """Keyed → the editor is told Opus (what resolve_model will run); unkeyed
+    → DeepSeek, exactly as before. Both halves, because "served the new model"
+    alone cannot tell an upgrade from a hard-coded swap."""
+    from automations._common import resolve_model
+
+    aid = "acc_help_opus"
+    await _seed_account(aid)   # no owner → the house key decides
+    with _no_anthropic_key():
+        served = (await get_account_config(aid))["purpose_defaults"]
+        assert served["help_assistant"] == "deepseek-v4-flash", served
+        assert await resolve_model(aid, "help_assistant") == "deepseek-v4-flash"
+        # No-account ask with no fallback: DeepSeek too.
+        assert await resolve_model("", "help_assistant") == "deepseek-v4-flash"
+    with _no_anthropic_key(house="sk-ant-house"):
+        served = (await get_account_config(aid))["purpose_defaults"]
+        assert served["help_assistant"] == "claude-opus-5-5", served
+        assert await resolve_model(aid, "help_assistant") == "claude-opus-5-5"
+        # The house key alone does NOT pay a no-account ask (billed to the
+        # asker or the fallback) — so that path must stay on DeepSeek.
+        assert await resolve_model("", "help_assistant") == "deepseek-v4-flash"
+    with _no_anthropic_key(fallback="sk-ant-fallback"):
+        assert await resolve_model("", "help_assistant") == "claude-opus-5-5"
+        # An operator pin still outranks the keyed default.
+        async with get_session() as s:
+            s.add(AccountAiConfig(account_id=aid, model_by_purpose=json.dumps(
+                {"help_assistant": "deepseek-v4-pro"})))
+        assert await resolve_model(aid, "help_assistant") == "deepseek-v4-pro"
+
+
+async def case_a_json_purpose_refuses_a_model_that_cannot_return_json():
+    """Claude via Anthropic's compat layer 400s on response_format=json_object,
+    so pinning it on a JSON lane is a 422 at save — and the same model is a
+    fine pin for a text purpose (help_assistant), so the rule is per purpose."""
+    from automations._common import JSON_OBJECT_PURPOSES
+
+    aid = "acc_json_pin"
+    await _seed_account(aid)
+    for purpose in sorted(JSON_OBJECT_PURPOSES):
+        try:
+            await put_account_config(_ConfigBody(account_id=aid, config={
+                "model_by_purpose": {purpose: "claude-opus-5-5"}}))
+            raise AssertionError(f"{purpose} accepted a model that cannot return JSON")
+        except HTTPException as e:
+            assert e.status_code == 422 and "JSON" in str(e.detail), e.detail
+        out = await put_account_config(_ConfigBody(account_id=aid, config={
+            "model_by_purpose": {purpose: "deepseek-v4-flash"}}))
+        assert out["config"]["model_by_purpose"] == {purpose: "deepseek-v4-flash"}, out
+    out = await put_account_config(_ConfigBody(account_id=aid, config={
+        "model_by_purpose": {"help_assistant": "claude-opus-5-5"}}))
+    assert out["config"]["model_by_purpose"] == {"help_assistant": "claude-opus-5-5"}, out
+
+
 async def case_the_editor_is_told_which_purposes_do_not_inherit():
     """A purpose in `PURPOSE_DEFAULT_MODELS` does NOT inherit the account brain,
     and the panel that exists to show model choice was rendering "inherit
@@ -389,7 +464,8 @@ async def case_the_editor_is_told_which_purposes_do_not_inherit():
     from llm_client import MODELS
 
     await _seed_account("acc_purpose_defaults")
-    body = await get_account_config("acc_purpose_defaults")
+    with _no_anthropic_key():
+        body = await get_account_config("acc_purpose_defaults")
     served = body["purpose_defaults"]
     assert set(served) == set(PURPOSE_DEFAULT_MODELS), served
     for purpose, model in served.items():
@@ -399,8 +475,9 @@ async def case_the_editor_is_told_which_purposes_do_not_inherit():
     real = dict(PURPOSE_DEFAULT_MODELS)
     PURPOSE_DEFAULT_MODELS["help_assistant"] = "a-model-that-was-retired"
     try:
-        served = (await get_account_config(
-            "acc_purpose_defaults"))["purpose_defaults"]
+        with _no_anthropic_key():
+            served = (await get_account_config(
+                "acc_purpose_defaults"))["purpose_defaults"]
         assert served["help_assistant"] == DEFAULT_MODEL, \
             f"the editor was shown a retired id: {served}"
     finally:
@@ -461,5 +538,7 @@ _harness.run(
     case_the_effort_box_shows_what_the_account_actually_runs,
     case_a_round_trip_save_does_not_materialize_the_default,
     case_the_editor_is_told_which_purposes_do_not_inherit,
+    case_help_assistant_default_is_opus_only_where_anthropic_is_keyed,
+    case_a_json_purpose_refuses_a_model_that_cannot_return_json,
     case_model_notes_roundtrip_and_sparse,
 )

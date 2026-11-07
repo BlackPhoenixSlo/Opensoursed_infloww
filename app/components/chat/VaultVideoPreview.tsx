@@ -145,6 +145,7 @@ export function VaultVideoPreview({
                   <button
                     type="button"
                     aria-label="Previous frame"
+                    title="Previous frame"
                     onClick={() => setFrameIdx((n) => (n - 1 + drmFrames.length) % drmFrames.length)}
                     className="absolute left-1 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-black/55 hover:bg-black/80 text-white grid place-items-center"
                   >
@@ -153,6 +154,7 @@ export function VaultVideoPreview({
                   <button
                     type="button"
                     aria-label="Next frame"
+                    title="Next frame"
                     onClick={() => setFrameIdx((n) => (n + 1) % drmFrames.length)}
                     className="absolute right-1 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-black/55 hover:bg-black/80 text-white grid place-items-center"
                   >

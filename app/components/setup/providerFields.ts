@@ -16,6 +16,7 @@ export const LABELS: Record<string, string> = {
   deepseek: "DeepSeek API key",
   deepinfra: "DeepInfra API key",
   zai: "Z.ai (GLM) API key",
+  anthropic: "Anthropic (Claude) API key",
 };
 
 /** A DeepSeek key is `sk-` + 32 hex and nothing else on this list looks like
@@ -27,12 +28,17 @@ export const LABELS: Record<string, string> = {
  *  A warning, never a block. Key formats are the vendor's to change, and being
  *  wrong about a shape must not stop someone saving a key that works. */
 const DEEPSEEK_SHAPE = /^sk-[0-9a-f]{32}$/i;
+/** Every Anthropic key starts `sk-ant-` (api03 / admin / usr variants). */
+const ANTHROPIC_SHAPE = /^sk-ant-/;
 
 export function wrongFieldWarning(provider: string, value: string): string | null {
   const v = value.trim();
-  if (!v || provider === "deepseek") return null;
-  if (DEEPSEEK_SHAPE.test(v)) {
+  if (!v) return null;
+  if (provider !== "deepseek" && DEEPSEEK_SHAPE.test(v)) {
     return "That looks like a DeepSeek key — it belongs in the DeepSeek field below.";
+  }
+  if (provider !== "anthropic" && ANTHROPIC_SHAPE.test(v)) {
+    return "That looks like an Anthropic key — it belongs in the Anthropic field below.";
   }
   return null;
 }
@@ -41,4 +47,5 @@ export const HELP: Record<string, string> = {
   deepseek: "Powers chat replies and most automations. platform.deepseek.com.",
   deepinfra: "Vision — vault image describes and inbound-photo replies. deepinfra.com.",
   zai: "Chat replies only — GLM models. Not used for vault or photo describes. z.ai.",
+  anthropic: "Help assistant answers (Claude Opus). console.anthropic.com.",
 };

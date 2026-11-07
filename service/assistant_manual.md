@@ -149,8 +149,8 @@ rule-only kinds (Apply profiles, Backfill chat history, Customs owed).
 
 Every AI-written message resolves the agency's own API key. **Settings → AI
 keys** (`/settings/ai-keys`, owners only — an employee does not see it), one
-password field per provider in this order: **DeepInfra · DeepSeek ·
-Z.ai (GLM)**, each with a set / not set badge. Leave a field blank
+password field per provider in this order: **Anthropic (Claude) · DeepInfra ·
+DeepSeek · Z.ai (GLM)**, each with a set / not set badge. Leave a field blank
 to keep the stored key.
 
 - DeepSeek powers chat replies and most automations — this is the one that
@@ -158,6 +158,10 @@ to keep the stored key.
 - DeepInfra powers vision: vault image descriptions, and Auto-reply's opt-in
   "describe photos fans send".
 - Z.ai is an optional second provider.
+- Anthropic is optional and powers only this help assistant: with an Anthropic
+  key set (it starts `sk-ant-`, from console.anthropic.com) the help assistant
+  answers on Claude Opus (`claude-opus-5-5`), otherwise on `deepseek-v4-flash`.
+  A model the deployment operator pinned for the help assistant still wins.
 
 **It fails closed.** With no key for the provider a model belongs to, the call is
 refused with "add it in Settings → AI keys" — there is no fallback house key.
@@ -202,6 +206,31 @@ people when they log in". A one-off broadcast to everyone online right now is
 → Smart Messages → **New Message** → Message online fans.
 
 It is not a true login event. Detection is polling, roughly once a minute.
+
+## Chargebacks on the Dashboard
+
+The **Dashboard**'s Creator earnings overview card has a **Chargebacks** tile next to
+Subscriptions, Tips, Posts, Referrals and Messages: the period's charged-back
+and refunded sales, shown as a negative number in red and dated by the day of
+the sale, not the day of the dispute. **Total earnings** already leaves them
+out. The same tile is on **Analytics → Creator reports**, whose Creator
+performance part also charts **Chargebacks** for the picked creator. The
+figures come from OnlyFans' own chargeback list, matched to the sale; it is
+read-only — nothing here disputes or refunds anything.
+
+## Lock-screen alerts (OS notifications)
+
+Purchase, tip and message alerts can reach the phone's lock screen or the
+computer's notification tray. Open the **notification bell** in the top bar →
+**Toast settings** → tick **OS notification** and tap **Test** (that tap asks
+the browser for permission). Alerts follow the types whose **Toast** is ticked
+in the same panel. **Send push in 8 s** is a test you can watch arrive with the
+phone locked.
+
+- iPhone / iPad: alerts only work from the app on the Home Screen — Share →
+  **Add to Home Screen**, open it from there, then tap Test.
+- "Notifications are blocked for this site": allow them in the browser's site
+  settings (on an iPhone or iPad, in the device's notification options for the app).
 
 ---
 
@@ -447,6 +476,33 @@ is the engine behind it, and the **Keep promos running** card under that switch
 holds the engine's settings (how often it checks, a max number of re-arms, and
 a **Dry run** box that is **on by default** — untick it or it will only report).
 See `promo_reactivate` below.
+
+## Growth → Scripts — the script library
+
+**Growth → Scripts** holds each creator's saved scripts (text, optional media
+and price, tags, internal notes), grouped by **Tag** or **Sequence** (numbered
+steps). Pick the creator in the column on the left. Chatters use them in a
+Messages Pro chat through the composer's **Scripts** pill, and a chat that is
+on a sequence shows a **▶ Next in "…"** bubble with its next step. Scripts are
+not an automation — nothing sends by itself.
+
+- **Add one:** the **+** menu → **Add script**, **Add sequence → Create new**
+  or **Add tag**.
+- **Import:** the **+** menu → **Import → From Excel** (download **Script
+  templates.xlsx**, fill it in, upload the .xlsx; failed rows are listed) or
+  **From other creators** (up to 5 at a time).
+- **Share:** **Share** in the header (the selected scripts, or all of them),
+  or a row's own share button, then tick the creators — or **Share to all
+  creators** for every creator you own. Sharing again adds nothing twice.
+  Media stays on its own creator, so a copied script arrives without it and
+  the result says how many lost it.
+- **All models** (at the top of the creator column) is a read-only table: one
+  row per sequence or tag, one column per creator, with each creator's count
+  or "—" where it is missing. Each row has **Share to all creators**, copying
+  it from the first creator that already has it.
+- **Formatting:** the script's Text field and the Messages Pro composer's
+  **Aa** button give OnlyFans' own formatting — text size, bold, italic, text
+  colour, clear formatting. OnlyFans creators only.
 
 ---
 
@@ -1036,6 +1092,10 @@ do not carry between models. Only steps that generate their text need an AI key.
 - New fans stop being enrolled 14 days after the broadcast went out.
 - A paid step whose vault media was never mapped for that model is skipped, so a
   funnel that works on one model can stall on another.
+- A funnel or follow-up step cut off mid-send is never resent by itself (a PPV
+  must not go out twice). Auto Funnel lists it with a **May not have sent**
+  badge, the fan id and the step: check that fan's chat, then press **Retry**
+  if he did not get it.
 
 ## kind: auto_posts — Auto posts (self-cleaning feed)
 

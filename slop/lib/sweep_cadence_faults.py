@@ -1,6 +1,5 @@
 """The full chat sweep cadence's break-it-once faults (service/sweep_cadence.py, whose `tick`
-looks `plan` up in its module, and service/automations/scrape_chats.py through the real
-`OFClient.list_chats`): lib/faults.py merges `register(Fault)` into FAULTS. The check names
+looks `plan` up in its module): lib/faults.py merges `register(Fault)` into FAULTS. The check names
 live here and scenarios/2026-11-07-chat-sweep-cadence.py imports them.
 """
 from __future__ import annotations
@@ -10,8 +9,6 @@ COLLAPSE = ("a seeded backlog of duplicate full sweeps collapses to its oldest j
             "'duplicate full sweep'); fan_ids jobs untouched")
 ANCHOR = ("a new full sweep only once the last one finished >= SWEEP_EVERY_S ago (none while one is recent, "
           "one once it is older); a deactivated or session-dead Creator gets none")
-UNREAD = ("a full sweep reads no chat OF lists as unread and every read one, recording chats_skipped_unread; "
-          "a fan_ids job still reads the chat it names")
 
 
 def _sweep_every_pass() -> None:
@@ -30,27 +27,8 @@ def _sweep_every_pass() -> None:
     sc.plan = every_pass
 
 
-def _sweep_reads_unread() -> None:
-    """The sweep never sees OF's unread state: the chat list's unread fields are dropped
-    on the way in, so every listed chat is read (and marked read on OF)."""
-    import of_client
-
-    real = of_client.OFClient.list_chats
-
-    def blind(self, *a, **k):
-        page = real(self, *a, **k)
-        for row in (page or {}).get("list") or ():
-            row.pop("unreadMessagesCount", None)
-            row.pop("hasUnread", None)
-        return page
-
-    of_client.OFClient.list_chats = blind
-
-
 def register(Fault) -> dict:
     return {
         # slop/run 2026-11-07-chat-sweep-cadence --break (the scenario's FAULT)
         "sweep-enqueued-every-pass": Fault(_sweep_every_pass, (ONE_OPEN, ANCHOR)),
-        # slop/run 2026-11-07-chat-sweep-cadence --break --fault=sweep-reads-unread-chats
-        "sweep-reads-unread-chats": Fault(_sweep_reads_unread, (UNREAD,)),
     }

@@ -5,6 +5,7 @@ import json
 import logging
 
 import llm_client
+import llm_providers
 from automation_registry import LEGACY_KINDS
 from db.engine import get_session
 from db.models import AccountAiConfig
@@ -38,6 +39,29 @@ MODEL_PURPOSES: tuple[str, ...] = (
     "help_assistant",
 )
 
+# Purposes whose lane asks for `response_format: json_object` and resolves its
+# model through `resolve_model` (gen_info.py, welcome_chatter_for_info.py's
+# extraction, copilot_api.py). A model with `json_object_ok=False` is skipped
+# at every resolve step for these and refused as a pin (account_config_rules).
+JSON_OBJECT_PURPOSES: frozenset[str] = frozenset(
+    {"gen_info", "welcome_chatter_for_info", "copilot"})
+
+
+def model_fits(model: str | None, purpose: str) -> bool:
+    """A real MODELS id this purpose can call (JSON lanes need json_object)."""
+    mdl = llm_client.MODELS.get(model or "")
+    return mdl is not None and (mdl.json_object_ok or purpose not in JSON_OBJECT_PURPOSES)
+
+
+def _fits_or_warn(model: str | None, purpose: str, account_id: str, step: str) -> bool:
+    if model_fits(model, purpose):
+        return True
+    if model in llm_client.MODELS:   # real model, wrong shape: say why it was skipped
+        log.warning("resolve_model: %s %s cannot serve JSON purpose %s account=%s — "
+                    "falling through", step, model, purpose, account_id)
+    return False
+
+
 # Purposes whose model must NOT follow the account brain, and what they run
 # instead. This sits BETWEEN the operator's own `model_by_purpose` pin and
 # `account_ai_config.model`: an explicit pin still wins, the brain no longer
@@ -70,13 +94,52 @@ PURPOSE_DEFAULT_MODELS: dict[str, str] = {
 }
 
 
+# A purpose default that moves to a better model when THIS account can pay that
+# model's provider — never otherwise, so a deployment without the key behaves
+# exactly as before. `help_assistant` → Claude Opus when an Anthropic key
+# resolves (the agency's own, or the deployment's HELP_ASSISTANT_ANTHROPIC_KEY).
+# The Anthropic compat layer does not cache, so this is ~100x the DeepSeek
+# bill per question (~28k input tokens at the miss rate): keying it is opting in.
+KEYED_PURPOSE_DEFAULTS: dict[str, tuple[str, str]] = {
+    "help_assistant": ("anthropic", "claude-opus-5-5"),
+}
+
+
+async def _provider_keyed(account_id: str, provider: str, purpose: str) -> bool:
+    """Would a `purpose` call for this account find a `provider` key? "" account
+    = the no-account help ask, billed to the asker's own key or the purpose
+    fallback (never the house key), and only the fallback is visible here."""
+    if not account_id:
+        return bool(llm_providers.fallback_key(purpose, provider))
+    try:
+        return await llm_client.llm_key_available(account_id, provider, purpose)
+    except Exception:
+        log.warning("purpose_default: key check failed account=%s provider=%s",
+                    account_id, provider, exc_info=True)
+        return False
+
+
+async def purpose_default(account_id: str, purpose: str) -> str | None:
+    """What `purpose` runs on this account with no operator pin, or None when
+    the purpose is not in PURPOSE_DEFAULT_MODELS (it then follows the brain).
+    Always a MODELS id otherwise — see resolve_model on retired ids."""
+    if purpose not in PURPOSE_DEFAULT_MODELS:
+        return None
+    keyed = KEYED_PURPOSE_DEFAULTS.get(purpose)
+    if keyed and keyed[1] in llm_client.MODELS and \
+            await _provider_keyed(account_id, keyed[0], purpose):
+        return keyed[1]
+    fixed = PURPOSE_DEFAULT_MODELS[purpose]
+    return fixed if fixed in llm_client.MODELS else DEFAULT_MODEL
+
+
 async def resolve_model(account_id: str, purpose: str, override: str | None = None) -> str:
     """Resolve the LLM model for one automation run, VALIDATED against
     llm_client.MODELS at every step so a stale/typo value can never reach
     llm_client.chat (where it would fail every fan with LLMConfigError).
 
     Precedence: payload `override` → account_ai_config.model_by_purpose[purpose]
-    → PURPOSE_DEFAULT_MODELS[purpose] → account_ai_config.model → DEFAULT_MODEL.
+    → purpose_default (KEYED_PURPOSE_DEFAULTS, else PURPOSE_DEFAULT_MODELS) → account_ai_config.model → DEFAULT_MODEL.
     TOTAL: a value not in MODELS is skipped and a config read that fails is
     logged, both falling through to the house model, so resolution always yields
     a usable model and never raises.
@@ -90,7 +153,7 @@ async def resolve_model(account_id: str, purpose: str, override: str | None = No
     string simply finds no override and falls through, which is what the lanes
     with no dropdown (content_resolver, pins) rely on.
     """
-    if override and override in llm_client.MODELS:
+    if override and _fits_or_warn(override, purpose, account_id, "override"):
         return override
     try:
         async with get_session() as s:
@@ -119,7 +182,7 @@ async def resolve_model(account_id: str, purpose: str, override: str | None = No
         except Exception:
             chosen = None
             log.warning("bad_model_by_purpose account=%s purpose=%s", account_id, purpose)
-        if chosen and chosen in llm_client.MODELS:
+        if chosen and _fits_or_warn(chosen, purpose, account_id, "pin"):
             return chosen
     if purpose in PURPOSE_DEFAULT_MODELS:
         # MEMBERSHIP decides, not the value's validity — this branch must be
@@ -128,8 +191,7 @@ async def resolve_model(account_id: str, purpose: str, override: str | None = No
         # through to `cfg.model`, which is glm-5.3-flash on every live account.
         # That is exactly and only the outcome the map exists to prevent, and it
         # would have happened silently, at ~2.8x, the day someone tidied MODELS.
-        fixed = PURPOSE_DEFAULT_MODELS[purpose]
-        return fixed if fixed in llm_client.MODELS else DEFAULT_MODEL
-    if cfg is not None and cfg.model and cfg.model in llm_client.MODELS:
+        return await purpose_default(account_id, purpose)
+    if cfg is not None and cfg.model and _fits_or_warn(cfg.model, purpose, account_id, "brain"):
         return cfg.model
     return DEFAULT_MODEL

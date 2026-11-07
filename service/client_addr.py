@@ -13,6 +13,13 @@ EDGE_PROXIES     a CDN in front of Traefik (deploy/ae/EDGE-CDN.md): `cloudflare`
                  the address our proxies saw is one of these, the CDN's
                  `CF-Connecting-IP` header is the client. Empty (the default):
                  the header is never read, nothing changes.
+                 `cloudflare-tunnel`: the same plus loopback, for a cloudflared
+                 tunnel on the host (deploy/ae/docker-compose.tunnel.yml).
+                 cloudflared reaches Traefik from 127.0.0.1, so Traefik's
+                 X-Forwarded-For is loopback. Safe: a hit on the public IP
+                 reaches Traefik from a public peer, so that address is not
+                 loopback and the header is ignored; only a process on the box
+                 can present a loopback peer, and that one owns the box already.
 
 Why a header of its own: Traefik believes no forwarded header from its clients,
 so behind Cloudflare it sets X-Forwarded-For to the Cloudflare server's address
@@ -34,6 +41,7 @@ from fastapi import Request
 Net = ipaddress.IPv4Network | ipaddress.IPv6Network
 Addr = ipaddress.IPv4Address | ipaddress.IPv6Address
 
+_LOOPBACK = "127.0.0.0/8,::1/128"
 _DEFAULT_TRUSTED = "127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,fe80::/10"
 # https://www.cloudflare.com/ips-v4 + /ips-v6, fetched 2026-11-06.
 CLOUDFLARE = (
@@ -53,8 +61,10 @@ def _parse(raw: str, env: str) -> tuple[Net, ...]:
         entry = entry.strip()
         if not entry:
             continue
-        if entry.lower() == "cloudflare":
+        if entry.lower() in ("cloudflare", "cloudflare-tunnel"):
             out.extend(_parse(CLOUDFLARE, env))
+            if entry.lower() == "cloudflare-tunnel":
+                out.extend(_parse(_LOOPBACK, env))
             continue
         try:
             out.append(ipaddress.ip_network(entry, strict=False))

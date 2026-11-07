@@ -9,7 +9,7 @@
  * someone needs config help is the failure mode the endpoint exists to avoid.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 // Hoisted with the vi.mock factories below — anything they close over has to
@@ -257,3 +257,111 @@ describe("AssistantWidget", () => {
     expect(document.activeElement).toBe(screen.getByPlaceholderText("Ask a question…"));
   });
 });
+
+/** Phone width: matchMedia says "below the corner launcher's breakpoint", the
+ *  viewport is 390×844, and a button's rect is where its inline style put it
+ *  (jsdom has no layout). */
+describe("AssistantWidget on a phone", () => {
+  const real = { w: window.innerWidth, h: window.innerHeight, mm: window.matchMedia };
+  beforeEach(() => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, writable: true, value: 390 });
+    Object.defineProperty(window, "innerHeight", { configurable: true, writable: true, value: 844 });
+    window.matchMedia = ((q: string) => ({
+      matches: q.includes("max-width"), media: q,
+      addEventListener: () => {}, removeEventListener: () => {},
+    })) as unknown as typeof window.matchMedia;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      const left = parseFloat(this.style.left) || 0;
+      const top = parseFloat(this.style.top) || 0;
+      return { left, top, right: left + 48, bottom: top + 48, width: 48, height: 48, x: left, y: top, toJSON: () => ({}) } as DOMRect;
+    });
+  });
+  afterEach(() => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, writable: true, value: real.w });
+    Object.defineProperty(window, "innerHeight", { configurable: true, writable: true, value: real.h });
+    window.matchMedia = real.mm;
+    vi.restoreAllMocks();
+  });
+
+  const render = () => renderWithProviders(<AssistantProvider><AssistantWidget /></AssistantProvider>);
+  const stored = () => JSON.parse(window.localStorage.getItem("chatterly:assistant_launcher") || "null");
+  /** Press the launcher, move by (dx, dy) in two steps, release. */
+  async function drag(el: HTMLElement, dx: number, dy: number) {
+    const r = el.getBoundingClientRect();
+    const x = r.left + 24, y = r.top + 24;
+    await userEvent.pointer([
+      { keys: "[MouseLeft>]", target: el, coords: { clientX: x, clientY: y } },
+      { target: el, coords: { clientX: x + dx / 2, clientY: y + dy / 2 } },
+      { target: el, coords: { clientX: x + dx, clientY: y + dy } },
+      { keys: "[/MouseLeft]", target: el },
+    ]);
+  }
+
+  it("sits bottom-right above the composer by default; a tap opens the full-screen sheet", async () => {
+    render();
+    const bubble = await screen.findByRole("button", { name: "Help assistant" });
+    expect(bubble.style.left).toBe(`${390 - 48 - 12}px`);
+    expect(bubble.style.top).toBe(`${844 - 48 - 180}px`);
+    await userEvent.click(bubble);
+
+    const box = screen.getByPlaceholderText("Ask a question…");
+    const sheet = box.closest("[data-look='messenger']") as HTMLElement;
+    expect(sheet.className).toContain("inset-x-0");
+    expect(sheet.className).not.toContain("w-[400px]");
+    // The sheet covers the launcher; its X is the way out, and brings it back.
+    expect(screen.queryByRole("button", { name: "Help assistant" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Close help" }));
+    expect(screen.queryByPlaceholderText("Ask a question…")).toBeNull();
+    expect(screen.getByRole("button", { name: "Help assistant" })).toBeTruthy();
+  });
+
+  it("a drag moves it and snaps to the nearest edge, swallowing the release click", async () => {
+    render();
+    const bubble = await screen.findByRole("button", { name: "Help assistant" });
+    await drag(bubble, -280, -300);
+
+    // Dropped near the left side: snapped flush to it, panel NOT opened.
+    expect(screen.queryByPlaceholderText("Ask a question…")).toBeNull();
+    const moved = screen.getByRole("button", { name: "Help assistant" });
+    expect(moved.style.left).toBe("12px");
+    expect(stored()).toEqual({ edge: "left", along: 480, tucked: false });
+
+    // The next real tap still opens it (the swallow is one-shot).
+    await userEvent.click(moved);
+    expect(screen.getByPlaceholderText("Ask a question…")).toBeTruthy();
+  });
+
+  it("tucks when pushed past the side edge; the chevron tab pulls it back out", async () => {
+    render();
+    const bubble = await screen.findByRole("button", { name: "Help assistant" });
+    await drag(bubble, 60, 0);
+
+    expect(screen.queryByRole("button", { name: "Help assistant" })).toBeNull();
+    const tab = screen.getByRole("button", { name: "Show help assistant" });
+    expect(tab.className).toContain("right-0");
+    expect(stored()).toEqual({ edge: "right", along: 180, tucked: true });
+
+    await userEvent.click(tab);
+    expect(screen.queryByRole("button", { name: "Show help assistant" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Help assistant" }).style.top).toBe(`${844 - 48 - 180}px`);
+    expect(stored()).toEqual({ edge: "right", along: 180, tucked: false });
+  });
+
+  it("restores a tucked launcher from the last visit, unread dot on the tab", async () => {
+    window.localStorage.setItem("chatterly:assistant_launcher", JSON.stringify({ edge: "left", along: 300, tucked: true }));
+    let settle: (v: unknown) => void = () => {};
+    relayPost.mockImplementation(() => new Promise((res) => { settle = res; }));
+    render();
+    const tab = await screen.findByRole("button", { name: "Show help assistant" });
+    expect(tab.className).toContain("left-0");
+
+    // Ask from the sheet, close it, and let the answer land while tucked.
+    fireEvent.click(tab);
+    await userEvent.click(screen.getByRole("button", { name: "Help assistant" }));
+    await ask("anything");
+    await userEvent.click(screen.getByRole("button", { name: "Close help" }));
+    settle({ answer: "an answer", error: null });
+    expect(await screen.findByLabelText("New reply")).toBeTruthy();
+  });
+});
+

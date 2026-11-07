@@ -24,9 +24,9 @@ function Harness({ initial = "", messagesPro }: { initial?: string; messagesPro?
 const draft = () => screen.getByLabelText("draft") as HTMLTextAreaElement;
 const openPicker = () => fireEvent.click(screen.getByLabelText("Emoji picker"));
 const search = () => screen.getByPlaceholderText("Search emoji…");
-/** The open picker's emoji-grid buttons: not a titled tab, the trigger or a quick-row button. */
+/** The open picker's emoji-grid buttons ("Insert …"), not a quick-row button. */
 const gridButtons = () => screen.getAllByRole("button")
-  .filter((b) => !b.title && b.getAttribute("aria-label") !== "Emoji picker" && !screen.getByTestId("quick").contains(b));
+  .filter((b) => b.title.startsWith("Insert ") && !screen.getByTestId("quick").contains(b));
 /** Both quick rows' emojis: desktop (8 slots), then phone (its first 5). */
 const quickButtons = () => within(screen.getByTestId("quick")).getAllByRole("button").map((b) => b.textContent);
 

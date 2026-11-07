@@ -39,7 +39,7 @@ export function FanListButtons({ onlineOnly, onToggleOnline, onOpenFan, onlineLi
         type="button"
         aria-pressed={onlineOnly}
         onClick={onToggleOnline}
-        title={onlineListFailed ? "Online list unavailable" : undefined}
+        title={onlineListFailed ? "Online list unavailable" : onlineOnly ? "Showing only fans online now: click to show all" : "Show only fans online now"}
         className={cn(
           G.button, onlineOnly && G.buttonPressed,
           "relative flex flex-1 items-center justify-center bg-accent text-white hover:bg-accent-hover ring-fg",

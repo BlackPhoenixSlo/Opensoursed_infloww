@@ -21,9 +21,8 @@ import type { OFChatItem, OFUserMini } from "@/lib/relay";
 import type { FanSpend } from "@/hooks/useFanSpend";
 import { cn, decodeHtmlEntities, fmtRelTime, interpretSubStatus } from "@/lib/utils";
 import { clockTime, fmtSpend } from "@/lib/format";
-import { ofPreviewText } from "@/lib/ofRichText";
 import { proxyImage } from "@/lib/mediaUrl";
-import { type FanId, sameUserId } from "@/lib/fanId";
+import type { FanId } from "@/lib/fanId";
 import { isUnreadChat } from "@/lib/chatUnread";
 import { MP } from "@/lib/messagesPro";
 import { fanDeepLinkHref } from "@/lib/nav";
@@ -31,6 +30,7 @@ import { useChatDraftText } from "@/lib/chatDrafts";
 import { useFanTyping } from "@/lib/fanTyping";
 import type { FanListSelection } from "./FanList";
 import { ROW_BADGE_LABEL, type RowBadge, rowBadges } from "./fanRowBadges";
+import { previewText, previewTitle } from "./fanRowPreview";
 import { OpenInNewWindowMenu } from "./OpenInNewWindowMenu";
 import { NOT_WIRED, NotWiredNote, notWiredTitle, useNotWiredNote } from "./NotWired";
 
@@ -289,7 +289,10 @@ export const FanRow = memo(function FanRow({
             <RowCloseNotWired className={account ? "lg:ml-auto" : "ml-auto"} />
           </div>
           <div className={cn(G.bottom, "flex items-center")}>
-            <span className={cn(G.preview, "flex-1 min-w-0 truncate", unread ? cn(G.previewUnread, "text-fg") : "text-fg-dim")}>
+            <span
+              title={typing || (draft && !isSelected) ? undefined : previewTitle(c)}
+              className={cn(G.preview, "flex-1 min-w-0 truncate", unread ? cn(G.previewUnread, "text-fg") : "text-fg-dim")}
+            >
               {/* Infloww's preview states (MP2 message-HF80yTBL.js; 04 M3,
                *  M25): "is typing…" while the Fan types, else an unsent draft
                *  as "[Draft] …" in the preview's own emphasis (not on the open
@@ -410,32 +413,6 @@ function rowTooltip(
   }
   return parts.length ? parts.join(" · ") : undefined;
 }
-
-/** Tag the preview with "you:" when the last message came from us — this
- *  is huge for triage: at a glance you see whether the fan replied or is
- *  still waiting on us. The model account's id is the row's __accountId
- *  (which == that account's own creator id). Same `sameUserId` compare the
- *  yellow dot uses: this line said "you: ghj" while the dot beside it said
- *  "awaiting your reply" on the very same Fansly row, because only one of
- *  the two normalized the id. */
-function previewText(c: OFChatItem): string {
-  const lm = c.lastMessage;
-  if (!lm) return "";
-  const fromMe = sameUserId(lm.fromUser?.id, c.__accountId);
-  const prefix = fromMe ? "you: " : "";
-  // Quick visual cues so triage doesn't need opening every row:
-  //   💰  tip       — money came in
-  //   🔒  PPV       — paid content sent/received
-  //   📎 N media    — free media only
-  const marker =
-    lm.isTip ? "💰 " :
-    (lm.isFree === false || lm.lockedText) ? "🔒 " :
-    "";
-  if (lm.text) return prefix + marker + ofPreviewText(lm.text);
-  if (lm.mediaCount) return `${prefix}${marker || "📎 "}${lm.mediaCount} media`;
-  return (prefix + marker).trim();
-}
-
 
 function fmtTime(iso: string | undefined | null, nowMs: number): string {
   if (!iso) return "";

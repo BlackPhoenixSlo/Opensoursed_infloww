@@ -966,6 +966,7 @@ async def case_the_fallback_policy_is_one_reviewable_row():
 
     assert llm_providers._FALLBACK_KEY_ENVS == {
         ("help_assistant", "deepseek"): "HELP_ASSISTANT_DEEPSEEK_KEY",
+        ("help_assistant", "anthropic"): "HELP_ASSISTANT_ANTHROPIC_KEY",
     }, llm_providers._FALLBACK_KEY_ENVS
 
     house_envs = {p.api_key_env for p in llm_providers.PROVIDERS.values()}

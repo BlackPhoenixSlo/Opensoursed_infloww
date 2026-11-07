@@ -141,13 +141,11 @@ const LANG_TAG_COLOR: Record<string, string> = {
  *  detected language isn't English, render "(es)" (colored by language) + the
  *  English text; the original stays one hover away in the title tooltip.
  *  English / untranslated / toggle-off all render the plain original. */
-export function TranslatableText({ raw, translation, textClassName, onAccent }: {
+export function TranslatableText({ raw, translation, textClassName }: {
   raw: string;
   translation?: BubbleTranslation | null;
   /** On the text span only, never the language tag: a PPV's title weight (ML11). */
   textClassName?: string;
-  /** The bubble is our accent fill (OfRichText's coloured-run chip). */
-  onAccent?: boolean;
 }) {
   const original = stripHtml(raw);
   const t = translation;
@@ -156,7 +154,7 @@ export function TranslatableText({ raw, translation, textClassName, onAccent }: 
   // The original as the fan sees it: OF's formatting kept (plain bodies render exactly as plain text did).
   // Not OF markup: the plain text as the bubble always drew it (tags dropped, entities decoded).
   if (!show && !isOfHtml(raw)) return <span className={textClassName}>{original}</span>;
-  if (!show) return <OfRichText raw={raw} className={cn(textClassName, onAccent && "of-rt-on-accent")} />;
+  if (!show) return <OfRichText raw={raw} className={textClassName} />;
   return (
     <>
       <span

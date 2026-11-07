@@ -364,6 +364,8 @@ export interface OFChatItem {
     createdAt?: string;
     mediaCount?: number;
     isFree?: boolean;
+    /** Only on a WS frame / our own send; OF's /chats `lastMessage` has none. */
+    price?: number;
     isTip?: boolean;
     lockedText?: boolean;
     isOpened?: boolean;

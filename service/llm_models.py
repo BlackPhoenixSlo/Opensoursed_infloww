@@ -99,6 +99,15 @@ class LLMModel:
     # the Brain dropdown is derived from MODELS.keys(), so anything added here
     # is offerable to an operator the moment it lands.
     vision_ok: bool = False
+    # Does `temperature` travel? False = omitted from the body. Claude 4.7+
+    # 400s on any value below 1 ("`temperature` is deprecated for this model",
+    # measured 2026-11-07), and every caller here passes one below 1.
+    sends_temperature: bool = True
+    # Does the provider accept `response_format: {"type": "json_object"}`?
+    # False = never route a JSON lane here (`_model_pick.JSON_OBJECT_PURPOSES`)
+    # and refuse such a call before it fires. Anthropic's compat layer 400s on
+    # it ("Input should be 'json_schema'", measured 2026-11-07).
+    json_object_ok: bool = True
 
     def reasoning_keys(self) -> dict[str, Any]:
         """A FRESH copy of the reasoning body fragment, safe to splice into a
@@ -242,6 +251,45 @@ MODELS: dict[str, LLMModel] = {
         output_per_1k_cents=0.11,
         # No `effort_choices`: z.ai accepts the string on this model and ignores
         # it, so offering it would be offering a setting that does nothing.
+        reasoning_body=_body(thinking={"type": "disabled"}),
+    ),
+    # Claude (Anthropic) via the OpenAI-compat layer. Registered for the help
+    # assistant (`_model_pick` defaults it to Opus when an Anthropic key is
+    # resolvable); offerable elsewhere, but NOT for a lane that asks for
+    # `response_format: json_object` — the layer 400s on it (json_schema only).
+    #
+    # Prices: list, per 1M (platform.claude.com/docs/en/about-claude/pricing,
+    # read 2026-11-07) → cents/1k = ÷10. Hit rate = 0.05x base on Opus/Sonnet
+    # 5.5, 0.1x on Haiku 5.5. The compat layer does NOT cache ("Prompt caching
+    # is not supported") and reports no cached tokens, so today every input
+    # token bills at the MISS rate; the hit rate is seeded for honesty only.
+    #   opus-5-5:   $4 in / $0.20 hit / $20 out   → 0.4 / 0.02 / 2.0
+    #   sonnet-5-5: $2 in / $0.10 hit / $10 out   → 0.2 / 0.01 / 1.0
+    #   haiku-5-5:  $0.10 / $0.01 / $0.50 (≤100k-token prompts; over 100k it is
+    #               5x — no route here sends that much) → 0.01 / 0.001 / 0.05
+    #
+    # Reasoning (measured 2026-11-07): Claude 5 thinks by default; the layer
+    # ignores `reasoning_effort` and `output_config` (a bogus effort is a 200),
+    # so no `effort_choices`. Opus 5.5 400s on `thinking: disabled` and Sonnet
+    # 5.5 does too (wants `between_tools`); `enabled` + budget is accepted and
+    # the layer turns it into adaptive thinking, so that is the stated mode.
+    # Haiku 5.5 takes `disabled`: it is the cheap fast one.
+    "claude-opus-5-5": LLMModel(
+        "claude-opus-5-5", "anthropic",
+        input_per_1k_cents=0.4, input_cache_hit_per_1k_cents=0.02,
+        output_per_1k_cents=2.0, sends_temperature=False, json_object_ok=False,
+        reasoning_body=_body(thinking={"type": "enabled", "budget_tokens": 1024}),
+    ),
+    "claude-sonnet-5-5": LLMModel(
+        "claude-sonnet-5-5", "anthropic",
+        input_per_1k_cents=0.2, input_cache_hit_per_1k_cents=0.01,
+        output_per_1k_cents=1.0, sends_temperature=False, json_object_ok=False,
+        reasoning_body=_body(thinking={"type": "enabled", "budget_tokens": 1024}),
+    ),
+    "claude-haiku-5-5": LLMModel(
+        "claude-haiku-5-5", "anthropic",
+        input_per_1k_cents=0.01, input_cache_hit_per_1k_cents=0.001,
+        output_per_1k_cents=0.05, sends_temperature=False, json_object_ok=False,
         reasoning_body=_body(thinking={"type": "disabled"}),
     ),
 }

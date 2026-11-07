@@ -271,6 +271,7 @@ export function MediaStrip({ msg, locked, accountId, fanId, isOutgoing, eagerMed
           <button
             type="button"
             onClick={() => setExpanded(true)}
+            title={`Show ${hiddenCount} more`}
             style={{ width: fallbackBox.w, height: fallbackBox.h }}
             className="flex-none rounded-md border border-border bg-bg-elev-1 hover:bg-bg-elev-2 text-xs text-fg-dim flex items-center justify-center gap-1"
           >
@@ -400,6 +401,7 @@ function MediaLightbox({
           onClose();
         }}
         aria-label="Close image"
+        title="Close image"
         className="absolute top-4 right-4 z-10 w-10 h-10 grid place-items-center rounded-full bg-white/10 hover:bg-white/20 text-white text-2xl leading-none"
       >
         ×
@@ -410,6 +412,7 @@ function MediaLightbox({
           <button
             type="button"
             aria-label="Previous image"
+            title="Previous image"
             onClick={(e) => {
               e.stopPropagation();
               onIndex((index - 1 + count) % count);
@@ -421,6 +424,7 @@ function MediaLightbox({
           <button
             type="button"
             aria-label="Next image"
+            title="Next image"
             onClick={(e) => {
               e.stopPropagation();
               onIndex((index + 1) % count);

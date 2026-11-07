@@ -9,7 +9,7 @@ line with the same row id is OF's newer view of that row, e.g. a status flip to
 `transaction_ingest.run_one_tick` pages) answers as OF did on 2026-11-07 (measured,
 service/of_reads.py `transactions`; lib/sweep_pacing_wire.py the same): `start` /
 `end` ignored; `start_date` YYYY-MM-DD -> createdAt's date >= it, an ISO one -> empty;
-at most the latest `latest[account]` (LEDGER_LATEST, 600: INFERRED from prod walks)
+at most the latest `latest[account]` (LEDGER_LATEST, 600: INFERRED from AE's walks)
 rows, newest first, `limit` per page from `offset`, `hasMore`; read from the file when
 the call arrives (a line still being written is skipped). No file: the read fails as
 before. Latency: none (the real ledger walk sleeps 0.4 s between pages).

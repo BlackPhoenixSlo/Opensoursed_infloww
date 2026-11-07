@@ -71,6 +71,7 @@ export function MediaTray({
                 disabled={effectivePreviewCount === 0}
                 className={STEP}
                 aria-label="Fewer free previews"
+                title="Fewer free previews"
               ><Minus className="h-3.5 w-3.5" aria-hidden /></button>
               <span className="tabular-nums text-fg">
                 {effectivePreviewCount}/{attached.length}
@@ -81,6 +82,7 @@ export function MediaTray({
                 disabled={effectivePreviewCount >= attached.length}
                 className={STEP}
                 aria-label="More free previews"
+                title="More free previews"
               ><Plus className="h-3.5 w-3.5" aria-hidden /></button>
             </div>
           )}
@@ -155,6 +157,7 @@ export function MediaTray({
                     onClick={() => remove(m.id)}
                     className="absolute top-0.5 right-0.5 w-7 h-7 md:w-4 md:h-4 rounded-full bg-black/70 text-white grid place-items-center opacity-90"
                     aria-label="Remove"
+                    title="Remove"
                   ><X className="h-3 w-3" aria-hidden /></button>
                 </div>
               </Fragment>

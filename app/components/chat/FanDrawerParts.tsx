@@ -98,6 +98,12 @@ export const BLOCK_TITLE: Record<InsightsBlockId, string> = {
 export type InsightsTab = "insights" | "sales" | "notes";
 export const INSIGHTS_TABS: InsightsTab[] = ["insights", "sales", "notes"];
 export const TAB_LABEL: Record<InsightsTab, string> = { insights: "Insights", sales: "Sales", notes: "Notes" };
+/** A tab's hover text. */
+export const TAB_HINT: Record<InsightsTab, string> = {
+  insights: "Fan insights: profile, spending and more",
+  sales: "Sales: this fan's PPVs and purchases",
+  notes: "Notes about this fan",
+};
 /** The head reads the tab (Clone `messages.js:1614`). */
 const TAB_TITLE: Record<InsightsTab, string> = { insights: "Fan insights", sales: "Sales", notes: "Notes" };
 /** The Clone's 20px tab icons (`messages.html:845-847`): eye, tag, note. */
@@ -170,6 +176,7 @@ export function InsightsHead({ uid, tab, setTab, blocks, onClose, addOpen, setAd
         onClick={onClose}
         className="shrink-0 grid place-items-center w-11 h-11 md:w-6 md:h-6 -my-2 md:my-0 -mr-2 md:mr-0 text-2xl md:text-lg font-normal leading-none text-fg-dim hover:text-fg"
         aria-label="Close"
+        title="Close Fan insights"
       >
         ×
       </button>
@@ -363,6 +370,7 @@ export function InsightsBlock({
           onClick={() => setExpanded((e) => !e)}
           aria-expanded={expanded}
           aria-label={`${expanded ? "Collapse" : "Expand"} ${title}`}
+          title={`${expanded ? "Collapse" : "Expand"} ${title}`}
           className="shrink-0 text-fg-dim hover:text-fg"
         >
           <svg aria-hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9"

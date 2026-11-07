@@ -534,8 +534,6 @@ async def _automation_scrape_chats(
     # `isMutedNotifications` (creator-side mute). None when unknown (explicit-id
     # scrapes don't list the chat object) → identity upsert leaves is_muted alone.
     targets: list[tuple[int, dict | None, bool | None]] = []
-    skipped_unread = 0
-    listed_at = datetime.utcnow()
     if explicit:
         targets = [(int(c), None, None) for c in explicit]
     else:
@@ -566,20 +564,6 @@ async def _automation_scrape_chats(
                 if cid is None or int(cid) in seen_chat_ids:
                     continue
                 seen_chat_ids.add(int(cid))
-                # Reading a chat's messages marks it read on OF, and an agency whose
-                # chatters work in another CRM sees it flip before anyone answered
-                # (webhook_dispatch._scrape_after_blast): a full sweep leaves unread
-                # chats alone; a later sweep takes them once they are read. A chat
-                # that never gets read here is never swept: accepted while agencies
-                # answer in Infloww (the WS pump still stores its inbound).
-                # Race left: this listing ages while the GETs below run one by one
-                # (~27 min for a big account), and the gap is widest for the later,
-                # less active chats. The GET loop narrows it with no extra OF call
-                # (`_inbound_since`: the pump stored an inbound after `listed_at`);
-                # an inbound the pump missed can still be marked read.
-                if int(ch.get("unreadMessagesCount") or 0) > 0 or ch.get("hasUnread") is True:
-                    skipped_unread += 1
-                    continue
                 # `isMutedNotifications` lives on the top-level chat object (NOT
                 # on withUser — confirmed live); coerce to a definite bool.
                 targets.append((int(cid), wu, bool(ch.get("isMutedNotifications"))))
@@ -593,9 +577,6 @@ async def _automation_scrape_chats(
     messages_inserted = 0
     messages_seen = 0
     for chat_id, with_user, is_muted in targets:
-        if not explicit and await _inbound_since(account_id, chat_id, listed_at):
-            skipped_unread += 1   # unread since the listing: leave it to a later sweep
-            continue
         try:
             ins, seen = await _scrape_one_chat(
                 account_id, own_user_id, client, chat_id, with_user,
@@ -635,21 +616,9 @@ async def _automation_scrape_chats(
         "messages_inserted": messages_inserted,
         "messages_seen": messages_seen,
     }
-    if not explicit:
-        out["chats_skipped_unread"] = skipped_unread
     if not payload:
         # Payload exactly `{}`: sweep_cadence anchors the next full sweep on this run
         # (`{"limit": 50}`, a per-fan job, ... never count).
         out["full_sweep"] = True
     return out
 
-
-async def _inbound_since(account_id: str, fan_id: int, since: datetime) -> bool:
-    """The WS pump stored an inbound from this fan after `since`: the chat is
-    likely unread on OF now (one indexed DB read, no OF call)."""
-    async with get_session() as s:
-        return (await s.execute(
-            select(Message.message_id).where(
-                Message.account_id == account_id, Message.fan_id == fan_id,
-                Message.created_at >= since, Message.direction == "in").limit(1)
-        )).first() is not None

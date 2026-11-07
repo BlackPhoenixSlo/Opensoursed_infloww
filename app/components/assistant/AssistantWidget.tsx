@@ -56,7 +56,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useReducer, useRef, useState, type ReactNode } from "react";
 import { usePathname } from "next/navigation";
-import { ArrowUp, ChevronDown, SendHorizontal, X } from "lucide-react";
+import { ArrowUp, ChevronDown, ChevronLeft, ChevronRight, SendHorizontal, X } from "lucide-react";
 
 import { IfMark } from "@/components/auth/SiteLook";
 import { useRecentErrors } from "@/components/ErrorBadge";
@@ -66,6 +66,8 @@ import { useEmployee } from "@/contexts/EmployeeContext";
 import { useOptionalUser } from "@/contexts/UserContext";
 import { useScope } from "@/contexts/ScopeContext";
 import { useActiveAccounts } from "@/hooks/useAccounts";
+import { useMediaQuery } from "@/hooks/useMediaQuery";
+import { useDragPress } from "@/components/useDragPress";
 import { relay, type AccountMeta } from "@/lib/relay";
 import { cn } from "@/lib/utils";
 import { lazyModule, useLazyModule } from "@/lib/lazyModule";
@@ -74,11 +76,16 @@ import {
   assistantReducer, initialAssistantState, settledFrom, settledFromError,
   type AskResponse, type AssistantCore,
 } from "./assistantReducer";
+import {
+  initialLauncherState, launcherDockReducer, launcherSpot, parseLauncherDock,
+} from "./launcherDockReducer";
 
 export type { Turn } from "./assistantReducer";
 
 /** Open/closed survives a reload; the conversation does not. */
 const OPEN_KEY = "chatterly:assistant_open";
+/** Where the phone launcher was dropped / tucked (launcherDockReducer.ts). */
+export const LAUNCHER_KEY = "chatterly:assistant_launcher";
 
 /** The Help center route: the page IS the open panel, so the corner hides there. */
 export const HELP_PATH = "/help-center";
@@ -211,8 +218,20 @@ export function AssistantWidget() {
   // Messages Pro's composer spans the full width below lg (one pane at a
   // time), so the corner launcher would sit on its send button there.
   const onMessagesPro = pathname?.startsWith("/messages-pro") ?? false;
+  // Below the corner launcher's breakpoint the bot is a draggable icon and a
+  // full-screen sheet instead (PhoneLauncher).
+  const phone = useMediaQuery(onMessagesPro ? "(max-width: 1023.98px)" : "(max-width: 767.98px)");
 
   if (!a.hydrated || pathname === HELP_PATH) return null;
+
+  if (phone) {
+    return (
+      <>
+        {a.open && <AssistantPanel variant="sheet" onClose={a.toggle} />}
+        <PhoneLauncher hidden={a.open} unread={a.unread} onOpen={a.toggle} />
+      </>
+    );
+  }
 
   return (
     <>
@@ -244,6 +263,93 @@ export function AssistantWidget() {
   );
 }
 
+/** The phone launcher: a round icon the user drags anywhere; on release it
+ *  snaps to the nearest left / right / bottom edge, or — dropped past a side
+ *  edge — tucks into it behind a chevron tab that pulls it back out. A tap
+ *  (no drag, useDragPress) opens the sheet. Spot and tuck persist per device
+ *  under LAUNCHER_KEY. Stays mounted under the open sheet so its spot is not
+ *  re-read on every close. */
+function PhoneLauncher({ hidden, unread, onOpen }: { hidden: boolean; unread: boolean; onOpen: () => void }) {
+  const [s, dispatch] = useReducer(launcherDockReducer, initialLauncherState);
+
+  useEffect(() => {
+    let raw: string | null = null;
+    try { raw = window.localStorage.getItem(LAUNCHER_KEY); } catch { /* safari private */ }
+    dispatch({ type: "load", dock: parseLauncherDock(raw), vw: window.innerWidth, vh: window.innerHeight });
+    const onResize = () => dispatch({ type: "resize", vw: window.innerWidth, vh: window.innerHeight });
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  // Save after a drop or an untuck — never a drag move or the load.
+  useEffect(() => {
+    if (s.saves === 0) return;
+    try { window.localStorage.setItem(LAUNCHER_KEY, JSON.stringify(s.dock)); } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [s.saves]);
+
+  const { onPointerDown, swallowClick } = useDragPress({
+    begin: (e) => {
+      const r = e.currentTarget.getBoundingClientRect();
+      return { x: r.left, y: r.top };
+    },
+    move: (o, dx, dy) => dispatch({ type: "dragMove", x: o.x + dx, y: o.y + dy }),
+    drop: () => dispatch({ type: "drop" }),
+  });
+
+  if (!s.loaded || hidden) return null;
+  const { left, top } = launcherSpot(s);
+  const dot = unread && (
+    <span className="absolute right-0 top-0 h-3 w-3 rounded-full bg-[#e5372f]" aria-label="New reply" />
+  );
+
+  if (s.dock.tucked) {
+    const onLeft = s.dock.edge === "left";
+    return (
+      // Its own key, and it swallows the drag's click too: the release that
+      // tucked the icon must not land here and pull it straight back out.
+      <button
+        key="tab"
+        type="button"
+        onClick={() => { if (!swallowClick()) dispatch({ type: "untuck" }); }}
+        style={{ top }}
+        className={cn(
+          "fixed z-40 grid h-12 w-6 place-items-center bg-black text-white",
+          "shadow-[0_4px_16px_rgba(0,0,0,0.35)]",
+          onLeft ? "left-0 rounded-r-xl" : "right-0 rounded-l-xl",
+        )}
+        title="Show help"
+        aria-label="Show help assistant"
+      >
+        {onLeft ? <ChevronRight className="h-5 w-5" aria-hidden /> : <ChevronLeft className="h-5 w-5" aria-hidden />}
+        {dot}
+      </button>
+    );
+  }
+
+  return (
+    <button
+      key="icon"
+      type="button"
+      onPointerDown={onPointerDown}
+      onClick={() => { if (!swallowClick()) onOpen(); }}
+      style={{ left, top }}
+      // touch-none: the finger drags the icon, not the page under it.
+      className={cn(
+        "fixed z-40 grid h-12 w-12 touch-none select-none place-items-center rounded-full bg-black text-white",
+        "shadow-[0_4px_16px_rgba(0,0,0,0.35)]",
+        !s.drag && "transition-[left,top] duration-200 ease-out",
+      )}
+      title="Ask for help with this product (drag to move, push past the edge to tuck away)"
+      aria-label="Help assistant"
+      data-edge={s.drag ? "dragging" : s.dock.edge}
+    >
+      <LauncherIcon />
+      {dot}
+    </button>
+  );
+}
+
 /** Intercom's speech bubble with a smile, which Infloww's launcher wears. */
 function LauncherIcon() {
   return (
@@ -256,19 +362,21 @@ function LauncherIcon() {
 
 // ── The panel ──────────────────────────────────────────────────────
 
-/** The messenger's body. `dock`: Intercom's 400px panel above the launcher.
- *  `page`: the same content filling /help-center's white frame (Infloww's
- *  HelpPage: full bleed, no page header), in a centred 720px column, with no
- *  close button (the sidebar is the way out). */
 /** The answer renderer (markdown + tab links, with every page's tab table behind it): out of the shell's first load,
  *  fetched when a panel opens. */
 const answerText = lazyModule(() => import("./AnswerText"));
 
+/** The messenger's body. `dock`: Intercom's 400px panel above the launcher.
+ *  `page`: the same content filling /help-center's white frame (Infloww's
+ *  HelpPage: full bleed, no page header), in a centred 720px column, with no
+ *  close button (the sidebar is the way out). `sheet`: the phone's full-screen
+ *  messenger, as tall as the visible viewport (`--vvh`) so the keyboard never
+ *  covers its composer. */
 export function AssistantPanel({
   variant,
   onClose,
 }: {
-  variant: "dock" | "page";
+  variant: "dock" | "page" | "sheet";
   onClose?: () => void;
 }) {
   const { turns, userName, accountId, accounts, scoped, setPicked, ask } = useAssistant();
@@ -306,6 +414,8 @@ export function AssistantPanel({
         "flex flex-col bg-panel text-fg overflow-hidden",
         page
           ? "h-chat min-h-0 w-full"
+          : variant === "sheet"
+          ? "fixed inset-x-0 top-0 z-50 h-[var(--vvh,100dvh)] w-full"
           : cn(
               "fixed bottom-[84px] right-5 z-40 hidden md:flex",
               "w-[400px] h-[min(704px,calc(100dvh-104px))] rounded-2xl",
@@ -404,7 +514,7 @@ export function AssistantPanel({
 
       {/* Where Intercom's Home / News / Messages / Help bar sits: our composer. */}
       <div className="shrink-0 border-t border-[#ededed] bg-white">
-        <div className={cn("px-4 pt-2.5 pb-4 flex flex-col gap-2", column)}>
+        <div className={cn("px-4 pt-2.5 pb-4 flex flex-col gap-2", variant === "sheet" && "pb-[max(1rem,env(safe-area-inset-bottom))]", column)}>
           {/* No live account at all (none connected yet, or the roster has
               not loaded): the server answers from the manual alone, and the
               one thing worth pointing at is where to connect one. */}

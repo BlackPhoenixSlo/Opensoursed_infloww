@@ -1,5 +1,5 @@
 """
-service/llm_client.py — pluggable LLM client (DeepSeek + DeepInfra + Z.ai).
+service/llm_client.py — pluggable LLM client (DeepSeek + DeepInfra + Z.ai + Anthropic).
 
 ONE async entry point — `chat()` — that every automation runner will eventually
 call instead of POSTing a provider directly (see library/db_data/19_llm_providers.md §2,
@@ -213,7 +213,7 @@ def llm_attempt_outcome(status_or_exc_kind: int | str, attempt: int,
 # copy per caller (and never re-composed in the browser).
 KEY_FIX_URL = "/settings/ai-keys"
 _PROVIDER_LABELS = {"deepseek": "DeepSeek", "deepinfra": "DeepInfra",
-                    "zai": "Z.ai (GLM)"}
+                    "zai": "Z.ai (GLM)", "anthropic": "Anthropic (Claude)"}
 _FEATURE_LABELS = {
     "describe_media": "Vault describe", "describe_flags": "Vault describe",
     "describe_inbound_image": "Photo describe",
@@ -965,7 +965,7 @@ async def chat(
     reasoning_effort: str = "",
     user_id: str | None = None,
 ) -> LLMResult:
-    """Call an OpenAI-compatible LLM (DeepSeek, DeepInfra or Z.ai) with full cost + audit.
+    """Call an OpenAI-compatible LLM (DeepSeek, DeepInfra, Z.ai or Anthropic) with full cost + audit.
 
     Flow (19 §2):
       1. Resolve model -> provider -> base_url, then the KEY of the agency that
@@ -1009,6 +1009,9 @@ async def chat(
     if user_id is not None and account_id is not None:
         raise LLMConfigError("chat() bills an account OR an agency, not both")
     mdl, prov = _resolve(model)
+    if (response_format or {}).get("type") == "json_object" and not mdl.json_object_ok:
+        # A guaranteed provider 400 (Anthropic compat); refuse at no cost.
+        raise LLMConfigError(f"model {mdl.id!r} does not support response_format=json_object")
     # Before the cap reservation and the audit row, exactly where the old
     # combined _resolve raised: a call with no usable credential must cost
     # neither a cap slot nor a grok_calls row. Same for an effort string the
@@ -1031,9 +1034,10 @@ async def chat(
     body: dict[str, Any] = {
         "model": mdl.wire_model(),  # provider's real name (≠ our id for DeepInfra)
         "messages": messages,
-        "temperature": temperature,
         "stream": False,
     }
+    if mdl.sends_temperature:   # Claude 4.7+ 400s on it (llm_models)
+        body["temperature"] = temperature
     if response_format is not None:
         body["response_format"] = response_format
     # The reasoning mode, stated explicitly and never by omission — the model

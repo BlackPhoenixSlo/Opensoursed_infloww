@@ -145,4 +145,11 @@ describe("bumpAfterSend", () => {
     expect(r).toMatchObject({ hasUnread: false, unreadMessagesCount: 0 });
     expect(r.lastMessage).toMatchObject({ text: "hi", createdAt: now, fromUser: { id: "a1", name: "Me" }, isFree: true });
   });
+
+  it("drops the old message's lockedText / isTip (no 🔒/💰 on our free text)", () => {
+    const old = { ...row("a1", 9), lastMessage: { id: 5, text: "😍", lockedText: true, isTip: true, isFree: true } };
+    const out = bumpAfterSend(UNF, data([old]), "a1", 9, msg, now);
+    const lm = out.pages[0].rows[0].lastMessage!;
+    expect(lm).toEqual({ id: 5, text: "hi", fromUser: { id: "a1", name: "Me" }, createdAt: now, mediaCount: 0, isFree: true, price: 0 });
+  });
 });

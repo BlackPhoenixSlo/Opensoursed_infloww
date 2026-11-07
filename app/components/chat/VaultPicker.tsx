@@ -687,6 +687,7 @@ export function VaultPicker(props: VaultPickerProps) {
                 onClick={() => dispatch({ type: "clearQuery" })}
                 className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-fg"
                 aria-label="Clear search"
+                title="Clear search"
               >
                 <X className="h-3.5 w-3.5" aria-hidden />
               </button>

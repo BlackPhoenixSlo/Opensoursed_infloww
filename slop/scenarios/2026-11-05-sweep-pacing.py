@@ -12,7 +12,7 @@ OF's side per Creator (lib/sweep_pacing_wire.py, set here): `--set promos=` prom
 1,150 medium: the prewarm's 12-page cap is 1,200), `--set subscribers=` active subscribers (500 /
 2,400 / 5,000, OF's 50 a page: 48 pages at medium) and `--set transactions=` ledger rows of the
 last 6 days (400 / 1,000 / 2,000; OF answers the latest TX_CAP = 600 of them, so medium and large
-land 600: INFERRED from prod offset-paged walks, not probed). Half the Creators are busy (chatters + their Fan List), half
+land 600: INFERRED from AE's offset-paged walks, not probed). Half the Creators are busy (chatters + their Fan List), half
 idle. On every idle Creator OF answers one page 429 once whatever the pace: promotions offset 100
 ("Please allow 2 seconds"), subscribers offset 100 ("... allow 1 seconds"), transactions offset
 100 ("Too many requests": no wait named); on the first busy Creator its first background

@@ -16,7 +16,7 @@ that answers the four routes below and hands every other request to of_wire's ow
                                          day-boundary TZ is unknown); an ISO `startDate` -> an
                                          empty list, hasMore false; `offset` pages it. At most
                                          `tx_cap` (TX_CAP, 600) rows, the latest, hasMore false
-                                         there: INFERRED from prod offset-paged walks (6 pages
+                                         there: INFERRED from AE's offset-paged walks (6 pages
                                          then hasMore false), not probed. `add_tx` appends a row
                                          mid-run. `window = False` (fault
                                          tx-recent-window-ignored): OF ignores `startDate` too;
@@ -50,7 +50,7 @@ import time
 from urllib.parse import parse_qs, urlsplit
 
 BURST = 10
-TX_CAP = 600   # OF's ledger answers the latest 600 rows, whatever the window (INFERRED: prod walks, 11-07)
+TX_CAP = 600   # OF's ledger answers the latest 600 rows, whatever the window (INFERRED: AE's walks, 11-07)
 REFILL_PER_S = 2.0
 TOO_MANY = "Too many requests. Please allow 1 seconds"
 ROUTES = {"/api2/v2/promotions": "promotions", "/api2/v2/subscriptions/subscribers": "subscribers",

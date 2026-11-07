@@ -327,6 +327,7 @@ export function TaggedCreatorChips({
             onClick={() => onChange(selected.filter((x) => x.id !== c.id))}
             className="text-[var(--inf-accent-text,var(--color-accent))]/70 hover:text-[var(--inf-accent-text,var(--color-accent))]"
             aria-label={`Remove ${c.name}`}
+            title={`Remove ${c.name}`}
           >
             ✕
           </button>

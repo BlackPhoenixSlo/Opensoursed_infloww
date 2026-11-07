@@ -257,6 +257,7 @@ function InboxSelector({
       <button
         type="button"
         {...triggerProps}
+        title="Choose which inbox to show (Split Inbox)"
         className={cn(G.inbox, "w-full flex items-center text-left border-border text-fg hover:border-border-light")}
       >
         <Mail className={cn(G.inboxIcon, "shrink-0 text-fg-dim")} />

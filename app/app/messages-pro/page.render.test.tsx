@@ -766,7 +766,7 @@ describe("the Messages Pro page", () => {
     const [path, ctx] = onlineListReads()[0];
     expect(Object.fromEntries(new URLSearchParams(path.split("?")[1]))).toEqual({ type: "active", online: "1", limit: "50" });
     expect(ctx?.accountId).toBe(ACCOUNT_ID);
-    expect(tooltipOf(onlineFans())).toBeNull();
+    expect(tooltipOf(onlineFans())).toBe("Showing only fans online now: click to show all");
   });
 
   it("\"Online Fans\" falls back to the row rule when the online list fails, with the tooltip \"Online list unavailable\"; under All Models the list is not read", async () => {
@@ -791,7 +791,7 @@ describe("the Messages Pro page", () => {
     await userEvent.click(onlineFans());
     await vi.waitFor(() => expect(listedFans()).toEqual(["Fixture Fan One"]));
     expect(onlineListReads()).toEqual([]);
-    expect(tooltipOf(onlineFans())).toBeNull();
+    expect(tooltipOf(onlineFans())).toBe("Showing only fans online now: click to show all");
   });
 
   /* ── Notifications (ticket 80) ───────────────────────────────────────── */

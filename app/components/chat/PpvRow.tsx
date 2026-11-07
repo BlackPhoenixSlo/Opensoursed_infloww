@@ -149,6 +149,7 @@ export function FreePreviews({
         disabled={!enabled || count === 0}
         className={step}
         aria-label="Fewer free previews"
+        title="Fewer free previews"
       >−</button>
       <span className="tabular-nums text-fg">{count}/{total}</span>
       <button
@@ -157,6 +158,7 @@ export function FreePreviews({
         disabled={!enabled || count >= total}
         className={step}
         aria-label="More free previews"
+        title="More free previews"
       >+</button>
     </div>
   );

@@ -64,6 +64,12 @@ KNOWN: dict[str, dict] = {
         "help": "Optional provider for chat replies (z.ai). Only needed if an "
                 "account's Brain is set to a GLM model.",
     },
+    "ANTHROPIC_API_KEY": {
+        "label": "Anthropic (Claude) API key",
+        "group": "AI models",
+        "help": "Optional. Help assistant answers (Claude Opus); any account "
+                "an operator points at a Claude model. console.anthropic.com.",
+    },
     "HELP_ASSISTANT_DEEPSEEK_KEY": {
         "label": "Help-bot fallback key (DeepSeek)",
         "group": "AI models",
@@ -72,6 +78,14 @@ KNOWN: dict[str, dict] = {
                 "of its own. It is what lets a brand-new agency ask the product "
                 "where to paste its keys. Blank = the help bot fails closed for "
                 "keyless agencies, as it did before.",
+    },
+    "HELP_ASSISTANT_ANTHROPIC_KEY": {
+        "label": "Help-bot fallback key (Anthropic)",
+        "group": "AI models",
+        "help": "Paid by this deployment, used ONLY by the in-product help "
+                "chatbot for an agency with no Anthropic key of its own. Set = "
+                "the help bot answers with Claude Opus by default instead of "
+                "DeepSeek. Blank = DeepSeek, as before.",
     },
     "GOOGLE_DRIVE_API_KEY": {
         "label": "Google Drive API key",

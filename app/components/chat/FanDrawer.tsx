@@ -57,7 +57,7 @@ import { MediaLightbox, PpvSalesSection, PurchasesOverTime, SalesTable, UnsoldPp
 import {
   autoRenewal, Badge, BLOCK_TITLE, BlurEdit, InfoIcon, INLINE_EDIT, INSIGHTS_TABS, InsightsBlock, InsightsRow, LANGUAGE_OPTIONS,
   languageHint, LocalTime,
-  InsightsHead, MassExcludeToggle, MM_DD, NickEdit, ProfileCard, RULE, TAB_ICON, TAB_LABEL, toneClass, useFocusRequest,
+  InsightsHead, MassExcludeToggle, MM_DD, NickEdit, ProfileCard, RULE, TAB_HINT, TAB_ICON, TAB_LABEL, toneClass, useFocusRequest,
   type BlockCard, type InsightsTab,
 } from "./FanDrawerParts";
 
@@ -822,6 +822,7 @@ export function FanDrawer({
               role="tab"
               id={`${uid}-tab-${t}`}
               aria-selected={tab === t}
+              title={TAB_HINT[t]}
               onClick={() => setTab(t)}
               className={cn(
                 MP.insights.tab,

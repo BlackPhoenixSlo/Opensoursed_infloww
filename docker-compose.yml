@@ -136,6 +136,9 @@ services:
       # at it. Nothing routes here by default, so a blank value is the normal
       # state rather than a misconfiguration.
       ZAI_API_KEY: "${ZAI_API_KEY:-}"
+      # Anthropic (Claude) — the help assistant's Opus, and any account an
+      # operator points at a Claude model. Blank = nothing routes there.
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       # Founder second factor (auth._read_admin_password), and the ONE key where
       # the environment outranks the Setup → Keys store — which is what makes
       # rotating it possible at all. It only works if it is NAMED here: the relay
@@ -182,7 +185,8 @@ services:
       # empty = loopback + private ranges.
       # TRUSTED_PROXIES: "${TRUSTED_PROXIES:-}"
       # A CDN in front of Traefik (deploy/ae/EDGE-CDN.md): `cloudflare` makes
-      # its CF-Connecting-IP the client when the request came from Cloudflare.
+      # its CF-Connecting-IP the client when the request came from Cloudflare;
+      # `cloudflare-tunnel` also from loopback (a cloudflared tunnel on the host).
       # Unset = the header is never read.
       EDGE_PROXIES: "${EDGE_PROXIES:-}"
     volumes:

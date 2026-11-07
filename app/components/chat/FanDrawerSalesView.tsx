@@ -662,6 +662,7 @@ export function MediaLightbox({ media, onClose }: { media: LightboxMedia; onClos
         onClick={onClose}
         className={cn(MP.ours.FanDrawer.lightboxClose, "absolute text-white grid place-items-center bg-black/40 hover:bg-black/60")}
         aria-label="Close preview"
+        title="Close preview"
       >
         ×
       </button>

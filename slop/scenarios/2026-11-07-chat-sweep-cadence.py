@@ -1,42 +1,35 @@
-"""Full chat sweeps (`scrape_chats`, payload `{}`) run on a cadence, never one per relay restart,
-and never read a chat OnlyFans lists as unread (service/sweep_cadence.py,
-service/automations/scrape_chats.py).
+"""Full chat sweeps (`scrape_chats`, payload `{}`) run on a cadence, never one per relay restart
+(service/sweep_cadence.py).
 
-Prod (2026-11, measured): the boot seed enqueued one sweep per account on every restart with no
+Prod AE (2026-11, measured): the boot seed enqueued one sweep per account on every restart with no
 dedupe; 16 deploys in 48 h left up to 18 identical pending sweeps per account on a 2-slot bulk lane.
-A sweep's `GET /chats/{fan}/messages` marks the chat read on OF, which an agency working in another
-CRM sees flip before anyone answered.
 
 World: `flat_agency` with CREATORS Creators, each with a captured session (the relay's REAL
-OFClient against lib/of_wire.py, `OF_WIRE`). Each Creator's OF chat list holds CHATS of its Fans,
-N_UNREAD of them with `unreadMessagesCount` > 0 (half of those also `hasUnread`). The last two
+OFClient against lib/of_wire.py, `OF_WIRE`). Each Creator's OF chat list holds CHATS of its Fans.
+The last two
 Creators are deactivated (the real `POST /admin/accounts/{id}/active`) and session-dead (SQL: the
 row `account_health.mark_session_dead` writes, probe stamped now so the recovery probe stays off).
 Each live Creator carries, by SQL, BACKLOG identical pending `{}` sweeps (what BACKLOG restarts of
-the old boot seed left) and one future-dated `fan_ids` scrape of an unread Fan.
+the old boot seed left) and one future-dated `fan_ids` scrape.
 
 Phases: (1) one cadence pass; (2) RESTARTS times: SIGTERM + start the relay (`stack.stop_relay`,
 as `docker stop`), two cadence passes; (3) supervisor passes (`/__slop/automation-tick`) until no
 live Creator has an open sweep: the sweeps run against the fake OF; (4) restart + a cadence pass;
-(5) Creator 0's sweep runs aged past SWEEP_EVERY_S by SQL + a cadence pass; (6) the `fan_ids` jobs
-made due by SQL + a supervisor pass.
+(5) Creator 0's sweep runs aged past SWEEP_EVERY_S by SQL + a cadence pass.
 
 Checks (names in lib/sweep_cadence_faults.py): ONE_OPEN (every observation: at most one
 pending/running `{}` sweep per Creator); COLLAPSE (each backlog's oldest job is the one left, the
-rest cancelled 'duplicate full sweep', the `fan_ids` job still pending until phase 6); ANCHOR (no
-sweep after phase 4 while the last finished one is recent, exactly Creator 0's after phase 5,
-none ever for the deactivated / session-dead Creator); UNREAD (each live Creator's sweep read
-exactly its read chats at OF, recorded chats_skipped_unread == N_UNREAD, and the phase-6 `fan_ids`
-job read its unread Fan). Evidence `sweep-cadence.json`.
+rest cancelled 'duplicate full sweep', the `fan_ids` job still pending); ANCHOR (no sweep after
+phase 4 while the last finished one is recent, exactly Creator 0's after phase 5, none ever for the
+deactivated / session-dead Creator). Evidence `sweep-cadence.json`.
 
 Bypasses (declared): OF at its wire (lib/of_wire.py: one message per chat; 50 ms a call, a
 guess); the cadence's timer (`/__slop/sweep-cadence-tick`, lib/sweep_cadence_relay.py: one
 `sweep_cadence.tick()` pass; prod's periodic task starts FIRST_AFTER_S after boot, TICK_S apart)
-and the supervisor's (`/__slop/automation-tick`); time (a finished run's `completed_at` and the
-`fan_ids` jobs' `run_at` moved by SQL, the rows the product wrote, their times only).
+and the supervisor's (`/__slop/automation-tick`); time (a finished run's `completed_at` moved by
+SQL, the row the product wrote, its time only).
 Break-it-once: `sweep-enqueued-every-pass` (the scenario's FAULT: each pass enqueues for every
-live Creator, the old per-restart seed in the new loop): only ONE_OPEN and ANCHOR;
-`--fault=sweep-reads-unread-chats` (the chat list's unread fields dropped in OFClient): only UNREAD.
+live Creator, the old per-restart seed in the new loop): only ONE_OPEN and ANCHOR.
 """
 from __future__ import annotations
 
@@ -46,7 +39,7 @@ from collections import Counter
 from datetime import datetime, timedelta
 
 from slop.lib.client import Recorder
-from slop.lib.sweep_cadence_faults import ANCHOR, COLLAPSE, ONE_OPEN, UNREAD
+from slop.lib.sweep_cadence_faults import ANCHOR, COLLAPSE, ONE_OPEN
 from slop.seed import ts
 
 PROFILE = "flat_agency"
@@ -55,7 +48,6 @@ OF_WIRE = True
 FAULT = "sweep-enqueued-every-pass"
 CREATORS = 5          # 3 live, 1 deactivated, 1 session-dead
 CHATS = 12            # each Creator's OF chat list
-N_UNREAD = 4          # of them unread on OF
 BACKLOG = 5           # identical pending {} sweeps per live Creator (the old seed, 5 restarts)
 RESTARTS = 3
 SWEEP_EVERY_S = 4 * 3600   # service/sweep_cadence.py SWEEP_EVERY_S (the scenario imports no service code)
@@ -71,18 +63,13 @@ async def run(ctx) -> None:
     live, off, dead = creators[:-2], creators[-2], creators[-1]
     rng = w.rng("scenario:sweep-cadence")
 
-    # OF's chat lists: CHATS Fans each, UNREAD of them unread.
-    read_fans: dict[str, set[int]] = {}
-    unread_fans: dict[str, list[int]] = {}
+    # OF's chat lists: CHATS Fans each.
+    listed: dict[str, list[int]] = {}
     with fake.lock:
         for aid in creators:
-            fans = rng.sample([f["id"] for f in w.data["fans"][aid]], CHATS)
-            unread = fans[:N_UNREAD]
-            unread_fans[aid], read_fans[aid] = unread, set(fans[N_UNREAD:])
+            listed[aid] = fans = rng.sample([f["id"] for f in w.data["fans"][aid]], CHATS)
             fake.chats[aid] = [{"withUser": {"id": fan, "username": f"u{fan}", "name": f"Fan {fan}"},
-                                "unreadMessagesCount": (1 + k % 3) if fan in unread else 0,
-                                "hasUnread": fan in unread[::2], "isMutedNotifications": False}
-                               for k, fan in enumerate(fans)]
+                                "unreadMessagesCount": 0, "isMutedNotifications": False} for fan in fans]
 
     (await ctx.owner.post(f"/admin/accounts/{off}/active", json={"active": False})).raise_for_status()
     now = datetime.utcnow()
@@ -102,7 +89,7 @@ async def run(ctx) -> None:
                 backlog.setdefault(aid, []).append(int(cur.lastrowid))
             cur = con.execute("INSERT INTO scheduled_jobs (account_id, kind, payload_json, run_at, status, attempts,"
                               " created_at) VALUES (?, 'scrape_chats', ?, ?, 'pending', 0, ?)",
-                              (aid, json.dumps({"fan_ids": [unread_fans[aid][0]]}),
+                              (aid, json.dumps({"fan_ids": [listed[aid][0]]}),
                                ts(now + timedelta(days=1)), ts(now)))
             fan_job[aid] = int(cur.lastrowid)
     con.close()
@@ -183,8 +170,6 @@ async def run(ctx) -> None:
                            " ORDER BY id").fetchall()
     finally:
         con.close()
-    skipped = {a: [json.loads(s or "{}").get("chats_skipped_unread") for a2, st, s in runs if a2 == a and st == "ok"]
-               for a in live}
 
     # (4) a restart right after: nothing due.
     await restart("restart after sweeps")
@@ -201,31 +186,11 @@ async def run(ctx) -> None:
     aged_open = {a: n for a, n in open_sweeps(jobs()).items() if n}
     ever_off = {a: max(o["sweeps_total"].get(a, 0) for o in observations) for a in (off, dead)}
 
-    # (6) the fan_ids jobs come due: each reads the unread Fan it names.
-    con = w.sql()
-    with con:
-        con.execute("UPDATE scheduled_jobs SET run_at=? WHERE id IN (%s)" % ",".join("?" * len(fan_job)),
-                    (ts(datetime.utcnow() - timedelta(seconds=1)), *fan_job.values()))
-        # Creator 0's new sweep stays out of this pass (it would read the same read chats again).
-        con.execute("UPDATE scheduled_jobs SET run_at=? WHERE kind='scrape_chats' AND payload_json='{}'"
-                    " AND status='pending' AND account_id=?", (ts(datetime.utcnow() + timedelta(days=1)), live[0]))
-    con.close()
-    calls_before = len(fake.calls)
-    r = await hook.post("/__slop/automation-tick", timeout=600)
-    r.raise_for_status()
-    ticks.append({"at": "fan_ids due", **r.json()})
-    with fake.lock:
-        fan_calls = list(fake.calls[calls_before:])
-    fan_fetched = {aid: {int(c["path"].rsplit("/", 2)[-2]) for c in fan_calls
-                         if c["account"] == aid and c["route"] == MSG_ROUTE} for aid in live}
-    fan_status = {j["id"]: j["status"] for j in jobs() if j["id"] in fan_job.values()}
-
     (ctx.out / "sweep-cadence.json").write_text(json.dumps({
         "creators": {"live": live, "deactivated": off, "session_dead": dead},
-        "unread": unread_fans, "read": {a: sorted(v) for a, v in read_fans.items()},
+        "listed": listed,
         "backlog": backlog, "fan_jobs": fan_job, "observations": observations, "ticks": ticks,
         "sweep_fetched": {a: sorted(v) for a, v in fetched.items()},
-        "fan_fetched": {a: sorted(v) for a, v in fan_fetched.items()}, "skipped_unread": skipped,
     }, indent=1, default=str))
 
     over = [(o["at"], a, n) for o in observations for a, n in o["open"].items() if n > 1]
@@ -239,18 +204,5 @@ async def run(ctx) -> None:
     if any(ever_off.values()):
         anchor_bad.append(("deactivated / session-dead got a sweep", ever_off))
     ctx.check(ANCHOR, not anchor_bad, bad=anchor_bad)
-    unread_bad = []
-    for aid in live:
-        if fetched[aid] != read_fans[aid]:
-            unread_bad.append((aid, "sweep read", sorted(fetched[aid] - read_fans[aid]),
-                               "missed", sorted(read_fans[aid] - fetched[aid])))
-        if not skipped[aid] or any(s != N_UNREAD for s in skipped[aid]):
-            unread_bad.append((aid, "chats_skipped_unread", skipped[aid]))
-        if fan_fetched[aid] != {unread_fans[aid][0]} or fan_status.get(fan_job[aid]) != "done":
-            unread_bad.append((aid, "fan_ids job", sorted(fan_fetched[aid]), fan_status.get(fan_job[aid])))
-    for aid in (off, dead):
-        if fetched[aid]:
-            unread_bad.append((aid, "deactivated / dead Creator read", sorted(fetched[aid])))
-    ctx.check(UNREAD, not unread_bad, unread=N_UNREAD, chats=CHATS, bad=unread_bad[:10])
     ctx.metric("sweep_cadence", {"observations": len(observations), "sweep_runs": len(runs),
                                  "of_message_reads": sum(len(v) for v in fetched.values())})

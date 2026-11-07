@@ -306,6 +306,7 @@ export function MassMessageComposer({
                       onClick={() => dispatch({ type: "removeGif", id: g.id })}
                       className="absolute top-0.5 right-0.5 w-6 h-6 md:w-4 md:h-4 rounded-full bg-black/70 text-white grid place-items-center opacity-80 hover:opacity-100"
                       aria-label="Remove GIF"
+                      title="Remove GIF"
                     >
                       <X className="h-3 w-3" aria-hidden />
                     </button>

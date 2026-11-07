@@ -114,6 +114,16 @@ describe("FanRow", () => {
     expect(row()).toHaveTextContent("Hello there");
   });
 
+  it("no 🔒 on our free text that OF flags lockedText; a PPV's 🔒 explains itself on hover", () => {
+    const me = { id: Number(ACCOUNT_ID), name: "Me" };
+    renderRow({ chat: { ...CHAT, lastMessage: { ...CHAT.lastMessage, id: 9001, text: "hellooo", fromUser: me, isFree: true, lockedText: true } } });
+    expect(within(row()).getByText("you: hellooo")).not.toHaveAttribute("title");
+
+    cleanup();
+    renderRow({ chat: { ...CHAT, lastMessage: { ...CHAT.lastMessage, id: 9002, text: "new set", fromUser: me, isFree: false, mediaCount: 3 } } });
+    expect(within(row()).getByText("you: 🔒 new set")).toHaveAttribute("title", "🔒 paid message (PPV)");
+  });
+
   it("puts aria-current=\"true\" on the selected row", () => {
     renderRow({ selected: true });
     expect(row()).toHaveAttribute("aria-current", "true");

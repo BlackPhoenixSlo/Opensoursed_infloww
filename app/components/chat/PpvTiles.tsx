@@ -135,6 +135,7 @@ export function PpvTiles({
                 onClick={() => onRemove(m.id)}
                 className={cn(MP.ppvRow.attachmentRemove, MP.ours.Composer.tileRemove, "absolute bg-black/75 text-white")}
                 aria-label="Remove attachment"
+                title="Remove attachment"
               >
                 ✕
               </button>
@@ -181,6 +182,7 @@ export function PpvTiles({
             onClick={() => uploads.remove(u.key)}
             className={cn(MP.ppvRow.attachmentRemove, MP.ours.Composer.tileRemove, "absolute bg-black/75 text-white")}
             aria-label="Remove upload"
+            title="Remove upload"
           >
             ✕
           </button>
@@ -199,6 +201,7 @@ export function PpvTiles({
             onClick={() => onRemoveGif(g.id)}
             className={cn(MP.ppvRow.attachmentRemove, MP.ours.Composer.tileRemove, "absolute bg-black/75 text-white")}
             aria-label="Remove GIF"
+            title="Remove GIF"
           >
             ✕
           </button>

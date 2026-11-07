@@ -70,8 +70,9 @@ function NewMenu({ onCompose }: { onCompose: (mode: ComposerMode) => void }) {
         {...triggerProps}
         className={cn(G.iconButton, ICON_BUTTON)}
         aria-label="New"
+        title="New: mass message, message online fans, or post"
       >
-        <Plus className={G.iconButtonIcon} />
+        <Plus aria-hidden className={G.iconButtonIcon} />
       </button>
       {open && (
         <section {...menuProps} aria-label="New" className={cn(MENU, MP.ours.FanListHeader.menuPlace)}>
@@ -126,10 +127,11 @@ export function FanListHeader({
           onClick={() => (searchOpen ? closeSearch() : setSearchOpen(true))}
           className={cn(G.iconButton, ICON_BUTTON)}
           aria-label="Search"
+          title={searchOpen ? "Close search" : "Search chats by fan name or username"}
           aria-expanded={searchOpen}
           aria-controls={searchOpen ? searchRowId : undefined}
         >
-          <Search className={G.iconButtonIcon} />
+          <Search aria-hidden className={G.iconButtonIcon} />
         </button>
         <NewMenu onCompose={setComposer} />
       </div>

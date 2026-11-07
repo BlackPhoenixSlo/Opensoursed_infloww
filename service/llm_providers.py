@@ -28,7 +28,7 @@ load_dotenv(_ENV_FILE, override=False)
 
 @dataclass(frozen=True)
 class LLMProvider:
-    name: str          # "deepseek" | "deepinfra" | "zai"
+    name: str          # "deepseek" | "deepinfra" | "zai" | "anthropic"
     base_url: str      # OpenAI-compatible base
     api_key_env: str   # env var holding the bearer key
 
@@ -44,6 +44,13 @@ PROVIDERS: dict[str, LLMProvider] = {
     # caller that trusts the status code sees a successful request with no
     # choices rather than a routing error. Probed 2026-08-27.
     "zai": LLMProvider("zai", "https://api.z.ai/api/paas/v4", "ZAI_API_KEY"),
+    # Anthropic (Claude) through its OpenAI-compatibility layer: same
+    # /chat/completions path, `Authorization: Bearer <key>` accepted, so no
+    # second client. The layer is not the native API — no prompt caching,
+    # `reasoning_effort` ignored, `temperature` and `response_format:
+    # json_object` are 400s on current models (see llm_models). Probed
+    # 2026-11-07; docs: platform.claude.com/docs/en/api/openai-sdk.
+    "anthropic": LLMProvider("anthropic", "https://api.anthropic.com/v1", "ANTHROPIC_API_KEY"),
 }
 
 
@@ -77,7 +84,8 @@ def _api_key(env_name: str) -> str:
 
 
 # ── Purpose-scoped fallback credentials ───────────────────────────────
-# ONE ROW PER HOLE IN THE FAIL-CLOSED KEY GATE, and today there is one. The key
+# ONE ROW PER HOLE IN THE FAIL-CLOSED KEY GATE, and today there is one purpose
+# (on two providers). The key
 # is `(purpose, provider)` and the value is the env id of a credential THIS
 # DEPLOYMENT pays for; `llm_client._tenant_api_key` consults it only after an
 # agency turns out to have no key of its own.
@@ -98,6 +106,8 @@ def _api_key(env_name: str) -> str:
 # value simply restores the old fail-closed behaviour.
 _FALLBACK_KEY_ENVS: dict[tuple[str, str], str] = {
     ("help_assistant", "deepseek"): "HELP_ASSISTANT_DEEPSEEK_KEY",
+    # Set → the help bot runs Claude Opus by default (`_model_pick`).
+    ("help_assistant", "anthropic"): "HELP_ASSISTANT_ANTHROPIC_KEY",
 }
 
 

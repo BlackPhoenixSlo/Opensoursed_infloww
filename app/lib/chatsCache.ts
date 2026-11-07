@@ -155,14 +155,16 @@ export function bumpAfterSend(
       ...target,
       hasUnread: false,
       unreadMessagesCount: 0,
+      // A fresh message, not the old one spread: the fan's previous
+      // `lockedText` / `isTip` used to ride on and mark our free text 🔒/💰.
       lastMessage: {
-        ...(target.lastMessage ?? { id: 0 }),
         id: target.lastMessage?.id ?? 0,
         text: msg.text,
         fromUser: { id: msg.fromUserId, name: msg.fromUserName },
         createdAt: nowIso,
         mediaCount: msg.mediaCount,
         isFree: msg.price === 0,
+        price: msg.price,
       },
     },
     { inPlace: !decodeChatsKey(key).unfiltered },

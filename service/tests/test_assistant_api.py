@@ -1914,6 +1914,29 @@ def case_fit_sheds_in_its_documented_order():
     assert len(out) + 1 + len(full[len(out) + 1:].split("\n")[0]) > cap, \
         "the cut threw away a line that fit"
 
+async def case_long_answers_end_with_one_offer_to_say_more():
+    # Owner, 2026-11-07: replies were bloated. The rule caps a how-to answer at
+    # ~300 chars and moves the rest behind ONE closing offer that names its
+    # topic (the widget sends no history, so a bare "yes" has nothing to expand).
+    system = " ".join(assistant_api._build_system_prompt().split())
+    assert "KEEP IT UNDER 300 CHARACTERS" in system
+    assert "end with ONE short question offering the rest, naming its topic" in system
+    assert 'A bare "yes"' in system and "cannot see the earlier message" in system
+    # The fan-why / date rule still opens with its clarifying question.
+    assert "still OPENS the reply rather than closing it" in system
+    # Example beats rule: the docs-only exemplars obey the cap, and one shows
+    # the offer as its last sentence.
+    import re as _re4
+    offers = 0
+    for block in _re4.split(r"\nQ(?= |:)", assistant_api._FEWSHOTS)[1:]:
+        q, _, a = block.partition("\nA:")
+        if "pack" in q.lower() or "Model1" in q:
+            continue                      # fan diagnoses keep their own shape
+        flat = " ".join(a.split())
+        assert len(flat) <= 300, f"a docs exemplar runs {len(flat)} chars: {flat[:60]!r}"
+        offers += flat.endswith("?")
+    assert offers >= 1, "no docs exemplar shows the closing offer"
+
 
 _harness.run(
     case_happy_path_returns_the_model_answer,
@@ -1975,4 +1998,5 @@ _harness.run(
     case_two_fewshots_that_pull_opposite_ways_both_survive,
     case_a_recipient_list_is_redacted_whatever_type_the_ids_arrive_as,
     case_fit_sheds_in_its_documented_order,
+    case_long_answers_end_with_one_offer_to_say_more,
 )

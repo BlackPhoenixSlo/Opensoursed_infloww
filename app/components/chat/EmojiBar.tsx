@@ -73,6 +73,7 @@ export function EmojiQuickRow({
         type="button"
         disabled={disabled}
         onClick={() => { pushRecent(e); onInsert(e); }}
+        title={`Insert ${e}`}
         className={`${size} grid place-items-center rounded-md hover:bg-bg-elev-1 disabled:opacity-40 text-base`}
       >
         {e}
@@ -177,6 +178,7 @@ export function EmojiPickerButton({
           triggerClassName,
         )}
         aria-label="Emoji picker"
+        title="Emoji picker"
       >
         {/* Messages Pro draws Infloww's outline smiley, its row's 20px glyph. */}
         {messagesPro ? <Smile size={20} strokeWidth={1.6} aria-hidden /> : "😊"}
@@ -282,6 +284,7 @@ function EmojiBtn({ emoji, onClick }: { emoji: string; onClick: (e: string) => v
     <button
       type="button"
       onClick={() => onClick(emoji)}
+      title={`Insert ${emoji}`}
       className="w-11 h-11 md:w-7 md:h-7 grid place-items-center rounded-md hover:bg-bg-elev-1 text-2xl md:text-base"
     >
       {emoji}

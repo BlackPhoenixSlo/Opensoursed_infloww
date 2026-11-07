@@ -317,6 +317,7 @@ export function TimedMessagePopover(props: TimedMessagePopoverProps) {
                   <button
                     key={m}
                     type="button"
+                    title={`Send in ${m} min`}
                     onClick={() => {
                       setOpen(false);
                       onPreset(m);

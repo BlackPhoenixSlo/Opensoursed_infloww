@@ -55,6 +55,7 @@ export function QuickEmojiRow({ onInsert, disabled }: { onInsert: (emoji: string
           type="button"
           onClick={() => onInsert(e)}
           disabled={disabled}
+          title={`Insert ${e} (pick your quick emojis with the gear)`}
           className="w-7 h-7 shrink-0 grid place-items-center rounded-md text-base hover:bg-bg-elev-1 disabled:opacity-40"
         >
           {e}
