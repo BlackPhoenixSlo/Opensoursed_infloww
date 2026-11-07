@@ -34,6 +34,7 @@ these; `_drain_due_jobs_once` spawns what plan_dispatch returns). No DB, no loop
   case_plan_rule_needs_runs:   max_runs set and run_count None -> ValueError (shell invariant).
   case_quiet_plan_table:       the band gate: inside -> Skip; outside -> Enqueue; no clock ->
                                Enqueue(no_clock=True) (the shell warns once).
+  case_bulk_dispatch_goes_by_oldest_due_job: the bulk lane by oldest due run_at, not last_served.
   case_dispatch_order_table:   operator first, then kind rank, then least recently served,
                                then account id; in-flight pairs not spawned; the bulk lane.
   case_dispatch_never_mutates: inputs untouched.
@@ -344,6 +345,19 @@ def case_dispatch_order_table():
     # the same pair twice: one spawn
     assert len(plan_dispatch([Pair("a", K, False), Pair("a", K, True)], set(), {}, lambda k: 4, set())) == 1
     assert plan_dispatch([], set(), {}, lambda k: 4, set()) == []
+
+
+def case_bulk_dispatch_goes_by_oldest_due_job():
+    """The bulk lane queues by each pair's oldest due job, never by `last_served`
+    (process-local: empty after a restart, which put the same ids last every time)."""
+    B = "scrape_chats"
+    pairs = [Pair("a", B, False, 300.0), Pair("z", B, False, 100.0), Pair("m", B, False, 200.0)]
+    for served in ({}, {"z": 999.0, "m": 1.0}):
+        got = plan_dispatch(pairs, set(), served, lambda k: 50, {B})
+        assert [s.account_id for s in got] == ["z", "m", "a"], (served, got)
+    # a non-bulk pair still goes least recently served first
+    got = plan_dispatch([Pair("a", K, False, 1.0), Pair("b", K, False, 2.0)], set(), {"a": 9.0}, lambda k: 4, set())
+    assert [s.account_id for s in got] == ["b", "a"], got
 
 
 def case_dispatch_never_mutates():

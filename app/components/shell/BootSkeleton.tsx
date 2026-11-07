@@ -97,7 +97,7 @@ function DashboardBoot() {
               <span className="h-[45px] flex items-center"><Skeleton className="h-[34px] w-32" /></span>
             </div>
             <div className="flex flex-col md:flex-row xl:flex-[3] min-w-0">
-              {([["subscriptions", "tips"], ["posts", "referrals"], ["messages", "streams"]] as const).map(([a, b], i) => (
+              {([["subscriptions", "tips"], ["posts", "referrals"], ["messages", "chargebacks"]] as const).map(([a, b], i) => (
                 <div key={a} className={cn(
                   "flex-1 min-w-0 md:h-[177px] flex flex-col justify-center gap-4 md:gap-[56px] py-4 md:py-0",
                   "border-t xl:border-t-0 md:border-l border-border", i === 0 && "md:border-l-0 xl:border-l")}>

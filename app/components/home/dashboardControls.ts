@@ -35,6 +35,8 @@ export type DashboardControl = {
   wired: boolean;
   /** A tab's period id. */
   period?: Period;
+  /** Ours in the capture's slot: its label is not the capture's (the row and its sources still are). */
+  ours?: true;
 };
 
 const J = "index.9f50f370.js";
@@ -78,8 +80,9 @@ export const DASHBOARD_HEADER = [
     sources: [`${J} @11238833`], inventory: "[CL]", wired: true },
   { key: "messages", id: "dashboard#48", kind: "tile", labels: ["Messages"],
     sources: [`${J} @11239315`], inventory: "[CL]", wired: true },
-  { key: "streams", id: "dashboard#49", kind: "tile", labels: ["Streams"],
-    sources: [`${J} @11239701`], inventory: "[CL]", wired: true },
+  // Ours in the capture's Streams slot (#49): the window's reversals, below zero; stream sales count in Total only.
+  { key: "chargebacks", id: "dashboard#49", kind: "tile", labels: ["Chargebacks"],
+    sources: [`${J} @11239701`], inventory: "[CL]", wired: true, ours: true },
   // The bottom box's "Employee sales" card, the per-employee read (ticket 26), and its tooltip.
   { key: "employeeSales", id: "dashboard#79", kind: "tile", labels: ["Employee sales"],
     sources: [`${J} @11244153`], inventory: "[CL]", wired: true },

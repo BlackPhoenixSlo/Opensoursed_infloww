@@ -10,8 +10,8 @@ and its rules are in `README.md`; this file is only what this flow adds. Its fil
 
 | Path | Role |
 |---|---|
-| `lib/attribution_relay` | OF's `/payouts/transactions` (what `transaction_ingest.run_one_tick` pages) read from `<tmp>/of-ledger.jsonl`, appended while the run goes on; `GET /__slop/ledger` counts the pages served. No file: the read fails as before |
-| `lib/ledger_faults` | The ledger ingest's check `LEDGER` (one write transaction per ledger page with news, none for a quiet re-poll; each fan's `lifetime_spend_cents` == seeded spend + its revenue rows) and its faults `ledger-per-row-txns` (`_write_page` one row per transaction) and `ledger-delta-separate-txn` (the first lifetime delta lost), both patching `transaction_ingest` and targeting `LEDGER` |
+| `lib/attribution_relay` | OF's `/payouts/transactions` (what `transaction_ingest.run_one_tick` pages) read from `<tmp>/of-ledger.jsonl`, appended while the run goes on (a later line of a row id: OF's newer view of it), as OF answered on 2026-11-07: start/end ignored, date-only `startDate` honoured, the latest 600 rows (`POST /__slop/ledger {latest: {account: n}}` narrows it); OF's `/payouts/chargebacks` (`{list, marker}`, dispute createdAt in [startDate, endDate), limit cap 100, offset) from `<tmp>/of-chargebacks.jsonl`; `GET /__slop/ledger` counts the pages and disputes calls per Creator. No file: the read fails as before |
+| `lib/ledger_faults` | The ledger ingest's check `LEDGER` (one write transaction per ledger page with news, none for a quiet re-poll; each fan's `lifetime_spend_cents` == seeded spend + its revenue rows) and its faults `ledger-per-row-txns` (`_write_page` one row per transaction) and `ledger-delta-separate-txn` (the first lifetime delta lost), both patching `transaction_ingest` and targeting `LEDGER`; the chargebacks phase's checks `CB_MONEY`, `CB_OPEN`, `CB_UNMATCHED`, `CB_REPOLL`, `CB_CALLS` and fault `ledger-chargeback-already-ignored` (`transaction_chargebacks.plan_chargebacks` sees every row as revenue: re-deducts on each poll; targets `CB_MONEY`, `CB_REPOLL`) |
 | `seed/sales_touches` | `seed()`: outbound rows in the past as the product writes them (a human 1:1 send, an Automation send, a mass send with its `mass_runs` row); `employees()`: each chatter's mirror Employee (read, or written when missing) and the Automation sentinel (written as migration 0011 does when the DB lacks it) |
 
 ## Scenarios
@@ -30,6 +30,9 @@ and its rules are in `README.md`; this file is only what this flow adds. Its fil
   3 h 30 min in its hours and minutes fields (screenshots `trigger-sales-converters-window`,
   `settled-sales-converters-window-saved`). Faults: `converters-first-chatter` (default),
   `converters-counts-automation`, `converters-window-ignored`, `chatter-send-unstamped`.
+  Last, the chargebacks phase (scenario docstring): OF's disputes reverse ingested sales through the real refresh
+  walk's poll (ledger undo + dispute, dispute only on a sale aged out of the ledger window, an open dispute, an
+  unmatched one, a same-fan same-amount pair 1 s apart, a re-poll); fault `ledger-chargeback-already-ignored`.
 
 ## Rules the run asserts (Infloww's Converters, 2026-10-27)
 
@@ -48,6 +51,10 @@ and its rules are in `README.md`; this file is only what this flow adds. Its fil
 - Past touches (hours ago), Automation and mass sends are SQL rows in the product's shape. Mirror Employees and the
   Automation sentinel are SQL rows written before any send. A fresh `create_all` DB has no Automation row,
   because only alembic migration 0011 writes it.
+- OF's disputes list is a file, empty until the chargebacks phase; no sale is disputed while the fake ledger still
+  calls it `done` (OF's two lists show one payment's status). Measured 2026-11-07 with that lag: every refresh walk
+  reinstates the row and every poll re-deducts it (lifetime right after each tick, two write transactions and two
+  status_flip broadcasts per walk), the product's "lifetime follows status both ways".
 - A WS tip's ledger twin is appended only after the pump is quiet. WS-unlocked PPVs get no ledger twin
   (`_ENABLE_PPV_FINGERPRINT` is False, so a twin would count twice).
 - The send route's p95 budget (1500 ms) is a stress budget at ~100 sends/s. `chatter-crowd` owns the

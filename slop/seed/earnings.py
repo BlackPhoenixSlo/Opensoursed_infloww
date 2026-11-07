@@ -24,6 +24,11 @@ Two days OF and the ledger disagree on (`w.data["earnings_cases"]`):
                 day and OF charts on that UTC day; that Creator has no other
                 sale from the day before to the day after the next (a report in
                 that zone sees this one sale alone)
+With `chargebacks=True`, each Creator also has two of today's sales reversed
+(`CHARGEBACKS`: a PPV message charged back, a tip refunded), as the chargebacks
+ingest leaves them (status flipped, money kept), from their own RNG stream; no
+earnings read counts them, the Chargebacks tiles do (`w.data["earnings_cases"]
+["chargebacks"]`).
 Deterministic from the World's seed."""
 from __future__ import annotations
 
@@ -51,12 +56,15 @@ def _day_net(rng, c: str, base: dict, weekday: int) -> tuple[int, int]:
 
 ZERO_SALE_CENTS = 1400     # the $14 PPV message of the zero day
 MIDNIGHT_SALE_CENTS = 2500
+# Today's reversed sales per Creator: (kind, gross, status); net is OF's 80%.
+CHARGEBACKS = (("ppv_message", 3610, "chargedback"), ("tip", 1250, "refunded"))
 
 
 def seed(w: World, creators: list[dict], tmp: Path, *, history_days: int, connected_days: int,
          capture: float = 0.96, trickle: float = 0.03, zero_back: int = 2, midnight_back: int = 6,
-         midnight_tz: str = "America/Los_Angeles") -> dict:
+         midnight_tz: str = "America/Los_Angeles", chargebacks: bool = False) -> dict:
     rng = w.rng("earnings")
+    cb_rng = w.rng("earnings_chargebacks")
     today = w.now.date()
     zero_day = (today - timedelta(days=zero_back)).isoformat()
     local_day = today - timedelta(days=midnight_back)
@@ -129,6 +137,14 @@ def seed(w: World, creators: list[dict], tmp: Path, *, history_days: int, connec
             one_sale(midnight_at, MIDNIGHT_SALE_CENTS)
         for cat, mean in (("messages", base["messages"]), ("tips", base["tips"])):
             rows_for(today, round(mean * 100 / 0.8 * 0.4), KIND[cat], until=w.now)
+        if chargebacks:
+            start = datetime.combine(today, time.min)
+            for kind, gross, status in CHARGEBACKS:
+                tx_id += 1
+                at = start + timedelta(seconds=cb_rng.randint(0, max(0, int((w.now - start).total_seconds()) - 1)))
+                net = round(gross * 0.8)
+                ledger.append((aid, cb_rng.choice(fans[aid]), kind, gross, "USD", ts(at), ts(w.now), str(tx_id), status,
+                               net, gross - net, 0, "ledger"))
         con.execute("UPDATE accounts SET created_at=? WHERE id=?",
                     (ts(datetime.combine(connected, datetime.min.time()) + timedelta(hours=9)), aid))
     with con:
@@ -143,6 +159,9 @@ def seed(w: World, creators: list[dict], tmp: Path, *, history_days: int, connec
     w.data["connected"] = connected.isoformat()
     w.data["earnings_cases"] = {
         "zero_day": zero_day, "zero_sale_cents": ZERO_SALE_CENTS,
+        "chargebacks": ({"rows": len(CHARGEBACKS) * len(creators),
+                         "net_cents": sum(round(g * 0.8) for _k, g, _s in CHARGEBACKS) * len(creators)}
+                        if chargebacks else None),
         "midnight": {"account_id": creators[0]["id"], "tz": midnight_tz, "local_day": local_day.isoformat(),
                      "utc": ts(midnight_at), "gross_cents": MIDNIGHT_SALE_CENTS}}
     return truth

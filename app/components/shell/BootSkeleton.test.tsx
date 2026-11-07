@@ -16,7 +16,7 @@ describe("BootSkeleton", () => {
   it("the Dashboard: the period tabs and the earnings card's labels from the Dashboard's catalogue, a bar per figure", () => {
     render(<BootSkeleton pathname="/" />);
     expect(route()).toBe("dashboard");
-    for (const k of ["title", "total", "subscriptions", "tips", "posts", "referrals", "messages", "streams"] as const) {
+    for (const k of ["title", "total", "subscriptions", "tips", "posts", "referrals", "messages", "chargebacks"] as const) {
       expect(screen.getByText(control(k).labels[0])).toBeTruthy();
     }
     for (const t of PERIOD_TABS) expect(screen.getByText(t.labels[0])).toBeTruthy();

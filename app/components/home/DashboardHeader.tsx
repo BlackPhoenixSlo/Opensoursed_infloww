@@ -20,7 +20,9 @@
  * before those settings answer.
  *
  * Total earnings and the channel tiles read one
- * `GET /admin/stats/revenue?from&to&group_by=kind`. That answer and the Applied
+ * `GET /admin/stats/revenue?from&to&group_by=kind`; Chargebacks (ours, in
+ * the capture's Streams slot) reads it with `status=reversed` and shows the
+ * sum below zero (stream sales count in Total only). That answer and the Applied
  * settings are saved with the React Query snapshot (components/providers.tsx),
  * keyed by the signed-in principal: a return visit paints the last Total at
  * once, cut by the saved settings, and refreshes both. Total sums every kind,
@@ -57,7 +59,7 @@
 import { createContext, useContext, useState, type ReactNode } from "react";
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import {
-  AlignCenter, BookmarkPlus, FileText, Info as InfoIcon, Lightbulb, Loader2, MessageCircleMore, UserStar,
+  BookmarkPlus, FileText, Info as InfoIcon, Lightbulb, Loader2, MessageCircleMore, Undo2, UserStar,
   type LucideIcon,
 } from "lucide-react";
 
@@ -66,7 +68,7 @@ import type { PerEmployeeResp } from "@/hooks/useStats";
 import { useAppliedSettings } from "@/lib/appliedSettings";
 import { usePrincipalId } from "@/hooks/useEmployeeKey";
 import { periodWindow, type Period } from "@/lib/dateRange";
-import { fmtCents } from "@/lib/format";
+import { fmtCents, isLoss } from "@/lib/format";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { relay } from "@/lib/relay";
 import { utcOffsetLabel } from "@/lib/utcOffset";
@@ -78,10 +80,11 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import {
   control, DEFAULT_BASIS, DEFAULT_PERIOD, isPeriod, PERIOD_TABS, type Basis, type DashboardControlKey,
 } from "@/components/home/dashboardControls";
-import { netMissingNote } from "@/components/home/netMissingNote";
+import { CHARGEBACKS_UNAVAILABLE, netMissingNote } from "@/components/home/netMissingNote";
 
 /** Referrals' tile title when OnlyFans' referrals read failed for some Creators, or all. */
 export const REFERRALS_UNAVAILABLE = "OnlyFans referrals are unavailable for some creators, counted as $0.00";
+export { CHARGEBACKS_UNAVAILABLE };
 
 /** White on the dark card (16-dashboard.png), the theme's text in light. */
 export const WHITE = "text-white [html[data-theme=light]_&]:text-fg";
@@ -93,26 +96,25 @@ interface RevenueRow {
 }
 interface RevenueResp { rows: RevenueRow[] }
 
-type Channel = "subscriptions" | "tips" | "posts" | "referrals" | "messages" | "streams";
+type Channel = "subscriptions" | "tips" | "posts" | "referrals" | "messages" | "chargebacks";
 
 /**
  * The capture's channels and the Relay's sales kinds (`transaction_ingest.KIND_CATALOG`)
  * each sums, as the spec's Channel mapping writes them. A channel absent here
- * (Referrals) has no sales kind and reads its own (`useReferrals`); a kind absent here (`unknown`
- * among them) counts in Total earnings only.
+ * (Referrals, Chargebacks) has no sales kind and reads its own (`useReferrals`, the reversed read); a kind
+ * absent here (`unknown`, `ppv_stream` and `tip_stream` among them) counts in Total earnings only.
  */
 const CHANNEL_KINDS: Partial<Record<Channel, readonly string[]>> = {
   subscriptions: ["subscription", "rebill"],
   messages: ["ppv_message", "custom"],
   posts: ["ppv_post"],
   tips: ["tip", "tip_post"],
-  streams: ["ppv_stream", "tip_stream"],
 };
 
 /**
  * Each channel's icon (capture #58-#63): the glyph 22px in the channel colour on a 45px circle of that colour at 10%
  * over the card (16-dashboard.png samples: Subscriptions #2d3734, Tips #292d3b, Referrals #3a302e, Messages #362d3b,
- * Streams #262a36). `rgb` is "r, g, b".
+ * Streams #262a36; Chargebacks, ours, is the err token). `rgb` is "r, g, b".
  */
 export const TILE_ICON: Record<Channel, { Icon: LucideIcon; rgb: string }> = {
   subscriptions: { Icon: BookmarkPlus, rgb: "42, 212, 172" },
@@ -120,7 +122,7 @@ export const TILE_ICON: Record<Channel, { Icon: LucideIcon; rgb: string }> = {
   posts: { Icon: FileText, rgb: "42, 212, 172" },
   referrals: { Icon: UserStar, rgb: "255, 124, 113" },
   messages: { Icon: MessageCircleMore, rgb: "206, 99, 255" },
-  streams: { Icon: AlignCenter, rgb: "20, 78, 204" },
+  chargebacks: { Icon: Undo2, rgb: "255, 124, 113" },
 };
 
 /** The answer's rows; an answer without a `rows` array (a mock's `[]` or `{}`) reads as a window with no sales,
@@ -129,9 +131,8 @@ const rowsOf = (d: RevenueResp | undefined): RevenueRow[] => (Array.isArray(d?.r
 
 /** A header figure in whole dollars with a thousands separator, "$1,005,875": the house choice for the earnings
  *  overview, deliberately unlike the bundle's `getHomePageMoneyFormat` (index.9f50f370.js @11227188), which prints
- *  two decimals at every size. Rounds to the nearest dollar; a negative keeps its leading minus. */
-const money = (c: number): string =>
-  `${c < 0 ? "-" : ""}$${(Math.abs(c) / 100).toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
+ *  two decimals at every size. Rounds to the nearest dollar; a loss keeps its minus, one under a dollar is "$0". */
+const money = fmtCents;
 
 /** A row's money in the chosen basis: OnlyFans's `net_cents` in Net, `total_cents` in Gross. */
 const cents = (r: RevenueRow, basis: Basis) => (basis === "Net" ? r.net_cents ?? 0 : r.total_cents);
@@ -188,7 +189,8 @@ function Figure({ text, refreshing = false }: { text: string; refreshing?: boole
 /** What a channel tile needs from the header: the by-kind read, whether the
  *  Applied settings have answered, and the basis. */
 interface Tiles {
-  revenue: UseQueryResult<RevenueResp>; referrals: UseQueryResult<ReferralsResp>; ready: boolean; basis: Basis;
+  revenue: UseQueryResult<RevenueResp>; referrals: UseQueryResult<ReferralsResp>; reversed: UseQueryResult<RevenueResp>;
+  ready: boolean; basis: Basis;
 }
 
 /**
@@ -202,22 +204,30 @@ interface Tiles {
  */
 function ChannelTile({ k, tiles }: { k: Channel; tiles: Tiles }) {
   const kinds = CHANNEL_KINDS[k];
-  const { revenue, referrals, ready, basis } = tiles;
-  const sum = kinds ? rowsOf(revenue.data)
-    .filter((r) => r.kind !== null && kinds.includes(r.kind))
-    .reduce((s, r) => s + cents(r, basis), 0) : referralsTotal(referrals.data);
-  const partial = !kinds && (referrals.isError || !!referrals.data?.unavailable?.length);
+  const { revenue, referrals, reversed, ready, basis } = tiles;
+  const chargebacks = k === "chargebacks";
+  // Chargebacks: the window's reversals (dated by their sale) below zero; Total already leaves them out.
+  const sum = chargebacks ? -rowsOf(reversed.data).reduce((s, r) => s + cents(r, basis), 0)
+    : kinds ? rowsOf(revenue.data)
+      .filter((r) => r.kind !== null && kinds.includes(r.kind))
+      .reduce((s, r) => s + cents(r, basis), 0) : referralsTotal(referrals.data);
+  const partial = k === "referrals" && (referrals.isError || !!referrals.data?.unavailable?.length);
+  const read = chargebacks ? reversed : kinds ? revenue : referrals;
   return (
     <div
       data-control={k}
-      title={partial ? REFERRALS_UNAVAILABLE : undefined}
+      title={partial ? REFERRALS_UNAVAILABLE : chargebacks && reversed.isError ? CHARGEBACKS_UNAVAILABLE : undefined}
       className="flex items-center justify-between gap-2 ml-[35.5px] mr-[38.5px]"
     >
       <div className="flex flex-col shrink-0">
-        {!ready || (kinds ? revenue : referrals).isPending ? (
+        {!ready || read.isPending ? (
           <span className="h-[28px] flex items-center"><Shimmer what={label(k)} className="h-[21px] w-16" /></span>
+        ) : chargebacks && reversed.isError ? (
+          <span data-figure className={cn("text-[21px] leading-[28px] font-bold", WHITE)}>-</span>
         ) : (
-          <span data-figure className={cn("text-[21px] leading-[28px] font-bold tabular-nums", WHITE)}>{money(sum)}</span>
+          <span data-figure className={cn("text-[21px] leading-[28px] font-bold tabular-nums", isLoss(sum) ? "text-err" : WHITE)}>
+            {money(sum)}
+          </span>
         )}
         <span className="text-[12px] leading-[17px] text-[#808080]">{label(k)}</span>
       </div>
@@ -417,14 +427,28 @@ export default function DashboardHeader() {
     staleTime: 30_000,
   });
 
+  // Chargebacks: the same read over the reversals (`status=reversed`: chargedback, refunded, refund pending).
+  const reversed = useQuery<RevenueResp>({
+    queryKey: ["dashboard", "revenue-reversed-by-kind", principalId, from, to, basis],
+    queryFn: () => {
+      const qs = new URLSearchParams({ from, to, group_by: "kind", status: "reversed" });
+      if (basis === "Net") qs.set("include_net", "true");
+      return relay.get<RevenueResp>(`/admin/stats/revenue?${qs.toString()}`);
+    },
+    enabled: ready,
+    staleTime: 30_000,
+  });
+
   // OnlyFans' referrals, the same figure under Net and Gross; Total earnings adds them as the bundle's does. The
   // ledger's Total shows without waiting on them (an OF read per Creator) and takes them in when they land.
   const referrals = useReferrals(dayIn(from, reportTz), dayIn(to, reportTz), null, ready);
   const totalCents = rowsOf(revenue.data).reduce((sum, r) => sum + cents(r, basis), 0) + referralsTotal(referrals.data);
+  // Chargebacks' reversals with no net yet count too, once their read lands.
   const netMissing = basis === "Net" && revenue.isSuccess
-    ? rowsOf(revenue.data).reduce((n, r) => n + (r.net_missing_count ?? 0), 0)
+    ? [...rowsOf(revenue.data), ...(reversed.isSuccess ? rowsOf(reversed.data) : [])]
+      .reduce((n, r) => n + (r.net_missing_count ?? 0), 0)
     : 0;
-  const tiles: Tiles = { revenue, referrals, ready, basis };
+  const tiles: Tiles = { revenue, referrals, reversed, ready, basis };
 
   return (
     // #11: 16px from this card to the bottom box, the Dashboard grid's gap.
@@ -480,7 +504,7 @@ export default function DashboardHeader() {
           <div className="flex flex-col md:flex-row xl:flex-[3] min-w-0">
             <ChannelColumn top="subscriptions" bottom="tips" tiles={tiles} first />
             <ChannelColumn top="posts" bottom="referrals" tiles={tiles} />
-            <ChannelColumn top="messages" bottom="streams" tiles={tiles} />
+            <ChannelColumn top="messages" bottom="chargebacks" tiles={tiles} />
           </div>
         </div>
       )}

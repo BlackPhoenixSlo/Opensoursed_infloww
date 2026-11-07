@@ -394,7 +394,8 @@ async def _due_job_pairs() -> list[dispatch_plan.Pair]:
         rows = (
             await s.execute(
                 select(ScheduledJob.account_id, ScheduledJob.kind,
-                       func.max(case((_by_operator(auto_emp), 1), else_=0)))
+                       func.max(case((_by_operator(auto_emp), 1), else_=0)),
+                       func.min(ScheduledJob.run_at))
                 .where(
                     ScheduledJob.status == "pending",
                     ScheduledJob.run_at <= now,
@@ -402,8 +403,16 @@ async def _due_job_pairs() -> list[dispatch_plan.Pair]:
                 .group_by(ScheduledJob.account_id, ScheduledJob.kind)
             )
         ).all()
-    return [dispatch_plan.Pair(r[0], r[1], bool(r[2]) and canonical_kind(r[1]) in _OPERATOR_KINDS)
+    return [dispatch_plan.Pair(r[0], r[1], bool(r[2]) and canonical_kind(r[1]) in _OPERATOR_KINDS,
+                               _epoch(r[3]))
             for r in rows if r[0] not in off]
+
+
+def _epoch(dt: datetime | str | None) -> float:
+    """A naive-UTC run_at as epoch seconds (an aggregate may come back as text)."""
+    if isinstance(dt, str):
+        dt = _parse_iso(dt)
+    return (dt - datetime(1970, 1, 1)).total_seconds() if dt else 0.0
 
 
 # Accounts already warned about "quiet hours set, but no clock to evaluate them in".

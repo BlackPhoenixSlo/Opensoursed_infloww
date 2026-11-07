@@ -20,6 +20,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, onTes
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 
 import { jsonRes, renderWithProviders } from "@/test-utils";
+import { CHARGEBACKS_UNAVAILABLE } from "@/components/home/reportsMath";
 
 vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => ({ accountId: null }) }));
 // An owner session by default; a test may switch to a chatter session (no user).
@@ -504,15 +505,19 @@ describe("StatsReport Creator reports Overview", () => {
     ...(byKind ? { by_kind: byKind.map(([kind, c]) => ({ kind, total_cents: c, count: 1 })) } : {}),
   });
   // The selected window's kinds: Subscriptions $150 (subscription + rebill), Messages $80, Posts $20, Tips $30,
-  // Streams $10, so Total earnings $290.
+  // a $10 stream tip (no channel: Total only), so Total earnings $290.
   const CURRENT = [kindRow("subscription", 10000), kindRow("rebill", 5000), kindRow("ppv", 8000),
     kindRow("ppv_post", 2000), kindRow("tip", 3000), kindRow("tip_stream", 1000)];
   // The window before: Subscriptions $100, Messages $100, Posts $20, no Tips and no Streams, so Total $220.
   const PRIOR = [kindRow("subscription", 10000), kindRow("ppv", 10000), kindRow("ppv_post", 2000)];
   const PRIOR_FROM = "2026-10-02T00:00:00.000Z";
-  /** Answers the kind read by window (the selected one or the one before), the day read with `days`. */
+  // The window's reversals (`status=reversed`), Chargebacks' $28.88.
+  const REVERSED = [kindRow("ppv_message", 2888)];
+  /** Answers the kind read by window (the selected one or the one before), the day read with `days`, the reversed
+   *  kind read with REVERSED. */
   const mockRevenue = (days: unknown[] = [], hours: unknown[] = []) => {
     revenueFor = (q) => {
+      if (q.get("status") === "reversed") return jsonRes({ rows: q.get("group_by") === "kind" ? REVERSED : [] });
       if (q.get("group_by") === "day") return jsonRes({ rows: days });
       if (q.get("group_by") === "hour") return jsonRes({ rows: hours });
       return jsonRes({ rows: q.get("from") === PRIOR_FROM ? PRIOR : CURRENT });
@@ -560,7 +565,7 @@ describe("StatsReport Creator reports Overview", () => {
       .getByTitle("Track trends and growth of your managed creators’ earning channels")).toBeInTheDocument();
     // analytics-creator-reports#50: the seven tiles, in order (the hidden cell between Messages and Tips is not one).
     expect(within(section("Earnings summary")).getAllByRole("group").map((t) => t.getAttribute("aria-label")))
-      .toEqual(["Total earnings", "Subscriptions", "Posts", "Messages", "Tips", "Referrals", "Streams"]);
+      .toEqual(["Total earnings", "Subscriptions", "Posts", "Messages", "Tips", "Referrals", "Chargebacks"]);
     // Earnings by channel is one of Infloww's sections: nothing above it is titled Inflowwww extra.
     expect(channel.closest('[title="Inflowwww extra"]')).toBeNull();
   });
@@ -581,7 +586,11 @@ describe("StatsReport Creator reports Overview", () => {
     expect(figures(tile("Posts"))).toEqual(["$20", "0.00%"]);
     expect(within(tile("Posts")).queryByRole("img")).toBeNull();
     expect(figures(tile("Tips"))).toEqual(["$30", "-"]);
-    expect(figures(tile("Streams"))).toEqual(["$10", "-"]);
+    // Chargebacks: the window's reversals below zero on the err token, no growth (no prior read).
+    expect(figures(tile("Chargebacks"))).toEqual(["-$29", "-"]);
+    expect(within(tile("Chargebacks")).getAllByRole("definition")[0]).toHaveStyle({ color: "var(--color-err)" });
+    expect(within(tile("Total earnings")).getAllByRole("definition")[0]).toHaveStyle({ color: "var(--color-fg)" });
+    expect(revenue().some((r) => r.status === "reversed" && r.group_by === "kind" && !r.account_id)).toBe(true);
     // Referrals is OnlyFans' own read (`/admin/stats/referrals`), none here.
     expect(figures(tile("Referrals"))[0]).toBe("$0");
   });
@@ -655,7 +664,7 @@ describe("StatsReport Creator reports Overview", () => {
     const chan = section("Earnings by channel");
     // analytics-creator-reports#74, #75: a line per channel, every channel when none is picked.
     await waitFor(() => expect(within(chan).getAllByRole("img").map((l) => l.getAttribute("aria-label")))
-      .toEqual(["Subscription", "Tips", "Posts", "Messages", "Referrals", "Streams"]));
+      .toEqual(["Subscription", "Tips", "Posts", "Messages", "Referrals"]));
     // analytics-creator-reports#71: the Channels pick, Referrals among them.
     fireEvent.click(within(chan).getByRole("button", { name: "Channels" }));
     expect(screen.getByRole("checkbox", { name: "Referrals" })).toBeEnabled();
@@ -665,8 +674,8 @@ describe("StatsReport Creator reports Overview", () => {
     // analytics-creator-reports#75, #85: the donut's legend, share and amount of the kind read's channels.
     const legend = within(section("Earnings breakdown")).getByRole("list", { name: "Earnings breakdown legend" });
     await waitFor(() => expect(within(legend).getAllByRole("listitem").map((r) => r.textContent)).toEqual([
-      "Subscription51.72%$150", "Tips10.34%$30", "Posts6.90%$20", "Messages27.59%$80",
-      "Referrals0.00%$0", "Streams3.45%$10",
+      "Subscription53.57%$150", "Tips10.71%$30", "Posts7.14%$20", "Messages28.57%$80",
+      "Referrals0.00%$0", "Chargebacks--$29",
     ]));
   });
 
@@ -703,7 +712,7 @@ describe("StatsReport Creator reports Overview", () => {
     const summary = await screen.findByRole("region", { name: "Earnings summary" });
     await waitFor(() => expect(figures(within(summary).getByRole("group", { name: "Total earnings" })))
       .toEqual(["$0", "-"]));
-    for (const name of ["Subscriptions", "Posts", "Messages", "Tips", "Streams"]) {
+    for (const name of ["Subscriptions", "Posts", "Messages", "Tips", "Chargebacks"]) {
       expect(figures(within(summary).getByRole("group", { name }))).toEqual(["$0", "-"]);
     }
     expect(screen.queryByText("No creators in this selection")).toBeNull();
@@ -957,6 +966,8 @@ describe("StatsReport Creator reports Creator performance", () => {
   const mockCreatorA = () => {
     revenueFor = (q) => {
       if (q.get("account_id") !== "acct-a") return jsonRes({ rows: [] });
+      // Creator A's reversals: $28.88 on one day.
+      if (q.get("status") === "reversed") return jsonRes({ rows: [dayRow("2026-10-01", 2888, [["ppv_message", 2888]])] });
       if (q.get("group_by") === "day") {
         return jsonRes({ rows: [dayRow("2026-10-01", 4000, [["subscription", 1500], ["tip", 2000], ["ppv", 500]])] });
       }
@@ -1034,7 +1045,7 @@ describe("StatsReport Creator reports Creator performance", () => {
     // analytics-creator-reports#161: All by default, a bar per bucket.
     const channels = screen.getByRole("group", { name: "Earnings channel" });
     expect(within(channels).getAllByRole("button").map((b) => b.textContent))
-      .toEqual(["All", "Subscriptions", "Tips", "Posts", "Messages", "Referrals", "Streams"]);
+      .toEqual(["All", "Subscriptions", "Tips", "Posts", "Messages", "Referrals"]);
     expect(within(channels).getByRole("button", { name: "All" })).toHaveAttribute("aria-pressed", "true");
     await waitFor(() => expect(bars()).toEqual(["Oct 1: $40", "Oct 2: $0", "Oct 3: $0"]));
     fireEvent.click(within(channels).getByRole("button", { name: "Tips" }));
@@ -1062,12 +1073,12 @@ describe("StatsReport Creator reports Creator performance", () => {
     const legend = within(section("Earnings breakdown")).getByRole("list", { name: "Earnings breakdown legend" });
     await waitFor(() => expect(within(legend).getAllByRole("listitem").map((r) => r.textContent)).toEqual([
       "Subscription$15060.00%", "Tips$3012.00%", "Posts$104.00%", "Messages$6024.00%",
-      "Referrals$00.00%", "Streams$00.00%",
+      "Referrals$00.00%", "Chargebacks-$29-",
     ]));
     const growth = within(section("Earnings breakdown")).getByRole("list", { name: "Earnings growth" });
     // #166: each row's count, then its change.
     expect(within(growth).getAllByRole("listitem").map((r) => r.textContent)).toEqual([
-      "$15050.00%Subscription", "$30-Tips", "$10-Posts", "$600.00%Messages", "$0-Referrals", "$0-Streams",
+      "$15050.00%Subscription", "$30-Tips", "$10-Posts", "$600.00%Messages", "$0-Referrals", "-$29-Chargebacks",
     ]);
   });
 
@@ -1139,13 +1150,17 @@ describe("StatsReport Creator reports Show net earnings", () => {
     net_missing_count: number; by_kind?: Row[] };
   const kindRow = (kind: string, gross: number, net: number, missing = 0): Row =>
     ({ day: null, kind, total_cents: gross, count: 1, net_cents: net, net_missing_count: missing });
-  // Gross: Subscriptions $150 (subscription + rebill), Messages $80, Posts $20, Tips $30, Streams $10, so $290.
-  // OF's net: Subscriptions $120, Messages $64, Posts $16, Tips $24, Streams $8, so $232; two PPV sales have no net yet.
+  // Gross: Subscriptions $150 (subscription + rebill), Messages $80, Posts $20, Tips $30, a $10 stream tip, so $290.
+  // OF's net: Subscriptions $120, Messages $64, Posts $16, Tips $24, the stream tip $8, so $232; two PPV sales have
+  // no net yet. Reversed: $28.88 gross, $23.10 net, on the one day.
   const KINDS = [kindRow("subscription", 10000, 8000), kindRow("rebill", 5000, 4000), kindRow("ppv", 8000, 6400, 2),
     kindRow("ppv_post", 2000, 1600), kindRow("tip", 3000, 2400), kindRow("tip_stream", 1000, 800)];
   // One day in the default window (Fri 9 Oct through Thu 15 Oct).
   const DAYS: Row[] = [{ day: "2026-10-10", kind: null, total_cents: 29000, count: 6, net_cents: 23200,
     net_missing_count: 2, by_kind: KINDS }];
+  const REVERSED_KINDS = [kindRow("ppv_message", 2888, 2310)];
+  const REVERSED_DAYS: Row[] = [{ day: "2026-10-10", kind: null, total_cents: 2888, count: 1, net_cents: 2310,
+    net_missing_count: 0, by_kind: REVERSED_KINDS }];
   /** The relay's answer: `net_cents` and `net_missing_count` only when the read asks for them. */
   const shape = (rows: Row[], net: boolean): unknown[] => rows.map(({ net_cents, net_missing_count, by_kind, ...r }) => ({
     ...r, ...(net ? { net_cents, net_missing_count } : {}), ...(by_kind ? { by_kind: shape(by_kind, net) } : {}),
@@ -1166,7 +1181,8 @@ describe("StatsReport Creator reports Show net earnings", () => {
   beforeEach(() => {
     creators = [NET_A];
     revenueFor = (q) => {
-      const rows = q.get("group_by") === "day" ? DAYS : KINDS;
+      const reversed = q.get("status") === "reversed";
+      const rows = q.get("group_by") === "day" ? (reversed ? REVERSED_DAYS : DAYS) : reversed ? REVERSED_KINDS : KINDS;
       return jsonRes({ rows: shape(rows, q.get("include_net") === "true") });
     };
   });
@@ -1183,11 +1199,11 @@ describe("StatsReport Creator reports Show net earnings", () => {
     expect(value(tile("Messages"))).toBe("$64");
     expect(value(tile("Posts"))).toBe("$16");
     expect(value(tile("Tips"))).toBe("$24");
-    expect(value(tile("Streams"))).toBe("$8");
+    expect(value(tile("Chargebacks"))).toBe("-$23");
     expect(within(section("Earnings trends")).getAllByRole("img").map((b) => b.getAttribute("aria-label")))
       .toContain("Oct 10: $232");
     const legend = within(section("Earnings breakdown")).getByRole("list", { name: "Earnings breakdown legend" });
-    expect(within(legend).getAllByRole("listitem")[0]).toHaveTextContent("Subscription51.72%$120");
+    expect(within(legend).getAllByRole("listitem")[0]).toHaveTextContent("Subscription53.57%$120");
 
     // Creator statistics: Total is the per-model read's net total; the per-kind money columns have no net read.
     await waitFor(() => expect(tableRows(table())[0].slice(0, 7))
@@ -1222,6 +1238,45 @@ describe("StatsReport Creator reports Show net earnings", () => {
     expect(screen.queryByText(MISSING)).toBeNull();
   });
 
+  it("a failed or slow reversed read never holds the Overview: only Chargebacks shows '-', titled when failed", async () => {
+    const earned = revenueFor;
+    let answer!: () => void;
+    const held = new Promise<void>((r) => { answer = r; });
+    revenueFor = (q) => (q.get("status") === "reversed" ? held.then(() => jsonRes({ detail: "relay down" }, 500)) : earned(q));
+    renderWithProviders(<StatsReport view="creator" />);
+    // Pending: every other tile and the legend show, Chargebacks "-" with no title yet.
+    await waitFor(() => expect(value(tile("Total earnings"))).toBe("$232"));
+    expect(value(tile("Messages"))).toBe("$64");
+    expect(value(tile("Chargebacks"))).toBe("-");
+    expect(tile("Chargebacks")).not.toHaveAttribute("title");
+    const legend = within(section("Earnings breakdown")).getByRole("list", { name: "Earnings breakdown legend" });
+    expect(within(legend).getAllByRole("listitem")[0]).toHaveTextContent("Subscription53.57%$120");
+    answer();
+    await waitFor(() => expect(tile("Chargebacks")).toHaveAttribute("title", CHARGEBACKS_UNAVAILABLE));
+    expect(value(tile("Chargebacks"))).toBe("-");
+    expect(within(tile("Chargebacks")).getAllByRole("definition")[0]).not.toHaveStyle({ color: "var(--color-err)" });
+    expect(value(tile("Total earnings"))).toBe("$232");
+    expect(within(legend).getAllByRole("listitem").at(-1)).toHaveTextContent("Chargebacks--");
+  });
+
+  it("a reversal under 50 cents prints plain '$0', never a red '-$0'", async () => {
+    const earned = revenueFor;
+    revenueFor = (q) => (q.get("status") === "reversed"
+      ? jsonRes({ rows: shape([kindRow("tip", 40, 32)], q.get("include_net") === "true") }) : earned(q));
+    renderWithProviders(<StatsReport view="creator" />);
+    await waitFor(() => expect(value(tile("Total earnings"))).toBe("$232"));
+    await waitFor(() => expect(value(tile("Chargebacks"))).toBe("$0"));
+    expect(within(tile("Chargebacks")).getAllByRole("definition")[0]).not.toHaveStyle({ color: "var(--color-err)" });
+  });
+
+  it("the missing-net note counts the reversals with no net too", async () => {
+    const earned = revenueFor;
+    revenueFor = (q) => (q.get("status") === "reversed"
+      ? jsonRes({ rows: shape([kindRow("ppv_message", 2888, 0, 1)], q.get("include_net") === "true") }) : earned(q));
+    renderWithProviders(<StatsReport view="creator" />);
+    expect(await screen.findByText(MISSING.replace("2 sales", "3 sales"))).toBeInTheDocument();
+  });
+
   it("discloses the sales with no net, shows Net earnings with its VAT line, and exports net with the empty cells", async () => {
     const csv = captureCsv();
     renderWithProviders(<StatsReport view="creator" />);
@@ -1253,13 +1308,16 @@ describe("StatsReport Creator reports Show net earnings", () => {
     expect(head).not.toContain("Tips");
     expect(head).not.toContain("OF ranking");
     expect(lines.slice(3, 5)).toEqual(["", "By day"]);
-    expect(lines[5]).toBe("Creator,Day,Total earnings,Subscription,Tips,Posts,Messages,Streams");
+    expect(lines[5]).toBe("Creator,Day,Total earnings,Subscription,Tips,Posts,Messages,Other,Chargebacks");
     // The default window's seven days; OF's net by channel on the one with sales.
     expect(lines.slice(6)).toHaveLength(7);
-    expect(lines).toContain("Creator A,2026-10-09,0,0,0,0,0,0");
-    expect(lines).toContain("Creator A,2026-10-10,232,120,24,16,64,8");
+    expect(lines).toContain("Creator A,2026-10-09,0,0,0,0,0,0,0");
+    expect(lines).toContain("Creator A,2026-10-10,232,120,24,16,64,8,-23.1");
     const byDay = revenue().slice(before);
-    expect(byDay).toEqual([expect.objectContaining({ group_by: "day", by_kind: "true", account_id: "acct-a",
-      include_net: "true" })]);
+    expect(byDay).toHaveLength(2);
+    expect(byDay).toEqual(expect.arrayContaining([
+      expect.objectContaining({ group_by: "day", by_kind: "true", account_id: "acct-a", include_net: "true" }),
+      expect.objectContaining({ group_by: "day", by_kind: "true", account_id: "acct-a", include_net: "true", status: "reversed" }),
+    ]));
   });
 });

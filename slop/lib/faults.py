@@ -849,6 +849,17 @@ FAULTS: dict[str, Fault] = {
         "Earnings trends: every day == max(OF, ledger) per category (today: the ledger's)",
         "Creator performance: each Creator's net == max(OF, ledger) per day + today's ledger",
     )),
+    # slop/run creator-earnings --break --fault=chargebacks-lose-sign
+    # The Chargebacks tiles drop their minus (the Dashboard's sum, reportsMath.asChargebacks' negation): they show
+    # the reversals as earnings. The relay and every total are right; only the tile check sees it.
+    "chargebacks-lose-sign": Fault(None, (
+        "chargebacks_tile_negative: Dashboard This month, Creator reports Last 30 days and both at 390px show "
+        "Chargebacks == -(the reversed read's net) on the err token",
+    ), browser=(
+        (r"-rowsOf\(reversed\.data\)", "rowsOf(reversed.data)"),
+        (r"total_cents: -r\.total_cents", "total_cents: r.total_cents"),
+        (r"net_cents: -r\.net_cents", "net_cents: r.net_cents"),
+    ), browser_files=2),
     # slop/run scoped-reads --break (the scenario's FAULT)
     "relay-cache-no-single-flight": Fault(_relay_cache_no_single_flight, (
         "cold concurrent burst: OnlyFans saw exactly one call per Creator per read (single-flight)",

@@ -2,14 +2,18 @@
 Background ingest supervisor for OF's /api2/v2/payouts/transactions ledger.
 
 Single async supervisor task per process. 15-min ticks (`_TICK_INTERVAL_S`).
-Up to _REFRESH_CONCURRENCY accounts at once inside one refresh tick, each paged
+Up to _REFRESH_CONCURRENCY accounts at once inside one tick, each paged
 at of_pacing's per-Creator pace.
 
 Drops X-Priority entirely (the request-context priority does not propagate
 to a background task — see library/db_data/12_transaction_ingest_synthesis.md §2
 row 3). The rate-limit posture is cadence + sequential walk, not a header.
 
-7-day rolling window steady-state; 90-day cold-start backfill.
+Steady state: each tick walks the trailing 24 h (`recent`: OF's date-only
+`startDate`, ~1 page); the full `refresh` runs once per 2 h period per account
+(each at its own phase in it) and on the first tick after a restart. OF ignores
+`start`/`end` (measured 2026-11-07, acct 532022545), so a full walk and the
+backfill read OF's latest 600 rows (hasMore false at 600), whatever their window.
 
 3-step dedup writer (synthesis §5):
   Step 1: provider_id fast path (handles re-polls + loading->cleared flips).
@@ -96,6 +100,13 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _clamped_env(name: str, default: float, lo: float, hi: float) -> float:
+    v = _env_float(name, default)
+    if not math.isfinite(v):
+        v = default
+    return min(hi, max(lo, v))
+
+
 # ── Knobs ────────────────────────────────────────────────────────────
 # Ledger supervisor cadence. 900 s (was 300): OF's ledger lands hours late (rows
 # measured 209/560/628 min after occurred_at), pending->cleared changes no total,
@@ -112,10 +123,8 @@ _MAX_TICK_INTERVAL_S = 1500.0
 
 
 def _tick_interval_s() -> float:
-    v = _env_float("INGEST_TICK_INTERVAL_S", _DEFAULT_TICK_INTERVAL_S)
-    if not math.isfinite(v):
-        v = _DEFAULT_TICK_INTERVAL_S
-    return min(_MAX_TICK_INTERVAL_S, max(_MIN_TICK_INTERVAL_S, v))
+    return _clamped_env("INGEST_TICK_INTERVAL_S", _DEFAULT_TICK_INTERVAL_S,
+                        _MIN_TICK_INTERVAL_S, _MAX_TICK_INTERVAL_S)
 
 
 _TICK_INTERVAL_S = _tick_interval_s()
@@ -198,6 +207,8 @@ from transaction_ingest_decide import (  # noqa: E402,F401
     IN_FLIGHT,
     SCAN_FIELDS,
     _DEFAULT_BACKFILL_DAYS,
+    _DEFAULT_FULL_EVERY_S,
+    _DEFAULT_RECENT_WINDOW_H,
     _ENABLE_PPV_FINGERPRINT,
     _FAIL_BACKOFF_S,
     _FAILS_BEFORE_PAUSE,
@@ -216,7 +227,10 @@ from transaction_ingest_decide import (  # noqa: E402,F401
     _strip_html,
     _to_cents,
     decide_mode,
+    full_bucket,
+    full_phase_s,
     is_paused,
+    recent_start_date,
     parse_page,
     plan_page,
     scan_after_failure,
@@ -227,6 +241,38 @@ from transaction_ingest_decide import (  # noqa: E402,F401
     tip_window,
     window_for,
 )
+
+# Recent vs full walk (transaction_ingest_decide.decide_mode). A tick re-reads the
+# trailing INGEST_RECENT_WINDOW_H (default 24 h, clamped 12-168): rows land <= ~10.5 h
+# late (measured), so new rows still arrive within a tick. The full walk, which
+# catches the rare late reversal (refund/chargeback) on an older row, runs once per
+# INGEST_FULL_EVERY_S period (default 7200, clamped 900-86400) on its first tick,
+# each account at its own phase (crc32), so 50 Creators spread over the period's
+# 8 ticks and walk to walk is 7200 s +/- a tick. A recent walk covers 48-72 h (whole
+# days from its startDate): 1-2 pages in prod, so ~1-2 x 4 + 6 x 0.5 = 7-11 ledger
+# calls/h/account (the purchases feed read after a walk is separate). OF's ledger
+# filters, measured 2026-11-07 on acct 532022545 (limit=10, read-only): `start`/`end`
+# are ignored (same rows as no params); `startDate=YYYY-MM-DD` is honoured (createdAt
+# >= that day, day-boundary TZ unknown) and `offset` pages it; an ISO `startDate`
+# answers an EMPTY list with hasMore false; no filter answers the latest rows, capped
+# at 600 (INFERRED from prod walks: 6 pages then hasMore false). So the recent walk
+# sends `startDate` (recent_start_date: a day before its window, date only) and the
+# full walk sends none: it reads the latest 600, the reach it always had. Defaults:
+# literals in transaction_ingest_decide.
+_RECENT_WINDOW_H = _clamped_env("INGEST_RECENT_WINDOW_H", _DEFAULT_RECENT_WINDOW_H, 12.0, 168.0)
+_FULL_EVERY_S = _clamped_env("INGEST_FULL_EVERY_S", _DEFAULT_FULL_EVERY_S, 900.0, 86400.0)
+# Each account's last full walk that completed (reached its window's end) in
+# THIS process, stamped with its window's end (when it started), so the period runs
+# walk to walk: a restart's first tick is a full walk. Admin /run mode=refresh counts.
+_last_full_at: dict[str, datetime] = {}
+# Accounts whose recent walk got a row older than its `startDate` minus a day (OF
+# ignored `startDate`): warned once per process.
+_recent_window_warned: set[str] = set()
+# Accounts whose recent walk came back empty although the DB holds a row on or
+# after the startDate sent (OF answering nothing, e.g. to an ISO startDate):
+# warned once per process.
+_recent_empty_warned: set[str] = set()
+_RECENT_IGNORED_SLACK = timedelta(days=1)
 
 
 # ── Writer pieces ───────────────────────────────────────────────────
@@ -745,10 +791,15 @@ async def _apply_ops(s, account_id: str, ops: list[RowOp], held: dict, ws: dict)
                     "ingest_tx_status_flip provider=%s old=%s new=%s",
                     p["provider_id"], *op.status_flip,
                 )
-            if op.lifetime_delta:
+            if op.lifetime_delta < 0:
                 log.info(
                     "ingest_tx_chargeback provider=%s amount=%d",
                     p["provider_id"], -op.lifetime_delta,
+                )
+            elif op.lifetime_delta > 0:
+                log.info(
+                    "ingest_tx_reinstated provider=%s amount=%d",
+                    p["provider_id"], op.lifetime_delta,
                 )
         elif op.action == "promote":
             tx = ws[op.target_id]
@@ -764,6 +815,11 @@ async def _apply_ops(s, account_id: str, ops: list[RowOp], held: dict, ws: dict)
                 account_id, p["fan_id"], p["provider_id"],
                 p["amount_cents"], op.kind, prev_ws_amount,
             )
+            if op.lifetime_delta < 0 and p["status"] in _NON_REVENUE_STATUSES:   # not a cents reconcile
+                log.info(
+                    "ingest_tx_chargeback provider=%s amount=%d",
+                    p["provider_id"], -op.lifetime_delta,
+                )
         else:  # insert
             tx = Transaction(
                 account_id=account_id,
@@ -993,12 +1049,15 @@ async def _is_paused(account_id: str) -> bool:
 async def _decide_mode(account_id: str) -> str:
     async with get_session() as s:
         row = await s.get(TransactionScanHistory, account_id)
-        return decide_mode(_scan_facts(row) if row is not None else None)
+        return decide_mode(_scan_facts(row) if row is not None else None,
+                           now=datetime.utcnow(), last_full_at=_last_full_at.get(account_id),
+                           full_every_s=_FULL_EVERY_S,
+                           phase_s=full_phase_s(account_id, _FULL_EVERY_S))
 
 
 def _window_for(mode: str, state: TransactionScanHistory) -> tuple[datetime, datetime]:
     """See transaction_ingest_decide.window_for."""
-    return window_for(mode, _scan_facts(state), datetime.utcnow())
+    return window_for(mode, _scan_facts(state), datetime.utcnow(), recent_h=_RECENT_WINDOW_H)
 
 
 def _store_scan(row: TransactionScanHistory, state: ScanState) -> None:
@@ -1129,8 +1188,11 @@ def _tick_result(t0: float, *, inserted: int = 0, patched: int = 0,
 async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
     """One supervisor tick for one account.
 
-    refresh:  window = (utcnow - 7d, utcnow)
+    recent:   window = (utcnow - _RECENT_WINDOW_H, utcnow)
+    refresh:  window = (utcnow - 7d, utcnow); completed, it stamps _last_full_at
     backfill: window = (backfill_floor, oldest_seen_occurred_at or utcnow)
+    A completed refresh / backfill then polls OF's disputes
+    (transaction_chargebacks.poll_after_walk; its errors never fail the tick).
 
     Sleeps 0.4s between pages. Stops on empty page OR hasMore=false. Bounded
     by a per-account asyncio.Lock so a slow (>600s) tick can't stack with the
@@ -1208,6 +1270,7 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
                         account_id, state.current_status, age_s,
                     )
                 start_dt, end_dt = _window_for(mode, state)
+                newest_seen = state.newest_seen_occurred_at
                 # Stamp last_scan_at AND current_status at tick START (see
                 # scan_started; without it the schema default 'idle' makes an
                 # account's first tick invisible to /run's 409 check).
@@ -1239,6 +1302,9 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
             # means no cursor makes progress → stop WITHOUT floor_reached, so a
             # backfill never marks itself complete off a truncated scan.
             seen_tx_ids: set = set()
+            # Recent walk only: OF's date-only filter (the full walk and the
+            # backfill send none: OF's latest 600). start/end stay, ignored by OF.
+            start_date = recent_start_date(start_dt) if mode == "recent" else None
             _PAGE_CEILING = 500  # 500 × 100 rows — far past any real window
 
             try:
@@ -1261,6 +1327,7 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
                         offset=offset,
                         start=start_dt.isoformat(),
                         end=end_dt.isoformat(),
+                        start_date=start_date,
                     )
                     rows = resp.get("list") or []
                     marker = resp.get("nextMarker")
@@ -1272,6 +1339,15 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
                     )
                     if not rows:
                         floor_reached = True
+                        if (start_date is not None and not seen_tx_ids
+                                and account_id not in _recent_empty_warned
+                                and newest_seen is not None
+                                and newest_seen >= datetime.fromisoformat(start_date)):
+                            _recent_empty_warned.add(account_id)
+                            log.warning(
+                                "ingest_tx_recent_walk_empty account=%s start_date=%s newest_seen=%s",
+                                account_id, start_date, newest_seen.isoformat(),
+                            )
                         break
                     page_ids = {raw.get("id") for raw in rows if raw.get("id") is not None}
                     if page_ids and page_ids <= seen_tx_ids:
@@ -1289,6 +1365,17 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
                                 rows_min_ts = occ
                             if rows_max_ts is None or occ > rows_max_ts:
                                 rows_max_ts = occ
+                    # Guard, log only: a recent walk handed rows from more than a
+                    # day before its startDate means OF ignored it (the walk then
+                    # costs a full one; it never reads fewer rows).
+                    if (start_date is not None and account_id not in _recent_window_warned
+                            and rows_min_ts is not None
+                            and rows_min_ts < datetime.fromisoformat(start_date) - _RECENT_IGNORED_SLACK):
+                        _recent_window_warned.add(account_id)
+                        log.warning(
+                            "ingest_tx_recent_window_ignored account=%s oldest=%s window_start=%s",
+                            account_id, rows_min_ts.isoformat(), start_date,
+                        )
                     # One write transaction for the page; row by row only
                     # if that fails (never raises for a row).
                     ins, pat = await _write_page(account_id, rows)
@@ -1319,6 +1406,15 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
                 floor_reached=floor_reached,
             )
             finalized = True
+            # A full walk that reached its window's end (not one cut short by the
+            # repeated-page guard or the ceiling) resets the full-walk clock.
+            if mode == "refresh" and floor_reached:
+                _last_full_at[account_id] = end_dt
+            # Disputes the 600-row walk cannot reach (transaction_chargebacks):
+            # after a completed full walk, same lock; never fails the tick.
+            if mode in ("refresh", "backfill") and floor_reached:
+                import transaction_chargebacks
+                await transaction_chargebacks.poll_after_walk(account_id, client)
 
             # Relink: retry the payment→message link for recent orphaned chat
             # PPVs whose message row arrived AFTER the transaction did (scrape
@@ -1632,9 +1728,11 @@ async def trigger_backfill(account_id: str, *, since: datetime | None = None) ->
 
 async def backfill_after_reactivation(account_id: str, deactivated_at: datetime) -> bool:
     """A Creator was just reactivated after being off since `deactivated_at`.
-    A gap inside the rolling refresh window is re-read by the next refresh
-    tick anyway; a longer one is backfilled from `deactivated_at` on. True
-    when a backfill was queued."""
+    A gap inside the 7-day window is re-read by the next full refresh walk
+    anyway (within one _FULL_EVERY_S period + a tick); a longer one is
+    backfilled from `deactivated_at` on. Both reach only OF's latest 600 rows
+    (OF ignores start/end), so a busier gap is not re-read. True when a
+    backfill was queued."""
     if datetime.utcnow() - deactivated_at <= timedelta(days=_ROLLING_WINDOW_DAYS):
         return False
     await trigger_backfill(account_id, since=deactivated_at)
@@ -1642,8 +1740,9 @@ async def backfill_after_reactivation(account_id: str, deactivated_at: datetime)
 
 
 async def supervisor_cycle() -> None:
-    """One pass over every live account (start_supervisor's loop body): refresh
-    ticks _REFRESH_CONCURRENCY accounts at once, then backfills _BACKFILL_CONCURRENCY."""
+    """One pass over every live account (start_supervisor's loop body): recent /
+    full refresh ticks _REFRESH_CONCURRENCY accounts at once, then backfills
+    _BACKFILL_CONCURRENCY."""
     account_ids = await _live_account_ids()
     # NO online gate here. This loop is not a dashboard convenience —
     # it is the only writer of the `transactions` ledger, and
@@ -1657,27 +1756,28 @@ async def supervisor_cycle() -> None:
     # who had already blown past the whale cap still read as $0 and the
     # AI kept selling to him. Freshness for a watching human is what the
     # 30s fast poll is for — THAT one keeps the online gate.
-    refresh_aids: list[str] = []
+    refresh_aids: list[tuple[str, str]] = []
     backfill_aids: list[str] = []
     for aid in account_ids:
         if await _is_paused(aid):
             continue
-        if (await _decide_mode(aid)) == "backfill":
+        mode = await _decide_mode(aid)
+        if mode == "backfill":
             backfill_aids.append(aid)
         else:
-            refresh_aids.append(aid)
+            refresh_aids.append((aid, mode))   # "recent" or the full "refresh"
 
     rsem = asyncio.Semaphore(_REFRESH_CONCURRENCY)
 
-    async def _rf(aid: str) -> None:
+    async def _rf(aid: str, mode: str) -> None:
         async with rsem:
             try:
-                await supervised_tick(aid, "refresh")
+                await supervised_tick(aid, mode)
             except Exception as e:
                 log.warning("ingest_tx_scan failed account=%s", aid, exc_info=True)
                 await _record_failure(aid, e)
 
-    await asyncio.gather(*(_rf(a) for a in refresh_aids))
+    await asyncio.gather(*(_rf(a, m) for a, m in refresh_aids))
 
     if backfill_aids:
         sem = asyncio.Semaphore(_BACKFILL_CONCURRENCY)
@@ -1706,8 +1806,9 @@ async def start_supervisor() -> None:
     _BACKFILL_CONCURRENCY in parallel — synthesis review §4: a 30-account
     cold-start drops from ~100min to ~25min."""
     log.info(
-        "ingest_tx_supervisor_started tick=%ds window=%dd backfill=%dd",
-        _TICK_INTERVAL_S, _ROLLING_WINDOW_DAYS, _DEFAULT_BACKFILL_DAYS,
+        "ingest_tx_supervisor_started tick=%ds recent=%.0fh window=%dd full_every=%ds backfill=%dd",
+        _TICK_INTERVAL_S, _RECENT_WINDOW_H, _ROLLING_WINDOW_DAYS, _FULL_EVERY_S,
+        _DEFAULT_BACKFILL_DAYS,
     )
     # Boot-time sweep: clear any rows parked at 'refreshing'/'backfilling'
     # from the previous process. The asyncio.Lock that protected them is

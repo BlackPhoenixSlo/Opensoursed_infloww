@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
 The payouts-ledger supervisor ticks every 15 min, and that must stay green.
+Each tick walks the trailing 24 h; the full 7 days once per 2 h period (each
+account at its own crc32 phase): the env knobs' clamps are pinned here too.
 
 2026-11-06: 300 s -> 900 s. The ledger lands hours late (209/560/628 min
 after occurred_at, measured) and provider_id dedup makes a re-read a no-op,
@@ -82,6 +84,38 @@ def case_clamp_floor_60_and_cap_1500():
         assert _reloaded(v)[0] == want, (v, want)
     # The ceiling itself stays green with a fleet cycle on top (no 10 min margin promised there).
     assert _tx_ingest_tier((tx._MAX_TICK_INTERVAL_S + _fleet_cycle_s()) / 60, "ok") == "green"
+
+
+def _knob(env: str, attr: str, value):
+    """transaction_ingest re-imported with `env` = value (None: unset); returns its `attr`."""
+    old = os.environ.get(env)
+    try:
+        if value is None:
+            os.environ.pop(env, None)
+        else:
+            os.environ[env] = value
+        return getattr(importlib.reload(tx), attr)
+    finally:
+        if old is None:
+            os.environ.pop(env, None)
+        else:
+            os.environ[env] = old
+        importlib.reload(tx)
+
+
+def case_recent_window_and_full_every_clamps():
+    """Recent window 24 h (12-168), full walk every 7200 s (900-86400); garbage/inf -> default."""
+    table = [
+        ("INGEST_RECENT_WINDOW_H", "_RECENT_WINDOW_H",
+         ((None, 24.0), ("36", 36.0), ("12", 12.0), ("1", 12.0), ("6", 12.0), ("168", 168.0),
+          ("500", 168.0), ("-3", 12.0), ("garbage", 24.0), ("", 24.0), ("inf", 24.0), ("nan", 24.0))),
+        ("INGEST_FULL_EVERY_S", "_FULL_EVERY_S",
+         ((None, 7200.0), ("3600", 3600.0), ("60", 900.0), ("900", 900.0), ("86400", 86400.0),
+          ("1e9", 86400.0), ("garbage", 7200.0), ("-inf", 7200.0))),
+    ]
+    for env, attr, rows in table:
+        for value, want in rows:
+            assert _knob(env, attr, value) == want, (env, value, want)
 
 
 def case_stale_inflight_below_the_tick():

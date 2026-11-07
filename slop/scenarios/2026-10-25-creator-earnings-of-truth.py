@@ -26,10 +26,17 @@ next UTC day) is counted once, on its local day. UI: the Dashboard's This month
 and Creator reports' Last 30 days show those numbers, and Creator reports on
 the zero day show the $14s. Budgets: report route p95s under the crowd, and vs
 the last green run.
+Chargebacks (the tile in Streams' old slot): each Creator has two of today's
+sales reversed (seed/earnings.py `chargebacks=True`: one charged back, one
+refunded); the reversed read (`status=reversed`) sums exactly them, no earnings
+read counts them, and the Dashboard's This month, Creator reports' Last 30 days
+and both at 390px show Chargebacks as minus that net on the err token.
 Break-it-once: of-zero-erases-db-sale (OF's day replaces the ledger's, as
-shipped in f96535be0); --fault=reports-ignore-of-earnings (the ledger alone).
+shipped in f96535be0); --fault=reports-ignore-of-earnings (the ledger alone);
+--fault=chargebacks-lose-sign (the tiles drop the minus).
 Screenshots: dashboard-month-{before,after}, creator-reports-30d-{before,after},
-creator-reports-zero-day-after (gross), creator-performance-zero-day-after.
+creator-reports-zero-day-after (gross), creator-performance-zero-day-after,
+dashboard-month-390, creator-reports-7d-390.
 """
 from __future__ import annotations
 
@@ -75,7 +82,8 @@ async def run(ctx) -> None:
     ids = [c["id"] for c in creators]
     history = ctx.param("history_days", 130)
     connected_days = ctx.param("connected_days", 9)
-    truth = earnings.seed(w, creators, ctx.stack.tmp, history_days=history, connected_days=connected_days)
+    truth = earnings.seed(w, creators, ctx.stack.tmp, history_days=history, connected_days=connected_days,
+                          chargebacks=True)
     today = w.now.date()
     yesterday = today - timedelta(days=1)
     win = {"month": (_iso(today.replace(day=1)), _iso(today, True)),
@@ -206,6 +214,19 @@ async def run(ctx) -> None:
             bad[k] = {"got": by_kind(after[k]), "want": exp}
     ctx.check("Dashboard and Creator reports totals by kind == max(OF, ledger) per complete day + the ledger (today)",
               not bad, wrong=bad, month=by_kind(after["month"]), range=by_kind(after["range"]))
+    # Chargebacks: the reversed read sums the seeded reversals, nothing dropped.
+    seeded_cb = cases["chargebacks"]
+    cb_api, cb_sql = {}, {}
+    con = w.sql()
+    for k in ("month", "range"):
+        body = await rev("kind", *win[k], status="reversed")
+        cb_api[k] = sum(row.get("net_cents") or 0 for row in body.get("rows", []))
+        cb_sql[k] = con.execute(
+            "SELECT COALESCE(SUM(net_cents), 0) FROM transactions WHERE status IN ('chargedback','refunded','refund_pending') "
+            "AND date(occurred_at) BETWEEN ? AND ?", (win[k][0][:10], win[k][1][:10])).fetchone()[0]
+    con.close()
+    ctx.check(CB_API, seeded_cb["net_cents"] > 0 and all(cb_api[k] == cb_sql[k] == seeded_cb["net_cents"] for k in cb_api),
+              api=cb_api, sql=cb_sql, seeded=seeded_cb)
     exp_days = want(*win["range"])["days"]
     got_days = {row["day"]: row.get("net_cents") or 0 for row in trend.get("rows", [])}
     wrong_days = {d: {"got": got_days.get(d, 0), "want": v} for d, v in exp_days.items() if got_days.get(d, 0) != v}
@@ -297,8 +318,9 @@ async def run(ctx) -> None:
         for n in UI_CHECKS:
             ctx.skip(n, "--no-ui")
         return
-    ui_after = await _ui_pass(ctx, "after", win["prior"][0], zero_day=z)
-    ctx.metric("ui", {"before": ui_before, "after": ui_after})
+    ui_after = await _ui_pass(ctx, "after", win["prior"][0], zero_day=z, chargebacks=True)
+    phone = await _ui_phone(ctx)
+    ctx.metric("ui", {"before": ui_before, "after": ui_after, "phone": phone})
     ctx.check(UI_CHECKS[0], ui_before["reports_growth"] == "-", growth=ui_before["reports_growth"])
     month_api = sum(by_kind(after["month"]).values()) / 100
     range_api = sum(by_kind(after["range"]).values()) / 100
@@ -308,21 +330,67 @@ async def run(ctx) -> None:
               and ui_after["reports_growth"] not in ("-", ""),
               ui=ui_after["reports_total"], api=range_api, growth=ui_after["reports_growth"],
               before=ui_before["reports_total"])
-    ctx.check(UI_CHECKS[3], not (ui_before["5xx"] or ui_after["5xx"]), before=ui_before["5xx"], after=ui_after["5xx"])
+    ctx.check(UI_CHECKS[3], not (ui_before["5xx"] or ui_after["5xx"] or phone["5xx"]), before=ui_before["5xx"],
+              after=ui_after["5xx"], phone=phone["5xx"])
     zero_api = sum(row.get("total_cents") or 0 for row in zero.get("rows", [])) / 100
     ctx.check(UI_CHECKS[4], ui_after["zero_total"] is not None and abs(ui_after["zero_total"] - zero_api) < 1,
               ui=ui_after["zero_total"], api=zero_api, want=cases["zero_sale_cents"] * len(ids) / 100,
               day=z, shots=[ui_after["zero_shot"], ui_after["zero_table_shot"]])
+    # Whole dollars, as both surfaces print money: "-$117".
+    cb_want = f"-${round(cb_api['month'] / 100):,}"
+    cb_got = {"dashboard": ui_after["cb_dashboard"], "reports": ui_after["cb_reports"],
+              "dashboard_390": phone["cb_dashboard"], "reports_390": phone["cb_reports"]}
+    ctx.check(UI_CHECKS[5], cb_api["month"] > 0 and cb_api["month"] == cb_api["range"]
+              and all(g and g[0] == cb_want and g[1] for g in cb_got.values()),
+              want=cb_want, got=cb_got, shots=[ui_after["dashboard_shot"], ui_after["reports_shot"], *phone["shots"]])
 
 
+CB_API = ("chargebacks_api: the reversed read's net (This month, Last 30 days) == the seeded chargedback + refunded "
+          "rows, nothing dropped")
 UI_CHECKS = ("UI before: Creator reports' growth against unknown days shows '-'",
              "UI: Dashboard This month total == OF Statistics + today's ledger (the API's)",
              "UI: Creator reports Last 30 days Total earnings == OF Statistics + today's ledger, with a growth %",
              "no 5xx in the browser sessions",
-             "UI: Creator reports on OF's $0 day show the API's gross (the ledger's $14 per Creator)")
+             "UI: Creator reports on OF's $0 day show the API's gross (the ledger's $14 per Creator)",
+             "chargebacks_tile_negative: Dashboard This month, Creator reports Last 30 days and both at 390px show "
+             "Chargebacks == -(the reversed read's net) on the err token")
+
+# The Dashboard's Chargebacks figure, once its read answered: (text, on the err token).
+_CB_DASH = ("() => { const f = [...document.querySelectorAll('[data-control=chargebacks] [data-figure]')].pop();"
+            " return f && /\\d/.test(f.textContent) ? [f.textContent.trim(), f.classList.contains('text-err')] : null; }")
+# Creator reports' Chargebacks summary tile: (value, on the err token).
+_CB_REPORTS = ("() => { const g = document.querySelector('[role=group][aria-label=\"Chargebacks\"]');"
+               " const dd = g && g.querySelector('dd'); return dd && /\\d/.test(dd.textContent)"
+               " ? [dd.textContent.trim(), (dd.getAttribute('style') || '').includes('--color-err')] : null; }")
 
 
-async def _ui_pass(ctx, tag: str, prior_from: str, zero_day: str | None = None) -> dict:
+async def _cb_read(page, js: str) -> list | None:
+    try:
+        return await (await page.wait_for_function(js, timeout=60_000)).json_value()
+    except Exception:  # noqa: BLE001 - a tile that never settles is a red check, not a crash
+        return await page.evaluate(js)
+
+
+async def _ui_phone(ctx) -> dict:
+    """The Dashboard (This month) and Creator reports (its default Last 7 days, today in it) at 390px: their
+    Chargebacks figures, screenshots with the tile in view."""
+    out: dict = {"shots": []}
+    async with ui.owner_browser(ctx, viewport=(390, 844)) as page:
+        await page.goto(f"{ctx.app}/?window=month", wait_until="domcontentloaded")
+        out["cb_dashboard"] = await _cb_read(page, _CB_DASH)
+        await page.locator("[data-control=chargebacks]").last.scroll_into_view_if_needed()
+        await page.wait_for_timeout(800)
+        out["shots"].append(await ui.shot(ctx, page, "dashboard-month-390"))
+        await page.goto(f"{ctx.app}/analytics/creator-reports", wait_until="domcontentloaded")
+        out["cb_reports"] = await _cb_read(page, _CB_REPORTS)
+        await page.get_by_role("group", name="Chargebacks").scroll_into_view_if_needed()
+        await page.wait_for_timeout(800)
+        out["shots"].append(await ui.shot(ctx, page, "creator-reports-7d-390"))
+        out["5xx"] = [u for s, u in page.slop["statuses"] if s >= 500 and "/api/of/" not in u][:10]
+    return out
+
+
+async def _ui_pass(ctx, tag: str, prior_from: str, zero_day: str | None = None, chargebacks: bool = False) -> dict:
     out = {}
     async with ui.owner_browser(ctx, viewport=(1440, 1000)) as page:
         await page.goto(f"{ctx.app}/?window=month", wait_until="domcontentloaded")
@@ -331,6 +399,8 @@ async def _ui_pass(ctx, tag: str, prior_from: str, zero_day: str | None = None) 
         await page.wait_for_function(
             "() => /\\$\\d/.test([...document.querySelectorAll('[data-control=total]')].pop()?.textContent || '')",
             timeout=60_000)
+        if chargebacks:
+            out["cb_dashboard"] = await _cb_read(page, _CB_DASH)
         await page.wait_for_timeout(1500)
         out["dashboard_shot"] = await ui.shot(ctx, page, f"dashboard-month-{tag}")
         out["dashboard_total"] = _dollars(await total.inner_text())
@@ -348,6 +418,8 @@ async def _ui_pass(ctx, tag: str, prior_from: str, zero_day: str | None = None) 
             "() => { const g = document.querySelector('[role=group][aria-label=\"Total earnings\"]');"
             " const dd = g && g.querySelectorAll('dd'); return dd && /\\$\\d/.test(dd[0].textContent); }",
             timeout=60_000)
+        if chargebacks:
+            out["cb_reports"] = await _cb_read(page, _CB_REPORTS)
         await page.wait_for_timeout(2500)
         out["reports_shot"] = await ui.shot(ctx, page, f"creator-reports-30d-{tag}")
         dds = tile.locator("dd")

@@ -6,3 +6,6 @@ export function netMissingNote(n: number, noun: "Net" | "net earnings"): string 
     ? `1 sale in this period has no net figure from OnlyFans yet, so ${noun} ${verb} it out.`
     : `${n} sales in this period have no net figure from OnlyFans yet, so ${noun} ${verb} them out.`;
 }
+
+/** Chargebacks' figure title, Dashboard and Creator reports, when the reversed read failed. */
+export const CHARGEBACKS_UNAVAILABLE = "Chargebacks are unavailable";

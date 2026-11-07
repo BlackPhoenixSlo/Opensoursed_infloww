@@ -15,6 +15,10 @@ Plus the harness primitives every P4 automation depends on:
       inserts 0 (no dupes) and still records an ok run.
   case_scrape_all_chats_sweep:
       no chat_ids in the payload → list_chats sweep; withUser supplies identity.
+  case_scrape_sweep_skips_unread_chats:
+      a full sweep fetches no chat OF lists as unread (unreadMessagesCount > 0
+      or hasUnread), records chats_skipped_unread + full_sweep; a fan_ids job
+      still reads the chat it names.
   case_fan_lease_acquire_block_steal:
       a live lease blocks a second automation; an expired one can be stolen;
       release frees it. The per-(account, fan) send guard (one send per cycle).
@@ -355,6 +359,57 @@ async def case_scrape_sweep_paginates_all_chats():
         assert len(msgs) == 23, len(msgs)
 
 
+# ── A full sweep leaves unread chats alone (a read marks them read on OF) ──
+
+async def case_scrape_sweep_skips_unread_chats():
+    aid, read, unread, has_unread = "acc_scrape_unread", 4101, 4102, 4103
+    await _seed_account(aid)
+    chats = {c: [_of_msg(c * 10, True, "hi", "2026-06-04T10:00:00+00:00", fan_id=c)]
+             for c in (read, unread, has_unread)}
+    fetched: list[int] = []
+
+    class UnreadClient(FakeClient):
+        def list_chats(self, **kw) -> dict:
+            page = super().list_chats(**kw)
+            for row in page["list"]:
+                cid = row["withUser"]["id"]
+                row["unreadMessagesCount"] = 2 if cid == unread else 0
+                row["hasUnread"] = cid == has_unread
+            return page
+
+        def get_messages(self, chat_id, **kw) -> dict:
+            fetched.append(int(chat_id))
+            return super().get_messages(chat_id, **kw)
+
+    fake = UnreadClient(chats)
+    ax._make_client = lambda account_id: fake  # type: ignore[attr-defined]
+    await enqueue_job(aid, "scrape_chats", payload={})
+    res = await run_once(aid, "scrape_chats")
+    assert res["status"] == "ok", res
+    assert res["chats_scanned"] == 1 and res["chats_skipped_unread"] == 2, res
+    assert res["full_sweep"] is True, res
+    assert set(fetched) == {read}, fetched
+
+    # A per-fan job is unchanged: it reads the chat it names, unread or not.
+    fetched.clear()
+    await enqueue_job(aid, "scrape_chats", payload={"fan_ids": [unread]})
+    res = await run_once(aid, "scrape_chats")
+    assert res["status"] == "ok" and set(fetched) == {unread}, (res, fetched)
+    assert "full_sweep" not in res and "chats_skipped_unread" not in res, res
+
+    # A capped listing is no full sweep (sweep_cadence never anchors on it); a chat
+    # listed read whose fan the pump stored an inbound from after the listing is
+    # left alone too (no extra OF call).
+    fetched.clear()
+    async with get_session() as s:
+        s.add(Message(account_id=aid, fan_id=read, message_id=99_000_001, direction="in",
+                      body="new", created_at=datetime.utcnow() + timedelta(minutes=1)))
+    await enqueue_job(aid, "scrape_chats", payload={"limit": 50})
+    res = await run_once(aid, "scrape_chats")
+    assert res["status"] == "ok" and fetched == [], (res, fetched)
+    assert res["chats_skipped_unread"] == 3 and "full_sweep" not in res, res
+
+
 # ── Long convo: both ends (asc-forward + desc-backward), never the middle ──
 
 async def case_scrape_long_convo_both_ends():
@@ -548,6 +603,25 @@ async def case_supervisor_dispatches_least_recently_served_account_first():
         "winning a slot must stamp the account as served")
 
 
+async def case_due_pairs_carry_their_oldest_due_run_at():
+    """_due_job_pairs hands plan_dispatch each pair's oldest due run_at (epoch s),
+    the bulk lane's order."""
+    old, new = "acc_due_old", "acc_due_new"
+    now = datetime.utcnow()
+    for aid in (old, new):
+        await _seed_account(aid)
+    await enqueue_job(old, "scrape_chats", payload={}, run_at=now - timedelta(hours=3))
+    await enqueue_job(old, "scrape_chats", payload={}, run_at=now - timedelta(hours=1))
+    await enqueue_job(new, "scrape_chats", payload={}, run_at=now - timedelta(minutes=5))
+    due = {p.account_id: p.due_at for p in await ax._due_job_pairs() if p.account_id in (old, new)}
+    want = (now - timedelta(hours=3) - datetime(1970, 1, 1)).total_seconds()
+    assert abs(due[old] - want) < 1 and due[old] < due[new], due
+    async with get_session() as s:   # leave no due scrape for later cases' drains
+        for j in (await s.execute(select(ScheduledJob).where(
+                ScheduledJob.account_id.in_((old, new))))).scalars():
+            j.status = "done"
+
+
 async def _employees() -> tuple[int, int]:
     """(an operator's employee id, the system Automation employee's id)."""
     from db.models import Employee
@@ -582,7 +656,7 @@ async def case_an_operators_job_dispatches_first_in_the_operator_tier():
     await enqueue_job(a_sys, "unsend_messages", payload={}, created_by_employee_id=auto_id)
     await enqueue_job(a_op, "unsend_messages", payload={}, created_by_employee_id=op_id)
 
-    pairs = {(a, k): op for a, k, op in await ax._due_job_pairs()}
+    pairs = {(a, k): op for a, k, op, _due in await ax._due_job_pairs()}
     assert pairs[(a_op, "unsend_messages")] is True, pairs
     assert pairs[(a_auto, "send_welcome")] is False, pairs
     assert pairs[(a_sys, "unsend_messages")] is False, ("the Automation employee is not an operator", pairs)
@@ -623,7 +697,7 @@ async def case_run_now_on_an_automation_kind_is_rate_limited_as_automation():
         await _seed_account(a)
     await enqueue_job(a_ar, "autoreply", payload={}, created_by_employee_id=op_id)
     await enqueue_job(a_uns, "unsend_messages", payload={}, created_by_employee_id=op_id)
-    pairs = {(a, k): op for a, k, op in await ax._due_job_pairs()}
+    pairs = {(a, k): op for a, k, op, _due in await ax._due_job_pairs()}
     assert pairs[(a_ar, "autoreply")] is False, ("Run now made autoreply an operator run", pairs)
     assert pairs[(a_uns, "unsend_messages")] is True, pairs
 
@@ -1467,6 +1541,7 @@ _harness.run(
     case_scrape_fast_skip,
     case_scrape_all_chats_sweep,
     case_scrape_sweep_paginates_all_chats,
+    case_scrape_sweep_skips_unread_chats,
     case_scrape_long_convo_both_ends,
     case_scrape_desc_catch_up_no_refetch_start,
     case_fan_lease_acquire_block_steal,
@@ -1474,6 +1549,7 @@ _harness.run(
     case_kind_priority_ordering,
     case_supervisor_dispatches_high_priority_first,
     case_supervisor_dispatches_least_recently_served_account_first,
+    case_due_pairs_carry_their_oldest_due_run_at,
     case_an_operators_job_dispatches_first_in_the_operator_tier,
     case_the_claim_takes_the_operators_job_first,
     case_run_now_on_an_automation_kind_is_rate_limited_as_automation,

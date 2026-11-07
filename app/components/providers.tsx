@@ -121,7 +121,9 @@ const PERSIST_KEYS: ReadonlyArray<readonly string[]> = [
   ["dashboard", "revenue-by-kind"], // the Dashboard's Total earnings (a DB
                     //   sum, keyed by principal): a return visit paints the
                     //   last Total at once, then refreshes it. Its siblings
-                    //   under "dashboard" stay in memory.
+                    //   under "dashboard" stay in memory, but:
+  ["dashboard", "revenue-reversed-by-kind"], // Chargebacks beside it, so the
+                    //   tile paints with Total, not a shimmer after it.
   // Per-Creator OF badges and roster figures: without them every reload read
   // all 13 Creators again before a card or tab showed a number (2026-11-05,
   // AE: 57 calls on a cold Dashboard). Now a reload paints the last ones and

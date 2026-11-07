@@ -70,7 +70,8 @@ import CreatorOverview from "./CreatorOverview";
 import CreatorPerformance from "./CreatorPerformance";
 import { DateRangePill, FILTER_FIELD, FiltersPill, ShownBySelect } from "./ReportsControls";
 import {
-  type Chan, type ColCtx, type Money, type RangeKey, type RevResp, type Tab, CHANNELS, DEFAULT_COLS, DEFAULT_RANGE,
+  type Chan, type ColCtx, type Money, type RangeKey, type RevResp, type Tab, DEFAULT_COLS, DEFAULT_RANGE, EARNING_CHANNELS,
+  asChargebacks,
   LEDGER_ROWS, STAT_COLS, TABS, creatorDayRows, creatorName, creatorRows, dailyOf, datePresets, daysFrom, grossOf, hoursOf,
   isTab, netMissingNote, netOf, readOf, referralsUnavailableNote, rollUp, sumKinds, totalOf, viewOf, wholeHistory,
 } from "./reportsMath";
@@ -254,6 +255,10 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
   const revPriorQueries = useQueries({
     queries: effectiveIds.map((id) => revenueQuery("kind", id, priorFromIso, priorToIso, net)),
   });
+  // Chargebacks' tile and legend row: the window's reversals, below zero (`asChargebacks`). No prior read: its growth is "-".
+  const revReversedQueries = useQueries({
+    queries: effectiveIds.map((id) => revenueQuery("kind", id, fromIso, toIso, net, true)),
+  });
   // Referrals: OnlyFans' own read per Creator (no transaction carries them), as one more kind on the rows above,
   // folded in when they land: the ledger's figures never wait on them.
   const { now: refs, rev: refRev, priorRev: refPriorRev } =
@@ -282,8 +287,9 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
 
   /* aggregate kind rows → buckets, for the window and the one before */
   const buckets = useMemo(
-    () => sumKinds([...revByKindQueries, { data: refRev.kind }], money),
-    [revByKindQueries, refRev, money],
+    () => sumKinds([...revByKindQueries, { data: refRev.kind },
+      ...revReversedQueries.map((q) => ({ data: asChargebacks(q.data) }))], money),
+    [revByKindQueries, refRev, revReversedQueries, money],
   );
   const totalCents = useMemo(() => totalOf(buckets), [buckets]);
   // The ledger's Gross earnings stays gross with net on: a net read still carries each row's `total_cents`.
@@ -309,13 +315,18 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
   }, [isAll, allModels, selectedIds]);
 
   /* The Overview's state: an error first, then a read still pending, then no Creator in the selection. */
-  // The referrals read never holds the Overview; failed, it counts $0.00 under a note, never an error.
-  const view = viewOf([perModel, ...revByDayQueries, ...revByKindQueries, ...revByHourQueries], visibleCreators.length > 0);
+  // The referrals and reversed reads never hold the Overview: failed, referrals count $0.00 under a note and
+  // Chargebacks shows "-" under a title (`chargebacksRead`), never an error.
+  const view = viewOf([perModel, ...revByDayQueries, ...revByKindQueries, ...revByHourQueries],
+    visibleCreators.length > 0);
+  const chargebacksRead = {
+    isPending: revReversedQueries.some((q) => q.isPending), isError: revReversedQueries.some((q) => q.isError),
+  };
 
   const trendPoints = useMemo(() => rollUp(trendSrc.slots, trendSrc.d.total, trendPeriod), [trendSrc, trendPeriod]);
   // #74: a line per picked channel, every one when none is picked.
   const channelLines = useMemo(
-    () => CHANNELS
+    () => EARNING_CHANNELS
       .filter((c) => chanPick.size === 0 || chanPick.has(c.key))
       .map((c) => ({ ...c, points: rollUp(chanSrc.slots, chanSrc.d.byChan(c.key), chanPeriod) })),
     [chanSrc, chanPeriod, chanPick],
@@ -329,8 +340,10 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
   });
   const colCtx = ctxFor(net);
   // The sales in the selection's window with no net figure from OnlyFans yet, which net leaves out.
+  // Chargebacks' reversals with no net yet count too, once their read lands.
   const netMissing = net && revByKindQueries.every((q) => q.isSuccess)
-    ? revByKindQueries.reduce((n, q) => n + (q.data?.rows ?? []).reduce((a, r) => a + (r.net_missing_count ?? 0), 0), 0)
+    ? [...revByKindQueries, ...revReversedQueries.filter((q) => q.isSuccess)]
+      .reduce((n, q) => n + (q.data?.rows ?? []).reduce((a, r) => a + (r.net_missing_count ?? 0), 0), 0)
     : 0;
   // The capture's column order, filtered to the Custom metrics pick.
   const orderedCols = useMemo(() => STAT_COLS.filter((c) => visibleCols.has(c.key)), [visibleCols]);
@@ -383,8 +396,9 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
     [perfReversedQueries, perfSlots, money, perfPeriod],
   );
   const perfBuckets = useMemo(
-    () => sumKinds([...perfKindQueries, { data: perfRefRev.kind }], money),
-    [perfKindQueries, perfRefRev, money],
+    () => sumKinds([...perfKindQueries, { data: perfRefRev.kind },
+      ...perfReversedQueries.map((q) => ({ data: asChargebacks(q.data) }))], money),
+    [perfKindQueries, perfRefRev, perfReversedQueries, money],
   );
   const perfPrior = useMemo(
     () => (wholeHistory(perfPriorQueries)
@@ -407,7 +421,14 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
     }
     if (c.displays.includes("day")) {
       // The day read Earnings by channel makes, so a Creator already on screen comes from the cache.
-      const read = (id: string) => qc.fetchQuery(revenueQuery("day", id, fromIso, toIso, c.net));
+      // Chargebacks' column: the reversed day read's rows on the same answer.
+      const read = async (id: string): Promise<RevResp> => {
+        const [earned, reversed] = await Promise.all([
+          qc.fetchQuery(revenueQuery("day", id, fromIso, toIso, c.net)),
+          qc.fetchQuery(revenueQuery("day", id, fromIso, toIso, c.net, true)),
+        ]);
+        return { ...earned, rows: [...earned.rows, ...(asChargebacks(reversed)?.rows ?? [])] };
+      };
       sections.push({ title: "By day", rows: await creatorDayRows(visibleCreators, dayDates, c.net, read) });
     }
     return sections;
@@ -605,7 +626,7 @@ function CreatorReportsCard({ range, frame }: { range: CreatorRange; frame: Fram
           setChanPick={setChanPick} chanGran={chanGran} setChanGran={setChanGran} channelLines={channelLines}
           from={from} to={to} net={net} buildExport={buildExport} perModel={perModel} visibleCreators={visibleCreators}
           visibleCols={visibleCols} setVisibleCols={setVisibleCols} orderedCols={orderedCols} colCtx={colCtx}
-          grossCents={grossCents} netLedger={netLedger}
+          grossCents={grossCents} netLedger={netLedger} chargebacksRead={chargebacksRead}
         />
       )}
     </div>

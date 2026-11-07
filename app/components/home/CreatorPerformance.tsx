@@ -9,13 +9,16 @@ import { ChargebacksChart, EarningsHeatmap } from "@/components/home/CreatorPerf
 import { fmtDollars } from "@/components/stats/chart";
 import { EmptyState } from "@/components/ui/infloww";
 import type { PerModelRow } from "@/hooks/useStats";
-import { growthOf } from "@/lib/format";
+import { growthOf, isLoss } from "@/lib/format";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 
 import { Donut, PerfTitle, Sparkline, TrendBars } from "./ReportsCharts";
-import { type Bucket, type Chan, type Point, type View, CHANNELS, NO_CREATORS, SUMMARY_TEXT, creatorName, dailyOf } from "./reportsMath";
+import {
+  type Bucket, type Chan, type Point, type View, CHANNELS, EARNING_CHANNELS, NO_CREATORS, SUMMARY_TEXT, creatorName, dailyOf,
+} from "./reportsMath";
 
-/** #161: the Creator performance Earnings block's channel buttons, All first. */
+/** #161: the Creator performance Earnings block's channel buttons, All first. The bundle's Streams has none: its sales
+ *  count in All, and Chargebacks has its own chart below (bars draw nothing below zero). */
 const PERF_CHANNELS: readonly { key: Chan | "all"; label: string }[] = [
   { key: "all", label: "All" },
   { key: "subscriptions", label: "Subscriptions" },
@@ -23,12 +26,11 @@ const PERF_CHANNELS: readonly { key: Chan | "all"; label: string }[] = [
   { key: "posts", label: "Posts" },
   { key: "messages", label: "Messages" },
   { key: "referrals", label: "Referrals" },
-  { key: "streams", label: "Streams" },
 ];
 /** #167: Creator performance's own slice and legend-dot colours, in CHANNELS' order (the bundle's literal hex, as the
  *  Overview's channel colours are); its sparklines rise and fall in the bundle's two. */
 const PERF_COLORS: Record<Chan, string> = {
-  subscriptions: "#3467ff", tips: "#2ad4ac", posts: "#ff6868", messages: "#ffa553", referrals: "#34c2ff", streams: "#ca34ff",
+  subscriptions: "#3467ff", tips: "#2ad4ac", posts: "#ff6868", messages: "#ffa553", referrals: "#34c2ff", chargebacks: "#ff7c71",
 };
 const PERF_SPARK = { up: "#2ad4ac", down: "#ff7c71" } as const;
 /** #155, #164, #168: the Creator performance blocks' tooltips, verbatim. */
@@ -61,7 +63,8 @@ export default function CreatorPerformance({
       <EmptyState kind="error" text="Request failed" onRetry={perfRetry} />
     </div>
   );
-  const perfChanSum = CHANNELS.reduce((a, c) => a + perfBuckets[c.key], 0);
+  const perfChanSum = EARNING_CHANNELS.reduce((a, c) => a + perfBuckets[c.key], 0);
+  const figureColor = (cents: number) => (perfReady && isLoss(cents) ? "var(--color-err)" : "var(--color-fg)");
   return (
     <div className="flex flex-col md:flex-row text-[13px]">
       <aside className="md:w-[240px] shrink-0 px-4 md:pr-0 pt-2 md:pt-6 pb-4">
@@ -163,7 +166,7 @@ export default function CreatorPerformance({
           {perfView === "error" ? perfFailed(250) : (
             <div className="flex flex-col md:flex-row border rounded-lg" style={{ borderColor: "var(--color-border)" }}>
               <div className="flex-1 min-w-0 p-4">
-                <Donut perf slices={perfReady ? CHANNELS.map((c) => ({ color: PERF_COLORS[c.key], cents: perfBuckets[c.key] })) : null} />
+                <Donut perf slices={perfReady ? EARNING_CHANNELS.map((c) => ({ color: PERF_COLORS[c.key], cents: perfBuckets[c.key] })) : null} />
                 <ul aria-label="Earnings breakdown legend" className="flex flex-wrap">
                   {CHANNELS.map((c) => (
                     <li key={c.key} className="w-1/3 mb-2 flex flex-col">
@@ -171,11 +174,12 @@ export default function CreatorPerformance({
                         <span className="w-[7px] h-[7px] rounded-full mr-1.5 shrink-0" style={{ background: PERF_COLORS[c.key] }} aria-hidden />
                         {c.label}
                       </span>
-                      <span className="text-lg font-bold leading-[22px] px-2" style={{ color: "var(--color-fg)" }}>
+                      <span className="text-lg font-bold leading-[22px] px-2" style={{ color: figureColor(perfBuckets[c.key]) }}>
                         {perfReady ? fmtDollars(perfBuckets[c.key]) : "-"}
                       </span>
                       <span className="text-sm font-semibold leading-5 px-2" style={{ color: "var(--color-fg-dim)" }}>
-                        {perfReady ? `${(perfChanSum > 0 ? (100 * perfBuckets[c.key]) / perfChanSum : 0).toFixed(2)}%` : "-"}
+                        {perfReady && c.key !== "chargebacks"
+                          ? `${(perfChanSum > 0 ? (100 * perfBuckets[c.key]) / perfChanSum : 0).toFixed(2)}%` : "-"}
                       </span>
                     </li>
                   ))}
@@ -193,7 +197,7 @@ export default function CreatorPerformance({
                       <span className="flex flex-col min-w-0">
                         {/* #166: the count, 4px from the 12px arrow, then the change. */}
                         <span className="inline-flex items-center">
-                          <span className="text-base font-semibold leading-5 mr-1 tabular-nums" style={{ color: "var(--color-fg)" }}>
+                          <span className="text-base font-semibold leading-5 mr-1 tabular-nums" style={{ color: figureColor(perfBuckets[c.key]) }}>
                             {perfReady ? fmtDollars(perfBuckets[c.key]) : "-"}
                           </span>
                           <span
@@ -210,7 +214,7 @@ export default function CreatorPerformance({
                           {c.label}
                         </span>
                       </span>
-                      {perfReady && (
+                      {perfReady && c.key !== "chargebacks" && (
                         <Sparkline values={perfDaily.byChan(c.key)} color={g.dir === "down" ? PERF_SPARK.down : PERF_SPARK.up} />
                       )}
                     </li>

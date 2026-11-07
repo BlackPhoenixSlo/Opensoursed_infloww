@@ -16,6 +16,9 @@ export function fmtCents(c: number | null | undefined): string {
   return `${c < 0 && d > 0 ? "-" : ""}$${d.toLocaleString("en-US")}`;
 }
 
+/** A figure `fmtCents` prints with its minus ("-$1" and below; -$0.49 prints "$0"): what a loss colour keys on. */
+export const isLoss = (c: number): boolean => fmtCents(c).startsWith("-");
+
 /** Cents → a unit price (a PPV, a sale line, a script, a subscription, a promo cost) or an average / a rate (avg
  *  spend, LTV, ARPU, per hour, CPC, CPS): its cents, rounded to the cent, with commas, and no ".00" on a whole
  *  amount: "$9.99", "$10", "$1,234.56", as Infloww keeps cents on these (its `getMoneyFormat` / `formatMoney`,

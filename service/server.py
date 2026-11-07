@@ -992,10 +992,6 @@ _tx_fast_task: asyncio.Task | None = None
 # scheduled_jobs / automation_rules and runs the 12 automations. Cancelled in
 # _stop_event_pumps alongside _tx_ingest_task.
 _automation_exec_task: asyncio.Task | None = None
-# W7 (0): seed the inbox with each account's chat links ONCE on startup so the
-# bot has conversation links to react to; webhooks carry deltas after that.
-# Guarded so a re-entered startup can't double-enqueue the scrape sweep.
-_chat_links_seeded: bool = False
 # The asyncio loop the app is running on. Captured at startup so sync FastAPI
 # endpoints (which run in the threadpool, with NO running loop in the worker
 # thread) can schedule pump start/stop via `call_soon_threadsafe`.
@@ -1569,38 +1565,12 @@ async def _start_event_pumps() -> None:
         _automation_supervisor(), name="automation-exec",
     )
 
-    # W7 (0) — seed chat links ONCE for all accounts: enqueue a one-shot
-    # scrape_chats sweep per session-backed account so the inbox has the full
-    # conversation list (the WS pump then carries deltas — no second bulk-pull).
-    # Reuses the existing scrape_chats automation; the supervisor's first drain
-    # (immediate at loop start) picks the jobs up. Fire-and-forget so N inserts
-    # don't block startup.
-    asyncio.create_task(_seed_chat_links_once(), name="w7-seed-chat-links")
-
-
-async def _seed_chat_links_once() -> None:
-    """Enqueue a one-shot scrape_chats job per active account (W7 part 0)."""
-    global _chat_links_seeded
-    if _chat_links_seeded:
-        return
-    _chat_links_seeded = True
-    try:
-        from automation_executor import enqueue_job, wake_supervisor
-        n = 0
-        off = await account_health.deactivated_ids()
-        for meta in account_registry.list_accounts():
-            if not meta.get("has_session") or meta["id"] in off:
-                continue
-            try:
-                await enqueue_job(meta["id"], "scrape_chats", payload={})
-                n += 1
-            except Exception:
-                log.warning("w7_seed_enqueue_failed account=%s", meta.get("id"), exc_info=True)
-        if n:
-            wake_supervisor()
-        log.info("w7_chat_links_seeded accounts=%d", n)
-    except Exception:
-        log.warning("w7_seed_chat_links failed", exc_info=True)
+    # Full chat sweeps (scrape_chats `{}`) on a cadence anchored on each account's last
+    # finished sweep, at most one open per account; duplicates collapse. Replaces the
+    # once-per-boot seed that stacked a sweep per account on every restart.
+    import sweep_cadence
+    asyncio.create_task(_periodic("chat sweep cadence", sweep_cadence.TICK_S, sweep_cadence.tick,
+                                  first_after_s=sweep_cadence.FIRST_AFTER_S), name="chat-sweep-cadence")
 
 
 @app.on_event("startup")

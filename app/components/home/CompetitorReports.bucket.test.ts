@@ -7,7 +7,8 @@ import { bucketOf } from "./CompetitorReports";
  * ingested by transaction_ingest.py as `ppv_post` (OF ledger prefixes
  * "Post from " / "Post purchase by "), and post-tips as `tip_post`. Both must
  * land in the "posts" channel, NOT be swallowed by the generic ppv→messages
- * catch-all. Likewise `ppv_stream` belongs in "streams", not "messages".
+ * catch-all. Stream sales (`ppv_stream`, `tip_stream`) have no channel since
+ * Chargebacks took Streams' place: "other" (Total earnings only), never "messages".
  */
 describe("bucketOf", () => {
   it("routes paid feed-post revenue to posts", () => {
@@ -15,9 +16,9 @@ describe("bucketOf", () => {
     expect(bucketOf("tip_post")).toBe("posts");
   });
 
-  it("routes stream revenue to streams", () => {
-    expect(bucketOf("ppv_stream")).toBe("streams");
-    expect(bucketOf("tip_stream")).toBe("streams");
+  it("routes stream revenue to other, never messages", () => {
+    expect(bucketOf("ppv_stream")).toBe("other");
+    expect(bucketOf("tip_stream")).toBe("other");
   });
 
   it("keeps chat PPV in messages", () => {

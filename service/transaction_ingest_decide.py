@@ -7,7 +7,8 @@ caller passes `now`).
 twin of — `tip_window` — and the fans that already subscribed — `subscription_fans`),
 asks `plan_page` what to do with each OF row, and opens ONE write transaction
 only if some op writes. The scan bookkeeping (`scan_started`, `scan_interrupted`,
-`scan_after_failure`, `scan_after_success`, `window_for`, `decide_mode`) is the
+`scan_after_failure`, `scan_after_success`, `window_for`, `decide_mode`,
+`full_phase_s`, `full_bucket`, `recent_start_date`) is the
 same split: these compute the next state, `transaction_ingest` reads and writes
 the row.
 
@@ -16,6 +17,7 @@ reading `transaction_ingest._classify_kind` and friends.
 """
 from __future__ import annotations
 
+import zlib
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Iterable, Literal, NamedTuple
@@ -70,6 +72,14 @@ _FINGERPRINT_WINDOW = timedelta(seconds=300)
 
 # Scan state machine.
 _ROLLING_WINDOW_DAYS = 7
+# Ledger walk cadence (transaction_ingest resolves the env knobs, see there): every
+# tick walks the trailing _DEFAULT_RECENT_WINDOW_H (`recent`); the full 7-day
+# `refresh` runs on the first tick of each _DEFAULT_FULL_EVERY_S period, each
+# account's periods shifted by its own phase (`full_bucket`). Plain literals
+# (soak/timing/knobs.py reads them).
+_DEFAULT_RECENT_WINDOW_H = 24.0
+_DEFAULT_FULL_EVERY_S = 7200.0
+_EPOCH = datetime(1970, 1, 1)
 _DEFAULT_BACKFILL_DAYS = 90
 _FAIL_BACKOFF_S = 1800                  # auto-pause 30 min after 3 real fails = two
                                         # 900 s ticks skipped (below a tick it only
@@ -267,9 +277,15 @@ def plan_page(
     a page is a rebill).
 
     3-step dedupe: provider id -> WS twin fingerprint (chat tips) -> insert.
-    Lifetime: +amount on a revenue insert only; never on a re-poll; a
-    promote reconciles the WS amount to the ledger's; a flip into a refund
-    status takes the previous amount off."""
+    Lifetime follows "is the row in a settled reversal" (chargedback |
+    refunded), so any oscillation nets to 0: +amount on a revenue insert only;
+    never on a plain re-poll; a flip INTO a settled reversal takes the previous
+    amount off, a flip OUT of one (to anything else, `failed` included) puts it
+    back (a dispute OF lost, or the chargebacks poll's flip the ledger still
+    calls `done`). The deduct clamps the counter at 0, so a reinstate can
+    overshoot a fan whose counter was already below the amount. A promote
+    reconciles the WS amount to the ledger's, or takes the WS amount off when
+    the ledger row is already non-revenue (the WS pump bumped it)."""
     existing = {str(k): v for k, v in existing_by_provider.items()}
     candidates = list(fingerprints)
     taken: set[int] = set()
@@ -290,18 +306,24 @@ def plan_page(
                 ops.append(RowOp("noop", p, kind))
                 continue
             flip = (prev.status, p["status"]) if prev.status != p["status"] else None
-            refund = (p["status"] in _REFUND_STATUSES and prev.status not in _REFUND_STATUSES
-                      and bool(fan))
-            ops.append(RowOp("patch", p, kind, status_flip=flip,
-                             lifetime_delta=-prev.amount_cents if refund else 0,
+            delta = 0
+            if fan and p["status"] in _REFUND_STATUSES and prev.status not in _REFUND_STATUSES:
+                delta = -prev.amount_cents
+            elif fan and prev.status in _REFUND_STATUSES and p["status"] not in _REFUND_STATUSES:
+                delta = prev.amount_cents
+            ops.append(RowOp("patch", p, kind, status_flip=flip, lifetime_delta=delta,
                              broadcast="status_flip" if flip else None))
             existing[key] = seen
             continue
         ws = _fingerprint_match(p, candidates, taken) if _fingerprint_eligible(raw_kind) else None
         if ws is not None:
             taken.add(ws.id)
-            delta = (p["amount_cents"] - ws.amount_cents
-                     if fan and p["status"] not in _NON_REVENUE_STATUSES else 0)
+            if not fan:
+                delta = 0
+            elif p["status"] in _NON_REVENUE_STATUSES:
+                delta = -ws.amount_cents
+            else:
+                delta = p["amount_cents"] - ws.amount_cents
             ops.append(RowOp("promote", p, kind, target_id=ws.id, lifetime_delta=delta,
                              broadcast="ledger_promote"))
             existing[key] = seen
@@ -409,16 +431,49 @@ def is_paused(state: ScanState | None, now: datetime) -> bool:
     return state is not None and state.paused_until is not None and state.paused_until > now
 
 
-def decide_mode(state: ScanState | None) -> str:
-    """No scan row yet, or never fully backfilled -> backfill; else refresh."""
+def full_phase_s(account_id: str, full_every_s: float = _DEFAULT_FULL_EVERY_S) -> int:
+    """The account's fixed offset into the full-walk period, in [0, full_every_s):
+    crc32, so it survives restarts and spreads Creators across the period."""
+    return zlib.crc32(str(account_id).encode()) % max(1, int(full_every_s))
+
+
+def full_bucket(at: datetime, *, full_every_s: float, phase_s: float) -> int:
+    """Which of the account's full-walk periods `at` (naive UTC) falls in."""
+    return int(((at - _EPOCH).total_seconds() + phase_s) // full_every_s)
+
+
+def decide_mode(state: ScanState | None, *, now: datetime, last_full_at: datetime | None,
+                full_every_s: float = _DEFAULT_FULL_EVERY_S, phase_s: float = 0.0) -> str:
+    """No scan row yet, or never fully backfilled -> backfill. Else the full
+    7-day `refresh` when none completed in this process (`last_full_at` None)
+    or `now` is in a later period than it (`full_bucket`): one full walk per
+    period, on its first tick, so walk to walk is full_every_s (+/- a tick);
+    else `recent`."""
     if state is None or not state.fully_backfilled:
         return "backfill"
-    return "refresh"
+    if last_full_at is None:
+        return "refresh"
+    b = lambda t: full_bucket(t, full_every_s=full_every_s, phase_s=phase_s)  # noqa: E731
+    return "refresh" if b(now) != b(last_full_at) else "recent"
 
 
-def window_for(mode: str, state: ScanState, now: datetime) -> tuple[datetime, datetime]:
-    """refresh: trailing 7d (5d pending + 2d safety).
+def recent_start_date(window_start: datetime) -> str:
+    """The recent walk's `startDate`: the day before its window starts, date only
+    (`YYYY-MM-DD`). OF filters createdAt >= that day (measured 2026-11-07, acct
+    532022545) in a day-boundary TZ not known, hence the day of margin. Never an
+    ISO datetime: OF answers that with an empty list (measured, same probe)."""
+    return (window_start - timedelta(days=1)).date().isoformat()
+
+
+def window_for(mode: str, state: ScanState, now: datetime, *,
+               recent_h: float = _DEFAULT_RECENT_WINDOW_H) -> tuple[datetime, datetime]:
+    """recent: trailing recent_h (rows land <= ~10.5 h late, measured).
+    refresh: trailing 7d (5d pending + 2d safety).
+    OF ignores start/end (measured 2026-11-07): the window bounds the bookkeeping;
+    only the recent walk's recent_start_date narrows what OF answers.
     backfill: walk from oldest_seen_occurred_at (or now) BACK to backfill_floor."""
+    if mode == "recent":
+        return (now - timedelta(hours=recent_h), now)
     if mode == "refresh":
         return (now - timedelta(days=_ROLLING_WINDOW_DAYS), now)
     floor = state.backfill_floor or (now - timedelta(days=_DEFAULT_BACKFILL_DAYS))

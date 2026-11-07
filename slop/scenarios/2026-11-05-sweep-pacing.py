@@ -1,7 +1,8 @@
 """Background OnlyFans list walks, paced (service/of_pacing.py): the hourly link prewarm pass
 (link_metrics.prewarm_all: tracking links, trials, promotions), the lifecycle roster crawl
-(subscribers), two passes of the 900 s ledger supervisor (transaction_ingest.supervisor_cycle,
-payouts transactions) and a Growth page's claimer refresh (link_metrics.maybe_refresh) run at
+(subscribers), three passes of the 900 s ledger supervisor (transaction_ingest.supervisor_cycle,
+payouts transactions: the first fill (backfill), the full 7-day walk a fresh process starts with, then
+a recent 24 h walk) and a Growth page's claimer refresh (link_metrics.maybe_refresh) run at
 once, against OF's own rate limit, while `--users` chatters work half the Creators and their Fan
 List fills names in the background.
 
@@ -10,7 +11,8 @@ Creator (seed/of_sessions.py), so the relay's REAL OFClient talks to lib/of_wire
 OF's side per Creator (lib/sweep_pacing_wire.py, set here): `--set promos=` promotions (350 small,
 1,150 medium: the prewarm's 12-page cap is 1,200), `--set subscribers=` active subscribers (500 /
 2,400 / 5,000, OF's 50 a page: 48 pages at medium) and `--set transactions=` ledger rows of the
-last 6 days (400 / 1,000 / 2,000). Half the Creators are busy (chatters + their Fan List), half
+last 6 days (400 / 1,000 / 2,000; OF answers the latest TX_CAP = 600 of them, so medium and large
+land 600: INFERRED from prod offset-paged walks, not probed). Half the Creators are busy (chatters + their Fan List), half
 idle. On every idle Creator OF answers one page 429 once whatever the pace: promotions offset 100
 ("Please allow 2 seconds"), subscribers offset 100 ("... allow 1 seconds"), transactions offset
 100 ("Too many requests": no wait named); on the first busy Creator its first background
@@ -60,26 +62,44 @@ Checks (names in lib/sweep_pacing_faults.py):
                          subscriber_snapshot rows and their newest seen_at are unchanged.
   walk_counts_match      every run ended (TERMINAL's roster crawl with its 429); per Creator,
                          link_meta promo rows == OF's promotions, subscriber_snapshot rows == OF's
-                         subscribers (TERMINAL: its mirror), new transactions rows == OF's ledger
-                         rows (a failed page never looks empty).
+                         subscribers (TERMINAL: its mirror), new transactions rows == the ledger
+                         rows OF serves, min(rows, TX_CAP) (the cap INFERRED; a failed page never
+                         looks empty).
   no_5xx                 no 5xx or transport error on any call, apart from a name-fill lookup
                          whose OF answer stayed 429 after its retry (retry_once_per_429 owns it).
   user_read_p95          the person's lookup p95 <= USER_READ_P95_MS (budget).
   background_lookup_p95  the name fill's lookup p95 <= BACKGROUND_LOOKUP_P95_MS (budget): it is
                          user-triggered, never paced (paced, it measured 11-13 s).
-  tx_calls_budget        per Creator, its payouts `transactions` GETs in a supervisor pass (the worst
-                         of the TX_CYCLES, 429 retries included) x 3600 / the relay's
-                         _TICK_INTERVAL_S (`tick_interval_s` in /__slop/sweep-pacing/runs) <=
-                         (ceil(rows / TX_PAGE) + 1) x 3600 / TX_TICK_S x TX_HEADROOM. INFERRED, not a
-                         measurement of the loop: pages per pass (measured) x 3600 / the interval
-                         constant; the passes run back to back here, so the real sleep is never
-                         observed, and tx-cadence-300 sets that same module var. A regression guard
-                         on pages-per-pass and the constant. 900 s passes; 300 s (3x the passes) does not.
+  tx_calls_budget        per Creator whose full walk ended (ingest_tx_scan_end mode=refresh) before
+                         the last pass (at least one must), its payouts `transactions` GETs in its recent walk (pass mode
+                         from the relay's ingest_tx_scan_start line) x 3600 / the relay's
+                         _TICK_INTERVAL_S + those of its full 7-day walk x 3600 / _FULL_EVERY_S
+                         (`tick_interval_s`, `full_every_s` in /__slop/sweep-pacing/runs; 429 retries
+                         included; the backfill pass is a one-off, not counted) <= (ceil(rows on or
+                         after the recent walk's startDate, the day before the last TX_RECENT_H /
+                         TX_PAGE) x 3600 / TX_TICK_S + ceil(min(rows, TX_CAP) / TX_PAGE) x 3600 /
+                         TX_FULL_S) x TX_HEADROOM. INFERRED, not a measurement of the loop:
+                         pages per walk (measured) x the walks an hour the constants imply; the
+                         passes run back to back here, so the real sleep and the 2 h period are
+                         never observed, and tx-cadence-300 sets that same module var. A regression
+                         guard on pages-per-walk and the constants. 900 / 7200 s passes; 300 s (3x
+                         the recent walks) and OF ignoring `startDate` (a recent walk = a full one)
+                         do not.
                          walk_counts_match's ledger half is the "earnings unchanged" invariant.
+  tx_recent_catches_new_row  between the full pass and the recent one OF gains, per Creator, a row
+                         10 h old and one 3 days old (NEW_ROW_AGO); every Creator whose full walk
+                         ended walked recent in the last pass and landed the 10 h row (the 3-day
+                         one is before its startDate: the next full walk's, not required), and the
+                         relay never logged ingest_tx_recent_walk_empty. The added rows are left
+                         out of walk_counts_match.
+  tx_recent_window_kept  every Creator whose full walk ended before the last pass had a recent walk
+                         (at least one such Creator) and the relay never logged
+                         ingest_tx_recent_window_ignored (its guard: a recent page held a row more
+                         than a day older than its startDate, i.e. OF ignored it).
   stock "p95 within 1.25x (+50ms) of the last green run": both lookups (P95_VS_LAST).
 Pacing covers OF's API list pages only: CDN, media and /img fetches are not walks here.
-Measured: metric `tx_supervisor`, each supervisor pass's wall time and pages per Creator (the
-first fill, then the steady state); tx_calls_budget checks its pages per hour.
+Measured: metric `tx_supervisor`, each supervisor pass's walk modes, wall time and pages per Creator
+(the first fill, the full walk, a recent one); tx_calls_budget checks the pages per hour they imply.
 
 Bypasses (declared):
   - OF's rate limit is a GUESS (lib/sweep_pacing_wire.py), not OF's measured policy: a token bucket
@@ -89,7 +109,7 @@ Bypasses (declared):
     Creator) beside a paced walk (~0.9/s) stay under the refill. of_wire.py is not edited:
     the extension swaps its server's handler class for a subclass (harness side).
   - The jobs' cadences (hourly prewarm_all with its spread, the 30 min lifecycle sweep, the 900 s
-    ledger supervisor's sleep) are `POST /__slop/sweep-pacing/run` (lib/sweep_pacing_relay.py),
+    ledger supervisor's sleep and its 2 h full-walk period) are `POST /__slop/sweep-pacing/run` (lib/sweep_pacing_relay.py),
     which runs the production functions in fresh contexts (no request around them); the spread is
     compressed (above). USER_WINDOW_S, PAGE_GAP_S, JITTER_S and the 429 retry are the product's.
   - The tracking links and trials are of_wire's empty ones; only GROWTH's claimed promotions have
@@ -101,10 +121,15 @@ Break-it-once (verified, not assumed): sweep-unpaced (the scenario's FAULT: no g
 turns pages_spaced and walk_counts_match red: unpaced, a Creator's walks drain its bucket within a
 second, the single retry meets a second 429 and the roster crawls fail. A person's lookup can also
 meet GROWTH's empty bucket (no_429_on_user_reads, no_5xx), and GROWTH's refresh can lose the race
-for the retry (growth_refresh_walked): noise, not targets (red in some runs only, measured). sweep-no-429-retry
+for the retry (growth_refresh_walked): noise, not targets (red in some runs only, measured). A Creator
+whose backfill the 429s failed walks its full pass one pass late and is left out of the tx checks.
+sweep-no-429-retry
 (`--fault=`: gap kept, no retry) turns retry_once_per_429, terminal_429_keeps_mirror and
 walk_counts_match red. The lookups' p95s and growth_route_not_blocked stay. tx-cadence-300
 (`--fault=`: the supervisor's interval 300 s, pages unchanged) turns tx_calls_budget red only.
+tx-recent-window-ignored (`--fault=`, harness side: OF ignores startDate) turns tx_calls_budget
+and tx_recent_window_kept red; every row still lands. tx-recent-startdate-iso (`--fault=`, harness
+side: the startDate reaches OF as ISO, answered empty) turns tx_recent_catches_new_row red.
 """
 from __future__ import annotations
 
@@ -114,15 +139,16 @@ import re
 import sys
 import time
 from collections import Counter, defaultdict
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from slop.actors import chatter
 from slop.lib.client import Recorder
 from slop.lib.procmon import pct
 from slop.lib.sweep_pacing_faults import (BG_P95, COUNTS, GROWTH, GROWTH_ROUTE, NO_429_USER, NO_5XX,
-                                          PAGES_SPACED, RETRY_ONCE, SKIPS, TERMINAL, TX_BUDGET, USER_P95)
-from slop.lib.sweep_pacing_wire import TOO_MANY, SweepWire
+                                          PAGES_SPACED, RETRY_ONCE, SKIPS, STARTDATE_ISO, TERMINAL, TX_BUDGET,
+                                          TX_NEW_ROW, TX_WINDOW, USER_P95, WINDOW_IGNORED)
+from slop.lib.sweep_pacing_wire import TOO_MANY, TX_CAP, SweepWire
 from slop.seed import of_sessions, ts
 
 sys.path.append(str(Path(__file__).resolve().parents[2] / "service"))   # a stdlib leaf: the pace itself
@@ -141,9 +167,11 @@ BURSTS, BURST_N, BURST_EVERY_S = 6, 8, 15.0
 USER_AT_S = tuple(round(3.0 + 1.6 * k, 1) for k in range(5))   # a person's lookups, into each burst
 GROWTH_SETTLE_S = 2.5        # after GROWTH's Promotions page (3 reads), before the first burst (8)
 EARNINGS_N, EARNINGS_EVERY_S, EARNINGS_MAX_MS = 24, 0.5, 2_000
-TX_CYCLES = 2
+TX_CYCLES = 3                # backfill, the full 7-day walk, a recent one (its own run, after NEW_ROW_AGO)
+NEW_ROW_AGO = (timedelta(hours=10), timedelta(days=3))   # rows OF gains before the recent pass: caught / not needed
 TX_PAGE = 100                # transaction_ingest._PAGE_LIMIT (OF's max a page)
-TX_TICK_S, TX_HEADROOM = 900, 1.5   # the cadence the budget is sized for, and its slack
+TX_TICK_S, TX_FULL_S, TX_RECENT_H = 900, 7200, 24   # the cadence the budget is sized for
+TX_HEADROOM = 1.5            # its slack over the pages those imply
 GROWTH_PROMOS, GROWTH_CLAIMED, GROWTH_CLAIMS = 250, 5, 100
 TERMINAL_SNAPSHOT = 120
 RUN_TIMEOUT_S = 900
@@ -158,6 +186,10 @@ EXPECTED_TRACEBACKS = tuple((m, '"code": 429') for m in (
 WALK_ROUTES = ("campaigns", "trials", "promotions", "subscribers", "transactions")
 PREWARM_ROUTES = ("campaigns", "trials", "promotions")
 _SKIP = re.compile(r"bg_walk_skip account=(\S+) kind=link_prewarm")
+_TX_START = re.compile(r"ingest_tx_scan_start account=(\S+) mode=(\w+)")
+_TX_FULL_OK = re.compile(r"ingest_tx_scan_end account=(\S+) mode=refresh ")
+_TX_IGNORED = "ingest_tx_recent_window_ignored"
+_TX_EMPTY = "ingest_tx_recent_walk_empty"
 _ALLOW = re.compile(r"allow\s+(\d+(?:\.\d+)?)\s*sec", re.I)
 
 
@@ -242,6 +274,8 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     n_tx = int(ctx.param("transactions", w.size["sweep_pacing_transactions"]))
     fake = ctx.of_wire
     sw = SweepWire(fake)
+    sw.window = ctx.fault != WINDOW_IGNORED
+    sw.startdate_iso = ctx.fault == STARTDATE_ISO
     _seed_of(sw, w, aids, n_promo, n_sub, n_tx, growth)
     for a in idle:
         sw.inject[(a, "promotions")] = {"offset": 100, "text": "Too many requests. Please allow 2 seconds"}
@@ -322,12 +356,28 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     earn = asyncio.ensure_future(earnings_reads())
     await asyncio.sleep(GROWTH_SETTLE_S)
     bursts = asyncio.gather(*(fan_list(a) for a in busy))
-    for job, extra in (("link_prewarm", {}), ("subscribers", {"account_ids": aids}), ("tx_cycles", {"cycles": TX_CYCLES})):
+    for job, extra in (("link_prewarm", {}), ("subscribers", {"account_ids": aids}),
+                       ("tx_cycles", {"cycles": TX_CYCLES - 1})):
         (await ctx.owner.post("/__slop/sweep-pacing/run", json={"job": job, **extra})).raise_for_status()
     deadline = time.monotonic() + RUN_TIMEOUT_S
+    new_rows: dict[str, list[str]] = {}   # Creator -> provider ids OF gained before the recent pass
     while True:
         got = (await ctx.owner.get("/__slop/sweep-pacing/runs")).json()
-        if all(x["t1"] for x in got["runs"]) or time.monotonic() > deadline:
+        if not new_rows and any(x["job"] == "tx_cycles" and x["t1"] for x in got["runs"]):
+            # Between the full pass and the recent one: OF gains a row 10 h old (the recent walk must
+            # land it) and one 3 days old (before its startDate: the next full walk's, not its).
+            at = datetime.now(timezone.utc)
+            for i, a in enumerate(aids):
+                fan = sw.txs[a][0]["user"]["id"]
+                for j, ago in enumerate(NEW_ROW_AGO):
+                    pid = 9_000_000_000 + i * 10 + j
+                    sw.add_tx(a, {"id": pid, "user": {"id": fan}, "amount": 12.0, "currency": "USD",
+                                  "createdAt": _iso(at - ago), "status": "done", "net": 9.6, "fee": 2.4,
+                                  "vatAmount": 0, "description": f"Tip from u{fan}"})
+                    new_rows.setdefault(a, []).append(str(pid))
+            (await ctx.owner.post("/__slop/sweep-pacing/run", json={"job": "tx_cycles", "cycles": 1})).raise_for_status()
+            continue
+        if (new_rows and all(x["t1"] for x in got["runs"])) or time.monotonic() > deadline:
             break
         await asyncio.sleep(0.5)
     walls = time.time() - t_walks
@@ -485,7 +535,12 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     con = w.sql()
     meta = dict(con.execute("SELECT account_id, COUNT(*) FROM link_meta WHERE kind='promo' GROUP BY account_id"))
     snap = dict(con.execute("SELECT account_id, COUNT(*) FROM subscriber_snapshot GROUP BY account_id"))
-    tx1 = dict(con.execute("SELECT account_id, COUNT(*) FROM transactions GROUP BY account_id"))
+    added = [pid for ids in new_rows.values() for pid in ids]
+    tx1 = dict(con.execute("SELECT account_id, COUNT(*) FROM transactions WHERE provider_transaction_id NOT IN "
+                           f"({','.join('?' * len(added)) or 'NULL'}) GROUP BY account_id", added))
+    landed = {str(r[0]) for r in con.execute(
+        f"SELECT provider_transaction_id FROM transactions WHERE provider_transaction_id IN "
+        f"({','.join('?' * len(added)) or 'NULL'})", added)}
     con.close()
     errs = [{k: x[k] for k in ("job", "account", "error")} for x in runs
             if (x["error"] and not (x["job"] == "subscribers" and x["account"] == terminal))
@@ -494,10 +549,11 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     cnt_bad = {}
     for a in aids:
         got_ = {"promos": meta.get(a, 0), "subscribers": snap.get(a, 0), "transactions": tx1.get(a, 0) - tx0.get(a, 0)}
-        want = {"promos": n_promo[a], "subscribers": mirror0[0] if a == terminal else n_sub, "transactions": n_tx}
+        want = {"promos": n_promo[a], "subscribers": mirror0[0] if a == terminal else n_sub,
+                "transactions": min(n_tx, TX_CAP)}
         if got_ != want:
             cnt_bad[a] = {"got": got_, "want": want}
-    ctx.check(COUNTS, not errs and not cnt_bad and not timed_out and len(runs) == 3 + len(aids),
+    ctx.check(COUNTS, not errs and not cnt_bad and not timed_out and len(runs) == 4 + len(aids),
               runs=len(runs), failed=errs[:6], n_failed=len(errs), wrong=cnt_bad, timed_out=timed_out)
 
     # ── no_5xx ──────────────────────────────────────────────────────────────
@@ -521,22 +577,48 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     ctx.metric("p95_vs_last_green_n", {"user lookup": len(lat), "background lookup": len(bgl)})
 
     # ── the ledger supervisor's passes (measured) ───────────────────────────
-    txrun = next((x for x in runs if x["job"] == "tx_cycles"), None)
-    cycles = ((txrun or {}).get("result") or {}).get("cycles") or []
-    sup, pass_pages = [], []
+    cycles = [c for x in runs if x["job"] == "tx_cycles" for c in ((x.get("result") or {}).get("cycles") or [])]
+    sup, pass_pages, pass_modes = [], [], []
     for i, c in enumerate(cycles):
         pages = Counter(e["account"] for e in log if e["route"] == "transactions" and c["t0"] <= e["t"] <= c["t1"])
+        modes = {m.group(1): m.group(2) for y in plog
+                 if c["t0"] <= y["t"] <= c["t1"] and (m := _TX_START.search(y["msg"]))}
         pass_pages.append(pages)
+        pass_modes.append(modes)
         sup.append({"pass": i + 1, "wall_s": round(c["t1"] - c["t0"], 1), "creators": len(pages),
+                    "modes": dict(Counter(modes.values())),
                     "pages_per_creator": sorted(pages.values()), "pages": sum(pages.values())})
     ctx.metric("tx_supervisor", sup)
-    tick = got.get("tick_interval_s")
-    worst = {a: max((p.get(a, 0) for p in pass_pages), default=0) for a in aids}
-    tx_budget_h = (-(-n_tx // TX_PAGE) + 1) * 3600 / TX_TICK_S * TX_HEADROOM
-    per_h = {a: round(p * 3600 / tick, 1) for a, p in worst.items()} if tick else {}
-    ctx.check(TX_BUDGET, len(cycles) == TX_CYCLES and bool(per_h) and all(worst.values())
-              and all(v <= tx_budget_h for v in per_h.values()),
-              tick_interval_s=tick, pages_per_pass=worst, calls_per_hour=per_h, budget_per_hour=tx_budget_h)
+    # Only Creators whose full walk ended before the last pass are due a recent one (a Creator whose
+    # backfill the 429s failed runs one pass late).
+    full_ok = sorted({m.group(1) for c in cycles[:-1] for y in plog
+                      if c["t0"] <= y["t"] <= c["t1"] and (m := _TX_FULL_OK.search(y["msg"]))} & set(aids))
+    tick, full_s = got.get("tick_interval_s"), got.get("full_every_s")
+    walk = {a: {md: max((p.get(a, 0) for p, ms in zip(pass_pages, pass_modes) if ms.get(a) == md), default=0)
+                for md in ("recent", "refresh")} for a in full_ok}
+    per_h = ({a: round(v["recent"] * 3600 / tick + v["refresh"] * 3600 / full_s, 1) for a, v in walk.items()}
+             if tick and full_s else {})
+    since = (w.now.replace(tzinfo=None) - timedelta(hours=TX_RECENT_H, days=1)).date().isoformat()   # startDate
+    budget_h = {}
+    for a in full_ok:
+        recent_rows = sum(1 for r in sw.txs[a] if r["createdAt"][:10] >= since)
+        budget_h[a] = round((-(-recent_rows // TX_PAGE) * 3600 / TX_TICK_S
+                             + -(-min(n_tx, TX_CAP) // TX_PAGE) * 3600 / TX_FULL_S) * TX_HEADROOM, 1)
+    ctx.check(TX_BUDGET, len(cycles) == TX_CYCLES and bool(full_ok) and len(per_h) == len(full_ok)
+              and all(v["recent"] and v["refresh"] for v in walk.values())
+              and all(per_h[a] <= budget_h[a] for a in full_ok),
+              creators=len(aids), full_ok=len(full_ok), tick_interval_s=tick, full_every_s=full_s, pages_per_walk=walk, calls_per_hour=per_h,
+              budget_per_hour=budget_h)
+    ignored = [y["msg"] for y in plog if _TX_IGNORED in y["msg"]]
+    recent_walks = sorted({a for ms in pass_modes for a, md in ms.items() if md == "recent"})
+    ctx.check(TX_WINDOW, bool(full_ok) and set(full_ok) <= set(recent_walks) and not ignored,
+              recent_walks=len(recent_walks), full_ok=len(full_ok), creators=len(aids), warnings=len(ignored), e_g=ignored[:3])
+    empty = [y["msg"] for y in plog if _TX_EMPTY in y["msg"]]
+    last_modes = pass_modes[-1] if pass_modes else {}
+    missed = [a for a in full_ok if new_rows.get(a, [""])[0] not in landed or last_modes.get(a) != "recent"]
+    ctx.check(TX_NEW_ROW, bool(full_ok) and not missed and not empty,
+              full_ok=len(full_ok), missed=missed, empty_walk_warnings=len(empty), e_g=empty[:3],
+              rows_3d_old_landed=sum(1 for a in full_ok if new_rows[a][1] in landed))
     slow = sorted((x for x in user_relay if p95 is not None and x["ms"] >= p95), key=lambda x: x["t"])
     ctx.metric("user_lookups_at_or_over_p95", [{"s_into_walks": round(x["t"] - t_walks, 1), "ms": round(x["ms"]),
                                                "account": x["account"]} for x in slow])
@@ -547,5 +629,6 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
     ctx.note(f"{len(aids)} Creators ({len(busy)} busy), walls {walls:.0f} s, {len(log)} list GETs at OF, "
              f"{n429} 429s, user lookup p95 {p95} ms over {len(lat)}, background lookup p95 {bg95} ms over "
              f"{len(bgl)}, {sum(chatters.actions.values())} chatter actions",
-             *(f"ledger supervisor pass {s['pass']}: {s['wall_s']} s, {s['pages']} pages over {s['creators']} "
-               f"Creators ({s['pages_per_creator']})" for s in sup))
+             *(f"ledger supervisor pass {s['pass']} {s['modes']}: {s['wall_s']} s, {s['pages']} pages over "
+               f"{s['creators']} Creators ({s['pages_per_creator']})" for s in sup),
+             f"ledger calls/h per Creator at {tick}/{full_s} s (inferred): {per_h} vs budget {budget_h}")

@@ -584,7 +584,19 @@ class ReadsMixin:
         period end as a unix timestamp; then the response's `nextMarker`), `type`
         and, on the Tips sub-tabs, `tipsSource` (profile|post_all|chat|stream|
         story). OF sends no endDate. Each is added only when given, so callers
-        that do not pass them send what they always sent."""
+        that do not pass them send what they always sent.
+
+        Measured 2026-11-07 (acct 532022545, limit=10, read-only): `start` /
+        `end` are IGNORED (same rows as no params); `start_date` as `YYYY-MM-DD`
+        filters createdAt >= that day (day-boundary TZ unknown); an ISO datetime
+        `start_date` answers an EMPTY list, hasMore false (with or without
+        `marker`), so never send one. No filter: the latest rows, newest first,
+        `nextMarker` = the oldest row's createdAt (unix). `offset` pages a
+        `start_date` read (measured 2026-11-07, same acct, startDate=2026-11-02,
+        limit=10: offset 0 -> 10 rows hasMore true, offset 10 -> 8 rows hasMore
+        false, no id in both, every row >= the date).
+        INFERRED (prod offset-paged walks, 6 pages then hasMore false): an
+        unfiltered read stops at the latest 600 rows."""
         params: dict[str, Any] = {"limit": limit, "offset": offset}
         if type:  params["type"] = type
         if start: params["start"] = start

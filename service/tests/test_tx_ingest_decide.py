@@ -14,6 +14,7 @@ import _harness  # MUST be first
 _harness.bootstrap()
 
 import logging  # noqa: E402
+from collections import Counter  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
 
 import transaction_ingest_decide as d  # noqa: E402
@@ -72,6 +73,27 @@ def case_plan_table():
         ("chargeback -> refunded: no second refund", row("p1", status="refunded"),
          {"p1": held(row("p1", amount=7.0, status="undo"))}, (), (),
          ("patch", "tip", 0, False, "status_flip", (0, 1))),
+        ("chargedback -> cleared (dispute lost) puts the old amount back", row("p1"),
+         {"p1": held(row("p1", amount=7.0, status="undo"))}, (), (),
+         ("patch", "tip", 700, False, "status_flip", (0, 1))),
+        ("refunded -> refund_pending (still revenue) puts it back", row("p1", status="pending_return"),
+         {"p1": held(row("p1", status="refunded"))}, (), (),
+         ("patch", "tip", 500, False, "status_flip", (0, 1))),
+        ("chargedback -> failed: leaves the settled reversal, puts it back", row("p1", status="failed"),
+         {"p1": held(row("p1", status="undo"))}, (), (),
+         ("patch", "tip", 500, False, "status_flip", (0, 1))),
+        ("cleared -> failed: no delta (as before)", row("p1", status="failed"),
+         {"p1": held(row("p1"))}, (), (),
+         ("patch", "tip", 0, False, "status_flip", (0, 1))),
+        ("WS twin adopted already charged back takes the WS bump off", row("p1", status="undo"), {},
+         [WsTip(9, FAN, 495, NOW)], (),
+         ("promote", "tip", -495, False, "ledger_promote", (0, 1))),
+        ("WS twin adopted already refunded takes the WS bump off", row("p1", status="refunded"), {},
+         [WsTip(9, FAN, 500, NOW)], (),
+         ("promote", "tip", -500, False, "ledger_promote", (0, 1))),
+        ("WS twin adopted refund_pending: still revenue, reconcile only", row("p1", status="pending_return"),
+         {}, [WsTip(9, FAN, 500, NOW)], (),
+         ("promote", "tip", 0, False, "ledger_promote", (0, 1))),
         ("WS twin adopted (same amount)", row("p1"), {}, [WsTip(9, FAN, 500, NOW + timedelta(seconds=60))], (),
          ("promote", "tip", 0, False, "ledger_promote", (0, 1))),
         ("WS twin adopted, amount reconciled", row("p1", amount=5.01), {},
@@ -130,6 +152,21 @@ def case_duplicate_provider_id_inside_one_page():
         ("patch", "tip", -500, False, "status_flip", (0, 1)),
         ("noop", "tip", 0, False, None, (0, 1)),   # the same row again: nothing to write
     ], [shape(o) for o in ops]
+
+
+def case_reversal_oscillation_nets_one_amount():
+    # Lifetime follows status: however OF's statuses bounce, the sale is off once.
+    for name, statuses, want in [
+        ("cleared -> chargedback -> refund_pending -> chargedback", ["undo", "pending_return", "undo"], -500),
+        ("cleared -> chargedback -> cleared", ["undo", "done"], 0),
+        ("cleared -> refund_pending -> chargedback -> refunded", ["pending_return", "undo", "refunded"], -500),
+        ("chargedback -> cleared -> chargedback -> cleared", ["undo", "done", "undo", "done"], 0),
+        ("cleared -> chargedback -> failed -> cleared", ["undo", "failed", "done"], 0),
+    ]:
+        ops = plan([row("p1", status=st) for st in statuses], {"p1": held(row("p1"))})
+        assert sum(o.lifetime_delta for o in ops) == want, (name, [o.lifetime_delta for o in ops])
+    ops = plan([row("p1", status="done")], {"p1": held(row("p1", status="undo"))})
+    assert ops[0].status_flip == ("chargedback", "cleared") and ops[0].lifetime_delta == 500, ops
 
 
 def case_a_numeric_provider_id_matches_its_text_column():
@@ -225,14 +262,97 @@ def case_start_and_interrupt():
 
 
 def case_window_and_mode():
-    assert d.decide_mode(None) == "backfill"
-    assert d.decide_mode(ScanState()) == "backfill"
-    assert d.decide_mode(ScanState(fully_backfilled=True)) == "refresh"
+    done = ScanState(fully_backfilled=True)
+    full, phase = d._DEFAULT_FULL_EVERY_S, 437
+    # NOW (12:00 UTC) is a 7200 s boundary of the epoch, so with phase 437 this
+    # account's current period began 437 s ago, at B.
+    B = NOW - timedelta(seconds=phase)
+    assert d.full_bucket(B, full_every_s=full, phase_s=phase) == d.full_bucket(NOW, full_every_s=full, phase_s=phase)
+    assert d.full_bucket(B - timedelta(seconds=1), full_every_s=full, phase_s=phase) \
+        == d.full_bucket(NOW, full_every_s=full, phase_s=phase) - 1
+    table = [
+        # (name, state, last_full_at, phase, want)
+        ("no scan row", None, None, 0, "backfill"),
+        ("never backfilled", ScanState(), None, 0, "backfill"),
+        ("backfilling, full walk recent", ScanState(), NOW, 0, "backfill"),
+        ("just restarted: no full walk in this process", done, None, phase, "refresh"),
+        ("full walk at the start of this period", done, B, phase, "recent"),
+        ("full walk 5 min ago, same period", done, NOW - timedelta(minutes=5), phase, "recent"),
+        ("full walk 1 s before this period", done, B - timedelta(seconds=1), phase, "refresh"),
+        ("10 min ago is the previous period at this phase", done, NOW - timedelta(minutes=10), phase, "refresh"),
+        ("phase 0: NOW is the boundary, 1 s ago was the last period", done, NOW - timedelta(seconds=1), 0, "refresh"),
+        ("phase 0: a walk at NOW", done, NOW, 0, "recent"),
+        ("a walk stamped in a later period (clock stepped back)", done, NOW + timedelta(hours=3), phase, "refresh"),
+        ("hours ago", done, NOW - timedelta(hours=5), phase, "refresh"),
+    ]
+    for name, st, last, ph, want in table:
+        got = d.decide_mode(st, now=NOW, last_full_at=last, phase_s=ph)
+        assert got == want, (name, got, want)
+    assert d.decide_mode(done, now=NOW, last_full_at=NOW - timedelta(seconds=950), full_every_s=900) == "refresh"
+    assert d.window_for("recent", ScanState(), NOW) == (NOW - timedelta(hours=24), NOW)
+    assert d.window_for("recent", ScanState(), NOW, recent_h=12) == (NOW - timedelta(hours=12), NOW)
     assert d.window_for("refresh", ScanState(), NOW) == (NOW - timedelta(days=7), NOW)
     assert d.window_for("backfill", ScanState(), NOW) == (NOW - timedelta(days=90), NOW)
     floor, oldest = NOW - timedelta(days=30), NOW - timedelta(days=4)
     assert d.window_for("backfill", ScanState(backfill_floor=floor, oldest_seen_occurred_at=oldest), NOW) \
         == (floor, oldest)
+
+
+def case_recent_start_date_is_date_only_a_day_early():
+    for start, want in [
+        (datetime(2026, 11, 6, 12, 0), "2026-11-05"),
+        (datetime(2026, 11, 7, 0, 0), "2026-11-06"),
+        (datetime(2026, 11, 6, 23, 59, 59), "2026-11-05"),
+        (datetime(2026, 1, 1, 5, 0), "2025-12-31"),
+    ]:
+        got = d.recent_start_date(start)
+        assert got == want and __import__("re").fullmatch(r"\d{4}-\d{2}-\d{2}", got), (start, got, want)
+
+
+_rng = __import__("random").Random(7)
+FLEET = [str(_rng.randrange(10**8, 10**9)) for _ in range(50)]   # 50 OF-like Creator ids, deterministic
+
+
+def _full_ticks(aid: str, tick_s: float, hours: float, t0: datetime) -> list[int]:
+    """The supervisor's ticks for one account from a restart at t0: which tick indexes walk full
+    (decide at the tick, stamp the walk's start, as run_one_tick does)."""
+    done, last, out = ScanState(fully_backfilled=True), None, []
+    ph = d.full_phase_s(aid)
+    for n in range(int(hours * 3600 / tick_s)):
+        now = t0 + timedelta(seconds=n * tick_s)
+        if d.decide_mode(done, now=now, last_full_at=last, phase_s=ph) == "refresh":
+            out.append(n)
+            last = now
+    return out
+
+
+def case_full_phase_deterministic_in_period():
+    got = [d.full_phase_s(a) for a in FLEET]
+    assert all(0 <= g < 7200 and isinstance(g, int) for g in got), got
+    assert got == [d.full_phase_s(a) for a in FLEET], "phase must not change between calls"
+    assert d.full_phase_s("80000112") == __import__("zlib").crc32(b"80000112") % 7200
+    assert d.full_phase_s("80000112", 3600) == __import__("zlib").crc32(b"80000112") % 3600
+
+
+def case_restart_herd_spreads_within_one_period_then_exact_period():
+    t0 = NOW + timedelta(seconds=123)
+    second = Counter()
+    for aid in FLEET:
+        fulls = _full_ticks(aid, 900, 26, t0)
+        assert fulls[0] == 0, (aid, fulls[:3])                        # restart: everyone full at once
+        assert 1 <= fulls[1] <= 8, (aid, fulls[:3])                   # then within one period
+        assert {b - a for a, b in zip(fulls[1:], fulls[2:])} == {8}, (aid, fulls)   # 7200 s walk to walk
+        second[fulls[1]] += 1
+    spread = [second[n] for n in range(1, 9)]
+    print(f"    full-walk phase spread of 50 Creators over the 8 ticks of a period: {spread}")
+    # crc32 phases are ~uniform: 50 into 8 ticks is ~6 each with multinomial noise (a max of 12-14 is
+    # normal at n=50); the bound is "no tick carries a third of the fleet", vs all 50 at the restart.
+    assert sum(spread) == 50 and max(spread) <= 16 and min(spread) >= 1, spread
+    # Ticks that run late (cycle overrun): walk to walk stays 7200 s +/- one tick.
+    for aid in FLEET[:10]:
+        fulls = _full_ticks(aid, 905, 26, t0)
+        gaps = {(b - a) * 905 for a, b in zip(fulls[1:], fulls[2:])}
+        assert all(7200 - 905 <= g <= 7200 + 905 for g in gaps), (aid, gaps)
 
 
 # ── the write path ──────────────────────────────────────────────────
@@ -274,6 +394,15 @@ async def case_a_page_is_one_ledger_txn_with_its_lifetime():
     rows[2] = row(7_700_000_002, amount=3.0, status="undo", at=NOW - timedelta(minutes=2))
     assert await ti._write_page(aid, rows) == (0, 5)
     assert _ledger_txns() == 1
+    assert await _lifetime(aid) == 1500 - 300
+    # OF calls it `done` again (dispute lost): the amount comes back with the row.
+    rows[2] = row(7_700_000_002, amount=3.0, status="done", at=NOW - timedelta(minutes=2))
+    assert await ti._write_page(aid, rows) == (0, 5)
+    assert _ledger_txns() == 1
+    assert await _lifetime(aid) == 1500
+    rows[2] = row(7_700_000_002, amount=3.0, status="undo", at=NOW - timedelta(minutes=2))
+    assert await ti._write_page(aid, rows) == (0, 5)
+    _ledger_txns()
     assert await _lifetime(aid) == 1500 - 300
     # A lone row with nothing to write (re-poll, or no provider id): no write transaction.
     assert await ti._write_one(aid, rows[0]) == (0, 1)

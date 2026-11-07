@@ -47,7 +47,7 @@ vi.mock("@/components/stats/PerModelKpiGrid", () => ({
 
 import HomePage from "@/app/page";
 import { DASHBOARD_HEADER, type DashboardControl } from "@/components/home/dashboardControls";
-import { REFERRALS_UNAVAILABLE, TILE_ICON } from "@/components/home/DashboardHeader";
+import { CHARGEBACKS_UNAVAILABLE, REFERRALS_UNAVAILABLE, TILE_ICON } from "@/components/home/DashboardHeader";
 import { periodWindow, type Period } from "@/lib/dateRange";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import { shouldPersistKey } from "@/components/providers";
@@ -76,6 +76,9 @@ let fetchMock: ReturnType<typeof vi.fn>;
 /** Each answer to `GET /admin/stats/revenue?group_by=kind`, in turn, told whether the read asked for Net; the last
  *  repeats. */
 let revenue: Array<(net: boolean) => Promise<Response>>;
+/** The answer to the Chargebacks tile's `GET /admin/stats/revenue?group_by=kind&status=reversed`: none unless a case
+ *  says so. */
+let reversed: (net: boolean) => Promise<Response>;
 const byBasis = (gross: unknown, net: unknown) => async (isNet: boolean) => jsonRes(isNet ? net : gross);
 let applied: () => Promise<Response>;
 /** Each answer to `GET /admin/stats/per-employee`, in turn; the last repeats. */
@@ -100,11 +103,15 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date(WEDNESDAY));
   revenue = [byBasis(BY_KIND, BY_KIND_NET)];
+  reversed = byBasis({ rows: [] }, { rows: [] });
   applied = async () => appliedRes();
   perEmployee = [async () => jsonRes(PER_EMPLOYEE)];
   fetchMock = vi.fn(async (url: string) => {
     const u = new URL(String(url), "http://localhost");
     if (u.pathname === "/admin/settings/applied") return applied();
+    if (u.pathname === "/admin/stats/revenue" && u.searchParams.get("status") === "reversed") {
+      return reversed(u.searchParams.get("include_net") === "true");
+    }
     if (u.pathname === "/admin/stats/revenue" && u.searchParams.get("group_by") === "kind") {
       return (revenue.length > 1 ? revenue.shift()! : revenue[0])(u.searchParams.get("include_net") === "true");
     }
@@ -129,10 +136,14 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/** The header's revenue reads, as URLs, with the init each was sent with. */
-const revenueReads = () => fetchMock.mock.calls
-  .map(([url, init]) => ({ url: new URL(String(url), "http://localhost"), init: init as RequestInit }))
-  .filter(({ url }) => url.pathname === "/admin/stats/revenue" && url.searchParams.get("group_by") === "kind");
+const calls = () => fetchMock.mock.calls
+  .map(([url, init]) => ({ url: new URL(String(url), "http://localhost"), init: init as RequestInit }));
+/** The header's revenue reads (the earnings; not Chargebacks' reversed read), as URLs, with the init each was sent with. */
+const revenueReads = () => calls().filter(({ url }) => url.pathname === "/admin/stats/revenue"
+  && url.searchParams.get("group_by") === "kind" && !url.searchParams.has("status"));
+/** Chargebacks' reversed reads. */
+const reversedReads = () => calls().filter(({ url }) => url.pathname === "/admin/stats/revenue"
+  && url.searchParams.get("status") === "reversed");
 
 /** The header's per-employee reads, as URLs, with the init each was sent with. */
 const perEmployeeReads = () => fetchMock.mock.calls
@@ -155,7 +166,7 @@ const tile = (key: string) => document.querySelector<HTMLElement>(`[data-control
 /** A channel tile's figure as read ("$30"), or null while none shows. */
 const channelFigure = (key: string) => tile(key).querySelector("[data-figure]")?.textContent ?? null;
 /** The wired channel tiles, in catalogue order. */
-const CHANNELS = ["subscriptions", "tips", "posts", "messages", "streams"] as const;
+const CHANNELS = ["subscriptions", "tips", "posts", "messages", "chargebacks"] as const;
 const channelFigures = () => Object.fromEntries(CHANNELS.map((k) => [k, channelFigure(k)]));
 /** The Net / Gross select: the `IfSelect` combobox inside its catalogue slot. */
 const basis = () => within(tile("basis")).getByRole("combobox", { name: "Earnings" });
@@ -186,7 +197,7 @@ describe("the KPI header's control catalogue matches the Layout capture on disk"
       const row = rowOf(c.id);
       expect(row, `${c.id} is not an Items row`).toBeTruthy();
       const value = row!.split("|")[4];
-      for (const label of c.labels) expect(value).toContain(label);
+      if (!c.ours) for (const label of c.labels) expect(value).toContain(label);
       const sources = row!.split("|")[5].split(";").map((s) => s.trim());
       for (const s of c.sources) expect(sources).toContain(s);
     },
@@ -397,11 +408,11 @@ const ALL_KINDS_NET = {
 /** Hand sums of ALL_KINDS by the spec's channel mapping. */
 const ALL_GROSS = {
   total: "$72",
-  channels: { subscriptions: "$30", tips: "$15", posts: "$4", messages: "$10", streams: "$8" },
+  channels: { subscriptions: "$30", tips: "$15", posts: "$4", messages: "$10", chargebacks: "$0" },
 };
 const ALL_NET = {
   total: "$56",
-  channels: { subscriptions: "$24", tips: "$12", posts: "$3", messages: "$8", streams: "$5" },
+  channels: { subscriptions: "$24", tips: "$12", posts: "$3", messages: "$8", chargebacks: "$0" },
 };
 
 describe("the channel tiles and the Net / Gross switch (ticket 25)", () => {
@@ -429,16 +440,70 @@ describe("the channel tiles and the Net / Gross switch (ticket 25)", () => {
     await mountHome();
     await shows("$10");
     expect(channelFigures()).toEqual(
-      { subscriptions: "$0", tips: "$0", posts: "$0", messages: "$6", streams: "$0" },
+      { subscriptions: "$0", tips: "$0", posts: "$0", messages: "$6", chargebacks: "$0" },
     );
     pickBasis("Gross");
     await shows("$12");
     expect(channelFigures()).toEqual(
-      { subscriptions: "$0", tips: "$0", posts: "$0", messages: "$7", streams: "$0" },
+      { subscriptions: "$0", tips: "$0", posts: "$0", messages: "$7", chargebacks: "$0" },
     );
     // Nothing on the card says the tiles add up to Total earnings.
     const card = totalTile().closest("section")!;
     expect(card.textContent).not.toMatch(/\b(sum|add up|of total|breakdown)\b/i);
+  });
+
+  it("Chargebacks reads the reversals below zero on the err token, in Net and in Gross; Total and stream sales unmoved", async () => {
+    revenue = [byBasis(ALL_KINDS, ALL_KINDS_NET)];
+    reversed = byBasis(
+      { rows: [{ day: null, kind: "ppv_message", total_cents: 2888, count: 2 }] },
+      { rows: [{ day: null, kind: "ppv_message", total_cents: 2888, count: 2, net_cents: 2310, net_missing_count: 0 }] },
+    );
+    await mountHome();
+    await shows(ALL_NET.total);
+    await waitFor(() => expect(channelFigure("chargebacks")).toBe("-$23"));
+    expect(tile("chargebacks").querySelector("[data-figure]")!.className).toContain("text-err");
+    expect(tile("chargebacks").textContent).toContain("Chargebacks");
+    expect(channelFigures()).toEqual({ ...ALL_NET.channels, chargebacks: "-$23" });
+    pickBasis("Gross");
+    await shows(ALL_GROSS.total);
+    await waitFor(() => expect(channelFigure("chargebacks")).toBe("-$29"));
+    expect(reversedReads().map(({ url }) => [url.searchParams.get("group_by"), url.searchParams.get("include_net")]))
+      .toEqual([["kind", "true"], ["kind", null]]);
+  });
+
+  it("a failed Chargebacks read shows '-', titled, never $0, and leaves the other tiles", async () => {
+    revenue = [byBasis(ALL_KINDS, ALL_KINDS_NET)];
+    reversed = async () => jsonRes({ detail: "relay down" }, 500);
+    await mountHome();
+    await shows(ALL_NET.total);
+    await waitFor(() => expect(channelFigure("chargebacks")).toBe("-"));
+    expect(tile("chargebacks").title).toBe(CHARGEBACKS_UNAVAILABLE);
+    expect(channelFigure("messages")).toBe(ALL_NET.channels.messages);
+  });
+
+  it("a reversal under 50 cents prints plain '$0', never a red '-$0'", async () => {
+    revenue = [byBasis(ALL_KINDS, ALL_KINDS_NET)];
+    reversed = byBasis(
+      { rows: [{ day: null, kind: "tip", total_cents: 40, count: 1 }] },
+      { rows: [{ day: null, kind: "tip", total_cents: 40, count: 1, net_cents: 32, net_missing_count: 0 }] },
+    );
+    await mountHome();
+    await shows(ALL_NET.total);
+    await waitFor(() => expect(reversedReads().length).toBeGreaterThan(0));
+    await waitFor(() => expect(channelFigure("chargebacks")).toBe("$0"));
+    expect(tile("chargebacks").querySelector("[data-figure]")!.className).not.toContain("text-err");
+  });
+
+  it("Net's missing-net note counts the reversals with no net too", async () => {
+    revenue = [byBasis(ALL_KINDS, ALL_KINDS_NET)];
+    reversed = byBasis(
+      { rows: [{ day: null, kind: "ppv_message", total_cents: 2888, count: 2 }] },
+      { rows: [{ day: null, kind: "ppv_message", total_cents: 2888, count: 2, net_cents: 0, net_missing_count: 2 }] },
+    );
+    await mountHome();
+    await shows(ALL_NET.total);
+    await waitFor(() => expect(netNote()?.textContent)
+      .toBe("3 sales in this period have no net figure from OnlyFans yet, so Net leaves them out."));
   });
 
   it("Referrals is the same in both modes, and a Creator OnlyFans could not answer for is $0, titled why", async () => {
@@ -531,7 +596,7 @@ describe("the channel tiles and the Net / Gross switch (ticket 25)", () => {
     await mountHome();
     await shows("$0");
     expect(channelFigures()).toEqual(
-      { subscriptions: "$0", tips: "$0", posts: "$0", messages: "$0", streams: "$0" },
+      { subscriptions: "$0", tips: "$0", posts: "$0", messages: "$0", chargebacks: "$0" },
     );
     expect(netNote()).toBeNull();
   });
@@ -558,7 +623,7 @@ describe("the channel tiles and the Net / Gross switch (ticket 25)", () => {
     await mountHome();
     await shows("$0");
     expect(channelFigures()).toEqual(
-      { subscriptions: "$0", tips: "$0", posts: "$0", messages: "$0", streams: "$0" },
+      { subscriptions: "$0", tips: "$0", posts: "$0", messages: "$0", chargebacks: "$0" },
     );
     expect(netNote()).toBeNull();
   });
@@ -580,7 +645,7 @@ describe("the saved Total: Total earnings' read and the Applied settings ride th
   /** Saved on the last visit, an hour ago: past both reads' staleTime. */
   const lastVisit = { updatedAt: new Date(WEDNESDAY).getTime() - 60 * 60_000 };
 
-  it("saves those two reads under the signed-in principal, and nothing else the page reads", async () => {
+  it("saves those reads (Total, Chargebacks, Applied settings) under the signed-in principal, and nothing else the page reads", async () => {
     const { queryClient } = renderWithProviders(<HomePage />);
     await shows(TOTAL_NET);
     const keys = queryClient.getQueryCache().getAll().map((q) => q.queryKey);
@@ -588,11 +653,13 @@ describe("the saved Total: Total earnings' read and the Applied settings ride th
     expect(saved).toEqual(expect.arrayContaining([
       ["applied-settings", "owner-1", null],
       ["dashboard", "revenue-by-kind", "owner-1", ...WEEK, "Net"],
+      ["dashboard", "revenue-reversed-by-kind", "owner-1", ...WEEK, "Net"],
     ]));
-    expect(saved.every((k) => k[0] === "applied-settings" || k[1] === "revenue-by-kind")).toBe(true);
+    const persisted = ["revenue-by-kind", "revenue-reversed-by-kind"];
+    expect(saved.every((k) => k[0] === "applied-settings" || persisted.includes(k[1] as string))).toBe(true);
     // The page's other reads (per-employee, referrals: OnlyFans' figure, the timesheet) stay in memory.
     expect(keys.some((k) => k[0] === "dashboard" && k[1] === "per-employee")).toBe(true);
-    expect(keys.filter((k) => k[0] === "stats" || (k[0] === "dashboard" && k[1] !== "revenue-by-kind"))
+    expect(keys.filter((k) => k[0] === "stats" || (k[0] === "dashboard" && !persisted.includes(k[1] as string)))
       .some((k) => shouldPersistKey(k))).toBe(false);
   });
 

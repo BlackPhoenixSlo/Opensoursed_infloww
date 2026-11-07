@@ -2,7 +2,8 @@
 end of its `_wire`), for scenarios/2026-11-05-sweep-pacing.py. Inert until called.
 
   POST /__slop/sweep-pacing/knobs {NAME: seconds, ...}  sets service/of_pacing.py's USER_WINDOW_S
-       and link_metrics' _PREWARM_SPREAD_S (time compression, declared) and from then on keeps of_pacing's and link_metrics' log lines.
+       and link_metrics' _PREWARM_SPREAD_S (time compression, declared) and from then on keeps of_pacing's,
+       link_metrics' and transaction_ingest's log lines (each ledger walk's mode: ingest_tx_scan_start).
        The pacer's own PAGE_GAP_S / JITTER_S and the 429 retry are never set here.
   POST /__slop/sweep-pacing/run {job, account_ids, cycles}  starts the production job in a fresh
        context (no request around it, as the supervisors' tasks), and answers at once:
@@ -14,7 +15,9 @@ end of its `_wire`), for scenarios/2026-11-05-sweep-pacing.py. Inert until calle
                        cycle's {t0, t1}
        Bypass, declared: the jobs' cadences (hourly / 30 min / _TICK_INTERVAL_S) and prewarm_all's spread.
   GET  /__slop/sweep-pacing/runs  {runs: [{n, job, account, t0, t1, error, result}], log: [{t, msg}],
-       tick_interval_s: transaction_ingest._TICK_INTERVAL_S (the supervisor's sleep this relay runs with)}
+       tick_interval_s: transaction_ingest._TICK_INTERVAL_S (the supervisor's sleep this relay runs with),
+       full_every_s: transaction_ingest._FULL_EVERY_S (its full 7-day walk's period),
+       recent_window_h: transaction_ingest._RECENT_WINDOW_H}
 """
 
 import asyncio
@@ -30,8 +33,14 @@ _log: list[dict] = []
 _tasks: set = set()
 
 
+_TX_KEEP = ("ingest_tx_scan_start", "ingest_tx_scan_end", "ingest_tx_recent_window_ignored",
+            "ingest_tx_recent_walk_empty")
+
+
 class _Keep(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
+        if record.name == "of-relay.ingest_tx" and not record.getMessage().startswith(_TX_KEEP):
+            return
         _log.append({"t": record.created, "msg": record.getMessage()})
 
 
@@ -73,7 +82,7 @@ def wire(app, loopback, _relay) -> None:
                 setattr(of_pacing, k, float(v))
             else:
                 raise HTTPException(400, f"not a knob: {k}")
-        for name in ("of-relay.of_pacing", link_metrics.log.name):
+        for name in ("of-relay.of_pacing", link_metrics.log.name, "of-relay.ingest_tx"):
             lg = logging.getLogger(name)
             if _keep not in lg.handlers:
                 lg.addHandler(_keep)
@@ -109,7 +118,9 @@ def wire(app, loopback, _relay) -> None:
         loopback(request)
         import transaction_ingest
         return {"runs": [dict(r) for r in _runs], "log": list(_log),
-                "tick_interval_s": transaction_ingest._TICK_INTERVAL_S}
+                "tick_interval_s": transaction_ingest._TICK_INTERVAL_S,
+                "full_every_s": transaction_ingest._FULL_EVERY_S,
+                "recent_window_h": transaction_ingest._RECENT_WINDOW_H}
 
     app.add_api_route("/__slop/sweep-pacing/knobs", knobs, methods=["POST"])
     app.add_api_route("/__slop/sweep-pacing/run", run, methods=["POST"])

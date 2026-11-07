@@ -42,8 +42,8 @@ must stop for a deactivated Creator (service/account_health.py "Deactivation").
   case_pump_supervisor_skips_and_reaps:
       one supervisor pass starts no pump for the deactivated Creator and stops
       the one it had.
-  case_chat_link_seed_skips:
-      the startup scrape_chats seed enqueues for the active Creator only.
+  case_chat_sweep_cadence_skips:
+      the full chat sweep cadence (sweep_cadence) enqueues for the active Creator only.
   case_ledger_polls_skip:
       the 5-min ledger supervisor and the 30s fast poll tick the active
       Creator only.
@@ -481,7 +481,8 @@ async def case_pump_supervisor_skips_and_reaps() -> None:
     assert OFF in STOPPED, f"the deactivated Creator's pump was not reaped: {STOPPED}"
 
 
-async def case_chat_link_seed_skips() -> None:
+async def case_chat_sweep_cadence_skips() -> None:
+    import sweep_cadence
     enqueued: list[str] = []
 
     async def _enqueue(aid, kind, payload=None, **_k):
@@ -489,12 +490,11 @@ async def case_chat_link_seed_skips() -> None:
 
     orig = ax.enqueue_job, ax.wake_supervisor
     ax.enqueue_job, ax.wake_supervisor = _enqueue, lambda: None
-    server._chat_links_seeded = False
     try:
-        await server._seed_chat_links_once()
+        await sweep_cadence.tick()
     finally:
         ax.enqueue_job, ax.wake_supervisor = orig
-    assert OFF not in enqueued and ON in enqueued, f"seeded: {enqueued}"
+    assert OFF not in enqueued and ON in enqueued, f"enqueued: {enqueued}"
 
 
 async def case_ledger_polls_skip() -> None:
@@ -545,7 +545,7 @@ async def case_executor_skips() -> None:
         for aid in (OFF, ON):
             s.add(ScheduledJob(account_id=aid, kind="t_deact_noop", payload_json="{}",
                                status="pending", run_at=now - timedelta(seconds=5)))
-    pairs = [(a, k) for a, k, _op in await ax._due_job_pairs()]
+    pairs = [(a, k) for a, k, _op, _due in await ax._due_job_pairs()]
     assert (ON, "t_deact_noop") in pairs and (OFF, "t_deact_noop") not in pairs, pairs
 
     before = CALLS["noop"]

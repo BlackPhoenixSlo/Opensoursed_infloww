@@ -344,6 +344,7 @@ class Pair(NamedTuple):
     account_id: str
     kind: str
     operator: bool                  # an operator started one of its due jobs
+    due_at: float = 0.0             # its oldest due job's run_at (epoch s): bulk lane order
 
 
 @dataclass(frozen=True)
@@ -358,10 +359,15 @@ def plan_dispatch(pairs: Iterable[Pair], inflight: AbstractSet[tuple[str, str]],
                   last_served: Mapping[str, float], rank: Callable[[str], int],
                   bulk_kinds: AbstractSet[str]) -> list[Spawn]:
     """The runs to spawn, in spawn order: operator runs first, then kind priority (`rank`),
-    then the account served longest ago, account id breaking a tie. A pair already in
-    flight is not spawned again (no stacking over a slow run). `bulk`: the bulk lane."""
-    order = sorted(pairs, key=lambda p: (not p.operator, rank(p.kind),
-                                         last_served.get(p.account_id, 0.0), p.account_id))
+    then the account served longest ago, account id breaking a tie. A bulk pair goes by its
+    oldest due job instead: `last_served` is process-local, so after a restart it would
+    queue the bulk lane in account-id order, the same accounts last every time. A pair
+    already in flight is not spawned again (no stacking over a slow run). `bulk`: the bulk lane."""
+    def key(p: Pair):
+        bulk = p.kind in bulk_kinds
+        return (not p.operator, rank(p.kind), bulk,
+                p.due_at if bulk else last_served.get(p.account_id, 0.0), p.account_id)
+    order = sorted(pairs, key=key)
     taken = set(inflight)
     out: list[Spawn] = []
     for p in order:

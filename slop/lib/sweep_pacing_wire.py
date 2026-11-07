@@ -9,10 +9,25 @@ that answers the four routes below and hands every other request to of_wire's ow
   GET /api2/v2/subscriptions/subscribers `{"list": [...], "hasMore": bool}` from `subs[uid]`;
                                          a promotion's claimers read (`filter[promoId]=id`)
                                          pages `claims[(uid, id)]`, any other filter is empty
-  GET /api2/v2/payouts/transactions      `txs[uid]` rows with createdAt in [start, end], newest
-                                         first, `offset` / `limit`, `hasMore`
+  GET /api2/v2/payouts/transactions      `txs[uid]` rows, newest first, `offset` / `limit`,
+                                         `hasMore`, as OF answered on 2026-11-07 (measured, acct
+                                         532022545): `start` / `end` ignored; `startDate`
+                                         YYYY-MM-DD -> createdAt's date >= it (UTC here; OF's
+                                         day-boundary TZ is unknown); an ISO `startDate` -> an
+                                         empty list, hasMore false; `offset` pages it. At most
+                                         `tx_cap` (TX_CAP, 600) rows, the latest, hasMore false
+                                         there: INFERRED from prod offset-paged walks (6 pages
+                                         then hasMore false), not probed. `add_tx` appends a row
+                                         mid-run. `window = False` (fault
+                                         tx-recent-window-ignored): OF ignores `startDate` too;
+                                         `startdate_iso = True` (fault tx-recent-startdate-iso):
+                                         a date-only startDate is read as the ISO datetime of
+                                         that midnight, as if the product sent one (-> empty)
   GET /api2/v2/users/list                `{"<id>": {id, name, username}}` for every `m[]` / `x[]`
                                          id asked (the view is recorded)
+  GET /api2/v2/payouts/chargebacks       `{"list": [], "marker": <epoch s>}`: no disputes (what a
+                                         completed refresh walk polls, service/transaction_chargebacks);
+                                         outside the bucket (a GUESS), logged as route `chargebacks`
 
 OF's limit: a GUESS at OF's real policy (declared bypass; OF publishes none and it was never
 measured): a token bucket per Creator across these four routes, BURST (10)
@@ -32,28 +47,20 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import datetime
 from urllib.parse import parse_qs, urlsplit
 
 BURST = 10
+TX_CAP = 600   # OF's ledger answers the latest 600 rows, whatever the window (INFERRED: prod walks, 11-07)
 REFILL_PER_S = 2.0
 TOO_MANY = "Too many requests. Please allow 1 seconds"
 ROUTES = {"/api2/v2/promotions": "promotions", "/api2/v2/subscriptions/subscribers": "subscribers",
           "/api2/v2/payouts/transactions": "transactions", "/api2/v2/users/list": "users_list"}
 LOGGED = {"/api2/v2/campaigns": "campaigns", "/api2/v2/trials": "trials"}  # of_wire answers; arrival logged
+CHARGEBACKS = "/api2/v2/payouts/chargebacks"
 
 
 def body_429(text: str = TOO_MANY) -> dict:
     return {"error": {"code": 429, "message": text}}
-
-
-def _naive(s: str | None) -> datetime | None:
-    if not s:
-        return None
-    try:
-        return datetime.fromisoformat(str(s).replace("Z", "+00:00")).replace(tzinfo=None)
-    except ValueError:
-        return None
 
 
 class SweepWire:
@@ -64,6 +71,9 @@ class SweepWire:
         self.txs: dict[str, list[dict]] = {}   # newest first
         self.inject: dict[tuple[str, str], dict] = {}
         self.claims: dict[tuple[str, int], list[dict]] = {}
+        self.window = True                     # honour transactions' startDate
+        self.tx_cap = TX_CAP
+        self.startdate_iso = False             # read a date-only startDate as ISO (OF: empty)
         self.log: list[dict] = []
         self._bucket: dict[str, tuple[float, float]] = {}   # Creator -> (tokens, at)
         self._lock = threading.Lock()
@@ -76,6 +86,10 @@ class SweepWire:
                 path = urlsplit(self.path).path
                 if method == "GET" and path in ROUTES:
                     return sw._serve(self)
+                if method == "GET" and path == CHARGEBACKS:
+                    uid = self.headers.get("User-ID") or ""
+                    sw._arrive(uid, "chargebacks", urlsplit(self.path).query, status=200)
+                    return self._record(uid, f"GET {path}", 200, {"list": [], "marker": int(time.time())})
                 if method == "GET" and path in LOGGED:
                     sw._arrive(self.headers.get("User-ID") or "", LOGGED[path], urlsplit(self.path).query)
                 return super()._serve(method)
@@ -117,10 +131,10 @@ class SweepWire:
             return h._record(uid, route, 429, body_429(text))
         return h._record(uid, route, 200, self._page(uid, name, q, off, lim))
 
-    def _arrive(self, uid: str, name: str, query: str) -> None:
+    def _arrive(self, uid: str, name: str, query: str, status: int | None = None) -> None:
         with self._lock:
             self.log.append({"t": time.time(), "account": uid, "route": name, "query": query, "offset": None,
-                             "view": None, "status": None, "asked": None})
+                             "view": None, "status": status, "asked": None})
 
     def _page(self, uid: str, name: str, q: dict, off: int, lim: int):
         if name == "promotions":
@@ -133,12 +147,20 @@ class SweepWire:
             rows = self.subs.get(uid, [])
             return {"list": rows[off:off + lim], "hasMore": off + lim < len(rows)}
         if name == "transactions":
-            lo, hi = _naive((q.get("start") or [None])[0]), _naive((q.get("end") or [None])[0])
-            rows = [r for r in self.txs.get(uid, [])
-                    if (a := _naive(r["createdAt"])) is not None and (lo is None or a >= lo) and (hi is None or a <= hi)]
+            sd = (q.get("startDate") or [None])[0] if self.window else None
+            if sd and self.startdate_iso and len(sd) == 10:
+                sd += "T00:00:00.000Z"
+            if sd and len(sd) != 10:   # an ISO datetime: OF answers nothing
+                return {"list": [], "hasMore": False}
+            rows = [r for r in self.txs.get(uid, []) if not sd or r["createdAt"][:10] >= sd][:self.tx_cap]
             return {"list": rows[off:off + lim], "hasMore": off + lim < len(rows)}
         ids = q.get("m[]") or q.get("x[]") or []
         return {str(i): {"id": int(i), "name": f"Fan {i}", "username": f"u{i}"} for i in ids}
+
+    def add_tx(self, uid: str, row: dict) -> None:
+        """A ledger row lands on OF mid-run (kept newest first)."""
+        with self._lock:   # a new list: a page being served keeps the one it read
+            self.txs[uid] = sorted([*self.txs.get(uid, []), row], key=lambda r: r["createdAt"], reverse=True)
 
     def snapshot(self) -> list[dict]:
         with self._lock:

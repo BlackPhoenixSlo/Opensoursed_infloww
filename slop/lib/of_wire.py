@@ -136,7 +136,7 @@ that route (route as recorded, e.g. `"GET /api2/v2/chats"`): a slow OF read besi
 together do not keep answering together (a fixed time keeps every lane in phase: waves).
 `hold[(uid, route)]` is a list of seconds: each arriving call of that Creator on that route
 pops the first and waits that long more (the next N calls held, the rest as usual). Every
-call in `calls` also carries its arrival time `t0` and its query string `query`.
+call in `calls` also carries its arrival time `t0`, its path `path` and its query string `query`.
 
 OF's chat WebSocket (`wsUrl`, ws://127.0.0.1:<port>/ws3/<uid>; the relay's real
 of_ws pump connects here): the client's `{"act":"connect","token":…}` is answered
@@ -561,7 +561,8 @@ class FakeOF:
             def _record(self, uid: str, route: str, status: int, body, ctype: str = "application/json") -> None:
                 with fake.lock:
                     fake.calls.append({"t0": getattr(self, "_t0", None), "t": time.time(), "account": uid,
-                                       "route": route, "query": urlsplit(self.path).query, "status": status,
+                                       "route": route, "path": urlsplit(self.path).path,
+                                       "query": urlsplit(self.path).query, "status": status,
                                        "cookie": bool(self.headers.get("Cookie"))})
                 self._send(status, body, ctype)
 

@@ -3,13 +3,13 @@
 /** Creator reports › Overview (#42 to #153): Earnings summary, Earnings trends, Earnings by channel and Earnings
  *  breakdown, Creator statistics, and our Earnings ledger. Its state lives in CompetitorReports. */
 
-import { CircleDollarSign, MessageCircle, RefreshCw, StickyNote, UserRoundPlus, Video, type LucideIcon } from "lucide-react";
+import { CircleDollarSign, MessageCircle, RefreshCw, StickyNote, Undo2, UserRoundPlus, type LucideIcon } from "lucide-react";
 
 import { OnlyfansLine } from "@/components/shell/inflowwIcons";
 import { type Gran, LineChart, fmtDollars, fmtUsd } from "@/components/stats/chart";
 import ExportMenu, { type ExportChoice } from "@/components/stats/ExportMenu";
 import type { PerModelRow } from "@/hooks/useStats";
-import { growthOf } from "@/lib/format";
+import { growthOf, isLoss } from "@/lib/format";
 import { EXTRA_LABEL } from "@/lib/openinflowwwwExtras";
 import type { Section } from "@/lib/reportExport";
 
@@ -17,13 +17,16 @@ import { CreatorTable } from "./CreatorTable";
 import { CardTitle, Donut, NotWired, ReportCard, SectionTitle, StatCard, SummaryTile, TrendBars } from "./ReportsCharts";
 import { ChannelsPill, CustomMetricsPill, GranularityTabs, UtcChip } from "./ReportsControls";
 import {
-  type Bucket, type Chan, type ColCtx, type Point, type StatCol, type View, CHANNEL_TEXT, CHANNELS, LEDGER_ROWS, SUMMARY_TEXT,
+  type Bucket, type Chan, type ColCtx, type Point, type StatCol, type View, CHANNEL_TEXT, CHANNELS, CHARGEBACKS_UNAVAILABLE,
+  EARNING_CHANNELS, LEDGER_ROWS,
+  SUMMARY_TEXT,
   TREND_TEXT, isWait, viewOf,
 } from "./reportsMath";
 
 /** #50: the summary tiles in order; the hidden cell sits after Messages. The icons are the nearest of ours to the
- *  bundle's (`RefreshCw02`, `StickerSquare`, `MessageCircle01`, `CurrencyDollarCircle`, `UserShare`, `VideoRecorder`,
- *  index.9f50f370.js near @13286185); the Total tile's is OnlyFans' mark (`Onlyfans`), the shell's `OnlyfansLine`. */
+ *  bundle's (`RefreshCw02`, `StickerSquare`, `MessageCircle01`, `CurrencyDollarCircle`, `UserShare`,
+ *  index.9f50f370.js near @13286185); the Total tile's is OnlyFans' mark (`Onlyfans`), the shell's `OnlyfansLine`.
+ *  Chargebacks (ours) takes the bundle's Streams slot: the window's reversals, below zero. */
 const TILES: readonly { key: Chan | "total"; label: string; Icon: LucideIcon }[] = [
   { key: "total",         label: "Total earnings", Icon: OnlyfansLine },
   { key: "subscriptions", label: "Subscriptions",  Icon: RefreshCw },
@@ -31,7 +34,7 @@ const TILES: readonly { key: Chan | "total"; label: string; Icon: LucideIcon }[]
   { key: "messages",      label: "Messages",       Icon: MessageCircle },
   { key: "tips",          label: "Tips",           Icon: CircleDollarSign },
   { key: "referrals",     label: "Referrals",      Icon: UserRoundPlus },
-  { key: "streams",       label: "Streams",        Icon: Video },
+  { key: "chargebacks",   label: "Chargebacks",    Icon: Undo2 },
 ];
 /** #101: the Creator statistics cards' tooltips, verbatim. */
 const STAT_TIPS = {
@@ -44,7 +47,7 @@ const STAT_TIPS = {
 export default function CreatorOverview({
   ids, view, totalCents, buckets, prior, trendGran, setTrendGran, dayDates, trendPoints, chanPick, setChanPick,
   chanGran, setChanGran, channelLines, from, to, net, buildExport, perModel, visibleCreators, visibleCols,
-  setVisibleCols, orderedCols, colCtx, grossCents, netLedger,
+  setVisibleCols, orderedCols, colCtx, grossCents, netLedger, chargebacksRead,
 }: {
   ids: { summary: string; trends: string; channel: string; breakdown: string; stats: string; ledger: string };
   view: View; totalCents: number; buckets: Record<Bucket, number>; prior: (Record<Bucket, number> & { total: number }) | null;
@@ -56,8 +59,11 @@ export default function CreatorOverview({
   visibleCols: Set<string>; setVisibleCols: (next: Set<string>) => void;
   orderedCols: readonly StatCol[]; colCtx: ColCtx; grossCents: number;
   netLedger: Partial<Record<(typeof LEDGER_ROWS)[number], number>>;
+  /** The reversed read, outside `view`: pending or failed, only Chargebacks' figures show "-". */
+  chargebacksRead: { isPending: boolean; isError: boolean };
 }) {
   const ready = view === "ready";
+  const cbShown = ready && !chargebacksRead.isPending && !chargebacksRead.isError;
   /* #101: the Creator statistics cards; "-" until the per-model read answers with a Creator in the selection. */
   const statsView = viewOf([perModel], visibleCreators.length > 0);
   const messageEarnings = visibleCreators.reduce((a, m) => a + (m.revenue_by_kind?.ppv ?? 0), 0);
@@ -68,7 +74,7 @@ export default function CreatorOverview({
   const refundedAcrossCreators = net
     ? visibleCreators.reduce((a, m) => a + (m.refunded_net_cents ?? 0), 0) : refundedGross;
   /* #75, #85: the donut's channels, their share of the channels' sum */
-  const chanSum = CHANNELS.reduce((a, c) => a + buckets[c.key], 0);
+  const chanSum = EARNING_CHANNELS.reduce((a, c) => a + buckets[c.key], 0);
   return (
     <div className="px-4 pb-6 text-[13px]">
     {/* #46 to #60: Earnings summary, a card of seven tiles in four columns. */}
@@ -82,14 +88,18 @@ export default function CreatorOverview({
         <dl className="grid grid-cols-2 md:grid-cols-4 gap-2">
           {TILES.map((t, i) => {
             const cents = t.key === "total" ? totalCents : buckets[t.key];
+            const cb = t.key === "chargebacks";
+            const blank = isWait(view) || (cb && (chargebacksRead.isPending || chargebacksRead.isError));
             const tile = (
               <SummaryTile
                 key={t.key}
                 label={t.label}
                 Icon={t.Icon}
                 total={t.key === "total"}
+                negative={!blank && isLoss(cents)}
+                title={cb && !isWait(view) && chargebacksRead.isError ? CHARGEBACKS_UNAVAILABLE : undefined}
                 // With no Creator the reads' zeros, "$0".
-                value={isWait(view) ? "-" : fmtDollars(cents)}
+                value={blank ? "-" : fmtDollars(cents)}
                 growth={ready ? growthOf(cents, prior?.[t.key]) : { text: "-", dir: null }}
               />
             );
@@ -155,7 +165,7 @@ export default function CreatorOverview({
         <ReportCard className="p-4 md:h-[375px]">
           <div className="md:w-[344px]">
             <CardTitle id={ids.breakdown} label="Earnings breakdown" />
-            <Donut slices={ready ? CHANNELS.map((c) => ({ color: c.color, cents: buckets[c.key] })) : null} />
+            <Donut slices={ready ? EARNING_CHANNELS.map((c) => ({ color: c.color, cents: buckets[c.key] })) : null} />
             <ul
               aria-label="Earnings breakdown legend"
               className="grid grid-cols-[1fr_max-content_max-content] gap-x-6 gap-y-1 text-sm leading-[1.1429]"
@@ -166,11 +176,12 @@ export default function CreatorOverview({
                     <span className="w-2 h-2 rounded-full mr-2 shrink-0" style={{ background: c.color }} aria-hidden />
                     {c.label}
                   </span>
+                  {/* Chargebacks has no share of the earnings: "-". */}
                   <span className="text-right" style={{ color: "var(--color-fg)" }}>
-                    {ready ? `${(chanSum > 0 ? (100 * buckets[c.key]) / chanSum : 0).toFixed(2)}%` : "-"}
+                    {ready && c.key !== "chargebacks" ? `${(chanSum > 0 ? (100 * buckets[c.key]) / chanSum : 0).toFixed(2)}%` : "-"}
                   </span>
-                  <span className="text-right" style={{ color: "var(--color-fg)" }}>
-                    {ready ? fmtDollars(buckets[c.key]) : "-"}
+                  <span className="text-right" style={{ color: (c.key === "chargebacks" ? cbShown : ready) && isLoss(buckets[c.key]) ? "var(--color-err)" : "var(--color-fg)" }}>
+                    {(c.key === "chargebacks" ? cbShown : ready) ? fmtDollars(buckets[c.key]) : "-"}
                   </span>
                 </li>
               ))}

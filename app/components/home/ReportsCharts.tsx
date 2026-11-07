@@ -60,15 +60,16 @@ export function CardTitle({ id, label, tip, className }: { id: string; label: st
 
 /** #55 to #60: a summary tile, its title (with a 20px icon 4px away), value and growth. The total tile is larger.
  *  A `null` value is Not wired. */
-export function SummaryTile({ label, Icon, total, value, growth }: {
-  label: string; Icon: LucideIcon; total: boolean; value: string | null; growth: Growth;
+/** `negative`: a figure below zero (Chargebacks), on our err token; `title`: why a figure is "-". */
+export function SummaryTile({ label, Icon, total, value, growth, negative = false, title }: {
+  label: string; Icon: LucideIcon; total: boolean; value: string | null; growth: Growth; negative?: boolean; title?: string;
 }) {
   // #59: rising and falling on our ok and pink tokens (ADR-0001 colours).
   const color = growth.dir === "up" ? "var(--color-ok)" : growth.dir === "down" ? "var(--color-pink)" : "var(--color-fg)";
   const Arrow = growth.dir === "up" ? ArrowUpRight : ArrowDownLeft;
   return (
     // The capture has no phone layout: below md the total tile spans both columns and long values wrap.
-    <div role="group" aria-label={label} className={cn("flex flex-col min-w-0 [overflow-wrap:anywhere]", total && "gap-0.5 col-span-2 md:col-span-1")}>
+    <div role="group" aria-label={label} title={title} className={cn("flex flex-col min-w-0 [overflow-wrap:anywhere]", total && "gap-0.5 col-span-2 md:col-span-1")}>
       <dt
         // #51, #53: Text$5's tracking, heading4's 0.034px or body1's 0.032px on the title and growth, heading1's
         // 0.128px or heading2's 0.098px on the value.
@@ -80,7 +81,7 @@ export function SummaryTile({ label, Icon, total, value, growth }: {
       </dt>
       <dd
         className={cn("font-medium tabular-nums", total ? "text-[32px] leading-9 tracking-[0.128px]" : "text-[28px] leading-8 tracking-[0.098px]")}
-        style={{ color: "var(--color-fg)" }}
+        style={{ color: negative ? "var(--color-err)" : "var(--color-fg)" }}
       >
         {value === null ? <NotWired label={label} /> : value}
       </dd>

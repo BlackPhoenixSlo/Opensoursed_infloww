@@ -18,6 +18,16 @@ so a target can never name a check that does not exist.
                        (transaction_ingest._TICK_INTERVAL_S = 300 in the relay, as
                        INGEST_TICK_INTERVAL_S=300 would set it): the same pages a pass at 3x the
                        passes an hour, so tx_calls_budget goes red. Every page and row unchanged.
+  tx-recent-window-ignored  harness side (the scenario sets lib/sweep_pacing_wire.py's
+                       `window = False`): OF ignores the ledger's startDate, so a recent walk
+                       pages the whole ledger like a full one: tx_calls_budget red, and the relay's
+                       guard logs ingest_tx_recent_window_ignored (tx_recent_window_kept
+                       red). Every row still lands (walk_counts_match stays green).
+  tx-recent-startdate-iso  harness side (the scenario sets lib/sweep_pacing_wire.py's
+                       `startdate_iso = True`): the recent walk's startDate reaches OF as an ISO
+                       datetime, which OF answers with an empty list (measured): the row added
+                       10 h before the recent pass never lands and the relay logs
+                       ingest_tx_recent_walk_empty (tx_recent_catches_new_row red).
 """
 from __future__ import annotations
 
@@ -33,6 +43,10 @@ NO_5XX = "no_5xx"
 USER_P95 = "user_read_p95"
 BG_P95 = "background_lookup_p95"
 TX_BUDGET = "tx_calls_budget"
+TX_WINDOW = "tx_recent_window_kept"
+TX_NEW_ROW = "tx_recent_catches_new_row"
+WINDOW_IGNORED = "tx-recent-window-ignored"
+STARTDATE_ISO = "tx-recent-startdate-iso"
 
 
 def _unpaced() -> None:
@@ -59,4 +73,8 @@ def register(Fault) -> dict:
         "sweep-no-429-retry": Fault(_no_retry, (RETRY_ONCE, TERMINAL, COUNTS)),
         # slop/run sweep-pacing --break --fault=tx-cadence-300 --baseline=<green run>
         "tx-cadence-300": Fault(_tx_cadence_300, (TX_BUDGET,)),
+        # slop/run sweep-pacing --break --fault=tx-recent-window-ignored --baseline=<green run>
+        WINDOW_IGNORED: Fault(None, (TX_BUDGET, TX_WINDOW)),
+        # slop/run sweep-pacing --break --fault=tx-recent-startdate-iso --baseline=<green run>
+        STARTDATE_ISO: Fault(None, (TX_NEW_ROW,)),
     }
