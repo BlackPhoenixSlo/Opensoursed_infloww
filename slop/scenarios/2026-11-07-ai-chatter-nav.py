@@ -1,5 +1,5 @@
 """Sidebar: My Automations split in two plus Full AI Chatter (2026-11-07). The owner on a phone opens
-the nav drawer and finds My Automations (Auto Post, Auto Story, Auto Mass, Gen-Info, Client masses),
+the nav drawer and finds My Automations (Auto Post, Auto Story, Auto Mass, Gen-Info),
 then My AI Chatter (Auto-reply, Auto Funnel, Get to know fans), then Full AI Chatter, and taps it: the
 drawer closes on the coming-soon page. At desktop width the sidebar on Auto-reply holds My AI Chatter
 open with Auto-reply current. A chatter whose enforced role ticks Auto-reply only sees My AI Chatter
@@ -35,7 +35,7 @@ AUTO_REPLY = "/growth/auto-reply"
 GTKF = "/growth/get-to-know-fans"
 FULL = "/full-ai-chatter"
 
-MY_AUTOMATIONS = "My Automations: Auto Post / Auto Story / Auto Mass / Gen-Info / Client masses"
+MY_AUTOMATIONS = "My Automations: Auto Post / Auto Story / Auto Mass / Gen-Info"
 MY_AI_CHATTER = "My AI Chatter: Auto-reply / Auto Funnel / Get to know fans"
 
 C_ROLE = "PUT /admin/settings/roles (enforced, a role ticking Auto-reply of the opt-in pages) is stored and read back"
