@@ -8,7 +8,7 @@ cap, and the LLM model (global + optional per-purpose override). gen_info /
 send_welcome / send_followup / welcome_chatter_for_info all resolve it at run time, so this is
 the one screen that fills the brain a fresh account starts without.
 
-  GET /admin/account-config?account_id=  → {config, slots, model_options, purposes}
+  GET /admin/account-config?account_id=  → {config, slots, model_options, default_model, purposes}
        `config` is the stored brain (defaults filled for the scalar caps); the
        rest is metadata so the editor can render dropdowns + the 6 image slots.
   PUT /admin/account-config              → upsert the brain, returns {config}
@@ -263,6 +263,9 @@ async def get_account_config(account_id: str = Query(...)) -> dict[str, Any]:
         "defaults_by_voice": brains,
         "slots": list(TIME_SLOTS),
         "model_options": _model_options(),
+        # What `model: null` runs (resolve_model's house fallback), so an editor
+        # labels "Default (…)" from the server rather than a hardcoded id.
+        "default_model": DEFAULT_MODEL,
         "effort_options": llm_client.effort_options_by_model(),
         "purposes": list(MODEL_PURPOSES),
         # What each purpose runs when the operator has pinned NOTHING. Served

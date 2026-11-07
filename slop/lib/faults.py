@@ -985,6 +985,14 @@ FAULTS: dict[str, Fault] = {
         # next dev bundles appliedSettings.ts into each chunk the run loads: app/layout, app/page,
         # settings/layout, settings/[tab]/page (one match per pattern per load of each).
         browser_files=4, ts_files=1),
+    # slop/run 2026-11-07-ai-chatter-nav --break (the scenario's FAULT, client side): app/lib/nav.ts's
+    # Full AI Chatter link without `chatterHidden`, so a chatter's sidebar draws the owner-only page.
+    "full-ai-chatter-shown-to-chatter": Fault(None, (
+        "chatter (role ticks Auto-reply only): the sidebar shows My AI Chatter with Auto-reply and "
+        "Get to know fans, no My Automations, no Full AI Chatter",
+    ), browser=((r'(href:\s*\\?"/full-ai-chatter\\?",[^}]*?chatterHidden:\s*)(?:true|!0)', r"\g<1>false"),),
+        # next dev's eval strings escape the quotes; nav.ts sits in each chunk the run loads.
+        browser_files=4),
     # slop/run 2026-10-26-fan-list-chips --break (the scenario's FAULT)
     "fan-list-owe-reply-last-sort-never-active": Fault(None, (
         "chips on screen: All, Owe reply, Pinned, Unread, With Tips, the pinned lists, Priority",

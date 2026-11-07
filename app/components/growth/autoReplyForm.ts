@@ -14,9 +14,14 @@
  *   • The state is the draft plus the draft the last Save sent
  *     (automations/sentDraft.ts: `unsaved` holds "Saved" off over an edit made
  *     while that save was in flight).
+ *   • Model + effort are the ACCOUNT's (`account_ai_config.model` /
+ *     `reasoning_effort`, the account-config PUT), not this blob's: seeded by
+ *     `brainSeed`, sent by `brainPayload` only when they changed. "" = null
+ *     (model: the server's `default_model`; effort: the model's own pin).
  */
 
 import { sentState, withSent, type Saved, type SentState } from "@/components/automations/sentDraft";
+import type { AccountConfigResp, BrainConfig } from "@/hooks/useAccountConfig";
 import type { AutoreplyConfig } from "@/hooks/useAutoreplyConfig";
 
 export interface AutoReplyDraft {
@@ -37,7 +42,16 @@ export interface AutoReplyDraft {
   newMax: number;
   describe: boolean;
   skipPhotoOnly: boolean;
+  /** `account_ai_config.model`; "" = null (the server's `default_model`). */
+  model: string;
+  /** `account_ai_config.reasoning_effort`; "" = the model's own pin. */
+  effort: string;
 }
+
+/** The account-config read the Model row needs. */
+export type BrainPick = Pick<AccountConfigResp, "model_options" | "effort_options" | "default_model"> & {
+  config: Pick<BrainConfig, "model" | "reasoning_effort">;
+};
 
 type KeysOf<V> = { [K in keyof AutoReplyDraft]: AutoReplyDraft[K] extends V ? K : never }[keyof AutoReplyDraft];
 export type SwitchKey = KeysOf<boolean>;
@@ -50,7 +64,10 @@ export type AutoReplyEdit =
   | { type: "switch"; k: SwitchKey; on: boolean }
   /** A number input's raw text; clamped to `LIMITS[k]`. */
   | { type: "number"; k: NumberKey; raw: string }
-  | { type: "toggleFolder"; id: string };
+  | { type: "toggleFolder"; id: string }
+  /** "" = Default. A new model resets effort to its own pin (the legal set is per model). */
+  | { type: "model"; model: string }
+  | { type: "effort"; effort: string };
 
 export type AutoReplyAction = AutoReplyEdit | Saved;
 
@@ -71,8 +88,35 @@ const toDollars = (cents: number) => Math.round(cents) / 100;
 const clamp = (raw: string, lo: number, hi: number) =>
   Math.max(lo, Math.min(Number(raw) || lo, hi));
 
-/** The draft for an effective config (defaults ⊕ stored). */
-export function draftFromConfig(eff: AutoreplyConfig): AutoReplyDraft {
+/** The model/effort the Model row starts on. A stored model the server no longer
+ *  offers runs the default (resolve_model), so it reads "" — and so does an
+ *  effort the model does not take. The effort served is what the account runs
+ *  (account_config_api `_effective_effort`), so a pinned one shows, not a blank. */
+export function brainSeed(b: BrainPick | null | undefined): Pick<AutoReplyDraft, "model" | "effort"> {
+  const m = b?.config.model ?? "";
+  const model = m && b?.model_options.includes(m) ? m : "";
+  const e = b?.config.reasoning_effort ?? "";
+  return { model, effort: e && (b?.effort_options[model] ?? []).includes(e) ? e : "" };
+}
+
+/** The efforts the picked model takes. Default ("") takes none: the PUT refuses
+ *  an effort with `model: null`. */
+export const effortChoices = (d: AutoReplyDraft, b: BrainPick): string[] =>
+  d.model ? b.effort_options[d.model] ?? [] : [];
+
+/** The model the replies run on right now: the pick, else the server's default. */
+export const answersWith = (d: AutoReplyDraft, b: BrainPick): string => d.model || b.default_model;
+
+/** The account-config PUT body (the stored brain echoed, model/effort set), or
+ *  null when neither moved from `brainSeed` — no Save rewrites the brain idly. */
+export function brainPayload<C extends BrainPick["config"]>(d: AutoReplyDraft, b: BrainPick & { config: C }): C | null {
+  const seed = brainSeed(b);
+  if (d.model === seed.model && d.effort === seed.effort) return null;
+  return { ...b.config, model: d.model || null, reasoning_effort: d.effort || null };
+}
+
+/** The draft for an effective config (defaults ⊕ stored), plus the account's model pick. */
+export function draftFromConfig(eff: AutoreplyConfig, brain?: BrainPick | null): AutoReplyDraft {
   const delay = eff.silence_min_minutes ?? 24;
   return {
     enabled: !!eff.enabled,
@@ -87,11 +131,13 @@ export function draftFromConfig(eff: AutoreplyConfig): AutoReplyDraft {
     newMax: toDollars(eff.new_fan_max_spend_cents ?? 1_000),
     describe: !!eff.describe_photos,
     skipPhotoOnly: !!eff.skip_photo_only,
+    ...brainSeed(brain),
   };
 }
 
 /** The form's state for an effective config: its draft, nothing sent yet. */
-export const initState = (eff: AutoreplyConfig): AutoReplyState => sentState(draftFromConfig(eff));
+export const initState = (eff: AutoreplyConfig, brain?: BrainPick | null): AutoReplyState =>
+  sentState(draftFromConfig(eff, brain));
 
 /** Randomise only means something above a 0 delay (the switch is disabled at 0). */
 export const randomiseOn = (d: AutoReplyDraft) => d.randomise && d.delay > 0;
@@ -133,6 +179,10 @@ function editDraft(d: AutoReplyDraft, action: AutoReplyEdit): AutoReplyDraft {
       if (folders.has(action.id)) folders.delete(action.id); else folders.add(action.id);
       return { ...d, folders };
     }
+    case "model":
+      return { ...d, model: action.model, effort: "" };
+    case "effort":
+      return { ...d, effort: action.effort };
   }
 }
 

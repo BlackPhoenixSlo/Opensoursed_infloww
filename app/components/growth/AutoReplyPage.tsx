@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * My Automations > Auto-reply (ours; Infloww has no counterpart). The owner's
+ * My AI Chatter > Auto-reply (ours; Infloww has no counterpart). The owner's
  * ask: "just autoreply, with options to pick folder who to reply".
  *
  * One switch, the timing (a delay, optionally randomised up to 2x) and WHO to
@@ -15,7 +15,11 @@
  * skipping messages that are only a photo. Human style, at the bottom: the
  * engine's realism layers (human style, typos, non-native English, space before
  * "?"), the same `autoreply` keys of the style blob (`/admin/style-config`)
- * the Settings Auto Convo tab edits; all default ON.
+ * the Settings Auto Convo tab edits; all default ON. Model: the ACCOUNT's AI
+ * model + effort (`/admin/account-config`, shared with every AI automation that
+ * has no pin of its own), sent by the same Save only when it changed; "Default"
+ * = null, labelled from the server's `default_model`. A failed config read hides
+ * the row (the rest of the page still saves).
  *
  * On Infloww's look (page-parity ticket 16): the page header holds the creator
  * select (`?creator=`), Learn (the blurb) and the Auto-reply switch; the form is
@@ -25,7 +29,7 @@
 import { useReducer } from "react";
 import Link from "next/link";
 
-import { IfInput, IfLearn, IfSwitch } from "@/components/ui/infloww";
+import { IfInput, IfLearn, IfSelect, IfSwitch } from "@/components/ui/infloww";
 import { AiKeyNotice } from "@/components/AiKeyNotice";
 import { ListColumn, useFanLists } from "@/components/audience/fanLists";
 import { HumanStyleBlock, useHumanStyle, usePageSave } from "@/components/automations/HumanStyleBlock";
@@ -33,6 +37,7 @@ import { unsaved } from "@/components/automations/sentDraft";
 import { FormBlock, NoCreator, SaveRow, SwitchRow, useAutomationCreator } from "@/components/automations/automationPage";
 import type { CreatorPick } from "@/components/shell/CreatorRail";
 import { PageFrame } from "@/components/shell/PageFrame";
+import { useAccountConfig, useSaveAccountConfig, type AccountConfigResp } from "@/hooks/useAccountConfig";
 import {
   useAutoreplyConfig,
   useSaveAutoreplyConfig,
@@ -41,8 +46,8 @@ import {
 } from "@/hooks/useAutoreplyConfig";
 
 import {
-  autoReplyReducer, buildPayload, canSubmit, initState, LIMITS, randomiseOn,
-  type NumberKey, type SwitchKey,
+  answersWith, autoReplyReducer, brainPayload, buildPayload, canSubmit, effortChoices, initState, LIMITS,
+  randomiseOn, type AutoReplyDraft, type AutoReplyEdit, type NumberKey, type SwitchKey,
 } from "./autoReplyForm";
 
 const TITLE = "Auto-reply";
@@ -68,10 +73,11 @@ export default function AutoReplyPage() {
  *  a failed read can never be saved over the account's real settings. */
 function AutoReplyForm({ accountId, creators }: { accountId: string; creators: CreatorPick }) {
   const cfgQ = useAutoreplyConfig(accountId);
-  if (cfgQ.isLoading || !cfgQ.data) {
+  const brainQ = useAccountConfig(accountId);
+  if (cfgQ.isLoading || brainQ.isLoading || !cfgQ.data) {
     return (
       <PageFrame title={TITLE} creators={creators} actions={LEARN}>
-        {cfgQ.isLoading ? <NoCreator loading /> : (
+        {cfgQ.isLoading || brainQ.isLoading ? <NoCreator loading /> : (
           <p className="text-[14px] text-err">
             {(cfgQ.error as Error)?.message || "Could not load the Auto-reply settings."}
           </p>
@@ -86,24 +92,35 @@ function AutoReplyForm({ accountId, creators }: { accountId: string; creators: C
       stored={cfgQ.data.config ?? {}}
       defaults={cfgQ.data.defaults ?? {}}
       visionKey={cfgQ.data.vision_key}
+      brain={brainQ.data}
     />
   );
 }
 
 function AutoReplyFields({
-  accountId, creators, stored, defaults, visionKey,
+  accountId, creators, stored, defaults, visionKey, brain,
 }: {
   accountId: string;
   creators: CreatorPick;
   stored: AutoreplyConfig;
   defaults: AutoreplyConfig;
   visionKey?: AutoreplyKeyState;
+  brain?: AccountConfigResp;
 }) {
-  const saveM = useSaveAutoreplyConfig(accountId);
+  const replyM = useSaveAutoreplyConfig(accountId);
+  const brainM = useSaveAccountConfig(accountId);
+  // One Save, two PUTs (the brain's only when the model moved): one verdict.
+  const saveM = {
+    isPending: replyM.isPending || brainM.isPending,
+    isSuccess: replyM.isSuccess && !brainM.isPending && !brainM.isError,
+    isError: replyM.isError || brainM.isError,
+    error: replyM.error ?? brainM.error,
+    reset: () => { replyM.reset(); brainM.reset(); },
+  };
   const style = useHumanStyle("autoreply", accountId);
   const { customLists, isLoading: listsLoading } = useFanLists(accountId);
   // Seeded once from defaults ⊕ stored; a refetch does not re-seed (autoReplyForm.ts).
-  const [state, dispatch] = useReducer(autoReplyReducer, { ...defaults, ...stored }, initState);
+  const [state, dispatch] = useReducer(autoReplyReducer, undefined, () => initState({ ...defaults, ...stored }, brain));
   const { draft } = state;
   const verdict = usePageSave(saveM, style, unsaved(state), dispatch);
 
@@ -116,7 +133,11 @@ function AutoReplyFields({
   const { delay } = draft;
   const noSource = !canSubmit(draft);
 
-  const save = () => verdict.save(() => saveM.mutate(buildPayload(draft, stored)));
+  const save = () => verdict.save(() => {
+    const b = brain && brainPayload(draft, brain);
+    if (b) brainM.mutate(b);
+    replyM.mutate(buildPayload(draft, stored));
+  });
 
   return (
     <PageFrame
@@ -128,6 +149,8 @@ function AutoReplyFields({
       <div className="max-w-[720px] space-y-8">
         {/* Missing key, or the key the last run was refused on (401/402/403). */}
         <AiKeyNotice accountId={accountId} kinds={["autoreply"]} />
+
+        {brain && <ModelBlock draft={draft} brain={brain} edit={verdict.edit} />}
 
         <FormBlock title="When to reply">
           <label className="flex flex-wrap items-center gap-2 text-[14px] text-fg">
@@ -240,5 +263,38 @@ function AutoReplyFields({
         <SaveRow save={verdict} onSave={save} disabled={noSource} />
       </div>
     </PageFrame>
+  );
+}
+
+/** The account's reply model: Default (the server's `default_model`) or a pinned id, plus its effort when the
+ *  model takes one (`effort_options[model]`, per provider); the line under it names what runs now. */
+function ModelBlock({ draft, brain, edit }: {
+  draft: AutoReplyDraft; brain: AccountConfigResp; edit: (a: AutoReplyEdit) => void;
+}) {
+  const efforts = effortChoices(draft, brain);
+  const models = [
+    { value: "", label: `Default (${brain.default_model})` },
+    ...brain.model_options.map((m) => ({ value: m, label: m })),
+  ];
+  return (
+    <FormBlock title="Model">
+      <div className="flex flex-wrap items-center gap-2 text-[14px] text-fg">
+        <span className="w-16">Model</span>
+        <IfSelect aria-label="Model" value={draft.model} options={models}
+          onChange={(model) => edit({ type: "model", model })} className="w-[240px] max-sm:flex-1" />
+      </div>
+      {efforts.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 text-[14px] text-fg">
+          <span className="w-16">Effort</span>
+          <IfSelect aria-label="Reasoning effort" value={draft.effort}
+            options={[{ value: "", label: "Model default" }, ...efforts.map((e) => ({ value: e, label: e }))]}
+            onChange={(effort) => edit({ type: "effort", effort })} className="w-[240px] max-sm:flex-1" />
+        </div>
+      )}
+      <div className="text-[12px] text-muted">
+        Answers with <span className="text-fg">{answersWith(draft, brain)}</span>. Account-wide: AI automations
+        without a model of their own use it too.
+      </div>
+    </FormBlock>
   );
 }

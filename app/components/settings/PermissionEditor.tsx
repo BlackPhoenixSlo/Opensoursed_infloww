@@ -42,13 +42,14 @@ type PermissionTab = (typeof TABS)[number];
 interface PageGroup {
   title: string;
   pages: { label: string; href: string }[];
-  /** The nav group is `chatterOptIn` (My Automations): off for chatters unless ticked here. */
-  optIn?: boolean;
+  /** The nav group is `chatterOptIn` (My Automations, My AI Chatter): off for chatters unless ticked here;
+   *  the note under it. */
+  optIn?: string;
 }
 
-/** The note under an opt-in group (ours, so it carries the extra label). */
-export const OPT_IN_NOTE =
-  "Off for chatters by default, except Get to know fans. Tick a page to let this role open it; it applies while Enforce role permissions is on.";
+/** The note under an opt-in group (ours, so it carries the extra label); `except` are its `notOptIn` pages. */
+export const optInNote = (except: string[]) =>
+  `Off for chatters by default${except.length ? `, except ${except.join(", ")}` : ""}. Tick a page to let this role open it; it applies while Enforce role permissions is on.`;
 
 /** The editor's tabs from the nav: "Growth" and "OF Manager" are those groups' children; "Operations"
  *  is every other non-divider link, top-level links first under "General", then each
@@ -68,7 +69,7 @@ export function permissionTabs(sidebar: NavNode[] = SIDEBAR): { tab: PermissionT
     groups[tab].push({
       title: n.label,
       pages: n.children.filter(isPermissionPage).map(({ label, href }) => ({ label, href })),
-      ...(n.chatterOptIn ? { optIn: true } : {}),
+      ...(n.chatterOptIn ? { optIn: optInNote(n.children.filter((c) => c.notOptIn).map((c) => c.label)) } : {}),
     });
   }
   return TABS.map((tab) => ({ tab, groups: groups[tab] }));
@@ -148,7 +149,7 @@ export default function PermissionEditor({ role, onSave, onBack, canSave, childr
                 {g.title}
               </h4>
               {g.optIn && (
-                <p title={EXTRA_LABEL} className="mb-4 text-[var(--if-fg-2)]">{OPT_IN_NOTE}</p>
+                <p title={EXTRA_LABEL} className="mb-4 text-[var(--if-fg-2)]">{g.optIn}</p>
               )}
               {g.pages.map((p) => (
                 <div key={p.href}>

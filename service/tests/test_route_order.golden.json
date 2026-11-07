@@ -1,4 +1,4 @@
-{"openapi_sha1": "22bc82e414ad1e9582bbb07bc6147ef433ecc308",
+{"openapi_sha1": "53ccdb7ddb182615dcfa7db591f9e2d773bf08ff",
  "routes": [
   ["GET,HEAD", "/openapi.json", "openapi"],
   ["GET,HEAD", "/docs", "swagger_ui_html"],
@@ -140,6 +140,7 @@
   ["GET", "/admin/account-config", "get_account_config"],
   ["PUT", "/admin/account-config", "put_account_config"],
   ["POST", "/admin/assistant/ask", "ask"],
+  ["GET", "/admin/assistant/history", "history"],
   ["POST", "/admin/copilot/{account_id}/{fan_id}/suggest", "suggest"],
   ["GET", "/admin/my-llm-keys", "my_llm_keys_status"],
   ["PUT", "/admin/my-llm-keys", "my_llm_keys_set"],

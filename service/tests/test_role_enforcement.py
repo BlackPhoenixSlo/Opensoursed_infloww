@@ -371,14 +371,16 @@ def case_a_two_agency_chatter_is_granted_an_opt_in_page_by_the_enforcing_agency_
         _reset()
 
 
-def case_the_opt_in_pages_are_the_navs_my_automations_group():
+def case_the_opt_in_pages_are_the_navs_opt_in_groups():
     nav_ts = NAV.read_text()
-    group = nav_ts.split('label: "My Automations"', 1)[1].split("],", 1)[0]
-    assert "chatterOptIn: true" in group
-    # A `notOptIn` link (Get to know fans) sits in the group but is granted like any other page.
-    opt_in = {href for href, rest in re.findall(r'href: "([^"]+)"([^}]*)\}', group) if "notOptIn: true" not in rest}
+    groups = [nav_ts.split(f'label: "{g}"', 1)[1].split("],", 1)[0] for g in ("My Automations", "My AI Chatter")]
+    assert all("chatterOptIn: true" in g for g in groups)
+    assert nav_ts.count("chatterOptIn: true") == 2
+    # A `notOptIn` link (Get to know fans) sits in a group but is granted like any other page.
+    opt_in = {href for g in groups for href, rest in re.findall(r'href: "([^"]+)"([^}]*)\}', g)
+              if "notOptIn: true" not in rest}
     assert opt_in == permissions.OPT_IN_PAGES
-    assert "/growth/get-to-know-fans" in group and "/growth/get-to-know-fans" not in permissions.OPT_IN_PAGES
+    assert "/growth/get-to-know-fans" in groups[1] and "/growth/get-to-know-fans" not in permissions.OPT_IN_PAGES
 
 
 def case_a_creator_reports_only_chatter_reads_revenue_and_a_role_granting_neither_page_does_not():
@@ -1128,7 +1130,7 @@ def _drift(nav_ts: str) -> list[str]:
 
 def case_the_page_map_follows_the_nav():
     nav_ts = NAV.read_text()
-    assert len(_nav_pages(nav_ts)) == 46
+    assert len(_nav_pages(nav_ts)) == 47
     assert _drift(nav_ts) == []
 
 

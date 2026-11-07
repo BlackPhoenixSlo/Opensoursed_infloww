@@ -64,7 +64,7 @@ _CATALOG: dict[str, dict[str, Any]] = {
     "autoreply": {
         "label": "Auto-reply (reply when the team is slow)", "recurring": True, "surface": "rules",
         "cadence_default_s": 180,
-        "summary": "Continue the chat with a known low-spend fan when nobody answered his message in time. Never-PPV, no info-gather. Gates (silence window, spend caps, info-complete) live on My Automations → Auto-reply.",
+        "summary": "Continue the chat with a known low-spend fan when nobody answered his message in time. Never-PPV, no info-gather. Gates (silence window, spend caps, info-complete) live on My AI Chatter → Auto-reply.",
         "example": "every 3m · limit 200 · max_sends 25",
         "knobs": [
             {"key": "limit", "type": "int", "min": 1, "default": 200, "hint": "candidate sweep ceiling per tick"},

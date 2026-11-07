@@ -17,7 +17,7 @@ import userEvent from "@testing-library/user-event";
 const { relayPost, relayGet, nav, scope, employee, roster } = vi.hoisted(() => ({
   relayPost: vi.fn(),
   relayGet: vi.fn(),
-  nav: { pathname: "/" },
+  nav: { pathname: "/", pushed: [] as string[] },
   scope: { accountId: "1001" as string | null },
   employee: { current: { id: 7 } as { id: number } | null },
   roster: { list: [] as Array<{ id: string; nickname?: string | null }> },
@@ -40,13 +40,20 @@ vi.mock("@/lib/relay", () => {
 });
 
 vi.mock("next/navigation", () => ({ usePathname: () => nav.pathname }));
+// The router is the boundary: a link click records where it went and runs the
+// caller's onClick, as next/link's does before its client-side push.
+vi.mock("next/link", () => ({
+  default: ({ href, onClick, children, ...rest }: { href: string; onClick?: (e: unknown) => void; children: React.ReactNode }) => (
+    <a {...rest} href={href} onClick={(e) => { e.preventDefault(); nav.pushed.push(href); onClick?.(e); }}>{children}</a>
+  ),
+}));
 
 vi.mock("@/contexts/ScopeContext", () => ({ useScope: () => scope }));
 vi.mock("@/contexts/EmployeeContext", () => ({ useEmployee: () => employee }));
 vi.mock("@/hooks/useAccounts", () => ({ useActiveAccounts: () => roster.list }));
 
 import { renderWithProviders } from "@/test-utils";
-import { AssistantProvider, AssistantWidget } from "./AssistantWidget";
+import { AssistantProvider, AssistantWidget, LAUNCHER_KEY } from "./AssistantWidget";
 
 /** The widget starts collapsed; every case here works in the open panel. */
 async function openPanel() {
@@ -67,6 +74,7 @@ beforeEach(() => {
   // GET /admin/errors?since_hours=24 — the Status card's source.
   relayGet.mockResolvedValue({ count: 0, since_hours: 24, list: [] });
   nav.pathname = "/";
+  nav.pushed = [];
   scope.accountId = "1001";
   employee.current = { id: 7 };
   roster.list = [
@@ -251,10 +259,86 @@ describe("AssistantWidget", () => {
     expect(await screen.findByText("Status: Partial Outage (2 errors in 24h)")).toBeTruthy();
   });
 
-  it("focuses the composer from the Ask a question card", async () => {
+  it("focuses the composer from the Ask a question card, without a scroll-into-view", async () => {
     await openPanel();
+    const focus = vi.spyOn(HTMLElement.prototype, "focus");
     await userEvent.click(screen.getByRole("button", { name: /Ask a question/ }));
     expect(document.activeElement).toBe(screen.getByPlaceholderText("Ask a question…"));
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+    focus.mockRestore();
+  });
+
+  it("a link click in the dock navigates and keeps the dock open, the page unlocked", async () => {
+    relayPost.mockResolvedValue({ answer: "Open **Creators → Manage creators**.", error: null });
+    await openPanel();
+    await ask("add a creator?");
+    await userEvent.click(await screen.findByRole("link", { name: "Creators → Manage creators" }));
+    expect(nav.pushed).toEqual(["/creators"]);
+    expect(screen.getByPlaceholderText("Ask a question…")).toBeTruthy();
+    expect(document.body.style.position).toBe("");
+  });
+
+  describe("history", () => {
+    const rows = [
+      { id: 12, ts: new Date().toISOString(), question: "where are auto posts?", answer: "Growth → Auto Posts. Want the steps?", error: null, model: "m" },
+      { id: 11, ts: new Date(Date.now() - 3 * 86_400_000).toISOString(), question: "old q", answer: "old a", error: null, model: "m" },
+      { id: 10, ts: new Date(Date.now() - 4 * 86_400_000).toISOString(), question: "capped", answer: "Cap used up.", error: "cap", model: "m" },
+    ];
+    beforeEach(() => {
+      relayGet.mockImplementation((path: string) => Promise.resolve(
+        path.startsWith("/admin/assistant/history") ? { turns: rows } : { count: 0, since_hours: 24, list: [] },
+      ));
+    });
+    const historyCalls = () => relayGet.mock.calls.filter(([p]) => String(p).startsWith("/admin/assistant/history"));
+
+    it("loads once on the first open and shows earlier turns, by day, open in the dock", async () => {
+      const bubble = await openPanel();
+      const earlier = await screen.findByRole("button", { name: "Earlier (3)" });
+      expect(earlier.getAttribute("aria-expanded")).toBe("true");
+      expect(screen.getByText("where are auto posts?")).toBeTruthy();
+      expect(screen.getByText("Today")).toBeTruthy();
+      expect(historyCalls()).toHaveLength(1);
+      expect(historyCalls()[0][0]).toBe("/admin/assistant/history?limit=50");
+
+      await userEvent.click(bubble); // close
+      await userEvent.click(bubble); // reopen: no second read
+      await screen.findByRole("button", { name: "Earlier (3)" });
+      expect(historyCalls()).toHaveLength(1);
+    });
+
+    it("sends the last answered turns (no error ones) as history, oldest first", async () => {
+      relayPost.mockResolvedValue({ answer: "Here are the steps.", error: null });
+      await openPanel();
+      await screen.findByRole("button", { name: "Earlier (3)" });
+      await ask("yes");
+      await waitFor(() => expect(relayPost).toHaveBeenCalledTimes(1));
+      expect(relayPost.mock.calls[0][1]).toEqual({
+        question: "yes", account_id: "1001",
+        history: [
+          { question: "old q", answer: "old a" },
+          { question: "where are auto posts?", answer: "Growth → Auto Posts. Want the steps?" },
+        ],
+      });
+      await screen.findByText("Here are the steps.");
+      await ask("and then?");
+      await waitFor(() => expect(relayPost).toHaveBeenCalledTimes(2));
+      expect((relayPost.mock.calls[1][1] as { history: unknown[] }).history).toEqual([
+        { question: "old q", answer: "old a" },
+        { question: "where are auto posts?", answer: "Growth → Auto Posts. Want the steps?" },
+        { question: "yes", answer: "Here are the steps." },
+      ]);
+    });
+
+    it("a failed history read is no history, and the next open retries", async () => {
+      relayGet.mockImplementation((path: string) => path.startsWith("/admin/assistant/history")
+        ? Promise.reject(new Error("relay 401")) : Promise.resolve({ count: 0, since_hours: 24, list: [] }));
+      const bubble = await openPanel();
+      await waitFor(() => expect(historyCalls()).toHaveLength(1));
+      expect(screen.queryByRole("button", { name: /Earlier/ })).toBeNull();
+      await userEvent.click(bubble);
+      await userEvent.click(bubble);
+      await waitFor(() => expect(historyCalls()).toHaveLength(2));
+    });
   });
 });
 
@@ -284,7 +368,7 @@ describe("AssistantWidget on a phone", () => {
   });
 
   const render = () => renderWithProviders(<AssistantProvider><AssistantWidget /></AssistantProvider>);
-  const stored = () => JSON.parse(window.localStorage.getItem("chatterly:assistant_launcher") || "null");
+  const stored = () => JSON.parse(window.localStorage.getItem(LAUNCHER_KEY) || "null");
   /** Press the launcher, move by (dx, dy) in two steps, release. */
   async function drag(el: HTMLElement, dx: number, dy: number) {
     const r = el.getBoundingClientRect();
@@ -297,11 +381,33 @@ describe("AssistantWidget on a phone", () => {
     ]);
   }
 
-  it("sits bottom-right above the composer by default; a tap opens the full-screen sheet", async () => {
+  /** The default is tucked: tap its tab to get the icon out. */
+  async function pullOut() {
+    await userEvent.click(await screen.findByRole("button", { name: "Show help assistant" }));
+    return screen.getByRole("button", { name: "Help assistant" });
+  }
+
+  it("starts tucked into the left edge above the composer: only the tab shows", async () => {
     render();
-    const bubble = await screen.findByRole("button", { name: "Help assistant" });
-    expect(bubble.style.left).toBe(`${390 - 48 - 12}px`);
+    const tab = await screen.findByRole("button", { name: "Show help assistant" });
+    expect(tab.className).toContain("left-0");
+    expect(tab.style.top).toBe(`${844 - 48 - 180}px`);
+    expect(screen.queryByRole("button", { name: "Help assistant" })).toBeNull();
+    expect(window.localStorage.getItem(LAUNCHER_KEY)).toBeNull();
+  });
+
+  it("ignores a v1 spot: the old key never moves the launcher out of its tucked default", async () => {
+    window.localStorage.setItem("chatterly:assistant_launcher", JSON.stringify({ edge: "left", along: 12, tucked: false }));
+    render();
+    expect(await screen.findByRole("button", { name: "Show help assistant" })).toBeTruthy();
+  });
+
+  it("the tab pulls the icon out at the same height; a tap opens the full-screen sheet", async () => {
+    render();
+    const bubble = await pullOut();
+    expect(bubble.style.left).toBe("12px");
     expect(bubble.style.top).toBe(`${844 - 48 - 180}px`);
+    expect(stored()).toEqual({ edge: "left", along: 180, tucked: false });
     await userEvent.click(bubble);
 
     const box = screen.getByPlaceholderText("Ask a question…");
@@ -315,29 +421,75 @@ describe("AssistantWidget on a phone", () => {
     expect(screen.getByRole("button", { name: "Help assistant" })).toBeTruthy();
   });
 
+  it("the sheet locks the page under it and unlocks it on close", async () => {
+    window.localStorage.setItem("chatterly:assistant_open", "1");
+    render();
+    await screen.findByPlaceholderText("Ask a question…");
+    expect(document.body.style.position).toBe("fixed");
+    expect(document.body.style.overflow).toBe("hidden");
+    expect(document.documentElement.style.overflow).toBe("hidden");
+    // 16px: iOS zooms into a smaller input on focus.
+    expect(screen.getByPlaceholderText("Ask a question…").className).toContain("text-[16px]");
+    await userEvent.click(screen.getByRole("button", { name: "Close help" }));
+    expect(document.body.getAttribute("style")).toBeNull();
+    expect(document.documentElement.style.overflow).toBe("");
+  });
+
+  it("a tapped answer link navigates AND closes the sheet", async () => {
+    window.localStorage.setItem("chatterly:assistant_open", "1");
+    relayPost.mockResolvedValue({ answer: "Open **Creators → Manage creators**.", error: null });
+    render();
+    await ask("add a creator?");
+    await userEvent.click(await screen.findByRole("link", { name: "Creators → Manage creators" }));
+    expect(nav.pushed).toEqual(["/creators"]);
+    expect(screen.queryByPlaceholderText("Ask a question…")).toBeNull();
+    expect(window.localStorage.getItem("chatterly:assistant_open")).toBe("0");
+    expect(document.body.getAttribute("style")).toBeNull();
+  });
+
+  it("earlier turns sit collapsed under Earlier on the sheet", async () => {
+    window.localStorage.setItem("chatterly:assistant_open", "1");
+    relayGet.mockImplementation((path: string) => Promise.resolve(path.startsWith("/admin/assistant/history")
+      ? { turns: [{ id: 1, ts: new Date().toISOString(), question: "old q", answer: "old a", error: null, model: "m" }] }
+      : { count: 0, since_hours: 24, list: [] }));
+    render();
+    const earlier = await screen.findByRole("button", { name: "Earlier (1)" });
+    expect(earlier.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("old q")).toBeNull();
+    await userEvent.click(earlier);
+    expect(screen.getByText("old q")).toBeTruthy();
+  });
+
   it("a drag moves it and snaps to the nearest edge, swallowing the release click", async () => {
     render();
-    const bubble = await screen.findByRole("button", { name: "Help assistant" });
-    await drag(bubble, -280, -300);
+    const bubble = await pullOut();
+    await drag(bubble, 280, -300);
 
-    // Dropped near the left side: snapped flush to it, panel NOT opened.
+    // Dropped near the right side: snapped flush to it, panel NOT opened.
     expect(screen.queryByPlaceholderText("Ask a question…")).toBeNull();
     const moved = screen.getByRole("button", { name: "Help assistant" });
-    expect(moved.style.left).toBe("12px");
-    expect(stored()).toEqual({ edge: "left", along: 480, tucked: false });
+    expect(moved.style.left).toBe(`${390 - 48 - 12}px`);
+    expect(stored()).toEqual({ edge: "right", along: 480, tucked: false });
 
     // The next real tap still opens it (the swallow is one-shot).
     await userEvent.click(moved);
     expect(screen.getByPlaceholderText("Ask a question…")).toBeTruthy();
   });
 
-  it("tucks when pushed past the side edge; the chevron tab pulls it back out", async () => {
+  it("re-tucks when pushed past a side edge; the chevron tab pulls it back out", async () => {
     render();
-    const bubble = await screen.findByRole("button", { name: "Help assistant" });
-    await drag(bubble, 60, 0);
+    const bubble = await pullOut();
+    await drag(bubble, -60, 0);
 
     expect(screen.queryByRole("button", { name: "Help assistant" })).toBeNull();
-    const tab = screen.getByRole("button", { name: "Show help assistant" });
+    let tab = screen.getByRole("button", { name: "Show help assistant" });
+    expect(tab.className).toContain("left-0");
+    expect(stored()).toEqual({ edge: "left", along: 180, tucked: true });
+
+    // Out again, over to the right side, tucked there.
+    await userEvent.click(tab);
+    await drag(screen.getByRole("button", { name: "Help assistant" }), 390, 0);
+    tab = screen.getByRole("button", { name: "Show help assistant" });
     expect(tab.className).toContain("right-0");
     expect(stored()).toEqual({ edge: "right", along: 180, tucked: true });
 
@@ -347,8 +499,21 @@ describe("AssistantWidget on a phone", () => {
     expect(stored()).toEqual({ edge: "right", along: 180, tucked: false });
   });
 
+  it("dots the default tab when a reply lands while it is tucked", async () => {
+    let settle: (v: unknown) => void = () => {};
+    relayPost.mockImplementation(() => new Promise((res) => { settle = res; }));
+    render();
+    await userEvent.click(await pullOut());
+    await ask("anything");
+    await userEvent.click(screen.getByRole("button", { name: "Close help" }));
+    await drag(screen.getByRole("button", { name: "Help assistant" }), -60, 0);
+    settle({ answer: "an answer", error: null });
+    const dot = await screen.findByLabelText("New reply");
+    expect(dot.closest("button")?.getAttribute("aria-label")).toBe("Show help assistant");
+  });
+
   it("restores a tucked launcher from the last visit, unread dot on the tab", async () => {
-    window.localStorage.setItem("chatterly:assistant_launcher", JSON.stringify({ edge: "left", along: 300, tucked: true }));
+    window.localStorage.setItem(LAUNCHER_KEY, JSON.stringify({ edge: "left", along: 300, tucked: true }));
     let settle: (v: unknown) => void = () => {};
     relayPost.mockImplementation(() => new Promise((res) => { settle = res; }));
     render();

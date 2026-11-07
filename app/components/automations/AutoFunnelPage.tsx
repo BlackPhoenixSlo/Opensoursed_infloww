@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * My Automations > Auto Funnel — the mass-message funnels (a broadcast opener,
+ * My AI Chatter > Auto Funnel — the mass-message funnels (a broadcast opener,
  * then reply-checked steps ending in a PPV) as their own My Automations page.
  *
  * Nothing new underneath: it is the legacy /automations "Mass funnels" tab

@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * My Automations > Get to know fans (ours). The AI info-gather automation
+ * My AI Chatter > Get to know fans (ours). The AI info-gather automation
  * (`welcome_chatter_for_info`, service/automations/welcome_chatter_for_info.py) on a page of its own: the header
  * switch turns the kind on or off for the creator (`/admin/automation-rules/switch`, which creates its rule from
  * the catalog defaults the first time); once the rule exists the page shows its settings (the message cutoff and

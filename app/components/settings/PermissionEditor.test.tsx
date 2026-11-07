@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, screen, within } from "@testing-library/react";
 
 import { renderWithProviders } from "@/test-utils";
-import PermissionEditor, { OPT_IN_NOTE, PAGE_HREFS, permissionTabs, type PermissionRole } from "@/components/settings/PermissionEditor";
+import PermissionEditor, { optInNote, PAGE_HREFS, permissionTabs, type PermissionRole } from "@/components/settings/PermissionEditor";
 import { SIDEBAR, type NavGroup, type NavNode } from "@/lib/nav";
 import { CARD_PERMISSIONS } from "@/lib/dashboardCards";
 import { PAGE_ACTIONS } from "@/lib/permissionActions";
@@ -52,11 +52,15 @@ function hrefsOn(name: string): string[] {
 }
 
 describe("PermissionEditor", () => {
-  it("says My Automations is off for chatters until ticked, under that group only", () => {
+  it("says My Automations and My AI Chatter are off for chatters until ticked, under those groups only", () => {
     renderEditor();
-    const notes = screen.getAllByText(OPT_IN_NOTE);
-    expect(notes).toHaveLength(1);
-    expect(notes[0].previousElementSibling?.textContent).toBe("My Automations");
+    const notes = screen.getAllByText(/^Off for chatters by default/);
+    expect(notes.map((n) => [n.previousElementSibling?.textContent, n.textContent])).toEqual([
+      ["My Automations", optInNote([])],
+      ["My AI Chatter", optInNote(["Get to know fans"])],
+    ]);
+    expect(notes[0].textContent).toMatch(/^Off for chatters by default\. Tick/);
+    expect(notes[1].textContent).toMatch(/^Off for chatters by default, except Get to know fans\. Tick/);
     expect(notes[0].getAttribute("title")).toBe("Inflowwww extra");
   });
 
@@ -77,8 +81,8 @@ describe("PermissionEditor", () => {
     expect([...union].sort()).toEqual([...ALL].sort());
     // Operations opens on the top-level links under "General", then each other group in nav order.
     const titles = within(screen.getByRole("tabpanel")).getAllByRole("heading").map((h) => h.textContent);
-    expect(titles).toEqual(["General", "Analytics", "Share for Share", "My Automations", "Creators", "Employees"]);
-    expect(operations.slice(0, 2)).toEqual(["/", "/messages-pro"]);
+    expect(titles).toEqual(["General", "Analytics", "Share for Share", "My Automations", "My AI Chatter", "Creators", "Employees"]);
+    expect(operations.slice(0, 3)).toEqual(["/", "/messages-pro", "/full-ai-chatter"]);
   });
 
   it("keys a role by every SIDEBAR page in nav order, nav.ts's PERMISSION_PAGES being the one list", () => {
@@ -96,7 +100,7 @@ describe("PermissionEditor", () => {
     const pages = (tab: string, title: string) =>
       tabs.find((t) => t.tab === tab)!.groups.find((g) => g.title === title)!.pages.map((p) => p.href);
     expect(pages("Growth", "Growth")).toEqual([...childHrefs("Growth"), "/growth/fake"]);
-    expect(pages("Operations", "General")).toEqual(["/", "/messages-pro", "/fake-top"]);
+    expect(pages("Operations", "General")).toEqual(["/", "/messages-pro", "/full-ai-chatter", "/fake-top"]);
   });
 
   it("files no link that answers to another page's grant (`permission`), top-level or a group's child", () => {

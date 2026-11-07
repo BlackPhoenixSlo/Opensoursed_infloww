@@ -33,9 +33,11 @@
  * when someone needs config help is the failure mode the whole endpoint exists
  * to avoid, and a red toast would reintroduce it in the last 40 lines.
  *
- * v1 is deliberately thin: no streaming, no persistence across refresh, no
- * feedback buttons, and each question is sent SINGLE-SHOT — the server gets
- * this question and the role it derives from the session, never the transcript.
+ * Deliberately thin: no streaming, no feedback buttons. Earlier sessions'
+ * turns come back from the server (GET /admin/assistant/history, once per page
+ * load, on the first open) and render under "Earlier"; each ask carries the
+ * last 3 answered turns as `history` (assistantReducer `historyForAsk`) so a
+ * bare "yes" can take up the last answer's offer.
  *
  * ALL-MODELS SCOPE: the product's default scope is "all models", which used to
  * replace the composer with "pick an account first" — a help bot dead in the
@@ -73,9 +75,10 @@ import { cn } from "@/lib/utils";
 import { lazyModule, useLazyModule } from "@/lib/lazyModule";
 import { BRAND_NAME } from "@/lib/brand";
 import {
-  assistantReducer, initialAssistantState, settledFrom, settledFromError,
-  type AskResponse, type AssistantCore,
+  assistantReducer, groupByDay, HISTORY_LIMIT, historyForAsk, historyFromRows, initialAssistantState,
+  settledFrom, settledFromError, type AskResponse, type AssistantCore, type HistoryRow, type Turn,
 } from "./assistantReducer";
+import { useSheetViewport } from "./useSheetViewport";
 import {
   initialLauncherState, launcherDockReducer, launcherSpot, parseLauncherDock,
 } from "./launcherDockReducer";
@@ -84,8 +87,11 @@ export type { Turn } from "./assistantReducer";
 
 /** Open/closed survives a reload; the conversation does not. */
 const OPEN_KEY = "chatterly:assistant_open";
-/** Where the phone launcher was dropped / tucked (launcherDockReducer.ts). */
-export const LAUNCHER_KEY = "chatterly:assistant_launcher";
+/** Where the phone launcher was dropped / tucked (launcherDockReducer.ts).
+ *  v2: the default became tucked-left; v1 spots (often an accidental drag,
+ *  since a swipe that starts on the icon moves it) are dropped so every phone
+ *  starts from that default once. */
+export const LAUNCHER_KEY = "chatterly:assistant_launcher_v2";
 
 /** The Help center route: the page IS the open panel, so the corner hides there. */
 export const HELP_PATH = "/help-center";
@@ -102,9 +108,9 @@ const NO_ACCOUNT_HINT =
 
 // ── The provider ───────────────────────────────────────────────────
 
-/** The reducer's fields (assistantReducer.ts; `onHelpPage` stays inside)
- *  plus the provider's own. */
-interface AssistantState extends Omit<AssistantCore, "onHelpPage"> {
+/** The reducer's fields (assistantReducer.ts; `onHelpPage` and the history
+ *  load status stay inside) plus the provider's own. */
+interface AssistantState extends Omit<AssistantCore, "onHelpPage" | "historyStatus"> {
   toggle: () => void;
   ask: (question: string) => void;
   accountId: string | null;
@@ -127,7 +133,7 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
   // must not either — read it in an effect and paint nothing until then.
   // hydrated / open / turns / unread move together: assistantReducer.ts.
   const [state, dispatch] = useReducer(assistantReducer, initialAssistantState);
-  const { hydrated, open } = state;
+  const { hydrated, open, history, turns } = state;
   const pathname = usePathname();
   // A reply is "read" if the dock is open or the help page is on screen; the
   // reducer holds both and reads them when the answer lands.
@@ -176,8 +182,21 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
 
   const toggle = useCallback(() => dispatch({ type: "toggle" }), []);
 
+  // Earlier sessions' turns: once per page load, the first time a surface
+  // shows the conversation. A failed read leaves it idle for the next open.
+  const wantHistory = hydrated && (open || state.onHelpPage) && state.historyStatus === "idle";
+  useEffect(() => {
+    if (!wantHistory) return;
+    dispatch({ type: "history_requested" });
+    relay.get<{ turns?: HistoryRow[] }>(`/admin/assistant/history?limit=${HISTORY_LIMIT}`, { accountId: scopedId, employeeId })
+      .then((body) => dispatch({ type: "history_loaded", turns: historyFromRows(body) }))
+      .catch(() => dispatch({ type: "history_failed" }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wantHistory]);
+
   const ask = useCallback(async (question: string) => {
     const id = nextId.current++;
+    const prior = historyForAsk({ history, turns });
     dispatch({ type: "asked", id, question });
     try {
       const r = await relay.post<AskResponse>(
@@ -185,18 +204,19 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
         // No `role` — the server derives who is asking from the session, and a
         // role read out of this body would be client-supplied theater.
         // No account connected yet → no `account_id`: a manual-only answer.
-        accountId ? { question, account_id: accountId } : { question },
+        // Previous turns ride along only when there are any.
+        { ...(accountId ? { question, account_id: accountId } : { question }), ...(prior.length ? { history: prior } : {}) },
         { accountId, employeeId },
       );
       dispatch(settledFrom(id, r));
     } catch (e) {
       dispatch(settledFromError(id, e));
     }
-  }, [accountId, employeeId]);
+  }, [accountId, employeeId, history, turns]);
 
-  // `onHelpPage` stays inside the reducer: drop it from the context value at runtime too.
-  const { onHelpPage: _onHelpPage, ...core } = state;
-  void _onHelpPage;
+  // `onHelpPage` / `historyStatus` stay inside the reducer: drop them from the context value at runtime too.
+  const { onHelpPage: _onHelpPage, historyStatus: _historyStatus, ...core } = state;
+  void _onHelpPage; void _historyStatus;
   const value: AssistantState = {
     ...core, toggle, ask, accountId, accounts,
     scoped: scopedId !== null, setPicked, userName,
@@ -263,7 +283,8 @@ export function AssistantWidget() {
   );
 }
 
-/** The phone launcher: a round icon the user drags anywhere; on release it
+/** The phone launcher: starts tucked into the left edge behind its chevron
+ *  tab (a tap pulls the icon out). The icon drags anywhere; on release it
  *  snaps to the nearest left / right / bottom edge, or — dropped past a side
  *  edge — tucks into it behind a chevron tab that pulls it back out. A tap
  *  (no drag, useDragPress) opens the sheet. Spot and tuck persist per device
@@ -370,8 +391,11 @@ const answerText = lazyModule(() => import("./AnswerText"));
  *  `page`: the same content filling /help-center's white frame (Infloww's
  *  HelpPage: full bleed, no page header), in a centred 720px column, with no
  *  close button (the sidebar is the way out). `sheet`: the phone's full-screen
- *  messenger, as tall as the visible viewport (`--vvh`) so the keyboard never
- *  covers its composer. */
+ *  messenger, pinned to the visual viewport over a locked body
+ *  (useSheetViewport) so the keyboard never covers its composer nor scrolls
+ *  the page out from under it. Earlier sessions' turns sit above this one's
+ *  under an "Earlier" toggle, collapsed on the sheet so they never bury the
+ *  composer. */
 export function AssistantPanel({
   variant,
   onClose,
@@ -379,7 +403,7 @@ export function AssistantPanel({
   variant: "dock" | "page" | "sheet";
   onClose?: () => void;
 }) {
-  const { turns, userName, accountId, accounts, scoped, setPicked, ask } = useAssistant();
+  const { turns, history, userName, accountId, accounts, scoped, setPicked, ask } = useAssistant();
   const answer = useLazyModule(answerText);
   const [draft, setDraft] = useState("");
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -389,6 +413,12 @@ export function AssistantPanel({
   const canSend = draft.trim().length > 0;
   const empty = turns.length === 0;
   const page = variant === "page";
+  const sheet = variant === "sheet";
+  const sheetStyle = useSheetViewport(sheet);
+  const [earlierOpen, setEarlierOpen] = useState(!sheet);
+  // A link tapped in the full-screen sheet closes it, or the page it opened
+  // stays hidden under the sheet. The dock sits beside the page: stays open.
+  const leave = sheet ? onClose : undefined;
   // The page spans the shell panel; its content keeps the messenger's measure.
   const column = page ? "mx-auto w-full max-w-[720px]" : "";
 
@@ -399,7 +429,7 @@ export function AssistantPanel({
   useEffect(() => {
     const el = listRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [turns]);
+  }, [turns, history.length]);
 
   const send = () => {
     if (!canSend) return;
@@ -407,14 +437,43 @@ export function AssistantPanel({
     setDraft("");
   };
 
+  const renderTurn = (t: Turn) => (
+    <div key={t.id} className="flex flex-col gap-2">
+      <div className="self-end max-w-[85%] rounded-2xl rounded-br-md bg-[#151515] px-3.5 py-2 text-[13px] text-white whitespace-pre-wrap break-words">
+        {t.question}
+      </div>
+      {t.answer === null ? (
+        <div className="self-start rounded-2xl rounded-bl-md bg-bg-elev-1 px-3.5 py-2 text-[13px] text-fg-dim animate-pulse">
+          thinking…
+        </div>
+      ) : (
+        <div
+          className={cn(
+            "self-start max-w-[92%] rounded-2xl rounded-bl-md bg-bg-elev-1 px-3.5 py-2",
+            "text-[13px] leading-relaxed break-words",
+            // A cap / missing key / provider wobble is still an answer —
+            // muted, never a red error chip. See the module note.
+            t.error ? "text-fg-dim" : "text-fg",
+          )}
+        >
+          {/* The answer is markdown (the manual is), and the tab names in
+              it are real destinations — AnswerText renders both. No
+              `whitespace-pre-wrap` here: it owns its own block layout. */}
+          {answer && <answer.AnswerText text={t.answer} muted={!!t.error} onNavigate={leave} />}
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div
       data-look="messenger"
+      style={sheetStyle}
       className={cn(
         "flex flex-col bg-panel text-fg overflow-hidden",
         page
           ? "h-chat min-h-0 w-full"
-          : variant === "sheet"
+          : sheet
           ? "fixed inset-x-0 top-0 z-50 h-[var(--vvh,100dvh)] w-full"
           : cn(
               "fixed bottom-[84px] right-5 z-40 hidden md:flex",
@@ -470,7 +529,8 @@ export function AssistantPanel({
             <>
               <button
                 type="button"
-                onClick={() => composerRef.current?.focus()}
+                // preventScroll: no Safari scroll-into-view jump of the page.
+                onClick={() => composerRef.current?.focus({ preventScroll: true })}
                 className={cn(CARD, "flex items-center gap-4 text-left hover:border-[#dcdcdc]")}
               >
                 <span className="min-w-0 flex-1">
@@ -482,45 +542,38 @@ export function AssistantPanel({
               <StatusCard />
             </>
           )}
-          {turns.map((t) => (
-            <div key={t.id} className="flex flex-col gap-2">
-              <div className="self-end max-w-[85%] rounded-2xl rounded-br-md bg-[#151515] px-3.5 py-2 text-[13px] text-white whitespace-pre-wrap break-words">
-                {t.question}
-              </div>
-              {t.answer === null ? (
-                <div className="self-start rounded-2xl rounded-bl-md bg-bg-elev-1 px-3.5 py-2 text-[13px] text-fg-dim animate-pulse">
-                  thinking…
+          {history.length > 0 && (
+            <section aria-label="Earlier questions" className="flex flex-col gap-3">
+              <button
+                type="button"
+                onClick={() => setEarlierOpen((o) => !o)}
+                aria-expanded={earlierOpen}
+                className="flex items-center gap-1 self-center rounded-full px-3 py-1 text-[12px] font-medium text-fg-dim hover:text-fg"
+              >
+                Earlier ({history.length})
+                <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", earlierOpen && "rotate-180")} aria-hidden />
+              </button>
+              {earlierOpen && groupByDay(history, new Date()).map((g, i) => (
+                <div key={`${i}-${g.label}`} className="flex flex-col gap-3">
+                  <div className="self-center text-[11px] text-muted">{g.label}</div>
+                  {g.turns.map(renderTurn)}
                 </div>
-              ) : (
-                <div
-                  className={cn(
-                    "self-start max-w-[92%] rounded-2xl rounded-bl-md bg-bg-elev-1 px-3.5 py-2",
-                    "text-[13px] leading-relaxed break-words",
-                    // A cap / missing key / provider wobble is still an answer —
-                    // muted, never a red error chip. See the module note.
-                    t.error ? "text-fg-dim" : "text-fg",
-                  )}
-                >
-                  {/* The answer is markdown (the manual is), and the tab names in
-                      it are real destinations — AnswerText renders both. No
-                      `whitespace-pre-wrap` here: it owns its own block layout. */}
-                  {answer && <answer.AnswerText text={t.answer} muted={!!t.error} />}
-                </div>
-              )}
-            </div>
-          ))}
+              ))}
+            </section>
+          )}
+          {turns.map(renderTurn)}
         </div>
       </div>
 
       {/* Where Intercom's Home / News / Messages / Help bar sits: our composer. */}
       <div className="shrink-0 border-t border-[#ededed] bg-white">
-        <div className={cn("px-4 pt-2.5 pb-4 flex flex-col gap-2", variant === "sheet" && "pb-[max(1rem,env(safe-area-inset-bottom))]", column)}>
+        <div className={cn("px-4 pt-2.5 pb-4 flex flex-col gap-2", sheet && "pb-[max(1rem,env(safe-area-inset-bottom))]", column)}>
           {/* No live account at all (none connected yet, or the roster has
               not loaded): the server answers from the manual alone, and the
               one thing worth pointing at is where to connect one. */}
           {!accountId && (
             <div className="px-1 text-[11px] leading-4 text-muted">
-              {answer && <answer.AnswerText text={NO_ACCOUNT_HINT} />}
+              {answer && <answer.AnswerText text={NO_ACCOUNT_HINT} onNavigate={leave} />}
             </div>
           )}
           {/* In all-models scope nothing on screen names an account, but the
@@ -559,7 +612,11 @@ export function AssistantPanel({
               placeholder="Ask a question…"
               title="Answers come from the product manual; 'not supported' is a real answer. Enter to send · Shift+Enter for a new line"
               rows={1}
-              className="flex-1 min-w-0 max-h-28 resize-none bg-transparent py-1.5 text-[14px] leading-5 text-fg placeholder:text-muted focus:outline-none [field-sizing:content]"
+              // 16px on the phone: iOS zooms the page into any smaller input.
+              className={cn(
+                "flex-1 min-w-0 max-h-28 resize-none bg-transparent py-1.5 leading-5 text-fg placeholder:text-muted focus:outline-none [field-sizing:content]",
+                sheet ? "text-[16px]" : "text-[14px]",
+              )}
             />
             {/* Always "Ask" — the per-turn "thinking…" row shows progress, and
                 the composer stays live while an answer is in flight. */}

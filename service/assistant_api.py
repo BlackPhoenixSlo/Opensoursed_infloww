@@ -59,7 +59,17 @@ two is the database, so every line of the pack is testable without one. THIS
 file is the HTTP layer: the prompt, the drift gate, the route, and no
 diagnosis at all.
 
-  POST /admin/assistant/ask  {question, account_id?} → {answer, error}
+  POST /admin/assistant/ask  {question, account_id?, history?} → {answer, error}
+  GET  /admin/assistant/history?limit=50        → the caller's own turns, newest first
+  GET  /admin/assistant/history?all=1&limit=50  → every asker's turns (master only)
+
+HISTORY. Every ask that reached the model (success or a friendly-error answer)
+writes one `assistant_turns` row — question, the answer the asker saw, who,
+model/provider/cost/latency; never a key, never the prompt blocks — so the
+owner can read what people ask. The widget sends the asker's last turns back
+as `history` (≤3, each side cut to 600 chars); they ride the USER message under
+PREVIOUS TURNS, so a bare "yes" can take up the last answer's offer while the
+system prompt stays one cached prompt.
 
 NO ACCOUNT YET. A signed-in agency that has not connected an OnlyFans account
 still needs "where is X?" answered — connecting one is the first thing it asks
@@ -88,21 +98,27 @@ the manual's Roles section. Access itself is not this file's job —
 from __future__ import annotations
 
 import logging
+import time
+from datetime import timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Body
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Body, HTTPException, Query
+from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import select
 
 import assistant_fan_pack
 import assistant_state
 import llm_client
-from auth import assert_account_owned, get_request_user, require_user
+from auth import assert_account_owned, get_request_user, require_master, require_user
 from automations._common import resolve_model  # the one model resolver
 from brand import BRAND_NAME
 from chatters import get_request_chatter
+from db.engine import get_session
+from db.models import AssistantTurn, Chatter, User
 from llm_client import (LLMCapExceeded, LLMConfigError, LLMHTTPError, LLMKeyError,
                         key_error_payload)
+from llm_models import MODELS
 
 log = logging.getLogger("of-relay.assistant_api")
 
@@ -128,12 +144,15 @@ Rules:
   essential part — where it lives and what to set, still within 300 characters
   — and end with ONE short question offering the rest, naming its topic: "Want
   the step-by-step for Auto Post?" Nothing after that question. An answer that
-  already fits in 300 characters gets no offer. Each question reaches you
-  alone, with no earlier messages, so the offer must name its feature, and when
-  the asker comes back for more ("step-by-step for Auto Post", "tell me more
-  about the Auto Post settings") the full answer may be long. A bare "yes",
-  "more" or "go on" with no feature named: say in one line that you cannot see
-  the earlier message and ask which feature. Fan diagnoses from a FAN EVIDENCE
+  already fits in 300 characters gets no offer. The offer still names its
+  feature, and when the asker comes back for more ("step-by-step for Auto
+  Post", "tell me more about the Auto Post settings") the full answer may be
+  long. A "PREVIOUS TURNS" block may come before the question: the asker's
+  last few questions and your answers, oldest first. Read the question in its
+  light. A bare "yes", "more" or "go on" means yes to the offer in your LAST
+  previous answer: give that rest, about that feature. Only with no PREVIOUS
+  TURNS block, or no offer in it, say in one line that you cannot tell what it
+  refers to and ask which feature. Fan diagnoses from a FAN EVIDENCE
   PACK keep the shape their examples show, and a clarifying question (which
   date, which fan) still OPENS the reply rather than closing it.
 - If the asker is a chatter and the answer lives on a page the manual's Roles
@@ -432,13 +451,31 @@ def _asker_role() -> str:
     return "a chatter" if get_request_chatter() is not None else "an owner/admin"
 
 
+def _history_block(history: "list[HistoryTurn] | None") -> str | None:
+    """The asker's earlier turns, oldest first; None when there are none."""
+    if not history:
+        return None
+    lines = ["PREVIOUS TURNS (oldest first; the asker's earlier questions and "
+             "your answers — the question below follows them):"]
+    for i, t in enumerate(history, 1):
+        lines.append(f"[{i}] Asker: {t.question}\n[{i}] You: {t.answer}")
+    return "\n".join(lines)
+
+
 def _user_block(question: str, role: str, state: str | None = None,
-                fan: str | None = None) -> str:
+                fan: str | None = None,
+                history: "list[HistoryTurn] | None" = None) -> str:
     """Everything that varies per request lives HERE, not in the system prompt.
 
-    The fan pack goes LAST, closest to the answer: when someone pastes a chat
-    header and asks why a thread is silent, that block IS the question."""
-    parts = [f"The asker is {role}.", f"Question: {question}"]
+    PREVIOUS TURNS sit BEFORE the question, so the question still follows
+    everything it may refer back to. The fan pack goes LAST, closest to the
+    answer: when someone pastes a chat header and asks why a thread is silent,
+    that block IS the question."""
+    parts = [f"The asker is {role}."]
+    prev = _history_block(history)
+    if prev:
+        parts.append(prev)
+    parts.append(f"Question: {question}")
     if state:
         parts.append(state)
     if fan:
@@ -453,23 +490,64 @@ NO_ACCOUNT_NOTE = (
     "app, so there is no live state to read.")
 
 
+MAX_HISTORY_TURNS = 3
+MAX_HISTORY_CHARS = 600     # per question AND per answer
+
+
+def _cut(text: str) -> str:
+    text = (text or "").strip()
+    return text if len(text) <= MAX_HISTORY_CHARS else text[:MAX_HISTORY_CHARS - 1] + "…"
+
+
+class HistoryTurn(BaseModel):
+    question: str = Field("", max_length=20_000)
+    answer: str = Field("", max_length=20_000)
+
+    @field_validator("question", "answer")
+    @classmethod
+    def _trim(cls, v: str) -> str:
+        return _cut(v)
+
+
 class AskBody(BaseModel):
     question: str = Field(..., max_length=MAX_QUESTION_CHARS)
     # Omitted = no account connected yet (see the module docstring). Empty is
     # still refused: "" would no-op `assert_account_owned`.
     account_id: str | None = Field(None, min_length=1)
+    # The widget's last turns, oldest first. Over-long input is CUT, not
+    # refused (a 422 would break the ask): the newest MAX_HISTORY_TURNS survive.
+    history: list[HistoryTurn] | None = Field(None, max_length=50)
     # No `role` field, deliberately — see the module docstring.
+
+    @field_validator("history")
+    @classmethod
+    def _last_turns(cls, v: list[HistoryTurn] | None) -> list[HistoryTurn] | None:
+        if not v:
+            return None
+        kept = [t for t in v if t.question or t.answer][-MAX_HISTORY_TURNS:]
+        return kept or None
 
 
 def _answer(text: str, error: str | None = None) -> dict[str, Any]:
     return {"answer": text, "error": error}
 
 
+def _provider_of(model: str) -> str | None:
+    mdl = MODELS.get(model)
+    return mdl.provider if mdl is not None else None
+
+
 async def _complete(model: str, user_content: str, *, account_id: str | None,
                     user_id: str | None = None,
                     capped: str = "This account's AI budget is used up for today.",
+                    meta: dict[str, Any] | None = None,
                     ) -> dict[str, Any]:
-    """One help-bot completion, every provider failure turned into an answer."""
+    """One help-bot completion, every provider failure turned into an answer.
+
+    `meta`, when given, is filled with what the turn row records (model,
+    provider, cost) — the answer dict itself stays {answer, error}."""
+    if meta is not None:
+        meta.update(model=model, provider=_provider_of(model), cost_millicents=None)
     try:
         result = await llm_client.chat(
             model=model,
@@ -499,6 +577,9 @@ async def _complete(model: str, user_content: str, *, account_id: str | None,
             "The AI provider is having trouble — try again in a minute.",
             "provider")
 
+    if meta is not None:
+        meta.update(model=result.model, provider=result.provider,
+                    cost_millicents=result.cost_cents)
     answer = (result.content or "").strip()
     if not answer:
         # A model that reasoned its whole output budget away returns content=""
@@ -509,8 +590,46 @@ async def _complete(model: str, user_content: str, *, account_id: str | None,
     return _answer(answer)
 
 
+def _asker_ids() -> tuple[str | None, str | None]:
+    """(user_id, chatter_id) of the session — the same precedence as `_asker_role`."""
+    user = get_request_user()
+    if user is not None:
+        return user.id, None
+    chatter = get_request_chatter()
+    return None, (chatter.id if chatter is not None else None)
+
+
+async def _record_turn(*, question: str, out: dict[str, Any], role: str,
+                       account_id: str | None, meta: dict[str, Any],
+                       started: float) -> None:
+    """One `assistant_turns` row per answered ask. Best-effort: a failed write
+    is logged and never costs the asker the answer they already paid for."""
+    user_id, chatter_id = _asker_ids()
+    try:
+        async with get_session() as s:
+            s.add(AssistantTurn(
+                user_id=user_id, chatter_id=chatter_id, account_id=account_id,
+                role=role, question=question, answer=out["answer"],
+                error=out["error"], model=meta.get("model"),
+                provider=meta.get("provider"),
+                cost_millicents=meta.get("cost_millicents"),
+                latency_ms=int((time.monotonic() - started) * 1000)))
+    except Exception:
+        log.warning("assistant: turn row write failed", exc_info=True)
+
+
 @router.post("/admin/assistant/ask")
 async def ask(body: AskBody = Body(...)) -> dict[str, Any]:
+    started = time.monotonic()
+    out, meta, role, question = await _ask(body)
+    if meta:   # empty = refused before any model call (blank question)
+        await _record_turn(question=question, out=out, role=role,
+                           account_id=body.account_id, meta=meta, started=started)
+    return out
+
+
+async def _ask(body: AskBody) -> tuple[dict[str, Any], dict[str, Any], str, str]:
+    """The ask itself → (answer dict, turn meta, role, stripped question)."""
     if body.account_id is None:
         # No account to gate on, so the gate is the session itself: a signed-in
         # user of this deployment, never an anonymous caller.
@@ -518,18 +637,21 @@ async def ask(body: AskBody = Body(...)) -> dict[str, Any]:
     else:
         assert_account_owned(body.account_id)
     question = body.question.strip()
-    if not question:
-        return _answer("Ask me something about the product.", "empty_question")
-
     role = _asker_role()
+    meta: dict[str, Any] = {}
+    if not question:
+        return (_answer("Ask me something about the product.", "empty_question"),
+                meta, role, question)
+
     if body.account_id is None:
         # Manual only, billed to the asking agency. No account → no pin to
         # read, so the model is the purpose default.
-        return await _complete(
+        out = await _complete(
             await resolve_model("", PURPOSE),
-            _user_block(question, role, NO_ACCOUNT_NOTE),
-            account_id=None, user_id=user.id,
+            _user_block(question, role, NO_ACCOUNT_NOTE, history=body.history),
+            account_id=None, user_id=user.id, meta=meta,
             capped="Today's help-bot budget is used up — try again tomorrow.")
+        return out, meta, role, question
 
     # Resolution comes FIRST: the paste may name a different model, and the live
     # state block has to describe the account the question is actually about.
@@ -543,12 +665,65 @@ async def ask(body: AskBody = Body(...)) -> dict[str, Any]:
     # there is no failure branch to write here.
     model = await resolve_model(body.account_id, PURPOSE)
     out = await _complete(
-        model, _user_block(question, role, state, target.block),
-        account_id=body.account_id)      # pays — see above
+        model, _user_block(question, role, state, target.block, body.history),
+        account_id=body.account_id, meta=meta)      # pays — see above
     if out["error"] is None:
         # The model answered without rows it should have had — be honest about why.
         if state is None:
             out["answer"] += assistant_state.FAIL_NOTE
         if not target.ok:
             out["answer"] += assistant_fan_pack.FAIL_NOTE
-    return out
+    return out, meta, role, question
+
+
+# ── History ───────────────────────────────────────────────────────────
+
+def _turn_row(t: AssistantTurn) -> dict[str, Any]:
+    return {
+        "id": t.id,
+        "ts": t.ts.replace(tzinfo=timezone.utc).isoformat() if t.ts else None,
+        "account_id": t.account_id, "role": t.role,
+        "question": t.question, "answer": t.answer, "error": t.error,
+        "model": t.model, "provider": t.provider,
+        "cost_millicents": t.cost_millicents, "latency_ms": t.latency_ms,
+    }
+
+
+@router.get("/admin/assistant/history")
+async def history(limit: int = Query(50, ge=1, le=500),
+                  all: bool = Query(False)) -> dict[str, Any]:
+    """The caller's own turns, newest first; `all=1` is every asker's (master).
+
+    Own: whoever the session is — a user by `user_id`, a chatter by
+    `chatter_id`. No principal (ALLOW_ANONYMOUS_ADMIN) has no history: 401.
+    All: `require_master`, the founder read gate (401 anonymous, 403 others);
+    each row also carries the asker's username / chatter name."""
+    if all:
+        require_master()
+        async with get_session() as s:
+            rows = (await s.execute(
+                select(AssistantTurn, User.username, Chatter.username,
+                       Chatter.display_name)
+                .outerjoin(User, User.id == AssistantTurn.user_id)
+                .outerjoin(Chatter, Chatter.id == AssistantTurn.chatter_id)
+                .order_by(AssistantTurn.ts.desc(), AssistantTurn.id.desc())
+                .limit(limit))).all()
+        turns = []
+        for t, uname, cname, cdisplay in rows:
+            row = _turn_row(t)
+            row.update(user_id=t.user_id, chatter_id=t.chatter_id,
+                       username=uname or cname,
+                       display_name=cdisplay if t.chatter_id else None)
+            turns.append(row)
+        return {"turns": turns}
+
+    user_id, chatter_id = _asker_ids()
+    if user_id is None and chatter_id is None:
+        raise HTTPException(status_code=401, detail="sign in required")
+    col = AssistantTurn.user_id if user_id else AssistantTurn.chatter_id
+    async with get_session() as s:
+        rows = (await s.execute(
+            select(AssistantTurn).where(col == (user_id or chatter_id))
+            .order_by(AssistantTurn.ts.desc(), AssistantTurn.id.desc())
+            .limit(limit))).scalars().all()
+    return {"turns": [_turn_row(t) for t in rows]}

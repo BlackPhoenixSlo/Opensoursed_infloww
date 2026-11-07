@@ -7,7 +7,7 @@ docs/spec/phase-04-apply-stored-settings.md › Role enforcement):
   granted_pages(ctx, roles)   the granted page hrefs, or None for every page
   denied_actions(ctx, roles)  the `<page>#<action>` Function permissions it denies
   denied_cards(ctx, roles)    the Dashboard cards (`CARD_KEYS`) it hides
-  OPT_IN_PAGES                My Automations: a chatter's only by explicit grant
+  OPT_IN_PAGES                My Automations, My AI Chatter: a chatter's only by explicit grant
   opt_in_granted(ctx, roles)  the OPT_IN_PAGES one Agency context may use
   require_opt_in_page(page)   403 unless some Agency context grants that page
                               (the rule-kind and funnel writes call it)
@@ -118,7 +118,7 @@ def _granting_role(roles: dict[str, Any], employee_id: int | None) -> dict[str, 
     return None if off else role
 
 
-# My Automations (ours, not Infloww; app/lib/nav.ts `chatterOptIn`). Off for a
+# My Automations and My AI Chatter (ours, not Infloww; app/lib/nav.ts `chatterOptIn`). Off for a
 # chatter by default: such a page is granted only by a stored role that ticks
 # it, on an Agency enforcing role permissions. The built-in Owner and Admin,
 # unstored, grant none of them (the Role Settings Panel shows them unticked);
@@ -128,7 +128,7 @@ def _granting_role(roles: dict[str, Any], employee_id: int | None) -> dict[str, 
 # serve (role_enforcement_middleware) and, for the shared rule and funnel
 # routes, on the writes of these pages' own rule kinds and funnels
 # (`require_opt_in_page`). service/tests/test_role_enforcement.py pins this set
-# to the nav's My Automations group.
+# to the nav's chatterOptIn groups.
 OPT_IN_PAGES: frozenset[str] = frozenset({
     "/growth/auto-post", "/growth/auto-story", "/growth/auto-mass",
     "/growth/auto-reply", "/growth/auto-funnel", "/growth/gen-info",
@@ -430,8 +430,9 @@ PAGE_MAP: dict[str, tuple[str, tuple[str, ...]]] = {
     # Saved mass_premade rules, their run log, the audience's OF lists and the vault picker.
     "/growth/auto-mass": ("Auto Mass", (
         "/admin/automation-rules", "/admin/stats/automation-runs", "/api/of/v2/lists", *_PICKER)),
-    # The switch, the reply delay, the folder pick (OF's lists) and Human style.
-    "/growth/auto-reply": ("Auto-reply", ("/admin/autoreply-config", "/admin/style-config", "/api/of/v2/lists")),
+    # The switch, the reply delay, the folder pick (OF's lists), Human style and the reply model (the account config).
+    "/growth/auto-reply": ("Auto-reply", (
+        "/admin/autoreply-config", "/admin/style-config", "/api/of/v2/lists", "/admin/account-config")),
     # The funnels list/editor, its Reply-walking switch, ▶ Start (a funnel-linked
     # mass to an OF list) and 🖼 Media (the vault picker).
     "/growth/auto-funnel": ("Auto Funnel", (
@@ -443,6 +444,8 @@ PAGE_MAP: dict[str, tuple[str, tuple[str, ...]]] = {
     "/growth/get-to-know-fans": ("Get to know fans", ("/admin/account-config",)),
     # The gen_info switch (its rule) and the one-shot old-fans enqueue (process_old_fans).
     "/growth/gen-info": ("Gen-Info", ("/admin/automation", "/admin/automation-rules")),
+    # A coming-soon page: no Relay route of its own.
+    "/full-ai-chatter": ("Full AI Chatter", ()),
     "/creators": ("Manage creators", (
         "/admin/accounts/active", "/admin/automation", "/admin/reload-session")),
     # Its proxy routes are owner-only (`_CHATTER_BLOCKED_ADMIN_PREFIXES`).

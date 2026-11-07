@@ -14,7 +14,10 @@
  * it does not understand falls through as text, which is why an unclosed `**`
  * degrades to a visible asterisk instead of eating the rest of the answer.
  *
- * The one thing it ADDS is click paths: see answerLinks.ts.
+ * The one thing it ADDS is click paths: see answerLinks.ts. `onNavigate` runs
+ * on a link's click: the phone's full-screen sheet passes its close, because
+ * a route change under a sheet that stays open is a tap that "does nothing"
+ * (measured on the dev stack: URL changed, sheet still 390x844 over it).
  */
 
 import type { ReactNode } from "react";
@@ -28,7 +31,7 @@ const INLINE_RE = /`([^`\n]+)`|\*\*([^\n]+?)\*\*|\*([^*\n]+?)\*/g;
 
 /** `text`, which starts at `offset` in the plain run, with the parts of it
  *  inside a hit wrapped in a <Link>. `key` disambiguates sibling spans. */
-function linked(text: string, offset: number, hits: PathHit[], key: number): ReactNode[] {
+function linked(text: string, offset: number, hits: PathHit[], key: number, onNavigate?: () => void): ReactNode[] {
   const out: ReactNode[] = [];
   let last = 0;
   hits.forEach((h, i) => {
@@ -40,6 +43,7 @@ function linked(text: string, offset: number, hits: PathHit[], key: number): Rea
       <Link
         key={`l${key}-${i}`}
         href={h.href}
+        onClick={onNavigate}
         className="text-accent underline decoration-accent/40 underline-offset-2 hover:decoration-accent"
       >
         {text.slice(start, end)}
@@ -62,7 +66,7 @@ function linked(text: string, offset: number, hits: PathHit[], key: number): Rea
  * The result is always ONE element's children, so keys only have to be unique
  * within this call — no caller-supplied prefix needed.
  */
-function inline(text: string): ReactNode[] {
+function inline(text: string, onNavigate?: () => void): ReactNode[] {
   const spans: Array<{ kind: "text" | "code" | "bold" | "italic"; text: string }> = [];
   let last = 0;
   let m: RegExpExecArray | null;
@@ -93,7 +97,7 @@ function inline(text: string): ReactNode[] {
         </code>,
       ];
     }
-    const body = linked(s.text, at, hits, i);
+    const body = linked(s.text, at, hits, i, onNavigate);
     if (s.kind === "bold") {
       return [
         <strong key={`b${i}`} className="font-semibold text-fg">
@@ -161,7 +165,7 @@ function parse(text: string): Block[] {
   return blocks;
 }
 
-export function AnswerText({ text, muted }: { text: string; muted?: boolean }) {
+export function AnswerText({ text, muted, onNavigate }: { text: string; muted?: boolean; onNavigate?: () => void }) {
   const blocks = parse(text);
 
   return (
@@ -170,7 +174,7 @@ export function AnswerText({ text, muted }: { text: string; muted?: boolean }) {
         if (b.kind === "h") {
           return (
             <p key={i} className="font-semibold text-fg">
-              {inline(b.items[0])}
+              {inline(b.items[0], onNavigate)}
             </p>
           );
         }
@@ -179,7 +183,7 @@ export function AnswerText({ text, muted }: { text: string; muted?: boolean }) {
           // and the model's own line breaks are an artefact of the manual.
           return (
             <p key={i} className="break-words">
-              {inline(b.items.join(" "))}
+              {inline(b.items.join(" "), onNavigate)}
             </p>
           );
         }
@@ -194,7 +198,7 @@ export function AnswerText({ text, muted }: { text: string; muted?: boolean }) {
           >
             {b.items.map((it, j) => (
               <li key={j} className="marker:text-fg-dim">
-                {inline(it)}
+                {inline(it, onNavigate)}
               </li>
             ))}
           </List>

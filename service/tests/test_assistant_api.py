@@ -1917,11 +1917,14 @@ def case_fit_sheds_in_its_documented_order():
 async def case_long_answers_end_with_one_offer_to_say_more():
     # Owner, 2026-11-07: replies were bloated. The rule caps a how-to answer at
     # ~300 chars and moves the rest behind ONE closing offer that names its
-    # topic (the widget sends no history, so a bare "yes" has nothing to expand).
+    # topic. Since 2026-11-07 the widget sends its last turns (PREVIOUS TURNS),
+    # so a bare "yes" takes up the last offer; only without them does it ask.
     system = " ".join(assistant_api._build_system_prompt().split())
     assert "KEEP IT UNDER 300 CHARACTERS" in system
     assert "end with ONE short question offering the rest, naming its topic" in system
-    assert 'A bare "yes"' in system and "cannot see the earlier message" in system
+    assert 'A bare "yes"' in system and "yes to the offer in your LAST previous answer" in system
+    assert "Only with no PREVIOUS TURNS block" in system
+    assert "cannot see the earlier message" not in system, "the old no-history rule survived"
     # The fan-why / date rule still opens with its clarifying question.
     assert "still OPENS the reply rather than closing it" in system
     # Example beats rule: the docs-only exemplars obey the cap, and one shows
@@ -1936,6 +1939,193 @@ async def case_long_answers_end_with_one_offer_to_say_more():
         assert len(flat) <= 300, f"a docs exemplar runs {len(flat)} chars: {flat[:60]!r}"
         offers += flat.endswith("?")
     assert offers >= 1, "no docs exemplar shows the closing offer"
+
+
+# ── Turn log + history (owner 2026-11-07: "so I know what people are asking") ──
+
+async def _turns(**where):
+    from sqlalchemy import select as _sel
+    from db.models import AssistantTurn
+    async with get_session() as s:
+        q = _sel(AssistantTurn).order_by(AssistantTurn.id)
+        for k, v in where.items():
+            q = q.where(getattr(AssistantTurn, k) == v)
+        return list((await s.execute(q)).scalars().all())
+
+
+async def case_every_answered_ask_writes_one_turn_row():
+    _patch(_Spy("My Automations → Auto Post."))
+    token = auth._request_user.set(auth.AuthedUser("u_turns", "turns", frozenset({AID})))
+    try:
+        before = len(await _turns(user_id="u_turns"))
+        out = await _ask("how do I make autopost? [turnlog]")
+        _patch(_Spy(raises=LLMHTTPError("502 bad gateway", status=502)))
+        err = await _ask("where is the vault? [turnlog]")
+        _patch(_Spy())
+        await _ask("   ")                          # refused before the model: no row
+    finally:
+        auth._request_user.reset(token)
+    rows = (await _turns(user_id="u_turns"))[before:]
+    assert len(rows) == 2, [(r.question, r.error) for r in rows]
+    ok, bad = rows
+    assert (ok.question, ok.answer, ok.error) == (
+        "how do I make autopost? [turnlog]", out["answer"], None), vars(ok)
+    assert ok.account_id == AID and ok.role == "an owner/admin" and ok.chatter_id is None
+    assert ok.provider == "deepseek" and ok.model and ok.cost_millicents == 0, vars(ok)
+    assert ok.latency_ms is not None and ok.latency_ms >= 0 and ok.ts is not None
+    # The friendly error sentence the asker saw is stored, with its tag.
+    assert (bad.answer, bad.error) == (err["answer"], "provider"), vars(bad)
+    assert bad.model == ok.model and bad.cost_millicents is None, vars(bad)
+    # Never a key, never the prompt blocks.
+    for r in rows:
+        blob = " ".join(str(v) for v in vars(r).values())
+        assert "LIVE STATE" not in blob and "sk-" not in blob, blob[:200]
+
+
+async def case_a_chatter_turn_is_keyed_by_the_chatter():
+    _patch(_Spy("ask an owner"))
+    identity = chatters.ChatterIdentity(
+        id_="ch_turns", username="chat_turns", display_name="Chat T", color=None,
+        owner_user_ids=frozenset({"u1"}), account_ids=frozenset({AID}))
+    token = chatters._request_chatter.set(identity)
+    try:
+        await _ask("where are smart messages? [chatter]")
+    finally:
+        chatters._request_chatter.reset(token)
+    rows = await _turns(chatter_id="ch_turns")
+    assert len(rows) == 1 and rows[0].user_id is None and rows[0].role == "a chatter", rows
+
+
+async def case_a_failed_turn_write_never_costs_the_answer():
+    _patch(_Spy("still answered"))
+    real = assistant_api.get_session
+    def _boom():
+        raise RuntimeError("db down")
+    assistant_api.get_session = _boom
+    try:
+        out = await _ask()
+    finally:
+        assistant_api.get_session = real
+    assert out == {"answer": "still answered", "error": None}, out
+
+
+async def case_history_rides_the_user_message_before_the_question():
+    spy = _Spy("Here are the steps.")
+    _patch(spy)
+    long_answer = "A" * 2000
+    hist = [{"question": f"old q{i}", "answer": f"old a{i}"} for i in range(4)] + [
+        {"question": "how do I make autopost?",
+         "answer": long_answer + " Want the step-by-step for Auto Post?"}]
+    await ask(AskBody(question="yes", account_id=AID, history=hist))
+    system, user = spy.calls[-1]["messages"]
+    u = user["content"]
+    assert "PREVIOUS TURNS" in u, u[:400]
+    # Newest 3 survive, oldest first; each side cut to 600 chars.
+    assert "old q0" not in u and "old q1" not in u and "old q2" in u and "old q3" in u, u[:600]
+    assert u.index("old q2") < u.index("old q3") < u.index("how do I make autopost?")
+    assert long_answer not in u and "A" * 599 in u, "an answer was not cut to 600"
+    # The block sits before the question; the question follows everything it refers to.
+    assert u.index("PREVIOUS TURNS") < u.index("Question: yes"), u[:300]
+    assert "old q3" not in system["content"] and "Question: yes" not in system["content"]
+    # No history → no block; the system prompt is the same bytes either way.
+    await ask(AskBody(question="yes", account_id=AID))
+    assert "PREVIOUS TURNS (" not in spy.calls[-1]["messages"][1]["content"]
+    assert spy.calls[-1]["messages"][0]["content"] == system["content"], \
+        "history changed the cached system prompt — prefix cache busted"
+    # The stored question is the asker's own, never the history.
+    rows = await _turns(question="yes")
+    assert rows and all("old q" not in r.question for r in rows)
+    # The no-account path carries it too.
+    token = _as_user("u_hist_noacc")
+    try:
+        await ask(AskBody(question="more", history=[{"question": "q", "answer": "a"}]))
+    finally:
+        auth._request_user.reset(token)
+    assert "PREVIOUS TURNS" in spy.calls[-1]["messages"][1]["content"]
+
+
+def case_history_over_http_is_scoped_and_all_is_master_only():
+    import asyncio as _aio
+    from db.models import User
+
+    async def _seed():
+        async with get_session() as s:
+            for uid, name, admin in (("u_h_a", "hist_a", False), ("u_h_b", "hist_b", False),
+                                     ("u_h_m", "hist_m", True)):
+                if await s.get(User, uid) is None:
+                    s.add(User(id=uid, username=name, password=f"pw-{name}", is_admin=admin))
+    _aio.run(_seed())
+    _patch(_Spy("Creators → Manage creators → Add creator."))
+
+    def _login(name):
+        c = _harness.make_client()
+        r = c.post("/auth/login", json={"username": name, "password": f"pw-{name}"})
+        assert r.status_code == 200, (r.status_code, r.text)
+        return c
+
+    a, b, m = _login("hist_a"), _login("hist_b"), _login("hist_m")
+    for q in ("first from a", "second from a"):
+        assert a.post("/admin/assistant/ask", json={"question": q}).status_code == 200
+    assert b.post("/admin/assistant/ask", json={"question": "only from b"}).status_code == 200
+
+    r = a.get("/admin/assistant/history")
+    assert r.status_code == 200, r.text
+    turns = r.json()["turns"]
+    assert [t["question"] for t in turns] == ["second from a", "first from a"], turns
+    assert set(turns[0]) >= {"id", "ts", "question", "answer", "error", "model",
+                             "provider", "cost_millicents", "latency_ms", "account_id", "role"}
+    assert "user_id" not in turns[0] and "username" not in turns[0], turns[0]
+    assert [t["question"] for t in b.get("/admin/assistant/history").json()["turns"]] == ["only from b"]
+    assert len(a.get("/admin/assistant/history?limit=1").json()["turns"]) == 1
+
+    # all=1: master only.
+    assert a.get("/admin/assistant/history?all=1").status_code == 403
+    assert _harness.make_client().get("/admin/assistant/history?all=1").status_code == 401
+    assert _harness.make_client().get("/admin/assistant/history").status_code == 401
+    r = m.get("/admin/assistant/history?all=1&limit=500")
+    assert r.status_code == 200, r.text
+    every = r.json()["turns"]
+    by_q = {t["question"]: t for t in every}
+    assert by_q["only from b"]["username"] == "hist_b" and by_q["only from b"]["user_id"] == "u_h_b"
+    assert by_q["second from a"]["username"] == "hist_a"
+    assert every.index(by_q["second from a"]) < every.index(by_q["first from a"]), "not newest first"
+
+
+def case_the_migration_creates_the_table_on_a_bare_db():
+    import importlib.util, sqlite3, subprocess, sys as _sys
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy import create_engine, inspect as _insp
+    repo = Path(__file__).resolve().parents[2]
+    mig = repo / "service" / "db" / "migrations"
+    found = sorted((mig / "versions").glob("*_assistant_turns.py"))
+    assert len(found) == 1, found
+    spec = importlib.util.spec_from_file_location(found[0].stem, found[0])
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod.down_revision == "0103_saved_reply_sequences", mod.down_revision
+    r = subprocess.run([_sys.executable, "-m", "alembic", "-c", str(mig / "alembic.ini"), "heads"],
+                       cwd=repo, env={**os.environ, "PYTHONPATH": str(repo)},
+                       capture_output=True, text=True, timeout=300)
+    assert r.returncode == 0, r.stderr
+    heads = [ln for ln in r.stdout.splitlines() if ln.strip()]
+    assert len(heads) == 1 and heads[0].startswith(mod.revision), r.stdout
+    path = Path(tempfile.mkdtemp(prefix="assistant_turns_mig_")) / "mig.db"
+    assert str(path) != str(_harness.DB_PATH)
+    sqlite3.connect(path).close()
+    eng = create_engine(f"sqlite:///{path}")
+    for _ in range(2):                              # idempotent
+        with eng.begin() as c, Operations.context(MigrationContext.configure(c)):
+            mod.upgrade()
+    insp = _insp(eng)
+    cols = {c["name"] for c in insp.get_columns("assistant_turns")}
+    from db.models import AssistantTurn
+    assert cols == {c.name for c in AssistantTurn.__table__.columns}, cols
+    assert {i["name"] for i in insp.get_indexes("assistant_turns")} == {
+        i.name for i in AssistantTurn.__table__.indexes}
+    with eng.begin() as c, Operations.context(MigrationContext.configure(c)):
+        mod.downgrade()
+    assert "assistant_turns" not in _insp(eng).get_table_names()
 
 
 _harness.run(
@@ -1999,4 +2189,10 @@ _harness.run(
     case_a_recipient_list_is_redacted_whatever_type_the_ids_arrive_as,
     case_fit_sheds_in_its_documented_order,
     case_long_answers_end_with_one_offer_to_say_more,
+    case_every_answered_ask_writes_one_turn_row,
+    case_a_chatter_turn_is_keyed_by_the_chatter,
+    case_a_failed_turn_write_never_costs_the_answer,
+    case_history_rides_the_user_message_before_the_question,
+    case_history_over_http_is_scoped_and_all_is_master_only,
+    case_the_migration_creates_the_table_on_a_bare_db,
 )

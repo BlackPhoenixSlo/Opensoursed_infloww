@@ -17,7 +17,10 @@
  *    a box toggled while that PUT is in flight survives its success, and
  *    "Saved" waits until no edit made during a save is left unsaved;
  *  - the page header (page-parity ticket 16) holds the Auto-reply switch, and
- *    `?creator=` picks the Creator whose blob seeds the form.
+ *    `?creator=` picks the Creator whose blob seeds the form;
+ *  - Model: the account config's model, "Default (<default_model>)" = null; a
+ *    changed pick PUTs the stored brain back with only model/effort set, an
+ *    untouched one sends no account-config PUT; no config read, no row.
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
@@ -49,7 +52,7 @@ const LISTS = [
 
 function mockReads(opts: {
   config?: Record<string, unknown>; keyAvailable?: boolean; visionAvailable?: boolean;
-  style?: Record<string, unknown>;
+  style?: Record<string, unknown>; brain?: Record<string, unknown>;
 } = {}) {
   get.mockImplementation((path: string) => {
     if (path.startsWith("/admin/autoreply-config")) {
@@ -77,6 +80,15 @@ function mockReads(opts: {
       });
     }
     if (path.startsWith("/api/of/v2/lists")) return Promise.resolve({ list: LISTS });
+    if (path.startsWith("/admin/account-config") && opts.brain) {
+      return Promise.resolve({
+        account_id: "acc-a",
+        config: { persona: "Ella.", model: null, reasoning_effort: "", ...opts.brain },
+        default_model: "deepseek-v4-flash",
+        model_options: ["deepseek-v4-flash", "deepseek-v4-pro", "claude-opus-5-5"],
+        effort_options: { "deepseek-v4-flash": [], "deepseek-v4-pro": ["low", "medium", "high"], "claude-opus-5-5": [] },
+      });
+    }
     if (path.startsWith("/admin/ai-key-status")) {
       const missing = opts.keyAvailable === false;
       return Promise.resolve({
@@ -335,5 +347,57 @@ describe("AutoReplyPage", () => {
     await screen.findByRole("switch", { name: /Human style/ });
     await saved();
     expect(put.mock.calls.every(([path]) => path !== "/admin/style-config")).toBe(true);
+  });
+
+  describe("Model", () => {
+    /** Pick `option` in the Model select, Save, and return the account-config PUT's config. */
+    async function pickAndSave(option: string) {
+      fireEvent.click(await screen.findByRole("combobox", { name: "Model" }));
+      fireEvent.click(within(screen.getByRole("listbox")).getByRole("option", { name: option }));
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(put.mock.calls.some(([p]) => p === "/admin/account-config")).toBe(true));
+      return put.mock.calls.find(([p]) => p === "/admin/account-config")![1].config;
+    }
+
+    it("shows Default labelled from the server and what runs now", async () => {
+      mockReads({ brain: {} });
+      renderWithProviders(<AutoReplyPage />);
+      expect(await screen.findByRole("combobox", { name: "Model" })).toHaveTextContent("Default (deepseek-v4-flash)");
+      expect(screen.getByText(/Answers with/)).toHaveTextContent("Answers with deepseek-v4-flash");
+      expect(screen.queryByRole("combobox", { name: "Reasoning effort" })).toBeNull();
+    });
+
+    it("saves a pick with the stored brain echoed, and Default back as null", async () => {
+      mockReads({ brain: {} });
+      renderWithProviders(<AutoReplyPage />);
+      expect(await pickAndSave("claude-opus-5-5")).toMatchObject({ model: "claude-opus-5-5", persona: "Ella." });
+      expect(screen.getByText(/Answers with/)).toHaveTextContent("claude-opus-5-5");
+
+      cleanup(); put.mockReset(); put.mockResolvedValue({ account_id: "acc-a", config: {} });
+      mockReads({ brain: { model: "claude-opus-5-5" } });
+      renderWithProviders(<AutoReplyPage />);
+      expect(await pickAndSave("Default (deepseek-v4-flash)")).toMatchObject({ model: null, reasoning_effort: null });
+    });
+
+    it("offers the effort a model takes", async () => {
+      mockReads({ brain: { model: "deepseek-v4-pro", reasoning_effort: "high" } });
+      renderWithProviders(<AutoReplyPage />);
+      expect(await screen.findByRole("combobox", { name: "Reasoning effort" })).toHaveTextContent("high");
+    });
+
+    it("an untouched model sends no account-config PUT", async () => {
+      mockReads({ brain: { model: "claude-opus-5-5" } });
+      renderWithProviders(<AutoReplyPage />);
+      await screen.findByRole("combobox", { name: "Model" });
+      await saved();
+      expect(put.mock.calls.every(([p]) => p !== "/admin/account-config")).toBe(true);
+    });
+
+    it("no config read: no Model row, the rest still loads", async () => {
+      mockReads();
+      renderWithProviders(<AutoReplyPage />);
+      await screen.findByRole("switch", { name: "Fans in folders" });
+      expect(screen.queryByRole("combobox", { name: "Model" })).toBeNull();
+    });
   });
 });

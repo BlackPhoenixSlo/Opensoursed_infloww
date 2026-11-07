@@ -109,6 +109,8 @@ export interface AccountConfigResp {
   persona_fact_fields_by_voice: Record<string, PersonaFactField[]>;
   slots: string[];          // the 6 time-of-day slot keys, ordered
   model_options: string[];  // LLM model ids the account may pick
+  /** What `model: null` runs (the house model); the "Default (…)" label. */
+  default_model: string;
   // Per model, the reasoning-effort values it accepts (weakest first).
   // Empty for a model with no reasoning control — the legal set is per
   // provider, so this cannot be a single shared list.
@@ -146,6 +148,8 @@ export function useSaveAccountConfig(accountId: string | null) {
       relay.put("/admin/account-config", { account_id: accountId, config }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["account-config", accountId] });
+      // A new model can need another provider's key (AiKeyNotice resolves it per kind).
+      qc.invalidateQueries({ queryKey: ["ai-key-status", accountId] });
     },
   });
 }

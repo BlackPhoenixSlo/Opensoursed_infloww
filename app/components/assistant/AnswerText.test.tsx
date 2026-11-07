@@ -7,8 +7,8 @@
  * invariant is therefore blunt: no raw `**` ever reaches the DOM, and a tab
  * name is a link the reader can click instead of a route to re-type.
  */
-import { describe, expect, it } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach } from "vitest";
 
 import { AnswerText } from "./AnswerText";
@@ -16,6 +16,15 @@ import { AnswerText } from "./AnswerText";
 afterEach(cleanup);
 
 describe("AnswerText", () => {
+  it("runs onNavigate when a link is clicked (the phone sheet closes on it)", () => {
+    const onNavigate = vi.fn();
+    render(<AnswerText text="Open **Creators → Manage creators**." onNavigate={onNavigate} />);
+    const link = screen.getByRole("link", { name: "Creators → Manage creators" });
+    link.addEventListener("click", (e) => e.preventDefault()); // jsdom: no real navigation
+    fireEvent.click(link);
+    expect(onNavigate).toHaveBeenCalledTimes(1);
+  });
+
   it("renders bold as emphasis and never as asterisks", () => {
     const { container } = render(
       <AnswerText text="Go to **Growth → Profile promotion**, set a **Name**." />,

@@ -3663,3 +3663,35 @@ class PushSent(Base):
     sent_at: Mapped[datetime] = _ts_now()
 
     __table_args__ = (Index("ix_push_sent_sent_at", "sent_at"),)
+
+
+class AssistantTurn(Base):
+    """One help-assistant ask (assistant_api POST /admin/assistant/ask): the
+    question, the answer the asker saw (friendly error sentences included, with
+    `error` the machine tag), who asked and what it cost. The owner reads these
+    to learn what people ask (GET /admin/assistant/history?all=1); the widget
+    reads the asker's own (scoped by `user_id`, or `chatter_id` for a chatter
+    session — exactly one is set; both NULL only under ALLOW_ANONYMOUS_ADMIN).
+    `role` is the server-derived asker role string. No keys, no prompt blocks.
+    No FKs: a deleted user's questions stay readable."""
+    __tablename__ = "assistant_turns"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = _ts_now()
+    user_id: Mapped[str | None] = mapped_column(String)
+    chatter_id: Mapped[str | None] = mapped_column(String)
+    account_id: Mapped[str | None] = mapped_column(String)
+    role: Mapped[str] = mapped_column(String, nullable=False)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    answer: Mapped[str] = mapped_column(Text, nullable=False)
+    error: Mapped[str | None] = mapped_column(String)
+    model: Mapped[str | None] = mapped_column(String)
+    provider: Mapped[str | None] = mapped_column(String)
+    cost_millicents: Mapped[int | None] = mapped_column(Integer)
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
+
+    __table_args__ = (
+        Index("ix_assistant_turns_user_ts", "user_id", "ts"),
+        Index("ix_assistant_turns_chatter_ts", "chatter_id", "ts"),
+        Index("ix_assistant_turns_ts", "ts"),
+    )

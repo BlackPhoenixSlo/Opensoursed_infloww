@@ -94,6 +94,14 @@ describe("findPaths", () => {
     });
   });
 
+  it("links the AI chat lanes under My AI Chatter, no longer under My Automations", () => {
+    expect(only("switch off My AI Chatter → Auto-reply first")).toEqual({
+      href: "/growth/auto-reply",
+      text: "My AI Chatter → Auto-reply",
+    });
+    expect(only("My Automations → Auto-reply")).toBeNull();
+  });
+
   it("stops at the label when the sentence runs on past it", () => {
     // The failure this prevents: underlining "Auto Post and press New auto
     // post" and resolving it to nothing.

@@ -5,19 +5,20 @@
  *
  * Labels are VERBATIM from docs/infloww-screens.md §1.1 (sidebar) and §3.10
  * (settings tabs); routes follow §2. The one deliberate deviation from Infloww
- * is the "My Automations" group (Auto Post, Auto Story, Auto Mass, Auto-reply,
- * Auto Funnel, Get to know fans, Gen-Info; VISION.md).
+ * are ours (VISION.md): the "My Automations" group (Auto Post, Auto Story,
+ * Auto Mass, Gen-Info), the "My AI Chatter" group (Auto-reply,
+ * Auto Funnel, Get to know fans) and the "Full AI Chatter" coming-soon page.
  *
  *   chatterHidden — hidden from a chatter-only session (the relay still 403s
  *                   the owner endpoints; this is UI hygiene, not the gate).
  *   chatterOptIn  — a group a chatter sees only the pages of that a stored
  *                   Permission role ticks with "Enforce role permissions" on
- *                   (My Automations; off by default, the built-in Admin and
+ *                   (My Automations, My AI Chatter; off by default, the built-in Admin and
  *                   Owner included): the Applied settings `opt_in` list. The
  *                   relay refuses their routes and rule kinds likewise
  *                   (service/permissions.py OPT_IN_PAGES, OPT_IN_KINDS).
  *   notOptIn      — a link of a `chatterOptIn` group its role grants like any
- *                   other page (My Automations › Get to know fans).
+ *                   other page (My AI Chatter › Get to know fans).
  *   notBuilt      — the route renders the Fansly welcome placeholder.
  *   popout        — a window of its own, never a page in the app: the sidebar
  *                   opens it with `openPopout` (Messages Pro, ADR-0002).
@@ -44,6 +45,7 @@ import type { MouseEvent } from "react";
 import {
   AlarmClockCheck,
   AtSign,
+  Bot,
   CalendarClock,
   ChartColumn,
   Database,
@@ -58,6 +60,7 @@ import {
   ScrollText,
   ServerCog,
   ShieldCheck,
+  Sparkles,
   User,
   Users,
   Wallet,
@@ -194,13 +197,23 @@ export const ONLYFANS_NAV: NavNode[] = [
       { label: "Auto Post", href: "/growth/auto-post" },
       { label: "Auto Story", href: "/growth/auto-story" },
       { label: "Auto Mass", href: "/growth/auto-mass" },
+      { label: "Gen-Info", href: "/growth/gen-info" },
+    ],
+  },
+  // Ours: the AI chat lanes, opt-in for a chatter like My Automations.
+  {
+    label: "My AI Chatter",
+    icon: Bot,
+    chatterOptIn: true,
+    children: [
       { label: "Auto-reply", href: "/growth/auto-reply" },
       { label: "Auto Funnel", href: "/growth/auto-funnel" },
       // Its Model info is the account's, so a role grants it like any page (service/permissions.py PAGE_MAP).
       { label: "Get to know fans", href: "/growth/get-to-know-fans", notOptIn: true },
-      { label: "Gen-Info", href: "/growth/gen-info" },
     ],
   },
+  // Ours: the fully autonomous chatter's coming-soon page. Owner-only: a product teaser, nothing a chatter operates.
+  { label: "Full AI Chatter", href: "/full-ai-chatter", icon: Sparkles, chatterHidden: true },
 ];
 
 /** The menus every platform shows, below the divider. */
@@ -387,7 +400,7 @@ const PERMISSION_OF: ReadonlyMap<string, string> = new Map(
     .flatMap((l) => (l.permission ? [[l.href, l.permission] as const] : [])),
 );
 
-/** The chatterOptIn groups' pages (My Automations): a chatter's only when an
+/** The chatterOptIn groups' pages (My Automations, My AI Chatter): a chatter's only when an
  *  enforcing role grants them (`sessionGrantedPages`). */
 export const CHATTER_OPT_IN_PAGES: ReadonlySet<string> = new Set(
   SIDEBAR.flatMap((n) => (isGroup(n) && n.chatterOptIn ? n.children.filter((c) => !c.notOptIn).map((c) => c.href) : [])),

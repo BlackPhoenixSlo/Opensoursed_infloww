@@ -51,6 +51,9 @@ async def case_get_defaults_for_unset():
     # Metadata drives the editor's dropdowns + image slots.
     assert len(resp["slots"]) == 6 and resp["slots"][0] == "morning_1", resp
     assert resp["model_options"], "model options should be non-empty"
+    # `model: null` runs the house model; served so the editor labels "Default (…)".
+    from automations._common import DEFAULT_MODEL
+    assert resp["default_model"] == DEFAULT_MODEL and DEFAULT_MODEL in resp["model_options"], resp
     assert set(resp["purposes"]) == set(MODEL_PURPOSES), resp
 
 

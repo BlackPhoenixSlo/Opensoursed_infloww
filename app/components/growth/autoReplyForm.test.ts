@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 import { unsaved } from "@/components/automations/sentDraft";
 import type { AutoreplyConfig } from "@/hooks/useAutoreplyConfig";
 import {
-  autoReplyReducer, buildPayload, canSubmit, draftFromConfig, initState, randomiseOn,
-  type AutoReplyAction, type AutoReplyDraft, type AutoReplyEdit, type NumberKey,
+  answersWith, autoReplyReducer, brainPayload, brainSeed, buildPayload, canSubmit, draftFromConfig, effortChoices,
+  initState, randomiseOn, type AutoReplyAction, type AutoReplyDraft, type AutoReplyEdit, type BrainPick, type NumberKey,
 } from "./autoReplyForm";
 
 /** service/automations/autoreply.py `_defaults()`. */
@@ -157,5 +157,72 @@ describe("canSubmit", () => {
     ["off, neither: nothing runs, may save", { enabled: false, foldersOn: false, newOn: false }, true],
   ])("%s", (_name, patch, want) => {
     expect(canSubmit({ ...draftFromConfig(DEFAULTS), ...patch })).toBe(want);
+  });
+});
+
+/** A slice of account_config_api's GET: the house model, one model with efforts, one without. */
+const BRAIN = (model: string | null, reasoning_effort: string | null = ""): BrainPick => ({
+  default_model: "deepseek-v4-flash",
+  model_options: ["deepseek-v4-flash", "deepseek-v4-pro", "claude-opus-5-5"],
+  effort_options: { "deepseek-v4-flash": [], "deepseek-v4-pro": ["low", "medium", "high"], "claude-opus-5-5": [] },
+  config: { model, reasoning_effort },
+});
+
+describe("model: the account's reply model", () => {
+  it.each<[string, BrainPick | null, string, string]>([
+    ["no config read: Default", null, "", ""],
+    ["null: Default", BRAIN(null), "", ""],
+    ["a pin", BRAIN("claude-opus-5-5"), "claude-opus-5-5", ""],
+    ["a pin with its served effort", BRAIN("deepseek-v4-pro", "high"), "deepseek-v4-pro", "high"],
+    ["a retired id runs the default", BRAIN("grok-4-1-fast", "high"), "", ""],
+    ["an effort the model does not take", BRAIN("claude-opus-5-5", "high"), "claude-opus-5-5", ""],
+  ])("seed: %s", (_n, b, model, effort) => {
+    expect(brainSeed(b)).toEqual({ model, effort });
+    expect(draftFromConfig(DEFAULTS, b)).toMatchObject({ model, effort });
+  });
+
+  it.each<[string, BrainPick, AutoReplyEdit[], string, string[], string]>([
+    ["Default answers with the server's default; no effort", BRAIN(null), [], "deepseek-v4-flash", [], ""],
+    ["pick claude", BRAIN(null), [{ type: "model", model: "claude-opus-5-5" }], "claude-opus-5-5", [], ""],
+    ["pick pro: its efforts", BRAIN(null), [{ type: "model", model: "deepseek-v4-pro" }],
+      "deepseek-v4-pro", ["low", "medium", "high"], ""],
+    ["a new model resets effort to its pin", BRAIN("deepseek-v4-pro", "high"),
+      [{ type: "model", model: "deepseek-v4-pro" }], "deepseek-v4-pro", ["low", "medium", "high"], ""],
+    ["effort edit", BRAIN("deepseek-v4-pro"), [{ type: "effort", effort: "low" }],
+      "deepseek-v4-pro", ["low", "medium", "high"], "low"],
+  ])("%s", (_n, b, actions, runs, efforts, effort) => {
+    const d = run(actions, draftFromConfig(DEFAULTS, b));
+    expect(answersWith(d, b)).toBe(runs);
+    expect(effortChoices(d, b)).toEqual(efforts);
+    expect(d.effort).toBe(effort);
+  });
+
+  it.each<[string, BrainPick, AutoReplyEdit[], { model: string | null; reasoning_effort: string | null } | null]>([
+    ["untouched: no PUT", BRAIN("claude-opus-5-5"), [], null],
+    ["re-picked the same: no PUT", BRAIN("claude-opus-5-5"), [{ type: "model", model: "claude-opus-5-5" }], null],
+    ["retired id untouched: no PUT", BRAIN("grok-4-1-fast"), [], null],
+    ["Default -> claude", BRAIN(null), [{ type: "model", model: "claude-opus-5-5" }],
+      { model: "claude-opus-5-5", reasoning_effort: null }],
+    ["claude -> Default = null", BRAIN("claude-opus-5-5"), [{ type: "model", model: "" }],
+      { model: null, reasoning_effort: null }],
+    ["effort only", BRAIN("deepseek-v4-pro", "high"), [{ type: "effort", effort: "low" }],
+      { model: "deepseek-v4-pro", reasoning_effort: "low" }],
+  ])("brainPayload: %s", (_n, b, actions, want) => {
+    const d = run(actions, draftFromConfig(DEFAULTS, b));
+    const out = brainPayload(d, b);
+    expect(out && { model: out.model, reasoning_effort: out.reasoning_effort }).toEqual(want);
+  });
+
+  it("echoes the rest of the stored brain (the PUT replaces it)", () => {
+    const b = { ...BRAIN(null), config: { model: null, reasoning_effort: "", persona: "Ella.", cotag_username: "x" } };
+    const d = run([{ type: "model", model: "claude-opus-5-5" }], draftFromConfig(DEFAULTS, b));
+    expect(brainPayload(d, b)).toEqual({ model: "claude-opus-5-5", reasoning_effort: null, persona: "Ella.", cotag_username: "x" });
+  });
+
+  it("model edits leave the autoreply blob alone and count as unsaved", () => {
+    const s0 = initState(DEFAULTS, BRAIN(null));
+    const s1 = autoReplyReducer(autoReplyReducer(s0, { type: "saved" }), { type: "model", model: "claude-opus-5-5" });
+    expect(unsaved(s1)).toBe(true);
+    expect(buildPayload(s1.draft, DEFAULTS)).toEqual(buildPayload(s0.draft, DEFAULTS));
   });
 });

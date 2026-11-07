@@ -36,7 +36,7 @@ function outline(nodes: NavNode[]): string[] {
 }
 
 describe("sidebar (docs/infloww-screens.md §1.1)", () => {
-  it("has Infloww's items and sub-items verbatim, plus My Automations", () => {
+  it("has Infloww's items and sub-items verbatim, plus My Automations, My AI Chatter and Full AI Chatter", () => {
     expect(outline(visibleSidebar(SIDEBAR, OWNER))).toEqual([
       "Dashboard",
       "OF Manager: Home / Go live / New post / Notifications / Messages Basic / Vault / Queue / Collections / Bookmarks / Statements / Statistics / Bank / My profile / Release forms / OF settings",
@@ -45,7 +45,9 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
       "Messages Pro",
       "Growth: Smart Messages / Smart lists / Auto-follow / Vault Pro / Scripts / Profile promotion / Free trial links / Tracking links / Sensitive words",
       "Share for Share: Discover creators / Requests / S4S schedule / S4S settings",
-      "My Automations: Auto Post / Auto Story / Auto Mass / Auto-reply / Auto Funnel / Get to know fans / Gen-Info",
+      "My Automations: Auto Post / Auto Story / Auto Mass / Gen-Info",
+      "My AI Chatter: Auto-reply / Auto Funnel / Get to know fans",
+      "Full AI Chatter",
       "—",
       "Creators: Manage creators / Custom proxy",
       "Employees: Manage employees / Shift schedule",
@@ -53,17 +55,29 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
     expect(visibleLinks(SIDEBAR_FOOTER, OWNER).map((l) => l.label)).toEqual(["Settings", "Help center"]);
   });
 
-  it("My Automations is exactly Auto Post + Auto Story + Auto Mass + Auto-reply + Auto Funnel + Get to know fans + Gen-Info", () => {
-    const g = visibleSidebar(SIDEBAR, OWNER).find((n) => isGroup(n) && n.label === "My Automations");
-    expect(g && isGroup(g) && g.children.map((c) => [c.label, c.href])).toEqual([
+  it("My Automations is Auto Post + Auto Story + Auto Mass + Gen-Info; My AI Chatter the AI chat lanes", () => {
+    const group = (label: string) => {
+      const g = visibleSidebar(SIDEBAR, OWNER).find((n) => isGroup(n) && n.label === label);
+      return g && isGroup(g) && { optIn: g.chatterOptIn, children: g.children.map((c) => [c.label, c.href]) };
+    };
+    expect(group("My Automations")).toEqual({ optIn: true, children: [
       ["Auto Post", "/growth/auto-post"],
       ["Auto Story", "/growth/auto-story"],
       ["Auto Mass", "/growth/auto-mass"],
+      ["Gen-Info", "/growth/gen-info"],
+    ] });
+    expect(group("My AI Chatter")).toEqual({ optIn: true, children: [
       ["Auto-reply", "/growth/auto-reply"],
       ["Auto Funnel", "/growth/auto-funnel"],
       ["Get to know fans", "/growth/get-to-know-fans"],
-      ["Gen-Info", "/growth/gen-info"],
-    ]);
+    ] });
+  });
+
+  it("Full AI Chatter is an owner-only Permission page of its own, below My AI Chatter", () => {
+    expect(findNavLink("/full-ai-chatter")).toMatchObject({ label: "Full AI Chatter", chatterHidden: true });
+    expect(PERMISSION_PAGES.has("/full-ai-chatter")).toBe(true);
+    expect(CHATTER_OPT_IN_PAGES.has("/full-ai-chatter")).toBe(false);
+    expect(outline(visibleSidebar(SIDEBAR, { chatterOnly: true, grantedPages: null }))).not.toContain("Full AI Chatter");
   });
 
   it("shows an owner every Settings tab but the master's System tab", () => {
@@ -74,35 +88,43 @@ describe("sidebar (docs/infloww-screens.md §1.1)", () => {
     const labels = outline(visibleSidebar(SIDEBAR, { chatterOnly: true, grantedPages: null }));
     expect(labels).not.toContain("Creators: Manage creators / Custom proxy");
     // Only its `notOptIn` page, whose Model info is the account's.
-    expect(labels).toContain("My Automations: Get to know fans");
+    expect(labels).toContain("My AI Chatter: Get to know fans");
+    expect(labels.some((l) => l.startsWith("My Automations"))).toBe(false);
     expect(labels).toContain("Growth: Smart Messages / Scripts");
   });
 
-  it("My Automations is opt-in for a chatter: only the pages an enforcing role grants", () => {
+  it("My Automations and My AI Chatter are opt-in for a chatter: only the pages an enforcing role grants", () => {
     expect([...CHATTER_OPT_IN_PAGES]).toEqual([
-      "/growth/auto-post", "/growth/auto-story", "/growth/auto-mass", "/growth/auto-reply", "/growth/auto-funnel",
-      "/growth/gen-info",
+      "/growth/auto-post", "/growth/auto-story", "/growth/auto-mass", "/growth/gen-info",
+      "/growth/auto-reply", "/growth/auto-funnel",
     ]);
-    const automations = (chatterOnly: boolean, permissions?: { pages: string[] | null; opt_in?: string[] }) =>
-      outline(visibleSidebar(SIDEBAR, {
+    // Both opt-in groups' sidebar lines, "" for a group dropped.
+    const automations = (chatterOnly: boolean, permissions?: { pages: string[] | null; opt_in?: string[] }) => {
+      const lines = outline(visibleSidebar(SIDEBAR, {
         chatterOnly, grantedPages: sessionGrantedPages(chatterOnly, permissions),
-      })).find((l) => l.startsWith("My Automations")) ?? null;
+      }));
+      return ["My Automations", "My AI Chatter"].map((g) => lines.find((l) => l.startsWith(`${g}:`)) ?? "");
+    };
+    const onlyGtkf = ["", "My AI Chatter: Get to know fans"];
     // Enforcement off, the read not answered yet, or the unstored built-in Admin (`pages: null`,
     // `opt_in: []`): the opt-in pages hidden, Get to know fans (not opt-in) granted like any page.
-    expect(automations(true, { pages: null, opt_in: [] })).toBe("My Automations: Get to know fans");
-    expect(automations(true, undefined)).toBe("My Automations: Get to know fans");
-    expect(automations(true, { pages: ["/growth/get-to-know-fans"], opt_in: [] })).toBe("My Automations: Get to know fans");
-    // A role granting nothing of it, then one ticking Auto Mass only (`opt_in`, the relay's word).
-    expect(automations(true, { pages: ["/messages-pro"], opt_in: [] })).toBeNull();
-    expect(automations(true, { pages: ["/messages-pro", "/growth/auto-mass"], opt_in: ["/growth/auto-mass"] }))
-      .toBe("My Automations: Auto Mass");
+    expect(automations(true, { pages: null, opt_in: [] })).toEqual(onlyGtkf);
+    expect(automations(true, undefined)).toEqual(onlyGtkf);
+    expect(automations(true, { pages: ["/growth/get-to-know-fans"], opt_in: [] })).toEqual(onlyGtkf);
+    // A role granting nothing of them, then one ticking Auto Mass and Auto-reply only (`opt_in`, the relay's word).
+    expect(automations(true, { pages: ["/messages-pro"], opt_in: [] })).toEqual(["", ""]);
+    const ticked = ["/growth/auto-mass", "/growth/auto-reply"];
+    expect(automations(true, { pages: ["/messages-pro", ...ticked], opt_in: ticked }))
+      .toEqual(["My Automations: Auto Mass", "My AI Chatter: Auto-reply"]);
     // `pages` alone grants none: a two-agency chatter's `opt_in` is the union, `pages` is not.
-    expect(automations(true, { pages: ["/growth/auto-mass"] })).toBeNull();
+    expect(automations(true, { pages: ticked })).toEqual(["", ""]);
     expect(automations(true, { pages: ["/messages-pro"], opt_in: ["/growth/auto-mass"] }))
-      .toBe("My Automations: Auto Mass");
-    // An owner always sees it all.
-    const all = "My Automations: Auto Post / Auto Story / Auto Mass / Auto-reply / Auto Funnel / Get to know fans / Gen-Info";
-    expect(automations(false, { pages: null })).toBe(all);
+      .toEqual(["My Automations: Auto Mass", ""]);
+    // An owner always sees them all.
+    expect(automations(false, { pages: null })).toEqual([
+      "My Automations: Auto Post / Auto Story / Auto Mass / Gen-Info",
+      "My AI Chatter: Auto-reply / Auto Funnel / Get to know fans",
+    ]);
     // Opened by URL: denied to the chatter without the grant, every other page open.
     const off = sessionGrantedPages(true, { pages: null, opt_in: [] });
     expect(deniedPage("/growth/auto-mass", off)).toBe("/growth/auto-mass");

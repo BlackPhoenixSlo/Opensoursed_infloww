@@ -34,10 +34,12 @@ export const MARGIN = 12;
 const TOP_RESERVE = 64;
 /** Dropped with this much of the icon past a side edge: tuck it. */
 export const TUCK_PAST = Math.round(SIZE * 0.4);
-/** Default: right side, clear of the chat composer below it (measured at
- *  390×844: Messages Pro's composer, emoji row to Send, is 163px tall). */
+/** Default: TUCKED into the left side, only the chevron tab showing (owner,
+ *  2026-11-07: an untucked icon sat on the Dashboard's earnings numbers), at a
+ *  height clear of the chat composer below it (measured at 390×844: Messages
+ *  Pro's composer, emoji row to Send, is 163px tall). */
 export const DEFAULT_ALONG = 180;
-export const DEFAULT_LAUNCHER_DOCK: LauncherDock = { edge: "right", along: DEFAULT_ALONG, tucked: false };
+export const DEFAULT_LAUNCHER_DOCK: LauncherDock = { edge: "left", along: DEFAULT_ALONG, tucked: true };
 
 export interface LauncherState {
   dock: LauncherDock;

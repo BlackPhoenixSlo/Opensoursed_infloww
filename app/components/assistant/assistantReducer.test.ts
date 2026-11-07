@@ -7,7 +7,12 @@ import {
   initialAssistantState,
   settledFrom,
   settledFromError,
+  groupByDay,
+  historyForAsk,
+  historyFromRows,
+  HISTORY_LIMIT,
   type AssistantAction,
+  type Turn,
   type AssistantCore,
 } from "./assistantReducer";
 
@@ -82,5 +87,76 @@ describe("settledFrom / settledFromError", () => {
     ["any other throw: no detail", new TypeError("fetch failed"), "Couldn't reach the assistant — try again in a moment."],
   ])("%s", (_name, e, answer) => {
     expect(settledFromError(3, e)).toEqual({ type: "settled", id: 3, answer, error: "transport" });
+  });
+});
+
+describe("history", () => {
+  const turn = (id: number, over: Partial<Turn> = {}): Turn => ({ id, question: `q${id}`, answer: `a${id}`, error: null, ...over });
+  const loaded = (turns: Turn[]): AssistantAction => ({ type: "history_loaded", turns });
+
+  it.each<[string, AssistantAction[], Partial<AssistantCore>]>([
+    ["request: idle → loading", [{ type: "history_requested" }], { historyStatus: "loading" }],
+    ["loaded: rows kept, status loaded", [{ type: "history_requested" }, loaded([turn(-2)])], { historyStatus: "loaded", history: [turn(-2)] }],
+    ["failed: stays failed while open (no retry loop)", [{ type: "history_requested" }, { type: "history_failed" }, { type: "history_requested" }], { historyStatus: "failed", history: [] }],
+    ["failed: the next open re-arms it", [{ type: "history_failed" }, { type: "toggle" }, { type: "toggle" }], { historyStatus: "idle", open: true }],
+    ["request while loaded: no second load", [loaded([turn(-2)]), { type: "history_requested" }], { historyStatus: "loaded" }],
+    ["loaded leaves this session's turns alone", [ask(0), loaded([turn(-2)])], { turns: [{ id: 0, question: "q0", answer: null, error: null }] }],
+  ])("%s", (_name, actions, want) => {
+    expect(run(actions, hydratedState(true))).toMatchObject(want);
+  });
+
+  it("request while loading returns the same object", () => {
+    const s = run([{ type: "history_requested" }], hydratedState(true));
+    expect(assistantReducer(s, { type: "history_requested" })).toBe(s);
+  });
+
+  it("keeps at most HISTORY_LIMIT, the newest", () => {
+    const many = Array.from({ length: HISTORY_LIMIT + 5 }, (_, i) => turn(-1 - i));
+    const s = run([loaded(many)]);
+    expect(s.history).toHaveLength(HISTORY_LIMIT);
+    expect(s.history[0].id).toBe(-6);
+  });
+
+  it.each<[string, Parameters<typeof historyFromRows>[0], Turn[]]>([
+    ["rows newest-first → oldest-first, negative ids", { turns: [
+      { id: 9, ts: "2026-11-07T10:00:00Z", question: "b", answer: "B", error: null },
+      { id: 4, ts: "2026-11-06T10:00:00Z", question: "a", answer: "A", error: "cap" },
+    ] }, [
+      { id: -5, question: "a", answer: "A", error: "cap", ts: "2026-11-06T10:00:00Z" },
+      { id: -10, question: "b", answer: "B", error: null, ts: "2026-11-07T10:00:00Z" },
+    ]],
+    ["no turns key: empty", {} as { turns?: never }, []],
+    ["null body: empty", null, []],
+  ])("historyFromRows: %s", (_name, body, want) => {
+    expect(historyFromRows(body)).toEqual(want);
+  });
+
+  it.each<[string, Turn[], Turn[], Array<{ question: string; answer: string }>]>([
+    ["last 3 across history and session, oldest first", [turn(-3), turn(-2)], [turn(0), turn(1)],
+      [{ question: "q-2", answer: "a-2" }, { question: "q0", answer: "a0" }, { question: "q1", answer: "a1" }]],
+    ["skips in-flight and error turns", [turn(-2)], [turn(0, { error: "cap" }), turn(1, { answer: null })],
+      [{ question: "q-2", answer: "a-2" }]],
+    ["nothing yet: empty", [], [], []],
+  ])("historyForAsk: %s", (_name, history, turns, want) => {
+    expect(historyForAsk({ history, turns })).toEqual(want);
+  });
+
+  it("groupByDay labels local days: Today, Yesterday, a date, a past year", () => {
+    const now = new Date(2026, 10, 7, 15);
+    const at = (y: number, m: number, d: number, h = 9) => new Date(y, m, d, h).toISOString();
+    const g = groupByDay([
+      turn(-1, { ts: at(2025, 11, 31) }),
+      turn(-2, { ts: at(2026, 10, 5) }),
+      turn(-3, { ts: at(2026, 10, 5, 20) }),
+      turn(-4, { ts: null }),
+      turn(-5, { ts: at(2026, 10, 6) }),
+      turn(-6, { ts: at(2026, 10, 7, 1) }),
+    ], now);
+    expect(g.map((x) => [x.label, x.turns.map((t) => t.id)])).toEqual([
+      ["Dec 31, 2025", [-1]],
+      ["Nov 5", [-2, -3, -4]],
+      ["Yesterday", [-5]],
+      ["Today", [-6]],
+    ]);
   });
 });
