@@ -1,5 +1,6 @@
 /**
- * My Automations › Get to know fans: the header switch is there, and the Model info box opens on the
+ * My Automations › Get to know fans: the switch sits in the Automation card, the settings show with no rule and
+ * the switch off (catalog defaults), and their Save then creates the rule OFF (never the switch). The Model info box opens on the
  * relay's prewritten template while the account has no note (its untouched label lines never reach a
  * prompt: service/tests/test_bio_consistency.py), but on the stored note once there is one. Save sends
  * the stored brain back with only `model_notes` changed. A Human style box toggled while the style save is in
@@ -30,6 +31,7 @@ const TEMPLATE = "Name: \nAge: \nFrom: ";
 const relayGet = relay.get as unknown as Mock;
 const relayPut = relay.put as unknown as Mock;
 const relayPatch = relay.patch as unknown as Mock;
+const relayPost = relay.post as unknown as Mock;
 const KIND = "welcome_chatter_for_info";
 const RULE = { id: 7, account_id: ACC, name: "Get to know fans", kind: KIND, is_enabled: true, every_seconds: 300,
   trigger: null, payload: {}, quiet_hours: null, created_at: null, last_run: null, next_due_at: null,
@@ -43,7 +45,8 @@ const serve = (modelNotes: string | null, withRule = false) =>
     }
     if (path.startsWith("/admin/automation-rules")) return { rules: withRule ? [RULE] : [] };
     if (path.startsWith("/admin/automation-kinds")) {
-      return { kinds: withRule ? [{ kind: KIND, label: "Get to know fans", recurring: true, summary: "", knobs: [] }] : [] };
+      return { kinds: [{ kind: KIND, label: "Get to know fans", recurring: true, summary: "", cadence_default_s: 60,
+        knobs: [{ key: "max_fan_messages", type: "int", min: 3, max: 100, default: 10 }] }] };
     }
     if (path.startsWith("/admin/style-config")) return { account_id: ACC, config: STYLE_ON, defaults: STYLE_ON };
     return {};
@@ -55,14 +58,17 @@ beforeEach(() => {
   relayPut.mockResolvedValue({ account_id: ACC, config: {} });
   relayPatch.mockReset();
   relayPatch.mockResolvedValue(RULE);
+  relayPost.mockReset();
+  relayPost.mockResolvedValue({ ...RULE, is_enabled: false });
 });
 afterEach(() => cleanup());
 
 describe("Get to know fans", () => {
-  it("shows the header switch and prefills the template while there is no note", async () => {
+  it("shows the switch in the Automation card and prefills the template while there is no note", async () => {
     serve(null);
     renderWithProviders(<GetToKnowFansPage />, makeTestQueryClient());
-    expect(await screen.findByRole("switch", { name: "Get to know fans" })).toBeTruthy();
+    const sw = await screen.findByRole("switch", { name: "Get to know fans" });
+    expect(sw.closest("section")?.querySelector("h2")?.textContent).toBe("Automation");
     const box = (await screen.findByRole("textbox", { name: "Model info" })) as HTMLTextAreaElement;
     expect(box.value).toBe(TEMPLATE);
 
@@ -72,6 +78,24 @@ describe("Get to know fans", () => {
     expect(relayPut.mock.calls[0]).toEqual(["/admin/account-config", {
       account_id: ACC, config: { persona: "Ella.", model_notes: "Name: Mia\nAge: \nFrom: " },
     }]);
+  });
+
+  it("shows the settings with no rule and the switch off; Save creates the rule OFF", async () => {
+    serve("Name: Mia");
+    renderWithProviders(<GetToKnowFansPage />, makeTestQueryClient());
+    const cutoff = (await screen.findByRole("spinbutton", { name: "Message cutoff" })) as HTMLInputElement;
+    expect(screen.getByRole("switch", { name: "Get to know fans" })).not.toBeChecked();
+    expect(cutoff.value).toBe("10");
+    expect(screen.queryByText(/Turn it on above/)).toBeNull();
+
+    fireEvent.change(cutoff, { target: { value: "9" } });
+    fireEvent.click(screen.getAllByRole("button", { name: "Save" })[0]);
+    await waitFor(() => expect(relayPost).toHaveBeenCalledTimes(1));
+    const [path, body] = relayPost.mock.calls[0];
+    expect(path).toBe("/admin/automation-rules");
+    expect(body).toMatchObject({ account_id: ACC, kind: KIND, is_enabled: false, every_seconds: 60,
+      payload: { max_fan_messages: 9 } });
+    expect(relayPatch).not.toHaveBeenCalled();
   });
 
   it("opens on the stored note, not the template", async () => {

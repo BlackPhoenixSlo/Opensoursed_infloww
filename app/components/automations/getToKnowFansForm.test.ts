@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import { unsaved } from "@/components/automations/sentDraft";
-import type { AutomationKind } from "@/hooks/useAutomations";
+import type { AutomationKind, AutomationRule } from "@/hooks/useAutomations";
 import {
-  buildPayload, gtkfReducer, initState, invalidReason, limitsOf, type GtkfAction, type GtkfDraft,
+  buildPayload, gtkfReducer, initState, invalidReason, limitsOf, ruleSave, type GtkfAction, type GtkfDraft, type RuleSave,
 } from "./getToKnowFansForm";
 
 const META: AutomationKind = {
-  kind: "welcome_chatter_for_info", label: "Get to know fans", recurring: true, summary: "",
+  kind: "welcome_chatter_for_info", label: "Get to know fans", recurring: true, summary: "", cadence_default_s: 60,
   knobs: [
     { key: "max_fan_messages", default: 10, min: 3, max: 100 },
     { key: "closing_ppv_price_cents", default: 1000, min: 300, max: 20_000 },
@@ -17,7 +17,9 @@ const META: AutomationKind = {
 const LIM = limitsOf(META);
 
 describe("initState", () => {
-  it.each<[string, Record<string, unknown>, GtkfDraft]>([
+  it.each<[string, Record<string, unknown> | undefined, GtkfDraft]>([
+    ["no rule yet: the catalog defaults", undefined,
+      { cutoff: "10", media: [], caption: "one more for you", price: "10" }],
     ["empty payload: the catalog defaults", {},
       { cutoff: "10", media: [], caption: "one more for you", price: "10" }],
     ["stored payload", { max_fan_messages: 7, closing_ppv_media_ids: [5, "6"], closing_ppv_text: "hi",
@@ -74,5 +76,20 @@ describe("unsaved: 'Saved' only while nothing changed since the last Save sent",
     ["Save, an edit, Save again", [{ type: "saved" }, price, { type: "saved" }], false],
   ])("%s", (_name, actions, want) => {
     expect(unsaved(actions.reduce(gtkfReducer, initState({}, META)))).toBe(want);
+  });
+});
+
+describe("ruleSave: PATCH the rule, or with none yet a create that stays OFF", () => {
+  const d: GtkfDraft = { cutoff: "9", media: [{ id: 4, type: "photo" }] as GtkfDraft["media"], caption: "c", price: "7" };
+  const fields = { max_fan_messages: 9, closing_ppv_media_ids: [4], closing_ppv_text: "c", closing_ppv_price_cents: 700 };
+  const rule = (on: boolean) => ({ id: 3, is_enabled: on, payload: { limit: 5 } }) as unknown as AutomationRule;
+  it.each<[string, AutomationRule | null, RuleSave]>([
+    ["no rule: parked create, the switch's name and cadence", null, { create: {
+      account_id: "a1", kind: "welcome_chatter_for_info", name: "Get to know fans", every_seconds: 60,
+      payload: fields, is_enabled: false } }],
+    ["rule off: PATCH payload only (never touches is_enabled)", rule(false), { id: 3, patch: { payload: { limit: 5, ...fields } } }],
+    ["rule on: PATCH payload only", rule(true), { id: 3, patch: { payload: { limit: 5, ...fields } } }],
+  ])("%s", (_name, r, want) => {
+    expect(ruleSave(d, r, META, "a1")).toEqual(want);
   });
 });

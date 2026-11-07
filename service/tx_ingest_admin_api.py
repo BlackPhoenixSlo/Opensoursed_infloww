@@ -46,9 +46,10 @@ router = APIRouter()
 
 def _tx_ingest_tier(minutes_since_scan: float | None, current_status: str) -> str:
     """Health tier per synthesis §7.
-    green:  scanned within 30m AND status in {idle, ok, refreshing, backfilling}
+    green:  scanned within 30m AND status in {idle, ok, refreshing, backfilling, backfill_partial}
     yellow: 30 < minutes_since_scan <= 360
     red:    minutes_since_scan > 360 OR status in {paused, error, never_scanned}
+    (backfill_stalled, a walk stopped short of done: never green, its reason in last_error)
 
     Note: 'refreshing'/'backfilling' here are the in-flight steady states
     (tick START stamps them, _mark_success then stamps 'ok'). A row
@@ -60,7 +61,7 @@ def _tx_ingest_tier(minutes_since_scan: float | None, current_status: str) -> st
     if minutes_since_scan is None:
         return "red"
     if minutes_since_scan <= 30 and current_status in (
-        "idle", "ok", "refreshing", "backfilling",
+        "idle", "ok", "refreshing", "backfilling", "backfill_partial",
     ):
         return "green"
     if minutes_since_scan <= 360:
@@ -97,8 +98,9 @@ async def admin_ingest_tx_health() -> dict[str, Any]:
         acct_rows = [r for r in acct_rows if r[0] in allowed_ids]
 
     hist_by_acct = {h.account_id: h for h in hist_rows}
-    # In-memory, this process only: each account's last complete full 7-day walk
-    # (its window's end). Kept for the prod after-check of the recent/full cadence.
+    # In-memory, this process only: each account's last complete full 7-day walk, or one
+    # cut short or failed on an unfinished account (its window's end). Kept for the prod
+    # after-check of the recent/full cadence.
     try:
         from transaction_ingest import _last_full_at  # type: ignore[import-not-found]
     except ImportError:
@@ -220,12 +222,12 @@ async def admin_ingest_tx_run(
 
     async def _trigger() -> None:
         try:
-            from transaction_ingest import run_one_tick  # type: ignore[import-not-found]
+            from transaction_ingest import supervised_tick  # type: ignore[import-not-found]
         except ImportError:
             log.info("admin_ingest_tx_run: transaction_ingest not yet available; no-op")
             return
         try:
-            await run_one_tick(account_id, mode=mode)
+            await supervised_tick(account_id, mode)   # paced, as the supervisor's
         except Exception:
             log.warning("run_one_tick failed for %s", account_id, exc_info=True)
 

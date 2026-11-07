@@ -184,6 +184,18 @@ export function useUpdateRule(accountId: string | null) {
   });
 }
 
+/** One page Save of a kind's settings: PATCH the rule, or `create` it when the account has none yet (a settings page
+ *  sends `is_enabled: false` there, so saving never turns it on: getToKnowFansForm.ts `ruleSave`). */
+export function useSaveRule(accountId: string | null) {
+  const qc = useQueryClient();
+  return useMutation<AutomationRule, Error, { id: number; patch: RulePatch } | { create: RuleDraft }>({
+    mutationFn: (req) => "create" in req
+      ? relay.post<AutomationRule>("/admin/automation-rules", req.create)
+      : relay.patch<AutomationRule>(`/admin/automation-rules/${req.id}`, req.patch),
+    onSuccess: () => qc.invalidateQueries({ queryKey: [KEY, accountId] }),
+  });
+}
+
 /** Turn a KIND on/off for the account — one request, whatever the account's rule
  *  rows happen to look like. The client used to decide this itself (create vs.
  *  wake vs. park-them-all, and the cadence a new row gets), which meant two

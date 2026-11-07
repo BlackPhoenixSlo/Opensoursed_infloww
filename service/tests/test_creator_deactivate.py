@@ -589,7 +589,15 @@ async def case_reactivate_after_long_gap_backfills() -> None:
         owner.post(f"/admin/accounts/{OFF}/active", json={"active": False})
         await _backdate_deactivation(OFF, timedelta(days=2))
         owner.post(f"/admin/accounts/{OFF}/active", json={"active": True})
-        assert asked == [], f"a gap inside the refresh window needs no backfill: {asked}"
+        assert len(asked) == 1, f"a full walk reads only the latest 600 rows, so 2 days need the walk: {asked}"
+        gap = datetime.utcnow() - asked[0][1]
+        assert timedelta(days=1) < gap < timedelta(days=3), f"since is not the deactivation: {asked}"
+
+        asked.clear()
+        owner.post(f"/admin/accounts/{OFF}/active", json={"active": False})
+        await _backdate_deactivation(OFF, timedelta(hours=12))
+        owner.post(f"/admin/accounts/{OFF}/active", json={"active": True})
+        assert asked == [], f"a gap inside the recent window needs no backfill: {asked}"
     finally:
         ti.trigger_backfill = orig
 

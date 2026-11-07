@@ -7,16 +7,18 @@ caller passes `now`).
 twin of — `tip_window` — and the fans that already subscribed — `subscription_fans`),
 asks `plan_page` what to do with each OF row, and opens ONE write transaction
 only if some op writes. The scan bookkeeping (`scan_started`, `scan_interrupted`,
-`scan_after_failure`, `scan_after_success`, `window_for`, `decide_mode`,
-`full_phase_s`, `full_bucket`, `recent_start_date`) is the
-same split: these compute the next state, `transaction_ingest` reads and writes
-the row.
+`scan_after_failure`, `scan_after_success`, `scan_backfill_page`, `window_for`,
+`decide_mode`, `full_phase_s`, `full_bucket`, `recent_start_date`, `backfill_step`,
+`marker_of`, `page_span`) is the same split: these compute the next state,
+`transaction_ingest` reads and writes the row.
 
 Everything here is re-exported by `transaction_ingest`, so its importers keep
 reading `transaction_ingest._classify_kind` and friends.
 """
 from __future__ import annotations
 
+import calendar
+import math
 import zlib
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -85,6 +87,18 @@ _FAIL_BACKOFF_S = 1800                  # auto-pause 30 min after 3 real fails =
                                         # 900 s ticks skipped (below a tick it only
                                         # relabelled); a proxy CONNECT refusal never counts
 _FAILS_BEFORE_PAUSE = 3
+# The marker walk's bounds. Per tick: at OF's measured ~1.4 s a page + 0.4 s sleep + a write, ~2 s a
+# page, 40 pages = 4,000 rows in ~80 s, under _STALE_INFLIGHT_S (720 s) even with 429 waits, and 2 at
+# once add at most 2 x ~0.5 calls/s (5-10k rows: 2-3 ticks).
+# No total ceiling: each page's marker strictly decreases, down to startDate (a row below it stops
+# the walk); a page of nothing new, or a stuck marker, stops the tick. The cursor moves down within a
+# walk; scan_backfill_restart, scan_started and trigger_backfill clear it: at most one re-walk an outage.
+_BACKFILL_TICK_PAGES = 40
+# A resumed tick's recent read: its offset paging ends at OF's offset cap (600 rows) anyway.
+_BACKFILL_FRESH_PAGES = 6
+BACKFILL_PARTIAL = "backfill_partial"   # between ticks: never IN_FLIGHT, or the next tick would skip
+BACKFILL_STALLED = "backfill_stalled"   # stopped short of done, not the tick cap
+_STALLED_PREFIX = "backfill_stopped: "
 
 
 def _normalize_status(raw_status: str | None) -> str:
@@ -365,9 +379,16 @@ IN_FLIGHT = ("refreshing", "backfilling")
 def scan_started(state: ScanState, mode: str, start: datetime, now: datetime) -> ScanState:
     """Tick start: last_scan_at and the in-flight status are stamped (the /run
     endpoint's 409 guard reads the status; the dashboard tier reads
-    "actively scanning"); a first backfill pins its floor at the window start."""
+    "actively scanning"); a first backfill pins its floor at the window start.
+    A backfill cursor below the window (the seen range of a walk before the
+    marker walk) is no cursor: the walk starts over from the top, re-reads cost
+    nothing, a marker below startDate would answer nothing."""
     floor = start if mode == "backfill" and state.backfill_floor is None else state.backfill_floor
-    return replace(state, last_scan_at=now, backfill_floor=floor,
+    oldest = state.oldest_seen_occurred_at
+    if (mode == "backfill" and oldest is not None
+            and oldest < datetime.fromisoformat(recent_start_date(floor))):
+        oldest = None
+    return replace(state, last_scan_at=now, backfill_floor=floor, oldest_seen_occurred_at=oldest,
                    current_status="backfilling" if mode == "backfill" else "refreshing")
 
 
@@ -402,29 +423,64 @@ def scan_after_success(
     rows_max: datetime | None,
     floor_reached: bool,
     now: datetime,
+    stop_reason: str | None = None,
 ) -> ScanState:
     """A completed tick: the streak resets, the seen range widens, and the
-    status says 'ok' — except a backfill that has not reached its floor,
-    which stays 'backfilling' (the banner reads "still working")."""
+    status says 'ok' — except a backfill not done: BACKFILL_PARTIAL (the walk is
+    working, green), or BACKFILL_STALLED after a stop other than the tick's page
+    cap (`stop_reason` kept in last_error, not green; a refresh in between leaves
+    both). Until the backfill is done the seen range is its own: only a backfill
+    moves it (a refresh's top above newest_seen would hide a gap from the next
+    resumed read; a backfill's own pages go through scan_backfill_page)."""
     oldest, newest = state.oldest_seen_occurred_at, state.newest_seen_occurred_at
-    if rows_min is not None and (oldest is None or rows_min < oldest):
+    moves_range = mode == "backfill" or state.fully_backfilled
+    if moves_range and rows_min is not None and (oldest is None or rows_min < oldest):
         oldest = rows_min
-    if rows_max is not None and (newest is None or rows_max > newest):
+    if moves_range and rows_max is not None and (newest is None or rows_max > newest):
         newest = rows_max
     done = mode == "backfill" and floor_reached
+    unfinished = not done and (mode == "backfill" or not state.fully_backfilled)
+    error = None
+    if unfinished and mode == "backfill":
+        error = None if stop_reason in (None, "tick_cap") else f"{_STALLED_PREFIX}{stop_reason}"
+    elif unfinished and (state.last_error or "").startswith(_STALLED_PREFIX):
+        error = state.last_error
     return replace(
         state,
         last_scan_at=now,
         consecutive_failures=0,
-        last_error=None,
+        last_error=error,
         last_marker=last_marker if last_marker is not None else state.last_marker,
         oldest_seen_occurred_at=oldest,
         newest_seen_occurred_at=newest,
         rows_inserted_total=state.rows_inserted_total + inserted,
         rows_patched_total=state.rows_patched_total + patched,
         fully_backfilled=True if done else state.fully_backfilled,
-        current_status="backfilling" if mode == "backfill" and not floor_reached else "ok",
+        current_status=(BACKFILL_STALLED if error else BACKFILL_PARTIAL) if unfinished else "ok",
     )
+
+
+def scan_backfill_page(state: ScanState, *, cursor: datetime | None, newest: datetime | None,
+                       inserted: int, patched: int) -> ScanState:
+    """One backfill tick's page, durably held: its counters and, for a marker-walk
+    page, the cursor. A page never raises it (scan_backfill_restart, scan_started and
+    trigger_backfill clear it)."""
+    was_oldest, was_newest = state.oldest_seen_occurred_at, state.newest_seen_occurred_at
+    return replace(
+        state,
+        oldest_seen_occurred_at=cursor if cursor is not None and (was_oldest is None or cursor < was_oldest)
+        else was_oldest,
+        newest_seen_occurred_at=newest if newest is not None and (was_newest is None or newest > was_newest)
+        else was_newest,
+        rows_inserted_total=state.rows_inserted_total + inserted,
+        rows_patched_total=state.rows_patched_total + patched,
+    )
+
+
+def scan_backfill_restart(state: ScanState) -> ScanState:
+    """The walk starts over from the top: its resumed read could not reach newest_seen
+    (OF's offset cap), so rows between the two are unread. Markers have no such cap."""
+    return replace(state, oldest_seen_occurred_at=None)
 
 
 def is_paused(state: ScanState | None, now: datetime) -> bool:
@@ -444,25 +500,80 @@ def full_bucket(at: datetime, *, full_every_s: float, phase_s: float) -> int:
 
 def decide_mode(state: ScanState | None, *, now: datetime, last_full_at: datetime | None,
                 full_every_s: float = _DEFAULT_FULL_EVERY_S, phase_s: float = 0.0) -> str:
-    """No scan row yet, or never fully backfilled -> backfill. Else the full
+    """No scan row yet, or a backfill not started (no cursor, no stop) -> backfill. Else the full
     7-day `refresh` when none completed in this process (`last_full_at` None)
     or `now` is in a later period than it (`full_bucket`): one full walk per
     period, on its first tick, so walk to walk is full_every_s (+/- a tick);
-    else `recent`."""
-    if state is None or not state.fully_backfilled:
+    else `recent`, or the unfinished walk's `backfill`: a walk owes the full walks'
+    status flips and disputes polls as much as a finished account, above all a
+    walk that stopped and may never finish (the refresh leaves its cursor)."""
+    started = (state is not None and (state.oldest_seen_occurred_at is not None
+                                      or (state.last_error or "").startswith(_STALLED_PREFIX)))
+    if state is None or (not state.fully_backfilled and not started):
         return "backfill"
     if last_full_at is None:
         return "refresh"
     b = lambda t: full_bucket(t, full_every_s=full_every_s, phase_s=phase_s)  # noqa: E731
-    return "refresh" if b(now) != b(last_full_at) else "recent"
+    if b(now) != b(last_full_at):
+        return "refresh"
+    return "recent" if state.fully_backfilled else "backfill"
 
 
 def recent_start_date(window_start: datetime) -> str:
     """The recent walk's `startDate`: the day before its window starts, date only
-    (`YYYY-MM-DD`). OF filters createdAt >= that day (measured 2026-11-07, acct
-    532022545) in a day-boundary TZ not known, hence the day of margin. Never an
-    ISO datetime: OF answers that with an empty list (measured, same probe)."""
+    (`YYYY-MM-DD`). OF filters createdAt >= that day's UTC midnight (measured
+    2026-11-07, acct 15891843), hence the day of margin. Never an ISO datetime: what
+    OF does with one is format-dependent (one form answered empty on acct 532022545;
+    `2026-10-01T00:00:00Z`, limit=1, answered a row on 15891843, and one row cannot
+    show the filter was honoured). The backfill's startDate too, from its floor."""
     return (window_start - timedelta(days=1)).date().isoformat()
+
+
+def marker_of(at: datetime) -> int:
+    """OF's `marker` (createdAt <= marker, unix seconds, measured) that re-reads the
+    naive UTC `at`: rounded UP, so a row in `at`'s second is re-read, never skipped."""
+    return calendar.timegm(at.timetuple()) + (1 if at.microsecond else 0)
+
+
+def page_span(rows: list[dict], window_start: datetime) -> tuple[datetime | None, datetime | None, bool]:
+    """(the page's oldest createdAt at or above window_start: the cursor it allows; its
+    newest; whether a row sits below window_start, i.e. OF ignored startDate)."""
+    at = [t for t in (_parse_iso(r.get("createdAt")) for r in rows) if t is not None]
+    inside = [t for t in at if t >= window_start]
+    return (min(inside, default=None), max(at, default=None), len(inside) < len(at))
+
+
+class BackfillStep(NamedTuple):
+    """What a marker-walk page means: `complete` the window is read to its start; `next`
+    page at `marker`; `stop` not done, the next tick resumes from the cursor (`reason`)."""
+    action: Literal["complete", "next", "stop"]
+    reason: str
+    marker: int | None = None
+
+
+def backfill_step(*, rows: int, has_more: object, next_marker: object, sent_marker: int | None,
+                  first_page: bool, held_since: bool, below_window: bool) -> BackfillStep:
+    """Complete ONLY on a page with rows and hasMore false, or an empty first page with
+    hasMore false and nothing held in the window (`_backfill_walk` then asks OF whether that
+    answer was blank). OF's offset-cap answer (empty, hasMore false) looks like an end
+    but is not: empty after a page, or with rows held, never completes."""
+    if rows == 0:
+        if first_page and not held_since and has_more is False:
+            return BackfillStep("complete", "empty_window")
+        return BackfillStep("stop", "empty_first_page_rows_held" if first_page and held_since else "empty_page")
+    if has_more is False:
+        return BackfillStep("complete", "last_page")
+    if has_more is not True:
+        return BackfillStep("stop", "no_has_more")
+    if below_window:
+        return BackfillStep("stop", "start_date_ignored")
+    try:
+        marker = math.ceil(float(next_marker))  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
+        return BackfillStep("stop", "no_next_marker")
+    if sent_marker is not None and marker >= sent_marker:
+        return BackfillStep("stop", "marker_not_decreasing")
+    return BackfillStep("next", "more", marker)
 
 
 def window_for(mode: str, state: ScanState, now: datetime, *,
@@ -470,7 +581,7 @@ def window_for(mode: str, state: ScanState, now: datetime, *,
     """recent: trailing recent_h (rows land <= ~10.5 h late, measured).
     refresh: trailing 7d (5d pending + 2d safety).
     OF ignores start/end (measured 2026-11-07): the window bounds the bookkeeping;
-    only the recent walk's recent_start_date narrows what OF answers.
+    recent_start_date narrows what OF answers (recent walk, backfill).
     backfill: walk from oldest_seen_occurred_at (or now) BACK to backfill_floor."""
     if mode == "recent":
         return (now - timedelta(hours=recent_h), now)

@@ -4,6 +4,7 @@ end of its `_wire`), for scenarios/2026-11-05-sweep-pacing.py. Inert until calle
   POST /__slop/sweep-pacing/knobs {NAME: seconds, ...}  sets service/of_pacing.py's USER_WINDOW_S
        and link_metrics' _PREWARM_SPREAD_S (time compression, declared) and from then on keeps of_pacing's,
        link_metrics' and transaction_ingest's log lines (each ledger walk's mode: ingest_tx_scan_start).
+       Pins transaction_ingest.full_phase_s for the run (bypass, declared).
        The pacer's own PAGE_GAP_S / JITTER_S and the 429 retry are never set here.
   POST /__slop/sweep-pacing/run {job, account_ids, cycles}  starts the production job in a fresh
        context (no request around it, as the supervisors' tasks), and answers at once:
@@ -34,7 +35,7 @@ _tasks: set = set()
 
 
 _TX_KEEP = ("ingest_tx_scan_start", "ingest_tx_scan_end", "ingest_tx_recent_window_ignored",
-            "ingest_tx_recent_walk_empty")
+            "ingest_tx_recent_walk_empty", "ingest_tx_backfill_stop", "ingest_tx_backfill_recent_capped")
 
 
 class _Keep(logging.Handler):
@@ -87,6 +88,11 @@ def wire(app, loopback, _relay) -> None:
             if _keep not in lg.handlers:
                 lg.addHandler(_keep)
                 lg.setLevel(logging.INFO)
+        # Every Creator a quarter into its full-walk period, so none crosses one mid-run: a crossing adds a full walk
+        # to whichever Creator's crc32 phase falls in those minutes, and reds its call bounds (measured, 3 runs of ~17).
+        import transaction_ingest as ti
+        now = (datetime.utcnow() - datetime(1970, 1, 1)).total_seconds()
+        ti.full_phase_s = lambda _account_id, every=ti._FULL_EVERY_S: (every / 4 - now) % every
         return {**{k: getattr(of_pacing, k) for k in (*KNOBS, "PAGE_GAP_S", "JITTER_S")},
                 SPREAD: link_metrics._PREWARM_SPREAD_S}
 

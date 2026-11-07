@@ -101,6 +101,8 @@ FLOW_SIZES: dict[str, tuple[int, int, int]] = {
     "auto_exclude_control_members": (400, 1_000, 3_000),
     # os-ping-push: Creators in multi_agency_big_models (5 Agencies), steady-phase frames per Creator
     "os_ping_creators": (10, 20, 20), "os_ping_frames": (12, 24, 40),
+    # cmm-calendar-all-models: the owner's Creators (the fleet target is <= 50), free sends per Creator per day
+    "cmm_calendar_creators": (4, 50, 50), "cmm_calendar_free_per_day": (6, 12, 24),
     # slow-connections: seed/chat_media.py CDN assets, the picker Creator's OF vault page items
     "slow_conn_chat_assets": (40, 120, 400), "slow_conn_vault_media": (48, 200, 1_000),
     # rich-text-sends: Creators made Fansly accounts (the last ones), formatted-script sends to their fans

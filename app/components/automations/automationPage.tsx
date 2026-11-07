@@ -59,12 +59,14 @@ export function FormBlock({ title, children, className }: { title: ReactNode; ch
 
 /** A 56px row: the label (and a 12px hint under it) left, the switch right; the switch is named by `label`.
  *  `children` show under the row (a switch's own fields). */
-export function SwitchRow({ label, hint, checked, onChange, disabled, children }: {
+export function SwitchRow({ label, hint, checked, onChange, disabled, loading, children }: {
   label: string;
   hint?: ReactNode;
   checked: boolean;
   onChange: (checked: boolean) => void;
   disabled?: boolean;
+  /** A switch write in flight: the knob spins, clicks wait. */
+  loading?: boolean;
   children?: ReactNode;
 }) {
   return (
@@ -74,7 +76,7 @@ export function SwitchRow({ label, hint, checked, onChange, disabled, children }
           <div className="text-[14px] text-fg">{label}</div>
           {hint && <div className="mt-0.5 text-[12px] text-muted">{hint}</div>}
         </div>
-        <IfSwitch aria-label={label} checked={checked} onChange={onChange} disabled={disabled} />
+        <IfSwitch aria-label={label} checked={checked} onChange={onChange} disabled={disabled} loading={loading} />
       </div>
       {children && <div className="space-y-2 pb-4">{children}</div>}
     </div>

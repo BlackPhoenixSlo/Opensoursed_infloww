@@ -16,8 +16,9 @@ redirected secrets and sessions, CHATTERLY_TEST_MODE) plus loopback-only hooks.
        records every pool wait as at least 80 ms (recording only, nothing sleeps).
   POST /__slop/coverage-save  under `slop/run --map` (coverage.py runs the relay) write the
        data collected so far (lib/procmon.py every 5 s, cli once before teardown); 404 otherwise.
-  GET  /__slop/server-reads, POST /__slop/screens-404 {on}  the HTML's inline boot: the reads
-       the Next server sent, and bundles 404 for every caller (`_wire_inline_boot`).
+  GET  /__slop/server-reads, POST /__slop/screens-404 {on}, POST /__slop/server-wire {path, mode}  the HTML's
+       inline boot: the reads the Next server sent, bundles 404 for every caller, and the server's reads of one
+       path refused 403 or held (`_wire_inline_boot`).
   POST /__slop/telemetry-flush  emit service/db/write_telemetry's JSON line now
        (reason "flush"; its shutdown line, early), so the counts are in relay.log.
   POST /__slop/browserbase  {api, chunk_url_tpl, job_window_s?}  points the served Browserbase
@@ -699,17 +700,30 @@ def _wire(app) -> None:
     import automation_executor
     import client_pool
 
-    def offline_fallback(real):
+    import contextvars
+    in_load_client = contextvars.ContextVar("slop_in_load_client", default=False)
+
+    def offline_fallback(real, *, translates=False):
         def build(account_id):
+            if in_load_client.get():
+                # The pool under the relay's `_load_client`: the build error reaches it as in
+                # prod, which answers it (no session / bad session: 503) before any OF read.
+                return real(account_id)
+            token = in_load_client.set(True) if translates else None
             try:
                 return real(account_id)
             except Exception as e:  # noqa: BLE001 — re-raised on first use, unchanged
                 return _OfflineOF(str(account_id), e)
+            finally:
+                if token is not None:
+                    in_load_client.reset(token)
         return build
 
     # The relay's, the automations' and the background jobs' (of_stats_daily reads through the pool) client seams.
-    for mod, attr in ((server, "_load_client"), (automation_executor, "_make_client"), (client_pool, "get")):
-        setattr(mod, attr, offline_fallback(getattr(mod, attr)))
+    # `_load_client` translates the pool's build errors into its HTTP answer; the deferred error is that answer.
+    for mod, attr, translates in ((server, "_load_client", True), (automation_executor, "_make_client", False),
+                                  (client_pool, "get", False)):
+        setattr(mod, attr, offline_fallback(getattr(mod, attr), translates=translates))
     app.on_event("startup")(events.start_persist_worker)
 
     def _loopback(request: Request) -> None:
@@ -942,14 +956,28 @@ def _wire_inline_boot(app, _loopback, server) -> None:
            the Next server alike: a page route would only reach the browser's calls.
       The Next server's /admin/screens/* read for a browser with the `slop_no_bundles=1` cookie (actors/ui.py
       NO_BUNDLES_COOKIE: its page route 404s the bundles) answers 404 too.
+      POST /__slop/server-wire {path, mode}  the Next server's reads of `path` (exact) meet what a scenario's page
+           route does to the browser's: mode 403 (a blocking proxy's HTML 403) or "hold" (a relay that never
+           answers: held until the mode changes, at most HOLD_MAX_S, then a 504 nobody waits for; the server's own
+           INLINE_TIMEOUT_MS gives up first); null lifts it. The proxy and the silent relay a scenario stands in for
+           sit in front of the relay, on the leg the browser's rewrites and the server's reads both take (RELAY_URL).
     """
+    import asyncio as _asyncio
     import time as _time
 
     from fastapi import Request
-    from starlette.responses import JSONResponse
+    from starlette.responses import HTMLResponse, JSONResponse
 
     reads: list[dict] = []
     screens_404 = {"on": False}
+    server_wire: dict[str, object] = {}
+    hold_max_s = 10.0  # HOLD_MAX_S
+
+    async def held(path: str) -> JSONResponse:
+        t_end = _time.monotonic() + hold_max_s
+        while server_wire.get(path) == "hold" and _time.monotonic() < t_end:
+            await _asyncio.sleep(0.05)
+        return JSONResponse({"detail": "slop: held"}, status_code=504)
 
     async def inline_hook(request, call_next):
         t0 = _time.time()
@@ -957,8 +985,13 @@ def _wire_inline_boot(app, _loopback, server) -> None:
         ua = request.headers.get("user-agent", "")
         server_read = ua == "node" or ua.startswith("undici")
         no_bundles = server_read and "slop_no_bundles=1" in request.headers.get("cookie", "")
+        wire = server_wire.get(path) if server_read else None
         if (screens_404["on"] or no_bundles) and path.startswith("/admin/screens/"):
             resp = JSONResponse({"detail": "slop: per-Creator path"}, status_code=404)
+        elif wire == 403:
+            resp = HTMLResponse("<h1>403 Forbidden</h1>", status_code=403)
+        elif wire == "hold":
+            resp = await held(path)
         else:
             resp = await call_next(request)
         if server_read:
@@ -978,8 +1011,21 @@ def _wire_inline_boot(app, _loopback, server) -> None:
         screens_404["on"] = bool((await request.json()).get("on"))
         return dict(screens_404)
 
+    async def set_server_wire(request: Request) -> dict:
+        _loopback(request)
+        body = await request.json()
+        mode = body.get("mode")
+        if mode not in (None, 403, "hold"):
+            return JSONResponse({"detail": f"mode {mode!r}: 403, 'hold' or null"}, status_code=400)
+        if mode is None:
+            server_wire.pop(body["path"], None)
+        else:
+            server_wire[body["path"]] = mode
+        return dict(server_wire)
+
     app.add_api_route("/__slop/server-reads", server_reads, methods=["GET"])
     app.add_api_route("/__slop/screens-404", set_screens_404, methods=["POST"])
+    app.add_api_route("/__slop/server-wire", set_server_wire, methods=["POST"])
 
 
 def _wire_pumps(app, _loopback, server) -> None:

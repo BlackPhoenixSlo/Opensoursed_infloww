@@ -9,7 +9,8 @@ after a restart). On the real run_one_tick with a fake OF client:
         nothing); stamps last_scan_at/'ok' (green), never moves the backfill watermark
     case_due_full_walks_7d_and_stamps           pages the 7-day window (no startDate on the
         wire: OF's latest 600), stamps _last_full_at
-    case_backfill_sends_no_start_date           the backfill's wire has no startDate either
+    case_backfill_sends_a_date_only_start_date  the backfill's wire: startDate a day before its
+        floor, date only (its walk: test_tx_ingest_backfill.py)
     case_failed_full_does_not_stamp             a page that raises: no stamp, next is full again
     case_truncated_full_does_not_stamp          OF ignoring `offset` (repeated page): no stamp
     case_window_ignored_warns_once              a recent page with a row > 1 day before startDate logs
@@ -172,14 +173,16 @@ async def case_due_full_walks_7d_and_stamps():
     assert (await ti._decide_mode(ACCT)) == "refresh"
 
 
-async def case_backfill_sends_no_start_date():
+async def case_backfill_sends_a_date_only_start_date():
     await _ready()
     async with get_session() as s:
-        (await s.get(TransactionScanHistory, ACCT)).fully_backfilled = False
+        row = await s.get(TransactionScanHistory, ACCT)
+        row.fully_backfilled = False
+        row.oldest_seen_occurred_at = None
     fake = _Fake([_page([_row("b1", datetime.utcnow() - timedelta(days=2))])])
     mode, res = await _tick(fake)
     assert mode == "backfill" and res["error"] is None and fake.wire, (mode, res, fake.wire)
-    assert not any("startDate" in w for w in fake.wire), fake.wire
+    assert fake.wire == [{"limit": 100, "offset": 0, "startDate": "2026-07-31"}], fake.wire
 
 
 async def case_failed_full_does_not_stamp():

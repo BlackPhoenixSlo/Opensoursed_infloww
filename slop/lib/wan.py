@@ -143,6 +143,9 @@ class WanEdge:
                                  f"--backend=127.0.0.1,{app.port}", "--workers=1", "--no-ocsp", "--no-via",
                                  "--backend-read-timeout=600s", "--frontend-read-timeout=600s",
                                  "--backend-keep-alive-timeout=60s",
+                                 # Traefik's default (entryPoints http2.maxConcurrentStreams; deploy/ sets none), not
+                                 # nghttpx's 100: hung background reads past the cap stall every request after them
+                                 "--frontend-http2-max-concurrent-streams=250",
                                  f"--accesslog-file={log / 'edge-access.log'}",
                                  "--accesslog-format=$time_iso8601 $status $request_time $method $path $alpn",
                                  f"--errorlog-file={log / 'edge-error.log'}", str(key), str(cert)],

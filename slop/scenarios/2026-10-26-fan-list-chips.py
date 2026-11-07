@@ -52,8 +52,9 @@ Bypasses, declared:
   pace (SEARCH_KEY_MS) is a guess at a fast typist;
 - every other /api/of/* read stays held (actors/ui.py), so spend, tipsEnabled
   ("Unread with tips") and the profile reads are absent;
-- console lines for requests the harness itself aborts (off-host URLs) are not
-  counted as the app's errors;
+- console lines for requests the harness itself aborts (off-host URLs) or answers
+  404 (the screen bundles, actors/ui.py `screen_bundle_404`) are not counted as the
+  app's errors;
 - the ranking checks' spend is synthetic: the Fan List's OF spend batch is held at
   the browser's wire (above; on screen only the relay's recent tip spend shows), so
   node ranks on a spend map drawn from `--seed` (`w.rng("scenario:fan-list-chips:spend")`,
@@ -115,7 +116,7 @@ P95_VS_LAST_MIN_N = 20
 
 C_ORDER = "chips on screen: All, Owe reply, Pinned, Unread, With Tips, the pinned lists, Priority"
 C_NO_PLUS = 'no "+" Extras overflow and no "✎ Lists" chip in the Fan List (All Models and one Creator with lists)'
-C_UNREAD = "Unread count == loaded chats"
+C_UNREAD = F.C_UNREAD
 C_OWE = F.C_OWE
 C_OWE_ROWS = "Owe reply lists exactly the owed chats (by Fan)"
 C_DOTS = "owe dots only while Owe reply is on"
@@ -638,7 +639,8 @@ async def _pencil_shown(page, timeout_ms: int) -> bool:
 
 def _console_errors(ctx, aborted: list[str]) -> list[dict]:
     """Console errors and uncaught errors the session logged (actors/notif_click's
-    capture), less a failed load of a URL the harness itself aborted (off-host)."""
+    capture), less a failed load of a URL the harness itself aborted (off-host) or
+    answered 404 (a screen bundle: actors/ui.py `screen_bundle_404`, a declared bypass)."""
     path = ctx.out / "console-fan-list.jsonl"
     rows = [json.loads(ln) for ln in path.read_text().splitlines()] if path.exists() else []
     off = set(aborted)
@@ -834,7 +836,7 @@ async def _screens(ctx, view, creators) -> None:
                           "owe_dots": dots_on, "sort": look, "sort_menu": marks, "stored_sort": stored,
                           "pin_writes": pins, "filter_row_all_models": lines_all,
                           "filter_row_one_creator": lines_one, "search": search})
-        aborted += page.slop["offhost_aborted"]
+        aborted += page.slop["offhost_aborted"] + page.slop["bundles_404"]
         statuses += page.slop["statuses"]
 
     # 2x crops of the filter and chip rows: All Models, then one Creator (its list pinned).
@@ -848,7 +850,7 @@ async def _screens(ctx, view, creators) -> None:
         await _chip_row(page).get_by_role("button", name=f"Folder {PINNED}").scroll_into_view_if_needed()
         await page.wait_for_timeout(300)
         shots["js"] = await _crop(ctx, page, "j-one-creator-chip-row-scrolled-to-pinned-list@2x")
-        aborted += page.slop["offhost_aborted"]
+        aborted += page.slop["offhost_aborted"] + page.slop["bundles_404"]
         statuses += page.slop["statuses"]
 
     # The narrowest phone: the Fan List is the whole screen.
@@ -865,7 +867,7 @@ async def _screens(ctx, view, creators) -> None:
         ctx.metric("narrow", {"viewport": NARROW, "all_models": narrow_all, "one_creator": narrow_one})
         ctx.note(f"filter row at {NARROW[0]}px: All Models {narrow_all['lines']} line(s), "
                  f"one Creator {narrow_one['lines']} line(s)")
-        aborted += page.slop["offhost_aborted"]
+        aborted += page.slop["offhost_aborted"] + page.slop["bundles_404"]
         statuses += page.slop["statuses"]
 
     # A 390px phone: the sort menu's trigger, the menu open, and the order picked there.
@@ -887,7 +889,7 @@ async def _screens(ctx, view, creators) -> None:
         ctx.check(C_PHONE_PICK, stored_phone == "spend" and look_phone["label"] == "Sort: Amount spent",
                   stored=stored_phone, label=look_phone["label"])
         ctx.metric("phone", {"viewport": PHONE, "sort_menu": marks_phone, "stored_sort": stored_phone})
-        aborted += page.slop["offhost_aborted"]
+        aborted += page.slop["offhost_aborted"] + page.slop["bundles_404"]
         statuses += page.slop["statuses"]
 
     errors = _console_errors(ctx, aborted)

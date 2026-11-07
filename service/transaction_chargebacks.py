@@ -272,7 +272,8 @@ async def poll_chargebacks(account_id: str, client) -> dict:
 
 
 async def poll_after_walk(account_id: str, client) -> dict | None:
-    """run_one_tick's hook after a completed refresh / backfill walk. Never
+    """run_one_tick's hook after a completed refresh or backfill, or a tick that moved
+    a row out of a reversal. Never
     raises (a CancelledError aside): an error logs `ingest_cb_error` (with a
     traceback only the first time per account per process) and never counts
     toward the ledger's failure streak or pause."""

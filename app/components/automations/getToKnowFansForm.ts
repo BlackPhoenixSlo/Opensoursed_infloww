@@ -2,16 +2,18 @@
  * Get to know fans' rule settings as a pure reducer: the draft of the rule payload the page edits (its Human style
  * boxes: HumanStyleBlock.tsx) and the draft the last Save sent.
  *
- *   • The draft is seeded once from the rule's payload, else the catalog defaults (`initState`); the settings are
- *     keyed by rule id, so a refetch never re-seeds them.
+ *   • The draft is seeded once per creator from the rule's payload, else (no rule yet) the catalog defaults
+ *     (`initState`); a refetch, or the switch creating the rule, never re-seeds it.
  *   • Numbers stay as typed (a min of 3 would fight every keystroke); `invalidReason` checks them before Save.
  *   • The state is the draft plus the draft the last Save sent (sentDraft.ts: `unsaved` holds "Saved" off over an
  *     edit made while that save was in flight).
  *   • `buildPayload` sends the rule's payload back with only this page's fields changed (the PATCH replaces it).
+ *   • `ruleSave`: a PATCH of the rule, or with none yet a create PARKED (`is_enabled: false`), so a Save never turns
+ *     the automation on; only the switch does.
  */
 
 import { sentState, withSent, type Saved, type SentState } from "@/components/automations/sentDraft";
-import type { AutomationKind } from "@/hooks/useAutomations";
+import type { AutomationKind, AutomationRule, RuleDraft, RulePatch } from "@/hooks/useAutomations";
 import type { VaultMedia } from "@/lib/relay";
 
 export interface GtkfDraft {
@@ -50,7 +52,8 @@ export function limitsOf(meta: AutomationKind): RuleLimits {
   };
 }
 
-export function initState(p: Record<string, unknown>, meta: AutomationKind): GtkfState {
+export function initState(stored: Record<string, unknown> | undefined, meta: AutomationKind): GtkfState {
+  const p = stored ?? {};
   return sentState({
     cutoff: String(p.max_fan_messages ?? knobOf(meta, "max_fan_messages")?.default ?? 10),
     media: (Array.isArray(p.closing_ppv_media_ids) ? p.closing_ppv_media_ids : [])
@@ -80,6 +83,18 @@ export function buildPayload(d: GtkfDraft, payload: Record<string, unknown>): Re
     closing_ppv_text: d.caption,
     closing_ppv_price_cents: toCents(Number(d.price)),
   };
+}
+
+/** What Save sends: the rule's PATCH, or (no rule yet) a parked create with the name and cadence the switch's create
+ *  would give it (automation_rules_api.ensure_kind_rule `_new_row`), so switching it on later just wakes it. */
+export type RuleSave = { id: number; patch: RulePatch } | { create: RuleDraft };
+
+export function ruleSave(d: GtkfDraft, rule: AutomationRule | null, meta: AutomationKind, accountId: string): RuleSave {
+  if (rule) return { id: rule.id, patch: { payload: buildPayload(d, rule.payload ?? {}) } };
+  return { create: {
+    account_id: accountId, kind: meta.kind, name: meta.label || meta.kind,
+    every_seconds: meta.cadence_default_s ?? 300, payload: buildPayload(d, {}), is_enabled: false,
+  } };
 }
 
 export const gtkfReducer = withSent((d: GtkfDraft, a: GtkfEdit): GtkfDraft => ({ ...d, [a.k]: a.v }));

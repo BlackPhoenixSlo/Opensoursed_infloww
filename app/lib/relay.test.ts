@@ -10,8 +10,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-  API_KEY_ERROR_EVENT, ApiKeyError, RelayError, describeLoadError, relay, request, type ApiKeyErrorPayload,
+  API_KEY_ERROR_EVENT, ApiKeyError, RelayError, describeLoadError, prefetchScreenBundle, relay, request,
+  type ApiKeyErrorPayload,
 } from "@/lib/relay";
+import { resetScreenBundles, setScreen } from "@/lib/screenBundle";
 
 const err = (m: string) => new Error(m);
 
@@ -128,5 +130,28 @@ describe("request › cache mode", () => {
 
   it("leaves an unscoped call on the browser's default cache", async () => {
     expect(await modeOf()).toBeUndefined();
+  });
+});
+
+describe("request › a failed screen bundle's reads keep a slot (slop fan-list-chips 2026-11-07)", () => {
+  afterEach(() => { vi.unstubAllGlobals(); resetScreenBundles(); });
+
+  it("two hung rail feeds of a Creator never hold back its chat list once the bundle failed", async () => {
+    const sent: string[] = [];
+    vi.stubGlobal("fetch", vi.fn((url: string) => {
+      sent.push(url.split("?")[0]);
+      if (url.startsWith("/admin/screens/")) return Promise.resolve(new Response("{}", { status: 404 }));
+      if (url.startsWith("/api/of/v2/chats")) return Promise.resolve(new Response('{"list":[],"hasMore":false}'));
+      return new Promise<Response>(() => {});  // OnlyFans never answers the rail's feeds
+    }));
+    setScreen({ kind: "inbox" });
+    // The bundle failed before the screen mounted (the HTML's inline answer lands first), then the rail mounts first.
+    await prefetchScreenBundle({ kind: "inbox" });
+    const bg = { accountId: "a", priority: "background" as const };
+    void relay.get("/api/of/v2/users/notifications?limit=10", bg);
+    void relay.get("/api/of/v2/users/notifications?limit=10&type=tip", bg);
+    await expect(relay.get("/api/of/v2/chats?limit=25&offset=0&order=recent", bg))
+      .resolves.toEqual({ list: [], hasMore: false });
+    expect(sent).toEqual(["/admin/screens/inbox", "/api/of/v2/users/notifications", "/api/of/v2/chats"]);
   });
 });

@@ -50,7 +50,8 @@ async def screen_bundle_404(r) -> bool:
     read goes out on its own route as before the bundles: OnlyFans ones held, DB ones answered. The bundles
     themselves: the screen-bundles (API) and clicks-first scenarios, on browsers of their own. True: answered.
     The HTML's inline bundle (the Next server's read, past this route): 404 at the relay for a browser carrying
-    NO_BUNDLES_COOKIE (set where this route is installed)."""
+    NO_BUNDLES_COOKIE (set where this route is installed). Chromium logs each of these 404s as a failed load: the
+    page's `slop["bundles_404"]` lists them, so a console check can tell the harness's from the app's."""
     if not urlsplit(r.request.url).path.startswith(SCREEN_BUNDLES):
         return False
     await r.fulfill(status=404, content_type="application/json", body='{"detail":"Not Found"}')
@@ -201,6 +202,7 @@ async def _owner_page(browser, ctx, viewport, held, aborted, init_scripts=(), *,
         await bctx.add_init_script(js)
 
     patches = _client_fault(ctx)
+    bundles_404: list[str] = []  # screen_bundle_404 answers: Chromium logs each as a failed load (the harness's)
 
     async def route(r):
         u = urlsplit(r.request.url)
@@ -216,7 +218,7 @@ async def _owner_page(browser, ctx, viewport, held, aborted, init_scripts=(), *,
                 for t in through):
             await r.continue_()
         elif await screen_bundle_404(r):
-            pass
+            bundles_404.append(r.request.url)
         elif u.path.startswith("/api/of/") or u.path in OF_LIVE_PATHS:
             held.append(r)  # never answered: OF is not reachable from a slop run
         else:
@@ -234,8 +236,8 @@ async def _owner_page(browser, ctx, viewport, held, aborted, init_scripts=(), *,
         await emulate(cdp, ctx.net)
     statuses: list[tuple[int, str]] = []
     page.on("response", lambda resp: statuses.append((resp.status, resp.url)))
-    page.slop = {"held_of_reads": held, "offhost_aborted": aborted, "statuses": statuses, "crashed": None,
-                 "cdp": cdp}
+    page.slop = {"held_of_reads": held, "offhost_aborted": aborted, "bundles_404": bundles_404, "statuses": statuses,
+                 "crashed": None, "cdp": cdp}
     page.on("crash", lambda _p: page.slop.update(crashed=time.time() * 1000))
     return page
 

@@ -2540,17 +2540,18 @@ class TransactionScanHistory(Base):
     job needs (error/pause bookkeeping + insert/patch counters).
 
     Phases:
-      • Backfill (fully_backfilled=False): asks for 90d back from connect
-        time toward `backfill_floor` (OF answers its latest 600 rows, see
-        below); advances `oldest_seen_occurred_at`.
+      • Backfill (fully_backfilled=False): walks OF's `marker` pages from the
+        top back to `backfill_floor` (90d back from connect time, or the gap
+        of a reactivation), a bounded stretch a tick; `oldest_seen_occurred_at`
+        is its cursor, saved per page once the page's rows are held.
       • Refresh (fully_backfilled=True): each 15-min tick re-fetches the
         trailing 24 h (`recent`, OF's date-only `startDate` a day early); the
         full walk once per 2 h period per account (each at its own phase) and
         on the first tick after a restart. OF ignores `start`/`end` and an ISO
         `startDate` answers an empty list (measured 2026-11-07, acct
-        532022545), so the full walk and the backfill read OF's latest rows,
-        whatever their window: 600 (INFERRED from prod walks). `last_marker` is
-        observability only — each walk re-reads its window from scratch.
+        532022545), and `offset` >= 600 answers empty (measured, acct 15891843),
+        so the full walk reads OF's latest 600 rows, whatever its window.
+        `last_marker` is observability only.
 
     Auto-pause: after 3 consecutive failures the supervisor sets
     `paused_until = utcnow() + 30 min` and `current_status='paused'`. Tick

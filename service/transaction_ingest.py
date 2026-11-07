@@ -12,8 +12,11 @@ row 3). The rate-limit posture is cadence + sequential walk, not a header.
 Steady state: each tick walks the trailing 24 h (`recent`: OF's date-only
 `startDate`, ~1 page); the full `refresh` runs once per 2 h period per account
 (each at its own phase in it) and on the first tick after a restart. OF ignores
-`start`/`end` (measured 2026-11-07, acct 532022545), so a full walk and the
-backfill read OF's latest 600 rows (hasMore false at 600), whatever their window.
+`start`/`end` (measured 2026-11-07, acct 532022545), and `offset` >= 600 answers
+empty with hasMore false although offset 500 said hasMore true (measured, acct
+15891843), so a full walk reads OF's latest 600 rows, whatever its window. The
+backfill walks `marker`s under a date-only `startDate` instead: no cap (run below,
+_backfill_tick), its cursor oldest_seen_occurred_at, resumed tick to tick.
 
 3-step dedup writer (synthesis §5):
   Step 1: provider_id fast path (handles re-polls + loading->cleared flips).
@@ -50,6 +53,8 @@ import math
 import os
 import time
 from collections import Counter, defaultdict
+from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, NamedTuple
 
@@ -130,7 +135,9 @@ def _tick_interval_s() -> float:
 _TICK_INTERVAL_S = _tick_interval_s()
 _PAGE_SLEEP_S = 0.4
 _PAGE_LIMIT = 100                       # OF max per request
-_BACKFILL_CONCURRENCY = 4               # synthesis review §4
+# Creators on one proxy may share OF's bucket (5-10 a proxy; the bucket's size is a guess, its 429s measured: at 4,
+# 8 Creators of 2500 rows offered ~3 pages/s to a guessed 2/s and 6 pages failed twice, slop sweep-pacing small).
+_BACKFILL_CONCURRENCY = 2
 # Refresh ticks this many accounts at once: each pages at of_pacing's per-Creator pace (>= 1 s a
 # page), so serial, 50 Creators x 10 pages of 7 days would take ~570 s a cycle
 # (measured 114 s for 10 x 10, slop sweep-pacing medium). Creators never share a pacer.
@@ -206,6 +213,10 @@ from transaction_ingest_decide import (  # noqa: E402,F401
     PATCH_FIELDS,
     IN_FLIGHT,
     SCAN_FIELDS,
+    _BACKFILL_FRESH_PAGES,
+    _BACKFILL_TICK_PAGES,
+    SETTLED_REVERSALS,
+    BackfillStep,
     _DEFAULT_BACKFILL_DAYS,
     _DEFAULT_FULL_EVERY_S,
     _DEFAULT_RECENT_WINDOW_H,
@@ -226,15 +237,20 @@ from transaction_ingest_decide import (  # noqa: E402,F401
     _parse_row,
     _strip_html,
     _to_cents,
+    backfill_step,
     decide_mode,
     full_bucket,
     full_phase_s,
     is_paused,
+    marker_of,
+    page_span,
     recent_start_date,
     parse_page,
     plan_page,
     scan_after_failure,
     scan_after_success,
+    scan_backfill_page,
+    scan_backfill_restart,
     scan_interrupted,
     scan_started,
     subscription_fans,
@@ -253,16 +269,18 @@ from transaction_ingest_decide import (  # noqa: E402,F401
 # calls/h/account (the purchases feed read after a walk is separate). OF's ledger
 # filters, measured 2026-11-07 on acct 532022545 (limit=10, read-only): `start`/`end`
 # are ignored (same rows as no params); `startDate=YYYY-MM-DD` is honoured (createdAt
-# >= that day, day-boundary TZ unknown) and `offset` pages it; an ISO `startDate`
-# answers an EMPTY list with hasMore false; no filter answers the latest rows, capped
-# at 600 (INFERRED from prod walks: 6 pages then hasMore false). So the recent walk
+# >= that day's UTC midnight) and `offset` pages it; an ISO `startDate`
+# answers an EMPTY list with hasMore false; `offset` >= 600 answers empty, filter or
+# not (measured 2026-11-07, acct 15891843; offset 500 still says hasMore true, so a
+# busy account's full walk is 7 calls, the last one empty). So the recent walk
 # sends `startDate` (recent_start_date: a day before its window, date only) and the
 # full walk sends none: it reads the latest 600, the reach it always had. Defaults:
 # literals in transaction_ingest_decide.
 _RECENT_WINDOW_H = _clamped_env("INGEST_RECENT_WINDOW_H", _DEFAULT_RECENT_WINDOW_H, 12.0, 168.0)
 _FULL_EVERY_S = _clamped_env("INGEST_FULL_EVERY_S", _DEFAULT_FULL_EVERY_S, 900.0, 86400.0)
 # Each account's last full walk that completed (reached its window's end) in
-# THIS process, stamped with its window's end (when it started), so the period runs
+# THIS process, or was cut short or failed on an unfinished account (or that walk would
+# starve behind it), stamped with its window's end (when it started), so the period runs
 # walk to walk: a restart's first tick is a full walk. Admin /run mode=refresh counts.
 _last_full_at: dict[str, datetime] = {}
 # Accounts whose recent walk got a row older than its `startDate` minus a day (OF
@@ -273,6 +291,14 @@ _recent_window_warned: set[str] = set()
 # warned once per process.
 _recent_empty_warned: set[str] = set()
 _RECENT_IGNORED_SLACK = timedelta(days=1)
+# Accounts where a tick moved a row out of a reversal: the disputes poll follows, in that
+# tick or, if it fails, the next. A dispute may still stand on a row the ledger calls `done`
+# (0 of 89 joined disputes on acct 15891843, measured; not ruled out). In memory: a restart
+# forgets, and the period's full walk polls anyway.
+_reinstated: set[str] = set()
+# Inside a backfill tick: its re-read of old rows announces nothing older
+# than the cap, status flips and promotes too (see _after_commit_op).
+_BACKFILL_NEWS_CAPPED: ContextVar[bool] = ContextVar("ledger_backfill_news_capped", default=False)
 
 
 # ── Writer pieces ───────────────────────────────────────────────────
@@ -911,6 +937,9 @@ async def _ingest_rows(account_id: str, rows: list[dict]) -> _Ingested:
     async with _ledger_txn() as s:
         r = await _read_plan(s, account_id, parsed)
         stamps = await _apply_ops(s, account_id, r.ops, r.held, r.ws)
+    if any(op.status_flip and op.status_flip[0] in SETTLED_REVERSALS and op.status_flip[1] not in SETTLED_REVERSALS
+           for op in r.ops):
+        _reinstated.add(account_id)
     return _Ingested(r.ops, stamps, True)
 
 
@@ -946,13 +975,15 @@ async def _after_commit_op(account_id: str, op: RowOp, stamp: tuple | None) -> N
     # PPV settling pending→cleared days after purchase) and ledger
     # promotes only happen on rows already inside the 7-day refresh
     # window — naturally bounded, AND exactly the update the drawer is
-    # waiting on. Plain re-polls (no flip) stay silent — they happen every
-    # 15-min tick.
+    # waiting on. A backfill's marker walk is the exception: it re-reads
+    # months of old rows, so everything it announces is capped (the row is
+    # updated all the same). Plain re-polls (no flip) stay silent — they
+    # happen every 15-min tick.
     if op.broadcast is not None and op.parsed["fan_id"]:
         from events import announce_transaction
         await announce_transaction(
             account_id, op.parsed["fan_id"], occurred_at=op.parsed["occurred_at"],
-            capped=op.broadcast == "insert", kind=op.kind,
+            capped=op.broadcast == "insert" or _BACKFILL_NEWS_CAPPED.get(), kind=op.kind,
             status=op.parsed["status"], reason=op.broadcast)
 
 
@@ -1130,13 +1161,16 @@ async def _clear_stale_inflight() -> int:
         return len(rows)
 
 
-async def _record_failure(account_id: str, exc: Exception) -> None:
+async def _record_failure(account_id: str, exc: Exception, *, progressed: bool = False) -> None:
     # A proxy refusal (of_client.proxy_refused; _proxy_retry already retried
     # it) never reached OF: it says nothing about the account or its session.
+    # Nor does a backfill that committed pages before failing (`progressed`, e.g.
+    # OF's second 429 forty pages in): not counted, or a long walk could pause
+    # itself; its cursor is already saved and the next tick resumes there.
     refusal = proxy_refused(exc)
     async with get_session() as s:
         row = await _scan_state(s, account_id)
-        state = scan_after_failure(_scan_facts(row), refusal, datetime.utcnow(),
+        state = scan_after_failure(_scan_facts(row), refusal or progressed, datetime.utcnow(),
                                    error=repr(exc)[:500])
         _store_scan(row, state)
     if refusal:
@@ -1164,18 +1198,205 @@ async def _mark_success(
     page_rows_min_occurred_at: datetime | None,
     page_rows_max_occurred_at: datetime | None,
     floor_reached: bool,
+    stop_reason: str | None = None,
 ) -> None:
     # 'ok' (not the start-of-tick 'refreshing') so the /run endpoint's
     # collision check (status IN ('refreshing','backfilling')) only fires
-    # when a tick is genuinely in flight; a backfill short of its floor
-    # keeps 'backfilling' so the banner reads "still working".
+    # when a tick is genuinely in flight; a backfill not done reads
+    # BACKFILL_PARTIAL or, stopped (`stop_reason`), BACKFILL_STALLED on the banner.
     async with get_session() as s:
         row = await _scan_state(s, account_id)
         _store_scan(row, scan_after_success(
             _scan_facts(row), mode=mode, inserted=inserted, patched=patched,
             last_marker=last_marker, rows_min=page_rows_min_occurred_at,
             rows_max=page_rows_max_occurred_at, floor_reached=floor_reached,
-            now=datetime.utcnow()))
+            now=datetime.utcnow(), stop_reason=stop_reason))
+
+
+@dataclass
+class _BackfillTick:
+    """A backfill tick so far: survives the exception that ends it. `walked`: marker-walk
+    pages durably held (the rest of the fields count every page, the recent read's too).
+    `stop`: why the tick's walk ended."""
+    pages: int = 0
+    inserted: int = 0
+    patched: int = 0
+    walked: int = 0
+    last_marker: int | None = None
+    complete: bool = False
+    stop: str | None = None
+
+
+async def _save_backfill_page(account_id: str, tick: _BackfillTick, ins: int, pat: int, *,
+                              cursor: datetime | None, newest: datetime | None) -> None:
+    """Durable per page, so neither a crash nor a failed later page loses the walk's place."""
+    async with get_session() as s:
+        row = await _scan_state(s, account_id)
+        _store_scan(row, scan_backfill_page(_scan_facts(row), cursor=cursor, newest=newest,
+                                            inserted=ins, patched=pat))
+    tick.pages += 1
+    tick.inserted += ins
+    tick.patched += pat
+
+
+async def _rows_held_since(account_id: str, start: datetime) -> bool:
+    """Ledger rows only: a WS pump's tip (no provider id) says nothing about the ledger's answer."""
+    async with get_session() as s:
+        return (await s.execute(select(Transaction.id).where(
+            Transaction.account_id == account_id, Transaction.occurred_at >= start,
+            Transaction.provider_transaction_id.is_not(None),
+        ).limit(1))).first() is not None
+
+
+async def _provider_ids_not_held(account_id: str, rows: list[dict]) -> set[str]:
+    """The page's provider ids the DB does not hold. `_write_page` logs and skips a row
+    that fails alone because a re-poll re-serves it, but a cursor past it never would:
+    a backfill moves its cursor only over rows actually held."""
+    ids = {str(r["id"]) for r in rows if r.get("id")}
+    if not ids:
+        return ids
+    async with get_session() as s:
+        held = (await s.execute(select(Transaction.provider_transaction_id).where(
+            Transaction.account_id == account_id,
+            Transaction.provider_transaction_id.in_(ids),
+        ))).scalars().all()
+    return ids - set(held)
+
+
+def _backfill_fetch(client: OFClient, start_date: str, marker: int | None) -> dict:
+    """One page of the marker walk. No `start` / `end` (OF ignores them), never an offset."""
+    return client.transactions(limit=_PAGE_LIMIT, offset=0, start_date=start_date, marker=marker)
+
+
+async def _window_answered_blank(account_id: str, client: OFClient, window_start: datetime) -> bool:
+    """An empty first page with nothing held in the window: a real empty window, or a blank
+    answer? No filter, limit=1: OF names the newest row (measured: n=1, hasMore true). A row in
+    the window means blank. No row at all means no ledger, unless we hold one: blank too."""
+    resp = await asyncio.to_thread(client.transactions, limit=1, offset=0)
+    rows = resp.get("list") or []
+    if rows:
+        return page_span(rows, window_start)[0] is not None
+    return await _rows_held_since(account_id, datetime.min)
+
+
+async def _backfill_recent_rows(account_id: str, client: OFClient, tick: _BackfillTick,
+                                newest_seen: datetime | None) -> str:
+    """A resumed tick's recent read, the recent walk's shape: decide_mode says backfill
+    until done, so without it new rows would wait out the whole walk. Moves no cursor.
+    Back to the newest row seen when that is older (a walk that sat out an outage: the rows
+    above its top, which no marker page will read), up to OF's offset cap.
+
+    newest_seen is the walk's claim that all from its cursor up to there is read, so it moves
+    only once the read got back to it. Returns `reached`; or `gap`: rows stand between the read
+    and newest_seen, the caller re-walks; or `blank` / `rows_not_held`: neither, retry next tick."""
+    since = datetime.utcnow() - timedelta(hours=_RECENT_WINDOW_H)
+    start_date = recent_start_date(min(since, newest_seen) if newest_seen else since)
+    seen: set = set()
+    offset = 0
+    top: datetime | None = None
+    reached = False
+    for _ in range(_BACKFILL_FRESH_PAGES):
+        resp = await asyncio.to_thread(client.transactions, limit=_PAGE_LIMIT, offset=offset,
+                                       start_date=start_date)
+        rows = resp.get("list") or []
+        ids = {raw.get("id") for raw in rows if raw.get("id") is not None}
+        if not rows or (ids and ids <= seen):
+            break
+        seen |= ids
+        ins, pat = await _write_page(account_id, rows)
+        if await _provider_ids_not_held(account_id, rows):
+            await _save_backfill_page(account_id, tick, ins, pat, cursor=None, newest=None)
+            return "rows_not_held"
+        oldest, newest, _ = page_span(rows, datetime.min)
+        top = max(top or newest, newest or top) if top or newest else None
+        reached = (reached or resp.get("hasMore") is False
+                   or (newest_seen is not None and oldest is not None and oldest <= newest_seen))
+        await _save_backfill_page(account_id, tick, ins, pat, cursor=None, newest=top if reached else None)
+        if resp.get("hasMore") is not True:
+            break
+        offset += len(rows)
+        await asyncio.sleep(_PAGE_SLEEP_S)
+    if reached:
+        return "reached"
+    if not seen:
+        return "blank" if newest_seen is not None else "reached"
+    log.warning("ingest_tx_backfill_recent_capped account=%s start_date=%s pages=%d newest_seen=%s",
+                account_id, start_date, _BACKFILL_FRESH_PAGES, newest_seen)
+    return "gap"
+
+
+async def _backfill_walk(account_id: str, client: OFClient, start_date: str, cursor: datetime | None,
+                         tick: _BackfillTick) -> str:
+    """The marker walk, from the cursor (inclusive, ties re-read: provider-id dedupe makes
+    overlap free) down to startDate. Returns why it ended; sets `tick.complete` only
+    when backfill_step says the window is read. A raise leaves the cursor at the last page held."""
+    window_start = datetime.fromisoformat(start_date)
+    marker = marker_of(cursor) if cursor is not None else None
+    seen: set = set()
+    first_page = True
+    while True:
+        if tick.walked >= _BACKFILL_TICK_PAGES:
+            return "tick_cap"
+        resp = await asyncio.to_thread(_backfill_fetch, client, start_date, marker)
+        rows = resp.get("list") or []
+        if resp.get("nextMarker") is not None:
+            tick.last_marker = resp.get("nextMarker")
+        log.info("ingest_tx_page_fetched account=%s page=%d count=%d marker=%s",
+                 account_id, tick.pages, len(rows), resp.get("nextMarker"))
+        ids = {raw.get("id") for raw in rows if raw.get("id") is not None}
+        if ids and ids <= seen:
+            return "repeated_page"
+        seen |= ids
+        floor_cursor, newest, below = page_span(rows, window_start)
+        if rows:
+            # One write transaction for the page; row by row only if that fails.
+            ins, pat = await _write_page(account_id, rows)
+            if await _provider_ids_not_held(account_id, rows):
+                await _save_backfill_page(account_id, tick, ins, pat, cursor=None, newest=newest)
+                return "rows_not_held"
+            await _save_backfill_page(account_id, tick, ins, pat, cursor=floor_cursor, newest=newest)
+            tick.walked += 1
+        step = backfill_step(
+            rows=len(rows), has_more=resp.get("hasMore"), next_marker=resp.get("nextMarker"),
+            sent_marker=marker, first_page=first_page, below_window=below,
+            held_since=bool(rows) or await _rows_held_since(account_id, window_start))
+        if (step.reason == "empty_window"
+                and await _window_answered_blank(account_id, client, window_start)):
+            return "blank_first_page"
+        first_page = False
+        if step.action != "next":
+            tick.complete = step.action == "complete"
+            return step.reason
+        marker = step.marker
+        await asyncio.sleep(_PAGE_SLEEP_S)
+
+
+async def _backfill_tick(account_id: str, client: OFClient, start_date: str, state: ScanState,
+                         tick: _BackfillTick) -> None:
+    """A backfill tick: recent rows first when resuming (the first tick reads them from
+    the top anyway), then up to _BACKFILL_TICK_PAGES of the marker walk. Every page under
+    the news cap: a walk's flips of old rows are no news. Sets `tick.stop`."""
+    cursor = state.oldest_seen_occurred_at
+    capped = _BACKFILL_NEWS_CAPPED.set(True)
+    try:
+        read = "reached"
+        if cursor is not None:
+            read = await _backfill_recent_rows(account_id, client, tick, state.newest_seen_occurred_at)
+        if read == "gap":
+            async with get_session() as s:
+                row = await _scan_state(s, account_id)
+                _store_scan(row, scan_backfill_restart(_scan_facts(row)))
+            cursor = None
+        if read in ("blank", "rows_not_held"):
+            tick.stop = f"recent_read_{read}"
+        else:
+            tick.stop = await _backfill_walk(account_id, client, start_date, cursor, tick)
+    finally:
+        _BACKFILL_NEWS_CAPPED.reset(capped)
+    # The tick's page cap is the walk working; anything else short of done needs a look.
+    (log.info if tick.complete or tick.stop == "tick_cap" else log.warning)(
+        "ingest_tx_backfill_stop account=%s reason=%s complete=%s walked=%d start_date=%s",
+        account_id, tick.stop, tick.complete, tick.walked, start_date)
 
 
 def _tick_result(t0: float, *, inserted: int = 0, patched: int = 0,
@@ -1185,14 +1406,23 @@ def _tick_result(t0: float, *, inserted: int = 0, patched: int = 0,
             "duration_ms": int((time.monotonic() - t0) * 1000), "error": error}
 
 
+async def _poll_disputes(account_id: str, client: OFClient) -> None:
+    """transaction_chargebacks.poll_after_walk. Answers `_reinstated` too, unless it failed:
+    then the next tick asks again."""
+    import transaction_chargebacks
+    if await transaction_chargebacks.poll_after_walk(account_id, client) is not None:
+        _reinstated.discard(account_id)
+
+
 async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
     """One supervisor tick for one account.
 
     recent:   window = (utcnow - _RECENT_WINDOW_H, utcnow)
     refresh:  window = (utcnow - 7d, utcnow); completed, it stamps _last_full_at
-    backfill: window = (backfill_floor, oldest_seen_occurred_at or utcnow)
-    A completed refresh / backfill then polls OF's disputes
-    (transaction_chargebacks.poll_after_walk; its errors never fail the tick).
+    backfill: window = (backfill_floor, oldest_seen_occurred_at or utcnow), walked
+              by _backfill_tick (marker pages, per-tick cap, resumes at the cursor)
+    A completed refresh or backfill, or any tick that moved a row out of a reversal
+    (failed or not), polls OF's disputes (_poll_disputes; its errors never fail the tick).
 
     Sleeps 0.4s between pages. Stops on empty page OR hasMore=false. Bounded
     by a per-account asyncio.Lock so a slow (>600s) tick can't stack with the
@@ -1277,7 +1507,8 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
                 # _mark_success / _record_failure both overwrite at end,
                 # AND the try/finally below catches CancelledError so the
                 # stamp can't stick across process restarts.
-                _store_scan(state, scan_started(_scan_facts(state), mode, start_dt, datetime.utcnow()))
+                started = scan_started(_scan_facts(state), mode, start_dt, datetime.utcnow())
+                _store_scan(state, started)
 
             # Start stamp is committed. Every exit path below must
             # overwrite it.
@@ -1302,9 +1533,10 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
             # means no cursor makes progress → stop WITHOUT floor_reached, so a
             # backfill never marks itself complete off a truncated scan.
             seen_tx_ids: set = set()
-            # Recent walk only: OF's date-only filter (the full walk and the
-            # backfill send none: OF's latest 600). start/end stay, ignored by OF.
-            start_date = recent_start_date(start_dt) if mode == "recent" else None
+            # OF's date-only filter, the recent walk's and the backfill's (the full
+            # walk sends none: OF's latest 600). start/end stay there, ignored by OF.
+            start_date = recent_start_date(start_dt) if mode in ("recent", "backfill") else None
+            bf = _BackfillTick()
             _PAGE_CEILING = 500  # 500 × 100 rows — far past any real window
 
             try:
@@ -1312,7 +1544,10 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
                     "ingest_tx_scan_start account=%s mode=%s start=%s end=%s",
                     account_id, mode, start_dt.isoformat(), end_dt.isoformat(),
                 )
-                while True:
+                if mode == "backfill":
+                    await _backfill_tick(account_id, client, start_date, started, bf)
+                    pages, last_marker, floor_reached = bf.pages, bf.last_marker, bf.complete
+                while mode != "backfill":   # the recent / full walks' offset pages
                     if pages >= _PAGE_CEILING:
                         log.warning(
                             "ingest_tx_page_ceiling account=%s pages=%d — scan truncated",
@@ -1390,10 +1625,15 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
             except Exception as e:
                 if not proxy_refused(e):  # a refusal logs one line in _record_failure
                     log.warning("ingest_tx_scan_failed account=%s", account_id, exc_info=True)
-                await _record_failure(account_id, e)
+                await _record_failure(account_id, e, progressed=bf.walked > 0)
                 finalized = True
-                return _tick_result(t0, inserted=inserted, patched=patched,
-                                    pages=pages, error=repr(e))
+                # Or a full walk that keeps failing freezes the unfinished walk behind it.
+                if mode == "refresh" and not started.fully_backfilled:
+                    _last_full_at[account_id] = end_dt
+                if account_id in _reinstated:
+                    await _poll_disputes(account_id, client)
+                return _tick_result(t0, inserted=inserted + bf.inserted, patched=patched + bf.patched,
+                                    pages=pages + bf.pages, error=repr(e))
 
             await _mark_success(
                 account_id,
@@ -1404,17 +1644,19 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
                 page_rows_min_occurred_at=rows_min_ts,
                 page_rows_max_occurred_at=rows_max_ts,
                 floor_reached=floor_reached,
+                stop_reason=bf.stop,
             )
             finalized = True
             # A full walk that reached its window's end (not one cut short by the
-            # repeated-page guard or the ceiling) resets the full-walk clock.
-            if mode == "refresh" and floor_reached:
+            # repeated-page guard or the ceiling) resets the full-walk clock. An
+            # unfinished walk's refresh resets it either way, or the walk would
+            # starve behind refreshes that never finish.
+            if mode == "refresh" and (floor_reached or not started.fully_backfilled):
                 _last_full_at[account_id] = end_dt
             # Disputes the 600-row walk cannot reach (transaction_chargebacks):
             # after a completed full walk, same lock; never fails the tick.
-            if mode in ("refresh", "backfill") and floor_reached:
-                import transaction_chargebacks
-                await transaction_chargebacks.poll_after_walk(account_id, client)
+            if account_id in _reinstated or (mode in ("backfill", "refresh") and floor_reached):
+                await _poll_disputes(account_id, client)
 
             # Relink: retry the payment→message link for recent orphaned chat
             # PPVs whose message row arrived AFTER the transaction did (scrape
@@ -1473,10 +1715,10 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
             log.info(
                 "ingest_tx_scan_end account=%s mode=%s pages=%d inserted=%d "
                 "patched=%d duration_ms=%d",
-                account_id, mode, pages, inserted, patched, dur_ms,
+                account_id, mode, pages, inserted + bf.inserted, patched + bf.patched, dur_ms,
             )
             return {
-                "rows_inserted": inserted, "rows_patched": patched,
+                "rows_inserted": inserted + bf.inserted, "rows_patched": patched + bf.patched,
                 "pages": pages, "duration_ms": dur_ms, "error": None,
             }
         finally:
@@ -1517,7 +1759,7 @@ _FAST_POLL_STAGGER_S = 0.2
 async def supervised_tick(account_id: str, mode: str) -> dict:
     """The supervisor's tick for one account: `run_one_tick` as a background walk
     (of_pacing: its pages at the shared per-Creator pace, OF's 429 retried once).
-    The admin /run stays unpaced."""
+    The admin /run too: a backfill is 40 pages a tick, whoever asked for it."""
     return await of_pacing.walk(account_id, "transactions", lambda: run_one_tick(account_id, mode=mode))
 
 
@@ -1715,6 +1957,9 @@ async def trigger_backfill(account_id: str, *, since: datetime | None = None) ->
     floor = since or (datetime.utcnow() - timedelta(days=_DEFAULT_BACKFILL_DAYS))
     async with get_session() as s:
         row = await _scan_state(s, account_id)
+        # A walk not done still owes its own floor (reactivated again mid-walk).
+        if not row.fully_backfilled and row.backfill_floor is not None:
+            floor = min(floor, row.backfill_floor)
         row.backfill_floor = floor
         row.oldest_seen_occurred_at = None
         row.fully_backfilled = False
@@ -1728,12 +1973,11 @@ async def trigger_backfill(account_id: str, *, since: datetime | None = None) ->
 
 async def backfill_after_reactivation(account_id: str, deactivated_at: datetime) -> bool:
     """A Creator was just reactivated after being off since `deactivated_at`.
-    A gap inside the 7-day window is re-read by the next full refresh walk
-    anyway (within one _FULL_EVERY_S period + a tick); a longer one is
-    backfilled from `deactivated_at` on. Both reach only OF's latest 600 rows
-    (OF ignores start/end), so a busier gap is not re-read. True when a
-    backfill was queued."""
-    if datetime.utcnow() - deactivated_at <= timedelta(days=_ROLLING_WINDOW_DAYS):
+    A gap inside the recent window is re-read by the next recent walk; a longer
+    one is backfilled from `deactivated_at` on, the whole gap (marker walk): a full
+    walk reaches only OF's latest 600 rows, under 6 days at 111 rows a day (measured,
+    15891843). True when a backfill was queued."""
+    if datetime.utcnow() - deactivated_at <= timedelta(hours=_RECENT_WINDOW_H):
         return False
     await trigger_backfill(account_id, since=deactivated_at)
     return True
@@ -1803,8 +2047,8 @@ async def start_supervisor() -> None:
 
     Refresh ticks run up to _REFRESH_CONCURRENCY at once (bounded concurrent
     OF load; each Creator paced on its own). Backfill ticks may run up to
-    _BACKFILL_CONCURRENCY in parallel — synthesis review §4: a 30-account
-    cold-start drops from ~100min to ~25min."""
+    _BACKFILL_CONCURRENCY in parallel: a 30-account cold-start takes about half
+    the serial time."""
     log.info(
         "ingest_tx_supervisor_started tick=%ds recent=%.0fh window=%dd full_every=%ds backfill=%dd",
         _TICK_INTERVAL_S, _RECENT_WINDOW_H, _ROLLING_WINDOW_DAYS, _FULL_EVERY_S,

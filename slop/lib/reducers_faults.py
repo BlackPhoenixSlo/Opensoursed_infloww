@@ -88,6 +88,9 @@ AUTOREPLY_DRAFT_INFLIGHT = ("auto-reply: a Delay typed while the settings PUT is
                             "once it lands; the next Save shows 'Saved' and stores it (GET /admin/autoreply-config)")
 GTKF_INFLIGHT = ("get to know fans: a cutoff, caption and price typed while the rule PATCH is in flight are kept and keep "
                  "'Saved' off once it lands; the next Save shows 'Saved' and stores them (GET /admin/automation-rules)")
+GTKF_OFF = ("get to know fans: with no rule and the switch off the settings show (catalog defaults); Save creates the "
+            "rule OFF with the typed values (POST /admin/automation-rules, is_enabled false, no switch call); on then "
+            "off keeps them on screen and stored, one rule")
 PM_SWITCH = ("priority mass: switching 'Post as' from one Creator to another drops the first one's list picks "
              "(the POST carries the second Creator's picks and its pre-ticked MASSDMEXCLUDE on the default "
              "audience only)")
@@ -384,6 +387,21 @@ def register(Fault) -> dict:
         "inflight-edit-shows-saved": Fault(None, (AUTOREPLY_DRAFT_INFLIGHT, GTKF_INFLIGHT), browser=(
             (r"s\.draft !== s\.sent", "s.sent === null"),
         ), browser_files=2),
+        # slop/run 2026-10-29-state-reducers --break --fault=gtkf-settings-need-rule --set only=gtkf
+        # app/components/automations/GetToKnowFansPage.tsx: the settings mount only once a rule row exists (the
+        # owner's bug: a creator never switched on shows no cutoff / closing PPV while off). Only GTKF_OFF goes red:
+        # GTKF_INFLIGHT switches on first, which makes the row.
+        "gtkf-settings-need-rule": Fault(None, (GTKF_OFF,), browser=(
+            (r"rulesQ\.isSuccess && meta && ", "rulesQ.isSuccess && meta && rule && "),
+        )),
+        # slop/run 2026-10-29-state-reducers --break --fault=gtkf-save-turns-on --set only=gtkf
+        # app/components/automations/getToKnowFansForm.ts `ruleSave`: a Save with no rule creates it ON, so saving
+        # settings starts sending. GTKF_OFF goes red (its rule must stay off after Save), and GTKF_INFLIGHT after it:
+        # the rule is left on, so its switch no longer starts off (measured: run
+        # 20261107T205147Z-2026-10-29-state-reducers-break-b72a, "rule already on before the test").
+        "gtkf-save-turns-on": Fault(None, (GTKF_OFF, GTKF_INFLIGHT), browser=(
+            (r"(payload: buildPayload\(d, \{\}\),(?:\\n|\s)*)is_enabled: false", r"\1is_enabled: true"),
+        )),
         # slop/run 2026-10-29-state-reducers --break --fault=nudge-save-ok-any-account
         # app/components/settings/nudgeOnlineReducer.ts `saveOk`: a save landing after an account
         # switch is applied to the account now shown, so B says "Saved" for A's write.

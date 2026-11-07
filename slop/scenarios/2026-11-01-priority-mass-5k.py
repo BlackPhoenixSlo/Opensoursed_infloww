@@ -64,11 +64,6 @@ ONCE + CRASH; `pm-cancel-keeps-pending` (cancel_run without its sweep): CANCEL;
 `pm-sensitive-word-ignored` (`_sensitive_words` reads nothing): REFUSE; `pm-leg-exact-scan-only`
 (the leg's `priority_mass.sensitive_hits` finds nothing): LEG_SCAN; `pm-ui-no-massdm-seed` (the
 composer's MASSDMEXCLUDE seed reverted, client side; UI run only): UI_SEED.
-EXPECTED_TRACEBACKS (set by the UI run only; lib/cli.py reads it after `run`): the Mass Messages
-tab's always-mounted OnlyFans panel calls `POST /admin/mass-messages/refresh`. The seeded Creators'
-stub session has no `headers`: in the product `_load_client` answers that 503 `bad_session`, but
-lib/relay.py's `client_pool.get` fallback hands it an `_OfflineOF` that raises the KeyError on first
-use, inside the route, which catches only OFAPIError, so it 500s here. Not this flow.
 """
 from __future__ import annotations
 
@@ -117,9 +112,7 @@ SCAN_N = 20
 SCAN_WORD = "pay pal"               # listed only after S is created
 SCAN_TEXT = "tip me on pay  pal, {name}"   # two spaces: the leg's exact scan misses it
 LIVE = ("resolving", "running")
-EXPECTED_TRACEBACKS: tuple = ()       # the UI run sets UI_TRACEBACKS (docstring)
 UI_TEXT = "hi {name}, thinking of you today"   # the UI run's text (not B's API text: REPEAT)
-UI_TRACEBACKS = (("Exception in ASGI application", "KeyError: 'headers'"),)
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -603,8 +596,6 @@ async def run(ctx) -> None:
         for n in (ui_runs, ui_word, UI_SEED, ui_listed):
             ctx.skip(n, "--no-ui")
     else:
-        global EXPECTED_TRACEBACKS      # deliberate: lib/cli.py reads it after run (docstring)
-        EXPECTED_TRACEBACKS = UI_TRACEBACKS
         await _ui(ctx, A, C, runs[A], q, ui_runs, ui_word)
         await _ui_seed(ctx, B, lists[B], aud[B], q, ui_listed)
     for h in (*https, legs_http):

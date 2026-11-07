@@ -615,7 +615,7 @@ async def admin_accounts_set_active(
     Activate clears it; the pump supervisor restarts the pump within 15s.
     Jobs that fell due while it was off are cancelled as missed
     (`automation_executor.cancel_jobs_missed_while_off`), and a gap longer than
-    the ledger's refresh window is backfilled
+    the ledger's recent window is backfilled
     (`transaction_ingest.backfill_after_reactivation`).
 
     The default (no-header) account is left alone, even when it is this

@@ -122,9 +122,13 @@ clock-out on Creator 0, as `/clock-in` + `/clock-out` would leave it).
    toggled once that save settled (a wipe would be its onSuccess, `dropSaved`), "Saved" stays off, and the
    next Save PUTs and stores it. Screenshots autoreply-style-during-save, autoreply-style-landed,
    autoreply-style-after-save.
-9b. Get to know fans (My Automations > Get to know fans, `?creator=` Creator 0; the header switch creates the
-   rule through the real route): cutoff typed, Save, and while its rule PATCH is held the cutoff, the closing
-   caption and the price typed; once that save settled the fields keep them and "Saved" is off; the next Save
+9b. Get to know fans (My AI Chatter > Get to know fans, `?creator=` Creator 0). First on a 390x844 phone, dark:
+   no rule, the Automation card's switch off -> the settings show the catalog defaults; cutoff, caption and price
+   typed, Save -> one POST /admin/automation-rules with is_enabled false, no switch call, the DB row parked with
+   them; switch on then off -> the same row on, then off, the values kept on screen and stored. Screenshots
+   gtkf-off-no-rule, gtkf-off-saved, gtkf-on-off-kept. Then (desktop) the switch wakes that rule: cutoff typed,
+   Save, and while its rule PATCH is held the cutoff, the closing caption and the price typed; once that save
+   settled the fields keep them and "Saved" is off; the next Save
    shows it and GET /admin/automation-rules holds them (price in cents). Screenshots gtkf-edit-during-save,
    gtkf-after-save, gtkf-resaved.
 10. Priority mass (Smart Messages > New Message > Priority mass message): 'Post as' Creator 1,
@@ -481,8 +485,9 @@ from slop.lib.reducers_faults import (ADMIN_EMPTY, ADMIN_GATE, ADMIN_ROSTER_FAIL
                                         CLOCK_INVERTED, CLOCK_SAVED, DUPES_CONFIRM, DUPES_HIDE, DUPES_PARTIAL,
                                         FANLIST_LOAD_MORE, FANLIST_RETURN, FANLIST_REWARM, FANLIST_SCOPE, FL_SEED,
                                         FL_SWITCH, FRAME_PAGE1, GROUP_ACK, GROUP_ACK_MS, GROUP_BURST, GROUP_FANSLY,
-                                        GTKF_INFLIGHT, MASS_ALL, MASS_BODY, MASS_FREE, MASS_GATE, MASS_GATE_SEND,
-                                        MASS_PARTIAL, MASS_RETRY, MASS_TEMPLATE_GIF, MASS_VOLUME, NUDGE_KEEP,
+                                        GTKF_INFLIGHT, GTKF_OFF, MASS_ALL, MASS_BODY, MASS_FREE, MASS_GATE,
+                                        MASS_GATE_SEND, MASS_PARTIAL, MASS_RETRY, MASS_TEMPLATE_GIF, MASS_VOLUME,
+                                        NUDGE_KEEP,
                                         NUDGE_STALE, NUDGE_STORED,
                                         NUDGE_SWITCH, PM_ROW, PM_SWITCH, POST_ALL, POST_BODIES, POST_LOCKED,
                                         POST_PRICED, POST_RETRY, PREMADE_PAYLOAD, PREMADE_ROWS, PREMADE_STORED,
@@ -529,7 +534,7 @@ SECTIONS = {
     "admin-users": (ADMIN_USERS_FAILED,),
     "admin-gate": (ADMIN_GATE,),
     "autoreply": (AUTOREPLY_RELOAD, AUTOREPLY_STORED, AUTOREPLY_DRAFT_INFLIGHT, AUTOREPLY_INFLIGHT),
-    "gtkf": (GTKF_INFLIGHT,),
+    "gtkf": (GTKF_OFF, GTKF_INFLIGHT),
     "audience-pm": (PM_SWITCH, PM_ROW),
     "audience-fl": (FL_SEED, FL_SWITCH),
     "funnel-media": (FUNNEL_MEDIA_SAVED,),
@@ -3618,8 +3623,105 @@ GTKF_KIND = "welcome_chatter_for_info"
 GTKF_CAPTION = "slop closing caption"
 
 
+GTKF_OFF_CAPTION = "slop parked caption"
+
+
+async def _gtkf_rows(ctx, aid: str) -> list[tuple]:
+    """(id, is_enabled, cutoff, caption, price cents) of the Creator's rules of the kind, from the run's DB."""
+    import sqlite3
+    con = sqlite3.connect(f"file:{ctx.world.db}?mode=ro", uri=True, timeout=30)
+    try:
+        rows = con.execute("SELECT id, is_enabled, steps_json FROM automation_rules WHERE account_id=? AND kind=? "
+                           "ORDER BY id", (str(aid), GTKF_KIND)).fetchall()
+    finally:
+        con.close()
+    out = []
+    for rid, on, steps in rows:
+        p = json.loads(steps or "{}")
+        out.append((rid, int(on), p.get("max_fan_messages"), p.get("closing_ppv_text"),
+                    p.get("closing_ppv_price_cents")))
+    return out
+
+
+async def _dark_shot(ctx, page, name: str) -> None:
+    # The app's default theme (the harness browser runs light; ai-chatter-nav does the same): dark, phone.
+    await page.evaluate("() => { localStorage.setItem('chatterly:theme', 'dark'); "
+                        "document.documentElement.removeAttribute('data-theme'); }")
+    await _painted(page)
+    await ui.shot(ctx, page, name)
+
+
+async def _gtkf_off(ctx, page, chk, aid: str) -> None:
+    """GTKF_OFF on a 390x844 phone: no rule, switch off -> settings shown; Save parks a new rule; on, off keeps it."""
+    await page.goto(f"{ctx.app}/growth/get-to-know-fans?creator={aid}", wait_until="domcontentloaded")
+    sw = page.get_by_role("switch", name="Get to know fans", exact=True)
+    await sw.wait_for(timeout=WAIT_MS)
+    await page.wait_for_function("(b) => b && !b.disabled", arg=await sw.element_handle(), timeout=WAIT_MS)
+    start = await sw.get_attribute("aria-checked")
+    before = await _gtkf_rows(ctx, aid)
+    card = await sw.evaluate("(b) => b.closest('section')?.querySelector('h2')?.textContent ?? null")
+    in_header = await sw.evaluate("(b) => !!b.closest('header')")
+    cutoff = page.get_by_role("spinbutton", name="Message cutoff")
+    caption = page.get_by_role("textbox", name="Closing PPV caption")
+    price = page.get_by_role("spinbutton", name="Closing PPV price in dollars")
+    vals = lambda: asyncio.gather(cutoff.input_value(), caption.input_value(), price.input_value())  # noqa: E731
+    try:
+        await cutoff.wait_for(timeout=30_000)
+    except PwTimeout:
+        await _dark_shot(ctx, page, "gtkf-off-no-rule")
+        chk(GTKF_OFF, False, switch_before=start, rows_before=before, account=aid,
+            why="no Message cutoff with the switch off and no rule")
+        return
+    seeded = list(await vals())
+    await _dark_shot(ctx, page, "gtkf-off-no-rule")
+
+    await cutoff.fill("9")
+    await caption.fill(GTKF_OFF_CAPTION)
+    await price.fill("7")
+    save = page.get_by_role("button", name="Save", exact=True).first
+    with recorded(page, "POST", "/admin/automation-rules") as posts, \
+            recorded(page, "POST", "/admin/automation-rules/switch") as switches:
+        await save.click()
+        await page.get_by_text("Saved", exact=True).wait_for(timeout=30_000)
+    after_save = await _gtkf_rows(ctx, aid)
+    switch_after_save = await sw.get_attribute("aria-checked")
+    await save.scroll_into_view_if_needed()
+    await _dark_shot(ctx, page, "gtkf-off-saved")
+
+    async def flip(want: str) -> None:
+        await sw.click()
+        await page.wait_for_function("([b, w]) => b.getAttribute('aria-checked') === w && !b.disabled",
+                                     arg=[await sw.element_handle(), want], timeout=30_000)
+    await sw.scroll_into_view_if_needed()
+    await flip("true")
+    on_rows = await _gtkf_rows(ctx, aid)
+    await flip("false")
+    off_rows = await _gtkf_rows(ctx, aid)
+    kept = list(await vals())
+    await _dark_shot(ctx, page, "gtkf-on-off-kept")
+
+    want = (9, GTKF_OFF_CAPTION, 700)
+    body = (posts[0]["body"] or {}) if posts else {}
+    rid = after_save[0][0] if after_save else None
+    chk(GTKF_OFF, start == "false" and before == [] and card == "Automation" and not in_header
+        and seeded[0] == "10" and seeded[2] == "10" and bool(seeded[1])
+        and len(posts) == 1 and body.get("is_enabled") is False and switches == []
+        and switch_after_save == "false" and after_save == [(rid, 0, *want)]
+        and on_rows == [(rid, 1, *want)] and off_rows == [(rid, 0, *want)] and kept == ["9", GTKF_OFF_CAPTION, "7"],
+        switch_before=start, rows_before=before, switch_card=card, in_header=in_header, seeded=seeded,
+        posts=[{"status": p["status"], "body": p["body"]} for p in posts], switch_calls=len(switches),
+        switch_after_save=switch_after_save, rows_after_save=after_save, rows_on=on_rows, rows_off=off_rows,
+        kept=kept, account=aid)
+
+
 async def _gtkf(ctx, page, chk) -> None:
     aid = ctx.world.data["creators"][0]["id"]
+    await page.set_viewport_size({"width": PHONE[0], "height": PHONE[1]})
+    try:
+        await _gtkf_off(ctx, page, chk, aid)
+    finally:
+        await page.set_viewport_size({"width": VIEWPORT[0], "height": VIEWPORT[1]})
+    # GTKF_INFLIGHT: the rule GTKF_OFF parked (or none, if it failed) is off; the switch wakes or creates it.
     await page.goto(f"{ctx.app}/growth/get-to-know-fans?creator={aid}", wait_until="domcontentloaded")
     header = page.get_by_role("switch", name="Get to know fans", exact=True)
     await header.wait_for(timeout=WAIT_MS)
@@ -3629,7 +3731,7 @@ async def _gtkf(ctx, page, chk) -> None:
     if start != "false":  # a click would switch an existing rule off and time out later; fail here instead
         chk(GTKF_INFLIGHT, False, switch_before=start, account=aid, why="rule already on before the test")
         return
-    await header.click()  # the real switch creates the rule from the catalog defaults
+    await header.click()  # the real switch wakes the parked rule (creates one from the catalog defaults if none)
     await cutoff.wait_for(timeout=WAIT_MS)
     caption = page.get_by_role("textbox", name="Closing PPV caption")
     price = page.get_by_role("spinbutton", name="Closing PPV price in dollars")

@@ -1,6 +1,6 @@
-"""The Fan List's ranking faults (scenarios/2026-10-26-fan-list-chips.py): lib/faults.py merges
-`register(Fault)` into FAULTS. Both are client side: `browser=` rewrites
-app/components/chat/fanListSort.ts as the browser loads it (actors/ui.py) and as node loads it
+"""The Fan List's faults (scenarios/2026-10-26-fan-list-chips.py): lib/faults.py merges
+`register(Fault)` into FAULTS. All are client side: `browser=` rewrites the app's JS as the browser
+loads it (actors/ui.py); the ranking ones (app/components/chat/fanListSort.ts) also as node loads it
 (lib/app_ts.py, `lib/fan_list_ts.mjs`), so a `--no-ui` run catches them too. The check names
 live here and the scenario imports them, so a target can never name a check that does not exist.
 
@@ -18,6 +18,7 @@ FL_COUNTS = ("Fan List chip counts (the app's chipCounts in node, each Creator a
              "view's: Unread, Owe reply and All (unread or owed)")
 # The UI check the owe-count fault also turns red (measured: the Owe reply badge is chipCounts' number).
 C_OWE = "Owe reply count == owed loaded chats, in amber, shown off and on"
+C_UNREAD = "Unread count == loaded chats"
 
 
 def register(Fault) -> dict:
@@ -34,4 +35,11 @@ def register(Fault) -> dict:
         "fan-list-owe-count-from-unread": Fault(None, (FL_COUNTS, C_OWE), browser=(
             (r"(oweReplyCount: counted\.filter\(\(c\)\s*=>\s*)isOwed\(c\)", r"\1c.hasUnread"),
         )),
+        # slop/run 2026-10-26-fan-list-chips --break --fault=screen-reads-unreserved
+        # lib/relaySchedule.ts `admissible` (the fix of 2026-11-07): a failed screen bundle no longer keeps a Creator's
+        # last background slot for the screen's own reads, so the two money-rail feeds (held: OF is out of reach)
+        # take both and the per-Creator chat list never goes out: the badges have no loaded chats to count.
+        "screen-reads-unreserved": Fault(None, (C_UNREAD, C_OWE), browser=(
+            (r"s\.reserve \? Math\.max\(1, s\.perCreator - 1\) : s\.perCreator", "s.perCreator"),
+        ), browser_files=2, ts_files=0),  # next dev bundles lib/relaySchedule.ts into the layout's and the page's chunk
     }

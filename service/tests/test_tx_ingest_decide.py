@@ -15,6 +15,7 @@ _harness.bootstrap()
 
 import logging  # noqa: E402
 from collections import Counter  # noqa: E402
+from dataclasses import replace  # noqa: E402
 from datetime import datetime, timedelta  # noqa: E402
 
 import transaction_ingest_decide as d  # noqa: E402
@@ -235,17 +236,146 @@ def case_success_table():
     table = [
         # (mode, floor_reached, want status, want fully_backfilled)
         ("backfill", True, "ok", True),
-        ("backfill", False, "backfilling", False),
-        ("refresh", False, "ok", False),
-        ("refresh", True, "ok", False),
+        ("backfill", False, "backfill_partial", False),
+        ("refresh", False, "backfill_partial", False),
+        ("refresh", True, "backfill_partial", False),
     ]
     for mode, floor, want_status, want_full in table:
         s = d.scan_after_success(base, mode=mode, inserted=3, patched=1, last_marker=None,
                                  rows_min=t1, rows_max=NOW, floor_reached=floor, now=NOW)
         assert (s.current_status, s.fully_backfilled) == (want_status, want_full), (mode, floor, s)
         assert (s.consecutive_failures, s.last_error, s.last_scan_at) == (0, None, NOW), s
-        assert (s.oldest_seen_occurred_at, s.newest_seen_occurred_at) == (t1, NOW), s
+        # Until done the seen range is the backfill's: only a backfill moves it (a refresh's
+        # top would hide a gap below it from the next resumed read).
+        moved = mode == "backfill"
+        assert (s.oldest_seen_occurred_at, s.newest_seen_occurred_at) == (t1 if moved else t2, NOW if moved else t2), s
         assert (s.rows_inserted_total, s.rows_patched_total, s.last_marker) == (8, 1, 7), s
+    done = d.scan_after_success(replace(base, fully_backfilled=True), mode="refresh", inserted=0, patched=0,
+                                last_marker=None, rows_min=t1, rows_max=NOW, floor_reached=True, now=NOW)
+    assert (done.oldest_seen_occurred_at, done.newest_seen_occurred_at) == (t1, NOW), "a finished account's widens"
+    assert done.current_status == "ok"
+    assert d.BACKFILL_PARTIAL not in d.IN_FLIGHT, "between ticks: an in-flight status would skip the next tick"
+
+
+def case_a_stopped_walk_reads_stalled_until_a_tick_clears_it():
+    t = NOW - timedelta(days=1)
+    base = ScanState(oldest_seen_occurred_at=t, newest_seen_occurred_at=t)
+
+    def after(state, mode, floor=False, stop=None):
+        return d.scan_after_success(state, mode=mode, inserted=0, patched=0, last_marker=None, rows_min=None,
+                                    rows_max=None, floor_reached=floor, now=NOW, stop_reason=stop)
+    table = [
+        # (stop reason, want status, want last_error)
+        (None, "backfill_partial", None),
+        ("tick_cap", "backfill_partial", None),
+        ("no_next_marker", "backfill_stalled", "backfill_stopped: no_next_marker"),
+        ("rows_not_held", "backfill_stalled", "backfill_stopped: rows_not_held"),
+        ("blank_first_page", "backfill_stalled", "backfill_stopped: blank_first_page"),
+    ]
+    for stop, want, err in table:
+        s = after(base, "backfill", stop=stop)
+        assert (s.current_status, s.last_error) == (want, err), (stop, s)
+    stalled = after(base, "backfill", stop="repeated_page")
+    kept = after(replace(stalled, current_status="refreshing"), "refresh", floor=True)
+    assert (kept.current_status, kept.last_error) == ("backfill_stalled", stalled.last_error), kept
+    cap = after(stalled, "backfill", stop="tick_cap")
+    assert (cap.current_status, cap.last_error) == ("backfill_partial", None), cap
+    done = after(stalled, "backfill", floor=True, stop="last_page")
+    assert (done.current_status, done.last_error, done.fully_backfilled) == ("ok", None, True), done
+    plain = after(replace(base, last_error="OF 500"), "refresh", floor=True)
+    assert (plain.current_status, plain.last_error) == ("backfill_partial", None), plain
+
+
+def case_marker_of_rounds_up_so_ties_are_re_read():
+    table = [
+        (datetime(2026, 10, 13, 21, 49, 26), 1791928166),
+        (datetime(2026, 10, 13, 21, 49, 26, 1), 1791928167),
+        (datetime(2026, 10, 13, 21, 49, 26, 999999), 1791928167),
+        (datetime(1970, 1, 1), 0),
+    ]
+    for at, want in table:
+        assert d.marker_of(at) == want, (at, d.marker_of(at), want)
+
+
+def case_page_span_reads_of_stamps_and_clamps_to_the_window():
+    w = datetime(2026, 8, 1)
+    r = lambda at: {"createdAt": at}
+    table = [
+        # (rows, want cursor, want newest, want below)
+        ([], None, None, False),
+        ([r("2026-10-13T21:49:26+00:00"), r("2026-10-13T20:00:00+00:00")],
+         datetime(2026, 10, 13, 20), datetime(2026, 10, 13, 21, 49, 26), False),
+        ([r("2026-10-13T21:49:26Z")], datetime(2026, 10, 13, 21, 49, 26), datetime(2026, 10, 13, 21, 49, 26), False),
+        ([r("2026-10-13T21:49:26.250+00:00")], datetime(2026, 10, 13, 21, 49, 26, 250000),
+         datetime(2026, 10, 13, 21, 49, 26, 250000), False),
+        ([r("2026-08-02T00:00:00+00:00"), r("2026-07-20T00:00:00+00:00")],
+         datetime(2026, 8, 2), datetime(2026, 8, 2), True),
+        ([r("2026-07-20T00:00:00+00:00")], None, datetime(2026, 7, 20), True),
+        ([r("not a date"), {}], None, None, False),
+    ]
+    for rows, cursor, newest, below in table:
+        assert d.page_span(rows, w) == (cursor, newest, below), (rows, d.page_span(rows, w))
+
+
+def case_backfill_step_table():
+    table = [
+        # (rows, hasMore, nextMarker, sent, first, held, below, want action, reason, marker)
+        (100, True, 900, None, True, True, False, "next", "more", 900),
+        (100, True, 900, 1000, False, True, False, "next", "more", 900),
+        (100, True, "900", 1000, False, True, False, "next", "more", 900),
+        (100, True, 900.5, 1000, False, True, False, "next", "more", 901),   # never above-precision
+        (37, False, None, 1000, False, True, False, "complete", "last_page", None),
+        (37, False, None, None, True, True, False, "complete", "last_page", None),
+        (37, False, None, 1000, False, True, True, "complete", "last_page", None),
+        (0, False, None, None, True, False, False, "complete", "empty_window", None),
+        # hasMore anything but false: not an end, whatever else the page says (finding 5).
+        (0, True, None, None, True, False, False, "stop", "empty_page", None),
+        (0, None, None, None, True, False, False, "stop", "empty_page", None),
+        (37, None, None, 1000, False, True, False, "stop", "no_has_more", None),
+        (37, 0, None, 1000, False, True, False, "stop", "no_has_more", None),
+        (37, "", 900, 1000, False, True, False, "stop", "no_has_more", None),
+        # Not done: the offset cap's look-alike, a stuck cursor, OF ignoring startDate.
+        (0, False, None, None, True, True, False, "stop", "empty_first_page_rows_held", None),
+        (0, False, None, 1000, True, True, False, "stop", "empty_first_page_rows_held", None),
+        (0, False, None, 1000, False, True, False, "stop", "empty_page", None),
+        (0, True, 900, 1000, False, True, False, "stop", "empty_page", None),
+        (100, True, None, 1000, False, True, False, "stop", "no_next_marker", None),
+        (100, True, "x", 1000, False, True, False, "stop", "no_next_marker", None),
+        (100, True, float("inf"), 1000, False, True, False, "stop", "no_next_marker", None),
+        (100, True, float("nan"), 1000, False, True, False, "stop", "no_next_marker", None),
+        (100, True, 1000, 1000, False, True, False, "stop", "marker_not_decreasing", None),
+        (100, True, 1001, 1000, False, True, False, "stop", "marker_not_decreasing", None),
+        (100, True, 900, 1000, False, True, True, "stop", "start_date_ignored", None),
+    ]
+    for rows, more, nxt, sent, first, held, below, action, reason, marker in table:
+        got = d.backfill_step(rows=rows, has_more=more, next_marker=nxt, sent_marker=sent, first_page=first,
+                              held_since=held, below_window=below)
+        assert got == (action, reason, marker), (rows, more, nxt, sent, first, held, below, got)
+
+
+def case_scan_backfill_page_table():
+    hi, lo, top = NOW - timedelta(days=2), NOW - timedelta(days=5), NOW - timedelta(hours=1)
+    base = ScanState(oldest_seen_occurred_at=hi, newest_seen_occurred_at=hi, rows_inserted_total=4, rows_patched_total=1)
+    table = [
+        # (cursor, newest, want oldest, want newest)
+        (lo, top, lo, top),      # a page further down
+        (top, top, hi, top),     # the cursor never moves up
+        (None, top, hi, top),    # the recent read / a page not all held
+        (None, None, hi, hi),
+    ]
+    for cursor, newest, want_old, want_new in table:
+        s = d.scan_backfill_page(base, cursor=cursor, newest=newest, inserted=2, patched=3)
+        assert (s.oldest_seen_occurred_at, s.newest_seen_occurred_at) == (want_old, want_new), s
+        assert (s.rows_inserted_total, s.rows_patched_total) == (6, 4), s
+    assert d.scan_backfill_page(ScanState(), cursor=lo, newest=None, inserted=0, patched=0).oldest_seen_occurred_at == lo
+
+
+def case_backfill_tier_stays_green_between_ticks():
+    from tx_ingest_admin_api import _tx_ingest_tier
+    assert _tx_ingest_tier(5.0, "backfill_partial") == "green"
+    assert _tx_ingest_tier(5.0, "backfilling") == "green"
+    assert _tx_ingest_tier(5.0, d.BACKFILL_STALLED) == "yellow", "a stopped walk needs a look"
+    assert d.BACKFILL_STALLED not in d.IN_FLIGHT, "between ticks: an in-flight status would skip the next tick"
 
 
 def case_start_and_interrupt():
@@ -257,6 +387,16 @@ def case_start_and_interrupt():
     assert s.backfill_floor == pinned, "a backfill's floor is pinned by its first tick"
     s = d.scan_started(ScanState(), "refresh", NOW - timedelta(days=7), NOW)
     assert (s.current_status, s.backfill_floor) == ("refreshing", None), s
+    # A legacy seen range below the window is no cursor; one inside it (startDate's day too) is.
+    inside = floor - timedelta(hours=1)
+    s = d.scan_started(ScanState(backfill_floor=floor, oldest_seen_occurred_at=floor - timedelta(days=2)),
+                       "backfill", floor, NOW)
+    assert s.oldest_seen_occurred_at is None, s
+    s = d.scan_started(ScanState(backfill_floor=floor, oldest_seen_occurred_at=inside), "backfill", floor, NOW)
+    assert s.oldest_seen_occurred_at == inside, s
+    far = floor - timedelta(days=2)
+    s = d.scan_started(ScanState(backfill_floor=floor, oldest_seen_occurred_at=far), "refresh", floor, NOW)
+    assert s.oldest_seen_occurred_at == far, "only a backfill reads it as a cursor"
     s = d.scan_interrupted(ScanState(consecutive_failures=2, current_status="refreshing"), "interrupted_mid_tick")
     assert (s.current_status, s.last_error, s.consecutive_failures) == ("idle", "interrupted_mid_tick", 2), s
 
@@ -275,6 +415,16 @@ def case_window_and_mode():
         ("no scan row", None, None, 0, "backfill"),
         ("never backfilled", ScanState(), None, 0, "backfill"),
         ("backfilling, full walk recent", ScanState(), NOW, 0, "backfill"),
+        # A walk under way still owes the period's full walk (status flips, disputes).
+        ("walk started, full walk this period", ScanState(oldest_seen_occurred_at=NOW), B, phase, "backfill"),
+        ("walk started, full walk due", ScanState(oldest_seen_occurred_at=NOW), B - timedelta(seconds=1), phase, "refresh"),
+        ("walk started, none in this process", ScanState(oldest_seen_occurred_at=NOW), None, phase, "refresh"),
+        ("walk not started, full walk due", ScanState(), B - timedelta(seconds=1), phase, "backfill"),
+        ("walk stopped on its first page, full walk due",
+         ScanState(last_error="backfill_stopped: blank_first_page"), None, phase, "refresh"),
+        ("walk stopped on its first page, full walk done",
+         ScanState(last_error="backfill_stopped: blank_first_page"), B, phase, "backfill"),
+        ("a tick failed before any page: not stopped", ScanState(last_error="OF 500"), None, phase, "backfill"),
         ("just restarted: no full walk in this process", done, None, phase, "refresh"),
         ("full walk at the start of this period", done, B, phase, "recent"),
         ("full walk 5 min ago, same period", done, NOW - timedelta(minutes=5), phase, "recent"),

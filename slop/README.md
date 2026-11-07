@@ -28,7 +28,7 @@ slop/run all --map                               # rebuild slop/map.json (clean 
 slop/run inbox --no-wait                         # INFRA at once if no gate slot is free or admission fails
 SLOP_MAX_LOAD=6 SLOP_LOCK_WAIT_S=600 slop/run inbox   # the machine gate's load cap (default 12) and slot wait (3600 s)
 python3 ~/.slop/gate.py status                   # slot holders, who queues, load, machine threads, would admission pass
-python3 ~/.slop/gate.py run -- venv/bin/python -m pytest tests/test_webhook_dispatch.py   # any other heavy work, same gate
+python3 ~/.slop/gate.py run -- venv/bin/python -m pytest tests/test_cmm_paid_mm.py   # any other heavy work, same gate
 slop/run nightly --detach                        # the daily full sweep in the background (below: Nightly)
 ```
 
@@ -206,7 +206,7 @@ moved > 20%) and the map status. Exit 0 OK or only FLAKY, 1 a stable FAIL, 3 INF
 `slop/run nightly --apply-map=<nightly folder>` merges that folder's refreshed entries (its
 summary.json `map.mapped`) into `slop/map.json`, the others untouched: run it on a fresh branch from
 origin/main to ship the map PR. The schedule lives in the T3 app scheduler (02:00 local daily, a fresh
-thread per run) in the detached worktree `~/oi-slop-nightly` (never the main checkout):
+thread per run) in the detached worktree `/Users/founder/oi-slop-nightly` (never the main checkout):
 update it to origin/main, `slop/run nightly --detach`, poll for `done`, report `summary.md`.
 
 ## Layout
@@ -344,8 +344,8 @@ account, which a slop stack never has); `next dev` when `/login` does.
 - **`/api/of/*` is held in the browser.** OF-live reads never answer (below).
 - **OF's rate limit and paged lists (`lib/sweep_pacing_wire.py`, sweep-pacing).** Harness side, on
   `lib/of_wire.py`'s server without editing it (the server's handler class swapped for a subclass):
-  paged promotions, subscribers, payouts transactions and `/users/list`, and OF's 429 ("Please allow 1
-  seconds") from a token bucket per Creator across those four routes, 10 deep, refilled 2 a second (a
+  paged promotions, subscribers, payouts transactions (OF's measured `startDate`, `marker`, `nextMarker`,
+  100-a-page and offset >= 600 answers) and `/users/list`, and OF's 429 ("Please allow 1 seconds") from a token bucket per Creator across those four routes, 10 deep, refilled 2 a second (a
   GUESS at OF's policy, not measured: a page's own burst fits, a paced walk never drains it, back-to-back
   pages do), plus injected
   429s (once, or k times in a row) and a promotion's claimer pages. `lib/sweep_pacing_relay.py` runs the
@@ -845,7 +845,8 @@ A flow with a `README.<flow>.md` lists its scenarios there.
   in the browser from the relay's own view (`/admin/chats/recent` plus each thread's last
   message); OF's chat lists (`GET /chats/folders`) and the pin write (`PATCH
   /lists/{id}/pin-chat`) are faked at the browser's wire; failed loads of URLs the harness
-  aborts are not counted as console errors. Fault `fan-list-owe-reply-last-sort-never-active`
+  aborts or answers 404 (the screen bundles, `ui.screen_bundle_404`: `page.slop["bundles_404"]`) are not
+  counted as console errors. Fault `fan-list-owe-reply-last-sort-never-active`
   (a browser init script: Owe reply laid out last, where the "+" sat, and the sort button
   never pressed or blue) turns only the chip-order and sort-active checks red. Search: on one
   Creator the owner types a Fan's name 100 ms a key (a guess at a fast typist); the `/chats`
@@ -863,7 +864,9 @@ A flow with a `README.<flow>.md` lists its scenarios there.
   budget and vs the last green run. Faults (`lib/fan_list_faults.py`, client side, node too):
   `fan-list-owed-tier-lost` (a read owed chat drops to the idle tier; targets `FL_SORT_TIERS`),
   `fan-list-owe-count-from-unread` (Owe reply counts the unread chats; `FL_COUNTS` and the UI Owe reply count
-  check).
+  check), `screen-reads-unreserved` (browser only, `lib/relaySchedule.ts`: a failed screen bundle keeps no
+  background slot for the screen's own reads, so the two held money-rail feeds take a Creator's both and its
+  `/chats` never goes out; the UI Unread and Owe reply count checks).
 - `2026-10-26-mobile-gestures`: the owner on a phone (390x844, `owner_browser(touch=True)`,
   swipes as Chromium touch input via `ui.swipe`, CDP `Input.dispatchTouchEvent`). Dashboard:
   a vertical drag, a swipe from the OS edge zone (x < 24px) and a drag that turns vertical
@@ -1067,7 +1070,9 @@ A flow with a `README.<flow>.md` lists its scenarios there.
   with the "Proxy blocked (403)" banner, also at 390x844, the typed username kept across a failed Retry, Retry once
   lifted signs in (`BLOCKED_LOGIN`); and a silent relay (/auth/me and /chatter/me held at the wire): the form with
   the "Relay not answering" banner within `ME_SLOW_MS` + slack, not at the 15 s abort, kept through a late `null`
-  and a late user answer while /chatter/me stays held (`HUNG_LOGIN`). Bypasses and screenshots: the scenario's
+  and a late user answer while /chatter/me stays held (`HUNG_LOGIN`). The proxy and the silent relay sit on the leg
+  to the relay that the Next server's inline-boot reads take too, so both are put on those reads as well
+  (`lib/relay.py` `POST /__slop/server-wire {path, mode: 403|"hold"|null}`). Bypasses and screenshots: the scenario's
   docstring. Faults (`lib/session_faults.py`, client side): `outage-revalidate-signs-out` (the scenario's),
   `outage-boot-signs-out`, `auth-403-as-unreachable` (`BLOCKED_LOGIN`), `auth-me-waits-15s`,
   `gate-waits-chatter-probe` and `late-answer-drops-form` (each `HUNG_LOGIN`).
@@ -1143,7 +1148,7 @@ A flow with a `README.<flow>.md` lists its scenarios there.
   network quiet (Next's link prefetch, the Fan List's idle prefetch). `lib/img_relay.py`'s CDN bytes are a decodable 1x1 JPEG padded to size: Chromium
   cancels an image that will not decode after ~1.5 KB, so noise bytes never crossed a capped line in full.
 - `2026-11-05-sweep-pacing` (`OF_WIRE`): every Creator's background OF list walks at once (prewarm pass,
-  roster crawl, three ledger supervisor passes (backfill, full 7 days, recent 24 h), a Growth page's claimer
+  roster crawl, four ledger supervisor passes (backfill, full 7 days, two recent 24 h), a Growth page's claimer
   refresh, a second prewarm pass) against
   a guessed OF 429 limit while `--users` chatters and the Fan List's background name lookups work half the
   Creators. Checks: walk pages spaced >= 1 s per Creator across jobs, one same-page retry per 429, zero 429s
@@ -1151,8 +1156,17 @@ A flow with a `README.<flow>.md` lists its scenarios there.
   refresh walks its claimers, the Growth earnings read never waits on a walk, a twice-429'd page fails the
   walk and keeps the mirror, counts match OF, no 5xx, both lookups' p95, the ledger's OF calls an hour
   (recent + full walks) within budget, OF's `startDate` honoured and a row 10 h old landed by the recent
-  walk. Faults `sweep-unpaced`, `sweep-no-429-retry`, `tx-cadence-300`, `tx-recent-window-ignored`,
-  `tx-recent-startdate-iso` (`lib/sweep_pacing_faults.py`).
+  walk; the backfill's marker walk (a 6,000-row cold Creator with a twice-429'd page and its streak at 2, a reactivated one
+  with a blank page, resumed by admin `/run`, a reactivated one with a blank FIRST page, a walk with 1,540 rows above its top,
+  8 cold Creators on one guessed shared bucket): nothing dropped past OF's offset cap, every row once, lifetime once,
+  a stopped walk never complete and stalled, calls bounded incl. disputes, no terminal 429 on the shared bucket, a mid-walk
+  row lands, no status-flip burst. Faults `sweep-unpaced`,
+  `sweep-no-429-retry`, `tx-cadence-300`, `tx-recent-window-ignored`, `tx-recent-startdate-iso`,
+  `tx-backfill-offset-walk`, `tx-backfill-complete-on-empty`, `tx-backfill-marker-exclusive`,
+  `tx-backfill-lifetime-on-reread`, `tx-backfill-flips-uncapped`, `tx-backfill-uncapped`,
+  `tx-backfill-poll-only-complete`, `tx-backfill-poll-every-tick`, `tx-backfill-gap-unread`,
+  `tx-backfill-blank-first-page`, `tx-backfill-failure-counted`, `tx-backfill-short-gap-unwalked`, `tx-backfill-crowded`, `tx-backfill-dispute-repolled`
+  (`lib/sweep_pacing_faults.py`).
   Details: the scenario's docstring.
 - `2026-11-07-chat-sweep-cadence` (`OF_WIRE`): full chat sweeps (`scrape_chats` `{}`) on
   `service/sweep_cadence.py`'s cadence, not one per relay start. Seeded backlog of duplicate sweeps, 4 relay
@@ -1160,6 +1174,9 @@ A flow with a `README.<flow>.md` lists its scenarios there.
   its oldest, a new one only >= 4 h after the last, none for a deactivated / session-dead Creator.
   `lib/sweep_cadence_relay.py` (`POST /__slop/sweep-cadence-tick`: one cadence pass in place of its 300 s
   timer). Fault `sweep-enqueued-every-pass` (`lib/sweep_cadence_faults.py`). Details: the scenario's docstring.
+- `2026-11-07-ingest-health-banner` (`OF_WIRE`, UI): Ingest health's wording of a stopped and a working ledger backfill
+  after a real supervisor pass, then settled; screenshots `trigger-stalled-and-working`, `settled`. Fault
+  `ingest-banner-raw-status` (`lib/ingest_banner_faults.py`).
 - `2026-11-05-screen-bundles`: one relay call per screen (`service/screens_api.py`: GET
   /admin/screens/dashboard, /admin/screens/inbox). `one_agency` (50 Creators + neighbour) with
   captured sessions, OF on `lib/of_wire.py` (400 ms a call), each Creator's chat list its seeded Fans

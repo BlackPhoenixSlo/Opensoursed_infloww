@@ -203,7 +203,7 @@ function dispatchSchedule(a: ScheduleAction): void {
 }
 
 /** Wait for a background slot; resolves with the release. Aborted while waiting: rejects, the slot never taken. */
-function admitBackground(accountId: string | null, signal?: AbortSignal | null): Promise<() => void> {
+function admitBackground(accountId: string | null, signal: AbortSignal | null | undefined, screen: boolean): Promise<() => void> {
   signal?.throwIfAborted();
   const id = nextJobId++;
   const release = () => dispatchSchedule({ type: "done", id });
@@ -211,7 +211,7 @@ function admitBackground(accountId: string | null, signal?: AbortSignal | null):
     const onAbort = () => { admitted.delete(id); release(); reject(signal!.reason); };
     admitted.set(id, () => { signal?.removeEventListener("abort", onAbort); resolve(release); });
     signal?.addEventListener("abort", onAbort, { once: true });
-    dispatchSchedule({ type: "enqueue", job: { id, accountId } });
+    dispatchSchedule({ type: "enqueue", job: { id, accountId, screen } });
   });
 }
 
@@ -287,7 +287,7 @@ export async function request<T = unknown>(
   // queue; a user call never waits.
   const bgRead = background && url.startsWith("/api/of/") && method === "GET";
   if (bgRead) await screenSettled(init?.signal);
-  const release = bgRead ? await admitBackground(ctx?.accountId ?? null, init?.signal) : null;
+  const release = bgRead ? await admitBackground(ctx?.accountId ?? null, init?.signal, read != null) : null;
   try {
     const priority = FETCH_PRIORITY ? { priority: background ? "low" : "high" } as RequestInit : undefined;
     // A document load's first GET of an unscoped read the HTML carried (lib/inlineBoot.ts): that answer, once.
@@ -302,10 +302,14 @@ export async function request<T = unknown>(
 
 
 /** A screen bundle's GET (lib/screenBundle.ts). It runs every other Creator's reads as background on the relay: only
- *  the open one is the user's. */
+ *  the open one is the user's. A failed one (blocked, broken) sends the screen's reads per Creator: each Creator's
+ *  background lane keeps a slot for them until a bundle answers again (lib/relaySchedule.ts `reserve`). */
 function bundleGet(p: string): Promise<unknown> {
   const f = relayFocus();
-  return request(f ? `${p}${p.includes("?") ? "&" : "?"}focus=${encodeURIComponent(f)}` : p, { method: "GET" });
+  return request(f ? `${p}${p.includes("?") ? "&" : "?"}focus=${encodeURIComponent(f)}` : p, { method: "GET" }).then(
+    (body) => { dispatchSchedule({ type: "reserve", on: false }); return body; },
+    (e: unknown) => { dispatchSchedule({ type: "reserve", on: true }); throw e; },
+  );
 }
 
 /** Start `s`'s bundle now (a document load of its route: lib/screenEntry.ts; a chat open); its body, null if failed. */

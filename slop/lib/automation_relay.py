@@ -38,8 +38,11 @@ OF's answer) at `send_s`; `cancel_begin` / `cancel_done` after `cancel_s`. A Cre
 instead and the cancel raises: "proxy" as curl_cffi's ProxyError after `proxy_s` (the
 proxy's CONNECT 403 once OFClient._proxy_retry's ~6 s of retries ran out; OF never sees
 it), "of" as OF's own error (OFAPIError, a 400) after `cancel_s`. A Creator in
-`send_fail` ({account: "proxy"}, re-read every call) gets `send_refused` instead of
-`send_begin` and the send raises the same ProxyError after `proxy_s` (OF never sees it). A kill
+`send_fail` ({account: "proxy" | "of"}, re-read every call) gets `send_refused` instead of
+`send_begin` and the send raises: "proxy" the same ProxyError after `proxy_s` (OF never sees it),
+"of" OF's own 400 after `accept_at` of `send_s` (AE 2026-11-07: `{"error":{"code":0,"message":
+"Consent not accepted"}}`), as request_json raises it: OFAPIError with the response, here a
+stand-in carrying only its `status_code` and `text` (declared). A kill
 between `send_accepted` and `send_returned` is OF accepting a mass the relay never
 heard back about. Blocking sleeps, in the caller's worker thread as the real curl.
 With the same file: `subscribers` / `following` answer empty pages (a send's
@@ -143,6 +146,14 @@ class _Walker:
             time.sleep(float(cfg.get("proxy_s", 6.0)))
             self._mass_line("send_refused", token=token, text=text, by="proxy")
             raise ProxyError("Failed to perform, curl: (56) CONNECT tunnel failed, response 403")
+        if (cfg.get("send_fail") or {}).get(self.account_id) == "of":
+            from types import SimpleNamespace
+            from of_client import OFAPIError
+            time.sleep(send_s * frac)
+            self._mass_line("send_refused", token=token, text=text, by="of")
+            body = '{"error":{"code":0,"message":"Consent not accepted"}}'
+            raise OFAPIError(f"400 for https://onlyfans.com/api2/v2/messages/queue\n{body}",
+                             response=SimpleNamespace(status_code=400, text=body))
         self._mass_line("send_begin", token=token, text=text)
         time.sleep(send_s * frac)
         at = datetime.now(timezone.utc).isoformat(timespec="seconds")

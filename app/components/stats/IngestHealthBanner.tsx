@@ -33,6 +33,13 @@ export function tier(t: IngestTier): { text: string; dot: string; label: string 
   return                       { text: "text-err",  dot: "bg-err",  label: "Action needed" };
 }
 
+/** A row's scan status in words; the ledger backfill's two between-ticks states need them. */
+export function statusLabel(status: string): string {
+  if (status === "backfill_partial") return "backfilling · still working";
+  if (status === "backfill_stalled") return "backfill stalled";
+  return status;
+}
+
 export function overallLabel(t: IngestTier, count: number): string {
   if (count === 0) return "No accounts bound";
   if (t === "green") return "All accounts up to date.";
@@ -247,8 +254,11 @@ function AccountRow({ row }: { row: IngestAccountRow }) {
           paused · {pausedMinsLeft}m left
         </span>
       ) : row.current_status && row.current_status !== "ok" && (
-        <span className={cn("text-[11px] uppercase tracking-wide", t.text)}>
-          {row.current_status}
+        <span
+          className={cn("text-[11px] uppercase tracking-wide", t.text)}
+          title={row.last_error ?? undefined}
+        >
+          {statusLabel(row.current_status)}
         </span>
       )}
       <div className="ml-auto flex items-center gap-2">

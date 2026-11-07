@@ -2,12 +2,14 @@
 
 /**
  * My AI Chatter > Get to know fans (ours). The AI info-gather automation
- * (`welcome_chatter_for_info`, service/automations/welcome_chatter_for_info.py) on a page of its own: the header
- * switch turns the kind on or off for the creator (`/admin/automation-rules/switch`, which creates its rule from
- * the catalog defaults the first time); once the rule exists the page shows its settings (the message cutoff and
- * the closing PPV, from the rule's payload) and the engine's Human style boxes (the style blob, as Auto-reply's
- * page shows its own), saved together by one Save. Model info is the account's short note every chat prompt pins
- * (`account_ai_config.model_notes`, through `_persona.compose_persona`: this automation and Auto-reply).
+ * (`welcome_chatter_for_info`, service/automations/welcome_chatter_for_info.py) on a page of its own: the Automation
+ * card's switch turns the kind on or off for the creator (`/admin/automation-rules/switch`, which creates its rule
+ * from the catalog defaults the first time, else wakes the one there). Its settings (the message cutoff and the
+ * closing PPV, the rule's payload) and the engine's Human style boxes (the style blob, as Auto-reply's page shows its
+ * own) show whether it is on or off, rule or not, seeded from the rule's payload else the catalog defaults, saved
+ * together by one Save; with no rule yet that Save creates it OFF (getToKnowFansForm.ts `ruleSave`). Model info is
+ * the account's short note every chat prompt pins (`account_ai_config.model_notes`, through
+ * `_persona.compose_persona`: this automation and Auto-reply).
  *
  * Model info is for anyone with access to the account. The switch and settings ride the rule routes, which this
  * page does not grant on its own (service/permissions.py PAGE_MAP), so a role without them sees why instead.
@@ -22,20 +24,22 @@ import { useReducer, useState } from "react";
 import { AiKeyNotice } from "@/components/AiKeyNotice";
 import { VaultPicker } from "@/components/chat/VaultPicker";
 import { MediaTray } from "@/components/compose/MediaTray";
-import { FormBlock, NoCreator, SaveRow, useAutomationCreator } from "@/components/automations/automationPage";
+import {
+  FormBlock, NoCreator, SaveRow, SwitchRow, useAutomationCreator,
+} from "@/components/automations/automationPage";
 import { HumanStyleBlock, useHumanStyle, usePageSave } from "@/components/automations/HumanStyleBlock";
 import { unsaved } from "@/components/automations/sentDraft";
 import type { CreatorPick } from "@/components/shell/CreatorRail";
 import { PageFrame } from "@/components/shell/PageFrame";
-import { IfButton, IfInput, IfSwitch, IfTextArea } from "@/components/ui/infloww";
+import { IfButton, IfInput, IfTextArea } from "@/components/ui/infloww";
 import { useAccountConfig, useSaveAccountConfig, type AccountConfigResp } from "@/hooks/useAccountConfig";
 import {
-  useAutomationKinds, useAutomationRules, useSwitchKind, useUpdateRule, type AutomationKind, type AutomationRule,
+  useAutomationKinds, useAutomationRules, useSaveRule, useSwitchKind, type AutomationKind, type AutomationRule,
 } from "@/hooks/useAutomations";
 import { VAULT_PICK_MAX } from "@/lib/ofMirrorChatShared";
 import { Skeleton } from "@/components/ui/Skeleton";
 
-import { buildPayload, gtkfReducer, initState, invalidReason, limitsOf } from "./getToKnowFansForm";
+import { gtkfReducer, initState, invalidReason, limitsOf, ruleSave } from "./getToKnowFansForm";
 
 const TITLE = "Get to know fans";
 const KIND = "welcome_chatter_for_info";
@@ -64,37 +68,31 @@ function GetToKnowFans({ accountId, creators }: { accountId: string; creators: C
   const meta = kindsQ.data?.find((k) => k.kind === KIND);
 
   return (
-    <PageFrame
-      title={TITLE}
-      creators={creators}
-      actions={
-        <IfSwitch label={<span className="max-sm:sr-only">{TITLE}</span>} aria-label={TITLE}
-          checked={on} disabled={!rulesQ.isSuccess} loading={switchM.isPending}
-          onChange={(enable) => switchM.mutate({ kind: KIND, enable })} />
-      }
-    >
+    <PageFrame title={TITLE} creators={creators}>
       <div className="max-w-[720px] space-y-8">
         <AiKeyNotice accountId={accountId} kinds={[KIND]} />
 
         <FormBlock title="Automation">
+          <SwitchRow label={TITLE} checked={on} disabled={!rulesQ.isSuccess} loading={switchM.isPending}
+            hint={on ? "On: it is chatting with fans now." : "Off: nothing is sent. The settings below are kept."}
+            onChange={(enable) => switchM.mutate({ kind: KIND, enable })} />
+          {switchM.isError && <p className="text-[12px] text-err">{switchM.error.message}</p>}
           {meta?.summary && <p className="text-[14px] text-fg-dim">{meta.summary}</p>}
-          {rulesQ.isLoading || (rule && kindsQ.isLoading) ? (
+          {rulesQ.isLoading || kindsQ.isLoading ? (
             <FormSkeleton />
           ) : rulesQ.isError ? (
             <p className="text-[14px] text-muted">
               {(rulesQ.error as Error)?.message || "Could not load this automation."} Model info below still applies.
             </p>
-          ) : !rule ? (
-            <p className="text-[14px] text-muted">Turn it on above to set the message cutoff and the closing PPV.</p>
           ) : !meta ? (
             <p className="text-[14px] text-err">
               {(kindsQ.error as Error)?.message || "Could not load this automation's settings."}
             </p>
           ) : null}
-          {switchM.isError && <p className="text-[12px] text-err">{switchM.error.message}</p>}
         </FormBlock>
 
-        {rule && meta && <RuleSettings key={rule.id} accountId={accountId} rule={rule} meta={meta} />}
+        {/* Once per creator, on or off, rule or not: the switch creating or parking the rule never re-seeds it. */}
+        {rulesQ.isSuccess && meta && <RuleSettings accountId={accountId} rule={rule} meta={meta} />}
 
         <ModelInfo accountId={accountId} />
       </div>
@@ -102,22 +100,25 @@ function GetToKnowFans({ accountId, creators }: { accountId: string; creators: C
   );
 }
 
-/** The rule's own settings, seeded once from its payload (keyed by rule id; getToKnowFansForm.ts), plus the Human
- *  style boxes. */
-function RuleSettings({ accountId, rule, meta }: { accountId: string; rule: AutomationRule; meta: AutomationKind }) {
-  const updateM = useUpdateRule(accountId);
+/** The rule's own settings, seeded once from its payload, else the catalog defaults (getToKnowFansForm.ts), plus the
+ *  Human style boxes. */
+function RuleSettings({ accountId, rule, meta }: {
+  accountId: string; rule: AutomationRule | null; meta: AutomationKind;
+}) {
+  const saveM = useSaveRule(accountId);
   const style = useHumanStyle(KIND, accountId);
-  const [state, dispatch] = useReducer(gtkfReducer, undefined, () => initState(rule.payload, meta));
+  const [state, dispatch] = useReducer(gtkfReducer, undefined, () => initState(rule?.payload, meta));
   const [picking, setPicking] = useState(false);
   const { cutoff, media, caption, price } = state.draft;
   const lim = limitsOf(meta);
   const { cutMin, cutMax, priceMin, priceMax } = lim;
 
-  const verdict = usePageSave(updateM, style, unsaved(state), dispatch);
+  const verdict = usePageSave(saveM, style, unsaved(state), dispatch);
   const invalid = invalidReason(state.draft, lim);
 
+  // A rule this page's last Save created counts until the rules refetch shows it, so a second Save PATCHes it.
   const save = () =>
-    verdict.save(() => updateM.mutate({ id: rule.id, payload: buildPayload(state.draft, rule.payload) }));
+    verdict.save(() => saveM.mutate(ruleSave(state.draft, rule ?? saveM.data ?? null, meta, accountId)));
 
   return (
     <>

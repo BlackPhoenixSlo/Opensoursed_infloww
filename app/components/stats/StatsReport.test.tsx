@@ -446,6 +446,27 @@ describe("StatsReport Creator reports frame", () => {
     expect(await screen.findByText("Creator B")).toBeInTheDocument();
   });
 
+  it("words the ledger backfill's between-ticks statuses on an Ingest health row", async () => {
+    creators = [creator("acct-a", "Creator A", 1200)];
+    const ingest = (id: string, status: string, error: string | null, t: string) => ({
+      account_id: id, display_name: id, last_scan_at: "2026-10-15T01:50:00Z", current_status: status, last_error: error,
+      consecutive_failures: 0, paused_until: null, rows_inserted_total: 3, rows_patched_total: 0,
+      fully_backfilled: false, minutes_since_scan: 10, tier: t,
+    });
+    ingestRows = [
+      ingest("acct-a", "backfill_partial", null, "green"),
+      ingest("acct-b", "backfill_stalled", "backfill_stopped: no_next_marker", "yellow"),
+    ];
+    renderWithProviders(<StatsReport view="creator" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Inflowwww extras" }));
+    const panel = screen.getByRole("region", { name: "Inflowwww extras" });
+    fireEvent.click(await within(panel).findByRole("button", { name: /Ingest health/ }));
+    expect(await within(panel).findByText("backfilling · still working")).toBeInTheDocument();
+    expect(within(panel).getByText("backfill stalled")).toHaveAttribute("title", "backfill_stopped: no_next_marker");
+    expect(within(panel).queryByText("backfill_partial")).toBeNull();
+    expect(within(panel).queryByText("backfill_stalled")).toBeNull();
+  });
+
   it("keeps Ingest health, All messages… and the per-model KPI cards in the Inflowwww extras overflow", async () => {
     creators = [creator("acct-a", "Creator A", 1200)];
     const ingest = (id: string, pausedUntil: string | null) => ({

@@ -19,14 +19,15 @@ outage's timings are metrics (`ms_*`).
    shared cookie), focus -> /auth/me 200 `null` -> the sign-in form, snapshot cleared.
    Screenshot logout-revalidate.
 7. Signed in again by the form; the browser's /auth/me answered 403 at the wire (the blocking
-   proxy) -> reload -> the sign-in form with the `[data-auth-blocked]` "Proxy blocked (403)" banner
-   (`ms_403_to_banner`: first 403 -> banner); at 390x844 no horizontal scroll, banner, field and
+   proxy; the Next server's inline read of it too) -> reload -> the sign-in form with the
+   `[data-auth-blocked]` "Proxy blocked (403)" banner (`ms_403_to_banner`: first 403, the browser's
+   or the server's, -> banner); at 390x844 no horizontal scroll, banner, field and
    Login inside the viewport; the username typed, Retry with the 403 still on -> another 403, the
    form never unmounted (the typed username kept); 403 lifted, Retry -> the shell (GET /auth/me 200
    with the owner, `ms_retry_to_shell_after_403`). Screenshots blocked-1440, blocked-390 (the
    trigger), blocked-retry-kept-390, blocked-signed-in-390, blocked-signed-in-1440 (settled).
 8. Cold reload (snapshot removed) with /auth/me AND /chatter/me held at the wire, never answered
-   -> the sign-in form with the "Relay not answering" banner within ME_SLOW_MS + slack
+   (the Next server's inline reads of them held too) -> the sign-in form with the "Relay not answering" banner within ME_SLOW_MS + slack
    (`ms_held_to_banner`: first held /auth/me -> banner), not at the 15 s abort. 8a: the username
    typed, /auth/me answered 200 `null` while /chatter/me stays held -> the plain form, never
    unmounted (the typed username kept), then /chatter/me let through -> still the form. 8b: cold
@@ -44,8 +45,12 @@ are NetErr in `probeAction`). Focus and visibilitychange are dispatched as DOM e
 Chromium has no window manager). Step 6's logout clears the cookie (the relay's logout is
 stateless); it stands in for a revoked session, which the relay also answers with a 200 `null`.
 Steps 7-8 answer or hold the browser's /auth/me and /chatter/me with Playwright routes on the
-browser context: the blocking proxy and the silent relay in front of the app are out of reach
-(a 403 from the proxy, a TCP connection that never answers). The relay stays up behind them;
+browser context: the blocking proxy and the silent relay in front of the relay are out of reach
+(a 403 from the proxy, a TCP connection that never answers). They sit on the leg to the relay
+(RELAY_URL) that the Next server's own reads take too: a document load of `/` reads /auth/me and
+/chatter/me server-side for its HTML (app/lib/inlineBoot.server.ts), so the same 403 / hold is put
+on those reads at the relay (lib/relay.py `POST /__slop/server-wire`; a held one meets the
+server's INLINE_TIMEOUT_MS and the browser fetches it itself). The relay stays up behind them;
 the released requests go on to it unchanged, except 8a's /auth/me, answered 200 `null` at the
 wire (a signed-out cookie's answer, standing in for a session revoked meanwhile). Step 8 removes
 the auth snapshot first: a warm boot paints the shell from it instead of the form (a fresh
@@ -189,6 +194,24 @@ async def run(ctx) -> None:
                 for pat in pats:
                     await page.context.unroute(pat, handler)
 
+        @contextlib.asynccontextmanager
+        async def server_wire(mode, *paths: str):
+            """The same on the Next server's reads of `paths` for the HTML (403 or "hold", lib/relay.py
+            `/__slop/server-wire`): the proxy / silent relay is on the leg to the relay both take."""
+            for p in paths:
+                (await ctx.owner.post("/__slop/server-wire", json={"path": p, "mode": mode})).raise_for_status()
+            try:
+                yield
+            finally:
+                for p in paths:
+                    if relay_up["v"]:
+                        await ctx.owner.post("/__slop/server-wire", json={"path": p, "mode": None})
+
+        async def server_403s(t0: float) -> list[float]:
+            """When the relay answered the Next server's /auth/me 403 (epoch s) since t0."""
+            reads = (await ctx.owner.get("/__slop/server-reads")).json()["reads"]
+            return [r["t1"] for r in reads if r["path"] == "/auth/me" and r["status"] == 403 and r["t0"] >= t0]
+
         def verdict(parts: dict) -> tuple[bool, dict]:
             return all(parts.values()), {"parts": parts, "red": [k for k, v in parts.items() if not v]}
 
@@ -313,18 +336,21 @@ async def run(ctx) -> None:
                 await route.fulfill(status=403, content_type="text/html", body="<h1>403 Forbidden</h1>")
             b_want = {"kind": "blocked", "text": "Proxy blocked (403)—Retry", "role": "status"}
             try:
-                async with wire(r403, "**/auth/me"):
+                async with wire(r403, "**/auth/me"), server_wire(403, "/auth/me"):
+                    t_reload = time.time()
                     await page.reload(wait_until="domcontentloaded", timeout=WAIT_MS)
                     await _until(lambda: _any(page, (BANNER, RETRY)), 60)
                     t_banner = time.time()
                     b1, s1 = await banner(), await seen()
-                    if hits and b1["kind"] == "blocked":
-                        ctx.metric("ms_403_to_banner", round((t_banner - hits[0]) * 1000))
+                    first = sorted(hits + await server_403s(t_reload))
+                    if first and b1["kind"] == "blocked":
+                        ctx.metric("ms_403_to_banner", round((t_banner - first[0]) * 1000))
                     await ui.shot(ctx, page, "blocked-1440")
                     parts = {"banner_blocked": b1 == b_want,
                              "form_not_shell": s1["signin_form"] == 1 and s1["retry_screen"] == 0 and not s1["shell"]}
                     if b1["kind"] is None:
-                        chk(BLOCKED_LOGIN, False, **verdict(parts)[1], banner=b1, seen=s1, me_403s=len(hits))
+                        chk(BLOCKED_LOGIN, False, **verdict(parts)[1], banner=b1, seen=s1, me_403s=len(hits),
+                            all_403s=len(first))
                         return
                     await page.set_viewport_size({"width": PHONE[0], "height": PHONE[1]})
                     await page.wait_for_timeout(500)
@@ -421,7 +447,7 @@ async def run(ctx) -> None:
             await signed_in_shell()
             try:
                 # 8a: a late signed-out answer while the chatter probe hangs: the form stays up
-                async with wire(hold, "**/auth/me", "**/chatter/me"):
+                async with wire(hold, "**/auth/me", "**/chatter/me"), server_wire("hold", "/auth/me", "/chatter/me"):
                     await held_boot("a")
                     await ui.shot(ctx, page, "hung-1440")
                     if not parts["a_form_not_shell"]:
@@ -445,7 +471,7 @@ async def run(ctx) -> None:
                     parts["a_chatter_released_form_kept"] = k2 == plain
                     detail["a_after_null"], detail["a_after_chatter"] = k1, k2
                 # 8b: a late signed-in answer while the chatter probe hangs: the shell at once
-                async with wire(hold, "**/auth/me", "**/chatter/me"):
+                async with wire(hold, "**/auth/me", "**/chatter/me"), server_wire("hold", "/auth/me", "/chatter/me"):
                     await held_boot("b")
                     n1, t0 = len(me), time.time()
                     detail["b_released_me"] = await release("/auth/me")

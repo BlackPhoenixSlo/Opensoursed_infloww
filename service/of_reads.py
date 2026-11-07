@@ -588,15 +588,21 @@ class ReadsMixin:
 
         Measured 2026-11-07 (acct 532022545, limit=10, read-only): `start` /
         `end` are IGNORED (same rows as no params); `start_date` as `YYYY-MM-DD`
-        filters createdAt >= that day (day-boundary TZ unknown); an ISO datetime
-        `start_date` answers an EMPTY list, hasMore false (with or without
-        `marker`), so never send one. No filter: the latest rows, newest first,
-        `nextMarker` = the oldest row's createdAt (unix). `offset` pages a
-        `start_date` read (measured 2026-11-07, same acct, startDate=2026-11-02,
-        limit=10: offset 0 -> 10 rows hasMore true, offset 10 -> 8 rows hasMore
-        false, no id in both, every row >= the date).
-        INFERRED (prod offset-paged walks, 6 pages then hasMore false): an
-        unfiltered read stops at the latest 600 rows."""
+        filters createdAt >= that day's UTC midnight (acct 15891843). An ISO datetime
+        `start_date` is format-dependent: one form answered an EMPTY list, hasMore
+        false, on 532022545, `2026-10-01T00:00:00Z` with limit=1 answered a row on
+        15891843 (one row cannot show the filter was honoured), so never send one.
+        Order is non-increasing createdAt, with same-second pairs inside pages (9 in
+        10011 rows), not strictly descending; a tie forced at limit=1 repeats a row
+        (nextMarker == marker), never skips. A page holds at most 100 rows, limit=200
+        too. `offset` pages a read
+        up to 500: offset >= 600 answers empty, hasMore false, filter or not,
+        although offset 500 said hasMore true, so that empty answer is NOT the
+        end (measured 2026-11-07, acct 15891843). `marker` has no such cap (7
+        pages, 1300 rows past the top, no overlap): createdAt <= marker, inclusive,
+        and `nextMarker` = the createdAt (unix) of the NEXT page's first row. The
+        last page under `start_date` + `marker`: hasMore false, no nextMarker,
+        ending at the window's first day."""
         params: dict[str, Any] = {"limit": limit, "offset": offset}
         if type:  params["type"] = type
         if start: params["start"] = start
