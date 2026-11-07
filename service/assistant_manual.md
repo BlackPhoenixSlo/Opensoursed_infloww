@@ -43,8 +43,8 @@ The sidebar, top to bottom:
 
 The top bar holds the sidebar toggle, the Inflowwww wordmark, the status pill,
 the error badge, your time zone, the SFW switch, the notification bell, the
-Clock button and the avatar menu (theme, Log out). There is no model picker: a
-page that shows one creator has its own creator select.
+Clock button and the avatar menu (theme, Log out). There is no creator picker in
+the top bar: a page that shows one creator has its own creator select.
 
 **Old names people still use.** "Stuff" is now Analytics → Message dashboard,
 "Auto Convo" is My AI Chatter → Auto-reply, "Inbox" is Messages Pro, "Stats"
@@ -116,7 +116,7 @@ one.
 | Asked about | What to say | Nearest live thing |
 |---|---|---|
 | The Automations page: the Brain card, the rules list with **+ New rule**, the 12 "Ready-made posts & broadcasts" tabs, the Automation runs log | Removed. An old `/automations` link lands on My Automations → Auto Post. | The pages listed above |
-| The Brain: persona, location, clock, daily AI cap, creator facts, models | Operator-only, raising the daily cap included (see "The Brain"). | **Model info** on My AI Chatter → Get to know fans |
+| The Brain: persona, location, clock, daily AI cap, creator facts, per-purpose models | Operator-only, raising the daily cap included (see "The Brain"). The account's AI model is not: it is the **Model** block on My AI Chatter → Auto-reply. | **Model info** on My AI Chatter → Get to know fans; the **Model** block on My AI Chatter → Auto-reply |
 | Follow-ups (`send_followup`) | Operator-only. | Writing to him from the chat; the Nudge trigger for fans who come online |
 | The Audience fence | Operator-only, and its folder sync is removed. | — |
 | ⚡ Reply Instant, real-time dispatch for an inbound message | Operator-only. | Auto-reply |
@@ -156,7 +156,9 @@ DeepSeek · Z.ai (GLM)**, each with a set / not set badge. Leave a field blank
 to keep the stored key.
 
 - DeepSeek powers chat replies and most automations — this is the one that
-  matters. The system default model is `deepseek-v4-flash`.
+  matters. The system default model is `deepseek-v4-flash`; pick another one
+  for the account in the **Model** block on My AI Chatter → Auto-reply, and
+  hold a key for that model's provider.
 - DeepInfra powers vision: vault image descriptions, and Auto-reply's opt-in
   "describe photos fans send".
 - Z.ai is an optional second provider.
@@ -236,6 +238,20 @@ phone locked.
 
 ---
 
+## This help assistant — memory and the phone launcher
+
+- **It remembers your earlier questions.** Each question and its answer are
+  kept for the person who asked. Opening the chat shows them under
+  **Earlier (N)**, grouped by day — tap it to open or fold the list (on a phone
+  it starts folded). Every new question carries your last three exchanges, so a
+  follow-up builds on them: a bare "yes", "more" or "go on" takes up the offer in
+  the last answer. It only sees your own questions, never a colleague's.
+- **On a phone the launcher is a ">" tab on the left edge.** Tap the tab to pull
+  the round help icon out; tap the icon to open the chat. Drag the icon anywhere;
+  drag it partly past the left or right edge to tuck it away behind its tab. On a
+  computer it is the round button in the bottom-right corner. **Help center**
+  (pinned at the bottom of the sidebar) shows the same chat as a full page.
+
 # Setting up
 
 ## Connecting an OnlyFans account
@@ -289,10 +305,17 @@ Each account has a brain — persona, location, creator (female/male), language,
 creator clock, a **daily AI cap** (a fresh account starts at 100¢ = $1.00, and
 at the cap the runs report ok but do less), the nine creator facts, the model
 and its per-purpose model choices, and the time-of-day lines and images the
-welcome uses. Every AI lane reads it, and it has no page: nothing in the app
-edits it. The one part an operator can change is **Model info**, the short note
-every chat prompt pins: it is on **My AI Chatter → Get to know fans**. For anything else in the brain (raising the daily cap
-included), say the deployment operator has to change it.
+welcome uses. Every AI lane reads it, and it has no page of its own. Two parts
+are editable in the app:
+
+- **The account's AI model** (and its reasoning effort): the **Model** block at
+  the top of **My AI Chatter → Auto-reply** (see "kind: autoreply"). It is
+  account-wide: every AI automation without a model of its own uses it too.
+- **Model info**, the short note every chat prompt pins: it is on **My AI
+  Chatter → Get to know fans**.
+
+For anything else in the brain (the per-purpose model choices and raising the
+daily cap included), say the deployment operator has to change it.
 
 ## Adding an employee (a chatter's login)
 
@@ -761,8 +784,22 @@ enabled rule of this kind.
 casual line matched to the tone of the recent messages, to keep the conversation
 alive. It never pitches: no PPV, no tip ask, no content offer.
 
-**Where:** My AI Chatter → **Auto-reply** (`/growth/auto-reply`) — the switch,
-the delay, WHO it answers and the reply-style boxes.
+**Where:** My AI Chatter → **Auto-reply** (`/growth/auto-reply`) — the
+**Model** block, the switch, the delay, WHO it answers and the reply-style
+boxes, all saved by the page's one **Save**.
+
+**Model — which AI writes the replies:** the **Model** block at the top of the
+page. The **Model** select is **Default (deepseek-v4-flash)** or one specific
+model, listed by id: Claude Opus, Sonnet or Haiku (`claude-opus-5-5`,
+`claude-sonnet-5-5`, `claude-haiku-5-5`), DeepSeek (`deepseek-v4-flash`,
+`deepseek-v4-pro`), GLM (`glm-5.3-flash`, `glm-4.5-air`) and Qwen.
+When the picked model takes one, an **Effort** select (reasoning effort) shows
+under it; "Model default" leaves the model's own. The line under the selects
+reads "Answers with *model*. Account-wide: AI automations without a model of
+their own use it too." — this is the account's model, not just Auto-reply's.
+Press **Save** to keep the pick. Pick a model only if Settings → AI keys holds a
+key for its provider (Anthropic for Claude, Z.ai for GLM, DeepSeek for
+DeepSeek, DeepInfra for Qwen); without one its AI is refused (see "The AI key").
 
 **How to enable:** switch it on and Save. That one switch writes the settings
 **and** creates or wakes the `autoreply` rule; switching it off parks the rule.
@@ -787,8 +824,9 @@ last 16 messages · quiet hours · 200 candidates and 25 replies per run.
   no reply.
 Off, keyless or failed: the reply never claims to know what is in the photo.
 
-**Prerequisites:** a **DeepSeek** key in Settings → AI keys (the page shows an
-"add a key" notice when the account cannot pay for its model).
+**Prerequisites:** a key in Settings → AI keys for the provider of the picked
+model — **DeepSeek** for the default (the page shows an "add a key" notice when
+the account cannot pay for its model).
 
 **Caveats:**
 - Enable it only on accounts with real fans, never on promo-spam accounts.
@@ -812,7 +850,7 @@ exactly as typed, default "what's yours?" (blank = off) · `gif_id` 4th bubble
 Every bubble is sent exactly as written; no AI rewrites any of it.
 
 **Prerequisites:** a working OnlyFans session; the account's brain (location and
-creator clock drive the time line; it has no page, see "The Brain"); for a photo,
+creator clock drive the time line; the clock has no page, see "The Brain"); for a photo,
 a per-slot image in the brain's time-of-day slots or a vault folder named "bot",
 "welcome script" or "welcome".
 The whole welcome is written by the app, so it goes out with no AI key.
