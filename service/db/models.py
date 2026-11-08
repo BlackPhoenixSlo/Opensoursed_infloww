@@ -2546,8 +2546,8 @@ class TransactionScanHistory(Base):
         is its cursor, saved per page once the page's rows are held.
       • Refresh (fully_backfilled=True): each 15-min tick re-fetches the
         trailing 24 h (`recent`, OF's date-only `startDate` a day early); the
-        full walk once per 2 h period per account (each at its own phase) and
-        on the first tick after a restart. OF ignores `start`/`end` and an ISO
+        full walk once per 2 h period per account (each at its own phase;
+        `last_full_at` persists it, so a restart re-walks only accounts due). OF ignores `start`/`end` and an ISO
         `startDate` answers an empty list (measured 2026-11-07, acct
         532022545), and `offset` >= 600 answers empty (measured, acct 15891843),
         so the full walk reads OF's latest 600 rows, whatever its window.
@@ -2578,6 +2578,11 @@ class TransactionScanHistory(Base):
         Integer, nullable=False, server_default=text("0")
     )
     paused_until: Mapped[datetime | None] = mapped_column(DateTime)
+    # Full-walk SCHEDULING watermark, not proof of success: the window end of the last
+    # attempted full walk (completed, failed, or cut short) or, for a backfilled account
+    # first seen without one, the moment it was seeded (its first full walk then waits
+    # for its next phase boundary). Recent walks leave it.
+    last_full_at: Mapped[datetime | None] = mapped_column(DateTime)
     rows_inserted_total: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default=text("0")
     )

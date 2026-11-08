@@ -28,6 +28,8 @@ clip at /files/v/<uid>/<mid>/240p.mp4 (in `assets()`; lib/img_relay.video_bytes)
 `gifs` (uid -> item indexes k, set before that Creator's vault is first made): those items are gifs, as OF stores
 one (service/tests/fixtures/of_media_shapes.json): `files.full` a .mp4 (/files/v/<uid>/<mid>/gif.mp4, the same
 clip), the thumb a jpg, no videoSources; the item's other draws are unchanged, so the rest of the vault is too.
+`full_mp4` (off by default): a video's `files.full` is its source mp4 (/files/v/<uid>/<mid>/src.mp4, the same clip;
+in `assets()`), as OF's are, instead of the .jpg every other flow reads (2026-11-08-vault-download saves it).
 
 Records (fake.vault_calls, arrival order after the fake's latency): {t, account, route ("lists" | "media" |
 "by_id"), query (the parsed query string, one value per key; by_id: {"id": ...}), status, egress}. fake.calls
@@ -65,7 +67,7 @@ def folder_id(uid: str, j: int) -> int:
 
 
 def path(uid: str, mid: int, variant: str) -> str:
-    return f"/files/v/{uid}/{mid}/{variant}.{'mp4' if variant in ('240p', 'gif') else 'jpg'}"
+    return f"/files/v/{uid}/{mid}/{variant}.{'mp4' if variant in ('240p', 'gif', 'src') else 'jpg'}"
 
 
 def owner_of(key: str) -> tuple[str, int, str] | None:
@@ -80,9 +82,9 @@ def _iso(t: float) -> str:
 
 class VaultWire:
     def __init__(self, fake, *, seed: int, items: int, folders: int = FOLDERS, sizes: dict[str, int] | None = None,
-                 ip_bound: bool = False, mp4: bool = False):
+                 ip_bound: bool = False, mp4: bool = False, full_mp4: bool = False):
         self.fake, self.seed, self.items, self.folders = fake, seed, items, folders
-        self.ip_bound, self.mp4 = ip_bound, mp4
+        self.ip_bound, self.mp4, self.full_mp4 = ip_bound, mp4, full_mp4
         self.sizes = dict(sizes or {})
         self.gifs: dict[str, set[int]] = {}
         self.t0 = int(time.time())
@@ -124,6 +126,8 @@ class VaultWire:
         if m["type"] == "gif":
             url["full"] = sign(HOST, path(uid, m["id"], "gif"), exp, gen, ip)
         vid = m["type"] == "video"
+        if vid and self.full_mp4:
+            url["full"] = sign(HOST, path(uid, m["id"], "src"), exp, gen, ip)
         return {"id": m["id"], "type": m["type"], "createdAt": _iso(m["created"]), "isReady": True,
                 "hasError": False, "canView": True, "convertedToVideo": False,
                 **({"duration": 12} if vid else {}),
@@ -145,6 +149,8 @@ class VaultWire:
                     out[f"{HOST}{path(uid, m['id'], '240p')}"] = {"size": m["sizes"][1]}  # size ignored: a clip
                 if m["type"] == "gif":
                     out[f"{HOST}{path(uid, m['id'], 'gif')}"] = {"size": m["sizes"][1]}  # size ignored: a clip
+                if self.full_mp4 and m["type"] == "video":
+                    out[f"{HOST}{path(uid, m['id'], 'src')}"] = {"size": m["sizes"][1]}  # size ignored: a clip
         return out
 
     def add(self, uid: str, name: str, k: int) -> tuple[dict, list[dict]]:

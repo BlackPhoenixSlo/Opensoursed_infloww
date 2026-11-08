@@ -137,6 +137,12 @@ async def _scan(aid: str) -> TransactionScanHistory:
         return await s.get(TransactionScanHistory, aid)
 
 
+async def _unstamp(aid: str) -> None:
+    """No full-walk watermark yet (persisted TransactionScanHistory.last_full_at)."""
+    async with get_session() as s:
+        (await s.get(TransactionScanHistory, aid)).last_full_at = None
+
+
 async def _held(aid: str) -> Counter:
     async with get_session() as s:
         return Counter((await s.execute(select(Transaction.provider_transaction_id).where(
@@ -888,7 +894,7 @@ async def case_a_stopped_walk_says_why_and_refreshes_when_a_full_walk_is_due():
     assert not scan.fully_backfilled and scan.current_status == "backfill_stalled", scan
     assert scan.last_error == "backfill_stopped: no_next_marker", scan.last_error
     cursor = scan.oldest_seen_occurred_at
-    ti._last_full_at.pop(aid, None)
+    await _unstamp(aid)
     assert await ti._decide_mode(aid) == "refresh", "a stalled walk must not stop the full walks"
     of.rows = [sale | {"status": "pending_return"}, *rows[:10], *rows[11:]]
     assert (await _tick(aid, of, mode="refresh"))["error"] is None
@@ -914,7 +920,7 @@ async def case_a_refresh_cut_short_on_an_unfinished_walk_still_gives_the_walk_it
     of.answer = lambda q, body: {**body, "nextMarker": None}
     await _tick(aid, of)
     of.answer = lambda q, body: {**body, "list": rows[:100], "hasMore": True}   # the repeated-page guard
-    ti._last_full_at.pop(aid, None)
+    await _unstamp(aid)
     await _tick(aid, of, mode="refresh")
     assert await ti._decide_mode(aid) == "backfill", "a walk starved by refreshes that never finish"
 
@@ -930,7 +936,7 @@ async def case_a_failing_refresh_on_an_unfinished_walk_still_gives_the_walk_its_
     finally:
         ti._BACKFILL_TICK_PAGES = cap
     cursor = (await _scan(aid)).oldest_seen_occurred_at
-    ti._last_full_at.pop(aid, None)
+    await _unstamp(aid)
     assert await ti._decide_mode(aid) == "refresh"
 
     def down(_q):
@@ -946,7 +952,7 @@ async def case_a_failing_refresh_on_an_unfinished_walk_still_gives_the_walk_its_
     await _exactly(aid, of.rows)
 
 
-async def case_a_failing_refresh_on_a_finished_account_is_retried():
+async def case_a_failing_refresh_on_a_finished_account_spends_its_period():
     aid = "bf_refresh_fails_done"
     await _account(aid, cursor=_floor(), full=True)
     of = _OF(_spread(50, step_s=4000))
@@ -955,9 +961,12 @@ async def case_a_failing_refresh_on_a_finished_account_is_retried():
         raise RuntimeError("OF down")
 
     of.before = down
-    ti._last_full_at.pop(aid, None)
-    await _tick(aid, of, mode="refresh")
-    assert aid not in ti._last_full_at and await ti._decide_mode(aid) == "refresh"
+    await _unstamp(aid)
+    res = await _tick(aid, of, mode="refresh")
+    scan = await _scan(aid)
+    assert res["error"] and scan.current_status == "error" and scan.consecutive_failures == 1, scan
+    # One full walk per period, a failed one too (AE 2026-11-08: re-walked every tick until paused).
+    assert scan.last_full_at is not None and await ti._decide_mode(aid) == "recent"
 
 
 async def case_a_short_reactivation_past_600_rows_reads_the_whole_gap_and_completes_again():
@@ -971,7 +980,7 @@ async def case_a_short_reactivation_past_600_rows_reads_the_whole_gap_and_comple
     gap = _spread(666, newest_h=0.5, step_s=776, prefix="gap")
     of.rows = [*gap, *old]
     of.wire.clear()
-    ti._last_full_at.pop(aid, None)
+    await _unstamp(aid)
     await ti.backfill_after_reactivation(aid, off_at)
     for _ in range(4):
         await _tick(aid, of, mode=await ti._decide_mode(aid))

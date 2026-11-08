@@ -98,13 +98,6 @@ async def admin_ingest_tx_health() -> dict[str, Any]:
         acct_rows = [r for r in acct_rows if r[0] in allowed_ids]
 
     hist_by_acct = {h.account_id: h for h in hist_rows}
-    # In-memory, this process only: each account's last complete full 7-day walk, or one
-    # cut short or failed on an unfinished account (its window's end). Kept for the prod
-    # after-check of the recent/full cadence.
-    try:
-        from transaction_ingest import _last_full_at  # type: ignore[import-not-found]
-    except ImportError:
-        _last_full_at = {}
     accounts_out: list[dict[str, Any]] = []
     worst = "green"
     for aid, nick in acct_rows:
@@ -144,7 +137,9 @@ async def admin_ingest_tx_health() -> dict[str, Any]:
                 "minutes_since_scan": round(mins, 2) if mins is not None else None,
                 "tier": tier,
             }
-        full = _last_full_at.get(aid)
+        # Scheduling state, not proof of success: the last ATTEMPTED full walk's window
+        # end (completed, failed or cut short), or its one-time seed (last_full_at).
+        full = h.last_full_at if h is not None else None
         entry["last_full_scan_at"] = full.isoformat() if full else None
         accounts_out.append(entry)
         if _TIER_RANK[entry["tier"]] > _TIER_RANK[worst]:

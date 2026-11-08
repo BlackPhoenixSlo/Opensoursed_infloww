@@ -1,8 +1,8 @@
 """Background OnlyFans list walks, paced (service/of_pacing.py): the hourly link prewarm pass
 (link_metrics.prewarm_all: tracking links, trials, promotions), the lifecycle roster crawl
 (subscribers), four passes of the 900 s ledger supervisor (transaction_ingest.supervisor_cycle,
-payouts transactions: the first fill (backfill), the full 7-day walk a fresh process starts with, then
-recent 24 h walks) and a Growth page's claimer refresh (link_metrics.maybe_refresh) run at
+payouts transactions: the first fill (backfill), the full 7-day walk of a period turned over (the
+backfilled Creators' last_full_at backdated one period by SQL before it), then recent 24 h walks) and a Growth page's claimer refresh (link_metrics.maybe_refresh) run at
 once, against OF's own rate limit, while `--users` chatters work half the Creators and their Fan
 List fills names in the background.
 
@@ -143,12 +143,20 @@ Checks (names in lib/sweep_pacing_faults.py):
                          retry's 429 ends a tick; full walks' are reported as refresh_terminal_429s), each
                          Creator's ledger GETs (200s) and disputes calls <= what its rows imply.
   stock "p95 within 1.25x (+50ms) of the last green run": both lookups (P95_VS_LAST).
+  tx_restart_keeps_full_schedule  then (lib/sweep_pacing_watermark.py, its docstring): backfilled
+                         Creators' persisted watermarks seeded mixed on their real crc32 phases, the
+                         relay SIGKILLed and restarted on the same DB: only the due ones walk full.
+  tx_failed_full_consumes_period  one Creator's full walk failed on a terminal second 429 (injected
+                         twice): error kept, the period spent (same-period ticks recent), the next
+                         period's tick walks full again.
 Pacing covers OF's API list pages only: CDN, media and /img fetches are not walks here.
 Measured: metric `tx_supervisor`, each supervisor pass's walk modes, wall time and pages per Creator
 (the first fill, the full walk, a recent one); tx_calls_budget checks the pages per hour they imply.
 
 Bypasses (declared):
-  transaction_ingest.full_phase_s is pinned (`/knobs`): no Creator crosses a full-walk period mid-run.
+  transaction_ingest.full_phase_s is pinned (`/knobs`): no Creator crosses a full-walk period mid-run
+  (the watermark stages unpin it). Before pass 2 the backfilled Creators' last_full_at is backdated one
+  period by SQL (a period turned over, not waited). The watermark stages' bypasses: their docstring.
   - OF's rate limit is a GUESS (lib/sweep_pacing_wire.py), not OF's measured policy: a token bucket
     per Creator across its four list routes (10 deep, 2 a second); an empty one answers 429 with OF's measured body ("Too many
     requests. Please allow 1 seconds"); its injected 429s too. Latency is lib/of_wire.py's 50 ms.
@@ -182,6 +190,8 @@ tx-recent-window-ignored (`--fault=`, harness side: OF ignores startDate) turns 
 and tx_recent_window_kept red; every row still lands. tx-recent-startdate-iso (`--fault=`, harness
 side: the startDate reaches OF as ISO, answered empty) turns tx_recent_catches_new_row red.
 tx-backfill-* (`--fault=`, lib/sweep_pacing_faults.py): the walk's own, each to its tx_backfill_ checks.
+tx-full-watermark-forgotten / tx-failed-full-not-stamped (`--fault=`): tx_restart_keeps_full_schedule /
+tx_failed_full_consumes_period.
 """
 from __future__ import annotations
 
@@ -204,6 +214,7 @@ from slop.lib.sweep_pacing_faults import (BF_BURST, BF_CALLS, BF_DISPUTE, BF_DRO
                                           BG_P95, COUNTS, GROWTH, GROWTH_ROUTE, NO_429_USER, NO_5XX,
                                           PAGES_SPACED, RETRY_ONCE, SKIPS, STARTDATE_ISO, TERMINAL, TX_BUDGET,
                                           TX_NEW_ROW, TX_WINDOW, USER_P95, WINDOW_IGNORED)
+from slop.lib import sweep_pacing_watermark
 from slop.lib.sweep_pacing_wire import TOO_MANY, TX_CAP, SweepWire
 from slop.seed import creators, fans, of_sessions, ts
 
@@ -593,6 +604,12 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
                 while not _scan(w, react)["done"] and time.monotonic() < until:
                     await asyncio.sleep(0.5)
                 admin["t1"] = time.time()
+            # A period turned over: the backfilled Creators' full walk is due (last_full_at persists).
+            con = w.sql()
+            with con:
+                con.execute("UPDATE transaction_scan_history SET last_full_at = ? WHERE fully_backfilled = 1",
+                            (ts(datetime.utcnow() - timedelta(seconds=got["full_every_s"])),))
+            con.close()
             (await ctx.owner.post("/__slop/sweep-pacing/run", json={"job": "tx_cycles", "cycles": 1})).raise_for_status()
             tx_started = 2
             continue
@@ -1055,3 +1072,6 @@ async def run(ctx) -> None:  # noqa: C901  one flow, its checks in order
              *(f"ledger supervisor pass {s['pass']} {s['modes']}: {s['wall_s']} s, {s['pages']} pages over "
                f"{s['creators']} Creators ({s['pages_per_creator']})" for s in sup),
              f"ledger calls/h per Creator at {tick}/{full_s} s (inferred): {per_h} vs budget {budget_h}")
+
+    # ── the full walk's persisted watermark: restart, failed full walk (after every check above) ──
+    await sweep_pacing_watermark.run(ctx, w, sw, shared=set(crowd))

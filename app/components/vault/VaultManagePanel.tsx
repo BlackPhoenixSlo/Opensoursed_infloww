@@ -20,7 +20,9 @@ import { Square } from "lucide-react";
 
 import { EmptyState, IfModal } from "@/components/ui/infloww";
 import { VaultVideoPreview } from "@/components/chat/VaultPicker";
-import { useVaultAccountId } from "@/components/vault/VaultAccount";
+import { useVaultAccount, useVaultAccountId } from "@/components/vault/VaultAccount";
+import VaultDownloadPanel, { DOWNLOAD_OFF, useVaultDownload } from "@/components/vault/VaultDownloadPanel";
+import { isBusy, safeName } from "@/components/vault/vaultDownloadReducer";
 import VaultAiFoldersModal from "@/components/vault/VaultAiFoldersModal";
 import VaultDisputesModal from "@/components/vault/VaultDisputesModal";
 import VaultFlagsReviewModal from "@/components/vault/VaultFlagsReviewModal";
@@ -81,7 +83,11 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
   // A plain string, never null: the page does not mount this panel until a
   // model is chosen, and remounts it when the choice changes.
   const accountId = useVaultAccountId();
+  const { account } = useVaultAccount();
   const qc = useQueryClient();
+  // Ours: download (selection / folder / whole vault) into a folder the user picks; see `vaultDownloadReducer`.
+  const dl = useVaultDownload(accountId, safeName(account?.nickname || account?.name || accountId));
+  const downloadOff = !dl.supported ? DOWNLOAD_OFF : isBusy(dl.state) ? "A download is running" : "";
   // Folder / type / search and the ticked files — see `vaultBrowseReducer`.
   // FanId, not number: Fansly album ids are snowflakes above 2^53, and a
   // narrowed one selects a DIFFERENT album. Media ids below stay number[].
@@ -420,6 +426,10 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
           selectedId={ofFolderId}
           onSelect={(id) => dispatchBrowse({ type: "folder", id })}
           onChanged={refreshAll}
+          onDownloadFolder={downloadOff ? undefined : (f) => dl.start({
+            mode: "folder", label: `folder ${f.name}`, folder: { id: f.id, name: f.name },
+            source: useLocal ? "mirror" : "live",
+          })}
         />
 
         {/* RIGHT grid */}
@@ -442,6 +452,8 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
             onSelectAll={() => dispatchBrowse({ type: "selectAll", ids: items.map((m) => m.id) })}
             selectMode={selectMode}
             onToggleSelect={() => dispatchBrowse({ type: "toggleSelectMode" })}
+            onDownloadAll={() => dl.start({ mode: "vault", label: "whole vault", source: useLocal ? "mirror" : "live" })}
+            downloadOff={downloadOff}
           />
 
           <div
@@ -525,6 +537,11 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
               onNewFolder={() => newFolderWithSelection(deps)}
               onDescribe={() => describeSelected(deps)}
               onClear={() => dispatchBrowse({ type: "clearSelection" })}
+              onDownload={() => dl.start({
+                mode: "selection", label: `${selected.size} selected`,
+                media: items.filter((m) => selected.has(m.id)), source: useLocal ? "mirror" : "live",
+              })}
+              downloadOff={downloadOff}
             />
           )}
         </section>
@@ -663,6 +680,7 @@ export default function VaultManagePanel({ extrasOpen = false, onCloseExtras = (
       {open === "aiFolders" && (
         <VaultAiFoldersModal accountId={accountId} onClose={() => setOpen(null)} />
       )}
+      <VaultDownloadPanel dl={dl} />
     </div>
   );
 }

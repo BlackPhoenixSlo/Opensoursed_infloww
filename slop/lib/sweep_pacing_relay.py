@@ -4,7 +4,8 @@ end of its `_wire`), for scenarios/2026-11-05-sweep-pacing.py. Inert until calle
   POST /__slop/sweep-pacing/knobs {NAME: seconds, ...}  sets service/of_pacing.py's USER_WINDOW_S
        and link_metrics' _PREWARM_SPREAD_S (time compression, declared) and from then on keeps of_pacing's,
        link_metrics' and transaction_ingest's log lines (each ledger walk's mode: ingest_tx_scan_start).
-       Pins transaction_ingest.full_phase_s for the run (bypass, declared).
+       Pins transaction_ingest.full_phase_s for the run (bypass, declared); `"PHASE_PIN": false`
+       restores the product's crc32 phase instead (the watermark stage: a restarted relay).
        The pacer's own PAGE_GAP_S / JITTER_S and the 429 retry are never set here.
   POST /__slop/sweep-pacing/run {job, account_ids, cycles}  starts the production job in a fresh
        context (no request around it, as the supervisors' tasks), and answers at once:
@@ -18,7 +19,8 @@ end of its `_wire`), for scenarios/2026-11-05-sweep-pacing.py. Inert until calle
   GET  /__slop/sweep-pacing/runs  {runs: [{n, job, account, t0, t1, error, result}], log: [{t, msg}],
        tick_interval_s: transaction_ingest._TICK_INTERVAL_S (the supervisor's sleep this relay runs with),
        full_every_s: transaction_ingest._FULL_EVERY_S (its full 7-day walk's period),
-       recent_window_h: transaction_ingest._RECENT_WINDOW_H}
+       recent_window_h: transaction_ingest._RECENT_WINDOW_H,
+       phases: {id: transaction_ingest.full_phase_s(id, full_every_s)} for `?phase_ids=a,b`}
 """
 
 import asyncio
@@ -76,6 +78,7 @@ def wire(app, loopback, _relay) -> None:
         import link_metrics
         import of_pacing
         body = await request.json()
+        pin = body.pop("PHASE_PIN", True)
         for k, v in body.items():
             if k == SPREAD:
                 link_metrics._PREWARM_SPREAD_S = float(v)
@@ -91,8 +94,10 @@ def wire(app, loopback, _relay) -> None:
         # Every Creator a quarter into its full-walk period, so none crosses one mid-run: a crossing adds a full walk
         # to whichever Creator's crc32 phase falls in those minutes, and reds its call bounds (measured, 3 runs of ~17).
         import transaction_ingest as ti
+        import transaction_ingest_decide
         now = (datetime.utcnow() - datetime(1970, 1, 1)).total_seconds()
-        ti.full_phase_s = lambda _account_id, every=ti._FULL_EVERY_S: (every / 4 - now) % every
+        ti.full_phase_s = ((lambda _account_id, every=ti._FULL_EVERY_S: (every / 4 - now) % every) if pin
+                           else transaction_ingest_decide.full_phase_s)
         return {**{k: getattr(of_pacing, k) for k in (*KNOBS, "PAGE_GAP_S", "JITTER_S")},
                 SPREAD: link_metrics._PREWARM_SPREAD_S}
 
@@ -123,10 +128,13 @@ def wire(app, loopback, _relay) -> None:
     async def runs(request: Request) -> dict:
         loopback(request)
         import transaction_ingest
+        every = transaction_ingest._FULL_EVERY_S
+        ids = [x for x in (request.query_params.get("phase_ids") or "").split(",") if x]
         return {"runs": [dict(r) for r in _runs], "log": list(_log),
                 "tick_interval_s": transaction_ingest._TICK_INTERVAL_S,
-                "full_every_s": transaction_ingest._FULL_EVERY_S,
-                "recent_window_h": transaction_ingest._RECENT_WINDOW_H}
+                "full_every_s": every,
+                "recent_window_h": transaction_ingest._RECENT_WINDOW_H,
+                "phases": {a: transaction_ingest.full_phase_s(a, every) for a in ids}}
 
     app.add_api_route("/__slop/sweep-pacing/knobs", knobs, methods=["POST"])
     app.add_api_route("/__slop/sweep-pacing/run", run, methods=["POST"])

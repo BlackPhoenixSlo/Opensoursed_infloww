@@ -381,12 +381,17 @@ HEALTH_PROBE = LoopLane("health_probe", "HEALTH_ALL_CONCURRENCY", 24)
 # one dead proxy (10 stuck slots, 6 walking the other 40 in ~7 s).
 REFERRALS_READ = LoopLane("referrals_read", "REFERRALS_CONCURRENCY", 16)
 
+# Vault Pro's download through the relay (`vault_download_api`): a slot per file for its WHOLE stream, which for a
+# source video can be minutes. Queued, never rejected: the browser runs 3 at a time per tab, so a waiter is another
+# tab's file. 4 keeps a whole-vault pull from holding more than a few proxy sockets and curl handles at once.
+VAULT_DOWNLOAD = LoopLane("vault_download", "VAULT_DOWNLOAD_CONCURRENCY", 4)
+
 
 # Every lane, so diagnostics can be DERIVED rather than restated. `admin_streams`
 # merges `all_stats()`; adding a lane above and forgetting it here is the only
 # way it can go unreported, which is one place to look instead of two files.
 LANES = (VIDEO_STREAM, IMG_FETCH, STORYBOARD_BUILD)
-LOOP_LANES = (VAULT_MEDIA_READ, HEALTH_PROBE, REFERRALS_READ)
+LOOP_LANES = (VAULT_MEDIA_READ, HEALTH_PROBE, REFERRALS_READ, VAULT_DOWNLOAD)
 
 
 def describe() -> list[dict[str, Any]]:

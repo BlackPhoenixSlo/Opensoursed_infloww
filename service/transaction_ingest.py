@@ -11,7 +11,8 @@ row 3). The rate-limit posture is cadence + sequential walk, not a header.
 
 Steady state: each tick walks the trailing 24 h (`recent`: OF's date-only
 `startDate`, ~1 page); the full `refresh` runs once per 2 h period per account
-(each at its own phase in it) and on the first tick after a restart. OF ignores
+(each at its own phase in it; its watermark `last_full_at` persists, so a restart
+re-walks only accounts due, and a failed attempt spends its period). OF ignores
 `start`/`end` (measured 2026-11-07, acct 532022545), and `offset` >= 600 answers
 empty with hasMore false although offset 500 said hasMore true (measured, acct
 15891843), so a full walk reads OF's latest 600 rows, whatever its window. The
@@ -252,6 +253,7 @@ from transaction_ingest_decide import (  # noqa: E402,F401
     scan_backfill_page,
     scan_backfill_restart,
     scan_interrupted,
+    scan_seeded,
     scan_started,
     subscription_fans,
     tip_window,
@@ -278,11 +280,11 @@ from transaction_ingest_decide import (  # noqa: E402,F401
 # literals in transaction_ingest_decide.
 _RECENT_WINDOW_H = _clamped_env("INGEST_RECENT_WINDOW_H", _DEFAULT_RECENT_WINDOW_H, 12.0, 168.0)
 _FULL_EVERY_S = _clamped_env("INGEST_FULL_EVERY_S", _DEFAULT_FULL_EVERY_S, 900.0, 86400.0)
-# Each account's last full walk that completed (reached its window's end) in
-# THIS process, or was cut short or failed on an unfinished account (or that walk would
-# starve behind it), stamped with its window's end (when it started), so the period runs
-# walk to walk: a restart's first tick is a full walk. Admin /run mode=refresh counts.
-_last_full_at: dict[str, datetime] = {}
+# The full-walk watermark is TransactionScanHistory.last_full_at (persisted, so a
+# restart re-walks only accounts due): every attempted full walk stamps its window's
+# end (when it started) with its finalization, completed, failed or cut short; one
+# per period, a failed one included (measured AE 2026-11-08: unstamped failures
+# re-walked every tick until paused). Admin /run mode=refresh counts.
 # Accounts whose recent walk got a row older than its `startDate` minus a day (OF
 # ignored `startDate`): warned once per process.
 _recent_window_warned: set[str] = set()
@@ -1078,11 +1080,17 @@ async def _is_paused(account_id: str) -> bool:
 
 
 async def _decide_mode(account_id: str) -> str:
+    now = datetime.utcnow()
     async with get_session() as s:
         row = await s.get(TransactionScanHistory, account_id)
-        return decide_mode(_scan_facts(row) if row is not None else None,
-                           now=datetime.utcnow(), last_full_at=_last_full_at.get(account_id),
-                           full_every_s=_FULL_EVERY_S,
+        facts = _scan_facts(row) if row is not None else None
+        if facts is not None:
+            seeded = scan_seeded(facts, now)
+            if seeded is not facts:   # persisted (this session commits) before the tick
+                _store_scan(row, seeded)
+                log.info("ingest_tx_full_watermark_seeded account=%s", account_id)
+                facts = seeded
+        return decide_mode(facts, now=now, full_every_s=_FULL_EVERY_S,
                            phase_s=full_phase_s(account_id, _FULL_EVERY_S))
 
 
@@ -1161,7 +1169,8 @@ async def _clear_stale_inflight() -> int:
         return len(rows)
 
 
-async def _record_failure(account_id: str, exc: Exception, *, progressed: bool = False) -> None:
+async def _record_failure(account_id: str, exc: Exception, *, progressed: bool = False,
+                          full_at: datetime | None = None) -> None:
     # A proxy refusal (of_client.proxy_refused; _proxy_retry already retried
     # it) never reached OF: it says nothing about the account or its session.
     # Nor does a backfill that committed pages before failing (`progressed`, e.g.
@@ -1171,7 +1180,7 @@ async def _record_failure(account_id: str, exc: Exception, *, progressed: bool =
     async with get_session() as s:
         row = await _scan_state(s, account_id)
         state = scan_after_failure(_scan_facts(row), refusal or progressed, datetime.utcnow(),
-                                   error=repr(exc)[:500])
+                                   error=repr(exc)[:500], full_at=full_at)
         _store_scan(row, state)
     if refusal:
         # Not counted toward the pause: the next tick retries for free.
@@ -1199,6 +1208,7 @@ async def _mark_success(
     page_rows_max_occurred_at: datetime | None,
     floor_reached: bool,
     stop_reason: str | None = None,
+    full_at: datetime | None = None,
 ) -> None:
     # 'ok' (not the start-of-tick 'refreshing') so the /run endpoint's
     # collision check (status IN ('refreshing','backfilling')) only fires
@@ -1210,7 +1220,7 @@ async def _mark_success(
             _scan_facts(row), mode=mode, inserted=inserted, patched=patched,
             last_marker=last_marker, rows_min=page_rows_min_occurred_at,
             rows_max=page_rows_max_occurred_at, floor_reached=floor_reached,
-            now=datetime.utcnow(), stop_reason=stop_reason))
+            now=datetime.utcnow(), stop_reason=stop_reason, full_at=full_at))
 
 
 @dataclass
@@ -1418,7 +1428,8 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
     """One supervisor tick for one account.
 
     recent:   window = (utcnow - _RECENT_WINDOW_H, utcnow)
-    refresh:  window = (utcnow - 7d, utcnow); completed, it stamps _last_full_at
+    refresh:  window = (utcnow - 7d, utcnow); completed, failed or cut short, it
+              stamps last_full_at (its window end) with its finalization
     backfill: window = (backfill_floor, oldest_seen_occurred_at or utcnow), walked
               by _backfill_tick (marker pages, per-tick cap, resumes at the cursor)
     A completed refresh or backfill, or any tick that moved a row out of a reversal
@@ -1625,11 +1636,11 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
             except Exception as e:
                 if not proxy_refused(e):  # a refusal logs one line in _record_failure
                     log.warning("ingest_tx_scan_failed account=%s", account_id, exc_info=True)
-                await _record_failure(account_id, e, progressed=bf.walked > 0)
+                # A failed full walk spends its period too: else it re-walks every tick
+                # (a finished account) or freezes the unfinished walk behind it.
+                await _record_failure(account_id, e, progressed=bf.walked > 0,
+                                      full_at=end_dt if mode == "refresh" else None)
                 finalized = True
-                # Or a full walk that keeps failing freezes the unfinished walk behind it.
-                if mode == "refresh" and not started.fully_backfilled:
-                    _last_full_at[account_id] = end_dt
                 if account_id in _reinstated:
                     await _poll_disputes(account_id, client)
                 return _tick_result(t0, inserted=inserted + bf.inserted, patched=patched + bf.patched,
@@ -1645,14 +1656,10 @@ async def run_one_tick(account_id: str, *, mode: str = "refresh") -> dict:
                 page_rows_max_occurred_at=rows_max_ts,
                 floor_reached=floor_reached,
                 stop_reason=bf.stop,
+                # Cut short (repeated page, ceiling) or not: one attempt per period.
+                full_at=end_dt if mode == "refresh" else None,
             )
             finalized = True
-            # A full walk that reached its window's end (not one cut short by the
-            # repeated-page guard or the ceiling) resets the full-walk clock. An
-            # unfinished walk's refresh resets it either way, or the walk would
-            # starve behind refreshes that never finish.
-            if mode == "refresh" and (floor_reached or not started.fully_backfilled):
-                _last_full_at[account_id] = end_dt
             # Disputes the 600-row walk cannot reach (transaction_chargebacks):
             # after a completed full walk, same lock; never fails the tick.
             if account_id in _reinstated or (mode in ("backfill", "refresh") and floor_reached):

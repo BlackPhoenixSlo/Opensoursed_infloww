@@ -203,7 +203,7 @@ function FolderDeleteModal({ folder, onDelete, onCancel }: {
   );
 }
 
-export default function VaultFolderRail({ folders, loading, error, onRetry, selectedId, onSelect, onChanged }: {
+export default function VaultFolderRail({ folders, loading, error, onRetry, selectedId, onSelect, onChanged, onDownloadFolder }: {
   /** The folders to list, in OF's order. */
   folders: VaultList[];
   loading: boolean;
@@ -215,6 +215,8 @@ export default function VaultFolderRail({ folders, loading, error, onRetry, sele
   onSelect: (id: FanId | null) => void;
   /** Called after every folder write, taken by OF or not: the folders may have changed. */
   onChanged: () => void;
+  /** Ours: the row menu's "Download folder" (absent: no such item). */
+  onDownloadFolder?: (f: VaultList) => void;
 }) {
   const accountId = useVaultAccountId();
   const qc = useQueryClient();
@@ -504,6 +506,7 @@ export default function VaultFolderRail({ folders, loading, error, onRetry, sele
                           items={[
                             { label: "Rename", onClick: () => setNameModal({ folder: f }) },
                             { label: "Delete", onClick: () => setDeleteModal(f) },
+                            ...(onDownloadFolder ? [{ label: "Download folder", onClick: () => onDownloadFolder(f) }] : []),
                           ]}
                         />
                       </span>

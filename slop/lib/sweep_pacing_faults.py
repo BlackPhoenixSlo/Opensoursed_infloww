@@ -47,6 +47,10 @@ so a target can never name a check that does not exist.
   tx-backfill-crowded  4 backfills at once, the pace measured over CROWD's bucket: a retry's 429 ends a tick.
   tx-backfill-dispute-repolled  the disputes poll ignores a row's status (lib/ledger_faults.py's bug
                        class): every backfill tick deducts the disputed sale again.
+  tx-full-watermark-forgotten  the full-walk watermark back in memory: a Creator this process has not
+                       stamped walks full whatever last_full_at says (a restart re-walks everyone).
+  tx-failed-full-not-stamped  a failed full walk on a backfilled Creator leaves last_full_at (the
+                       pre-fix rule, AE 2026-11-08): its next tick in the same period walks full again.
 """
 from __future__ import annotations
 
@@ -76,6 +80,8 @@ BF_BURST = "tx_backfill_no_flip_burst"
 BF_DISPUTE = "tx_backfill_dispute_stands"
 BF_GAP = "tx_backfill_gap_rewalked"
 BF_SHARED = "tx_backfill_shared_bucket"
+TX_RESTART = "tx_restart_keeps_full_schedule"
+TX_FAILED_FULL = "tx_failed_full_consumes_period"
 
 
 def _unpaced() -> None:
@@ -239,8 +245,51 @@ def _bf_failure_counted() -> None:
     import transaction_ingest as ti
     real = ti._record_failure
 
-    async def record(account_id, exc, *, progressed=False):
-        await real(account_id, exc, progressed=False)
+    async def record(account_id, exc, *, progressed=False, **kw):
+        await real(account_id, exc, progressed=False, **kw)
+
+    ti._record_failure = record
+
+
+def _tx_full_watermark_forgotten() -> None:
+    from dataclasses import replace
+    from datetime import datetime
+
+    import transaction_ingest as ti
+    mine: set[str] = set()   # Creators this process stamped (the old in-memory dict's keys)
+    real_ok, real_fail, real_decide = ti._mark_success, ti._record_failure, ti._decide_mode
+
+    async def ok(account_id, **kw):
+        await real_ok(account_id, **kw)
+        if kw.get("full_at") is not None:
+            mine.add(account_id)
+
+    async def fail(account_id, exc, **kw):
+        await real_fail(account_id, exc, **kw)
+        if kw.get("full_at") is not None:
+            mine.add(account_id)
+
+    async def decide(account_id):
+        if account_id in mine:
+            return await real_decide(account_id)
+        async with ti.get_session() as s:
+            row = await s.get(ti.TransactionScanHistory, account_id)
+            facts = ti._scan_facts(row) if row is not None else None
+        got = ti.decide_mode(facts if facts is None else replace(facts, last_full_at=None), now=datetime.utcnow())
+        return "refresh" if got == "recent" else got
+
+    ti._mark_success, ti._record_failure, ti._decide_mode = ok, fail, decide
+
+
+def _tx_failed_full_not_stamped() -> None:
+    import transaction_ingest as ti
+    real = ti._record_failure
+
+    async def record(account_id, exc, *, full_at=None, **kw):
+        async with ti.get_session() as s:
+            row = await s.get(ti.TransactionScanHistory, account_id)
+            done = row is not None and row.fully_backfilled
+        await real(account_id, exc, full_at=None if done else full_at, **kw)
 
     ti._record_failure = record
 
@@ -272,4 +321,6 @@ def register(Fault) -> dict:
         "tx-backfill-short-gap-unwalked": Fault(_bf_short_gap_unwalked, (BF_DROPPED, BF_ONCE, BF_LIFETIME, BF_PARTIAL)),
         "tx-backfill-crowded": Fault(_bf_crowded, (BF_SHARED,)),
         "tx-backfill-dispute-repolled": Fault(_bf_dispute_repolled, (BF_DISPUTE, BF_LIFETIME)),
+        "tx-full-watermark-forgotten": Fault(_tx_full_watermark_forgotten, (TX_RESTART,)),
+        "tx-failed-full-not-stamped": Fault(_tx_failed_full_not_stamped, (TX_FAILED_FULL,)),
     }

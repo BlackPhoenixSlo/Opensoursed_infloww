@@ -33,8 +33,25 @@ oracles, bypasses).
 | `seed/vault_live.py` | Vault Refresh's world by SQL from `lib/vault_wire.py`'s vaults: mirror Creators get `seed/vault_week.mirror` + the relay's folder list cached 2 h ago (LISTS_KEY); live Creators the picker's page 1 cached 2 h ago with thumbs expired 1 h ago (PICKER_KEY); every vault call LATENCY_S. |
 | `lib/vault_refresh_faults.py` | Vault Refresh's check names and faults (below). |
 | `scenarios/2026-11-05-vault-refresh.py` | Vault Pro's Refresh and the picker's broken-thumb reload. |
+| `lib/vault_download_faults.py` | Vault Pro download's check names and its fault (below). |
+| `scenarios/2026-11-08-vault-download.py` | Download selected / folder / whole vault, direct vs relay; its `Disk` (the picker stub's far side). |
 
 ## Scenarios
+
+- `2026-11-08-vault-download`: `flat_agency` (2 Creators), `OF_WIRE` + `lib/vault_wire.py` (`ip_bound`, `full_mp4`:
+  a video's `files.full` is its source mp4), mirror by SQL (`seed/vault_week`), CDN armed (exact seeded bytes).
+  Creator A no proxy (urls signed for "direct"), B on a `ProxyWire` proxy (urls signed for it). Stage relay-load
+  (also --no-ui): `--users` concurrent `GET /admin/vault-ai/download` of B's whole vault. UI (1440x900): on A,
+  Download selected (3 photos + 1 video), the rail's Download folder, Download whole vault with `STALE` urls signed
+  for a proxy A left; on B, Download selected. Screenshots `vault-download-<select|folder|vault|proxied>-trigger` /
+  `-settled`. Checks (`lib/vault_download_faults.py`): `SELECT`, `FOLDER`, `VAULT` (stale ones: 403, one by-id
+  re-sign each, then direct 200), `PROXIED` (0 browser CDN fetches), `RELAY_LOAD`; files read off disk (path, a
+  .jpg's exact bytes, an .mp4's size = served + ftyp), the panel's data-* counts, the relay's `vault_download` log
+  lines; p95 of the relay download vs last green. Fault `vault-download-direct-ignores-proxy` (default, client:
+  `sourceFor` drops the proxy rule) turns only `PROXIED` red. Bypasses: the browser's CDN requests answered at its
+  network boundary (Playwright route) by img_relay's fake with S3's CORS (ACAO `*` on 200/206, none on 403); the
+  native folder picker stubbed (init script; each chunk over a binding to `<tmp>/downloads/<phase>/`, `.crswap`
+  then rename, as Chromium). Knob `--items=` (`vault_download_items` 40 / 300 / 1,000).
 
 - `2026-11-05-vault-refresh`: `OF_WIRE` (`seed/of_sessions`) + `lib/vault_wire.py`, `agency_pool` plus `seed/vault_live`, `lib/img_relay.py`
   armed with `pictures`. UI: Vault Pro on Creator 0 (desktop) and 1 (phone): a folder + 5 media made on OF after

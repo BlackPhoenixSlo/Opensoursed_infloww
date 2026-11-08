@@ -418,14 +418,15 @@ def case_window_and_mode():
         # A walk under way still owes the period's full walk (status flips, disputes).
         ("walk started, full walk this period", ScanState(oldest_seen_occurred_at=NOW), B, phase, "backfill"),
         ("walk started, full walk due", ScanState(oldest_seen_occurred_at=NOW), B - timedelta(seconds=1), phase, "refresh"),
-        ("walk started, none in this process", ScanState(oldest_seen_occurred_at=NOW), None, phase, "refresh"),
+        ("walk started, never stamped", ScanState(oldest_seen_occurred_at=NOW), None, phase, "refresh"),
         ("walk not started, full walk due", ScanState(), B - timedelta(seconds=1), phase, "backfill"),
         ("walk stopped on its first page, full walk due",
          ScanState(last_error="backfill_stopped: blank_first_page"), None, phase, "refresh"),
         ("walk stopped on its first page, full walk done",
          ScanState(last_error="backfill_stopped: blank_first_page"), B, phase, "backfill"),
         ("a tick failed before any page: not stopped", ScanState(last_error="OF 500"), None, phase, "backfill"),
-        ("just restarted: no full walk in this process", done, None, phase, "refresh"),
+        # Unseeded (row from before the column): recent; _decide_mode persists scan_seeded's stamp.
+        ("backfilled, never stamped: recent, no deploy herd", done, None, phase, "recent"),
         ("full walk at the start of this period", done, B, phase, "recent"),
         ("full walk 5 min ago, same period", done, NOW - timedelta(minutes=5), phase, "recent"),
         ("full walk 1 s before this period", done, B - timedelta(seconds=1), phase, "refresh"),
@@ -436,9 +437,10 @@ def case_window_and_mode():
         ("hours ago", done, NOW - timedelta(hours=5), phase, "refresh"),
     ]
     for name, st, last, ph, want in table:
-        got = d.decide_mode(st, now=NOW, last_full_at=last, phase_s=ph)
+        got = d.decide_mode(st if st is None else replace(st, last_full_at=last), now=NOW, phase_s=ph)
         assert got == want, (name, got, want)
-    assert d.decide_mode(done, now=NOW, last_full_at=NOW - timedelta(seconds=950), full_every_s=900) == "refresh"
+    assert d.decide_mode(replace(done, last_full_at=NOW - timedelta(seconds=950)), now=NOW,
+                         full_every_s=900) == "refresh"
     assert d.window_for("recent", ScanState(), NOW) == (NOW - timedelta(hours=24), NOW)
     assert d.window_for("recent", ScanState(), NOW, recent_h=12) == (NOW - timedelta(hours=12), NOW)
     assert d.window_for("refresh", ScanState(), NOW) == (NOW - timedelta(days=7), NOW)
@@ -463,16 +465,19 @@ _rng = __import__("random").Random(7)
 FLEET = [str(_rng.randrange(10**8, 10**9)) for _ in range(50)]   # 50 OF-like Creator ids, deterministic
 
 
-def _full_ticks(aid: str, tick_s: float, hours: float, t0: datetime) -> list[int]:
-    """The supervisor's ticks for one account from a restart at t0: which tick indexes walk full
-    (decide at the tick, stamp the walk's start, as run_one_tick does)."""
-    done, last, out = ScanState(fully_backfilled=True), None, []
+def _full_ticks(aid: str, tick_s: float, hours: float, t0: datetime,
+                last: datetime | None = None) -> list[int]:
+    """The supervisor's ticks for one account from a boot at t0 with watermark `last` (None:
+    the deploy of the column): which tick indexes walk full (seed, decide at the tick, stamp
+    the walk's start, as _decide_mode and run_one_tick do)."""
+    st, out = ScanState(fully_backfilled=True, last_full_at=last), []
     ph = d.full_phase_s(aid)
     for n in range(int(hours * 3600 / tick_s)):
         now = t0 + timedelta(seconds=n * tick_s)
-        if d.decide_mode(done, now=now, last_full_at=last, phase_s=ph) == "refresh":
+        st = d.scan_seeded(st, now)
+        if d.decide_mode(st, now=now, phase_s=ph) == "refresh":
             out.append(n)
-            last = now
+            st = replace(st, last_full_at=now)
     return out
 
 
@@ -489,20 +494,78 @@ def case_restart_herd_spreads_within_one_period_then_exact_period():
     second = Counter()
     for aid in FLEET:
         fulls = _full_ticks(aid, 900, 26, t0)
-        assert fulls[0] == 0, (aid, fulls[:3])                        # restart: everyone full at once
-        assert 1 <= fulls[1] <= 8, (aid, fulls[:3])                   # then within one period
-        assert {b - a for a, b in zip(fulls[1:], fulls[2:])} == {8}, (aid, fulls)   # 7200 s walk to walk
-        second[fulls[1]] += 1
+        # The deploy seeds every NULL watermark: nobody full at boot, each at its own phase.
+        assert 1 <= fulls[0] <= 8, (aid, fulls[:3])
+        assert {b - a for a, b in zip(fulls, fulls[1:])} == {8}, (aid, fulls)   # 7200 s walk to walk
+        second[fulls[0]] += 1
     spread = [second[n] for n in range(1, 9)]
     print(f"    full-walk phase spread of 50 Creators over the 8 ticks of a period: {spread}")
     # crc32 phases are ~uniform: 50 into 8 ticks is ~6 each with multinomial noise (a max of 12-14 is
-    # normal at n=50); the bound is "no tick carries a third of the fleet", vs all 50 at the restart.
+    # normal at n=50); the bound is "no tick carries a third of the fleet", vs all 50 at the boot.
     assert sum(spread) == 50 and max(spread) <= 16 and min(spread) >= 1, spread
     # Ticks that run late (cycle overrun): walk to walk stays 7200 s +/- one tick.
     for aid in FLEET[:10]:
         fulls = _full_ticks(aid, 905, 26, t0)
-        gaps = {(b - a) * 905 for a, b in zip(fulls[1:], fulls[2:])}
+        gaps = {(b - a) * 905 for a, b in zip(fulls, fulls[1:])}
         assert all(7200 - 905 <= g <= 7200 + 905 for g in gaps), (aid, gaps)
+
+
+def case_full_watermark_seed_failure_and_rollback():
+    full, ph = d._DEFAULT_FULL_EVERY_S, 437
+    B = NOW - timedelta(seconds=ph)           # start of the current period (see case_window_and_mode)
+    done = ScanState(fully_backfilled=True)
+    # NULL policy: a backfilled account is seeded to now (then recent); nothing else is.
+    assert d.scan_seeded(done, NOW).last_full_at == NOW
+    for st in (ScanState(), ScanState(oldest_seen_occurred_at=NOW), replace(done, last_full_at=B)):
+        assert d.scan_seeded(st, NOW) is st, st
+    assert d.decide_mode(d.scan_seeded(done, NOW), now=NOW, phase_s=ph) == "recent"
+    # Seeded a second before its boundary: the boundary's tick walks full (at most one period late).
+    s = d.scan_seeded(done, B - timedelta(seconds=1))
+    assert d.decide_mode(s, now=B, phase_s=ph) == "refresh"
+    assert d.decide_mode(s, now=B - timedelta(milliseconds=500), phase_s=ph) == "recent"
+    # Configured periods: 900 s with this phase; the bucket arithmetic is the period's.
+    for every in (900.0, 3600.0, 86400.0):
+        p = d.full_phase_s("80000112", every)
+        start = datetime(1970, 1, 1) + timedelta(
+            seconds=d.full_bucket(NOW, full_every_s=every, phase_s=p) * every - p)
+        st = replace(done, last_full_at=start)
+        assert d.decide_mode(st, now=start + timedelta(seconds=every - 1), full_every_s=every, phase_s=p) == "recent"
+        assert d.decide_mode(st, now=start + timedelta(seconds=every), full_every_s=every, phase_s=p) == "refresh"
+        assert d.decide_mode(st, now=start - timedelta(seconds=1), full_every_s=every, phase_s=p) == "refresh"
+    # A failed or completed full walk stamps its window end; a refusal too; recent leaves it.
+    at = NOW - timedelta(minutes=3)
+    f = d.scan_after_failure(replace(done, last_full_at=B - timedelta(hours=2)), False, NOW,
+                             error="OF 429", full_at=at)
+    assert (f.last_full_at, f.current_status, f.consecutive_failures, f.last_error) == (at, "error", 1, "OF 429")
+    assert d.scan_after_failure(done, True, NOW, error="refused", full_at=at).last_full_at == at
+    third = d.scan_after_failure(replace(done, consecutive_failures=2), False, NOW, error="x", full_at=at)
+    assert third.current_status == "paused" and third.last_full_at == at, third
+    kept = d.scan_after_failure(replace(done, last_full_at=B), False, NOW, error="x")
+    assert kept.last_full_at == B
+    ok = dict(inserted=0, patched=0, last_marker=None, rows_min=None, rows_max=None, now=NOW)
+    assert d.scan_after_success(replace(done, last_full_at=B), mode="recent", floor_reached=True,
+                                **ok).last_full_at == B
+    assert d.scan_after_success(done, mode="refresh", floor_reached=False, full_at=at, **ok).last_full_at == at
+    assert d.decide_mode(f, now=NOW, phase_s=ph) == "recent", "a failed full walk re-walks in its period"
+    # Clock stepped back below the watermark: one refresh, which re-stamps it, then recent.
+    future = replace(done, last_full_at=NOW + timedelta(hours=3))
+    assert d.decide_mode(future, now=NOW, phase_s=ph) == "refresh"
+    assert d.decide_mode(replace(future, last_full_at=NOW), now=NOW + timedelta(seconds=1), phase_s=ph) == "recent"
+    # A boot on a persisted DB: only the accounts whose period turned over walk full.
+    fulls = _full_ticks("80000112", 900, 3, NOW, last=NOW - timedelta(seconds=1))
+    p = d.full_phase_s("80000112")
+    same = d.full_bucket(NOW, full_every_s=full, phase_s=p) == d.full_bucket(
+        NOW - timedelta(seconds=1), full_every_s=full, phase_s=p)
+    assert (fulls[0] != 0) if same else (fulls[0] == 0), (fulls, same)
+    due, not_due = 0, 0
+    for aid in FLEET:
+        p = d.full_phase_s(aid)
+        last = NOW - timedelta(minutes=20)
+        crossed = d.full_bucket(NOW, full_every_s=full, phase_s=p) != d.full_bucket(last, full_every_s=full, phase_s=p)
+        first = _full_ticks(aid, 900, 0.25, NOW, last=last)
+        assert bool(first) == crossed, (aid, first, crossed)
+        due, not_due = due + crossed, not_due + (not crossed)
+    assert due and not_due and due < len(FLEET) // 2, (due, not_due)
 
 
 # ── the write path ──────────────────────────────────────────────────

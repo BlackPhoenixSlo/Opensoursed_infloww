@@ -37,6 +37,8 @@ FLOW_SIZES: dict[str, tuple[int, int, int]] = {
     # vault-collect / vault-thumbs (the vault week cache)
     "vault_collect_creators": (6, 16, 40), "vault_collect_items": (400, 600, 2_000),
     "vault_thumbs_creators": (3, 6, 10), "vault_thumbs_items": (120, 300, 1_000),
+    # vault-download (media per vault: the whole-vault download's size)
+    "vault_download_items": (40, 300, 1_000),
     # priority-mass-5k
     "priority_mass_roster_a": (400, 7_000, 7_000),
     # welcome-burst

@@ -1160,13 +1160,15 @@ A flow with a `README.<flow>.md` lists its scenarios there.
   with a blank page, resumed by admin `/run`, a reactivated one with a blank FIRST page, a walk with 1,540 rows above its top,
   8 cold Creators on one guessed shared bucket): nothing dropped past OF's offset cap, every row once, lifetime once,
   a stopped walk never complete and stalled, calls bounded incl. disputes, no terminal 429 on the shared bucket, a mid-walk
-  row lands, no status-flip burst. Faults `sweep-unpaced`,
+  row lands, no status-flip burst; then the full walk's persisted watermark (`lib/sweep_pacing_watermark.py`): mixed
+  persisted phases, relay SIGKILL + restart on the same DB, only due Creators walk full; a full walk failed on a
+  terminal second 429 spends its period, the next period's tick walks full. Faults `sweep-unpaced`,
   `sweep-no-429-retry`, `tx-cadence-300`, `tx-recent-window-ignored`, `tx-recent-startdate-iso`,
   `tx-backfill-offset-walk`, `tx-backfill-complete-on-empty`, `tx-backfill-marker-exclusive`,
   `tx-backfill-lifetime-on-reread`, `tx-backfill-flips-uncapped`, `tx-backfill-uncapped`,
   `tx-backfill-poll-only-complete`, `tx-backfill-poll-every-tick`, `tx-backfill-gap-unread`,
-  `tx-backfill-blank-first-page`, `tx-backfill-failure-counted`, `tx-backfill-short-gap-unwalked`, `tx-backfill-crowded`, `tx-backfill-dispute-repolled`
-  (`lib/sweep_pacing_faults.py`).
+  `tx-backfill-blank-first-page`, `tx-backfill-failure-counted`, `tx-backfill-short-gap-unwalked`, `tx-backfill-crowded`, `tx-backfill-dispute-repolled`,
+  `tx-full-watermark-forgotten`, `tx-failed-full-not-stamped` (`lib/sweep_pacing_faults.py`).
   Details: the scenario's docstring.
 - `2026-11-07-chat-sweep-cadence` (`OF_WIRE`): full chat sweeps (`scrape_chats` `{}`) on
   `service/sweep_cadence.py`'s cadence, not one per relay start. Seeded backlog of duplicate sweeps, 4 relay

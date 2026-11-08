@@ -46,7 +46,8 @@ a second. Not measured against OF (prod: 148 /users/list 429s in 18 h over far m
 real OF is laxer than "1 a second"). `inject[(uid, route)] = {"offset": n, "text": msg}` answers the
 first request for that page (and `view`, when given; an unfiltered one) 429 with `msg`, whatever
 the limit says (OF's 429s are not only bursts); `"times": k` answers its first k requests so
-(default 1). `"marker": True`: only a request with a `marker`; `"skip": k`: not its first k such
+(default 1). `"marker": True`: only a request with a `marker`; `"full": True`: only one with no
+`startDate` (the ledger's full walk); `"skip": k`: not its first k such
 requests; `"empty": True` instead of `text`: an empty 200, hasMore false (the answer OF gives past
 its offset cap, out of nowhere). GET /campaigns and /trials stay of_wire's; their
 arrivals are logged too (status None), not limited. Every request is kept in `log`, arrival order: {t, account, route, query (the
@@ -140,7 +141,8 @@ class SweepWire:
             text, blank = None, False
             fire = (inj and not inj.get("done") and inj["offset"] == off and inj.get("view") in (None, view)
                     and not any(k.startswith("filter[") for k in q)
-                    and (not inj.get("marker") or "marker" in q))
+                    and (not inj.get("marker") or "marker" in q)
+                    and (not inj.get("full") or "startDate" not in q))
             if fire and inj.get("skip"):
                 inj["skip"] -= 1
                 fire = False
